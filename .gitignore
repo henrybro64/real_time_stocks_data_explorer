@@ -1,0 +1,162 @@
+# -----------------------------------------------------------------------------
+# Dependencies (never commit — reinstall from lockfiles / requirements)
+# -----------------------------------------------------------------------------
+node_modules/
+**/node_modules/
+
+# Python environments
+.venv/
+venv/
+ENV/
+env/
+
+# -----------------------------------------------------------------------------
+# Python: bytecode, caches, packaging & binary artifacts
+# -----------------------------------------------------------------------------
+**/__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+*.so
+.Python
+# setuptools / pip / build (sdist, wheel, editable installs)
+# Note: sdist/wheel archives usually land in ./dist/ — already ignored above.
+*.egg
+*.egg-info/
+*.dist-info/
+.eggs/
+build/
+dist/
+pip-wheel-metadata/
+pip-download-cache/
+wheelhouse/
+*.whl
+
+# Type checkers / linters (local caches)
+.mypy_cache/
+.dmypy.json
+.pytype/
+.pyre/
+.ruff_cache/
+.bandit
+.pylint.d/
+.hypothesis/
+.pytest_cache/
+.tox/
+.nox/
+
+# Virtualenv / tooling (uv, pipenv, etc.)
+.uv/
+.pip/
+
+# -----------------------------------------------------------------------------
+# Node / frontend: build outputs & Vite
+# -----------------------------------------------------------------------------
+frontend/dist/
+frontend/out/
+packages/*/dist/
+**/dist/
+**/dist-ssr/
+**/storybook-static/
+frontend/.next/
+**/.next/
+
+# Vite caches
+.vite/
+**/.vite/
+
+# Bundler / tooling caches
+.cache/
+.parcel-cache/
+.turbo/
+.eslintcache
+.stylelintcache
+*.tsbuildinfo
+# Next.js webpack cache packfiles
+**/.next/cache/webpack/**/*.pack
+
+# Test coverage (JS)
+coverage/
+**/coverage/
+.nyc_output/
+*.lcov
+lcov.info
+
+# -----------------------------------------------------------------------------
+# Environment & secrets (never commit real credentials)
+# -----------------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+!.env.sample
+*.local
+
+# -----------------------------------------------------------------------------
+# IDE & local editor state
+# -----------------------------------------------------------------------------
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+*.swp
+*.swo
+*~
+
+# Cursor — ignore local project cache; allow shared rules to be committed
+.cursor/*
+!.cursor/rules/
+
+# -----------------------------------------------------------------------------
+# OS
+# -----------------------------------------------------------------------------
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# -----------------------------------------------------------------------------
+# Logs & temp
+# -----------------------------------------------------------------------------
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+*.bak
+*.tmp
+*.temp
+
+# -----------------------------------------------------------------------------
+# Local databases / runtime files (if added later)
+# -----------------------------------------------------------------------------
+*.db
+*.sqlite
+*.sqlite3
+
+# -----------------------------------------------------------------------------
+# Deployment / hosting (CLI artifacts)
+# -----------------------------------------------------------------------------
+.vercel/
+.netlify/
+.sentryclirc
+
+# -----------------------------------------------------------------------------
+# Playwright / E2E (if added later)
+# -----------------------------------------------------------------------------
+playwright-report/
+test-results/
+blob-report/
+playwright/.cache/
+
+# -----------------------------------------------------------------------------
+# Jupyter (if notebooks are added)
+# -----------------------------------------------------------------------------
+.ipynb_checkpoints/
+
+# -----------------------------------------------------------------------------
+# Docs builds (if Sphinx/MkDocs added later)
+# -----------------------------------------------------------------------------
+docs/_build/
+site/
