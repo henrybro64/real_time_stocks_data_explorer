@@ -10,7 +10,7 @@ import { MarketIndicesStrip } from "../../components/market-status/MarketIndices
 import { MarketStatusStrip } from "../../components/market-status/MarketStatusStrip";
 import { StockSearch } from "../../components/search/StockSearch";
 import { WatchlistTable } from "../../components/watchlist/WatchlistTable";
-import { useLocalWatchlist } from "../../hooks/useLocalWatchlist";
+import { useLocalWatchlist } from "../../hooks/useLocalStockList";
 import { fetchMarketIndices, fetchMarkets, fetchQuotes, searchStocks } from "../../services/api/client";
 
 export function HomePage() {

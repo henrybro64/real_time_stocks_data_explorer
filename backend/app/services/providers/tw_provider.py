@@ -171,7 +171,8 @@ class TWProvider:
             return []
 
         today = datetime.now(ZoneInfo(stock.timezone)).date()
-        months_to_fetch = 3 if limit >= 30 else 2
+        # Fetch enough monthly slices to satisfy the requested candle limit.
+        months_to_fetch = max(2, math.ceil(limit / 20) + 1)
         candles_by_time: dict[str, CandleRecord] = {}
 
         for month_offset in range(months_to_fetch):
@@ -404,6 +405,12 @@ def _daily_limit(range_name: str) -> int:
         return 7
     if range_name == "1M":
         return 30
+    if range_name == "3M":
+        return 65
+    if range_name == "6M":
+        return 130
+    if range_name == "1Y":
+        return 260
     return 30
 
 
@@ -595,4 +602,10 @@ def _history_shape(range_name: str) -> tuple[timedelta, int]:
         return timedelta(hours=4), 28
     if range_name == "1M":
         return timedelta(days=1), 30
+    if range_name == "3M":
+        return timedelta(days=1), 90
+    if range_name == "6M":
+        return timedelta(days=1), 180
+    if range_name == "1Y":
+        return timedelta(days=2), 182
     return timedelta(minutes=10), 32

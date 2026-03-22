@@ -2,9 +2,10 @@
 
 import { Button, InlineLoading, Tag, Tile } from "@carbon/react";
 import { useQuery } from "@tanstack/react-query";
-import type { Candle, Quote } from "@shared/quote";
+import type { ChartLayout, Quote } from "@shared/quote";
 import type { Stock } from "@shared/stock";
-import Link from "next/link";
+import { useId } from "react";
+import { useRouter } from "next/navigation";
 import { getDisplayStockName, useLanguage } from "../../app/i18n";
 import { fetchHistory, fetchQuote } from "../../services/api/client";
 import { formatCurrency, formatLastUpdated, formatPercent, formatSignedNumber } from "../../services/format/quote";
@@ -14,9 +15,20 @@ type Props = {
   quote?: Quote;
   isTracked: boolean;
   onToggle: (stockId: string) => void;
+  /** Override Add / Remove button labels (e.g. portfolio vs watchlist). */
+  addLabel?: string;
+  removeLabel?: string;
 };
 
-export function StockCard({ stock, quote: initialQuote, isTracked, onToggle }: Props) {
+export function StockCard({
+  stock,
+  quote: initialQuote,
+  isTracked,
+  onToggle,
+  addLabel,
+  removeLabel,
+}: Props) {
+  const router = useRouter();
   const { language, t, formatNumber } = useLanguage();
   const quoteQuery = useQuery({
     queryKey: ["card-quote", stock.id],
@@ -31,16 +43,13 @@ export function StockCard({ stock, quote: initialQuote, isTracked, onToggle }: P
 
   const historyQuery = useQuery({
     queryKey: ["card-history", stock.id, "1W"],
-    queryFn: async () => {
-      const response = await fetchHistory(stock.id, "1W");
-      return response.candles;
-    },
+    queryFn: () => fetchHistory(stock.id, "1W"),
     refetchInterval: 60_000,
     staleTime: 30_000,
   });
 
   const quote = initialQuote ?? quoteQuery.data;
-  const chartCandles = historyQuery.data ?? [];
+  const chartLayout = historyQuery.data?.chartLayout ?? null;
 
   return (
     <Tile className="app-stock-card">
@@ -62,7 +71,7 @@ export function StockCard({ stock, quote: initialQuote, isTracked, onToggle }: P
               {formatSignedNumber(quote.change, stock.currency)} ({formatPercent(quote.changePercent)})
             </p>
           </div>
-          <Sparkline candles={chartCandles} currency={stock.currency} />
+          <Sparkline chartLayout={chartLayout} isLoading={historyQuery.isLoading} currency={stock.currency} />
           <dl className="app-stock-card-meta">
             <div>
               <dt>{t("stock.market")}</dt>
@@ -89,21 +98,42 @@ export function StockCard({ stock, quote: initialQuote, isTracked, onToggle }: P
       )}
 
       <div className="app-stock-card-actions">
-        <Button as={Link} kind="tertiary" size="sm" href={`/stock/${encodeURIComponent(stock.id)}`}>
+        <Button
+          kind="tertiary"
+          size="sm"
+          onClick={() => router.push(`/stock/${encodeURIComponent(stock.id)}`)}
+        >
           {t("stock.viewDetails")}
         </Button>
         <Button kind={isTracked ? "secondary" : "primary"} size="sm" onClick={() => onToggle(stock.id)}>
-          {isTracked ? t("stock.remove") : t("stock.add")}
+          {isTracked ? (removeLabel ?? t("stock.remove")) : (addLabel ?? t("stock.add"))}
         </Button>
       </div>
     </Tile>
   );
 }
 
-function Sparkline({ candles, currency }: { candles: Candle[]; currency: "USD" | "TWD" }) {
+function Sparkline({
+  chartLayout,
+  isLoading,
+  currency,
+}: {
+  chartLayout: ChartLayout | null;
+  isLoading: boolean;
+  currency: "USD" | "TWD";
+}) {
   const { t } = useLanguage();
+  const gradId = useId().replace(/:/g, "");
 
-  if (candles.length < 2) {
+  if (isLoading) {
+    return (
+      <div className="app-stock-card-sparkline app-stock-card-sparkline-empty">
+        <InlineLoading description={t("stock.weekRange")} status="active" />
+      </div>
+    );
+  }
+
+  if (!chartLayout || chartLayout.points.length < 2) {
     return (
       <div className="app-stock-card-sparkline app-stock-card-sparkline-empty">
         <p className="app-section-meta">{t("stock.weekRangeNoData")}</p>
@@ -111,39 +141,25 @@ function Sparkline({ candles, currency }: { candles: Candle[]; currency: "USD" |
     );
   }
 
-  const prices = candles.map((candle) => candle.close);
-  const min = Math.min(...prices);
-  const max = Math.max(...prices);
-  const start = prices[0];
-  const end = prices[prices.length - 1];
-  const trendUp = end >= start;
-  const points = candles
-    .map((candle, index) => {
-      const x = (index / Math.max(candles.length - 1, 1)) * 100;
-      const y = max === min ? 50 : 100 - ((candle.close - min) / (max - min)) * 100;
-      return `${x},${y}`;
-    })
-    .join(" ");
+  const { pointsPolyline, trendUp, firstClose, lastClose } = chartLayout;
+  const points = pointsPolyline;
 
   return (
     <div className="app-stock-card-sparkline">
       <div className="app-stock-card-sparkline-header">
         <p className="app-section-meta">{t("stock.weekRange")}</p>
         <p className={trendUp ? "app-positive app-stock-card-range" : "app-negative app-stock-card-range"}>
-          {formatCurrency(start, currency)} {"->"} {formatCurrency(end, currency)}
+          {formatCurrency(firstClose, currency)} {"->"} {formatCurrency(lastClose, currency)}
         </p>
       </div>
       <svg className="app-stock-card-sparkline-svg" viewBox="0 0 100 100" preserveAspectRatio="none">
         <defs>
-          <linearGradient id={`sparkline-fill-${currency}-${trendUp ? "up" : "down"}`} x1="0%" y1="0%" x2="0%" y2="100%">
+          <linearGradient id={gradId} x1="0%" y1="0%" x2="0%" y2="100%">
             <stop offset="0%" stopColor={trendUp ? "#24a148" : "#da1e28"} stopOpacity="0.22" />
             <stop offset="100%" stopColor={trendUp ? "#24a148" : "#da1e28"} stopOpacity="0.02" />
           </linearGradient>
         </defs>
-        <polygon
-          points={`0,100 ${points} 100,100`}
-          fill={`url(#sparkline-fill-${currency}-${trendUp ? "up" : "down"})`}
-        />
+        <polygon points={`0,100 ${points} 100,100`} fill={`url(#${gradId})`} />
         <polyline
           points={points}
           fill="none"

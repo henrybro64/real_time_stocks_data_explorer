@@ -5,7 +5,7 @@ import math
 import re
 from datetime import datetime, timedelta
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
@@ -70,6 +70,12 @@ _REQUEST_TIMEOUT_SECONDS = 10
 _USER_AGENT = "stock-ticker-app/0.1 contact@example.com"
 _STOOQ_QUOTE_URL = "https://stooq.com/q/l/"
 _YAHOO_QUOTE_URL = "https://query1.finance.yahoo.com/v7/finance/quote"
+# v7 quote often returns Unauthorized for server-side requests; v8 chart is more reliable.
+_YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart"
+_BROWSER_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+)
 _SYMBOL_PATTERN = re.compile(r"^[A-Z][A-Z0-9.\-]{0,9}$")
 
 
@@ -245,6 +251,14 @@ def _load_text_with_headers(url: str, params: dict[str, str], headers: dict[str,
         return response.read().decode("utf-8", errors="ignore")
 
 
+def _load_json_get(url: str, headers: dict[str, str]) -> dict:
+    request = Request(url)
+    for key, value in headers.items():
+        request.add_header(key, value)
+    with urlopen(request, timeout=_REQUEST_TIMEOUT_SECONDS) as response:
+        return json.load(response)
+
+
 def _stock_from_sec_row(
     row: list[object],
     ticker_index: int,
@@ -312,27 +326,111 @@ def _fallback_stock(symbol: str) -> StockRecord | None:
     )
 
 
-def _fetch_live_quote(stock: StockRecord) -> QuoteRecord | None:
-    stooq_quote = _fetch_stooq_quote(stock)
-    if stooq_quote is not None:
-        return stooq_quote
+def _previous_close_from_chart_block(block: dict) -> float | None:
+    quotes = block.get("indicators", {}).get("quote")
+    if not isinstance(quotes, list) or not quotes:
+        return None
+    closes = quotes[0].get("close")
+    if not isinstance(closes, list):
+        return None
+    numeric = [float(c) for c in closes if isinstance(c, (int, float))]
+    if len(numeric) < 2:
+        return None
+    return numeric[-2]
 
+
+def _fetch_yahoo_chart_quote(stock: StockRecord) -> QuoteRecord | None:
+    """Primary US quote: Yahoo chart API (works when v7 quote is blocked)."""
+    headers = {
+        "User-Agent": _BROWSER_USER_AGENT,
+        "Accept": "application/json,text/plain,*/*",
+    }
+    tz = ZoneInfo(stock.timezone)
+    for candidate in (stock.symbol, f"{stock.symbol}.US"):
+        path_symbol = quote(candidate, safe="-.")
+        url = f"{_YAHOO_CHART_URL}/{path_symbol}?interval=1d&range=5d"
+        try:
+            payload = _load_json_get(url, headers)
+        except (HTTPError, URLError, TimeoutError, ValueError, json.JSONDecodeError):
+            continue
+
+        chart = payload.get("chart")
+        if not isinstance(chart, dict) or chart.get("error"):
+            continue
+        results = chart.get("result")
+        if not isinstance(results, list) or not results:
+            continue
+        block = results[0]
+        meta = block.get("meta")
+        if not isinstance(meta, dict):
+            continue
+
+        last_price = meta.get("regularMarketPrice")
+        if not isinstance(last_price, (int, float)):
+            continue
+
+        previous_close = meta.get("chartPreviousClose")
+        if not isinstance(previous_close, (int, float)) or previous_close == 0:
+            alt = meta.get("previousClose")
+            if isinstance(alt, (int, float)) and alt != 0:
+                previous_close = alt
+            else:
+                inferred = _previous_close_from_chart_block(block)
+                if inferred is None or inferred == 0:
+                    continue
+                previous_close = inferred
+
+        market_time = meta.get("regularMarketTime")
+        quote_time = (
+            datetime.fromtimestamp(market_time, tz=tz)
+            if isinstance(market_time, (int, float))
+            else datetime.now(tz)
+        )
+        change = round(float(last_price) - float(previous_close), 2)
+        change_percent = round((change / float(previous_close)) * 100, 2)
+
+        volume_raw = meta.get("regularMarketVolume")
+        volume = int(volume_raw) if isinstance(volume_raw, (int, float)) else None
+        high_raw = meta.get("regularMarketDayHigh")
+        low_raw = meta.get("regularMarketDayLow")
+
+        return QuoteRecord(
+            id=stock.id,
+            last_price=round(float(last_price), 2),
+            change=change,
+            change_percent=change_percent,
+            previous_close=round(float(previous_close), 2),
+            open=None,
+            high=round(float(high_raw), 2) if isinstance(high_raw, (int, float)) else None,
+            low=round(float(low_raw), 2) if isinstance(low_raw, (int, float)) else None,
+            volume=volume,
+            timestamp=quote_time.isoformat(),
+            is_market_open=is_market_open(stock.market, quote_time),
+        )
+
+    return None
+
+
+def _fetch_yahoo_v7_quote(stock: StockRecord) -> QuoteRecord | None:
+    headers = {
+        "User-Agent": _BROWSER_USER_AGENT,
+        "Accept": "application/json,text/plain,*/*",
+    }
     item: dict | None = None
     for candidate in (stock.symbol, f"{stock.symbol}.US"):
         try:
             payload = _load_json_with_headers(
                 _YAHOO_QUOTE_URL,
                 {"symbols": candidate},
-                {
-                    "User-Agent": "Mozilla/5.0",
-                    "Accept": "application/json,text/plain,*/*",
-                },
+                headers,
             )
         except (HTTPError, URLError, TimeoutError, ValueError):
             continue
 
         quote_response = payload.get("quoteResponse")
         if not isinstance(quote_response, dict):
+            continue
+        if quote_response.get("error"):
             continue
         result = quote_response.get("result")
         if not isinstance(result, list) or not result:
@@ -380,6 +478,15 @@ def _fetch_live_quote(stock: StockRecord) -> QuoteRecord | None:
     )
 
 
+def _fetch_live_quote(stock: StockRecord) -> QuoteRecord | None:
+    # Stooq first caused wrong/stale prices for some tickers (e.g. SIMO). Prefer Yahoo chart.
+    for fetcher in (_fetch_yahoo_chart_quote, _fetch_yahoo_v7_quote, _fetch_stooq_quote):
+        quote = fetcher(stock)
+        if quote is not None:
+            return quote
+    return None
+
+
 def _fetch_stooq_quote(stock: StockRecord) -> QuoteRecord | None:
     symbol = f"{stock.symbol.lower()}.us"
     try:
@@ -387,21 +494,39 @@ def _fetch_stooq_quote(stock: StockRecord) -> QuoteRecord | None:
             _STOOQ_QUOTE_URL,
             {"s": symbol, "i": "d"},
             {
-                "User-Agent": "Mozilla/5.0",
+                "User-Agent": _BROWSER_USER_AGENT,
                 "Accept": "text/csv,text/plain,*/*",
             },
         )
     except (HTTPError, URLError, TimeoutError, ValueError):
         return None
 
-    row = csv_payload.strip().splitlines()
-    if not row:
-        return None
-    columns = row[0].split(",")
-    if len(columns) < 8:
+    if "Exceeded the daily hits limit" in csv_payload or "N/D" == csv_payload.strip():
         return None
 
-    date_text = columns[1].strip()
+    lines = [line.strip() for line in csv_payload.strip().splitlines() if line.strip()]
+    columns: list[str] | None = None
+    date_text = ""
+    for line in reversed(lines):
+        cols = line.split(",")
+        if len(cols) < 8:
+            continue
+        dt = cols[1].strip()
+        if len(dt) != 8 or not dt.isdigit():
+            continue
+        close_value = _parse_number(cols[6])
+        if close_value is None:
+            continue
+        sym_cell = cols[0].strip()
+        if sym_cell and _normalize_stooq_symbol_cell(sym_cell) != stock.symbol.upper():
+            continue
+        columns = cols
+        date_text = dt
+        break
+
+    if columns is None:
+        return None
+
     open_value = _parse_number(columns[3])
     high_value = _parse_number(columns[4])
     low_value = _parse_number(columns[5])
@@ -445,6 +570,14 @@ def _parse_int_number(raw_value: str) -> int | None:
     return int(number) if number is not None else None
 
 
+def _normalize_stooq_symbol_cell(sym_cell: str) -> str:
+    normalized = sym_cell.strip().upper()
+    for suffix in (".US", ".U"):
+        if normalized.endswith(suffix):
+            normalized = normalized[: -len(suffix)]
+    return normalized
+
+
 def _parse_stooq_timestamp(raw_date: str, timezone_name: str) -> datetime:
     tz = ZoneInfo(timezone_name)
     try:
@@ -458,4 +591,10 @@ def _history_shape(range_name: str) -> tuple[timedelta, int]:
         return timedelta(hours=6), 28
     if range_name == "1M":
         return timedelta(days=1), 30
+    if range_name == "3M":
+        return timedelta(days=1), 90
+    if range_name == "6M":
+        return timedelta(days=1), 180
+    if range_name == "1Y":
+        return timedelta(days=2), 182
     return timedelta(minutes=15), 32

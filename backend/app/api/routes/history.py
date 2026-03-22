@@ -2,8 +2,10 @@ from fastapi import APIRouter, HTTPException, Query
 
 from app.models.quote import CandleRecord
 from app.models.stock import StockRecord
-from app.schemas.quote import CandleResponse, HistoryEnvelope
+from app.schemas.quote import CandleResponse, ChartLayoutResponse, HistoryEnvelope
 from app.schemas.stock import StockResponse
+from app.services.chart_layout import build_chart_layout
+from app.services.key_stats_service import get_key_statistics
 from app.services.news_service import news_service
 from app.services.quote_service import quote_service
 
@@ -20,11 +22,22 @@ def get_history(
     if data is None:
         raise HTTPException(status_code=404, detail="Stock not found")
     stock, candles = data
+    layout_raw = build_chart_layout(candles)
+    chart_layout = ChartLayoutResponse(**layout_raw) if layout_raw else None
     return HistoryEnvelope(
         stock=_stock_schema(stock),
         range=range_name,
         candles=[_candle_schema(candle) for candle in candles],
+        chartLayout=chart_layout,
     )
+
+
+@router.get("/{stock_id}/key-statistics")
+def get_stock_key_statistics(stock_id: str) -> dict[str, object]:
+    data = get_key_statistics(stock_id)
+    if data is None:
+        raise HTTPException(status_code=404, detail="Stock not found")
+    return data
 
 
 @router.get("/{stock_id}/news")

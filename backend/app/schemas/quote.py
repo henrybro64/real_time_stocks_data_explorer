@@ -31,8 +31,26 @@ class QuoteEnvelope(BaseModel):
     quote: QuoteResponse
 
 
+class ChartPoint(BaseModel):
+    x: float
+    y: float
+
+
+class ChartLayoutResponse(BaseModel):
+    minY: float
+    maxY: float
+    pointsPolyline: str
+    points: list[ChartPoint]
+    yAxisTicks: list[float]
+    xAxisTickIndices: list[int]
+    firstClose: float
+    lastClose: float
+    trendUp: bool
+
+
 class HistoryEnvelope(BaseModel):
     stock: StockResponse
     range: str
     candles: list[CandleResponse]
+    chartLayout: ChartLayoutResponse | None = None
 

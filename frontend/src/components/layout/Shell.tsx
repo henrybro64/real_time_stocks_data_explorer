@@ -86,17 +86,26 @@ export function Shell({ children }: Props) {
                         {isLeftPanelVisible ? "Hide panel" : "Show panel"}
                       </Button>
                       <aside className="app-shell-left-panel" aria-label="Workspace navigation">
-                        <p className="app-eyebrow">Workspace</p>
+                        <div className="app-shell-brand">
+                          <p className="app-eyebrow">Workspace</p>
+                          <p className="app-shell-brand-subtitle">Market command center</p>
+                        </div>
                         <nav className="app-left-nav">
                           <Link className={pathname === "/" ? "app-left-nav-link active" : "app-left-nav-link"} href="/">
                             {t("nav.dashboard")}
                           </Link>
                           <a className="app-left-nav-link" href="/#markets">
-                            Markets
+                            {t("nav.markets")}
                           </a>
                           <a className="app-left-nav-link" href="/#watchlist">
-                            Watchlist
+                            {t("nav.watchlist")}
                           </a>
+                          <Link
+                            className={pathname === "/portfolio" ? "app-left-nav-link active" : "app-left-nav-link"}
+                            href="/portfolio"
+                          >
+                            {t("nav.portfolio")}
+                          </Link>
                         </nav>
                       </aside>
                     </div>

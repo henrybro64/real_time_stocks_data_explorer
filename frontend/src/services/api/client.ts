@@ -1,5 +1,6 @@
 import type {
   HistoryResponse,
+  KeyStatistics,
   MarketIndex,
   MarketStatus,
   NewsItem,
@@ -9,8 +10,23 @@ import type {
 import type { TimeRange } from "@shared/quote";
 import type { Stock } from "@shared/stock";
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
-const API_PREFIX = process.env.NEXT_PUBLIC_API_PREFIX ?? "/api";
+/**
+ * API environment (Next.js):
+ *
+ * - **Same-origin (recommended):** leave `NEXT_PUBLIC_API_BASE_URL` unset or empty.
+ *   The browser calls `/api/...` on the current origin; Next.js rewrites proxy to the backend
+ *   (see `BACKEND_PROXY_URL` in `next.config.mjs`).
+ *
+ * - **Direct backend (e.g. debugging):** set `NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8000`
+ *   and ensure `CORS_ORIGINS` on the backend includes your UI origin.
+ */
+const rawBase = process.env.NEXT_PUBLIC_API_BASE_URL;
+const API_BASE_URL =
+  rawBase === undefined || rawBase === ""
+    ? ""
+    : rawBase.replace(/\/$/, "");
+
+const API_PREFIX = (process.env.NEXT_PUBLIC_API_PREFIX ?? "/api").replace(/\/$/, "") || "/api";
 
 function buildPath(path: string): string {
   if (!path.startsWith("/")) {
@@ -19,8 +35,17 @@ function buildPath(path: string): string {
   return `${API_PREFIX}${path}`;
 }
 
+/** Full URL for HTTP(S) requests (relative when same-origin). */
+function apiUrl(path: string): string {
+  const p = buildPath(path);
+  if (API_BASE_URL === "") {
+    return p;
+  }
+  return `${API_BASE_URL}${p}`;
+}
+
 async function fetchJson<T>(path: string): Promise<T> {
-  const response = await fetch(`${API_BASE_URL}${buildPath(path)}`);
+  const response = await fetch(apiUrl(path));
   if (!response.ok) {
     throw new Error(`Request failed: ${response.status}`);
   }
@@ -53,6 +78,10 @@ export function fetchHistory(stockId: string, range: TimeRange) {
   );
 }
 
+export function fetchKeyStatistics(stockId: string) {
+  return fetchJson<KeyStatistics>(`/stocks/${encodeURIComponent(stockId)}/key-statistics`);
+}
+
 export function fetchStockNews(stockId: string) {
   return fetchJson<NewsItem[]>(`/stocks/${encodeURIComponent(stockId)}/news`);
 }
@@ -62,7 +91,7 @@ export function fetchWatchlist() {
 }
 
 export async function addToWatchlist(stockId: string) {
-  const response = await fetch(`${API_BASE_URL}${buildPath("/watchlist/items")}`, {
+  const response = await fetch(apiUrl("/watchlist/items"), {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -79,7 +108,7 @@ export async function addToWatchlist(stockId: string) {
 
 export async function removeFromWatchlist(stockId: string) {
   const response = await fetch(
-    `${API_BASE_URL}${buildPath(`/watchlist/items/${encodeURIComponent(stockId)}`)}`,
+    apiUrl(`/watchlist/items/${encodeURIComponent(stockId)}`),
     {
       method: "DELETE",
     },
@@ -91,4 +120,3 @@ export async function removeFromWatchlist(stockId: string) {
 
   return (await response.json()) as WatchlistResponse;
 }
-

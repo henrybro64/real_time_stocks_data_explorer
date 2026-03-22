@@ -26,7 +26,7 @@ export function WatchlistTable({ isLoading = false, items, onRemove }: Props) {
       ) : items.length === 0 ? (
         <p className="app-supporting-copy">{t("watchlist.empty")}</p>
       ) : (
-        <div className="app-watchlist-grid">
+        <div className="app-watchlist-grid app-watchlist-grid-explorer">
           {items.map(({ stock, quote }) => (
             <StockCard
               key={stock.id}
