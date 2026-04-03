@@ -20,6 +20,10 @@ const displayFont = Rajdhani({
 export const metadata: Metadata = {
   title: "Stock Ticker",
   description: "Real-time stock dashboard",
+  icons: {
+    icon: "/icon.svg",
+    shortcut: "/icon.svg",
+  },
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {

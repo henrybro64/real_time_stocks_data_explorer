@@ -17,7 +17,7 @@ export function MarketIndicesStrip({ isLoading = false, items }: Props) {
           title: "最新市場指數",
           subtitle: "台灣證券交易所 / 道瓊工業 / 那斯達克 / 標普 500",
           loading: "載入市場指數中",
-          live: "交易中",
+          live: "開盤中",
           closed: "已收盤",
           updated: "更新",
         }

@@ -3,15 +3,23 @@
 import { Column, Grid, InlineLoading, Tab, TabList, TabPanel, TabPanels, Tabs, Tile } from "@carbon/react";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import type { HistoryResponse, KeyStatistics, NewsItem, QuoteResponse } from "@shared/api";
+import type { HistoryResponse, KeyStatistics, NewsItem, QuoteResponse, TWStockInsights } from "@shared/api";
 import type { TimeRange } from "@shared/quote";
 import Link from "next/link";
 import { useLanguage } from "../../app/i18n";
+import { AiInsightPanel } from "../../components/ai/AiInsightPanel";
 import { PriceChart } from "../../components/chart/PriceChart";
 import { KeyStatisticsPanel } from "../../components/key-stats/KeyStatisticsPanel";
 import { StockNewsPanel } from "../../components/news/StockNewsPanel";
 import { QuoteSummary } from "../../components/quote/QuoteSummary";
-import { fetchHistory, fetchKeyStatistics, fetchQuote, fetchStockNews } from "../../services/api/client";
+import { TwInsightsPanel } from "../../components/tw-insights/TwInsightsPanel";
+import {
+  fetchHistory,
+  fetchKeyStatistics,
+  fetchQuote,
+  fetchStockNews,
+  fetchTwStockInsights,
+} from "../../services/api/client";
 
 const RANGES: TimeRange[] = ["1D", "1W", "1M", "3M", "6M", "1Y"];
 
@@ -24,6 +32,7 @@ export function StockDetailPage({ stockId = "" }: Props) {
   const decodedStockId = decodeURIComponent(stockId);
   const [range, setRange] = useState<TimeRange>("1D");
   const selectedIndex = RANGES.indexOf(range);
+  const isTaiwanStock = decodedStockId.startsWith("TW:");
 
   const quoteQuery = useQuery<QuoteResponse>({
     queryKey: ["quote", decodedStockId],
@@ -49,6 +58,13 @@ export function StockDetailPage({ stockId = "" }: Props) {
     queryKey: ["key-statistics", decodedStockId],
     queryFn: () => fetchKeyStatistics(decodedStockId),
     enabled: decodedStockId.length > 0,
+    staleTime: 60_000,
+  });
+
+  const twInsightsQuery = useQuery<TWStockInsights>({
+    queryKey: ["tw-insights", decodedStockId],
+    queryFn: () => fetchTwStockInsights(decodedStockId),
+    enabled: decodedStockId.length > 0 && isTaiwanStock,
     staleTime: 60_000,
   });
 
@@ -121,6 +137,14 @@ export function StockDetailPage({ stockId = "" }: Props) {
       <Column className="app-column-spacing" sm={4} md={8} lg={16}>
         <StockNewsPanel isLoading={newsQuery.isLoading} items={newsQuery.data ?? []} />
       </Column>
+      <Column className="app-column-spacing" sm={4} md={8} lg={16}>
+        <AiInsightPanel stockId={decodedStockId} />
+      </Column>
+      {isTaiwanStock ? (
+        <Column className="app-column-spacing" sm={4} md={8} lg={16}>
+          <TwInsightsPanel isLoading={twInsightsQuery.isLoading} insights={twInsightsQuery.data ?? null} />
+        </Column>
+      ) : null}
     </Grid>
   );
 }

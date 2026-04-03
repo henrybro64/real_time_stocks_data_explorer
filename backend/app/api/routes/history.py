@@ -2,12 +2,18 @@ from fastapi import APIRouter, HTTPException, Query
 
 from app.models.quote import CandleRecord
 from app.models.stock import StockRecord
-from app.schemas.quote import CandleResponse, ChartLayoutResponse, HistoryEnvelope
+from app.schemas.quote import (
+    CandleResponse,
+    ChartLayoutResponse,
+    HistoryEnvelope,
+)
 from app.schemas.stock import StockResponse
+from app.schemas.tw_insights import TWStockInsightsResponse
 from app.services.chart_layout import build_chart_layout
 from app.services.key_stats_service import get_key_statistics
 from app.services.news_service import news_service
 from app.services.quote_service import quote_service
+from app.services.tw_insights_service import get_tw_stock_insights
 
 
 router = APIRouter(prefix="/stocks", tags=["history"])
@@ -54,6 +60,19 @@ def get_stock_news(stock_id: str) -> list[dict[str, str]]:
         }
         for item in news_service.get_recent_news(stock)
     ]
+
+
+@router.get("/{stock_id}/tw-insights", response_model=TWStockInsightsResponse)
+def get_tw_insights(stock_id: str) -> TWStockInsightsResponse:
+    stock = quote_service.get_stock(stock_id)
+    if stock is None:
+        raise HTTPException(status_code=404, detail="Stock not found")
+    if stock.market != "TW":
+        raise HTTPException(
+            status_code=404,
+            detail="Taiwan insights are only available for TW stocks",
+        )
+    return TWStockInsightsResponse(**get_tw_stock_insights(stock))
 
 
 def _stock_schema(stock: StockRecord) -> StockResponse:

@@ -106,6 +106,18 @@ export function Shell({ children }: Props) {
                           >
                             {t("nav.portfolio")}
                           </Link>
+                          <Link
+                            className={pathname === "/assets" ? "app-left-nav-link active" : "app-left-nav-link"}
+                            href="/assets"
+                          >
+                            {t("nav.assets")}
+                          </Link>
+                          <Link
+                            className={pathname === "/ai-settings" ? "app-left-nav-link active" : "app-left-nav-link"}
+                            href="/ai-settings"
+                          >
+                            {t("nav.aiSettings")}
+                          </Link>
                         </nav>
                       </aside>
                     </div>

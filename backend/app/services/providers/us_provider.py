@@ -1,16 +1,14 @@
 from __future__ import annotations
 
-import json
 import math
 import re
 from datetime import datetime, timedelta
-from urllib.error import HTTPError, URLError
-from urllib.parse import quote, urlencode
-from urllib.request import Request, urlopen
+from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
 from app.models.quote import CandleRecord, QuoteRecord
 from app.models.stock import StockRecord
+from app.services.http_client import HttpFetchError, fetch_json, fetch_text
 from app.services.market_clock import is_market_open
 
 
@@ -107,9 +105,13 @@ class USProvider:
             ]
         is_symbol_query = _looks_like_symbol(symbol)
         has_exact_symbol = any(stock.symbol.upper() == symbol for stock in matches)
-        if is_symbol_query and not has_exact_symbol and not matches:
+        # Unknown tickers (many ETFs): add synthetic US:{symbol} unless we already
+        # have an exact symbol match. Substring name hits must not block this.
+        if is_symbol_query and not has_exact_symbol:
             fallback_stock = _fallback_stock(symbol)
-            if fallback_stock is not None:
+            if fallback_stock is not None and not any(
+                stock.id == fallback_stock.id for stock in matches
+            ):
                 matches.insert(0, fallback_stock)
         matches.sort(key=lambda stock: _search_rank(stock, normalized, symbol))
         return matches
@@ -162,6 +164,10 @@ class USProvider:
         if stock is None:
             return []
 
+        live_history = _fetch_yahoo_history(stock, range_name)
+        if live_history:
+            return live_history
+
         now = datetime.now(ZoneInfo(stock.timezone))
         step, points = _history_shape(range_name)
         base_price = _base_price_for_stock(stock_id, stock.symbol)
@@ -197,7 +203,7 @@ class USProvider:
         catalog = dict(US_STOCKS)
         try:
             payload = _load_catalog_payload()
-        except (HTTPError, URLError, TimeoutError, ValueError):
+        except (HttpFetchError, TimeoutError, ValueError):
             self.__class__._catalog_cache = catalog
             self.__class__._catalog_cached_at = now
             return catalog
@@ -227,36 +233,45 @@ class USProvider:
 
 
 def _load_catalog_payload() -> dict:
-    request = Request(_CATALOG_URL)
-    request.add_header("User-Agent", _USER_AGENT)
-    request.add_header("Accept", "application/json,text/plain,*/*")
-
-    with urlopen(request, timeout=_REQUEST_TIMEOUT_SECONDS) as response:
-        return json.load(response)
+    return fetch_json(
+        _CATALOG_URL,
+        headers={
+            "User-Agent": _USER_AGENT,
+            "Accept": "application/json,text/plain,*/*",
+        },
+        timeout_seconds=_REQUEST_TIMEOUT_SECONDS,
+        retries=2,
+    )
 
 
 def _load_json_with_headers(url: str, params: dict[str, str], headers: dict[str, str]) -> dict:
-    request = Request(f"{url}?{urlencode(params)}")
-    for key, value in headers.items():
-        request.add_header(key, value)
-    with urlopen(request, timeout=_REQUEST_TIMEOUT_SECONDS) as response:
-        return json.load(response)
+    return fetch_json(
+        url,
+        params=params,
+        headers=headers,
+        timeout_seconds=_REQUEST_TIMEOUT_SECONDS,
+        retries=2,
+    )
 
 
 def _load_text_with_headers(url: str, params: dict[str, str], headers: dict[str, str]) -> str:
-    request = Request(f"{url}?{urlencode(params)}")
-    for key, value in headers.items():
-        request.add_header(key, value)
-    with urlopen(request, timeout=_REQUEST_TIMEOUT_SECONDS) as response:
-        return response.read().decode("utf-8", errors="ignore")
+    return fetch_text(
+        url,
+        params=params,
+        headers=headers,
+        timeout_seconds=_REQUEST_TIMEOUT_SECONDS,
+        retries=2,
+        encoding="utf-8",
+    )
 
 
 def _load_json_get(url: str, headers: dict[str, str]) -> dict:
-    request = Request(url)
-    for key, value in headers.items():
-        request.add_header(key, value)
-    with urlopen(request, timeout=_REQUEST_TIMEOUT_SECONDS) as response:
-        return json.load(response)
+    return fetch_json(
+        url,
+        headers=headers,
+        timeout_seconds=_REQUEST_TIMEOUT_SECONDS,
+        retries=2,
+    )
 
 
 def _stock_from_sec_row(
@@ -351,7 +366,7 @@ def _fetch_yahoo_chart_quote(stock: StockRecord) -> QuoteRecord | None:
         url = f"{_YAHOO_CHART_URL}/{path_symbol}?interval=1d&range=5d"
         try:
             payload = _load_json_get(url, headers)
-        except (HTTPError, URLError, TimeoutError, ValueError, json.JSONDecodeError):
+        except (HttpFetchError, TimeoutError, ValueError):
             continue
 
         chart = payload.get("chart")
@@ -424,7 +439,7 @@ def _fetch_yahoo_v7_quote(stock: StockRecord) -> QuoteRecord | None:
                 {"symbols": candidate},
                 headers,
             )
-        except (HTTPError, URLError, TimeoutError, ValueError):
+        except (HttpFetchError, TimeoutError, ValueError):
             continue
 
         quote_response = payload.get("quoteResponse")
@@ -487,6 +502,112 @@ def _fetch_live_quote(stock: StockRecord) -> QuoteRecord | None:
     return None
 
 
+def _fetch_yahoo_history(stock: StockRecord, range_name: str) -> list[CandleRecord]:
+    headers = {
+        "User-Agent": _BROWSER_USER_AGENT,
+        "Accept": "application/json,text/plain,*/*",
+    }
+    interval, range_param = _yahoo_history_window(range_name)
+    for candidate in (stock.symbol, f"{stock.symbol}.US"):
+        path_symbol = quote(candidate, safe="-.")
+        url = f"{_YAHOO_CHART_URL}/{path_symbol}?interval={interval}&range={range_param}"
+        try:
+            payload = _load_json_get(url, headers)
+        except (HttpFetchError, TimeoutError, ValueError):
+            continue
+
+        chart = payload.get("chart")
+        if not isinstance(chart, dict) or chart.get("error"):
+            continue
+        results = chart.get("result")
+        if not isinstance(results, list) or not results:
+            continue
+        block = results[0]
+        if not isinstance(block, dict):
+            continue
+        timestamps = block.get("timestamp")
+        if not isinstance(timestamps, list) or not timestamps:
+            continue
+
+        indicators = block.get("indicators")
+        if not isinstance(indicators, dict):
+            continue
+        quotes = indicators.get("quote")
+        if not isinstance(quotes, list) or not quotes:
+            continue
+        first = quotes[0]
+        if not isinstance(first, dict):
+            continue
+
+        opens = first.get("open")
+        highs = first.get("high")
+        lows = first.get("low")
+        closes = first.get("close")
+        volumes = first.get("volume")
+        if not all(isinstance(series, list) for series in (opens, highs, lows, closes)):
+            continue
+        if not isinstance(volumes, list):
+            volumes = [None] * len(timestamps)
+
+        meta = block.get("meta")
+        tz_name = (
+            meta.get("exchangeTimezoneName")
+            if isinstance(meta, dict)
+            and isinstance(meta.get("exchangeTimezoneName"), str)
+            else stock.timezone
+        )
+        tz = ZoneInfo(tz_name)
+
+        candles: list[CandleRecord] = []
+        for i, ts in enumerate(timestamps):
+            if not isinstance(ts, (int, float)):
+                continue
+            if i >= len(opens) or i >= len(highs) or i >= len(lows) or i >= len(closes):
+                continue
+            open_value = opens[i]
+            high_value = highs[i]
+            low_value = lows[i]
+            close_value = closes[i]
+            if not all(
+                isinstance(v, (int, float))
+                for v in (open_value, high_value, low_value, close_value)
+            ):
+                continue
+            vol_raw = volumes[i] if i < len(volumes) else None
+            vol = int(vol_raw) if isinstance(vol_raw, (int, float)) else 0
+            candles.append(
+                CandleRecord(
+                    time=datetime.fromtimestamp(ts, tz=tz).isoformat(),
+                    open=round(float(open_value), 2),
+                    high=round(float(high_value), 2),
+                    low=round(float(low_value), 2),
+                    close=round(float(close_value), 2),
+                    volume=vol,
+                )
+            )
+
+        if candles:
+            return candles
+
+    return []
+
+
+def _yahoo_history_window(range_name: str) -> tuple[str, str]:
+    if range_name == "1D":
+        return "5m", "1d"
+    if range_name == "1W":
+        return "30m", "5d"
+    if range_name == "1M":
+        return "1d", "1mo"
+    if range_name == "3M":
+        return "1d", "3mo"
+    if range_name == "6M":
+        return "1d", "6mo"
+    if range_name == "1Y":
+        return "1d", "1y"
+    return "1d", "1mo"
+
+
 def _fetch_stooq_quote(stock: StockRecord) -> QuoteRecord | None:
     symbol = f"{stock.symbol.lower()}.us"
     try:
@@ -498,7 +619,7 @@ def _fetch_stooq_quote(stock: StockRecord) -> QuoteRecord | None:
                 "Accept": "text/csv,text/plain,*/*",
             },
         )
-    except (HTTPError, URLError, TimeoutError, ValueError):
+    except (HttpFetchError, TimeoutError, ValueError):
         return None
 
     if "Exceeded the daily hits limit" in csv_payload or "N/D" == csv_payload.strip():

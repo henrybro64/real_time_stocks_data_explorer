@@ -1,21 +1,30 @@
 from __future__ import annotations
 
-import json
 import math
 import re
-import ssl
 from datetime import date, datetime, time, timedelta
-from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
-from urllib.request import Request, urlopen
+from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
+from app.core.config import settings
+from app.services.http_client import HttpFetchError, fetch_json, fetch_text
 from app.models.quote import CandleRecord, QuoteRecord
 from app.models.stock import StockRecord
 from app.services.market_clock import is_market_open
 
 
 TW_STOCKS: dict[str, StockRecord] = {
+    "TW:0050": StockRecord(
+        id="TW:0050",
+        market="TW",
+        symbol="0050",
+        name="元大台灣50",
+        name_en="Yuanta Taiwan 50 ETF",
+        name_zh_tw="元大台灣50",
+        exchange="TWSE",
+        currency="TWD",
+        timezone="Asia/Taipei",
+    ),
     "TW:2330": StockRecord(
         id="TW:2330",
         market="TW",
@@ -52,6 +61,7 @@ TW_STOCKS: dict[str, StockRecord] = {
 }
 
 BASE_PRICES = {
+    "TW:0050": 191.0,
     "TW:2330": 948.0,
     "TW:2317": 171.5,
     "TW:2454": 1325.0,
@@ -64,12 +74,40 @@ _ISIN_LISTED_URL = "https://isin.twse.com.tw/isin/C_public.jsp?strMode=2"
 _ISIN_OTC_URL = "https://isin.twse.com.tw/isin/C_public.jsp?strMode=4"
 _REQUEST_TIMEOUT_SECONDS = 5
 _CATALOG_TTL = timedelta(hours=12)
+_QUOTE_CACHE_TTL = timedelta(minutes=15)
+_YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart"
+_BROWSER_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+)
+
+
+def _yahoo_tw_symbol_candidates(stock: StockRecord) -> tuple[str, ...]:
+    sym = stock.symbol.strip()
+    if stock.exchange == "TPEx":
+        return (f"{sym}.TWO", f"{sym}.TW")
+    return (f"{sym}.TW", f"{sym}.TWO")
+
+
+def _previous_close_from_chart_block(block: dict) -> float | None:
+    quotes = block.get("indicators", {}).get("quote")
+    if not isinstance(quotes, list) or not quotes:
+        return None
+    closes = quotes[0].get("close")
+    if not isinstance(closes, list):
+        return None
+    numeric = [float(c) for c in closes if isinstance(c, (int, float))]
+    if len(numeric) < 2:
+        return None
+    return numeric[-2]
 
 
 class TWProvider:
     market = "TW"
     _catalog_cache: dict[str, StockRecord] | None = None
     _catalog_cached_at: datetime | None = None
+    _quote_cache: dict[str, QuoteRecord] = {}
+    _quote_cached_at: dict[str, datetime] = {}
 
     def list_stocks(self) -> list[StockRecord]:
         return list(self._stock_catalog().values())
@@ -95,8 +133,24 @@ class TWProvider:
 
         quote = self._fetch_quote(stock)
         if quote is not None:
+            self.__class__._quote_cache[stock_id] = quote
+            self.__class__._quote_cached_at[stock_id] = datetime.now(
+                ZoneInfo(stock.timezone)
+            )
             return quote
-        return self._mock_quote(stock_id)
+        quote = self._fetch_yahoo_tw_quote(stock)
+        if quote is not None:
+            self.__class__._quote_cache[stock_id] = quote
+            self.__class__._quote_cached_at[stock_id] = datetime.now(
+                ZoneInfo(stock.timezone)
+            )
+            return quote
+        cached_quote = self._cached_quote(stock)
+        if cached_quote is not None:
+            return cached_quote
+        if settings.tw_use_mock_quotes:
+            return self._mock_quote(stock_id)
+        return None
 
     def get_history(self, stock_id: str, range_name: str) -> list[CandleRecord]:
         stock = self.get_stock(stock_id)
@@ -106,13 +160,31 @@ class TWProvider:
         if range_name == "1D":
             quote = self._fetch_quote(stock)
             if quote is not None:
+                self.__class__._quote_cache[stock_id] = quote
+                self.__class__._quote_cached_at[stock_id] = datetime.now(
+                    ZoneInfo(stock.timezone)
+                )
                 return _approximate_intraday_candles(stock, quote)
-            return self._mock_history(stock_id, range_name)
+            quote = self._fetch_yahoo_tw_quote(stock)
+            if quote is not None:
+                self.__class__._quote_cache[stock_id] = quote
+                self.__class__._quote_cached_at[stock_id] = datetime.now(
+                    ZoneInfo(stock.timezone)
+                )
+                return _approximate_intraday_candles(stock, quote)
+            cached_quote = self._cached_quote(stock)
+            if cached_quote is not None:
+                return _approximate_intraday_candles(stock, cached_quote)
+            if settings.tw_use_mock_quotes:
+                return self._mock_history(stock_id, range_name)
+            return []
 
         candles = self._fetch_daily_history(stock, limit=_daily_limit(range_name))
         if candles:
             return candles
-        return self._mock_history(stock_id, range_name)
+        if settings.tw_use_mock_quotes:
+            return self._mock_history(stock_id, range_name)
+        return []
 
     def _fetch_quote(self, stock: StockRecord) -> QuoteRecord | None:
         try:
@@ -125,7 +197,7 @@ class TWProvider:
                 },
                 referer="https://mis.twse.com.tw/stock/index.jsp",
             )
-        except (HTTPError, URLError, TimeoutError, ValueError):
+        except (HttpFetchError, TimeoutError, ValueError):
             return None
 
         items = payload.get("msgArray")
@@ -166,6 +238,86 @@ class TWProvider:
             is_market_open=is_market_open(stock.market, quote_timestamp),
         )
 
+    def _fetch_yahoo_tw_quote(self, stock: StockRecord) -> QuoteRecord | None:
+        """Yahoo chart meta when TWSE mis API is flaky or blocked."""
+        headers = {
+            "User-Agent": _BROWSER_USER_AGENT,
+            "Accept": "application/json,text/plain,*/*",
+        }
+        tz = ZoneInfo(stock.timezone)
+        for candidate in _yahoo_tw_symbol_candidates(stock):
+            path_symbol = quote(candidate, safe="-.")
+            url = f"{_YAHOO_CHART_URL}/{path_symbol}?interval=1d&range=5d"
+            try:
+                payload = fetch_json(
+                    url,
+                    headers=headers,
+                    timeout_seconds=_REQUEST_TIMEOUT_SECONDS,
+                    retries=2,
+                )
+            except (HttpFetchError, TimeoutError, ValueError):
+                continue
+
+            chart = payload.get("chart")
+            if not isinstance(chart, dict) or chart.get("error"):
+                continue
+            results = chart.get("result")
+            if not isinstance(results, list) or not results:
+                continue
+            block = results[0]
+            meta = block.get("meta")
+            if not isinstance(meta, dict):
+                continue
+
+            last_price = meta.get("regularMarketPrice")
+            if not isinstance(last_price, (int, float)):
+                continue
+
+            previous_close = meta.get("chartPreviousClose")
+            if not isinstance(previous_close, (int, float)) or previous_close == 0:
+                alt = meta.get("previousClose")
+                if isinstance(alt, (int, float)) and alt != 0:
+                    previous_close = alt
+                else:
+                    inferred = _previous_close_from_chart_block(block)
+                    if inferred is None or inferred == 0:
+                        continue
+                    previous_close = inferred
+
+            market_time = meta.get("regularMarketTime")
+            quote_time = (
+                datetime.fromtimestamp(market_time, tz=tz)
+                if isinstance(market_time, (int, float))
+                else datetime.now(tz)
+            )
+            change = round(float(last_price) - float(previous_close), 2)
+            change_percent = round((change / float(previous_close)) * 100, 2)
+
+            volume_raw = meta.get("regularMarketVolume")
+            volume = int(volume_raw) if isinstance(volume_raw, (int, float)) else None
+            high_raw = meta.get("regularMarketDayHigh")
+            low_raw = meta.get("regularMarketDayLow")
+
+            return QuoteRecord(
+                id=stock.id,
+                last_price=round(float(last_price), 2),
+                change=change,
+                change_percent=change_percent,
+                previous_close=round(float(previous_close), 2),
+                open=None,
+                high=round(float(high_raw), 2)
+                if isinstance(high_raw, (int, float))
+                else None,
+                low=round(float(low_raw), 2)
+                if isinstance(low_raw, (int, float))
+                else None,
+                volume=volume,
+                timestamp=quote_time.isoformat(),
+                is_market_open=is_market_open(stock.market, quote_time),
+            )
+
+        return None
+
     def _fetch_daily_history(self, stock: StockRecord, limit: int) -> list[CandleRecord]:
         if stock.exchange != "TWSE":
             return []
@@ -186,7 +338,7 @@ class TWProvider:
                         "stockNo": stock.symbol,
                     },
                 )
-            except (HTTPError, URLError, TimeoutError, ValueError):
+            except (HttpFetchError, TimeoutError, ValueError):
                 continue
 
             if payload.get("stat") != "OK":
@@ -213,7 +365,7 @@ class TWProvider:
         detailed_company_rows: dict[str, StockRecord] = {}
         try:
             payload = _load_json(_COMPANY_LIST_URL, {})
-        except (HTTPError, URLError, TimeoutError, ValueError):
+        except (HttpFetchError, TimeoutError, ValueError):
             payload = None
 
         if isinstance(payload, list):
@@ -228,7 +380,7 @@ class TWProvider:
         for html_url in (_ISIN_LISTED_URL, _ISIN_OTC_URL):
             try:
                 html = _load_text(html_url)
-            except (HTTPError, URLError, TimeoutError, UnicodeDecodeError):
+            except (HttpFetchError, TimeoutError, UnicodeDecodeError):
                 continue
 
             for stock in _stocks_from_isin_html(html, detailed_company_rows):
@@ -292,52 +444,57 @@ class TWProvider:
             )
         return candles
 
+    def _cached_quote(self, stock: StockRecord) -> QuoteRecord | None:
+        cached_quote = self.__class__._quote_cache.get(stock.id)
+        cached_at = self.__class__._quote_cached_at.get(stock.id)
+        if cached_quote is None or cached_at is None:
+            return None
+
+        now = datetime.now(ZoneInfo(stock.timezone))
+        if now - cached_at > _QUOTE_CACHE_TTL:
+            self.__class__._quote_cache.pop(stock.id, None)
+            self.__class__._quote_cached_at.pop(stock.id, None)
+            return None
+        return cached_quote
+
 
 def _load_json(url: str, params: dict[str, str], referer: str | None = None) -> object:
-    query = urlencode(params)
-    request = Request(f"{url}?{query}")
-    request.add_header(
-        "User-Agent",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-    )
-    request.add_header("Accept", "application/json,text/plain,*/*")
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+        ),
+        "Accept": "application/json,text/plain,*/*",
+    }
     if referer:
-        request.add_header("Referer", referer)
+        headers["Referer"] = referer
 
-    try:
-        with urlopen(request, timeout=_REQUEST_TIMEOUT_SECONDS) as response:
-            return json.load(response)
-    except URLError as exc:
-        if not _should_retry_without_tls_verification(url, exc):
-            raise
-
-        # TWSE's TLS chain intermittently fails Python's verifier on macOS; retry
-        # without certificate validation so the app can still reach the official endpoint.
-        insecure_context = ssl._create_unverified_context()
-        with urlopen(request, timeout=_REQUEST_TIMEOUT_SECONDS, context=insecure_context) as response:
-            return json.load(response)
+    return fetch_json(
+        url,
+        params=params,
+        headers=headers,
+        timeout_seconds=_REQUEST_TIMEOUT_SECONDS,
+        retries=2,
+        allow_insecure_fallback_hosts={"mis.twse.com.tw", "www.twse.com.tw"},
+    )
 
 
 def _load_text(url: str) -> str:
-    request = Request(url)
-    request.add_header(
-        "User-Agent",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    }
+    return fetch_text(
+        url,
+        headers=headers,
+        timeout_seconds=_REQUEST_TIMEOUT_SECONDS,
+        retries=2,
+        encoding="big5-hkscs",
+        allow_insecure_fallback_hosts={"isin.twse.com.tw"},
     )
-    request.add_header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-
-    try:
-        with urlopen(request, timeout=_REQUEST_TIMEOUT_SECONDS) as response:
-            return response.read().decode("big5-hkscs", errors="ignore")
-    except URLError as exc:
-        if not _should_retry_without_tls_verification(url, exc):
-            raise
-
-        insecure_context = ssl._create_unverified_context()
-        with urlopen(request, timeout=_REQUEST_TIMEOUT_SECONDS, context=insecure_context) as response:
-            return response.read().decode("big5-hkscs", errors="ignore")
 
 
 def _first_number(*values: str | None) -> float | None:
@@ -377,12 +534,6 @@ def _parse_quote_timestamp(raw_date: str | None, raw_time: str | None, timezone_
         return datetime.strptime(f"{raw_date}{raw_time}", "%Y%m%d%H:%M:%S").replace(tzinfo=tz)
     except ValueError:
         return datetime.now(tz)
-
-
-def _should_retry_without_tls_verification(url: str, exc: URLError) -> bool:
-    if not url.startswith("https://") or "twse.com.tw" not in url:
-        return False
-    return isinstance(exc.reason, ssl.SSLCertVerificationError)
 
 
 def _quote_exchange_prefix(exchange: str) -> str:
@@ -499,7 +650,8 @@ def _stock_from_isin_row(
 ) -> StockRecord | None:
     normalized_market = market_label.strip()
     normalized_cfi = cfi_code.strip().upper()
-    if normalized_market not in {"上市", "上櫃"} or not normalized_cfi.startswith("E"):
+    # Include both common shares (E*) and fund/ETF-style instruments (C*).
+    if normalized_market not in {"上市", "上櫃"} or not normalized_cfi.startswith(("E", "C")):
         return None
 
     parts = code_and_name.replace("&nbsp;", " ").split()

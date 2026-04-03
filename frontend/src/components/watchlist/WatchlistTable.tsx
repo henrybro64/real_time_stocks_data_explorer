@@ -5,11 +5,17 @@ import { StockCard } from "../stock-card/StockCard";
 
 type Props = {
   isLoading?: boolean;
+  isRefreshing?: boolean;
   items: QuoteResponse[];
   onRemove: (stockId: string) => void;
 };
 
-export function WatchlistTable({ isLoading = false, items, onRemove }: Props) {
+export function WatchlistTable({
+  isLoading = false,
+  isRefreshing = false,
+  items,
+  onRemove,
+}: Props) {
   const { t } = useLanguage();
 
   return (
@@ -22,21 +28,30 @@ export function WatchlistTable({ isLoading = false, items, onRemove }: Props) {
         <p className="app-section-meta">{t("watchlist.count", { count: items.length })}</p>
       </div>
       {isLoading ? (
-        <InlineLoading description={t("watchlist.loading")} status="active" />
+        <div className="app-watchlist-loading-wrap">
+          <InlineLoading description={t("watchlist.loading")} status="active" />
+        </div>
       ) : items.length === 0 ? (
         <p className="app-supporting-copy">{t("watchlist.empty")}</p>
       ) : (
-        <div className="app-watchlist-grid app-watchlist-grid-explorer">
-          {items.map(({ stock, quote }) => (
-            <StockCard
-              key={stock.id}
-              isTracked
-              onToggle={onRemove}
-              quote={quote}
-              stock={stock}
-            />
-          ))}
-        </div>
+        <>
+          <div className="app-watchlist-refreshing-wrap">
+            {isRefreshing ? (
+              <InlineLoading description={t("home.summary.loading")} status="active" />
+            ) : null}
+          </div>
+          <div className="app-watchlist-grid app-watchlist-grid-explorer">
+            {items.map(({ stock, quote }) => (
+              <StockCard
+                key={stock.id}
+                isTracked
+                onToggle={onRemove}
+                quote={quote}
+                stock={stock}
+              />
+            ))}
+          </div>
+        </>
       )}
     </Tile>
   );

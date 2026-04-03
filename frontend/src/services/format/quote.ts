@@ -25,6 +25,16 @@ export function formatLastUpdated(timestamp: string) {
   }).format(new Date(timestamp));
 }
 
+export function formatLastUpdatedWithSeconds(timestamp: string) {
+  return new Intl.DateTimeFormat("zh-TW", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    month: "numeric",
+    day: "numeric",
+  }).format(new Date(timestamp));
+}
+
 export function formatMarketTime(timestamp: string, timezone: string) {
   return new Intl.DateTimeFormat("zh-TW", {
     hour: "2-digit",

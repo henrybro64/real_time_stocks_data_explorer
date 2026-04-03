@@ -126,8 +126,8 @@ export function PriceChart({ candles, chartLayout, currency, isActive = true, ra
     return <Tile className="app-empty-state">{t("chart.noData")}</Tile>;
   }
 
-  const activeCandle = activeIndex !== null ? candles[activeIndex] : null;
-  const activeCoord = activeIndex !== null ? pointCoords[activeIndex] : null;
+  const activeCandle = activeIndex !== null ? candles[activeIndex] ?? null : null;
+  const activeCoord = activeIndex !== null ? pointCoords[activeIndex] ?? null : null;
 
   const guideLines = [15, 40, 65, 90];
 

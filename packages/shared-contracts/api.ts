@@ -22,6 +22,12 @@ export type MarketIndex = {
   isMarketOpen: boolean;
 };
 
+export type FxRate = {
+  pair: "USD/TWD" | string;
+  rate: number;
+  timestamp: string;
+};
+
 export type NewsItem = {
   title: string;
   url: string;
@@ -45,6 +51,95 @@ export type HistoryResponse = {
 
 export type WatchlistResponse = {
   ids: string[];
+};
+
+export type PortfolioPosition = {
+  id: number;
+  stockId: string;
+  quantity: number;
+  averageCost: number;
+  currency: string;
+  notes: string | null;
+  stock: Stock;
+  quote: Quote;
+  marketValue: number;
+  unrealizedPl: number;
+  unrealizedPlPercent: number;
+};
+
+export type PortfolioPositionCreate = {
+  stockId: string;
+  quantity: number;
+  averageCost: number;
+  currency: string;
+  notes?: string | null;
+};
+
+export type PortfolioPositionUpdate = {
+  quantity?: number;
+  averageCost?: number;
+  currency?: string;
+  notes?: string | null;
+};
+
+export type PortfolioSummaryPosition = {
+  stockId: string;
+  symbol: string;
+  currency: string;
+  quantity: number;
+  lastPrice: number;
+  marketValue: number;
+  timestamp: string;
+};
+
+export type PortfolioSummary = {
+  totalUsd: number;
+  totalTwd: number;
+  combinedUsd: number;
+  combinedTwd: number;
+  usdTwdRate: number;
+  fxTimestamp: string;
+  positions: PortfolioSummaryPosition[];
+  skippedStockIds: string[];
+};
+
+export type PortfolioAssetType = "cash" | "real_estate" | "other";
+
+export type PortfolioAsset = {
+  id: number;
+  assetType: PortfolioAssetType | string;
+  name: string;
+  currency: string;
+  value: number;
+  notes: string | null;
+};
+
+export type PortfolioAssetCreate = {
+  assetType: PortfolioAssetType | string;
+  name: string;
+  currency: string;
+  value: number;
+  notes?: string | null;
+};
+
+export type PortfolioAssetUpdate = {
+  assetType?: PortfolioAssetType | string;
+  name?: string;
+  currency?: string;
+  value?: number;
+  notes?: string | null;
+};
+
+export type ApiKeyStatus = {
+  provider: "openai" | "perplexity";
+  configured: boolean;
+  keyLast4: string | null;
+};
+
+export type AiInsightResponse = {
+  provider: "openai" | "perplexity";
+  stockId: string;
+  content: string;
 };
 
 /** Extended stats for stock detail (from quote + Yahoo chart or local candles). */
@@ -74,5 +169,56 @@ export type KeyStatistics = {
   dayRangeMarkerPercent: number | null;
   /** 0–100 position of last price within 52-week low–high (server). */
   week52RangeMarkerPercent: number | null;
+};
+
+export type TWRevenuePoint = {
+  month: string;
+  revenueK: number;
+  momPercent: number;
+  yoyPercent: number;
+};
+
+export type TWRevenueInsight = {
+  lastUpdated: string;
+  latestRevenueK: number;
+  latestMomPercent: number;
+  latestYoyPercent: number;
+  points: TWRevenuePoint[];
+};
+
+export type TWPeerMetric = {
+  label: string;
+  period: string;
+  companyPercent: number;
+  industryAveragePercent: number;
+  rank: number;
+  total: number;
+};
+
+export type TWPeerInsight = {
+  sector: string;
+  asOf: string;
+  companyCount: number;
+  metrics: TWPeerMetric[];
+};
+
+export type TWDividendYear = {
+  year: number;
+  cashDividend: number;
+  stockDividend: number;
+  cashYieldPercent: number;
+  exDividendDate: string | null;
+  payDate: string | null;
+};
+
+export type TWDividendInsight = {
+  avgCashYield2Y: number;
+  years: TWDividendYear[];
+};
+
+export type TWStockInsights = {
+  revenue: TWRevenueInsight;
+  peer: TWPeerInsight;
+  dividends: TWDividendInsight;
 };
 

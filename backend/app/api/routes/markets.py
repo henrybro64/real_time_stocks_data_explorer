@@ -8,6 +8,7 @@ from app.services.market_clock import (
     is_market_open,
     market_label,
 )
+from app.services.fx_service import get_usd_twd_fx_snapshot
 from app.services.market_index_service import market_index_service
 
 
@@ -46,3 +47,8 @@ def get_market_indices() -> list[dict[str, str | bool | float]]:
         }
         for item in market_index_service.get_latest()
     ]
+
+
+@router.get("/fx/usd-twd")
+def get_usd_twd_fx_rate() -> dict[str, str | float]:
+    return get_usd_twd_fx_snapshot()

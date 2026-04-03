@@ -10,14 +10,14 @@ import { MarketIndicesStrip } from "../../components/market-status/MarketIndices
 import { MarketStatusStrip } from "../../components/market-status/MarketStatusStrip";
 import { StockSearch } from "../../components/search/StockSearch";
 import { WatchlistTable } from "../../components/watchlist/WatchlistTable";
-import { useLocalWatchlist } from "../../hooks/useLocalStockList";
+import { useWatchlist } from "../../hooks/useWatchlist";
 import { fetchMarketIndices, fetchMarkets, fetchQuotes, searchStocks } from "../../services/api/client";
 
 export function HomePage() {
   const { t } = useLanguage();
   const [query, setQuery] = useState("");
   const deferredQuery = useDeferredValue(query);
-  const watchlist = useLocalWatchlist();
+  const watchlist = useWatchlist();
 
   const marketsQuery = useQuery<MarketStatus[]>({
     queryKey: ["markets"],
@@ -40,7 +40,12 @@ export function HomePage() {
   const watchlistQuery = useQuery<QuoteResponse[]>({
     queryKey: ["watchlist-quotes", watchlist.ids],
     queryFn: () => fetchQuotes(watchlist.ids),
-    refetchInterval: 5_000,
+    enabled: watchlist.ids.length > 0,
+    refetchInterval: () => {
+      const hasTaiwanStocks = watchlist.ids.some((id) => id.startsWith("TW:"));
+      return hasTaiwanStocks ? 2_000 : 5_000;
+    },
+    refetchIntervalInBackground: true,
   });
 
   const searchQuery = useQuery<Stock[]>({
@@ -80,9 +85,11 @@ export function HomePage() {
               <dd>{watchlist.ids.length}</dd>
             </div>
           </dl>
-          {marketsQuery.isFetching || watchlistQuery.isFetching ? (
-            <InlineLoading description={t("home.summary.loading")} status="active" />
-          ) : null}
+          <div className="app-summary-loading-slot">
+            {marketsQuery.isLoading || (!watchlistQuery.data && watchlistQuery.isLoading) ? (
+              <InlineLoading description={t("home.summary.loading")} status="active" />
+            ) : null}
+          </div>
         </Tile>
       </Column>
       <Column className="app-column-spacing" id="markets" sm={4} md={8} lg={16}>
@@ -103,7 +110,8 @@ export function HomePage() {
       </Column>
       <Column className="app-column-spacing" id="watchlist" sm={4} md={8} lg={16}>
         <WatchlistTable
-          isLoading={watchlistQuery.isLoading}
+          isLoading={!watchlistQuery.data && (watchlistQuery.isLoading || watchlist.isLoading)}
+          isRefreshing={!!watchlistQuery.data && (watchlistQuery.isFetching || watchlist.isMutating)}
           items={watchlistQuery.data ?? []}
           onRemove={watchlist.remove}
         />

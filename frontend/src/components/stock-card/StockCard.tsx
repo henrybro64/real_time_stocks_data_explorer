@@ -8,7 +8,13 @@ import { useId } from "react";
 import { useRouter } from "next/navigation";
 import { getDisplayStockName, useLanguage } from "../../app/i18n";
 import { fetchHistory, fetchQuote } from "../../services/api/client";
-import { formatCurrency, formatLastUpdated, formatPercent, formatSignedNumber } from "../../services/format/quote";
+import {
+  formatCurrency,
+  formatLastUpdated,
+  formatLastUpdatedWithSeconds,
+  formatPercent,
+  formatSignedNumber,
+} from "../../services/format/quote";
 
 type Props = {
   stock: Stock;
@@ -79,11 +85,23 @@ export function StockCard({
             </div>
             <div>
               <dt>{t("stock.updatedAt")}</dt>
-              <dd>{formatLastUpdated(quote.timestamp)}</dd>
+              <dd>
+                {stock.market === "TW"
+                  ? formatLastUpdatedWithSeconds(quote.timestamp)
+                  : formatLastUpdated(quote.timestamp)}
+              </dd>
             </div>
             <div>
               <dt>{t("stock.prevClose")}</dt>
               <dd>{formatCurrency(quote.previousClose, stock.currency)}</dd>
+            </div>
+            <div>
+              <dt>{t("quote.low")}</dt>
+              <dd>{quote.low != null ? formatCurrency(quote.low, stock.currency) : "-"}</dd>
+            </div>
+            <div>
+              <dt>{t("quote.high")}</dt>
+              <dd>{quote.high != null ? formatCurrency(quote.high, stock.currency) : "-"}</dd>
             </div>
             <div>
               <dt>{t("stock.volume")}</dt>

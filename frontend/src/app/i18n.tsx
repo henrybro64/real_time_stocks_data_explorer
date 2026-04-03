@@ -10,6 +10,8 @@ type TranslationKey =
   | "nav.markets"
   | "nav.watchlist"
   | "nav.portfolio"
+  | "nav.assets"
+  | "nav.aiSettings"
   | "nav.menu.open"
   | "nav.menu.close"
   | "header.notifications"
@@ -69,13 +71,17 @@ type TranslationKey =
   | "chart.interactHint"
   | "portfolio.title"
   | "portfolio.description"
+  | "portfolio.equity.title"
   | "portfolio.count"
   | "portfolio.loading"
+  | "portfolio.loadError"
   | "portfolio.empty"
   | "portfolio.column.symbol"
   | "portfolio.column.name"
   | "portfolio.column.market"
+  | "portfolio.column.quantity"
   | "portfolio.column.last"
+  | "portfolio.column.marketValue"
   | "portfolio.column.change"
   | "portfolio.column.changePercent"
   | "portfolio.column.volume"
@@ -88,6 +94,52 @@ type TranslationKey =
   | "portfolio.search.emptyPrompt"
   | "portfolio.addHolding"
   | "portfolio.removeHolding"
+  | "portfolio.quantity.saving"
+  | "portfolio.quantity.saved"
+  | "portfolio.assets.eyebrow"
+  | "portfolio.assets.title"
+  | "portfolio.assets.count"
+  | "portfolio.assets.loading"
+  | "portfolio.assets.empty"
+  | "portfolio.assets.add"
+  | "portfolio.assets.remove"
+  | "portfolio.assets.column.type"
+  | "portfolio.assets.column.name"
+  | "portfolio.assets.column.currency"
+  | "portfolio.assets.column.value"
+  | "portfolio.assets.type.cash"
+  | "portfolio.assets.type.realEstate"
+  | "portfolio.assets.type.other"
+  | "portfolio.aggregate.eyebrow"
+  | "portfolio.aggregate.title"
+  | "portfolio.aggregate.combinedUsd"
+  | "portfolio.aggregate.combinedTwd"
+  | "portfolio.aggregate.fxRate"
+  | "aiSettings.title"
+  | "aiSettings.description"
+  | "twInsights.title"
+  | "twInsights.description"
+  | "twInsights.loading"
+  | "twInsights.revenue.title"
+  | "twInsights.revenue.latest"
+  | "twInsights.peer.title"
+  | "twInsights.peer.period"
+  | "twInsights.peer.company"
+  | "twInsights.peer.industry"
+  | "twInsights.peer.rank"
+  | "twInsights.dividend.title"
+  | "twInsights.dividend.avg2y"
+  | "twInsights.dividend.year"
+  | "twInsights.dividend.cash"
+  | "twInsights.dividend.stock"
+  | "twInsights.dividend.yield"
+  | "twInsights.dividend.exDate"
+  | "twInsights.dividend.payDate"
+  | "twInsights.dividend.distributionTitle"
+  | "twInsights.dividend.policyTitle"
+  | "twInsights.dividend.byPayoutYear"
+  | "twInsights.dividend.byEarningsYear"
+  | "twInsights.dividend.earningsYear"
   | "keyStats.title"
   | "keyStats.open"
   | "keyStats.previousClose"
@@ -116,6 +168,8 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "nav.markets": "Markets",
     "nav.watchlist": "Watchlist",
     "nav.portfolio": "Portfolio",
+    "nav.assets": "Assets",
+    "nav.aiSettings": "AI settings",
     "nav.menu.open": "Open navigation menu",
     "nav.menu.close": "Close navigation menu",
     "header.notifications": "Notifications",
@@ -177,8 +231,11 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "portfolio.title": "Portfolio",
     "portfolio.description":
       "Your actual positions (what you own). This list is separate from the dashboard watchlist, which is for research and tracking.",
+    "portfolio.equity.title": "Holdings equity (USD & TWD)",
     "portfolio.count": "{count} positions",
     "portfolio.loading": "Loading portfolio quotes",
+    "portfolio.loadError":
+      "Could not load your holdings. Check that the backend is running and try again.",
     "portfolio.empty": "No positions yet. Search below to add symbols you hold.",
     "portfolio.search.eyebrow": "Holdings",
     "portfolio.search.title": "Add symbols to your portfolio",
@@ -187,10 +244,59 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "portfolio.search.emptyPrompt": "Enter a symbol or company name to find stocks to add as holdings.",
     "portfolio.addHolding": "Add to portfolio",
     "portfolio.removeHolding": "Remove from portfolio",
+    "portfolio.quantity.saving": "Saving...",
+    "portfolio.quantity.saved": "Saved",
+    "portfolio.assets.eyebrow": "Other assets",
+    "portfolio.assets.title": "Consolidated assets",
+    "portfolio.assets.count": "{count} assets",
+    "portfolio.assets.loading": "Loading other assets",
+    "portfolio.assets.empty": "No extra assets yet. Add cash, real estate, or other assets.",
+    "portfolio.assets.add": "Add asset",
+    "portfolio.assets.remove": "Remove asset",
+    "portfolio.assets.column.type": "Type",
+    "portfolio.assets.column.name": "Name",
+    "portfolio.assets.column.currency": "Currency",
+    "portfolio.assets.column.value": "Value",
+    "portfolio.assets.type.cash": "Cash account",
+    "portfolio.assets.type.realEstate": "Real estate",
+    "portfolio.assets.type.other": "Other",
+    "portfolio.aggregate.eyebrow": "Totals",
+    "portfolio.aggregate.title": "Aggregated assets by currency",
+    "portfolio.aggregate.combinedUsd": "Combined total (USD)",
+    "portfolio.aggregate.combinedTwd": "Combined total (TWD)",
+    "portfolio.aggregate.fxRate": "FX rate",
+    "aiSettings.title": "AI API key settings",
+    "aiSettings.description": "Manage OpenAI and Perplexity API keys for stock detail AI output.",
+    "twInsights.title": "Taiwan fundamentals snapshot",
+    "twInsights.description":
+      "Additional Taiwan-only context similar to local investor portals: revenue trend, peer momentum, and dividends.",
+    "twInsights.loading": "Loading Taiwan insights",
+    "twInsights.revenue.title": "Monthly revenue trend (K TWD)",
+    "twInsights.revenue.latest": "Latest",
+    "twInsights.peer.title": "Peer performance snapshot",
+    "twInsights.peer.period": "Period",
+    "twInsights.peer.company": "Company",
+    "twInsights.peer.industry": "Industry avg",
+    "twInsights.peer.rank": "Rank",
+    "twInsights.dividend.title": "Dividend history",
+    "twInsights.dividend.avg2y": "Avg cash yield (2Y)",
+    "twInsights.dividend.year": "Year",
+    "twInsights.dividend.cash": "Cash",
+    "twInsights.dividend.stock": "Stock",
+    "twInsights.dividend.yield": "Cash yield",
+    "twInsights.dividend.exDate": "Ex-dividend",
+    "twInsights.dividend.payDate": "Pay date",
+    "twInsights.dividend.distributionTitle": "Historical dividend distribution",
+    "twInsights.dividend.policyTitle": "Dividend policy detail",
+    "twInsights.dividend.byPayoutYear": "By payout year",
+    "twInsights.dividend.byEarningsYear": "By earnings year",
+    "twInsights.dividend.earningsYear": "Earnings year",
     "portfolio.column.symbol": "Symbol",
     "portfolio.column.name": "Name",
     "portfolio.column.market": "Market",
+    "portfolio.column.quantity": "Shares",
     "portfolio.column.last": "Last",
+    "portfolio.column.marketValue": "Position value",
     "portfolio.column.change": "Change",
     "portfolio.column.changePercent": "Change %",
     "portfolio.column.volume": "Volume",
@@ -224,6 +330,8 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "nav.markets": "市場",
     "nav.watchlist": "自選",
     "nav.portfolio": "投資組合",
+    "nav.assets": "資產總覽",
+    "nav.aiSettings": "AI 設定",
     "nav.menu.open": "開啟導覽選單",
     "nav.menu.close": "關閉導覽選單",
     "header.notifications": "通知",
@@ -284,8 +392,10 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "portfolio.title": "投資組合",
     "portfolio.description":
       "此處為您實際持有的標的，與儀表板的「自選清單」分開；自選清單適合研究與追蹤。",
+    "portfolio.equity.title": "持股市值（美金與台幣）",
     "portfolio.count": "{count} 檔持倉",
     "portfolio.loading": "載入投資組合報價中",
+    "portfolio.loadError": "無法載入持倉。請確認後端已啟動後再試。",
     "portfolio.empty": "尚無持倉。請在下方搜尋並加入您持有的標的。",
     "portfolio.search.eyebrow": "持倉",
     "portfolio.search.title": "將標的加入投資組合",
@@ -294,10 +404,58 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "portfolio.search.emptyPrompt": "輸入代碼或公司名稱，找出要加入為持倉的標的。",
     "portfolio.addHolding": "加入投資組合",
     "portfolio.removeHolding": "從投資組合移除",
+    "portfolio.quantity.saving": "儲存中...",
+    "portfolio.quantity.saved": "已儲存",
+    "portfolio.assets.eyebrow": "其他資產",
+    "portfolio.assets.title": "整體資產",
+    "portfolio.assets.count": "{count} 筆資產",
+    "portfolio.assets.loading": "載入其他資產中",
+    "portfolio.assets.empty": "尚無其他資產。可新增現金、房地產或其他資產。",
+    "portfolio.assets.add": "新增資產",
+    "portfolio.assets.remove": "移除資產",
+    "portfolio.assets.column.type": "類型",
+    "portfolio.assets.column.name": "名稱",
+    "portfolio.assets.column.currency": "幣別",
+    "portfolio.assets.column.value": "金額",
+    "portfolio.assets.type.cash": "現金帳戶",
+    "portfolio.assets.type.realEstate": "房地產",
+    "portfolio.assets.type.other": "其他",
+    "portfolio.aggregate.eyebrow": "資產總覽",
+    "portfolio.aggregate.title": "依幣別彙總資產",
+    "portfolio.aggregate.combinedUsd": "合併總資產（USD）",
+    "portfolio.aggregate.combinedTwd": "合併總資產（TWD）",
+    "portfolio.aggregate.fxRate": "匯率",
+    "aiSettings.title": "AI API 金鑰設定",
+    "aiSettings.description": "管理 OpenAI 與 Perplexity API 金鑰，供個股明細 AI 輸出使用。",
+    "twInsights.title": "台股基本面快照",
+    "twInsights.description": "僅台股顯示：月營收趨勢、同業表現與股利資訊。",
+    "twInsights.loading": "載入台股補充資訊中",
+    "twInsights.revenue.title": "月營收趨勢（仟元）",
+    "twInsights.revenue.latest": "最新",
+    "twInsights.peer.title": "同業表現快照",
+    "twInsights.peer.period": "期間",
+    "twInsights.peer.company": "公司",
+    "twInsights.peer.industry": "同業平均",
+    "twInsights.peer.rank": "排名",
+    "twInsights.dividend.title": "歷年股利",
+    "twInsights.dividend.avg2y": "近2年平均現金殖利率",
+    "twInsights.dividend.year": "年度",
+    "twInsights.dividend.cash": "現金股利",
+    "twInsights.dividend.stock": "股票股利",
+    "twInsights.dividend.yield": "現金殖利率",
+    "twInsights.dividend.exDate": "除息日",
+    "twInsights.dividend.payDate": "發放日",
+    "twInsights.dividend.distributionTitle": "歷年股利分配",
+    "twInsights.dividend.policyTitle": "歷年股利政策",
+    "twInsights.dividend.byPayoutYear": "股利發放期間",
+    "twInsights.dividend.byEarningsYear": "股利所屬期間",
+    "twInsights.dividend.earningsYear": "所屬期間",
     "portfolio.column.symbol": "代碼",
     "portfolio.column.name": "名稱",
     "portfolio.column.market": "市場",
+    "portfolio.column.quantity": "股數",
     "portfolio.column.last": "最新價",
+    "portfolio.column.marketValue": "持倉市值",
     "portfolio.column.change": "漲跌",
     "portfolio.column.changePercent": "漲跌幅",
     "portfolio.column.volume": "成交量",

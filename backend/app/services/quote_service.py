@@ -2,6 +2,7 @@ from app.models.quote import CandleRecord, QuoteRecord
 from app.models.stock import StockRecord
 from app.services.providers.tw_provider import TWProvider
 from app.services.providers.us_provider import USProvider
+from app.services.quote_redis_cache import get_cached_quote, set_cached_quote
 
 
 class QuoteService:
@@ -31,9 +32,15 @@ class QuoteService:
         return provider.get_stock(stock_id) if provider else None
 
     def get_quote(self, stock_id: str) -> QuoteRecord | None:
+        cached = get_cached_quote(stock_id)
+        if cached is not None:
+            return cached
         market = self._market_from_id(stock_id)
         provider = self.providers.get(market)
-        return provider.get_quote(stock_id) if provider else None
+        quote = provider.get_quote(stock_id) if provider else None
+        if quote is not None:
+            set_cached_quote(stock_id, quote)
+        return quote
 
     def get_quotes(self, stock_ids: list[str]) -> list[tuple[StockRecord, QuoteRecord]]:
         envelopes: list[tuple[StockRecord, QuoteRecord]] = []
