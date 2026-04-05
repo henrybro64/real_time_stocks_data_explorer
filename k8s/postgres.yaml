@@ -30,6 +30,7 @@ metadata:
   name: stock-ticker-postgres
 spec:
   replicas: 1
+  progressDeadlineSeconds: 900
   # RWO PVC: RollingUpdate can run old+new pods briefly; the second pod cannot mount the same volume,
   # leaving "old replicas pending termination" and a stuck rollout. Recreate tears down first, then starts.
   strategy:
@@ -62,13 +63,21 @@ spec:
           volumeMounts:
             - mountPath: /var/lib/postgresql/data
               name: data
+          # Without this, liveness can restart the container while initdb/recovery is still running.
+          startupProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"
+            failureThreshold: 60
+            periodSeconds: 5
           readinessProbe:
             exec:
               command:
                 - sh
                 - -c
                 - pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"
-            initialDelaySeconds: 5
             periodSeconds: 5
           livenessProbe:
             exec:
@@ -76,8 +85,7 @@ spec:
                 - sh
                 - -c
                 - pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"
-            initialDelaySeconds: 15
-            periodSeconds: 10
+            periodSeconds: 15
       volumes:
         - name: data
           persistentVolumeClaim:

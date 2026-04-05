@@ -342,6 +342,19 @@ sudo k3s kubectl -n stock-ticker port-forward svc/stock-ticker-frontend 3000:300
 
 ### Troubleshooting
 
+k3s on Ubuntu — `kubectl` fails with **permission denied** on `/etc/rancher/k3s/k3s.yaml`:
+
+The server kubeconfig is often **root-readable only**. Use **`sudo k3s kubectl`** for all commands, **or** copy it once so plain `kubectl` works (same as **Use `kubectl` as your user** under Ubuntu Linux (k3s) above):
+
+```bash
+mkdir -p ~/.kube
+sudo cp /etc/rancher/k3s/k3s.yaml ~/.kube/config
+sudo chown "$(id -u)":"$(id -g)" ~/.kube/config
+kubectl get nodes
+```
+
+If `KUBECONFIG` points at `/etc/rancher/k3s/k3s.yaml` in your shell, unset it or rely on `~/.kube/config` after copying.
+
 Namespace does not exist:
 
 ```text
@@ -367,6 +380,7 @@ k3s on Ubuntu — Postgres rollout times out (`stock-ticker-postgres` never Read
 - **ext4 + `lost+found`**: many provisioned volumes are not empty at the mount root, so Postgres must use **`PGDATA` in a subdirectory** (`k8s/postgres.yaml` sets `/var/lib/postgresql/data/pgdata`). If you had a failed init from an older manifest, delete the Postgres deployment PVC and re-apply so data initializes on a clean volume.
 - **ReadWriteOnce + rolling updates**: a single-replica Deployment with default `RollingUpdate` can briefly run two pods; the second cannot attach the same volume, so rollout stalls with **old replicas pending termination**. The manifest uses **`strategy: Recreate`** for Postgres so the old pod releases the PVC before the new one starts.
 - First-time image pull for `postgres:16-alpine` needs outbound network from the node. `kubectl describe pod -n stock-ticker -l app=stock-ticker-postgres` shows `ImagePullBackOff` vs volume errors.
+- **`0 of 1 updated replicas are available`** / progress deadline: inspect the pod (`sudo k3s kubectl describe pod -n stock-ticker -l app=stock-ticker-postgres`). The manifest uses a **`startupProbe`** so slow `initdb` is not killed by liveness; if logs show repeated restarts or data errors, delete the PVC and re-apply (wipes DB).
 
 Switching from in-cluster Postgres to host Postgres (or vice versa): adjust `k8s/kustomization.yaml` and `backend-database-secret.yaml`, then apply. To **remove** cluster Postgres and its data volume:
 

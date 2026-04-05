@@ -156,7 +156,7 @@ deploy_manifests() {
   ${KUBECTL_CMD} -n "${NAMESPACE}" rollout status deployment/stock-ticker-redis --timeout=180s
 
   echo "Waiting for Postgres"
-  if ! ${KUBECTL_CMD} -n "${NAMESPACE}" rollout status deployment/stock-ticker-postgres --timeout=300s; then
+  if ! ${KUBECTL_CMD} -n "${NAMESPACE}" rollout status deployment/stock-ticker-postgres --timeout=960s; then
     print_postgres_debug_help
     exit 1
   fi
