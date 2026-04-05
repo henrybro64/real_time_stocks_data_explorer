@@ -1,6 +1,6 @@
 # postgres:16-alpine with a PersistentVolumeClaim so data survives pod restarts and host reboots.
-# The cluster storage provisioner (e.g. k3d local-path) backs the PVC; do not delete the PVC
-# if you want to keep data. Deleting the entire k3d cluster may still remove cluster-local volumes.
+# k3s / k3d: use the default Rancher local-path StorageClass so the PVC binds (kubectl get storageclass).
+# If your cluster uses another default SC, change or remove storageClassName below.
 ---
 apiVersion: v1
 kind: Secret
@@ -19,6 +19,7 @@ metadata:
 spec:
   accessModes:
     - ReadWriteOnce
+  storageClassName: local-path
   resources:
     requests:
       storage: 2Gi
@@ -37,6 +38,8 @@ spec:
       labels:
         app: stock-ticker-postgres
     spec:
+      securityContext:
+        fsGroup: 70
       containers:
         - name: postgres
           image: postgres:16-alpine
@@ -47,6 +50,11 @@ spec:
           envFrom:
             - secretRef:
                 name: stock-ticker-postgres
+          # ext4 volumes (typical local-path) have lost+found at the mount root; Postgres refuses
+          # to init in a non-empty directory. Use a subdirectory for PGDATA (official image pattern).
+          env:
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
           volumeMounts:
             - mountPath: /var/lib/postgresql/data
               name: data

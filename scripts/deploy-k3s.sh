@@ -113,6 +113,25 @@ import_into_k3s() {
   trap - EXIT
 }
 
+print_postgres_debug_help() {
+  cat <<'EOF' >&2
+
+Postgres rollout failed. Common causes on k3s:
+- PVC stuck Pending: no StorageClass or wrong name. Run: kubectl get storageclass && kubectl get pvc -n stock-ticker
+  k3s usually expects storageClassName: local-path (see k8s/postgres.yaml).
+- ext4 PVC root contains lost+found: Postgres must use PGDATA under a subdir (manifest sets /var/lib/postgresql/data/pgdata).
+  If you deployed before that fix, delete the PVC and re-apply so the volume initializes cleanly.
+- postgres:16-alpine still pulling (first boot needs network). Check: kubectl describe pod -n stock-ticker -l app=stock-ticker-postgres
+- Volume permissions: see pod Events.
+
+Debug:
+  kubectl -n stock-ticker get pvc
+  kubectl -n stock-ticker get pods -l app=stock-ticker-postgres
+  kubectl -n stock-ticker describe pod -l app=stock-ticker-postgres
+  kubectl -n stock-ticker logs -l app=stock-ticker-postgres --tail=80
+EOF
+}
+
 print_backend_debug_help() {
   cat <<'EOF' >&2
 
@@ -136,7 +155,10 @@ deploy_manifests() {
   ${KUBECTL_CMD} -n "${NAMESPACE}" rollout status deployment/stock-ticker-redis --timeout=180s
 
   echo "Waiting for Postgres"
-  ${KUBECTL_CMD} -n "${NAMESPACE}" rollout status deployment/stock-ticker-postgres --timeout=180s
+  if ! ${KUBECTL_CMD} -n "${NAMESPACE}" rollout status deployment/stock-ticker-postgres --timeout=300s; then
+    print_postgres_debug_help
+    exit 1
+  fi
 
   echo "Waiting for backend"
   if ! ${KUBECTL_CMD} -n "${NAMESPACE}" rollout status deployment/stock-ticker-backend --timeout=600s; then
