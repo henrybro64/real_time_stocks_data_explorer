@@ -211,9 +211,22 @@ EOF
 sudo apt update
 sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 sudo usermod -aG docker "$USER"
-# log out and back in, or run `newgrp docker` in the current shell
-docker version
 ```
+
+Add your user to the `docker` group (above), then **apply that group in this terminal** — **one** of:
+
+- log out and log back in (or reboot), **or**
+- run `newgrp docker` once in the shell you use for `docker` / `kubectl`, **or**
+- open a **new** terminal session after `usermod`
+
+Then verify:
+
+```bash
+docker version
+docker ps
+```
+
+If you see `permission denied while trying to connect to the docker API at unix:///var/run/docker.sock`, the group change is not active yet: run `newgrp docker` or sign out/in. Do **not** rely on `sudo docker` for normal use (it can confuse file permissions on images/volumes).
 
 **Install k3s** (once per machine, or follow [k3s install](https://docs.k3s.io/installation))
 
@@ -223,6 +236,8 @@ sudo k3s kubectl get nodes
 ```
 
 **Clone the repo** (if you have not already — see **Clone the repo** above), then **deploy**:
+
+`./scripts/deploy-k3s.sh k3s` uses **`sudo k3s kubectl`** by default so it works when `/etc/rancher/k3s/k3s.yaml` is root-only. To use plain `kubectl` (no sudo), copy the kubeconfig to your user (see below) and run `KUBECTL_CMD=kubectl ./scripts/deploy-k3s.sh k3s`.
 
 ```bash
 cd Real_Time_Stocks_Data_Explorer   # or your clone path

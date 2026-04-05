@@ -8,7 +8,8 @@ NAMESPACE="${NAMESPACE:-stock-ticker}"
 BACKEND_IMAGE="${BACKEND_IMAGE:-stock-ticker-backend:local}"
 FRONTEND_IMAGE="${FRONTEND_IMAGE:-stock-ticker-frontend:local}"
 K3D_CLUSTER_NAME="${K3D_CLUSTER_NAME:-stock-ticker}"
-KUBECTL_CMD=""
+# Optional override, e.g. KUBECTL_CMD=kubectl ./scripts/deploy-k3s.sh k3s after fixing ~/.kube/config
+KUBECTL_CMD="${KUBECTL_CMD:-}"
 
 usage() {
   cat <<'EOF'
@@ -23,6 +24,9 @@ Modes:
 k3d one-time setup (before first deploy):
   k3d cluster create stock-ticker
   kubectl config use-context k3d-stock-ticker
+
+k3s: uses "sudo k3s kubectl" by default (kubeconfig under /etc/rancher is root-readable).
+  Override: KUBECTL_CMD=kubectl ./scripts/deploy-k3s.sh k3s  (after copying k3s.yaml to ~/.kube/config)
 EOF
 }
 
@@ -94,6 +98,7 @@ import_into_k3s() {
 
   local tmp_dir
   tmp_dir="$(mktemp -d)"
+  # EXIT must not reference `tmp_dir` after this function returns (local goes out of scope with set -u).
   trap 'rm -rf "${tmp_dir}"' EXIT
 
   echo "Saving local images as tar archives"
@@ -103,6 +108,9 @@ import_into_k3s() {
   echo "Importing images into native k3s containerd"
   sudo k3s ctr -n k8s.io images import "${tmp_dir}/backend.tar"
   sudo k3s ctr -n k8s.io images import "${tmp_dir}/frontend.tar"
+
+  rm -rf "${tmp_dir}"
+  trap - EXIT
 }
 
 print_backend_debug_help() {
@@ -112,7 +120,7 @@ Backend rollout failed. Common causes:
 - Postgres pod not ready or DATABASE_URL wrong (default: in-cluster stock-ticker-postgres).
 - If using host Postgres instead: wrong hostname / pg_hba — see README and scripts/k8s-test-host-postgres.sh
 
-Debug:
+Debug (use the same kubectl command you use for apply, e.g. sudo k3s kubectl on Ubuntu):
   kubectl -n stock-ticker get pods -l app=stock-ticker-backend
   kubectl -n stock-ticker logs deployment/stock-ticker-backend -c migrate-db
   kubectl -n stock-ticker logs deployment/stock-ticker-backend -c backend
@@ -147,12 +155,17 @@ fi
 
 require_cmd docker
 
-if command -v kubectl >/dev/null 2>&1; then
-  KUBECTL_CMD="kubectl"
+if [[ -n "${KUBECTL_CMD}" ]]; then
+  :
 elif [[ "${MODE}" == "k3s" ]] && command -v k3s >/dev/null 2>&1; then
+  # Plain kubectl often cannot read /etc/rancher/k3s/k3s.yaml (root-only). k3s embeds kubectl.
+  KUBECTL_CMD="sudo k3s kubectl"
+elif command -v kubectl >/dev/null 2>&1; then
+  KUBECTL_CMD="kubectl"
+elif command -v k3s >/dev/null 2>&1; then
   KUBECTL_CMD="sudo k3s kubectl"
 else
-  echo "Missing required command: kubectl" >&2
+  echo "Missing required command: kubectl (or k3s for k3s mode)" >&2
   exit 1
 fi
 
@@ -180,7 +193,7 @@ cat <<EOF
 Deployment complete.
 
 Open the app with:
-  kubectl -n ${NAMESPACE} port-forward svc/stock-ticker-frontend 3000:3000
+  ${KUBECTL_CMD} -n ${NAMESPACE} port-forward svc/stock-ticker-frontend 3000:3000
 
 Then browse:
   http://127.0.0.1:3000
