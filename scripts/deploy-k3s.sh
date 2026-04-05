@@ -123,6 +123,7 @@ Postgres rollout failed. Common causes on k3s:
   If you deployed before that fix, delete the PVC and re-apply so the volume initializes cleanly.
 - postgres:16-alpine still pulling (first boot needs network). Check: kubectl describe pod -n stock-ticker -l app=stock-ticker-postgres
 - Volume permissions: see pod Events.
+- RWO PVC + RollingUpdate: use strategy Recreate on stock-ticker-postgres (see k8s/postgres.yaml) so only one pod mounts the volume.
 
 Debug:
   kubectl -n stock-ticker get pvc

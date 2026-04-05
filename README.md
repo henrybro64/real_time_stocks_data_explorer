@@ -365,6 +365,7 @@ k3s on Ubuntu — Postgres rollout times out (`stock-ticker-postgres` never Read
 
 - Check the PVC is **Bound**, not **Pending**: `sudo k3s kubectl get pvc -n stock-ticker`. The manifest uses StorageClass **`local-path`** (k3s default). If your cluster has no `local-path`, run `sudo k3s kubectl get storageclass` and set `storageClassName` in `k8s/postgres.yaml` to match, or install the [local-path-provisioner](https://github.com/rancher/local-path-provisioner).
 - **ext4 + `lost+found`**: many provisioned volumes are not empty at the mount root, so Postgres must use **`PGDATA` in a subdirectory** (`k8s/postgres.yaml` sets `/var/lib/postgresql/data/pgdata`). If you had a failed init from an older manifest, delete the Postgres deployment PVC and re-apply so data initializes on a clean volume.
+- **ReadWriteOnce + rolling updates**: a single-replica Deployment with default `RollingUpdate` can briefly run two pods; the second cannot attach the same volume, so rollout stalls with **old replicas pending termination**. The manifest uses **`strategy: Recreate`** for Postgres so the old pod releases the PVC before the new one starts.
 - First-time image pull for `postgres:16-alpine` needs outbound network from the node. `kubectl describe pod -n stock-ticker -l app=stock-ticker-postgres` shows `ImagePullBackOff` vs volume errors.
 
 Switching from in-cluster Postgres to host Postgres (or vice versa): adjust `k8s/kustomization.yaml` and `backend-database-secret.yaml`, then apply. To **remove** cluster Postgres and its data volume:

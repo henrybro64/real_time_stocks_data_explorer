@@ -30,6 +30,10 @@ metadata:
   name: stock-ticker-postgres
 spec:
   replicas: 1
+  # RWO PVC: RollingUpdate can run old+new pods briefly; the second pod cannot mount the same volume,
+  # leaving "old replicas pending termination" and a stuck rollout. Recreate tears down first, then starts.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: stock-ticker-postgres
