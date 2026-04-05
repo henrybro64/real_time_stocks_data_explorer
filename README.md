@@ -89,7 +89,7 @@ This repo supports a no-registry local Kubernetes flow:
 3. apply the manifests in `k8s/`
 4. expose the frontend locally with `port-forward`
 
-To **remove the app**, use `kubectl delete -k k8s` (this also removes the Postgres PVC and its data). To **remove the cluster itself**, delete the k3d cluster or uninstall k3s — see **macOS (k3d)** and **Ubuntu Linux (k3s)** below.
+To **remove the app**, use `./scripts/k8s-teardown.sh k3d|k3s` or `kubectl delete -k k8s` (this also removes the Postgres PVC and its data). To **remove the cluster itself**, delete the k3d cluster or uninstall k3s — see **macOS (k3d)** and **Ubuntu Linux (k3s)** below.
 
 The helper script for this flow is `scripts/deploy-k3s.sh`.
 
@@ -164,7 +164,8 @@ kubectl exec -n stock-ticker deploy/stock-ticker-postgres -- \
 **4. Remove the app from Kubernetes** (deletes everything defined in `k8s/`, including the **Postgres PVC** — **database data is removed** unless you backed it up above)
 
 ```bash
-kubectl delete -k k8s
+./scripts/k8s-teardown.sh k3d
+# or: kubectl delete -k k8s
 ```
 
 **5. Delete the k3d cluster** (optional; destroys the cluster and cluster-local volumes)
@@ -254,8 +255,14 @@ Before **Remove the app**, back up Postgres the same way as in **Backup Postgres
 **Remove the app** (same as macOS: deletes manifests and **Postgres PVC** — data is removed)
 
 ```bash
+./scripts/k8s-teardown.sh k3s
+# same effect:
 sudo k3s kubectl delete -k k8s
 ```
+
+That drops **deployments, services, secrets, ConfigMaps, and the Postgres PVC** so you can redeploy from a clean slate. It does **not** remove Docker images you built (`stock-ticker-backend:local`, etc.) or uninstall k3s.
+
+If something is **stuck** (namespace `Terminating`, old pods never gone), force-delete remaining objects in `stock-ticker`, then run the delete again or remove finalizers on the namespace only as a last resort (search *kubernetes namespace stuck terminating*).
 
 **Uninstall k3s** (optional; removes the cluster and node)
 
