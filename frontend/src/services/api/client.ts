@@ -47,13 +47,17 @@ function buildPath(path: string): string {
 }
 
 /** Full URL for HTTP(S) requests (relative when same-origin). */
-function apiUrl(path: string): string {
+export function apiUrl(path: string): string {
   const p = buildPath(path);
   if (API_BASE_URL === "") {
     return p;
   }
   return `${API_BASE_URL}${p}`;
 }
+
+const defaultFetchInit: RequestInit = {
+  credentials: "include",
+};
 
 /** FastAPI error bodies: `detail` as string, validation array, or object. */
 async function failedRequestMessage(response: Response): Promise<string> {
@@ -73,7 +77,7 @@ async function failedRequestMessage(response: Response): Promise<string> {
 }
 
 async function fetchJson<T>(path: string): Promise<T> {
-  const response = await fetch(apiUrl(path));
+  const response = await fetch(apiUrl(path), defaultFetchInit);
   if (!response.ok) {
     throw new Error(await failedRequestMessage(response));
   }
@@ -128,6 +132,7 @@ export function fetchWatchlist() {
 
 export async function addToWatchlist(stockId: string) {
   const response = await fetch(apiUrl("/watchlist/items"), {
+    ...defaultFetchInit,
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -146,6 +151,7 @@ export async function removeFromWatchlist(stockId: string) {
   const response = await fetch(
     apiUrl(`/watchlist/items/${encodeURIComponent(stockId)}`),
     {
+      ...defaultFetchInit,
       method: "DELETE",
     },
   );
@@ -167,6 +173,7 @@ export function fetchPortfolioSummary() {
 
 export async function addPortfolioPosition(payload: PortfolioPositionCreate) {
   const response = await fetch(apiUrl("/portfolio/positions"), {
+    ...defaultFetchInit,
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -181,6 +188,7 @@ export async function addPortfolioPosition(payload: PortfolioPositionCreate) {
 
 export async function updatePortfolioPosition(positionId: number, payload: PortfolioPositionUpdate) {
   const response = await fetch(apiUrl(`/portfolio/positions/${positionId}`), {
+    ...defaultFetchInit,
     method: "PATCH",
     headers: {
       "Content-Type": "application/json",
@@ -195,6 +203,7 @@ export async function updatePortfolioPosition(positionId: number, payload: Portf
 
 export async function deletePortfolioPosition(positionId: number) {
   const response = await fetch(apiUrl(`/portfolio/positions/${positionId}`), {
+    ...defaultFetchInit,
     method: "DELETE",
   });
   if (!response.ok) {
@@ -208,6 +217,7 @@ export function fetchPortfolioAssets() {
 
 export async function addPortfolioAsset(payload: PortfolioAssetCreate) {
   const response = await fetch(apiUrl("/portfolio/assets"), {
+    ...defaultFetchInit,
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -222,6 +232,7 @@ export async function addPortfolioAsset(payload: PortfolioAssetCreate) {
 
 export async function updatePortfolioAsset(assetId: number, payload: PortfolioAssetUpdate) {
   const response = await fetch(apiUrl(`/portfolio/assets/${assetId}`), {
+    ...defaultFetchInit,
     method: "PATCH",
     headers: {
       "Content-Type": "application/json",
@@ -236,6 +247,7 @@ export async function updatePortfolioAsset(assetId: number, payload: PortfolioAs
 
 export async function deletePortfolioAsset(assetId: number) {
   const response = await fetch(apiUrl(`/portfolio/assets/${assetId}`), {
+    ...defaultFetchInit,
     method: "DELETE",
   });
   if (!response.ok) {
@@ -249,6 +261,7 @@ export function fetchApiKeyStatus(provider: "openai" | "perplexity") {
 
 export async function saveApiKey(provider: "openai" | "perplexity", apiKey: string) {
   const response = await fetch(apiUrl(`/ai/keys/${provider}`), {
+    ...defaultFetchInit,
     method: "PUT",
     headers: {
       "Content-Type": "application/json",

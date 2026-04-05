@@ -1,6 +1,5 @@
 from sqlalchemy import delete, select
 
-from app.db.init_db import DEFAULT_USER_ID
 from app.db.models import PortfolioAsset, PortfolioPosition
 from app.db.session import SessionLocal
 from app.models.quote import QuoteRecord
@@ -9,19 +8,20 @@ from app.services.quote_service import quote_service
 
 
 class PortfolioService:
-    def list_positions(self) -> list[PortfolioPosition]:
+    def list_positions(self, user_id: str) -> list[PortfolioPosition]:
         if SessionLocal is None:
             raise RuntimeError("DATABASE_URL is not configured")
         with SessionLocal() as session:
             positions = session.execute(
                 select(PortfolioPosition)
-                .where(PortfolioPosition.user_id == DEFAULT_USER_ID)
+                .where(PortfolioPosition.user_id == user_id)
                 .order_by(PortfolioPosition.created_at.asc()),
             ).scalars()
             return list(positions)
 
     def add_position(
         self,
+        user_id: str,
         stock_id: str,
         quantity: float,
         average_cost: float,
@@ -35,7 +35,7 @@ class PortfolioService:
         with SessionLocal() as session:
             existing = session.execute(
                 select(PortfolioPosition).where(
-                    PortfolioPosition.user_id == DEFAULT_USER_ID,
+                    PortfolioPosition.user_id == user_id,
                     PortfolioPosition.stock_id == stock_id,
                 ),
             ).scalar_one_or_none()
@@ -44,7 +44,7 @@ class PortfolioService:
                     f"Position already exists for stock id: {stock_id}",
                 )
             position = PortfolioPosition(
-                user_id=DEFAULT_USER_ID,
+                user_id=user_id,
                 stock_id=stock_id,
                 quantity=quantity,
                 average_cost=average_cost,
@@ -58,6 +58,7 @@ class PortfolioService:
 
     def update_position(
         self,
+        user_id: str,
         position_id: int,
         quantity: float | None,
         average_cost: float | None,
@@ -70,7 +71,7 @@ class PortfolioService:
             position = session.execute(
                 select(PortfolioPosition).where(
                     PortfolioPosition.id == position_id,
-                    PortfolioPosition.user_id == DEFAULT_USER_ID,
+                    PortfolioPosition.user_id == user_id,
                 ),
             ).scalar_one_or_none()
             if position is None:
@@ -86,33 +87,34 @@ class PortfolioService:
             session.refresh(position)
             return position
 
-    def delete_position(self, position_id: int) -> None:
+    def delete_position(self, user_id: str, position_id: int) -> None:
         if SessionLocal is None:
             raise RuntimeError("DATABASE_URL is not configured")
         with SessionLocal() as session:
             deleted = session.execute(
                 delete(PortfolioPosition).where(
                     PortfolioPosition.id == position_id,
-                    PortfolioPosition.user_id == DEFAULT_USER_ID,
+                    PortfolioPosition.user_id == user_id,
                 ),
             )
             session.commit()
             if deleted.rowcount == 0:
                 raise ValueError(f"Position not found: {position_id}")
 
-    def list_assets(self) -> list[PortfolioAsset]:
+    def list_assets(self, user_id: str) -> list[PortfolioAsset]:
         if SessionLocal is None:
             raise RuntimeError("DATABASE_URL is not configured")
         with SessionLocal() as session:
             assets = session.execute(
                 select(PortfolioAsset)
-                .where(PortfolioAsset.user_id == DEFAULT_USER_ID)
+                .where(PortfolioAsset.user_id == user_id)
                 .order_by(PortfolioAsset.created_at.asc()),
             ).scalars()
             return list(assets)
 
     def add_asset(
         self,
+        user_id: str,
         asset_type: str,
         name: str,
         currency: str,
@@ -123,7 +125,7 @@ class PortfolioService:
             raise RuntimeError("DATABASE_URL is not configured")
         with SessionLocal() as session:
             asset = PortfolioAsset(
-                user_id=DEFAULT_USER_ID,
+                user_id=user_id,
                 asset_type=asset_type,
                 name=name,
                 currency=currency,
@@ -137,6 +139,7 @@ class PortfolioService:
 
     def update_asset(
         self,
+        user_id: str,
         asset_id: int,
         asset_type: str | None,
         name: str | None,
@@ -150,7 +153,7 @@ class PortfolioService:
             asset = session.execute(
                 select(PortfolioAsset).where(
                     PortfolioAsset.id == asset_id,
-                    PortfolioAsset.user_id == DEFAULT_USER_ID,
+                    PortfolioAsset.user_id == user_id,
                 ),
             ).scalar_one_or_none()
             if asset is None:
@@ -168,14 +171,14 @@ class PortfolioService:
             session.refresh(asset)
             return asset
 
-    def delete_asset(self, asset_id: int) -> None:
+    def delete_asset(self, user_id: str, asset_id: int) -> None:
         if SessionLocal is None:
             raise RuntimeError("DATABASE_URL is not configured")
         with SessionLocal() as session:
             deleted = session.execute(
                 delete(PortfolioAsset).where(
                     PortfolioAsset.id == asset_id,
-                    PortfolioAsset.user_id == DEFAULT_USER_ID,
+                    PortfolioAsset.user_id == user_id,
                 ),
             )
             session.commit()

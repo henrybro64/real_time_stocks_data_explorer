@@ -1,5 +1,6 @@
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
+from app.api.deps import get_effective_user_id
 from app.schemas.ai import (
     AiInsightResponse,
     ApiKeyStatusResponse,
@@ -12,9 +13,12 @@ router = APIRouter(prefix="/ai", tags=["ai"])
 
 
 @router.get("/keys/{provider}", response_model=ApiKeyStatusResponse)
-def get_api_key_status(provider: str) -> ApiKeyStatusResponse:
+def get_api_key_status(
+    provider: str,
+    user_id: str = Depends(get_effective_user_id),
+) -> ApiKeyStatusResponse:
     try:
-        configured, key_last4 = api_key_service.get_status(provider)
+        configured, key_last4 = api_key_service.get_status(user_id, provider)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RuntimeError as exc:
@@ -30,9 +34,14 @@ def get_api_key_status(provider: str) -> ApiKeyStatusResponse:
 def upsert_api_key(
     provider: str,
     payload: ApiKeyUpsertRequest,
+    user_id: str = Depends(get_effective_user_id),
 ) -> ApiKeyStatusResponse:
     try:
-        configured, key_last4 = api_key_service.upsert_key(provider, payload.apiKey)
+        configured, key_last4 = api_key_service.upsert_key(
+            user_id,
+            provider,
+            payload.apiKey,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RuntimeError as exc:
@@ -48,11 +57,13 @@ def upsert_api_key(
 def get_ai_insight(
     stock_id: str,
     provider: str = Query(default="openai"),
+    user_id: str = Depends(get_effective_user_id),
 ) -> AiInsightResponse:
     try:
         content = ai_insight_service.generate_insight(
-            stock_id=stock_id,
-            provider=provider,
+            user_id,
+            stock_id,
+            provider,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

@@ -3,7 +3,8 @@ kind: Kustomization
 namespace: stock-ticker
 resources:
   - namespace.yaml
-  - postgres.yaml
   - redis.yaml
+  - postgres.yaml
+  - backend-database-secret.yaml
   - backend.yaml
   - frontend.yaml

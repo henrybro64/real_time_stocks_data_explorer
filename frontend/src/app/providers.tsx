@@ -3,7 +3,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useState, type ReactNode } from "react";
 import { LanguageProvider } from "./i18n";
-import { Shell } from "../components/layout/Shell";
+import { AppChrome } from "../components/layout/AppChrome";
 
 type Props = {
   children: ReactNode;
@@ -15,7 +15,7 @@ export function Providers({ children }: Props) {
   return (
     <QueryClientProvider client={queryClient}>
       <LanguageProvider>
-        <Shell>{children}</Shell>
+        <AppChrome>{children}</AppChrome>
       </LanguageProvider>
     </QueryClientProvider>
   );

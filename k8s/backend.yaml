@@ -4,7 +4,6 @@ metadata:
   name: stock-ticker-backend-env
 data:
   API_PREFIX: /api
-  DATABASE_URL: postgresql+psycopg://postgres:postgres@stock-ticker-postgres:5432/stocks
   REDIS_URL: redis://stock-ticker-redis:6379/0
   CORS_ORIGINS: ""
 ---
@@ -34,6 +33,8 @@ spec:
           envFrom:
             - configMapRef:
                 name: stock-ticker-backend-env
+            - secretRef:
+                name: stock-ticker-backend-database
       containers:
         - name: backend
           image: stock-ticker-backend:local
@@ -44,6 +45,8 @@ spec:
           envFrom:
             - configMapRef:
                 name: stock-ticker-backend-env
+            - secretRef:
+                name: stock-ticker-backend-database
           readinessProbe:
             httpGet:
               path: /health

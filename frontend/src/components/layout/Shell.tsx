@@ -13,11 +13,13 @@ import {
   SkipToContent,
   Theme,
 } from "@carbon/react";
-import { Menu, Notification, UserAvatar } from "@carbon/icons-react";
-import { type ReactNode, useState } from "react";
+import { Menu, Notification } from "@carbon/icons-react";
+import { type ReactNode, useEffect, useState } from "react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useLanguage } from "../../app/i18n";
+import { fetchAuthStatus, logout } from "../../services/api/auth";
+import type { AuthStatus } from "../../services/api/auth";
 
 type Props = {
   children: ReactNode;
@@ -25,8 +27,28 @@ type Props = {
 
 export function Shell({ children }: Props) {
   const pathname = usePathname();
+  const router = useRouter();
   const { language, setLanguage, t } = useLanguage();
   const [isLeftPanelVisible, setIsLeftPanelVisible] = useState(true);
+  const [auth, setAuth] = useState<AuthStatus | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchAuthStatus()
+      .then((s) => {
+        if (!cancelled) {
+          setAuth(s);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setAuth(null);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [pathname]);
 
   return (
     <>
@@ -61,11 +83,40 @@ export function Shell({ children }: Props) {
                       繁中
                     </Button>
                   </div>
+                  {auth?.authEnabled ? (
+                    <div className="app-auth-actions">
+                      {auth.loggedIn && auth.user ? (
+                        <>
+                          <span className="cds--label-01 app-auth-user" title={auth.user.username}>
+                            {auth.user.username}
+                          </span>
+                          <Button
+                            kind="ghost"
+                            size="sm"
+                            onClick={async () => {
+                              await logout();
+                              setAuth(await fetchAuthStatus());
+                              router.refresh();
+                            }}
+                          >
+                            Sign out
+                          </Button>
+                        </>
+                      ) : (
+                        <Button
+                          kind="ghost"
+                          size="sm"
+                          onClick={() => {
+                            router.push("/login");
+                          }}
+                        >
+                          Sign in
+                        </Button>
+                      )}
+                    </div>
+                  ) : null}
                   <HeaderGlobalAction aria-label={t("header.notifications")} tooltipAlignment="end">
                     <Notification size={20} />
-                  </HeaderGlobalAction>
-                  <HeaderGlobalAction aria-label={t("header.userProfile")} tooltipAlignment="end">
-                    <UserAvatar size={20} />
                   </HeaderGlobalAction>
                 </HeaderGlobalBar>
               </Header>

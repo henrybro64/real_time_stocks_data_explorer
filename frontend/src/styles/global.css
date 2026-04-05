@@ -1132,3 +1132,78 @@ input {
     height: 16rem;
   }
 }
+
+/* Carbon-style login (g100) */
+.app-login-root {
+  min-height: 100vh;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem 1rem;
+}
+
+.app-login-backdrop {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(circle at 18% 20%, rgba(83, 126, 255, 0.18), transparent 42%),
+    radial-gradient(circle at 88% 12%, rgba(83, 255, 218, 0.1), transparent 38%),
+    linear-gradient(155deg, #05070d 0%, #0b1020 45%, #070a12 100%);
+  z-index: 0;
+}
+
+.app-login-grid {
+  position: relative;
+  z-index: 1;
+  max-width: 28rem;
+  width: 100%;
+}
+
+.app-login-tile {
+  padding: 2rem !important;
+  border: 1px solid rgba(120, 152, 255, 0.28) !important;
+  background: rgba(10, 14, 24, 0.92) !important;
+  box-shadow: 0 24px 80px rgba(5, 8, 16, 0.65);
+  backdrop-filter: blur(10px);
+}
+
+.app-login-eyebrow {
+  color: var(--cds-text-secondary);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin-bottom: 0.35rem;
+}
+
+.app-login-title {
+  font-family: var(--font-display), sans-serif;
+  letter-spacing: 0.02em;
+}
+
+.app-login-subtitle {
+  color: var(--cds-text-secondary);
+  margin-top: 0.5rem;
+}
+
+.app-login-error {
+  color: var(--cds-support-error);
+}
+
+.app-login-back {
+  display: inline-block;
+  margin-top: 0.5rem;
+}
+
+.app-auth-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-right: 0.5rem;
+}
+
+.app-auth-user {
+  max-width: 10rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

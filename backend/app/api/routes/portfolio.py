@@ -1,9 +1,10 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from zoneinfo import ZoneInfo
 
+from app.api.deps import get_effective_user_id
 from app.db.models import PortfolioAsset, PortfolioPosition
 from app.models.quote import QuoteRecord
 from app.models.stock import StockRecord
@@ -25,17 +26,17 @@ from app.services.quote_service import quote_service
 
 router = APIRouter(prefix="/portfolio", tags=["portfolio"])
 
-# _to_response(..., quote=...) uses this when callers should fetch inside the function.
 _MISSING_QUOTE = object()
 
 
 @router.get("/positions", response_model=list[PortfolioPositionResponse])
-def list_portfolio_positions() -> list[PortfolioPositionResponse]:
-    positions = portfolio_service.list_positions()
+def list_portfolio_positions(
+    user_id: str = Depends(get_effective_user_id),
+) -> list[PortfolioPositionResponse]:
+    positions = portfolio_service.list_positions(user_id)
     if not positions:
         return []
 
-    # Fetch live quotes in parallel — sequential calls (45× HTTP) often time out the UI.
     quote_by_stock: dict[str, QuoteRecord | None] = {}
     workers = min(16, max(1, len(positions)))
     with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -63,9 +64,11 @@ def list_portfolio_positions() -> list[PortfolioPositionResponse]:
 @router.post("/positions", response_model=PortfolioPositionResponse)
 def add_portfolio_position(
     payload: PortfolioPositionCreate,
+    user_id: str = Depends(get_effective_user_id),
 ) -> PortfolioPositionResponse:
     try:
         position = portfolio_service.add_position(
+            user_id,
             stock_id=payload.stockId,
             quantity=payload.quantity,
             average_cost=payload.averageCost,
@@ -84,9 +87,11 @@ def add_portfolio_position(
 def update_portfolio_position(
     position_id: int,
     payload: PortfolioPositionUpdate,
+    user_id: str = Depends(get_effective_user_id),
 ) -> PortfolioPositionResponse:
     try:
         position = portfolio_service.update_position(
+            user_id,
             position_id=position_id,
             quantity=payload.quantity,
             average_cost=payload.averageCost,
@@ -99,22 +104,29 @@ def update_portfolio_position(
 
 
 @router.delete("/positions/{position_id}", status_code=204)
-def delete_portfolio_position(position_id: int) -> None:
+def delete_portfolio_position(
+    position_id: int,
+    user_id: str = Depends(get_effective_user_id),
+) -> None:
     try:
-        portfolio_service.delete_position(position_id)
+        portfolio_service.delete_position(user_id, position_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.get("/assets", response_model=list[PortfolioAssetResponse])
-def list_portfolio_assets() -> list[PortfolioAssetResponse]:
-    assets = portfolio_service.list_assets()
+def list_portfolio_assets(
+    user_id: str = Depends(get_effective_user_id),
+) -> list[PortfolioAssetResponse]:
+    assets = portfolio_service.list_assets(user_id)
     return [_to_asset_response(asset) for asset in assets]
 
 
 @router.get("/summary", response_model=PortfolioSummaryResponse)
-def get_portfolio_summary() -> PortfolioSummaryResponse:
-    positions = portfolio_service.list_positions()
+def get_portfolio_summary(
+    user_id: str = Depends(get_effective_user_id),
+) -> PortfolioSummaryResponse:
+    positions = portfolio_service.list_positions(user_id)
     fx_snapshot = get_usd_twd_fx_snapshot()
     usd_twd_rate = float(fx_snapshot["rate"])
 
@@ -171,8 +183,10 @@ def get_portfolio_summary() -> PortfolioSummaryResponse:
 @router.post("/assets", response_model=PortfolioAssetResponse)
 def add_portfolio_asset(
     payload: PortfolioAssetCreate,
+    user_id: str = Depends(get_effective_user_id),
 ) -> PortfolioAssetResponse:
     asset = portfolio_service.add_asset(
+        user_id,
         asset_type=payload.assetType,
         name=payload.name,
         currency=payload.currency,
@@ -186,9 +200,11 @@ def add_portfolio_asset(
 def update_portfolio_asset(
     asset_id: int,
     payload: PortfolioAssetUpdate,
+    user_id: str = Depends(get_effective_user_id),
 ) -> PortfolioAssetResponse:
     try:
         asset = portfolio_service.update_asset(
+            user_id,
             asset_id=asset_id,
             asset_type=payload.assetType,
             name=payload.name,
@@ -202,9 +218,12 @@ def update_portfolio_asset(
 
 
 @router.delete("/assets/{asset_id}", status_code=204)
-def delete_portfolio_asset(asset_id: int) -> None:
+def delete_portfolio_asset(
+    asset_id: int,
+    user_id: str = Depends(get_effective_user_id),
+) -> None:
     try:
-        portfolio_service.delete_asset(asset_id)
+        portfolio_service.delete_asset(user_id, asset_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -212,7 +231,6 @@ def delete_portfolio_asset(asset_id: int) -> None:
 def _synthetic_quote_for_holdings(
     stock: StockRecord, position: PortfolioPosition
 ) -> QuoteRecord:
-    """Use average cost when live quote is unavailable so rows still list."""
     tz = ZoneInfo(stock.timezone)
     now = datetime.now(tz)
     price = float(position.average_cost)

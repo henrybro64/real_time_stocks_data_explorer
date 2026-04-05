@@ -80,131 +80,326 @@ npm install
 npm run dev
 ```
 
-## Run In k3s
+## Run In Local Kubernetes (`k3d` on macOS, `k3s` on Ubuntu)
 
-This repo now supports a no-registry local Kubernetes flow:
+This repo supports a no-registry local Kubernetes flow:
 
 1. build the backend and frontend images locally
-2. import those local images into `k3s` / `k3d`
-3. deploy Postgres, Redis, backend, and frontend from `k8s/`
-4. expose the frontend locally with `kubectl port-forward`
+2. import those images into the cluster runtime
+3. apply the manifests in `k8s/`
+4. expose the frontend locally with `port-forward`
 
-The helper script is `scripts/deploy-k3s.sh`.
+To **remove the app**, use `kubectl delete -k k8s` (this also removes the Postgres PVC and its data). To **remove the cluster itself**, delete the k3d cluster or uninstall k3s — see **macOS (k3d)** and **Ubuntu Linux (k3s)** below.
 
-### Prerequisites
+The helper script for this flow is `scripts/deploy-k3s.sh`.
 
-- A working Docker daemon on the machine that builds the images
-- `kubectl`
-- macOS: `k3d` (native `k3s` is Linux-only, so macOS uses `k3d`, which runs k3s inside Docker)
-- Ubuntu Linux: native `k3s` or `kubectl` access to an existing k3s cluster
+Important:
 
-### Exact Commands: macOS
+- macOS should use `k3d`, not native `k3s`
+- Ubuntu Linux can use native `k3s`
+- the deploy script does **not** create the cluster for you — create the cluster first, then run it
+- Docker Desktop is **not** required on macOS; `colima + docker + k3d` is enough
 
-Install the local tooling once:
+### Clone the repo
 
 ```bash
-brew install colima docker kubectl k3d
-colima start --cpu 4 --memory 8 --disk 30
+git clone https://github.com/henrybro64/Real_Time_Stocks_Data_Explorer.git
+cd Real_Time_Stocks_Data_Explorer
 ```
 
-Clone, create the cluster, build/import/deploy the app, and expose it locally:
+### macOS (k3d): create cluster → deploy → remove app → delete cluster
+
+**1. Install tooling and start Colima (one-time per machine)**
 
 ```bash
-git clone <your-github-url> Real_Time_Stocks_Data_Explorer
-cd Real_Time_Stocks_Data_Explorer
+brew install colima docker docker-buildx kubectl k3d
+colima start --cpu 4 --memory 8 --disk 30
+docker context use colima
+docker buildx use colima
+```
 
+**2. Create the k3d cluster** (once; repeat only if you removed the cluster)
+
+```bash
 k3d cluster create stock-ticker
+kubectl config use-context k3d-stock-ticker
+kubectl get nodes
+```
+
+**3. Deploy the app** (builds `stock-ticker-*:local`, imports into k3d, `kubectl apply -k k8s`)
+
+```bash
 ./scripts/deploy-k3s.sh k3d
+kubectl -n stock-ticker get pods
 kubectl -n stock-ticker port-forward svc/stock-ticker-frontend 3000:3000
 ```
 
-Open the app at `http://127.0.0.1:3000`.
+Open the UI at `http://127.0.0.1:3000`.
 
-If you want the exact manual commands instead of the helper script:
+#### Backup Postgres before you delete the namespace (recommended)
+
+**Common practice** is a **logical backup** with PostgreSQL’s **`pg_dump`** (SQL file or custom format). That works across teardown/redeploy and does not depend on copying the raw PVC disk. For large production DBs, storage-level **volume snapshots** (CSI / your cloud) are also used; for local k3d/k3s, `pg_dump` is usually enough.
+
+From the repo root, while `stock-ticker-postgres` is running:
+
+```bash
+./scripts/k8s-backup-postgres.sh
+# writes stocks-YYYYMMDD-HHMMSS.sql in the current directory
+```
+
+Manual equivalent:
+
+```bash
+kubectl exec -n stock-ticker deploy/stock-ticker-postgres -- \
+  sh -c 'PGPASSWORD=postgres pg_dump -h 127.0.0.1 -U postgres -d stocks --no-owner --no-acl' \
+  > stocks-backup.sql
+```
+
+**Restore** after a fresh deploy (Postgres pod up; run **after** migrations if you rely on Alembic for schema — a **full** dump includes schema and can conflict with migrations; for repeated dev cycles, prefer backing up **data-only** once schema is stable: `pg_dump --data-only ...`, then restore with `./scripts/k8s-restore-postgres.sh` after the backend init has migrated):
+
+```bash
+./scripts/k8s-restore-postgres.sh stocks-backup.sql
+```
+
+**4. Remove the app from Kubernetes** (deletes everything defined in `k8s/`, including the **Postgres PVC** — **database data is removed** unless you backed it up above)
+
+```bash
+kubectl delete -k k8s
+```
+
+**5. Delete the k3d cluster** (optional; destroys the cluster and cluster-local volumes)
+
+```bash
+k3d cluster delete stock-ticker
+```
+
+**6. Stop Colima** (optional; frees the Docker VM)
+
+```bash
+colima stop
+```
+
+Expected pods after a healthy deploy:
+
+```text
+stock-ticker-backend    1/1 Running
+stock-ticker-frontend   1/1 Running
+stock-ticker-postgres   1/1 Running
+stock-ticker-redis      1/1 Running
+```
+
+### Ubuntu Linux (k3s): install Docker → install k3s → deploy → remove → uninstall
+
+**Install Git and Docker Engine**
+
+```bash
+sudo apt update
+sudo apt install -y ca-certificates curl git
+
+sudo install -m 0755 -d /etc/apt/keyrings
+sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+sudo chmod a+r /etc/apt/keyrings/docker.asc
+
+sudo tee /etc/apt/sources.list.d/docker.sources > /dev/null <<EOF
+Types: deb
+URIs: https://download.docker.com/linux/ubuntu
+Suites: $(. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}")
+Components: stable
+Signed-By: /etc/apt/keyrings/docker.asc
+EOF
+
+sudo apt update
+sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+sudo usermod -aG docker "$USER"
+# log out and back in, or run `newgrp docker` in the current shell
+docker version
+```
+
+**Install k3s** (once per machine, or follow [k3s install](https://docs.k3s.io/installation))
+
+```bash
+curl -sfL https://get.k3s.io | sh -
+sudo k3s kubectl get nodes
+```
+
+**Clone the repo** (if you have not already — see **Clone the repo** above), then **deploy**:
+
+```bash
+cd Real_Time_Stocks_Data_Explorer   # or your clone path
+
+./scripts/deploy-k3s.sh k3s
+sudo k3s kubectl -n stock-ticker get pods
+sudo k3s kubectl -n stock-ticker port-forward svc/stock-ticker-frontend 3000:3000
+```
+
+Open the UI at `http://127.0.0.1:3000`.
+
+Before **Remove the app**, back up Postgres the same way as in **Backup Postgres before you delete the namespace** (macOS section above) if you need the data. Use `./scripts/k8s-backup-postgres.sh` when plain `kubectl` works, or adapt the `kubectl exec` example to `sudo k3s kubectl exec`.
+
+**Remove the app** (same as macOS: deletes manifests and **Postgres PVC** — data is removed)
+
+```bash
+sudo k3s kubectl delete -k k8s
+```
+
+**Uninstall k3s** (optional; removes the cluster and node)
+
+```bash
+sudo /usr/local/bin/k3s-uninstall.sh
+```
+
+**Use `kubectl` as your user** (optional; avoids prefixing every command with `sudo k3s kubectl`):
+
+```bash
+mkdir -p ~/.kube
+sudo cp /etc/rancher/k3s/k3s.yaml ~/.kube/config
+sudo chown "$(id -u)":"$(id -g)" ~/.kube/config
+kubectl config get-contexts
+kubectl config use-context default   # name may differ; pick the k3s context from the list above
+kubectl get nodes
+```
+
+### What the script actually does
+
+`./scripts/deploy-k3s.sh k3d`
+
+- builds `stock-ticker-backend:local`
+- builds `stock-ticker-frontend:local`
+- imports those images into the existing `k3d` cluster
+- runs `kubectl apply -k k8s`
+- waits for Redis, Postgres, backend, and frontend to become ready
+
+`./scripts/deploy-k3s.sh k3s`
+
+- builds the same two images locally
+- saves them as tar archives
+- imports them into native `k3s` containerd with `k3s ctr`
+- applies the same manifests from `k8s/`
+- waits for Redis, Postgres, backend, and frontend to become ready (same as `k3d` mode)
+
+### What gets deployed
+
+- `postgres:16-alpine` with a **PersistentVolumeClaim** (default **2Gi**) so database files survive pod restarts and host reboots; data lives on the cluster’s storage provisioner (e.g. k3d local-path).
+- `redis:7-alpine` for quote/news cache
+- `stock-ticker-backend:local`
+- `stock-ticker-frontend:local`
+
+The backend connects to the in-cluster Service **`stock-ticker-postgres`** (`DATABASE_URL` in `k8s/backend-database-secret.yaml`). Removing the **PVC** or the whole cluster **without** a backup can still delete data—treat the PVC as your durable store while the cluster exists.
+
+The backend deployment runs `alembic upgrade head` in an init container before the API starts. The API then seeds the default user (`default-user`) automatically when it can reach the database.
+
+### Kubernetes: use Postgres on your Mac instead (optional)
+
+To point the backend at **host Postgres** (e.g. reuse an existing DB on the machine): edit `k8s/backend-database-secret.yaml` so `DATABASE_URL` uses **`host.lima.internal`** or **`host.docker.internal`** (see `./scripts/k8s-test-host-postgres.sh`), then remove **`postgres.yaml`** from `k8s/kustomization.yaml` so you do not run two Postgres instances. Apply and restart the backend.
+
+### Manual commands instead of the helper script
+
+macOS with `k3d`:
 
 ```bash
 docker build -t stock-ticker-backend:local -f backend/Dockerfile .
 docker build -t stock-ticker-frontend:local -f frontend/Dockerfile .
 k3d image import stock-ticker-backend:local stock-ticker-frontend:local -c stock-ticker
 kubectl apply -k k8s
-kubectl -n stock-ticker rollout status deployment/stock-ticker-postgres
 kubectl -n stock-ticker rollout status deployment/stock-ticker-redis
+kubectl -n stock-ticker rollout status deployment/stock-ticker-postgres
 kubectl -n stock-ticker rollout status deployment/stock-ticker-backend
 kubectl -n stock-ticker rollout status deployment/stock-ticker-frontend
 kubectl -n stock-ticker port-forward svc/stock-ticker-frontend 3000:3000
 ```
 
-### Exact Commands: Ubuntu Linux
-
-Install native `k3s` once:
-
-```bash
-curl -sfL https://get.k3s.io | sh -
-
-mkdir -p ~/.kube
-sudo cp /etc/rancher/k3s/k3s.yaml ~/.kube/config
-sudo chown "$(id -u)":"$(id -g)" ~/.kube/config
-```
-
-Clone, build/import/deploy the app, and expose it locally:
-
-```bash
-git clone <your-github-url> Real_Time_Stocks_Data_Explorer
-cd Real_Time_Stocks_Data_Explorer
-
-./scripts/deploy-k3s.sh k3s
-kubectl -n stock-ticker port-forward svc/stock-ticker-frontend 3000:3000
-```
-
-Open the app at `http://127.0.0.1:3000`.
-
-If you want the exact manual commands instead of the helper script:
+Ubuntu with native `k3s`:
 
 ```bash
 docker build -t stock-ticker-backend:local -f backend/Dockerfile .
 docker build -t stock-ticker-frontend:local -f frontend/Dockerfile .
-
 docker save -o /tmp/stock-ticker-backend-local.tar stock-ticker-backend:local
 docker save -o /tmp/stock-ticker-frontend-local.tar stock-ticker-frontend:local
-
 sudo k3s ctr -n k8s.io images import /tmp/stock-ticker-backend-local.tar
 sudo k3s ctr -n k8s.io images import /tmp/stock-ticker-frontend-local.tar
-
-kubectl apply -k k8s
-kubectl -n stock-ticker rollout status deployment/stock-ticker-postgres
-kubectl -n stock-ticker rollout status deployment/stock-ticker-redis
-kubectl -n stock-ticker rollout status deployment/stock-ticker-backend
-kubectl -n stock-ticker rollout status deployment/stock-ticker-frontend
-kubectl -n stock-ticker port-forward svc/stock-ticker-frontend 3000:3000
+sudo k3s kubectl apply -k k8s
+sudo k3s kubectl -n stock-ticker rollout status deployment/stock-ticker-redis
+sudo k3s kubectl -n stock-ticker rollout status deployment/stock-ticker-postgres
+sudo k3s kubectl -n stock-ticker rollout status deployment/stock-ticker-backend
+sudo k3s kubectl -n stock-ticker rollout status deployment/stock-ticker-frontend
+sudo k3s kubectl -n stock-ticker port-forward svc/stock-ticker-frontend 3000:3000
 ```
 
-### What Gets Deployed
+### Troubleshooting
 
-- `postgres:16-alpine` with a local PVC for app data
-- `redis:7-alpine` for quote/news cache
-- `stock-ticker-backend:local`
-- `stock-ticker-frontend:local`
+Namespace does not exist:
 
-The backend deployment runs `alembic upgrade head` in an init container before the API starts. The API startup then seeds the default user (`default-user`) automatically.
-
-### Cleanup
-
-Remove the app resources:
-
-```bash
-kubectl delete -k k8s
+```text
+Error from server (NotFound): namespaces "stock-ticker" not found
 ```
 
-Delete the macOS k3d cluster:
+This usually means you ran `port-forward` before running the deploy script, or `kubectl` is pointed at the wrong cluster. Check:
 
 ```bash
-k3d cluster delete stock-ticker
+kubectl config current-context
+kubectl get namespaces
 ```
 
-Uninstall native Ubuntu k3s completely:
+k3d on macOS (`No nodes found for given cluster`, or `connection refused` to `kubernetes.docker.internal`):
+
+- Create the cluster once if it does not exist: `k3d cluster create stock-ticker`
+- Use the k3d context (not Docker Desktop Kubernetes): `kubectl config use-context k3d-stock-ticker`
+- List clusters: `k3d cluster list`
+
+Switching from in-cluster Postgres to host Postgres (or vice versa): adjust `k8s/kustomization.yaml` and `backend-database-secret.yaml`, then apply. To **remove** cluster Postgres and its data volume:
 
 ```bash
-sudo /usr/local/bin/k3s-uninstall.sh
+kubectl -n stock-ticker delete deployment,svc,secret stock-ticker-postgres
+kubectl -n stock-ticker delete pvc stock-ticker-postgres-data
+```
+
+Backend rollout times out or stuck in `Init:CrashLoopBackOff`:
+
+- The init container runs `alembic` against `DATABASE_URL`. If you use **host Postgres**, pods must reach your Mac (see `./scripts/k8s-test-host-postgres.sh`). If you use **in-cluster Postgres**, wait until `stock-ticker-postgres` is Ready. Check:
+
+```bash
+kubectl -n stock-ticker logs deployment/stock-ticker-backend -c migrate-db
+kubectl -n stock-ticker logs deployment/stock-ticker-backend -c backend
+```
+
+- **Host Postgres only — wrong hostname:** run `./scripts/k8s-test-host-postgres.sh`. Edit `k8s/backend-database-secret.yaml`, re-apply, then restart the backend.
+- **In-cluster Postgres:** ensure `stock-ticker-postgres` is Running and `DATABASE_URL` uses service `stock-ticker-postgres`.
+- Older stuck: `kubectl -n stock-ticker delete pod -l app=stock-ticker-backend` after fixing config.
+- If you rebuilt a local image and the pod did not refresh because the tag is still `:local`, restart the deployment:
+
+```bash
+kubectl -n stock-ticker rollout restart deployment/stock-ticker-backend
+kubectl -n stock-ticker rollout restart deployment/stock-ticker-frontend
+```
+
+Old `buildx` plugin on macOS:
+
+```text
+client version 1.42 is too old
+```
+
+Make sure Docker is using a current Homebrew `buildx` plugin:
+
+```bash
+brew install docker-buildx
+mkdir -p ~/.docker
+printf '%s\n' '{' '  "cliPluginsExtraDirs": ["/opt/homebrew/lib/docker/cli-plugins"]' '}' > ~/.docker/config.json
+docker buildx version
+docker buildx ls
+```
+
+### Stuck pods after delete
+
+If namespaces or pods hang while terminating:
+
+```bash
+kubectl -n stock-ticker delete pod --all --grace-period=0 --force
+```
+
+### Stop k3s without uninstalling (Ubuntu)
+
+```bash
+sudo systemctl stop k3s
 ```
 
 ### API URL shape (same-origin)

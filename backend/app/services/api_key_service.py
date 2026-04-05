@@ -1,7 +1,6 @@
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 
-from app.db.init_db import DEFAULT_USER_ID
 from app.db.models import UserApiKey
 from app.db.session import SessionLocal
 
@@ -9,9 +8,9 @@ SUPPORTED_PROVIDERS = {"openai", "perplexity"}
 
 
 class ApiKeyService:
-    def get_status(self, provider: str) -> tuple[bool, str | None]:
+    def get_status(self, user_id: str, provider: str) -> tuple[bool, str | None]:
         try:
-            row = self._get_row(provider)
+            row = self._get_row(user_id, provider)
             if row is None:
                 return False, None
             masked = row.api_key[-4:] if len(row.api_key) >= 4 else row.api_key
@@ -21,16 +20,21 @@ class ApiKeyService:
                 "API key storage schema is missing. Run `alembic upgrade head`.",
             ) from exc
 
-    def get_key(self, provider: str) -> str | None:
+    def get_key(self, user_id: str, provider: str) -> str | None:
         try:
-            row = self._get_row(provider)
+            row = self._get_row(user_id, provider)
             return row.api_key if row is not None else None
         except SQLAlchemyError as exc:
             raise RuntimeError(
                 "API key storage schema is missing. Run `alembic upgrade head`.",
             ) from exc
 
-    def upsert_key(self, provider: str, api_key: str) -> tuple[bool, str | None]:
+    def upsert_key(
+        self,
+        user_id: str,
+        provider: str,
+        api_key: str,
+    ) -> tuple[bool, str | None]:
         provider = self._normalize_provider(provider)
         if SessionLocal is None:
             raise RuntimeError("DATABASE_URL is not configured")
@@ -43,13 +47,13 @@ class ApiKeyService:
             with SessionLocal() as session:
                 row = session.execute(
                     select(UserApiKey).where(
-                        UserApiKey.user_id == DEFAULT_USER_ID,
+                        UserApiKey.user_id == user_id,
                         UserApiKey.provider == provider,
                     ),
                 ).scalar_one_or_none()
                 if row is None:
                     row = UserApiKey(
-                        user_id=DEFAULT_USER_ID,
+                        user_id=user_id,
                         provider=provider,
                         api_key=cleaned,
                     )
@@ -64,14 +68,14 @@ class ApiKeyService:
                 "API key storage schema is missing. Run `alembic upgrade head`.",
             ) from exc
 
-    def _get_row(self, provider: str) -> UserApiKey | None:
+    def _get_row(self, user_id: str, provider: str) -> UserApiKey | None:
         provider = self._normalize_provider(provider)
         if SessionLocal is None:
             raise RuntimeError("DATABASE_URL is not configured")
         with SessionLocal() as session:
             return session.execute(
                 select(UserApiKey).where(
-                    UserApiKey.user_id == DEFAULT_USER_ID,
+                    UserApiKey.user_id == user_id,
                     UserApiKey.provider == provider,
                 ),
             ).scalar_one_or_none()

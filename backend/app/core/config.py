@@ -14,13 +14,36 @@ class Settings(BaseSettings):
 
     app_name: str = "Stock Ticker API"
     api_prefix: str = "/api"
-    database_url: str | None = Field(default=None)
-    # Optional Redis: cache live quotes for faster portfolio / watchlist.
-    redis_url: str | None = Field(default=None)
-    quote_cache_ttl_seconds: int = Field(default=60, ge=10, le=600)
-    # Comma-separated CORS origins for different-origin UIs.
-    # Same-origin `/` + `/api` does not require CORS.
-    # Defaults cover local dev (direct API + separate UI port).
+
+    # Postgres (required in cluster / local DB mode). Maps env DATABASE_URL.
+    database_url: str = Field(default="")
+    # Redis for optional quote caching. Maps env REDIS_URL.
+    redis_url: str = Field(default="")
+    # TTL for cached quote payloads when Redis is enabled.
+    quote_cache_ttl_seconds: int = Field(default=60, ge=1)
+    # When true, TW quotes use synthetic data (offline demos only).
+    tw_use_mock_quotes: bool = Field(default=False)
+
+    # Multi-user OAuth (Google, Microsoft, Apple). When false, API uses default-user only.
+    auth_enabled: bool = Field(default=False)
+    # Starlette session signing; use a long random value in production when auth_enabled.
+    session_secret: str = Field(default="dev-session-secret-change-me")
+    # Public origin of the Next.js app (OAuth redirect URIs), e.g. http://localhost:3000
+    public_base_url: str = Field(default="http://localhost:3000")
+
+    google_client_id: str = Field(default="")
+    google_client_secret: str = Field(default="")
+
+    microsoft_client_id: str = Field(default="")
+    microsoft_client_secret: str = Field(default="")
+    microsoft_tenant: str = Field(default="consumers")
+
+    apple_client_id: str = Field(default="")
+    apple_team_id: str = Field(default="")
+    apple_key_id: str = Field(default="")
+    apple_private_key: str = Field(default="")
+    # Comma-separated CORS origins (different-origin UIs). Same-origin `/` + `/api` does not
+    # require CORS; defaults cover dev (direct API + separate UI port).
     cors_origins: str = Field(
         default=(
             "http://localhost:3000,"
@@ -36,28 +59,10 @@ class Settings(BaseSettings):
             return []
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
 
-    # When TWSE realtime JSON fails, Yahoo Finance is used as fallback.
-    # Synthetic mock TW quotes are for local demos only — not real prices.
-    tw_use_mock_quotes: bool = Field(default=False)
-
     @property
-    def sqlalchemy_database_url(self) -> str | None:
-        """Normalize DATABASE_URL for SQLAlchemy + psycopg driver."""
-        if not self.database_url:
-            return None
-        if self.database_url.startswith("postgres://"):
-            return self.database_url.replace(
-                "postgres://",
-                "postgresql+psycopg://",
-                1,
-            )
-        if self.database_url.startswith("postgresql://"):
-            return self.database_url.replace(
-                "postgresql://",
-                "postgresql+psycopg://",
-                1,
-            )
-        return self.database_url
+    def sqlalchemy_database_url(self) -> str:
+        """SQLAlchemy/Alembic URL (same as ``database_url``, trimmed)."""
+        return self.database_url.strip()
 
 
 settings = Settings()

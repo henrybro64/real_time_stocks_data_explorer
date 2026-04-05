@@ -19,6 +19,10 @@ Usage:
 Modes:
   k3d  Build images locally and import them into an existing k3d cluster.
   k3s  Build images locally and import them into a native k3s containerd store.
+
+k3d one-time setup (before first deploy):
+  k3d cluster create stock-ticker
+  kubectl config use-context k3d-stock-ticker
 EOF
 }
 
@@ -35,6 +39,48 @@ build_images() {
 
   echo "Building frontend image: ${FRONTEND_IMAGE}"
   docker build -t "${FRONTEND_IMAGE}" -f "${ROOT_DIR}/frontend/Dockerfile" "${ROOT_DIR}"
+}
+
+ensure_k3d_cluster_exists() {
+  require_cmd k3d
+  local names
+  names="$(k3d cluster list 2>/dev/null | awk 'NR>1 {print $1}' || true)"
+  if ! echo "${names}" | grep -qx "${K3D_CLUSTER_NAME}"; then
+    cat <<EOF >&2
+Error: k3d cluster '${K3D_CLUSTER_NAME}' was not found.
+
+Create it once, then point kubectl at it:
+  k3d cluster create ${K3D_CLUSTER_NAME}
+  kubectl config use-context k3d-${K3D_CLUSTER_NAME}
+
+Re-run:
+  ./scripts/deploy-k3s.sh k3d
+EOF
+    exit 1
+  fi
+}
+
+require_kubectl_context_for_k3d() {
+  local expected="k3d-${K3D_CLUSTER_NAME}"
+  local cur
+  cur="$(kubectl config current-context 2>/dev/null || echo "")"
+  if [[ "${cur}" != "${expected}" ]]; then
+    cat <<EOF >&2
+Error: kubectl is not using the k3d context for this cluster.
+
+  Expected context: ${expected}
+  Current context:  ${cur:-<none>}
+
+If you see connection refused to kubernetes.docker.internal, Docker Desktop Kubernetes
+is selected instead of k3d. Fix:
+
+  kubectl config use-context ${expected}
+
+If that context is missing, create the cluster first:
+  k3d cluster create ${K3D_CLUSTER_NAME}
+EOF
+    exit 1
+  fi
 }
 
 import_into_k3d() {
@@ -59,18 +105,36 @@ import_into_k3s() {
   sudo k3s ctr -n k8s.io images import "${tmp_dir}/frontend.tar"
 }
 
+print_backend_debug_help() {
+  cat <<'EOF' >&2
+
+Backend rollout failed. Common causes:
+- Postgres pod not ready or DATABASE_URL wrong (default: in-cluster stock-ticker-postgres).
+- If using host Postgres instead: wrong hostname / pg_hba — see README and scripts/k8s-test-host-postgres.sh
+
+Debug:
+  kubectl -n stock-ticker get pods -l app=stock-ticker-backend
+  kubectl -n stock-ticker logs deployment/stock-ticker-backend -c migrate-db
+  kubectl -n stock-ticker logs deployment/stock-ticker-backend -c backend
+  kubectl -n stock-ticker describe pod -l app=stock-ticker-backend
+EOF
+}
+
 deploy_manifests() {
   echo "Applying Kubernetes manifests"
   ${KUBECTL_CMD} apply -k "${ROOT_DIR}/k8s"
 
-  echo "Waiting for Postgres"
-  ${KUBECTL_CMD} -n "${NAMESPACE}" rollout status deployment/stock-ticker-postgres --timeout=180s
-
   echo "Waiting for Redis"
   ${KUBECTL_CMD} -n "${NAMESPACE}" rollout status deployment/stock-ticker-redis --timeout=180s
 
+  echo "Waiting for Postgres"
+  ${KUBECTL_CMD} -n "${NAMESPACE}" rollout status deployment/stock-ticker-postgres --timeout=180s
+
   echo "Waiting for backend"
-  ${KUBECTL_CMD} -n "${NAMESPACE}" rollout status deployment/stock-ticker-backend --timeout=180s
+  if ! ${KUBECTL_CMD} -n "${NAMESPACE}" rollout status deployment/stock-ticker-backend --timeout=600s; then
+    print_backend_debug_help
+    exit 1
+  fi
 
   echo "Waiting for frontend"
   ${KUBECTL_CMD} -n "${NAMESPACE}" rollout status deployment/stock-ticker-frontend --timeout=180s
@@ -94,6 +158,8 @@ fi
 
 case "${MODE}" in
   k3d)
+    ensure_k3d_cluster_exists
+    require_kubectl_context_for_k3d
     build_images
     import_into_k3d
     deploy_manifests

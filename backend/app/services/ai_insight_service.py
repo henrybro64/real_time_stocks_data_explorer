@@ -10,13 +10,13 @@ from app.services.quote_service import quote_service
 
 
 class AiInsightService:
-    def generate_insight(self, stock_id: str, provider: str) -> str:
+    def generate_insight(self, user_id: str, stock_id: str, provider: str) -> str:
         stock = quote_service.get_stock(stock_id)
         quote = quote_service.get_quote(stock_id)
         if stock is None or quote is None:
             raise ValueError("Stock not found")
 
-        api_key = api_key_service.get_key(provider)
+        api_key = api_key_service.get_key(user_id, provider)
         if not api_key:
             raise ValueError(f"{provider} API key is not configured")
 
