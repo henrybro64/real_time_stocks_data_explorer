@@ -32,4 +32,8 @@ echo "=== Step 1: teardown (${MODE}) ==="
 
 echo
 echo "=== Step 2: deploy (${MODE}) ==="
-"${ROOT_DIR}/scripts/deploy-k3s.sh" "${MODE}"
+if ! "${ROOT_DIR}/scripts/deploy-k3s.sh" "${MODE}"; then
+  echo >&2
+  echo "Deploy failed. Collect logs with: ${ROOT_DIR}/scripts/k8s-diagnose.sh ${MODE}" >&2
+  exit 1
+fi

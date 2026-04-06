@@ -10,6 +10,7 @@ set -euo pipefail
 
 MODE="${1:-}"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+NAMESPACE="${NAMESPACE:-stock-ticker}"
 KUBECTL_CMD="${KUBECTL_CMD:-}"
 
 usage() {
@@ -40,6 +41,16 @@ elif command -v k3s >/dev/null 2>&1; then
 else
   echo "Missing required command: kubectl (or k3s for k3s mode)" >&2
   exit 1
+fi
+
+if ! ${KUBECTL_CMD} get ns &>/dev/null; then
+  echo "Error: cannot reach the Kubernetes cluster (check kubectl / k3s)." >&2
+  exit 1
+fi
+
+if ! ${KUBECTL_CMD} get namespace "${NAMESPACE}" &>/dev/null; then
+  echo "Namespace ${NAMESPACE} not found — nothing to delete (already clean)."
+  exit 0
 fi
 
 echo "Deleting resources from ${ROOT_DIR}/k8s ..."

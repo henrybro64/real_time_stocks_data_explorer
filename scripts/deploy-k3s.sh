@@ -141,6 +141,7 @@ Debug:
   kubectl -n stock-ticker get pods -l app=stock-ticker-postgres
   kubectl -n stock-ticker describe pod -l app=stock-ticker-postgres
   kubectl -n stock-ticker logs -l app=stock-ticker-postgres --tail=80
+  ./scripts/k8s-diagnose.sh k3s   # or: ./scripts/k8s-diagnose.sh k3d
 EOF
 }
 

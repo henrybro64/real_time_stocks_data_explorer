@@ -389,6 +389,12 @@ sudo k3s kubectl -n stock-ticker port-forward svc/stock-ticker-frontend 3000:300
 
 ### Troubleshooting
 
+**Deploy / `./scripts/k8s-redeploy.sh` fails** (Postgres Pending, rollout timeout, etc.):
+
+1. From the repo root: `./scripts/k8s-diagnose.sh k3s` (or `k3d` on macOS). Paste the full output when asking for help.
+2. If **`VolumeBinding: context deadline exceeded`** or PVC **Pending**: restart local-path (`sudo k3s kubectl -n kube-system rollout restart deployment/local-path-provisioner`), ensure the node has **disk space** (`df -h`), then delete the Postgres PVC and `kubectl apply -k k8s` again.
+3. If teardown says **namespace stuck Terminating**: `./scripts/k8s-unstick-namespace.sh stock-ticker` then `--force` with `jq` as documented in **Stuck namespace** below.
+
 k3s on Ubuntu — `kubectl` fails with **permission denied** on `/etc/rancher/k3s/k3s.yaml`:
 
 The server kubeconfig is often **root-readable only**. Use **`sudo k3s kubectl`** for all commands, **or** copy it once so plain `kubectl` works (same as **Use `kubectl` as your user** under Ubuntu Linux (k3s) above):
