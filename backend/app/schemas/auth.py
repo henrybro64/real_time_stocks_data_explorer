@@ -11,3 +11,8 @@ class AuthStatusResponse(BaseModel):
     loggedIn: bool
     providers: dict[str, bool]
     user: AuthUserPublic | None = None
+
+
+class LocalLoginRequest(BaseModel):
+    username: str
+    password: str

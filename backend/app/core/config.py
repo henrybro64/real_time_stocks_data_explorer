@@ -24,24 +24,14 @@ class Settings(BaseSettings):
     # When true, TW quotes use synthetic data (offline demos only).
     tw_use_mock_quotes: bool = Field(default=False)
 
-    # Multi-user OAuth (Google, Microsoft, Apple). When false, API uses default-user only.
+    # Multi-user auth. When false, API uses default-user only.
     auth_enabled: bool = Field(default=False)
+    # Local username/password auth flow (no external providers).
+    local_auth_enabled: bool = Field(default=False)
+    local_auth_username: str = Field(default="")
+    local_auth_password: str = Field(default="")
     # Starlette session signing; use a long random value in production when auth_enabled.
     session_secret: str = Field(default="dev-session-secret-change-me")
-    # Public origin of the Next.js app (OAuth redirect URIs), e.g. http://localhost:3000
-    public_base_url: str = Field(default="http://localhost:3000")
-
-    google_client_id: str = Field(default="")
-    google_client_secret: str = Field(default="")
-
-    microsoft_client_id: str = Field(default="")
-    microsoft_client_secret: str = Field(default="")
-    microsoft_tenant: str = Field(default="consumers")
-
-    apple_client_id: str = Field(default="")
-    apple_team_id: str = Field(default="")
-    apple_key_id: str = Field(default="")
-    apple_private_key: str = Field(default="")
     # Comma-separated CORS origins (different-origin UIs). Same-origin `/` + `/api` does not
     # require CORS; defaults cover dev (direct API + separate UI port).
     cors_origins: str = Field(

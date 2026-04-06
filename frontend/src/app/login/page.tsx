@@ -5,14 +5,16 @@ import {
   Column,
   Grid,
   Heading,
+  PasswordInput,
   Stack,
+  TextInput,
   Theme,
   Tile,
 } from "@carbon/react";
 import Link from "next/link";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useRouter } from "next/navigation";
 import { Suspense, useEffect, useState } from "react";
-import { fetchAuthStatus, loginUrl } from "../../services/api/auth";
+import { fetchAuthStatus, loginLocal } from "../../services/api/auth";
 
 function LoginFallback() {
   return (
@@ -24,11 +26,12 @@ function LoginFallback() {
 
 function LoginPageInner() {
   const router = useRouter();
-  const searchParams = useSearchParams();
-  const error = searchParams?.get("error");
   const [ready, setReady] = useState(false);
   const [allowed, setAllowed] = useState(false);
   const [providers, setProviders] = useState<Record<string, boolean>>({});
+  const [localUsername, setLocalUsername] = useState("");
+  const [localPassword, setLocalPassword] = useState("");
+  const [localError, setLocalError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -82,53 +85,52 @@ function LoginPageInner() {
                 <p className="cds--label-01 app-login-eyebrow">Stock Ticker</p>
                 <Heading className="app-login-title">Sign in</Heading>
                 <p className="cds--body-compact-01 app-login-subtitle">
-                  Use a connected account. Your credentials stay with the provider; we only store
-                  your session after you approve access.
+                  Sign in with your local account. We only store your session.
                 </p>
               </div>
-              {error ? (
+              {localError ? (
                 <p className="cds--label-01 app-login-error" role="alert">
-                  Sign-in did not complete. Try again or pick another provider.
+                  {localError}
                 </p>
               ) : null}
               <Stack gap={3}>
-                {providers.google ? (
-                  <Button
-                    kind="tertiary"
-                    size="lg"
-                    onClick={() => {
-                      window.location.href = loginUrl("google");
-                    }}
-                  >
-                    Continue with Google
-                  </Button>
+                {providers.local ? (
+                  <Stack gap={4}>
+                    <TextInput
+                      id="local-username"
+                      labelText="Username"
+                      value={localUsername}
+                      onChange={(e) => setLocalUsername(e.target.value)}
+                      autoComplete="username"
+                    />
+                    <PasswordInput
+                      id="local-password"
+                      labelText="Password"
+                      value={localPassword}
+                      onChange={(e) => setLocalPassword(e.target.value)}
+                      autoComplete="current-password"
+                    />
+                    <Button
+                      size="lg"
+                      onClick={async () => {
+                        setLocalError(null);
+                        try {
+                          await loginLocal(localUsername.trim(), localPassword);
+                          router.replace("/");
+                          router.refresh();
+                        } catch {
+                          setLocalError("Invalid username or password.");
+                        }
+                      }}
+                    >
+                      Continue with local account
+                    </Button>
+                  </Stack>
                 ) : null}
-                {providers.microsoft ? (
-                  <Button
-                    kind="tertiary"
-                    size="lg"
-                    onClick={() => {
-                      window.location.href = loginUrl("microsoft");
-                    }}
-                  >
-                    Continue with Microsoft
-                  </Button>
-                ) : null}
-                {providers.apple ? (
-                  <Button
-                    kind="tertiary"
-                    size="lg"
-                    onClick={() => {
-                      window.location.href = loginUrl("apple");
-                    }}
-                  >
-                    Continue with Apple
-                  </Button>
-                ) : null}
-                {!providers.google && !providers.microsoft && !providers.apple ? (
+                {!providers.local ? (
                   <p className="cds--helper-text-01">
-                    No OAuth providers are configured on the server. Set Google, Microsoft, and/or
-                    Apple client IDs in the backend environment.
+                    Local auth is not configured on the server. Set LOCAL_AUTH_ENABLED,
+                    LOCAL_AUTH_USERNAME and LOCAL_AUTH_PASSWORD in backend environment.
                   </p>
                 ) : null}
               </Stack>

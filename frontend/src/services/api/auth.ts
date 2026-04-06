@@ -27,6 +27,16 @@ export async function logout(): Promise<void> {
   }
 }
 
-export function loginUrl(provider: "google" | "microsoft" | "apple"): string {
-  return apiUrl(`/auth/login/${provider}`);
+export async function loginLocal(username: string, password: string): Promise<void> {
+  const response = await fetch(apiUrl("/auth/login/local"), {
+    method: "POST",
+    credentials: "include",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({ username, password }),
+  });
+  if (!response.ok) {
+    throw new Error(`Local login failed: ${response.status}`);
+  }
 }

@@ -90,7 +90,7 @@ Other PCs on the same network should open the UI at **`http://<ubuntu-host-ip>:3
 
 2. **Firewall on Ubuntu** (if `ufw` is enabled): allow the UI port, e.g. `sudo ufw allow 3000/tcp` and `sudo ufw reload`.
 
-3. **OAuth (`AUTH_ENABLED=true`):** set **`PUBLIC_BASE_URL`** to the exact origin users open (include port): e.g. `http://192.168.120.102:3000` for local Next **`dev:lan`**, or **`http://192.168.120.102:30080`** for **Kubernetes NodePort**. Register the same origin in Google/Microsoft redirect URIs (e.g. `…/api/auth/callback/google`). Some providers restrict non-public URLs; if login fails, use a tunnel or a DNS name they allow.
+3. **Local auth (`AUTH_ENABLED=true`)**: set `LOCAL_AUTH_ENABLED=true` and define `LOCAL_AUTH_USERNAME` / `LOCAL_AUTH_PASSWORD` in backend env/secret. No cloud provider setup is needed.
 
 **Kubernetes (k3s / k3d):** The default frontend Service is **ClusterIP** — it is **not** reachable at `http://192.168.x.x:3000` on the node. After `kubectl apply -k k8s`, open the UI from another PC at **`http://<node-ip>:30080`** (Service **`stock-ticker-frontend-nodeport`**). Example: `http://192.168.120.102:30080`. If `ufw` is on: `sudo ufw allow 30080/tcp`. From the Ubuntu host only, you can still use **`kubectl port-forward`** to `http://127.0.0.1:3000`, or open `http://127.0.0.1:30080` / `http://192.168.120.102:30080` when NodePort is applied.
 
@@ -351,18 +351,16 @@ The backend connects to the in-cluster Service **`stock-ticker-postgres`** (`DAT
 
 The backend deployment runs `alembic upgrade head` in an init container before the API starts. The API then seeds the default user (`default-user`) automatically when it can reach the database.
 
-### Kubernetes: multi-user OAuth (Google / Microsoft)
+### Kubernetes: multi-user local auth (no Google/Microsoft)
 
-The cluster manifests include **`k8s/backend-auth-secret.yaml`** (session + OAuth client fields) and **`AUTH_ENABLED` / `PUBLIC_BASE_URL`** in `k8s/backend.yaml` (ConfigMap `stock-ticker-backend-env`).
+The cluster manifests include **`k8s/backend-auth-secret.yaml`** (session + local credentials) and `AUTH_ENABLED` / `LOCAL_AUTH_ENABLED` in `k8s/backend.yaml` (ConfigMap `stock-ticker-backend-env`).
 
-1. Edit **`k8s/backend-auth-secret.yaml`**: set **`SESSION_SECRET`** (long random string), **`MICROSOFT_CLIENT_ID`**, **`MICROSOFT_CLIENT_SECRET`**, and optionally Google keys. Keep **`MICROSOFT_TENANT`** as `consumers` for personal Microsoft accounts unless you use a work tenant.
-2. In the same ConfigMap (`stock-ticker-backend-env`), set **`AUTH_ENABLED`** to **`"true"`** and **`PUBLIC_BASE_URL`** to the **exact** browser origin users use — e.g. **`http://192.168.120.102:30080`** when using the NodePort URL (scheme + host + port, no trailing slash).
-3. In **Azure** / **Google Cloud**, register redirect URIs:  
-   `{PUBLIC_BASE_URL}/api/auth/callback/microsoft` and `{PUBLIC_BASE_URL}/api/auth/callback/google`.
-4. **`kubectl apply -k k8s`** and restart the backend if needed:  
-   `kubectl -n stock-ticker rollout restart deployment/stock-ticker-backend`
+1. Edit **`k8s/backend-auth-secret.yaml`**: set **`SESSION_SECRET`** (long random string), **`LOCAL_AUTH_USERNAME`**, and **`LOCAL_AUTH_PASSWORD`**.
+2. Ensure the ConfigMap keeps **`AUTH_ENABLED: "true"`** and **`LOCAL_AUTH_ENABLED: "true"`**.
+3. **`kubectl apply -k k8s`** and restart backend/frontend if needed:
+   `kubectl -n stock-ticker rollout restart deployment/stock-ticker-backend deployment/stock-ticker-frontend`
 
-With **`AUTH_ENABLED=true`**, the UI redirects unauthenticated users to **`/login`**. Do not commit real secrets; adjust **`k8s/backend-auth-secret.yaml`** locally or use a private overlay.
+With **`AUTH_ENABLED=true`**, unauthenticated users are redirected to **`/login`** and can sign in with the configured local account. Do not commit real secrets; adjust **`k8s/backend-auth-secret.yaml`** locally or use a private overlay.
 
 ### Kubernetes: use Postgres on your Mac instead (optional)
 

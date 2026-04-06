@@ -33,27 +33,6 @@ class User(Base):
     )
 
 
-class OAuthIdentity(Base):
-    __tablename__ = "oauth_identities"
-    __table_args__ = (
-        UniqueConstraint(
-            "provider",
-            "subject",
-            name="uq_oauth_identities_provider_subject",
-        ),
-    )
-
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    user_id: Mapped[str] = mapped_column(
-        String(64),
-        ForeignKey("users.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-    provider: Mapped[str] = mapped_column(String(32), nullable=False)
-    subject: Mapped[str] = mapped_column(String(255), nullable=False)
-
-
 class WatchlistItem(Base):
     __tablename__ = "watchlist_items"
     __table_args__ = (

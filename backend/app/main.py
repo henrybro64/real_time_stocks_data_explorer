@@ -48,6 +48,15 @@ def validate_auth_settings() -> None:
             "AUTH_ENABLED requires SESSION_SECRET (or session_secret) "
             "with at least 16 characters.",
         )
+    if settings.auth_enabled and not settings.local_auth_enabled:
+        raise RuntimeError("AUTH_ENABLED requires LOCAL_AUTH_ENABLED=true in local auth mode.")
+    if settings.local_auth_enabled and (
+        not settings.local_auth_username or not settings.local_auth_password
+    ):
+        raise RuntimeError(
+            "LOCAL_AUTH_ENABLED requires LOCAL_AUTH_USERNAME "
+            "and LOCAL_AUTH_PASSWORD.",
+        )
 
 
 @app.get("/health")
