@@ -1,10 +1,9 @@
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 
+from app.db.init_ids import DEFAULT_USER_ID
 from app.db.models import User
 from app.db.session import SessionLocal
-
-DEFAULT_USER_ID = "default-user"
 
 
 def seed_default_user() -> None:

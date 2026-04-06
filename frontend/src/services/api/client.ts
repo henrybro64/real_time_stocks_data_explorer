@@ -16,6 +16,7 @@ import type {
   PortfolioSummary,
   QuoteResponse,
   TWStockInsights,
+  USStockInsights,
   WatchlistResponse,
 } from "@shared/api";
 import type { TimeRange } from "@shared/quote";
@@ -124,6 +125,10 @@ export function fetchStockNews(stockId: string) {
 
 export function fetchTwStockInsights(stockId: string) {
   return fetchJson<TWStockInsights>(`/stocks/${encodeURIComponent(stockId)}/tw-insights`);
+}
+
+export function fetchUsStockInsights(stockId: string) {
+  return fetchJson<USStockInsights>(`/stocks/${encodeURIComponent(stockId)}/us-insights`);
 }
 
 export function fetchWatchlist() {

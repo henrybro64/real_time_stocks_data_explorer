@@ -9,11 +9,13 @@ from app.schemas.quote import (
 )
 from app.schemas.stock import StockResponse
 from app.schemas.tw_insights import TWStockInsightsResponse
+from app.schemas.us_insights import USStockInsightsResponse
 from app.services.chart_layout import build_chart_layout
 from app.services.key_stats_service import get_key_statistics
 from app.services.news_service import news_service
 from app.services.quote_service import quote_service
 from app.services.tw_insights_service import get_tw_stock_insights
+from app.services.us_insights_service import get_us_stock_insights
 
 
 router = APIRouter(prefix="/stocks", tags=["history"])
@@ -73,6 +75,19 @@ def get_tw_insights(stock_id: str) -> TWStockInsightsResponse:
             detail="Taiwan insights are only available for TW stocks",
         )
     return TWStockInsightsResponse(**get_tw_stock_insights(stock))
+
+
+@router.get("/{stock_id}/us-insights", response_model=USStockInsightsResponse)
+def get_us_insights(stock_id: str) -> USStockInsightsResponse:
+    stock = quote_service.get_stock(stock_id)
+    if stock is None:
+        raise HTTPException(status_code=404, detail="Stock not found")
+    if stock.market != "US":
+        raise HTTPException(
+            status_code=404,
+            detail="U.S. insights are only available for US stocks",
+        )
+    return USStockInsightsResponse(**get_us_stock_insights(stock))
 
 
 def _stock_schema(stock: StockRecord) -> StockResponse:

@@ -25,11 +25,23 @@ class TWPeerMetricResponse(BaseModel):
     total: int
 
 
+class TWPeerMoverResponse(BaseModel):
+    rank: int
+    name: str
+    symbol: str
+    change1mPercent: float
+    change3mPercent: float
+    change6mPercent: float
+    change1yPercent: float
+
+
 class TWPeerInsightResponse(BaseModel):
     sector: str
     asOf: str
     companyCount: int
     metrics: list[TWPeerMetricResponse]
+    compareUrl: str | None = None
+    topMovers: list[TWPeerMoverResponse] = []
 
 
 class TWDividendYearResponse(BaseModel):

@@ -195,11 +195,23 @@ export type TWPeerMetric = {
   total: number;
 };
 
+export type TWPeerMover = {
+  rank: number;
+  name: string;
+  symbol: string;
+  change1mPercent: number;
+  change3mPercent: number;
+  change6mPercent: number;
+  change1yPercent: number;
+};
+
 export type TWPeerInsight = {
   sector: string;
   asOf: string;
   companyCount: number;
   metrics: TWPeerMetric[];
+  compareUrl: string | null;
+  topMovers: TWPeerMover[];
 };
 
 export type TWDividendYear = {
@@ -220,5 +232,37 @@ export type TWStockInsights = {
   revenue: TWRevenueInsight;
   peer: TWPeerInsight;
   dividends: TWDividendInsight;
+};
+
+export type USPeerCompanyReturns = {
+  change1mPercent: number;
+  change3mPercent: number;
+  change6mPercent: number;
+  change1yPercent: number;
+};
+
+export type USPeerMover = {
+  rank: number;
+  symbol: string;
+  change1mPercent: number;
+  change3mPercent: number;
+  change6mPercent: number;
+  change1yPercent: number;
+};
+
+export type USPeerInsight = {
+  asOf: string;
+  sector: string;
+  industry: string;
+  compareUrl: string;
+  companySymbol: string;
+  companyRankBy1m: number | null;
+  companyCount: number;
+  companyReturns: USPeerCompanyReturns | null;
+  topMovers: USPeerMover[];
+};
+
+export type USStockInsights = {
+  peer: USPeerInsight;
 };
 

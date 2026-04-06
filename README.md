@@ -18,8 +18,6 @@ k8s/       Kubernetes manifests for local k3s/k3d deployment
 packages/
   shared-contracts/  shared TypeScript contracts
 scripts/   local deployment helpers
-docs/
-  mvp.md
 ```
 
 ## Run
@@ -43,7 +41,7 @@ export DATABASE_URL="postgresql+psycopg://postgres:postgres@127.0.0.1:5432/stock
 # 1) migrate schema
 alembic upgrade head
 
-# 2) seed single default user (id: default-user)
+# 2) optional: seed fallback user for AUTH_ENABLED=false mode (id: default-user)
 python -m scripts.seed_default_user
 
 # 3) start app
@@ -85,7 +83,7 @@ npm run dev
 Other PCs on the same network should open the UI at **`http://<ubuntu-host-ip>:3000`** (example: `http://192.168.120.102:3000`). The backend is not exposed directly if you use the default **same-origin** setup (browser → Next on port 3000 → Next proxies `/api` to the backend on localhost).
 
 1. **Listen on all interfaces** (not only `127.0.0.1`):
-   - **Frontend:** `cd frontend && npm run dev:lan`, **or** from repo root `npm run dev:lan` if you have the root `package.json` (run `git pull`). **Or** run `./scripts/dev-lan.sh` from the repo root (works even without root `package.json`). Same as `next dev -H 0.0.0.0 -p 3000`. If you use plain `npm run dev`, Next may bind only **127.0.0.1**.
+   - **Frontend:** `cd frontend && npm run dev:lan`, **or** from repo root `npm run dev:lan`. **Or** run `./scripts/dev-lan.sh` from the repo root. Same as `next dev -H 0.0.0.0 -p 3000`. If you use plain `npm run dev`, Next may bind only **127.0.0.1**.
    - **Backend:** e.g. `uvicorn app.main:app --reload --host 0.0.0.0 --port 8000` (or keep `--host 127.0.0.1` if only Next on the same machine talks to the API; default is fine when the browser only hits Next).
 
 2. **Firewall on Ubuntu** (if `ufw` is enabled): allow the UI port, e.g. `sudo ufw allow 3000/tcp` and `sudo ufw reload`.
@@ -409,14 +407,7 @@ sudo k3s kubectl -n stock-ticker port-forward svc/stock-ticker-frontend 3000:300
 
 k3s on Ubuntu — `kubectl` fails with **permission denied** on `/etc/rancher/k3s/k3s.yaml`:
 
-The server kubeconfig is often **root-readable only**. Use **`sudo k3s kubectl`** for all commands, **or** copy it once so plain `kubectl` works (same as **Use `kubectl` as your user** under Ubuntu Linux (k3s) above):
-
-```bash
-mkdir -p ~/.kube
-sudo cp /etc/rancher/k3s/k3s.yaml ~/.kube/config
-sudo chown "$(id -u)":"$(id -g)" ~/.kube/config
-kubectl get nodes
-```
+The server kubeconfig is often **root-readable only**. Use **`sudo k3s kubectl`** for all commands, **or** follow **Use `kubectl` as your user** under Ubuntu Linux (k3s) above.
 
 If `KUBECONFIG` points at `/etc/rancher/k3s/k3s.yaml` in your shell, unset it or rely on `~/.kube/config` after copying.
 

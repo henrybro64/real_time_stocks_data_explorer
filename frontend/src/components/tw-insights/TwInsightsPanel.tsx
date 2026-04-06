@@ -85,6 +85,14 @@ export function TwInsightsPanel({ isLoading, insights }: Props) {
 
       <section className="app-tw-block">
         <h3 className="app-tw-block-title">{t("twInsights.peer.title")}</h3>
+        {insights.peer.compareUrl ? (
+          <p className="app-section-meta">
+            Source:{" "}
+            <a href={insights.peer.compareUrl} rel="noreferrer" target="_blank">
+              Yahoo Finance compare
+            </a>
+          </p>
+        ) : null}
         <Table size="sm" useZebraStyles>
           <TableHead>
             <TableRow>
@@ -107,6 +115,37 @@ export function TwInsightsPanel({ isLoading, insights }: Props) {
             ))}
           </TableBody>
         </Table>
+        {insights.peer.topMovers.length > 0 ? (
+          <>
+            <h4 className="app-tw-subtitle">Industry movers (1M/3M/6M/1Y)</h4>
+            <Table size="sm" useZebraStyles>
+              <TableHead>
+                <TableRow>
+                  <TableHeader>#</TableHeader>
+                  <TableHeader>Company</TableHeader>
+                  <TableHeader>Symbol</TableHeader>
+                  <TableHeader>1M</TableHeader>
+                  <TableHeader>3M</TableHeader>
+                  <TableHeader>6M</TableHeader>
+                  <TableHeader>1Y</TableHeader>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {insights.peer.topMovers.map((item) => (
+                  <TableRow key={`${item.rank}-${item.symbol}`}>
+                    <TableCell>{item.rank}</TableCell>
+                    <TableCell>{item.name}</TableCell>
+                    <TableCell>{item.symbol}</TableCell>
+                    <TableCell>{formatSignedPercent(item.change1mPercent)}</TableCell>
+                    <TableCell>{formatSignedPercent(item.change3mPercent)}</TableCell>
+                    <TableCell>{formatSignedPercent(item.change6mPercent)}</TableCell>
+                    <TableCell>{formatSignedPercent(item.change1yPercent)}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </>
+        ) : null}
       </section>
 
       <section className="app-tw-block">
