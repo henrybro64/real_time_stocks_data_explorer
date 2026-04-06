@@ -90,7 +90,7 @@ Other PCs on the same network should open the UI at **`http://<ubuntu-host-ip>:3
 
 2. **Firewall on Ubuntu** (if `ufw` is enabled): allow the UI port, e.g. `sudo ufw allow 3000/tcp` and `sudo ufw reload`.
 
-3. **Local auth (`AUTH_ENABLED=true`)**: set `LOCAL_AUTH_ENABLED=true` and define `LOCAL_AUTH_USERNAME` / `LOCAL_AUTH_PASSWORD` in backend env/secret. No cloud provider setup is needed.
+3. **Local auth (`AUTH_ENABLED=true`)**: set `LOCAL_AUTH_ENABLED=true`. Users can create their own account from `/login` (username + password). Optional: define `LOCAL_AUTH_USERNAME` / `LOCAL_AUTH_PASSWORD` as a bootstrap admin account. No cloud provider setup is needed.
 
 **Kubernetes (k3s / k3d):** The default frontend Service is **ClusterIP** — it is **not** reachable at `http://192.168.x.x:3000` on the node. After `kubectl apply -k k8s`, open the UI from another PC at **`http://<node-ip>:30080`** (Service **`stock-ticker-frontend-nodeport`**). Example: `http://192.168.120.102:30080`. If `ufw` is on: `sudo ufw allow 30080/tcp`. From the Ubuntu host only, you can still use **`kubectl port-forward`** to `http://127.0.0.1:3000`, or open `http://127.0.0.1:30080` / `http://192.168.120.102:30080` when NodePort is applied.
 
@@ -355,12 +355,12 @@ The backend deployment runs `alembic upgrade head` in an init container before t
 
 The cluster manifests include **`k8s/backend-auth-secret.yaml`** (session + local credentials) and `AUTH_ENABLED` / `LOCAL_AUTH_ENABLED` in `k8s/backend.yaml` (ConfigMap `stock-ticker-backend-env`).
 
-1. Edit **`k8s/backend-auth-secret.yaml`**: set **`SESSION_SECRET`** (long random string), **`LOCAL_AUTH_USERNAME`**, and **`LOCAL_AUTH_PASSWORD`**.
+1. Edit **`k8s/backend-auth-secret.yaml`**: set **`SESSION_SECRET`** (long random string). `LOCAL_AUTH_USERNAME` / `LOCAL_AUTH_PASSWORD` are optional bootstrap credentials (if set, backend ensures that account exists).
 2. Ensure the ConfigMap keeps **`AUTH_ENABLED: "true"`** and **`LOCAL_AUTH_ENABLED: "true"`**.
 3. **`kubectl apply -k k8s`** and restart backend/frontend if needed:
    `kubectl -n stock-ticker rollout restart deployment/stock-ticker-backend deployment/stock-ticker-frontend`
 
-With **`AUTH_ENABLED=true`**, unauthenticated users are redirected to **`/login`** and can sign in with the configured local account. Do not commit real secrets; adjust **`k8s/backend-auth-secret.yaml`** locally or use a private overlay.
+With **`AUTH_ENABLED=true`**, unauthenticated users are redirected to **`/login`** and can sign in (or create a new account). Each account gets its own `user_id`, so watchlist/portfolio/API-key data is isolated per user in Postgres. Do not commit real secrets; adjust **`k8s/backend-auth-secret.yaml`** locally or use a private overlay.
 
 ### Kubernetes: use Postgres on your Mac instead (optional)
 

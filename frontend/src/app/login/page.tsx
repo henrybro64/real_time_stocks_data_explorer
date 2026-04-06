@@ -12,7 +12,7 @@ import {
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Suspense, useEffect, useState } from "react";
-import { fetchAuthStatus, loginLocal } from "../../services/api/auth";
+import { fetchAuthStatus, loginLocal, registerLocal } from "../../services/api/auth";
 
 function LoginFallback() {
   return (
@@ -82,7 +82,7 @@ function LoginPageInner() {
               <p className="cds--label-01 app-login-eyebrow">Stock Ticker</p>
               <Heading className="app-login-title">Sign in</Heading>
               <p className="cds--body-compact-01 app-login-subtitle">
-                Sign in with your local account. We only store your session.
+                Sign in with your account. New here? Create one in one click.
               </p>
             </div>
             {localError ? (
@@ -120,7 +120,28 @@ function LoginPageInner() {
                       }
                     }}
                   >
-                    Continue with local account
+                    Sign in
+                  </Button>
+                  <Button
+                    kind="tertiary"
+                    size="lg"
+                    onClick={async () => {
+                      setLocalError(null);
+                      const uname = localUsername.trim();
+                      if (!uname || localPassword.length < 8) {
+                        setLocalError("Use a username and password with at least 8 characters.");
+                        return;
+                      }
+                      try {
+                        await registerLocal(uname, localPassword);
+                        router.replace("/");
+                        router.refresh();
+                      } catch {
+                        setLocalError("Could not create account (username may already exist).");
+                      }
+                    }}
+                  >
+                    Create account
                   </Button>
                 </Stack>
               ) : null}

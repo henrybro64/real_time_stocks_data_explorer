@@ -2,12 +2,20 @@
 
 from __future__ import annotations
 
-import secrets
 from fastapi import APIRouter, HTTPException, Request
 
 from app.core.config import settings
-from app.db.init_ids import DEFAULT_USER_ID
-from app.schemas.auth import AuthStatusResponse, AuthUserPublic, LocalLoginRequest
+from app.schemas.auth import (
+    AuthStatusResponse,
+    AuthUserPublic,
+    LocalLoginRequest,
+    LocalRegisterRequest,
+)
+from app.services.local_auth_service import (
+    get_user_by_id,
+    register_local_user,
+    verify_local_login,
+)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -36,19 +44,20 @@ def auth_status(request: Request) -> AuthStatusResponse:
             providers=flags,
             user=None,
         )
-    if settings.local_auth_enabled and str(uid) == DEFAULT_USER_ID:
+    user = get_user_by_id(str(uid))
+    if user is None:
+        request.session.clear()
         return AuthStatusResponse(
             authEnabled=True,
-            loggedIn=True,
+            loggedIn=False,
             providers=flags,
-            user=AuthUserPublic(id=DEFAULT_USER_ID, username=settings.local_auth_username),
+            user=None,
         )
-    request.session.clear()
     return AuthStatusResponse(
         authEnabled=True,
-        loggedIn=False,
+        loggedIn=True,
         providers=flags,
-        user=None,
+        user=AuthUserPublic(id=user["id"], username=user["username"]),
     )
 
 
@@ -58,12 +67,24 @@ def login_local(payload: LocalLoginRequest, request: Request) -> dict[str, str]:
         raise HTTPException(status_code=404, detail="Auth is disabled")
     if not settings.local_auth_enabled:
         raise HTTPException(status_code=404, detail="Local auth is disabled")
-    if not (
-        secrets.compare_digest(payload.username, settings.local_auth_username)
-        and secrets.compare_digest(payload.password, settings.local_auth_password)
-    ):
+    uid = verify_local_login(payload.username.strip(), payload.password)
+    if not uid:
         raise HTTPException(status_code=401, detail="Invalid username or password")
-    request.session["user_id"] = DEFAULT_USER_ID
+    request.session["user_id"] = uid
+    return {"status": "ok"}
+
+
+@router.post("/register/local")
+def register_local(payload: LocalRegisterRequest, request: Request) -> dict[str, str]:
+    if not settings.auth_enabled:
+        raise HTTPException(status_code=404, detail="Auth is disabled")
+    if not settings.local_auth_enabled:
+        raise HTTPException(status_code=404, detail="Local auth is disabled")
+    try:
+        uid = register_local_user(payload.username, payload.password)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    request.session["user_id"] = uid
     return {"status": "ok"}
 
 

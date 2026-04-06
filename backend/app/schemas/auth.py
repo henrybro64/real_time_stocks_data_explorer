@@ -16,3 +16,8 @@ class AuthStatusResponse(BaseModel):
 class LocalLoginRequest(BaseModel):
     username: str
     password: str
+
+
+class LocalRegisterRequest(BaseModel):
+    username: str
+    password: str

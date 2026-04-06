@@ -12,6 +12,7 @@ from app.api.routes.search import router as search_router
 from app.api.routes.stream import router as stream_router
 from app.api.routes.watchlist import router as watchlist_router
 from app.core.config import settings
+from app.services.local_auth_service import ensure_bootstrap_local_user
 
 
 app = FastAPI(title=settings.app_name)
@@ -50,13 +51,23 @@ def validate_auth_settings() -> None:
         )
     if settings.auth_enabled and not settings.local_auth_enabled:
         raise RuntimeError("AUTH_ENABLED requires LOCAL_AUTH_ENABLED=true in local auth mode.")
-    if settings.local_auth_enabled and (
-        not settings.local_auth_username or not settings.local_auth_password
-    ):
+    # local_auth_username/password are optional bootstrap credentials; users can also self-register.
+    if bool(settings.local_auth_username) ^ bool(settings.local_auth_password):
         raise RuntimeError(
-            "LOCAL_AUTH_ENABLED requires LOCAL_AUTH_USERNAME "
-            "and LOCAL_AUTH_PASSWORD.",
+            "Set both LOCAL_AUTH_USERNAME and LOCAL_AUTH_PASSWORD, or leave both empty.",
         )
+    if settings.local_auth_password and len(settings.local_auth_password) < 8:
+        raise RuntimeError("LOCAL_AUTH_PASSWORD must be at least 8 characters.")
+
+
+@app.on_event("startup")
+def bootstrap_local_auth_user() -> None:
+    if not (settings.auth_enabled and settings.local_auth_enabled):
+        return
+    ensure_bootstrap_local_user(
+        settings.local_auth_username,
+        settings.local_auth_password,
+    )
 
 
 @app.get("/health")

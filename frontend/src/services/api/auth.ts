@@ -40,3 +40,17 @@ export async function loginLocal(username: string, password: string): Promise<vo
     throw new Error(`Local login failed: ${response.status}`);
   }
 }
+
+export async function registerLocal(username: string, password: string): Promise<void> {
+  const response = await fetch(apiUrl("/auth/register/local"), {
+    method: "POST",
+    credentials: "include",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({ username, password }),
+  });
+  if (!response.ok) {
+    throw new Error(`Local register failed: ${response.status}`);
+  }
+}
