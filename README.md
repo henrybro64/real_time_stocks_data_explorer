@@ -351,6 +351,19 @@ The backend connects to the in-cluster Service **`stock-ticker-postgres`** (`DAT
 
 The backend deployment runs `alembic upgrade head` in an init container before the API starts. The API then seeds the default user (`default-user`) automatically when it can reach the database.
 
+### Kubernetes: multi-user OAuth (Google / Microsoft)
+
+The cluster manifests include **`k8s/backend-auth-secret.yaml`** (session + OAuth client fields) and **`AUTH_ENABLED` / `PUBLIC_BASE_URL`** in `k8s/backend.yaml` (ConfigMap `stock-ticker-backend-env`).
+
+1. Edit **`k8s/backend-auth-secret.yaml`**: set **`SESSION_SECRET`** (long random string), **`MICROSOFT_CLIENT_ID`**, **`MICROSOFT_CLIENT_SECRET`**, and optionally Google keys. Keep **`MICROSOFT_TENANT`** as `consumers` for personal Microsoft accounts unless you use a work tenant.
+2. In the same ConfigMap (`stock-ticker-backend-env`), set **`AUTH_ENABLED`** to **`"true"`** and **`PUBLIC_BASE_URL`** to the **exact** browser origin users use — e.g. **`http://192.168.120.102:30080`** when using the NodePort URL (scheme + host + port, no trailing slash).
+3. In **Azure** / **Google Cloud**, register redirect URIs:  
+   `{PUBLIC_BASE_URL}/api/auth/callback/microsoft` and `{PUBLIC_BASE_URL}/api/auth/callback/google`.
+4. **`kubectl apply -k k8s`** and restart the backend if needed:  
+   `kubectl -n stock-ticker rollout restart deployment/stock-ticker-backend`
+
+With **`AUTH_ENABLED=true`**, the UI redirects unauthenticated users to **`/login`**. Do not commit real secrets; adjust **`k8s/backend-auth-secret.yaml`** locally or use a private overlay.
+
 ### Kubernetes: use Postgres on your Mac instead (optional)
 
 To point the backend at **host Postgres** (e.g. reuse an existing DB on the machine): edit `k8s/backend-database-secret.yaml` so `DATABASE_URL` uses **`host.lima.internal`** or **`host.docker.internal`** (see `./scripts/k8s-test-host-postgres.sh`), then remove **`postgres.yaml`** from `k8s/kustomization.yaml` so you do not run two Postgres instances. Apply and restart the backend.

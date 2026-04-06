@@ -5,7 +5,12 @@ metadata:
 data:
   API_PREFIX: /api
   REDIS_URL: redis://stock-ticker-redis:6379/0
+  # Comma-separated; same-origin UI usually needs no CORS. Add LAN origins if you call the API from another host.
   CORS_ORIGINS: ""
+  # Multi-user OAuth: set AUTH_ENABLED to "true", set PUBLIC_BASE_URL to the exact browser origin (scheme+host+port, no path).
+  # Example NodePort LAN: http://192.168.120.102:30080 — must match Microsoft/Google redirect URIs (…/api/auth/callback/...).
+  AUTH_ENABLED: "true"
+  PUBLIC_BASE_URL: "http://192.168.120.102:30080"
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -35,6 +40,8 @@ spec:
                 name: stock-ticker-backend-env
             - secretRef:
                 name: stock-ticker-backend-database
+            - secretRef:
+                name: stock-ticker-backend-auth
       containers:
         - name: backend
           image: stock-ticker-backend:local
@@ -47,6 +54,8 @@ spec:
                 name: stock-ticker-backend-env
             - secretRef:
                 name: stock-ticker-backend-database
+            - secretRef:
+                name: stock-ticker-backend-auth
           readinessProbe:
             httpGet:
               path: /health
