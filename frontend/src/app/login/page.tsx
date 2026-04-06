@@ -2,8 +2,6 @@
 
 import {
   Button,
-  Column,
-  Grid,
   Heading,
   PasswordInput,
   Stack,
@@ -77,70 +75,68 @@ function LoginPageInner() {
   return (
     <Theme theme="g100" as="div" className="app-login-root">
       <div className="app-login-backdrop" aria-hidden />
-      <Grid className="app-login-grid">
-        <Column lg={6} md={4} sm={4}>
-          <Tile className="app-login-tile">
-            <Stack gap={6}>
-              <div>
-                <p className="cds--label-01 app-login-eyebrow">Stock Ticker</p>
-                <Heading className="app-login-title">Sign in</Heading>
-                <p className="cds--body-compact-01 app-login-subtitle">
-                  Sign in with your local account. We only store your session.
-                </p>
-              </div>
-              {localError ? (
-                <p className="cds--label-01 app-login-error" role="alert">
-                  {localError}
+      <div className="app-login-grid">
+        <Tile className="app-login-tile">
+          <Stack gap={6}>
+            <div>
+              <p className="cds--label-01 app-login-eyebrow">Stock Ticker</p>
+              <Heading className="app-login-title">Sign in</Heading>
+              <p className="cds--body-compact-01 app-login-subtitle">
+                Sign in with your local account. We only store your session.
+              </p>
+            </div>
+            {localError ? (
+              <p className="cds--label-01 app-login-error" role="alert">
+                {localError}
+              </p>
+            ) : null}
+            <Stack gap={3}>
+              {providers.local ? (
+                <Stack gap={4}>
+                  <TextInput
+                    id="local-username"
+                    labelText="Username"
+                    value={localUsername}
+                    onChange={(e) => setLocalUsername(e.target.value)}
+                    autoComplete="username"
+                  />
+                  <PasswordInput
+                    id="local-password"
+                    labelText="Password"
+                    value={localPassword}
+                    onChange={(e) => setLocalPassword(e.target.value)}
+                    autoComplete="current-password"
+                  />
+                  <Button
+                    size="lg"
+                    onClick={async () => {
+                      setLocalError(null);
+                      try {
+                        await loginLocal(localUsername.trim(), localPassword);
+                        router.replace("/");
+                        router.refresh();
+                      } catch {
+                        setLocalError("Invalid username or password.");
+                      }
+                    }}
+                  >
+                    Continue with local account
+                  </Button>
+                </Stack>
+              ) : null}
+              {!providers.local ? (
+                <p className="cds--helper-text-01">
+                  Local auth is not configured on the server. Set LOCAL_AUTH_ENABLED,
+                  LOCAL_AUTH_USERNAME and LOCAL_AUTH_PASSWORD in backend environment.
                 </p>
               ) : null}
-              <Stack gap={3}>
-                {providers.local ? (
-                  <Stack gap={4}>
-                    <TextInput
-                      id="local-username"
-                      labelText="Username"
-                      value={localUsername}
-                      onChange={(e) => setLocalUsername(e.target.value)}
-                      autoComplete="username"
-                    />
-                    <PasswordInput
-                      id="local-password"
-                      labelText="Password"
-                      value={localPassword}
-                      onChange={(e) => setLocalPassword(e.target.value)}
-                      autoComplete="current-password"
-                    />
-                    <Button
-                      size="lg"
-                      onClick={async () => {
-                        setLocalError(null);
-                        try {
-                          await loginLocal(localUsername.trim(), localPassword);
-                          router.replace("/");
-                          router.refresh();
-                        } catch {
-                          setLocalError("Invalid username or password.");
-                        }
-                      }}
-                    >
-                      Continue with local account
-                    </Button>
-                  </Stack>
-                ) : null}
-                {!providers.local ? (
-                  <p className="cds--helper-text-01">
-                    Local auth is not configured on the server. Set LOCAL_AUTH_ENABLED,
-                    LOCAL_AUTH_USERNAME and LOCAL_AUTH_PASSWORD in backend environment.
-                  </p>
-                ) : null}
-              </Stack>
-              <Link className="cds--link app-login-back" href="/">
-                Back to dashboard
-              </Link>
             </Stack>
-          </Tile>
-        </Column>
-      </Grid>
+            <Link className="cds--link app-login-back" href="/">
+              Back to dashboard
+            </Link>
+          </Stack>
+        </Tile>
+      </div>
     </Theme>
   );
 }
