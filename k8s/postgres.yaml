@@ -1,6 +1,8 @@
 # postgres:16-alpine with a PersistentVolumeClaim so data survives pod restarts and host reboots.
 # k3s / k3d: use the default Rancher local-path StorageClass so the PVC binds (kubectl get storageclass).
 # If your cluster uses another default SC, change or remove storageClassName below.
+# If PVC stays Pending and the pod shows VolumeBinding "context deadline exceeded", fix local-path-provisioner
+# / disk space (see README k3s troubleshooting) — Postgres will not start until the PVC is Bound.
 ---
 apiVersion: v1
 kind: Secret

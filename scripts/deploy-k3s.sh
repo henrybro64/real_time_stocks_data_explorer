@@ -124,6 +124,9 @@ print_postgres_debug_help() {
   cat <<'EOF' >&2
 
 Postgres rollout failed. Common causes on k3s:
+- PVC Pending + pod Node=<none> + Event "VolumeBinding: context deadline exceeded": local-path provisioner
+  cannot bind storage in time — NOT initdb. Check: df -h; kubectl -n kube-system logs deployment/local-path-provisioner --tail=80;
+  kubectl -n kube-system rollout restart deployment/local-path-provisioner; then delete pvc and re-apply if needed.
 - PVC stuck Pending: no StorageClass or wrong name. Run: kubectl get storageclass && kubectl get pvc -n stock-ticker
   k3s usually expects storageClassName: local-path (see k8s/postgres.yaml).
 - ext4 PVC root contains lost+found: Postgres must use PGDATA under a subdir (manifest sets /var/lib/postgresql/data/pgdata).
