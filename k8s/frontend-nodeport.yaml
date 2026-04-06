@@ -1,0 +1,16 @@
+# Extra Service so the UI is reachable at http://<node-ip>:30080 from other machines on the LAN.
+# The default stock-ticker-frontend Service stays ClusterIP for in-cluster use; this one exposes NodePort.
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: stock-ticker-frontend-nodeport
+spec:
+  type: NodePort
+  selector:
+    app: stock-ticker-frontend
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http
+      nodePort: 30080

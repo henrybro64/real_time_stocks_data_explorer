@@ -229,9 +229,11 @@ cat <<EOF
 
 Deployment complete.
 
-Open the app with:
+From this machine (port-forward):
   ${KUBECTL_CMD} -n ${NAMESPACE} port-forward svc/stock-ticker-frontend 3000:3000
+  Then browse: http://127.0.0.1:3000
 
-Then browse:
-  http://127.0.0.1:3000
+From other PCs on the LAN (NodePort — use your node's IP, e.g. from kubectl get nodes -o wide):
+  http://<node-ip>:30080
+  If the browser cannot connect, allow the port: sudo ufw allow 30080/tcp
 EOF

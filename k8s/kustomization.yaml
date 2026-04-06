@@ -8,3 +8,4 @@ resources:
   - backend-database-secret.yaml
   - backend.yaml
   - frontend.yaml
+  - frontend-nodeport.yaml

@@ -90,9 +90,9 @@ Other PCs on the same network should open the UI at **`http://<ubuntu-host-ip>:3
 
 2. **Firewall on Ubuntu** (if `ufw` is enabled): allow the UI port, e.g. `sudo ufw allow 3000/tcp` and `sudo ufw reload`.
 
-3. **OAuth (`AUTH_ENABLED=true`):** set **`PUBLIC_BASE_URL=http://192.168.120.102:3000`** (use your real IP) in `backend/.env`, and add the matching redirect URIs in Google/Microsoft (e.g. `http://192.168.120.102:3000/api/auth/callback/google`). Some providers restrict non-public URLs; if login fails, use a tunnel or a DNS name they allow.
+3. **OAuth (`AUTH_ENABLED=true`):** set **`PUBLIC_BASE_URL`** to the exact origin users open (include port): e.g. `http://192.168.120.102:3000` for local Next **`dev:lan`**, or **`http://192.168.120.102:30080`** for **Kubernetes NodePort**. Register the same origin in Google/Microsoft redirect URIs (e.g. `…/api/auth/callback/google`). Some providers restrict non-public URLs; if login fails, use a tunnel or a DNS name they allow.
 
-**Kubernetes (k3s) on that machine:** `kubectl port-forward` binds **localhost** by default. To reach the cluster UI from other PCs, bind all interfaces, e.g. `sudo k3s kubectl -n stock-ticker port-forward --address 0.0.0.0 svc/stock-ticker-frontend 3000:3000`, then browse `http://192.168.120.102:3000`. Alternatively expose the Service with **NodePort** or an **Ingress** and use the node IP and assigned port.
+**Kubernetes (k3s / k3d):** The default frontend Service is **ClusterIP** — it is **not** reachable at `http://192.168.x.x:3000` on the node. After `kubectl apply -k k8s`, open the UI from another PC at **`http://<node-ip>:30080`** (Service **`stock-ticker-frontend-nodeport`**). Example: `http://192.168.120.102:30080`. If `ufw` is on: `sudo ufw allow 30080/tcp`. From the Ubuntu host only, you can still use **`kubectl port-forward`** to `http://127.0.0.1:3000`, or open `http://127.0.0.1:30080` / `http://192.168.120.102:30080` when NodePort is applied.
 
 **Cannot connect from another PC using the IP — check in order:**
 
@@ -102,7 +102,7 @@ Other PCs on the same network should open the UI at **`http://<ubuntu-host-ip>:3
 4. **Firewall** — `sudo ufw status`; if active, `sudo ufw allow 3000/tcp` and reload. Check **cloud / hypervisor** security groups if Ubuntu is a VM.
 5. **Same network** — Client must reach the host (try `ping 192.168.120.102`). Guest isolation in VMware/VirtualBox, or **client VPN**, can block access.
 6. **Use `http://` not `https://`** unless you terminated TLS elsewhere.
-7. **k3s only** — If you use `port-forward`, you must pass **`--address 0.0.0.0`** or other machines cannot connect.
+7. **k3s / k3d — use port 30080** — With the bundled **NodePort** Service, use **`http://<node-ip>:30080`** from other machines (not `:3000` on the IP unless you use `port-forward --address 0.0.0.0`).
 
 ## Run In Local Kubernetes (`k3d` on macOS, `k3s` on Ubuntu)
 
@@ -345,6 +345,7 @@ kubectl get nodes
 - `redis:7-alpine` for quote/news cache
 - `stock-ticker-backend:local`
 - `stock-ticker-frontend:local`
+- A **NodePort** Service (`stock-ticker-frontend-nodeport`, port **30080**) so you can open **`http://<node-ip>:30080`** from other machines on the LAN without `kubectl port-forward`.
 
 The backend connects to the in-cluster Service **`stock-ticker-postgres`** (`DATABASE_URL` in `k8s/backend-database-secret.yaml`). Removing the **PVC** or the whole cluster **without** a backup can still delete data—treat the PVC as your durable store while the cluster exists.
 
