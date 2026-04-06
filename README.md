@@ -80,6 +80,20 @@ npm install
 npm run dev
 ```
 
+### Access from other machines on the LAN (e.g. `192.168.120.101`)
+
+Other PCs on the same network should open the UI at **`http://<ubuntu-host-ip>:3000`** (example: `http://192.168.120.101:3000`). The backend is not exposed directly if you use the default **same-origin** setup (browser → Next on port 3000 → Next proxies `/api` to the backend on localhost).
+
+1. **Listen on all interfaces** (not only `127.0.0.1`):
+   - **Frontend:** from `frontend/`, run `npm run dev:lan` (or `npx next dev --hostname 0.0.0.0 -p 3000`).
+   - **Backend:** e.g. `uvicorn app.main:app --reload --host 0.0.0.0 --port 8000` (or keep `--host 127.0.0.1` if only Next on the same machine talks to the API; default is fine when the browser only hits Next).
+
+2. **Firewall on Ubuntu** (if `ufw` is enabled): allow the UI port, e.g. `sudo ufw allow 3000/tcp` and `sudo ufw reload`.
+
+3. **OAuth (`AUTH_ENABLED=true`):** set **`PUBLIC_BASE_URL=http://192.168.120.101:3000`** (use your real IP) in `backend/.env`, and add the matching redirect URIs in Google/Microsoft (e.g. `http://192.168.120.101:3000/api/auth/callback/google`). Some providers restrict non-public URLs; if login fails, use a tunnel or a DNS name they allow.
+
+**Kubernetes (k3s) on that machine:** `kubectl port-forward` binds **localhost** by default. To reach the cluster UI from other PCs, bind all interfaces, e.g. `sudo k3s kubectl -n stock-ticker port-forward --address 0.0.0.0 svc/stock-ticker-frontend 3000:3000`, then browse `http://192.168.120.101:3000`. Alternatively expose the Service with **NodePort** or an **Ingress** and use the node IP and assigned port.
+
 ## Run In Local Kubernetes (`k3d` on macOS, `k3s` on Ubuntu)
 
 This repo supports a no-registry local Kubernetes flow:
