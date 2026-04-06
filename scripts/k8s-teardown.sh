@@ -43,7 +43,8 @@ else
 fi
 
 echo "Deleting resources from ${ROOT_DIR}/k8s ..."
-${KUBECTL_CMD} delete -k "${ROOT_DIR}/k8s" --wait=true --timeout=120s
+echo "(This waits until the namespace is fully removed; the shell may look idle for a bit.)"
+${KUBECTL_CMD} delete -k "${ROOT_DIR}/k8s" --wait=true --timeout=300s
 
 echo
 echo "Teardown finished. The stock-ticker namespace and app resources (including Postgres PVC) are gone."

@@ -262,7 +262,13 @@ sudo k3s kubectl delete -k k8s
 
 That drops **deployments, services, secrets, ConfigMaps, and the Postgres PVC** so you can redeploy from a clean slate. It does **not** remove Docker images you built (`stock-ticker-backend:local`, etc.) or uninstall k3s.
 
-If something is **stuck** (namespace `Terminating`, old pods never gone), force-delete remaining objects in `stock-ticker`, then run the delete again or remove finalizers on the namespace only as a last resort (search *kubernetes namespace stuck terminating*).
+**How to tell it finished:** `kubectl delete -k` waits for the **namespace** to disappear. After the `deleted` lines, the command may sit with **no output** for a little while — that is normal. When it is done, your **shell prompt returns**. Confirm:
+
+```bash
+sudo k3s kubectl get ns | grep stock-ticker || echo "gone — teardown complete"
+```
+
+If there is **no line** for `stock-ticker`, you are clean. If the namespace stays **`Terminating`** for a long time, open another terminal and run `sudo k3s kubectl get pods -n stock-ticker`, `sudo k3s kubectl describe namespace stock-ticker`, and see **Stuck pods after delete** below.
 
 **Uninstall k3s** (optional; removes the cluster and node)
 
@@ -431,9 +437,26 @@ docker buildx version
 docker buildx ls
 ```
 
-### Stuck pods after delete
+### Stuck pods or namespace `Terminating`
 
-If namespaces or pods hang while terminating:
+**Namespace stuck `Terminating` for a long time** (even when `get pods -n stock-ticker` is empty): something still has a **finalizer** or a hidden resource. List what is left, then only if needed clear the namespace finalizer:
+
+```bash
+./scripts/k8s-unstick-namespace.sh stock-ticker
+# k3s:
+KUBECTL_CMD="sudo k3s kubectl" ./scripts/k8s-unstick-namespace.sh stock-ticker
+```
+
+If the script shows **no leftover objects** and the namespace still will not finish, install **`jq`** and run the **last-resort** finalize (safe when the namespace is already empty):
+
+```bash
+sudo apt install -y jq   # if needed
+KUBECTL_CMD="sudo k3s kubectl" ./scripts/k8s-unstick-namespace.sh stock-ticker --force
+```
+
+Manual equivalent (same as `--force`): `kubectl get namespace stock-ticker -o json | jq '.spec.finalizers = []' | kubectl replace --raw /api/v1/namespaces/stock-ticker/finalize -f -`
+
+**Pods** hang while terminating:
 
 ```bash
 kubectl -n stock-ticker delete pod --all --grace-period=0 --force
