@@ -85,7 +85,7 @@ npm run dev
 Other PCs on the same network should open the UI at **`http://<ubuntu-host-ip>:3000`** (example: `http://192.168.120.102:3000`). The backend is not exposed directly if you use the default **same-origin** setup (browser → Next on port 3000 → Next proxies `/api` to the backend on localhost).
 
 1. **Listen on all interfaces** (not only `127.0.0.1`):
-   - **Frontend:** from `frontend/`, run `npm run dev:lan` (or `npx next dev --hostname 0.0.0.0 -p 3000`).
+   - **Frontend:** `cd frontend && npm run dev:lan`, **or** from repo root `npm run dev:lan` if you have the root `package.json` (run `git pull`). **Or** run `./scripts/dev-lan.sh` from the repo root (works even without root `package.json`). Same as `next dev -H 0.0.0.0 -p 3000`. If you use plain `npm run dev`, Next may bind only **127.0.0.1**.
    - **Backend:** e.g. `uvicorn app.main:app --reload --host 0.0.0.0 --port 8000` (or keep `--host 127.0.0.1` if only Next on the same machine talks to the API; default is fine when the browser only hits Next).
 
 2. **Firewall on Ubuntu** (if `ufw` is enabled): allow the UI port, e.g. `sudo ufw allow 3000/tcp` and `sudo ufw reload`.
@@ -93,6 +93,16 @@ Other PCs on the same network should open the UI at **`http://<ubuntu-host-ip>:3
 3. **OAuth (`AUTH_ENABLED=true`):** set **`PUBLIC_BASE_URL=http://192.168.120.102:3000`** (use your real IP) in `backend/.env`, and add the matching redirect URIs in Google/Microsoft (e.g. `http://192.168.120.102:3000/api/auth/callback/google`). Some providers restrict non-public URLs; if login fails, use a tunnel or a DNS name they allow.
 
 **Kubernetes (k3s) on that machine:** `kubectl port-forward` binds **localhost** by default. To reach the cluster UI from other PCs, bind all interfaces, e.g. `sudo k3s kubectl -n stock-ticker port-forward --address 0.0.0.0 svc/stock-ticker-frontend 3000:3000`, then browse `http://192.168.120.102:3000`. Alternatively expose the Service with **NodePort** or an **Ingress** and use the node IP and assigned port.
+
+**Cannot connect from another PC using the IP — check in order:**
+
+1. **Correct IP** — On Ubuntu: `ip -br a` or `hostname -I`. DHCP may have changed the address; use the current IPv4 on your LAN (e.g. `192.168.120.x`).
+2. **Next is listening on all interfaces** — Use **`cd frontend && npm run dev:lan`** or **`./scripts/dev-lan.sh`** (runs `next dev -H 0.0.0.0 -p 3000`). Confirm: `ss -tlnp | grep 3000` should show **`0.0.0.0:3000`** (or `*:3000`), not only `127.0.0.1:3000`. If it still shows **127.0.0.1**, stop whatever is using the port (`sudo lsof -i :3000` or `sudo ss -tlnp | grep 3000`), then start **`dev:lan` again** — an old **`npm run dev`** session may still be bound to localhost.
+3. **Test on the server first** — `curl -sI -o /dev/null -w "%{http_code}\n" http://127.0.0.1:3000` and the same with `http://192.168.120.102:3000` (replace IP). Both should return **200** (or 304).
+4. **Firewall** — `sudo ufw status`; if active, `sudo ufw allow 3000/tcp` and reload. Check **cloud / hypervisor** security groups if Ubuntu is a VM.
+5. **Same network** — Client must reach the host (try `ping 192.168.120.102`). Guest isolation in VMware/VirtualBox, or **client VPN**, can block access.
+6. **Use `http://` not `https://`** unless you terminated TLS elsewhere.
+7. **k3s only** — If you use `port-forward`, you must pass **`--address 0.0.0.0`** or other machines cannot connect.
 
 ## Run In Local Kubernetes (`k3d` on macOS, `k3s` on Ubuntu)
 

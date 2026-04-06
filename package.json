@@ -1,0 +1,9 @@
+{
+  "name": "real-time-stocks-data-explorer",
+  "private": true,
+  "description": "Root scripts delegate to frontend/; run npm install in frontend/ first.",
+  "scripts": {
+    "dev": "npm run dev --prefix frontend",
+    "dev:lan": "npm run dev:lan --prefix frontend"
+  }
+}
