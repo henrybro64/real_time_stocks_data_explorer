@@ -30,7 +30,8 @@ metadata:
   name: stock-ticker-postgres
 spec:
   replicas: 1
-  progressDeadlineSeconds: 900
+  # Must exceed worst-case first boot (initdb on slow disks). tcp probes below avoid exec/env flake.
+  progressDeadlineSeconds: 2400
   # RWO PVC: RollingUpdate can run old+new pods briefly; the second pod cannot mount the same volume,
   # leaving "old replicas pending termination" and a stuck rollout. Recreate tears down first, then starts.
   strategy:
@@ -63,29 +64,24 @@ spec:
           volumeMounts:
             - mountPath: /var/lib/postgresql/data
               name: data
-          # Without this, liveness can restart the container while initdb/recovery is still running.
+          # TCP on 5432: postgres accepts connections after initdb; avoids exec probe default
+          # 1s timeout and env expansion issues with pg_isready on some nodes.
           startupProbe:
-            exec:
-              command:
-                - sh
-                - -c
-                - pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"
-            failureThreshold: 60
+            tcpSocket:
+              port: postgres
             periodSeconds: 5
+            failureThreshold: 360
+            timeoutSeconds: 3
           readinessProbe:
-            exec:
-              command:
-                - sh
-                - -c
-                - pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"
+            tcpSocket:
+              port: postgres
             periodSeconds: 5
+            timeoutSeconds: 3
           livenessProbe:
-            exec:
-              command:
-                - sh
-                - -c
-                - pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"
-            periodSeconds: 15
+            tcpSocket:
+              port: postgres
+            periodSeconds: 30
+            timeoutSeconds: 3
       volumes:
         - name: data
           persistentVolumeClaim:

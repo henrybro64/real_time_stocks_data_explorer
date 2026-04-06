@@ -293,7 +293,8 @@ kubectl get nodes
 
 - builds `stock-ticker-backend:local`
 - builds `stock-ticker-frontend:local`
-- imports those images into the existing `k3d` cluster
+- `docker pull` + imports **`postgres:16-alpine`** and **`redis:7-alpine`** into the cluster (faster rollouts than pulling inside the node on first boot)
+- imports the app images into the existing `k3d` cluster
 - runs `kubectl apply -k k8s`
 - waits for Redis, Postgres, backend, and frontend to become ready
 
@@ -302,8 +303,9 @@ kubectl get nodes
 - builds the same two images locally
 - saves them as tar archives
 - imports them into native `k3s` containerd with `k3s ctr`
+- **pre-pulls** `postgres:16-alpine` and `redis:7-alpine` into containerd (so the Postgres pod does not spend minutes pulling on first boot)
 - applies the same manifests from `k8s/`
-- waits for Redis, Postgres, backend, and frontend to become ready (same as `k3d` mode)
+- waits for Redis, Postgres, backend, and frontend to become ready (same as `k3d` mode). **Postgres** can still sit at “0 of 1 …” for **several minutes** while `initdb` runs on the volume; that is normal on first deploy.
 
 ### What gets deployed
 
@@ -393,7 +395,7 @@ k3s on Ubuntu — Postgres rollout times out (`stock-ticker-postgres` never Read
 - **ext4 + `lost+found`**: many provisioned volumes are not empty at the mount root, so Postgres must use **`PGDATA` in a subdirectory** (`k8s/postgres.yaml` sets `/var/lib/postgresql/data/pgdata`). If you had a failed init from an older manifest, delete the Postgres deployment PVC and re-apply so data initializes on a clean volume.
 - **ReadWriteOnce + rolling updates**: a single-replica Deployment with default `RollingUpdate` can briefly run two pods; the second cannot attach the same volume, so rollout stalls with **old replicas pending termination**. The manifest uses **`strategy: Recreate`** for Postgres so the old pod releases the PVC before the new one starts.
 - First-time image pull for `postgres:16-alpine` needs outbound network from the node. `kubectl describe pod -n stock-ticker -l app=stock-ticker-postgres` shows `ImagePullBackOff` vs volume errors.
-- **`0 of 1 updated replicas are available`** / progress deadline: inspect the pod (`sudo k3s kubectl describe pod -n stock-ticker -l app=stock-ticker-postgres`). The manifest uses a **`startupProbe`** so slow `initdb` is not killed by liveness; if logs show repeated restarts or data errors, delete the PVC and re-apply (wipes DB).
+- **`0 of 1 updated replicas are available`** / progress deadline: inspect the pod (`sudo k3s kubectl describe pod -n stock-ticker -l app=stock-ticker-postgres`). Probes use **TCP :5432** (not `exec`) so slow `initdb` and slow disks are less likely to flake; rollout can still take many minutes on first boot. If logs show repeated crashes or data errors, delete the Postgres deployment **and** PVC, then re-apply (wipes DB).
 
 Switching from in-cluster Postgres to host Postgres (or vice versa): adjust `k8s/kustomization.yaml` and `backend-database-secret.yaml`, then apply. To **remove** cluster Postgres and its data volume:
 

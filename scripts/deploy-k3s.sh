@@ -89,8 +89,11 @@ EOF
 
 import_into_k3d() {
   require_cmd k3d
-  echo "Importing local images into k3d cluster: ${K3D_CLUSTER_NAME}"
-  k3d image import "${BACKEND_IMAGE}" "${FRONTEND_IMAGE}" -c "${K3D_CLUSTER_NAME}"
+  echo "Pulling postgres and redis images (so the cluster does not wait on first in-pod pull)"
+  docker pull postgres:16-alpine
+  docker pull redis:7-alpine
+  echo "Importing images into k3d cluster: ${K3D_CLUSTER_NAME}"
+  k3d image import postgres:16-alpine redis:7-alpine "${BACKEND_IMAGE}" "${FRONTEND_IMAGE}" -c "${K3D_CLUSTER_NAME}"
 }
 
 import_into_k3s() {
@@ -109,6 +112,10 @@ import_into_k3s() {
   sudo k3s ctr -n k8s.io images import "${tmp_dir}/backend.tar"
   sudo k3s ctr -n k8s.io images import "${tmp_dir}/frontend.tar"
 
+  echo "Pulling postgres and redis into k3s containerd (avoids slow image pull during Postgres rollout)"
+  sudo k3s ctr -n k8s.io images pull docker.io/library/postgres:16-alpine
+  sudo k3s ctr -n k8s.io images pull docker.io/library/redis:7-alpine
+
   rm -rf "${tmp_dir}"
   trap - EXIT
 }
@@ -124,6 +131,7 @@ Postgres rollout failed. Common causes on k3s:
 - postgres:16-alpine still pulling (first boot needs network). Check: kubectl describe pod -n stock-ticker -l app=stock-ticker-postgres
 - Volume permissions: see pod Events.
 - RWO PVC + RollingUpdate: use strategy Recreate on stock-ticker-postgres (see k8s/postgres.yaml) so only one pod mounts the volume.
+- Corrupt or half-initialized data on the PVC: delete deployment + PVC, re-apply (see README).
 
 Debug:
   kubectl -n stock-ticker get pvc
@@ -156,7 +164,9 @@ deploy_manifests() {
   ${KUBECTL_CMD} -n "${NAMESPACE}" rollout status deployment/stock-ticker-redis --timeout=180s
 
   echo "Waiting for Postgres"
-  if ! ${KUBECTL_CMD} -n "${NAMESPACE}" rollout status deployment/stock-ticker-postgres --timeout=960s; then
+  echo "  First-time init (initdb on the PVC) often takes 2–6+ minutes; this step is quiet until Ready."
+  echo "  Watch elsewhere: ${KUBECTL_CMD} -n ${NAMESPACE} get pods -w"
+  if ! ${KUBECTL_CMD} -n "${NAMESPACE}" rollout status deployment/stock-ticker-postgres --timeout=2460s; then
     print_postgres_debug_help
     exit 1
   fi
