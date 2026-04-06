@@ -94,9 +94,21 @@ export function Shell({ children }: Props) {
                             kind="ghost"
                             size="sm"
                             onClick={async () => {
-                              await logout();
-                              setAuth(await fetchAuthStatus());
-                              router.refresh();
+                              try {
+                                await logout();
+                              } finally {
+                                setAuth((current) =>
+                                  current
+                                    ? {
+                                        ...current,
+                                        loggedIn: false,
+                                        user: null,
+                                      }
+                                    : current,
+                                );
+                                router.replace("/login");
+                                router.refresh();
+                              }
                             }}
                           >
                             Sign out
