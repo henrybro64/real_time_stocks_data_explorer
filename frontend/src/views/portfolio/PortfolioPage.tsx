@@ -175,17 +175,21 @@ export function PortfolioPage() {
             <div className="app-assets-currency-columns">
               <div className="app-portfolio-aggregate-card">
                 <p className="app-section-meta">USD</p>
-                <p className="app-stock-card-price">{formatCurrency(totalUsd, "USD")}</p>
+                <p className="app-stock-card-price" data-testid="portfolio-total-usd">
+                  {formatCurrency(totalUsd, "USD")}
+                </p>
                 <p className="app-section-meta">{t("portfolio.aggregate.combinedUsd")}</p>
-                <p className="app-portfolio-combined-amount">
+                <p className="app-portfolio-combined-amount" data-testid="portfolio-combined-usd">
                   {formatCurrency(combinedUsd, "USD")}
                 </p>
               </div>
               <div className="app-portfolio-aggregate-card">
                 <p className="app-section-meta">TWD</p>
-                <p className="app-stock-card-price">{formatCurrency(totalTwd, "TWD")}</p>
+                <p className="app-stock-card-price" data-testid="portfolio-total-twd">
+                  {formatCurrency(totalTwd, "TWD")}
+                </p>
                 <p className="app-section-meta">{t("portfolio.aggregate.combinedTwd")}</p>
-                <p className="app-portfolio-combined-amount">
+                <p className="app-portfolio-combined-amount" data-testid="portfolio-combined-twd">
                   {formatCurrency(combinedTwd, "TWD")}
                 </p>
               </div>
@@ -227,6 +231,7 @@ export function PortfolioPage() {
           removeLabel={t("portfolio.removeHolding")}
           results={searchQuery.data ?? []}
           searchInputId="portfolio-stock-search"
+          sectionTestId="portfolio-search-section"
           watchlistIds={portfolio.ids}
         />
       </Column>
@@ -259,7 +264,7 @@ export function PortfolioPage() {
                 </TableHead>
                 <TableBody>
                   {items.map((position) => (
-                    <TableRow key={position.id}>
+                    <TableRow data-testid={`portfolio-position-${position.stockId}`} key={position.id}>
                       <TableCell>
                         <span className="app-result-symbol">{position.stock.symbol}</span>
                       </TableCell>
@@ -272,6 +277,7 @@ export function PortfolioPage() {
                       <TableCell>
                         <div className="app-portfolio-quantity-input-wrap">
                           <TextInput
+                            data-testid={`portfolio-quantity-input-${position.stockId}`}
                             hideLabel
                             id={`portfolio-quantity-${position.id}`}
                             labelText={t("portfolio.column.quantity")}
@@ -322,7 +328,12 @@ export function PortfolioPage() {
                           >
                             {t("stock.viewDetails")}
                           </Link>
-                          <Button kind="ghost" size="sm" onClick={() => portfolio.remove(position.id)}>
+                          <Button
+                            data-testid={`portfolio-remove-${position.stockId}`}
+                            kind="ghost"
+                            size="sm"
+                            onClick={() => portfolio.remove(position.id)}
+                          >
                             {t("portfolio.removeHolding")}
                           </Button>
                         </div>

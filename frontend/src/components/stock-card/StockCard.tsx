@@ -58,7 +58,7 @@ export function StockCard({
   const chartLayout = historyQuery.data?.chartLayout ?? null;
 
   return (
-    <Tile className="app-stock-card">
+    <Tile className="app-stock-card" data-testid={`stock-card-${stock.id}`}>
       <div className="app-stock-card-top">
         <div>
           <p className="app-result-symbol">
@@ -117,13 +117,19 @@ export function StockCard({
 
       <div className="app-stock-card-actions">
         <Button
+          data-testid={`stock-card-view-${stock.id}`}
           kind="tertiary"
           size="sm"
           onClick={() => router.push(`/stock/${encodeURIComponent(stock.id)}`)}
         >
           {t("stock.viewDetails")}
         </Button>
-        <Button kind={isTracked ? "secondary" : "primary"} size="sm" onClick={() => onToggle(stock.id)}>
+        <Button
+          data-testid={`stock-card-toggle-${stock.id}`}
+          kind={isTracked ? "secondary" : "primary"}
+          size="sm"
+          onClick={() => onToggle(stock.id)}
+        >
           {isTracked ? (removeLabel ?? t("stock.remove")) : (addLabel ?? t("stock.add"))}
         </Button>
       </div>

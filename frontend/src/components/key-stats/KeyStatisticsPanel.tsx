@@ -103,7 +103,7 @@ export function KeyStatisticsPanel({ stats, currency, isLoading = false }: Props
 
   if (isLoading) {
     return (
-      <Tile className="app-key-stats-tile">
+      <Tile className="app-key-stats-tile" data-testid="key-statistics-section">
         <p className="app-eyebrow">{t("keyStats.title")}</p>
         <InlineLoading description={t("detail.loading")} status="active" />
       </Tile>
@@ -131,7 +131,7 @@ export function KeyStatisticsPanel({ stats, currency, isLoading = false }: Props
   const showFundamentalsNote = isFundamentalsMissing(stats);
 
   return (
-    <Tile className="app-key-stats-tile">
+    <Tile className="app-key-stats-tile" data-testid="key-statistics-section">
       <h3 className="app-key-stats-title">{t("keyStats.title")}</h3>
       {showFundamentalsNote ? (
         <p className="app-key-stats-fundamentals-note app-supporting-copy">{t("keyStats.fundamentalsUnavailable")}</p>

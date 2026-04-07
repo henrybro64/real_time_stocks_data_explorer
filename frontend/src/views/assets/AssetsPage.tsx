@@ -119,15 +119,23 @@ export function AssetsPage() {
           <div className="app-assets-currency-columns">
             <div className="app-portfolio-aggregate-card">
               <p className="app-section-meta">USD</p>
-              <p className="app-stock-card-price">{formatCurrency(totalUsd, "USD")}</p>
+              <p className="app-stock-card-price" data-testid="assets-total-usd">
+                {formatCurrency(totalUsd, "USD")}
+              </p>
               <p className="app-section-meta">{t("portfolio.aggregate.combinedUsd")}</p>
-              <p className="app-portfolio-combined-amount">{formatCurrency(combinedUsd, "USD")}</p>
+              <p className="app-portfolio-combined-amount" data-testid="assets-combined-usd">
+                {formatCurrency(combinedUsd, "USD")}
+              </p>
             </div>
             <div className="app-portfolio-aggregate-card">
               <p className="app-section-meta">TWD</p>
-              <p className="app-stock-card-price">{formatCurrency(totalTwd, "TWD")}</p>
+              <p className="app-stock-card-price" data-testid="assets-total-twd">
+                {formatCurrency(totalTwd, "TWD")}
+              </p>
               <p className="app-section-meta">{t("portfolio.aggregate.combinedTwd")}</p>
-              <p className="app-portfolio-combined-amount">{formatCurrency(combinedTwd, "TWD")}</p>
+              <p className="app-portfolio-combined-amount" data-testid="assets-combined-twd">
+                {formatCurrency(combinedTwd, "TWD")}
+              </p>
             </div>
           </div>
           <p className="app-section-meta">
@@ -174,7 +182,11 @@ export function AssetsPage() {
               step="any"
               onChange={(event) => setAssetValueDraft(event.currentTarget.value)}
             />
-            <Button onClick={handleAddAsset} disabled={addAssetMutation.isPending}>
+            <Button
+              data-testid="asset-add-button"
+              onClick={handleAddAsset}
+              disabled={addAssetMutation.isPending}
+            >
               {t("portfolio.assets.add")}
             </Button>
           </div>
@@ -202,6 +214,7 @@ export function AssetsPage() {
                         <TableCell>{formatCurrency(Number(asset.value), "USD")}</TableCell>
                         <TableCell>
                           <Button
+                            data-testid={`asset-remove-${asset.id}`}
                             kind="ghost"
                             size="sm"
                             onClick={() => deleteAssetMutation.mutate(asset.id)}
@@ -233,6 +246,7 @@ export function AssetsPage() {
                         <TableCell>{formatCurrency(Number(asset.value), "TWD")}</TableCell>
                         <TableCell>
                           <Button
+                            data-testid={`asset-remove-${asset.id}`}
                             kind="ghost"
                             size="sm"
                             onClick={() => deleteAssetMutation.mutate(asset.id)}

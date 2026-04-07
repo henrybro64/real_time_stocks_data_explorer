@@ -15,7 +15,7 @@ function formatSignedPercent(value: number): string {
 export function UsInsightsPanel({ isLoading, insights }: Props) {
   if (isLoading) {
     return (
-      <Tile className="app-section-tile">
+      <Tile className="app-section-tile" data-testid="us-insights-section">
         <InlineLoading description="Loading U.S. peer comparison" status="active" />
       </Tile>
     );
@@ -25,7 +25,7 @@ export function UsInsightsPanel({ isLoading, insights }: Props) {
   }
   const { peer } = insights;
   return (
-    <Tile className="app-section-tile app-tw-insights">
+    <Tile className="app-section-tile app-tw-insights" data-testid="us-insights-section">
       <div className="app-section-header">
         <div>
           <p className="app-eyebrow">U.S. insights</p>

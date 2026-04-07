@@ -19,7 +19,7 @@ export function WatchlistTable({
   const { t } = useLanguage();
 
   return (
-    <Tile className="app-section-tile">
+    <Tile className="app-section-tile" data-testid="watchlist-section">
       <div className="app-section-header">
         <div>
           <p className="app-eyebrow">Tracked securities</p>
