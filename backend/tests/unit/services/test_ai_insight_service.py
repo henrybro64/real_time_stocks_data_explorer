@@ -46,6 +46,7 @@ def test_build_prompt_for_us_stocks_uses_english_sections() -> None:
 
 
 def test_generate_insight_dispatches_to_openai(monkeypatch) -> None:
+    user_id = "test-user"
     stock = StockRecord(
         id="US:AAPL",
         market="US",
@@ -69,7 +70,11 @@ def test_generate_insight_dispatches_to_openai(monkeypatch) -> None:
 
     monkeypatch.setattr(ai_module.quote_service, "get_stock", lambda stock_id: stock)
     monkeypatch.setattr(ai_module.quote_service, "get_quote", lambda stock_id: quote)
-    monkeypatch.setattr(ai_module.api_key_service, "get_key", lambda provider: "sk-test")
+    monkeypatch.setattr(
+        ai_module.api_key_service,
+        "get_key",
+        lambda current_user_id, provider: "sk-test",
+    )
     monkeypatch.setattr(ai_module, "get_key_statistics", lambda stock_id: {"peTtm": 30.5})
 
     def fake_call_openai(prompt: str, api_key: str) -> str:
@@ -79,7 +84,11 @@ def test_generate_insight_dispatches_to_openai(monkeypatch) -> None:
 
     monkeypatch.setattr(ai_module, "_call_openai", fake_call_openai)
 
-    result = ai_module.AiInsightService().generate_insight("US:AAPL", "openai")
+    result = ai_module.AiInsightService().generate_insight(
+        user_id,
+        "US:AAPL",
+        "openai",
+    )
 
     assert result == "analysis"
     assert captured["api_key"] == "sk-test"
@@ -87,6 +96,7 @@ def test_generate_insight_dispatches_to_openai(monkeypatch) -> None:
 
 
 def test_generate_insight_requires_configured_api_key(monkeypatch) -> None:
+    user_id = "test-user"
     stock = StockRecord(
         id="US:AAPL",
         market="US",
@@ -109,7 +119,15 @@ def test_generate_insight_requires_configured_api_key(monkeypatch) -> None:
 
     monkeypatch.setattr(ai_module.quote_service, "get_stock", lambda stock_id: stock)
     monkeypatch.setattr(ai_module.quote_service, "get_quote", lambda stock_id: quote)
-    monkeypatch.setattr(ai_module.api_key_service, "get_key", lambda provider: None)
+    monkeypatch.setattr(
+        ai_module.api_key_service,
+        "get_key",
+        lambda current_user_id, provider: None,
+    )
 
     with pytest.raises(ValueError, match="API key is not configured"):
-        ai_module.AiInsightService().generate_insight("US:AAPL", "openai")
+        ai_module.AiInsightService().generate_insight(
+            user_id,
+            "US:AAPL",
+            "openai",
+        )
