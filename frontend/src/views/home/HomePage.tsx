@@ -1,7 +1,7 @@
 "use client";
 
 import { Column, Grid, InlineLoading, Tile } from "@carbon/react";
-import { useDeferredValue, useState } from "react";
+import { useDeferredValue, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { MarketIndex, MarketStatus, QuoteResponse } from "@shared/api";
 import type { Stock } from "@shared/stock";
@@ -53,6 +53,32 @@ export function HomePage() {
     queryFn: () => searchStocks(deferredQuery),
     enabled: deferredQuery.trim().length > 0,
   });
+
+  const watchlistItems = useMemo(() => {
+    const quoteItemsById = new Map(
+      (watchlistQuery.data ?? []).map((item) => [item.stock.id, item]),
+    );
+    const knownStocksById = new Map(
+      (searchQuery.data ?? []).map((stock) => [stock.id, stock]),
+    );
+
+    return watchlist.ids.flatMap((stockId) => {
+      const item = quoteItemsById.get(stockId);
+      if (item) {
+        return [item];
+      }
+      const stock = knownStocksById.get(stockId);
+      if (stock) {
+        return [{ stock }];
+      }
+      return [];
+    });
+  }, [searchQuery.data, watchlist.ids, watchlistQuery.data]);
+
+  const pendingWatchlistIds = useMemo(() => {
+    const hydratedIds = new Set(watchlistItems.map((item) => item.stock.id));
+    return watchlist.ids.filter((stockId) => !hydratedIds.has(stockId));
+  }, [watchlist.ids, watchlistItems]);
 
   return (
     <Grid className="app-page-grid" fullWidth>
@@ -110,9 +136,15 @@ export function HomePage() {
       </Column>
       <Column className="app-column-spacing" id="watchlist" sm={4} md={8} lg={16}>
         <WatchlistTable
-          isLoading={!watchlistQuery.data && (watchlistQuery.isLoading || watchlist.isLoading)}
+          isLoading={
+            watchlist.ids.length === 0
+            && !watchlistQuery.data
+            && (watchlistQuery.isLoading || watchlist.isLoading)
+          }
           isRefreshing={!!watchlistQuery.data && (watchlistQuery.isFetching || watchlist.isMutating)}
-          items={watchlistQuery.data ?? []}
+          items={watchlistItems}
+          pendingIds={pendingWatchlistIds}
+          trackedCount={watchlist.ids.length}
           onRemove={watchlist.remove}
         />
       </Column>
