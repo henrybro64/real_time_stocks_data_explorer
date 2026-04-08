@@ -131,6 +131,9 @@ class TWProvider:
         if stock is None:
             return None
 
+        if settings.tw_use_mock_quotes:
+            return self._mock_quote(stock_id)
+
         quote = self._fetch_quote(stock)
         if quote is not None:
             self.__class__._quote_cache[stock_id] = quote
@@ -156,6 +159,9 @@ class TWProvider:
         stock = self.get_stock(stock_id)
         if stock is None:
             return []
+
+        if settings.tw_use_mock_quotes:
+            return self._mock_history(stock_id, range_name)
 
         if range_name == "1D":
             quote = self._fetch_quote(stock)
@@ -353,6 +359,9 @@ class TWProvider:
         return candles[-limit:]
 
     def _stock_catalog(self) -> dict[str, StockRecord]:
+        if settings.tw_use_mock_quotes:
+            return dict(TW_STOCKS)
+
         now = datetime.now(ZoneInfo("Asia/Taipei"))
         if (
             self.__class__._catalog_cache is not None
