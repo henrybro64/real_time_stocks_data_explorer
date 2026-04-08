@@ -23,7 +23,11 @@ export default defineConfig({
     ? undefined
     : [
         {
-          command: "python3 -m uvicorn app.main:app --host 127.0.0.1 --port 8000",
+          command: [
+            "python3 -m alembic -c alembic.ini upgrade head",
+            "PYTHONPATH=. python3 scripts/seed_default_user.py",
+            "python3 -m uvicorn app.main:app --host 127.0.0.1 --port 8000",
+          ].join(" && "),
           cwd: backendDir,
           env: {
             ...process.env,
