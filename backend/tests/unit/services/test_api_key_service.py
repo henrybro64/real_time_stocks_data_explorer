@@ -16,17 +16,19 @@ def test_normalize_provider_rejects_unsupported_values() -> None:
 
 def test_get_status_masks_last_four_characters(monkeypatch) -> None:
     service = ApiKeyService()
+    user_id = "test-user"
     monkeypatch.setattr(
         service,
         "_get_row",
-        lambda provider: SimpleNamespace(api_key="sk-test-1234"),
+        lambda current_user_id, provider: SimpleNamespace(api_key="sk-test-1234"),
     )
 
-    assert service.get_status("openai") == (True, "1234")
+    assert service.get_status(user_id, "openai") == (True, "1234")
 
 
 def test_get_status_returns_not_configured_when_row_missing(monkeypatch) -> None:
     service = ApiKeyService()
-    monkeypatch.setattr(service, "_get_row", lambda provider: None)
+    user_id = "test-user"
+    monkeypatch.setattr(service, "_get_row", lambda current_user_id, provider: None)
 
-    assert service.get_status("perplexity") == (False, None)
+    assert service.get_status(user_id, "perplexity") == (False, None)

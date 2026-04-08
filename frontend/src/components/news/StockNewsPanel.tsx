@@ -32,7 +32,7 @@ export function StockNewsPanel({ items, isLoading = false }: Props) {
         };
 
   return (
-    <Tile className="app-section-tile">
+    <Tile className="app-section-tile" data-testid="stock-news-section">
       <div className="app-section-header">
         <div>
           <p className="app-eyebrow">{copy.eyebrow}</p>

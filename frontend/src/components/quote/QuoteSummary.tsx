@@ -12,7 +12,7 @@ export function QuoteSummary({ item }: Props) {
   const { stock, quote } = item;
 
   return (
-    <Tile className="app-section-tile app-quote-summary">
+    <Tile className="app-section-tile app-quote-summary" data-testid="quote-summary-section">
       <div className="app-section-header">
         <div>
           <p className="app-detail-symbol">

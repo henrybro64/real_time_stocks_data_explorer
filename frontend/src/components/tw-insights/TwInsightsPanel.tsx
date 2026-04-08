@@ -40,7 +40,7 @@ export function TwInsightsPanel({ isLoading, insights }: Props) {
 
   if (isLoading) {
     return (
-      <Tile className="app-section-tile">
+      <Tile className="app-section-tile" data-testid="tw-insights-section">
         <InlineLoading description={t("twInsights.loading")} status="active" />
       </Tile>
     );
@@ -54,7 +54,7 @@ export function TwInsightsPanel({ isLoading, insights }: Props) {
   const maxRevenue = Math.max(...revenuePoints.map((item) => item.revenueK), 1);
 
   return (
-    <Tile className="app-section-tile app-tw-insights">
+    <Tile className="app-section-tile app-tw-insights" data-testid="tw-insights-section">
       <div className="app-section-header">
         <div>
           <p className="app-eyebrow">Taiwan insights</p>

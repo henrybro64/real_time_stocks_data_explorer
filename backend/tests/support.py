@@ -1,0 +1,75 @@
+from app.models.quote import CandleRecord, QuoteRecord
+from app.models.stock import StockRecord
+
+
+def stock_record(
+    stock_id: str,
+    *,
+    market: str,
+    symbol: str,
+    name: str,
+    exchange: str,
+    currency: str,
+    timezone: str,
+    name_en: str | None = None,
+    name_zh_tw: str | None = None,
+) -> StockRecord:
+    return StockRecord(
+        id=stock_id,
+        market=market,
+        symbol=symbol,
+        name=name,
+        exchange=exchange,
+        currency=currency,
+        timezone=timezone,
+        name_en=name_en,
+        name_zh_tw=name_zh_tw,
+    )
+
+
+def quote_record(
+    stock_id: str,
+    *,
+    last_price: float,
+    change: float,
+    change_percent: float,
+    previous_close: float,
+    timestamp: str,
+    is_market_open: bool,
+    open_price: float | None = None,
+    high: float | None = None,
+    low: float | None = None,
+    volume: int | None = None,
+) -> QuoteRecord:
+    return QuoteRecord(
+        id=stock_id,
+        last_price=last_price,
+        change=change,
+        change_percent=change_percent,
+        previous_close=previous_close,
+        timestamp=timestamp,
+        is_market_open=is_market_open,
+        open=open_price,
+        high=high,
+        low=low,
+        volume=volume,
+    )
+
+
+def candle_record(
+    *,
+    time: str,
+    open_price: float,
+    high: float,
+    low: float,
+    close: float,
+    volume: int,
+) -> CandleRecord:
+    return CandleRecord(
+        time=time,
+        open=open_price,
+        high=high,
+        low=low,
+        close=close,
+        volume=volume,
+    )

@@ -23,6 +23,7 @@ type Props = {
   /** Pass-through to result cards (e.g. “Add to portfolio”). */
   addLabel?: string;
   removeLabel?: string;
+  sectionTestId?: string;
 };
 
 export function StockSearch({
@@ -36,6 +37,7 @@ export function StockSearch({
   labels,
   addLabel,
   removeLabel,
+  sectionTestId = "stock-search-section",
 }: Props) {
   const { t } = useLanguage();
 
@@ -46,7 +48,7 @@ export function StockSearch({
   const emptyPrompt = labels?.emptyPrompt ?? t("search.emptyPrompt");
 
   return (
-    <Tile className="app-section-tile">
+    <Tile className="app-section-tile" data-testid={sectionTestId}>
       <div className="app-section-header">
         <div>
           <p className="app-eyebrow">{eyebrow}</p>

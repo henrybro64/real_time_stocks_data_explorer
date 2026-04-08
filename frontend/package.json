@@ -11,7 +11,9 @@
     "build": "next build",
     "start": "next start",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "test:e2e": "playwright test",
+    "test:e2e:headed": "playwright test --headed"
   },
   "dependencies": {
     "@carbon/icons-react": "^11.76.0",
@@ -28,6 +30,7 @@
     "@types/node": "^25.5.0",
     "@types/react": "^18.3.20",
     "@types/react-dom": "^18.3.6",
+    "@playwright/test": "^1.54.2",
     "@vitejs/plugin-react": "^4.4.1",
     "jsdom": "^26.1.0",
     "typescript": "^5.8.3",
