@@ -16,11 +16,12 @@ async function waitForSearchResult(
   query: string,
 ) {
   const searchSection = page.getByTestId(sectionTestId);
-  await page.locator(inputSelector).fill(query);
-  await page.waitForResponse(
+  const responsePromise = page.waitForResponse(
     (response) => response.ok() && isSearchResponse(response.url(), query),
     { timeout: 10_000 },
   );
+  await page.locator(inputSelector).fill(query);
+  await responsePromise;
   await expect(searchSection.getByTestId(`stock-card-${TW_STOCK_ID}`)).toBeVisible({ timeout: 10_000 });
   return searchSection.getByTestId(`stock-card-${TW_STOCK_ID}`);
 }

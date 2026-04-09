@@ -5,7 +5,6 @@ import { useQuery } from "@tanstack/react-query";
 import type { ChartLayout, Quote } from "@shared/quote";
 import type { Stock } from "@shared/stock";
 import { useId } from "react";
-import { useRouter } from "next/navigation";
 import { getDisplayStockName, useLanguage } from "../../app/i18n";
 import { fetchHistory, fetchQuote } from "../../services/api/client";
 import {
@@ -34,7 +33,6 @@ export function StockCard({
   addLabel,
   removeLabel,
 }: Props) {
-  const router = useRouter();
   const { language, t, formatNumber } = useLanguage();
   const quoteQuery = useQuery({
     queryKey: ["card-quote", stock.id],
@@ -118,9 +116,9 @@ export function StockCard({
       <div className="app-stock-card-actions">
         <Button
           data-testid={`stock-card-view-${stock.id}`}
+          href={`/stock/${encodeURIComponent(stock.id)}`}
           kind="tertiary"
           size="sm"
-          onClick={() => router.push(`/stock/${encodeURIComponent(stock.id)}`)}
         >
           {t("stock.viewDetails")}
         </Button>
