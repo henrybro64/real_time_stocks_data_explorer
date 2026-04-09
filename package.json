@@ -9,6 +9,6 @@
     "test:frontend:allure": "npm run test:allure --prefix frontend",
     "test:e2e:allure": "npm run test:e2e:allure --prefix frontend",
     "allure:merge": "python3 scripts/merge_allure_results.py allure-results/merged allure-results/backend allure-results/frontend-unit allure-results/frontend-e2e allure-results/k3s-smoke",
-    "allure:report": "npm run allure:merge && npx --prefix frontend allure generate allure-results/merged -o allure-report --clean"
+    "allure:report": "npm run allure:merge && rm -rf allure-report && npx --prefix frontend allure generate allure-results/merged -o allure-report"
   }
 }
