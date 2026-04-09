@@ -2,19 +2,15 @@ import { expect, test } from "@playwright/test";
 
 import {
   ensurePortfolioDoesNotContain,
+  searchFromPortfolio,
   TW_STOCK_ID,
-  TW_STOCK_SYMBOL,
 } from "./helpers";
 
 
 test("portfolio add, edit quantity, verify totals, and remove holding", async ({ page }) => {
   await ensurePortfolioDoesNotContain(page, TW_STOCK_ID);
 
-  await page.goto("/portfolio");
-  await page.locator("#portfolio-stock-search").fill(TW_STOCK_SYMBOL);
-  const searchSection = page.getByTestId("portfolio-search-section");
-  const stockCard = searchSection.getByTestId(`stock-card-${TW_STOCK_ID}`);
-  await expect(stockCard).toBeVisible();
+  const stockCard = await searchFromPortfolio(page);
   await stockCard.getByTestId(`stock-card-toggle-${TW_STOCK_ID}`).click();
 
   const row = page.getByTestId(`portfolio-position-${TW_STOCK_ID}`);

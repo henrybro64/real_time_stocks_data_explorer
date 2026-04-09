@@ -4,6 +4,27 @@ import { expect, Page } from "@playwright/test";
 export const TW_STOCK_ID = "TW:2330";
 export const TW_STOCK_SYMBOL = "2330";
 
+function isSearchResponse(urlString: string, query: string) {
+  const url = new URL(urlString);
+  return url.pathname.endsWith("/api/search") && url.searchParams.get("q") === query;
+}
+
+async function waitForSearchResult(
+  page: Page,
+  inputSelector: string,
+  sectionTestId: string,
+  query: string,
+) {
+  const searchSection = page.getByTestId(sectionTestId);
+  await page.locator(inputSelector).fill(query);
+  await page.waitForResponse(
+    (response) => response.ok() && isSearchResponse(response.url(), query),
+    { timeout: 10_000 },
+  );
+  await expect(searchSection.getByTestId(`stock-card-${TW_STOCK_ID}`)).toBeVisible({ timeout: 10_000 });
+  return searchSection.getByTestId(`stock-card-${TW_STOCK_ID}`);
+}
+
 
 export async function openHome(page: Page) {
   await page.goto("/");
@@ -12,10 +33,14 @@ export async function openHome(page: Page) {
 
 
 export async function searchFromHome(page: Page, query = TW_STOCK_SYMBOL) {
-  const searchSection = page.getByTestId("stock-search-section");
-  await page.locator("#stock-search").fill(query);
-  await expect(searchSection.getByTestId(`stock-card-${TW_STOCK_ID}`)).toBeVisible();
-  return searchSection.getByTestId(`stock-card-${TW_STOCK_ID}`);
+  return waitForSearchResult(page, "#stock-search", "stock-search-section", query);
+}
+
+
+export async function searchFromPortfolio(page: Page, query = TW_STOCK_SYMBOL) {
+  await page.goto("/portfolio");
+  await expect(page.locator("#main-content")).toBeVisible();
+  return waitForSearchResult(page, "#portfolio-stock-search", "portfolio-search-section", query);
 }
 
 
