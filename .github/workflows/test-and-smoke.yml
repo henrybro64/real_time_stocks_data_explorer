@@ -180,6 +180,7 @@ jobs:
       - k3s-smoke
     steps:
       - uses: actions/checkout@v5
+      - uses: actions/configure-pages@v5
       - uses: actions/setup-node@v5
         with:
           node-version: "20"
@@ -225,3 +226,28 @@ jobs:
           name: allure-report
           path: allure-report
           if-no-files-found: error
+      - name: Upload GitHub Pages artifact
+        if: ${{ github.event_name == 'push' && github.ref_name == github.event.repository.default_branch }}
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: allure-report
+
+  deploy-allure-pages:
+    runs-on: ubuntu-latest
+    if: ${{ always() && github.event_name == 'push' && github.ref_name == github.event.repository.default_branch }}
+    needs:
+      - allure-report
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy Allure report to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+      - name: Publish Pages URL in workflow summary
+        run: |
+          echo "Allure report: ${{ steps.deployment.outputs.page_url }}" >> "$GITHUB_STEP_SUMMARY"

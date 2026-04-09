@@ -103,6 +103,10 @@ npm run allure:report
 
 The merged raw results land in `allure-results/merged`, and the generated HTML report lands in `allure-report/`.
 
+In GitHub Actions, every run uploads the merged HTML report as an artifact. On pushes to the default branch, the workflow also deploys the Allure HTML report to GitHub Pages so it can be opened directly in the browser.
+
+To enable the browser-viewable report, set the repository Pages source to `GitHub Actions` in the GitHub Pages settings once.
+
 ### Access from other machines on the LAN (e.g. `192.168.120.102`)
 
 Other PCs on the same network should open the UI at **`http://<ubuntu-host-ip>:3000`** (example: `http://192.168.120.102:3000`). The backend is not exposed directly if you use the default **same-origin** setup (browser → Next on port 3000 → Next proxies `/api` to the backend on localhost).
