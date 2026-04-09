@@ -11,8 +11,10 @@
     "build": "next build",
     "start": "next start",
     "test": "vitest run",
+    "test:allure": "ALLURE_RESULTS_DIR=../allure-results/frontend-unit vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
+    "test:e2e:allure": "ALLURE_RESULTS_DIR=../allure-results/frontend-e2e playwright test",
     "test:e2e:headed": "playwright test --headed"
   },
   "dependencies": {
@@ -32,6 +34,9 @@
     "@types/react-dom": "^18.3.6",
     "@playwright/test": "^1.54.2",
     "@vitejs/plugin-react": "^4.4.1",
+    "allure": "^3.4.0",
+    "allure-playwright": "^3.7.0",
+    "allure-vitest": "^3.7.0",
     "jsdom": "^26.1.0",
     "typescript": "^5.8.3",
     "vitest": "^3.2.4"

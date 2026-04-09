@@ -34,12 +34,23 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
+      - name: Prepare Allure results directory
+        run: |
+          mkdir -p allure-results/backend
+          touch allure-results/backend/.keep
       - name: Install backend dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r backend/requirements-dev.txt
       - name: Run backend tests
-        run: pytest backend/tests/unit backend/tests/integration
+        run: pytest backend/tests/unit backend/tests/integration --alluredir allure-results/backend
+      - name: Upload backend Allure results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: backend-allure-results
+          path: allure-results/backend
+          if-no-files-found: warn
 
   frontend-playwright:
     runs-on: ubuntu-latest
@@ -71,6 +82,10 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
+      - name: Prepare Allure results directories
+        run: |
+          mkdir -p allure-results/frontend-unit allure-results/frontend-e2e
+          touch allure-results/frontend-unit/.keep allure-results/frontend-e2e/.keep
       - name: Install backend dependencies
         run: |
           python -m pip install --upgrade pip
@@ -80,9 +95,44 @@ jobs:
       - name: Install Playwright browser
         run: npx --prefix frontend playwright install --with-deps chromium
       - name: Run frontend unit tests
+        id: frontend_unit_tests
+        continue-on-error: true
+        env:
+          ALLURE_RESULTS_DIR: ../allure-results/frontend-unit
         run: npm test --prefix frontend
       - name: Run Playwright E2E
+        id: frontend_e2e_tests
+        continue-on-error: true
+        env:
+          ALLURE_RESULTS_DIR: ../allure-results/frontend-e2e
         run: npm run test:e2e --prefix frontend
+      - name: Upload frontend unit Allure results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: frontend-unit-allure-results
+          path: allure-results/frontend-unit
+          if-no-files-found: warn
+      - name: Upload frontend e2e Allure results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: frontend-e2e-allure-results
+          path: allure-results/frontend-e2e
+          if-no-files-found: warn
+      - name: Fail job when any frontend suite fails
+        if: always()
+        run: |
+          status=0
+          if [ "${{ steps.frontend_unit_tests.outcome }}" != "success" ]; then
+            echo "Frontend unit tests failed"
+            status=1
+          fi
+          if [ "${{ steps.frontend_e2e_tests.outcome }}" != "success" ]; then
+            echo "Frontend Playwright E2E failed"
+            status=1
+          fi
+          exit "${status}"
 
   k3s-smoke:
     runs-on: ubuntu-latest
@@ -96,9 +146,80 @@ jobs:
       KUBECTL_CMD: sudo k3s kubectl
     steps:
       - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - name: Prepare Allure results directory
+        run: |
+          mkdir -p allure-results/k3s-smoke
+          touch allure-results/k3s-smoke/.keep
+      - name: Install smoke test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest allure-pytest
       - name: Install k3s
         run: |
           curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="--write-kubeconfig-mode 644 --disable traefik" sh -
           sudo k3s kubectl get nodes
       - name: Run k3s deployment smoke
-        run: ./scripts/ci-k3s-smoke.sh
+        run: pytest backend/tests/smoke/test_k3s_smoke.py --alluredir allure-results/k3s-smoke
+      - name: Upload k3s smoke Allure results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: k3s-smoke-allure-results
+          path: allure-results/k3s-smoke
+          if-no-files-found: warn
+
+  allure-report:
+    runs-on: ubuntu-latest
+    if: always()
+    needs:
+      - backend-pytest
+      - frontend-playwright
+      - k3s-smoke
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install frontend dependencies
+        run: npm ci --prefix frontend
+      - name: Download backend Allure results
+        uses: actions/download-artifact@v8
+        with:
+          name: backend-allure-results
+          path: allure-results/backend
+      - name: Download frontend unit Allure results
+        uses: actions/download-artifact@v8
+        with:
+          name: frontend-unit-allure-results
+          path: allure-results/frontend-unit
+      - name: Download frontend e2e Allure results
+        uses: actions/download-artifact@v8
+        with:
+          name: frontend-e2e-allure-results
+          path: allure-results/frontend-e2e
+      - name: Download k3s smoke Allure results
+        uses: actions/download-artifact@v8
+        with:
+          name: k3s-smoke-allure-results
+          path: allure-results/k3s-smoke
+      - name: Merge Allure results
+        run: python3 scripts/merge_allure_results.py allure-results/merged allure-results/backend allure-results/frontend-unit allure-results/frontend-e2e allure-results/k3s-smoke
+      - name: Generate Allure report
+        run: npx --prefix frontend allure generate allure-results/merged -o allure-report --clean
+      - name: Upload merged Allure results
+        uses: actions/upload-artifact@v7
+        with:
+          name: merged-allure-results
+          path: allure-results/merged
+          if-no-files-found: error
+      - name: Upload Allure HTML report
+        uses: actions/upload-artifact@v7
+        with:
+          name: allure-report
+          path: allure-report
+          if-no-files-found: error

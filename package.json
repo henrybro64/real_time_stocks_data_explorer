@@ -4,6 +4,11 @@
   "description": "Root scripts delegate to frontend/; run npm install in frontend/ first.",
   "scripts": {
     "dev": "npm run dev --prefix frontend",
-    "dev:lan": "npm run dev:lan --prefix frontend"
+    "dev:lan": "npm run dev:lan --prefix frontend",
+    "test:backend:allure": "python3 -m pytest backend/tests/unit backend/tests/integration --alluredir allure-results/backend",
+    "test:frontend:allure": "npm run test:allure --prefix frontend",
+    "test:e2e:allure": "npm run test:e2e:allure --prefix frontend",
+    "allure:merge": "python3 scripts/merge_allure_results.py allure-results/merged allure-results/backend allure-results/frontend-unit allure-results/frontend-e2e allure-results/k3s-smoke",
+    "allure:report": "npm run allure:merge && npx --prefix frontend allure generate allure-results/merged -o allure-report --clean"
   }
 }

@@ -7,6 +7,14 @@ const repoRoot = path.resolve(frontendDir, "..");
 const backendDir = path.join(repoRoot, "backend");
 const databaseUrl = process.env.DATABASE_URL ?? "postgresql+psycopg://postgres:postgres@127.0.0.1:5432/stocks_test";
 const skipWebServer = process.env.PLAYWRIGHT_SKIP_WEBSERVER === "1";
+const allureResultsDir = process.env.ALLURE_RESULTS_DIR;
+const reporters = process.env.CI
+  ? [["github"], ["html", { open: "never" }]]
+  : [["list"]];
+
+if (allureResultsDir) {
+  reporters.push(["allure-playwright", { resultsDir: allureResultsDir }]);
+}
 
 
 export default defineConfig({
@@ -14,7 +22,7 @@ export default defineConfig({
   fullyParallel: false,
   retries: process.env.CI ? 1 : 0,
   workers: 1,
-  reporter: process.env.CI ? [["github"], ["html", { open: "never" }]] : "list",
+  reporter: reporters,
   use: {
     baseURL: "http://127.0.0.1:3000",
     trace: "on-first-retry",

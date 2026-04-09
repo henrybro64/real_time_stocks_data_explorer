@@ -149,6 +149,8 @@ playwright-report/
 test-results/
 blob-report/
 playwright/.cache/
+allure-results/
+allure-report/
 
 # -----------------------------------------------------------------------------
 # Jupyter (if notebooks are added)

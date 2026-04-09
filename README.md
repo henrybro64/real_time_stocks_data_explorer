@@ -78,6 +78,31 @@ npm install
 npm run dev
 ```
 
+## Tests And Allure
+
+Install backend test dependencies from `backend/requirements-dev.txt` and frontend dependencies from `frontend/package.json` first.
+
+Generate Allure results locally:
+
+```bash
+# backend
+npm run test:backend:allure
+
+# frontend unit tests
+npm run test:frontend:allure
+
+# frontend Playwright E2E
+npm run test:e2e:allure
+```
+
+Merge the generated `allure-results/*` folders and build one HTML report:
+
+```bash
+npm run allure:report
+```
+
+The merged raw results land in `allure-results/merged`, and the generated HTML report lands in `allure-report/`.
+
 ### Access from other machines on the LAN (e.g. `192.168.120.102`)
 
 Other PCs on the same network should open the UI at **`http://<ubuntu-host-ip>:3000`** (example: `http://192.168.120.102:3000`). The backend is not exposed directly if you use the default **same-origin** setup (browser → Next on port 3000 → Next proxies `/api` to the backend on localhost).
