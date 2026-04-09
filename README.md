@@ -103,9 +103,12 @@ npm run allure:report
 
 The merged raw results land in `allure-results/merged`, and the generated HTML report lands in `allure-report/`.
 
-In GitHub Actions, every run uploads the merged HTML report as an artifact. On pushes to the default branch, the workflow also deploys the Allure HTML report to GitHub Pages so it can be opened directly in the browser.
+In GitHub Actions, every run uploads the merged HTML report as an artifact. On pushes to the default branch, the workflow can also deploy the Allure HTML report to GitHub Pages so it can be opened directly in the browser.
 
-To enable the browser-viewable report, set the repository Pages source to `GitHub Actions` in the GitHub Pages settings once.
+To enable the browser-viewable report:
+
+1. Set the repository Pages source to `GitHub Actions` in the GitHub Pages settings.
+2. Add a repository variable named `ENABLE_ALLURE_PAGES` with value `true`.
 
 ### Access from other machines on the LAN (e.g. `192.168.120.102`)
 

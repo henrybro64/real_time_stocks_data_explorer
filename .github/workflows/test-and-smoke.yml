@@ -180,7 +180,6 @@ jobs:
       - k3s-smoke
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/configure-pages@v5
       - uses: actions/setup-node@v5
         with:
           node-version: "20"
@@ -227,14 +226,14 @@ jobs:
           path: allure-report
           if-no-files-found: error
       - name: Upload GitHub Pages artifact
-        if: ${{ github.event_name == 'push' && github.ref_name == github.event.repository.default_branch }}
+        if: ${{ vars.ENABLE_ALLURE_PAGES == 'true' && github.event_name == 'push' && github.ref_name == github.event.repository.default_branch }}
         uses: actions/upload-pages-artifact@v4
         with:
           path: allure-report
 
   deploy-allure-pages:
     runs-on: ubuntu-latest
-    if: ${{ always() && github.event_name == 'push' && github.ref_name == github.event.repository.default_branch }}
+    if: ${{ always() && vars.ENABLE_ALLURE_PAGES == 'true' && github.event_name == 'push' && github.ref_name == github.event.repository.default_branch }}
     needs:
       - allure-report
     permissions:
