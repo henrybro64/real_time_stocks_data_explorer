@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Request
 
+from app.api.deps import get_request_identity
 from app.core.config import settings
 from app.schemas.auth import (
     AuthStatusResponse,
@@ -29,22 +30,25 @@ def _provider_flags() -> dict[str, bool]:
 @router.get("/status", response_model=AuthStatusResponse)
 def auth_status(request: Request) -> AuthStatusResponse:
     flags = _provider_flags()
-    if not settings.auth_enabled:
+    identity = get_request_identity(request)
+
+    if not identity.auth_enabled:
         return AuthStatusResponse(
             authEnabled=False,
             loggedIn=False,
             providers=flags,
             user=None,
         )
-    uid = request.session.get("user_id")
-    if not uid:
+
+    if not identity.is_authenticated:
         return AuthStatusResponse(
             authEnabled=True,
             loggedIn=False,
             providers=flags,
             user=None,
         )
-    user = get_user_by_id(str(uid))
+
+    user = get_user_by_id(identity.user_id)
     if user is None:
         request.session.clear()
         return AuthStatusResponse(

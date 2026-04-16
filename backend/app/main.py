@@ -12,6 +12,8 @@ from app.api.routes.search import router as search_router
 from app.api.routes.stream import router as stream_router
 from app.api.routes.watchlist import router as watchlist_router
 from app.core.config import settings
+from app.db.init_db import seed_default_user
+from app.db.session import SessionLocal
 from app.services.local_auth_service import ensure_bootstrap_local_user
 
 
@@ -58,6 +60,13 @@ def validate_auth_settings() -> None:
         )
     if settings.local_auth_password and len(settings.local_auth_password) < 8:
         raise RuntimeError("LOCAL_AUTH_PASSWORD must be at least 8 characters.")
+
+
+@app.on_event("startup")
+def bootstrap_single_user_principal() -> None:
+    if settings.auth_enabled or SessionLocal is None:
+        return
+    seed_default_user()
 
 
 @app.on_event("startup")
