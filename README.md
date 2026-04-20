@@ -41,12 +41,11 @@ export DATABASE_URL="postgresql+psycopg://postgres:postgres@127.0.0.1:5432/stock
 # 1) migrate schema
 alembic upgrade head
 
-# 2) optional: seed fallback user for AUTH_ENABLED=false mode (id: default-user)
-python -m scripts.seed_default_user
-
-# 3) start app
+# 2) start app
 python -m uvicorn app.main:app --reload
 ```
+
+When `AUTH_ENABLED=false`, backend startup automatically seeds the single-user principal (`default-user`) used by watchlist, portfolio, and AI-key routes. The manual `python -m scripts.seed_default_user` helper is only needed for repair or ad-hoc local resets.
 
 ### Redis (local cache process)
 
