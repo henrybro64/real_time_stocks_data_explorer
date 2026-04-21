@@ -32,7 +32,7 @@ export function WatchlistTable({
 }: Props) {
   const { t } = useLanguage();
   const count = trackedCount ?? items.length;
-  const showOnlyNotice = noticeKind !== null && items.length === 0;
+  const showOnlyNotice = noticeKind !== null && items.length === 0 && pendingIds.length === 0;
 
   return (
     <Tile className="app-section-tile" data-testid="watchlist-section">

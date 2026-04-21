@@ -9,10 +9,10 @@ import { useLanguage } from "../../app/i18n";
 import { MarketIndicesStrip } from "../../components/market-status/MarketIndicesStrip";
 import { MarketStatusStrip } from "../../components/market-status/MarketStatusStrip";
 import { StockSearch } from "../../components/search/StockSearch";
-import { errorToNoticeKind } from "../../components/state/RequestStateNotice";
 import { WatchlistTable } from "../../components/watchlist/WatchlistTable";
 import { useWatchlist } from "../../hooks/useWatchlist";
 import { fetchMarketIndices, fetchMarkets, fetchQuotes, searchStocks } from "../../services/api/client";
+import { deriveWatchlistNoticeKind } from "./watchlistState";
 
 export function HomePage() {
   const { t } = useLanguage();
@@ -82,26 +82,19 @@ export function HomePage() {
   }, [watchlist.ids, watchlistItems]);
 
   const watchlistNoticeKind = useMemo(() => {
-    if (watchlist.mutationError) {
-      return errorToNoticeKind(watchlist.mutationError);
-    }
-    if (watchlist.queryError && !watchlist.hasLoaded) {
-      return errorToNoticeKind(watchlist.queryError);
-    }
-    if (watchlistQuery.isError && watchlistItems.length > 0) {
-      return "stale";
-    }
-    if (watchlistQuery.error) {
-      return errorToNoticeKind(watchlistQuery.error);
-    }
-    return null;
+    return deriveWatchlistNoticeKind({
+      hasLoaded: watchlist.hasLoaded,
+      mutationError: watchlist.mutationError,
+      queryError: watchlist.queryError,
+      quoteError: watchlistQuery.error,
+      quoteCount: watchlistQuery.data?.length ?? 0,
+    });
   }, [
     watchlist.hasLoaded,
     watchlist.mutationError,
     watchlist.queryError,
-    watchlistItems.length,
     watchlistQuery.error,
-    watchlistQuery.isError,
+    watchlistQuery.data,
   ]);
 
   return (
