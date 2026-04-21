@@ -1,6 +1,7 @@
 import { Column, Grid, Tag, Tile } from "@carbon/react";
 import type { QuoteResponse } from "@shared/api";
 import { getDisplayStockName, useLanguage } from "../../app/i18n";
+import { QuoteFreshnessTag } from "../state/QuoteFreshnessTag";
 import { formatCurrency, formatLastUpdated, formatPercent, formatSignedNumber } from "../../services/format/quote";
 
 type Props = {
@@ -28,7 +29,10 @@ export function QuoteSummary({ item }: Props) {
           {formatSignedNumber(quote.change, stock.currency)} ({formatPercent(quote.changePercent)})
         </p>
       </div>
-      <p className="app-section-meta">{t("quote.updatedAt", { time: formatLastUpdated(quote.timestamp) })}</p>
+      <div className="app-quote-status-row">
+        <p className="app-section-meta">{t("quote.updatedAt", { time: formatLastUpdated(quote.timestamp) })}</p>
+        <QuoteFreshnessTag isMarketOpen={quote.isMarketOpen} timestamp={quote.timestamp} />
+      </div>
       <Grid className="app-stat-grid" condensed fullWidth>
         <Column className="app-stat-column" sm={2} md={4} lg={3}>
           <Stat label={t("stock.prevClose")} value={formatCurrency(quote.previousClose, stock.currency)} />

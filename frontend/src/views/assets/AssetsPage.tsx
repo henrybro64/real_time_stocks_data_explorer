@@ -21,12 +21,12 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { PortfolioAsset } from "@shared/api";
 import { useLanguage } from "../../app/i18n";
-import { usePortfolioPositions } from "../../hooks/usePortfolioPositions";
+import { RequestStateNotice, errorToNoticeKind } from "../../components/state/RequestStateNotice";
 import {
   addPortfolioAsset,
   deletePortfolioAsset,
   fetchPortfolioAssets,
-  fetchUsdTwdFxRate,
+  fetchPortfolioAssetSummary,
 } from "../../services/api/client";
 import { formatCurrency } from "../../services/format/quote";
 
@@ -37,21 +37,21 @@ export function AssetsPage() {
   const [assetNameDraft, setAssetNameDraft] = useState("");
   const [assetCurrencyDraft, setAssetCurrencyDraft] = useState("USD");
   const [assetValueDraft, setAssetValueDraft] = useState("");
-  const portfolio = usePortfolioPositions();
 
   const assetsQuery = useQuery<PortfolioAsset[]>({
     queryKey: ["portfolio-assets"],
     queryFn: fetchPortfolioAssets,
   });
-  const fxQuery = useQuery({
-    queryKey: ["usd-twd-fx-rate"],
-    queryFn: fetchUsdTwdFxRate,
-    refetchInterval: 60_000,
+  const assetSummaryQuery = useQuery({
+    queryKey: ["portfolio-assets-summary"],
+    queryFn: fetchPortfolioAssetSummary,
+    refetchInterval: 5_000,
   });
   const addAssetMutation = useMutation({
     mutationFn: addPortfolioAsset,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["portfolio-assets"] });
+      queryClient.invalidateQueries({ queryKey: ["portfolio-assets-summary"] });
       setAssetNameDraft("");
       setAssetValueDraft("");
     },
@@ -60,26 +60,21 @@ export function AssetsPage() {
     mutationFn: deletePortfolioAsset,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["portfolio-assets"] });
+      queryClient.invalidateQueries({ queryKey: ["portfolio-assets-summary"] });
     },
   });
 
-  const items = portfolio.positions;
   const assets = assetsQuery.data ?? [];
   const usdAssets = assets.filter((asset) => asset.currency === "USD");
   const twdAssets = assets.filter((asset) => asset.currency === "TWD");
-  const totalUsd = [...items, ...assets].reduce((sum, entry) => {
-    const currency = "stock" in entry ? entry.stock.currency : entry.currency;
-    const value = "stock" in entry ? entry.marketValue : entry.value;
-    return currency === "USD" ? sum + value : sum;
-  }, 0);
-  const totalTwd = [...items, ...assets].reduce((sum, entry) => {
-    const currency = "stock" in entry ? entry.stock.currency : entry.currency;
-    const value = "stock" in entry ? entry.marketValue : entry.value;
-    return currency === "TWD" ? sum + value : sum;
-  }, 0);
-  const usdTwdRate = fxQuery.data?.rate ?? 0;
-  const combinedUsd = usdTwdRate > 0 ? totalUsd + totalTwd / usdTwdRate : totalUsd;
-  const combinedTwd = usdTwdRate > 0 ? totalTwd + totalUsd * usdTwdRate : totalTwd;
+  const summary = assetSummaryQuery.data;
+  const usdTwdRate = summary?.usdTwdRate ?? 0;
+  const summaryNoticeKind =
+    assetSummaryQuery.error != null
+      ? (summary ? "stale" : errorToNoticeKind(assetSummaryQuery.error))
+      : null;
+  const showSummaryLoading = summary == null && assetSummaryQuery.isLoading;
+  const showSummaryError = summary == null && summaryNoticeKind != null;
 
   const handleAddAsset = () => {
     // Be tolerant of user input like "1,000.50"
@@ -116,28 +111,59 @@ export function AssetsPage() {
               <h2>{t("portfolio.aggregate.title")}</h2>
             </div>
           </div>
-          <div className="app-assets-currency-columns">
-            <div className="app-portfolio-aggregate-card">
-              <p className="app-section-meta">USD</p>
-              <p className="app-stock-card-price" data-testid="assets-total-usd">
-                {formatCurrency(totalUsd, "USD")}
-              </p>
-              <p className="app-section-meta">{t("portfolio.aggregate.combinedUsd")}</p>
-              <p className="app-portfolio-combined-amount" data-testid="assets-combined-usd">
-                {formatCurrency(combinedUsd, "USD")}
-              </p>
+          {showSummaryError ? (
+            <div className="app-state-notice-wrap">
+              <RequestStateNotice compact kind={summaryNoticeKind} scopeLabel={t("portfolio.aggregate.title")} />
             </div>
-            <div className="app-portfolio-aggregate-card">
-              <p className="app-section-meta">TWD</p>
-              <p className="app-stock-card-price" data-testid="assets-total-twd">
-                {formatCurrency(totalTwd, "TWD")}
-              </p>
-              <p className="app-section-meta">{t("portfolio.aggregate.combinedTwd")}</p>
-              <p className="app-portfolio-combined-amount" data-testid="assets-combined-twd">
-                {formatCurrency(combinedTwd, "TWD")}
-              </p>
+          ) : (
+            <div className="app-assets-currency-columns">
+              <div className="app-portfolio-aggregate-card">
+                <p className="app-section-meta">USD</p>
+                {showSummaryLoading ? (
+                  <InlineLoading description={t("portfolio.assets.loading")} status="active" />
+                ) : (
+                  <>
+                    <p className="app-stock-card-price" data-testid="assets-total-usd">
+                      {formatCurrency(summary!.totalUsd, "USD")}
+                    </p>
+                    <p className="app-section-meta">{t("portfolio.aggregate.combinedUsd")}</p>
+                    <p className="app-portfolio-combined-amount" data-testid="assets-combined-usd">
+                      {formatCurrency(summary!.combinedUsd, "USD")}
+                    </p>
+                    <p className="app-section-meta">{t("portfolio.aggregate.liquidAssets")}</p>
+                    <p className="app-portfolio-secondary-amount" data-testid="assets-liquid-usd">
+                      {formatCurrency(summary!.liquidCombinedUsd, "USD")}
+                    </p>
+                  </>
+                )}
+              </div>
+              <div className="app-portfolio-aggregate-card">
+                <p className="app-section-meta">TWD</p>
+                {showSummaryLoading ? (
+                  <InlineLoading description={t("portfolio.assets.loading")} status="active" />
+                ) : (
+                  <>
+                    <p className="app-stock-card-price" data-testid="assets-total-twd">
+                      {formatCurrency(summary!.totalTwd, "TWD")}
+                    </p>
+                    <p className="app-section-meta">{t("portfolio.aggregate.combinedTwd")}</p>
+                    <p className="app-portfolio-combined-amount" data-testid="assets-combined-twd">
+                      {formatCurrency(summary!.combinedTwd, "TWD")}
+                    </p>
+                    <p className="app-section-meta">{t("portfolio.aggregate.liquidAssets")}</p>
+                    <p className="app-portfolio-secondary-amount" data-testid="assets-liquid-twd">
+                      {formatCurrency(summary!.liquidCombinedTwd, "TWD")}
+                    </p>
+                  </>
+                )}
+              </div>
             </div>
-          </div>
+          )}
+          {summary != null && summaryNoticeKind ? (
+            <div className="app-state-notice-wrap">
+              <RequestStateNotice compact kind={summaryNoticeKind} scopeLabel={t("portfolio.aggregate.title")} />
+            </div>
+          ) : null}
           <p className="app-section-meta">
             {t("portfolio.aggregate.fxRate")}:{" "}
             {usdTwdRate > 0 ? `1 USD = ${usdTwdRate.toFixed(4)} TWD` : "—"}

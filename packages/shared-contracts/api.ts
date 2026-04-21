@@ -103,6 +103,20 @@ export type PortfolioSummary = {
   skippedStockIds: string[];
 };
 
+export type PortfolioAssetSummary = {
+  totalUsd: number;
+  totalTwd: number;
+  combinedUsd: number;
+  combinedTwd: number;
+  liquidTotalUsd: number;
+  liquidTotalTwd: number;
+  liquidCombinedUsd: number;
+  liquidCombinedTwd: number;
+  usdTwdRate: number;
+  fxTimestamp: string;
+  skippedStockIds: string[];
+};
+
 export type PortfolioAssetType = "cash" | "real_estate" | "other";
 
 export type PortfolioAsset = {
@@ -265,4 +279,3 @@ export type USPeerInsight = {
 export type USStockInsights = {
   peer: USPeerInsight;
 };
-

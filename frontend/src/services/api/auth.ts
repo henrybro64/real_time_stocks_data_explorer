@@ -1,4 +1,4 @@
-import { apiUrl } from "./client";
+import { requestJson, requestVoid } from "./client";
 
 export type AuthStatus = {
   authEnabled: boolean;
@@ -8,49 +8,31 @@ export type AuthStatus = {
 };
 
 export async function fetchAuthStatus(): Promise<AuthStatus> {
-  const response = await fetch(apiUrl("/auth/status"), {
-    credentials: "include",
-  });
-  if (!response.ok) {
-    throw new Error(`Auth status failed: ${response.status}`);
-  }
-  return (await response.json()) as AuthStatus;
+  return requestJson<AuthStatus>("/auth/status");
 }
 
 export async function logout(): Promise<void> {
-  const response = await fetch(apiUrl("/auth/logout"), {
+  await requestVoid("/auth/logout", {
     method: "POST",
-    credentials: "include",
   });
-  if (!response.ok) {
-    throw new Error(`Logout failed: ${response.status}`);
-  }
 }
 
 export async function loginLocal(username: string, password: string): Promise<void> {
-  const response = await fetch(apiUrl("/auth/login/local"), {
+  await requestVoid("/auth/login/local", {
     method: "POST",
-    credentials: "include",
     headers: {
       "content-type": "application/json",
     },
     body: JSON.stringify({ username, password }),
   });
-  if (!response.ok) {
-    throw new Error(`Local login failed: ${response.status}`);
-  }
 }
 
 export async function registerLocal(username: string, password: string): Promise<void> {
-  const response = await fetch(apiUrl("/auth/register/local"), {
+  await requestVoid("/auth/register/local", {
     method: "POST",
-    credentials: "include",
     headers: {
       "content-type": "application/json",
     },
     body: JSON.stringify({ username, password }),
   });
-  if (!response.ok) {
-    throw new Error(`Local register failed: ${response.status}`);
-  }
 }

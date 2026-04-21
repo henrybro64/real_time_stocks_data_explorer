@@ -9,6 +9,7 @@ import type {
   AiInsightResponse,
   PortfolioAsset,
   PortfolioAssetCreate,
+  PortfolioAssetSummary,
   PortfolioAssetUpdate,
   PortfolioPosition,
   PortfolioPositionCreate,
@@ -21,6 +22,28 @@ import type {
 } from "@shared/api";
 import type { TimeRange } from "@shared/quote";
 import type { Stock } from "@shared/stock";
+
+export type ApiErrorKind =
+  | "auth"
+  | "permission"
+  | "unavailable"
+  | "validation"
+  | "not_found"
+  | "unknown";
+
+export class ApiError extends Error {
+  readonly detail: string | null;
+  readonly kind: ApiErrorKind;
+  readonly status: number | null;
+
+  constructor(message: string, options: { status?: number | null; detail?: string | null; kind: ApiErrorKind }) {
+    super(message);
+    this.name = "ApiError";
+    this.status = options.status ?? null;
+    this.detail = options.detail ?? null;
+    this.kind = options.kind;
+  }
+}
 
 /**
  * API environment (Next.js):
@@ -60,27 +83,118 @@ const defaultFetchInit: RequestInit = {
   credentials: "include",
 };
 
+function classifyApiErrorKind(status: number | null, detail: string | null, message: string): ApiErrorKind {
+  const text = `${detail ?? ""} ${message}`.toLowerCase();
+
+  if (status === 401 || text.includes("not authenticated") || text.includes("invalid username or password")) {
+    return "auth";
+  }
+  if (status === 403 || text.includes("forbidden") || text.includes("permission")) {
+    return "permission";
+  }
+  if (
+    status === 502 ||
+    status === 503 ||
+    status === 504 ||
+    text.includes("failed to fetch") ||
+    text.includes("networkerror") ||
+    text.includes("network request failed") ||
+    text.includes("timeout") ||
+    text.includes("temporarily unavailable") ||
+    text.includes("provider unavailable")
+  ) {
+    return "unavailable";
+  }
+  if (status === 400) {
+    return "validation";
+  }
+  if (status === 404) {
+    return "not_found";
+  }
+  return "unknown";
+}
+
 /** FastAPI error bodies: `detail` as string, validation array, or object. */
-async function failedRequestMessage(response: Response): Promise<string> {
-  let extra = "";
+async function failedRequestDetail(response: Response): Promise<string | null> {
   try {
     const payload = (await response.json()) as { detail?: unknown };
     const detail = payload.detail;
     if (typeof detail === "string") {
-      extra = ` - ${detail}`;
-    } else if (detail != null) {
-      extra = ` - ${JSON.stringify(detail)}`;
+      return detail;
+    }
+    if (detail != null) {
+      return JSON.stringify(detail);
     }
   } catch {
     /* ignore non-JSON body */
   }
-  return `Request failed: ${response.status}${extra}`;
+  return null;
+}
+
+async function failedRequestError(response: Response): Promise<ApiError> {
+  const detail = await failedRequestDetail(response);
+  const message = detail ? `Request failed: ${response.status} - ${detail}` : `Request failed: ${response.status}`;
+  return new ApiError(message, {
+    status: response.status,
+    detail,
+    kind: classifyApiErrorKind(response.status, detail, message),
+  });
+}
+
+export function toApiError(error: unknown): ApiError {
+  if (error instanceof ApiError) {
+    return error;
+  }
+  if (error instanceof Error) {
+    return new ApiError(error.message, {
+      status: null,
+      detail: error.message,
+      kind: classifyApiErrorKind(null, error.message, error.message),
+    });
+  }
+  return new ApiError("Unknown request failure", {
+    status: null,
+    detail: null,
+    kind: "unknown",
+  });
+}
+
+function mergeRequestInit(init?: RequestInit): RequestInit {
+  return {
+    ...defaultFetchInit,
+    ...init,
+    headers: {
+      ...(defaultFetchInit.headers ?? {}),
+      ...(init?.headers ?? {}),
+    },
+  };
+}
+
+async function request(path: string, init?: RequestInit): Promise<Response> {
+  try {
+    const response = await fetch(apiUrl(path), mergeRequestInit(init));
+    if (!response.ok) {
+      throw await failedRequestError(response);
+    }
+    return response;
+  } catch (error) {
+    throw toApiError(error);
+  }
+}
+
+export async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await request(path, init);
+  return (await response.json()) as T;
+}
+
+export async function requestVoid(path: string, init?: RequestInit): Promise<void> {
+  await request(path, init);
 }
 
 async function fetchJson<T>(path: string): Promise<T> {
-  const response = await fetch(apiUrl(path), defaultFetchInit);
+  const response = await request(path);
   if (!response.ok) {
-    throw new Error(await failedRequestMessage(response));
+    throw await failedRequestError(response);
   }
   return (await response.json()) as T;
 }
@@ -136,36 +250,19 @@ export function fetchWatchlist() {
 }
 
 export async function addToWatchlist(stockId: string) {
-  const response = await fetch(apiUrl("/watchlist/items"), {
-    ...defaultFetchInit,
+  return requestJson<WatchlistResponse>("/watchlist/items", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
     },
     body: JSON.stringify({ id: stockId }),
   });
-
-  if (!response.ok) {
-    throw new Error(await failedRequestMessage(response));
-  }
-
-  return (await response.json()) as WatchlistResponse;
 }
 
 export async function removeFromWatchlist(stockId: string) {
-  const response = await fetch(
-    apiUrl(`/watchlist/items/${encodeURIComponent(stockId)}`),
-    {
-      ...defaultFetchInit,
-      method: "DELETE",
-    },
-  );
-
-  if (!response.ok) {
-    throw new Error(await failedRequestMessage(response));
-  }
-
-  return (await response.json()) as WatchlistResponse;
+  return requestJson<WatchlistResponse>(`/watchlist/items/${encodeURIComponent(stockId)}`, {
+    method: "DELETE",
+  });
 }
 
 export function fetchPortfolioPositions() {
@@ -177,87 +274,63 @@ export function fetchPortfolioSummary() {
 }
 
 export async function addPortfolioPosition(payload: PortfolioPositionCreate) {
-  const response = await fetch(apiUrl("/portfolio/positions"), {
-    ...defaultFetchInit,
+  return requestJson<PortfolioPosition>("/portfolio/positions", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
     },
     body: JSON.stringify(payload),
   });
-  if (!response.ok) {
-    throw new Error(await failedRequestMessage(response));
-  }
-  return (await response.json()) as PortfolioPosition;
 }
 
 export async function updatePortfolioPosition(positionId: number, payload: PortfolioPositionUpdate) {
-  const response = await fetch(apiUrl(`/portfolio/positions/${positionId}`), {
-    ...defaultFetchInit,
+  return requestJson<PortfolioPosition>(`/portfolio/positions/${positionId}`, {
     method: "PATCH",
     headers: {
       "Content-Type": "application/json",
     },
     body: JSON.stringify(payload),
   });
-  if (!response.ok) {
-    throw new Error(await failedRequestMessage(response));
-  }
-  return (await response.json()) as PortfolioPosition;
 }
 
 export async function deletePortfolioPosition(positionId: number) {
-  const response = await fetch(apiUrl(`/portfolio/positions/${positionId}`), {
-    ...defaultFetchInit,
+  await requestVoid(`/portfolio/positions/${positionId}`, {
     method: "DELETE",
   });
-  if (!response.ok) {
-    throw new Error(await failedRequestMessage(response));
-  }
 }
 
 export function fetchPortfolioAssets() {
   return fetchJson<PortfolioAsset[]>("/portfolio/assets");
 }
 
+export function fetchPortfolioAssetSummary() {
+  return fetchJson<PortfolioAssetSummary>("/portfolio/assets/summary");
+}
+
 export async function addPortfolioAsset(payload: PortfolioAssetCreate) {
-  const response = await fetch(apiUrl("/portfolio/assets"), {
-    ...defaultFetchInit,
+  return requestJson<PortfolioAsset>("/portfolio/assets", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
     },
     body: JSON.stringify(payload),
   });
-  if (!response.ok) {
-    throw new Error(await failedRequestMessage(response));
-  }
-  return (await response.json()) as PortfolioAsset;
 }
 
 export async function updatePortfolioAsset(assetId: number, payload: PortfolioAssetUpdate) {
-  const response = await fetch(apiUrl(`/portfolio/assets/${assetId}`), {
-    ...defaultFetchInit,
+  return requestJson<PortfolioAsset>(`/portfolio/assets/${assetId}`, {
     method: "PATCH",
     headers: {
       "Content-Type": "application/json",
     },
     body: JSON.stringify(payload),
   });
-  if (!response.ok) {
-    throw new Error(await failedRequestMessage(response));
-  }
-  return (await response.json()) as PortfolioAsset;
 }
 
 export async function deletePortfolioAsset(assetId: number) {
-  const response = await fetch(apiUrl(`/portfolio/assets/${assetId}`), {
-    ...defaultFetchInit,
+  await requestVoid(`/portfolio/assets/${assetId}`, {
     method: "DELETE",
   });
-  if (!response.ok) {
-    throw new Error(await failedRequestMessage(response));
-  }
 }
 
 export function fetchApiKeyStatus(provider: "openai" | "perplexity") {
@@ -265,18 +338,13 @@ export function fetchApiKeyStatus(provider: "openai" | "perplexity") {
 }
 
 export async function saveApiKey(provider: "openai" | "perplexity", apiKey: string) {
-  const response = await fetch(apiUrl(`/ai/keys/${provider}`), {
-    ...defaultFetchInit,
+  return requestJson<ApiKeyStatus>(`/ai/keys/${provider}`, {
     method: "PUT",
     headers: {
       "Content-Type": "application/json",
     },
     body: JSON.stringify({ apiKey }),
   });
-  if (!response.ok) {
-    throw new Error(await failedRequestMessage(response));
-  }
-  return (await response.json()) as ApiKeyStatus;
 }
 
 export function fetchAiInsight(stockId: string, provider: "openai" | "perplexity") {

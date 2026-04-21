@@ -7,6 +7,8 @@ import type { Stock } from "@shared/stock";
 import { useId } from "react";
 import { getDisplayStockName, useLanguage } from "../../app/i18n";
 import { fetchHistory, fetchQuote } from "../../services/api/client";
+import { QuoteFreshnessTag } from "../state/QuoteFreshnessTag";
+import { RequestStateNotice, errorToNoticeKind } from "../state/RequestStateNotice";
 import {
   formatCurrency,
   formatLastUpdated,
@@ -54,6 +56,7 @@ export function StockCard({
 
   const quote = initialQuote ?? quoteQuery.data;
   const chartLayout = historyQuery.data?.chartLayout ?? null;
+  const quoteRefreshFailed = initialQuote === undefined && quoteQuery.isError && quote != null;
 
   return (
     <Tile className="app-stock-card" data-testid={`stock-card-${stock.id}`}>
@@ -75,7 +78,28 @@ export function StockCard({
               {formatSignedNumber(quote.change, stock.currency)} ({formatPercent(quote.changePercent)})
             </p>
           </div>
-          <Sparkline chartLayout={chartLayout} isLoading={historyQuery.isLoading} currency={stock.currency} />
+          <div className="app-stock-card-status-row">
+            <QuoteFreshnessTag
+              isMarketOpen={quote.isMarketOpen}
+              refreshFailed={quoteRefreshFailed}
+              timestamp={quote.timestamp}
+            />
+            <p className="app-section-meta">
+              {stock.market === "TW"
+                ? `${t("stock.updatedAt")} ${formatLastUpdatedWithSeconds(quote.timestamp)}`
+                : `${t("stock.updatedAt")} ${formatLastUpdated(quote.timestamp)}`}
+            </p>
+          </div>
+          {quoteRefreshFailed ? (
+            <RequestStateNotice compact kind="stale" scopeLabel={stock.symbol} />
+          ) : null}
+          <Sparkline
+            chartLayout={chartLayout}
+            currency={stock.currency}
+            error={historyQuery.error}
+            isLoading={historyQuery.isLoading}
+            scopeLabel={`${stock.symbol} ${t("stock.weekRange")}`}
+          />
           <dl className="app-stock-card-meta">
             <div>
               <dt>{t("stock.market")}</dt>
@@ -83,11 +107,7 @@ export function StockCard({
             </div>
             <div>
               <dt>{t("stock.updatedAt")}</dt>
-              <dd>
-                {stock.market === "TW"
-                  ? formatLastUpdatedWithSeconds(quote.timestamp)
-                  : formatLastUpdated(quote.timestamp)}
-              </dd>
+              <dd>{stock.market === "TW" ? formatLastUpdatedWithSeconds(quote.timestamp) : formatLastUpdated(quote.timestamp)}</dd>
             </div>
             <div>
               <dt>{t("stock.prevClose")}</dt>
@@ -108,7 +128,7 @@ export function StockCard({
           </dl>
         </>
       ) : quoteQuery.isError ? (
-        <p className="app-supporting-copy">{t("stock.quoteLoadError")}</p>
+        <RequestStateNotice compact kind={errorToNoticeKind(quoteQuery.error)} scopeLabel={stock.symbol} />
       ) : (
         <InlineLoading description={t("stock.quoteLoading")} status="active" />
       )}
@@ -137,15 +157,20 @@ export function StockCard({
 
 function Sparkline({
   chartLayout,
+  error,
   isLoading,
   currency,
+  scopeLabel,
 }: {
   chartLayout: ChartLayout | null;
+  error?: unknown;
   isLoading: boolean;
   currency: "USD" | "TWD";
+  scopeLabel: string;
 }) {
   const { t } = useLanguage();
   const gradId = useId().replace(/:/g, "");
+  const noticeKind = error ? (chartLayout ? "stale" : errorToNoticeKind(error)) : null;
 
   if (isLoading) {
     return (
@@ -153,6 +178,10 @@ function Sparkline({
         <InlineLoading description={t("stock.weekRange")} status="active" />
       </div>
     );
+  }
+
+  if ((!chartLayout || chartLayout.points.length < 2) && noticeKind) {
+    return <RequestStateNotice compact kind={noticeKind} scopeLabel={scopeLabel} />;
   }
 
   if (!chartLayout || chartLayout.points.length < 2) {
@@ -168,6 +197,7 @@ function Sparkline({
 
   return (
     <div className="app-stock-card-sparkline">
+      {noticeKind ? <RequestStateNotice compact kind={noticeKind} scopeLabel={scopeLabel} /> : null}
       <div className="app-stock-card-sparkline-header">
         <p className="app-section-meta">{t("stock.weekRange")}</p>
         <p className={trendUp ? "app-positive app-stock-card-range" : "app-negative app-stock-card-range"}>

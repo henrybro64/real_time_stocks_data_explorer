@@ -12,6 +12,7 @@ from app.schemas.portfolio import (
     PortfolioPositionCreate,
     PortfolioAssetCreate,
     PortfolioAssetResponse,
+    PortfolioAssetSummaryResponse,
     PortfolioAssetUpdate,
     PortfolioPositionResponse,
     PortfolioPositionUpdate,
@@ -129,53 +130,54 @@ def get_portfolio_summary(
     positions = portfolio_service.list_positions(user_id)
     fx_snapshot = get_usd_twd_fx_snapshot()
     usd_twd_rate = float(fx_snapshot["rate"])
-
-    total_usd = 0.0
-    total_twd = 0.0
-    rows: list[PortfolioSummaryPosition] = []
-    skipped_stock_ids: list[str] = []
-
-    for position in positions:
-        stock = quote_service.get_stock(position.stock_id)
-        if stock is None:
-            skipped_stock_ids.append(position.stock_id)
-            continue
-        quote = quote_service.get_quote(position.stock_id)
-        if quote is None:
-            quote = _synthetic_quote_for_holdings(stock, position)
-        market_value = position.quantity * quote.last_price
-        if stock.currency == "USD":
-            total_usd += market_value
-        elif stock.currency == "TWD":
-            total_twd += market_value
-
-        rows.append(
-            PortfolioSummaryPosition(
-                stockId=position.stock_id,
-                symbol=stock.symbol,
-                currency=stock.currency,
-                quantity=position.quantity,
-                lastPrice=quote.last_price,
-                marketValue=round(market_value, 2),
-                timestamp=quote.timestamp,
-            )
-        )
-
-    combined_usd = total_usd + (
-        total_twd / usd_twd_rate if usd_twd_rate > 0 else 0.0
-    )
-    combined_twd = total_twd + (
-        total_usd * usd_twd_rate if usd_twd_rate > 0 else 0.0
-    )
+    rows, position_entries, skipped_stock_ids = _summarize_positions(positions)
+    totals = portfolio_service.summarize_currency_buckets(position_entries, usd_twd_rate)
 
     return PortfolioSummaryResponse(
-        totalUsd=round(total_usd, 2),
-        totalTwd=round(total_twd, 2),
-        combinedUsd=round(combined_usd, 2),
-        combinedTwd=round(combined_twd, 2),
+        totalUsd=totals["totalUsd"],
+        totalTwd=totals["totalTwd"],
+        combinedUsd=totals["combinedUsd"],
+        combinedTwd=totals["combinedTwd"],
         usdTwdRate=usd_twd_rate,
         fxTimestamp=str(fx_snapshot["timestamp"]),
         positions=rows,
+        skippedStockIds=skipped_stock_ids,
+    )
+
+
+@router.get("/assets/summary", response_model=PortfolioAssetSummaryResponse)
+def get_portfolio_asset_summary(
+    user_id: str = Depends(get_effective_user_id),
+) -> PortfolioAssetSummaryResponse:
+    positions = portfolio_service.list_positions(user_id)
+    assets = portfolio_service.list_assets(user_id)
+    fx_snapshot = get_usd_twd_fx_snapshot()
+    usd_twd_rate = float(fx_snapshot["rate"])
+
+    _, position_entries, skipped_stock_ids = _summarize_positions(positions)
+    all_entries = list(position_entries)
+    liquid_entries = list(position_entries)
+
+    for asset in assets:
+        value = round(float(asset.value), 2)
+        all_entries.append((asset.currency, value))
+        if asset.asset_type != "real_estate":
+            liquid_entries.append((asset.currency, value))
+
+    totals = portfolio_service.summarize_currency_buckets(all_entries, usd_twd_rate)
+    liquid_totals = portfolio_service.summarize_currency_buckets(liquid_entries, usd_twd_rate)
+
+    return PortfolioAssetSummaryResponse(
+        totalUsd=totals["totalUsd"],
+        totalTwd=totals["totalTwd"],
+        combinedUsd=totals["combinedUsd"],
+        combinedTwd=totals["combinedTwd"],
+        liquidTotalUsd=liquid_totals["totalUsd"],
+        liquidTotalTwd=liquid_totals["totalTwd"],
+        liquidCombinedUsd=liquid_totals["combinedUsd"],
+        liquidCombinedTwd=liquid_totals["combinedTwd"],
+        usdTwdRate=usd_twd_rate,
+        fxTimestamp=str(fx_snapshot["timestamp"]),
         skippedStockIds=skipped_stock_ids,
     )
 
@@ -247,6 +249,38 @@ def _synthetic_quote_for_holdings(
         low=price,
         volume=None,
     )
+
+
+def _summarize_positions(
+    positions: list[PortfolioPosition],
+) -> tuple[list[PortfolioSummaryPosition], list[tuple[str, float]], list[str]]:
+    rows: list[PortfolioSummaryPosition] = []
+    entries: list[tuple[str, float]] = []
+    skipped_stock_ids: list[str] = []
+
+    for position in positions:
+        stock = quote_service.get_stock(position.stock_id)
+        if stock is None:
+            skipped_stock_ids.append(position.stock_id)
+            continue
+        quote = quote_service.get_quote(position.stock_id)
+        if quote is None:
+            quote = _synthetic_quote_for_holdings(stock, position)
+        market_value = round(position.quantity * quote.last_price, 2)
+        entries.append((stock.currency, market_value))
+        rows.append(
+            PortfolioSummaryPosition(
+                stockId=position.stock_id,
+                symbol=stock.symbol,
+                currency=stock.currency,
+                quantity=position.quantity,
+                lastPrice=quote.last_price,
+                marketValue=market_value,
+                timestamp=quote.timestamp,
+            )
+        )
+
+    return rows, entries, skipped_stock_ids
 
 
 def _to_response(

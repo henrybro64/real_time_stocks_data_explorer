@@ -114,6 +114,7 @@ type TranslationKey =
   | "portfolio.aggregate.title"
   | "portfolio.aggregate.combinedUsd"
   | "portfolio.aggregate.combinedTwd"
+  | "portfolio.aggregate.liquidAssets"
   | "portfolio.aggregate.fxRate"
   | "aiSettings.title"
   | "aiSettings.description"
@@ -264,6 +265,7 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "portfolio.aggregate.title": "Aggregated assets by currency",
     "portfolio.aggregate.combinedUsd": "Combined total (USD)",
     "portfolio.aggregate.combinedTwd": "Combined total (TWD)",
+    "portfolio.aggregate.liquidAssets": "Liquid assets excl. real estate",
     "portfolio.aggregate.fxRate": "FX rate",
     "aiSettings.title": "AI API key settings",
     "aiSettings.description": "Manage OpenAI and Perplexity API keys for stock detail AI output.",
@@ -424,6 +426,7 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "portfolio.aggregate.title": "依幣別彙總資產",
     "portfolio.aggregate.combinedUsd": "合併總資產（USD）",
     "portfolio.aggregate.combinedTwd": "合併總資產（TWD）",
+    "portfolio.aggregate.liquidAssets": "可變現資產（不含房地產）",
     "portfolio.aggregate.fxRate": "匯率",
     "aiSettings.title": "AI API 金鑰設定",
     "aiSettings.description": "管理 OpenAI 與 Perplexity API 金鑰，供個股明細 AI 輸出使用。",

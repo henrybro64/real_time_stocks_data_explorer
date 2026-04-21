@@ -9,6 +9,7 @@ import { useLanguage } from "../../app/i18n";
 import { MarketIndicesStrip } from "../../components/market-status/MarketIndicesStrip";
 import { MarketStatusStrip } from "../../components/market-status/MarketStatusStrip";
 import { StockSearch } from "../../components/search/StockSearch";
+import { errorToNoticeKind } from "../../components/state/RequestStateNotice";
 import { WatchlistTable } from "../../components/watchlist/WatchlistTable";
 import { useWatchlist } from "../../hooks/useWatchlist";
 import { fetchMarketIndices, fetchMarkets, fetchQuotes, searchStocks } from "../../services/api/client";
@@ -80,6 +81,29 @@ export function HomePage() {
     return watchlist.ids.filter((stockId) => !hydratedIds.has(stockId));
   }, [watchlist.ids, watchlistItems]);
 
+  const watchlistNoticeKind = useMemo(() => {
+    if (watchlist.mutationError) {
+      return errorToNoticeKind(watchlist.mutationError);
+    }
+    if (watchlist.queryError && !watchlist.hasLoaded) {
+      return errorToNoticeKind(watchlist.queryError);
+    }
+    if (watchlistQuery.isError && watchlistItems.length > 0) {
+      return "stale";
+    }
+    if (watchlistQuery.error) {
+      return errorToNoticeKind(watchlistQuery.error);
+    }
+    return null;
+  }, [
+    watchlist.hasLoaded,
+    watchlist.mutationError,
+    watchlist.queryError,
+    watchlistItems.length,
+    watchlistQuery.error,
+    watchlistQuery.isError,
+  ]);
+
   return (
     <Grid className="app-page-grid" fullWidth>
       <Column className="app-column-spacing" sm={4} md={8} lg={12}>
@@ -119,10 +143,14 @@ export function HomePage() {
         </Tile>
       </Column>
       <Column className="app-column-spacing" id="markets" sm={4} md={8} lg={16}>
-        <MarketStatusStrip isLoading={marketsQuery.isLoading} markets={marketsQuery.data ?? []} />
+        <MarketStatusStrip error={marketsQuery.error} isLoading={marketsQuery.isLoading} markets={marketsQuery.data ?? []} />
       </Column>
       <Column className="app-column-spacing" sm={4} md={8} lg={16}>
-        <MarketIndicesStrip isLoading={marketIndicesQuery.isLoading} items={marketIndicesQuery.data ?? []} />
+        <MarketIndicesStrip
+          error={marketIndicesQuery.error}
+          isLoading={marketIndicesQuery.isLoading}
+          items={marketIndicesQuery.data ?? []}
+        />
       </Column>
       <Column className="app-column-spacing" sm={4} md={8} lg={16}>
         <StockSearch
@@ -137,12 +165,13 @@ export function HomePage() {
       <Column className="app-column-spacing" id="watchlist" sm={4} md={8} lg={16}>
         <WatchlistTable
           isLoading={
-            watchlist.ids.length === 0
-            && !watchlistQuery.data
-            && (watchlistQuery.isLoading || watchlist.isLoading)
+            watchlist.ids.length === 0 &&
+            !watchlistQuery.data &&
+            (watchlistQuery.isLoading || watchlist.isLoading)
           }
           isRefreshing={!!watchlistQuery.data && (watchlistQuery.isFetching || watchlist.isMutating)}
           items={watchlistItems}
+          noticeKind={watchlistNoticeKind}
           pendingIds={pendingWatchlistIds}
           trackedCount={watchlist.ids.length}
           onRemove={watchlist.remove}

@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { PortfolioPosition } from "@shared/api";
 import {
@@ -12,6 +13,7 @@ import {
 
 export function usePortfolioPositions() {
   const queryClient = useQueryClient();
+  const [actionError, setActionError] = useState<unknown>(null);
   const query = useQuery({
     queryKey: ["portfolio-positions"],
     queryFn: fetchPortfolioPositions,
@@ -47,28 +49,64 @@ export function usePortfolioPositions() {
   });
 
   const positions: PortfolioPosition[] = query.data ?? [];
+  const mutationError = addMutation.error ?? updateMutation.error ?? deleteMutation.error;
+
+  const resetErrors = () => {
+    addMutation.reset();
+    updateMutation.reset();
+    deleteMutation.reset();
+    setActionError(null);
+  };
 
   const addByStockId = async (stockId: string) => {
-    const quote = await fetchQuote(stockId);
-    addMutation.mutate({
-      stockId,
-      quantity: 1,
-      averageCost: quote.quote.lastPrice,
-      currency: quote.stock.currency,
-      notes: null,
-    });
+    resetErrors();
+    try {
+      const quote = await fetchQuote(stockId);
+      addMutation.mutate({
+        stockId,
+        quantity: 1,
+        averageCost: quote.quote.lastPrice,
+        currency: quote.stock.currency,
+        notes: null,
+      });
+    } catch (error) {
+      setActionError(error);
+    }
+  };
+
+  const add: typeof addMutation.mutate = (...args) => {
+    resetErrors();
+    addMutation.mutate(...args);
+  };
+
+  const update: typeof updateMutation.mutate = (...args) => {
+    resetErrors();
+    updateMutation.mutate(...args);
+  };
+
+  const remove: typeof deleteMutation.mutate = (...args) => {
+    resetErrors();
+    deleteMutation.mutate(...args);
   };
 
   return {
     positions,
     ids: positions.map((item) => item.stockId),
     isLoading: query.isLoading,
-    isError: query.isError,
-    error: query.error,
+    isError:
+      query.isError ||
+      addMutation.isError ||
+      updateMutation.isError ||
+      deleteMutation.isError ||
+      actionError != null,
+    error: actionError ?? mutationError ?? query.error,
+    queryError: query.error,
+    mutationError,
+    actionError,
     isMutating: addMutation.isPending || updateMutation.isPending || deleteMutation.isPending,
-    add: addMutation.mutate,
+    add,
     addByStockId,
-    update: updateMutation.mutate,
-    remove: deleteMutation.mutate,
+    update,
+    remove,
   };
 }

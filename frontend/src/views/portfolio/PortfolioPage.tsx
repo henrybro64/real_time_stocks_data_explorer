@@ -21,6 +21,7 @@ import type { Stock } from "@shared/stock";
 import Link from "next/link";
 import { getDisplayStockName, useLanguage } from "../../app/i18n";
 import { StockSearch } from "../../components/search/StockSearch";
+import { RequestStateNotice, errorToNoticeKind } from "../../components/state/RequestStateNotice";
 import { usePortfolioPositions } from "../../hooks/usePortfolioPositions";
 import { fetchPortfolioSummary, fetchUsdTwdFxRate, searchStocks } from "../../services/api/client";
 import { formatCurrency, formatLastUpdated, formatPercent, formatSignedNumber } from "../../services/format/quote";
@@ -53,8 +54,22 @@ export function PortfolioPage() {
   });
   /** While the first fetch runs, `data` is undefined so `items` is [] — do not treat as empty. */
   const showPortfolioLoading = portfolio.isLoading && items.length === 0;
-  const showPortfolioError = portfolio.isError && items.length === 0;
-  const isEmpty = !portfolio.isLoading && !portfolio.isError && items.length === 0;
+  const showPortfolioError = portfolio.queryError != null && items.length === 0;
+  const isEmpty = !portfolio.isLoading && portfolio.queryError == null && items.length === 0;
+  const portfolioTableNoticeKind =
+    portfolio.queryError != null ? (items.length > 0 ? "stale" : errorToNoticeKind(portfolio.queryError)) : null;
+  const portfolioActionNoticeKind =
+    portfolio.mutationError != null
+      ? errorToNoticeKind(portfolio.mutationError)
+      : portfolio.actionError != null
+        ? errorToNoticeKind(portfolio.actionError)
+        : null;
+  const portfolioAggregateNoticeKind =
+    summaryQuery.error != null
+      ? (summaryQuery.data ? "stale" : errorToNoticeKind(summaryQuery.error))
+      : fxQuery.error != null
+        ? (fxQuery.data ? "stale" : errorToNoticeKind(fxQuery.error))
+        : null;
 
   /** Sum table `marketValue` by native currency — matches the grid; avoids $0 while /summary is slow. */
   const holdingsNativeTotals = useMemo(() => {
@@ -163,6 +178,12 @@ export function PortfolioPage() {
         </Tile>
       </Column>
 
+      {portfolioActionNoticeKind ? (
+        <Column className="app-column-spacing" sm={4} md={8} lg={16}>
+          <RequestStateNotice kind={portfolioActionNoticeKind} scopeLabel={t("portfolio.title")} />
+        </Column>
+      ) : null}
+
       {!showPortfolioLoading && !showPortfolioError && items.length > 0 ? (
         <Column className="app-column-spacing" sm={4} md={8} lg={16}>
           <Tile className="app-section-tile">
@@ -194,6 +215,11 @@ export function PortfolioPage() {
                 </p>
               </div>
             </div>
+            {portfolioAggregateNoticeKind ? (
+              <div className="app-state-notice-wrap">
+                <RequestStateNotice compact kind={portfolioAggregateNoticeKind} scopeLabel={t("portfolio.equity.title")} />
+              </div>
+            ) : null}
             <p className="app-section-meta">
               {t("portfolio.aggregate.fxRate")}:{" "}
               {usdTwdRate > 0 ? `1 USD = ${usdTwdRate.toFixed(4)} TWD` : "—"}
@@ -238,8 +264,13 @@ export function PortfolioPage() {
 
       <Column className="app-column-spacing" sm={4} md={8} lg={16}>
         <Tile className="app-section-tile">
+          {portfolioTableNoticeKind ? (
+            <div className="app-state-notice-wrap">
+              <RequestStateNotice kind={portfolioTableNoticeKind} scopeLabel={t("portfolio.title")} />
+            </div>
+          ) : null}
           {showPortfolioError ? (
-            <p className="app-supporting-copy app-negative">{t("portfolio.loadError")}</p>
+            <RequestStateNotice kind={errorToNoticeKind(portfolio.error)} scopeLabel={t("portfolio.title")} />
           ) : showPortfolioLoading ? (
             <InlineLoading description={t("portfolio.loading")} status="active" />
           ) : isEmpty ? (
