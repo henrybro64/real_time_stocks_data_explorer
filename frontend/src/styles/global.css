@@ -780,6 +780,41 @@ input {
   stroke-width: 0.35;
 }
 
+.app-chart-candle-body {
+  stroke-width: 0.35;
+}
+
+.app-chart-candle-body-up {
+  fill: rgba(36, 161, 72, 0.28);
+  stroke: #24a148;
+}
+
+.app-chart-candle-body-down {
+  fill: rgba(218, 30, 40, 0.24);
+  stroke: #da1e28;
+}
+
+.app-chart-candle-body-active {
+  stroke: var(--cds-focus, #ffffff);
+  stroke-width: 0.55;
+}
+
+.app-chart-candle-wick {
+  stroke-width: 0.75;
+}
+
+.app-chart-candle-wick-up {
+  stroke: rgba(36, 161, 72, 0.96);
+}
+
+.app-chart-candle-wick-down {
+  stroke: rgba(218, 30, 40, 0.96);
+}
+
+.app-chart-candle-wick-active {
+  stroke-width: 1;
+}
+
 .app-chart-hit-layer {
   cursor: crosshair;
 }
@@ -790,7 +825,8 @@ input {
   height: 18rem;
   border: 1px solid var(--cds-border-subtle-01);
   background:
-    linear-gradient(180deg, rgba(15, 98, 254, 0.08), rgba(255, 255, 255, 0) 55%),
+    radial-gradient(circle at top right, rgba(69, 137, 255, 0.08), rgba(255, 255, 255, 0) 38%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0) 60%),
     var(--cds-layer);
 }
 

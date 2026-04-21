@@ -39,8 +39,8 @@ describe("PriceChart", () => {
           },
         ]}
         chartLayout={{
-          minY: 102,
-          maxY: 118,
+          minY: 95,
+          maxY: 120,
           pointsPolyline: "0,100 100,0",
           points: [
             { x: 0, y: 100 },
@@ -63,5 +63,58 @@ describe("PriceChart", () => {
     expect(
       screen.getByText("將游標移到圖表上或點選，可檢視該時間點的開高低收與成交量。"),
     ).toBeInTheDocument();
+  });
+
+  it("renders candlestick bodies for each candle in the series", () => {
+    const { container } = renderWithLanguage(
+      <PriceChart
+        candles={[
+          {
+            time: "2026-04-01T09:00:00+08:00",
+            open: 100,
+            high: 110,
+            low: 95,
+            close: 102,
+            volume: 1000,
+          },
+          {
+            time: "2026-04-01T10:00:00+08:00",
+            open: 102,
+            high: 120,
+            low: 101,
+            close: 118,
+            volume: 1500,
+          },
+          {
+            time: "2026-04-01T11:00:00+08:00",
+            open: 118,
+            high: 119,
+            low: 109,
+            close: 112,
+            volume: 1400,
+          },
+        ]}
+        chartLayout={{
+          minY: 95,
+          maxY: 120,
+          pointsPolyline: "0,72 50,8 100,32",
+          points: [
+            { x: 0, y: 72 },
+            { x: 50, y: 8 },
+            { x: 100, y: 32 },
+          ],
+          yAxisTicks: [120, 114, 108, 102, 95],
+          xAxisTickIndices: [0, 1, 2],
+          firstClose: 102,
+          lastClose: 112,
+          trendUp: true,
+        }}
+        currency="USD"
+        range="1D"
+      />,
+    );
+
+    expect(container.querySelectorAll(".app-chart-candle-body")).toHaveLength(3);
+    expect(container.querySelectorAll(".app-chart-candle-wick")).toHaveLength(3);
   });
 });

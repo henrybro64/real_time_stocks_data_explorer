@@ -48,6 +48,8 @@ def test_history_endpoint_returns_quote_history_for_requested_range(monkeypatch,
     assert payload["stock"]["id"] == "TW:2330"
     assert payload["range"] == "1W"
     assert len(payload["candles"]) == 2
+    assert payload["chartLayout"]["minY"] == 948.0
+    assert payload["chartLayout"]["maxY"] == 960.0
     assert payload["chartLayout"]["trendUp"] is True
 
 
