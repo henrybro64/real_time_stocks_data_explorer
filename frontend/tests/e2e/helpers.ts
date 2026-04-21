@@ -21,7 +21,20 @@ async function waitForSearchResult(
     { timeout: 10_000 },
   );
   await page.locator(inputSelector).fill(query);
-  await responsePromise;
+  const response = await responsePromise;
+  const payload = (await response.json().catch(() => null)) as
+    | Array<{ id?: unknown; symbol?: unknown }>
+    | null;
+  const resultIds =
+    payload?.flatMap((item) => (typeof item.id === "string" ? [item.id] : [])) ?? [];
+  if (!resultIds.includes(TW_STOCK_ID)) {
+    throw new Error(
+      [
+        `Expected ${TW_STOCK_ID} in search results for query "${query}", but it was missing.`,
+        `Returned ids: ${resultIds.length > 0 ? resultIds.join(", ") : "(none)"}`,
+      ].join(" "),
+    );
+  }
   await expect(searchSection.getByTestId(`stock-card-${TW_STOCK_ID}`)).toBeVisible({ timeout: 10_000 });
   return searchSection.getByTestId(`stock-card-${TW_STOCK_ID}`);
 }
