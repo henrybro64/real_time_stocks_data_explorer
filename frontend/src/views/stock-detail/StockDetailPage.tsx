@@ -19,6 +19,7 @@ import { PriceChart } from "../../components/chart/PriceChart";
 import { KeyStatisticsPanel } from "../../components/key-stats/KeyStatisticsPanel";
 import { StockNewsPanel } from "../../components/news/StockNewsPanel";
 import { QuoteSummary } from "../../components/quote/QuoteSummary";
+import { RequestStateNotice, errorToNoticeKind } from "../../components/state/RequestStateNotice";
 import { TwInsightsPanel } from "../../components/tw-insights/TwInsightsPanel";
 import { UsInsightsPanel } from "../../components/us-insights/UsInsightsPanel";
 import {
@@ -37,7 +38,7 @@ type Props = {
 };
 
 export function StockDetailPage({ stockId = "" }: Props) {
-  const { t } = useLanguage();
+  const { language, t } = useLanguage();
   const decodedStockId = decodeURIComponent(stockId);
   const [range, setRange] = useState<TimeRange>("1D");
   const selectedIndex = RANGES.indexOf(range);
@@ -94,7 +95,7 @@ export function StockDetailPage({ stockId = "" }: Props) {
     );
   }
 
-  if (!quoteQuery.data || !historyQuery.data) {
+  if (!quoteQuery.data && quoteQuery.isLoading) {
     return (
       <Grid className="app-page-grid" fullWidth>
         <Column sm={4} md={8} lg={16}>
@@ -106,6 +107,55 @@ export function StockDetailPage({ stockId = "" }: Props) {
     );
   }
 
+  if (!quoteQuery.data && quoteQuery.isError) {
+    return (
+      <Grid className="app-page-grid" fullWidth>
+        <Column sm={4} md={8} lg={16}>
+          <Tile className="app-empty-state">
+            <RequestStateNotice kind={errorToNoticeKind(quoteQuery.error)} scopeLabel={decodedStockId} />
+          </Tile>
+        </Column>
+      </Grid>
+    );
+  }
+
+  if (!quoteQuery.data) {
+    return (
+      <Grid className="app-page-grid" fullWidth>
+        <Column sm={4} md={8} lg={16}>
+          <Tile className="app-empty-state">
+            <InlineLoading description={t("detail.loading")} status="active" />
+          </Tile>
+        </Column>
+      </Grid>
+    );
+  }
+
+  const quoteRefreshFailed = quoteQuery.isError && quoteQuery.data != null;
+  const sectionLabels =
+    language === "zh-TW"
+      ? {
+          keyStats: "關鍵指標",
+          news: "新聞",
+          twInsights: "台股洞察",
+          usInsights: "美股洞察",
+        }
+      : {
+          keyStats: "key statistics",
+          news: "news",
+          twInsights: "Taiwan insights",
+          usInsights: "U.S. insights",
+        };
+  const chartNoticeKind =
+    historyQuery.error != null
+      ? (historyQuery.data ? "stale" : errorToNoticeKind(historyQuery.error))
+      : null;
+  const keyStatsNoticeKind = keyStatsQuery.error != null ? errorToNoticeKind(keyStatsQuery.error) : null;
+  const newsNoticeKind =
+    newsQuery.error != null ? ((newsQuery.data?.length ?? 0) > 0 ? "stale" : errorToNoticeKind(newsQuery.error)) : null;
+  const twInsightsNoticeKind = twInsightsQuery.error != null ? errorToNoticeKind(twInsightsQuery.error) : null;
+  const usInsightsNoticeKind = usInsightsQuery.error != null ? errorToNoticeKind(usInsightsQuery.error) : null;
+
   return (
     <Grid className="app-page-grid" fullWidth>
       <Column className="app-column-spacing" sm={4} md={8} lg={16}>
@@ -114,56 +164,97 @@ export function StockDetailPage({ stockId = "" }: Props) {
         </Link>
       </Column>
       <Column className="app-column-spacing" sm={4} md={8} lg={16}>
-        <QuoteSummary item={quoteQuery.data} />
+        {quoteRefreshFailed ? (
+          <div className="app-section-stack">
+            <RequestStateNotice kind="stale" scopeLabel={decodedStockId} />
+            <QuoteSummary item={quoteQuery.data} />
+          </div>
+        ) : null}
+        {!quoteRefreshFailed ? <QuoteSummary item={quoteQuery.data} /> : null}
       </Column>
       <Column className="app-column-spacing" sm={4} md={8} lg={16}>
         <Tile className="app-section-tile">
-          <Tabs
-            onChange={({ selectedIndex: nextIndex }) => setRange(RANGES[nextIndex] ?? "1D")}
-            selectedIndex={selectedIndex}
-          >
-            <TabList aria-label={t("detail.selectHistoryRange")} contained>
-              {RANGES.map((item) => (
-                <Tab key={item}>{item}</Tab>
-              ))}
-            </TabList>
-            <TabPanels>
-              {RANGES.map((item) => (
-                <TabPanel key={item}>
-                  <PriceChart
-                    candles={historyQuery.data.candles}
-                    chartLayout={historyQuery.data.chartLayout}
-                    currency={historyQuery.data.stock.currency}
-                    isActive={item === range}
-                    range={item}
-                  />
-                </TabPanel>
-              ))}
-            </TabPanels>
-          </Tabs>
+          {chartNoticeKind ? (
+            <div className="app-state-notice-wrap">
+              <RequestStateNotice kind={chartNoticeKind} scopeLabel={t("chart.title")} />
+            </div>
+          ) : null}
+          {!historyQuery.data && historyQuery.isLoading ? (
+            <InlineLoading description={t("detail.loading")} status="active" />
+          ) : historyQuery.data ? (
+            <Tabs
+              onChange={({ selectedIndex: nextIndex }) => setRange(RANGES[nextIndex] ?? "1D")}
+              selectedIndex={selectedIndex}
+            >
+              <TabList aria-label={t("detail.selectHistoryRange")} contained>
+                {RANGES.map((item) => (
+                  <Tab key={item}>{item}</Tab>
+                ))}
+              </TabList>
+              <TabPanels>
+                {RANGES.map((item) => (
+                  <TabPanel key={item}>
+                    <PriceChart
+                      candles={historyQuery.data.candles}
+                      chartLayout={historyQuery.data.chartLayout}
+                      currency={historyQuery.data.stock.currency}
+                      isActive={item === range}
+                      range={item}
+                    />
+                  </TabPanel>
+                ))}
+              </TabPanels>
+            </Tabs>
+          ) : null}
         </Tile>
       </Column>
       <Column className="app-column-spacing" sm={4} md={8} lg={16}>
-        <KeyStatisticsPanel
-          currency={quoteQuery.data.stock.currency}
-          isLoading={keyStatsQuery.isLoading}
-          stats={keyStatsQuery.data ?? null}
-        />
+        {keyStatsQuery.isError && !keyStatsQuery.data ? (
+          <RequestStateNotice kind={keyStatsNoticeKind ?? "error"} scopeLabel={sectionLabels.keyStats} />
+        ) : (
+          <div className="app-section-stack">
+            {keyStatsQuery.isError && keyStatsNoticeKind ? (
+              <RequestStateNotice compact kind={keyStatsNoticeKind} scopeLabel={sectionLabels.keyStats} />
+            ) : null}
+            <KeyStatisticsPanel
+              currency={quoteQuery.data.stock.currency}
+              isLoading={keyStatsQuery.isLoading}
+              stats={keyStatsQuery.data ?? null}
+            />
+          </div>
+        )}
       </Column>
       <Column className="app-column-spacing" sm={4} md={8} lg={16}>
-        <StockNewsPanel isLoading={newsQuery.isLoading} items={newsQuery.data ?? []} />
+        {newsQuery.isError && (newsQuery.data?.length ?? 0) === 0 ? (
+          <RequestStateNotice kind={newsNoticeKind ?? "error"} scopeLabel={sectionLabels.news} />
+        ) : (
+          <div className="app-section-stack">
+            {newsNoticeKind === "stale" ? (
+              <RequestStateNotice compact kind="stale" scopeLabel={sectionLabels.news} />
+            ) : null}
+            <StockNewsPanel isLoading={newsQuery.isLoading} items={newsQuery.data ?? []} />
+          </div>
+        )}
       </Column>
       <Column className="app-column-spacing" sm={4} md={8} lg={16}>
         <AiInsightPanel stockId={decodedStockId} />
       </Column>
       {isTaiwanStock ? (
         <Column className="app-column-spacing" sm={4} md={8} lg={16}>
-          <TwInsightsPanel isLoading={twInsightsQuery.isLoading} insights={twInsightsQuery.data ?? null} />
+          {twInsightsQuery.isError && !twInsightsQuery.data ? (
+            <RequestStateNotice kind={twInsightsNoticeKind ?? "error"} scopeLabel={sectionLabels.twInsights} />
+          ) : (
+            <TwInsightsPanel isLoading={twInsightsQuery.isLoading} insights={twInsightsQuery.data ?? null} />
+          )}
         </Column>
       ) : null}
       {isUsStock ? (
         <Column className="app-column-spacing" sm={4} md={8} lg={16}>
-          <UsInsightsPanel isLoading={usInsightsQuery.isLoading} insights={usInsightsQuery.data ?? null} />
+          {usInsightsQuery.isError && !usInsightsQuery.data ? (
+            <RequestStateNotice kind={usInsightsNoticeKind ?? "error"} scopeLabel={sectionLabels.usInsights} />
+          ) : (
+            <UsInsightsPanel isLoading={usInsightsQuery.isLoading} insights={usInsightsQuery.data ?? null} />
+          )}
         </Column>
       ) : null}
     </Grid>

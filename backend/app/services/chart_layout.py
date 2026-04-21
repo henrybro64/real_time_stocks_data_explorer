@@ -29,9 +29,10 @@ def _y_axis_ticks(lo: float, hi: float, count: int) -> list[float]:
 def build_chart_layout(candles: list[CandleRecord]) -> dict[str, object] | None:
     if not candles:
         return None
-    closes = [c.close for c in candles]
-    lo = min(closes)
-    hi = max(closes)
+    lows = [c.low for c in candles]
+    highs = [c.high for c in candles]
+    lo = min(lows)
+    hi = max(highs)
     denom = max(len(candles) - 1, 1)
 
     points: list[dict[str, float]] = []

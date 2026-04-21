@@ -198,6 +198,34 @@ class PortfolioService:
         )
         return market_value, unrealized_pl, unrealized_pl_percent
 
+    @staticmethod
+    def summarize_currency_buckets(
+        entries: list[tuple[str, float]],
+        usd_twd_rate: float,
+    ) -> dict[str, float]:
+        total_usd = round(
+            sum(value for currency, value in entries if currency == "USD"),
+            2,
+        )
+        total_twd = round(
+            sum(value for currency, value in entries if currency == "TWD"),
+            2,
+        )
+        combined_usd = round(
+            total_usd + (total_twd / usd_twd_rate if usd_twd_rate > 0 else 0.0),
+            2,
+        )
+        combined_twd = round(
+            total_twd + (total_usd * usd_twd_rate if usd_twd_rate > 0 else 0.0),
+            2,
+        )
+        return {
+            "totalUsd": total_usd,
+            "totalTwd": total_twd,
+            "combinedUsd": combined_usd,
+            "combinedTwd": combined_twd,
+        }
+
     def _validate_stock(self, stock_id: str) -> StockRecord:
         stock = quote_service.get_stock(stock_id)
         if stock is None:

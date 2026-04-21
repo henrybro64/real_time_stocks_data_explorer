@@ -77,3 +77,17 @@ class PortfolioSummaryResponse(BaseModel):
     fxTimestamp: str
     positions: list[PortfolioSummaryPosition]
     skippedStockIds: list[str]
+
+
+class PortfolioAssetSummaryResponse(BaseModel):
+    totalUsd: float
+    totalTwd: float
+    combinedUsd: float
+    combinedTwd: float
+    liquidTotalUsd: float
+    liquidTotalTwd: float
+    liquidCombinedUsd: float
+    liquidCombinedTwd: float
+    usdTwdRate: float
+    fxTimestamp: str
+    skippedStockIds: list[str]

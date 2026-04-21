@@ -2,7 +2,7 @@
 
 import { Tile } from "@carbon/react";
 import type { Candle, ChartLayout } from "@shared/quote";
-import { useCallback, useId, useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import type { AppLanguage } from "../../app/i18n";
 import { useLanguage } from "../../app/i18n";
 import { formatCurrency } from "../../services/format/quote";
@@ -14,6 +14,47 @@ type Props = {
   isActive?: boolean;
   range: string;
 };
+
+type CandleGeometry = {
+  x: number;
+  wickTop: number;
+  wickBottom: number;
+  bodyTop: number;
+  bodyHeight: number;
+  closeY: number;
+  isUp: boolean;
+};
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
+function priceToY(price: number, minY: number, maxY: number): number {
+  if (maxY === minY) {
+    return 50;
+  }
+  return 100 - ((price - minY) / (maxY - minY)) * 100;
+}
+
+function candleBodyWidth(points: ChartLayout["points"]): number {
+  if (points.length < 2) {
+    return 6;
+  }
+
+  let minStep = Number.POSITIVE_INFINITY;
+  for (let index = 1; index < points.length; index += 1) {
+    const step = points[index].x - points[index - 1].x;
+    if (step > 0 && step < minStep) {
+      minStep = step;
+    }
+  }
+
+  if (!Number.isFinite(minStep)) {
+    return 6;
+  }
+
+  return clamp(minStep * 0.56, 0.28, 5.4);
+}
 
 function formatAxisDate(iso: string, language: AppLanguage, range: string): string {
   const d = new Date(iso);
@@ -62,10 +103,7 @@ export function PriceChart({ candles, chartLayout, currency, isActive = true, ra
   const [activeIndex, setActiveIndex] = useState<number | null>(null);
   const [tooltipStyle, setTooltipStyle] = useState<{ left: number; top: number }>({ left: 0, top: 0 });
 
-  const chartGradientId = useId().replace(/:/g, "");
-
   const pointCoords = chartLayout?.points ?? [];
-  const points = chartLayout?.pointsPolyline ?? "";
   const minY = chartLayout?.minY ?? 0;
   const maxY = chartLayout?.maxY ?? 0;
   const yTicks = chartLayout?.yAxisTicks ?? [];
@@ -122,12 +160,39 @@ export function PriceChart({ candles, chartLayout, currency, isActive = true, ra
     return <Tile className="app-empty-state">{t("chart.noData")}</Tile>;
   }
 
-  if (!chartLayout || !points) {
+  if (!chartLayout || pointCoords.length === 0 || yTicks.length === 0) {
     return <Tile className="app-empty-state">{t("chart.noData")}</Tile>;
   }
 
+  const bodyWidth = candleBodyWidth(pointCoords);
+  const halfBodyWidth = bodyWidth / 2;
+  const candleGeometries: CandleGeometry[] = candles.map((candle, index) => {
+    const xSource =
+      pointCoords[index]?.x ??
+      (candles.length === 1 ? 50 : (index / Math.max(candles.length - 1, 1)) * 100);
+    const x = clamp(xSource, halfBodyWidth, 100 - halfBodyWidth);
+    const openY = priceToY(candle.open, minY, maxY);
+    const closeY = priceToY(candle.close, minY, maxY);
+    const highY = priceToY(candle.high, minY, maxY);
+    const lowY = priceToY(candle.low, minY, maxY);
+    const rawBodyHeight = Math.abs(openY - closeY);
+    const normalizedBodyHeight = Math.max(rawBodyHeight, 0.9);
+    const bodyCenterY = (openY + closeY) / 2;
+
+    return {
+      x,
+      wickTop: Math.min(highY, lowY),
+      wickBottom: Math.max(highY, lowY),
+      bodyTop: rawBodyHeight < 0.9 ? bodyCenterY - normalizedBodyHeight / 2 : Math.min(openY, closeY),
+      bodyHeight: normalizedBodyHeight,
+      closeY,
+      isUp: candle.close >= candle.open,
+    };
+  });
+
   const activeCandle = activeIndex !== null ? candles[activeIndex] ?? null : null;
-  const activeCoord = activeIndex !== null ? pointCoords[activeIndex] ?? null : null;
+  const activeGeometry = activeIndex !== null ? candleGeometries[activeIndex] ?? null : null;
+  const activeCoord = activeGeometry !== null ? { x: activeGeometry.x, y: activeGeometry.closeY } : null;
 
   const guideLines = [15, 40, 65, 90];
 
@@ -171,14 +236,38 @@ export function PriceChart({ candles, chartLayout, currency, isActive = true, ra
             {guideLines.map((position) => (
               <line key={position} className="app-chart-grid-line" x1="0" x2="100" y1={position} y2={position} />
             ))}
-            <defs>
-              <linearGradient id={chartGradientId} x1="0%" y1="0%" x2="0%" y2="100%">
-                <stop offset="0%" stopColor="#0f62fe" stopOpacity="0.28" />
-                <stop offset="100%" stopColor="#0f62fe" stopOpacity="0.02" />
-              </linearGradient>
-            </defs>
-            <polygon points={`0,100 ${points} 100,100`} fill={`url(#${chartGradientId})`} />
-            <polyline points={points} fill="none" stroke="#0f62fe" strokeWidth="1.6" vectorEffect="non-scaling-stroke" />
+            {candleGeometries.map((geometry, index) => (
+              <g key={`${candles[index]?.time ?? index}-${index}`}>
+                <line
+                  className={[
+                    "app-chart-candle-wick",
+                    geometry.isUp ? "app-chart-candle-wick-up" : "app-chart-candle-wick-down",
+                    activeIndex === index ? "app-chart-candle-wick-active" : "",
+                  ]
+                    .filter(Boolean)
+                    .join(" ")}
+                  x1={geometry.x}
+                  x2={geometry.x}
+                  y1={geometry.wickTop}
+                  y2={geometry.wickBottom}
+                  vectorEffect="non-scaling-stroke"
+                />
+                <rect
+                  className={[
+                    "app-chart-candle-body",
+                    geometry.isUp ? "app-chart-candle-body-up" : "app-chart-candle-body-down",
+                    activeIndex === index ? "app-chart-candle-body-active" : "",
+                  ]
+                    .filter(Boolean)
+                    .join(" ")}
+                  x={geometry.x - halfBodyWidth}
+                  y={geometry.bodyTop}
+                  width={bodyWidth}
+                  height={geometry.bodyHeight}
+                  rx={Math.min(bodyWidth * 0.12, 0.24)}
+                />
+              </g>
+            ))}
 
             {activeCoord !== null ? (
               <>
@@ -244,11 +333,13 @@ export function PriceChart({ candles, chartLayout, currency, isActive = true, ra
         <div className="app-chart-x-axis">
           <span className="app-chart-x-label">{t("chart.axisDate")}</span>
           <div className="app-chart-x-ticks">
-            {xTickIndices.map((idx) => (
-              <span key={idx} className="app-chart-x-tick">
-                {formatAxisDate(candles[idx].time, language, range)}
-              </span>
-            ))}
+            {xTickIndices
+              .filter((idx) => candles[idx] != null)
+              .map((idx) => (
+                <span key={idx} className="app-chart-x-tick">
+                  {formatAxisDate(candles[idx].time, language, range)}
+                </span>
+              ))}
           </div>
         </div>
       </div>

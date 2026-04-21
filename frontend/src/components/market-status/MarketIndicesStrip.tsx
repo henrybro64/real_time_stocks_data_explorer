@@ -1,14 +1,16 @@
 import { InlineLoading, Tag, Tile } from "@carbon/react";
 import type { MarketIndex } from "@shared/api";
 import { useLanguage } from "../../app/i18n";
+import { RequestStateNotice, errorToNoticeKind } from "../state/RequestStateNotice";
 import { formatLastUpdated, formatPercent } from "../../services/format/quote";
 
 type Props = {
+  error?: unknown;
   isLoading?: boolean;
   items: MarketIndex[];
 };
 
-export function MarketIndicesStrip({ isLoading = false, items }: Props) {
+export function MarketIndicesStrip({ error, isLoading = false, items }: Props) {
   const { language } = useLanguage();
   const copy =
     language === "zh-TW"
@@ -39,6 +41,7 @@ export function MarketIndicesStrip({ isLoading = false, items }: Props) {
     maximumFractionDigits: 2,
     signDisplay: "always",
   });
+  const noticeKind = error ? (items.length > 0 ? "stale" : errorToNoticeKind(error)) : null;
 
   return (
     <Tile className="app-section-tile">
@@ -49,6 +52,11 @@ export function MarketIndicesStrip({ isLoading = false, items }: Props) {
         </div>
         <p className="app-section-meta">{copy.subtitle}</p>
       </div>
+      {noticeKind ? (
+        <div className="app-state-notice-wrap">
+          <RequestStateNotice kind={noticeKind} scopeLabel={copy.title} />
+        </div>
+      ) : null}
       {isLoading ? <InlineLoading description={copy.loading} status="active" /> : null}
       <div className="app-market-grid">
         {items.map((item) => (

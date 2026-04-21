@@ -1,4 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import type { PortfolioPosition } from "@shared/api";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -33,7 +34,7 @@ function createWrapper() {
   };
 }
 
-function buildPosition(id: number, stockId: string) {
+function buildPosition(id: number, stockId: string): PortfolioPosition {
   return {
     id,
     stockId,
@@ -158,5 +159,29 @@ describe("usePortfolioPositions", () => {
       expect(result.current.positions).toHaveLength(1);
       expect(result.current.positions[0]?.stockId).toBe("US:MSFT");
     });
+  });
+
+  it("surfaces add-by-symbol quote lookup failures as action errors", async () => {
+    vi.mocked(fetchPortfolioPositions).mockResolvedValue([]);
+    vi.mocked(fetchQuote).mockRejectedValue(new Error("Failed to fetch"));
+
+    const { result } = renderHook(() => usePortfolioPositions(), {
+      wrapper: createWrapper(),
+    });
+
+    await waitFor(() => {
+      expect(result.current.positions).toEqual([]);
+    });
+
+    await act(async () => {
+      await result.current.addByStockId("US:AAPL");
+    });
+
+    await waitFor(() => {
+      expect(result.current.actionError).toBeInstanceOf(Error);
+      expect((result.current.actionError as Error).message).toBe("Failed to fetch");
+    });
+
+    expect(addPortfolioPosition).not.toHaveBeenCalled();
   });
 });

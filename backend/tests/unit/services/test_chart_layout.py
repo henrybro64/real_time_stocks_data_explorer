@@ -1,3 +1,5 @@
+import pytest
+
 from app.models.quote import CandleRecord
 from app.services.chart_layout import build_chart_layout
 
@@ -69,14 +71,15 @@ def test_build_chart_layout_tracks_range_and_trend_direction() -> None:
     layout = build_chart_layout(candles)
 
     assert layout is not None
-    assert layout["minY"] == 110.0
-    assert layout["maxY"] == 120.0
+    assert layout["minY"] == 109.0
+    assert layout["maxY"] == 121.0
     assert layout["firstClose"] == 120.0
     assert layout["lastClose"] == 110.0
     assert layout["trendUp"] is False
     assert layout["xAxisTickIndices"] == [0, 1, 2]
-    assert layout["points"] == [
-        {"x": 0.0, "y": 0.0},
-        {"x": 50.0, "y": 50.0},
-        {"x": 100.0, "y": 100.0},
-    ]
+    assert len(layout["points"]) == 3
+    assert layout["points"][0]["x"] == 0.0
+    assert layout["points"][0]["y"] == pytest.approx(8.333333333333329)
+    assert layout["points"][1] == {"x": 50.0, "y": 50.0}
+    assert layout["points"][2]["x"] == 100.0
+    assert layout["points"][2]["y"] == pytest.approx(91.66666666666667)

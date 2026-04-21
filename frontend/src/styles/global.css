@@ -276,6 +276,11 @@ input {
   line-height: 1.6;
 }
 
+.app-section-stack {
+  display: grid;
+  gap: 0.85rem;
+}
+
 .app-body-copy {
   max-width: 56rem;
   margin: 1rem 0 0;
@@ -329,6 +334,59 @@ input {
 .app-section-meta {
   margin: 0;
   color: var(--cds-text-secondary);
+}
+
+.app-state-notice-wrap {
+  margin-bottom: 0.85rem;
+}
+
+.app-state-notice {
+  display: grid;
+  gap: 0.35rem;
+  padding: 0.85rem 1rem;
+  border: 1px solid rgba(122, 156, 255, 0.24);
+  border-radius: 0.5rem;
+  background: rgba(17, 24, 39, 0.72);
+}
+
+.app-state-notice-compact {
+  padding: 0.65rem 0.8rem;
+}
+
+.app-state-notice-auth,
+.app-state-notice-permission,
+.app-state-notice-error {
+  border-color: rgba(218, 30, 40, 0.34);
+  background: rgba(46, 18, 24, 0.7);
+}
+
+.app-state-notice-unavailable {
+  border-color: rgba(252, 196, 25, 0.34);
+  background: rgba(54, 44, 14, 0.68);
+}
+
+.app-state-notice-stale {
+  border-color: rgba(69, 137, 255, 0.34);
+  background: rgba(16, 31, 59, 0.7);
+}
+
+.app-state-notice-title,
+.app-state-notice-body {
+  margin: 0;
+}
+
+.app-state-notice-title {
+  font-weight: 600;
+}
+
+.app-state-notice-body {
+  color: var(--cds-text-secondary);
+}
+
+.app-state-notice-action {
+  color: #a8c7ff;
+  font-size: 0.875rem;
+  text-decoration: underline;
 }
 
 .app-market-grid,
@@ -491,6 +549,14 @@ input {
   gap: 0.35rem;
 }
 
+.app-stock-card-status-row,
+.app-quote-status-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
 .app-stock-card-price {
   margin: 0;
   font-size: clamp(1.75rem, 4vw, 2.5rem);
@@ -602,6 +668,10 @@ input {
 .app-detail-change {
   margin: 0;
   font-size: 1.25rem;
+}
+
+.app-quote-status-row {
+  margin-top: 0.85rem;
 }
 
 .app-stat-grid {
@@ -780,6 +850,41 @@ input {
   stroke-width: 0.35;
 }
 
+.app-chart-candle-body {
+  stroke-width: 0.35;
+}
+
+.app-chart-candle-body-up {
+  fill: rgba(36, 161, 72, 0.28);
+  stroke: #24a148;
+}
+
+.app-chart-candle-body-down {
+  fill: rgba(218, 30, 40, 0.24);
+  stroke: #da1e28;
+}
+
+.app-chart-candle-body-active {
+  stroke: var(--cds-focus, #ffffff);
+  stroke-width: 0.55;
+}
+
+.app-chart-candle-wick {
+  stroke-width: 0.75;
+}
+
+.app-chart-candle-wick-up {
+  stroke: rgba(36, 161, 72, 0.96);
+}
+
+.app-chart-candle-wick-down {
+  stroke: rgba(218, 30, 40, 0.96);
+}
+
+.app-chart-candle-wick-active {
+  stroke-width: 1;
+}
+
 .app-chart-hit-layer {
   cursor: crosshair;
 }
@@ -790,7 +895,8 @@ input {
   height: 18rem;
   border: 1px solid var(--cds-border-subtle-01);
   background:
-    linear-gradient(180deg, rgba(15, 98, 254, 0.08), rgba(255, 255, 255, 0) 55%),
+    radial-gradient(circle at top right, rgba(69, 137, 255, 0.08), rgba(255, 255, 255, 0) 38%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0) 60%),
     var(--cds-layer);
 }
 
@@ -1004,6 +1110,13 @@ input {
   margin: 0.25rem 0 0;
   font-size: 1.35rem;
   font-weight: 700;
+  line-height: 1.2;
+}
+
+.app-portfolio-secondary-amount {
+  margin: 0.25rem 0 0;
+  font-size: 1.05rem;
+  font-weight: 600;
   line-height: 1.2;
 }
 

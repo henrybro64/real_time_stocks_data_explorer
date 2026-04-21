@@ -114,6 +114,7 @@ type TranslationKey =
   | "portfolio.aggregate.title"
   | "portfolio.aggregate.combinedUsd"
   | "portfolio.aggregate.combinedTwd"
+  | "portfolio.aggregate.liquidAssets"
   | "portfolio.aggregate.fxRate"
   | "aiSettings.title"
   | "aiSettings.description"
@@ -223,7 +224,7 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "chart.noData": "No chart data is available.",
     "chart.title": "Price history",
     "chart.rangeSummary": "{range} range {min} - {max}",
-    "chart.description": "Chart shows closing-price trends for the selected range.",
+    "chart.description": "Chart shows candlesticks for the selected range.",
     "chart.axisYTitle": "Price ({currency})",
     "chart.axisDate": "Date",
     "chart.candleClose": "Close",
@@ -264,6 +265,7 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "portfolio.aggregate.title": "Aggregated assets by currency",
     "portfolio.aggregate.combinedUsd": "Combined total (USD)",
     "portfolio.aggregate.combinedTwd": "Combined total (TWD)",
+    "portfolio.aggregate.liquidAssets": "Liquid assets excl. real estate",
     "portfolio.aggregate.fxRate": "FX rate",
     "aiSettings.title": "AI API key settings",
     "aiSettings.description": "Manage OpenAI and Perplexity API keys for stock detail AI output.",
@@ -384,7 +386,7 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "chart.noData": "沒有可顯示的圖表資料。",
     "chart.title": "價格走勢",
     "chart.rangeSummary": "{range} 區間高低 {min} - {max}",
-    "chart.description": "圖表顯示所選區間的收盤價走勢。",
+    "chart.description": "圖表以 K 線顯示所選區間的價格走勢。",
     "chart.axisYTitle": "價格（{currency}）",
     "chart.axisDate": "日期",
     "chart.candleClose": "收盤",
@@ -424,6 +426,7 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "portfolio.aggregate.title": "依幣別彙總資產",
     "portfolio.aggregate.combinedUsd": "合併總資產（USD）",
     "portfolio.aggregate.combinedTwd": "合併總資產（TWD）",
+    "portfolio.aggregate.liquidAssets": "可變現資產（不含房地產）",
     "portfolio.aggregate.fxRate": "匯率",
     "aiSettings.title": "AI API 金鑰設定",
     "aiSettings.description": "管理 OpenAI 與 Perplexity API 金鑰，供個股明細 AI 輸出使用。",
