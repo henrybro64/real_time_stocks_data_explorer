@@ -42,6 +42,14 @@ class Settings(BaseSettings):
             "http://127.0.0.1:5173"
         ),
     )
+    # Provider-agnostic stock-analysis AI configuration.
+    ai_provider: str = Field(default="")
+    ai_model: str = Field(default="")
+    openai_api_key: str = Field(default="")
+    anthropic_api_key: str = Field(default="")
+    gemini_api_key: str = Field(default="")
+    perplexity_api_key: str = Field(default="")
+    ollama_base_url: str = Field(default="http://127.0.0.1:11434")
 
     @property
     def allowed_origins(self) -> list[str]:

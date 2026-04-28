@@ -16,6 +16,7 @@ import type {
   PortfolioPositionUpdate,
   PortfolioSummary,
   QuoteResponse,
+  StockAnalysisResponse,
   TWStockInsights,
   USStockInsights,
   WatchlistResponse,
@@ -243,6 +244,10 @@ export function fetchTwStockInsights(stockId: string) {
 
 export function fetchUsStockInsights(stockId: string) {
   return fetchJson<USStockInsights>(`/stocks/${encodeURIComponent(stockId)}/us-insights`);
+}
+
+export function fetchStockAnalysis(stockId: string) {
+  return fetchJson<StockAnalysisResponse>(`/stocks/${encodeURIComponent(stockId)}/analysis`);
 }
 
 export function fetchWatchlist() {

@@ -1,8 +1,15 @@
 import pytest
+from fastapi.testclient import TestClient
 
 from app.api.routes import history as history_routes
+from app.core.config import settings
+from app.main import app
 from app.services.news_service import NewsItem, news_service
 from app.services.quote_service import quote_service
+from app.services.stock_analysis_service import (
+    ComputedStockAnalysisData,
+    StockAnalysisResult,
+)
 from tests.support import candle_record, stock_record
 
 
@@ -124,6 +131,76 @@ def test_key_stats_and_news_endpoints_return_safe_payloads(monkeypatch, client) 
             "publishedAt": "2026-04-01T10:00:00+08:00",
         }
     ]
+
+
+def test_analysis_endpoint_returns_computed_metrics_when_ai_is_unavailable(
+    monkeypatch,
+    client,
+) -> None:
+    monkeypatch.setattr(
+        history_routes.stock_analysis_service,
+        "analyze_stock",
+        lambda stock_id: StockAnalysisResult(
+            stock_id=stock_id,
+            ticker="AAPL",
+            computed_data=ComputedStockAnalysisData(
+                ticker="AAPL",
+                company_name="Apple Inc.",
+                currency="USD",
+                sector="Technology",
+                industry="Consumer Electronics",
+                market_cap=3_000_000_000_000,
+                trailing_pe=29.4,
+                forward_pe=27.1,
+                current_price=210.5,
+                return_1m_percent=4.2,
+                return_3m_percent=8.7,
+                return_6m_percent=12.4,
+                return_1y_percent=22.1,
+                sma_50=205.2,
+                sma_200=188.4,
+                price_vs_sma_50_percent=2.58,
+                price_vs_sma_200_percent=11.73,
+                rsi_14=61.4,
+                volatility_30d_annualized=24.6,
+                max_drawdown_1y_percent=-14.8,
+                average_volume_30d=75_000_000,
+            ),
+            ai_provider="openai",
+            ai_model="gpt-4o-mini",
+            ai_analysis=None,
+            warnings=(
+                "AI analysis is temporarily unavailable, but computed stock metrics are still available.",
+            ),
+            errors=(),
+        ),
+    )
+
+    response = client.get("/api/stocks/US:AAPL/analysis")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["stockId"] == "US:AAPL"
+    assert payload["ticker"] == "AAPL"
+    assert payload["computedData"]["currentPrice"] == 210.5
+    assert payload["computedData"]["averageVolume30d"] == 75_000_000
+    assert payload["aiAnalysis"] is None
+    assert payload["warnings"] == [
+        "AI analysis is temporarily unavailable, but computed stock metrics are still available."
+    ]
+
+
+def test_analysis_endpoint_rejects_anonymous_when_auth_enabled(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(settings, "auth_enabled", True)
+    monkeypatch.setattr(settings, "local_auth_enabled", True)
+
+    with TestClient(app) as unauthenticated_client:
+        response = unauthenticated_client.get("/api/stocks/US:AAPL/analysis")
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "Not authenticated"}
 
 
 def test_tw_insights_endpoint_only_allows_tw_stocks(monkeypatch, client) -> None:

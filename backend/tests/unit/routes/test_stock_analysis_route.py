@@ -1,0 +1,77 @@
+from app.api.routes.history import _stock_analysis_schema
+from app.services.stock_analysis_service import (
+    ComputedStockAnalysisData,
+    StockAnalysisResult,
+)
+
+
+def test_stock_analysis_schema_uses_public_field_names() -> None:
+    payload = _stock_analysis_schema(
+        StockAnalysisResult(
+            stock_id="US:AAPL",
+            ticker="AAPL",
+            computed_data=ComputedStockAnalysisData(
+                ticker="AAPL",
+                company_name="Apple Inc.",
+                currency="USD",
+                sector="Technology",
+                industry="Consumer Electronics",
+                market_cap=3_000_000_000_000,
+                trailing_pe=29.4,
+                forward_pe=27.1,
+                current_price=210.5,
+                return_1m_percent=4.2,
+                return_3m_percent=8.7,
+                return_6m_percent=12.4,
+                return_1y_percent=22.1,
+                sma_50=205.2,
+                sma_200=188.4,
+                price_vs_sma_50_percent=2.58,
+                price_vs_sma_200_percent=11.73,
+                rsi_14=61.4,
+                volatility_30d_annualized=24.6,
+                max_drawdown_1y_percent=-14.8,
+                average_volume_30d=75_000_000,
+            ),
+            ai_provider="openai",
+            ai_model="gpt-4o-mini",
+            ai_analysis="Structured analysis",
+            warnings=("warning",),
+            errors=("error",),
+        )
+    ).model_dump()
+
+    assert payload == {
+        "stockId": "US:AAPL",
+        "ticker": "AAPL",
+        "computedData": {
+            "ticker": "AAPL",
+            "companyName": "Apple Inc.",
+            "currency": "USD",
+            "sector": "Technology",
+            "industry": "Consumer Electronics",
+            "marketCap": 3_000_000_000_000,
+            "trailingPe": 29.4,
+            "forwardPe": 27.1,
+            "currentPrice": 210.5,
+            "return1mPercent": 4.2,
+            "return3mPercent": 8.7,
+            "return6mPercent": 12.4,
+            "return1yPercent": 22.1,
+            "sma50": 205.2,
+            "sma200": 188.4,
+            "priceVsSma50Percent": 2.58,
+            "priceVsSma200Percent": 11.73,
+            "rsi14": 61.4,
+            "volatility30dAnnualized": 24.6,
+            "maxDrawdown1yPercent": -14.8,
+            "averageVolume30d": 75_000_000,
+        },
+        "aiProvider": "openai",
+        "aiModel": "gpt-4o-mini",
+        "aiAnalysis": "Structured analysis",
+        "citations": [],
+        "searchResults": [],
+        "warnings": ["warning"],
+        "errors": ["error"],
+    }

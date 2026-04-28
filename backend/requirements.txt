@@ -10,3 +10,6 @@ itsdangerous>=2.0.0
 redis>=5.0.0
 PyJWT[crypto]>=2.8.0
 cryptography>=42.0.0
+numpy
+pandas
+yfinance
