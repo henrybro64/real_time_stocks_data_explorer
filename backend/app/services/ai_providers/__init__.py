@@ -6,7 +6,10 @@ from app.services.ai_providers.base import (
     AnalysisCitation,
     AnalysisSearchResult,
 )
-from app.services.ai_providers.factory import create_ai_provider
+from app.services.ai_providers.factory import (
+    create_ai_provider,
+    create_ai_provider_from_credentials,
+)
 
 __all__ = [
     "AIAnalysisResult",
@@ -16,4 +19,5 @@ __all__ = [
     "AnalysisCitation",
     "AnalysisSearchResult",
     "create_ai_provider",
+    "create_ai_provider_from_credentials",
 ]

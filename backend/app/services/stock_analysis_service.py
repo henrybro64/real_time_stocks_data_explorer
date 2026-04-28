@@ -120,7 +120,12 @@ class StockAnalysisService:
         self._info_loader = info_loader or _load_info_from_yfinance
         self._provider_factory = provider_factory
 
-    def analyze_stock(self, stock_id: str) -> StockAnalysisResult:
+    def analyze_stock(
+        self,
+        stock_id: str,
+        *,
+        provider_override: AIProvider | None = None,
+    ) -> StockAnalysisResult:
         stock = quote_service.get_stock(stock_id)
         if stock is None:
             raise ValueError("Stock not found")
@@ -139,11 +144,14 @@ class StockAnalysisService:
         search_results: tuple[AnalysisSearchResult, ...] = ()
         provider_config_error: str | None = None
 
-        try:
-            provider = self._provider_factory()
-        except AIProviderConfigurationError as exc:
-            provider_config_error = str(exc)
-            provider = None
+        if provider_override is not None:
+            provider = provider_override
+        else:
+            try:
+                provider = self._provider_factory()
+            except AIProviderConfigurationError as exc:
+                provider_config_error = str(exc)
+                provider = None
 
         if provider is None:
             if provider_config_error is not None:
@@ -156,6 +164,8 @@ class StockAnalysisService:
             ai_provider = getattr(provider, "provider_name", None)
             ai_model = getattr(provider, "model_name", None)
             prompt_payload = computed_data.to_prompt_payload()
+            prompt_payload["stockId"] = stock_id
+            prompt_payload["market"] = stock.market
             prompt_payload["recentNewsContextAvailable"] = False
             if warnings:
                 prompt_payload["warnings"] = list(warnings)

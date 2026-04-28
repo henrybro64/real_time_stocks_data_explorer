@@ -1,5 +1,6 @@
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
+from app.api.deps import get_request_identity
 from app.models.quote import CandleRecord
 from app.models.stock import StockRecord
 from app.schemas.analysis import (
@@ -20,12 +21,14 @@ from app.services.chart_layout import build_chart_layout
 from app.services.key_stats_service import get_key_statistics
 from app.services.news_service import news_service
 from app.services.quote_service import quote_service
+from app.services.ai_providers import AIProvider
 from app.services.stock_analysis_service import (
     StockAnalysisResult,
     stock_analysis_service,
 )
 from app.services.tw_insights_service import get_tw_stock_insights
 from app.services.us_insights_service import get_us_stock_insights
+from app.services.user_ai_provider_service import resolve_user_ai_provider
 
 
 router = APIRouter(prefix="/stocks", tags=["history"])
@@ -59,11 +62,24 @@ def get_stock_key_statistics(stock_id: str) -> dict[str, object]:
 
 
 @router.get("/{stock_id}/analysis", response_model=StockAnalysisResponse)
-def get_stock_analysis(stock_id: str) -> StockAnalysisResponse:
+def get_stock_analysis(
+    stock_id: str,
+    provider: str | None = Query(default=None),
+    identity=Depends(get_request_identity),
+) -> StockAnalysisResponse:
+    provider_override: AIProvider | None = None
     try:
-        result = stock_analysis_service.analyze_stock(stock_id)
+        provider_override = resolve_user_ai_provider(identity.user_id, provider)
+        result = stock_analysis_service.analyze_stock(
+            stock_id,
+            provider_override=provider_override,
+        )
     except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        if str(exc) == "Stock not found":
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
     return _stock_analysis_schema(result)
 
 
