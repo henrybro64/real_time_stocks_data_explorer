@@ -1,6 +1,9 @@
 import pytest
+from fastapi.testclient import TestClient
 
 from app.api.routes import history as history_routes
+from app.core.config import settings
+from app.main import app
 from app.services.news_service import NewsItem, news_service
 from app.services.quote_service import quote_service
 from app.services.stock_analysis_service import (
@@ -183,6 +186,19 @@ def test_analysis_endpoint_returns_computed_metrics_when_ai_is_unavailable(
     assert payload["warnings"] == [
         "AI analysis is temporarily unavailable, but computed stock metrics are still available."
     ]
+
+
+def test_analysis_endpoint_rejects_anonymous_when_auth_enabled(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(settings, "auth_enabled", True)
+    monkeypatch.setattr(settings, "local_auth_enabled", True)
+
+    with TestClient(app) as unauthenticated_client:
+        response = unauthenticated_client.get("/api/stocks/US:AAPL/analysis")
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "Not authenticated"}
 
 
 def test_tw_insights_endpoint_only_allows_tw_stocks(monkeypatch, client) -> None:

@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from app.api.deps import get_request_identity
+from app.api.deps import get_effective_user_id
 from app.models.quote import CandleRecord
 from app.models.stock import StockRecord
 from app.schemas.analysis import (
@@ -65,11 +65,11 @@ def get_stock_key_statistics(stock_id: str) -> dict[str, object]:
 def get_stock_analysis(
     stock_id: str,
     provider: str | None = Query(default=None),
-    identity=Depends(get_request_identity),
+    user_id: str = Depends(get_effective_user_id),
 ) -> StockAnalysisResponse:
     provider_override: AIProvider | None = None
     try:
-        provider_override = resolve_user_ai_provider(identity.user_id, provider)
+        provider_override = resolve_user_ai_provider(user_id, provider)
         if provider_override is None:
             result = stock_analysis_service.analyze_stock(stock_id)
         else:
