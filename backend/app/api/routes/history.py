@@ -70,10 +70,13 @@ def get_stock_analysis(
     provider_override: AIProvider | None = None
     try:
         provider_override = resolve_user_ai_provider(identity.user_id, provider)
-        result = stock_analysis_service.analyze_stock(
-            stock_id,
-            provider_override=provider_override,
-        )
+        if provider_override is None:
+            result = stock_analysis_service.analyze_stock(stock_id)
+        else:
+            result = stock_analysis_service.analyze_stock(
+                stock_id,
+                provider_override=provider_override,
+            )
     except ValueError as exc:
         if str(exc) == "Stock not found":
             raise HTTPException(status_code=404, detail=str(exc)) from exc
