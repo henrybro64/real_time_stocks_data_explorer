@@ -176,6 +176,79 @@ input {
   white-space: pre-wrap;
 }
 
+.app-stock-analysis-tags {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.app-stock-analysis-messages {
+  display: grid;
+  gap: 0.35rem;
+  margin-bottom: 0.75rem;
+}
+
+.app-stock-analysis-grid {
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+  margin: 0 0 1rem;
+}
+
+.app-stock-analysis-metric {
+  margin: 0;
+  border: 1px solid rgba(97, 113, 144, 0.22);
+  border-radius: 0.85rem;
+  padding: 0.9rem 1rem;
+  background:
+    linear-gradient(165deg, rgba(102, 138, 255, 0.08), rgba(64, 236, 188, 0.05)),
+    rgba(13, 18, 28, 0.92);
+  min-height: 6.5rem;
+}
+
+.app-stock-analysis-metric dt {
+  color: var(--cds-text-secondary);
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-bottom: 0.55rem;
+}
+
+.app-stock-analysis-metric dd {
+  margin: 0;
+  font-size: 1rem;
+  line-height: 1.45;
+  color: var(--cds-text-primary);
+  word-break: break-word;
+}
+
+.app-stock-analysis-body {
+  display: grid;
+  gap: 0.45rem;
+  margin-bottom: 1rem;
+}
+
+.app-stock-analysis-body h3 {
+  margin: 0;
+}
+
+.app-stock-analysis-text {
+  white-space: pre-wrap;
+}
+
+.app-stock-analysis-links {
+  margin: 0;
+  padding-left: 1.15rem;
+  display: grid;
+  gap: 0.35rem;
+}
+
+.app-stock-analysis-disclaimer {
+  margin: 0;
+  color: var(--cds-text-secondary);
+  font-size: 0.9rem;
+}
+
 .app-left-nav-link {
   color: var(--cds-text-secondary);
   padding: 0.65rem 0.75rem;

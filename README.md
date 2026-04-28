@@ -69,6 +69,37 @@ Configure backend to use it (in `backend/.env`):
 REDIS_URL=redis://127.0.0.1:6379/0
 ```
 
+### AI Stock Analysis
+
+The stock detail page now includes an **AI stock analysis** section backed by:
+
+- `yfinance` 1-year daily price history
+- `pandas` / `numpy` metric calculation on the backend
+- an env-configured AI provider that receives only the computed summary JSON
+
+Configure it in `backend/.env`:
+
+```bash
+AI_PROVIDER=openai        # openai | perplexity | anthropic | gemini | ollama
+AI_MODEL=gpt-4o-mini
+OPENAI_API_KEY=...
+# or
+PERPLEXITY_API_KEY=...
+```
+
+The API route is:
+
+```text
+GET /api/stocks/{stock_id}/analysis
+```
+
+Notes:
+
+- if no AI provider is configured, the endpoint still returns computed metrics with warnings
+- current provider implementations in this repo are `openai` and `perplexity`; the abstraction is designed to add others later
+- `yfinance` data can be delayed, incomplete, or unavailable for some symbols
+- AI output is informational only and is not financial advice
+
 Frontend:
 
 ```bash

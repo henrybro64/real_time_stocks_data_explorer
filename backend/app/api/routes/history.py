@@ -2,6 +2,12 @@ from fastapi import APIRouter, HTTPException, Query
 
 from app.models.quote import CandleRecord
 from app.models.stock import StockRecord
+from app.schemas.analysis import (
+    ComputedStockAnalysisResponse,
+    StockAnalysisCitationResponse,
+    StockAnalysisResponse,
+    StockAnalysisSearchResultResponse,
+)
 from app.schemas.quote import (
     CandleResponse,
     ChartLayoutResponse,
@@ -14,6 +20,10 @@ from app.services.chart_layout import build_chart_layout
 from app.services.key_stats_service import get_key_statistics
 from app.services.news_service import news_service
 from app.services.quote_service import quote_service
+from app.services.stock_analysis_service import (
+    StockAnalysisResult,
+    stock_analysis_service,
+)
 from app.services.tw_insights_service import get_tw_stock_insights
 from app.services.us_insights_service import get_us_stock_insights
 
@@ -46,6 +56,15 @@ def get_stock_key_statistics(stock_id: str) -> dict[str, object]:
     if data is None:
         raise HTTPException(status_code=404, detail="Stock not found")
     return data
+
+
+@router.get("/{stock_id}/analysis", response_model=StockAnalysisResponse)
+def get_stock_analysis(stock_id: str) -> StockAnalysisResponse:
+    try:
+        result = stock_analysis_service.analyze_stock(stock_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return _stock_analysis_schema(result)
 
 
 @router.get("/{stock_id}/news")
@@ -112,4 +131,55 @@ def _candle_schema(candle: CandleRecord) -> CandleResponse:
         low=candle.low,
         close=candle.close,
         volume=candle.volume,
+    )
+
+
+def _stock_analysis_schema(result: StockAnalysisResult) -> StockAnalysisResponse:
+    return StockAnalysisResponse(
+        stockId=result.stock_id,
+        ticker=result.ticker,
+        computedData=ComputedStockAnalysisResponse(
+            ticker=result.computed_data.ticker,
+            companyName=result.computed_data.company_name,
+            currency=result.computed_data.currency,
+            sector=result.computed_data.sector,
+            industry=result.computed_data.industry,
+            marketCap=result.computed_data.market_cap,
+            trailingPe=result.computed_data.trailing_pe,
+            forwardPe=result.computed_data.forward_pe,
+            currentPrice=result.computed_data.current_price,
+            return1mPercent=result.computed_data.return_1m_percent,
+            return3mPercent=result.computed_data.return_3m_percent,
+            return6mPercent=result.computed_data.return_6m_percent,
+            return1yPercent=result.computed_data.return_1y_percent,
+            sma50=result.computed_data.sma_50,
+            sma200=result.computed_data.sma_200,
+            priceVsSma50Percent=result.computed_data.price_vs_sma_50_percent,
+            priceVsSma200Percent=result.computed_data.price_vs_sma_200_percent,
+            rsi14=result.computed_data.rsi_14,
+            volatility30dAnnualized=result.computed_data.volatility_30d_annualized,
+            maxDrawdown1yPercent=result.computed_data.max_drawdown_1y_percent,
+            averageVolume30d=result.computed_data.average_volume_30d,
+        ),
+        aiProvider=result.ai_provider,
+        aiModel=result.ai_model,
+        aiAnalysis=result.ai_analysis,
+        citations=[
+            StockAnalysisCitationResponse(
+                url=item.url,
+                title=item.title,
+                source=item.source,
+            )
+            for item in result.citations
+        ],
+        searchResults=[
+            StockAnalysisSearchResultResponse(
+                title=item.title,
+                url=item.url,
+                source=item.source,
+            )
+            for item in result.search_results
+        ],
+        warnings=list(result.warnings),
+        errors=list(result.errors),
     )

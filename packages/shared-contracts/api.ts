@@ -142,6 +142,55 @@ export type AiInsightResponse = {
   content: string;
 };
 
+export type StockAnalysisCitation = {
+  url: string;
+  title: string | null;
+  source: string | null;
+};
+
+export type StockAnalysisSearchResult = {
+  title: string;
+  url: string;
+  source: string | null;
+};
+
+export type ComputedStockAnalysis = {
+  ticker: string;
+  companyName: string | null;
+  currency: string | null;
+  sector: string | null;
+  industry: string | null;
+  marketCap: number | null;
+  trailingPe: number | null;
+  forwardPe: number | null;
+  currentPrice: number | null;
+  return1mPercent: number | null;
+  return3mPercent: number | null;
+  return6mPercent: number | null;
+  return1yPercent: number | null;
+  sma50: number | null;
+  sma200: number | null;
+  priceVsSma50Percent: number | null;
+  priceVsSma200Percent: number | null;
+  rsi14: number | null;
+  volatility30dAnnualized: number | null;
+  maxDrawdown1yPercent: number | null;
+  averageVolume30d: number | null;
+};
+
+export type StockAnalysisResponse = {
+  stockId: string;
+  ticker: string;
+  computedData: ComputedStockAnalysis;
+  aiProvider: string | null;
+  aiModel: string | null;
+  aiAnalysis: string | null;
+  citations: StockAnalysisCitation[];
+  searchResults: StockAnalysisSearchResult[];
+  warnings: string[];
+  errors: string[];
+};
+
 /** Extended stats for stock detail (from quote + Yahoo chart or local candles). */
 export type KeyStatistics = {
   open: number | null;
@@ -265,4 +314,3 @@ export type USPeerInsight = {
 export type USStockInsights = {
   peer: USPeerInsight;
 };
-
