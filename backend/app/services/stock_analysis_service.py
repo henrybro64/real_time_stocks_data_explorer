@@ -44,6 +44,17 @@ RETURN_WINDOWS = {
     "return1yPercent": 252,
 }
 
+HISTORY_FETCH_ERROR = "Failed to load 1 year of daily stock history from yfinance."
+NO_HISTORY_ERROR = "No historical price data returned from yfinance."
+UNUSABLE_PRICE_HISTORY_ERROR = (
+    "Historical price data from yfinance did not include usable adjusted or closing prices."
+)
+METADATA_LOAD_WARNING = "Some company metadata could not be loaded from yfinance."
+INVALID_YFINANCE_TICKER_ERROR = "Ticker appears invalid or unavailable in yfinance."
+SKIP_AI_MISSING_HISTORY_WARNING = (
+    "Skipping AI analysis because required yfinance historical price data is unavailable."
+)
+
 
 @dataclass(frozen=True)
 class ComputedStockAnalysisData:
@@ -135,6 +146,18 @@ class StockAnalysisService:
         errors: list[str] = []
         history = self._load_history(ticker, errors)
         info = self._load_info(ticker, warnings)
+        has_price_history = _has_usable_price_history(history)
+        if not has_price_history and not history.empty:
+            errors.append(UNUSABLE_PRICE_HISTORY_ERROR)
+        if (
+            any(
+                error in errors
+                for error in (NO_HISTORY_ERROR, UNUSABLE_PRICE_HISTORY_ERROR)
+            )
+            and METADATA_LOAD_WARNING not in warnings
+            and not _has_meaningful_yfinance_info(info)
+        ):
+            errors.append(INVALID_YFINANCE_TICKER_ERROR)
         computed_data = _build_computed_data(stock, ticker, history, info)
 
         ai_provider: str | None = None
@@ -163,25 +186,30 @@ class StockAnalysisService:
         else:
             ai_provider = getattr(provider, "provider_name", None)
             ai_model = getattr(provider, "model_name", None)
-            prompt_payload = computed_data.to_prompt_payload()
-            prompt_payload["stockId"] = stock_id
-            prompt_payload["market"] = stock.market
-            prompt_payload["recentNewsContextAvailable"] = False
-            if warnings:
-                prompt_payload["warnings"] = list(warnings)
-            if errors:
-                prompt_payload["errors"] = list(errors)
-            try:
-                result = provider.generate_stock_analysis(prompt_payload)
-                ai_analysis = result.content
-                citations = result.citations
-                search_results = result.search_results
-                ai_provider = result.provider
-                ai_model = result.model
-            except (AIProviderError, Exception):
+            if not has_price_history:
                 warnings.append(
-                    "AI analysis is temporarily unavailable, but computed stock metrics are still available.",
+                    SKIP_AI_MISSING_HISTORY_WARNING,
                 )
+            else:
+                prompt_payload = computed_data.to_prompt_payload()
+                prompt_payload["stockId"] = stock_id
+                prompt_payload["market"] = stock.market
+                prompt_payload["recentNewsContextAvailable"] = False
+                if warnings:
+                    prompt_payload["warnings"] = list(warnings)
+                if errors:
+                    prompt_payload["errors"] = list(errors)
+                try:
+                    result = provider.generate_stock_analysis(prompt_payload)
+                    ai_analysis = result.content
+                    citations = result.citations
+                    search_results = result.search_results
+                    ai_provider = result.provider
+                    ai_model = result.model
+                except (AIProviderError, Exception):
+                    warnings.append(
+                        "AI analysis is temporarily unavailable, but computed stock metrics are still available.",
+                    )
 
         return StockAnalysisResult(
             stock_id=stock_id,
@@ -200,17 +228,17 @@ class StockAnalysisService:
         try:
             history = self._history_loader(ticker)
         except Exception:
-            errors.append("Failed to load 1 year of daily stock history from yfinance.")
+            errors.append(HISTORY_FETCH_ERROR)
             return pd.DataFrame()
         if history.empty:
-            errors.append("No historical price data returned from yfinance.")
+            errors.append(NO_HISTORY_ERROR)
         return history
 
     def _load_info(self, ticker: str, warnings: list[str]) -> dict[str, object]:
         try:
             return self._info_loader(ticker)
         except Exception:
-            warnings.append("Some company metadata could not be loaded from yfinance.")
+            warnings.append(METADATA_LOAD_WARNING)
             return {}
 
 
@@ -249,6 +277,42 @@ def _load_info_from_yfinance(ticker: str) -> dict[str, object]:
             if value is not None and target_key not in info:
                 info[target_key] = value
     return info
+
+
+def _has_usable_price_history(history: pd.DataFrame) -> bool:
+    return not select_price_series(history).empty
+
+
+def _has_meaningful_yfinance_info(info: dict[str, object]) -> bool:
+    return any(
+        _has_meaningful_value(info.get(key))
+        for key in (
+            "longName",
+            "shortName",
+            "currency",
+            "sector",
+            "industry",
+            "marketCap",
+            "trailingPE",
+            "forwardPE",
+            "currentPrice",
+            "regularMarketPrice",
+            "previousClose",
+        )
+    )
+
+
+def _has_meaningful_value(value: object) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    try:
+        if pd.isna(value):
+            return False
+    except (TypeError, ValueError):
+        pass
+    return True
 
 
 def _build_computed_data(
