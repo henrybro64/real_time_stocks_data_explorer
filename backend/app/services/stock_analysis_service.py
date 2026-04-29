@@ -307,6 +307,11 @@ def _has_meaningful_value(value: object) -> bool:
         return False
     if isinstance(value, str):
         return bool(value.strip())
+    try:
+        if pd.isna(value):
+            return False
+    except (TypeError, ValueError):
+        pass
     return True
 
 

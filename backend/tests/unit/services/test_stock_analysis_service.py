@@ -264,3 +264,38 @@ def test_analyze_stock_does_not_mark_invalid_ticker_when_metadata_fetch_fails(
     assert NO_HISTORY_ERROR in result.errors
     assert INVALID_YFINANCE_TICKER_ERROR not in result.errors
     assert METADATA_LOAD_WARNING in result.warnings
+
+
+def test_analyze_stock_treats_nan_yfinance_metadata_as_missing_signal(
+    monkeypatch,
+) -> None:
+    stock = stock_record(
+        "US:AAPL",
+        market="US",
+        symbol="AAPL",
+        name="Apple Inc.",
+        exchange="NASDAQ",
+        currency="USD",
+        timezone="America/New_York",
+    )
+    service = StockAnalysisService(
+        history_loader=lambda ticker: pd.DataFrame(),
+        info_loader=lambda ticker: {
+            "longName": np.nan,
+            "currency": np.nan,
+            "marketCap": np.nan,
+            "trailingPE": np.nan,
+            "forwardPE": np.nan,
+            "currentPrice": np.nan,
+        },
+        provider_factory=lambda: None,
+    )
+    monkeypatch.setattr(
+        "app.services.stock_analysis_service.quote_service.get_stock",
+        lambda stock_id: stock,
+    )
+
+    result = service.analyze_stock("US:AAPL")
+
+    assert NO_HISTORY_ERROR in result.errors
+    assert INVALID_YFINANCE_TICKER_ERROR in result.errors
