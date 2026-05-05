@@ -197,20 +197,24 @@ def _us_market_holidays(year: int) -> frozenset[date]:
     return frozenset(holidays)
 
 
-@lru_cache(maxsize=8)
 def _tw_market_holidays(year: int) -> frozenset[date]:
-    query_year = year - 1911
     try:
-        html = fetch_text(
-            _TWSE_HOLIDAY_URL,
-            params={"response": "html", "queryYear": str(query_year)},
-            headers={"User-Agent": _BROWSER_USER_AGENT},
-            timeout_seconds=8.0,
-            retries=1,
-        )
+        return _tw_market_holidays_cached(year)
     except HttpFetchError:
         logger.warning("Failed to fetch TWSE holiday schedule for %s", year)
         return frozenset()
+
+
+@lru_cache(maxsize=8)
+def _tw_market_holidays_cached(year: int) -> frozenset[date]:
+    query_year = year - 1911
+    html = fetch_text(
+        _TWSE_HOLIDAY_URL,
+        params={"response": "html", "queryYear": str(query_year)},
+        headers={"User-Agent": _BROWSER_USER_AGENT},
+        timeout_seconds=8.0,
+        retries=1,
+    )
 
     parser = _TableRowParser()
     parser.feed(html)
