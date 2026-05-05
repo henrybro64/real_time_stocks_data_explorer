@@ -15,6 +15,7 @@ from app.core.config import settings
 from app.db.init_db import seed_default_user
 from app.db.session import SessionLocal
 from app.services.local_auth_service import ensure_bootstrap_local_user
+from app.services.portfolio_history_service import portfolio_history_service
 
 
 app = FastAPI(title=settings.app_name)
@@ -77,6 +78,20 @@ def bootstrap_local_auth_user() -> None:
         settings.local_auth_username,
         settings.local_auth_password,
     )
+
+
+@app.on_event("startup")
+def start_portfolio_history_sampler() -> None:
+    if not settings.portfolio_history_sampler_enabled:
+        return
+    portfolio_history_service.start_background_sampler(
+        settings.portfolio_history_poll_seconds,
+    )
+
+
+@app.on_event("shutdown")
+def stop_portfolio_history_sampler() -> None:
+    portfolio_history_service.stop_background_sampler()
 
 
 @app.get("/health")

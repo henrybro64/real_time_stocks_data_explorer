@@ -768,6 +768,21 @@ input {
   font-size: 1.25rem;
 }
 
+.app-chart-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.5rem 0.75rem;
+  align-items: center;
+}
+
+.app-chart-toolbar-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.35rem;
+}
+
 .app-chart-interact-hint {
   margin: 0 0 0.85rem;
   font-size: 0.8125rem;
@@ -921,6 +936,23 @@ input {
   fill: #4589ff;
   stroke: #161616;
   stroke-width: 0.35;
+}
+
+.app-value-chart-line {
+  stroke: #78a9ff;
+  stroke-width: 1.15;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.app-value-chart-dot {
+  fill: rgba(120, 169, 255, 0.9);
+}
+
+.app-value-chart-dot-active {
+  fill: #ffffff;
+  stroke: #78a9ff;
+  stroke-width: 0.45;
 }
 
 .app-chart-candle-body {

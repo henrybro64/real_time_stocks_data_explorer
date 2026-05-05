@@ -116,6 +116,42 @@ class PortfolioAsset(Base):
     )
 
 
+class PortfolioHistorySnapshot(Base):
+    __tablename__ = "portfolio_history_snapshots"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "snapshot_hour",
+            "source_window",
+            name="uq_portfolio_history_user_hour_window",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    snapshot_hour: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        index=True,
+    )
+    source_window: Mapped[str] = mapped_column(String(8), nullable=False)
+    captured_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+    usd_twd_rate: Mapped[float] = mapped_column(nullable=False)
+    holdings_value_usd: Mapped[float] = mapped_column(nullable=False)
+    holdings_value_twd: Mapped[float] = mapped_column(nullable=False)
+    combined_assets_usd: Mapped[float] = mapped_column(nullable=False)
+    combined_assets_twd: Mapped[float] = mapped_column(nullable=False)
+
+
 class OAuthIdentity(Base):
     __tablename__ = "oauth_identities"
     __table_args__ = (

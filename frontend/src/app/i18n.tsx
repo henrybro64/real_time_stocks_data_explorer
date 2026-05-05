@@ -116,6 +116,20 @@ type TranslationKey =
   | "portfolio.aggregate.combinedTwd"
   | "portfolio.aggregate.liquidAssets"
   | "portfolio.aggregate.fxRate"
+  | "portfolio.history.loading"
+  | "portfolio.history.empty"
+  | "portfolio.history.range"
+  | "portfolio.history.zoomIn"
+  | "portfolio.history.zoomOut"
+  | "portfolio.history.interactHint"
+  | "portfolio.history.value"
+  | "portfolio.history.session"
+  | "portfolio.history.session.tw"
+  | "portfolio.history.session.us"
+  | "portfolio.history.holdingsUsd"
+  | "portfolio.history.holdingsTwd"
+  | "portfolio.history.combinedAssetsUsd"
+  | "portfolio.history.combinedAssetsTwd"
   | "aiSettings.title"
   | "aiSettings.description"
   | "twInsights.title"
@@ -267,6 +281,20 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "portfolio.aggregate.combinedTwd": "Combined total (TWD)",
     "portfolio.aggregate.liquidAssets": "Liquid assets excl. real estate",
     "portfolio.aggregate.fxRate": "FX rate",
+    "portfolio.history.loading": "Loading historical portfolio values",
+    "portfolio.history.empty": "No historical data yet. Hourly snapshots appear while Taiwan or U.S. markets are open.",
+    "portfolio.history.range": "Range: {range}",
+    "portfolio.history.zoomIn": "Zoom in",
+    "portfolio.history.zoomOut": "Zoom out",
+    "portfolio.history.interactHint": "Hover or click to inspect the hourly snapshot, market session, and FX rate used.",
+    "portfolio.history.value": "Value",
+    "portfolio.history.session": "Session",
+    "portfolio.history.session.tw": "Taiwan market",
+    "portfolio.history.session.us": "U.S. market",
+    "portfolio.history.holdingsUsd": "Holdings value history (USD)",
+    "portfolio.history.holdingsTwd": "Holdings value history (TWD)",
+    "portfolio.history.combinedAssetsUsd": "Combined assets history (USD)",
+    "portfolio.history.combinedAssetsTwd": "Combined assets history (TWD)",
     "aiSettings.title": "AI API key settings",
     "aiSettings.description": "Manage OpenAI and Perplexity API keys for stock detail AI output.",
     "twInsights.title": "Taiwan fundamentals snapshot",
@@ -428,6 +456,20 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "portfolio.aggregate.combinedTwd": "合併總資產（TWD）",
     "portfolio.aggregate.liquidAssets": "可變現資產（不含房地產）",
     "portfolio.aggregate.fxRate": "匯率",
+    "portfolio.history.loading": "載入歷史資產資料中",
+    "portfolio.history.empty": "目前還沒有歷史資料。台灣或美國市場開盤期間會按小時累積快照。",
+    "portfolio.history.range": "區間：{range}",
+    "portfolio.history.zoomIn": "放大",
+    "portfolio.history.zoomOut": "縮小",
+    "portfolio.history.interactHint": "將游標移到圖表上或點選，可檢視每小時快照、市場時段與換匯匯率。",
+    "portfolio.history.value": "數值",
+    "portfolio.history.session": "市場時段",
+    "portfolio.history.session.tw": "台灣市場",
+    "portfolio.history.session.us": "美國市場",
+    "portfolio.history.holdingsUsd": "持股市值歷史（USD）",
+    "portfolio.history.holdingsTwd": "持股市值歷史（TWD）",
+    "portfolio.history.combinedAssetsUsd": "合併總資產歷史（USD）",
+    "portfolio.history.combinedAssetsTwd": "合併總資產歷史（TWD）",
     "aiSettings.title": "AI API 金鑰設定",
     "aiSettings.description": "管理 OpenAI 與 Perplexity API 金鑰，供個股明細 AI 輸出使用。",
     "twInsights.title": "台股基本面快照",

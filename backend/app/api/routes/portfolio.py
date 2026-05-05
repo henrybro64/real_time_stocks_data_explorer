@@ -1,8 +1,6 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException
-from zoneinfo import ZoneInfo
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.api.deps import get_effective_user_id
 from app.db.models import PortfolioAsset, PortfolioPosition
@@ -11,6 +9,9 @@ from app.models.stock import StockRecord
 from app.schemas.portfolio import (
     PortfolioPositionCreate,
     PortfolioAssetCreate,
+    PortfolioHistoryPointResponse,
+    PortfolioHistoryResponse,
+    PortfolioHistorySeriesResponse,
     PortfolioAssetResponse,
     PortfolioAssetSummaryResponse,
     PortfolioAssetUpdate,
@@ -19,9 +20,14 @@ from app.schemas.portfolio import (
     PortfolioSummaryPosition,
     PortfolioSummaryResponse,
 )
-from app.schemas.quote import QuoteResponse
+from app.schemas.quote import ChartLayoutResponse, QuoteResponse
 from app.schemas.stock import StockResponse
+from app.services.chart_layout import build_value_chart_layout
 from app.services.fx_service import get_usd_twd_fx_snapshot
+from app.services.portfolio_history_service import (
+    PortfolioHistorySeries,
+    portfolio_history_service,
+)
 from app.services.portfolio_service import portfolio_service
 from app.services.quote_service import quote_service
 
@@ -78,6 +84,7 @@ def add_portfolio_position(
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    _refresh_history_snapshot(user_id)
     return _to_response(position)
 
 
@@ -101,6 +108,7 @@ def update_portfolio_position(
         )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    _refresh_history_snapshot(user_id)
     return _to_response(position)
 
 
@@ -113,6 +121,7 @@ def delete_portfolio_position(
         portfolio_service.delete_position(user_id, position_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    _refresh_history_snapshot(user_id)
 
 
 @router.get("/assets", response_model=list[PortfolioAssetResponse])
@@ -182,6 +191,38 @@ def get_portfolio_asset_summary(
     )
 
 
+@router.get("/history/holdings", response_model=PortfolioHistoryResponse)
+def get_portfolio_holdings_history(
+    range_name: str = Query(default="1M", alias="range"),
+    user_id: str = Depends(get_effective_user_id),
+) -> PortfolioHistoryResponse:
+    try:
+        history = portfolio_history_service.list_metric_history(
+            user_id,
+            metric="holdings",
+            range_name=range_name,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _history_response(range_name, "holdings", history)
+
+
+@router.get("/history/combined-assets", response_model=PortfolioHistoryResponse)
+def get_portfolio_combined_assets_history(
+    range_name: str = Query(default="1M", alias="range"),
+    user_id: str = Depends(get_effective_user_id),
+) -> PortfolioHistoryResponse:
+    try:
+        history = portfolio_history_service.list_metric_history(
+            user_id,
+            metric="combinedAssets",
+            range_name=range_name,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _history_response(range_name, "combinedAssets", history)
+
+
 @router.post("/assets", response_model=PortfolioAssetResponse)
 def add_portfolio_asset(
     payload: PortfolioAssetCreate,
@@ -195,6 +236,7 @@ def add_portfolio_asset(
         value=payload.value,
         notes=payload.notes,
     )
+    _refresh_history_snapshot(user_id)
     return _to_asset_response(asset)
 
 
@@ -216,6 +258,7 @@ def update_portfolio_asset(
         )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    _refresh_history_snapshot(user_id)
     return _to_asset_response(asset)
 
 
@@ -228,28 +271,7 @@ def delete_portfolio_asset(
         portfolio_service.delete_asset(user_id, asset_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-
-def _synthetic_quote_for_holdings(
-    stock: StockRecord, position: PortfolioPosition
-) -> QuoteRecord:
-    tz = ZoneInfo(stock.timezone)
-    now = datetime.now(tz)
-    price = float(position.average_cost)
-    return QuoteRecord(
-        id=stock.id,
-        last_price=price,
-        change=0.0,
-        change_percent=0.0,
-        previous_close=price,
-        timestamp=now.isoformat(),
-        is_market_open=False,
-        open=price,
-        high=price,
-        low=price,
-        volume=None,
-    )
-
+    _refresh_history_snapshot(user_id)
 
 def _summarize_positions(
     positions: list[PortfolioPosition],
@@ -265,7 +287,7 @@ def _summarize_positions(
             continue
         quote = quote_service.get_quote(position.stock_id)
         if quote is None:
-            quote = _synthetic_quote_for_holdings(stock, position)
+            quote = portfolio_service.synthetic_quote_for_position(stock, position)
         market_value = round(position.quantity * quote.last_price, 2)
         entries.append((stock.currency, market_value))
         rows.append(
@@ -296,7 +318,7 @@ def _to_response(
     if quote is _MISSING_QUOTE:
         quote = quote_service.get_quote(position.stock_id)
     if quote is None:
-        quote = _synthetic_quote_for_holdings(stock, position)
+        quote = portfolio_service.synthetic_quote_for_position(stock, position)
     market_value, unrealized_pl, unrealized_pl_percent = (
         portfolio_service.build_metrics(position, quote)
     )
@@ -354,3 +376,45 @@ def _to_asset_response(asset: PortfolioAsset) -> PortfolioAssetResponse:
         value=asset.value,
         notes=asset.notes,
     )
+
+
+def _history_response(
+    range_name: str,
+    metric: str,
+    history: dict[str, PortfolioHistorySeries],
+) -> PortfolioHistoryResponse:
+    usd_history = history["USD"]
+    twd_history = history["TWD"]
+    return PortfolioHistoryResponse(
+        range=range_name,
+        metric=metric,
+        usd=_history_series_response(usd_history),
+        twd=_history_series_response(twd_history),
+    )
+
+
+def _history_series_response(series: PortfolioHistorySeries) -> PortfolioHistorySeriesResponse:
+    points = list(series.points)
+    layout_raw = build_value_chart_layout([point.value for point in points])
+    chart_layout = ChartLayoutResponse(**layout_raw) if layout_raw else None
+    return PortfolioHistorySeriesResponse(
+        currency=series.currency,
+        points=[
+            PortfolioHistoryPointResponse(
+                timestamp=point.timestamp,
+                sourceWindow=point.source_window,
+                fxRate=point.fx_rate,
+                value=point.value,
+            )
+            for point in points
+        ],
+        chartLayout=chart_layout,
+    )
+
+
+def _refresh_history_snapshot(user_id: str) -> None:
+    try:
+        portfolio_history_service.capture_due_snapshots_for_user(user_id)
+    except Exception:
+        # Snapshot collection should never block primary CRUD paths.
+        return

@@ -17,18 +17,27 @@ import {
 } from "@carbon/react";
 import { useDeferredValue, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import type { TimeRange } from "@shared/quote";
 import type { Stock } from "@shared/stock";
 import Link from "next/link";
 import { getDisplayStockName, useLanguage } from "../../app/i18n";
+import { HistoricalValueChart } from "../../components/chart/HistoricalValueChart";
+import { getHistoryZoomState, stepHistoryRange } from "../../components/chart/historyRange";
 import { StockSearch } from "../../components/search/StockSearch";
 import { RequestStateNotice, errorToNoticeKind } from "../../components/state/RequestStateNotice";
 import { usePortfolioPositions } from "../../hooks/usePortfolioPositions";
-import { fetchPortfolioSummary, fetchUsdTwdFxRate, searchStocks } from "../../services/api/client";
+import {
+  fetchPortfolioHoldingsHistory,
+  fetchPortfolioSummary,
+  fetchUsdTwdFxRate,
+  searchStocks,
+} from "../../services/api/client";
 import { formatCurrency, formatLastUpdated, formatPercent, formatSignedNumber } from "../../services/format/quote";
 
 export function PortfolioPage() {
   const { t, language, formatNumber } = useLanguage();
   const [query, setQuery] = useState("");
+  const [historyRange, setHistoryRange] = useState<TimeRange>("1M");
   const [draftQuantities, setDraftQuantities] = useState<Record<number, string>>({});
   const [savingPositionIds, setSavingPositionIds] = useState<Record<number, boolean>>({});
   const [savedPositionIds, setSavedPositionIds] = useState<Record<number, boolean>>({});
@@ -52,6 +61,12 @@ export function PortfolioPage() {
     refetchInterval: 60_000,
     enabled: items.length > 0,
   });
+  const holdingsHistoryQuery = useQuery({
+    queryKey: ["portfolio-holdings-history", historyRange],
+    queryFn: () => fetchPortfolioHoldingsHistory(historyRange),
+    enabled: items.length > 0,
+    refetchInterval: 60_000,
+  });
   /** While the first fetch runs, `data` is undefined so `items` is [] — do not treat as empty. */
   const showPortfolioLoading = portfolio.isLoading && items.length === 0;
   const showPortfolioError = portfolio.queryError != null && items.length === 0;
@@ -70,6 +85,10 @@ export function PortfolioPage() {
       : fxQuery.error != null
         ? (fxQuery.data ? "stale" : errorToNoticeKind(fxQuery.error))
         : null;
+  const holdingsHistoryNoticeKind =
+    holdingsHistoryQuery.error != null
+      ? (holdingsHistoryQuery.data ? "stale" : errorToNoticeKind(holdingsHistoryQuery.error))
+      : null;
 
   /** Sum table `marketValue` by native currency — matches the grid; avoids $0 while /summary is slow. */
   const holdingsNativeTotals = useMemo(() => {
@@ -98,6 +117,7 @@ export function PortfolioPage() {
   const combinedTwd =
     usdTwdRate > 0 ? totalTwd + totalUsd * usdTwdRate : totalTwd;
   const positionIdByStockId = new Map(items.map((item) => [item.stockId, item.id]));
+  const { canZoomIn, canZoomOut } = getHistoryZoomState(historyRange);
 
   const handleQuantityDraftChange = (positionId: number, nextValue: string) => {
     setDraftQuantities((current) => ({ ...current, [positionId]: nextValue }));
@@ -229,6 +249,44 @@ export function PortfolioPage() {
                 Quote unavailable: {summaryQuery.data.skippedStockIds.join(", ")}
               </p>
             ) : null}
+          </Tile>
+        </Column>
+      ) : null}
+
+      {!showPortfolioLoading && !showPortfolioError && items.length > 0 ? (
+        <Column className="app-column-spacing" sm={4} md={8} lg={16}>
+          <Tile className="app-section-tile">
+            {holdingsHistoryNoticeKind ? (
+              <div className="app-state-notice-wrap">
+                <RequestStateNotice
+                  compact
+                  kind={holdingsHistoryNoticeKind}
+                  scopeLabel={t("portfolio.equity.title")}
+                />
+              </div>
+            ) : null}
+            <div className="app-assets-currency-columns">
+              <HistoricalValueChart
+                title={t("portfolio.history.holdingsUsd")}
+                series={holdingsHistoryQuery.data?.usd ?? null}
+                range={historyRange}
+                onZoomIn={() => setHistoryRange((current) => stepHistoryRange(current, "in"))}
+                onZoomOut={() => setHistoryRange((current) => stepHistoryRange(current, "out"))}
+                canZoomIn={canZoomIn}
+                canZoomOut={canZoomOut}
+                isLoading={holdingsHistoryQuery.isLoading}
+              />
+              <HistoricalValueChart
+                title={t("portfolio.history.holdingsTwd")}
+                series={holdingsHistoryQuery.data?.twd ?? null}
+                range={historyRange}
+                onZoomIn={() => setHistoryRange((current) => stepHistoryRange(current, "in"))}
+                onZoomOut={() => setHistoryRange((current) => stepHistoryRange(current, "out"))}
+                canZoomIn={canZoomIn}
+                canZoomOut={canZoomOut}
+                isLoading={holdingsHistoryQuery.isLoading}
+              />
+            </div>
           </Tile>
         </Column>
       ) : null}

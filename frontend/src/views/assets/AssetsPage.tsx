@@ -20,12 +20,16 @@ import {
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { PortfolioAsset } from "@shared/api";
+import type { TimeRange } from "@shared/quote";
 import { useLanguage } from "../../app/i18n";
+import { HistoricalValueChart } from "../../components/chart/HistoricalValueChart";
+import { getHistoryZoomState, stepHistoryRange } from "../../components/chart/historyRange";
 import { RequestStateNotice, errorToNoticeKind } from "../../components/state/RequestStateNotice";
 import {
   addPortfolioAsset,
   deletePortfolioAsset,
   fetchPortfolioAssets,
+  fetchPortfolioCombinedAssetsHistory,
   fetchPortfolioAssetSummary,
 } from "../../services/api/client";
 import { formatCurrency } from "../../services/format/quote";
@@ -33,6 +37,7 @@ import { formatCurrency } from "../../services/format/quote";
 export function AssetsPage() {
   const { t } = useLanguage();
   const queryClient = useQueryClient();
+  const [historyRange, setHistoryRange] = useState<TimeRange>("1M");
   const [assetTypeDraft, setAssetTypeDraft] = useState("cash");
   const [assetNameDraft, setAssetNameDraft] = useState("");
   const [assetCurrencyDraft, setAssetCurrencyDraft] = useState("USD");
@@ -46,6 +51,11 @@ export function AssetsPage() {
     queryKey: ["portfolio-assets-summary"],
     queryFn: fetchPortfolioAssetSummary,
     refetchInterval: 5_000,
+  });
+  const assetsHistoryQuery = useQuery({
+    queryKey: ["portfolio-assets-history", historyRange],
+    queryFn: () => fetchPortfolioCombinedAssetsHistory(historyRange),
+    refetchInterval: 60_000,
   });
   const addAssetMutation = useMutation({
     mutationFn: addPortfolioAsset,
@@ -73,8 +83,13 @@ export function AssetsPage() {
     assetSummaryQuery.error != null
       ? (summary ? "stale" : errorToNoticeKind(assetSummaryQuery.error))
       : null;
+  const assetsHistoryNoticeKind =
+    assetsHistoryQuery.error != null
+      ? (assetsHistoryQuery.data ? "stale" : errorToNoticeKind(assetsHistoryQuery.error))
+      : null;
   const showSummaryLoading = summary == null && assetSummaryQuery.isLoading;
   const showSummaryError = summary == null && summaryNoticeKind != null;
+  const { canZoomIn, canZoomOut } = getHistoryZoomState(historyRange);
 
   const handleAddAsset = () => {
     // Be tolerant of user input like "1,000.50"
@@ -168,6 +183,42 @@ export function AssetsPage() {
             {t("portfolio.aggregate.fxRate")}:{" "}
             {usdTwdRate > 0 ? `1 USD = ${usdTwdRate.toFixed(4)} TWD` : "—"}
           </p>
+        </Tile>
+      </Column>
+
+      <Column className="app-column-spacing" sm={4} md={8} lg={16}>
+        <Tile className="app-section-tile">
+          {assetsHistoryNoticeKind ? (
+            <div className="app-state-notice-wrap">
+              <RequestStateNotice
+                compact
+                kind={assetsHistoryNoticeKind}
+                scopeLabel={t("portfolio.aggregate.title")}
+              />
+            </div>
+          ) : null}
+          <div className="app-assets-currency-columns">
+            <HistoricalValueChart
+              title={t("portfolio.history.combinedAssetsUsd")}
+              series={assetsHistoryQuery.data?.usd ?? null}
+              range={historyRange}
+              onZoomIn={() => setHistoryRange((current) => stepHistoryRange(current, "in"))}
+              onZoomOut={() => setHistoryRange((current) => stepHistoryRange(current, "out"))}
+              canZoomIn={canZoomIn}
+              canZoomOut={canZoomOut}
+              isLoading={assetsHistoryQuery.isLoading}
+            />
+            <HistoricalValueChart
+              title={t("portfolio.history.combinedAssetsTwd")}
+              series={assetsHistoryQuery.data?.twd ?? null}
+              range={historyRange}
+              onZoomIn={() => setHistoryRange((current) => stepHistoryRange(current, "in"))}
+              onZoomOut={() => setHistoryRange((current) => stepHistoryRange(current, "out"))}
+              canZoomIn={canZoomIn}
+              canZoomOut={canZoomOut}
+              isLoading={assetsHistoryQuery.isLoading}
+            />
+          </div>
         </Tile>
       </Column>
 

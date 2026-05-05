@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     quote_cache_ttl_seconds: int = Field(default=60, ge=1)
     # When true, TW quotes use synthetic data (offline demos only).
     tw_use_mock_quotes: bool = Field(default=False)
+    # Background sampler for portfolio history snapshots.
+    portfolio_history_sampler_enabled: bool = Field(default=True)
+    portfolio_history_poll_seconds: int = Field(default=300, ge=30)
 
     # Multi-user auth. When false, API uses default-user only.
     auth_enabled: bool = Field(default=False)
