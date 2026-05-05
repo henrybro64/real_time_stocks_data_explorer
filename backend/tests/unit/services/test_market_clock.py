@@ -1,6 +1,6 @@
-from datetime import datetime
+from datetime import date, datetime
 
-from app.services.market_clock import is_market_open
+from app.services.market_clock import current_snapshot_bucket, is_market_open
 
 
 def test_us_market_is_open_at_exact_open_boundary() -> None:
@@ -27,3 +27,29 @@ def test_tw_market_closes_after_1330() -> None:
 
     assert is_market_open("TW", open_boundary) is True
     assert is_market_open("TW", closed_after) is False
+
+
+def test_us_market_is_closed_on_observed_independence_day() -> None:
+    now = datetime.fromisoformat("2026-07-03T10:00:00-04:00")
+
+    assert is_market_open("US", now) is False
+
+
+def test_tw_market_is_closed_on_configured_holiday(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.services.market_clock._tw_market_holidays",
+        lambda year: frozenset({date(2026, 5, 1)}),
+    )
+
+    now = datetime.fromisoformat("2026-05-01T10:00:00+08:00")
+
+    assert is_market_open("TW", now) is False
+
+
+def test_snapshot_bucket_uses_last_open_hour_at_close_boundary() -> None:
+    now = datetime.fromisoformat("2026-03-30T16:00:00-04:00")
+
+    bucket = current_snapshot_bucket("US", now)
+
+    assert bucket is not None
+    assert bucket.isoformat() == "2026-03-30T19:00:00+00:00"

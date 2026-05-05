@@ -1,6 +1,6 @@
 from pydantic import BaseModel, Field
 
-from app.schemas.quote import QuoteResponse
+from app.schemas.quote import ChartLayoutResponse, QuoteResponse
 from app.schemas.stock import StockResponse
 
 
@@ -91,3 +91,23 @@ class PortfolioAssetSummaryResponse(BaseModel):
     usdTwdRate: float
     fxTimestamp: str
     skippedStockIds: list[str]
+
+
+class PortfolioHistoryPointResponse(BaseModel):
+    timestamp: str
+    sourceWindow: str
+    fxRate: float
+    value: float
+
+
+class PortfolioHistorySeriesResponse(BaseModel):
+    currency: str
+    points: list[PortfolioHistoryPointResponse]
+    chartLayout: ChartLayoutResponse | None = None
+
+
+class PortfolioHistoryResponse(BaseModel):
+    range: str
+    metric: str
+    usd: PortfolioHistorySeriesResponse
+    twd: PortfolioHistorySeriesResponse

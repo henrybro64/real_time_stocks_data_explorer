@@ -117,6 +117,26 @@ export type PortfolioAssetSummary = {
   skippedStockIds: string[];
 };
 
+export type PortfolioHistoryPoint = {
+  timestamp: string;
+  sourceWindow: string;
+  fxRate: number;
+  value: number;
+};
+
+export type PortfolioHistorySeries = {
+  currency: "USD" | "TWD";
+  points: PortfolioHistoryPoint[];
+  chartLayout: ChartLayout | null;
+};
+
+export type PortfolioHistoryResponse = {
+  range: TimeRange;
+  metric: "holdings" | "combinedAssets" | string;
+  usd: PortfolioHistorySeries;
+  twd: PortfolioHistorySeries;
+};
+
 export type PortfolioAssetType = "cash" | "real_estate" | "other";
 
 export type PortfolioAsset = {

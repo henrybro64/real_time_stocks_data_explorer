@@ -1,4 +1,7 @@
+from datetime import datetime
+
 from sqlalchemy import delete, select
+from zoneinfo import ZoneInfo
 
 from app.db.models import PortfolioAsset, PortfolioPosition
 from app.db.session import SessionLocal
@@ -197,6 +200,28 @@ class PortfolioService:
             0.0 if cost_basis == 0 else round((unrealized_pl / cost_basis) * 100, 2)
         )
         return market_value, unrealized_pl, unrealized_pl_percent
+
+    @staticmethod
+    def synthetic_quote_for_position(
+        stock: StockRecord,
+        position: PortfolioPosition,
+    ) -> QuoteRecord:
+        tz = ZoneInfo(stock.timezone)
+        now = datetime.now(tz)
+        price = float(position.average_cost)
+        return QuoteRecord(
+            id=stock.id,
+            last_price=price,
+            change=0.0,
+            change_percent=0.0,
+            previous_close=price,
+            timestamp=now.isoformat(),
+            is_market_open=False,
+            open=price,
+            high=price,
+            low=price,
+            volume=None,
+        )
 
     @staticmethod
     def summarize_currency_buckets(

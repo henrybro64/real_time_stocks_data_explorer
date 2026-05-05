@@ -45,24 +45,9 @@ The application currently stores the following user-owned entities.
 | Portfolio | conceptual collection | `portfolio_positions.user_id` and `portfolio_assets.user_id` | route dependency + user-scoped queries |
 | Holding / position | `portfolio_positions` | `user_id -> users.id` FK | unique `(user_id, stock_id)`, user-scoped CRUD |
 | Portfolio asset | `portfolio_assets` | `user_id -> users.id` FK | user-scoped CRUD |
+| Portfolio history snapshot | `portfolio_history_snapshots` | `user_id -> users.id` FK | unique `(user_id, snapshot_hour, source_window)`, user-scoped history queries |
 | AI provider API key | `user_api_keys` | `user_id -> users.id` FK | unique `(user_id, provider)`, user-scoped get/upsert |
 | OAuth identity mapping | `oauth_identities` | `user_id -> users.id` FK | unique `(provider, subject)` |
-
-### Not currently implemented
-
-These entities are mentioned in the issue but do not currently exist in the schema or API surface:
-
-- alerts
-- user preferences
-- saved layouts
-- dashboard settings
-
-Because they do not exist yet, there is no current cross-user access path for them. Any future implementation should follow the same pattern used by the existing tables:
-
-- explicit `user_id`
-- foreign key to `users.id`
-- route-level identity resolution
-- service queries filtered by `user_id`
 
 ## Access Control Enforcement
 
@@ -104,18 +89,6 @@ This means the application is not relying only on frontend behavior or API conve
 | --- | --- | --- | --- | --- |
 | `AUTH_ENABLED=false` | seeded system principal | no | `default-user` | single-user compatibility mode |
 | `AUTH_ENABLED=true` and `LOCAL_AUTH_ENABLED=true` | session cookie -> `users.id` | yes | authenticated session user | stale sessions are rejected |
-
-## Review Notes
-
-The main design tighteners added for issue `#4` are:
-
-- the single-user principal is now bootstrapped automatically at backend startup instead of relying on a manual seed step
-- request identity resolution is centralized and rejects stale session users
-- integration tests now verify:
-  - single-user bootstrap behavior
-  - anonymous rejection when auth is enabled
-  - stale-session rejection
-  - cross-user isolation for watchlists, portfolio data, and AI API keys
 
 ## Summary
 

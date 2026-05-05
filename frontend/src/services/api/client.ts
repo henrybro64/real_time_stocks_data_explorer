@@ -9,6 +9,7 @@ import type {
   AiInsightResponse,
   PortfolioAsset,
   PortfolioAssetCreate,
+  PortfolioHistoryResponse,
   PortfolioAssetSummary,
   PortfolioAssetUpdate,
   PortfolioPosition,
@@ -276,6 +277,18 @@ export function fetchPortfolioPositions() {
 
 export function fetchPortfolioSummary() {
   return fetchJson<PortfolioSummary>("/portfolio/summary");
+}
+
+export function fetchPortfolioHoldingsHistory(range: TimeRange) {
+  return fetchJson<PortfolioHistoryResponse>(
+    `/portfolio/history/holdings?range=${encodeURIComponent(range)}`,
+  );
+}
+
+export function fetchPortfolioCombinedAssetsHistory(range: TimeRange) {
+  return fetchJson<PortfolioHistoryResponse>(
+    `/portfolio/history/combined-assets?range=${encodeURIComponent(range)}`,
+  );
 }
 
 export async function addPortfolioPosition(payload: PortfolioPositionCreate) {
