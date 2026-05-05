@@ -1,4 +1,16 @@
+from app.services.quote_service import QuoteService
 from app.services.providers import tw_provider, us_provider
+from tests.support import stock_record
+
+
+class StubSearchProvider:
+    def __init__(self, results):
+        self.results = results
+        self.queries: list[str] = []
+
+    def search(self, query: str):
+        self.queries.append(query)
+        return list(self.results)
 
 
 def test_us_provider_search_returns_known_us_stock_without_network(monkeypatch) -> None:
@@ -75,3 +87,43 @@ def test_tw_provider_get_quote_uses_mock_without_network(monkeypatch) -> None:
 
     assert quote is not None
     assert quote.id == "TW:2330"
+
+
+def test_quote_service_routes_numeric_searches_to_tw_provider_only() -> None:
+    service = QuoteService()
+    tw_search = StubSearchProvider(
+        [
+            stock_record(
+                "TW:2330",
+                market="TW",
+                symbol="2330",
+                name="台積電",
+                exchange="TWSE",
+                currency="TWD",
+                timezone="Asia/Taipei",
+                name_en="TSMC",
+                name_zh_tw="台積電",
+            )
+        ]
+    )
+    us_search = StubSearchProvider(
+        [
+            stock_record(
+                "US:AAPL",
+                market="US",
+                symbol="AAPL",
+                name="Apple Inc.",
+                exchange="NASDAQ",
+                currency="USD",
+                timezone="America/New_York",
+                name_en="Apple Inc.",
+            )
+        ]
+    )
+    service.providers = {"US": us_search, "TW": tw_search}
+
+    matches = service.search("2330")
+
+    assert [item.id for item in matches] == ["TW:2330"]
+    assert tw_search.queries == ["2330"]
+    assert us_search.queries == []

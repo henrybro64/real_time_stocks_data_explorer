@@ -19,11 +19,12 @@ class QuoteService:
         return stocks
 
     def search(self, query: str) -> list[StockRecord]:
-        if not query.strip():
+        normalized_query = query.strip()
+        if not normalized_query:
             return self.list_stocks()
         matches: list[StockRecord] = []
-        for provider in self.providers.values():
-            matches.extend(provider.search(query))
+        for provider in self._providers_for_search_query(normalized_query):
+            matches.extend(provider.search(normalized_query))
         return matches
 
     def get_stock(self, stock_id: str) -> StockRecord | None:
@@ -65,6 +66,13 @@ class QuoteService:
     def _market_from_id(stock_id: str) -> str:
         return stock_id.split(":", 1)[0]
 
+    def _providers_for_search_query(self, query: str):
+        # Taiwan equities/ETFs use numeric symbols; avoid slow, irrelevant US catalog
+        # lookups when the user is clearly searching for a Taiwan code like "2330".
+        if query.isdigit():
+            tw_provider = self.providers.get("TW")
+            return [tw_provider] if tw_provider is not None else []
+        return list(self.providers.values())
+
 
 quote_service = QuoteService()
-
