@@ -26,6 +26,8 @@ class Settings(BaseSettings):
     # Background sampler for portfolio history snapshots.
     portfolio_history_sampler_enabled: bool = Field(default=True)
     portfolio_history_poll_seconds: int = Field(default=300, ge=30)
+    # Shared secret header token for internal snapshot-capture endpoint.
+    portfolio_history_capture_token: str = Field(default="")
 
     # Multi-user auth. When false, API uses default-user only.
     auth_enabled: bool = Field(default=False)
