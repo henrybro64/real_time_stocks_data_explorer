@@ -8,5 +8,6 @@ resources:
   - backend-database-secret.yaml
   - backend-auth-secret.yaml
   - backend.yaml
+  - backend-history-capture-cronjob.yaml
   - frontend.yaml
   - frontend-nodeport.yaml

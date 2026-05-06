@@ -91,6 +91,17 @@ export function HistoricalValueChart({
   const yTicks = chartLayout?.yAxisTicks ?? [];
   const xTickIndices = chartLayout?.xAxisTickIndices ?? [];
   const currency = series?.currency ?? "USD";
+  const hasRenderableSeries =
+    !isLoading &&
+    !!series &&
+    points.length > 0 &&
+    !!chartLayout &&
+    coords.length > 0 &&
+    yTicks.length > 0;
+  const displayYTicks = hasRenderableSeries ? yTicks : [null, null, null, null, null];
+  const displayXTickIndices = hasRenderableSeries
+    ? xTickIndices
+    : Array.from({ length: 5 }, (_, index) => index);
 
   const updateFromClientX = useCallback(
     (clientX: number, clientY: number) => {
@@ -164,19 +175,15 @@ export function HistoricalValueChart({
         <InlineLoading description={t("portfolio.history.loading")} status="active" />
       ) : null}
 
-      {!isLoading && (!series || points.length === 0 || !chartLayout || coords.length === 0 || yTicks.length === 0) ? (
-        <Tile className="app-empty-state">{t("portfolio.history.empty")}</Tile>
-      ) : null}
-
-      {!isLoading && series && points.length > 0 && chartLayout && coords.length > 0 && yTicks.length > 0 ? (
+      {!isLoading ? (
         <>
           <div className="app-chart-frame">
             <div className="app-chart-y-axis" aria-hidden>
               <span className="app-chart-y-currency">{t("chart.axisYTitle", { currency })}</span>
               <div className="app-chart-y-ticks">
-                {yTicks.map((value, index) => (
-                  <span key={`${currency}-${index}`} className="app-chart-y-tick">
-                    {formatCurrency(value, currency)}
+                {displayYTicks.map((value, index) => (
+                  <span key={`${currency}-${index}-${value ?? "empty"}`} className="app-chart-y-tick">
+                    {value == null ? "—" : formatCurrency(value, currency)}
                   </span>
                 ))}
               </div>
@@ -204,10 +211,11 @@ export function HistoricalValueChart({
                 <polyline
                   className="app-value-chart-line"
                   fill="none"
-                  points={chartLayout.pointsPolyline}
+                  points={hasRenderableSeries ? chartLayout.pointsPolyline : ""}
                   vectorEffect="non-scaling-stroke"
                 />
-                {coords.map((coord, index) => (
+                {hasRenderableSeries
+                  ? coords.map((coord, index) => (
                   <circle
                     key={`${points[index]?.timestamp ?? index}-${index}`}
                     className={[
@@ -220,8 +228,9 @@ export function HistoricalValueChart({
                     cy={coord.y}
                     r={activeIndex === index ? 1.35 : 0.75}
                   />
-                ))}
-                {activeCoord ? (
+                    ))
+                  : null}
+                {hasRenderableSeries && activeCoord ? (
                   <>
                     <line
                       className="app-chart-crosshair"
@@ -242,7 +251,13 @@ export function HistoricalValueChart({
                 <rect className="app-chart-hit-layer" width="100" height="100" fill="transparent" />
               </svg>
 
-              {activePoint ? (
+              {!hasRenderableSeries ? (
+                <div className="app-chart-empty-overlay">
+                  <Tile className="app-empty-state">{t("portfolio.history.empty")}</Tile>
+                </div>
+              ) : null}
+
+              {hasRenderableSeries && activePoint ? (
                 <div className="app-chart-tooltip" style={tooltipStyle}>
                   <p className="app-chart-tooltip-date">
                     {formatTooltipDate(activePoint.timestamp, language)}
@@ -269,11 +284,11 @@ export function HistoricalValueChart({
             <div className="app-chart-x-axis">
               <span className="app-chart-x-label">{t("chart.axisDate")}</span>
               <div className="app-chart-x-ticks">
-                {xTickIndices.map((index) => {
+                {displayXTickIndices.map((index) => {
                   const point = points[index];
                   return (
-                    <span key={`${point?.timestamp ?? index}-${index}`} className="app-chart-x-tick">
-                      {point ? formatAxisDate(point.timestamp, language, range) : "—"}
+                    <span key={`${point?.timestamp ?? `empty-${index}`}-${index}`} className="app-chart-x-tick">
+                      {point && hasRenderableSeries ? formatAxisDate(point.timestamp, language, range) : "—"}
                     </span>
                   );
                 })}
@@ -281,13 +296,15 @@ export function HistoricalValueChart({
             </div>
           </div>
 
-          <p className="app-section-meta">
-            {t("chart.rangeSummary", {
-              range,
-              min: formatCurrency(chartLayout.minY, currency),
-              max: formatCurrency(chartLayout.maxY, currency),
-            })}
-          </p>
+          {hasRenderableSeries ? (
+            <p className="app-section-meta">
+              {t("chart.rangeSummary", {
+                range,
+                min: formatCurrency(chartLayout.minY, currency),
+                max: formatCurrency(chartLayout.maxY, currency),
+              })}
+            </p>
+          ) : null}
         </>
       ) : null}
     </div>

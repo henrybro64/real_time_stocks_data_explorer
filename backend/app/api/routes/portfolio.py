@@ -1,6 +1,6 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 
 from app.api.deps import get_effective_user_id
 from app.db.models import PortfolioAsset, PortfolioPosition
@@ -20,6 +20,7 @@ from app.schemas.portfolio import (
     PortfolioSummaryPosition,
     PortfolioSummaryResponse,
 )
+from app.core.config import settings
 from app.schemas.quote import ChartLayoutResponse, QuoteResponse
 from app.schemas.stock import StockResponse
 from app.services.chart_layout import build_value_chart_layout
@@ -221,6 +222,23 @@ def get_portfolio_combined_assets_history(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return _history_response(range_name, "combinedAssets", history)
+
+
+@router.post("/history/capture")
+def capture_portfolio_history_snapshots(
+    x_portfolio_history_token: str | None = Header(default=None),
+) -> dict[str, int]:
+    expected = settings.portfolio_history_capture_token.strip()
+    if not expected:
+        raise HTTPException(
+            status_code=503,
+            detail="History capture endpoint is not configured",
+        )
+    if x_portfolio_history_token != expected:
+        raise HTTPException(status_code=403, detail="Forbidden")
+    captured = portfolio_history_service.capture_due_snapshots_for_all_users()
+    return {"captured": captured}
+
 
 
 @router.post("/assets", response_model=PortfolioAssetResponse)

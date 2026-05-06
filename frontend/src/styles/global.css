@@ -840,6 +840,15 @@ input {
   cursor: crosshair;
 }
 
+.app-chart-empty-overlay {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  pointer-events: none;
+}
+
 .app-chart-corner {
   grid-column: 1;
   grid-row: 2;

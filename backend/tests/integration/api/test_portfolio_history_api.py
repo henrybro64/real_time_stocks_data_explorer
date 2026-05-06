@@ -185,3 +185,24 @@ def test_capture_due_snapshots_upserts_current_hour(
     assert refreshed[0].holdings_value_twd == 8640.0
     assert refreshed[0].combined_assets_usd == 770.0
     assert refreshed[0].combined_assets_twd == 24640.0
+
+
+def test_capture_endpoint_requires_token_and_triggers_capture(monkeypatch) -> None:
+    monkeypatch.setattr("app.core.config.settings.portfolio_history_capture_token", "test-token")
+    monkeypatch.setattr("app.core.config.settings.portfolio_history_sampler_enabled", False)
+    monkeypatch.setattr(
+        portfolio_routes.portfolio_history_service,
+        "capture_due_snapshots_for_all_users",
+        lambda: 3,
+    )
+
+    with TestClient(app) as client:
+        forbidden = client.post("/api/portfolio/history/capture")
+        assert forbidden.status_code == 403
+
+        response = client.post(
+            "/api/portfolio/history/capture",
+            headers={"X-Portfolio-History-Token": "test-token"},
+        )
+        assert response.status_code == 200
+        assert response.json() == {"captured": 3}

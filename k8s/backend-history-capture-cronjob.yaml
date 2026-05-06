@@ -1,0 +1,33 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: stock-ticker-history-capture
+spec:
+  schedule: "*/10 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: capture-history
+              image: curlimages/curl:8.7.1
+              imagePullPolicy: IfNotPresent
+              env:
+                - name: CAPTURE_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: stock-ticker-backend-auth
+                      key: PORTFOLIO_HISTORY_CAPTURE_TOKEN
+              command:
+                - sh
+                - -c
+                - |
+                  set -eu
+                  curl --fail --show-error --silent \
+                    -X POST \
+                    -H "X-Portfolio-History-Token: ${CAPTURE_TOKEN}" \
+                    http://stock-ticker-backend:8000/api/portfolio/history/capture
