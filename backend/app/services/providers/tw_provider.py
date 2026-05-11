@@ -58,6 +58,39 @@ TW_STOCKS: dict[str, StockRecord] = {
         currency="TWD",
         timezone="Asia/Taipei",
     ),
+    "TW:2303": StockRecord(
+        id="TW:2303",
+        market="TW",
+        symbol="2303",
+        name="聯電",
+        name_en="UMC",
+        name_zh_tw="聯電",
+        exchange="TWSE",
+        currency="TWD",
+        timezone="Asia/Taipei",
+    ),
+    "TW:2881": StockRecord(
+        id="TW:2881",
+        market="TW",
+        symbol="2881",
+        name="富邦金",
+        name_en="Fubon Financial",
+        name_zh_tw="富邦金",
+        exchange="TWSE",
+        currency="TWD",
+        timezone="Asia/Taipei",
+    ),
+    "TW:2882": StockRecord(
+        id="TW:2882",
+        market="TW",
+        symbol="2882",
+        name="國泰金",
+        name_en="Cathay Financial",
+        name_zh_tw="國泰金",
+        exchange="TWSE",
+        currency="TWD",
+        timezone="Asia/Taipei",
+    ),
 }
 
 BASE_PRICES = {
@@ -65,6 +98,9 @@ BASE_PRICES = {
     "TW:2330": 948.0,
     "TW:2317": 171.5,
     "TW:2454": 1325.0,
+    "TW:2303": 51.6,
+    "TW:2881": 78.4,
+    "TW:2882": 63.1,
 }
 
 _REALTIME_URL = "https://mis.twse.com.tw/stock/api/getStockInfo.jsp"

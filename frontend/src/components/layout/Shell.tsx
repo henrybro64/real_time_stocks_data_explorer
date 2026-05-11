@@ -160,6 +160,12 @@ export function Shell({ children }: Props) {
                           <a className="app-left-nav-link" href="/#markets">
                             {t("nav.markets")}
                           </a>
+                          <Link
+                            className={pathname === "/rankings" ? "app-left-nav-link active" : "app-left-nav-link"}
+                            href="/rankings"
+                          >
+                            {t("nav.rankings")}
+                          </Link>
                           <a className="app-left-nav-link" href="/#watchlist">
                             {t("nav.watchlist")}
                           </a>

@@ -42,6 +42,43 @@ export type QuoteResponse = {
 
 export type QuotesResponse = QuoteResponse[];
 
+export type RankingType =
+  | "volume"
+  | "volume_up"
+  | "volume_down"
+  | "net_buy"
+  | "net_sell";
+
+export type RankingSourceType =
+  | "free-public"
+  | "free-unofficial"
+  | "cache"
+  | "unsupported";
+
+export type RankingItem = {
+  rank: number;
+  stock: Stock;
+  lastPrice: number | null;
+  changePercent: number | null;
+  volume: number | null;
+  volumeDeltaPercent: number | null;
+  netBuySellShares: number | null;
+  timestamp: string;
+};
+
+export type RankingResponse = {
+  market: MarketCode;
+  rankingType: RankingType;
+  items: RankingItem[];
+  timestamp: string;
+  source: string;
+  sourceType: RankingSourceType;
+  isMarketOpen: boolean;
+  dataFreshnessLabel: string;
+  warningMessage: string | null;
+  unsupportedReason: string | null;
+};
+
 export type HistoryResponse = {
   stock: Stock;
   range: TimeRange;

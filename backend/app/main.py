@@ -8,6 +8,7 @@ from app.api.routes.history import router as history_router
 from app.api.routes.markets import router as markets_router
 from app.api.routes.portfolio import router as portfolio_router
 from app.api.routes.quotes import router as quotes_router
+from app.api.routes.rankings import router as rankings_router
 from app.api.routes.search import router as search_router
 from app.api.routes.stream import router as stream_router
 from app.api.routes.watchlist import router as watchlist_router
@@ -36,6 +37,7 @@ app.add_middleware(
 
 app.include_router(auth_router, prefix=settings.api_prefix)
 app.include_router(markets_router, prefix=settings.api_prefix)
+app.include_router(rankings_router, prefix=settings.api_prefix)
 app.include_router(search_router, prefix=settings.api_prefix)
 app.include_router(quotes_router, prefix=settings.api_prefix)
 app.include_router(history_router, prefix=settings.api_prefix)

@@ -1,5 +1,7 @@
 import type {
   HistoryResponse,
+  RankingResponse,
+  RankingType,
   KeyStatistics,
   MarketIndex,
   MarketStatus,
@@ -223,6 +225,12 @@ export function fetchQuotes(ids: string[]) {
 
 export function fetchQuote(stockId: string) {
   return fetchJson<QuoteResponse>(`/quotes/${encodeURIComponent(stockId)}`);
+}
+
+export function fetchRankings(market: "US" | "TW", rankingType: RankingType, limit = 50) {
+  return fetchJson<RankingResponse>(
+    `/rankings?market=${encodeURIComponent(market)}&type=${encodeURIComponent(rankingType)}&limit=${limit}`,
+  );
 }
 
 export function fetchHistory(stockId: string, range: TimeRange) {
