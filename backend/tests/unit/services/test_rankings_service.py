@@ -114,6 +114,30 @@ def test_volume_up_ranking_uses_existing_baseline() -> None:
     assert [item.volumeDeltaPercent for item in response.items] == [100.0, 50.0, 20.0]
 
 
+def test_volume_up_ranks_zero_delta_above_negative_deltas() -> None:
+    volume_baselines = InMemoryVolumeBaselineStore()
+    volume_baselines.set("US:AAPL", 100)
+    volume_baselines.set("US:MSFT", 100)
+    service = RankingsService(
+        FakeQuoteSource(
+            stocks={
+                "US:AAPL": _us_stock("US:AAPL", "AAPL", "Apple Inc."),
+                "US:MSFT": _us_stock("US:MSFT", "MSFT", "Microsoft Corporation"),
+            },
+            quotes={
+                "US:AAPL": _quote("US:AAPL", 100, "2026-05-12T10:00:00-04:00"),
+                "US:MSFT": _quote("US:MSFT", 95, "2026-05-12T10:00:00-04:00"),
+            },
+        ),
+        volume_baseline_store=volume_baselines,
+    )
+
+    response = service.get_rankings("US", RankingType.volume_up, limit=2)
+
+    assert [item.stock.symbol for item in response.items] == ["AAPL", "MSFT"]
+    assert [item.volumeDeltaPercent for item in response.items] == [0.0, -5.0]
+
+
 def test_volume_up_returns_null_delta_when_baseline_is_missing() -> None:
     service = RankingsService(
         FakeQuoteSource(
@@ -243,6 +267,32 @@ def test_tw_net_buy_returns_daily_warning() -> None:
     assert [item.stock.symbol for item in response.items] == ["2330", "2317"]
     assert response.warningMessage == "台股三大法人買賣超為日資料，非盤中即時資料。"
     assert response.sourceType == RankingSourceType.free_public
+
+
+def test_tw_net_buy_ranks_zero_above_negative_values() -> None:
+    service = RankingsService(
+        FakeQuoteSource(
+            stocks={
+                "TW:2330": _tw_stock("TW:2330", "2330", "台積電"),
+                "TW:2317": _tw_stock("TW:2317", "2317", "鴻海"),
+                "TW:2454": _tw_stock("TW:2454", "2454", "聯發科"),
+            },
+            quotes={
+                "TW:2330": _quote("TW:2330", 1000, "2026-05-12T10:00:00+08:00"),
+                "TW:2317": _quote("TW:2317", 2000, "2026-05-12T10:00:00+08:00"),
+                "TW:2454": _quote("TW:2454", 3000, "2026-05-12T10:00:00+08:00"),
+            },
+        )
+    )
+    service._fetch_tw_institutional_snapshot = lambda now: (  # type: ignore[method-assign]
+        date(2026, 5, 11),
+        {"TW:2330": 500000, "TW:2317": 0, "TW:2454": -100000},
+    )
+
+    response = service.get_rankings("TW", RankingType.net_buy, limit=3)
+
+    assert [item.stock.symbol for item in response.items] == ["2330", "2317", "2454"]
+    assert [item.netBuySellShares for item in response.items] == [500000, 0, -100000]
 
 
 def test_tw_net_sell_returns_daily_warning() -> None:

@@ -356,7 +356,11 @@ class RankingsService:
                 candidates,
                 key=lambda item: (
                     item.volume_delta_percent is None,
-                    -(item.volume_delta_percent or -10**9),
+                    -(
+                        item.volume_delta_percent
+                        if item.volume_delta_percent is not None
+                        else -10**9
+                    ),
                     -(item.volume or -1),
                     item.stock.symbol,
                 ),
@@ -381,7 +385,11 @@ class RankingsService:
                 candidates,
                 key=lambda item: (
                     item.net_buy_sell_shares is None,
-                    -(item.net_buy_sell_shares or -10**9),
+                    -(
+                        item.net_buy_sell_shares
+                        if item.net_buy_sell_shares is not None
+                        else -10**9
+                    ),
                     item.stock.symbol,
                 ),
             )
