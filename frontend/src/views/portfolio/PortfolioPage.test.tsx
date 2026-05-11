@@ -226,9 +226,11 @@ describe("PortfolioPage", () => {
     const twRow = screen.getByTestId("portfolio-position-TW:2330");
     const usRow = screen.getByTestId("portfolio-position-US:AAPL");
     expect(within(twRow).getByText("TWSE")).toBeInTheDocument();
+    expect(twRow).toHaveTextContent("TWD");
     expect(twRow).toHaveTextContent("950.00");
     expect(twRow).toHaveTextContent("1,900.00");
     expect(within(usRow).getByText("NASDAQ")).toBeInTheDocument();
+    expect(usRow).toHaveTextContent("USD");
     expect(usRow).toHaveTextContent("187.23");
     expect(usRow).toHaveTextContent("374.46");
   });
