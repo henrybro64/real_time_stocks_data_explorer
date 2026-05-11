@@ -184,6 +184,10 @@ export function PortfolioPage() {
     event.currentTarget.blur();
   };
 
+  const renderCurrencyValue = (value: number, currency: "USD" | "TWD") => (
+    <span>{`${currency} ${formatCurrency(value, currency)}`}</span>
+  );
+
   return (
     <Grid className="app-page-grid" fullWidth>
       <Column className="app-column-spacing" sm={4} md={8} lg={16}>
@@ -397,8 +401,8 @@ export function PortfolioPage() {
                             </div>
                           </div>
                         </TableCell>
-                        <TableCell>{formatCurrency(position.quote.lastPrice, position.stock.currency)}</TableCell>
-                        <TableCell>{formatCurrency(position.marketValue, position.stock.currency)}</TableCell>
+                        <TableCell>{renderCurrencyValue(position.quote.lastPrice, position.stock.currency)}</TableCell>
+                        <TableCell>{renderCurrencyValue(position.marketValue, position.stock.currency)}</TableCell>
                         <TableCell>
                           <span className={position.quote.change >= 0 ? "app-positive" : "app-negative"}>
                             {formatSignedNumber(position.quote.change, position.stock.currency)}
