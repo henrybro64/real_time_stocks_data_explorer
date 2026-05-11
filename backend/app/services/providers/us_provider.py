@@ -53,6 +53,56 @@ US_STOCKS: dict[str, StockRecord] = {
         currency="USD",
         timezone="America/New_York",
     ),
+    "US:TSLA": StockRecord(
+        id="US:TSLA",
+        market="US",
+        symbol="TSLA",
+        name="Tesla, Inc.",
+        name_en="Tesla, Inc.",
+        exchange="NASDAQ",
+        currency="USD",
+        timezone="America/New_York",
+    ),
+    "US:AMD": StockRecord(
+        id="US:AMD",
+        market="US",
+        symbol="AMD",
+        name="Advanced Micro Devices, Inc.",
+        name_en="Advanced Micro Devices, Inc.",
+        exchange="NASDAQ",
+        currency="USD",
+        timezone="America/New_York",
+    ),
+    "US:META": StockRecord(
+        id="US:META",
+        market="US",
+        symbol="META",
+        name="Meta Platforms, Inc.",
+        name_en="Meta Platforms, Inc.",
+        exchange="NASDAQ",
+        currency="USD",
+        timezone="America/New_York",
+    ),
+    "US:AMZN": StockRecord(
+        id="US:AMZN",
+        market="US",
+        symbol="AMZN",
+        name="Amazon.com, Inc.",
+        name_en="Amazon.com, Inc.",
+        exchange="NASDAQ",
+        currency="USD",
+        timezone="America/New_York",
+    ),
+    "US:GOOGL": StockRecord(
+        id="US:GOOGL",
+        market="US",
+        symbol="GOOGL",
+        name="Alphabet Inc.",
+        name_en="Alphabet Inc.",
+        exchange="NASDAQ",
+        currency="USD",
+        timezone="America/New_York",
+    ),
 }
 
 BASE_PRICES = {
@@ -60,6 +110,11 @@ BASE_PRICES = {
     "US:MSFT": 438.17,
     "US:NVDA": 119.31,
     "US:MU": 98.42,
+    "US:TSLA": 172.15,
+    "US:AMD": 146.83,
+    "US:META": 497.66,
+    "US:AMZN": 182.57,
+    "US:GOOGL": 165.42,
 }
 
 _CATALOG_URL = "https://www.sec.gov/files/company_tickers_exchange.json"
