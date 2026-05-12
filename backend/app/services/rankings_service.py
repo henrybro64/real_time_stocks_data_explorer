@@ -201,36 +201,43 @@ class RankingsService:
             )
 
         ranking_date, institutional_rows = institutional_snapshot
-        quotes_by_id = {
-            stock.id: (stock, quote)
-            for stock, quote in self.quote_source.get_quotes(MARKET_UNIVERSES["TW"])
-        }
-
         candidates: list[_RankingCandidate] = []
-        for stock_id in MARKET_UNIVERSES["TW"]:
-            net_buy_sell_shares = institutional_rows.get(stock_id)
+        ranking_timestamp = datetime.combine(
+            ranking_date,
+            time(18, 0),
+            tzinfo=_TW_TIMEZONE,
+        ).isoformat()
+        for stock_id, net_buy_sell_shares in institutional_rows.items():
             stock = self.quote_source.get_stock(stock_id)
-            if stock is None or net_buy_sell_shares is None:
+            if stock is None:
                 continue
-            envelope = quotes_by_id.get(stock_id)
-            quote = envelope[1] if envelope is not None else None
             candidates.append(
                 _RankingCandidate(
                     stock=_stock_schema(stock),
-                    last_price=quote.last_price if quote is not None else None,
-                    change_percent=quote.change_percent if quote is not None else None,
-                    volume=quote.volume if quote is not None else None,
+                    last_price=None,
+                    change_percent=None,
+                    volume=None,
                     volume_delta_percent=None,
                     net_buy_sell_shares=net_buy_sell_shares,
-                    timestamp=datetime.combine(
-                        ranking_date,
-                        time(18, 0),
-                        tzinfo=_TW_TIMEZONE,
-                    ).isoformat(),
+                    timestamp=ranking_timestamp,
                 )
             )
 
         ranked_candidates = self._sort_tw_institutional_candidates(candidates, ranking_type)[:limit]
+        quotes_by_id = {
+            stock.id: quote
+            for stock, quote in self.quote_source.get_quotes(
+                [candidate.stock.id for candidate in ranked_candidates]
+            )
+        }
+        for candidate in ranked_candidates:
+            quote = quotes_by_id.get(candidate.stock.id)
+            if quote is None:
+                continue
+            candidate.last_price = quote.last_price
+            candidate.change_percent = quote.change_percent
+            candidate.volume = quote.volume
+
         items = [
             _ranking_item(index, candidate)
             for index, candidate in enumerate(ranked_candidates, start=1)

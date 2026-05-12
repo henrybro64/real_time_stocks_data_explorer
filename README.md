@@ -100,21 +100,20 @@ Notes:
 - `yfinance` data can be delayed, incomplete, or unavailable for some symbols
 - AI output is informational only and is not financial advice
 
-### Market Rankings (Phase 1 free-only)
+### Market Rankings (free-only)
 
-The app also exposes a Phase 1 rankings page at `/rankings` backed by:
+The `/rankings` page is now focused on the one market-wide ranking surface this project can support reliably with free public data:
 
 ```text
-GET /api/rankings?market=US|TW&type=volume|volume_up|volume_down|net_buy|net_sell&limit=50
+GET /api/rankings?market=TW&type=net_buy|net_sell&limit=50
 ```
 
 Notes:
 
-- quote-based rankings use the app's free best-effort quote providers and may be delayed or temporarily unavailable
-- `volume_up` and `volume_down` compare against the previous quote snapshot baseline, with optional Redis persistence when `REDIS_URL` is configured, so the first refresh can still show an empty volume-change percent
-- Taiwan `net_buy` and `net_sell` use TWSE T86 daily institutional data and are explicitly labeled as daily, not intraday real-time
-- U.S. `net_buy` and `net_sell` are intentionally unsupported in this Phase 1 free-only implementation
-- the rankings universe is intentionally small and curated to avoid aggressive polling against free sources
+- Taiwan `net_buy` and `net_sell` use TWSE T86 daily institutional data
+- these rankings are explicitly labeled as daily, not intraday real-time
+- the UI hides U.S. market-wide rankings because reliable free market-wide U.S. data is not available in this app
+- if the TWSE public source is temporarily unavailable, the page shows an unavailable state instead of pretending the data is fresh
 
 Frontend:
 

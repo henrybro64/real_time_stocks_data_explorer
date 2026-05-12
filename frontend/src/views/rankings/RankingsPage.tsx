@@ -5,8 +5,6 @@ import {
   Column,
   Grid,
   InlineLoading,
-  Select,
-  SelectItem,
   Table,
   TableBody,
   TableCell,
@@ -32,25 +30,15 @@ import {
 } from "./rankingsCopy";
 
 const DEFAULT_LIMIT = 50;
+const MARKET = "TW" as const;
 type RankingsTabLabelKey =
   | "rankings.tab.netBuy"
-  | "rankings.tab.netSell"
-  | "rankings.tab.volume"
-  | "rankings.tab.volumeUp"
-  | "rankings.tab.volumeDown";
-type RankingsMarketLabelKey = "rankings.market.tw" | "rankings.market.us";
+  | "rankings.tab.netSell";
 
 const RANKING_TABS: Array<{ key: RankingType; labelKey: RankingsTabLabelKey }> = [
   { key: "net_buy", labelKey: "rankings.tab.netBuy" },
   { key: "net_sell", labelKey: "rankings.tab.netSell" },
-  { key: "volume", labelKey: "rankings.tab.volume" },
-  { key: "volume_up", labelKey: "rankings.tab.volumeUp" },
-  { key: "volume_down", labelKey: "rankings.tab.volumeDown" },
 ];
-const MARKET_LABEL_KEYS: Record<"TW" | "US", RankingsMarketLabelKey> = {
-  TW: "rankings.market.tw",
-  US: "rankings.market.us",
-};
 
 export function getRankingsRefetchInterval(isMarketOpen: boolean, rankingType: RankingType) {
   if (rankingType === "net_buy" || rankingType === "net_sell") {
@@ -83,25 +71,23 @@ function formatMaybeNumber(value: number | null, formatNumber: (value: number) =
 function tableTitle(
   response: RankingResponse | undefined,
   fallback: string,
-  translate: (key: RankingsTabLabelKey | RankingsMarketLabelKey) => string,
+  translate: (key: RankingsTabLabelKey | "rankings.market.tw") => string,
 ) {
   if (!response) {
     return fallback;
   }
   const tab = RANKING_TABS.find((candidate) => candidate.key === response.rankingType);
-  const marketLabel = translate(MARKET_LABEL_KEYS[response.market]);
   const rankingLabel = tab ? translate(tab.labelKey) : response.rankingType;
-  return `${marketLabel} ${rankingLabel}`;
+  return `${translate("rankings.market.tw")} ${rankingLabel}`;
 }
 
 export function RankingsPage() {
   const { language, t, formatNumber } = useLanguage();
-  const [market, setMarket] = useState<"US" | "TW">("TW");
-  const [rankingType, setRankingType] = useState<RankingType>("volume");
+  const [rankingType, setRankingType] = useState<RankingType>("net_buy");
 
   const rankingsQuery = useQuery<RankingResponse>({
-    queryKey: ["rankings", market, rankingType, DEFAULT_LIMIT],
-    queryFn: () => fetchRankings(market, rankingType, DEFAULT_LIMIT),
+    queryKey: ["rankings", MARKET, rankingType, DEFAULT_LIMIT],
+    queryFn: () => fetchRankings(MARKET, rankingType, DEFAULT_LIMIT),
     refetchInterval: (query) =>
       getRankingsRefetchInterval(
         (query.state.data as RankingResponse | undefined)?.isMarketOpen ?? false,
@@ -134,16 +120,12 @@ export function RankingsPage() {
             </div>
           </div>
           <div className="app-portfolio-asset-form">
-            <Select
-              id="rankings-market-select"
-              data-testid="rankings-market-select"
-              labelText={t("rankings.market")}
-              value={market}
-              onChange={(event) => setMarket(event.currentTarget.value as "US" | "TW")}
-            >
-              <SelectItem value="TW" text={t("rankings.market.tw")} />
-              <SelectItem value="US" text={t("rankings.market.us")} />
-            </Select>
+            <p className="app-supporting-copy" data-testid="rankings-market-label">
+              {t("rankings.market.tw")}
+            </p>
+            <p className="app-supporting-copy" data-testid="rankings-scope-note">
+              {t("rankings.notice.twOnly")}
+            </p>
           </div>
           <div className="app-shell-brand" style={{ marginTop: "1rem" }}>
             <div className="app-auth-actions" style={{ display: "flex", flexWrap: "wrap", gap: "0.75rem" }}>
