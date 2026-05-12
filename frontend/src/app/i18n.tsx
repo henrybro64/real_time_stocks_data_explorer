@@ -73,15 +73,11 @@ type TranslationKey =
   | "rankings.title"
   | "rankings.description"
   | "rankings.market"
-  | "rankings.market.us"
   | "rankings.market.tw"
   | "rankings.loading"
   | "rankings.empty"
   | "rankings.tab.netBuy"
   | "rankings.tab.netSell"
-  | "rankings.tab.volume"
-  | "rankings.tab.volumeUp"
-  | "rankings.tab.volumeDown"
   | "rankings.column.rank"
   | "rankings.column.symbol"
   | "rankings.column.name"
@@ -92,23 +88,14 @@ type TranslationKey =
   | "rankings.column.netBuySell"
   | "rankings.column.dataTime"
   | "rankings.column.source"
-  | "rankings.notice.quoteWarning"
+  | "rankings.notice.twOnly"
   | "rankings.notice.twDaily"
-  | "rankings.notice.usNetBuyUnsupported"
-  | "rankings.notice.usNetSellUnsupported"
   | "rankings.notice.twInstitutionalUnavailable"
-  | "rankings.freshness.volumeOpen"
-  | "rankings.freshness.volumeClosed"
-  | "rankings.freshness.baselineMissing"
-  | "rankings.freshness.volumeChangeOpen"
-  | "rankings.freshness.volumeChangeClosed"
   | "rankings.freshness.twInstitutionalUnavailable"
   | "rankings.freshness.twNetBuy"
   | "rankings.freshness.twNetSell"
   | "rankings.freshness.twNetBuyClosed"
   | "rankings.freshness.twNetSellClosed"
-  | "rankings.freshness.phase1Limited"
-  | "rankings.source.quote"
   | "rankings.source.twse"
   | "rankings.source.unsupported"
   | "portfolio.title"
@@ -289,17 +276,13 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "chart.interactHint": "Hover or click the chart to inspect open, high, low, close, and volume for that time.",
     "rankings.title": "Market rankings",
     "rankings.description":
-      "Phase 1 free-only rankings for U.S. and Taiwan markets. Institutional TW rankings are daily, while quote rankings use best-effort free sources.",
+      "Free-only Taiwan market rankings. This page shows daily institutional net buy/sell rankings; U.S. market-wide rankings are hidden because reliable free market-wide data is unavailable.",
     "rankings.market": "Market",
-    "rankings.market.us": "U.S.",
     "rankings.market.tw": "Taiwan",
     "rankings.loading": "Loading rankings",
     "rankings.empty": "No ranking rows are available for this selection right now.",
     "rankings.tab.netBuy": "Net buy",
     "rankings.tab.netSell": "Net sell",
-    "rankings.tab.volume": "Volume",
-    "rankings.tab.volumeUp": "Volume up",
-    "rankings.tab.volumeDown": "Volume down",
     "rankings.column.rank": "Rank",
     "rankings.column.symbol": "Symbol",
     "rankings.column.name": "Name",
@@ -310,21 +293,11 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "rankings.column.netBuySell": "Net buy / sell",
     "rankings.column.dataTime": "Data time",
     "rankings.column.source": "Source",
-    "rankings.notice.quoteWarning": "Free unofficial quote source; data may be delayed or unavailable.",
+    "rankings.notice.twOnly":
+      "Only Taiwan daily institutional rankings are shown here. U.S. market-wide rankings are not available from this app's free data sources.",
     "rankings.notice.twDaily": "Taiwan institutional net buy/sell rankings use daily data, not intraday real-time data.",
-    "rankings.notice.usNetBuyUnsupported":
-      "U.S. institutional net-buy data is not available from free-only sources in this app.",
-    "rankings.notice.usNetSellUnsupported":
-      "U.S. institutional net-sell data is not available from free-only sources in this app.",
     "rankings.notice.twInstitutionalUnavailable":
       "Taiwan institutional daily data is temporarily unavailable from the free public source.",
-    "rankings.freshness.volumeOpen": "Market open; rankings use the latest quote snapshot.",
-    "rankings.freshness.volumeClosed": "Market closed; rankings use the latest available quote snapshot.",
-    "rankings.freshness.baselineMissing":
-      "Baseline unavailable on the first snapshot; volume change percent stays empty until a later refresh.",
-    "rankings.freshness.volumeChangeOpen": "Volume change uses the previous quote snapshot baseline.",
-    "rankings.freshness.volumeChangeClosed":
-      "Market closed; volume change uses the previous quote snapshot baseline.",
     "rankings.freshness.twInstitutionalUnavailable":
       "Taiwan daily institutional ranking is unavailable from the free public source right now.",
     "rankings.freshness.twNetBuy":
@@ -335,8 +308,6 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
       "Market closed; Taiwan daily institutional ranking sorted by highest institutional net buy/sell shares.",
     "rankings.freshness.twNetSellClosed":
       "Market closed; Taiwan daily institutional ranking sorted by most negative institutional net buy/sell shares.",
-    "rankings.freshness.phase1Limited": "Phase 1 free-only limitation.",
-    "rankings.source.quote": "Quote rankings from the app's free best-effort quote providers.",
     "rankings.source.twse": "TWSE T86 daily institutional data",
     "rankings.source.unsupported": "Unsupported in Phase 1 free-only rankings",
     "portfolio.title": "Portfolio",
@@ -519,17 +490,14 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "chart.candleClose": "收盤",
     "chart.interactHint": "將游標移到圖表上或點選，可檢視該時間點的開高低收與成交量。",
     "rankings.title": "市場排行",
-    "rankings.description": "Phase 1 僅使用免費資料來源。台股法人排行為日資料，成交量排行則使用免費最佳努力報價來源。",
+    "rankings.description":
+      "此頁僅顯示免費資料可支援的台股法人日排行；因缺乏可靠的免費全市場資料來源，美股全市場排行已從此頁隱藏。",
     "rankings.market": "市場",
-    "rankings.market.us": "美股",
     "rankings.market.tw": "台股",
     "rankings.loading": "載入排行中",
     "rankings.empty": "目前沒有可顯示的排行資料。",
     "rankings.tab.netBuy": "買超",
     "rankings.tab.netSell": "賣超",
-    "rankings.tab.volume": "量大",
-    "rankings.tab.volumeUp": "量增",
-    "rankings.tab.volumeDown": "量縮",
     "rankings.column.rank": "排名",
     "rankings.column.symbol": "代碼",
     "rankings.column.name": "名稱",
@@ -540,23 +508,14 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "rankings.column.netBuySell": "買賣超",
     "rankings.column.dataTime": "資料時間",
     "rankings.column.source": "來源",
-    "rankings.notice.quoteWarning": "免費非官方報價來源，資料可能延遲或暫時無法取得。",
+    "rankings.notice.twOnly": "此頁僅顯示台股法人日排行；本應用程式的免費資料來源無法提供美股全市場排行。",
     "rankings.notice.twDaily": "台股三大法人買賣超為日資料，非盤中即時資料。",
-    "rankings.notice.usNetBuyUnsupported": "此應用程式的免費資料來源無法提供美股法人買超排行。",
-    "rankings.notice.usNetSellUnsupported": "此應用程式的免費資料來源無法提供美股法人賣超排行。",
     "rankings.notice.twInstitutionalUnavailable": "目前無法從免費公開來源取得台股法人日資料。",
-    "rankings.freshness.volumeOpen": "市場開盤中；排行使用最新報價快照。",
-    "rankings.freshness.volumeClosed": "市場休市；排行使用最新可用報價快照。",
-    "rankings.freshness.baselineMissing": "首次快照尚無基準，量變化百分比會在後續更新後顯示。",
-    "rankings.freshness.volumeChangeOpen": "量變化以先前報價快照為基準。",
-    "rankings.freshness.volumeChangeClosed": "市場休市；量變化以先前報價快照為基準。",
     "rankings.freshness.twInstitutionalUnavailable": "目前無法從免費公開來源取得台股法人日排行。",
     "rankings.freshness.twNetBuy": "台股法人日排行依三大法人買賣超股數由高到低排序。",
     "rankings.freshness.twNetSell": "台股法人日排行依三大法人買賣超股數由低到高排序。",
     "rankings.freshness.twNetBuyClosed": "市場休市；台股法人日排行依三大法人買賣超股數由高到低排序。",
     "rankings.freshness.twNetSellClosed": "市場休市；台股法人日排行依三大法人買賣超股數由低到高排序。",
-    "rankings.freshness.phase1Limited": "Phase 1 僅限免費資料來源。",
-    "rankings.source.quote": "排行使用應用程式的免費最佳努力報價來源。",
     "rankings.source.twse": "TWSE T86 法人日資料",
     "rankings.source.unsupported": "Phase 1 免費排行尚不支援",
     "portfolio.title": "投資組合",

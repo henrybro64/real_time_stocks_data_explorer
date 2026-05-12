@@ -25,7 +25,7 @@ vi.mock("next/link", () => ({
 function buildResponse(overrides: Partial<RankingResponse> = {}): RankingResponse {
   return {
     market: "TW",
-    rankingType: "volume",
+    rankingType: "net_buy",
     items: [
       {
         rank: 1,
@@ -49,11 +49,11 @@ function buildResponse(overrides: Partial<RankingResponse> = {}): RankingRespons
       },
     ],
     timestamp: "2026-05-11T01:30:00Z",
-    source: "Quote rankings from the app's free best-effort quote providers.",
-    sourceType: "free-unofficial",
+    source: "TWSE T86 daily institutional data",
+    sourceType: "free-public",
     isMarketOpen: true,
-    dataFreshnessLabel: "Market open; rankings use the latest quote snapshot.",
-    warningMessage: "Free unofficial quote source; data may be delayed or unavailable.",
+    dataFreshnessLabel: "TW daily institutional ranking sorted by highest 三大法人買賣超股數.",
+    warningMessage: "台股三大法人買賣超為日資料，非盤中即時資料。",
     unsupportedReason: null,
     ...overrides,
   };
@@ -90,25 +90,34 @@ describe("RankingsPage", () => {
 
     expect(await screen.findByRole("heading", { level: 1, name: "市場排行" })).toBeInTheDocument();
     expect(await screen.findByTestId("rankings-row-TW:2330")).toBeInTheDocument();
+    expect(screen.getByTestId("rankings-scope-note")).toHaveTextContent(
+      "此頁僅顯示台股法人日排行；本應用程式的免費資料來源無法提供美股全市場排行。",
+    );
     expect(screen.getByTestId("rankings-warning-message")).toHaveTextContent(
-      "免費非官方報價來源，資料可能延遲或暫時無法取得。",
+      "台股三大法人買賣超為日資料，非盤中即時資料。",
     );
   });
 
-  it("switches market and ranking tabs", async () => {
+  it("shows Taiwan-only controls and switches ranking tabs", async () => {
     const user = userEvent.setup();
     vi.mocked(fetchRankings)
       .mockResolvedValueOnce(buildResponse())
-      .mockResolvedValue(buildResponse({ market: "US", rankingType: "net_buy", items: [] }));
+      .mockResolvedValue(
+        buildResponse({
+          rankingType: "net_sell",
+          dataFreshnessLabel: "TW daily institutional ranking sorted by most negative 三大法人買賣超股數.",
+        }),
+      );
 
     renderRankingsPage();
 
     await screen.findByTestId("rankings-row-TW:2330");
-    await user.selectOptions(screen.getByTestId("rankings-market-select"), "US");
-    await user.click(screen.getByTestId("rankings-tab-net_buy"));
+    expect(screen.queryByTestId("rankings-market-select")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("rankings-tab-volume")).not.toBeInTheDocument();
+    await user.click(screen.getByTestId("rankings-tab-net_sell"));
 
     await waitFor(() => {
-      expect(fetchRankings).toHaveBeenLastCalledWith("US", "net_buy", 50);
+      expect(fetchRankings).toHaveBeenLastCalledWith("TW", "net_sell", 50);
     });
   });
 
@@ -128,33 +137,6 @@ describe("RankingsPage", () => {
     renderRankingsPage();
 
     expect(await screen.findByText("載入失敗")).toBeInTheDocument();
-  });
-
-  it("renders unsupported US net-buy messaging", async () => {
-    const user = userEvent.setup();
-    vi.mocked(fetchRankings)
-      .mockResolvedValueOnce(buildResponse())
-      .mockResolvedValue(
-        buildResponse({
-          market: "US",
-          rankingType: "net_buy",
-          items: [],
-          source: "Unsupported in Phase 1 free-only rankings",
-          sourceType: "unsupported",
-          warningMessage: null,
-          unsupportedReason: "US institutional net-buy data is not available from free-only sources in this app.",
-        }),
-      );
-
-    renderRankingsPage();
-
-    await screen.findByTestId("rankings-row-TW:2330");
-    await user.selectOptions(screen.getByTestId("rankings-market-select"), "US");
-    await user.click(screen.getByTestId("rankings-tab-net_buy"));
-
-    expect(await screen.findByTestId("rankings-unsupported-message")).toHaveTextContent(
-      "此應用程式的免費資料來源無法提供美股法人買超排行。",
-    );
   });
 
   it("renders TW daily-data warning for institutional rankings", async () => {

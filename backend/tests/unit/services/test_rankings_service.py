@@ -295,6 +295,30 @@ def test_tw_net_buy_ranks_zero_above_negative_values() -> None:
     assert [item.netBuySellShares for item in response.items] == [500000, 0, -100000]
 
 
+def test_tw_net_buy_uses_market_wide_public_rows_instead_of_curated_subset() -> None:
+    service = RankingsService(
+        FakeQuoteSource(
+            stocks={
+                "TW:2330": _tw_stock("TW:2330", "2330", "台積電"),
+                "TW:1101": _tw_stock("TW:1101", "1101", "台泥"),
+            },
+            quotes={
+                "TW:2330": _quote("TW:2330", 1000, "2026-05-12T10:00:00+08:00"),
+                "TW:1101": _quote("TW:1101", 2000, "2026-05-12T10:00:00+08:00"),
+            },
+        )
+    )
+    service._fetch_tw_institutional_snapshot = lambda now: (  # type: ignore[method-assign]
+        date(2026, 5, 11),
+        {"TW:1101": 900000, "TW:2330": 500000},
+    )
+
+    response = service.get_rankings("TW", RankingType.net_buy, limit=2)
+
+    assert [item.stock.symbol for item in response.items] == ["1101", "2330"]
+    assert [item.netBuySellShares for item in response.items] == [900000, 500000]
+
+
 def test_tw_net_sell_returns_daily_warning() -> None:
     service = RankingsService(
         FakeQuoteSource(

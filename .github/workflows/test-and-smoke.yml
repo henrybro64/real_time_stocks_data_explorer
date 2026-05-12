@@ -93,7 +93,10 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci --prefix frontend
       - name: Install Playwright browser
-        run: npx --prefix frontend playwright install --with-deps chromium
+        # GitHub-hosted Ubuntu runners already provide the system libraries
+        # Chromium needs for this project. Skipping `--with-deps` avoids
+        # lengthy apt mirror stalls during CI setup.
+        run: npx --prefix frontend playwright install chromium
       - name: Run frontend unit tests
         id: frontend_unit_tests
         continue-on-error: true
