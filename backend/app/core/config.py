@@ -28,16 +28,6 @@ class Settings(BaseSettings):
     portfolio_history_poll_seconds: int = Field(default=300, ge=30)
     # Shared secret header token for internal snapshot-capture endpoint.
     portfolio_history_capture_token: str = Field(default="")
-    # Shared secret header token for the internal rankings snapshot refresh endpoint.
-    rankings_snapshot_refresh_token: str = Field(default="")
-    # When true, RankingsService reads TW quote-based rankings (volume / change_up /
-    # change_down) from the Redis snapshot populated by the refresh CronJob instead of
-    # the hardcoded 7-stock curated universe. Falls back to the curated universe when
-    # the snapshot is missing or stale.
-    rankings_tw_snapshot_enabled: bool = Field(default=False)
-    # How many minutes a TW rankings snapshot can be older than before the service
-    # treats it as stale and falls back to the curated universe.
-    rankings_tw_snapshot_max_age_minutes: int = Field(default=60, ge=1)
 
     # Multi-user auth. When false, API uses default-user only.
     auth_enabled: bool = Field(default=False)

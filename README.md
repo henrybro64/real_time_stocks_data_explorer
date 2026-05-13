@@ -110,22 +110,17 @@ GET /api/rankings?market=TW|US&type=volume|volume_up|volume_down|change_up|chang
 
 Available ranking types per market:
 
-- Taiwan: `volume`, `change_up`, `change_down` (quote-based) and `net_buy`, `net_sell` (daily institutional)
-- U.S.: `volume`, `volume_up`, `volume_down`, `change_up`, `change_down` (all quote-based)
+- Taiwan UI tabs: `volume`, `change_up`, `change_down` (quote-based) and `net_buy`, `net_sell` (daily institutional)
+- U.S. UI tabs: `volume`, `change_up`, `change_down`
+- Backend also accepts `volume_up` / `volume_down` for either market, but these are our custom "vs previous snapshot" metric and are not exposed in the U.S. UI because Yahoo's pre-ranked sources do not cover them
 
-Notes:
+Data sources:
 
-- Taiwan quote-based rankings (`volume`, `change_up`, `change_down`) cover the full tracked TWSE universe via a Redis-backed snapshot refreshed every 30 minutes by a Kubernetes CronJob (`k8s/backend-rankings-snapshot-cronjob.yaml`). The snapshot reuses the stock universe already discovered by the daily TWSE T86 institutional fetch, so the universe stays in sync with whichever stocks actually trade
-- U.S. quote-based rankings (`volume`, `volume_up`, `volume_down`, `change_up`, `change_down`) currently rank a small curated stock list; expanding U.S. to the S&P 500 with the same snapshot pattern is a planned Phase 2 follow-up
-- Taiwan `net_buy` and `net_sell` use TWSE T86 daily institutional data and are explicitly labeled as daily, not intraday real-time
-- U.S. institutional `net_buy`/`net_sell` are not supported because reliable free U.S. institutional data is not available in this app
-- if a free public source is temporarily unavailable, the page shows an unavailable state instead of pretending the data is fresh
-
-Snapshot configuration (backend env vars):
-
-- `RANKINGS_SNAPSHOT_REFRESH_TOKEN` — shared secret the CronJob sends in `X-Rankings-Snapshot-Token` to `POST /api/rankings/snapshot/refresh?market=TW`; if unset the endpoint returns 503
-- `RANKINGS_TW_SNAPSHOT_ENABLED` (default `false`) — when `true`, Taiwan quote-based rankings read from the snapshot; when `false` they fall back to the curated 7-stock universe
-- `RANKINGS_TW_SNAPSHOT_MAX_AGE_MINUTES` (default `60`) — snapshots older than this fall back to the curated universe, so a stuck CronJob never quietly serves day-old data
+- `volume`, `change_up`, `change_down` come pre-sorted from Yahoo Finance — Yahoo TW rank pages (`tw.stock.yahoo.com/rank/volume|change-up|change-down`) for Taiwan, and `yfinance.screen("most_actives" | "day_gainers" | "day_losers")` for U.S. Responses are cached per (market, ranking_type) for ~5 min so reopening the page does not refetch.
+- `volume_up`, `volume_down` rank a small curated universe by comparing live volume to the previous in-process baseline, since no public source publishes this metric.
+- Taiwan `net_buy` and `net_sell` use TWSE T86 daily institutional data and are explicitly labeled as daily, not intraday real-time.
+- U.S. institutional `net_buy` / `net_sell` are not supported (no reliable free U.S. institutional source).
+- If the Yahoo pre-ranked fetch fails, the page falls back to a small curated quote universe so something still renders; if the free public source is fully down the page shows an unavailable state instead of pretending the data is fresh.
 
 Frontend:
 

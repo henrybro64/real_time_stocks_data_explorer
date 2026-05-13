@@ -1,0 +1,603 @@
+"""Pre-ranked rankings data from Yahoo Finance.
+
+Yahoo already publishes top-N by volume / change-up / change-down for both
+markets, so we ask them rather than fetching every stock and sorting in
+Python. The two providers behind one interface:
+
+* Taiwan: HTML rank pages at ``tw.stock.yahoo.com/rank/{volume,change-up,change-down}``.
+  These are server-side rendered; we strip the tags and walk the resulting
+  text lines, looking for stock-symbol markers and reading the surrounding
+  fields. Same approach as the existing ``tw_insights_service`` scrape.
+* U.S.: ``yfinance.screen("most_actives" | "day_gainers" | "day_losers")``,
+  which wraps the predefined screener endpoint and handles Yahoo's crumb
+  cookie internally. Returns JSON with full quote fields per row.
+
+Responses are cached in Redis (or in-memory if Redis is unavailable) for a
+short TTL so a single user opening the page repeatedly doesn't hammer Yahoo.
+On any failure ``fetch`` returns ``None`` so the caller falls back to the
+existing curated-universe path rather than rendering an empty list.
+"""
+
+from __future__ import annotations
+
+import html as html_lib
+import json
+import logging
+import re
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Any, Callable
+from zoneinfo import ZoneInfo
+
+from app.models.quote import QuoteRecord
+from app.models.stock import StockRecord
+from app.schemas.rankings import RankingType
+from app.services.http_client import HttpFetchError, fetch_text
+from app.services.market_clock import is_market_open
+
+logger = logging.getLogger(__name__)
+
+
+_BROWSER_USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+)
+_REQUEST_TIMEOUT_SECONDS = 8.0
+_REQUEST_RETRIES = 1
+_CACHE_TTL_SECONDS = 300  # 5 min; pre-ranked pages don't move that fast
+_CACHE_KEY_PREFIX = "rankings:external:v1:"
+_FETCH_BATCH = 50  # how many rows to ask for and cache; UI tops out at 50
+
+
+# Yahoo TW rank pages we know how to parse
+_TW_RANK_PATH = {
+    RankingType.volume: "volume",
+    RankingType.change_up: "change-up",
+    RankingType.change_down: "change-down",
+}
+_TW_BASE_URL = "https://tw.stock.yahoo.com/rank/{slug}"
+_TW_TZ = ZoneInfo("Asia/Taipei")
+_TW_SYMBOL_PATTERN = re.compile(r"^(\d{4,5})\.(TW|TWO)$")
+_TW_PERCENT_PATTERN = re.compile(r"^-?\d+(?:\.\d+)?%$")
+_TW_DECIMAL_PATTERN = re.compile(r"^-?\d{1,3}(?:,\d{3})*(?:\.\d+)?$")
+
+
+# Yahoo U.S. predefined screeners
+_US_SCREENER_ID = {
+    RankingType.volume: "most_actives",
+    RankingType.change_up: "day_gainers",
+    RankingType.change_down: "day_losers",
+}
+_US_TZ = ZoneInfo("America/New_York")
+
+
+@dataclass(frozen=True)
+class _CachedEnvelopes:
+    fetched_at: float  # epoch seconds
+    envelopes: list[tuple[StockRecord, QuoteRecord]]
+
+
+class RankingsExternalSource:
+    """Fetches pre-sorted (stock, quote) pairs for one ranking type."""
+
+    def __init__(
+        self,
+        *,
+        tw_html_fetcher: Callable[[str], str] | None = None,
+        us_screener_fetcher: Callable[[str, int], dict[str, Any]] | None = None,
+        cache_ttl_seconds: int = _CACHE_TTL_SECONDS,
+    ) -> None:
+        self._tw_html_fetcher = tw_html_fetcher or _default_tw_html_fetcher
+        self._us_screener_fetcher = us_screener_fetcher or _default_us_screener_fetcher
+        self._cache_ttl_seconds = max(1, cache_ttl_seconds)
+        self._memory_cache: dict[str, _CachedEnvelopes] = {}
+
+    def fetch(
+        self,
+        market: str,
+        ranking_type: RankingType,
+        limit: int,
+        now: datetime | None = None,
+    ) -> list[tuple[StockRecord, QuoteRecord]] | None:
+        if ranking_type not in _TW_RANK_PATH and ranking_type not in _US_SCREENER_ID:
+            return None
+        if market not in {"US", "TW"}:
+            return None
+
+        current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        cache_key = f"{_CACHE_KEY_PREFIX}{market}:{ranking_type.value}"
+
+        cached = self._read_cache(cache_key, current)
+        if cached is not None:
+            return cached[:limit]
+
+        envelopes = self._fetch_uncached(market, ranking_type, current)
+        if envelopes is None:
+            return None
+
+        self._write_cache(cache_key, envelopes, current)
+        return envelopes[:limit]
+
+    def _fetch_uncached(
+        self,
+        market: str,
+        ranking_type: RankingType,
+        now: datetime,
+    ) -> list[tuple[StockRecord, QuoteRecord]] | None:
+        if market == "TW":
+            slug = _TW_RANK_PATH.get(ranking_type)
+            if slug is None:
+                return None
+            try:
+                html_text = self._tw_html_fetcher(slug)
+            except (HttpFetchError, TimeoutError) as exc:
+                logger.warning("Yahoo TW rank page %s fetch failed: %s", slug, exc)
+                return None
+            envelopes = _parse_tw_rank_page(html_text, ranking_type, now)
+            if not envelopes:
+                logger.warning(
+                    "Yahoo TW rank page %s returned no parseable rows; "
+                    "falling back to curated universe",
+                    slug,
+                )
+                return None
+            return envelopes[:_FETCH_BATCH]
+
+        # market == "US"
+        scr_id = _US_SCREENER_ID.get(ranking_type)
+        if scr_id is None:
+            return None
+        try:
+            response = self._us_screener_fetcher(scr_id, _FETCH_BATCH)
+        except Exception as exc:  # noqa: BLE001 - yfinance can raise many shapes
+            logger.warning("Yahoo U.S. screener %s failed: %s", scr_id, exc)
+            return None
+        envelopes = _parse_us_screener_response(response, now)
+        if not envelopes:
+            logger.warning(
+                "Yahoo U.S. screener %s returned no parseable quotes; "
+                "falling back to curated universe",
+                scr_id,
+            )
+            return None
+        return envelopes[:_FETCH_BATCH]
+
+    def _read_cache(
+        self,
+        key: str,
+        now: datetime,
+    ) -> list[tuple[StockRecord, QuoteRecord]] | None:
+        now_epoch = now.timestamp()
+        # 1) In-memory layer (per-pod, instant)
+        entry = self._memory_cache.get(key)
+        if entry is not None and now_epoch - entry.fetched_at < self._cache_ttl_seconds:
+            return entry.envelopes
+        # 2) Redis layer (shared across pods, optional)
+        raw = _redis_get(key)
+        if raw is None:
+            return None
+        try:
+            payload = json.loads(raw)
+            fetched_at = float(payload["fetched_at"])
+            if now_epoch - fetched_at >= self._cache_ttl_seconds:
+                return None
+            envelopes = _deserialize_envelopes(payload["envelopes"])
+        except (KeyError, TypeError, ValueError) as exc:
+            logger.debug("Rankings external cache deserialize failed for %s: %s", key, exc)
+            return None
+        # Backfill memory layer so subsequent reads on this pod are O(1)
+        self._memory_cache[key] = _CachedEnvelopes(
+            fetched_at=fetched_at,
+            envelopes=envelopes,
+        )
+        return envelopes
+
+    def _write_cache(
+        self,
+        key: str,
+        envelopes: list[tuple[StockRecord, QuoteRecord]],
+        now: datetime,
+    ) -> None:
+        fetched_at = now.timestamp()
+        self._memory_cache[key] = _CachedEnvelopes(
+            fetched_at=fetched_at,
+            envelopes=envelopes,
+        )
+        payload = {
+            "fetched_at": fetched_at,
+            "envelopes": _serialize_envelopes(envelopes),
+        }
+        _redis_setex(key, self._cache_ttl_seconds, json.dumps(payload, ensure_ascii=False))
+
+
+# ---------------------------------------------------------------------------
+# Default fetchers (real network); replaced by tests with deterministic fakes
+# ---------------------------------------------------------------------------
+
+
+def _default_tw_html_fetcher(slug: str) -> str:
+    url = _TW_BASE_URL.format(slug=slug)
+    return fetch_text(
+        url,
+        headers={
+            "User-Agent": _BROWSER_USER_AGENT,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        },
+        timeout_seconds=_REQUEST_TIMEOUT_SECONDS,
+        retries=_REQUEST_RETRIES,
+    )
+
+
+def _default_us_screener_fetcher(scr_id: str, count: int) -> dict[str, Any]:
+    """Wrap ``yfinance.screen``. Imported lazily so unit tests don't need yfinance."""
+    import yfinance as yf  # pylint: disable=import-outside-toplevel
+
+    return yf.screen(scr_id, count=count)
+
+
+# ---------------------------------------------------------------------------
+# TW rank-page parser
+# ---------------------------------------------------------------------------
+
+
+def _strip_html_to_lines(raw_html: str) -> list[str]:
+    no_scripts = re.sub(
+        r"<script\b[^<]*(?:(?!</script>)<[^<]*)*</script>",
+        " ",
+        raw_html,
+        flags=re.IGNORECASE,
+    )
+    no_styles = re.sub(
+        r"<style\b[^<]*(?:(?!</style>)<[^<]*)*</style>",
+        " ",
+        no_scripts,
+        flags=re.IGNORECASE,
+    )
+    text = html_lib.unescape(re.sub(r"<[^>]+>", "\n", no_styles))
+    return [line.strip() for line in text.splitlines() if line.strip()]
+
+
+def _parse_tw_volume_lots(token: str) -> int | None:
+    cleaned = token.replace(",", "").strip()
+    if not cleaned:
+        return None
+    multiplier = 1
+    if cleaned.endswith("B"):
+        multiplier = 1_000_000_000
+        cleaned = cleaned[:-1]
+    elif cleaned.endswith("M"):
+        multiplier = 1_000_000
+        cleaned = cleaned[:-1]
+    elif cleaned.endswith("K"):
+        multiplier = 1_000
+        cleaned = cleaned[:-1]
+    try:
+        return int(float(cleaned) * multiplier)
+    except ValueError:
+        return None
+
+
+def _parse_tw_decimal(token: str) -> float | None:
+    if not _TW_DECIMAL_PATTERN.match(token):
+        return None
+    try:
+        return float(token.replace(",", ""))
+    except ValueError:
+        return None
+
+
+def _parse_tw_rank_page(
+    html_text: str,
+    ranking_type: RankingType,
+    now: datetime,
+) -> list[tuple[StockRecord, QuoteRecord]]:
+    lines = _strip_html_to_lines(html_text)
+    sign = -1.0 if ranking_type == RankingType.change_down else 1.0
+    market_open = is_market_open("TW", now)
+    quote_timestamp = now.astimezone(_TW_TZ).isoformat()
+
+    envelopes: list[tuple[StockRecord, QuoteRecord]] = []
+    seen_ids: set[str] = set()
+
+    for idx, line in enumerate(lines):
+        match = _TW_SYMBOL_PATTERN.match(line)
+        if not match:
+            continue
+        if idx == 0 or idx + 7 >= len(lines):
+            continue
+
+        symbol = match.group(1)
+        exchange = "TPEx" if match.group(2) == "TWO" else "TWSE"
+        stock_id = f"TW:{symbol}"
+        if stock_id in seen_ids:
+            continue
+
+        name = lines[idx - 1]
+        if (
+            not name
+            or _TW_DECIMAL_PATTERN.match(name)
+            or _TW_PERCENT_PATTERN.match(name)
+            or len(name) > 30
+        ):
+            continue
+
+        last_price = _parse_tw_decimal(lines[idx + 1])
+        change_abs_raw = _parse_tw_decimal(lines[idx + 2])
+        change_pct_token = lines[idx + 3]
+        high = _parse_tw_decimal(lines[idx + 4])
+        low = _parse_tw_decimal(lines[idx + 5])
+        volume_lots = _parse_tw_volume_lots(lines[idx + 7])
+
+        if (
+            last_price is None
+            or change_abs_raw is None
+            or not _TW_PERCENT_PATTERN.match(change_pct_token)
+        ):
+            continue
+        change_pct_value = _parse_tw_decimal(change_pct_token[:-1])
+        if change_pct_value is None:
+            continue
+
+        change_abs = sign * change_abs_raw
+        change_pct = sign * change_pct_value
+        previous_close = round(last_price - change_abs, 2)
+        if previous_close <= 0:
+            continue
+
+        volume_shares = volume_lots * 1000 if volume_lots is not None else None
+
+        stock = StockRecord(
+            id=stock_id,
+            market="TW",
+            symbol=symbol,
+            name=name,
+            exchange=exchange,
+            currency="TWD",
+            timezone="Asia/Taipei",
+            name_en=None,
+            name_zh_tw=name,
+        )
+        quote = QuoteRecord(
+            id=stock_id,
+            last_price=round(last_price, 2),
+            change=round(change_abs, 2),
+            change_percent=round(change_pct, 2),
+            previous_close=previous_close,
+            timestamp=quote_timestamp,
+            is_market_open=market_open,
+            open=None,
+            high=round(high, 2) if high is not None else None,
+            low=round(low, 2) if low is not None else None,
+            volume=volume_shares,
+        )
+        envelopes.append((stock, quote))
+        seen_ids.add(stock_id)
+
+    return envelopes
+
+
+# ---------------------------------------------------------------------------
+# U.S. screener parser
+# ---------------------------------------------------------------------------
+
+
+def _us_exchange(raw: Any) -> str:
+    if not isinstance(raw, str) or not raw:
+        return "NYSE"
+    upper = raw.upper()
+    if "NASDAQ" in upper or upper.startswith("NMS") or upper.startswith("NGM"):
+        return "NASDAQ"
+    if "NYSE" in upper or upper.startswith("NYS"):
+        return "NYSE"
+    if "AMEX" in upper or "ARCA" in upper or upper.startswith("ASE"):
+        return "AMEX"
+    return raw
+
+
+def _parse_us_screener_response(
+    response: Any,
+    now: datetime,
+) -> list[tuple[StockRecord, QuoteRecord]]:
+    if not isinstance(response, dict):
+        return []
+    raw_quotes = response.get("quotes") or []
+    if not isinstance(raw_quotes, list):
+        return []
+    market_open = is_market_open("US", now)
+
+    envelopes: list[tuple[StockRecord, QuoteRecord]] = []
+    seen_ids: set[str] = set()
+
+    for raw_quote in raw_quotes:
+        if not isinstance(raw_quote, dict):
+            continue
+        symbol = raw_quote.get("symbol")
+        if not isinstance(symbol, str) or not symbol:
+            continue
+        # Skip non-equity rows (ETF, mutual fund, etc.) — Yahoo includes
+        # mixed types in the predefined screeners for some queries.
+        quote_type = raw_quote.get("quoteType")
+        if isinstance(quote_type, str) and quote_type.upper() not in {"EQUITY", ""}:
+            continue
+        stock_id = f"US:{symbol}"
+        if stock_id in seen_ids:
+            continue
+
+        last_price = _coerce_float(raw_quote.get("regularMarketPrice"))
+        previous_close = _coerce_float(raw_quote.get("regularMarketPreviousClose"))
+        if last_price is None or previous_close is None or previous_close <= 0:
+            continue
+        change_abs = _coerce_float(raw_quote.get("regularMarketChange"))
+        change_pct = _coerce_float(raw_quote.get("regularMarketChangePercent"))
+        if change_abs is None:
+            change_abs = last_price - previous_close
+        if change_pct is None:
+            change_pct = (change_abs / previous_close) * 100.0
+
+        market_time_raw = raw_quote.get("regularMarketTime")
+        if isinstance(market_time_raw, (int, float)) and market_time_raw > 0:
+            quote_time = datetime.fromtimestamp(market_time_raw, tz=_US_TZ)
+        else:
+            quote_time = now.astimezone(_US_TZ)
+
+        volume = raw_quote.get("regularMarketVolume")
+        name = (
+            raw_quote.get("shortName")
+            or raw_quote.get("longName")
+            or raw_quote.get("displayName")
+            or symbol
+        )
+
+        stock = StockRecord(
+            id=stock_id,
+            market="US",
+            symbol=symbol,
+            name=str(name),
+            exchange=_us_exchange(raw_quote.get("fullExchangeName") or raw_quote.get("exchange")),
+            currency=str(raw_quote.get("currency") or "USD"),
+            timezone="America/New_York",
+            name_en=str(name),
+            name_zh_tw=None,
+        )
+        quote = QuoteRecord(
+            id=stock_id,
+            last_price=round(float(last_price), 2),
+            change=round(float(change_abs), 2),
+            change_percent=round(float(change_pct), 2),
+            previous_close=round(float(previous_close), 2),
+            timestamp=quote_time.isoformat(),
+            is_market_open=market_open,
+            open=_coerce_float(raw_quote.get("regularMarketOpen")),
+            high=_coerce_float(raw_quote.get("regularMarketDayHigh")),
+            low=_coerce_float(raw_quote.get("regularMarketDayLow")),
+            volume=int(volume) if isinstance(volume, (int, float)) else None,
+        )
+        envelopes.append((stock, quote))
+        seen_ids.add(stock_id)
+
+    return envelopes
+
+
+def _coerce_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value.replace(",", ""))
+        except ValueError:
+            return None
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Redis cache plumbing (shared client with quote_redis_cache)
+# ---------------------------------------------------------------------------
+
+
+def _redis_get(key: str) -> str | None:
+    from app.services.quote_redis_cache import _redis  # pylint: disable=import-outside-toplevel
+
+    client = _redis()
+    if client is None:
+        return None
+    try:
+        return client.get(key)
+    except Exception as exc:  # noqa: BLE001 - logging only
+        logger.debug("Rankings external cache Redis get %s: %s", key, exc)
+        return None
+
+
+def _redis_setex(key: str, ttl_seconds: int, value: str) -> None:
+    from app.services.quote_redis_cache import _redis  # pylint: disable=import-outside-toplevel
+
+    client = _redis()
+    if client is None:
+        return
+    try:
+        client.setex(key, ttl_seconds, value)
+    except Exception as exc:  # noqa: BLE001 - logging only
+        logger.debug("Rankings external cache Redis setex %s: %s", key, exc)
+
+
+def _serialize_envelopes(
+    envelopes: list[tuple[StockRecord, QuoteRecord]],
+) -> list[dict[str, Any]]:
+    serialized: list[dict[str, Any]] = []
+    for stock, quote in envelopes:
+        serialized.append(
+            {
+                "stock": {
+                    "id": stock.id,
+                    "market": stock.market,
+                    "symbol": stock.symbol,
+                    "name": stock.name,
+                    "exchange": stock.exchange,
+                    "currency": stock.currency,
+                    "timezone": stock.timezone,
+                    "name_en": stock.name_en,
+                    "name_zh_tw": stock.name_zh_tw,
+                },
+                "quote": {
+                    "id": quote.id,
+                    "last_price": quote.last_price,
+                    "change": quote.change,
+                    "change_percent": quote.change_percent,
+                    "previous_close": quote.previous_close,
+                    "timestamp": quote.timestamp,
+                    "is_market_open": quote.is_market_open,
+                    "open": quote.open,
+                    "high": quote.high,
+                    "low": quote.low,
+                    "volume": quote.volume,
+                },
+            }
+        )
+    return serialized
+
+
+def _deserialize_envelopes(
+    raw: list[dict[str, Any]],
+) -> list[tuple[StockRecord, QuoteRecord]]:
+    envelopes: list[tuple[StockRecord, QuoteRecord]] = []
+    for entry in raw:
+        stock_data = entry["stock"]
+        quote_data = entry["quote"]
+        stock = StockRecord(
+            id=str(stock_data["id"]),
+            market=str(stock_data["market"]),
+            symbol=str(stock_data["symbol"]),
+            name=str(stock_data["name"]),
+            exchange=str(stock_data["exchange"]),
+            currency=str(stock_data["currency"]),
+            timezone=str(stock_data["timezone"]),
+            name_en=stock_data.get("name_en"),
+            name_zh_tw=stock_data.get("name_zh_tw"),
+        )
+        quote = QuoteRecord(
+            id=str(quote_data["id"]),
+            last_price=float(quote_data["last_price"]),
+            change=float(quote_data["change"]),
+            change_percent=float(quote_data["change_percent"]),
+            previous_close=float(quote_data["previous_close"]),
+            timestamp=str(quote_data["timestamp"]),
+            is_market_open=bool(quote_data["is_market_open"]),
+            open=_coerce_float(quote_data.get("open")),
+            high=_coerce_float(quote_data.get("high")),
+            low=_coerce_float(quote_data.get("low")),
+            volume=int(quote_data["volume"]) if quote_data.get("volume") is not None else None,
+        )
+        envelopes.append((stock, quote))
+    return envelopes
+
+
+rankings_external_source = RankingsExternalSource()
+
+
+__all__ = [
+    "RankingsExternalSource",
+    "rankings_external_source",
+]

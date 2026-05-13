@@ -53,10 +53,12 @@ const TW_RANKING_TABS: Array<{ key: RankingType; labelKey: RankingsTabLabelKey }
   { key: "net_sell", labelKey: "rankings.tab.netSell" },
 ];
 
+// volume_up / volume_down are our custom "vs previous snapshot" metric and are
+// not available from Yahoo's pre-ranked screeners, so we hide those tabs from
+// the U.S. UI to keep the surface area honest. The backend still supports the
+// types if hit directly.
 const US_RANKING_TABS: Array<{ key: RankingType; labelKey: RankingsTabLabelKey }> = [
   { key: "volume", labelKey: "rankings.tab.volume" },
-  { key: "volume_up", labelKey: "rankings.tab.volumeUp" },
-  { key: "volume_down", labelKey: "rankings.tab.volumeDown" },
   { key: "change_up", labelKey: "rankings.tab.changeUp" },
   { key: "change_down", labelKey: "rankings.tab.changeDown" },
 ];

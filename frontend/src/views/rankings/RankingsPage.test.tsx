@@ -183,8 +183,9 @@ describe("RankingsPage", () => {
       .mockResolvedValueOnce(buildUsResponse())
       .mockResolvedValueOnce(
         buildUsResponse({
-          rankingType: "volume_down",
-          dataFreshnessLabel: "Volume change uses the previous quote snapshot baseline.",
+          rankingType: "change_down",
+          dataFreshnessLabel:
+            "Market open; price-move rankings come from Yahoo Finance and refresh every few minutes.",
         }),
       );
 
@@ -198,14 +199,14 @@ describe("RankingsPage", () => {
     });
     expect(await screen.findByTestId("rankings-row-US:MSFT")).toBeInTheDocument();
     expect(screen.getByTestId("rankings-scope-note")).toHaveTextContent(
-      "此處的美股排行以報價資料為主，且目前僅涵蓋有限追蹤清單，並非全市場排行。",
+      "美股報價排行直接採用 Yahoo Finance 預先排序的選股結果，涵蓋更廣的美股市場。",
     );
     expect(screen.getByTestId("rankings-realtime-tag")).toHaveTextContent("即時");
 
-    await user.click(screen.getByTestId("rankings-tab-volume_down"));
+    await user.click(screen.getByTestId("rankings-tab-change_down"));
 
     await waitFor(() => {
-      expect(fetchRankings).toHaveBeenLastCalledWith("US", "volume_down", 50);
+      expect(fetchRankings).toHaveBeenLastCalledWith("US", "change_down", 50);
     });
   });
 
@@ -276,7 +277,7 @@ describe("RankingsPage", () => {
       expect(fetchRankings).toHaveBeenLastCalledWith("TW", "volume", 50);
     });
     expect(screen.getByTestId("rankings-scope-note")).toHaveTextContent(
-      "台股報價排行涵蓋追蹤的 TWSE 範圍，盤中每 30 分鐘自動刷新一次。",
+      "台股報價排行直接採用 Yahoo Finance 預先排序的 TWSE 排行頁面，涵蓋更廣的台股市場。",
     );
     expect(screen.getByTestId("rankings-warning-message")).toHaveTextContent(
       "免費非官方報價來源可能延遲，或暫時無法提供資料。",
@@ -291,33 +292,6 @@ describe("RankingsPage", () => {
     await waitFor(() => {
       expect(screen.getByTestId("rankings-freshness-label")).toHaveTextContent(
         "市場開盤中；漲跌幅排行使用最新報價快照。",
-      );
-    });
-  });
-
-  it("renders the TW snapshot freshness label for periodic-snapshot rankings", async () => {
-    const user = userEvent.setup();
-    vi.mocked(fetchRankings)
-      .mockResolvedValueOnce(buildResponse())
-      .mockResolvedValueOnce(
-        buildTwQuoteResponse({
-          dataFreshnessLabel:
-            "Market open; rankings use the latest periodic snapshot covering the full tracked TWSE universe.",
-        }),
-      );
-
-    renderRankingsPage();
-
-    await screen.findByTestId("rankings-row-TW:2330");
-    await user.click(screen.getByTestId("rankings-tab-volume"));
-
-    await waitFor(() => {
-      expect(fetchRankings).toHaveBeenLastCalledWith("TW", "volume", 50);
-    });
-
-    await waitFor(() => {
-      expect(screen.getByTestId("rankings-freshness-label")).toHaveTextContent(
-        "市場開盤中；台股排行使用涵蓋整個追蹤 TWSE 範圍的定期快照。",
       );
     });
   });
@@ -356,7 +330,7 @@ describe("RankingsPage", () => {
       expect(fetchRankings).toHaveBeenLastCalledWith("US", "change_up", 50);
     });
     expect(screen.getByTestId("rankings-scope-note")).toHaveTextContent(
-      "此處的美股排行以報價資料為主，且目前僅涵蓋有限追蹤清單，並非全市場排行。",
+      "美股報價排行直接採用 Yahoo Finance 預先排序的選股結果，涵蓋更廣的美股市場。",
     );
     await waitFor(() => {
       expect(screen.getByTestId("rankings-freshness-label")).toHaveTextContent(

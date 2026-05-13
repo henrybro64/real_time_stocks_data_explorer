@@ -9,7 +9,7 @@ dependencies = [
   "pydantic==2.11.7",
   "numpy",
   "pandas",
-  "yfinance",
+  "yfinance>=0.2.40",
 ]
 
 [build-system]

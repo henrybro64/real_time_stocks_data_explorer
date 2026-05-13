@@ -12,4 +12,4 @@ PyJWT[crypto]>=2.8.0
 cryptography>=42.0.0
 numpy
 pandas
-yfinance
+yfinance>=0.2.40
