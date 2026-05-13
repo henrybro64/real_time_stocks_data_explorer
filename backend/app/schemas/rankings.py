@@ -9,6 +9,8 @@ class RankingType(str, Enum):
     volume = "volume"
     volume_up = "volume_up"
     volume_down = "volume_down"
+    change_up = "change_up"
+    change_down = "change_down"
     net_buy = "net_buy"
     net_sell = "net_sell"
 

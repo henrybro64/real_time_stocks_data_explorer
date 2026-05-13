@@ -157,6 +157,13 @@ class RankingsService:
                 freshness = "Market open; rankings use the latest quote snapshot."
             else:
                 freshness = "Market closed; rankings use the latest available quote snapshot."
+        elif ranking_type in {RankingType.change_up, RankingType.change_down}:
+            if market_open:
+                freshness = "Market open; price-move rankings use the latest quote snapshot."
+            else:
+                freshness = (
+                    "Market closed; price-move rankings use the latest available quote snapshot."
+                )
         elif baseline_missing:
             freshness = (
                 "Baseline unavailable on the first snapshot; volume change percent stays empty until a later refresh."
@@ -366,6 +373,30 @@ class RankingsService:
                 candidates,
                 key=lambda item: (
                     item.volume is None,
+                    -(item.volume or -1),
+                    item.stock.symbol,
+                ),
+            )
+        if ranking_type == RankingType.change_up:
+            return sorted(
+                candidates,
+                key=lambda item: (
+                    item.change_percent is None,
+                    -(
+                        item.change_percent
+                        if item.change_percent is not None
+                        else -10**9
+                    ),
+                    -(item.volume or -1),
+                    item.stock.symbol,
+                ),
+            )
+        if ranking_type == RankingType.change_down:
+            return sorted(
+                candidates,
+                key=lambda item: (
+                    item.change_percent is None,
+                    item.change_percent if item.change_percent is not None else 10**9,
                     -(item.volume or -1),
                     item.stock.symbol,
                 ),

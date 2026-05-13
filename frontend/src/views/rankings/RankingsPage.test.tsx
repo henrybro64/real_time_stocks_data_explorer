@@ -97,6 +97,45 @@ function buildUsResponse(overrides: Partial<RankingResponse> = {}): RankingRespo
   };
 }
 
+function buildTwQuoteResponse(overrides: Partial<RankingResponse> = {}): RankingResponse {
+  const nowIso = new Date().toISOString();
+
+  return {
+    market: "TW",
+    rankingType: "volume",
+    items: [
+      {
+        rank: 1,
+        stock: {
+          id: "TW:2330",
+          market: "TW",
+          symbol: "2330",
+          name: "台積電",
+          exchange: "TWSE",
+          currency: "TWD",
+          timezone: "Asia/Taipei",
+          nameEn: "TSMC",
+          nameZhTw: "台積電",
+        },
+        lastPrice: 951,
+        changePercent: 2.4,
+        volume: 195000,
+        volumeDeltaPercent: null,
+        netBuySellShares: null,
+        timestamp: nowIso,
+      },
+    ],
+    timestamp: nowIso,
+    source: "Quote rankings from the app's free best-effort quote providers.",
+    sourceType: "free-unofficial",
+    isMarketOpen: true,
+    dataFreshnessLabel: "Market open; rankings use the latest quote snapshot.",
+    warningMessage: "Free unofficial quote source; data may be delayed or unavailable.",
+    unsupportedReason: null,
+    ...overrides,
+  };
+}
+
 function renderRankingsPage(language: "en" | "zh-TW" = "zh-TW") {
   window.localStorage.clear();
   window.localStorage.setItem("stock-ticker-language", language);
@@ -207,5 +246,95 @@ describe("RankingsPage", () => {
     expect(await screen.findByTestId("rankings-warning-message")).toHaveTextContent(
       "台股三大法人買賣超為日資料，非盤中即時資料。",
     );
+  });
+
+  it("switches Taiwan tabs to quote-based rankings", async () => {
+    const user = userEvent.setup();
+    vi.mocked(fetchRankings)
+      .mockResolvedValueOnce(buildResponse())
+      .mockResolvedValueOnce(buildTwQuoteResponse())
+      .mockResolvedValueOnce(
+        buildTwQuoteResponse({
+          rankingType: "change_up",
+          items: [
+            {
+              ...buildTwQuoteResponse().items[0],
+              changePercent: 4.8,
+            },
+          ],
+          dataFreshnessLabel:
+            "Market open; price-move rankings use the latest quote snapshot.",
+        }),
+      );
+
+    renderRankingsPage();
+
+    await screen.findByTestId("rankings-row-TW:2330");
+    await user.click(screen.getByTestId("rankings-tab-volume"));
+
+    await waitFor(() => {
+      expect(fetchRankings).toHaveBeenLastCalledWith("TW", "volume", 50);
+    });
+    expect(screen.getByTestId("rankings-scope-note")).toHaveTextContent(
+      "此處的台股報價排行以報價資料為主，且目前僅涵蓋有限追蹤清單，並非全市場排行。",
+    );
+    expect(screen.getByTestId("rankings-warning-message")).toHaveTextContent(
+      "免費非官方報價來源可能延遲，或暫時無法提供資料。",
+    );
+    expect(screen.getByTestId("rankings-realtime-tag")).toHaveTextContent("即時");
+
+    await user.click(screen.getByTestId("rankings-tab-change_up"));
+
+    await waitFor(() => {
+      expect(fetchRankings).toHaveBeenLastCalledWith("TW", "change_up", 50);
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId("rankings-freshness-label")).toHaveTextContent(
+        "市場開盤中；漲跌幅排行使用最新報價快照。",
+      );
+    });
+  });
+
+  it("switches U.S. tabs to change-based rankings", async () => {
+    const user = userEvent.setup();
+    vi.mocked(fetchRankings)
+      .mockResolvedValueOnce(buildResponse())
+      .mockResolvedValueOnce(buildUsResponse())
+      .mockResolvedValueOnce(
+        buildUsResponse({
+          rankingType: "change_up",
+          items: [
+            {
+              ...buildUsResponse().items[0],
+              changePercent: 5.3,
+            },
+          ],
+          dataFreshnessLabel:
+            "Market open; price-move rankings use the latest quote snapshot.",
+        }),
+      );
+
+    renderRankingsPage();
+
+    await screen.findByTestId("rankings-row-TW:2330");
+    await user.selectOptions(screen.getByLabelText("市場"), "US");
+
+    await waitFor(() => {
+      expect(fetchRankings).toHaveBeenLastCalledWith("US", "volume", 50);
+    });
+
+    await user.click(screen.getByTestId("rankings-tab-change_up"));
+
+    await waitFor(() => {
+      expect(fetchRankings).toHaveBeenLastCalledWith("US", "change_up", 50);
+    });
+    expect(screen.getByTestId("rankings-scope-note")).toHaveTextContent(
+      "此處的美股排行以報價資料為主，且目前僅涵蓋有限追蹤清單，並非全市場排行。",
+    );
+    await waitFor(() => {
+      expect(screen.getByTestId("rankings-freshness-label")).toHaveTextContent(
+        "市場開盤中；漲跌幅排行使用最新報價快照。",
+      );
+    });
   });
 });

@@ -67,13 +67,22 @@ def _us_stock(stock_id: str, symbol: str, name: str):
     )
 
 
-def _quote(stock_id: str, volume: int, timestamp: str):
+def _quote(
+    stock_id: str,
+    volume: int,
+    timestamp: str,
+    *,
+    change: float = 1.0,
+    change_percent: float = 1.0,
+    last_price: float = 100.0,
+    previous_close: float = 99.0,
+):
     return quote_record(
         stock_id,
-        last_price=100.0,
-        change=1.0,
-        change_percent=1.0,
-        previous_close=99.0,
+        last_price=last_price,
+        change=change,
+        change_percent=change_percent,
+        previous_close=previous_close,
         timestamp=timestamp,
         is_market_open=True,
         volume=volume,
@@ -195,6 +204,99 @@ def test_volume_down_sorts_by_largest_decrease_first() -> None:
     assert [item.volumeDeltaPercent for item in response.items] == [-60.0, -50.0, -10.0]
 
 
+def test_change_up_sorts_by_highest_change_percent_descending() -> None:
+    service = RankingsService(
+        FakeQuoteSource(
+            stocks={
+                "TW:2330": _tw_stock("TW:2330", "2330", "台積電"),
+                "TW:2317": _tw_stock("TW:2317", "2317", "鴻海"),
+                "TW:2454": _tw_stock("TW:2454", "2454", "聯發科"),
+            },
+            quotes={
+                "TW:2330": _quote(
+                    "TW:2330",
+                    1000,
+                    "2026-05-12T10:00:00+08:00",
+                    change=8.0,
+                    change_percent=8.0,
+                    last_price=108.0,
+                    previous_close=100.0,
+                ),
+                "TW:2317": _quote(
+                    "TW:2317",
+                    1200,
+                    "2026-05-12T10:00:00+08:00",
+                    change=3.5,
+                    change_percent=3.5,
+                    last_price=103.5,
+                    previous_close=100.0,
+                ),
+                "TW:2454": _quote(
+                    "TW:2454",
+                    1500,
+                    "2026-05-12T10:00:00+08:00",
+                    change=-2.0,
+                    change_percent=-2.0,
+                    last_price=98.0,
+                    previous_close=100.0,
+                ),
+            },
+        )
+    )
+
+    response = service.get_rankings("TW", RankingType.change_up, limit=3)
+
+    assert [item.stock.symbol for item in response.items] == ["2330", "2317", "2454"]
+    assert [item.changePercent for item in response.items] == [8.0, 3.5, -2.0]
+    assert response.sourceType == RankingSourceType.free_unofficial
+
+
+def test_change_down_sorts_by_largest_drop_first() -> None:
+    service = RankingsService(
+        FakeQuoteSource(
+            stocks={
+                "TW:2330": _tw_stock("TW:2330", "2330", "台積電"),
+                "TW:2317": _tw_stock("TW:2317", "2317", "鴻海"),
+                "TW:2454": _tw_stock("TW:2454", "2454", "聯發科"),
+            },
+            quotes={
+                "TW:2330": _quote(
+                    "TW:2330",
+                    1000,
+                    "2026-05-12T10:00:00+08:00",
+                    change=-7.2,
+                    change_percent=-7.2,
+                    last_price=92.8,
+                    previous_close=100.0,
+                ),
+                "TW:2317": _quote(
+                    "TW:2317",
+                    1200,
+                    "2026-05-12T10:00:00+08:00",
+                    change=-1.5,
+                    change_percent=-1.5,
+                    last_price=98.5,
+                    previous_close=100.0,
+                ),
+                "TW:2454": _quote(
+                    "TW:2454",
+                    1500,
+                    "2026-05-12T10:00:00+08:00",
+                    change=2.5,
+                    change_percent=2.5,
+                    last_price=102.5,
+                    previous_close=100.0,
+                ),
+            },
+        )
+    )
+
+    response = service.get_rankings("TW", RankingType.change_down, limit=3)
+
+    assert [item.stock.symbol for item in response.items] == ["2330", "2317", "2454"]
+    assert [item.changePercent for item in response.items] == [-7.2, -1.5, 2.5]
+
+
 def test_limit_parameter_truncates_rankings() -> None:
     service = RankingsService(
         FakeQuoteSource(
@@ -257,6 +359,48 @@ def test_market_closed_label_is_exposed_on_quote_rankings() -> None:
 
     assert response.isMarketOpen is False
     assert "Market closed" in response.dataFreshnessLabel
+
+
+def test_change_up_uses_price_move_freshness_label_when_market_open() -> None:
+    service = RankingsService(
+        FakeQuoteSource(
+            stocks={"US:AAPL": _us_stock("US:AAPL", "AAPL", "Apple Inc.")},
+            quotes={"US:AAPL": _quote("US:AAPL", 100, "2026-05-12T10:00:00-04:00")},
+        )
+    )
+
+    response = service.get_rankings(
+        "US",
+        RankingType.change_up,
+        limit=1,
+        now=datetime(2026, 5, 12, 14, 0, tzinfo=timezone.utc),
+    )
+
+    assert response.isMarketOpen is True
+    assert response.dataFreshnessLabel == (
+        "Market open; price-move rankings use the latest quote snapshot."
+    )
+
+
+def test_change_down_uses_price_move_freshness_label_when_market_closed() -> None:
+    service = RankingsService(
+        FakeQuoteSource(
+            stocks={"US:AAPL": _us_stock("US:AAPL", "AAPL", "Apple Inc.")},
+            quotes={"US:AAPL": _quote("US:AAPL", 100, "2026-05-12T10:00:00-04:00")},
+        )
+    )
+
+    response = service.get_rankings(
+        "US",
+        RankingType.change_down,
+        limit=1,
+        now=datetime(2026, 5, 16, 12, 0, tzinfo=timezone.utc),
+    )
+
+    assert response.isMarketOpen is False
+    assert response.dataFreshnessLabel == (
+        "Market closed; price-move rankings use the latest available quote snapshot."
+    )
 
 
 def test_us_net_buy_is_explicitly_unsupported() -> None:
