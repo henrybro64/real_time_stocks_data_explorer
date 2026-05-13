@@ -5,6 +5,7 @@ from datetime import date, datetime, time, timedelta, timezone
 from typing import Literal
 from zoneinfo import ZoneInfo
 
+from app.models.quote import QuoteRecord
 from app.models.stock import StockRecord
 from app.schemas.rankings import (
     RankingItem,
@@ -114,7 +115,7 @@ class RankingsService:
         candidates: list[_RankingCandidate] = []
         baseline_missing = False
 
-        for stock, quote in self.quote_source.get_quotes(MARKET_UNIVERSES[market]):
+        for stock, quote in self._get_quote_rankings_snapshot(market):
             volume_delta_percent: float | None = None
             if ranking_type in {RankingType.volume_up, RankingType.volume_down}:
                 baseline_volume = self._volume_baselines.get(stock.id)
@@ -177,6 +178,17 @@ class RankingsService:
             warningMessage=_QUOTE_WARNING,
             unsupportedReason=None,
         )
+
+    def _get_quote_rankings_snapshot(
+        self,
+        market: RankingMarket,
+    ) -> list[tuple[StockRecord, QuoteRecord]]:
+        stock_ids = MARKET_UNIVERSES[market]
+        if market == "US":
+            get_live_quotes = getattr(self.quote_source, "get_live_quotes", None)
+            if callable(get_live_quotes):
+                return get_live_quotes(stock_ids)
+        return self.quote_source.get_quotes(stock_ids)
 
     def _build_tw_institutional_ranking(
         self,

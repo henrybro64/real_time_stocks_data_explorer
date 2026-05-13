@@ -8,15 +8,30 @@ from tests.support import quote_record, stock_record
 
 
 class FakeQuoteSource:
-    def __init__(self, stocks: dict[str, object], quotes: dict[str, object]) -> None:
+    def __init__(
+        self,
+        stocks: dict[str, object],
+        quotes: dict[str, object],
+        live_quotes: dict[str, object] | None = None,
+    ) -> None:
         self._stocks = stocks
         self._quotes = quotes
+        self._live_quotes = live_quotes if live_quotes is not None else quotes
 
     def get_quotes(self, stock_ids: list[str]):
         envelopes = []
         for stock_id in stock_ids:
             stock = self._stocks.get(stock_id)
             quote = self._quotes.get(stock_id)
+            if stock is not None and quote is not None:
+                envelopes.append((stock, quote))
+        return envelopes
+
+    def get_live_quotes(self, stock_ids: list[str]):
+        envelopes = []
+        for stock_id in stock_ids:
+            stock = self._stocks.get(stock_id)
+            quote = self._live_quotes.get(stock_id)
             if stock is not None and quote is not None:
                 envelopes.append((stock, quote))
         return envelopes
@@ -198,6 +213,31 @@ def test_limit_parameter_truncates_rankings() -> None:
 
     assert len(response.items) == 1
     assert response.items[0].stock.symbol == "MSFT"
+
+
+def test_us_quote_rankings_exclude_symbols_without_live_quotes() -> None:
+    service = RankingsService(
+        FakeQuoteSource(
+            stocks={
+                "US:AAPL": _us_stock("US:AAPL", "AAPL", "Apple Inc."),
+                "US:MSFT": _us_stock("US:MSFT", "MSFT", "Microsoft Corporation"),
+                "US:NVDA": _us_stock("US:NVDA", "NVDA", "NVIDIA Corporation"),
+            },
+            quotes={
+                "US:AAPL": _quote("US:AAPL", 999, "2026-05-12T10:00:00-04:00"),
+                "US:MSFT": _quote("US:MSFT", 300, "2026-05-12T10:00:00-04:00"),
+                "US:NVDA": _quote("US:NVDA", 200, "2026-05-12T10:00:00-04:00"),
+            },
+            live_quotes={
+                "US:MSFT": _quote("US:MSFT", 300, "2026-05-12T10:00:00-04:00"),
+                "US:NVDA": _quote("US:NVDA", 200, "2026-05-12T10:00:00-04:00"),
+            },
+        )
+    )
+
+    response = service.get_rankings("US", RankingType.volume, limit=3)
+
+    assert [item.stock.symbol for item in response.items] == ["MSFT", "NVDA"]
 
 
 def test_market_closed_label_is_exposed_on_quote_rankings() -> None:

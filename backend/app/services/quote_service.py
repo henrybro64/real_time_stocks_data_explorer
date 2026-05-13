@@ -1,3 +1,5 @@
+from collections.abc import Callable
+
 from app.models.quote import CandleRecord, QuoteRecord
 from app.models.stock import StockRecord
 from app.services.providers.tw_provider import TWProvider
@@ -44,10 +46,32 @@ class QuoteService:
         return quote
 
     def get_quotes(self, stock_ids: list[str]) -> list[tuple[StockRecord, QuoteRecord]]:
+        return self._collect_quotes(stock_ids, self.get_quote)
+
+    def get_live_quote(self, stock_id: str) -> QuoteRecord | None:
+        market = self._market_from_id(stock_id)
+        provider = self.providers.get(market)
+        if provider is None:
+            return None
+
+        live_quote_fetcher = getattr(provider, "get_live_quote", None)
+        if market == "US" and callable(live_quote_fetcher):
+            return live_quote_fetcher(stock_id)
+
+        return provider.get_quote(stock_id)
+
+    def get_live_quotes(self, stock_ids: list[str]) -> list[tuple[StockRecord, QuoteRecord]]:
+        return self._collect_quotes(stock_ids, self.get_live_quote)
+
+    def _collect_quotes(
+        self,
+        stock_ids: list[str],
+        fetcher: Callable[[str], QuoteRecord | None],
+    ) -> list[tuple[StockRecord, QuoteRecord]]:
         envelopes: list[tuple[StockRecord, QuoteRecord]] = []
         for stock_id in stock_ids:
             stock = self.get_stock(stock_id)
-            quote = self.get_quote(stock_id)
+            quote = fetcher(stock_id)
             if stock and quote:
                 envelopes.append((stock, quote))
         return envelopes

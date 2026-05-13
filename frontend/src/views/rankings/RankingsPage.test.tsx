@@ -90,6 +90,7 @@ describe("RankingsPage", () => {
 
     expect(await screen.findByRole("heading", { level: 1, name: "市場排行" })).toBeInTheDocument();
     expect(await screen.findByTestId("rankings-row-TW:2330")).toBeInTheDocument();
+    expect(screen.getByTestId("rankings-realtime-tag")).toHaveTextContent("非即時");
     expect(screen.getByTestId("rankings-scope-note")).toHaveTextContent(
       "此頁僅顯示台股法人日排行；本應用程式的免費資料來源無法提供美股全市場排行。",
     );

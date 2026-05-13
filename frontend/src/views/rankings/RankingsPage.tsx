@@ -5,6 +5,7 @@ import {
   Column,
   Grid,
   InlineLoading,
+  Tag,
   Table,
   TableBody,
   TableCell,
@@ -81,6 +82,17 @@ function tableTitle(
   return `${translate("rankings.market.tw")} ${rankingLabel}`;
 }
 
+function RankingRealtimeTag() {
+  const { language } = useLanguage();
+  const label = language === "zh-TW" ? "非即時" : "Not real-time";
+
+  return (
+    <Tag data-testid="rankings-realtime-tag" size="sm" type="cool-gray">
+      {label}
+    </Tag>
+  );
+}
+
 export function RankingsPage() {
   const { language, t, formatNumber } = useLanguage();
   const [rankingType, setRankingType] = useState<RankingType>("net_buy");
@@ -118,6 +130,7 @@ export function RankingsPage() {
               <p className="app-eyebrow">{t("rankings.market")}</p>
               <h2>{t("rankings.title")}</h2>
             </div>
+            {data ? <RankingRealtimeTag /> : null}
           </div>
           <div className="app-portfolio-asset-form">
             <p className="app-supporting-copy" data-testid="rankings-market-label">
