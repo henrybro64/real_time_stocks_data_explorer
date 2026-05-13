@@ -6,6 +6,8 @@ type RankingsCopyKey =
   | "rankings.notice.twInstitutionalUnavailable"
   | "rankings.freshness.quoteSnapshotOpen"
   | "rankings.freshness.quoteSnapshotClosed"
+  | "rankings.freshness.changeSnapshotOpen"
+  | "rankings.freshness.changeSnapshotClosed"
   | "rankings.freshness.volumeBaselineMissing"
   | "rankings.freshness.volumeBaselineOpen"
   | "rankings.freshness.volumeBaselineClosed"
@@ -21,6 +23,10 @@ type RankingsCopyKey =
 const FRESHNESS_LABEL_KEYS: Record<string, RankingsCopyKey> = {
   "Market open; rankings use the latest quote snapshot.": "rankings.freshness.quoteSnapshotOpen",
   "Market closed; rankings use the latest available quote snapshot.": "rankings.freshness.quoteSnapshotClosed",
+  "Market open; price-move rankings use the latest quote snapshot.":
+    "rankings.freshness.changeSnapshotOpen",
+  "Market closed; price-move rankings use the latest available quote snapshot.":
+    "rankings.freshness.changeSnapshotClosed",
   "Baseline unavailable on the first snapshot; volume change percent stays empty until a later refresh.":
     "rankings.freshness.volumeBaselineMissing",
   "Volume change uses the previous quote snapshot baseline.": "rankings.freshness.volumeBaselineOpen",

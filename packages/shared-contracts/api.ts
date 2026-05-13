@@ -46,6 +46,8 @@ export type RankingType =
   | "volume"
   | "volume_up"
   | "volume_down"
+  | "change_up"
+  | "change_down"
   | "net_buy"
   | "net_sell";
 

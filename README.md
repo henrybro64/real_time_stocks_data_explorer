@@ -102,17 +102,23 @@ Notes:
 
 ### Market Rankings (free-only)
 
-The `/rankings` page currently focuses on the Taiwan daily institutional rankings this app can support reliably with free public data:
+The `/rankings` page supports both Taiwan and U.S. markets using only free public data:
 
 ```text
-GET /api/rankings?market=TW&type=net_buy|net_sell&limit=50
+GET /api/rankings?market=TW|US&type=volume|volume_up|volume_down|change_up|change_down|net_buy|net_sell&limit=50
 ```
+
+Available ranking types per market:
+
+- Taiwan: `volume`, `change_up`, `change_down` (quote-based) and `net_buy`, `net_sell` (daily institutional)
+- U.S.: `volume`, `volume_up`, `volume_down`, `change_up`, `change_down` (all quote-based)
 
 Notes:
 
+- quote-based rankings (`volume`, `volume_up`, `volume_down`, `change_up`, `change_down`) cover a limited tracked universe rather than the full market, since reliable free market-wide quote data is not available in this app
 - Taiwan `net_buy` and `net_sell` use TWSE T86 daily institutional data and are explicitly labeled as daily, not intraday real-time
-- the UI hides U.S. market-wide rankings because reliable free market-wide U.S. data is not available in this app
-- if the TWSE public source is temporarily unavailable, the page shows an unavailable state instead of pretending the data is fresh
+- U.S. institutional `net_buy`/`net_sell` are not supported because reliable free U.S. institutional data is not available in this app
+- if a free public source is temporarily unavailable, the page shows an unavailable state instead of pretending the data is fresh
 
 Frontend:
 

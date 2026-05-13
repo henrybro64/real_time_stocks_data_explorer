@@ -40,10 +40,15 @@ type RankingsTabLabelKey =
   | "rankings.tab.volume"
   | "rankings.tab.volumeUp"
   | "rankings.tab.volumeDown"
+  | "rankings.tab.changeUp"
+  | "rankings.tab.changeDown"
   | "rankings.tab.netBuy"
   | "rankings.tab.netSell";
 
 const TW_RANKING_TABS: Array<{ key: RankingType; labelKey: RankingsTabLabelKey }> = [
+  { key: "volume", labelKey: "rankings.tab.volume" },
+  { key: "change_up", labelKey: "rankings.tab.changeUp" },
+  { key: "change_down", labelKey: "rankings.tab.changeDown" },
   { key: "net_buy", labelKey: "rankings.tab.netBuy" },
   { key: "net_sell", labelKey: "rankings.tab.netSell" },
 ];
@@ -52,6 +57,8 @@ const US_RANKING_TABS: Array<{ key: RankingType; labelKey: RankingsTabLabelKey }
   { key: "volume", labelKey: "rankings.tab.volume" },
   { key: "volume_up", labelKey: "rankings.tab.volumeUp" },
   { key: "volume_down", labelKey: "rankings.tab.volumeDown" },
+  { key: "change_up", labelKey: "rankings.tab.changeUp" },
+  { key: "change_down", labelKey: "rankings.tab.changeDown" },
 ];
 
 function tabsForMarket(market: RankingMarket) {
@@ -62,8 +69,12 @@ function defaultRankingTypeForMarket(market: RankingMarket): RankingType {
   return market === "US" ? "volume" : "net_buy";
 }
 
+function isInstitutionalRanking(rankingType: RankingType) {
+  return rankingType === "net_buy" || rankingType === "net_sell";
+}
+
 export function getRankingsRefetchInterval(isMarketOpen: boolean, rankingType: RankingType) {
-  if (rankingType === "net_buy" || rankingType === "net_sell") {
+  if (isInstitutionalRanking(rankingType)) {
     return 12 * 60 * 60 * 1000;
   }
   return isMarketOpen ? 30 * 60 * 1000 : 2 * 60 * 60 * 1000;
@@ -123,7 +134,7 @@ function getLatestRankingTimestamp(response: RankingResponse) {
 
 function RankingRealtimeTag({ response }: { response: RankingResponse }) {
   const { language } = useLanguage();
-  if (response.rankingType === "net_buy" || response.rankingType === "net_sell") {
+  if (isInstitutionalRanking(response.rankingType)) {
     const label = language === "zh-TW" ? "非即時" : "Not real-time";
 
     return (
@@ -165,8 +176,13 @@ export function RankingsPage() {
   const showError = rankingsQuery.error != null && data == null;
   const showUnsupported = !!data?.unsupportedReason;
   const localizedSource = data ? getLocalizedRankingsSource(data, t) : "";
-  const showNetBuySellColumn = rankingType === "net_buy" || rankingType === "net_sell";
-  const scopeNoteKey = market === "US" ? "rankings.notice.usScope" : "rankings.notice.twScope";
+  const showNetBuySellColumn = isInstitutionalRanking(rankingType);
+  const scopeNoteKey =
+    market === "US"
+      ? "rankings.notice.usScope"
+      : isInstitutionalRanking(rankingType)
+        ? "rankings.notice.twScope"
+        : "rankings.notice.twQuoteScope";
 
   function handleMarketChange(nextMarket: RankingMarket) {
     setMarket(nextMarket);
