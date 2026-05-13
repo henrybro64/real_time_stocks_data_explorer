@@ -182,15 +182,21 @@ class USProvider:
         return _fallback_stock(symbol)
 
     def get_quote(self, stock_id: str) -> QuoteRecord | None:
+        live_quote = self.get_live_quote(stock_id)
+        if live_quote is not None:
+            return live_quote
+
+        stock = self.get_stock(stock_id)
+        if stock is None:
+            return None
+        return self._mock_quote(stock)
+
+    def get_live_quote(self, stock_id: str) -> QuoteRecord | None:
         stock = self.get_stock(stock_id)
         if stock is None:
             return None
 
-        live_quote = _fetch_live_quote(stock)
-        if live_quote is not None:
-            return live_quote
-
-        return self._mock_quote(stock)
+        return _fetch_live_quote(stock)
 
     def _mock_quote(self, stock: StockRecord) -> QuoteRecord:
         timestamp = datetime.now(ZoneInfo(stock.timezone))
