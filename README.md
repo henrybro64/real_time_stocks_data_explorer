@@ -116,7 +116,7 @@ Available ranking types per market:
 
 Data sources:
 
-- `volume`, `change_up`, `change_down` come pre-sorted from Yahoo Finance — Yahoo TW rank pages (`tw.stock.yahoo.com/rank/volume|change-up|change-down`) for Taiwan, and `yfinance.screen("most_actives" | "day_gainers" | "day_losers")` for U.S. Responses are cached per (market, ranking_type) for ~5 min so reopening the page does not refetch.
+- `volume`, `change_up`, `change_down` come pre-sorted from Yahoo Finance — Yahoo Taiwan rank pages (`tw.stock.yahoo.com/rank/volume|change-up|change-down`) that combine **上市 (TWSE, `.TW`)** and **上櫃 (TPEx, `.TWO`)** in one pre-sorted list, and `yfinance.screen("most_actives" | "day_gainers" | "day_losers")` for U.S. Responses are cached per (market, ranking_type) for ~5 min so reopening the page does not refetch.
 - `volume_up`, `volume_down` rank a small curated universe by comparing live volume to the previous in-process baseline, since no public source publishes this metric.
 - Taiwan `net_buy` and `net_sell` use TWSE T86 daily institutional data and are explicitly labeled as daily, not intraday real-time.
 - U.S. institutional `net_buy` / `net_sell` are not supported (no reliable free U.S. institutional source).

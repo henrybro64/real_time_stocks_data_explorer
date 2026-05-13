@@ -277,7 +277,7 @@ describe("RankingsPage", () => {
       expect(fetchRankings).toHaveBeenLastCalledWith("TW", "volume", 50);
     });
     expect(screen.getByTestId("rankings-scope-note")).toHaveTextContent(
-      "台股報價排行直接採用 Yahoo Finance 預先排序的 TWSE 排行頁面，涵蓋更廣的台股市場。",
+      "台股報價排行採用 Yahoo Finance 預先排序的台股排行頁，上市（TWSE）與上櫃（TPEx）合併為同一清單。",
     );
     expect(screen.getByTestId("rankings-warning-message")).toHaveTextContent(
       "免費非官方報價來源可能延遲，或暫時無法提供資料。",

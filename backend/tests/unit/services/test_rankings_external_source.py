@@ -80,6 +80,24 @@ def test_parse_tw_volume_page_returns_signed_change_and_lots_to_shares() -> None
     assert envelopes[1][1].volume == 516_811_000
 
 
+def test_parse_tw_volume_page_merges_twse_and_tpex_rows_in_yahoo_order() -> None:
+    """Yahoo's default Taiwan rank tables interleave 上市 (.TW) and 上櫃 (.TWO)."""
+    html_text = _tw_rank_html(
+        [
+            ("上市股", "2330.TW", "100.00", "1.00", "1.00%", "101.00", "99.00", "10K"),
+            ("上櫃股", "1234.TWO", "50.00", "0.50", "1.01%", "51.00", "49.00", "5K"),
+        ]
+    )
+    now = datetime(2026, 5, 13, 5, 0, tzinfo=timezone.utc)
+
+    envelopes = _parse_tw_rank_page(html_text, RankingType.volume, now)
+
+    assert [(s.symbol, s.exchange) for s, _ in envelopes] == [
+        ("2330", "TWSE"),
+        ("1234", "TPEx"),
+    ]
+
+
 def test_parse_tw_change_down_page_flips_sign_on_change_and_percent() -> None:
     html_text = _tw_rank_html(
         [

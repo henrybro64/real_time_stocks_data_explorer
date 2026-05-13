@@ -326,7 +326,7 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "rankings.notice.twScope":
       "Taiwan rankings here use TWSE institutional daily data.",
     "rankings.notice.twQuoteScope":
-      "Taiwan quote rankings come pre-sorted from Yahoo Finance's TWSE rank pages and cover the broader TWSE market.",
+      "Taiwan quote rankings come pre-sorted from Yahoo Finance's Taiwan rank pages and include both TWSE-listed (上市) and TPEx-listed (上櫃) stocks in one list.",
     "rankings.notice.quoteUnofficial": "Free unofficial quote source; data may be delayed or unavailable.",
     "rankings.notice.twDaily": "Taiwan institutional net buy/sell rankings use daily data, not intraday real-time data.",
     "rankings.notice.twInstitutionalUnavailable":
@@ -570,7 +570,8 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "rankings.column.source": "來源",
     "rankings.notice.usScope": "美股報價排行直接採用 Yahoo Finance 預先排序的選股結果，涵蓋更廣的美股市場。",
     "rankings.notice.twScope": "此處的台股排行使用 TWSE 法人日資料。",
-    "rankings.notice.twQuoteScope": "台股報價排行直接採用 Yahoo Finance 預先排序的 TWSE 排行頁面，涵蓋更廣的台股市場。",
+    "rankings.notice.twQuoteScope":
+      "台股報價排行採用 Yahoo Finance 預先排序的台股排行頁，上市（TWSE）與上櫃（TPEx）合併為同一清單。",
     "rankings.notice.quoteUnofficial": "免費非官方報價來源可能延遲，或暫時無法提供資料。",
     "rankings.notice.twDaily": "台股三大法人買賣超為日資料，非盤中即時資料。",
     "rankings.notice.twInstitutionalUnavailable": "目前無法從免費公開來源取得台股法人日資料。",

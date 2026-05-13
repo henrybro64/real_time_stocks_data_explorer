@@ -5,9 +5,12 @@ markets, so we ask them rather than fetching every stock and sorting in
 Python. The two providers behind one interface:
 
 * Taiwan: HTML rank pages at ``tw.stock.yahoo.com/rank/{volume,change-up,change-down}``.
-  These are server-side rendered; we strip the tags and walk the resulting
-  text lines, looking for stock-symbol markers and reading the surrounding
-  fields. Same approach as the existing ``tw_insights_service`` scrape.
+  Yahoo's default Taiwan tables interleave **上市 (TWSE, ``.TW``)** and **上櫃
+  (TPEx / 櫃買, ``.TWO``)** in one pre-sorted list; we parse both suffixes and
+  map them to ``exchange="TWSE"`` vs ``"TPEx"``. These pages are server-side
+  rendered; we strip the tags and walk the resulting text lines, looking for
+  stock-symbol markers and reading the surrounding fields. Same approach as
+  the existing ``tw_insights_service`` scrape.
 * U.S.: ``yfinance.screen("most_actives" | "day_gainers" | "day_losers")``,
   which wraps the predefined screener endpoint and handles Yahoo's crumb
   cookie internally. Returns JSON with full quote fields per row.
