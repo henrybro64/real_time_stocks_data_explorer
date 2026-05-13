@@ -59,6 +59,44 @@ function buildResponse(overrides: Partial<RankingResponse> = {}): RankingRespons
   };
 }
 
+function buildUsResponse(overrides: Partial<RankingResponse> = {}): RankingResponse {
+  const nowIso = new Date().toISOString();
+
+  return {
+    market: "US",
+    rankingType: "volume",
+    items: [
+      {
+        rank: 1,
+        stock: {
+          id: "US:MSFT",
+          market: "US",
+          symbol: "MSFT",
+          name: "Microsoft Corporation",
+          exchange: "NASDAQ",
+          currency: "USD",
+          timezone: "America/New_York",
+          nameEn: "Microsoft Corporation",
+        },
+        lastPrice: 425.5,
+        changePercent: 0.8,
+        volume: 12345678,
+        volumeDeltaPercent: null,
+        netBuySellShares: null,
+        timestamp: nowIso,
+      },
+    ],
+    timestamp: nowIso,
+    source: "Quote rankings from the app's free best-effort quote providers.",
+    sourceType: "free-unofficial",
+    isMarketOpen: true,
+    dataFreshnessLabel: "Market open; rankings use the latest quote snapshot.",
+    warningMessage: "Free unofficial quote source; data may be delayed or unavailable.",
+    unsupportedReason: null,
+    ...overrides,
+  };
+}
+
 function renderRankingsPage(language: "en" | "zh-TW" = "zh-TW") {
   window.localStorage.clear();
   window.localStorage.setItem("stock-ticker-language", language);
@@ -92,33 +130,43 @@ describe("RankingsPage", () => {
     expect(await screen.findByTestId("rankings-row-TW:2330")).toBeInTheDocument();
     expect(screen.getByTestId("rankings-realtime-tag")).toHaveTextContent("非即時");
     expect(screen.getByTestId("rankings-scope-note")).toHaveTextContent(
-      "此頁僅顯示台股法人日排行；本應用程式的免費資料來源無法提供美股全市場排行。",
+      "此處的台股排行使用 TWSE 法人日資料。",
     );
     expect(screen.getByTestId("rankings-warning-message")).toHaveTextContent(
       "台股三大法人買賣超為日資料，非盤中即時資料。",
     );
   });
 
-  it("shows Taiwan-only controls and switches ranking tabs", async () => {
+  it("switches markets and ranking tabs", async () => {
     const user = userEvent.setup();
     vi.mocked(fetchRankings)
       .mockResolvedValueOnce(buildResponse())
-      .mockResolvedValue(
-        buildResponse({
-          rankingType: "net_sell",
-          dataFreshnessLabel: "TW daily institutional ranking sorted by most negative 三大法人買賣超股數.",
+      .mockResolvedValueOnce(buildUsResponse())
+      .mockResolvedValueOnce(
+        buildUsResponse({
+          rankingType: "volume_down",
+          dataFreshnessLabel: "Volume change uses the previous quote snapshot baseline.",
         }),
       );
 
     renderRankingsPage();
 
     await screen.findByTestId("rankings-row-TW:2330");
-    expect(screen.queryByTestId("rankings-market-select")).not.toBeInTheDocument();
-    expect(screen.queryByTestId("rankings-tab-volume")).not.toBeInTheDocument();
-    await user.click(screen.getByTestId("rankings-tab-net_sell"));
+    await user.selectOptions(screen.getByLabelText("市場"), "US");
 
     await waitFor(() => {
-      expect(fetchRankings).toHaveBeenLastCalledWith("TW", "net_sell", 50);
+      expect(fetchRankings).toHaveBeenLastCalledWith("US", "volume", 50);
+    });
+    expect(await screen.findByTestId("rankings-row-US:MSFT")).toBeInTheDocument();
+    expect(screen.getByTestId("rankings-scope-note")).toHaveTextContent(
+      "此處的美股排行以報價資料為主，且目前僅涵蓋有限追蹤清單，並非全市場排行。",
+    );
+    expect(screen.getByTestId("rankings-realtime-tag")).toHaveTextContent("即時");
+
+    await user.click(screen.getByTestId("rankings-tab-volume_down"));
+
+    await waitFor(() => {
+      expect(fetchRankings).toHaveBeenLastCalledWith("US", "volume_down", 50);
     });
   });
 

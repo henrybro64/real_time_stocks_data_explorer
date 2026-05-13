@@ -1,17 +1,31 @@
 import type { RankingResponse } from "@shared/api";
 
 type RankingsCopyKey =
+  | "rankings.notice.quoteUnofficial"
   | "rankings.notice.twDaily"
   | "rankings.notice.twInstitutionalUnavailable"
+  | "rankings.freshness.quoteSnapshotOpen"
+  | "rankings.freshness.quoteSnapshotClosed"
+  | "rankings.freshness.volumeBaselineMissing"
+  | "rankings.freshness.volumeBaselineOpen"
+  | "rankings.freshness.volumeBaselineClosed"
   | "rankings.freshness.twInstitutionalUnavailable"
   | "rankings.freshness.twNetBuy"
   | "rankings.freshness.twNetSell"
   | "rankings.freshness.twNetBuyClosed"
   | "rankings.freshness.twNetSellClosed"
+  | "rankings.source.quoteProviders"
   | "rankings.source.twse"
   | "rankings.source.unsupported";
 
 const FRESHNESS_LABEL_KEYS: Record<string, RankingsCopyKey> = {
+  "Market open; rankings use the latest quote snapshot.": "rankings.freshness.quoteSnapshotOpen",
+  "Market closed; rankings use the latest available quote snapshot.": "rankings.freshness.quoteSnapshotClosed",
+  "Baseline unavailable on the first snapshot; volume change percent stays empty until a later refresh.":
+    "rankings.freshness.volumeBaselineMissing",
+  "Volume change uses the previous quote snapshot baseline.": "rankings.freshness.volumeBaselineOpen",
+  "Market closed; volume change uses the previous quote snapshot baseline.":
+    "rankings.freshness.volumeBaselineClosed",
   "TW daily institutional ranking is unavailable from the free public source right now.":
     "rankings.freshness.twInstitutionalUnavailable",
   "TW daily institutional ranking sorted by highest 三大法人買賣超股數.": "rankings.freshness.twNetBuy",
@@ -23,6 +37,7 @@ const FRESHNESS_LABEL_KEYS: Record<string, RankingsCopyKey> = {
 };
 
 const WARNING_MESSAGE_KEYS: Record<string, RankingsCopyKey> = {
+  "Free unofficial quote source; data may be delayed or unavailable.": "rankings.notice.quoteUnofficial",
   "台股三大法人買賣超為日資料，非盤中即時資料。": "rankings.notice.twDaily",
 };
 
@@ -32,6 +47,7 @@ const UNSUPPORTED_REASON_KEYS: Record<string, RankingsCopyKey> = {
 };
 
 const SOURCE_KEYS: Record<string, RankingsCopyKey> = {
+  "Quote rankings from the app's free best-effort quote providers.": "rankings.source.quoteProviders",
   "TWSE T86 daily institutional data": "rankings.source.twse",
   "Unsupported in Phase 1 free-only rankings": "rankings.source.unsupported",
 };

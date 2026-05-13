@@ -5,6 +5,8 @@ import {
   Column,
   Grid,
   InlineLoading,
+  Select,
+  SelectItem,
   Tag,
   Table,
   TableBody,
@@ -20,6 +22,7 @@ import type { RankingResponse, RankingType } from "@shared/api";
 import { useState } from "react";
 
 import { getDisplayStockName, useLanguage } from "../../app/i18n";
+import { QuoteFreshnessTag } from "../../components/state/QuoteFreshnessTag";
 import { RequestStateNotice, errorToNoticeKind } from "../../components/state/RequestStateNotice";
 import { fetchRankings } from "../../services/api/client";
 import { formatCurrency, formatLastUpdated, formatPercent } from "../../services/format/quote";
@@ -31,15 +34,33 @@ import {
 } from "./rankingsCopy";
 
 const DEFAULT_LIMIT = 50;
-const MARKET = "TW" as const;
+const DEFAULT_MARKET = "TW" as const;
+type RankingMarket = RankingResponse["market"];
 type RankingsTabLabelKey =
+  | "rankings.tab.volume"
+  | "rankings.tab.volumeUp"
+  | "rankings.tab.volumeDown"
   | "rankings.tab.netBuy"
   | "rankings.tab.netSell";
 
-const RANKING_TABS: Array<{ key: RankingType; labelKey: RankingsTabLabelKey }> = [
+const TW_RANKING_TABS: Array<{ key: RankingType; labelKey: RankingsTabLabelKey }> = [
   { key: "net_buy", labelKey: "rankings.tab.netBuy" },
   { key: "net_sell", labelKey: "rankings.tab.netSell" },
 ];
+
+const US_RANKING_TABS: Array<{ key: RankingType; labelKey: RankingsTabLabelKey }> = [
+  { key: "volume", labelKey: "rankings.tab.volume" },
+  { key: "volume_up", labelKey: "rankings.tab.volumeUp" },
+  { key: "volume_down", labelKey: "rankings.tab.volumeDown" },
+];
+
+function tabsForMarket(market: RankingMarket) {
+  return market === "US" ? US_RANKING_TABS : TW_RANKING_TABS;
+}
+
+function defaultRankingTypeForMarket(market: RankingMarket): RankingType {
+  return market === "US" ? "volume" : "net_buy";
+}
 
 export function getRankingsRefetchInterval(isMarketOpen: boolean, rankingType: RankingType) {
   if (rankingType === "net_buy" || rankingType === "net_sell") {
@@ -72,34 +93,67 @@ function formatMaybeNumber(value: number | null, formatNumber: (value: number) =
 function tableTitle(
   response: RankingResponse | undefined,
   fallback: string,
-  translate: (key: RankingsTabLabelKey | "rankings.market.tw") => string,
+  translate: (key: RankingsTabLabelKey | "rankings.market.tw" | "rankings.market.us") => string,
 ) {
   if (!response) {
     return fallback;
   }
-  const tab = RANKING_TABS.find((candidate) => candidate.key === response.rankingType);
+  const tab = tabsForMarket(response.market).find((candidate) => candidate.key === response.rankingType);
   const rankingLabel = tab ? translate(tab.labelKey) : response.rankingType;
-  return `${translate("rankings.market.tw")} ${rankingLabel}`;
+  const marketLabel = response.market === "US" ? translate("rankings.market.us") : translate("rankings.market.tw");
+  return `${marketLabel} ${rankingLabel}`;
 }
 
-function RankingRealtimeTag() {
+function getLatestRankingTimestamp(response: RankingResponse) {
+  if (response.items.length === 0) {
+    return null;
+  }
+  return response.items.reduce((latestTimestamp, item) => {
+    const latestTime = Date.parse(latestTimestamp);
+    const itemTime = Date.parse(item.timestamp);
+    if (Number.isNaN(itemTime)) {
+      return latestTimestamp;
+    }
+    if (Number.isNaN(latestTime) || itemTime > latestTime) {
+      return item.timestamp;
+    }
+    return latestTimestamp;
+  }, response.items[0].timestamp);
+}
+
+function RankingRealtimeTag({ response }: { response: RankingResponse }) {
   const { language } = useLanguage();
-  const label = language === "zh-TW" ? "非即時" : "Not real-time";
+  if (response.rankingType === "net_buy" || response.rankingType === "net_sell") {
+    const label = language === "zh-TW" ? "非即時" : "Not real-time";
+
+    return (
+      <Tag data-testid="rankings-realtime-tag" size="sm" type="cool-gray">
+        {label}
+      </Tag>
+    );
+  }
+
+  const latestTimestamp = getLatestRankingTimestamp(response);
+  if (latestTimestamp == null) {
+    return null;
+  }
 
   return (
-    <Tag data-testid="rankings-realtime-tag" size="sm" type="cool-gray">
-      {label}
-    </Tag>
+    <div data-testid="rankings-realtime-tag">
+      <QuoteFreshnessTag isMarketOpen={response.isMarketOpen} timestamp={latestTimestamp} />
+    </div>
   );
 }
 
 export function RankingsPage() {
   const { language, t, formatNumber } = useLanguage();
-  const [rankingType, setRankingType] = useState<RankingType>("net_buy");
+  const [market, setMarket] = useState<RankingMarket>(DEFAULT_MARKET);
+  const [rankingType, setRankingType] = useState<RankingType>(defaultRankingTypeForMarket(DEFAULT_MARKET));
+  const rankingTabs = tabsForMarket(market);
 
   const rankingsQuery = useQuery<RankingResponse>({
-    queryKey: ["rankings", MARKET, rankingType, DEFAULT_LIMIT],
-    queryFn: () => fetchRankings(MARKET, rankingType, DEFAULT_LIMIT),
+    queryKey: ["rankings", market, rankingType, DEFAULT_LIMIT],
+    queryFn: () => fetchRankings(market, rankingType, DEFAULT_LIMIT),
     refetchInterval: (query) =>
       getRankingsRefetchInterval(
         (query.state.data as RankingResponse | undefined)?.isMarketOpen ?? false,
@@ -111,6 +165,13 @@ export function RankingsPage() {
   const showError = rankingsQuery.error != null && data == null;
   const showUnsupported = !!data?.unsupportedReason;
   const localizedSource = data ? getLocalizedRankingsSource(data, t) : "";
+  const showNetBuySellColumn = rankingType === "net_buy" || rankingType === "net_sell";
+  const scopeNoteKey = market === "US" ? "rankings.notice.usScope" : "rankings.notice.twScope";
+
+  function handleMarketChange(nextMarket: RankingMarket) {
+    setMarket(nextMarket);
+    setRankingType(defaultRankingTypeForMarket(nextMarket));
+  }
 
   return (
     <Grid className="app-page-grid" fullWidth>
@@ -130,19 +191,26 @@ export function RankingsPage() {
               <p className="app-eyebrow">{t("rankings.market")}</p>
               <h2>{t("rankings.title")}</h2>
             </div>
-            {data ? <RankingRealtimeTag /> : null}
+            {data ? <RankingRealtimeTag response={data} /> : null}
           </div>
           <div className="app-portfolio-asset-form">
-            <p className="app-supporting-copy" data-testid="rankings-market-label">
-              {t("rankings.market.tw")}
-            </p>
+            <Select
+              id="rankings-market-select"
+              data-testid="rankings-market-select"
+              labelText={t("rankings.market")}
+              value={market}
+              onChange={(event) => handleMarketChange(event.currentTarget.value as RankingMarket)}
+            >
+              <SelectItem value="TW" text={t("rankings.market.tw")} />
+              <SelectItem value="US" text={t("rankings.market.us")} />
+            </Select>
             <p className="app-supporting-copy" data-testid="rankings-scope-note">
-              {t("rankings.notice.twOnly")}
+              {t(scopeNoteKey)}
             </p>
           </div>
           <div className="app-shell-brand" style={{ marginTop: "1rem" }}>
             <div className="app-auth-actions" style={{ display: "flex", flexWrap: "wrap", gap: "0.75rem" }}>
-              {RANKING_TABS.map((tab) => (
+              {rankingTabs.map((tab) => (
                 <Button
                   data-testid={`rankings-tab-${tab.key}`}
                   key={tab.key}
@@ -199,7 +267,7 @@ export function RankingsPage() {
                         <TableHeader>{t("rankings.column.changePercent")}</TableHeader>
                         <TableHeader>{t("rankings.column.volume")}</TableHeader>
                         <TableHeader>{t("rankings.column.volumeChangePercent")}</TableHeader>
-                        <TableHeader>{t("rankings.column.netBuySell")}</TableHeader>
+                        {showNetBuySellColumn ? <TableHeader>{t("rankings.column.netBuySell")}</TableHeader> : null}
                         <TableHeader>{t("rankings.column.dataTime")}</TableHeader>
                         <TableHeader>{t("rankings.column.source")}</TableHeader>
                       </TableRow>
@@ -218,7 +286,9 @@ export function RankingsPage() {
                           <TableCell>{formatMaybePercent(item.changePercent)}</TableCell>
                           <TableCell>{formatMaybeNumber(item.volume, formatNumber)}</TableCell>
                           <TableCell>{formatMaybePercent(item.volumeDeltaPercent)}</TableCell>
-                          <TableCell>{formatMaybeNumber(item.netBuySellShares, formatNumber)}</TableCell>
+                          {showNetBuySellColumn ? (
+                            <TableCell>{formatMaybeNumber(item.netBuySellShares, formatNumber)}</TableCell>
+                          ) : null}
                           <TableCell>{formatLastUpdated(item.timestamp)}</TableCell>
                           <TableCell>{localizedSource}</TableCell>
                         </TableRow>
