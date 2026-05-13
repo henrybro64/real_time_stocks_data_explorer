@@ -9,5 +9,6 @@ resources:
   - backend-auth-secret.yaml
   - backend.yaml
   - backend-history-capture-cronjob.yaml
+  - backend-rankings-snapshot-cronjob.yaml
   - frontend.yaml
   - frontend-nodeport.yaml

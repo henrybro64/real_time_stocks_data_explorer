@@ -5,6 +5,7 @@ from datetime import date, datetime, time, timedelta, timezone
 from typing import Literal
 from zoneinfo import ZoneInfo
 
+from app.core.config import settings
 from app.models.quote import QuoteRecord
 from app.models.stock import StockRecord
 from app.schemas.rankings import (
@@ -17,6 +18,7 @@ from app.schemas.stock import StockResponse
 from app.services.http_client import HttpFetchError, fetch_json
 from app.services.market_clock import is_market_open
 from app.services.quote_service import QuoteService, quote_service
+from app.services.rankings_snapshot_cache import RankingsSnapshot, get_snapshot
 from app.services.rankings_volume_baseline_cache import (
     VolumeBaselineStore,
     default_volume_baseline_store,
@@ -115,7 +117,8 @@ class RankingsService:
         candidates: list[_RankingCandidate] = []
         baseline_missing = False
 
-        for stock, quote in self._get_quote_rankings_snapshot(market):
+        envelopes, used_snapshot = self._get_quote_rankings_snapshot(market, now)
+        for stock, quote in envelopes:
             volume_delta_percent: float | None = None
             if ranking_type in {RankingType.volume_up, RankingType.volume_down}:
                 baseline_volume = self._volume_baselines.get(stock.id)
@@ -153,12 +156,32 @@ class RankingsService:
         ]
 
         if ranking_type == RankingType.volume:
-            if market_open:
+            if used_snapshot and market_open:
+                freshness = (
+                    "Market open; rankings use the latest periodic snapshot covering "
+                    "the full tracked TWSE universe."
+                )
+            elif used_snapshot:
+                freshness = (
+                    "Market closed; rankings use the latest periodic snapshot covering "
+                    "the full tracked TWSE universe."
+                )
+            elif market_open:
                 freshness = "Market open; rankings use the latest quote snapshot."
             else:
                 freshness = "Market closed; rankings use the latest available quote snapshot."
         elif ranking_type in {RankingType.change_up, RankingType.change_down}:
-            if market_open:
+            if used_snapshot and market_open:
+                freshness = (
+                    "Market open; price-move rankings use the latest periodic snapshot "
+                    "covering the full tracked TWSE universe."
+                )
+            elif used_snapshot:
+                freshness = (
+                    "Market closed; price-move rankings use the latest periodic snapshot "
+                    "covering the full tracked TWSE universe."
+                )
+            elif market_open:
                 freshness = "Market open; price-move rankings use the latest quote snapshot."
             else:
                 freshness = (
@@ -189,13 +212,39 @@ class RankingsService:
     def _get_quote_rankings_snapshot(
         self,
         market: RankingMarket,
-    ) -> list[tuple[StockRecord, QuoteRecord]]:
+        now: datetime | None = None,
+    ) -> tuple[list[tuple[StockRecord, QuoteRecord]], bool]:
+        """Return ``(envelopes, used_snapshot)``.
+
+        When ``used_snapshot`` is True the envelopes came from the periodic
+        rankings snapshot in Redis and represent a market-wide universe
+        (e.g. all TWSE-listed stocks for TW). When False the envelopes came
+        from the per-request live quote fan-out over the small curated
+        ``MARKET_UNIVERSES`` list.
+        """
+        if market == "TW" and settings.rankings_tw_snapshot_enabled:
+            snapshot_envelopes = self._read_tw_snapshot_envelopes(now)
+            if snapshot_envelopes is not None:
+                return snapshot_envelopes, True
+
         stock_ids = MARKET_UNIVERSES[market]
         if market == "US":
             get_live_quotes = getattr(self.quote_source, "get_live_quotes", None)
             if callable(get_live_quotes):
-                return get_live_quotes(stock_ids)
-        return self.quote_source.get_quotes(stock_ids)
+                return get_live_quotes(stock_ids), False
+        return self.quote_source.get_quotes(stock_ids), False
+
+    def _read_tw_snapshot_envelopes(
+        self,
+        now: datetime | None,
+    ) -> list[tuple[StockRecord, QuoteRecord]] | None:
+        snapshot: RankingsSnapshot | None = get_snapshot("TW")
+        if snapshot is None or not snapshot.entries:
+            return None
+        max_age = settings.rankings_tw_snapshot_max_age_minutes
+        if snapshot.age_minutes(now) > max_age:
+            return None
+        return [(entry.stock, entry.quote) for entry in snapshot.entries]
 
     def _build_tw_institutional_ranking(
         self,
@@ -302,10 +351,20 @@ class RankingsService:
             unsupportedReason=_UNSUPPORTED_REASONS[ranking_type],
         )
 
-    def _fetch_tw_institutional_snapshot(
+    def fetch_tw_institutional_snapshot(
         self,
         now: datetime,
     ) -> tuple[date, dict[str, int]] | None:
+        """Fetch the most recent valid TWSE T86 daily institutional snapshot.
+
+        Walks back up to 7 days from the candidate date (yesterday if before
+        18:00 Taipei time, otherwise today) until a non-empty TWSE T86 dataset
+        is returned. The keys of the returned dict are the universe of TWSE
+        stock IDs that reported institutional activity on that date.
+
+        Public so that ``RankingsSnapshotService`` can reuse the universe
+        without duplicating the TWSE fetch logic.
+        """
         local_now = now.astimezone(_TW_TIMEZONE)
         candidate_date = local_now.date()
         if local_now.time() < time(18, 0):
@@ -317,6 +376,12 @@ class RankingsService:
             if rows:
                 return current_date, rows
         return None
+
+    def _fetch_tw_institutional_snapshot(
+        self,
+        now: datetime,
+    ) -> tuple[date, dict[str, int]] | None:
+        return self.fetch_tw_institutional_snapshot(now)
 
     def _fetch_tw_institutional_rows(self, current_date: date) -> dict[str, int]:
         try:

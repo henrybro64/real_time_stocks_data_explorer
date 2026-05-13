@@ -276,7 +276,7 @@ describe("RankingsPage", () => {
       expect(fetchRankings).toHaveBeenLastCalledWith("TW", "volume", 50);
     });
     expect(screen.getByTestId("rankings-scope-note")).toHaveTextContent(
-      "此處的台股報價排行以報價資料為主，且目前僅涵蓋有限追蹤清單，並非全市場排行。",
+      "台股報價排行涵蓋追蹤的 TWSE 範圍，盤中每 30 分鐘自動刷新一次。",
     );
     expect(screen.getByTestId("rankings-warning-message")).toHaveTextContent(
       "免費非官方報價來源可能延遲，或暫時無法提供資料。",
@@ -291,6 +291,33 @@ describe("RankingsPage", () => {
     await waitFor(() => {
       expect(screen.getByTestId("rankings-freshness-label")).toHaveTextContent(
         "市場開盤中；漲跌幅排行使用最新報價快照。",
+      );
+    });
+  });
+
+  it("renders the TW snapshot freshness label for periodic-snapshot rankings", async () => {
+    const user = userEvent.setup();
+    vi.mocked(fetchRankings)
+      .mockResolvedValueOnce(buildResponse())
+      .mockResolvedValueOnce(
+        buildTwQuoteResponse({
+          dataFreshnessLabel:
+            "Market open; rankings use the latest periodic snapshot covering the full tracked TWSE universe.",
+        }),
+      );
+
+    renderRankingsPage();
+
+    await screen.findByTestId("rankings-row-TW:2330");
+    await user.click(screen.getByTestId("rankings-tab-volume"));
+
+    await waitFor(() => {
+      expect(fetchRankings).toHaveBeenLastCalledWith("TW", "volume", 50);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("rankings-freshness-label")).toHaveTextContent(
+        "市場開盤中；台股排行使用涵蓋整個追蹤 TWSE 範圍的定期快照。",
       );
     });
   });

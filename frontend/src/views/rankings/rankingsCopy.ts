@@ -8,6 +8,10 @@ type RankingsCopyKey =
   | "rankings.freshness.quoteSnapshotClosed"
   | "rankings.freshness.changeSnapshotOpen"
   | "rankings.freshness.changeSnapshotClosed"
+  | "rankings.freshness.twSnapshotVolumeOpen"
+  | "rankings.freshness.twSnapshotVolumeClosed"
+  | "rankings.freshness.twSnapshotChangeOpen"
+  | "rankings.freshness.twSnapshotChangeClosed"
   | "rankings.freshness.volumeBaselineMissing"
   | "rankings.freshness.volumeBaselineOpen"
   | "rankings.freshness.volumeBaselineClosed"
@@ -27,6 +31,14 @@ const FRESHNESS_LABEL_KEYS: Record<string, RankingsCopyKey> = {
     "rankings.freshness.changeSnapshotOpen",
   "Market closed; price-move rankings use the latest available quote snapshot.":
     "rankings.freshness.changeSnapshotClosed",
+  "Market open; rankings use the latest periodic snapshot covering the full tracked TWSE universe.":
+    "rankings.freshness.twSnapshotVolumeOpen",
+  "Market closed; rankings use the latest periodic snapshot covering the full tracked TWSE universe.":
+    "rankings.freshness.twSnapshotVolumeClosed",
+  "Market open; price-move rankings use the latest periodic snapshot covering the full tracked TWSE universe.":
+    "rankings.freshness.twSnapshotChangeOpen",
+  "Market closed; price-move rankings use the latest periodic snapshot covering the full tracked TWSE universe.":
+    "rankings.freshness.twSnapshotChangeClosed",
   "Baseline unavailable on the first snapshot; volume change percent stays empty until a later refresh.":
     "rankings.freshness.volumeBaselineMissing",
   "Volume change uses the previous quote snapshot baseline.": "rankings.freshness.volumeBaselineOpen",

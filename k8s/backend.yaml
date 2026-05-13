@@ -10,6 +10,12 @@ data:
   # Local auth: when enabled, users must sign in with LOCAL_AUTH_USERNAME / LOCAL_AUTH_PASSWORD.
   AUTH_ENABLED: "true"
   LOCAL_AUTH_ENABLED: "true"
+  # When true, TW quote-based rankings (volume / change_up / change_down) rank the
+  # full TWSE universe from the periodic snapshot refreshed by the CronJob below.
+  # When false, rankings fall back to the small curated 7-stock universe.
+  RANKINGS_TW_SNAPSHOT_ENABLED: "true"
+  # Snapshot is considered usable for up to this many minutes after refresh.
+  RANKINGS_TW_SNAPSHOT_MAX_AGE_MINUTES: "60"
 ---
 apiVersion: apps/v1
 kind: Deployment

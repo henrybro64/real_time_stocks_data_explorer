@@ -104,6 +104,10 @@ type TranslationKey =
   | "rankings.freshness.quoteSnapshotClosed"
   | "rankings.freshness.changeSnapshotOpen"
   | "rankings.freshness.changeSnapshotClosed"
+  | "rankings.freshness.twSnapshotVolumeOpen"
+  | "rankings.freshness.twSnapshotVolumeClosed"
+  | "rankings.freshness.twSnapshotChangeOpen"
+  | "rankings.freshness.twSnapshotChangeClosed"
   | "rankings.freshness.volumeBaselineMissing"
   | "rankings.freshness.volumeBaselineOpen"
   | "rankings.freshness.volumeBaselineClosed"
@@ -321,7 +325,7 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "rankings.notice.twScope":
       "Taiwan rankings here use TWSE institutional daily data.",
     "rankings.notice.twQuoteScope":
-      "Taiwan quote rankings here are quote-based and currently use a limited tracked universe rather than the full market.",
+      "Taiwan quote rankings cover the tracked TWSE universe from a periodic snapshot that refreshes every 30 minutes during market hours.",
     "rankings.notice.quoteUnofficial": "Free unofficial quote source; data may be delayed or unavailable.",
     "rankings.notice.twDaily": "Taiwan institutional net buy/sell rankings use daily data, not intraday real-time data.",
     "rankings.notice.twInstitutionalUnavailable":
@@ -332,6 +336,14 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
       "Market open; price-move rankings use the latest quote snapshot.",
     "rankings.freshness.changeSnapshotClosed":
       "Market closed; price-move rankings use the latest available quote snapshot.",
+    "rankings.freshness.twSnapshotVolumeOpen":
+      "Market open; rankings use the latest periodic snapshot covering the full tracked TWSE universe.",
+    "rankings.freshness.twSnapshotVolumeClosed":
+      "Market closed; rankings use the latest periodic snapshot covering the full tracked TWSE universe.",
+    "rankings.freshness.twSnapshotChangeOpen":
+      "Market open; price-move rankings use the latest periodic snapshot covering the full tracked TWSE universe.",
+    "rankings.freshness.twSnapshotChangeClosed":
+      "Market closed; price-move rankings use the latest periodic snapshot covering the full tracked TWSE universe.",
     "rankings.freshness.volumeBaselineMissing":
       "Baseline unavailable on the first snapshot; volume change percent stays empty until a later refresh.",
     "rankings.freshness.volumeBaselineOpen": "Volume change uses the previous quote snapshot baseline.",
@@ -556,7 +568,7 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "rankings.column.source": "來源",
     "rankings.notice.usScope": "此處的美股排行以報價資料為主，且目前僅涵蓋有限追蹤清單，並非全市場排行。",
     "rankings.notice.twScope": "此處的台股排行使用 TWSE 法人日資料。",
-    "rankings.notice.twQuoteScope": "此處的台股報價排行以報價資料為主，且目前僅涵蓋有限追蹤清單，並非全市場排行。",
+    "rankings.notice.twQuoteScope": "台股報價排行涵蓋追蹤的 TWSE 範圍，盤中每 30 分鐘自動刷新一次。",
     "rankings.notice.quoteUnofficial": "免費非官方報價來源可能延遲，或暫時無法提供資料。",
     "rankings.notice.twDaily": "台股三大法人買賣超為日資料，非盤中即時資料。",
     "rankings.notice.twInstitutionalUnavailable": "目前無法從免費公開來源取得台股法人日資料。",
@@ -564,6 +576,14 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "rankings.freshness.quoteSnapshotClosed": "市場休市；排行使用最新可得的報價快照。",
     "rankings.freshness.changeSnapshotOpen": "市場開盤中；漲跌幅排行使用最新報價快照。",
     "rankings.freshness.changeSnapshotClosed": "市場休市；漲跌幅排行使用最新可得的報價快照。",
+    "rankings.freshness.twSnapshotVolumeOpen":
+      "市場開盤中；台股排行使用涵蓋整個追蹤 TWSE 範圍的定期快照。",
+    "rankings.freshness.twSnapshotVolumeClosed":
+      "市場休市；台股排行使用涵蓋整個追蹤 TWSE 範圍的最新定期快照。",
+    "rankings.freshness.twSnapshotChangeOpen":
+      "市場開盤中；台股漲跌幅排行使用涵蓋整個追蹤 TWSE 範圍的定期快照。",
+    "rankings.freshness.twSnapshotChangeClosed":
+      "市場休市；台股漲跌幅排行使用涵蓋整個追蹤 TWSE 範圍的最新定期快照。",
     "rankings.freshness.volumeBaselineMissing": "首次快照尚無基準值；量變化百分比會在後續刷新後顯示。",
     "rankings.freshness.volumeBaselineOpen": "量變化使用前一次報價快照作為基準。",
     "rankings.freshness.volumeBaselineClosed": "市場休市；量變化使用前一次報價快照作為基準。",

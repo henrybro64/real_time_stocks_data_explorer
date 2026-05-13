@@ -1,0 +1,39 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: stock-ticker-rankings-snapshot-tw
+spec:
+  # Every 30 min, 00:00-06:30 UTC, Mon-Fri.
+  # That window covers the TW trading session (09:00-13:30 TST = 01:00-05:30 UTC)
+  # with extra refresh ticks at the open boundary and the post-close wind-down.
+  schedule: "*/30 0-6 * * 1-5"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      # Generous timeout: TWSE T86 fetch + 1000+ parallel quote fetches can take
+      # several minutes in the slowest paths (per-stock Yahoo fallback).
+      activeDeadlineSeconds: 900
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: refresh-rankings-snapshot-tw
+              image: curlimages/curl:8.7.1
+              imagePullPolicy: IfNotPresent
+              env:
+                - name: REFRESH_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: stock-ticker-backend-auth
+                      key: RANKINGS_SNAPSHOT_REFRESH_TOKEN
+              command:
+                - sh
+                - -c
+                - |
+                  set -eu
+                  curl --fail --show-error --silent --max-time 600 \
+                    -X POST \
+                    -H "X-Rankings-Snapshot-Token: ${REFRESH_TOKEN}" \
+                    "http://stock-ticker-backend:8000/api/rankings/snapshot/refresh?market=TW"
