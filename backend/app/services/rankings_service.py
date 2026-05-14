@@ -277,7 +277,9 @@ class RankingsService:
         quotes_by_id = self._sp500_quote_batch(stocks)
         if quotes_by_id:
             return [(s, quotes_by_id[s.id]) for s in stocks if s.id in quotes_by_id]
-        return self.quote_source.get_quotes([s.id for s in stocks])
+        # v7 batch empty: per-symbol live path (bypasses quote Redis cache).
+        ids = [s.id for s in stocks]
+        return self.quote_source.get_live_quotes(ids)
 
     def _try_build_us_sp500_price_movers(
         self,
