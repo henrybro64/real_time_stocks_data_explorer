@@ -242,7 +242,9 @@ export function StockDetailPage({ stockId = "" }: Props) {
       {isTaiwanStock ? (
         <Column className="app-column-spacing" sm={4} md={8} lg={16}>
           {twInsightsQuery.isError && !twInsightsQuery.data ? (
-            <RequestStateNotice kind={twInsightsNoticeKind ?? "error"} scopeLabel={sectionLabels.twInsights} />
+            <Tile className="app-section-tile" data-testid="tw-insights-section">
+              <RequestStateNotice kind={twInsightsNoticeKind ?? "error"} scopeLabel={sectionLabels.twInsights} />
+            </Tile>
           ) : (
             <TwInsightsPanel isLoading={twInsightsQuery.isLoading} insights={twInsightsQuery.data ?? null} />
           )}

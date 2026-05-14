@@ -198,6 +198,7 @@ type TranslationKey =
   | "twInsights.title"
   | "twInsights.description"
   | "twInsights.loading"
+  | "twInsights.unavailable"
   | "twInsights.revenue.title"
   | "twInsights.revenue.latest"
   | "twInsights.peer.title"
@@ -454,6 +455,7 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "twInsights.description":
       "Additional Taiwan-only context similar to local investor portals: revenue trend, peer momentum, and dividends.",
     "twInsights.loading": "Loading Taiwan insights",
+    "twInsights.unavailable": "Taiwan insights are not available for this symbol right now.",
     "twInsights.revenue.title": "Monthly revenue trend (K TWD)",
     "twInsights.revenue.latest": "Latest",
     "twInsights.peer.title": "Peer performance snapshot",
@@ -701,6 +703,7 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "twInsights.title": "台股基本面快照",
     "twInsights.description": "僅台股顯示：月營收趨勢、同業表現與股利資訊。",
     "twInsights.loading": "載入台股補充資訊中",
+    "twInsights.unavailable": "目前無法顯示此股票的台股補充資訊。",
     "twInsights.revenue.title": "月營收趨勢（仟元）",
     "twInsights.revenue.latest": "最新",
     "twInsights.peer.title": "同業表現快照",

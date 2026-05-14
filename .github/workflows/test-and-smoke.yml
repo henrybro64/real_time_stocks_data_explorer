@@ -123,7 +123,7 @@ jobs:
           path: allure-results/frontend-e2e
           if-no-files-found: warn
       - name: Upload Playwright HTML report
-        if: failure()
+        if: always() && steps.frontend_e2e_tests.outcome == 'failure'
         uses: actions/upload-artifact@v7
         with:
           name: playwright-report
