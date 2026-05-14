@@ -86,6 +86,7 @@ type TranslationKey =
   | "rankings.tab.netSell"
   | "rankings.column.rank"
   | "rankings.column.symbol"
+  | "rankings.column.board"
   | "rankings.column.name"
   | "rankings.column.lastPrice"
   | "rankings.column.changePercent"
@@ -105,6 +106,7 @@ type TranslationKey =
   | "rankings.twBoard.groupLabel"
   | "rankings.twBoard.twse"
   | "rankings.twBoard.tpex"
+  | "rankings.twBoard.hint"
   | "rankings.notice.quoteUnofficial"
   | "rankings.notice.twDaily"
   | "rankings.notice.twInstitutionalUnavailable"
@@ -310,7 +312,7 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "chart.interactHint": "Hover or click the chart to inspect open, high, low, close, and volume for that time.",
     "rankings.title": "Market rankings",
     "rankings.description":
-      "Free-only rankings. Both Taiwan and U.S. show quote-based rankings over a limited tracked universe rather than full-market data. Taiwan also includes daily institutional net buy/sell rankings.",
+      "Free-only rankings. Both Taiwan and U.S. show quote-based rankings over a limited tracked universe rather than full-market data. Taiwan also includes daily institutional net buy/sell rankings. For Taiwan, use the board toggle to switch between TWSE-listed names and TPEx-listed names.",
     "rankings.market": "Market",
     "rankings.market.us": "U.S.",
     "rankings.market.tw": "Taiwan",
@@ -325,6 +327,7 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "rankings.tab.netSell": "Net sell",
     "rankings.column.rank": "Rank",
     "rankings.column.symbol": "Symbol",
+    "rankings.column.board": "Board",
     "rankings.column.name": "Name",
     "rankings.column.lastPrice": "Last price",
     "rankings.column.changePercent": "Change %",
@@ -352,6 +355,8 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "rankings.twBoard.groupLabel": "Board",
     "rankings.twBoard.twse": "Listed (TWSE)",
     "rankings.twBoard.tpex": "TPEx (OTC)",
+    "rankings.twBoard.hint":
+      "Quote and institutional rankings are filtered to the selected board; switch to TPEx to see OTC-listed names.",
     "rankings.notice.quoteUnofficial": "Free unofficial quote source; data may be delayed or unavailable.",
     "rankings.notice.twDaily": "Taiwan institutional net buy/sell rankings use daily data, not intraday real-time data.",
     "rankings.notice.twInstitutionalUnavailable":
@@ -577,7 +582,7 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "chart.interactHint": "將游標移到圖表上或點選，可檢視該時間點的開高低收與成交量。",
     "rankings.title": "市場排行",
     "rankings.description":
-      "免費排行頁。台股與美股皆提供以報價資料為主的排行（目前僅涵蓋有限追蹤清單），並非全市場排行；台股另保留三大法人日買超／賣超。",
+      "免費排行頁。台股與美股皆提供以報價資料為主的排行（目前僅涵蓋有限追蹤清單），並非全市場排行；台股另保留三大法人日買超／賣超。台股可依「上市／上櫃」切換交易別，排行範圍會隨之變更。",
     "rankings.market": "市場",
     "rankings.market.us": "美股",
     "rankings.market.tw": "台股",
@@ -592,6 +597,7 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "rankings.tab.netSell": "賣超",
     "rankings.column.rank": "排名",
     "rankings.column.symbol": "代碼",
+    "rankings.column.board": "板別",
     "rankings.column.name": "名稱",
     "rankings.column.lastPrice": "最新價",
     "rankings.column.changePercent": "漲跌幅",
@@ -615,6 +621,7 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "rankings.twBoard.groupLabel": "交易別",
     "rankings.twBoard.twse": "上市",
     "rankings.twBoard.tpex": "上櫃",
+    "rankings.twBoard.hint": "報價與法人排行皆依所選交易別篩選；要看上櫃請點「上櫃」。",
     "rankings.notice.quoteUnofficial": "免費非官方報價來源可能延遲，或暫時無法提供資料。",
     "rankings.notice.twDaily": "台股三大法人買賣超為日資料，非盤中即時資料。",
     "rankings.notice.twInstitutionalUnavailable": "目前無法從免費公開來源取得台股法人日資料。",
