@@ -94,7 +94,10 @@ type TranslationKey =
   | "rankings.column.netBuySell"
   | "rankings.column.dataTime"
   | "rankings.column.source"
-  | "rankings.notice.usScope"
+  | "rankings.notice.usScopeYahoo"
+  | "rankings.notice.usScopeSp500"
+  | "rankings.notice.usScopeQuote"
+  | "rankings.notice.usScopePending"
   | "rankings.notice.twScope"
   | "rankings.notice.twQuoteScope"
   | "rankings.notice.quoteUnofficial"
@@ -324,8 +327,14 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "rankings.column.netBuySell": "Net buy / sell",
     "rankings.column.dataTime": "Data time",
     "rankings.column.source": "Source",
-    "rankings.notice.usScope":
+    "rankings.notice.usScopeYahoo":
+      "U.S. quote rankings for this tab come pre-sorted from Yahoo Finance's predefined screeners and cover the broader U.S. market.",
+    "rankings.notice.usScopeSp500":
       "U.S. gainers and losers are the largest regular-session % moves among S&P 500 constituents (committed index snapshot) using batched Yahoo Finance quote fields. U.S. volume still prefers Yahoo's broader most-actives screener when available.",
+    "rankings.notice.usScopeQuote":
+      "U.S. rankings for this tab use the app's tracked-symbol list and live quotes (used when Yahoo's screener or S&P 500 batch quotes are unavailable for this view).",
+    "rankings.notice.usScopePending":
+      "U.S. scope for this tab appears after its data finishes loading.",
     "rankings.notice.twScope":
       "Taiwan rankings here use TWSE institutional daily data.",
     "rankings.notice.twQuoteScope":
@@ -577,8 +586,12 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "rankings.column.netBuySell": "買賣超",
     "rankings.column.dataTime": "資料時間",
     "rankings.column.source": "來源",
-    "rankings.notice.usScope":
+    "rankings.notice.usScopeYahoo": "美股此分頁採用 Yahoo Finance 預先排序的選股結果，涵蓋更廣的美股市場。",
+    "rankings.notice.usScopeSp500":
       "美股漲跌幅排行以標普五百成分股（內建名單快照）為範圍，使用 Yahoo Finance 批次報價欄位排序；美股成交量仍優先採用 Yahoo 全市場熱門成交選股（若可用）。",
+    "rankings.notice.usScopeQuote":
+      "美股此分頁目前使用應用程式追蹤清單與即時報價排序（當 Yahoo 選股或標普五百批次報價暫不可用時會走此路徑）。",
+    "rankings.notice.usScopePending": "美股此分頁的資料範圍說明會在資料載入完成後顯示。",
     "rankings.notice.twScope": "此處的台股排行使用 TWSE 法人日資料。",
     "rankings.notice.twQuoteScope":
       "台股報價排行採用 Yahoo Finance 預先排序的台股排行頁，上市（TWSE）與上櫃（TPEx）合併為同一清單。",

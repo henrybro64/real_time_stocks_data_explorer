@@ -161,6 +161,7 @@ class RankingsService:
                     market_open=market_open,
                     now=now,
                     source_type=RankingSourceType.free_unofficial,
+                    us_rankings_scope="yahoo" if market == "US" else None,
                 )
 
         candidates: list[_RankingCandidate] = []
@@ -236,6 +237,7 @@ class RankingsService:
             dataFreshnessLabel=freshness,
             warningMessage=_QUOTE_WARNING,
             unsupportedReason=None,
+            usRankingsScope="quote" if market == "US" else None,
         )
 
     def _get_quote_rankings_snapshot(
@@ -314,6 +316,7 @@ class RankingsService:
             now=now,
             source_type=RankingSourceType.free_unofficial,
             rankings_source_text=_SP500_CHANGE_SOURCE,
+            us_rankings_scope="sp500",
             change_freshness_open=(
                 "Market open; S&P 500 movers ranked by batched Yahoo quote change % (regular session fields)."
             ),
@@ -332,6 +335,7 @@ class RankingsService:
         now: datetime,
         source_type: RankingSourceType,
         rankings_source_text: str | None = None,
+        us_rankings_scope: str | None = None,
         change_freshness_open: str | None = None,
         change_freshness_closed: str | None = None,
     ) -> RankingResponse:
@@ -387,6 +391,7 @@ class RankingsService:
             dataFreshnessLabel=freshness,
             warningMessage=_QUOTE_WARNING,
             unsupportedReason=None,
+            usRankingsScope=us_rankings_scope if market == "US" else None,
         )
 
     def _build_tw_institutional_ranking(
