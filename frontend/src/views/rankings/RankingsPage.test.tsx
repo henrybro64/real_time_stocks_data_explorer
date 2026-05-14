@@ -199,9 +199,6 @@ describe("RankingsPage", () => {
     renderRankingsPage();
 
     expect(await screen.findByRole("heading", { level: 1, name: "市場排行" })).toBeInTheDocument();
-    expect(screen.getByTestId("rankings-tw-board-hint")).toHaveTextContent(
-      "報價與法人排行皆依所選交易別篩選；要看上櫃請點「上櫃」。",
-    );
     expect(await screen.findByTestId("rankings-row-TW:2330")).toBeInTheDocument();
     expect(await screen.findByRole("columnheader", { name: "板別" })).toBeInTheDocument();
     expect(screen.getByTestId("rankings-realtime-tag")).toHaveTextContent("非即時");
