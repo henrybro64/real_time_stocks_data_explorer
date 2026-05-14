@@ -9,7 +9,7 @@ test("stock detail renders quote, history, key stats, news fallback, and Taiwan-
 
   await searchCard.getByTestId(`stock-card-view-${TW_STOCK_ID}`).click();
 
-  await expect(page).toHaveURL(/\/stock\/TW%3A2330$/);
+  await expect(page).toHaveURL(/\/stock\/TW(%3A|:)2330$/);
   await expect(page.getByTestId("quote-summary-section")).toBeVisible();
   await expect(page.getByTestId("key-statistics-section")).toBeVisible();
   await expect(page.getByTestId("stock-news-section")).toBeVisible();

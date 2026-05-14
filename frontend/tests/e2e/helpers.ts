@@ -77,6 +77,6 @@ export async function ensurePortfolioDoesNotContain(page: Page, stockId = TW_STO
   if ((await row.count()) === 0) {
     return;
   }
-  await row.getByRole("button", { name: /remove/i }).click();
+  await row.getByTestId(`portfolio-remove-${stockId}`).click();
   await expect(row).toHaveCount(0);
 }
