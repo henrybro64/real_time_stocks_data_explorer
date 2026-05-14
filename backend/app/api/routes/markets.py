@@ -1,12 +1,13 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import APIRouter
-from zoneinfo import ZoneInfo
 
 from app.services.market_clock import (
     MARKET_TIMEZONES,
     is_market_open,
+    is_within_hour_before_market_open,
     market_label,
+    market_local_time,
 )
 from app.services.fx_service import get_usd_twd_fx_snapshot
 from app.services.market_index_service import market_index_service
@@ -17,16 +18,17 @@ router = APIRouter(prefix="/markets", tags=["markets"])
 
 @router.get("")
 def get_markets() -> list[dict[str, str | bool]]:
+    now = datetime.now(timezone.utc)
     payload: list[dict[str, str | bool]] = []
-    for market, timezone in MARKET_TIMEZONES.items():
-        current = datetime.now(ZoneInfo(str(timezone)))
+    for market, tz in MARKET_TIMEZONES.items():
         payload.append(
             {
                 "market": market,
                 "label": market_label(market),
-                "timezone": str(timezone),
-                "isOpen": is_market_open(market, current),
-                "localTime": current.isoformat(),
+                "timezone": str(tz),
+                "isOpen": is_market_open(market, now),
+                "localTime": market_local_time(market, now).isoformat(),
+                "withinHourBeforeOpen": is_within_hour_before_market_open(market, now),
             }
         )
     return payload

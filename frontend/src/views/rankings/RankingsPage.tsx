@@ -18,13 +18,13 @@ import {
   Tile,
 } from "@carbon/react";
 import { useQuery } from "@tanstack/react-query";
-import type { RankingResponse, RankingType } from "@shared/api";
-import { useState } from "react";
+import type { MarketStatus, RankingResponse, RankingType } from "@shared/api";
+import { useEffect, useMemo, useState } from "react";
 
 import { getDisplayStockName, useLanguage } from "../../app/i18n";
 import { QuoteFreshnessTag } from "../../components/state/QuoteFreshnessTag";
 import { RequestStateNotice, errorToNoticeKind } from "../../components/state/RequestStateNotice";
-import { fetchRankings } from "../../services/api/client";
+import { fetchMarkets, fetchRankings } from "../../services/api/client";
 import { formatCurrency, formatLastUpdated, formatPercent } from "../../services/format/quote";
 import {
   getLocalizedRankingsFreshnessLabel,
@@ -32,6 +32,7 @@ import {
   getLocalizedRankingsUnsupportedReason,
   getLocalizedRankingsWarningMessage,
 } from "./rankingsCopy";
+import { defaultRankingsMarketFromStatuses } from "./defaultRankingsMarket";
 
 const DEFAULT_LIMIT = 50;
 const DEFAULT_MARKET = "TW" as const;
@@ -189,10 +190,29 @@ function RankingRealtimeTag({ response }: { response: RankingResponse }) {
 
 export function RankingsPage() {
   const { language, t, formatNumber } = useLanguage();
-  const [market, setMarket] = useState<RankingMarket>(DEFAULT_MARKET);
+  const [marketOverride, setMarketOverride] = useState<RankingMarket | null>(null);
+  const marketsQuery = useQuery<MarketStatus[]>({
+    queryKey: ["markets"],
+    queryFn: fetchMarkets,
+    staleTime: 60_000,
+  });
+  const implicitMarket = useMemo((): RankingMarket => {
+    const list = marketsQuery.data;
+    if (!list?.length) return DEFAULT_MARKET;
+    return defaultRankingsMarketFromStatuses(list);
+  }, [marketsQuery.data]);
+  const market = marketOverride ?? implicitMarket;
   const [twBoard, setTwBoard] = useState<TwBoardSegment>("TWSE");
   const [rankingType, setRankingType] = useState<RankingType>(defaultRankingTypeForMarket(DEFAULT_MARKET));
   const rankingTabs = tabsForMarket(market);
+
+  useEffect(() => {
+    setRankingType((prev) => {
+      const allowed = new Set(tabsForMarket(market).map((tab) => tab.key));
+      if (allowed.has(prev)) return prev;
+      return defaultRankingTypeForMarket(market);
+    });
+  }, [market]);
 
   const rankingsQuery = useQuery<RankingResponse>({
     queryKey: ["rankings", market, twBoard, rankingType, DEFAULT_LIMIT],
@@ -227,7 +247,7 @@ export function RankingsPage() {
           : "rankings.notice.twQuoteScopeTwse";
 
   function handleMarketChange(nextMarket: RankingMarket) {
-    setMarket(nextMarket);
+    setMarketOverride(nextMarket);
     setRankingType(defaultRankingTypeForMarket(nextMarket));
     if (nextMarket === "TW") {
       setTwBoard("TWSE");

@@ -9,6 +9,8 @@ export type MarketStatus = {
   timezone: string;
   isOpen: boolean;
   localTime: string;
+  /** True on a trading day in the hour before regular session open (local), while the venue is still closed. */
+  withinHourBeforeOpen: boolean;
 };
 
 export type MarketIndex = {

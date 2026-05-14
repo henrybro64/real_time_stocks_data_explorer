@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { RankingResponse } from "@shared/api";
+import type { MarketStatus, RankingResponse } from "@shared/api";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
@@ -7,7 +7,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { LanguageProvider } from "../../app/i18n";
 import { ApiError } from "../../services/api/client";
-import { fetchRankings } from "../../services/api/client";
+import { fetchMarkets, fetchRankings } from "../../services/api/client";
 import { RankingsPage } from "./RankingsPage";
 
 vi.mock("../../services/api/client", async () => {
@@ -15,12 +15,39 @@ vi.mock("../../services/api/client", async () => {
   return {
     ...actual,
     fetchRankings: vi.fn(),
+    fetchMarkets: vi.fn(),
   };
 });
 
 vi.mock("next/link", () => ({
   default: ({ children, href }: { children: ReactNode; href: string }) => <a href={href}>{children}</a>,
 }));
+
+function buildMarketStatus(overrides: Partial<MarketStatus> & Pick<MarketStatus, "market">): MarketStatus {
+  const base: MarketStatus =
+    overrides.market === "US"
+      ? {
+          market: "US",
+          label: "U.S. Market",
+          timezone: "America/New_York",
+          isOpen: false,
+          localTime: "2026-05-11T09:00:00-04:00",
+          withinHourBeforeOpen: false,
+        }
+      : {
+          market: "TW",
+          label: "台灣市場",
+          timezone: "Asia/Taipei",
+          isOpen: false,
+          localTime: "2026-05-11T09:00:00+08:00",
+          withinHourBeforeOpen: false,
+        };
+  return { ...base, ...overrides };
+}
+
+function defaultMarketsPayload(): MarketStatus[] {
+  return [buildMarketStatus({ market: "TW" }), buildMarketStatus({ market: "US" })];
+}
 
 function buildResponse(overrides: Partial<RankingResponse> = {}): RankingResponse {
   return {
@@ -164,6 +191,7 @@ function renderRankingsPage(language: "en" | "zh-TW" = "zh-TW") {
 describe("RankingsPage", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(fetchMarkets).mockResolvedValue(defaultMarketsPayload());
     vi.mocked(fetchRankings).mockResolvedValue(buildResponse());
   });
 
@@ -179,6 +207,21 @@ describe("RankingsPage", () => {
     expect(screen.getByTestId("rankings-warning-message")).toHaveTextContent(
       "台股三大法人買賣超為日資料，非盤中即時資料。",
     );
+  });
+
+  it("defaults market to US when only U.S. is within hour before open", async () => {
+    vi.mocked(fetchMarkets).mockResolvedValue([
+      buildMarketStatus({ market: "TW", withinHourBeforeOpen: false }),
+      buildMarketStatus({ market: "US", withinHourBeforeOpen: true }),
+    ]);
+    vi.mocked(fetchRankings).mockResolvedValueOnce(buildResponse()).mockResolvedValue(buildUsResponse());
+
+    renderRankingsPage();
+
+    await waitFor(() => {
+      expect(fetchRankings).toHaveBeenCalledWith("US", "volume", 50, undefined);
+    });
+    expect(await screen.findByTestId("rankings-row-US:MSFT")).toBeInTheDocument();
   });
 
   it("switches markets and ranking tabs", async () => {
