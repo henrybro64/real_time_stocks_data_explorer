@@ -4,57 +4,42 @@ import { expect, Page } from "@playwright/test";
 export const TW_STOCK_ID = "TW:2330";
 export const TW_STOCK_SYMBOL = "2330";
 
-function isSearchResponse(urlString: string, query: string) {
-  const url = new URL(urlString);
-  return url.pathname.endsWith("/api/search") && url.searchParams.get("q") === query;
-}
+/** Home search uses React `useDeferredValue`; portfolio search is immediate. Allow slow CI. */
+const SEARCH_RESULT_TIMEOUT_MS = process.env.CI ? 75_000 : 25_000;
 
-async function waitForSearchResult(
-  page: Page,
-  inputSelector: string,
-  sectionTestId: string,
-  query: string,
-) {
+async function waitForSearchResult(page: Page, sectionTestId: string, query: string) {
   const searchSection = page.getByTestId(sectionTestId);
-  const responsePromise = page.waitForResponse(
-    (response) => response.ok() && isSearchResponse(response.url(), query),
-    { timeout: 10_000 },
-  );
-  await page.locator(inputSelector).fill(query);
-  const response = await responsePromise;
-  const payload = (await response.json().catch(() => null)) as
-    | Array<{ id?: unknown; symbol?: unknown }>
-    | null;
-  const resultIds =
-    payload?.flatMap((item) => (typeof item.id === "string" ? [item.id] : [])) ?? [];
-  if (!resultIds.includes(TW_STOCK_ID)) {
-    throw new Error(
-      [
-        `Expected ${TW_STOCK_ID} in search results for query "${query}", but it was missing.`,
-        `Returned ids: ${resultIds.length > 0 ? resultIds.join(", ") : "(none)"}`,
-      ].join(" "),
-    );
-  }
-  await expect(searchSection.getByTestId(`stock-card-${TW_STOCK_ID}`)).toBeVisible({ timeout: 10_000 });
-  return searchSection.getByTestId(`stock-card-${TW_STOCK_ID}`);
+  const card = searchSection.getByTestId(`stock-card-${TW_STOCK_ID}`);
+
+  await expect(searchSection).toBeVisible({ timeout: 30_000 });
+  await searchSection.scrollIntoViewIfNeeded();
+  const input = searchSection.getByRole("searchbox");
+  await expect(input).toBeVisible({ timeout: 15_000 });
+  await input.click();
+  await input.fill(query);
+  await expect(card).toBeVisible({ timeout: SEARCH_RESULT_TIMEOUT_MS });
+
+  return card;
 }
 
 
 export async function openHome(page: Page) {
   await page.goto("/");
   await expect(page.locator("#main-content")).toBeVisible();
+  await page.waitForLoadState("load");
 }
 
 
 export async function searchFromHome(page: Page, query = TW_STOCK_SYMBOL) {
-  return waitForSearchResult(page, "#stock-search", "stock-search-section", query);
+  return waitForSearchResult(page, "stock-search-section", query);
 }
 
 
 export async function searchFromPortfolio(page: Page, query = TW_STOCK_SYMBOL) {
   await page.goto("/portfolio");
   await expect(page.locator("#main-content")).toBeVisible();
-  return waitForSearchResult(page, "#portfolio-stock-search", "portfolio-search-section", query);
+  await page.waitForLoadState("load");
+  return waitForSearchResult(page, "portfolio-search-section", query);
 }
 
 
@@ -77,6 +62,6 @@ export async function ensurePortfolioDoesNotContain(page: Page, stockId = TW_STO
   if ((await row.count()) === 0) {
     return;
   }
-  await row.getByRole("button", { name: /remove/i }).click();
+  await row.getByTestId(`portfolio-remove-${stockId}`).click();
   await expect(row).toHaveCount(0);
 }

@@ -1,8 +1,11 @@
 from enum import Enum
+from typing import Literal
 
 from pydantic import BaseModel
 
 from app.schemas.stock import StockResponse
+
+TwBoard = Literal["TWSE", "TPEx"]
 
 
 class RankingType(str, Enum):
@@ -36,6 +39,8 @@ class RankingItem(BaseModel):
 class RankingResponse(BaseModel):
     market: str
     rankingType: RankingType
+    # When ``market`` is TW, which listing segment this response is scoped to.
+    twBoard: TwBoard | None = None
     items: list[RankingItem]
     timestamp: str
     source: str

@@ -13,6 +13,7 @@ from app.schemas.rankings import (
     RankingResponse,
     RankingSourceType,
     RankingType,
+    TwBoard,
 )
 from app.schemas.stock import StockResponse
 from app.services.http_client import HttpFetchError, fetch_json
@@ -26,28 +27,13 @@ from app.services.rankings_volume_baseline_cache import (
     VolumeBaselineStore,
     default_volume_baseline_store,
 )
-from app.services.providers.us_provider import (
-    synthetic_us_stock,
-    yahoo_v7_quotes_batch,
-)
+from app.services.providers.us_provider import yahoo_v7_quotes_batch
 from app.services.sp500_constituents import load_sp500_symbols
 
 
 RankingMarket = Literal["US", "TW"]
 
-US_RANKING_STOCK_IDS = [
-    "US:AAPL",
-    "US:MSFT",
-    "US:NVDA",
-    "US:MU",
-    "US:TSLA",
-    "US:AMD",
-    "US:META",
-    "US:AMZN",
-    "US:GOOGL",
-]
-
-TW_RANKING_STOCK_IDS = [
+TW_TWSE_RANKING_STOCK_IDS = [
     "TW:0050",
     "TW:2330",
     "TW:2317",
@@ -57,10 +43,21 @@ TW_RANKING_STOCK_IDS = [
     "TW:2882",
 ]
 
-MARKET_UNIVERSES: dict[RankingMarket, list[str]] = {
-    "US": US_RANKING_STOCK_IDS,
-    "TW": TW_RANKING_STOCK_IDS,
-}
+TW_TPEX_RANKING_STOCK_IDS = [
+    "TW:6488",
+    "TW:8299",
+    "TW:8271",
+    "TW:6215",
+    "TW:6643",
+    "TW:6562",
+    "TW:6451",
+    "TW:6462",
+]
+
+
+def _tw_quote_universe_ids(board: TwBoard) -> list[str]:
+    return TW_TPEX_RANKING_STOCK_IDS if board == "TPEx" else TW_TWSE_RANKING_STOCK_IDS
+
 
 _UNSUPPORTED_REASONS: dict[RankingType, str] = {
     RankingType.net_buy: "US institutional net-buy data is not available from free-only sources in this app.",
@@ -118,14 +115,23 @@ class RankingsService:
         ranking_type: RankingType | str,
         limit: int,
         now: datetime | None = None,
+        tw_board: TwBoard | None = None,
     ) -> RankingResponse:
         current = now or datetime.now(timezone.utc)
         normalized_type = RankingType(ranking_type)
+        effective_tw_board: TwBoard | None = tw_board if market == "TW" else None
+        if market == "TW" and effective_tw_board is None:
+            effective_tw_board = "TWSE"
         if normalized_type in {RankingType.net_buy, RankingType.net_sell}:
             if market == "US":
                 return self._unsupported_response(market, normalized_type, current)
-            return self._build_tw_institutional_ranking(normalized_type, limit, current)
-        return self._build_quote_ranking(market, normalized_type, limit, current)
+            assert effective_tw_board is not None
+            return self._build_tw_institutional_ranking(
+                normalized_type, limit, current, effective_tw_board
+            )
+        return self._build_quote_ranking(
+            market, normalized_type, limit, current, effective_tw_board
+        )
 
     def _build_quote_ranking(
         self,
@@ -133,6 +139,7 @@ class RankingsService:
         ranking_type: RankingType,
         limit: int,
         now: datetime,
+        tw_board: TwBoard | None,
     ) -> RankingResponse:
         market_open = is_market_open(market, now)
 
@@ -152,6 +159,7 @@ class RankingsService:
                 ranking_type=ranking_type,
                 limit=limit,
                 now=now,
+                tw_board=tw_board if market == "TW" else None,
             )
             if external_envelopes:
                 return self._build_pre_ranked_response(
@@ -162,12 +170,13 @@ class RankingsService:
                     now=now,
                     source_type=RankingSourceType.free_unofficial,
                     us_rankings_scope="yahoo" if market == "US" else None,
+                    tw_board=tw_board if market == "TW" else None,
                 )
 
         candidates: list[_RankingCandidate] = []
         baseline_missing = False
 
-        for stock, quote in self._get_quote_rankings_snapshot(market):
+        for stock, quote in self._get_quote_rankings_snapshot(market, tw_board):
             volume_delta_percent: float | None = None
             if ranking_type in {RankingType.volume_up, RankingType.volume_down}:
                 baseline_volume = self._volume_baselines.get(stock.id)
@@ -229,6 +238,7 @@ class RankingsService:
         return RankingResponse(
             market=market,
             rankingType=ranking_type,
+            twBoard=tw_board if market == "TW" else None,
             items=items,
             timestamp=now.isoformat(),
             source=_QUOTE_SOURCE,
@@ -243,13 +253,33 @@ class RankingsService:
     def _get_quote_rankings_snapshot(
         self,
         market: RankingMarket,
+        tw_board: TwBoard | None,
     ) -> list[tuple[StockRecord, QuoteRecord]]:
-        stock_ids = MARKET_UNIVERSES[market]
         if market == "US":
-            get_live_quotes = getattr(self.quote_source, "get_live_quotes", None)
-            if callable(get_live_quotes):
-                return get_live_quotes(stock_ids)
+            return self._us_sp500_quote_snapshot_envelopes()
+        assert tw_board is not None
+        stock_ids = _tw_quote_universe_ids(tw_board)
         return self.quote_source.get_quotes(stock_ids)
+
+    def _us_sp500_quote_snapshot_envelopes(self) -> list[tuple[StockRecord, QuoteRecord]]:
+        """US quote-path rankings: S&P 500 constituent snapshot; omit symbols with no quote."""
+        symbols = self._sp500_symbol_loader()
+        if not symbols:
+            return []
+        stocks: list[StockRecord] = []
+        for sym in symbols:
+            sid = f"US:{sym}"
+            stock = self.quote_source.get_stock(sid)
+            if stock is None:
+                continue
+            stocks.append(stock)
+
+        quotes_by_id = self._sp500_quote_batch(stocks)
+        if quotes_by_id:
+            return [(s, quotes_by_id[s.id]) for s in stocks if s.id in quotes_by_id]
+        # v7 batch empty: per-symbol live path (bypasses quote Redis cache).
+        ids = [s.id for s in stocks]
+        return self.quote_source.get_live_quotes(ids)
 
     def _try_build_us_sp500_price_movers(
         self,
@@ -265,8 +295,6 @@ class RankingsService:
         for sym in symbols:
             sid = f"US:{sym}"
             stock = self.quote_source.get_stock(sid)
-            if stock is None:
-                stock = synthetic_us_stock(sym)
             if stock is None:
                 continue
             stocks.append(stock)
@@ -338,6 +366,7 @@ class RankingsService:
         us_rankings_scope: str | None = None,
         change_freshness_open: str | None = None,
         change_freshness_closed: str | None = None,
+        tw_board: TwBoard | None = None,
     ) -> RankingResponse:
         """Render rankings that arrive already ordered (Yahoo screeners or S&P 500 movers)."""
         # We still want to keep the volume baseline cache warm even when we
@@ -383,6 +412,7 @@ class RankingsService:
         return RankingResponse(
             market=market,
             rankingType=ranking_type,
+            twBoard=tw_board if market == "TW" else None,
             items=items,
             timestamp=now.isoformat(),
             source=rankings_source_text or _PRE_RANKED_SOURCE,
@@ -399,6 +429,7 @@ class RankingsService:
         ranking_type: RankingType,
         limit: int,
         now: datetime,
+        tw_board: TwBoard,
     ) -> RankingResponse:
         market_open = is_market_open("TW", now)
         institutional_snapshot = self._fetch_tw_institutional_snapshot(now)
@@ -406,6 +437,7 @@ class RankingsService:
             return RankingResponse(
                 market="TW",
                 rankingType=ranking_type,
+                twBoard=tw_board,
                 items=[],
                 timestamp=now.isoformat(),
                 source="TWSE T86 daily institutional data",
@@ -425,7 +457,7 @@ class RankingsService:
         ).isoformat()
         for stock_id, net_buy_sell_shares in institutional_rows.items():
             stock = self.quote_source.get_stock(stock_id)
-            if stock is None:
+            if stock is None or stock.exchange != tw_board:
                 continue
             candidates.append(
                 _RankingCandidate(
@@ -470,6 +502,7 @@ class RankingsService:
         return RankingResponse(
             market="TW",
             rankingType=ranking_type,
+            twBoard=tw_board,
             items=items,
             timestamp=now.isoformat(),
             source="TWSE T86 daily institutional data",

@@ -17,6 +17,7 @@ def _sample_response() -> RankingResponse:
     return RankingResponse(
         market="TW",
         rankingType=RankingType.volume,
+        twBoard="TWSE",
         items=[
             RankingItem(
                 rank=1,
@@ -51,7 +52,11 @@ def _sample_response() -> RankingResponse:
 
 
 def test_rankings_endpoint_returns_response_shape(monkeypatch, client) -> None:
-    monkeypatch.setattr(rankings_route.rankings_service, "get_rankings", lambda market, ranking_type, limit: _sample_response())
+    monkeypatch.setattr(
+        rankings_route.rankings_service,
+        "get_rankings",
+        lambda market, ranking_type, limit, tw_board=None: _sample_response(),
+    )
 
     response = client.get("/api/rankings", params={"market": "TW", "type": "volume", "limit": 1})
 
@@ -59,6 +64,7 @@ def test_rankings_endpoint_returns_response_shape(monkeypatch, client) -> None:
     assert response.json() == {
         "market": "TW",
         "rankingType": "volume",
+        "twBoard": "TWSE",
         "items": [
             {
                 "rank": 1,
@@ -95,10 +101,11 @@ def test_rankings_endpoint_returns_response_shape(monkeypatch, client) -> None:
 def test_rankings_endpoint_passes_limit(monkeypatch, client) -> None:
     captured: dict[str, object] = {}
 
-    def fake_get_rankings(market, ranking_type, limit):
+    def fake_get_rankings(market, ranking_type, limit, tw_board=None):
         captured["market"] = market
         captured["ranking_type"] = ranking_type
         captured["limit"] = limit
+        captured["tw_board"] = tw_board
         return _sample_response()
 
     monkeypatch.setattr(rankings_route.rankings_service, "get_rankings", fake_get_rankings)
@@ -110,6 +117,7 @@ def test_rankings_endpoint_passes_limit(monkeypatch, client) -> None:
         "market": "TW",
         "ranking_type": RankingType.volume,
         "limit": 7,
+        "tw_board": None,
     }
 
 

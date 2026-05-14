@@ -87,6 +87,27 @@ def is_market_open(market: str, now: datetime | None = None) -> bool:
     return start <= current_time <= end
 
 
+def is_within_hour_before_market_open(
+    market: str, now: datetime | None = None
+) -> bool:
+    """Trading day, venue closed, local time in [session_start - 1h, session_start)."""
+    if is_market_open(market, now):
+        return False
+    current = market_local_time(market, now)
+    if not is_trading_day(market, current):
+        return False
+    start, _end = MARKET_WINDOWS[market]
+    session_start = current.replace(
+        hour=start.hour,
+        minute=start.minute,
+        second=0,
+        microsecond=0,
+    )
+    window_start = session_start - timedelta(hours=1)
+    current_minute = current.replace(second=0, microsecond=0)
+    return window_start <= current_minute < session_start
+
+
 def current_snapshot_bucket(market: str, now: datetime | None = None) -> datetime | None:
     current = market_local_time(market, now)
     if not is_market_open(market, current):

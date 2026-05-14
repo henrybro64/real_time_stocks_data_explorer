@@ -9,6 +9,8 @@ export type MarketStatus = {
   timezone: string;
   isOpen: boolean;
   localTime: string;
+  /** True on a trading day in the hour before regular session open (local), while the venue is still closed. */
+  withinHourBeforeOpen: boolean;
 };
 
 export type MarketIndex = {
@@ -74,6 +76,7 @@ export type RankingItem = {
 export type RankingResponse = {
   market: MarketCode;
   rankingType: RankingType;
+  twBoard?: "TWSE" | "TPEx" | null;
   items: RankingItem[];
   timestamp: string;
   source: string;
@@ -104,7 +107,7 @@ export type PortfolioPosition = {
   currency: string;
   notes: string | null;
   stock: Stock;
-  quote: Quote;
+  quote: Quote | null;
   marketValue: number;
   unrealizedPl: number;
   unrealizedPlPercent: number;
@@ -130,9 +133,9 @@ export type PortfolioSummaryPosition = {
   symbol: string;
   currency: string;
   quantity: number;
-  lastPrice: number;
+  lastPrice: number | null;
   marketValue: number;
-  timestamp: string;
+  timestamp: string | null;
 };
 
 export type PortfolioSummary = {

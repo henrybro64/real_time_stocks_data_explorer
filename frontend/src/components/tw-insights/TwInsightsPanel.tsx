@@ -47,7 +47,11 @@ export function TwInsightsPanel({ isLoading, insights }: Props) {
   }
 
   if (!insights) {
-    return null;
+    return (
+      <Tile className="app-section-tile" data-testid="tw-insights-section">
+        <p className="app-supporting-copy">{t("twInsights.unavailable")}</p>
+      </Tile>
+    );
   }
 
   const revenuePoints = insights.revenue.points.slice(-12);

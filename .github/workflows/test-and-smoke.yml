@@ -71,7 +71,6 @@ jobs:
     env:
       CI: true
       DATABASE_URL: postgresql+psycopg://postgres:postgres@127.0.0.1:5432/stocks_test
-      TW_USE_MOCK_QUOTES: true
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -122,6 +121,13 @@ jobs:
         with:
           name: frontend-e2e-allure-results
           path: allure-results/frontend-e2e
+          if-no-files-found: warn
+      - name: Upload Playwright HTML report
+        if: always() && steps.frontend_e2e_tests.outcome == 'failure'
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-report
+          path: frontend/playwright-report
           if-no-files-found: warn
       - name: Fail job when any frontend suite fails
         if: always()

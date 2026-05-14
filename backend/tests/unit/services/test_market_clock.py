@@ -1,6 +1,10 @@
 from datetime import date, datetime
 
-from app.services.market_clock import current_snapshot_bucket, is_market_open
+from app.services.market_clock import (
+    current_snapshot_bucket,
+    is_market_open,
+    is_within_hour_before_market_open,
+)
 
 
 def test_us_market_is_open_at_exact_open_boundary() -> None:
@@ -53,3 +57,33 @@ def test_snapshot_bucket_uses_last_open_hour_at_close_boundary() -> None:
 
     assert bucket is not None
     assert bucket.isoformat() == "2026-03-30T19:00:00+00:00"
+
+
+def test_us_within_hour_before_open_on_trading_day() -> None:
+    now = datetime.fromisoformat("2026-03-30T12:45:00+00:00")
+
+    assert is_within_hour_before_market_open("US", now) is True
+
+
+def test_us_not_within_hour_before_open_before_window() -> None:
+    now = datetime.fromisoformat("2026-03-30T12:20:00+00:00")
+
+    assert is_within_hour_before_market_open("US", now) is False
+
+
+def test_us_not_within_hour_before_open_when_session_has_started() -> None:
+    now = datetime.fromisoformat("2026-03-30T13:35:00+00:00")
+
+    assert is_within_hour_before_market_open("US", now) is False
+
+
+def test_tw_within_hour_before_open_on_trading_day() -> None:
+    now = datetime.fromisoformat("2026-04-01T00:30:00+00:00")
+
+    assert is_within_hour_before_market_open("TW", now) is True
+
+
+def test_tw_not_within_hour_before_open_on_weekend() -> None:
+    now = datetime.fromisoformat("2026-04-04T00:30:00+00:00")
+
+    assert is_within_hour_before_market_open("TW", now) is False

@@ -230,8 +230,11 @@ class PortfolioHistoryService:
             stock = quote_service.get_stock(position.stock_id)
             if stock is None:
                 continue
-            quote = self._resolve_quote(position, stock)
-            market_value = round(position.quantity * quote.last_price, 2)
+            quote = self._resolve_quote(position)
+            if quote is not None:
+                market_value = round(position.quantity * quote.last_price, 2)
+            else:
+                market_value = round(position.quantity * float(position.average_cost), 2)
             holdings_entries.append((stock.currency, market_value))
 
         holdings_totals = portfolio_service.summarize_currency_buckets(
@@ -253,18 +256,11 @@ class PortfolioHistoryService:
             combined_assets_twd=combined_totals["combinedTwd"],
         )
 
-    def _resolve_quote(
-        self,
-        position: PortfolioPosition,
-        stock: StockRecord,
-    ) -> QuoteRecord:
+    def _resolve_quote(self, position: PortfolioPosition) -> QuoteRecord | None:
         try:
-            quote = quote_service.get_quote(position.stock_id)
+            return quote_service.get_quote(position.stock_id)
         except Exception:
-            quote = None
-        if quote is not None:
-            return quote
-        return portfolio_service.synthetic_quote_for_position(stock, position)
+            return None
 
 
 def _range_delta(range_name: str) -> timedelta:

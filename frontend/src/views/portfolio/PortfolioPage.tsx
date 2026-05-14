@@ -15,7 +15,7 @@ import {
   TextInput,
   Tile,
 } from "@carbon/react";
-import { useDeferredValue, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { TimeRange } from "@shared/quote";
 import type { Stock } from "@shared/stock";
@@ -41,13 +41,13 @@ export function PortfolioPage() {
   const [draftQuantities, setDraftQuantities] = useState<Record<number, string>>({});
   const [savingPositionIds, setSavingPositionIds] = useState<Record<number, boolean>>({});
   const [savedPositionIds, setSavedPositionIds] = useState<Record<number, boolean>>({});
-  const deferredQuery = useDeferredValue(query);
   const portfolio = usePortfolioPositions();
 
+  const trimmedSearch = query.trim();
   const searchQuery = useQuery<Stock[]>({
-    queryKey: ["portfolio-search", deferredQuery],
-    queryFn: () => searchStocks(deferredQuery),
-    enabled: deferredQuery.trim().length > 0,
+    queryKey: ["portfolio-search", trimmedSearch],
+    queryFn: () => searchStocks(trimmedSearch),
+    enabled: trimmedSearch.length > 0,
   });
   const summaryQuery = useQuery({
     queryKey: ["portfolio-summary"],
@@ -401,22 +401,38 @@ export function PortfolioPage() {
                             </div>
                           </div>
                         </TableCell>
-                        <TableCell>{renderCurrencyValue(position.quote.lastPrice, position.stock.currency)}</TableCell>
+                        <TableCell>
+                          {position.quote != null
+                            ? renderCurrencyValue(position.quote.lastPrice, position.stock.currency)
+                            : "—"}
+                        </TableCell>
                         <TableCell>{renderCurrencyValue(position.marketValue, position.stock.currency)}</TableCell>
                         <TableCell>
-                          <span className={position.quote.change >= 0 ? "app-positive" : "app-negative"}>
-                            {formatSignedNumber(position.quote.change, position.stock.currency)}
-                          </span>
+                          {position.quote != null ? (
+                            <span className={position.quote.change >= 0 ? "app-positive" : "app-negative"}>
+                              {formatSignedNumber(position.quote.change, position.stock.currency)}
+                            </span>
+                          ) : (
+                            "—"
+                          )}
                         </TableCell>
                         <TableCell>
-                          <span className={position.quote.changePercent >= 0 ? "app-positive" : "app-negative"}>
-                            {formatPercent(position.quote.changePercent)}
-                          </span>
+                          {position.quote != null ? (
+                            <span className={position.quote.changePercent >= 0 ? "app-positive" : "app-negative"}>
+                              {formatPercent(position.quote.changePercent)}
+                            </span>
+                          ) : (
+                            "—"
+                          )}
                         </TableCell>
                         <TableCell>
-                          {position.quote.volume != null ? formatNumber(position.quote.volume) : "—"}
+                          {position.quote?.volume != null ? formatNumber(position.quote.volume) : "—"}
                         </TableCell>
-                        <TableCell>{formatLastUpdated(position.quote.timestamp)}</TableCell>
+                        <TableCell>
+                          {position.quote?.timestamp
+                            ? formatLastUpdated(position.quote.timestamp)
+                            : "—"}
+                        </TableCell>
                         <TableCell>
                           <div className="app-portfolio-actions">
                             <Link

@@ -18,7 +18,8 @@ Python. The two providers behind one interface:
 Responses are cached in Redis (or in-memory if Redis is unavailable) for a
 short TTL so a single user opening the page repeatedly doesn't hammer Yahoo.
 On any failure ``fetch`` returns ``None`` so the caller falls back to the
-existing curated-universe path rather than rendering an empty list.
+S&P 500 quote snapshot path (batched quotes, then per-symbol quotes), skipping
+symbols without usable quotes.
 """
 
 from __future__ import annotations
@@ -101,6 +102,8 @@ class RankingsExternalSource:
         ranking_type: RankingType,
         limit: int,
         now: datetime | None = None,
+        *,
+        tw_board: str | None = None,
     ) -> list[tuple[StockRecord, QuoteRecord]] | None:
         if ranking_type not in _TW_RANK_PATH and ranking_type not in _US_SCREENER_ID:
             return None
@@ -112,14 +115,24 @@ class RankingsExternalSource:
 
         cached = self._read_cache(cache_key, current)
         if cached is not None:
-            return cached[:limit]
+            return self._filter_tw_board(cached, market, tw_board)[:limit]
 
         envelopes = self._fetch_uncached(market, ranking_type, current)
         if envelopes is None:
             return None
 
         self._write_cache(cache_key, envelopes, current)
-        return envelopes[:limit]
+        return self._filter_tw_board(envelopes, market, tw_board)[:limit]
+
+    @staticmethod
+    def _filter_tw_board(
+        envelopes: list[tuple[StockRecord, QuoteRecord]],
+        market: str,
+        tw_board: str | None,
+    ) -> list[tuple[StockRecord, QuoteRecord]]:
+        if market != "TW" or tw_board not in {"TWSE", "TPEx"}:
+            return envelopes
+        return [pair for pair in envelopes if pair[0].exchange == tw_board]
 
     def _fetch_uncached(
         self,
@@ -140,7 +153,7 @@ class RankingsExternalSource:
             if not envelopes:
                 logger.warning(
                     "Yahoo TW rank page %s returned no parseable rows; "
-                    "falling back to curated universe",
+                    "falling back to the app's TW quote snapshot list",
                     slug,
                 )
                 return None
@@ -159,7 +172,7 @@ class RankingsExternalSource:
         if not envelopes:
             logger.warning(
                 "Yahoo U.S. screener %s returned no parseable quotes; "
-                "falling back to curated universe",
+                "falling back to S&P 500 quote snapshot",
                 scr_id,
             )
             return None

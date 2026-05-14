@@ -227,10 +227,21 @@ export function fetchQuote(stockId: string) {
   return fetchJson<QuoteResponse>(`/quotes/${encodeURIComponent(stockId)}`);
 }
 
-export function fetchRankings(market: "US" | "TW", rankingType: RankingType, limit = 50) {
-  return fetchJson<RankingResponse>(
-    `/rankings?market=${encodeURIComponent(market)}&type=${encodeURIComponent(rankingType)}&limit=${limit}`,
-  );
+export function fetchRankings(
+  market: "US" | "TW",
+  rankingType: RankingType,
+  limit = 50,
+  twBoard?: "TWSE" | "TPEx",
+) {
+  const params = new URLSearchParams({
+    market,
+    type: rankingType,
+    limit: String(limit),
+  });
+  if (market === "TW" && twBoard === "TPEx") {
+    params.set("twBoard", "TPEx");
+  }
+  return fetchJson<RankingResponse>(`/rankings?${params.toString()}`);
 }
 
 export function fetchHistory(stockId: string, range: TimeRange) {

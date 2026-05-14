@@ -6,7 +6,6 @@ from datetime import date, datetime, time, timedelta
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
-from app.core.config import settings
 from app.services.http_client import HttpFetchError, fetch_json, fetch_text
 from app.models.quote import CandleRecord, QuoteRecord
 from app.models.stock import StockRecord
@@ -91,16 +90,94 @@ TW_STOCKS: dict[str, StockRecord] = {
         currency="TWD",
         timezone="Asia/Taipei",
     ),
-}
-
-BASE_PRICES = {
-    "TW:0050": 191.0,
-    "TW:2330": 948.0,
-    "TW:2317": 171.5,
-    "TW:2454": 1325.0,
-    "TW:2303": 51.6,
-    "TW:2881": 78.4,
-    "TW:2882": 63.1,
+    "TW:6488": StockRecord(
+        id="TW:6488",
+        market="TW",
+        symbol="6488",
+        name="環球晶",
+        name_en="GlobalWafers",
+        name_zh_tw="環球晶",
+        exchange="TPEx",
+        currency="TWD",
+        timezone="Asia/Taipei",
+    ),
+    "TW:8299": StockRecord(
+        id="TW:8299",
+        market="TW",
+        symbol="8299",
+        name="群聯",
+        name_en="Phison",
+        name_zh_tw="群聯",
+        exchange="TPEx",
+        currency="TWD",
+        timezone="Asia/Taipei",
+    ),
+    "TW:8271": StockRecord(
+        id="TW:8271",
+        market="TW",
+        symbol="8271",
+        name="宇瞻",
+        name_en="Apacer",
+        name_zh_tw="宇瞻",
+        exchange="TPEx",
+        currency="TWD",
+        timezone="Asia/Taipei",
+    ),
+    "TW:6215": StockRecord(
+        id="TW:6215",
+        market="TW",
+        symbol="6215",
+        name="和椿",
+        name_en="Hotron",
+        name_zh_tw="和椿",
+        exchange="TPEx",
+        currency="TWD",
+        timezone="Asia/Taipei",
+    ),
+    "TW:6643": StockRecord(
+        id="TW:6643",
+        market="TW",
+        symbol="6643",
+        name="M31",
+        name_en="M31 Technology",
+        name_zh_tw="M31",
+        exchange="TPEx",
+        currency="TWD",
+        timezone="Asia/Taipei",
+    ),
+    "TW:6562": StockRecord(
+        id="TW:6562",
+        market="TW",
+        symbol="6562",
+        name="聯亞",
+        name_en="Allied Industrial",
+        name_zh_tw="聯亞",
+        exchange="TPEx",
+        currency="TWD",
+        timezone="Asia/Taipei",
+    ),
+    "TW:6451": StockRecord(
+        id="TW:6451",
+        market="TW",
+        symbol="6451",
+        name="訊芯-KY",
+        name_en="SmartEC",
+        name_zh_tw="訊芯-KY",
+        exchange="TPEx",
+        currency="TWD",
+        timezone="Asia/Taipei",
+    ),
+    "TW:6462": StockRecord(
+        id="TW:6462",
+        market="TW",
+        symbol="6462",
+        name="神盾",
+        name_en="Egis Technology",
+        name_zh_tw="神盾",
+        exchange="TPEx",
+        currency="TWD",
+        timezone="Asia/Taipei",
+    ),
 }
 
 _REALTIME_URL = "https://mis.twse.com.tw/stock/api/getStockInfo.jsp"
@@ -167,9 +244,6 @@ class TWProvider:
         if stock is None:
             return None
 
-        if settings.tw_use_mock_quotes:
-            return self._mock_quote(stock_id)
-
         quote = self._fetch_quote(stock)
         if quote is not None:
             self.__class__._quote_cache[stock_id] = quote
@@ -187,17 +261,12 @@ class TWProvider:
         cached_quote = self._cached_quote(stock)
         if cached_quote is not None:
             return cached_quote
-        if settings.tw_use_mock_quotes:
-            return self._mock_quote(stock_id)
         return None
 
     def get_history(self, stock_id: str, range_name: str) -> list[CandleRecord]:
         stock = self.get_stock(stock_id)
         if stock is None:
             return []
-
-        if settings.tw_use_mock_quotes:
-            return self._mock_history(stock_id, range_name)
 
         if range_name == "1D":
             quote = self._fetch_quote(stock)
@@ -217,15 +286,11 @@ class TWProvider:
             cached_quote = self._cached_quote(stock)
             if cached_quote is not None:
                 return _approximate_intraday_candles(stock, cached_quote)
-            if settings.tw_use_mock_quotes:
-                return self._mock_history(stock_id, range_name)
             return []
 
         candles = self._fetch_daily_history(stock, limit=_daily_limit(range_name))
         if candles:
             return candles
-        if settings.tw_use_mock_quotes:
-            return self._mock_history(stock_id, range_name)
         return []
 
     def _fetch_quote(self, stock: StockRecord) -> QuoteRecord | None:
@@ -395,9 +460,6 @@ class TWProvider:
         return candles[-limit:]
 
     def _stock_catalog(self) -> dict[str, StockRecord]:
-        if settings.tw_use_mock_quotes:
-            return dict(TW_STOCKS)
-
         now = datetime.now(ZoneInfo("Asia/Taipei"))
         if (
             self.__class__._catalog_cache is not None
@@ -434,60 +496,6 @@ class TWProvider:
         self.__class__._catalog_cache = catalog
         self.__class__._catalog_cached_at = now
         return catalog
-
-    def _mock_quote(self, stock_id: str) -> QuoteRecord | None:
-        stock = self.get_stock(stock_id)
-        if stock is None:
-            return None
-
-        timestamp = datetime.now(ZoneInfo(stock.timezone))
-        base_price = _base_price_for_stock(stock_id, stock.symbol)
-        drift = math.sin(timestamp.minute / 4) * 6 + math.cos(timestamp.second / 18) * 2
-        last_price = round(base_price + drift, 2)
-        previous_close = round(base_price - 8.0, 2)
-        change = round(last_price - previous_close, 2)
-        change_percent = round((change / previous_close) * 100, 2)
-        return QuoteRecord(
-            id=stock.id,
-            last_price=last_price,
-            change=change,
-            change_percent=change_percent,
-            previous_close=previous_close,
-            open=round(previous_close + 3.5, 2),
-            high=round(last_price + 7.5, 2),
-            low=round(last_price - 6.8, 2),
-            volume=18_500_000 + timestamp.minute * 28_000,
-            timestamp=timestamp.isoformat(),
-            is_market_open=is_market_open(stock.market, timestamp),
-        )
-
-    def _mock_history(self, stock_id: str, range_name: str) -> list[CandleRecord]:
-        stock = self.get_stock(stock_id)
-        if stock is None:
-            return []
-
-        now = datetime.now(ZoneInfo(stock.timezone))
-        step, points = _history_shape(range_name)
-        base_price = _base_price_for_stock(stock_id, stock.symbol)
-        candles: list[CandleRecord] = []
-        for index in range(points):
-            point_time = now - step * (points - index)
-            wave = math.sin(index / 3.1) * 8.0
-            open_price = round(base_price + wave, 2)
-            close_price = round(open_price + math.cos(index / 2.0) * 4.5, 2)
-            high_price = round(max(open_price, close_price) + 3.2, 2)
-            low_price = round(min(open_price, close_price) - 3.0, 2)
-            candles.append(
-                CandleRecord(
-                    time=point_time.isoformat(),
-                    open=open_price,
-                    high=high_price,
-                    low=low_price,
-                    close=close_price,
-                    volume=2_500_000 + index * 48_000,
-                )
-            )
-        return candles
 
     def _cached_quote(self, stock: StockRecord) -> QuoteRecord | None:
         cached_quote = self.__class__._quote_cache.get(stock.id)
@@ -728,14 +736,6 @@ def _stock_from_isin_row(
     )
 
 
-def _base_price_for_stock(stock_id: str, symbol: str) -> float:
-    if stock_id in BASE_PRICES:
-        return BASE_PRICES[stock_id]
-
-    seed = sum(ord(character) for character in symbol)
-    return round(18 + (seed % 1480) + ((seed // 9) % 100) / 100, 2)
-
-
 def _approximate_intraday_candles(stock: StockRecord, quote: QuoteRecord) -> list[CandleRecord]:
     tz = ZoneInfo(stock.timezone)
     quote_time = datetime.fromisoformat(quote.timestamp).astimezone(tz)
@@ -792,17 +792,3 @@ def _approximate_intraday_candles(stock: StockRecord, quote: QuoteRecord) -> lis
         )
 
     return candles
-
-
-def _history_shape(range_name: str) -> tuple[timedelta, int]:
-    if range_name == "1W":
-        return timedelta(hours=4), 28
-    if range_name == "1M":
-        return timedelta(days=1), 30
-    if range_name == "3M":
-        return timedelta(days=1), 90
-    if range_name == "6M":
-        return timedelta(days=1), 180
-    if range_name == "1Y":
-        return timedelta(days=2), 182
-    return timedelta(minutes=10), 32

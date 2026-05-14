@@ -18,13 +18,13 @@ import {
   Tile,
 } from "@carbon/react";
 import { useQuery } from "@tanstack/react-query";
-import type { RankingResponse, RankingType } from "@shared/api";
-import { useState } from "react";
+import type { MarketStatus, RankingResponse, RankingType } from "@shared/api";
+import { useEffect, useMemo, useState } from "react";
 
 import { getDisplayStockName, useLanguage } from "../../app/i18n";
 import { QuoteFreshnessTag } from "../../components/state/QuoteFreshnessTag";
 import { RequestStateNotice, errorToNoticeKind } from "../../components/state/RequestStateNotice";
-import { fetchRankings } from "../../services/api/client";
+import { fetchMarkets, fetchRankings } from "../../services/api/client";
 import { formatCurrency, formatLastUpdated, formatPercent } from "../../services/format/quote";
 import {
   getLocalizedRankingsFreshnessLabel,
@@ -32,10 +32,12 @@ import {
   getLocalizedRankingsUnsupportedReason,
   getLocalizedRankingsWarningMessage,
 } from "./rankingsCopy";
+import { defaultRankingsMarketFromStatuses } from "./defaultRankingsMarket";
 
 const DEFAULT_LIMIT = 50;
 const DEFAULT_MARKET = "TW" as const;
 type RankingMarket = RankingResponse["market"];
+type TwBoardSegment = "TWSE" | "TPEx";
 
 type UsScopeNoticeKey =
   | "rankings.notice.usScopeYahoo"
@@ -188,13 +190,39 @@ function RankingRealtimeTag({ response }: { response: RankingResponse }) {
 
 export function RankingsPage() {
   const { language, t, formatNumber } = useLanguage();
-  const [market, setMarket] = useState<RankingMarket>(DEFAULT_MARKET);
+  const [marketOverride, setMarketOverride] = useState<RankingMarket | null>(null);
+  const marketsQuery = useQuery<MarketStatus[]>({
+    queryKey: ["markets"],
+    queryFn: fetchMarkets,
+    staleTime: 60_000,
+  });
+  const implicitMarket = useMemo((): RankingMarket => {
+    const list = marketsQuery.data;
+    if (!list?.length) return DEFAULT_MARKET;
+    return defaultRankingsMarketFromStatuses(list);
+  }, [marketsQuery.data]);
+  const market = marketOverride ?? implicitMarket;
+  const [twBoard, setTwBoard] = useState<TwBoardSegment>("TWSE");
   const [rankingType, setRankingType] = useState<RankingType>(defaultRankingTypeForMarket(DEFAULT_MARKET));
   const rankingTabs = tabsForMarket(market);
 
+  useEffect(() => {
+    setRankingType((prev) => {
+      const allowed = new Set(tabsForMarket(market).map((tab) => tab.key));
+      if (allowed.has(prev)) return prev;
+      return defaultRankingTypeForMarket(market);
+    });
+  }, [market]);
+
   const rankingsQuery = useQuery<RankingResponse>({
-    queryKey: ["rankings", market, rankingType, DEFAULT_LIMIT],
-    queryFn: () => fetchRankings(market, rankingType, DEFAULT_LIMIT),
+    queryKey: ["rankings", market, twBoard, rankingType, DEFAULT_LIMIT],
+    queryFn: () =>
+      fetchRankings(
+        market,
+        rankingType,
+        DEFAULT_LIMIT,
+        market === "TW" ? twBoard : undefined,
+      ),
     refetchInterval: (query) =>
       getRankingsRefetchInterval(
         (query.state.data as RankingResponse | undefined)?.isMarketOpen ?? false,
@@ -211,12 +239,19 @@ export function RankingsPage() {
     market === "US"
       ? usScopeNoticeKeyFromState(rankingType, data)
       : isInstitutionalRanking(rankingType)
-        ? "rankings.notice.twScope"
-        : "rankings.notice.twQuoteScope";
+        ? twBoard === "TPEx"
+          ? "rankings.notice.twInstScopeTpex"
+          : "rankings.notice.twInstScopeTwse"
+        : twBoard === "TPEx"
+          ? "rankings.notice.twQuoteScopeTpex"
+          : "rankings.notice.twQuoteScopeTwse";
 
   function handleMarketChange(nextMarket: RankingMarket) {
-    setMarket(nextMarket);
+    setMarketOverride(nextMarket);
     setRankingType(defaultRankingTypeForMarket(nextMarket));
+    if (nextMarket === "TW") {
+      setTwBoard("TWSE");
+    }
   }
 
   return (
@@ -254,6 +289,31 @@ export function RankingsPage() {
               {t(scopeNoteKey)}
             </p>
           </div>
+          {market === "TW" ? (
+            <div className="app-shell-brand" style={{ marginTop: "0.75rem" }}>
+              <p className="app-eyebrow" style={{ marginBottom: "0.35rem" }}>
+                {t("rankings.twBoard.groupLabel")}
+              </p>
+              <div className="app-auth-actions" style={{ display: "flex", flexWrap: "wrap", gap: "0.75rem" }}>
+                <Button
+                  data-testid="rankings-tw-board-twse"
+                  kind={twBoard === "TWSE" ? "primary" : "ghost"}
+                  size="sm"
+                  onClick={() => setTwBoard("TWSE")}
+                >
+                  {t("rankings.twBoard.twse")}
+                </Button>
+                <Button
+                  data-testid="rankings-tw-board-tpex"
+                  kind={twBoard === "TPEx" ? "primary" : "ghost"}
+                  size="sm"
+                  onClick={() => setTwBoard("TPEx")}
+                >
+                  {t("rankings.twBoard.tpex")}
+                </Button>
+              </div>
+            </div>
+          ) : null}
           <div className="app-shell-brand" style={{ marginTop: "1rem" }}>
             <div className="app-auth-actions" style={{ display: "flex", flexWrap: "wrap", gap: "0.75rem" }}>
               {rankingTabs.map((tab) => (
