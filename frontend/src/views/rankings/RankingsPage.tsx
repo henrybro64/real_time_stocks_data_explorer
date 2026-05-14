@@ -312,9 +312,6 @@ export function RankingsPage() {
                   {t("rankings.twBoard.tpex")}
                 </Button>
               </div>
-              <p className="app-supporting-copy" data-testid="rankings-tw-board-hint" style={{ marginTop: "0.35rem" }}>
-                {t("rankings.twBoard.hint")}
-              </p>
             </div>
           ) : null}
           <div className="app-shell-brand" style={{ marginTop: "1rem" }}>
