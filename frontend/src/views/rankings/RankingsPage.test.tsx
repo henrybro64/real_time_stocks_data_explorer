@@ -56,6 +56,7 @@ function buildResponse(overrides: Partial<RankingResponse> = {}): RankingRespons
     warningMessage: "台股三大法人買賣超為日資料，非盤中即時資料。",
     unsupportedReason: null,
     usRankingsScope: null,
+    twBoard: "TWSE",
     ...overrides,
   };
 }
@@ -135,6 +136,7 @@ function buildTwQuoteResponse(overrides: Partial<RankingResponse> = {}): Ranking
     warningMessage: "Free unofficial quote source; data may be delayed or unavailable.",
     unsupportedReason: null,
     usRankingsScope: null,
+    twBoard: "TWSE",
     ...overrides,
   };
 }
@@ -172,7 +174,7 @@ describe("RankingsPage", () => {
     expect(await screen.findByTestId("rankings-row-TW:2330")).toBeInTheDocument();
     expect(screen.getByTestId("rankings-realtime-tag")).toHaveTextContent("非即時");
     expect(screen.getByTestId("rankings-scope-note")).toHaveTextContent(
-      "此處的台股排行使用 TWSE 法人日資料。",
+      "此處的台股法人排行僅含上市（TWSE）股票，資料來自 TWSE 法人日報表。",
     );
     expect(screen.getByTestId("rankings-warning-message")).toHaveTextContent(
       "台股三大法人買賣超為日資料，非盤中即時資料。",
@@ -199,7 +201,7 @@ describe("RankingsPage", () => {
     await user.selectOptions(screen.getByLabelText("市場"), "US");
 
     await waitFor(() => {
-      expect(fetchRankings).toHaveBeenLastCalledWith("US", "volume", 50);
+      expect(fetchRankings).toHaveBeenLastCalledWith("US", "volume", 50, undefined);
     });
     expect(await screen.findByTestId("rankings-row-US:MSFT")).toBeInTheDocument();
     expect(screen.getByTestId("rankings-scope-note")).toHaveTextContent(
@@ -210,7 +212,7 @@ describe("RankingsPage", () => {
     await user.click(screen.getByTestId("rankings-tab-change_down"));
 
     await waitFor(() => {
-      expect(fetchRankings).toHaveBeenLastCalledWith("US", "change_down", 50);
+      expect(fetchRankings).toHaveBeenLastCalledWith("US", "change_down", 50, undefined);
     });
   });
 
@@ -278,10 +280,10 @@ describe("RankingsPage", () => {
     await user.click(screen.getByTestId("rankings-tab-volume"));
 
     await waitFor(() => {
-      expect(fetchRankings).toHaveBeenLastCalledWith("TW", "volume", 50);
+      expect(fetchRankings).toHaveBeenLastCalledWith("TW", "volume", 50, "TWSE");
     });
     expect(screen.getByTestId("rankings-scope-note")).toHaveTextContent(
-      "台股報價排行採用 Yahoo Finance 預先排序的台股排行頁，上市（TWSE）與上櫃（TPEx）合併為同一清單。",
+      "此分頁的台股報價排行僅含上市（TWSE）；優先採用 Yahoo 台股排行頁，否則使用本應用程式的上市報價快照清單。",
     );
     expect(screen.getByTestId("rankings-warning-message")).toHaveTextContent(
       "免費非官方報價來源可能延遲，或暫時無法提供資料。",
@@ -291,7 +293,7 @@ describe("RankingsPage", () => {
     await user.click(screen.getByTestId("rankings-tab-change_up"));
 
     await waitFor(() => {
-      expect(fetchRankings).toHaveBeenLastCalledWith("TW", "change_up", 50);
+      expect(fetchRankings).toHaveBeenLastCalledWith("TW", "change_up", 50, "TWSE");
     });
     await waitFor(() => {
       expect(screen.getByTestId("rankings-freshness-label")).toHaveTextContent(
@@ -326,13 +328,13 @@ describe("RankingsPage", () => {
     await user.selectOptions(screen.getByLabelText("市場"), "US");
 
     await waitFor(() => {
-      expect(fetchRankings).toHaveBeenLastCalledWith("US", "volume", 50);
+      expect(fetchRankings).toHaveBeenLastCalledWith("US", "volume", 50, undefined);
     });
 
     await user.click(screen.getByTestId("rankings-tab-change_up"));
 
     await waitFor(() => {
-      expect(fetchRankings).toHaveBeenLastCalledWith("US", "change_up", 50);
+      expect(fetchRankings).toHaveBeenLastCalledWith("US", "change_up", 50, undefined);
     });
     expect(screen.getByTestId("rankings-scope-note")).toHaveTextContent(
       "美股漲跌幅排行以標普五百成分股（內建名單快照）為範圍，使用 Yahoo Finance 批次報價欄位排序；美股成交量仍優先採用 Yahoo 全市場熱門成交選股（若可用）。",
@@ -342,5 +344,22 @@ describe("RankingsPage", () => {
         "市場開盤中；漲跌幅排行使用最新報價快照。",
       );
     });
+  });
+
+  it("requests TPEx board when 上櫃 is selected", async () => {
+    const user = userEvent.setup();
+    vi.mocked(fetchRankings).mockResolvedValue(buildResponse({ twBoard: "TPEx" }));
+
+    renderRankingsPage();
+
+    await screen.findByTestId("rankings-row-TW:2330");
+    await user.click(screen.getByTestId("rankings-tw-board-tpex"));
+
+    await waitFor(() => {
+      expect(fetchRankings).toHaveBeenLastCalledWith("TW", "net_buy", 50, "TPEx");
+    });
+    expect(screen.getByTestId("rankings-scope-note")).toHaveTextContent(
+      "此處的台股法人排行僅含上櫃（TPEx）股票，資料來自 TWSE 法人日報表。",
+    );
   });
 });

@@ -102,6 +102,8 @@ class RankingsExternalSource:
         ranking_type: RankingType,
         limit: int,
         now: datetime | None = None,
+        *,
+        tw_board: str | None = None,
     ) -> list[tuple[StockRecord, QuoteRecord]] | None:
         if ranking_type not in _TW_RANK_PATH and ranking_type not in _US_SCREENER_ID:
             return None
@@ -113,14 +115,24 @@ class RankingsExternalSource:
 
         cached = self._read_cache(cache_key, current)
         if cached is not None:
-            return cached[:limit]
+            return self._filter_tw_board(cached, market, tw_board)[:limit]
 
         envelopes = self._fetch_uncached(market, ranking_type, current)
         if envelopes is None:
             return None
 
         self._write_cache(cache_key, envelopes, current)
-        return envelopes[:limit]
+        return self._filter_tw_board(envelopes, market, tw_board)[:limit]
+
+    @staticmethod
+    def _filter_tw_board(
+        envelopes: list[tuple[StockRecord, QuoteRecord]],
+        market: str,
+        tw_board: str | None,
+    ) -> list[tuple[StockRecord, QuoteRecord]]:
+        if market != "TW" or tw_board not in {"TWSE", "TPEx"}:
+            return envelopes
+        return [pair for pair in envelopes if pair[0].exchange == tw_board]
 
     def _fetch_uncached(
         self,

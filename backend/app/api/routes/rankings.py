@@ -2,7 +2,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Query
 
-from app.schemas.rankings import RankingResponse, RankingType
+from app.schemas.rankings import RankingResponse, RankingType, TwBoard
 from app.services.rankings_service import rankings_service
 
 
@@ -14,9 +14,11 @@ def get_rankings(
     market: Literal["US", "TW"] = Query(...),
     ranking_type: RankingType = Query(..., alias="type"),
     limit: int = Query(default=50, ge=1, le=50),
+    tw_board: TwBoard | None = Query(default=None, alias="twBoard"),
 ) -> RankingResponse:
     return rankings_service.get_rankings(
         market=market,
         ranking_type=ranking_type,
         limit=limit,
+        tw_board=tw_board,
     )

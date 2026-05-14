@@ -98,6 +98,30 @@ def test_parse_tw_volume_page_merges_twse_and_tpex_rows_in_yahoo_order() -> None
     ]
 
 
+def test_fetch_tw_applies_board_filter_while_reusing_one_html_fetch() -> None:
+    html_mixed = _tw_rank_html(
+        [
+            ("上市股", "2330.TW", "100.00", "1.00", "1.00%", "101.00", "99.00", "10K"),
+            ("上櫃股", "1234.TWO", "50.00", "0.50", "1.01%", "51.00", "49.00", "5K"),
+        ]
+    )
+    fetch_calls = {"n": 0}
+
+    def tw_fetcher(slug: str) -> str:
+        fetch_calls["n"] += 1
+        return html_mixed
+
+    source = RankingsExternalSource(tw_html_fetcher=tw_fetcher, cache_ttl_seconds=60)
+    now = datetime(2026, 5, 13, 5, 0, tzinfo=timezone.utc)
+
+    twse_only = source.fetch("TW", RankingType.volume, 10, now=now, tw_board="TWSE")
+    tpex_only = source.fetch("TW", RankingType.volume, 10, now=now, tw_board="TPEx")
+
+    assert [s.symbol for s, _ in twse_only] == ["2330"]
+    assert [s.symbol for s, _ in tpex_only] == ["1234"]
+    assert fetch_calls["n"] == 1
+
+
 def test_parse_tw_change_down_page_flips_sign_on_change_and_percent() -> None:
     html_text = _tw_rank_html(
         [

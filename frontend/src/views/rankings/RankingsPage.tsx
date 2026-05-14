@@ -36,6 +36,7 @@ import {
 const DEFAULT_LIMIT = 50;
 const DEFAULT_MARKET = "TW" as const;
 type RankingMarket = RankingResponse["market"];
+type TwBoardSegment = "TWSE" | "TPEx";
 
 type UsScopeNoticeKey =
   | "rankings.notice.usScopeYahoo"
@@ -189,12 +190,19 @@ function RankingRealtimeTag({ response }: { response: RankingResponse }) {
 export function RankingsPage() {
   const { language, t, formatNumber } = useLanguage();
   const [market, setMarket] = useState<RankingMarket>(DEFAULT_MARKET);
+  const [twBoard, setTwBoard] = useState<TwBoardSegment>("TWSE");
   const [rankingType, setRankingType] = useState<RankingType>(defaultRankingTypeForMarket(DEFAULT_MARKET));
   const rankingTabs = tabsForMarket(market);
 
   const rankingsQuery = useQuery<RankingResponse>({
-    queryKey: ["rankings", market, rankingType, DEFAULT_LIMIT],
-    queryFn: () => fetchRankings(market, rankingType, DEFAULT_LIMIT),
+    queryKey: ["rankings", market, twBoard, rankingType, DEFAULT_LIMIT],
+    queryFn: () =>
+      fetchRankings(
+        market,
+        rankingType,
+        DEFAULT_LIMIT,
+        market === "TW" ? twBoard : undefined,
+      ),
     refetchInterval: (query) =>
       getRankingsRefetchInterval(
         (query.state.data as RankingResponse | undefined)?.isMarketOpen ?? false,
@@ -211,12 +219,19 @@ export function RankingsPage() {
     market === "US"
       ? usScopeNoticeKeyFromState(rankingType, data)
       : isInstitutionalRanking(rankingType)
-        ? "rankings.notice.twScope"
-        : "rankings.notice.twQuoteScope";
+        ? twBoard === "TPEx"
+          ? "rankings.notice.twInstScopeTpex"
+          : "rankings.notice.twInstScopeTwse"
+        : twBoard === "TPEx"
+          ? "rankings.notice.twQuoteScopeTpex"
+          : "rankings.notice.twQuoteScopeTwse";
 
   function handleMarketChange(nextMarket: RankingMarket) {
     setMarket(nextMarket);
     setRankingType(defaultRankingTypeForMarket(nextMarket));
+    if (nextMarket === "TW") {
+      setTwBoard("TWSE");
+    }
   }
 
   return (
@@ -254,6 +269,31 @@ export function RankingsPage() {
               {t(scopeNoteKey)}
             </p>
           </div>
+          {market === "TW" ? (
+            <div className="app-shell-brand" style={{ marginTop: "0.75rem" }}>
+              <p className="app-eyebrow" style={{ marginBottom: "0.35rem" }}>
+                {t("rankings.twBoard.groupLabel")}
+              </p>
+              <div className="app-auth-actions" style={{ display: "flex", flexWrap: "wrap", gap: "0.75rem" }}>
+                <Button
+                  data-testid="rankings-tw-board-twse"
+                  kind={twBoard === "TWSE" ? "primary" : "ghost"}
+                  size="sm"
+                  onClick={() => setTwBoard("TWSE")}
+                >
+                  {t("rankings.twBoard.twse")}
+                </Button>
+                <Button
+                  data-testid="rankings-tw-board-tpex"
+                  kind={twBoard === "TPEx" ? "primary" : "ghost"}
+                  size="sm"
+                  onClick={() => setTwBoard("TPEx")}
+                >
+                  {t("rankings.twBoard.tpex")}
+                </Button>
+              </div>
+            </div>
+          ) : null}
           <div className="app-shell-brand" style={{ marginTop: "1rem" }}>
             <div className="app-auth-actions" style={{ display: "flex", flexWrap: "wrap", gap: "0.75rem" }}>
               {rankingTabs.map((tab) => (

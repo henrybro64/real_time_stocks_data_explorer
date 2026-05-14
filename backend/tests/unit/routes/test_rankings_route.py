@@ -44,13 +44,14 @@ def _sample_response() -> RankingResponse:
         warningMessage="Free unofficial quote source; data may be delayed or unavailable.",
         unsupportedReason=None,
         usRankingsScope=None,
+        twBoard="TWSE",
     )
 
 
 def test_get_rankings_route_delegates_to_service(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
-    def fake_get_rankings(market, ranking_type, limit):
+    def fake_get_rankings(market, ranking_type, limit, tw_board=None):
         captured["market"] = market
         captured["ranking_type"] = ranking_type
         captured["limit"] = limit
@@ -60,10 +61,8 @@ def test_get_rankings_route_delegates_to_service(monkeypatch) -> None:
 
     response = rankings_route.get_rankings(market="TW", ranking_type=RankingType.volume, limit=7)
 
-    assert captured == {
-        "market": "TW",
-        "ranking_type": RankingType.volume,
-        "limit": 7,
-    }
+    assert captured["market"] == "TW"
+    assert captured["ranking_type"] == RankingType.volume
+    assert captured["limit"] == 7
     assert response.rankingType == RankingType.volume
     assert response.items[0].stock.symbol == "2330"

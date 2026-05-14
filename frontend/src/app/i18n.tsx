@@ -98,8 +98,13 @@ type TranslationKey =
   | "rankings.notice.usScopeSp500"
   | "rankings.notice.usScopeQuote"
   | "rankings.notice.usScopePending"
-  | "rankings.notice.twScope"
-  | "rankings.notice.twQuoteScope"
+  | "rankings.notice.twInstScopeTwse"
+  | "rankings.notice.twInstScopeTpex"
+  | "rankings.notice.twQuoteScopeTwse"
+  | "rankings.notice.twQuoteScopeTpex"
+  | "rankings.twBoard.groupLabel"
+  | "rankings.twBoard.twse"
+  | "rankings.twBoard.tpex"
   | "rankings.notice.quoteUnofficial"
   | "rankings.notice.twDaily"
   | "rankings.notice.twInstitutionalUnavailable"
@@ -335,10 +340,17 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
       "U.S. rankings for this tab use the committed S&P 500 constituent snapshot and live quotes; symbols without a usable quote are omitted (shown when Yahoo's screener or batched quotes are unavailable for this view).",
     "rankings.notice.usScopePending":
       "U.S. scope for this tab appears after its data finishes loading.",
-    "rankings.notice.twScope":
-      "Taiwan rankings here use TWSE institutional daily data.",
-    "rankings.notice.twQuoteScope":
-      "Taiwan quote rankings come pre-sorted from Yahoo Finance's Taiwan rank pages and include both TWSE-listed (上市) and TPEx-listed (上櫃) stocks in one list.",
+    "rankings.notice.twInstScopeTwse":
+      "Taiwan institutional rankings here are filtered to TWSE-listed (上市) names using TWSE daily T86 data.",
+    "rankings.notice.twInstScopeTpex":
+      "Taiwan institutional rankings here are filtered to TPEx-listed (上櫃) names using TWSE daily T86 data.",
+    "rankings.notice.twQuoteScopeTwse":
+      "Taiwan quote rankings for this tab are filtered to TWSE-listed (上市) names (Yahoo Taiwan rank pages when available, otherwise the app's TWSE quote snapshot list).",
+    "rankings.notice.twQuoteScopeTpex":
+      "Taiwan quote rankings for this tab are filtered to TPEx-listed (上櫃) names (Yahoo Taiwan rank pages when available, otherwise the app's TPEx quote snapshot list).",
+    "rankings.twBoard.groupLabel": "Board",
+    "rankings.twBoard.twse": "Listed (TWSE)",
+    "rankings.twBoard.tpex": "TPEx (OTC)",
     "rankings.notice.quoteUnofficial": "Free unofficial quote source; data may be delayed or unavailable.",
     "rankings.notice.twDaily": "Taiwan institutional net buy/sell rankings use daily data, not intraday real-time data.",
     "rankings.notice.twInstitutionalUnavailable":
@@ -592,9 +604,15 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "rankings.notice.usScopeQuote":
       "美股此分頁使用內建標普五百成分股名單與即時報價排序；無法取得有效報價的代碼會略過（當 Yahoo 選股或批次報價不可用時會走此路徑）。",
     "rankings.notice.usScopePending": "美股此分頁的資料範圍說明會在資料載入完成後顯示。",
-    "rankings.notice.twScope": "此處的台股排行使用 TWSE 法人日資料。",
-    "rankings.notice.twQuoteScope":
-      "台股報價排行採用 Yahoo Finance 預先排序的台股排行頁，上市（TWSE）與上櫃（TPEx）合併為同一清單。",
+    "rankings.notice.twInstScopeTwse": "此處的台股法人排行僅含上市（TWSE）股票，資料來自 TWSE 法人日報表。",
+    "rankings.notice.twInstScopeTpex": "此處的台股法人排行僅含上櫃（TPEx）股票，資料來自 TWSE 法人日報表。",
+    "rankings.notice.twQuoteScopeTwse":
+      "此分頁的台股報價排行僅含上市（TWSE）；優先採用 Yahoo 台股排行頁，否則使用本應用程式的上市報價快照清單。",
+    "rankings.notice.twQuoteScopeTpex":
+      "此分頁的台股報價排行僅含上櫃（TPEx）；優先採用 Yahoo 台股排行頁，否則使用本應用程式的上櫃報價快照清單。",
+    "rankings.twBoard.groupLabel": "交易別",
+    "rankings.twBoard.twse": "上市",
+    "rankings.twBoard.tpex": "上櫃",
     "rankings.notice.quoteUnofficial": "免費非官方報價來源可能延遲，或暫時無法提供資料。",
     "rankings.notice.twDaily": "台股三大法人買賣超為日資料，非盤中即時資料。",
     "rankings.notice.twInstitutionalUnavailable": "目前無法從免費公開來源取得台股法人日資料。",

@@ -25,7 +25,7 @@ class _NullExternalSource:
     def __init__(self) -> None:
         self.calls: list[tuple[str, RankingType]] = []
 
-    def fetch(self, market, ranking_type, limit, now=None):  # noqa: ARG002
+    def fetch(self, market, ranking_type, limit, now=None, tw_board=None):  # noqa: ARG002
         self.calls.append((market, ranking_type))
         return None
 
@@ -537,10 +537,10 @@ class _StubExternalSource:
 
     def __init__(self, envelopes_by_key: dict[tuple[str, RankingType], list]) -> None:
         self._envelopes_by_key = envelopes_by_key
-        self.calls: list[tuple[str, RankingType, int]] = []
+        self.calls: list[tuple[str, RankingType, int, str | None]] = []
 
-    def fetch(self, market, ranking_type, limit, now=None):  # noqa: ARG002
-        self.calls.append((market, ranking_type, limit))
+    def fetch(self, market, ranking_type, limit, now=None, tw_board=None):  # noqa: ARG002
+        self.calls.append((market, ranking_type, limit, tw_board))
         envelopes = self._envelopes_by_key.get((market, ranking_type))
         if envelopes is None:
             return None
@@ -584,7 +584,7 @@ def test_volume_rankings_use_external_source_when_available() -> None:
     )
 
     assert [item.stock.symbol for item in response.items] == ["9999", "2330"]
-    assert external.calls == [("TW", RankingType.volume, 10)]
+    assert external.calls == [("TW", RankingType.volume, 10, "TWSE")]
     assert response.source == "Yahoo Finance pre-ranked quote rankings."
     assert response.usRankingsScope is None
     assert response.dataFreshnessLabel == (
@@ -620,7 +620,7 @@ def test_change_up_rankings_use_external_source_in_yahoo_order() -> None:
     )
 
     assert [item.stock.symbol for item in response.items] == ["AAA", "BBB"]
-    assert external.calls == [("US", RankingType.change_up, 5)]
+    assert external.calls == [("US", RankingType.change_up, 5, None)]
     assert response.usRankingsScope == "yahoo"
     assert response.dataFreshnessLabel == (
         "Market open; price-move rankings come from Yahoo Finance and refresh every few minutes."

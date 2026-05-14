@@ -74,6 +74,7 @@ export type RankingItem = {
 export type RankingResponse = {
   market: MarketCode;
   rankingType: RankingType;
+  twBoard?: "TWSE" | "TPEx" | null;
   items: RankingItem[];
   timestamp: string;
   source: string;
