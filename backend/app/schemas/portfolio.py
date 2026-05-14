@@ -111,3 +111,77 @@ class PortfolioHistoryResponse(BaseModel):
     metric: str
     usd: PortfolioHistorySeriesResponse
     twd: PortfolioHistorySeriesResponse
+
+
+class PortfolioAnalysisHoldingResponse(BaseModel):
+    stockId: str
+    symbol: str
+    name: str
+    market: str
+    exchange: str
+    currency: str
+    quantity: float
+    averageCost: float
+    lastPrice: float
+    costBasis: float
+    costBasisUsd: float
+    costBasisTwd: float
+    marketValue: float
+    marketValueUsd: float
+    marketValueTwd: float
+    unrealizedPl: float
+    unrealizedPlUsd: float
+    unrealizedPlTwd: float
+    unrealizedPlPercent: float
+    portfolioWeightPercent: float
+    notes: str | None = None
+
+
+class PortfolioAnalysisSkippedHoldingResponse(BaseModel):
+    stockId: str
+    symbol: str | None = None
+    reason: str
+
+
+class PortfolioAnalysisCurrencyExposureResponse(BaseModel):
+    currency: str
+    marketValue: float
+    marketValueUsd: float
+    marketValueTwd: float
+    portfolioWeightPercent: float
+
+
+class PortfolioConcentrationRiskResponse(BaseModel):
+    level: str
+    topHoldingWeightPercent: float
+    top3WeightPercent: float
+    top5WeightPercent: float
+
+
+class ComputedPortfolioAnalysisResponse(BaseModel):
+    holdingsCount: int
+    analyzedHoldingsCount: int
+    skippedHoldingsCount: int
+    totalCostBasisUsd: float
+    totalCostBasisTwd: float
+    totalMarketValueUsd: float
+    totalMarketValueTwd: float
+    totalUnrealizedPlUsd: float
+    totalUnrealizedPlTwd: float
+    totalUnrealizedPlPercent: float
+    usdTwdRate: float
+    fxTimestamp: str
+    currencyExposure: list[PortfolioAnalysisCurrencyExposureResponse]
+    largestHoldings: list[PortfolioAnalysisHoldingResponse]
+    holdings: list[PortfolioAnalysisHoldingResponse]
+    skippedHoldings: list[PortfolioAnalysisSkippedHoldingResponse]
+    concentrationRisk: PortfolioConcentrationRiskResponse
+
+
+class PortfolioAnalysisResponse(BaseModel):
+    computedSummary: ComputedPortfolioAnalysisResponse
+    aiReport: str | None = None
+    provider: str | None = None
+    model: str | None = None
+    warnings: list[str] = Field(default_factory=list)
+    disclaimer: str

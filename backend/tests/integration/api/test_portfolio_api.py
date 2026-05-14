@@ -1,6 +1,7 @@
 import pytest
 
 from app.api.routes import portfolio as portfolio_routes
+from app.services.ai_providers.base import AIAnalysisResult
 from app.services.quote_service import quote_service
 from tests.support import quote_record, stock_record
 
@@ -140,3 +141,151 @@ def test_portfolio_summary_skips_unknown_stocks(monkeypatch, client) -> None:
     assert create.status_code == 200
     assert response.status_code == 200
     assert response.json()["skippedStockIds"] == ["US:AAPL"]
+
+
+def test_portfolio_analysis_returns_structured_response(monkeypatch, client) -> None:
+    stock = stock_record(
+        "US:AAPL",
+        market="US",
+        symbol="AAPL",
+        name="Apple Inc.",
+        exchange="NASDAQ",
+        currency="USD",
+        timezone="America/New_York",
+        name_en="Apple Inc.",
+    )
+    quote = quote_record(
+        "US:AAPL",
+        last_price=200.0,
+        change=1.0,
+        change_percent=0.5,
+        previous_close=199.0,
+        timestamp="2026-04-01T09:30:00-04:00",
+        is_market_open=True,
+    )
+
+    class _MockProvider:
+        provider_name = "openai"
+        model_name = "gpt-test"
+
+        def generate_portfolio_analysis(
+            self,
+            input_data: dict[str, object],
+        ) -> AIAnalysisResult:
+            return AIAnalysisResult(
+                provider=self.provider_name,
+                model=self.model_name,
+                content="Portfolio report",
+            )
+
+    monkeypatch.setattr(
+        portfolio_routes.portfolio_analysis_service,
+        "_stock_loader",
+        lambda stock_id: stock if stock_id == "US:AAPL" else None,
+    )
+    monkeypatch.setattr(
+        portfolio_routes.portfolio_analysis_service,
+        "_quote_loader",
+        lambda stock_id: quote if stock_id == "US:AAPL" else None,
+    )
+    monkeypatch.setattr(
+        portfolio_routes.portfolio_analysis_service,
+        "_fx_snapshot_loader",
+        lambda: {
+            "pair": "USD/TWD",
+            "rate": 32.0,
+            "timestamp": "2026-04-01T01:00:00Z",
+        },
+    )
+    monkeypatch.setattr(
+        portfolio_routes.portfolio_analysis_service,
+        "_provider_resolver",
+        lambda user_id: _MockProvider(),
+    )
+
+    create = client.post(
+        "/api/portfolio/positions",
+        json={
+            "stockId": "US:AAPL",
+            "quantity": 2,
+            "averageCost": 180,
+            "currency": "USD",
+            "notes": "Core holding",
+        },
+    )
+    response = client.post("/api/portfolio/analysis")
+
+    assert create.status_code == 200
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["provider"] == "openai"
+    assert payload["model"] == "gpt-test"
+    assert payload["aiReport"] == "Portfolio report"
+    assert payload["computedSummary"]["totalMarketValueUsd"] == 400.0
+    assert payload["computedSummary"]["totalUnrealizedPlUsd"] == 40.0
+    assert payload["computedSummary"]["holdings"][0]["stockId"] == "US:AAPL"
+
+
+def test_portfolio_analysis_returns_missing_ai_config_error(monkeypatch, client) -> None:
+    stock = stock_record(
+        "US:AAPL",
+        market="US",
+        symbol="AAPL",
+        name="Apple Inc.",
+        exchange="NASDAQ",
+        currency="USD",
+        timezone="America/New_York",
+        name_en="Apple Inc.",
+    )
+    quote = quote_record(
+        "US:AAPL",
+        last_price=200.0,
+        change=1.0,
+        change_percent=0.5,
+        previous_close=199.0,
+        timestamp="2026-04-01T09:30:00-04:00",
+        is_market_open=True,
+    )
+
+    monkeypatch.setattr(
+        portfolio_routes.portfolio_analysis_service,
+        "_stock_loader",
+        lambda stock_id: stock if stock_id == "US:AAPL" else None,
+    )
+    monkeypatch.setattr(
+        portfolio_routes.portfolio_analysis_service,
+        "_quote_loader",
+        lambda stock_id: quote if stock_id == "US:AAPL" else None,
+    )
+    monkeypatch.setattr(
+        portfolio_routes.portfolio_analysis_service,
+        "_fx_snapshot_loader",
+        lambda: {
+            "pair": "USD/TWD",
+            "rate": 32.0,
+            "timestamp": "2026-04-01T01:00:00Z",
+        },
+    )
+    monkeypatch.setattr(
+        portfolio_routes.portfolio_analysis_service,
+        "_provider_resolver",
+        lambda user_id: None,
+    )
+
+    create = client.post(
+        "/api/portfolio/positions",
+        json={
+            "stockId": "US:AAPL",
+            "quantity": 1,
+            "averageCost": 180,
+            "currency": "USD",
+            "notes": None,
+        },
+    )
+    response = client.post("/api/portfolio/analysis")
+
+    assert create.status_code == 200
+    assert response.status_code == 400
+    assert response.json()["detail"] == (
+        "AI is not configured. Please set up your AI provider in AI Settings."
+    )

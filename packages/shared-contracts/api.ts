@@ -210,6 +210,80 @@ export type PortfolioAssetUpdate = {
   notes?: string | null;
 };
 
+export type PortfolioAnalysisHolding = {
+  stockId: string;
+  symbol: string;
+  name: string;
+  market: string;
+  exchange: string;
+  currency: string;
+  quantity: number;
+  averageCost: number;
+  lastPrice: number;
+  costBasis: number;
+  costBasisUsd: number;
+  costBasisTwd: number;
+  marketValue: number;
+  marketValueUsd: number;
+  marketValueTwd: number;
+  unrealizedPl: number;
+  unrealizedPlUsd: number;
+  unrealizedPlTwd: number;
+  unrealizedPlPercent: number;
+  portfolioWeightPercent: number;
+  notes: string | null;
+};
+
+export type PortfolioAnalysisSkippedHolding = {
+  stockId: string;
+  symbol: string | null;
+  reason: string;
+};
+
+export type PortfolioAnalysisCurrencyExposure = {
+  currency: string;
+  marketValue: number;
+  marketValueUsd: number;
+  marketValueTwd: number;
+  portfolioWeightPercent: number;
+};
+
+export type PortfolioConcentrationRisk = {
+  level: "low" | "moderate" | "high" | string;
+  topHoldingWeightPercent: number;
+  top3WeightPercent: number;
+  top5WeightPercent: number;
+};
+
+export type ComputedPortfolioAnalysis = {
+  holdingsCount: number;
+  analyzedHoldingsCount: number;
+  skippedHoldingsCount: number;
+  totalCostBasisUsd: number;
+  totalCostBasisTwd: number;
+  totalMarketValueUsd: number;
+  totalMarketValueTwd: number;
+  totalUnrealizedPlUsd: number;
+  totalUnrealizedPlTwd: number;
+  totalUnrealizedPlPercent: number;
+  usdTwdRate: number;
+  fxTimestamp: string;
+  currencyExposure: PortfolioAnalysisCurrencyExposure[];
+  largestHoldings: PortfolioAnalysisHolding[];
+  holdings: PortfolioAnalysisHolding[];
+  skippedHoldings: PortfolioAnalysisSkippedHolding[];
+  concentrationRisk: PortfolioConcentrationRisk;
+};
+
+export type PortfolioAnalysisResponse = {
+  computedSummary: ComputedPortfolioAnalysis;
+  aiReport: string | null;
+  provider: string | null;
+  model: string | null;
+  warnings: string[];
+  disclaimer: string;
+};
+
 export type ApiKeyStatus = {
   provider: "openai" | "perplexity";
   configured: boolean;

@@ -10,6 +10,7 @@ import type {
   ApiKeyStatus,
   AiInsightResponse,
   PortfolioAsset,
+  PortfolioAnalysisResponse,
   PortfolioAssetCreate,
   PortfolioHistoryResponse,
   PortfolioAssetSummary,
@@ -333,6 +334,12 @@ export async function updatePortfolioPosition(positionId: number, payload: Portf
 export async function deletePortfolioPosition(positionId: number) {
   await requestVoid(`/portfolio/positions/${positionId}`, {
     method: "DELETE",
+  });
+}
+
+export async function analyzePortfolio() {
+  return requestJson<PortfolioAnalysisResponse>("/portfolio/analysis", {
+    method: "POST",
   });
 }
 

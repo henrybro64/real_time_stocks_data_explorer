@@ -7,6 +7,12 @@ from app.db.models import PortfolioAsset, PortfolioPosition
 from app.models.quote import QuoteRecord
 from app.models.stock import StockRecord
 from app.schemas.portfolio import (
+    ComputedPortfolioAnalysisResponse,
+    PortfolioAnalysisCurrencyExposureResponse,
+    PortfolioAnalysisHoldingResponse,
+    PortfolioAnalysisResponse,
+    PortfolioAnalysisSkippedHoldingResponse,
+    PortfolioConcentrationRiskResponse,
     PortfolioPositionCreate,
     PortfolioAssetCreate,
     PortfolioHistoryPointResponse,
@@ -28,6 +34,11 @@ from app.services.fx_service import get_usd_twd_fx_snapshot
 from app.services.portfolio_history_service import (
     PortfolioHistorySeries,
     portfolio_history_service,
+)
+from app.services.portfolio_analysis_service import (
+    PortfolioAnalysisHolding,
+    PortfolioAnalysisResult,
+    portfolio_analysis_service,
 )
 from app.services.portfolio_service import portfolio_service
 from app.services.quote_service import quote_service
@@ -155,6 +166,19 @@ def get_portfolio_summary(
     )
 
 
+@router.post("/analysis", response_model=PortfolioAnalysisResponse)
+def analyze_portfolio(
+    user_id: str = Depends(get_effective_user_id),
+) -> PortfolioAnalysisResponse:
+    try:
+        result = portfolio_analysis_service.analyze_portfolio(user_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return _portfolio_analysis_schema(result)
+
+
 @router.get("/assets/summary", response_model=PortfolioAssetSummaryResponse)
 def get_portfolio_asset_summary(
     user_id: str = Depends(get_effective_user_id),
@@ -239,8 +263,6 @@ def capture_portfolio_history_snapshots(
     captured = portfolio_history_service.capture_due_snapshots_for_all_users()
     return {"captured": captured}
 
-
-
 @router.post("/assets", response_model=PortfolioAssetResponse)
 def add_portfolio_asset(
     payload: PortfolioAssetCreate,
@@ -290,6 +312,7 @@ def delete_portfolio_asset(
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     _refresh_history_snapshot(user_id)
+
 
 def _summarize_positions(
     positions: list[PortfolioPosition],
@@ -423,6 +446,93 @@ def _history_series_response(series: PortfolioHistorySeries) -> PortfolioHistory
             for point in points
         ],
         chartLayout=chart_layout,
+    )
+
+
+def _portfolio_analysis_schema(
+    result: PortfolioAnalysisResult,
+) -> PortfolioAnalysisResponse:
+    computed_summary = result.computed_summary
+    return PortfolioAnalysisResponse(
+        computedSummary=ComputedPortfolioAnalysisResponse(
+            holdingsCount=computed_summary.holdings_count,
+            analyzedHoldingsCount=computed_summary.analyzed_holdings_count,
+            skippedHoldingsCount=computed_summary.skipped_holdings_count,
+            totalCostBasisUsd=computed_summary.total_cost_basis_usd,
+            totalCostBasisTwd=computed_summary.total_cost_basis_twd,
+            totalMarketValueUsd=computed_summary.total_market_value_usd,
+            totalMarketValueTwd=computed_summary.total_market_value_twd,
+            totalUnrealizedPlUsd=computed_summary.total_unrealized_pl_usd,
+            totalUnrealizedPlTwd=computed_summary.total_unrealized_pl_twd,
+            totalUnrealizedPlPercent=computed_summary.total_unrealized_pl_percent,
+            usdTwdRate=computed_summary.usd_twd_rate,
+            fxTimestamp=computed_summary.fx_timestamp,
+            currencyExposure=[
+                PortfolioAnalysisCurrencyExposureResponse(
+                    currency=item.currency,
+                    marketValue=item.market_value,
+                    marketValueUsd=item.market_value_usd,
+                    marketValueTwd=item.market_value_twd,
+                    portfolioWeightPercent=item.portfolio_weight_percent,
+                )
+                for item in computed_summary.currency_exposure
+            ],
+            largestHoldings=[
+                _portfolio_analysis_holding_schema(item)
+                for item in computed_summary.largest_holdings
+            ],
+            holdings=[
+                _portfolio_analysis_holding_schema(item)
+                for item in computed_summary.holdings
+            ],
+            skippedHoldings=[
+                PortfolioAnalysisSkippedHoldingResponse(
+                    stockId=item.stock_id,
+                    symbol=item.symbol,
+                    reason=item.reason,
+                )
+                for item in computed_summary.skipped_holdings
+            ],
+            concentrationRisk=PortfolioConcentrationRiskResponse(
+                level=computed_summary.concentration_risk.level,
+                topHoldingWeightPercent=computed_summary.concentration_risk.top_holding_weight_percent,
+                top3WeightPercent=computed_summary.concentration_risk.top3_weight_percent,
+                top5WeightPercent=computed_summary.concentration_risk.top5_weight_percent,
+            ),
+        ),
+        aiReport=result.ai_report,
+        provider=result.provider,
+        model=result.model,
+        warnings=list(result.warnings),
+        disclaimer=result.disclaimer,
+    )
+
+
+def _portfolio_analysis_holding_schema(
+    item: PortfolioAnalysisHolding,
+) -> PortfolioAnalysisHoldingResponse:
+    return PortfolioAnalysisHoldingResponse(
+        stockId=item.stock_id,
+        symbol=item.symbol,
+        name=item.name,
+        market=item.market,
+        exchange=item.exchange,
+        currency=item.currency,
+        quantity=item.quantity,
+        averageCost=item.average_cost,
+        lastPrice=item.last_price,
+        costBasis=item.cost_basis,
+        costBasisUsd=item.cost_basis_usd,
+        costBasisTwd=item.cost_basis_twd,
+        marketValue=item.market_value,
+        marketValueUsd=item.market_value_usd,
+        marketValueTwd=item.market_value_twd,
+        unrealizedPl=item.unrealized_pl,
+        unrealizedPlUsd=item.unrealized_pl_usd,
+        unrealizedPlTwd=item.unrealized_pl_twd,
+        unrealizedPlPercent=item.unrealized_pl_percent,
+        portfolioWeightPercent=item.portfolio_weight_percent,
+        notes=item.notes,
     )
 
 
