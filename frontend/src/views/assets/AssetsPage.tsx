@@ -77,6 +77,12 @@ export function AssetsPage() {
   const assets = assetsQuery.data ?? [];
   const usdAssets = assets.filter((asset) => asset.currency === "USD");
   const twdAssets = assets.filter((asset) => asset.currency === "TWD");
+  // After the first successful fetch, `isLoading` is false during invalidation refetches.
+  // While refetching with an empty list, avoid showing the "no assets" copy — the table or
+  // a spinner should appear once the new row arrives (fixes a race for E2E and real users).
+  const assetsListLoading =
+    assetsQuery.isPending ||
+    (assetsQuery.isFetching && assets.length === 0 && !assetsQuery.isError);
   const summary = assetSummaryQuery.data;
   const usdTwdRate = summary?.usdTwdRate ?? 0;
   const summaryNoticeKind =
@@ -267,7 +273,7 @@ export function AssetsPage() {
               {t("portfolio.assets.add")}
             </Button>
           </div>
-          {assetsQuery.isLoading ? (
+          {assetsListLoading ? (
             <InlineLoading description={t("portfolio.assets.loading")} status="active" />
           ) : assets.length === 0 ? (
             <p className="app-supporting-copy">{t("portfolio.assets.empty")}</p>

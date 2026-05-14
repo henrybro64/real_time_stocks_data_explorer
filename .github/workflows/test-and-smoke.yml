@@ -206,6 +206,7 @@ jobs:
           name: frontend-e2e-allure-results
           path: allure-results/frontend-e2e
       - name: Download k3s smoke Allure results
+        continue-on-error: true
         uses: actions/download-artifact@v8
         with:
           name: k3s-smoke-allure-results
