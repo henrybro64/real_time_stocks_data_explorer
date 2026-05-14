@@ -9,6 +9,11 @@ from app.services.rankings_volume_baseline_cache import InMemoryVolumeBaselineSt
 from tests.support import quote_record, stock_record
 
 
+def _empty_sp500_quotes(_stocks):
+    """Bypass S&P 500 batched quotes so US mover tests hit quote or Yahoo screener paths."""
+    return {}
+
+
 class _NullExternalSource:
     """External source stub that pretends Yahoo is unavailable.
 
@@ -374,6 +379,7 @@ def test_change_down_falls_back_to_only_negative_movers_in_quote_path() -> None:
         ),
         volume_baseline_store=InMemoryVolumeBaselineStore(),
         external_source=external,
+        sp500_quote_batch=_empty_sp500_quotes,
     )
 
     response = service.get_rankings(
@@ -456,7 +462,8 @@ def test_change_up_uses_price_move_freshness_label_when_market_open() -> None:
         FakeQuoteSource(
             stocks={"US:AAPL": _us_stock("US:AAPL", "AAPL", "Apple Inc.")},
             quotes={"US:AAPL": _quote("US:AAPL", 100, "2026-05-12T10:00:00-04:00")},
-        )
+        ),
+        sp500_quote_batch=_empty_sp500_quotes,
     )
 
     response = service.get_rankings(
@@ -487,7 +494,8 @@ def test_change_down_uses_price_move_freshness_label_when_market_closed() -> Non
                     previous_close=100.0,
                 ),
             },
-        )
+        ),
+        sp500_quote_batch=_empty_sp500_quotes,
     )
 
     response = service.get_rankings(
@@ -581,6 +589,7 @@ def test_change_up_rankings_use_external_source_in_yahoo_order() -> None:
         quote_source=FakeQuoteSource(stocks={}, quotes={}),
         volume_baseline_store=InMemoryVolumeBaselineStore(),
         external_source=external,
+        sp500_quote_batch=_empty_sp500_quotes,
     )
 
     response = service.get_rankings(
@@ -591,9 +600,74 @@ def test_change_up_rankings_use_external_source_in_yahoo_order() -> None:
     )
 
     assert [item.stock.symbol for item in response.items] == ["AAA", "BBB"]
+    assert external.calls == [("US", RankingType.change_up, 5)]
     assert response.dataFreshnessLabel == (
         "Market open; price-move rankings come from Yahoo Finance and refresh every few minutes."
     )
+
+
+def test_us_sp500_change_up_uses_constituent_batch_before_yahoo_screener() -> None:
+    """US change_up ranks S&P 500 snapshot + batched quotes and skips Yahoo screeners."""
+    ts = "2026-05-12T10:00:00-04:00"
+    external = _StubExternalSource({("US", RankingType.change_up): []})
+
+    def sym_loader() -> tuple[str, ...]:
+        return ("WIN1", "LOSE1", "FLAT1")
+
+    def batch(stocks):
+        out = {}
+        for s in stocks:
+            if s.symbol == "WIN1":
+                out[s.id] = _quote(
+                    s.id,
+                    1000,
+                    ts,
+                    change_percent=7.0,
+                    change=7.0,
+                    last_price=107.0,
+                    previous_close=100.0,
+                )
+            elif s.symbol == "LOSE1":
+                out[s.id] = _quote(
+                    s.id,
+                    1000,
+                    ts,
+                    change_percent=-4.0,
+                    change=-4.0,
+                    last_price=96.0,
+                    previous_close=100.0,
+                )
+            elif s.symbol == "FLAT1":
+                out[s.id] = _quote(
+                    s.id,
+                    1000,
+                    ts,
+                    change_percent=0.0,
+                    change=0.0,
+                    last_price=100.0,
+                    previous_close=100.0,
+                )
+        return out
+
+    service = RankingsService(
+        quote_source=FakeQuoteSource(stocks={}, quotes={}),
+        volume_baseline_store=InMemoryVolumeBaselineStore(),
+        external_source=external,
+        sp500_symbol_loader=sym_loader,
+        sp500_quote_batch=batch,
+    )
+
+    response = service.get_rankings(
+        "US",
+        RankingType.change_up,
+        limit=10,
+        now=datetime(2026, 5, 12, 14, 0, tzinfo=timezone.utc),
+    )
+
+    assert [item.stock.symbol for item in response.items] == ["WIN1"]
+    assert external.calls == []
+    assert "S&P 500" in response.source
+    assert "S&P 500 movers ranked" in response.dataFreshnessLabel
 
 
 def test_rankings_fall_back_to_curated_when_external_source_returns_none() -> None:

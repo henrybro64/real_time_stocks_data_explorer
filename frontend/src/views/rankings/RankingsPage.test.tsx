@@ -199,7 +199,7 @@ describe("RankingsPage", () => {
     });
     expect(await screen.findByTestId("rankings-row-US:MSFT")).toBeInTheDocument();
     expect(screen.getByTestId("rankings-scope-note")).toHaveTextContent(
-      "美股報價排行直接採用 Yahoo Finance 預先排序的選股結果，涵蓋更廣的美股市場。",
+      "美股漲跌幅排行以標普五百成分股（內建名單快照）為範圍，使用 Yahoo Finance 批次報價欄位排序；美股成交量仍優先採用 Yahoo 全市場熱門成交選股（若可用）。",
     );
     expect(screen.getByTestId("rankings-realtime-tag")).toHaveTextContent("即時");
 
@@ -330,7 +330,7 @@ describe("RankingsPage", () => {
       expect(fetchRankings).toHaveBeenLastCalledWith("US", "change_up", 50);
     });
     expect(screen.getByTestId("rankings-scope-note")).toHaveTextContent(
-      "美股報價排行直接採用 Yahoo Finance 預先排序的選股結果，涵蓋更廣的美股市場。",
+      "美股漲跌幅排行以標普五百成分股（內建名單快照）為範圍，使用 Yahoo Finance 批次報價欄位排序；美股成交量仍優先採用 Yahoo 全市場熱門成交選股（若可用）。",
     );
     await waitFor(() => {
       expect(screen.getByTestId("rankings-freshness-label")).toHaveTextContent(

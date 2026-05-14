@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Literal
@@ -25,6 +26,11 @@ from app.services.rankings_volume_baseline_cache import (
     VolumeBaselineStore,
     default_volume_baseline_store,
 )
+from app.services.providers.us_provider import (
+    synthetic_us_stock,
+    yahoo_v7_quotes_batch,
+)
+from app.services.sp500_constituents import load_sp500_symbols
 
 
 RankingMarket = Literal["US", "TW"]
@@ -64,6 +70,10 @@ _UNSUPPORTED_REASONS: dict[RankingType, str] = {
 _QUOTE_SOURCE = "Quote rankings from the app's free best-effort quote providers."
 _QUOTE_WARNING = "Free unofficial quote source; data may be delayed or unavailable."
 _PRE_RANKED_SOURCE = "Yahoo Finance pre-ranked quote rankings."
+_SP500_CHANGE_SOURCE = (
+    "S&P 500 movers: constituent snapshot plus batched Yahoo Finance v7 quote fields "
+    "(free best-effort; not the same universe as Yahoo's predefined gainers/losers screeners)."
+)
 _PRE_RANKED_TYPES = {RankingType.volume, RankingType.change_up, RankingType.change_down}
 _TW_DAILY_WARNING = "台股三大法人買賣超為日資料，非盤中即時資料。"
 _TWSE_T86_URL = "https://www.twse.com.tw/fund/T86"
@@ -92,10 +102,15 @@ class RankingsService:
         quote_source: QuoteService | None = None,
         volume_baseline_store: VolumeBaselineStore | None = None,
         external_source: RankingsExternalSource | None = None,
+        *,
+        sp500_quote_batch: Callable[[list[StockRecord]], dict[str, QuoteRecord]] | None = None,
+        sp500_symbol_loader: Callable[[], tuple[str, ...]] | None = None,
     ) -> None:
         self.quote_source = quote_source or quote_service
         self._volume_baselines = volume_baseline_store or default_volume_baseline_store
         self._external_source = external_source or rankings_external_source
+        self._sp500_quote_batch = sp500_quote_batch or yahoo_v7_quotes_batch
+        self._sp500_symbol_loader = sp500_symbol_loader or load_sp500_symbols
 
     def get_rankings(
         self,
@@ -121,6 +136,16 @@ class RankingsService:
     ) -> RankingResponse:
         market_open = is_market_open(market, now)
 
+        if (
+            market == "US"
+            and ranking_type in {RankingType.change_up, RankingType.change_down}
+        ):
+            sp500_ranking = self._try_build_us_sp500_price_movers(
+                ranking_type, limit, now, market_open
+            )
+            if sp500_ranking is not None and sp500_ranking.items:
+                return sp500_ranking
+
         if ranking_type in _PRE_RANKED_TYPES:
             external_envelopes = self._external_source.fetch(
                 market=market,
@@ -135,7 +160,7 @@ class RankingsService:
                     envelopes=external_envelopes,
                     market_open=market_open,
                     now=now,
-                    source=RankingSourceType.free_unofficial,
+                    source_type=RankingSourceType.free_unofficial,
                 )
 
         candidates: list[_RankingCandidate] = []
@@ -224,6 +249,79 @@ class RankingsService:
                 return get_live_quotes(stock_ids)
         return self.quote_source.get_quotes(stock_ids)
 
+    def _try_build_us_sp500_price_movers(
+        self,
+        ranking_type: RankingType,
+        limit: int,
+        now: datetime,
+        market_open: bool,
+    ) -> RankingResponse | None:
+        symbols = self._sp500_symbol_loader()
+        if not symbols:
+            return None
+        stocks: list[StockRecord] = []
+        for sym in symbols:
+            sid = f"US:{sym}"
+            stock = self.quote_source.get_stock(sid)
+            if stock is None:
+                stock = synthetic_us_stock(sym)
+            if stock is None:
+                continue
+            stocks.append(stock)
+
+        quotes_by_id = self._sp500_quote_batch(stocks)
+        if not quotes_by_id:
+            return None
+
+        envelopes: list[tuple[StockRecord, QuoteRecord]] = [
+            (s, quotes_by_id[s.id]) for s in stocks if s.id in quotes_by_id
+        ]
+        filtered: list[tuple[StockRecord, QuoteRecord]] = []
+        for st, q in envelopes:
+            if q.change_percent is None:
+                continue
+            if ranking_type == RankingType.change_up and q.change_percent > 0:
+                filtered.append((st, q))
+            elif ranking_type == RankingType.change_down and q.change_percent < 0:
+                filtered.append((st, q))
+
+        if ranking_type == RankingType.change_up:
+            filtered.sort(
+                key=lambda t: (
+                    -(t[1].change_percent or -10**9),
+                    -(t[1].volume or -1),
+                    t[0].symbol,
+                ),
+            )
+        else:
+            filtered.sort(
+                key=lambda t: (
+                    t[1].change_percent if t[1].change_percent is not None else 10**9,
+                    -(t[1].volume or -1),
+                    t[0].symbol,
+                ),
+            )
+
+        envelopes_ranked = filtered[:limit]
+        if not envelopes_ranked:
+            return None
+
+        return self._build_pre_ranked_response(
+            market="US",
+            ranking_type=ranking_type,
+            envelopes=envelopes_ranked,
+            market_open=market_open,
+            now=now,
+            source_type=RankingSourceType.free_unofficial,
+            rankings_source_text=_SP500_CHANGE_SOURCE,
+            change_freshness_open=(
+                "Market open; S&P 500 movers ranked by batched Yahoo quote change % (regular session fields)."
+            ),
+            change_freshness_closed=(
+                "Market closed; S&P 500 movers ranked by latest batched Yahoo quote change % (regular session fields)."
+            ),
+        )
+
     def _build_pre_ranked_response(
         self,
         *,
@@ -232,14 +330,12 @@ class RankingsService:
         envelopes: list[tuple[StockRecord, QuoteRecord]],
         market_open: bool,
         now: datetime,
-        source: RankingSourceType,
+        source_type: RankingSourceType,
+        rankings_source_text: str | None = None,
+        change_freshness_open: str | None = None,
+        change_freshness_closed: str | None = None,
     ) -> RankingResponse:
-        """Render rankings that Yahoo already sorted for us.
-
-        The external source returns rows in rank order. We trust that order
-        instead of re-sorting in Python, since Yahoo's ordering matches the
-        canonical metric for the ranking type (volume / change percent).
-        """
+        """Render rankings that arrive already ordered (Yahoo screeners or S&P 500 movers)."""
         # We still want to keep the volume baseline cache warm even when we
         # do not surface volume_up/volume_down for this market, so future
         # requests for those ranking types have a baseline to compare to.
@@ -271,19 +367,22 @@ class RankingsService:
                 else "Market closed; volume rankings come from Yahoo Finance's latest snapshot."
             )
         else:
-            freshness = (
-                "Market open; price-move rankings come from Yahoo Finance and refresh every few minutes."
-                if market_open
-                else "Market closed; price-move rankings come from Yahoo Finance's latest snapshot."
-            )
+            if change_freshness_open is not None and change_freshness_closed is not None:
+                freshness = change_freshness_open if market_open else change_freshness_closed
+            else:
+                freshness = (
+                    "Market open; price-move rankings come from Yahoo Finance and refresh every few minutes."
+                    if market_open
+                    else "Market closed; price-move rankings come from Yahoo Finance's latest snapshot."
+                )
 
         return RankingResponse(
             market=market,
             rankingType=ranking_type,
             items=items,
             timestamp=now.isoformat(),
-            source=_PRE_RANKED_SOURCE,
-            sourceType=source,
+            source=rankings_source_text or _PRE_RANKED_SOURCE,
+            sourceType=source_type,
             isMarketOpen=market_open,
             dataFreshnessLabel=freshness,
             warningMessage=_QUOTE_WARNING,

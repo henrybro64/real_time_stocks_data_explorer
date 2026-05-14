@@ -108,6 +108,8 @@ type TranslationKey =
   | "rankings.freshness.yahooVolumeClosed"
   | "rankings.freshness.yahooChangeOpen"
   | "rankings.freshness.yahooChangeClosed"
+  | "rankings.freshness.sp500MoversOpen"
+  | "rankings.freshness.sp500MoversClosed"
   | "rankings.freshness.volumeBaselineMissing"
   | "rankings.freshness.volumeBaselineOpen"
   | "rankings.freshness.volumeBaselineClosed"
@@ -118,6 +120,7 @@ type TranslationKey =
   | "rankings.freshness.twNetSellClosed"
   | "rankings.source.quoteProviders"
   | "rankings.source.yahooPreRanked"
+  | "rankings.source.sp500Movers"
   | "rankings.source.twse"
   | "rankings.source.unsupported"
   | "portfolio.title"
@@ -322,7 +325,7 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "rankings.column.dataTime": "Data time",
     "rankings.column.source": "Source",
     "rankings.notice.usScope":
-      "U.S. quote rankings come pre-sorted from Yahoo Finance's predefined screeners and cover the broader U.S. market.",
+      "U.S. gainers and losers are the largest regular-session % moves among S&P 500 constituents (committed index snapshot) using batched Yahoo Finance quote fields. U.S. volume still prefers Yahoo's broader most-actives screener when available.",
     "rankings.notice.twScope":
       "Taiwan rankings here use TWSE institutional daily data.",
     "rankings.notice.twQuoteScope":
@@ -345,6 +348,10 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
       "Market open; price-move rankings come from Yahoo Finance and refresh every few minutes.",
     "rankings.freshness.yahooChangeClosed":
       "Market closed; price-move rankings come from Yahoo Finance's latest snapshot.",
+    "rankings.freshness.sp500MoversOpen":
+      "Market open; S&P 500 movers ranked by batched Yahoo quote change % (regular session fields).",
+    "rankings.freshness.sp500MoversClosed":
+      "Market closed; S&P 500 movers ranked by latest batched Yahoo quote change % (regular session fields).",
     "rankings.freshness.volumeBaselineMissing":
       "Baseline unavailable on the first snapshot; volume change percent stays empty until a later refresh.",
     "rankings.freshness.volumeBaselineOpen": "Volume change uses the previous quote snapshot baseline.",
@@ -362,6 +369,8 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
       "Market closed; Taiwan daily institutional ranking sorted by most negative institutional net buy/sell shares.",
     "rankings.source.quoteProviders": "Quote rankings from the app's free best-effort quote providers.",
     "rankings.source.yahooPreRanked": "Yahoo Finance pre-ranked rankings.",
+    "rankings.source.sp500Movers":
+      "S&P 500 movers from a constituent snapshot plus batched Yahoo Finance quote fields (not Yahoo's predefined gainers/losers screeners).",
     "rankings.source.twse": "TWSE T86 daily institutional data",
     "rankings.source.unsupported": "Unsupported in Phase 1 free-only rankings",
     "portfolio.title": "Portfolio",
@@ -568,7 +577,8 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "rankings.column.netBuySell": "買賣超",
     "rankings.column.dataTime": "資料時間",
     "rankings.column.source": "來源",
-    "rankings.notice.usScope": "美股報價排行直接採用 Yahoo Finance 預先排序的選股結果，涵蓋更廣的美股市場。",
+    "rankings.notice.usScope":
+      "美股漲跌幅排行以標普五百成分股（內建名單快照）為範圍，使用 Yahoo Finance 批次報價欄位排序；美股成交量仍優先採用 Yahoo 全市場熱門成交選股（若可用）。",
     "rankings.notice.twScope": "此處的台股排行使用 TWSE 法人日資料。",
     "rankings.notice.twQuoteScope":
       "台股報價排行採用 Yahoo Finance 預先排序的台股排行頁，上市（TWSE）與上櫃（TPEx）合併為同一清單。",
@@ -585,6 +595,10 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "rankings.freshness.yahooChangeOpen":
       "市場開盤中；漲跌幅排行來自 Yahoo Finance，約每幾分鐘自動更新。",
     "rankings.freshness.yahooChangeClosed": "市場休市；漲跌幅排行來自 Yahoo Finance 的最新快照。",
+    "rankings.freshness.sp500MoversOpen":
+      "市場開盤中；標普五百漲跌幅依 Yahoo 批次報價的盤中漲跌幅欄位排序。",
+    "rankings.freshness.sp500MoversClosed":
+      "市場休市；標普五百漲跌幅依 Yahoo 批次報價的最新盤中漲跌幅欄位排序。",
     "rankings.freshness.volumeBaselineMissing": "首次快照尚無基準值；量變化百分比會在後續刷新後顯示。",
     "rankings.freshness.volumeBaselineOpen": "量變化使用前一次報價快照作為基準。",
     "rankings.freshness.volumeBaselineClosed": "市場休市；量變化使用前一次報價快照作為基準。",
@@ -595,6 +609,8 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "rankings.freshness.twNetSellClosed": "市場休市；台股法人日排行依三大法人買賣超股數由低到高排序。",
     "rankings.source.quoteProviders": "排行使用本應用程式的免費最佳努力報價來源。",
     "rankings.source.yahooPreRanked": "Yahoo Finance 預先排序的排行資料。",
+    "rankings.source.sp500Movers":
+      "標普五百漲跌幅：成分股快照＋Yahoo Finance 批次報價欄位（非 Yahoo 預設漲跌榜選股）。",
     "rankings.source.twse": "TWSE T86 法人日資料",
     "rankings.source.unsupported": "Phase 1 免費排行尚不支援",
     "portfolio.title": "投資組合",
