@@ -15,7 +15,7 @@ import {
   TextInput,
   Tile,
 } from "@carbon/react";
-import { useDeferredValue, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { TimeRange } from "@shared/quote";
 import type { Stock } from "@shared/stock";
@@ -41,13 +41,13 @@ export function PortfolioPage() {
   const [draftQuantities, setDraftQuantities] = useState<Record<number, string>>({});
   const [savingPositionIds, setSavingPositionIds] = useState<Record<number, boolean>>({});
   const [savedPositionIds, setSavedPositionIds] = useState<Record<number, boolean>>({});
-  const deferredQuery = useDeferredValue(query);
   const portfolio = usePortfolioPositions();
 
+  const trimmedSearch = query.trim();
   const searchQuery = useQuery<Stock[]>({
-    queryKey: ["portfolio-search", deferredQuery],
-    queryFn: () => searchStocks(deferredQuery),
-    enabled: deferredQuery.trim().length > 0,
+    queryKey: ["portfolio-search", trimmedSearch],
+    queryFn: () => searchStocks(trimmedSearch),
+    enabled: trimmedSearch.length > 0,
   });
   const summaryQuery = useQuery({
     queryKey: ["portfolio-summary"],
