@@ -172,6 +172,7 @@ class RankingsService:
                 )
             )
 
+        candidates = self._filter_quote_candidates_for_ranking_type(candidates, ranking_type)
         ranked_candidates = self._sort_quote_candidates(candidates, ranking_type)[:limit]
         items = [
             _ranking_item(index, candidate)
@@ -454,6 +455,39 @@ class RankingsService:
                 continue
             parsed[f"TW:{raw_symbol}"] = net_value
         return parsed
+
+    @staticmethod
+    def _filter_quote_candidates_for_ranking_type(
+        candidates: list[_RankingCandidate],
+        ranking_type: RankingType,
+    ) -> list[_RankingCandidate]:
+        """Drop rows that cannot be ranked honestly for this metric (quote path only).
+
+        Pre-ranked Yahoo responses skip this filter; they are already scoped to the tab.
+        """
+        if ranking_type == RankingType.volume:
+            return [c for c in candidates if c.volume is not None]
+        if ranking_type == RankingType.change_up:
+            return [
+                c
+                for c in candidates
+                if c.change_percent is not None and c.change_percent > 0
+            ]
+        if ranking_type == RankingType.change_down:
+            return [
+                c
+                for c in candidates
+                if c.change_percent is not None and c.change_percent < 0
+            ]
+        if ranking_type == RankingType.volume_up:
+            return [c for c in candidates if c.volume_delta_percent is not None]
+        if ranking_type == RankingType.volume_down:
+            return [
+                c
+                for c in candidates
+                if c.volume_delta_percent is not None and c.volume_delta_percent < 0
+            ]
+        return candidates
 
     @staticmethod
     def _sort_quote_candidates(

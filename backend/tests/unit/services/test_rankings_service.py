@@ -207,7 +207,7 @@ def test_volume_up_returns_null_delta_when_baseline_is_missing() -> None:
 
     response = service.get_rankings("US", RankingType.volume_up, limit=1)
 
-    assert response.items[0].volumeDeltaPercent is None
+    assert response.items == []
     assert "Baseline unavailable" in response.dataFreshnessLabel
 
 
@@ -280,8 +280,8 @@ def test_change_up_sorts_by_highest_change_percent_descending() -> None:
 
     response = service.get_rankings("TW", RankingType.change_up, limit=3)
 
-    assert [item.stock.symbol for item in response.items] == ["2330", "2317", "2454"]
-    assert [item.changePercent for item in response.items] == [8.0, 3.5, -2.0]
+    assert [item.stock.symbol for item in response.items] == ["2330", "2317"]
+    assert [item.changePercent for item in response.items] == [8.0, 3.5]
     assert response.sourceType == RankingSourceType.free_unofficial
 
 
@@ -327,8 +327,64 @@ def test_change_down_sorts_by_largest_drop_first() -> None:
 
     response = service.get_rankings("TW", RankingType.change_down, limit=3)
 
-    assert [item.stock.symbol for item in response.items] == ["2330", "2317", "2454"]
-    assert [item.changePercent for item in response.items] == [-7.2, -1.5, 2.5]
+    assert [item.stock.symbol for item in response.items] == ["2330", "2317"]
+    assert [item.changePercent for item in response.items] == [-7.2, -1.5]
+
+
+def test_change_down_falls_back_to_only_negative_movers_in_quote_path() -> None:
+    """When Yahoo is unavailable, losers tab must not list gainers."""
+    external = _StubExternalSource({})
+
+    service = RankingsService(
+        quote_source=FakeQuoteSource(
+            stocks={
+                "US:AAPL": _us_stock("US:AAPL", "AAPL", "Apple Inc."),
+                "US:MSFT": _us_stock("US:MSFT", "MSFT", "Microsoft Corporation"),
+                "US:NVDA": _us_stock("US:NVDA", "NVDA", "NVIDIA Corporation"),
+            },
+            quotes={
+                "US:AAPL": _quote(
+                    "US:AAPL",
+                    100,
+                    "2026-05-12T10:00:00-04:00",
+                    change_percent=3.0,
+                    change=3.0,
+                    last_price=103.0,
+                    previous_close=100.0,
+                ),
+                "US:MSFT": _quote(
+                    "US:MSFT",
+                    200,
+                    "2026-05-12T10:00:00-04:00",
+                    change_percent=-2.0,
+                    change=-2.0,
+                    last_price=98.0,
+                    previous_close=100.0,
+                ),
+                "US:NVDA": _quote(
+                    "US:NVDA",
+                    300,
+                    "2026-05-12T10:00:00-04:00",
+                    change_percent=-5.0,
+                    change=-5.0,
+                    last_price=95.0,
+                    previous_close=100.0,
+                ),
+            },
+        ),
+        volume_baseline_store=InMemoryVolumeBaselineStore(),
+        external_source=external,
+    )
+
+    response = service.get_rankings(
+        "US",
+        RankingType.change_down,
+        limit=50,
+        now=datetime(2026, 5, 12, 14, 0, tzinfo=timezone.utc),
+    )
+
+    assert [item.stock.symbol for item in response.items] == ["NVDA", "MSFT"]
+    assert all(item.changePercent is not None and item.changePercent < 0 for item in response.items)
 
 
 def test_limit_parameter_truncates_rankings() -> None:
@@ -420,7 +476,17 @@ def test_change_down_uses_price_move_freshness_label_when_market_closed() -> Non
     service = RankingsService(
         FakeQuoteSource(
             stocks={"US:AAPL": _us_stock("US:AAPL", "AAPL", "Apple Inc.")},
-            quotes={"US:AAPL": _quote("US:AAPL", 100, "2026-05-12T10:00:00-04:00")},
+            quotes={
+                "US:AAPL": _quote(
+                    "US:AAPL",
+                    100,
+                    "2026-05-12T10:00:00-04:00",
+                    change=-1.0,
+                    change_percent=-1.0,
+                    last_price=99.0,
+                    previous_close=100.0,
+                ),
+            },
         )
     )
 
@@ -432,6 +498,8 @@ def test_change_down_uses_price_move_freshness_label_when_market_closed() -> Non
     )
 
     assert response.isMarketOpen is False
+    assert len(response.items) == 1
+    assert response.items[0].stock.symbol == "AAPL"
     assert response.dataFreshnessLabel == (
         "Market closed; price-move rankings use the latest available quote snapshot."
     )
