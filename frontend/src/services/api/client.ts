@@ -239,8 +239,8 @@ export function fetchRankings(
     type: rankingType,
     limit: String(limit),
   });
-  if (market === "TW" && twBoard === "TPEx") {
-    params.set("twBoard", "TPEx");
+  if (market === "TW" && twBoard != null) {
+    params.set("twBoard", twBoard);
   }
   return fetchJson<RankingResponse>(`/rankings?${params.toString()}`);
 }

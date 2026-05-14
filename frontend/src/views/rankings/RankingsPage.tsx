@@ -312,6 +312,9 @@ export function RankingsPage() {
                   {t("rankings.twBoard.tpex")}
                 </Button>
               </div>
+              <p className="app-supporting-copy" data-testid="rankings-tw-board-hint" style={{ marginTop: "0.35rem" }}>
+                {t("rankings.twBoard.hint")}
+              </p>
             </div>
           ) : null}
           <div className="app-shell-brand" style={{ marginTop: "1rem" }}>
@@ -368,6 +371,7 @@ export function RankingsPage() {
                       <TableRow>
                         <TableHeader>{t("rankings.column.rank")}</TableHeader>
                         <TableHeader>{t("rankings.column.symbol")}</TableHeader>
+                        {market === "TW" ? <TableHeader>{t("rankings.column.board")}</TableHeader> : null}
                         <TableHeader>{t("rankings.column.name")}</TableHeader>
                         <TableHeader>{t("rankings.column.lastPrice")}</TableHeader>
                         <TableHeader>{t("rankings.column.changePercent")}</TableHeader>
@@ -385,6 +389,7 @@ export function RankingsPage() {
                           <TableCell>
                             <span className="app-result-symbol">{item.stock.symbol}</span>
                           </TableCell>
+                          {market === "TW" ? <TableCell>{item.stock.exchange}</TableCell> : null}
                           <TableCell>{getDisplayStockName(item.stock, language)}</TableCell>
                           <TableCell>
                             {formatMaybeCurrency(item.lastPrice, item.stock.currency)}
