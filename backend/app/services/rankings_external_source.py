@@ -18,7 +18,8 @@ Python. The two providers behind one interface:
 Responses are cached in Redis (or in-memory if Redis is unavailable) for a
 short TTL so a single user opening the page repeatedly doesn't hammer Yahoo.
 On any failure ``fetch`` returns ``None`` so the caller falls back to the
-existing curated-universe path rather than rendering an empty list.
+S&P 500 quote snapshot path (batched quotes, then per-symbol quotes), skipping
+symbols without usable quotes.
 """
 
 from __future__ import annotations
@@ -140,7 +141,7 @@ class RankingsExternalSource:
             if not envelopes:
                 logger.warning(
                     "Yahoo TW rank page %s returned no parseable rows; "
-                    "falling back to curated universe",
+                    "falling back to the app's TW quote snapshot list",
                     slug,
                 )
                 return None
@@ -159,7 +160,7 @@ class RankingsExternalSource:
         if not envelopes:
             logger.warning(
                 "Yahoo U.S. screener %s returned no parseable quotes; "
-                "falling back to curated universe",
+                "falling back to S&P 500 quote snapshot",
                 scr_id,
             )
             return None

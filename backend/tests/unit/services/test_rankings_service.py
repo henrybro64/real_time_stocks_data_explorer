@@ -17,9 +17,9 @@ def _empty_sp500_quotes(_stocks):
 class _NullExternalSource:
     """External source stub that pretends Yahoo is unavailable.
 
-    Tests that exercise the curated/fallback path get this by default via the
-    ``_disable_external_source`` autouse fixture, so they never hit the real
-    Yahoo network or a Redis cache.
+    Tests that exercise the US S&P 500 quote snapshot path get this by default
+    via the ``_disable_external_source`` autouse fixture, so they never hit the
+    real Yahoo network or a Redis cache.
     """
 
     def __init__(self) -> None:
@@ -34,8 +34,8 @@ class _NullExternalSource:
 def _disable_external_source(monkeypatch):
     """Swap the module-level external source for a null stub.
 
-    Most rankings tests want to assert the curated path. Without this the
-    service would silently short-circuit through the live Yahoo fetcher.
+    Most US rankings tests want to assert the S&P 500 quote snapshot path. Without
+    this the service would silently short-circuit through the live Yahoo fetcher.
     Tests that need to drive the external path inject their own source via
     ``RankingsService(external_source=...)``.
     """
@@ -141,7 +141,8 @@ def test_volume_ranking_sorts_by_volume_descending() -> None:
                 "US:MSFT": _quote("US:MSFT", 300, "2026-05-12T10:00:00-04:00"),
                 "US:NVDA": _quote("US:NVDA", 200, "2026-05-12T10:00:00-04:00"),
             },
-        )
+        ),
+        sp500_quote_batch=_empty_sp500_quotes,
     )
 
     response = service.get_rankings("US", RankingType.volume, limit=3)
@@ -170,6 +171,7 @@ def test_volume_up_ranking_uses_existing_baseline() -> None:
             },
         ),
         volume_baseline_store=volume_baselines,
+        sp500_quote_batch=_empty_sp500_quotes,
     )
 
     response = service.get_rankings("US", RankingType.volume_up, limit=3)
@@ -194,6 +196,7 @@ def test_volume_up_ranks_zero_delta_above_negative_deltas() -> None:
             },
         ),
         volume_baseline_store=volume_baselines,
+        sp500_quote_batch=_empty_sp500_quotes,
     )
 
     response = service.get_rankings("US", RankingType.volume_up, limit=2)
@@ -209,6 +212,7 @@ def test_volume_up_returns_null_delta_when_baseline_is_missing() -> None:
             quotes={"US:AAPL": _quote("US:AAPL", 150, "2026-05-12T10:00:00-04:00")},
         ),
         volume_baseline_store=InMemoryVolumeBaselineStore(),
+        sp500_quote_batch=_empty_sp500_quotes,
     )
 
     response = service.get_rankings("US", RankingType.volume_up, limit=1)
@@ -236,6 +240,7 @@ def test_volume_down_sorts_by_largest_decrease_first() -> None:
             },
         ),
         volume_baseline_store=volume_baselines,
+        sp500_quote_batch=_empty_sp500_quotes,
     )
 
     response = service.get_rankings("US", RankingType.volume_down, limit=3)
@@ -406,7 +411,8 @@ def test_limit_parameter_truncates_rankings() -> None:
                 "US:AAPL": _quote("US:AAPL", 100, "2026-05-12T10:00:00-04:00"),
                 "US:MSFT": _quote("US:MSFT", 300, "2026-05-12T10:00:00-04:00"),
             },
-        )
+        ),
+        sp500_quote_batch=_empty_sp500_quotes,
     )
 
     response = service.get_rankings("US", RankingType.volume, limit=1)
@@ -417,23 +423,30 @@ def test_limit_parameter_truncates_rankings() -> None:
 
 
 def test_us_quote_rankings_exclude_symbols_without_live_quotes() -> None:
+    fake = FakeQuoteSource(
+        stocks={
+            "US:AAPL": _us_stock("US:AAPL", "AAPL", "Apple Inc."),
+            "US:MSFT": _us_stock("US:MSFT", "MSFT", "Microsoft Corporation"),
+            "US:NVDA": _us_stock("US:NVDA", "NVDA", "NVIDIA Corporation"),
+        },
+        quotes={
+            "US:AAPL": _quote("US:AAPL", 999, "2026-05-12T10:00:00-04:00"),
+            "US:MSFT": _quote("US:MSFT", 300, "2026-05-12T10:00:00-04:00"),
+            "US:NVDA": _quote("US:NVDA", 200, "2026-05-12T10:00:00-04:00"),
+        },
+        live_quotes={
+            "US:MSFT": _quote("US:MSFT", 300, "2026-05-12T10:00:00-04:00"),
+            "US:NVDA": _quote("US:NVDA", 200, "2026-05-12T10:00:00-04:00"),
+        },
+    )
+
+    def batch(stocks):
+        return {s.id: q for s in stocks for q in [fake._live_quotes.get(s.id)] if q is not None}
+
     service = RankingsService(
-        FakeQuoteSource(
-            stocks={
-                "US:AAPL": _us_stock("US:AAPL", "AAPL", "Apple Inc."),
-                "US:MSFT": _us_stock("US:MSFT", "MSFT", "Microsoft Corporation"),
-                "US:NVDA": _us_stock("US:NVDA", "NVDA", "NVIDIA Corporation"),
-            },
-            quotes={
-                "US:AAPL": _quote("US:AAPL", 999, "2026-05-12T10:00:00-04:00"),
-                "US:MSFT": _quote("US:MSFT", 300, "2026-05-12T10:00:00-04:00"),
-                "US:NVDA": _quote("US:NVDA", 200, "2026-05-12T10:00:00-04:00"),
-            },
-            live_quotes={
-                "US:MSFT": _quote("US:MSFT", 300, "2026-05-12T10:00:00-04:00"),
-                "US:NVDA": _quote("US:NVDA", 200, "2026-05-12T10:00:00-04:00"),
-            },
-        )
+        quote_source=fake,
+        sp500_symbol_loader=lambda: ("AAPL", "MSFT", "NVDA"),
+        sp500_quote_batch=batch,
     )
 
     response = service.get_rankings("US", RankingType.volume, limit=3)
@@ -446,7 +459,8 @@ def test_market_closed_label_is_exposed_on_quote_rankings() -> None:
         FakeQuoteSource(
             stocks={"US:AAPL": _us_stock("US:AAPL", "AAPL", "Apple Inc.")},
             quotes={"US:AAPL": _quote("US:AAPL", 100, "2026-05-12T10:00:00-04:00")},
-        )
+        ),
+        sp500_quote_batch=_empty_sp500_quotes,
     )
 
     response = service.get_rankings(
@@ -688,6 +702,7 @@ def test_rankings_fall_back_to_curated_when_external_source_returns_none() -> No
         ),
         volume_baseline_store=InMemoryVolumeBaselineStore(),
         external_source=external,
+        sp500_quote_batch=_empty_sp500_quotes,
     )
 
     response = service.get_rankings(
@@ -715,6 +730,7 @@ def test_volume_up_rankings_never_call_external_source() -> None:
         ),
         volume_baseline_store=InMemoryVolumeBaselineStore(),
         external_source=external,
+        sp500_quote_batch=_empty_sp500_quotes,
     )
 
     service.get_rankings(

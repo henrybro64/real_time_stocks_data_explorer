@@ -35,18 +35,6 @@ from app.services.sp500_constituents import load_sp500_symbols
 
 RankingMarket = Literal["US", "TW"]
 
-US_RANKING_STOCK_IDS = [
-    "US:AAPL",
-    "US:MSFT",
-    "US:NVDA",
-    "US:MU",
-    "US:TSLA",
-    "US:AMD",
-    "US:META",
-    "US:AMZN",
-    "US:GOOGL",
-]
-
 TW_RANKING_STOCK_IDS = [
     "TW:0050",
     "TW:2330",
@@ -58,7 +46,6 @@ TW_RANKING_STOCK_IDS = [
 ]
 
 MARKET_UNIVERSES: dict[RankingMarket, list[str]] = {
-    "US": US_RANKING_STOCK_IDS,
     "TW": TW_RANKING_STOCK_IDS,
 }
 
@@ -244,12 +231,30 @@ class RankingsService:
         self,
         market: RankingMarket,
     ) -> list[tuple[StockRecord, QuoteRecord]]:
-        stock_ids = MARKET_UNIVERSES[market]
         if market == "US":
-            get_live_quotes = getattr(self.quote_source, "get_live_quotes", None)
-            if callable(get_live_quotes):
-                return get_live_quotes(stock_ids)
+            return self._us_sp500_quote_snapshot_envelopes()
+        stock_ids = MARKET_UNIVERSES[market]
         return self.quote_source.get_quotes(stock_ids)
+
+    def _us_sp500_quote_snapshot_envelopes(self) -> list[tuple[StockRecord, QuoteRecord]]:
+        """US quote-path rankings: S&P 500 constituent snapshot; omit symbols with no quote."""
+        symbols = self._sp500_symbol_loader()
+        if not symbols:
+            return []
+        stocks: list[StockRecord] = []
+        for sym in symbols:
+            sid = f"US:{sym}"
+            stock = self.quote_source.get_stock(sid)
+            if stock is None:
+                stock = synthetic_us_stock(sym)
+            if stock is None:
+                continue
+            stocks.append(stock)
+
+        quotes_by_id = self._sp500_quote_batch(stocks)
+        if quotes_by_id:
+            return [(s, quotes_by_id[s.id]) for s in stocks if s.id in quotes_by_id]
+        return self.quote_source.get_quotes([s.id for s in stocks])
 
     def _try_build_us_sp500_price_movers(
         self,

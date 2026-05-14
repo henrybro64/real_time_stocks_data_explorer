@@ -332,7 +332,7 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "rankings.notice.usScopeSp500":
       "U.S. gainers and losers are the largest regular-session % moves among S&P 500 constituents (committed index snapshot) using batched Yahoo Finance quote fields. U.S. volume still prefers Yahoo's broader most-actives screener when available.",
     "rankings.notice.usScopeQuote":
-      "U.S. rankings for this tab use the app's tracked-symbol list and live quotes (used when Yahoo's screener or S&P 500 batch quotes are unavailable for this view).",
+      "U.S. rankings for this tab use the committed S&P 500 constituent snapshot and live quotes; symbols without a usable quote are omitted (shown when Yahoo's screener or batched quotes are unavailable for this view).",
     "rankings.notice.usScopePending":
       "U.S. scope for this tab appears after its data finishes loading.",
     "rankings.notice.twScope":
@@ -590,7 +590,7 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "rankings.notice.usScopeSp500":
       "美股漲跌幅排行以標普五百成分股（內建名單快照）為範圍，使用 Yahoo Finance 批次報價欄位排序；美股成交量仍優先採用 Yahoo 全市場熱門成交選股（若可用）。",
     "rankings.notice.usScopeQuote":
-      "美股此分頁目前使用應用程式追蹤清單與即時報價排序（當 Yahoo 選股或標普五百批次報價暫不可用時會走此路徑）。",
+      "美股此分頁使用內建標普五百成分股名單與即時報價排序；無法取得有效報價的代碼會略過（當 Yahoo 選股或批次報價不可用時會走此路徑）。",
     "rankings.notice.usScopePending": "美股此分頁的資料範圍說明會在資料載入完成後顯示。",
     "rankings.notice.twScope": "此處的台股排行使用 TWSE 法人日資料。",
     "rankings.notice.twQuoteScope":
