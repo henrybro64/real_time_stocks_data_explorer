@@ -16,7 +16,7 @@ Python. The two providers behind one interface:
   cookie internally. Returns JSON with full quote fields per row.
 
 Responses are cached in Redis (or in-memory if Redis is unavailable) for a
-short TTL so a single user opening the page repeatedly doesn't hammer Yahoo.
+bounded TTL so repeat traffic does not hammer Yahoo; tune via settings.
 On any failure ``fetch`` returns ``None`` so the caller falls back to the
 S&P 500 quote snapshot path (batched quotes, then per-symbol quotes), skipping
 symbols without usable quotes.
@@ -38,6 +38,7 @@ from app.models.stock import StockRecord
 from app.schemas.rankings import RankingType
 from app.services.http_client import HttpFetchError, fetch_text
 from app.services.market_clock import is_market_open
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +49,7 @@ _BROWSER_USER_AGENT = (
 )
 _REQUEST_TIMEOUT_SECONDS = 8.0
 _REQUEST_RETRIES = 1
-_CACHE_TTL_SECONDS = 300  # 5 min; pre-ranked pages don't move that fast
+_CACHE_TTL_SECONDS = 600  # Default 10 min; production uses ``settings.rankings_external_cache_ttl_seconds``.
 _CACHE_KEY_PREFIX = "rankings:external:v1:"
 _FETCH_BATCH = 50  # how many rows to ask for and cache; UI tops out at 50
 
@@ -610,7 +611,9 @@ def _deserialize_envelopes(
     return envelopes
 
 
-rankings_external_source = RankingsExternalSource()
+rankings_external_source = RankingsExternalSource(
+    cache_ttl_seconds=settings.rankings_external_cache_ttl_seconds,
+)
 
 
 __all__ = [

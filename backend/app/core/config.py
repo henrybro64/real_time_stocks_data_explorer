@@ -21,6 +21,9 @@ class Settings(BaseSettings):
     redis_url: str = Field(default="")
     # TTL for cached quote payloads when Redis is enabled.
     quote_cache_ttl_seconds: int = Field(default=60, ge=1)
+    # TTL for Yahoo / TW pre-ranked rank pages (Redis + in-memory).
+    # Higher values mean fewer upstream calls (env RANKINGS_EXTERNAL_CACHE_TTL_SECONDS).
+    rankings_external_cache_ttl_seconds: int = Field(default=600, ge=60, le=7200)
     # Background sampler for portfolio history snapshots.
     portfolio_history_sampler_enabled: bool = Field(default=True)
     portfolio_history_poll_seconds: int = Field(default=300, ge=30)
