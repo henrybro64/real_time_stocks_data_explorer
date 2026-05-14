@@ -86,6 +86,7 @@ type TranslationKey =
   | "rankings.tab.netSell"
   | "rankings.column.rank"
   | "rankings.column.symbol"
+  | "rankings.column.board"
   | "rankings.column.name"
   | "rankings.column.lastPrice"
   | "rankings.column.changePercent"
@@ -325,6 +326,7 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "rankings.tab.netSell": "Net sell",
     "rankings.column.rank": "Rank",
     "rankings.column.symbol": "Symbol",
+    "rankings.column.board": "Board",
     "rankings.column.name": "Name",
     "rankings.column.lastPrice": "Last price",
     "rankings.column.changePercent": "Change %",
@@ -592,6 +594,7 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "rankings.tab.netSell": "賣超",
     "rankings.column.rank": "排名",
     "rankings.column.symbol": "代碼",
+    "rankings.column.board": "板別",
     "rankings.column.name": "名稱",
     "rankings.column.lastPrice": "最新價",
     "rankings.column.changePercent": "漲跌幅",

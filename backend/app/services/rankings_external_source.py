@@ -1,25 +1,18 @@
 """Pre-ranked rankings data from Yahoo Finance.
 
-Yahoo already publishes top-N by volume / change-up / change-down for both
-markets, so we ask them rather than fetching every stock and sorting in
-Python. The two providers behind one interface:
+Yahoo already publishes top-N volume / movers; we scrape or screen instead of
+ranking every symbol in Python. Providers:
 
-* Taiwan: HTML rank pages at ``tw.stock.yahoo.com/rank/{volume,change-up,change-down}``.
-  Yahoo's default Taiwan tables interleave **上市 (TWSE, ``.TW``)** and **上櫃
-  (TPEx / 櫃買, ``.TWO``)** in one pre-sorted list; we parse both suffixes and
-  map them to ``exchange="TWSE"`` vs ``"TPEx"``. These pages are server-side
-  rendered; we strip the tags and walk the resulting text lines, looking for
-  stock-symbol markers and reading the surrounding fields. Same approach as
-  the existing ``tw_insights_service`` scrape.
-* U.S.: ``yfinance.screen("most_actives" | "day_gainers" | "day_losers")``,
-  which wraps the predefined screener endpoint and handles Yahoo's crumb
-  cookie internally. Returns JSON with full quote fields per row.
+* Taiwan: HTML at ``tw.stock.yahoo.com/rank/{volume,change-up,change-down}``.
+  Tables mix ``.TW`` (TWSE) and ``.TWO`` (TPEx); we parse rows with ``exchange``
+  set, then ``_filter_tw_board`` keeps the requested board.
+  SSR HTML is stripped to text (same approach as ``tw_insights_service``).
+* U.S.: ``yfinance.screen("most_actives" | "day_gainers" | "day_losers")`` with
+  Yahoo's crumb handling; JSON rows include quote fields.
 
-Responses are cached in Redis (or in-memory if Redis is unavailable) for a
-short TTL so a single user opening the page repeatedly doesn't hammer Yahoo.
-On any failure ``fetch`` returns ``None`` so the caller falls back to the
-S&P 500 quote snapshot path (batched quotes, then per-symbol quotes), skipping
-symbols without usable quotes.
+Responses are cached in Redis (or in-memory) for a bounded TTL (see settings).
+On failure, ``fetch`` returns ``None`` and the caller uses quote-snapshot
+fallback (batched or per-symbol quotes).
 """
 
 from __future__ import annotations
@@ -38,6 +31,7 @@ from app.models.stock import StockRecord
 from app.schemas.rankings import RankingType
 from app.services.http_client import HttpFetchError, fetch_text
 from app.services.market_clock import is_market_open
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +42,7 @@ _BROWSER_USER_AGENT = (
 )
 _REQUEST_TIMEOUT_SECONDS = 8.0
 _REQUEST_RETRIES = 1
-_CACHE_TTL_SECONDS = 300  # 5 min; pre-ranked pages don't move that fast
+_CACHE_TTL_SECONDS = 600  # Default 10 min; production uses ``settings.rankings_external_cache_ttl_seconds``.
 _CACHE_KEY_PREFIX = "rankings:external:v1:"
 _FETCH_BATCH = 50  # how many rows to ask for and cache; UI tops out at 50
 
@@ -610,7 +604,9 @@ def _deserialize_envelopes(
     return envelopes
 
 
-rankings_external_source = RankingsExternalSource()
+rankings_external_source = RankingsExternalSource(
+    cache_ttl_seconds=settings.rankings_external_cache_ttl_seconds,
+)
 
 
 __all__ = [

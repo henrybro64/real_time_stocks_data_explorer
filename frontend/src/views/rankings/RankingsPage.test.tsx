@@ -200,6 +200,7 @@ describe("RankingsPage", () => {
 
     expect(await screen.findByRole("heading", { level: 1, name: "市場排行" })).toBeInTheDocument();
     expect(await screen.findByTestId("rankings-row-TW:2330")).toBeInTheDocument();
+    expect(await screen.findByRole("columnheader", { name: "板別" })).toBeInTheDocument();
     expect(screen.getByTestId("rankings-realtime-tag")).toHaveTextContent("非即時");
     expect(screen.getByTestId("rankings-scope-note")).toHaveTextContent(
       "此處的台股法人排行僅含上市（TWSE）股票，資料來自 TWSE 法人日報表。",
