@@ -8,6 +8,10 @@ type RankingsCopyKey =
   | "rankings.freshness.quoteSnapshotClosed"
   | "rankings.freshness.changeSnapshotOpen"
   | "rankings.freshness.changeSnapshotClosed"
+  | "rankings.freshness.yahooVolumeOpen"
+  | "rankings.freshness.yahooVolumeClosed"
+  | "rankings.freshness.yahooChangeOpen"
+  | "rankings.freshness.yahooChangeClosed"
   | "rankings.freshness.volumeBaselineMissing"
   | "rankings.freshness.volumeBaselineOpen"
   | "rankings.freshness.volumeBaselineClosed"
@@ -17,6 +21,7 @@ type RankingsCopyKey =
   | "rankings.freshness.twNetBuyClosed"
   | "rankings.freshness.twNetSellClosed"
   | "rankings.source.quoteProviders"
+  | "rankings.source.yahooPreRanked"
   | "rankings.source.twse"
   | "rankings.source.unsupported";
 
@@ -27,6 +32,14 @@ const FRESHNESS_LABEL_KEYS: Record<string, RankingsCopyKey> = {
     "rankings.freshness.changeSnapshotOpen",
   "Market closed; price-move rankings use the latest available quote snapshot.":
     "rankings.freshness.changeSnapshotClosed",
+  "Market open; volume rankings come from Yahoo Finance and refresh every few minutes.":
+    "rankings.freshness.yahooVolumeOpen",
+  "Market closed; volume rankings come from Yahoo Finance's latest snapshot.":
+    "rankings.freshness.yahooVolumeClosed",
+  "Market open; price-move rankings come from Yahoo Finance and refresh every few minutes.":
+    "rankings.freshness.yahooChangeOpen",
+  "Market closed; price-move rankings come from Yahoo Finance's latest snapshot.":
+    "rankings.freshness.yahooChangeClosed",
   "Baseline unavailable on the first snapshot; volume change percent stays empty until a later refresh.":
     "rankings.freshness.volumeBaselineMissing",
   "Volume change uses the previous quote snapshot baseline.": "rankings.freshness.volumeBaselineOpen",
@@ -54,6 +67,7 @@ const UNSUPPORTED_REASON_KEYS: Record<string, RankingsCopyKey> = {
 
 const SOURCE_KEYS: Record<string, RankingsCopyKey> = {
   "Quote rankings from the app's free best-effort quote providers.": "rankings.source.quoteProviders",
+  "Yahoo Finance pre-ranked quote rankings.": "rankings.source.yahooPreRanked",
   "TWSE T86 daily institutional data": "rankings.source.twse",
   "Unsupported in Phase 1 free-only rankings": "rankings.source.unsupported",
 };

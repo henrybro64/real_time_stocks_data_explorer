@@ -17,6 +17,10 @@ from app.schemas.stock import StockResponse
 from app.services.http_client import HttpFetchError, fetch_json
 from app.services.market_clock import is_market_open
 from app.services.quote_service import QuoteService, quote_service
+from app.services.rankings_external_source import (
+    RankingsExternalSource,
+    rankings_external_source,
+)
 from app.services.rankings_volume_baseline_cache import (
     VolumeBaselineStore,
     default_volume_baseline_store,
@@ -59,6 +63,8 @@ _UNSUPPORTED_REASONS: dict[RankingType, str] = {
 
 _QUOTE_SOURCE = "Quote rankings from the app's free best-effort quote providers."
 _QUOTE_WARNING = "Free unofficial quote source; data may be delayed or unavailable."
+_PRE_RANKED_SOURCE = "Yahoo Finance pre-ranked quote rankings."
+_PRE_RANKED_TYPES = {RankingType.volume, RankingType.change_up, RankingType.change_down}
 _TW_DAILY_WARNING = "台股三大法人買賣超為日資料，非盤中即時資料。"
 _TWSE_T86_URL = "https://www.twse.com.tw/fund/T86"
 _TWSE_T86_SELECT_TYPE = "ALLBUT0999"
@@ -85,9 +91,11 @@ class RankingsService:
         self,
         quote_source: QuoteService | None = None,
         volume_baseline_store: VolumeBaselineStore | None = None,
+        external_source: RankingsExternalSource | None = None,
     ) -> None:
         self.quote_source = quote_source or quote_service
         self._volume_baselines = volume_baseline_store or default_volume_baseline_store
+        self._external_source = external_source or rankings_external_source
 
     def get_rankings(
         self,
@@ -112,6 +120,24 @@ class RankingsService:
         now: datetime,
     ) -> RankingResponse:
         market_open = is_market_open(market, now)
+
+        if ranking_type in _PRE_RANKED_TYPES:
+            external_envelopes = self._external_source.fetch(
+                market=market,
+                ranking_type=ranking_type,
+                limit=limit,
+                now=now,
+            )
+            if external_envelopes:
+                return self._build_pre_ranked_response(
+                    market=market,
+                    ranking_type=ranking_type,
+                    envelopes=external_envelopes,
+                    market_open=market_open,
+                    now=now,
+                    source=RankingSourceType.free_unofficial,
+                )
+
         candidates: list[_RankingCandidate] = []
         baseline_missing = False
 
@@ -196,6 +222,72 @@ class RankingsService:
             if callable(get_live_quotes):
                 return get_live_quotes(stock_ids)
         return self.quote_source.get_quotes(stock_ids)
+
+    def _build_pre_ranked_response(
+        self,
+        *,
+        market: RankingMarket,
+        ranking_type: RankingType,
+        envelopes: list[tuple[StockRecord, QuoteRecord]],
+        market_open: bool,
+        now: datetime,
+        source: RankingSourceType,
+    ) -> RankingResponse:
+        """Render rankings that Yahoo already sorted for us.
+
+        The external source returns rows in rank order. We trust that order
+        instead of re-sorting in Python, since Yahoo's ordering matches the
+        canonical metric for the ranking type (volume / change percent).
+        """
+        # We still want to keep the volume baseline cache warm even when we
+        # do not surface volume_up/volume_down for this market, so future
+        # requests for those ranking types have a baseline to compare to.
+        for stock, quote in envelopes:
+            if quote.volume is not None:
+                self._volume_baselines.set(stock.id, quote.volume)
+
+        candidates = [
+            _RankingCandidate(
+                stock=_stock_schema(stock),
+                last_price=quote.last_price,
+                change_percent=quote.change_percent,
+                volume=quote.volume,
+                volume_delta_percent=None,
+                net_buy_sell_shares=None,
+                timestamp=quote.timestamp,
+            )
+            for stock, quote in envelopes
+        ]
+        items = [
+            _ranking_item(index, candidate)
+            for index, candidate in enumerate(candidates, start=1)
+        ]
+
+        if ranking_type == RankingType.volume:
+            freshness = (
+                "Market open; volume rankings come from Yahoo Finance and refresh every few minutes."
+                if market_open
+                else "Market closed; volume rankings come from Yahoo Finance's latest snapshot."
+            )
+        else:
+            freshness = (
+                "Market open; price-move rankings come from Yahoo Finance and refresh every few minutes."
+                if market_open
+                else "Market closed; price-move rankings come from Yahoo Finance's latest snapshot."
+            )
+
+        return RankingResponse(
+            market=market,
+            rankingType=ranking_type,
+            items=items,
+            timestamp=now.isoformat(),
+            source=_PRE_RANKED_SOURCE,
+            sourceType=source,
+            isMarketOpen=market_open,
+            dataFreshnessLabel=freshness,
+            warningMessage=_QUOTE_WARNING,
+            unsupportedReason=None,
+        )
 
     def _build_tw_institutional_ranking(
         self,

@@ -1,10 +1,44 @@
 from datetime import date, datetime, timezone
 
+import pytest
+
 from app.schemas.rankings import RankingSourceType, RankingType
 from app.services import rankings_service as rankings_service_module
 from app.services.rankings_service import RankingsService
 from app.services.rankings_volume_baseline_cache import InMemoryVolumeBaselineStore
 from tests.support import quote_record, stock_record
+
+
+class _NullExternalSource:
+    """External source stub that pretends Yahoo is unavailable.
+
+    Tests that exercise the curated/fallback path get this by default via the
+    ``_disable_external_source`` autouse fixture, so they never hit the real
+    Yahoo network or a Redis cache.
+    """
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, RankingType]] = []
+
+    def fetch(self, market, ranking_type, limit, now=None):  # noqa: ARG002
+        self.calls.append((market, ranking_type))
+        return None
+
+
+@pytest.fixture(autouse=True)
+def _disable_external_source(monkeypatch):
+    """Swap the module-level external source for a null stub.
+
+    Most rankings tests want to assert the curated path. Without this the
+    service would silently short-circuit through the live Yahoo fetcher.
+    Tests that need to drive the external path inject their own source via
+    ``RankingsService(external_source=...)``.
+    """
+    monkeypatch.setattr(
+        rankings_service_module,
+        "rankings_external_source",
+        _NullExternalSource(),
+    )
 
 
 class FakeQuoteSource:
@@ -401,6 +435,145 @@ def test_change_down_uses_price_move_freshness_label_when_market_closed() -> Non
     assert response.dataFreshnessLabel == (
         "Market closed; price-move rankings use the latest available quote snapshot."
     )
+
+
+class _StubExternalSource:
+    """Returns canned envelopes in a fixed order, in the spirit of Yahoo's pre-sorted output."""
+
+    def __init__(self, envelopes_by_key: dict[tuple[str, RankingType], list]) -> None:
+        self._envelopes_by_key = envelopes_by_key
+        self.calls: list[tuple[str, RankingType, int]] = []
+
+    def fetch(self, market, ranking_type, limit, now=None):  # noqa: ARG002
+        self.calls.append((market, ranking_type, limit))
+        envelopes = self._envelopes_by_key.get((market, ranking_type))
+        if envelopes is None:
+            return None
+        return envelopes[:limit]
+
+
+def test_volume_rankings_use_external_source_when_available() -> None:
+    yahoo_envelopes = [
+        (
+            _tw_stock("TW:9999", "9999", "Yahoo-only"),
+            _quote("TW:9999", 100, "2026-05-12T10:00:00+08:00"),
+        ),
+        (
+            _tw_stock("TW:2330", "2330", "台積電"),
+            _quote("TW:2330", 50, "2026-05-12T10:00:00+08:00"),
+        ),
+    ]
+    external = _StubExternalSource({("TW", RankingType.volume): yahoo_envelopes})
+
+    quote_source = FakeQuoteSource(
+        stocks={
+            # Curated stock that should NOT appear because the external source
+            # short-circuits before the fan-out runs.
+            "TW:2317": _tw_stock("TW:2317", "2317", "鴻海"),
+        },
+        quotes={
+            "TW:2317": _quote("TW:2317", 999_999, "2026-05-12T10:00:00+08:00"),
+        },
+    )
+    service = RankingsService(
+        quote_source=quote_source,
+        volume_baseline_store=InMemoryVolumeBaselineStore(),
+        external_source=external,
+    )
+
+    response = service.get_rankings(
+        "TW",
+        RankingType.volume,
+        limit=10,
+        now=datetime(2026, 5, 12, 3, 0, tzinfo=timezone.utc),
+    )
+
+    assert [item.stock.symbol for item in response.items] == ["9999", "2330"]
+    assert external.calls == [("TW", RankingType.volume, 10)]
+    assert response.source == "Yahoo Finance pre-ranked quote rankings."
+    assert response.dataFreshnessLabel == (
+        "Market open; volume rankings come from Yahoo Finance and refresh every few minutes."
+    )
+
+
+def test_change_up_rankings_use_external_source_in_yahoo_order() -> None:
+    yahoo_envelopes = [
+        (
+            _us_stock("US:AAA", "AAA", "Top Gainer"),
+            _quote("US:AAA", 1000, "2026-05-12T10:00:00-04:00", change_percent=12.5),
+        ),
+        (
+            _us_stock("US:BBB", "BBB", "Second Gainer"),
+            _quote("US:BBB", 1000, "2026-05-12T10:00:00-04:00", change_percent=9.3),
+        ),
+    ]
+    external = _StubExternalSource({("US", RankingType.change_up): yahoo_envelopes})
+
+    service = RankingsService(
+        quote_source=FakeQuoteSource(stocks={}, quotes={}),
+        volume_baseline_store=InMemoryVolumeBaselineStore(),
+        external_source=external,
+    )
+
+    response = service.get_rankings(
+        "US",
+        RankingType.change_up,
+        limit=5,
+        now=datetime(2026, 5, 12, 14, 0, tzinfo=timezone.utc),
+    )
+
+    assert [item.stock.symbol for item in response.items] == ["AAA", "BBB"]
+    assert response.dataFreshnessLabel == (
+        "Market open; price-move rankings come from Yahoo Finance and refresh every few minutes."
+    )
+
+
+def test_rankings_fall_back_to_curated_when_external_source_returns_none() -> None:
+    external = _StubExternalSource({})  # always returns None
+
+    service = RankingsService(
+        quote_source=FakeQuoteSource(
+            stocks={"US:AAPL": _us_stock("US:AAPL", "AAPL", "Apple Inc.")},
+            quotes={"US:AAPL": _quote("US:AAPL", 100, "2026-05-12T10:00:00-04:00")},
+        ),
+        volume_baseline_store=InMemoryVolumeBaselineStore(),
+        external_source=external,
+    )
+
+    response = service.get_rankings(
+        "US",
+        RankingType.volume,
+        limit=10,
+        now=datetime(2026, 5, 12, 14, 0, tzinfo=timezone.utc),
+    )
+
+    assert [item.stock.symbol for item in response.items] == ["AAPL"]
+    assert response.source == "Quote rankings from the app's free best-effort quote providers."
+    assert response.dataFreshnessLabel == (
+        "Market open; rankings use the latest quote snapshot."
+    )
+
+
+def test_volume_up_rankings_never_call_external_source() -> None:
+    external = _StubExternalSource({})
+
+    service = RankingsService(
+        quote_source=FakeQuoteSource(
+            stocks={"US:AAPL": _us_stock("US:AAPL", "AAPL", "Apple Inc.")},
+            quotes={"US:AAPL": _quote("US:AAPL", 100, "2026-05-12T10:00:00-04:00")},
+        ),
+        volume_baseline_store=InMemoryVolumeBaselineStore(),
+        external_source=external,
+    )
+
+    service.get_rankings(
+        "US",
+        RankingType.volume_up,
+        limit=10,
+        now=datetime(2026, 5, 12, 14, 0, tzinfo=timezone.utc),
+    )
+
+    assert external.calls == [], "volume_up is our custom metric; should not query Yahoo"
 
 
 def test_us_net_buy_is_explicitly_unsupported() -> None:

@@ -110,15 +110,17 @@ GET /api/rankings?market=TW|US&type=volume|volume_up|volume_down|change_up|chang
 
 Available ranking types per market:
 
-- Taiwan: `volume`, `change_up`, `change_down` (quote-based) and `net_buy`, `net_sell` (daily institutional)
-- U.S.: `volume`, `volume_up`, `volume_down`, `change_up`, `change_down` (all quote-based)
+- Taiwan UI tabs: `volume`, `change_up`, `change_down` (quote-based) and `net_buy`, `net_sell` (daily institutional)
+- U.S. UI tabs: `volume`, `change_up`, `change_down`
+- Backend also accepts `volume_up` / `volume_down` for either market, but these are our custom "vs previous snapshot" metric and are not exposed in the U.S. UI because Yahoo's pre-ranked sources do not cover them
 
-Notes:
+Data sources:
 
-- quote-based rankings (`volume`, `volume_up`, `volume_down`, `change_up`, `change_down`) cover a limited tracked universe rather than the full market, since reliable free market-wide quote data is not available in this app
-- Taiwan `net_buy` and `net_sell` use TWSE T86 daily institutional data and are explicitly labeled as daily, not intraday real-time
-- U.S. institutional `net_buy`/`net_sell` are not supported because reliable free U.S. institutional data is not available in this app
-- if a free public source is temporarily unavailable, the page shows an unavailable state instead of pretending the data is fresh
+- `volume`, `change_up`, `change_down` come pre-sorted from Yahoo Finance — Yahoo Taiwan rank pages (`tw.stock.yahoo.com/rank/volume|change-up|change-down`) that combine **上市 (TWSE, `.TW`)** and **上櫃 (TPEx, `.TWO`)** in one pre-sorted list, and `yfinance.screen("most_actives" | "day_gainers" | "day_losers")` for U.S. Responses are cached per (market, ranking_type) for ~5 min so reopening the page does not refetch.
+- `volume_up`, `volume_down` rank a small curated universe by comparing live volume to the previous in-process baseline, since no public source publishes this metric.
+- Taiwan `net_buy` and `net_sell` use TWSE T86 daily institutional data and are explicitly labeled as daily, not intraday real-time.
+- U.S. institutional `net_buy` / `net_sell` are not supported (no reliable free U.S. institutional source).
+- If the Yahoo pre-ranked fetch fails, the page falls back to a small curated quote universe so something still renders; if the free public source is fully down the page shows an unavailable state instead of pretending the data is fresh.
 
 Frontend:
 
