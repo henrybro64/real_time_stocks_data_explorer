@@ -44,3 +44,6 @@ class RankingResponse(BaseModel):
     dataFreshnessLabel: str
     warningMessage: str | None = None
     unsupportedReason: str | None = None
+    # US-only: which universe/method backs the *current* tab so the scope banner stays honest
+    # (S&P 500 batch quotes vs Yahoo screeners vs the app's quote snapshot list).
+    usRankingsScope: str | None = None

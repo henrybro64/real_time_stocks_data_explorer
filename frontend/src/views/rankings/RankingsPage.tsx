@@ -36,6 +36,13 @@ import {
 const DEFAULT_LIMIT = 50;
 const DEFAULT_MARKET = "TW" as const;
 type RankingMarket = RankingResponse["market"];
+
+type UsScopeNoticeKey =
+  | "rankings.notice.usScopeYahoo"
+  | "rankings.notice.usScopeSp500"
+  | "rankings.notice.usScopeQuote"
+  | "rankings.notice.usScopePending";
+
 type RankingsTabLabelKey =
   | "rankings.tab.volume"
   | "rankings.tab.volumeUp"
@@ -73,6 +80,27 @@ function defaultRankingTypeForMarket(market: RankingMarket): RankingType {
 
 function isInstitutionalRanking(rankingType: RankingType) {
   return rankingType === "net_buy" || rankingType === "net_sell";
+}
+
+function usScopeNoticeKeyFromState(
+  rankingType: RankingType,
+  data: RankingResponse | undefined,
+): UsScopeNoticeKey {
+  const aligned =
+    data != null && data.market === "US" && data.rankingType === rankingType;
+  if (!aligned) {
+    return "rankings.notice.usScopePending";
+  }
+  switch (data.usRankingsScope) {
+    case "sp500":
+      return "rankings.notice.usScopeSp500";
+    case "yahoo":
+      return "rankings.notice.usScopeYahoo";
+    case "quote":
+      return "rankings.notice.usScopeQuote";
+    default:
+      return "rankings.notice.usScopePending";
+  }
 }
 
 export function getRankingsRefetchInterval(isMarketOpen: boolean, rankingType: RankingType) {
@@ -181,7 +209,7 @@ export function RankingsPage() {
   const showNetBuySellColumn = isInstitutionalRanking(rankingType);
   const scopeNoteKey =
     market === "US"
-      ? "rankings.notice.usScope"
+      ? usScopeNoticeKeyFromState(rankingType, data)
       : isInstitutionalRanking(rankingType)
         ? "rankings.notice.twScope"
         : "rankings.notice.twQuoteScope";

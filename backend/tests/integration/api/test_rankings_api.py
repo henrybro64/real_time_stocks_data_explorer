@@ -46,6 +46,7 @@ def _sample_response() -> RankingResponse:
         dataFreshnessLabel="Market open; rankings use the latest quote snapshot.",
         warningMessage="Free unofficial quote source; data may be delayed or unavailable.",
         unsupportedReason=None,
+        usRankingsScope=None,
     )
 
 
@@ -87,6 +88,7 @@ def test_rankings_endpoint_returns_response_shape(monkeypatch, client) -> None:
         "dataFreshnessLabel": "Market open; rankings use the latest quote snapshot.",
         "warningMessage": "Free unofficial quote source; data may be delayed or unavailable.",
         "unsupportedReason": None,
+        "usRankingsScope": None,
     }
 
 

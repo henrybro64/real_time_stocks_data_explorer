@@ -487,38 +487,13 @@ def _fetch_yahoo_chart_quote(stock: StockRecord) -> QuoteRecord | None:
     return None
 
 
-def _fetch_yahoo_v7_quote(stock: StockRecord) -> QuoteRecord | None:
-    headers = {
-        "User-Agent": _BROWSER_USER_AGENT,
-        "Accept": "application/json,text/plain,*/*",
-    }
-    item: dict | None = None
-    for candidate in (stock.symbol, f"{stock.symbol}.US"):
-        try:
-            payload = _load_json_with_headers(
-                _YAHOO_QUOTE_URL,
-                {"symbols": candidate},
-                headers,
-            )
-        except (HttpFetchError, TimeoutError, ValueError):
-            continue
+def _yahoo_v7_request_symbol(symbol: str) -> str:
+    """Yahoo v7 ``symbols=`` prefers hyphens for class‑B style tickers (e.g. ``BRK-B``)."""
+    return symbol.strip().upper().replace(".", "-")
 
-        quote_response = payload.get("quoteResponse")
-        if not isinstance(quote_response, dict):
-            continue
-        if quote_response.get("error"):
-            continue
-        result = quote_response.get("result")
-        if not isinstance(result, list) or not result:
-            continue
-        first = result[0]
-        if isinstance(first, dict):
-            item = first
-            break
 
-    if item is None:
-        return None
-
+def quote_from_yahoo_v7_item(item: dict, stock: StockRecord) -> QuoteRecord | None:
+    """Build a :class:`QuoteRecord` from one Yahoo Finance v7 ``quote`` result row."""
     last_price = item.get("regularMarketPrice")
     previous_close = item.get("regularMarketPreviousClose")
     if not isinstance(last_price, (int, float)) or not isinstance(previous_close, (int, float)) or previous_close == 0:
@@ -552,6 +527,98 @@ def _fetch_yahoo_v7_quote(stock: StockRecord) -> QuoteRecord | None:
         timestamp=quote_time.isoformat(),
         is_market_open=is_market_open(stock.market, quote_time),
     )
+
+
+def yahoo_v7_quotes_batch(stocks: list[StockRecord]) -> dict[str, QuoteRecord]:
+    """Fetch Yahoo v7 quotes for many tickers using a few batched HTTP calls.
+
+    Keys are ``stock.id`` (``US:SYMBOL``). Missing or invalid rows are omitted.
+    """
+    if not stocks:
+        return {}
+    headers = {
+        "User-Agent": _BROWSER_USER_AGENT,
+        "Accept": "application/json,text/plain,*/*",
+    }
+    out: dict[str, QuoteRecord] = {}
+    chunk_size = 40
+    for start in range(0, len(stocks), chunk_size):
+        chunk = stocks[start : start + chunk_size]
+        symbols_param = ",".join(_yahoo_v7_request_symbol(s.symbol) for s in chunk)
+        try:
+            payload = _load_json_with_headers(
+                _YAHOO_QUOTE_URL,
+                {"symbols": symbols_param},
+                headers,
+            )
+        except (HttpFetchError, TimeoutError, ValueError):
+            continue
+        quote_response = payload.get("quoteResponse")
+        if not isinstance(quote_response, dict) or quote_response.get("error"):
+            continue
+        result = quote_response.get("result")
+        if not isinstance(result, list):
+            continue
+
+        def _match_stock(yahoo_symbol: object) -> StockRecord | None:
+            if not isinstance(yahoo_symbol, str):
+                return None
+            yn = _yahoo_v7_request_symbol(yahoo_symbol)
+            for st in chunk:
+                if _yahoo_v7_request_symbol(st.symbol) == yn:
+                    return st
+            return None
+
+        for item in result:
+            if not isinstance(item, dict):
+                continue
+            y_sym = item.get("symbol")
+            st = _match_stock(y_sym)
+            if st is None:
+                continue
+            quote = quote_from_yahoo_v7_item(item, st)
+            if quote is not None:
+                out[st.id] = quote
+    return out
+
+
+def synthetic_us_stock(symbol: str) -> StockRecord | None:
+    """Return a minimal U.S. :class:`StockRecord` for a ticker not in the SEC catalog."""
+    return _fallback_stock(symbol)
+
+
+def _fetch_yahoo_v7_quote(stock: StockRecord) -> QuoteRecord | None:
+    headers = {
+        "User-Agent": _BROWSER_USER_AGENT,
+        "Accept": "application/json,text/plain,*/*",
+    }
+    item: dict | None = None
+    for candidate in (stock.symbol, f"{stock.symbol}.US"):
+        try:
+            payload = _load_json_with_headers(
+                _YAHOO_QUOTE_URL,
+                {"symbols": candidate},
+                headers,
+            )
+        except (HttpFetchError, TimeoutError, ValueError):
+            continue
+
+        quote_response = payload.get("quoteResponse")
+        if not isinstance(quote_response, dict):
+            continue
+        if quote_response.get("error"):
+            continue
+        result = quote_response.get("result")
+        if not isinstance(result, list) or not result:
+            continue
+        first = result[0]
+        if isinstance(first, dict):
+            item = first
+            break
+
+    if item is None:
+        return None
+    return quote_from_yahoo_v7_item(item, stock)
 
 
 def _fetch_live_quote(stock: StockRecord) -> QuoteRecord | None:

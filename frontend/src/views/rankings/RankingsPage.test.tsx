@@ -55,6 +55,7 @@ function buildResponse(overrides: Partial<RankingResponse> = {}): RankingRespons
     dataFreshnessLabel: "TW daily institutional ranking sorted by highest 三大法人買賣超股數.",
     warningMessage: "台股三大法人買賣超為日資料，非盤中即時資料。",
     unsupportedReason: null,
+    usRankingsScope: null,
     ...overrides,
   };
 }
@@ -93,6 +94,7 @@ function buildUsResponse(overrides: Partial<RankingResponse> = {}): RankingRespo
     dataFreshnessLabel: "Market open; rankings use the latest quote snapshot.",
     warningMessage: "Free unofficial quote source; data may be delayed or unavailable.",
     unsupportedReason: null,
+    usRankingsScope: "yahoo",
     ...overrides,
   };
 }
@@ -132,6 +134,7 @@ function buildTwQuoteResponse(overrides: Partial<RankingResponse> = {}): Ranking
     dataFreshnessLabel: "Market open; rankings use the latest quote snapshot.",
     warningMessage: "Free unofficial quote source; data may be delayed or unavailable.",
     unsupportedReason: null,
+    usRankingsScope: null,
     ...overrides,
   };
 }
@@ -184,6 +187,7 @@ describe("RankingsPage", () => {
       .mockResolvedValueOnce(
         buildUsResponse({
           rankingType: "change_down",
+          usRankingsScope: "yahoo",
           dataFreshnessLabel:
             "Market open; price-move rankings come from Yahoo Finance and refresh every few minutes.",
         }),
@@ -199,7 +203,7 @@ describe("RankingsPage", () => {
     });
     expect(await screen.findByTestId("rankings-row-US:MSFT")).toBeInTheDocument();
     expect(screen.getByTestId("rankings-scope-note")).toHaveTextContent(
-      "美股報價排行直接採用 Yahoo Finance 預先排序的選股結果，涵蓋更廣的美股市場。",
+      "美股此分頁採用 Yahoo Finance 預先排序的選股結果，涵蓋更廣的美股市場。",
     );
     expect(screen.getByTestId("rankings-realtime-tag")).toHaveTextContent("即時");
 
@@ -304,6 +308,7 @@ describe("RankingsPage", () => {
       .mockResolvedValueOnce(
         buildUsResponse({
           rankingType: "change_up",
+          usRankingsScope: "sp500",
           items: [
             {
               ...buildUsResponse().items[0],
@@ -330,7 +335,7 @@ describe("RankingsPage", () => {
       expect(fetchRankings).toHaveBeenLastCalledWith("US", "change_up", 50);
     });
     expect(screen.getByTestId("rankings-scope-note")).toHaveTextContent(
-      "美股報價排行直接採用 Yahoo Finance 預先排序的選股結果，涵蓋更廣的美股市場。",
+      "美股漲跌幅排行以標普五百成分股（內建名單快照）為範圍，使用 Yahoo Finance 批次報價欄位排序；美股成交量仍優先採用 Yahoo 全市場熱門成交選股（若可用）。",
     );
     await waitFor(() => {
       expect(screen.getByTestId("rankings-freshness-label")).toHaveTextContent(

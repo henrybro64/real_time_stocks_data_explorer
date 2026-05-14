@@ -57,6 +57,9 @@ export type RankingSourceType =
   | "cache"
   | "unsupported";
 
+/** Present when `market` is US; drives the rankings scope banner copy. */
+export type UsRankingsScope = "sp500" | "yahoo" | "quote";
+
 export type RankingItem = {
   rank: number;
   stock: Stock;
@@ -79,6 +82,7 @@ export type RankingResponse = {
   dataFreshnessLabel: string;
   warningMessage: string | null;
   unsupportedReason: string | null;
+  usRankingsScope: UsRankingsScope | null;
 };
 
 export type HistoryResponse = {
