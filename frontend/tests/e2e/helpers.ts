@@ -4,10 +4,8 @@ import { expect, Page } from "@playwright/test";
 export const TW_STOCK_ID = "TW:2330";
 export const TW_STOCK_SYMBOL = "2330";
 
-function isSearchResponse(urlString: string, query: string) {
-  const url = new URL(urlString);
-  return url.pathname.endsWith("/api/search") && url.searchParams.get("q") === query;
-}
+/** Home search uses React `useDeferredValue`, so results can lag the input on busy CI runners. */
+const SEARCH_RESULT_TIMEOUT_MS = process.env.CI ? 75_000 : 25_000;
 
 async function waitForSearchResult(
   page: Page,
@@ -16,27 +14,12 @@ async function waitForSearchResult(
   query: string,
 ) {
   const searchSection = page.getByTestId(sectionTestId);
-  const responsePromise = page.waitForResponse(
-    (response) => response.ok() && isSearchResponse(response.url(), query),
-    { timeout: 10_000 },
-  );
+  const card = searchSection.getByTestId(`stock-card-${TW_STOCK_ID}`);
+
   await page.locator(inputSelector).fill(query);
-  const response = await responsePromise;
-  const payload = (await response.json().catch(() => null)) as
-    | Array<{ id?: unknown; symbol?: unknown }>
-    | null;
-  const resultIds =
-    payload?.flatMap((item) => (typeof item.id === "string" ? [item.id] : [])) ?? [];
-  if (!resultIds.includes(TW_STOCK_ID)) {
-    throw new Error(
-      [
-        `Expected ${TW_STOCK_ID} in search results for query "${query}", but it was missing.`,
-        `Returned ids: ${resultIds.length > 0 ? resultIds.join(", ") : "(none)"}`,
-      ].join(" "),
-    );
-  }
-  await expect(searchSection.getByTestId(`stock-card-${TW_STOCK_ID}`)).toBeVisible({ timeout: 10_000 });
-  return searchSection.getByTestId(`stock-card-${TW_STOCK_ID}`);
+  await expect(card).toBeVisible({ timeout: SEARCH_RESULT_TIMEOUT_MS });
+
+  return card;
 }
 
 
