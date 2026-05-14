@@ -27,7 +27,7 @@ class PortfolioPositionResponse(BaseModel):
     currency: str
     notes: str | None = None
     stock: StockResponse
-    quote: QuoteResponse
+    quote: QuoteResponse | None = None
     marketValue: float
     unrealizedPl: float
     unrealizedPlPercent: float
@@ -63,9 +63,9 @@ class PortfolioSummaryPosition(BaseModel):
     symbol: str
     currency: str
     quantity: float
-    lastPrice: float
+    lastPrice: float | None = None
     marketValue: float
-    timestamp: str
+    timestamp: str | None = None
 
 
 class PortfolioSummaryResponse(BaseModel):

@@ -304,9 +304,7 @@ def _summarize_positions(
             skipped_stock_ids.append(position.stock_id)
             continue
         quote = quote_service.get_quote(position.stock_id)
-        if quote is None:
-            quote = portfolio_service.synthetic_quote_for_position(stock, position)
-        market_value = round(position.quantity * quote.last_price, 2)
+        market_value, _, _ = portfolio_service.build_metrics(position, quote)
         entries.append((stock.currency, market_value))
         rows.append(
             PortfolioSummaryPosition(
@@ -314,9 +312,9 @@ def _summarize_positions(
                 symbol=stock.symbol,
                 currency=stock.currency,
                 quantity=position.quantity,
-                lastPrice=quote.last_price,
+                lastPrice=quote.last_price if quote is not None else None,
                 marketValue=market_value,
-                timestamp=quote.timestamp,
+                timestamp=quote.timestamp if quote is not None else None,
             )
         )
 
@@ -335,10 +333,8 @@ def _to_response(
         )
     if quote is _MISSING_QUOTE:
         quote = quote_service.get_quote(position.stock_id)
-    if quote is None:
-        quote = portfolio_service.synthetic_quote_for_position(stock, position)
-    market_value, unrealized_pl, unrealized_pl_percent = (
-        portfolio_service.build_metrics(position, quote)
+    market_value, unrealized_pl, unrealized_pl_percent = portfolio_service.build_metrics(
+        position, quote
     )
     return PortfolioPositionResponse(
         id=position.id,
@@ -348,7 +344,7 @@ def _to_response(
         currency=position.currency,
         notes=position.notes,
         stock=_stock_schema(stock),
-        quote=_quote_schema(quote),
+        quote=_quote_schema(quote) if quote is not None else None,
         marketValue=market_value,
         unrealizedPl=unrealized_pl,
         unrealizedPlPercent=unrealized_pl_percent,

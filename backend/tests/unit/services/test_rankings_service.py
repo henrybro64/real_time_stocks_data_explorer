@@ -671,7 +671,14 @@ def test_us_sp500_change_up_uses_constituent_batch_before_yahoo_screener() -> No
         return out
 
     service = RankingsService(
-        quote_source=FakeQuoteSource(stocks={}, quotes={}),
+        quote_source=FakeQuoteSource(
+            stocks={
+                "US:WIN1": _us_stock("US:WIN1", "WIN1", "Win One"),
+                "US:LOSE1": _us_stock("US:LOSE1", "LOSE1", "Lose One"),
+                "US:FLAT1": _us_stock("US:FLAT1", "FLAT1", "Flat One"),
+            },
+            quotes={},
+        ),
         volume_baseline_store=InMemoryVolumeBaselineStore(),
         external_source=external,
         sp500_symbol_loader=sym_loader,

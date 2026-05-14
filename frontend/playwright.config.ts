@@ -40,7 +40,6 @@ export default defineConfig({
           env: {
             ...process.env,
             DATABASE_URL: databaseUrl,
-            TW_USE_MOCK_QUOTES: "true",
           },
           reuseExistingServer: !process.env.CI,
           timeout: 120_000,

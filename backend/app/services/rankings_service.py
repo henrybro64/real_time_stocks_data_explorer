@@ -26,10 +26,7 @@ from app.services.rankings_volume_baseline_cache import (
     VolumeBaselineStore,
     default_volume_baseline_store,
 )
-from app.services.providers.us_provider import (
-    synthetic_us_stock,
-    yahoo_v7_quotes_batch,
-)
+from app.services.providers.us_provider import yahoo_v7_quotes_batch
 from app.services.sp500_constituents import load_sp500_symbols
 
 
@@ -246,8 +243,6 @@ class RankingsService:
             sid = f"US:{sym}"
             stock = self.quote_source.get_stock(sid)
             if stock is None:
-                stock = synthetic_us_stock(sym)
-            if stock is None:
                 continue
             stocks.append(stock)
 
@@ -270,8 +265,6 @@ class RankingsService:
         for sym in symbols:
             sid = f"US:{sym}"
             stock = self.quote_source.get_stock(sid)
-            if stock is None:
-                stock = synthetic_us_stock(sym)
             if stock is None:
                 continue
             stocks.append(stock)

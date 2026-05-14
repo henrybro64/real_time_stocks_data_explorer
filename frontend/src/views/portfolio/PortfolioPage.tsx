@@ -401,22 +401,38 @@ export function PortfolioPage() {
                             </div>
                           </div>
                         </TableCell>
-                        <TableCell>{renderCurrencyValue(position.quote.lastPrice, position.stock.currency)}</TableCell>
+                        <TableCell>
+                          {position.quote != null
+                            ? renderCurrencyValue(position.quote.lastPrice, position.stock.currency)
+                            : "—"}
+                        </TableCell>
                         <TableCell>{renderCurrencyValue(position.marketValue, position.stock.currency)}</TableCell>
                         <TableCell>
-                          <span className={position.quote.change >= 0 ? "app-positive" : "app-negative"}>
-                            {formatSignedNumber(position.quote.change, position.stock.currency)}
-                          </span>
+                          {position.quote != null ? (
+                            <span className={position.quote.change >= 0 ? "app-positive" : "app-negative"}>
+                              {formatSignedNumber(position.quote.change, position.stock.currency)}
+                            </span>
+                          ) : (
+                            "—"
+                          )}
                         </TableCell>
                         <TableCell>
-                          <span className={position.quote.changePercent >= 0 ? "app-positive" : "app-negative"}>
-                            {formatPercent(position.quote.changePercent)}
-                          </span>
+                          {position.quote != null ? (
+                            <span className={position.quote.changePercent >= 0 ? "app-positive" : "app-negative"}>
+                              {formatPercent(position.quote.changePercent)}
+                            </span>
+                          ) : (
+                            "—"
+                          )}
                         </TableCell>
                         <TableCell>
-                          {position.quote.volume != null ? formatNumber(position.quote.volume) : "—"}
+                          {position.quote?.volume != null ? formatNumber(position.quote.volume) : "—"}
                         </TableCell>
-                        <TableCell>{formatLastUpdated(position.quote.timestamp)}</TableCell>
+                        <TableCell>
+                          {position.quote?.timestamp
+                            ? formatLastUpdated(position.quote.timestamp)
+                            : "—"}
+                        </TableCell>
                         <TableCell>
                           <div className="app-portfolio-actions">
                             <Link

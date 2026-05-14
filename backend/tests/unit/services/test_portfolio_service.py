@@ -21,6 +21,14 @@ def test_build_metrics_calculates_market_value_and_pl() -> None:
     assert metrics == (220.0, 20.0, 10.0)
 
 
+def test_build_metrics_uses_cost_basis_when_quote_unavailable() -> None:
+    position = SimpleNamespace(quantity=3.0, average_cost=900.0)
+
+    metrics = PortfolioService.build_metrics(position, None)
+
+    assert metrics == (2700.0, 0.0, 0.0)
+
+
 def test_build_metrics_handles_zero_cost_basis() -> None:
     position = SimpleNamespace(quantity=3.0, average_cost=0.0)
     quote = QuoteRecord(

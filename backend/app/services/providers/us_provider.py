@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 import re
 from datetime import datetime, timedelta
 from urllib.parse import quote
@@ -105,18 +104,6 @@ US_STOCKS: dict[str, StockRecord] = {
     ),
 }
 
-BASE_PRICES = {
-    "US:AAPL": 214.62,
-    "US:MSFT": 438.17,
-    "US:NVDA": 119.31,
-    "US:MU": 98.42,
-    "US:TSLA": 172.15,
-    "US:AMD": 146.83,
-    "US:META": 497.66,
-    "US:AMZN": 182.57,
-    "US:GOOGL": 165.42,
-}
-
 _CATALOG_URL = "https://www.sec.gov/files/company_tickers_exchange.json"
 _CATALOG_TTL = timedelta(hours=12)
 _REQUEST_TIMEOUT_SECONDS = 10
@@ -158,38 +145,14 @@ class USProvider:
                 for stock in self.list_stocks()
                 if normalized in stock.symbol.lower() or normalized in stock.name.lower()
             ]
-        is_symbol_query = _looks_like_symbol(symbol)
-        has_exact_symbol = any(stock.symbol.upper() == symbol for stock in matches)
-        # Unknown tickers (many ETFs): add synthetic US:{symbol} unless we already
-        # have an exact symbol match. Substring name hits must not block this.
-        if is_symbol_query and not has_exact_symbol:
-            fallback_stock = _fallback_stock(symbol)
-            if fallback_stock is not None and not any(
-                stock.id == fallback_stock.id for stock in matches
-            ):
-                matches.insert(0, fallback_stock)
         matches.sort(key=lambda stock: _search_rank(stock, normalized, symbol))
         return matches
 
     def get_stock(self, stock_id: str) -> StockRecord | None:
-        stock = self._stock_catalog().get(stock_id)
-        if stock is not None:
-            return stock
-
-        if not stock_id.startswith("US:"):
-            return None
-        symbol = stock_id.split(":", 1)[1].strip().upper()
-        return _fallback_stock(symbol)
+        return self._stock_catalog().get(stock_id)
 
     def get_quote(self, stock_id: str) -> QuoteRecord | None:
-        live_quote = self.get_live_quote(stock_id)
-        if live_quote is not None:
-            return live_quote
-
-        stock = self.get_stock(stock_id)
-        if stock is None:
-            return None
-        return self._mock_quote(stock)
+        return self.get_live_quote(stock_id)
 
     def get_live_quote(self, stock_id: str) -> QuoteRecord | None:
         stock = self.get_stock(stock_id)
@@ -197,28 +160,6 @@ class USProvider:
             return None
 
         return _fetch_live_quote(stock)
-
-    def _mock_quote(self, stock: StockRecord) -> QuoteRecord:
-        timestamp = datetime.now(ZoneInfo(stock.timezone))
-        base_price = _base_price_for_stock(stock.id, stock.symbol)
-        drift = math.sin(timestamp.minute / 3) * 1.8 + math.cos(timestamp.second / 15) * 0.7
-        last_price = round(base_price + drift, 2)
-        previous_close = round(base_price - 1.15, 2)
-        change = round(last_price - previous_close, 2)
-        change_percent = round((change / previous_close) * 100, 2)
-        return QuoteRecord(
-            id=stock.id,
-            last_price=last_price,
-            change=change,
-            change_percent=change_percent,
-            previous_close=previous_close,
-            open=round(previous_close + 0.35, 2),
-            high=round(last_price + 1.05, 2),
-            low=round(last_price - 1.38, 2),
-            volume=7_200_000 + timestamp.minute * 12_000,
-            timestamp=timestamp.isoformat(),
-            is_market_open=is_market_open(stock.market, timestamp),
-        )
 
     def get_history(self, stock_id: str, range_name: str) -> list[CandleRecord]:
         stock = self.get_stock(stock_id)
@@ -228,29 +169,7 @@ class USProvider:
         live_history = _fetch_yahoo_history(stock, range_name)
         if live_history:
             return live_history
-
-        now = datetime.now(ZoneInfo(stock.timezone))
-        step, points = _history_shape(range_name)
-        base_price = _base_price_for_stock(stock_id, stock.symbol)
-        candles: list[CandleRecord] = []
-        for index in range(points):
-            point_time = now - step * (points - index)
-            wave = math.sin(index / 3.5) * 2.1
-            open_price = round(base_price + wave, 2)
-            close_price = round(open_price + math.cos(index / 2.2) * 0.9, 2)
-            high_price = round(max(open_price, close_price) + 0.8, 2)
-            low_price = round(min(open_price, close_price) - 0.7, 2)
-            candles.append(
-                CandleRecord(
-                    time=point_time.isoformat(),
-                    open=open_price,
-                    high=high_price,
-                    low=low_price,
-                    close=close_price,
-                    volume=950_000 + index * 22_000,
-                )
-            )
-        return candles
+        return []
 
     def _stock_catalog(self) -> dict[str, StockRecord]:
         now = datetime.now(ZoneInfo("UTC"))
@@ -363,14 +282,6 @@ def _stock_from_sec_row(
     )
 
 
-def _base_price_for_stock(stock_id: str, symbol: str) -> float:
-    if stock_id in BASE_PRICES:
-        return BASE_PRICES[stock_id]
-
-    seed = sum(ord(character) for character in symbol)
-    return round(12 + (seed % 470) + ((seed // 7) % 100) / 100, 2)
-
-
 def _looks_like_symbol(symbol: str) -> bool:
     return bool(_SYMBOL_PATTERN.match(symbol))
 
@@ -385,21 +296,6 @@ def _search_rank(stock: StockRecord, normalized_query: str, raw_symbol_query: st
     if normalized_query and normalized_query in name:
         return (2, symbol)
     return (3, symbol)
-
-
-def _fallback_stock(symbol: str) -> StockRecord | None:
-    if not _looks_like_symbol(symbol):
-        return None
-    return StockRecord(
-        id=f"US:{symbol}",
-        market="US",
-        symbol=symbol,
-        name=symbol,
-        name_en=symbol,
-        exchange="US",
-        currency="USD",
-        timezone="America/New_York",
-    )
 
 
 def _previous_close_from_chart_block(block: dict) -> float | None:
@@ -580,11 +476,6 @@ def yahoo_v7_quotes_batch(stocks: list[StockRecord]) -> dict[str, QuoteRecord]:
             if quote is not None:
                 out[st.id] = quote
     return out
-
-
-def synthetic_us_stock(symbol: str) -> StockRecord | None:
-    """Return a minimal U.S. :class:`StockRecord` for a ticker not in the SEC catalog."""
-    return _fallback_stock(symbol)
 
 
 def _fetch_yahoo_v7_quote(stock: StockRecord) -> QuoteRecord | None:
@@ -833,17 +724,3 @@ def _parse_stooq_timestamp(raw_date: str, timezone_name: str) -> datetime:
         return datetime.strptime(raw_date.strip(), "%Y%m%d").replace(hour=16, minute=0, tzinfo=tz)
     except ValueError:
         return datetime.now(tz)
-
-
-def _history_shape(range_name: str) -> tuple[timedelta, int]:
-    if range_name == "1W":
-        return timedelta(hours=6), 28
-    if range_name == "1M":
-        return timedelta(days=1), 30
-    if range_name == "3M":
-        return timedelta(days=1), 90
-    if range_name == "6M":
-        return timedelta(days=1), 180
-    if range_name == "1Y":
-        return timedelta(days=2), 182
-    return timedelta(minutes=15), 32

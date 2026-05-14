@@ -104,7 +104,7 @@ export type PortfolioPosition = {
   currency: string;
   notes: string | null;
   stock: Stock;
-  quote: Quote;
+  quote: Quote | null;
   marketValue: number;
   unrealizedPl: number;
   unrealizedPlPercent: number;
@@ -130,9 +130,9 @@ export type PortfolioSummaryPosition = {
   symbol: string;
   currency: string;
   quantity: number;
-  lastPrice: number;
+  lastPrice: number | null;
   marketValue: number;
-  timestamp: string;
+  timestamp: string | null;
 };
 
 export type PortfolioSummary = {

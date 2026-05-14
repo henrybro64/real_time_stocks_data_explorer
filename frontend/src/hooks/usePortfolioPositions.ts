@@ -38,8 +38,7 @@ export function usePortfolioPositions() {
   const deleteMutation = useMutation({
     mutationFn: deletePortfolioPosition,
     onSuccess: (_, positionId) => {
-      // Remove locally first: refetch can fail if another row has a missing quote
-      // (GET /portfolio/positions raises 400 for the whole list), which would leave stale rows.
+      // Remove locally first so the table updates immediately before refetch.
       queryClient.setQueryData<PortfolioPosition[]>(["portfolio-positions"], (old) =>
         (old ?? []).filter((p) => p.id !== positionId),
       );

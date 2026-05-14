@@ -1,7 +1,4 @@
-from datetime import datetime
-
 from sqlalchemy import delete, select
-from zoneinfo import ZoneInfo
 
 from app.db.models import PortfolioAsset, PortfolioPosition
 from app.db.session import SessionLocal
@@ -191,37 +188,18 @@ class PortfolioService:
     @staticmethod
     def build_metrics(
         position: PortfolioPosition,
-        quote: QuoteRecord,
+        quote: QuoteRecord | None,
     ) -> tuple[float, float, float]:
-        market_value = round(position.quantity * quote.last_price, 2)
         cost_basis = position.quantity * position.average_cost
+        if quote is None:
+            market_value = round(cost_basis, 2)
+            return market_value, 0.0, 0.0
+        market_value = round(position.quantity * quote.last_price, 2)
         unrealized_pl = round(market_value - cost_basis, 2)
         unrealized_pl_percent = (
             0.0 if cost_basis == 0 else round((unrealized_pl / cost_basis) * 100, 2)
         )
         return market_value, unrealized_pl, unrealized_pl_percent
-
-    @staticmethod
-    def synthetic_quote_for_position(
-        stock: StockRecord,
-        position: PortfolioPosition,
-    ) -> QuoteRecord:
-        tz = ZoneInfo(stock.timezone)
-        now = datetime.now(tz)
-        price = float(position.average_cost)
-        return QuoteRecord(
-            id=stock.id,
-            last_price=price,
-            change=0.0,
-            change_percent=0.0,
-            previous_close=price,
-            timestamp=now.isoformat(),
-            is_market_open=False,
-            open=price,
-            high=price,
-            low=price,
-            volume=None,
-        )
 
     @staticmethod
     def summarize_currency_buckets(

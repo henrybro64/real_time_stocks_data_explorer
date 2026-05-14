@@ -71,7 +71,6 @@ jobs:
     env:
       CI: true
       DATABASE_URL: postgresql+psycopg://postgres:postgres@127.0.0.1:5432/stocks_test
-      TW_USE_MOCK_QUOTES: true
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5

@@ -75,7 +75,7 @@ def test_portfolio_positions_and_summary_handle_updates_and_missing_quotes(
     assert update.status_code == 200
     assert update.json()["quantity"] == 3.0
     assert positions.status_code == 200
-    assert positions.json()[0]["quote"]["lastPrice"] == 900.0
+    assert positions.json()[0]["quote"] is None
     assert summary.status_code == 200
     assert summary.json()["totalTwd"] == 2700.0
     assert summary.json()["combinedUsd"] == 84.38
