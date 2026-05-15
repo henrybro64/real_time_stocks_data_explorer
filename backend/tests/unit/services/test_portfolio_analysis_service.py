@@ -5,6 +5,8 @@ from app.services.ai_providers.base import AIAnalysisResult, AIProviderError
 from app.services.portfolio_analysis_service import (
     AI_NOT_CONFIGURED_ERROR,
     AI_TEMPORARILY_UNAVAILABLE_WARNING,
+    EMPTY_PORTFOLIO_ERROR,
+    NO_ANALYZABLE_HOLDINGS_ERROR,
     PortfolioAnalysisService,
 )
 from tests.support import quote_record, stock_record
@@ -139,6 +141,46 @@ def test_analyze_portfolio_calculates_metrics_and_calls_provider() -> None:
     assert provider.payload["totalMarketValueUsd"] == 339.06
 
 
+def test_analyze_portfolio_raises_when_portfolio_is_empty() -> None:
+    service = PortfolioAnalysisService(
+        position_loader=lambda user_id: [],
+        provider_resolver=lambda user_id: _MockProvider(),
+    )
+
+    with pytest.raises(ValueError, match=EMPTY_PORTFOLIO_ERROR):
+        service.analyze_portfolio("user-1")
+
+
+def test_analyze_portfolio_raises_when_no_holdings_have_quotes() -> None:
+    positions = [_position("US:AAPL", quantity=1, average_cost=100, currency="USD")]
+    stocks = {
+        "US:AAPL": stock_record(
+            "US:AAPL",
+            market="US",
+            symbol="AAPL",
+            name="Apple Inc.",
+            exchange="NASDAQ",
+            currency="USD",
+            timezone="America/New_York",
+            name_en="Apple Inc.",
+        )
+    }
+    service = PortfolioAnalysisService(
+        position_loader=lambda user_id: positions,
+        stock_loader=lambda stock_id: stocks.get(stock_id),
+        quote_loader=lambda stock_id: None,
+        fx_snapshot_loader=lambda: {
+            "pair": "USD/TWD",
+            "rate": 32.0,
+            "timestamp": "2026-04-01T01:00:00Z",
+        },
+        provider_resolver=lambda user_id: _MockProvider(),
+    )
+
+    with pytest.raises(ValueError, match=NO_ANALYZABLE_HOLDINGS_ERROR):
+        service.analyze_portfolio("user-1")
+
+
 def test_analyze_portfolio_raises_when_ai_is_not_configured() -> None:
     positions = [_position("US:AAPL", quantity=1, average_cost=100, currency="USD")]
     stocks = {
@@ -238,6 +280,57 @@ def test_analyze_portfolio_reports_skipped_quotes() -> None:
     assert result.computed_summary.skipped_holdings_count == 1
     assert result.computed_summary.skipped_holdings[0].stock_id == "TW:2330"
     assert "TW:2330" in result.warnings[0]
+
+
+def test_analyze_portfolio_propagates_unexpected_provider_errors() -> None:
+    class _BrokenProvider:
+        provider_name = "openai"
+        model_name = "gpt-test"
+
+        def generate_portfolio_analysis(
+            self,
+            input_data: dict[str, object],
+        ) -> AIAnalysisResult:
+            raise RuntimeError("unexpected failure")
+
+    positions = [_position("US:AAPL", quantity=1, average_cost=100, currency="USD")]
+    stocks = {
+        "US:AAPL": stock_record(
+            "US:AAPL",
+            market="US",
+            symbol="AAPL",
+            name="Apple Inc.",
+            exchange="NASDAQ",
+            currency="USD",
+            timezone="America/New_York",
+            name_en="Apple Inc.",
+        )
+    }
+    quotes = {
+        "US:AAPL": quote_record(
+            "US:AAPL",
+            last_price=110.0,
+            change=1.0,
+            change_percent=0.9,
+            previous_close=109.0,
+            timestamp="2026-04-01T09:30:00-04:00",
+            is_market_open=True,
+        )
+    }
+    service = PortfolioAnalysisService(
+        position_loader=lambda user_id: positions,
+        stock_loader=lambda stock_id: stocks.get(stock_id),
+        quote_loader=lambda stock_id: quotes.get(stock_id),
+        fx_snapshot_loader=lambda: {
+            "pair": "USD/TWD",
+            "rate": 32.0,
+            "timestamp": "2026-04-01T01:00:00Z",
+        },
+        provider_resolver=lambda user_id: _BrokenProvider(),
+    )
+
+    with pytest.raises(RuntimeError, match="unexpected failure"):
+        service.analyze_portfolio("user-1")
 
 
 def test_analyze_portfolio_returns_summary_when_provider_fails() -> None:

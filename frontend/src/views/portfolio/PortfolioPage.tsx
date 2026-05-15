@@ -36,10 +36,9 @@ import {
   searchStocks,
 } from "../../services/api/client";
 import { formatCurrency, formatLastUpdated, formatPercent, formatSignedNumber } from "../../services/format/quote";
+import { classifyPortfolioAnalysisError } from "./portfolioAnalysisErrors";
 
 type DisplayCurrency = "USD" | "TWD";
-
-const AI_NOT_CONFIGURED_MESSAGE = "AI is not configured. Please set up your AI provider in AI Settings.";
 
 function toDisplayCurrency(currency: string): DisplayCurrency | null {
   return currency === "USD" || currency === "TWD" ? currency : null;
@@ -276,8 +275,7 @@ export function PortfolioPage() {
       : analysis?.computedSummary.concentrationRisk.level === "moderate"
         ? t("portfolio.ai.level.moderate")
         : t("portfolio.ai.level.low");
-  const analysisErrorMessage = analysisMutation.error instanceof Error ? analysisMutation.error.message : "";
-  const showAiNotConfigured = analysisErrorMessage.includes(AI_NOT_CONFIGURED_MESSAGE);
+  const analysisErrorKind = classifyPortfolioAnalysisError(analysisMutation.error);
 
   return (
     <Grid className="app-page-grid" fullWidth>
@@ -403,7 +401,11 @@ export function PortfolioPage() {
                 {analysis?.model ? <Tag type="outline">{analysis.model}</Tag> : null}
               </div>
               <div className="app-portfolio-actions">
-                <Link className="cds--link" href="/ai-settings">
+                <Link
+                  className="cds--link"
+                  data-testid="portfolio-ai-settings-link"
+                  href="/ai-settings"
+                >
                   {t("portfolio.ai.settings")}
                 </Link>
                 <Button
@@ -426,12 +428,22 @@ export function PortfolioPage() {
               <InlineLoading description={t("portfolio.ai.loading")} status="active" />
             ) : null}
 
-            {showAiNotConfigured ? (
+            {analysisErrorKind === "not_configured" ? (
               <p data-testid="portfolio-ai-not-configured" className="app-supporting-copy">
                 {t("portfolio.ai.notConfigured")}
               </p>
-            ) : analysisMutation.error ? (
-              <p className="app-supporting-copy app-negative">{t("portfolio.ai.failed")}</p>
+            ) : analysisErrorKind === "empty_portfolio" ? (
+              <p data-testid="portfolio-ai-empty-error" className="app-supporting-copy app-negative">
+                {t("portfolio.ai.emptyPortfolioError")}
+              </p>
+            ) : analysisErrorKind === "no_analyzable_holdings" ? (
+              <p data-testid="portfolio-ai-no-analyzable" className="app-supporting-copy app-negative">
+                {t("portfolio.ai.noAnalyzableHoldings")}
+              </p>
+            ) : analysisErrorKind === "generic" ? (
+              <p data-testid="portfolio-ai-failed" className="app-supporting-copy app-negative">
+                {t("portfolio.ai.failed")}
+              </p>
             ) : null}
 
             {analysis?.warnings.length ? (

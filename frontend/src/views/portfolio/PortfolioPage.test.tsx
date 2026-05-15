@@ -15,11 +15,13 @@ import { PortfolioPage } from "./PortfolioPage";
 import { usePortfolioPositions } from "../../hooks/usePortfolioPositions";
 import {
   analyzePortfolio,
+  ApiError,
   fetchPortfolioHoldingsHistory,
   fetchPortfolioSummary,
   fetchUsdTwdFxRate,
   searchStocks,
 } from "../../services/api/client";
+import { PORTFOLIO_ANALYSIS_BACKEND_ERRORS } from "./portfolioAnalysisErrors";
 
 vi.mock("next/link", () => ({
   default: ({ children, href }: { children: ReactNode; href: string }) => <a href={href}>{children}</a>,
@@ -37,13 +39,19 @@ vi.mock("../../hooks/usePortfolioPositions", () => ({
   usePortfolioPositions: vi.fn(),
 }));
 
-vi.mock("../../services/api/client", () => ({
-  analyzePortfolio: vi.fn(),
-  fetchPortfolioHoldingsHistory: vi.fn(),
-  fetchPortfolioSummary: vi.fn(),
-  fetchUsdTwdFxRate: vi.fn(),
-  searchStocks: vi.fn(),
-}));
+vi.mock("../../services/api/client", async () => {
+  const actual = await vi.importActual<typeof import("../../services/api/client")>(
+    "../../services/api/client",
+  );
+  return {
+    ...actual,
+    analyzePortfolio: vi.fn(),
+    fetchPortfolioHoldingsHistory: vi.fn(),
+    fetchPortfolioSummary: vi.fn(),
+    fetchUsdTwdFxRate: vi.fn(),
+    searchStocks: vi.fn(),
+  };
+});
 
 function buildPosition({
   id,
@@ -370,7 +378,14 @@ describe("PortfolioPage", () => {
 
   it("shows the required AI-not-configured message", async () => {
     vi.mocked(analyzePortfolio).mockRejectedValue(
-      new Error("AI is not configured. Please set up your AI provider in AI Settings."),
+      new ApiError(
+        `Request failed: 400 - ${PORTFOLIO_ANALYSIS_BACKEND_ERRORS.AI_NOT_CONFIGURED}`,
+        {
+          status: 400,
+          detail: PORTFOLIO_ANALYSIS_BACKEND_ERRORS.AI_NOT_CONFIGURED,
+          kind: "validation",
+        },
+      ),
     );
     const user = userEvent.setup();
     renderPortfolioPage("en");
@@ -381,6 +396,45 @@ describe("PortfolioPage", () => {
       "AI is not configured. Please set up your AI provider in AI Settings.",
     );
     expect(screen.getByRole("link", { name: "AI Settings" })).toBeInTheDocument();
+  });
+
+  it("shows a dedicated message when no holdings can be analyzed", async () => {
+    vi.mocked(analyzePortfolio).mockRejectedValue(
+      new ApiError(
+        `Request failed: 400 - ${PORTFOLIO_ANALYSIS_BACKEND_ERRORS.NO_ANALYZABLE_HOLDINGS}`,
+        {
+          status: 400,
+          detail: PORTFOLIO_ANALYSIS_BACKEND_ERRORS.NO_ANALYZABLE_HOLDINGS,
+          kind: "validation",
+        },
+      ),
+    );
+    const user = userEvent.setup();
+    renderPortfolioPage("en");
+
+    await user.click(await screen.findByTestId("portfolio-ai-analyze-button"));
+
+    expect(await screen.findByTestId("portfolio-ai-no-analyzable")).toHaveTextContent(
+      "No holdings could be analyzed right now. Review your positions (metadata, currency, and quotes) and try again.",
+    );
+  });
+
+  it("shows a dedicated message when the portfolio is empty", async () => {
+    vi.mocked(analyzePortfolio).mockRejectedValue(
+      new ApiError(`Request failed: 400 - ${PORTFOLIO_ANALYSIS_BACKEND_ERRORS.EMPTY_PORTFOLIO}`, {
+        status: 400,
+        detail: PORTFOLIO_ANALYSIS_BACKEND_ERRORS.EMPTY_PORTFOLIO,
+        kind: "validation",
+      }),
+    );
+    const user = userEvent.setup();
+    renderPortfolioPage("en");
+
+    await user.click(await screen.findByTestId("portfolio-ai-analyze-button"));
+
+    expect(await screen.findByTestId("portfolio-ai-empty-error")).toHaveTextContent(
+      "Your portfolio has no holdings to analyze.",
+    );
   });
 
   it("renders the backend portfolio analysis response", async () => {

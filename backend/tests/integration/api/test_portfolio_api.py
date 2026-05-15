@@ -226,6 +226,13 @@ def test_portfolio_analysis_returns_structured_response(monkeypatch, client) -> 
     assert payload["computedSummary"]["holdings"][0]["stockId"] == "US:AAPL"
 
 
+def test_portfolio_analysis_returns_empty_portfolio_error(client) -> None:
+    response = client.post("/api/portfolio/analysis")
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Portfolio is empty."
+
+
 def test_portfolio_analysis_returns_missing_ai_config_error(monkeypatch, client) -> None:
     stock = stock_record(
         "US:AAPL",

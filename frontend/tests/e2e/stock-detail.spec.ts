@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./setup";
 
 import { openHome, searchFromHome, TW_STOCK_ID } from "./helpers";
 
