@@ -1,8 +1,9 @@
 import { expect, test } from "./setup";
 
 import {
+  addTwStockFromSearchCard,
   ensurePortfolioDoesNotContain,
-  searchFromPortfolio,
+  expectPortfolioPosition,
   TW_STOCK_ID,
 } from "./helpers";
 
@@ -10,11 +11,9 @@ import {
 test("portfolio add, edit quantity, verify totals, and remove holding", async ({ page }) => {
   await ensurePortfolioDoesNotContain(page, TW_STOCK_ID);
 
-  const stockCard = await searchFromPortfolio(page);
-  await stockCard.getByTestId(`stock-card-toggle-${TW_STOCK_ID}`).click();
-
+  await addTwStockFromSearchCard(page, "portfolio-search-section");
+  await expectPortfolioPosition(page);
   const row = page.getByTestId(`portfolio-position-${TW_STOCK_ID}`);
-  await expect(row).toBeVisible();
 
   const quantityInput = page.getByTestId(`portfolio-quantity-input-${TW_STOCK_ID}`);
   await quantityInput.fill("3");

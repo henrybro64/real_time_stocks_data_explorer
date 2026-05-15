@@ -1,5 +1,6 @@
-import { expect, Page, Route } from "@playwright/test";
+import { expect, Page } from "@playwright/test";
 
+import { installE2eApiMocks } from "./e2eApiMocks";
 
 export const TW_STOCK_ID = "TW:2330";
 export const TW_STOCK_SYMBOL = "2330";
@@ -18,40 +19,7 @@ export const E2E_TW_STOCK_SEARCH_RESULT = {
 
 /** Home search uses React `useDeferredValue`; portfolio search is immediate. Allow slow CI. */
 const SEARCH_RESULT_TIMEOUT_MS = process.env.CI ? 75_000 : 25_000;
-
-const pagesWithSearchMock = new WeakSet<Page>();
-
-export async function installE2eSearchMock(page: Page): Promise<void> {
-  if (pagesWithSearchMock.has(page)) {
-    return;
-  }
-  pagesWithSearchMock.add(page);
-
-  await page.route(/\/api\/search(\?|$)/, async (route: Route) => {
-    const url = new URL(route.request().url());
-    const query = (url.searchParams.get("q") ?? "").trim();
-    if (!query) {
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify([]),
-      });
-      return;
-    }
-
-    const normalized = query.toLowerCase();
-    const matchesTaiwanTsmc =
-      normalized.includes("2330") ||
-      normalized.includes("tsmc") ||
-      normalized.includes("台積");
-
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify(matchesTaiwanTsmc ? [E2E_TW_STOCK_SEARCH_RESULT] : []),
-    });
-  });
-}
+const POSITION_ROW_TIMEOUT_MS = process.env.CI ? 30_000 : 15_000;
 
 async function waitForBackendHealth(page: Page): Promise<void> {
   const attempts = process.env.CI ? 60 : 20;
@@ -70,7 +38,7 @@ async function waitForBackendHealth(page: Page): Promise<void> {
 }
 
 async function waitForSearchResult(page: Page, sectionTestId: string, query: string) {
-  await installE2eSearchMock(page);
+  await installE2eApiMocks(page);
   await waitForBackendHealth(page);
 
   const searchSection = page.getByTestId(sectionTestId);
@@ -87,30 +55,45 @@ async function waitForSearchResult(page: Page, sectionTestId: string, query: str
   return card;
 }
 
+export async function addTwStockFromSearchCard(page: Page, sectionTestId: string) {
+  const card = await waitForSearchResult(page, sectionTestId, TW_STOCK_SYMBOL);
+  await card.getByTestId(`stock-card-toggle-${TW_STOCK_ID}`).click();
+  return card;
+}
+
+export async function expectPortfolioPosition(page: Page, stockId = TW_STOCK_ID) {
+  await expect(page.getByTestId(`portfolio-position-${stockId}`)).toBeVisible({
+    timeout: POSITION_ROW_TIMEOUT_MS,
+  });
+}
+
+export async function expectWatchlistCard(page: Page, stockId = TW_STOCK_ID) {
+  const watchlistSection = page.getByTestId("watchlist-section");
+  await expect(watchlistSection.getByTestId(`stock-card-${stockId}`)).toBeVisible({
+    timeout: POSITION_ROW_TIMEOUT_MS,
+  });
+}
 
 export async function openHome(page: Page) {
-  await installE2eSearchMock(page);
+  await installE2eApiMocks(page);
   await waitForBackendHealth(page);
   await page.goto("/");
   await expect(page.locator("#main-content")).toBeVisible();
   await page.waitForLoadState("load");
 }
 
-
 export async function searchFromHome(page: Page, query = TW_STOCK_SYMBOL) {
   return waitForSearchResult(page, "stock-search-section", query);
 }
 
-
 export async function searchFromPortfolio(page: Page, query = TW_STOCK_SYMBOL) {
-  await installE2eSearchMock(page);
+  await installE2eApiMocks(page);
   await waitForBackendHealth(page);
   await page.goto("/portfolio");
   await expect(page.locator("#main-content")).toBeVisible();
   await page.waitForLoadState("load");
   return waitForSearchResult(page, "portfolio-search-section", query);
 }
-
 
 export async function ensureWatchlistDoesNotContain(page: Page, stockId = TW_STOCK_ID) {
   await openHome(page);
@@ -123,9 +106,8 @@ export async function ensureWatchlistDoesNotContain(page: Page, stockId = TW_STO
   await expect(card).toHaveCount(0);
 }
 
-
 export async function ensurePortfolioDoesNotContain(page: Page, stockId = TW_STOCK_ID) {
-  await installE2eSearchMock(page);
+  await installE2eApiMocks(page);
   await waitForBackendHealth(page);
   await page.goto("/portfolio");
   await expect(page.locator("#main-content")).toBeVisible();

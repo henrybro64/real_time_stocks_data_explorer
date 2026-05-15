@@ -1,17 +1,19 @@
 import { expect, test } from "./setup";
 
-import { ensureWatchlistDoesNotContain, openHome, searchFromHome, TW_STOCK_ID } from "./helpers";
+import {
+  addTwStockFromSearchCard,
+  ensureWatchlistDoesNotContain,
+  expectWatchlistCard,
+  openHome,
+  TW_STOCK_ID,
+} from "./helpers";
 
 
 test("watchlist add persists across refresh and can be removed cleanly", async ({ page }) => {
   await ensureWatchlistDoesNotContain(page, TW_STOCK_ID);
-  const searchCard = await searchFromHome(page);
-
-  await searchCard.getByTestId(`stock-card-toggle-${TW_STOCK_ID}`).click();
-
-  const watchlistSection = page.getByTestId("watchlist-section");
-  const watchlistCard = watchlistSection.getByTestId(`stock-card-${TW_STOCK_ID}`);
-  await expect(watchlistCard).toBeVisible();
+  await openHome(page);
+  await addTwStockFromSearchCard(page, "stock-search-section");
+  await expectWatchlistCard(page);
 
   await page.reload();
   await openHome(page);

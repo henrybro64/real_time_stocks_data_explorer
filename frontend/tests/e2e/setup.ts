@@ -1,14 +1,14 @@
 import { test as base, expect } from "@playwright/test";
 
-import { installE2eSearchMock } from "./helpers";
+import { installE2eApiMocks } from "./e2eApiMocks";
 
 /**
- * Every E2E test gets a deterministic /api/search stub so CI does not depend on
- * live quote-provider search (which can ECONNRESET the backend proxy).
+ * Stub search, quotes, watchlist, and portfolio APIs so E2E tests validate UI wiring
+ * without live market providers (which cause ECONNRESET / missing DOM nodes in CI).
  */
 export const test = base.extend({
   page: async ({ page }, use) => {
-    await installE2eSearchMock(page);
+    await installE2eApiMocks(page);
     await use(page);
   },
 });

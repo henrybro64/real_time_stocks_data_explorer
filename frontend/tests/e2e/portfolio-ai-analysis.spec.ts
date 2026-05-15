@@ -1,9 +1,9 @@
 import { expect, test } from "./setup";
 
 import {
+  addTwStockFromSearchCard,
   ensurePortfolioDoesNotContain,
-  searchFromPortfolio,
-  TW_STOCK_ID,
+  expectPortfolioPosition,
 } from "./helpers";
 
 const AI_NOT_CONFIGURED_DETAIL =
@@ -27,10 +27,8 @@ test("portfolio AI analysis shows not-configured guidance when AI is unset", asy
 
   await ensurePortfolioDoesNotContain(page, TW_STOCK_ID);
 
-  const stockCard = await searchFromPortfolio(page);
-  await stockCard.getByTestId(`stock-card-toggle-${TW_STOCK_ID}`).click();
-
-  await expect(page.getByTestId(`portfolio-position-${TW_STOCK_ID}`)).toBeVisible();
+  await addTwStockFromSearchCard(page, "portfolio-search-section");
+  await expectPortfolioPosition(page);
 
   await page.getByTestId("portfolio-ai-analyze-button").click();
 
