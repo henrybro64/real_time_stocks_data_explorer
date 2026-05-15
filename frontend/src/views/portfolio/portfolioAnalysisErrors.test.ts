@@ -20,16 +20,16 @@ describe("portfolioAnalysisErrors", () => {
     expect(classifyPortfolioAnalysisError(error)).toBe("not_configured");
   });
 
-  it("classifies no-quotable and empty-portfolio backend errors", () => {
+  it("classifies no-analyzable and empty-portfolio backend errors", () => {
     expect(
       classifyPortfolioAnalysisError(
         new ApiError("Request failed: 400", {
           status: 400,
-          detail: PORTFOLIO_ANALYSIS_BACKEND_ERRORS.NO_QUOTABLE_HOLDINGS,
+          detail: PORTFOLIO_ANALYSIS_BACKEND_ERRORS.NO_ANALYZABLE_HOLDINGS,
           kind: "validation",
         }),
       ),
-    ).toBe("no_quotable_holdings");
+    ).toBe("no_analyzable_holdings");
 
     expect(
       classifyPortfolioAnalysisError(

@@ -169,7 +169,7 @@ type TranslationKey =
   | "portfolio.ai.loading"
   | "portfolio.ai.notConfigured"
   | "portfolio.ai.emptyPortfolioError"
-  | "portfolio.ai.noQuotableHoldings"
+  | "portfolio.ai.noAnalyzableHoldings"
   | "portfolio.ai.failed"
   | "portfolio.ai.empty"
   | "portfolio.ai.totalMarketValueUsd"
@@ -459,8 +459,8 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "portfolio.ai.loading": "Analyzing portfolio...",
     "portfolio.ai.notConfigured": "AI is not configured. Please set up your AI provider in AI Settings.",
     "portfolio.ai.emptyPortfolioError": "Your portfolio has no holdings to analyze.",
-    "portfolio.ai.noQuotableHoldings":
-      "No holdings have an available quote right now. Check quotes and try again.",
+    "portfolio.ai.noAnalyzableHoldings":
+      "No holdings could be analyzed right now. Review your positions (metadata, currency, and quotes) and try again.",
     "portfolio.ai.failed": "Could not load AI portfolio analysis. Try again.",
     "portfolio.ai.empty": "Add at least one holding before running AI portfolio analysis.",
     "portfolio.ai.totalMarketValueUsd": "Total market value (USD)",
@@ -745,7 +745,8 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "portfolio.ai.notConfigured":
       "尚未設定 AI。請至「AI 設定」頁面設定您的 AI 提供方。",
     "portfolio.ai.emptyPortfolioError": "投資組合目前沒有持倉可分析。",
-    "portfolio.ai.noQuotableHoldings": "目前沒有任何持倉能取得有效報價，請確認報價來源後再試。",
+    "portfolio.ai.noAnalyzableHoldings":
+      "目前沒有任何持倉可供分析。請檢查持倉資料、幣別與報價是否完整後再試。",
     "portfolio.ai.failed": "目前無法載入 AI 投資組合分析，請稍後再試。",
     "portfolio.ai.empty": "請至少先新增一筆持倉，再執行 AI 投資組合分析。",
     "portfolio.ai.totalMarketValueUsd": "總市值（USD）",

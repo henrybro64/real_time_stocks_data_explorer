@@ -436,9 +436,9 @@ export function PortfolioPage() {
               <p data-testid="portfolio-ai-empty-error" className="app-supporting-copy app-negative">
                 {t("portfolio.ai.emptyPortfolioError")}
               </p>
-            ) : analysisErrorKind === "no_quotable_holdings" ? (
-              <p data-testid="portfolio-ai-no-quotable" className="app-supporting-copy app-negative">
-                {t("portfolio.ai.noQuotableHoldings")}
+            ) : analysisErrorKind === "no_analyzable_holdings" ? (
+              <p data-testid="portfolio-ai-no-analyzable" className="app-supporting-copy app-negative">
+                {t("portfolio.ai.noAnalyzableHoldings")}
               </p>
             ) : analysisErrorKind === "generic" ? (
               <p data-testid="portfolio-ai-failed" className="app-supporting-copy app-negative">

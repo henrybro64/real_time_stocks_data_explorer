@@ -5,14 +5,14 @@ export const PORTFOLIO_ANALYSIS_BACKEND_ERRORS = {
   AI_NOT_CONFIGURED:
     "AI is not configured. Please set up your AI provider in AI Settings.",
   EMPTY_PORTFOLIO: "Portfolio is empty.",
-  NO_QUOTABLE_HOLDINGS:
+  NO_ANALYZABLE_HOLDINGS:
     "Portfolio analysis requires at least one holding with an available quote.",
 } as const;
 
 export type PortfolioAnalysisErrorKind =
   | "not_configured"
   | "empty_portfolio"
-  | "no_quotable_holdings"
+  | "no_analyzable_holdings"
   | "generic";
 
 export function getPortfolioAnalysisErrorDetail(error: unknown): string | null {
@@ -42,8 +42,8 @@ export function classifyPortfolioAnalysisError(error: unknown): PortfolioAnalysi
   if (detail === PORTFOLIO_ANALYSIS_BACKEND_ERRORS.EMPTY_PORTFOLIO) {
     return "empty_portfolio";
   }
-  if (detail === PORTFOLIO_ANALYSIS_BACKEND_ERRORS.NO_QUOTABLE_HOLDINGS) {
-    return "no_quotable_holdings";
+  if (detail === PORTFOLIO_ANALYSIS_BACKEND_ERRORS.NO_ANALYZABLE_HOLDINGS) {
+    return "no_analyzable_holdings";
   }
   return "generic";
 }

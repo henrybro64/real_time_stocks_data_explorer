@@ -398,13 +398,13 @@ describe("PortfolioPage", () => {
     expect(screen.getByRole("link", { name: "AI Settings" })).toBeInTheDocument();
   });
 
-  it("shows a dedicated message when no holdings have quotes", async () => {
+  it("shows a dedicated message when no holdings can be analyzed", async () => {
     vi.mocked(analyzePortfolio).mockRejectedValue(
       new ApiError(
-        `Request failed: 400 - ${PORTFOLIO_ANALYSIS_BACKEND_ERRORS.NO_QUOTABLE_HOLDINGS}`,
+        `Request failed: 400 - ${PORTFOLIO_ANALYSIS_BACKEND_ERRORS.NO_ANALYZABLE_HOLDINGS}`,
         {
           status: 400,
-          detail: PORTFOLIO_ANALYSIS_BACKEND_ERRORS.NO_QUOTABLE_HOLDINGS,
+          detail: PORTFOLIO_ANALYSIS_BACKEND_ERRORS.NO_ANALYZABLE_HOLDINGS,
           kind: "validation",
         },
       ),
@@ -414,8 +414,8 @@ describe("PortfolioPage", () => {
 
     await user.click(await screen.findByTestId("portfolio-ai-analyze-button"));
 
-    expect(await screen.findByTestId("portfolio-ai-no-quotable")).toHaveTextContent(
-      "No holdings have an available quote right now. Check quotes and try again.",
+    expect(await screen.findByTestId("portfolio-ai-no-analyzable")).toHaveTextContent(
+      "No holdings could be analyzed right now. Review your positions (metadata, currency, and quotes) and try again.",
     );
   });
 
