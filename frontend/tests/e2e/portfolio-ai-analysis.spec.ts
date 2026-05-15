@@ -4,6 +4,7 @@ import {
   addTwStockFromSearchCard,
   ensurePortfolioDoesNotContain,
   expectPortfolioPosition,
+  TW_STOCK_ID,
 } from "./helpers";
 
 const AI_NOT_CONFIGURED_DETAIL =
