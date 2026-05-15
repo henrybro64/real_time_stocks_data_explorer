@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./setup";
 
 
 test("assets page can add assets and reflect consolidated totals", async ({ page }) => {
