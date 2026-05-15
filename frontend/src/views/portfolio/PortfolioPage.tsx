@@ -401,7 +401,11 @@ export function PortfolioPage() {
                 {analysis?.model ? <Tag type="outline">{analysis.model}</Tag> : null}
               </div>
               <div className="app-portfolio-actions">
-                <Link className="cds--link" href="/ai-settings">
+                <Link
+                  className="cds--link"
+                  data-testid="portfolio-ai-settings-link"
+                  href="/ai-settings"
+                >
                   {t("portfolio.ai.settings")}
                 </Link>
                 <Button
