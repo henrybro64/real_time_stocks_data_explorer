@@ -9,6 +9,7 @@ from app.services.ai_providers.base import (
     AIProvider,
     AIProviderError,
     SYSTEM_PROMPT,
+    build_portfolio_analysis_user_prompt,
     build_stock_analysis_user_prompt,
 )
 
@@ -24,6 +25,15 @@ class OpenAIProvider(AIProvider):
         self,
         input_data: dict[str, object],
     ) -> AIAnalysisResult:
+        return self._generate_analysis(build_stock_analysis_user_prompt(input_data))
+
+    def generate_portfolio_analysis(
+        self,
+        input_data: dict[str, object],
+    ) -> AIAnalysisResult:
+        return self._generate_analysis(build_portfolio_analysis_user_prompt(input_data))
+
+    def _generate_analysis(self, user_prompt: str) -> AIAnalysisResult:
         payload = {
             "model": self.model_name,
             "input": [
@@ -36,7 +46,7 @@ class OpenAIProvider(AIProvider):
                     "content": [
                         {
                             "type": "input_text",
-                            "text": build_stock_analysis_user_prompt(input_data),
+                            "text": user_prompt,
                         }
                     ],
                 },

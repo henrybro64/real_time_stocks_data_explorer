@@ -14,6 +14,12 @@ import {
 export function usePortfolioPositions() {
   const queryClient = useQueryClient();
   const [actionError, setActionError] = useState<unknown>(null);
+  const invalidatePortfolioQueries = () => {
+    queryClient.invalidateQueries({ queryKey: ["portfolio-positions"] });
+    queryClient.invalidateQueries({ queryKey: ["portfolio-summary"] });
+    queryClient.invalidateQueries({ queryKey: ["portfolio-holdings-history"] });
+    queryClient.invalidateQueries({ queryKey: ["portfolio-combined-assets-history"] });
+  };
   const query = useQuery({
     queryKey: ["portfolio-positions"],
     queryFn: fetchPortfolioPositions,
@@ -23,7 +29,7 @@ export function usePortfolioPositions() {
   const addMutation = useMutation({
     mutationFn: addPortfolioPosition,
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["portfolio-positions"] });
+      invalidatePortfolioQueries();
     },
   });
 
@@ -31,7 +37,7 @@ export function usePortfolioPositions() {
     mutationFn: ({ positionId, payload }: { positionId: number; payload: Parameters<typeof updatePortfolioPosition>[1] }) =>
       updatePortfolioPosition(positionId, payload),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["portfolio-positions"] });
+      invalidatePortfolioQueries();
     },
   });
 
@@ -42,8 +48,7 @@ export function usePortfolioPositions() {
       queryClient.setQueryData<PortfolioPosition[]>(["portfolio-positions"], (old) =>
         (old ?? []).filter((p) => p.id !== positionId),
       );
-      queryClient.invalidateQueries({ queryKey: ["portfolio-positions"] });
-      queryClient.invalidateQueries({ queryKey: ["portfolio-summary"] });
+      invalidatePortfolioQueries();
     },
   });
 

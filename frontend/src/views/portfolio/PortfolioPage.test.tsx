@@ -1,13 +1,20 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { PortfolioHistoryResponse, PortfolioPosition, PortfolioSummary } from "@shared/api";
+import type {
+  PortfolioAnalysisResponse,
+  PortfolioHistoryResponse,
+  PortfolioPosition,
+  PortfolioSummary,
+} from "@shared/api";
 import { render, screen, within } from "@testing-library/react";
 import type { ReactNode } from "react";
+import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { LanguageProvider } from "../../app/i18n";
 import { PortfolioPage } from "./PortfolioPage";
 import { usePortfolioPositions } from "../../hooks/usePortfolioPositions";
 import {
+  analyzePortfolio,
   fetchPortfolioHoldingsHistory,
   fetchPortfolioSummary,
   fetchUsdTwdFxRate,
@@ -31,6 +38,7 @@ vi.mock("../../hooks/usePortfolioPositions", () => ({
 }));
 
 vi.mock("../../services/api/client", () => ({
+  analyzePortfolio: vi.fn(),
   fetchPortfolioHoldingsHistory: vi.fn(),
   fetchPortfolioSummary: vi.fn(),
   fetchUsdTwdFxRate: vi.fn(),
@@ -165,6 +173,77 @@ const holdingsHistory: PortfolioHistoryResponse = {
   },
 };
 
+const portfolioAnalysis: PortfolioAnalysisResponse = {
+  computedSummary: {
+    holdingsCount: 2,
+    analyzedHoldingsCount: 2,
+    skippedHoldingsCount: 0,
+    totalCostBasisUsd: 400,
+    totalCostBasisTwd: 12_800,
+    totalMarketValueUsd: 433.84,
+    totalMarketValueTwd: 13_883.12,
+    totalUnrealizedPlUsd: 33.84,
+    totalUnrealizedPlTwd: 1_083.12,
+    totalUnrealizedPlPercent: 8.46,
+    usdTwdRate: 32,
+    fxTimestamp: "2026-04-01T01:00:00Z",
+    currencyExposure: [
+      {
+        currency: "USD",
+        marketValue: 374.46,
+        marketValueUsd: 374.46,
+        marketValueTwd: 11_982.72,
+        portfolioWeightPercent: 86.31,
+      },
+      {
+        currency: "TWD",
+        marketValue: 1_900,
+        marketValueUsd: 59.38,
+        marketValueTwd: 1_900,
+        portfolioWeightPercent: 13.69,
+      },
+    ],
+    largestHoldings: [
+      {
+        stockId: "US:AAPL",
+        symbol: "AAPL",
+        name: "Apple Inc.",
+        market: "US",
+        exchange: "NASDAQ",
+        currency: "USD",
+        quantity: 2,
+        averageCost: 180,
+        lastPrice: 187.23,
+        costBasis: 360,
+        costBasisUsd: 360,
+        costBasisTwd: 11_520,
+        marketValue: 374.46,
+        marketValueUsd: 374.46,
+        marketValueTwd: 11_982.72,
+        unrealizedPl: 14.46,
+        unrealizedPlUsd: 14.46,
+        unrealizedPlTwd: 462.72,
+        unrealizedPlPercent: 4.02,
+        portfolioWeightPercent: 86.31,
+        notes: null,
+      },
+    ],
+    holdings: [],
+    skippedHoldings: [],
+    concentrationRisk: {
+      level: "high",
+      topHoldingWeightPercent: 86.31,
+      top3WeightPercent: 100,
+      top5WeightPercent: 100,
+    },
+  },
+  aiReport: "Portfolio Summary\nConcentration Risk\nPossible Actions",
+  provider: "openai",
+  model: "gpt-test",
+  warnings: [],
+  disclaimer: "AI-generated analysis, not financial advice.",
+};
+
 function renderPortfolioPage(language: "en" | "zh-TW" = "zh-TW") {
   window.localStorage.clear();
   window.localStorage.setItem("stock-ticker-language", language);
@@ -186,8 +265,11 @@ function renderPortfolioPage(language: "en" | "zh-TW" = "zh-TW") {
 }
 
 describe("PortfolioPage", () => {
+  const updateMock = vi.fn();
+
   beforeEach(() => {
     vi.clearAllMocks();
+    updateMock.mockReset();
 
     vi.mocked(usePortfolioPositions).mockReturnValue({
       positions,
@@ -201,9 +283,10 @@ describe("PortfolioPage", () => {
       isMutating: false,
       add: vi.fn(),
       addByStockId: vi.fn(),
-      update: vi.fn(),
+      update: updateMock,
       remove: vi.fn(),
     });
+    vi.mocked(analyzePortfolio).mockResolvedValue(portfolioAnalysis);
     vi.mocked(fetchPortfolioSummary).mockResolvedValue(portfolioSummary);
     vi.mocked(fetchUsdTwdFxRate).mockResolvedValue({
       pair: "USD/TWD",
@@ -243,7 +326,75 @@ describe("PortfolioPage", () => {
     );
     expect(screen.getByRole("columnheader", { name: "Last price (stock currency)" })).toBeInTheDocument();
     expect(screen.getByRole("columnheader", { name: "Position value (stock currency)" })).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "Avg cost (stock currency)" })).toBeInTheDocument();
     expect(screen.getByText("Apple Inc.")).toBeInTheDocument();
     expect(screen.getByText("TSMC")).toBeInTheDocument();
+  });
+
+  it("submits average cost updates from the portfolio table", async () => {
+    const user = userEvent.setup();
+    renderPortfolioPage("en");
+
+    const averageCostInput = await screen.findByTestId("portfolio-average-cost-input-US:AAPL");
+    await user.clear(averageCostInput);
+    await user.type(averageCostInput, "180");
+    await user.keyboard("{Enter}");
+
+    expect(updateMock).toHaveBeenCalledWith(
+      {
+        positionId: 2,
+        payload: { averageCost: 180 },
+      },
+      expect.objectContaining({
+        onSuccess: expect.any(Function),
+        onSettled: expect.any(Function),
+      }),
+    );
+  });
+
+  it("shows a loading state while AI portfolio analysis is running", async () => {
+    let resolveAnalysis: ((value: PortfolioAnalysisResponse) => void) | null = null;
+    vi.mocked(analyzePortfolio).mockReturnValue(
+      new Promise<PortfolioAnalysisResponse>((resolve) => {
+        resolveAnalysis = resolve;
+      }),
+    );
+    const user = userEvent.setup();
+    renderPortfolioPage("en");
+
+    await user.click(await screen.findByTestId("portfolio-ai-analyze-button"));
+
+    expect(await screen.findByText("Analyzing portfolio...")).toBeInTheDocument();
+    resolveAnalysis?.(portfolioAnalysis);
+  });
+
+  it("shows the required AI-not-configured message", async () => {
+    vi.mocked(analyzePortfolio).mockRejectedValue(
+      new Error("AI is not configured. Please set up your AI provider in AI Settings."),
+    );
+    const user = userEvent.setup();
+    renderPortfolioPage("en");
+
+    await user.click(await screen.findByTestId("portfolio-ai-analyze-button"));
+
+    expect(await screen.findByTestId("portfolio-ai-not-configured")).toHaveTextContent(
+      "AI is not configured. Please set up your AI provider in AI Settings.",
+    );
+    expect(screen.getByRole("link", { name: "AI Settings" })).toBeInTheDocument();
+  });
+
+  it("renders the backend portfolio analysis response", async () => {
+    const user = userEvent.setup();
+    renderPortfolioPage("en");
+
+    await user.click(await screen.findByTestId("portfolio-ai-analyze-button"));
+
+    expect(await screen.findByTestId("portfolio-ai-report")).toHaveTextContent(
+      "Portfolio Summary",
+    );
+    expect(screen.getByText("openai")).toBeInTheDocument();
+    expect(screen.getByText("gpt-test")).toBeInTheDocument();
+    expect(screen.getByText("Total market value (USD)")).toBeInTheDocument();
+    expect(screen.getByText("AI-generated analysis, not financial advice.")).toBeInTheDocument();
   });
 });

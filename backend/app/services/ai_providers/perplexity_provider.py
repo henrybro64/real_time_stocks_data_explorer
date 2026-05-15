@@ -10,6 +10,7 @@ from app.services.ai_providers.base import (
     AIProviderError,
     AnalysisCitation,
     SYSTEM_PROMPT,
+    build_portfolio_analysis_user_prompt,
     build_stock_analysis_user_prompt,
 )
 
@@ -25,13 +26,22 @@ class PerplexityProvider(AIProvider):
         self,
         input_data: dict[str, object],
     ) -> AIAnalysisResult:
+        return self._generate_analysis(build_stock_analysis_user_prompt(input_data))
+
+    def generate_portfolio_analysis(
+        self,
+        input_data: dict[str, object],
+    ) -> AIAnalysisResult:
+        return self._generate_analysis(build_portfolio_analysis_user_prompt(input_data))
+
+    def _generate_analysis(self, user_prompt: str) -> AIAnalysisResult:
         payload = {
             "model": self.model_name,
             "messages": [
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {
                     "role": "user",
-                    "content": build_stock_analysis_user_prompt(input_data),
+                    "content": user_prompt,
                 },
             ],
         }

@@ -144,6 +144,7 @@ type TranslationKey =
   | "portfolio.column.name"
   | "portfolio.column.market"
   | "portfolio.column.quantity"
+  | "portfolio.column.averageCost"
   | "portfolio.column.last"
   | "portfolio.column.marketValue"
   | "portfolio.column.change"
@@ -160,6 +161,37 @@ type TranslationKey =
   | "portfolio.removeHolding"
   | "portfolio.quantity.saving"
   | "portfolio.quantity.saved"
+  | "portfolio.ai.eyebrow"
+  | "portfolio.ai.title"
+  | "portfolio.ai.description"
+  | "portfolio.ai.analyze"
+  | "portfolio.ai.reanalyze"
+  | "portfolio.ai.settings"
+  | "portfolio.ai.loading"
+  | "portfolio.ai.notConfigured"
+  | "portfolio.ai.failed"
+  | "portfolio.ai.empty"
+  | "portfolio.ai.totalMarketValueUsd"
+  | "portfolio.ai.totalMarketValueTwd"
+  | "portfolio.ai.totalCostBasisUsd"
+  | "portfolio.ai.totalUnrealizedPlUsd"
+  | "portfolio.ai.totalUnrealizedPlPercent"
+  | "portfolio.ai.concentration"
+  | "portfolio.ai.topHolding"
+  | "portfolio.ai.top3"
+  | "portfolio.ai.level"
+  | "portfolio.ai.level.low"
+  | "portfolio.ai.level.moderate"
+  | "portfolio.ai.level.high"
+  | "portfolio.ai.exposure"
+  | "portfolio.ai.largestHoldings"
+  | "portfolio.ai.report"
+  | "portfolio.ai.noReport"
+  | "portfolio.ai.skipped"
+  | "portfolio.ai.symbol"
+  | "portfolio.ai.weight"
+  | "portfolio.ai.marketValue"
+  | "portfolio.ai.unrealizedPl"
   | "portfolio.assets.eyebrow"
   | "portfolio.assets.title"
   | "portfolio.assets.count"
@@ -417,6 +449,39 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "portfolio.removeHolding": "Remove from portfolio",
     "portfolio.quantity.saving": "Saving...",
     "portfolio.quantity.saved": "Saved",
+    "portfolio.ai.eyebrow": "AI analysis",
+    "portfolio.ai.title": "AI portfolio analysis",
+    "portfolio.ai.description":
+      "The backend computes the portfolio summary first and sends only that summary to your saved AI provider.",
+    "portfolio.ai.analyze": "Analyze my portfolio",
+    "portfolio.ai.reanalyze": "Refresh analysis",
+    "portfolio.ai.settings": "AI Settings",
+    "portfolio.ai.loading": "Analyzing portfolio...",
+    "portfolio.ai.notConfigured": "AI is not configured. Please set up your AI provider in AI Settings.",
+    "portfolio.ai.failed": "Could not load AI portfolio analysis. Try again.",
+    "portfolio.ai.empty": "Add at least one holding before running AI portfolio analysis.",
+    "portfolio.ai.totalMarketValueUsd": "Total market value (USD)",
+    "portfolio.ai.totalMarketValueTwd": "Total market value (TWD)",
+    "portfolio.ai.totalCostBasisUsd": "Total cost basis (USD)",
+    "portfolio.ai.totalUnrealizedPlUsd": "Total unrealized P/L (USD)",
+    "portfolio.ai.totalUnrealizedPlPercent": "Total unrealized P/L %",
+    "portfolio.ai.concentration": "Concentration risk",
+    "portfolio.ai.topHolding": "Top holding",
+    "portfolio.ai.top3": "Top 3 holdings",
+    "portfolio.ai.level": "Risk level",
+    "portfolio.ai.level.low": "Low",
+    "portfolio.ai.level.moderate": "Moderate",
+    "portfolio.ai.level.high": "High",
+    "portfolio.ai.exposure": "Currency exposure",
+    "portfolio.ai.largestHoldings": "Largest holdings",
+    "portfolio.ai.report": "AI report",
+    "portfolio.ai.noReport":
+      "The provider summary is unavailable right now. The computed portfolio metrics below are still current.",
+    "portfolio.ai.skipped": "Skipped holdings",
+    "portfolio.ai.symbol": "Symbol",
+    "portfolio.ai.weight": "Weight %",
+    "portfolio.ai.marketValue": "Market value",
+    "portfolio.ai.unrealizedPl": "Unrealized P/L",
     "portfolio.assets.eyebrow": "Other assets",
     "portfolio.assets.title": "Consolidated assets",
     "portfolio.assets.count": "{count} assets",
@@ -482,6 +547,7 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "portfolio.column.name": "Name",
     "portfolio.column.market": "Market",
     "portfolio.column.quantity": "Shares",
+    "portfolio.column.averageCost": "Avg cost (stock currency)",
     "portfolio.column.last": "Last price (stock currency)",
     "portfolio.column.marketValue": "Position value (stock currency)",
     "portfolio.column.change": "Change",
@@ -667,6 +733,37 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "portfolio.removeHolding": "從投資組合移除",
     "portfolio.quantity.saving": "儲存中...",
     "portfolio.quantity.saved": "已儲存",
+    "portfolio.ai.eyebrow": "AI 分析",
+    "portfolio.ai.title": "AI 投資組合分析",
+    "portfolio.ai.description": "系統會先由後端計算投資組合摘要，再只把摘要送到您已儲存的 AI 提供方。",
+    "portfolio.ai.analyze": "分析我的投資組合",
+    "portfolio.ai.reanalyze": "重新分析",
+    "portfolio.ai.settings": "AI 設定",
+    "portfolio.ai.loading": "分析投資組合中...",
+    "portfolio.ai.notConfigured": "AI is not configured. Please set up your AI provider in AI Settings.",
+    "portfolio.ai.failed": "目前無法載入 AI 投資組合分析，請稍後再試。",
+    "portfolio.ai.empty": "請至少先新增一筆持倉，再執行 AI 投資組合分析。",
+    "portfolio.ai.totalMarketValueUsd": "總市值（USD）",
+    "portfolio.ai.totalMarketValueTwd": "總市值（TWD）",
+    "portfolio.ai.totalCostBasisUsd": "總成本（USD）",
+    "portfolio.ai.totalUnrealizedPlUsd": "未實現損益（USD）",
+    "portfolio.ai.totalUnrealizedPlPercent": "未實現損益 %",
+    "portfolio.ai.concentration": "集中度風險",
+    "portfolio.ai.topHolding": "最大持股",
+    "portfolio.ai.top3": "前三大持股",
+    "portfolio.ai.level": "風險等級",
+    "portfolio.ai.level.low": "低",
+    "portfolio.ai.level.moderate": "中",
+    "portfolio.ai.level.high": "高",
+    "portfolio.ai.exposure": "幣別曝險",
+    "portfolio.ai.largestHoldings": "最大持股",
+    "portfolio.ai.report": "AI 報告",
+    "portfolio.ai.noReport": "目前無法取得 AI 文字報告，但下方後端計算的投資組合指標仍為最新結果。",
+    "portfolio.ai.skipped": "已略過持股",
+    "portfolio.ai.symbol": "代碼",
+    "portfolio.ai.weight": "權重 %",
+    "portfolio.ai.marketValue": "市值",
+    "portfolio.ai.unrealizedPl": "未實現損益",
     "portfolio.assets.eyebrow": "其他資產",
     "portfolio.assets.title": "整體資產",
     "portfolio.assets.count": "{count} 筆資產",
@@ -731,6 +828,7 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "portfolio.column.name": "名稱",
     "portfolio.column.market": "市場",
     "portfolio.column.quantity": "股數",
+    "portfolio.column.averageCost": "平均成本（原幣）",
     "portfolio.column.last": "最新價（原幣）",
     "portfolio.column.marketValue": "持倉市值（原幣）",
     "portfolio.column.change": "漲跌",

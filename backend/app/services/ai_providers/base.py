@@ -55,6 +55,11 @@ class AIProvider(Protocol):
         input_data: Mapping[str, object],
     ) -> AIAnalysisResult: ...
 
+    def generate_portfolio_analysis(
+        self,
+        input_data: Mapping[str, object],
+    ) -> AIAnalysisResult: ...
+
 
 def build_stock_analysis_user_prompt(input_data: Mapping[str, object]) -> str:
     payload = json.dumps(input_data, ensure_ascii=False, indent=2, sort_keys=True)
@@ -118,6 +123,50 @@ def build_stock_analysis_user_prompt(input_data: Mapping[str, object]) -> str:
     )
 
 
+def build_portfolio_analysis_user_prompt(input_data: Mapping[str, object]) -> str:
+    payload = json.dumps(input_data, ensure_ascii=False, indent=2, sort_keys=True)
+    base = f"Backend-computed portfolio summary JSON:\n{payload}\n"
+    if _is_tw_portfolio(input_data):
+        return (
+            "你是資深投資組合分析助理。請使用繁體中文輸出，"
+            "且只能依據後端已計算好的投資組合資料做解讀。"
+            "不要重新從零計算持倉總值，也不要假設缺漏報價的即時價格。"
+            "請清楚指出任何不確定性，並明確標示這不是投資建議。\n\n"
+            "請依下列段落輸出：\n"
+            "## Portfolio Summary\n"
+            "## Concentration Risk\n"
+            "## Currency Exposure\n"
+            "## Largest Holdings\n"
+            "## Unrealized Gain/Loss Review\n"
+            "## Stock-by-stock Comments\n"
+            "## Possible Actions\n"
+            "## Risks to Monitor\n"
+            "## Disclaimer\n\n"
+            "請明確引用後端提供的集中度、幣別曝險、最大持股與未實現損益資料。\n\n"
+            f"{base}"
+        )
+    return (
+        "You are a senior portfolio analysis assistant. "
+        "Use only the backend-computed portfolio summary as the source of truth. "
+        "Do not recalculate raw portfolio values from scratch, and do not invent live prices "
+        "for skipped holdings. Be explicit about uncertainty and clearly state that this is not "
+        "financial advice.\n\n"
+        "Structure the response with these exact sections:\n"
+        "## Portfolio Summary\n"
+        "## Concentration Risk\n"
+        "## Currency Exposure\n"
+        "## Largest Holdings\n"
+        "## Unrealized Gain/Loss Review\n"
+        "## Stock-by-stock Comments\n"
+        "## Possible Actions\n"
+        "## Risks to Monitor\n"
+        "## Disclaimer\n\n"
+        "Explicitly reference the backend-provided concentration, currency exposure, largest "
+        "holdings, and unrealized gain/loss data.\n\n"
+        f"{base}"
+    )
+
+
 def _is_tw_market(input_data: Mapping[str, object]) -> bool:
     market = input_data.get("market")
     if isinstance(market, str) and market.strip().upper() == "TW":
@@ -133,3 +182,27 @@ def _is_tw_market(input_data: Mapping[str, object]) -> bool:
         if normalized.endswith(".TW") or normalized.endswith(".TWO"):
             return True
     return False
+
+
+def _is_tw_portfolio(input_data: Mapping[str, object]) -> bool:
+    holdings = input_data.get("holdings")
+    if not isinstance(holdings, list) or not holdings:
+        return False
+
+    tw_like = 0
+    for holding in holdings:
+        if not isinstance(holding, Mapping):
+            continue
+        stock_id = holding.get("stockId")
+        market = holding.get("market")
+        currency = holding.get("currency")
+        if isinstance(stock_id, str) and stock_id.strip().upper().startswith("TW:"):
+            tw_like += 1
+            continue
+        if isinstance(market, str) and market.strip().upper() == "TW":
+            tw_like += 1
+            continue
+        if isinstance(currency, str) and currency.strip().upper() == "TWD":
+            tw_like += 1
+
+    return tw_like == len(holdings)
