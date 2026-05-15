@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, replace
 from typing import Callable
+
+logger = logging.getLogger(__name__)
 
 from app.db.models import PortfolioPosition
 from app.models.quote import QuoteRecord
@@ -311,7 +314,8 @@ class PortfolioAnalysisService:
             ai_report = ai_result.content
             provider_name = ai_result.provider
             model_name = ai_result.model
-        except (AIProviderError, Exception):
+        except AIProviderError as exc:
+            logger.warning("Portfolio AI provider error for user %s: %s", user_id, exc)
             warnings.append(AI_TEMPORARILY_UNAVAILABLE_WARNING)
 
         return PortfolioAnalysisResult(
