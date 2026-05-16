@@ -25,7 +25,11 @@ def resolve_user_ai_provider(
             require_configured=True,
         )
 
-    stored_preference = user_ai_preference_service.get_preferred_provider(user_id)
+    try:
+        stored_preference = user_ai_preference_service.get_preferred_provider(user_id)
+    except RuntimeError:
+        # Table may be missing before migrations run; fall back to default order.
+        stored_preference = None
     if stored_preference is not None:
         provider = _provider_from_user_key(
             user_id,
