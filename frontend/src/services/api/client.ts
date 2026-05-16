@@ -267,8 +267,14 @@ export function fetchUsStockInsights(stockId: string) {
   return fetchJson<USStockInsights>(`/stocks/${encodeURIComponent(stockId)}/us-insights`);
 }
 
-export function fetchStockAnalysis(stockId: string) {
-  return fetchJson<StockAnalysisResponse>(`/stocks/${encodeURIComponent(stockId)}/analysis`);
+export function fetchStockAnalysis(stockId: string, options?: { refresh?: boolean }) {
+  const params = new URLSearchParams();
+  if (options?.refresh) {
+    params.set("refresh", "true");
+  }
+  const qs = params.toString();
+  const suffix = qs ? `?${qs}` : "";
+  return fetchJson<StockAnalysisResponse>(`/stocks/${encodeURIComponent(stockId)}/analysis${suffix}`);
 }
 
 export function fetchWatchlist() {

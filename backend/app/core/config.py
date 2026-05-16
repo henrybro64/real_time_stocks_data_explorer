@@ -21,6 +21,8 @@ class Settings(BaseSettings):
     redis_url: str = Field(default="")
     # TTL for cached quote payloads when Redis is enabled.
     quote_cache_ttl_seconds: int = Field(default=60, ge=1)
+    # TTL for Redis-cached stock AI narrative (metrics are always recomputed).
+    stock_analysis_cache_ttl_seconds: int = Field(default=1_209_600, ge=60, le=3_153_600)
     # TTL for Yahoo / TW pre-ranked rank pages (Redis + in-memory).
     # Higher values mean fewer upstream calls (env RANKINGS_EXTERNAL_CACHE_TTL_SECONDS).
     rankings_external_cache_ttl_seconds: int = Field(default=600, ge=60, le=7200)

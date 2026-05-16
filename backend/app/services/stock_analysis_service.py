@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Callable
 
 import pandas as pd
@@ -54,6 +55,17 @@ INVALID_YFINANCE_TICKER_ERROR = "Ticker appears invalid or unavailable in yfinan
 SKIP_AI_MISSING_HISTORY_WARNING = (
     "Skipping AI analysis because required yfinance historical price data is unavailable."
 )
+
+
+def _empty_price_history_frame() -> pd.DataFrame:
+    """Stable empty frame; bare ``pd.DataFrame()`` can break some numpy/pandas builds."""
+    return pd.DataFrame(columns=["Close", "Adj Close", "Volume"])
+
+
+def _coerce_history_frame(history: pd.DataFrame) -> pd.DataFrame:
+    if history.empty and history.columns.size == 0:
+        return _empty_price_history_frame()
+    return history
 
 
 @dataclass(frozen=True)
@@ -118,6 +130,7 @@ class StockAnalysisResult:
     search_results: tuple[AnalysisSearchResult, ...] = ()
     warnings: tuple[str, ...] = ()
     errors: tuple[str, ...] = ()
+    analyzed_at: datetime | None = None
 
 
 class StockAnalysisService:
@@ -136,6 +149,7 @@ class StockAnalysisService:
         stock_id: str,
         *,
         provider_override: AIProvider | None = None,
+        run_ai: bool = True,
     ) -> StockAnalysisResult:
         stock = quote_service.get_stock(stock_id)
         if stock is None:
@@ -145,6 +159,7 @@ class StockAnalysisService:
         warnings: list[str] = []
         errors: list[str] = []
         history = self._load_history(ticker, errors)
+        history = _coerce_history_frame(history)
         info = self._load_info(ticker, warnings)
         has_price_history = _has_usable_price_history(history)
         if not has_price_history and not history.empty:
@@ -165,51 +180,52 @@ class StockAnalysisService:
         ai_analysis: str | None = None
         citations: tuple[AnalysisCitation, ...] = ()
         search_results: tuple[AnalysisSearchResult, ...] = ()
-        provider_config_error: str | None = None
 
-        if provider_override is not None:
-            provider = provider_override
-        else:
-            try:
-                provider = self._provider_factory()
-            except AIProviderConfigurationError as exc:
-                provider_config_error = str(exc)
-                provider = None
-
-        if provider is None:
-            if provider_config_error is not None:
-                warnings.append(provider_config_error)
+        if run_ai:
+            provider_config_error: str | None = None
+            if provider_override is not None:
+                provider = provider_override
             else:
-                warnings.append(
-                    "AI provider is not configured. Returning computed stock metrics only.",
-                )
-        else:
-            ai_provider = getattr(provider, "provider_name", None)
-            ai_model = getattr(provider, "model_name", None)
-            if not has_price_history:
-                warnings.append(
-                    SKIP_AI_MISSING_HISTORY_WARNING,
-                )
-            else:
-                prompt_payload = computed_data.to_prompt_payload()
-                prompt_payload["stockId"] = stock_id
-                prompt_payload["market"] = stock.market
-                prompt_payload["recentNewsContextAvailable"] = False
-                if warnings:
-                    prompt_payload["warnings"] = list(warnings)
-                if errors:
-                    prompt_payload["errors"] = list(errors)
                 try:
-                    result = provider.generate_stock_analysis(prompt_payload)
-                    ai_analysis = result.content
-                    citations = result.citations
-                    search_results = result.search_results
-                    ai_provider = result.provider
-                    ai_model = result.model
-                except (AIProviderError, Exception):
+                    provider = self._provider_factory()
+                except AIProviderConfigurationError as exc:
+                    provider_config_error = str(exc)
+                    provider = None
+
+            if provider is None:
+                if provider_config_error is not None:
+                    warnings.append(provider_config_error)
+                else:
                     warnings.append(
-                        "AI analysis is temporarily unavailable, but computed stock metrics are still available.",
+                        "AI provider is not configured. Returning computed stock metrics only.",
                     )
+            else:
+                ai_provider = getattr(provider, "provider_name", None)
+                ai_model = getattr(provider, "model_name", None)
+                if not has_price_history:
+                    warnings.append(
+                        SKIP_AI_MISSING_HISTORY_WARNING,
+                    )
+                else:
+                    prompt_payload = computed_data.to_prompt_payload()
+                    prompt_payload["stockId"] = stock_id
+                    prompt_payload["market"] = stock.market
+                    prompt_payload["recentNewsContextAvailable"] = False
+                    if warnings:
+                        prompt_payload["warnings"] = list(warnings)
+                    if errors:
+                        prompt_payload["errors"] = list(errors)
+                    try:
+                        gen_result = provider.generate_stock_analysis(prompt_payload)
+                        ai_analysis = gen_result.content
+                        citations = gen_result.citations
+                        search_results = gen_result.search_results
+                        ai_provider = gen_result.provider
+                        ai_model = gen_result.model
+                    except (AIProviderError, Exception):
+                        warnings.append(
+                            "AI analysis is temporarily unavailable, but computed stock metrics are still available.",
+                        )
 
         return StockAnalysisResult(
             stock_id=stock_id,
@@ -229,7 +245,7 @@ class StockAnalysisService:
             history = self._history_loader(ticker)
         except Exception:
             errors.append(HISTORY_FETCH_ERROR)
-            return pd.DataFrame()
+            return _empty_price_history_frame()
         if history.empty:
             errors.append(NO_HISTORY_ERROR)
         return history

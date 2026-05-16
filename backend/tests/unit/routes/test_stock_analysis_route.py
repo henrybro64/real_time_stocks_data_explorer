@@ -70,6 +70,7 @@ def test_stock_analysis_schema_uses_public_field_names() -> None:
         "aiProvider": "openai",
         "aiModel": "gpt-4o-mini",
         "aiAnalysis": "Structured analysis",
+        "analyzedAt": None,
         "citations": [],
         "searchResults": [],
         "warnings": ["warning"],

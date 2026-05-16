@@ -299,3 +299,34 @@ def test_analyze_stock_treats_nan_yfinance_metadata_as_missing_signal(
 
     assert NO_HISTORY_ERROR in result.errors
     assert INVALID_YFINANCE_TICKER_ERROR in result.errors
+
+
+def test_analyze_stock_run_ai_false_skips_provider_and_ai_warnings(monkeypatch) -> None:
+    stock = stock_record(
+        "US:AAPL",
+        market="US",
+        symbol="AAPL",
+        name="Apple Inc.",
+        exchange="NASDAQ",
+        currency="USD",
+        timezone="America/New_York",
+    )
+    service = StockAnalysisService(
+        history_loader=lambda ticker: pd.DataFrame(),
+        info_loader=lambda ticker: {
+            "longName": "Apple Inc.",
+            "currency": "USD",
+        },
+        provider_factory=lambda: (_ for _ in ()).throw(AssertionError("provider_factory must not run")),
+    )
+    monkeypatch.setattr(
+        "app.services.stock_analysis_service.quote_service.get_stock",
+        lambda stock_id: stock,
+    )
+
+    result = service.analyze_stock("US:AAPL", run_ai=False)
+
+    assert result.ai_analysis is None
+    assert result.ai_provider is None
+    assert SKIP_AI_MISSING_HISTORY_WARNING not in result.warnings
+    assert "AI provider is not configured" not in result.warnings
