@@ -137,10 +137,14 @@ def test_analysis_endpoint_returns_computed_metrics_when_ai_is_unavailable(
     monkeypatch,
     client,
 ) -> None:
-    monkeypatch.setattr(
-        history_routes.stock_analysis_service,
-        "analyze_stock",
-        lambda stock_id: StockAnalysisResult(
+    def fake_analyze(
+        stock_id: str,
+        *,
+        provider_override=None,
+        run_ai=True,
+    ):
+        assert run_ai is False
+        return StockAnalysisResult(
             stock_id=stock_id,
             ticker="AAPL",
             computed_data=ComputedStockAnalysisData(
@@ -169,12 +173,11 @@ def test_analysis_endpoint_returns_computed_metrics_when_ai_is_unavailable(
             ai_provider="openai",
             ai_model="gpt-4o-mini",
             ai_analysis=None,
-            warnings=(
-                "AI analysis is temporarily unavailable, but computed stock metrics are still available.",
-            ),
+            warnings=(),
             errors=(),
-        ),
-    )
+        )
+
+    monkeypatch.setattr(history_routes.stock_analysis_service, "analyze_stock", fake_analyze)
 
     response = client.get("/api/stocks/US:AAPL/analysis")
 
@@ -185,9 +188,7 @@ def test_analysis_endpoint_returns_computed_metrics_when_ai_is_unavailable(
     assert payload["computedData"]["currentPrice"] == 210.5
     assert payload["computedData"]["averageVolume30d"] == 75_000_000
     assert payload["aiAnalysis"] is None
-    assert payload["warnings"] == [
-        "AI analysis is temporarily unavailable, but computed stock metrics are still available."
-    ]
+    assert payload["warnings"] == []
 
 
 def test_analysis_endpoint_rejects_anonymous_when_auth_enabled(

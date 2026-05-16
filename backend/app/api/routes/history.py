@@ -1,6 +1,10 @@
+from dataclasses import replace
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.api.deps import get_effective_user_id
+from app.core.config import settings
 from app.models.quote import CandleRecord
 from app.models.stock import StockRecord
 from app.schemas.analysis import (
@@ -22,6 +26,11 @@ from app.services.key_stats_service import get_key_statistics
 from app.services.news_service import news_service
 from app.services.quote_service import quote_service
 from app.services.ai_providers import AIProvider
+from app.services.stock_analysis_redis_cache import (
+    CachedStockAnalysisPayload,
+    get_cached_stock_analysis,
+    set_cached_stock_analysis,
+)
 from app.services.stock_analysis_service import (
     StockAnalysisResult,
     stock_analysis_service,
@@ -65,18 +74,53 @@ def get_stock_key_statistics(stock_id: str) -> dict[str, object]:
 def get_stock_analysis(
     stock_id: str,
     provider: str | None = Query(default=None),
+    refresh: bool = Query(default=False),
     user_id: str = Depends(get_effective_user_id),
 ) -> StockAnalysisResponse:
     provider_override: AIProvider | None = None
     try:
         provider_override = resolve_user_ai_provider(user_id, provider)
-        if provider_override is None:
-            result = stock_analysis_service.analyze_stock(stock_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    bucket = _stock_analysis_cache_bucket(provider_override)
+
+    try:
+        if refresh:
+            if provider_override is None:
+                result = stock_analysis_service.analyze_stock(stock_id, run_ai=True)
+            else:
+                result = stock_analysis_service.analyze_stock(
+                    stock_id,
+                    provider_override=provider_override,
+                    run_ai=True,
+                )
+            if result.ai_analysis:
+                now = datetime.now(timezone.utc)
+                set_cached_stock_analysis(
+                    user_id,
+                    stock_id,
+                    bucket,
+                    analyzed_at=now,
+                    ai_provider=result.ai_provider,
+                    ai_model=result.ai_model,
+                    ai_analysis=result.ai_analysis,
+                    citations=result.citations,
+                    search_results=result.search_results,
+                )
+                result = replace(result, analyzed_at=now)
         else:
-            result = stock_analysis_service.analyze_stock(
-                stock_id,
-                provider_override=provider_override,
-            )
+            if provider_override is None:
+                result = stock_analysis_service.analyze_stock(stock_id, run_ai=False)
+            else:
+                result = stock_analysis_service.analyze_stock(
+                    stock_id,
+                    provider_override=provider_override,
+                    run_ai=False,
+                )
+            cached = get_cached_stock_analysis(user_id, stock_id, bucket)
+            if cached is not None:
+                result = _merge_cached_ai_into_result(result, cached)
     except ValueError as exc:
         if str(exc) == "Stock not found":
             raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -153,6 +197,39 @@ def _candle_schema(candle: CandleRecord) -> CandleResponse:
     )
 
 
+def _stock_analysis_cache_bucket(provider_override: AIProvider | None) -> str:
+    if provider_override is not None:
+        name = getattr(provider_override, "provider_name", "unknown")
+        model = getattr(provider_override, "model_name", None) or ""
+        return f"{name}:{model}"
+    ap = (settings.ai_provider or "none").strip().lower()
+    am = (settings.ai_model or "none").strip().lower()
+    return f"env:{ap}:{am}"
+
+
+def _merge_cached_ai_into_result(
+    base: StockAnalysisResult,
+    cached: CachedStockAnalysisPayload,
+) -> StockAnalysisResult:
+    return replace(
+        base,
+        ai_provider=cached.ai_provider,
+        ai_model=cached.ai_model,
+        ai_analysis=cached.ai_analysis,
+        citations=cached.citations,
+        search_results=cached.search_results,
+        analyzed_at=cached.analyzed_at,
+    )
+
+
+def _stock_analysis_analyzed_at_iso(result: StockAnalysisResult) -> str | None:
+    value = result.analyzed_at
+    if value is None:
+        return None
+    dt = value.astimezone(timezone.utc)
+    return dt.isoformat().replace("+00:00", "Z")
+
+
 def _stock_analysis_schema(result: StockAnalysisResult) -> StockAnalysisResponse:
     return StockAnalysisResponse(
         stockId=result.stock_id,
@@ -183,6 +260,7 @@ def _stock_analysis_schema(result: StockAnalysisResult) -> StockAnalysisResponse
         aiProvider=result.ai_provider,
         aiModel=result.ai_model,
         aiAnalysis=result.ai_analysis,
+        analyzedAt=_stock_analysis_analyzed_at_iso(result),
         citations=[
             StockAnalysisCitationResponse(
                 url=item.url,

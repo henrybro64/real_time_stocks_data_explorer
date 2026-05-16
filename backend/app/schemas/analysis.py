@@ -44,6 +44,10 @@ class StockAnalysisResponse(BaseModel):
     aiProvider: str | None = None
     aiModel: str | None = None
     aiAnalysis: str | None = None
+    analyzedAt: str | None = Field(
+        default=None,
+        description="UTC instant when the cached AI narrative was produced (refresh), if any.",
+    )
     citations: list[StockAnalysisCitationResponse] = Field(default_factory=list)
     searchResults: list[StockAnalysisSearchResultResponse] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)

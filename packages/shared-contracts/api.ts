@@ -339,6 +339,8 @@ export type StockAnalysisResponse = {
   aiProvider: string | null;
   aiModel: string | null;
   aiAnalysis: string | null;
+  /** UTC ISO timestamp when the AI narrative was produced (after a refresh), if any. */
+  analyzedAt: string | null;
   citations: StockAnalysisCitation[];
   searchResults: StockAnalysisSearchResult[];
   warnings: string[];

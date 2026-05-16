@@ -1,7 +1,7 @@
 "use client";
 
 import { Button, InlineLoading, Tag, Tile } from "@carbon/react";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { StockAnalysisResponse } from "@shared/api";
 import { useLanguage } from "../../app/i18n";
 import { fetchStockAnalysis } from "../../services/api/client";
@@ -28,6 +28,7 @@ function MetricCard({ label, value }: { label: string; value: string }) {
 
 export function AiInsightPanel({ stockId }: Props) {
   const { formatNumber } = useLanguage();
+  const queryClient = useQueryClient();
   const analysisQuery = useQuery<StockAnalysisResponse>({
     queryKey: ["stock-analysis", stockId],
     queryFn: () => fetchStockAnalysis(stockId),
@@ -36,7 +37,15 @@ export function AiInsightPanel({ stockId }: Props) {
     staleTime: 300_000,
   });
 
+  const refreshMutation = useMutation({
+    mutationFn: () => fetchStockAnalysis(stockId, { refresh: true }),
+    onSuccess: (data) => {
+      queryClient.setQueryData(["stock-analysis", stockId], data);
+    },
+  });
+
   const analysis = analysisQuery.data;
+  const isRefreshing = refreshMutation.isPending;
   const computed = analysis?.computedData;
   const currency = getDisplayCurrency(computed?.currency);
 
@@ -109,7 +118,10 @@ export function AiInsightPanel({ stockId }: Props) {
           <p className="app-eyebrow">AI</p>
           <h2>AI stock analysis</h2>
         </div>
-        <p className="app-section-meta">1 year of yfinance history summarized before sending data to the AI model.</p>
+        <p className="app-section-meta">
+          Computed metrics refresh when you open this page. The AI narrative is loaded from cache until you choose Refresh
+          analysis.
+        </p>
       </div>
 
       <div className="app-ai-insight-controls">
@@ -117,13 +129,38 @@ export function AiInsightPanel({ stockId }: Props) {
           {analysis?.aiProvider ? <Tag type="cool-gray">{analysis.aiProvider}</Tag> : null}
           {analysis?.aiModel ? <Tag type="outline">{analysis.aiModel}</Tag> : null}
         </div>
-        <Button size="sm" kind="ghost" onClick={() => void analysisQuery.refetch()}>
+        <Button
+          size="sm"
+          kind="ghost"
+          disabled={isRefreshing}
+          onClick={() => {
+            refreshMutation.mutate();
+          }}
+        >
           Refresh analysis
         </Button>
       </div>
 
+      {analysis?.analyzedAt ? (
+        <p className="app-supporting-copy app-section-meta">
+          AI narrative as of {new Date(analysis.analyzedAt).toLocaleString()}
+        </p>
+      ) : null}
+
       {analysisQuery.isLoading && !analysis ? (
         <InlineLoading description="Loading stock analysis..." status="active" />
+      ) : null}
+
+      {isRefreshing ? (
+        <InlineLoading description="Refreshing AI analysis..." status="active" />
+      ) : null}
+
+      {refreshMutation.isError ? (
+        <p className="app-supporting-copy app-negative">
+          {refreshMutation.error instanceof Error
+            ? refreshMutation.error.message
+            : "Could not refresh AI analysis. Try again."}
+        </p>
       ) : null}
 
       {analysisQuery.error && !analysis ? (
@@ -167,9 +204,10 @@ export function AiInsightPanel({ stockId }: Props) {
         </div>
       ) : null}
 
-      {analysis && !analysis.aiAnalysis && !analysisQuery.isLoading ? (
+      {analysis && !analysis.aiAnalysis && !analysisQuery.isLoading && !isRefreshing ? (
         <p className="app-supporting-copy">
-          AI explanation is unavailable right now. The computed metrics above still reflect the latest successful analysis payload.
+          No cached AI analysis is available yet. Click Refresh analysis to generate one with your configured AI provider.
+          Computed metrics above are based on the latest market data loaded for this page.
         </p>
       ) : null}
 
