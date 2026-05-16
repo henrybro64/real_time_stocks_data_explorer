@@ -77,10 +77,6 @@ def upsert_api_key(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
-    try:
-        user_ai_preference_service.set_preferred_provider(user_id, provider)
-    except (ValueError, RuntimeError):
-        pass
     return ApiKeyStatusResponse(
         provider=provider.lower(),
         configured=configured,
