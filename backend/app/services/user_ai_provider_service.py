@@ -5,6 +5,7 @@ from app.services.ai_providers import (
     create_ai_provider_from_credentials,
 )
 from app.services.api_key_service import SUPPORTED_PROVIDERS, api_key_service
+from app.services.user_ai_preference_service import user_ai_preference_service
 
 
 DEFAULT_PROVIDER_ORDER = ("openai", "perplexity")
@@ -18,23 +19,48 @@ def resolve_user_ai_provider(
         return None
 
     if preferred_provider is not None:
-        normalized = _normalize_provider(preferred_provider)
-        api_key = api_key_service.get_key(user_id, normalized)
-        if not api_key:
-            raise ValueError(f"{normalized} API key is not configured")
-        return create_ai_provider_from_credentials(
-            provider_name=normalized,
-            api_key=api_key,
+        return _provider_from_user_key(
+            user_id,
+            _normalize_provider(preferred_provider),
+            require_configured=True,
         )
 
+    stored_preference = user_ai_preference_service.get_preferred_provider(user_id)
+    if stored_preference is not None:
+        provider = _provider_from_user_key(
+            user_id,
+            stored_preference,
+            require_configured=False,
+        )
+        if provider is not None:
+            return provider
+
     for provider_name in DEFAULT_PROVIDER_ORDER:
-        api_key = api_key_service.get_key(user_id, provider_name)
-        if api_key:
-            return create_ai_provider_from_credentials(
-                provider_name=provider_name,
-                api_key=api_key,
-            )
+        provider = _provider_from_user_key(
+            user_id,
+            provider_name,
+            require_configured=False,
+        )
+        if provider is not None:
+            return provider
     return None
+
+
+def _provider_from_user_key(
+    user_id: str,
+    provider_name: str,
+    *,
+    require_configured: bool,
+) -> AIProvider | None:
+    api_key = api_key_service.get_key(user_id, provider_name)
+    if not api_key:
+        if require_configured:
+            raise ValueError(f"{provider_name} API key is not configured")
+        return None
+    return create_ai_provider_from_credentials(
+        provider_name=provider_name,
+        api_key=api_key,
+    )
 
 
 def _normalize_provider(provider: str) -> str:

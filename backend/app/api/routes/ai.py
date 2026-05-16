@@ -3,13 +3,44 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from app.api.deps import get_effective_user_id
 from app.schemas.ai import (
     AiInsightResponse,
+    AiProviderPreferenceRequest,
+    AiProviderPreferenceResponse,
     ApiKeyStatusResponse,
     ApiKeyUpsertRequest,
 )
 from app.services.ai_insight_service import ai_insight_service
 from app.services.api_key_service import api_key_service
+from app.services.user_ai_preference_service import user_ai_preference_service
 
 router = APIRouter(prefix="/ai", tags=["ai"])
+
+
+@router.get("/preferences", response_model=AiProviderPreferenceResponse)
+def get_ai_provider_preference(
+    user_id: str = Depends(get_effective_user_id),
+) -> AiProviderPreferenceResponse:
+    try:
+        preferred = user_ai_preference_service.get_preferred_provider(user_id)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return AiProviderPreferenceResponse(preferredProvider=preferred)
+
+
+@router.put("/preferences", response_model=AiProviderPreferenceResponse)
+def set_ai_provider_preference(
+    payload: AiProviderPreferenceRequest,
+    user_id: str = Depends(get_effective_user_id),
+) -> AiProviderPreferenceResponse:
+    try:
+        preferred = user_ai_preference_service.set_preferred_provider(
+            user_id,
+            payload.preferredProvider,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return AiProviderPreferenceResponse(preferredProvider=preferred)
 
 
 @router.get("/keys/{provider}", response_model=ApiKeyStatusResponse)
@@ -46,6 +77,10 @@ def upsert_api_key(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+    try:
+        user_ai_preference_service.set_preferred_provider(user_id, provider)
+    except (ValueError, RuntimeError):
+        pass
     return ApiKeyStatusResponse(
         provider=provider.lower(),
         configured=configured,

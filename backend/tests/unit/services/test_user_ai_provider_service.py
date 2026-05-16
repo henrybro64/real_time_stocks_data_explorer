@@ -66,3 +66,31 @@ def test_resolve_user_ai_provider_falls_back_to_first_available(monkeypatch) -> 
     result = service.resolve_user_ai_provider("user-1")
 
     assert result == {"provider": "perplexity", "api_key": "pplx-key"}
+
+
+def test_resolve_user_ai_provider_uses_stored_preference_over_default_order(
+    monkeypatch,
+) -> None:
+    def fake_get_key(user_id: str, provider: str) -> str | None:
+        if provider in {"openai", "perplexity"}:
+            return f"key-{provider}"
+        return None
+
+    monkeypatch.setattr(service.api_key_service, "get_key", fake_get_key)
+    monkeypatch.setattr(
+        service.user_ai_preference_service,
+        "get_preferred_provider",
+        lambda user_id: "perplexity",
+    )
+    monkeypatch.setattr(
+        service,
+        "create_ai_provider_from_credentials",
+        lambda provider_name, api_key: {
+            "provider": provider_name,
+            "api_key": api_key,
+        },
+    )
+
+    result = service.resolve_user_ai_provider("user-1")
+
+    assert result == {"provider": "perplexity", "api_key": "key-perplexity"}

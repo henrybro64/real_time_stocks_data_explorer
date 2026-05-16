@@ -7,6 +7,7 @@ import type {
   MarketStatus,
   FxRate,
   NewsItem,
+  AiProviderPreference,
   ApiKeyStatus,
   AiInsightResponse,
   PortfolioAsset,
@@ -380,6 +381,20 @@ export async function updatePortfolioAsset(assetId: number, payload: PortfolioAs
 export async function deletePortfolioAsset(assetId: number) {
   await requestVoid(`/portfolio/assets/${assetId}`, {
     method: "DELETE",
+  });
+}
+
+export function fetchAiProviderPreference() {
+  return fetchJson<AiProviderPreference>("/ai/preferences");
+}
+
+export async function saveAiProviderPreference(provider: "openai" | "perplexity") {
+  return requestJson<AiProviderPreference>("/ai/preferences", {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ preferredProvider: provider }),
   });
 }
 

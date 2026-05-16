@@ -233,6 +233,26 @@ type TranslationKey =
   | "portfolio.history.combinedAssetsTwd"
   | "aiSettings.title"
   | "aiSettings.description"
+  | "aiSettings.providersEyebrow"
+  | "aiSettings.providersIntro"
+  | "aiSettings.activeProviderTitle"
+  | "aiSettings.activeProviderHelp"
+  | "aiSettings.activeProviderLabel"
+  | "aiSettings.activeProviderCurrent"
+  | "aiSettings.activeProviderAuto"
+  | "aiSettings.saveActiveProvider"
+  | "aiSettings.apiKeysTitle"
+  | "aiSettings.keyProviderLabel"
+  | "aiSettings.keyConfigured"
+  | "aiSettings.keyNotConfigured"
+  | "aiSettings.openAiStatus"
+  | "aiSettings.perplexityStatus"
+  | "aiSettings.notConfiguredShort"
+  | "aiSettings.apiKeyLabel"
+  | "aiSettings.apiKeyPlaceholder"
+  | "aiSettings.saveApiKey"
+  | "aiSettings.checking"
+  | "aiSettings.saving"
   | "twInsights.title"
   | "twInsights.description"
   | "twInsights.loading"
@@ -530,7 +550,30 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "portfolio.history.combinedAssetsUsd": "Combined assets history (USD)",
     "portfolio.history.combinedAssetsTwd": "Combined assets history (TWD)",
     "aiSettings.title": "AI API key settings",
-    "aiSettings.description": "Manage OpenAI and Perplexity API keys for stock detail AI output.",
+    "aiSettings.description":
+      "Choose which provider runs portfolio and stock AI analysis, then save API keys for each provider.",
+    "aiSettings.providersEyebrow": "AI providers",
+    "aiSettings.providersIntro":
+      "The provider dropdown for keys only picks which key you edit. Use Active provider below to switch OpenAI vs Perplexity for analysis.",
+    "aiSettings.activeProviderTitle": "Active provider for analysis",
+    "aiSettings.activeProviderHelp":
+      "Portfolio and stock AI use this provider when its API key is saved. Click Save after changing.",
+    "aiSettings.activeProviderLabel": "Active provider",
+    "aiSettings.activeProviderCurrent": "Currently active: {provider}",
+    "aiSettings.activeProviderAuto": "OpenAI first, then Perplexity (default)",
+    "aiSettings.saveActiveProvider": "Save active provider",
+    "aiSettings.apiKeysTitle": "API keys",
+    "aiSettings.keyProviderLabel": "Provider for key entry",
+    "aiSettings.keyConfigured": "{provider} key saved (****{last4})",
+    "aiSettings.keyNotConfigured": "{provider} key not saved yet",
+    "aiSettings.openAiStatus": "OpenAI",
+    "aiSettings.perplexityStatus": "Perplexity",
+    "aiSettings.notConfiguredShort": "not set",
+    "aiSettings.apiKeyLabel": "{provider} API key",
+    "aiSettings.apiKeyPlaceholder": "Paste API key",
+    "aiSettings.saveApiKey": "Save API key",
+    "aiSettings.checking": "Checking...",
+    "aiSettings.saving": "Saving...",
     "twInsights.title": "Taiwan fundamentals snapshot",
     "twInsights.description":
       "Additional Taiwan-only context similar to local investor portals: revenue trend, peer momentum, and dividends.",
@@ -821,7 +864,28 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "portfolio.history.combinedAssetsUsd": "合併總資產歷史（USD）",
     "portfolio.history.combinedAssetsTwd": "合併總資產歷史（TWD）",
     "aiSettings.title": "AI API 金鑰設定",
-    "aiSettings.description": "管理 OpenAI 與 Perplexity API 金鑰，供個股明細 AI 輸出使用。",
+    "aiSettings.description": "選擇投資組合與個股 AI 分析使用的提供方，並儲存各提供方的 API 金鑰。",
+    "aiSettings.providersEyebrow": "AI 提供方",
+    "aiSettings.providersIntro":
+      "下方「金鑰輸入」的下拉選單只決定要編輯哪一家的金鑰。請在「使用中提供方」選擇實際用於分析的 OpenAI 或 Perplexity。",
+    "aiSettings.activeProviderTitle": "使用中提供方（分析用）",
+    "aiSettings.activeProviderHelp": "投資組合與個股 AI 會使用此提供方（需已儲存對應 API 金鑰）。變更後請按儲存。",
+    "aiSettings.activeProviderLabel": "使用中提供方",
+    "aiSettings.activeProviderCurrent": "目前使用中：{provider}",
+    "aiSettings.activeProviderAuto": "預設：先 OpenAI，再 Perplexity",
+    "aiSettings.saveActiveProvider": "儲存使用中提供方",
+    "aiSettings.apiKeysTitle": "API 金鑰",
+    "aiSettings.keyProviderLabel": "要編輯金鑰的提供方",
+    "aiSettings.keyConfigured": "已儲存 {provider} 金鑰（****{last4}）",
+    "aiSettings.keyNotConfigured": "尚未儲存 {provider} 金鑰",
+    "aiSettings.openAiStatus": "OpenAI",
+    "aiSettings.perplexityStatus": "Perplexity",
+    "aiSettings.notConfiguredShort": "未設定",
+    "aiSettings.apiKeyLabel": "{provider} API 金鑰",
+    "aiSettings.apiKeyPlaceholder": "貼上 API 金鑰",
+    "aiSettings.saveApiKey": "儲存 API 金鑰",
+    "aiSettings.checking": "檢查中...",
+    "aiSettings.saving": "儲存中...",
     "twInsights.title": "台股基本面快照",
     "twInsights.description": "僅台股顯示：月營收趨勢、同業表現與股利資訊。",
     "twInsights.loading": "載入台股補充資訊中",
