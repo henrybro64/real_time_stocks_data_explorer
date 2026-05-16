@@ -315,7 +315,13 @@ class PortfolioAnalysisService:
             provider_name = ai_result.provider
             model_name = ai_result.model
         except AIProviderError as exc:
-            logger.warning("Portfolio AI provider error for user %s: %s", user_id, exc)
+            logger.warning(
+                "Portfolio AI provider error for user %s (%s): %s",
+                user_id,
+                type(exc).__name__,
+                exc,
+                exc_info=True,
+            )
             warnings.append(AI_TEMPORARILY_UNAVAILABLE_WARNING)
 
         return PortfolioAnalysisResult(

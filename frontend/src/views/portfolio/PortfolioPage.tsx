@@ -36,7 +36,10 @@ import {
   searchStocks,
 } from "../../services/api/client";
 import { formatCurrency, formatLastUpdated, formatPercent, formatSignedNumber } from "../../services/format/quote";
-import { classifyPortfolioAnalysisError } from "./portfolioAnalysisErrors";
+import {
+  classifyPortfolioAnalysisError,
+  PORTFOLIO_ANALYSIS_AI_TEMPORARILY_UNAVAILABLE_WARNING,
+} from "./portfolioAnalysisErrors";
 
 type DisplayCurrency = "USD" | "TWD";
 
@@ -446,16 +449,6 @@ export function PortfolioPage() {
               </p>
             ) : null}
 
-            {analysis?.warnings.length ? (
-              <div className="app-stock-analysis-messages">
-                {analysis.warnings.map((warning) => (
-                  <p key={warning} className="app-supporting-copy">
-                    {warning}
-                  </p>
-                ))}
-              </div>
-            ) : null}
-
             {analysis ? (
               <>
                 <dl className="app-stock-analysis-grid">
@@ -580,6 +573,26 @@ export function PortfolioPage() {
                   </div>
                 ) : null}
 
+                {analysis.warnings.length > 0 ? (
+                  <div className="app-stock-analysis-body" data-testid="portfolio-ai-warnings">
+                    <h3>{t("portfolio.ai.warningsHeading")}</h3>
+                    <div className="app-stock-analysis-messages">
+                      {analysis.warnings.map((warning) => (
+                        <p
+                          key={warning}
+                          className={
+                            warning === PORTFOLIO_ANALYSIS_AI_TEMPORARILY_UNAVAILABLE_WARNING
+                              ? "app-supporting-copy app-negative"
+                              : "app-supporting-copy"
+                          }
+                        >
+                          {warning}
+                        </p>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+
                 {analysis.aiReport ? (
                   <div className="app-stock-analysis-body">
                     <h3>{t("portfolio.ai.report")}</h3>
@@ -588,7 +601,13 @@ export function PortfolioPage() {
                     </p>
                   </div>
                 ) : (
-                  <p className="app-supporting-copy">{t("portfolio.ai.noReport")}</p>
+                  <p className="app-supporting-copy" data-testid="portfolio-ai-no-report">
+                    {analysis.warnings.some((w) => w === PORTFOLIO_ANALYSIS_AI_TEMPORARILY_UNAVAILABLE_WARNING)
+                      ? t("portfolio.ai.noReportProviderError")
+                      : analysis.warnings.length > 0
+                        ? t("portfolio.ai.noReportSeeWarnings")
+                        : t("portfolio.ai.noReport")}
+                  </p>
                 )}
 
                 <p className="app-stock-analysis-disclaimer">{analysis.disclaimer}</p>
