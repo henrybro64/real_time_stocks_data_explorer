@@ -290,6 +290,10 @@ export type ApiKeyStatus = {
   keyLast4: string | null;
 };
 
+export type AiProviderPreference = {
+  preferredProvider: "openai" | "perplexity" | null;
+};
+
 export type AiInsightResponse = {
   provider: "openai" | "perplexity";
   stockId: string;

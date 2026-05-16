@@ -148,6 +148,25 @@ input {
   gap: 0.35rem;
 }
 
+.app-ai-key-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin-top: 1.25rem;
+  padding-top: 1.25rem;
+  border-top: 1px solid var(--cds-border-subtle-01, #393939);
+}
+
+.app-ai-key-section:first-of-type {
+  margin-top: 0.75rem;
+  padding-top: 0;
+  border-top: none;
+}
+
+.app-ai-key-section-title {
+  font-weight: 600;
+}
+
 .app-ai-key-panel {
   border-top: 1px solid rgba(126, 149, 189, 0.24);
   padding-top: 0.8rem;

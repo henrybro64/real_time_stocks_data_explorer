@@ -11,6 +11,14 @@ class ApiKeyUpsertRequest(BaseModel):
     apiKey: str
 
 
+class AiProviderPreferenceResponse(BaseModel):
+    preferredProvider: str | None = None
+
+
+class AiProviderPreferenceRequest(BaseModel):
+    preferredProvider: str
+
+
 class AiInsightResponse(BaseModel):
     provider: str
     stockId: str
