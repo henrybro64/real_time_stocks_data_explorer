@@ -9,6 +9,10 @@ export const PORTFOLIO_ANALYSIS_BACKEND_ERRORS = {
     "Portfolio analysis requires at least one holding with an available quote.",
 } as const;
 
+/** Mirrors backend `AI_TEMPORARILY_UNAVAILABLE_WARNING` in portfolio_analysis_service.py */
+export const PORTFOLIO_ANALYSIS_AI_TEMPORARILY_UNAVAILABLE_WARNING =
+  "AI analysis is temporarily unavailable, but computed portfolio metrics are still available.";
+
 export type PortfolioAnalysisErrorKind =
   | "not_configured"
   | "empty_portfolio"

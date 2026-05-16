@@ -189,6 +189,9 @@ type TranslationKey =
   | "portfolio.ai.largestHoldings"
   | "portfolio.ai.report"
   | "portfolio.ai.noReport"
+  | "portfolio.ai.noReportProviderError"
+  | "portfolio.ai.noReportSeeWarnings"
+  | "portfolio.ai.warningsHeading"
   | "portfolio.ai.skipped"
   | "portfolio.ai.symbol"
   | "portfolio.ai.weight"
@@ -482,6 +485,11 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "portfolio.ai.report": "AI report",
     "portfolio.ai.noReport":
       "The provider summary is unavailable right now. The computed portfolio metrics below are still current.",
+    "portfolio.ai.noReportProviderError":
+      "The AI provider did not return a narrative (see Important notices above). Check AI Settings, quotas, and server logs, then use Refresh analysis to retry. Computed metrics below are still current.",
+    "portfolio.ai.noReportSeeWarnings":
+      "No AI narrative was returned. Review Important notices above, then try Refresh analysis. Computed metrics below are still current.",
+    "portfolio.ai.warningsHeading": "Important notices",
     "portfolio.ai.skipped": "Skipped holdings",
     "portfolio.ai.symbol": "Symbol",
     "portfolio.ai.weight": "Weight %",
@@ -768,6 +776,11 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "portfolio.ai.largestHoldings": "最大持股",
     "portfolio.ai.report": "AI 報告",
     "portfolio.ai.noReport": "目前無法取得 AI 文字報告，但下方後端計算的投資組合指標仍為最新結果。",
+    "portfolio.ai.noReportProviderError":
+      "AI 提供方這次沒有回傳文字報告（請見上方「重要提示」）。請檢查 AI 設定、用量上限與伺服器紀錄，並可點「重新分析」再試；下方後端計算的投資組合指標仍為最新結果。",
+    "portfolio.ai.noReportSeeWarnings":
+      "未取得 AI 文字報告。請先查看上方「重要提示」，再按「重新分析」；下方後端計算的投資組合指標仍為最新結果。",
+    "portfolio.ai.warningsHeading": "重要提示",
     "portfolio.ai.skipped": "已略過持股",
     "portfolio.ai.symbol": "代碼",
     "portfolio.ai.weight": "權重 %",

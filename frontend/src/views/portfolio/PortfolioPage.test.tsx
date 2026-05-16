@@ -21,7 +21,7 @@ import {
   fetchUsdTwdFxRate,
   searchStocks,
 } from "../../services/api/client";
-import { PORTFOLIO_ANALYSIS_BACKEND_ERRORS } from "./portfolioAnalysisErrors";
+import { PORTFOLIO_ANALYSIS_AI_TEMPORARILY_UNAVAILABLE_WARNING, PORTFOLIO_ANALYSIS_BACKEND_ERRORS } from "./portfolioAnalysisErrors";
 
 vi.mock("next/link", () => ({
   default: ({ children, href }: { children: ReactNode; href: string }) => <a href={href}>{children}</a>,
@@ -450,5 +450,45 @@ describe("PortfolioPage", () => {
     expect(screen.getByText("gpt-test")).toBeInTheDocument();
     expect(screen.getByText("Total market value (USD)")).toBeInTheDocument();
     expect(screen.getByText("AI-generated analysis, not financial advice.")).toBeInTheDocument();
+  });
+
+  it("shows Important notices above the AI section when the provider fails without narrative text", async () => {
+    vi.mocked(analyzePortfolio).mockResolvedValue({
+      ...portfolioAnalysis,
+      aiReport: null,
+      warnings: [
+        "Skipped holdings from AI analysis because stock metadata or current quotes were unavailable: US:XLE",
+        PORTFOLIO_ANALYSIS_AI_TEMPORARILY_UNAVAILABLE_WARNING,
+      ],
+    });
+    const user = userEvent.setup();
+    renderPortfolioPage("en");
+
+    await user.click(await screen.findByTestId("portfolio-ai-analyze-button"));
+
+    expect(await screen.findByTestId("portfolio-ai-warnings")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Important notices" })).toBeInTheDocument();
+    expect(screen.getByTestId("portfolio-ai-no-report")).toHaveTextContent(
+      "The AI provider did not return a narrative",
+    );
+  });
+
+  it("points users to notices when narrative is missing for other warning reasons", async () => {
+    vi.mocked(analyzePortfolio).mockResolvedValue({
+      ...portfolioAnalysis,
+      aiReport: null,
+      warnings: [
+        "Skipped holdings from AI analysis because stock metadata or current quotes were unavailable: US:XLE",
+      ],
+    });
+    const user = userEvent.setup();
+    renderPortfolioPage("en");
+
+    await user.click(await screen.findByTestId("portfolio-ai-analyze-button"));
+
+    expect(await screen.findByTestId("portfolio-ai-warnings")).toBeInTheDocument();
+    expect(screen.getByTestId("portfolio-ai-no-report")).toHaveTextContent(
+      "Review Important notices above",
+    );
   });
 });
