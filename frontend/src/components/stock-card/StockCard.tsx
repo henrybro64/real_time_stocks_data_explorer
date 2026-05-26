@@ -143,6 +143,14 @@ export function StockCard({
           {t("stock.viewDetails")}
         </Button>
         <Button
+          data-testid={`stock-card-alert-${stock.id}`}
+          href={`/alerts?stockId=${encodeURIComponent(stock.id)}`}
+          kind="ghost"
+          size="sm"
+        >
+          {t("detail.createAlert")}
+        </Button>
+        <Button
           data-testid={`stock-card-toggle-${stock.id}`}
           kind={isTracked ? "secondary" : "primary"}
           size="sm"

@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { AlertEvent, AlertRule } from "@shared/api";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import type { ReactNode } from "react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -145,5 +145,42 @@ describe("AlertsPage", () => {
     });
 
     expect(await screen.findByTestId("alerts-rule-row-2")).toBeInTheDocument();
+  });
+
+  it("supports editing and deleting an existing alert rule", async () => {
+    const user = userEvent.setup();
+    const updatedRule = buildRule({
+      thresholdValue: 215,
+      lastConditionMet: false,
+      lastObservedPrice: 214.5,
+    });
+
+    vi.mocked(updateAlertRule).mockResolvedValue(updatedRule);
+    vi.mocked(fetchAlertRules)
+      .mockResolvedValueOnce([buildRule()])
+      .mockResolvedValue([updatedRule]);
+
+    renderAlertsPage();
+
+    const ruleRow = await screen.findByTestId("alerts-rule-row-1");
+    await user.click(within(ruleRow).getByRole("button", { name: "Edit" }));
+    await user.clear(screen.getByLabelText("Threshold price"));
+    await user.type(screen.getByLabelText("Threshold price"), "215");
+    await user.click(screen.getByTestId("alert-submit-button"));
+
+    await waitFor(() => {
+      expect(updateAlertRule).toHaveBeenCalledWith(1, {
+        stockId: "US:AAPL",
+        ruleType: "price_above",
+        thresholdValue: 215,
+        enabled: true,
+      });
+    });
+
+    await user.click(within(ruleRow).getByRole("button", { name: "Delete" }));
+    await waitFor(() => {
+      expect(deleteAlertRule).toHaveBeenCalled();
+    });
+    expect(vi.mocked(deleteAlertRule).mock.calls[0][0]).toBe(1);
   });
 });

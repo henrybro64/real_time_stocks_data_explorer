@@ -193,7 +193,7 @@ def test_capture_endpoint_requires_token_and_triggers_capture(monkeypatch) -> No
     monkeypatch.setattr(
         portfolio_routes.portfolio_history_service,
         "capture_due_snapshots_for_all_users",
-        lambda: 3,
+        lambda **_: 3,
     )
 
     with TestClient(app) as client:
