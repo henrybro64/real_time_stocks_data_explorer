@@ -31,6 +31,13 @@ class Settings(BaseSettings):
     portfolio_history_poll_seconds: int = Field(default=300, ge=30)
     # Shared secret header token for internal snapshot-capture endpoint.
     portfolio_history_capture_token: str = Field(default="")
+    # Backend logging controls.
+    log_level: str = Field(default="INFO")
+    log_format: str = Field(default="console")
+    request_id_header: str = Field(default="X-Request-ID")
+    # Background evaluator for user alert rules.
+    alert_evaluator_enabled: bool = Field(default=True)
+    alert_evaluator_poll_seconds: int = Field(default=60, ge=30)
 
     # Multi-user auth. When false, API uses default-user only.
     auth_enabled: bool = Field(default=False)

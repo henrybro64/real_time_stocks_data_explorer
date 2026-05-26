@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, replace
+from time import perf_counter
 from typing import Callable
 
-logger = logging.getLogger(__name__)
-
+from app.core.diagnostics import elapsed_ms
 from app.db.models import PortfolioPosition
 from app.models.quote import QuoteRecord
 from app.models.stock import StockRecord
@@ -14,6 +14,8 @@ from app.services.fx_service import get_usd_twd_fx_snapshot
 from app.services.portfolio_service import portfolio_service
 from app.services.quote_service import quote_service
 from app.services.user_ai_provider_service import resolve_user_ai_provider
+
+logger = logging.getLogger(__name__)
 
 AI_NOT_CONFIGURED_ERROR = (
     "AI is not configured. Please set up your AI provider in AI Settings."
@@ -207,6 +209,7 @@ class PortfolioAnalysisService:
         self._provider_resolver = provider_resolver
 
     def analyze_portfolio(self, user_id: str) -> PortfolioAnalysisResult:
+        started_at = perf_counter()
         positions = self._position_loader(user_id)
         if not positions:
             raise ValueError(EMPTY_PORTFOLIO_ERROR)
@@ -307,6 +310,7 @@ class PortfolioAnalysisService:
         model_name = getattr(provider, "model_name", None)
         ai_report: str | None = None
 
+        ai_started_at = perf_counter()
         try:
             ai_result = provider.generate_portfolio_analysis(
                 computed_summary.to_prompt_payload()
@@ -314,23 +318,54 @@ class PortfolioAnalysisService:
             ai_report = ai_result.content
             provider_name = ai_result.provider
             model_name = ai_result.model
+            logger.info(
+                "Portfolio AI analysis completed",
+                extra={
+                    "event": "portfolio_analysis.ai.completed",
+                    "user_id": user_id,
+                    "provider": provider_name,
+                    "model": model_name,
+                    "duration_ms": elapsed_ms(ai_started_at),
+                },
+            )
         except AIProviderError as exc:
             logger.warning(
-                "Portfolio AI provider error for user %s (%s): %s",
-                user_id,
-                type(exc).__name__,
-                exc,
-                exc_info=True,
+                "Portfolio AI provider failed",
+                extra={
+                    "event": "portfolio_analysis.ai.failed",
+                    "user_id": user_id,
+                    "provider": provider_name,
+                    "model": model_name,
+                    "duration_ms": elapsed_ms(ai_started_at),
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                },
             )
             warnings.append(AI_TEMPORARILY_UNAVAILABLE_WARNING)
 
-        return PortfolioAnalysisResult(
+        result = PortfolioAnalysisResult(
             computed_summary=computed_summary,
             ai_report=ai_report,
             provider=provider_name,
             model=model_name,
             warnings=tuple(dict.fromkeys(warnings)),
         )
+        logger.info(
+            "Portfolio analysis completed",
+            extra={
+                "event": "portfolio_analysis.completed",
+                "user_id": user_id,
+                "provider": result.provider,
+                "model": result.model,
+                "duration_ms": elapsed_ms(started_at),
+                "position_count": len(positions),
+                "analyzed_holdings_count": result.computed_summary.analyzed_holdings_count,
+                "skipped_holdings_count": result.computed_summary.skipped_holdings_count,
+                "warning_count": len(result.warnings),
+                "ai_generated": bool(result.ai_report),
+            },
+        )
+        return result
 
 
 def _build_holding(

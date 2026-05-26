@@ -69,6 +69,26 @@ Configure backend to use it (in `backend/.env`):
 REDIS_URL=redis://127.0.0.1:6379/0
 ```
 
+### Backend Logging And Request IDs
+
+The backend now emits structured logs for:
+
+- API request lifecycle
+- quote/news/analysis/ranking provider flows
+- portfolio-history background capture jobs
+
+Key environment variables in `backend/.env`:
+
+```bash
+LOG_LEVEL=INFO
+LOG_FORMAT=console   # or json
+REQUEST_ID_HEADER=X-Request-ID
+```
+
+Each API request gets a request ID. If the client sends `X-Request-ID`, the backend reuses it; otherwise it generates one and returns it in the response header when possible. Use that value to trace the request across backend logs.
+
+Detailed field definitions and tracing guidance live in [docs/backend-logging.md](/Users/henrybro/workspace/real_time_stocks_data_explorer/docs/backend-logging.md).
+
 ### AI Stock Analysis
 
 The stock detail page now includes an **AI stock analysis** section backed by:
@@ -123,6 +143,38 @@ Data sources:
 - Taiwan `net_buy` and `net_sell` use TWSE T86 daily institutional data and are explicitly labeled as daily, not intraday real-time.
 - U.S. institutional `net_buy` / `net_sell` are not supported (no reliable free U.S. institutional source).
 - If the Yahoo pre-ranked fetch fails, the page falls back to a small curated quote universe so something still renders; if the free public source is fully down the page shows an unavailable state instead of pretending the data is fresh.
+
+### Threshold Alerts
+
+The app now supports user-scoped threshold alerts with persistent rules and durable event history:
+
+- supported rule types: `price_above`, `price_below`
+- backend APIs:
+  - `GET /api/alerts/rules`
+  - `POST /api/alerts/rules`
+  - `PATCH /api/alerts/rules/{rule_id}`
+  - `DELETE /api/alerts/rules/{rule_id}`
+  - `GET /api/alerts/events?limit=20`
+- frontend UI: `/alerts`, plus a prefilled create flow from the stock detail page
+
+How evaluation currently works:
+
+- the FastAPI process starts an in-process background evaluator (`ALERT_EVALUATOR_ENABLED`, `ALERT_EVALUATOR_POLL_SECONDS`)
+- alert reads and writes also trigger an immediate per-user evaluation pass so new rules and state changes appear without waiting for the next sampler tick
+- rules are evaluated against the backend quote service’s latest known quote data path instead of a separate alert-specific market data stack
+
+How duplicate events are prevented:
+
+- V1 uses state-transition de-duplication, not a user-configurable cooldown
+- when a rule becomes true, one durable `alert_events` row is written
+- no additional event is written while that same condition stays continuously true
+- a new event is only written after the condition first resets to false and then becomes true again
+
+Current limitations:
+
+- no email, SMS, push, webhook, or brokerage delivery integrations
+- evaluation runs inside the backend process, so this is a pragmatic single-service V1 rather than a separate scheduler/worker system
+- alert event messages are informational only and are not financial advice
 
 Frontend:
 

@@ -99,6 +99,51 @@ export type WatchlistResponse = {
   ids: string[];
 };
 
+export type AlertRuleType = "price_above" | "price_below";
+
+export type AlertRule = {
+  id: number;
+  stockId: string;
+  stock: Stock | null;
+  ruleType: AlertRuleType;
+  thresholdValue: number;
+  enabled: boolean;
+  lastConditionMet: boolean;
+  lastObservedPrice: number | null;
+  lastObservedQuoteTimestamp: string | null;
+  lastEvaluatedAt: string | null;
+  lastTriggeredAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type AlertEvent = {
+  id: number;
+  alertRuleId: number | null;
+  stockId: string;
+  stock: Stock | null;
+  ruleType: AlertRuleType;
+  thresholdValue: number;
+  triggeredAt: string;
+  observedPrice: number;
+  quoteTimestamp: string | null;
+  message: string;
+};
+
+export type AlertRuleCreate = {
+  stockId: string;
+  ruleType: AlertRuleType;
+  thresholdValue: number;
+  enabled?: boolean;
+};
+
+export type AlertRuleUpdate = {
+  stockId?: string;
+  ruleType?: AlertRuleType;
+  thresholdValue?: number;
+  enabled?: boolean;
+};
+
 export type PortfolioPosition = {
   id: number;
   stockId: string;

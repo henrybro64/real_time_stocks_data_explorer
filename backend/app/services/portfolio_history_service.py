@@ -4,7 +4,9 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import logging
 from threading import Event, Lock, Thread
+from time import perf_counter
 
+from app.core.diagnostics import elapsed_ms
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
@@ -61,9 +63,17 @@ class PortfolioHistoryService:
 
     def start_background_sampler(self, poll_seconds: int) -> None:
         if SessionLocal is None:
+            logger.info(
+                "Portfolio history sampler skipped because the database is unavailable",
+                extra={"event": "portfolio_history.sampler.skipped", "reason": "database_unavailable"},
+            )
             return
         with self._lock:
             if self._thread is not None and self._thread.is_alive():
+                logger.debug(
+                    "Portfolio history sampler was already running",
+                    extra={"event": "portfolio_history.sampler.already_running"},
+                )
                 return
             self._stop_event = Event()
             self._thread = Thread(
@@ -73,6 +83,14 @@ class PortfolioHistoryService:
                 name="portfolio-history-sampler",
             )
             self._thread.start()
+        logger.info(
+            "Portfolio history sampler started",
+            extra={
+                "event": "portfolio_history.sampler.started",
+                "job_name": "portfolio-history-sampler",
+                "poll_seconds": poll_seconds,
+            },
+        )
 
     def stop_background_sampler(self) -> None:
         with self._lock:
@@ -82,15 +100,33 @@ class PortfolioHistoryService:
             self._thread = None
             self._stop_event.set()
         thread.join(timeout=1.0)
+        logger.info(
+            "Portfolio history sampler stopped",
+            extra={
+                "event": "portfolio_history.sampler.stopped",
+                "job_name": "portfolio-history-sampler",
+            },
+        )
 
     def capture_due_snapshots_for_all_users(
         self,
         now: datetime | None = None,
+        *,
+        trigger: str = "manual",
     ) -> int:
+        started_at = perf_counter()
         if SessionLocal is None:
             return 0
         open_windows = iter_open_snapshot_windows(now)
         if not open_windows:
+            logger.debug(
+                "Portfolio history capture skipped because no snapshot window is open",
+                extra={
+                    "event": "portfolio_history.capture_all.skipped",
+                    "trigger": trigger,
+                    "reason": "no_open_snapshot_windows",
+                },
+            )
             return 0
         with SessionLocal() as session:
             user_ids = list(session.execute(select(User.id)).scalars())
@@ -100,7 +136,19 @@ class PortfolioHistoryService:
                 user_id,
                 now=now,
                 open_windows=open_windows,
+                trigger=trigger,
             )
+        logger.info(
+            "Portfolio history capture completed for all users",
+            extra={
+                "event": "portfolio_history.capture_all.completed",
+                "job_name": "portfolio_history_capture_all_users",
+                "trigger": trigger,
+                "user_count": len(user_ids),
+                "captured_count": total,
+                "duration_ms": elapsed_ms(started_at),
+            },
+        )
         return total
 
     def capture_due_snapshots_for_user(
@@ -109,11 +157,22 @@ class PortfolioHistoryService:
         *,
         now: datetime | None = None,
         open_windows: list[tuple[str, datetime]] | None = None,
+        trigger: str = "manual",
     ) -> int:
+        started_at = perf_counter()
         if SessionLocal is None:
             return 0
         active_windows = open_windows if open_windows is not None else iter_open_snapshot_windows(now)
         if not active_windows:
+            logger.debug(
+                "Portfolio history capture skipped for user",
+                extra={
+                    "event": "portfolio_history.capture_user.skipped",
+                    "user_id": user_id,
+                    "trigger": trigger,
+                    "reason": "no_open_snapshot_windows",
+                },
+            )
             return 0
 
         metrics = self._build_snapshot_metrics(user_id)
@@ -153,6 +212,18 @@ class PortfolioHistoryService:
                     snapshot.combined_assets_twd = metrics.combined_assets_twd
                 touched += 1
             session.commit()
+        logger.log(
+            logging.INFO if touched > 0 else logging.DEBUG,
+            "Portfolio history capture completed for user",
+            extra={
+                "event": "portfolio_history.capture_user.completed",
+                "user_id": user_id,
+                "trigger": trigger,
+                "window_count": len(active_windows),
+                "captured_count": touched,
+                "duration_ms": elapsed_ms(started_at),
+            },
+        )
         return touched
 
     def list_metric_history(
@@ -165,7 +236,7 @@ class PortfolioHistoryService:
     ) -> dict[str, PortfolioHistorySeries]:
         if SessionLocal is None:
             raise RuntimeError("DATABASE_URL is not configured")
-        self.capture_due_snapshots_for_user(user_id, now=now)
+        self.capture_due_snapshots_for_user(user_id, now=now, trigger="history_read")
 
         now_utc = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
         cutoff = now_utc - _range_delta(range_name)
@@ -215,9 +286,16 @@ class PortfolioHistoryService:
     def _run_sampler(self, poll_seconds: int) -> None:
         while not self._stop_event.wait(poll_seconds):
             try:
-                self.capture_due_snapshots_for_all_users()
+                self.capture_due_snapshots_for_all_users(trigger="background_sampler")
             except Exception:
-                logger.exception("Portfolio history sampler failed")
+                logger.exception(
+                    "Portfolio history sampler failed",
+                    extra={
+                        "event": "portfolio_history.sampler.failed",
+                        "job_name": "portfolio-history-sampler",
+                        "poll_seconds": poll_seconds,
+                    },
+                )
 
     def _build_snapshot_metrics(self, user_id: str) -> SnapshotMetrics:
         positions = portfolio_service.list_positions(user_id)
@@ -259,7 +337,16 @@ class PortfolioHistoryService:
     def _resolve_quote(self, position: PortfolioPosition) -> QuoteRecord | None:
         try:
             return quote_service.get_quote(position.stock_id)
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                "Snapshot quote lookup failed",
+                extra={
+                    "event": "portfolio_history.snapshot.quote_lookup_failed",
+                    "stock_id": position.stock_id,
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                },
+            )
             return None
 
 

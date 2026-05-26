@@ -2,10 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+import logging
+from time import perf_counter
 from typing import Callable
 
 import pandas as pd
 
+from app.core.diagnostics import elapsed_ms
 from app.models.stock import StockRecord
 from app.services.ai_providers import (
     AIProvider,
@@ -55,6 +58,8 @@ INVALID_YFINANCE_TICKER_ERROR = "Ticker appears invalid or unavailable in yfinan
 SKIP_AI_MISSING_HISTORY_WARNING = (
     "Skipping AI analysis because required yfinance historical price data is unavailable."
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _empty_price_history_frame() -> pd.DataFrame:
@@ -151,6 +156,7 @@ class StockAnalysisService:
         provider_override: AIProvider | None = None,
         run_ai: bool = True,
     ) -> StockAnalysisResult:
+        started_at = perf_counter()
         stock = quote_service.get_stock(stock_id)
         if stock is None:
             raise ValueError("Stock not found")
@@ -215,6 +221,7 @@ class StockAnalysisService:
                         prompt_payload["warnings"] = list(warnings)
                     if errors:
                         prompt_payload["errors"] = list(errors)
+                    ai_started_at = perf_counter()
                     try:
                         gen_result = provider.generate_stock_analysis(prompt_payload)
                         ai_analysis = gen_result.content
@@ -222,12 +229,35 @@ class StockAnalysisService:
                         search_results = gen_result.search_results
                         ai_provider = gen_result.provider
                         ai_model = gen_result.model
-                    except (AIProviderError, Exception):
+                        logger.info(
+                            "AI stock analysis completed",
+                            extra={
+                                "event": "stock_analysis.ai.completed",
+                                "stock_id": stock_id,
+                                "provider": ai_provider,
+                                "model": ai_model,
+                                "duration_ms": elapsed_ms(ai_started_at),
+                                "citation_count": len(citations),
+                            },
+                        )
+                    except (AIProviderError, Exception) as exc:
+                        logger.warning(
+                            "AI stock analysis provider failed",
+                            extra={
+                                "event": "stock_analysis.ai.failed",
+                                "stock_id": stock_id,
+                                "provider": ai_provider,
+                                "model": ai_model,
+                                "duration_ms": elapsed_ms(ai_started_at),
+                                "error_type": type(exc).__name__,
+                                "error": str(exc),
+                            },
+                        )
                         warnings.append(
                             "AI analysis is temporarily unavailable, but computed stock metrics are still available.",
                         )
 
-        return StockAnalysisResult(
+        result = StockAnalysisResult(
             stock_id=stock_id,
             ticker=ticker,
             computed_data=computed_data,
@@ -239,11 +269,37 @@ class StockAnalysisService:
             warnings=tuple(dict.fromkeys(warnings)),
             errors=tuple(dict.fromkeys(errors)),
         )
+        logger.info(
+            "Stock analysis completed",
+            extra={
+                "event": "stock_analysis.completed",
+                "stock_id": stock_id,
+                "ticker": ticker,
+                "run_ai": run_ai,
+                "provider": result.ai_provider,
+                "model": result.ai_model,
+                "duration_ms": elapsed_ms(started_at),
+                "warning_count": len(result.warnings),
+                "error_count": len(result.errors),
+                "ai_generated": bool(result.ai_analysis),
+            },
+        )
+        return result
 
     def _load_history(self, ticker: str, errors: list[str]) -> pd.DataFrame:
         try:
             history = self._history_loader(ticker)
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                "yfinance history load failed",
+                extra={
+                    "event": "stock_analysis.history.failed",
+                    "ticker": ticker,
+                    "provider": "yfinance",
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                },
+            )
             errors.append(HISTORY_FETCH_ERROR)
             return _empty_price_history_frame()
         if history.empty:
@@ -253,7 +309,17 @@ class StockAnalysisService:
     def _load_info(self, ticker: str, warnings: list[str]) -> dict[str, object]:
         try:
             return self._info_loader(ticker)
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                "yfinance metadata load failed",
+                extra={
+                    "event": "stock_analysis.metadata.failed",
+                    "ticker": ticker,
+                    "provider": "yfinance",
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                },
+            )
             warnings.append(METADATA_LOAD_WARNING)
             return {}
 
