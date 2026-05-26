@@ -3,9 +3,12 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
+import logging
+from time import perf_counter
 from typing import Literal
 from zoneinfo import ZoneInfo
 
+from app.core.diagnostics import elapsed_ms
 from app.models.quote import QuoteRecord
 from app.models.stock import StockRecord
 from app.schemas.rankings import (
@@ -30,6 +33,7 @@ from app.services.rankings_volume_baseline_cache import (
 from app.services.providers.us_provider import yahoo_v7_quotes_batch
 from app.services.sp500_constituents import load_sp500_symbols
 
+logger = logging.getLogger(__name__)
 
 RankingMarket = Literal["US", "TW"]
 
@@ -117,6 +121,7 @@ class RankingsService:
         now: datetime | None = None,
         tw_board: TwBoard | None = None,
     ) -> RankingResponse:
+        started_at = perf_counter()
         current = now or datetime.now(timezone.utc)
         normalized_type = RankingType(ranking_type)
         effective_tw_board: TwBoard | None = tw_board if market == "TW" else None
@@ -124,14 +129,31 @@ class RankingsService:
             effective_tw_board = "TWSE"
         if normalized_type in {RankingType.net_buy, RankingType.net_sell}:
             if market == "US":
-                return self._unsupported_response(market, normalized_type, current)
-            assert effective_tw_board is not None
-            return self._build_tw_institutional_ranking(
-                normalized_type, limit, current, effective_tw_board
+                response = self._unsupported_response(market, normalized_type, current)
+            else:
+                assert effective_tw_board is not None
+                response = self._build_tw_institutional_ranking(
+                    normalized_type, limit, current, effective_tw_board
+                )
+        else:
+            response = self._build_quote_ranking(
+                market, normalized_type, limit, current, effective_tw_board
             )
-        return self._build_quote_ranking(
-            market, normalized_type, limit, current, effective_tw_board
+        logger.info(
+            "Rankings request completed",
+            extra={
+                "event": "rankings.completed",
+                "market": market,
+                "ranking_type": normalized_type.value,
+                "limit": limit,
+                "tw_board": effective_tw_board,
+                "duration_ms": elapsed_ms(started_at),
+                "item_count": len(response.items),
+                "source_type": response.sourceType.value,
+                "is_market_open": response.isMarketOpen,
+            },
         )
+        return response
 
     def _build_quote_ranking(
         self,
@@ -563,6 +585,9 @@ class RankingsService:
                 },
                 timeout_seconds=8,
                 retries=1,
+                provider_name="twse",
+                operation_name="rankings_tw_institutional_daily",
+                resource_id=current_date.isoformat(),
             )
         except HttpFetchError:
             return {}

@@ -1,4 +1,5 @@
 from datetime import datetime
+import logging
 
 from zoneinfo import ZoneInfo
 from app.services.http_client import HttpFetchError, fetch_json
@@ -14,10 +15,20 @@ _BROWSER_USER_AGENT = (
 )
 _FALLBACK_USD_TWD_RATE = 32.0
 
+logger = logging.getLogger(__name__)
+
 
 def get_usd_twd_fx_snapshot() -> dict[str, str | float]:
     rate = _fetch_usd_twd_rate()
     if rate is None:
+        logger.warning(
+            "USD/TWD FX fetch failed; using fallback rate",
+            extra={
+                "event": "fx.usd_twd.fallback_used",
+                "provider": "yahoo_finance",
+                "fallback_rate": _FALLBACK_USD_TWD_RATE,
+            },
+        )
         rate = _FALLBACK_USD_TWD_RATE
     return {
         "pair": "USD/TWD",
@@ -37,6 +48,9 @@ def _fetch_usd_twd_rate() -> float | None:
             headers=headers,
             timeout_seconds=_REQUEST_TIMEOUT_SECONDS,
             retries=2,
+            provider_name="yahoo_finance",
+            operation_name="fx_usd_twd",
+            resource_id="USD/TWD",
         )
     except HttpFetchError:
         return None

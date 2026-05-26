@@ -4,10 +4,13 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from email.utils import parsedate_to_datetime
+import logging
+from time import perf_counter
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
+from app.core.diagnostics import elapsed_ms
 from app.models.stock import StockRecord
 
 _REQUEST_TIMEOUT_SECONDS = 8
@@ -15,6 +18,8 @@ _GOOGLE_NEWS_RSS_URL = "https://news.google.com/rss/search"
 _MAX_ITEMS = 12
 _WINDOW_HOURS = 24
 _ZHTW_CHAR_RANGE = ("\u4e00", "\u9fff")
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -34,9 +39,19 @@ class NewsService:
                 query,
                 profile=profile,
                 max_items=_MAX_ITEMS,
+                stock_id=stock.id,
             )
             if items:
                 return items
+        logger.info(
+            "No recent news items were found",
+            extra={
+                "event": "news.fetch.empty",
+                "provider": "google_news",
+                "stock_id": stock.id,
+                "query_count": len(queries),
+            },
+        )
         return []
 
 
@@ -64,7 +79,10 @@ def _fetch_google_news(
     query: str,
     profile: dict[str, str],
     max_items: int,
+    *,
+    stock_id: str,
 ) -> list[NewsItem]:
+    started_at = perf_counter()
     params = {"q": f"{query} when:1d", **profile}
     request = Request(f"{_GOOGLE_NEWS_RSS_URL}?{urlencode(params)}")
     request.add_header("User-Agent", "Mozilla/5.0")
@@ -76,12 +94,36 @@ def _fetch_google_news(
     try:
         with urlopen(request, timeout=_REQUEST_TIMEOUT_SECONDS) as response:
             xml_payload = response.read().decode("utf-8", errors="ignore")
-    except (HTTPError, URLError, TimeoutError):
+    except (HTTPError, URLError, TimeoutError) as exc:
+        logger.warning(
+            "Google News request failed",
+            extra={
+                "event": "news.fetch.failed",
+                "provider": "google_news",
+                "stock_id": stock_id,
+                "query": query,
+                "duration_ms": elapsed_ms(started_at),
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+            },
+        )
         return []
 
     try:
         root = ET.fromstring(xml_payload)
-    except ET.ParseError:
+    except ET.ParseError as exc:
+        logger.warning(
+            "Google News RSS parse failed",
+            extra={
+                "event": "news.fetch.parse_failed",
+                "provider": "google_news",
+                "stock_id": stock_id,
+                "query": query,
+                "duration_ms": elapsed_ms(started_at),
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+            },
+        )
         return []
 
     now = datetime.now(UTC)
@@ -113,6 +155,17 @@ def _fetch_google_news(
         if len(news) >= max_items:
             break
 
+    logger.info(
+        "Google News fetch completed",
+        extra={
+            "event": "news.fetch.completed",
+            "provider": "google_news",
+            "stock_id": stock_id,
+            "query": query,
+            "duration_ms": elapsed_ms(started_at),
+            "item_count": len(news),
+        },
+    )
     return news
 
 

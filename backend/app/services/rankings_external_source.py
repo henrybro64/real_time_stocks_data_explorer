@@ -23,15 +23,17 @@ import logging
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from time import perf_counter
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
+from app.core.diagnostics import elapsed_ms
+from app.core.config import settings
 from app.models.quote import QuoteRecord
 from app.models.stock import StockRecord
 from app.schemas.rankings import RankingType
 from app.services.http_client import HttpFetchError, fetch_text
 from app.services.market_clock import is_market_open
-from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +101,7 @@ class RankingsExternalSource:
         *,
         tw_board: str | None = None,
     ) -> list[tuple[StockRecord, QuoteRecord]] | None:
+        started_at = perf_counter()
         if ranking_type not in _TW_RANK_PATH and ranking_type not in _US_SCREENER_ID:
             return None
         if market not in {"US", "TW"}:
@@ -109,14 +112,47 @@ class RankingsExternalSource:
 
         cached = self._read_cache(cache_key, current)
         if cached is not None:
-            return self._filter_tw_board(cached, market, tw_board)[:limit]
+            filtered = self._filter_tw_board(cached, market, tw_board)[:limit]
+            logger.debug(
+                "External rankings cache hit",
+                extra={
+                    "event": "rankings.external.cache.hit",
+                    "market": market,
+                    "ranking_type": ranking_type.value,
+                    "tw_board": tw_board,
+                    "item_count": len(filtered),
+                },
+            )
+            return filtered
 
         envelopes = self._fetch_uncached(market, ranking_type, current)
         if envelopes is None:
+            logger.warning(
+                "External rankings source was unavailable",
+                extra={
+                    "event": "rankings.external.fetch.unavailable",
+                    "market": market,
+                    "ranking_type": ranking_type.value,
+                    "tw_board": tw_board,
+                    "duration_ms": elapsed_ms(started_at),
+                },
+            )
             return None
 
         self._write_cache(cache_key, envelopes, current)
-        return self._filter_tw_board(envelopes, market, tw_board)[:limit]
+        filtered = self._filter_tw_board(envelopes, market, tw_board)[:limit]
+        logger.info(
+            "External rankings fetch completed",
+            extra={
+                "event": "rankings.external.fetch.completed",
+                "market": market,
+                "ranking_type": ranking_type.value,
+                "tw_board": tw_board,
+                "duration_ms": elapsed_ms(started_at),
+                "item_count": len(filtered),
+            },
+        )
+        return filtered
 
     @staticmethod
     def _filter_tw_board(
@@ -141,14 +177,30 @@ class RankingsExternalSource:
             try:
                 html_text = self._tw_html_fetcher(slug)
             except (HttpFetchError, TimeoutError) as exc:
-                logger.warning("Yahoo TW rank page %s fetch failed: %s", slug, exc)
+                logger.warning(
+                    "Yahoo TW rank page fetch failed",
+                    extra={
+                        "event": "rankings.external.tw.failed",
+                        "market": "TW",
+                        "ranking_type": ranking_type.value,
+                        "provider": "yahoo_finance",
+                        "slug": slug,
+                        "error_type": type(exc).__name__,
+                        "error": str(exc),
+                    },
+                )
                 return None
             envelopes = _parse_tw_rank_page(html_text, ranking_type, now)
             if not envelopes:
                 logger.warning(
-                    "Yahoo TW rank page %s returned no parseable rows; "
-                    "falling back to the app's TW quote snapshot list",
-                    slug,
+                    "Yahoo TW rank page returned no parseable rows",
+                    extra={
+                        "event": "rankings.external.tw.empty",
+                        "market": "TW",
+                        "ranking_type": ranking_type.value,
+                        "provider": "yahoo_finance",
+                        "slug": slug,
+                    },
                 )
                 return None
             return envelopes[:_FETCH_BATCH]
@@ -160,14 +212,30 @@ class RankingsExternalSource:
         try:
             response = self._us_screener_fetcher(scr_id, _FETCH_BATCH)
         except Exception as exc:  # noqa: BLE001 - yfinance can raise many shapes
-            logger.warning("Yahoo U.S. screener %s failed: %s", scr_id, exc)
+            logger.warning(
+                "Yahoo U.S. screener failed",
+                extra={
+                    "event": "rankings.external.us.failed",
+                    "market": "US",
+                    "ranking_type": ranking_type.value,
+                    "provider": "yahoo_finance",
+                    "screener_id": scr_id,
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                },
+            )
             return None
         envelopes = _parse_us_screener_response(response, now)
         if not envelopes:
             logger.warning(
-                "Yahoo U.S. screener %s returned no parseable quotes; "
-                "falling back to S&P 500 quote snapshot",
-                scr_id,
+                "Yahoo U.S. screener returned no parseable quotes",
+                extra={
+                    "event": "rankings.external.us.empty",
+                    "market": "US",
+                    "ranking_type": ranking_type.value,
+                    "provider": "yahoo_finance",
+                    "screener_id": scr_id,
+                },
             )
             return None
         return envelopes[:_FETCH_BATCH]
@@ -235,6 +303,9 @@ def _default_tw_html_fetcher(slug: str) -> str:
         },
         timeout_seconds=_REQUEST_TIMEOUT_SECONDS,
         retries=_REQUEST_RETRIES,
+        provider_name="yahoo_finance",
+        operation_name="rankings_tw_html",
+        resource_id=slug,
     )
 
 
