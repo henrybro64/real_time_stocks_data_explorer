@@ -41,7 +41,12 @@ export function WatchlistTable({
           <p className="app-eyebrow">Tracked securities</p>
           <h2>{t("watchlist.title")}</h2>
         </div>
-        <p className="app-section-meta">{t("watchlist.count", { count })}</p>
+        <div className="app-watchlist-header-actions">
+          <p className="app-section-meta">{t("watchlist.count", { count })}</p>
+          <Button href="/alerts" kind="ghost" size="sm">
+            {t("watchlist.manageAlerts")}
+          </Button>
+        </div>
       </div>
       {noticeKind ? (
         <div className="app-state-notice-wrap">

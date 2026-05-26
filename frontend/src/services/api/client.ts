@@ -1,4 +1,8 @@
 import type {
+  AlertEvent,
+  AlertRule,
+  AlertRuleCreate,
+  AlertRuleUpdate,
   HistoryResponse,
   RankingResponse,
   RankingType,
@@ -280,6 +284,40 @@ export function fetchStockAnalysis(stockId: string, options?: { refresh?: boolea
 
 export function fetchWatchlist() {
   return fetchJson<WatchlistResponse>("/watchlist");
+}
+
+export function fetchAlertRules() {
+  return fetchJson<AlertRule[]>("/alerts/rules");
+}
+
+export function fetchAlertEvents(limit = 20) {
+  return fetchJson<AlertEvent[]>(`/alerts/events?limit=${limit}`);
+}
+
+export async function createAlertRule(payload: AlertRuleCreate) {
+  return requestJson<AlertRule>("/alerts/rules", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function updateAlertRule(ruleId: number, payload: AlertRuleUpdate) {
+  return requestJson<AlertRule>(`/alerts/rules/${ruleId}`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function deleteAlertRule(ruleId: number) {
+  await requestVoid(`/alerts/rules/${ruleId}`, {
+    method: "DELETE",
+  });
 }
 
 export async function addToWatchlist(stockId: string) {

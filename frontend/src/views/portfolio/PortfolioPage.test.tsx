@@ -373,7 +373,6 @@ describe("PortfolioPage", () => {
     await user.click(await screen.findByTestId("portfolio-ai-analyze-button"));
 
     expect(await screen.findByText("Analyzing portfolio...")).toBeInTheDocument();
-    resolveAnalysis?.(portfolioAnalysis);
   });
 
   it("shows the required AI-not-configured message", async () => {

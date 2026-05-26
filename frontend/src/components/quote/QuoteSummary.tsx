@@ -1,4 +1,4 @@
-import { Column, Grid, Tag, Tile } from "@carbon/react";
+import { Button, Column, Grid, Tag, Tile } from "@carbon/react";
 import type { QuoteResponse } from "@shared/api";
 import { getDisplayStockName, useLanguage } from "../../app/i18n";
 import { QuoteFreshnessTag } from "../state/QuoteFreshnessTag";
@@ -21,7 +21,17 @@ export function QuoteSummary({ item }: Props) {
           </p>
           <h2>{getDisplayStockName(stock, language)}</h2>
         </div>
-        <Tag type="cool-gray">{stock.currency}</Tag>
+        <div className="app-alerts-summary-actions">
+          <Tag type="cool-gray">{stock.currency}</Tag>
+          <Button
+            data-testid="quote-create-alert-button"
+            href={`/alerts?stockId=${encodeURIComponent(stock.id)}`}
+            kind="ghost"
+            size="sm"
+          >
+            {t("detail.createAlert")}
+          </Button>
+        </div>
       </div>
       <div className="app-detail-price-row">
         <p className="app-detail-price">{formatCurrency(quote.lastPrice, stock.currency)}</p>
