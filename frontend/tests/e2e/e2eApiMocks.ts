@@ -35,8 +35,41 @@ type PortfolioPositionRow = {
   unrealizedPlPercent: number;
 };
 
+type AlertRuleRow = {
+  id: number;
+  stockId: string;
+  stock: typeof E2E_TW_STOCK_SEARCH_RESULT;
+  ruleType: "price_above" | "price_below";
+  thresholdValue: number;
+  enabled: boolean;
+  lastConditionMet: boolean;
+  lastObservedPrice: number | null;
+  lastObservedQuoteTimestamp: string | null;
+  lastEvaluatedAt: string | null;
+  lastTriggeredAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type AlertEventRow = {
+  id: number;
+  alertRuleId: number | null;
+  stockId: string;
+  stock: typeof E2E_TW_STOCK_SEARCH_RESULT;
+  ruleType: "price_above" | "price_below";
+  thresholdValue: number;
+  triggeredAt: string;
+  observedPrice: number;
+  quoteTimestamp: string | null;
+  message: string;
+};
+
 type E2eMockState = {
   watchlistIds: string[];
+  alertRules: AlertRuleRow[];
+  alertEvents: AlertEventRow[];
+  nextAlertRuleId: number;
+  nextAlertEventId: number;
   portfolioPositions: PortfolioPositionRow[];
   nextPositionId: number;
 };
@@ -49,6 +82,10 @@ function getState(page: Page): E2eMockState {
   if (!state) {
     state = {
       watchlistIds: [],
+      alertRules: [],
+      alertEvents: [],
+      nextAlertRuleId: 1,
+      nextAlertEventId: 1,
       portfolioPositions: [],
       nextPositionId: 1,
     };
@@ -193,6 +230,17 @@ async function fulfillJson(route: Route, body: unknown, status = 200) {
   });
 }
 
+function conditionMet(ruleType: "price_above" | "price_below", thresholdValue: number) {
+  return ruleType === "price_above"
+    ? E2E_TW_QUOTE.lastPrice > thresholdValue
+    : E2E_TW_QUOTE.lastPrice < thresholdValue;
+}
+
+function buildAlertMessage(ruleType: "price_above" | "price_below", thresholdValue: number) {
+  const comparator = ruleType === "price_above" ? "rose above" : "fell below";
+  return `${E2E_TW_STOCK_SEARCH_RESULT.symbol} ${comparator} ${thresholdValue.toFixed(2)} (observed ${E2E_TW_QUOTE.lastPrice.toFixed(2)}).`;
+}
+
 export async function installE2eApiMocks(page: Page): Promise<void> {
   if (pagesWithApiMocks.has(page)) {
     return;
@@ -222,6 +270,63 @@ export async function installE2eApiMocks(page: Page): Promise<void> {
 
     if (path === "/api/watchlist" && request.method() === "GET") {
       await fulfillJson(route, { ids: [...state.watchlistIds] });
+      return;
+    }
+
+    if (path === "/api/alerts/rules" && request.method() === "GET") {
+      await fulfillJson(route, [...state.alertRules]);
+      return;
+    }
+
+    if (path === "/api/alerts/events" && request.method() === "GET") {
+      const limit = Number(url.searchParams.get("limit") ?? state.alertEvents.length);
+      await fulfillJson(route, state.alertEvents.slice(0, Number.isFinite(limit) ? limit : state.alertEvents.length));
+      return;
+    }
+
+    if (path === "/api/alerts/rules" && request.method() === "POST") {
+      const payload = request.postDataJSON() as {
+        stockId?: string;
+        ruleType?: "price_above" | "price_below";
+        thresholdValue?: number;
+        enabled?: boolean;
+      };
+      const ruleType = payload.ruleType ?? "price_above";
+      const thresholdValue = payload.thresholdValue ?? E2E_TW_QUOTE.lastPrice;
+      const enabled = payload.enabled ?? true;
+      const isMet = enabled && conditionMet(ruleType, thresholdValue);
+      const timestamp = E2E_TW_QUOTE.timestamp;
+      const created: AlertRuleRow = {
+        id: state.nextAlertRuleId++,
+        stockId: payload.stockId ?? TW_STOCK_ID,
+        stock: E2E_TW_STOCK_SEARCH_RESULT,
+        ruleType,
+        thresholdValue,
+        enabled,
+        lastConditionMet: isMet,
+        lastObservedPrice: enabled ? E2E_TW_QUOTE.lastPrice : null,
+        lastObservedQuoteTimestamp: enabled ? timestamp : null,
+        lastEvaluatedAt: enabled ? timestamp : null,
+        lastTriggeredAt: isMet ? timestamp : null,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      };
+      state.alertRules.push(created);
+      if (isMet) {
+        state.alertEvents.unshift({
+          id: state.nextAlertEventId++,
+          alertRuleId: created.id,
+          stockId: created.stockId,
+          stock: E2E_TW_STOCK_SEARCH_RESULT,
+          ruleType,
+          thresholdValue,
+          triggeredAt: timestamp,
+          observedPrice: E2E_TW_QUOTE.lastPrice,
+          quoteTimestamp: timestamp,
+          message: buildAlertMessage(ruleType, thresholdValue),
+        });
+      }
+      await fulfillJson(route, created);
       return;
     }
 

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+import logging
+from time import perf_counter
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from app.core.diagnostics import elapsed_ms
 from app.services.ai_providers.base import (
     AIAnalysisResult,
     AIProvider,
@@ -13,6 +16,8 @@ from app.services.ai_providers.base import (
     build_portfolio_analysis_user_prompt,
     build_stock_analysis_user_prompt,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class PerplexityProvider(AIProvider):
@@ -35,6 +40,7 @@ class PerplexityProvider(AIProvider):
         return self._generate_analysis(build_portfolio_analysis_user_prompt(input_data))
 
     def _generate_analysis(self, user_prompt: str) -> AIAnalysisResult:
+        started_at = perf_counter()
         payload = {
             "model": self.model_name,
             "messages": [
@@ -57,6 +63,17 @@ class PerplexityProvider(AIProvider):
             with urlopen(request, data=body, timeout=20) as response:
                 data = json.load(response)
         except (HTTPError, URLError, TimeoutError) as exc:
+            logger.warning(
+                "Perplexity request failed",
+                extra={
+                    "event": "ai_provider.request.failed",
+                    "provider": self.provider_name,
+                    "model": self.model_name,
+                    "duration_ms": elapsed_ms(started_at),
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                },
+            )
             raise AIProviderError("Perplexity request failed.") from exc
 
         choices = data.get("choices")
@@ -71,6 +88,16 @@ class PerplexityProvider(AIProvider):
             AnalysisCitation(url=url)
             for url in data.get("citations", [])
             if isinstance(url, str) and url.strip()
+        )
+        logger.info(
+            "Perplexity request completed",
+            extra={
+                "event": "ai_provider.request.completed",
+                "provider": self.provider_name,
+                "model": self.model_name,
+                "duration_ms": elapsed_ms(started_at),
+                "citation_count": len(citations),
+            },
         )
         return AIAnalysisResult(
             provider=self.provider_name,

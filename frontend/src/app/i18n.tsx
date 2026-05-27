@@ -7,6 +7,7 @@ export type AppLanguage = "en" | "zh-TW";
 
 type TranslationKey =
   | "nav.dashboard"
+  | "nav.alerts"
   | "nav.markets"
   | "nav.rankings"
   | "nav.watchlist"
@@ -43,6 +44,44 @@ type TranslationKey =
   | "watchlist.count"
   | "watchlist.loading"
   | "watchlist.empty"
+  | "watchlist.manageAlerts"
+  | "alerts.title"
+  | "alerts.description"
+  | "alerts.form.eyebrow"
+  | "alerts.form.createTitle"
+  | "alerts.form.editTitle"
+  | "alerts.form.stockId"
+  | "alerts.form.stockIdPlaceholder"
+  | "alerts.form.ruleType"
+  | "alerts.form.threshold"
+  | "alerts.form.enabled"
+  | "alerts.form.submitCreate"
+  | "alerts.form.submitUpdate"
+  | "alerts.form.cancelEdit"
+  | "alerts.rules.title"
+  | "alerts.rules.empty"
+  | "alerts.events.title"
+  | "alerts.events.empty"
+  | "alerts.ruleType.priceAbove"
+  | "alerts.ruleType.priceBelow"
+  | "alerts.status.enabled"
+  | "alerts.status.disabled"
+  | "alerts.status.conditionMet"
+  | "alerts.status.monitoring"
+  | "alerts.actions.edit"
+  | "alerts.actions.pause"
+  | "alerts.actions.resume"
+  | "alerts.actions.delete"
+  | "alerts.column.stock"
+  | "alerts.column.rule"
+  | "alerts.column.threshold"
+  | "alerts.column.status"
+  | "alerts.column.lastObserved"
+  | "alerts.column.lastTriggered"
+  | "alerts.column.actions"
+  | "alerts.column.observedPrice"
+  | "alerts.column.triggeredAt"
+  | "alerts.column.message"
   | "stock.market"
   | "stock.updatedAt"
   | "stock.prevClose"
@@ -58,6 +97,7 @@ type TranslationKey =
   | "detail.loading"
   | "detail.selectHistoryRange"
   | "detail.backToDashboard"
+  | "detail.createAlert"
   | "quote.updatedAt"
   | "quote.open"
   | "quote.high"
@@ -302,6 +342,7 @@ type TranslationKey =
 const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
   en: {
     "nav.dashboard": "Dashboard",
+    "nav.alerts": "Alerts",
     "nav.markets": "Markets",
     "nav.rankings": "Rankings",
     "nav.watchlist": "Watchlist",
@@ -339,6 +380,45 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "watchlist.count": "{count} stocks",
     "watchlist.loading": "Loading watchlist quotes",
     "watchlist.empty": "Add stocks from search. Latest quotes and update times will appear here.",
+    "watchlist.manageAlerts": "Manage alerts",
+    "alerts.title": "Threshold alerts",
+    "alerts.description":
+      "Create price-above and price-below rules for stocks you care about, then review the recent trigger history in one place.",
+    "alerts.form.eyebrow": "Rule editor",
+    "alerts.form.createTitle": "Create alert rule",
+    "alerts.form.editTitle": "Edit alert rule",
+    "alerts.form.stockId": "Stock ID",
+    "alerts.form.stockIdPlaceholder": "For example: US:AAPL or TW:2330",
+    "alerts.form.ruleType": "Rule type",
+    "alerts.form.threshold": "Threshold price",
+    "alerts.form.enabled": "Rule status",
+    "alerts.form.submitCreate": "Create alert",
+    "alerts.form.submitUpdate": "Save changes",
+    "alerts.form.cancelEdit": "Cancel",
+    "alerts.rules.title": "Current rules",
+    "alerts.rules.empty": "No alert rules yet. Create one above to start tracking threshold events.",
+    "alerts.events.title": "Recent events",
+    "alerts.events.empty": "No alert events yet. Events appear here when a rule crosses its threshold.",
+    "alerts.ruleType.priceAbove": "Price above",
+    "alerts.ruleType.priceBelow": "Price below",
+    "alerts.status.enabled": "Enabled",
+    "alerts.status.disabled": "Disabled",
+    "alerts.status.conditionMet": "Triggered state",
+    "alerts.status.monitoring": "Monitoring",
+    "alerts.actions.edit": "Edit",
+    "alerts.actions.pause": "Pause",
+    "alerts.actions.resume": "Resume",
+    "alerts.actions.delete": "Delete",
+    "alerts.column.stock": "Stock",
+    "alerts.column.rule": "Rule",
+    "alerts.column.threshold": "Threshold",
+    "alerts.column.status": "Status",
+    "alerts.column.lastObserved": "Last observed",
+    "alerts.column.lastTriggered": "Last triggered",
+    "alerts.column.actions": "Actions",
+    "alerts.column.observedPrice": "Observed price",
+    "alerts.column.triggeredAt": "Triggered",
+    "alerts.column.message": "Message",
     "stock.market": "Market",
     "stock.updatedAt": "Updated",
     "stock.prevClose": "Prev close",
@@ -354,6 +434,7 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "detail.loading": "Loading stock details",
     "detail.selectHistoryRange": "Select history range",
     "detail.backToDashboard": "Back to dashboard",
+    "detail.createAlert": "Create alert",
     "quote.updatedAt": "Updated {time}",
     "quote.open": "Open",
     "quote.high": "High",
@@ -636,6 +717,7 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
   },
   "zh-TW": {
     "nav.dashboard": "儀表板",
+    "nav.alerts": "警示",
     "nav.markets": "市場",
     "nav.rankings": "排行",
     "nav.watchlist": "自選",
@@ -672,6 +754,44 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "watchlist.count": "{count} 檔股票",
     "watchlist.loading": "載入自選報價中",
     "watchlist.empty": "搜尋股票後加入清單，這裡會持續顯示最新報價與更新時間。",
+    "watchlist.manageAlerts": "管理警示",
+    "alerts.title": "門檻警示",
+    "alerts.description": "建立價格高於或低於門檻的規則，並集中查看最近觸發紀錄。",
+    "alerts.form.eyebrow": "規則編輯器",
+    "alerts.form.createTitle": "新增警示規則",
+    "alerts.form.editTitle": "編輯警示規則",
+    "alerts.form.stockId": "股票 ID",
+    "alerts.form.stockIdPlaceholder": "例如 US:AAPL 或 TW:2330",
+    "alerts.form.ruleType": "規則類型",
+    "alerts.form.threshold": "門檻價格",
+    "alerts.form.enabled": "規則狀態",
+    "alerts.form.submitCreate": "建立警示",
+    "alerts.form.submitUpdate": "儲存變更",
+    "alerts.form.cancelEdit": "取消",
+    "alerts.rules.title": "目前規則",
+    "alerts.rules.empty": "目前沒有警示規則。請先在上方建立一筆。",
+    "alerts.events.title": "最近事件",
+    "alerts.events.empty": "目前沒有警示事件。當規則跨越門檻時，紀錄會出現在這裡。",
+    "alerts.ruleType.priceAbove": "價格高於",
+    "alerts.ruleType.priceBelow": "價格低於",
+    "alerts.status.enabled": "啟用中",
+    "alerts.status.disabled": "已停用",
+    "alerts.status.conditionMet": "條件成立",
+    "alerts.status.monitoring": "監控中",
+    "alerts.actions.edit": "編輯",
+    "alerts.actions.pause": "暫停",
+    "alerts.actions.resume": "恢復",
+    "alerts.actions.delete": "刪除",
+    "alerts.column.stock": "股票",
+    "alerts.column.rule": "規則",
+    "alerts.column.threshold": "門檻",
+    "alerts.column.status": "狀態",
+    "alerts.column.lastObserved": "最近觀測",
+    "alerts.column.lastTriggered": "最近觸發",
+    "alerts.column.actions": "操作",
+    "alerts.column.observedPrice": "觀測價格",
+    "alerts.column.triggeredAt": "觸發時間",
+    "alerts.column.message": "訊息",
     "stock.market": "市場",
     "stock.updatedAt": "更新時間",
     "stock.prevClose": "前收",
@@ -687,6 +807,7 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "detail.loading": "載入股票明細中",
     "detail.selectHistoryRange": "選擇歷史區間",
     "detail.backToDashboard": "返回儀表板",
+    "detail.createAlert": "建立警示",
     "quote.updatedAt": "更新時間 {time}",
     "quote.open": "開盤",
     "quote.high": "最高",

@@ -1,7 +1,10 @@
+import logging
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 
+from app.api.routes.alerts import router as alerts_router
 from app.api.routes.ai import router as ai_router
 from app.api.routes.auth import router as auth_router
 from app.api.routes.history import router as history_router
@@ -13,11 +16,17 @@ from app.api.routes.search import router as search_router
 from app.api.routes.stream import router as stream_router
 from app.api.routes.watchlist import router as watchlist_router
 from app.core.config import settings
+from app.core.logging import configure_logging
 from app.db.init_db import seed_default_user
 from app.db.session import SessionLocal
+from app.middleware.request_context import install_request_context_middleware
+from app.services.alert_service import alert_service
 from app.services.local_auth_service import ensure_bootstrap_local_user
 from app.services.portfolio_history_service import portfolio_history_service
 
+
+configure_logging()
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title=settings.app_name)
 
@@ -36,6 +45,7 @@ app.add_middleware(
 )
 
 app.include_router(auth_router, prefix=settings.api_prefix)
+app.include_router(alerts_router, prefix=settings.api_prefix)
 app.include_router(markets_router, prefix=settings.api_prefix)
 app.include_router(rankings_router, prefix=settings.api_prefix)
 app.include_router(search_router, prefix=settings.api_prefix)
@@ -45,6 +55,8 @@ app.include_router(watchlist_router, prefix=settings.api_prefix)
 app.include_router(portfolio_router, prefix=settings.api_prefix)
 app.include_router(ai_router, prefix=settings.api_prefix)
 app.include_router(stream_router, prefix=settings.api_prefix)
+
+install_request_context_middleware(app, logger=logger)
 
 
 @app.on_event("startup")
@@ -70,6 +82,10 @@ def bootstrap_single_user_principal() -> None:
     if settings.auth_enabled or SessionLocal is None:
         return
     seed_default_user()
+    logger.info(
+        "Seeded default single-user principal",
+        extra={"event": "app.bootstrap.default_user_seeded"},
+    )
 
 
 @app.on_event("startup")
@@ -80,20 +96,46 @@ def bootstrap_local_auth_user() -> None:
         settings.local_auth_username,
         settings.local_auth_password,
     )
+    logger.info(
+        "Ensured bootstrap local-auth user",
+        extra={"event": "app.bootstrap.local_auth_user_ready"},
+    )
 
 
 @app.on_event("startup")
 def start_portfolio_history_sampler() -> None:
     if not settings.portfolio_history_sampler_enabled:
+        logger.info(
+            "Portfolio history sampler is disabled",
+            extra={"event": "portfolio_history.sampler.disabled"},
+        )
         return
     portfolio_history_service.start_background_sampler(
         settings.portfolio_history_poll_seconds,
     )
 
 
+@app.on_event("startup")
+def start_alert_evaluator() -> None:
+    if not settings.alert_evaluator_enabled:
+        logger.info(
+            "Alert evaluator is disabled",
+            extra={"event": "alerts.evaluator.disabled"},
+        )
+        return
+    alert_service.start_background_evaluator(
+        settings.alert_evaluator_poll_seconds,
+    )
+
+
 @app.on_event("shutdown")
 def stop_portfolio_history_sampler() -> None:
     portfolio_history_service.stop_background_sampler()
+
+
+@app.on_event("shutdown")
+def stop_alert_evaluator() -> None:
+    alert_service.stop_background_evaluator()
 
 
 @app.get("/health")

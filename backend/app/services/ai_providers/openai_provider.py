@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+import logging
+from time import perf_counter
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from app.core.diagnostics import elapsed_ms
 from app.services.ai_providers.base import (
     AIAnalysisResult,
     AIProvider,
@@ -12,6 +15,8 @@ from app.services.ai_providers.base import (
     build_portfolio_analysis_user_prompt,
     build_stock_analysis_user_prompt,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class OpenAIProvider(AIProvider):
@@ -34,6 +39,7 @@ class OpenAIProvider(AIProvider):
         return self._generate_analysis(build_portfolio_analysis_user_prompt(input_data))
 
     def _generate_analysis(self, user_prompt: str) -> AIAnalysisResult:
+        started_at = perf_counter()
         payload = {
             "model": self.model_name,
             "input": [
@@ -61,10 +67,30 @@ class OpenAIProvider(AIProvider):
             with urlopen(request, data=body, timeout=20) as response:
                 data = json.load(response)
         except (HTTPError, URLError, TimeoutError) as exc:
+            logger.warning(
+                "OpenAI request failed",
+                extra={
+                    "event": "ai_provider.request.failed",
+                    "provider": self.provider_name,
+                    "model": self.model_name,
+                    "duration_ms": elapsed_ms(started_at),
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                },
+            )
             raise AIProviderError("OpenAI request failed.") from exc
         content = data.get("output_text")
         if not isinstance(content, str) or not content.strip():
             raise AIProviderError("OpenAI returned an empty analysis.")
+        logger.info(
+            "OpenAI request completed",
+            extra={
+                "event": "ai_provider.request.completed",
+                "provider": self.provider_name,
+                "model": self.model_name,
+                "duration_ms": elapsed_ms(started_at),
+            },
+        )
         return AIAnalysisResult(
             provider=self.provider_name,
             model=self.model_name,

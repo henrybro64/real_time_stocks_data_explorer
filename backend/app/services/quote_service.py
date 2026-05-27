@@ -1,10 +1,15 @@
 from collections.abc import Callable
+import logging
+from time import perf_counter
 
+from app.core.diagnostics import elapsed_ms
 from app.models.quote import CandleRecord, QuoteRecord
 from app.models.stock import StockRecord
 from app.services.providers.tw_provider import TWProvider
 from app.services.providers.us_provider import USProvider
 from app.services.quote_redis_cache import get_cached_quote, set_cached_quote
+
+logger = logging.getLogger(__name__)
 
 
 class QuoteService:
@@ -37,12 +42,64 @@ class QuoteService:
     def get_quote(self, stock_id: str) -> QuoteRecord | None:
         cached = get_cached_quote(stock_id)
         if cached is not None:
+            logger.debug(
+                "Quote cache hit",
+                extra={
+                    "event": "quote.cache.hit",
+                    "stock_id": stock_id,
+                },
+            )
             return cached
         market = self._market_from_id(stock_id)
         provider = self.providers.get(market)
-        quote = provider.get_quote(stock_id) if provider else None
+        if provider is None:
+            logger.warning(
+                "Quote provider is unavailable",
+                extra={
+                    "event": "quote.fetch.provider_missing",
+                    "stock_id": stock_id,
+                    "provider": market,
+                },
+            )
+            return None
+
+        started_at = perf_counter()
+        try:
+            quote = provider.get_quote(stock_id)
+        except Exception as exc:
+            logger.exception(
+                "Quote provider raised an unexpected error",
+                extra={
+                    "event": "quote.fetch.failed",
+                    "stock_id": stock_id,
+                    "provider": market,
+                    "duration_ms": elapsed_ms(started_at),
+                    "error_type": type(exc).__name__,
+                },
+            )
+            raise
         if quote is not None:
             set_cached_quote(stock_id, quote)
+            logger.info(
+                "Quote fetched from provider",
+                extra={
+                    "event": "quote.fetch.completed",
+                    "stock_id": stock_id,
+                    "provider": market,
+                    "duration_ms": elapsed_ms(started_at),
+                    "cache_write": True,
+                },
+            )
+            return quote
+        logger.warning(
+            "Quote provider returned no data",
+            extra={
+                "event": "quote.fetch.empty",
+                "stock_id": stock_id,
+                "provider": market,
+                "duration_ms": elapsed_ms(started_at),
+            },
+        )
         return quote
 
     def get_quotes(self, stock_ids: list[str]) -> list[tuple[StockRecord, QuoteRecord]]:
@@ -52,13 +109,47 @@ class QuoteService:
         market = self._market_from_id(stock_id)
         provider = self.providers.get(market)
         if provider is None:
+            logger.warning(
+                "Live quote provider is unavailable",
+                extra={
+                    "event": "quote.live.provider_missing",
+                    "stock_id": stock_id,
+                    "provider": market,
+                },
+            )
             return None
 
         live_quote_fetcher = getattr(provider, "get_live_quote", None)
-        if market == "US" and callable(live_quote_fetcher):
-            return live_quote_fetcher(stock_id)
+        started_at = perf_counter()
+        try:
+            if market == "US" and callable(live_quote_fetcher):
+                quote = live_quote_fetcher(stock_id)
+            else:
+                quote = provider.get_quote(stock_id)
+        except Exception as exc:
+            logger.exception(
+                "Live quote provider raised an unexpected error",
+                extra={
+                    "event": "quote.live.failed",
+                    "stock_id": stock_id,
+                    "provider": market,
+                    "duration_ms": elapsed_ms(started_at),
+                    "error_type": type(exc).__name__,
+                },
+            )
+            raise
 
-        return provider.get_quote(stock_id)
+        logger.log(
+            logging.INFO if quote is not None else logging.WARNING,
+            "Live quote fetch completed",
+            extra={
+                "event": "quote.live.completed" if quote is not None else "quote.live.empty",
+                "stock_id": stock_id,
+                "provider": market,
+                "duration_ms": elapsed_ms(started_at),
+            },
+        )
+        return quote
 
     def get_live_quotes(self, stock_ids: list[str]) -> list[tuple[StockRecord, QuoteRecord]]:
         return self._collect_quotes(stock_ids, self.get_live_quote)
@@ -80,11 +171,57 @@ class QuoteService:
         market = self._market_from_id(stock_id)
         provider = self.providers.get(market)
         if provider is None:
+            logger.warning(
+                "History provider is unavailable",
+                extra={
+                    "event": "quote.history.provider_missing",
+                    "stock_id": stock_id,
+                    "provider": market,
+                    "range_name": range_name,
+                },
+            )
             return None
         stock = provider.get_stock(stock_id)
         if stock is None:
+            logger.info(
+                "History request stock was not found",
+                extra={
+                    "event": "quote.history.stock_missing",
+                    "stock_id": stock_id,
+                    "provider": market,
+                    "range_name": range_name,
+                },
+            )
             return None
-        return stock, provider.get_history(stock_id, range_name)
+        started_at = perf_counter()
+        try:
+            candles = provider.get_history(stock_id, range_name)
+        except Exception as exc:
+            logger.exception(
+                "History provider raised an unexpected error",
+                extra={
+                    "event": "quote.history.failed",
+                    "stock_id": stock_id,
+                    "provider": market,
+                    "range_name": range_name,
+                    "duration_ms": elapsed_ms(started_at),
+                    "error_type": type(exc).__name__,
+                },
+            )
+            raise
+        logger.log(
+            logging.INFO if candles else logging.WARNING,
+            "History fetch completed",
+            extra={
+                "event": "quote.history.completed" if candles else "quote.history.empty",
+                "stock_id": stock_id,
+                "provider": market,
+                "range_name": range_name,
+                "duration_ms": elapsed_ms(started_at),
+                "candle_count": len(candles),
+            },
+        )
+        return stock, candles
 
     @staticmethod
     def _market_from_id(stock_id: str) -> str:

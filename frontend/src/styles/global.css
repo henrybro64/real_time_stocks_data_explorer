@@ -423,6 +423,14 @@ input {
   margin: 0;
 }
 
+.app-watchlist-header-actions,
+.app-alerts-summary-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: center;
+}
+
 .app-section-meta {
   margin: 0;
   color: var(--cds-text-secondary);
@@ -1218,6 +1226,41 @@ input {
   gap: 0.75rem;
   margin-bottom: 1rem;
   align-items: end;
+}
+
+.app-alerts-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+  gap: 0.75rem;
+  align-items: end;
+}
+
+.app-alerts-form-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: center;
+}
+
+.app-alerts-table-wrap .cds--data-table {
+  min-width: 72rem;
+}
+
+.app-alerts-actions,
+.app-alerts-tag-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.app-alerts-stock-cell {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.app-alerts-stock-cell a {
+  font-weight: 600;
 }
 
 .app-portfolio-aggregate-grid {

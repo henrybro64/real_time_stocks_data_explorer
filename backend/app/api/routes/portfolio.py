@@ -1,4 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import logging
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 
@@ -44,6 +45,7 @@ from app.services.portfolio_service import portfolio_service
 from app.services.quote_service import quote_service
 
 router = APIRouter(prefix="/portfolio", tags=["portfolio"])
+logger = logging.getLogger(__name__)
 
 _MISSING_QUOTE = object()
 
@@ -260,7 +262,9 @@ def capture_portfolio_history_snapshots(
         )
     if x_portfolio_history_token != expected:
         raise HTTPException(status_code=403, detail="Forbidden")
-    captured = portfolio_history_service.capture_due_snapshots_for_all_users()
+    captured = portfolio_history_service.capture_due_snapshots_for_all_users(
+        trigger="capture_endpoint",
+    )
     return {"captured": captured}
 
 @router.post("/assets", response_model=PortfolioAssetResponse)
@@ -538,7 +542,20 @@ def _portfolio_analysis_holding_schema(
 
 def _refresh_history_snapshot(user_id: str) -> None:
     try:
-        portfolio_history_service.capture_due_snapshots_for_user(user_id)
-    except Exception:
+        portfolio_history_service.capture_due_snapshots_for_user(
+            user_id,
+            trigger="portfolio_refresh",
+        )
+    except Exception as exc:
+        logger.warning(
+            "Portfolio history refresh failed after portfolio mutation",
+            extra={
+                "event": "portfolio_history.refresh.failed",
+                "user_id": user_id,
+                "trigger": "portfolio_refresh",
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+            },
+        )
         # Snapshot collection should never block primary CRUD paths.
         return

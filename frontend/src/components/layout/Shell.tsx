@@ -65,6 +65,9 @@ export function Shell({ children }: Props) {
                   <HeaderMenuItem as={Link} href="/">
                     {t("nav.dashboard")}
                   </HeaderMenuItem>
+                  <HeaderMenuItem as={Link} href="/alerts">
+                    {t("nav.alerts")}
+                  </HeaderMenuItem>
                 </HeaderNavigation>
                 <HeaderGlobalBar>
                   <div className="app-language-toggle" aria-label={t("header.language")}>
@@ -160,6 +163,12 @@ export function Shell({ children }: Props) {
                           <a className="app-left-nav-link" href="/#markets">
                             {t("nav.markets")}
                           </a>
+                          <Link
+                            className={pathname === "/alerts" ? "app-left-nav-link active" : "app-left-nav-link"}
+                            href="/alerts"
+                          >
+                            {t("nav.alerts")}
+                          </Link>
                           <Link
                             className={pathname === "/rankings" ? "app-left-nav-link active" : "app-left-nav-link"}
                             href="/rankings"
