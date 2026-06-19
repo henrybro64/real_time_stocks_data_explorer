@@ -216,6 +216,86 @@ def test_empty_portfolio_summary_returns_zero_gain_metrics(monkeypatch, client) 
     assert response.json()["combinedGainPercent"] == 0.0
 
 
+def test_portfolio_position_rejects_currency_mismatch(monkeypatch, client) -> None:
+    stock = stock_record(
+        "TW:2330",
+        market="TW",
+        symbol="2330",
+        name="台積電",
+        exchange="TWSE",
+        currency="TWD",
+        timezone="Asia/Taipei",
+        name_en="TSMC",
+        name_zh_tw="台積電",
+    )
+    monkeypatch.setattr(
+        quote_service,
+        "get_stock",
+        lambda stock_id: stock if stock_id == "TW:2330" else None,
+    )
+
+    response = client.post(
+        "/api/portfolio/positions",
+        json={
+            "stockId": "TW:2330",
+            "quantity": 1,
+            "averageCost": 900,
+            "currency": "USD",
+            "notes": None,
+        },
+    )
+
+    assert response.status_code == 400
+    assert "does not match" in response.json()["detail"]
+
+
+def test_portfolio_position_normalizes_supported_currency(monkeypatch, client) -> None:
+    stock = stock_record(
+        "TW:2330",
+        market="TW",
+        symbol="2330",
+        name="台積電",
+        exchange="TWSE",
+        currency="TWD",
+        timezone="Asia/Taipei",
+        name_en="TSMC",
+        name_zh_tw="台積電",
+    )
+    quote = quote_record(
+        "TW:2330",
+        last_price=950.0,
+        change=5.0,
+        change_percent=0.53,
+        previous_close=945.0,
+        timestamp="2026-04-01T09:00:00+08:00",
+        is_market_open=True,
+    )
+    monkeypatch.setattr(
+        quote_service,
+        "get_stock",
+        lambda stock_id: stock if stock_id == "TW:2330" else None,
+    )
+    monkeypatch.setattr(
+        quote_service,
+        "get_quote",
+        lambda stock_id: quote if stock_id == "TW:2330" else None,
+    )
+
+    response = client.post(
+        "/api/portfolio/positions",
+        json={
+            "stockId": "TW:2330",
+            "quantity": 1,
+            "averageCost": 900,
+            "currency": " twd ",
+            "notes": None,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["currency"] == "TWD"
+
+
 def test_portfolio_analysis_returns_structured_response(monkeypatch, client) -> None:
     stock = stock_record(
         "US:AAPL",

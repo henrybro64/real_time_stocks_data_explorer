@@ -335,14 +335,15 @@ def _summarize_positions(
             skipped_stock_ids.append(position.stock_id)
             continue
         quote = quote_service.get_quote(position.stock_id)
-        market_value, _, _ = portfolio_service.build_metrics(position, quote)
-        cost_basis = round(position.quantity * position.average_cost, 2)
-        entries.append((stock.currency, market_value, cost_basis))
+        market_value, unrealized_pl, _ = portfolio_service.build_metrics(position, quote)
+        cost_basis = round(market_value - unrealized_pl, 2)
+        currency = portfolio_service.normalize_currency(stock.currency)
+        entries.append((currency, market_value, cost_basis))
         rows.append(
             PortfolioSummaryPosition(
                 stockId=position.stock_id,
                 symbol=stock.symbol,
-                currency=stock.currency,
+                currency=currency,
                 quantity=position.quantity,
                 lastPrice=quote.last_price if quote is not None else None,
                 marketValue=market_value,

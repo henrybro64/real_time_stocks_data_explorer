@@ -6,6 +6,8 @@ from app.models.quote import QuoteRecord
 from app.models.stock import StockRecord
 from app.services.quote_service import quote_service
 
+SUPPORTED_PORTFOLIO_CURRENCIES = frozenset({"USD", "TWD"})
+
 
 class PortfolioService:
     def list_positions(self, user_id: str) -> list[PortfolioPosition]:
@@ -30,7 +32,8 @@ class PortfolioService:
     ) -> PortfolioPosition:
         if SessionLocal is None:
             raise RuntimeError("DATABASE_URL is not configured")
-        self._validate_stock(stock_id)
+        stock = self._validate_stock(stock_id)
+        normalized_currency = self._validate_holding_currency(stock, currency)
 
         with SessionLocal() as session:
             existing = session.execute(
@@ -48,7 +51,7 @@ class PortfolioService:
                 stock_id=stock_id,
                 quantity=quantity,
                 average_cost=average_cost,
-                currency=currency,
+                currency=normalized_currency,
                 notes=notes,
             )
             session.add(position)
@@ -76,12 +79,15 @@ class PortfolioService:
             ).scalar_one_or_none()
             if position is None:
                 raise ValueError(f"Position not found: {position_id}")
+            stock = quote_service.get_stock(position.stock_id)
+            if stock is None:
+                raise ValueError(f"Unknown stock id: {position.stock_id}")
             if quantity is not None:
                 position.quantity = quantity
             if average_cost is not None:
                 position.average_cost = average_cost
             if currency is not None:
-                position.currency = currency
+                position.currency = self._validate_holding_currency(stock, currency)
             position.notes = notes
             session.commit()
             session.refresh(position)
@@ -202,16 +208,43 @@ class PortfolioService:
         return market_value, unrealized_pl, unrealized_pl_percent
 
     @staticmethod
+    def normalize_currency(currency: str) -> str:
+        return currency.strip().upper()
+
+    @staticmethod
+    def _validate_holding_currency(stock: StockRecord, currency: str) -> str:
+        normalized = PortfolioService.normalize_currency(currency)
+        stock_currency = PortfolioService.normalize_currency(stock.currency)
+        if normalized != stock_currency:
+            raise ValueError(
+                "Holding currency does not match the stock currency: "
+                f"{currency!r} vs {stock.currency!r}",
+            )
+        if normalized not in SUPPORTED_PORTFOLIO_CURRENCIES:
+            raise ValueError(
+                f"Unsupported holding currency: {currency!r}. Only USD and TWD are supported.",
+            )
+        return normalized
+
+    @staticmethod
     def summarize_currency_buckets(
         entries: list[tuple[str, float]],
         usd_twd_rate: float,
     ) -> dict[str, float]:
         total_usd = round(
-            sum(value for currency, value in entries if currency == "USD"),
+            sum(
+                value
+                for currency, value in entries
+                if PortfolioService.normalize_currency(currency) == "USD"
+            ),
             2,
         )
         total_twd = round(
-            sum(value for currency, value in entries if currency == "TWD"),
+            sum(
+                value
+                for currency, value in entries
+                if PortfolioService.normalize_currency(currency) == "TWD"
+            ),
             2,
         )
         combined_usd = round(
@@ -266,6 +299,11 @@ class PortfolioService:
         stock = quote_service.get_stock(stock_id)
         if stock is None:
             raise ValueError(f"Unknown stock id: {stock_id}")
+        stock_currency = self.normalize_currency(stock.currency)
+        if stock_currency not in SUPPORTED_PORTFOLIO_CURRENCIES:
+            raise ValueError(
+                f"Unsupported stock currency: {stock.currency!r}. Only USD and TWD are supported.",
+            )
         return stock
 
 
