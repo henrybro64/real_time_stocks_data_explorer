@@ -255,6 +255,7 @@ type TranslationKey =
   | "portfolio.aggregate.title"
   | "portfolio.aggregate.combinedUsd"
   | "portfolio.aggregate.combinedTwd"
+  | "portfolio.aggregate.totalGain"
   | "portfolio.aggregate.liquidAssets"
   | "portfolio.aggregate.fxRate"
   | "portfolio.history.loading"
@@ -614,6 +615,7 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "portfolio.aggregate.title": "Aggregated assets by currency",
     "portfolio.aggregate.combinedUsd": "Combined total (USD)",
     "portfolio.aggregate.combinedTwd": "Combined total (TWD)",
+    "portfolio.aggregate.totalGain": "Total gain / loss",
     "portfolio.aggregate.liquidAssets": "Liquid assets excl. real estate",
     "portfolio.aggregate.fxRate": "FX rate",
     "portfolio.history.loading": "Loading historical portfolio values",
@@ -968,6 +970,7 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "portfolio.aggregate.title": "依幣別彙總資產",
     "portfolio.aggregate.combinedUsd": "合併總資產（USD）",
     "portfolio.aggregate.combinedTwd": "合併總資產（TWD）",
+    "portfolio.aggregate.totalGain": "總損益",
     "portfolio.aggregate.liquidAssets": "可變現資產（不含房地產）",
     "portfolio.aggregate.fxRate": "匯率",
     "portfolio.history.loading": "載入歷史資產資料中",

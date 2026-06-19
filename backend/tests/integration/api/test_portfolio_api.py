@@ -143,6 +143,79 @@ def test_portfolio_summary_skips_unknown_stocks(monkeypatch, client) -> None:
     assert response.json()["skippedStockIds"] == ["US:AAPL"]
 
 
+def test_portfolio_summary_includes_backend_calculated_combined_gain(
+    monkeypatch,
+    client,
+) -> None:
+    stock = stock_record(
+        "US:AAPL",
+        market="US",
+        symbol="AAPL",
+        name="Apple Inc.",
+        exchange="NASDAQ",
+        currency="USD",
+        timezone="America/New_York",
+        name_en="Apple Inc.",
+    )
+    quote = quote_record(
+        "US:AAPL",
+        last_price=200.0,
+        change=1.0,
+        change_percent=0.5,
+        previous_close=199.0,
+        timestamp="2026-04-01T09:30:00-04:00",
+        is_market_open=True,
+    )
+    monkeypatch.setattr(quote_service, "get_stock", lambda stock_id: stock if stock_id == "US:AAPL" else None)
+    monkeypatch.setattr(quote_service, "get_quote", lambda stock_id: quote if stock_id == "US:AAPL" else None)
+    monkeypatch.setattr(
+        portfolio_routes,
+        "get_usd_twd_fx_snapshot",
+        lambda: {
+            "pair": "USD/TWD",
+            "rate": 32.0,
+            "timestamp": "2026-04-01T01:00:00Z",
+        },
+    )
+
+    create = client.post(
+        "/api/portfolio/positions",
+        json={
+            "stockId": "US:AAPL",
+            "quantity": 2,
+            "averageCost": 180,
+            "currency": "USD",
+            "notes": None,
+        },
+    )
+    response = client.get("/api/portfolio/summary")
+
+    assert create.status_code == 200
+    assert response.status_code == 200
+    assert response.json()["combinedGainUsd"] == 40.0
+    assert response.json()["combinedGainTwd"] == 1280.0
+    assert response.json()["combinedGainPercent"] == 11.11
+
+
+def test_empty_portfolio_summary_returns_zero_gain_metrics(monkeypatch, client) -> None:
+    monkeypatch.setattr(
+        portfolio_routes,
+        "get_usd_twd_fx_snapshot",
+        lambda: {
+            "pair": "USD/TWD",
+            "rate": 32.0,
+            "timestamp": "2026-04-01T01:00:00Z",
+        },
+    )
+
+    response = client.get("/api/portfolio/summary")
+
+    assert response.status_code == 200
+    assert response.json()["combinedGainUsd"] == 0.0
+    assert response.json()["combinedGainTwd"] == 0.0
+    assert response.json()["combinedGainPercent"] == 0.0
+
+
 def test_portfolio_analysis_returns_structured_response(monkeypatch, client) -> None:
     stock = stock_record(
         "US:AAPL",

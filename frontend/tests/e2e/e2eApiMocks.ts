@@ -147,12 +147,22 @@ function buildPortfolioSummary(positions: PortfolioPositionRow[]) {
   const twdTotal = positions
     .filter((position) => position.currency === "TWD")
     .reduce((sum, position) => sum + position.marketValue, 0);
+  const twdCostBasis = positions
+    .filter((position) => position.currency === "TWD")
+    .reduce((sum, position) => sum + position.quantity * position.averageCost, 0);
+  const combinedGainTwd = Number((twdTotal - twdCostBasis).toFixed(2));
+  const combinedGainUsd = Number((combinedGainTwd / 32).toFixed(2));
+  const combinedGainPercent =
+    twdCostBasis === 0 ? 0 : Number((((twdTotal - twdCostBasis) / twdCostBasis) * 100).toFixed(2));
 
   return {
     totalUsd: 0,
     totalTwd: twdTotal,
     combinedUsd: twdTotal / 32,
     combinedTwd: twdTotal,
+    combinedGainUsd,
+    combinedGainTwd,
+    combinedGainPercent,
     usdTwdRate: 32,
     fxTimestamp: "2026-05-11T01:00:00Z",
     positions: positions.map((position) => ({
@@ -265,6 +275,16 @@ export async function installE2eApiMocks(page: Page): Promise<void> {
         normalized.includes("tsmc") ||
         normalized.includes("台積");
       await fulfillJson(route, matchesTaiwanTsmc ? [E2E_TW_STOCK_SEARCH_RESULT] : []);
+      return;
+    }
+
+    if (path === "/api/auth/status" && request.method() === "GET") {
+      await fulfillJson(route, {
+        authEnabled: true,
+        loggedIn: true,
+        providers: { local: true, google: false, github: false },
+        user: { id: "default-user", username: "default-user" },
+      });
       return;
     }
 

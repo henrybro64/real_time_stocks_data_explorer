@@ -47,6 +47,19 @@ function toDisplayCurrency(currency: string): DisplayCurrency | null {
   return currency === "USD" || currency === "TWD" ? currency : null;
 }
 
+function toneClassName(value: number | null): string | undefined {
+  if (value == null) {
+    return undefined;
+  }
+  if (value > 0) {
+    return "app-positive";
+  }
+  if (value < 0) {
+    return "app-negative";
+  }
+  return undefined;
+}
+
 export function PortfolioPage() {
   const { t, language, formatNumber } = useLanguage();
   const [query, setQuery] = useState("");
@@ -128,12 +141,15 @@ export function PortfolioPage() {
       ? summaryQuery.data.usdTwdRate
       : fxQuery.data?.rate ?? 0;
 
-  const totalUsd = holdingsNativeTotals.totalUsd;
-  const totalTwd = holdingsNativeTotals.totalTwd;
+  const totalUsd = summaryQuery.data?.totalUsd ?? holdingsNativeTotals.totalUsd;
+  const totalTwd = summaryQuery.data?.totalTwd ?? holdingsNativeTotals.totalTwd;
   const combinedUsd =
-    usdTwdRate > 0 ? totalUsd + totalTwd / usdTwdRate : totalUsd;
+    summaryQuery.data?.combinedUsd ?? (usdTwdRate > 0 ? totalUsd + totalTwd / usdTwdRate : totalUsd);
   const combinedTwd =
-    usdTwdRate > 0 ? totalTwd + totalUsd * usdTwdRate : totalTwd;
+    summaryQuery.data?.combinedTwd ?? (usdTwdRate > 0 ? totalTwd + totalUsd * usdTwdRate : totalTwd);
+  const combinedGainUsd = summaryQuery.data?.combinedGainUsd ?? null;
+  const combinedGainTwd = summaryQuery.data?.combinedGainTwd ?? null;
+  const combinedGainPercent = summaryQuery.data?.combinedGainPercent ?? null;
   const positionIdByStockId = new Map(items.map((item) => [item.stockId, item.id]));
   const { canZoomIn, canZoomOut } = getHistoryZoomState(historyRange);
   const positionsVersion = items
@@ -319,6 +335,17 @@ export function PortfolioPage() {
                 <p className="app-portfolio-combined-amount" data-testid="portfolio-combined-usd">
                   {formatCurrency(combinedUsd, "USD")}
                 </p>
+                <p className="app-section-meta">{t("portfolio.aggregate.totalGain")}</p>
+                <p
+                  className={["app-portfolio-secondary-amount", toneClassName(combinedGainUsd)]
+                    .filter(Boolean)
+                    .join(" ")}
+                  data-testid="portfolio-combined-gain-usd"
+                >
+                  {combinedGainUsd == null || combinedGainPercent == null
+                    ? "—"
+                    : `${formatSignedNumber(combinedGainUsd, "USD")} (${formatPercent(combinedGainPercent)})`}
+                </p>
               </div>
               <div className="app-portfolio-aggregate-card">
                 <p className="app-section-meta">TWD</p>
@@ -328,6 +355,17 @@ export function PortfolioPage() {
                 <p className="app-section-meta">{t("portfolio.aggregate.combinedTwd")}</p>
                 <p className="app-portfolio-combined-amount" data-testid="portfolio-combined-twd">
                   {formatCurrency(combinedTwd, "TWD")}
+                </p>
+                <p className="app-section-meta">{t("portfolio.aggregate.totalGain")}</p>
+                <p
+                  className={["app-portfolio-secondary-amount", toneClassName(combinedGainTwd)]
+                    .filter(Boolean)
+                    .join(" ")}
+                  data-testid="portfolio-combined-gain-twd"
+                >
+                  {combinedGainTwd == null || combinedGainPercent == null
+                    ? "—"
+                    : `${formatSignedNumber(combinedGainTwd, "TWD")} (${formatPercent(combinedGainPercent)})`}
                 </p>
               </div>
             </div>

@@ -229,6 +229,39 @@ class PortfolioService:
             "combinedTwd": combined_twd,
         }
 
+    @staticmethod
+    def summarize_position_buckets(
+        entries: list[tuple[str, float, float]],
+        usd_twd_rate: float,
+    ) -> dict[str, float]:
+        market_totals = PortfolioService.summarize_currency_buckets(
+            [(currency, market_value) for currency, market_value, _ in entries],
+            usd_twd_rate,
+        )
+        cost_totals = PortfolioService.summarize_currency_buckets(
+            [(currency, cost_basis) for currency, _, cost_basis in entries],
+            usd_twd_rate,
+        )
+        combined_gain_usd = round(
+            market_totals["combinedUsd"] - cost_totals["combinedUsd"],
+            2,
+        )
+        combined_gain_twd = round(
+            market_totals["combinedTwd"] - cost_totals["combinedTwd"],
+            2,
+        )
+        combined_gain_percent = (
+            0.0
+            if cost_totals["combinedUsd"] == 0
+            else round((combined_gain_usd / cost_totals["combinedUsd"]) * 100, 2)
+        )
+        return {
+            **market_totals,
+            "combinedGainUsd": combined_gain_usd,
+            "combinedGainTwd": combined_gain_twd,
+            "combinedGainPercent": combined_gain_percent,
+        }
+
     def _validate_stock(self, stock_id: str) -> StockRecord:
         stock = quote_service.get_stock(stock_id)
         if stock is None:

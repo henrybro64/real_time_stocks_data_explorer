@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+import pytest
+
 from app.models.quote import QuoteRecord
 from app.services.portfolio_service import PortfolioService
 
@@ -72,3 +74,59 @@ def test_summarize_currency_buckets_avoids_conversion_when_fx_missing() -> None:
         "combinedUsd": 100.0,
         "combinedTwd": 640.0,
     }
+
+
+@pytest.mark.parametrize(
+    ("entries", "expected"),
+    [
+        (
+            [("USD", 220.0, 200.0)],
+            {
+                "combinedGainUsd": 20.0,
+                "combinedGainTwd": 640.0,
+                "combinedGainPercent": 10.0,
+            },
+        ),
+        (
+            [("USD", 180.0, 200.0)],
+            {
+                "combinedGainUsd": -20.0,
+                "combinedGainTwd": -640.0,
+                "combinedGainPercent": -10.0,
+            },
+        ),
+        (
+            [("TWD", 3200.0, 3200.0)],
+            {
+                "combinedGainUsd": 0.0,
+                "combinedGainTwd": 0.0,
+                "combinedGainPercent": 0.0,
+            },
+        ),
+        (
+            [],
+            {
+                "combinedGainUsd": 0.0,
+                "combinedGainTwd": 0.0,
+                "combinedGainPercent": 0.0,
+            },
+        ),
+        (
+            [("USD", 150.0, 0.0)],
+            {
+                "combinedGainUsd": 150.0,
+                "combinedGainTwd": 4800.0,
+                "combinedGainPercent": 0.0,
+            },
+        ),
+    ],
+)
+def test_summarize_position_buckets_calculates_combined_gain(
+    entries: list[tuple[str, float, float]],
+    expected: dict[str, float],
+) -> None:
+    totals = PortfolioService.summarize_position_buckets(entries, 32.0)
+
+    assert totals["combinedGainUsd"] == expected["combinedGainUsd"]
+    assert totals["combinedGainTwd"] == expected["combinedGainTwd"]
+    assert totals["combinedGainPercent"] == expected["combinedGainPercent"]

@@ -20,8 +20,12 @@ export const E2E_TW_STOCK_SEARCH_RESULT = {
 /** Home search uses React `useDeferredValue`; portfolio search is immediate. Allow slow CI. */
 const SEARCH_RESULT_TIMEOUT_MS = process.env.CI ? 75_000 : 25_000;
 const POSITION_ROW_TIMEOUT_MS = process.env.CI ? 30_000 : 15_000;
+const MOCKS_ONLY = process.env.PLAYWRIGHT_MOCKS_ONLY === "1";
 
 async function waitForBackendHealth(page: Page): Promise<void> {
+  if (MOCKS_ONLY) {
+    return;
+  }
   const attempts = process.env.CI ? 60 : 20;
   for (let index = 0; index < attempts; index += 1) {
     try {
