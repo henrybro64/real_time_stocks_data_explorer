@@ -26,6 +26,8 @@ test("portfolio add, edit quantity, verify totals, and remove holding", async ({
   await expect(averageCostInput).toHaveValue("900");
 
   await expect(page.getByTestId("portfolio-total-twd")).not.toHaveText(/^NT\$0(?:\.00)?$/);
+  await expect(page.getByTestId("portfolio-combined-gain-usd")).toHaveText("+$4.69 (+5.56%)");
+  await expect(page.getByTestId("portfolio-combined-gain-twd")).toHaveText("+$150.00 (+5.56%)");
 
   await row.getByTestId(`portfolio-remove-${TW_STOCK_ID}`).click();
   await expect(row).toHaveCount(0);

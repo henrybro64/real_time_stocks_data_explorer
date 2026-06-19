@@ -188,6 +188,9 @@ export type PortfolioSummary = {
   totalTwd: number;
   combinedUsd: number;
   combinedTwd: number;
+  combinedGainUsd: number;
+  combinedGainTwd: number;
+  combinedGainPercent: number;
   usdTwdRate: number;
   fxTimestamp: string;
   positions: PortfolioSummaryPosition[];

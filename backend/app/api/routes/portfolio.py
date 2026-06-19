@@ -154,13 +154,16 @@ def get_portfolio_summary(
     fx_snapshot = get_usd_twd_fx_snapshot()
     usd_twd_rate = float(fx_snapshot["rate"])
     rows, position_entries, skipped_stock_ids = _summarize_positions(positions)
-    totals = portfolio_service.summarize_currency_buckets(position_entries, usd_twd_rate)
+    totals = portfolio_service.summarize_position_buckets(position_entries, usd_twd_rate)
 
     return PortfolioSummaryResponse(
         totalUsd=totals["totalUsd"],
         totalTwd=totals["totalTwd"],
         combinedUsd=totals["combinedUsd"],
         combinedTwd=totals["combinedTwd"],
+        combinedGainUsd=totals["combinedGainUsd"],
+        combinedGainTwd=totals["combinedGainTwd"],
+        combinedGainPercent=totals["combinedGainPercent"],
         usdTwdRate=usd_twd_rate,
         fxTimestamp=str(fx_snapshot["timestamp"]),
         positions=rows,
@@ -191,8 +194,9 @@ def get_portfolio_asset_summary(
     usd_twd_rate = float(fx_snapshot["rate"])
 
     _, position_entries, skipped_stock_ids = _summarize_positions(positions)
-    all_entries = list(position_entries)
-    liquid_entries = list(position_entries)
+    market_entries = [(currency, market_value) for currency, market_value, _ in position_entries]
+    all_entries = list(market_entries)
+    liquid_entries = list(market_entries)
 
     for asset in assets:
         value = round(float(asset.value), 2)
@@ -320,9 +324,9 @@ def delete_portfolio_asset(
 
 def _summarize_positions(
     positions: list[PortfolioPosition],
-) -> tuple[list[PortfolioSummaryPosition], list[tuple[str, float]], list[str]]:
+) -> tuple[list[PortfolioSummaryPosition], list[tuple[str, float, float]], list[str]]:
     rows: list[PortfolioSummaryPosition] = []
-    entries: list[tuple[str, float]] = []
+    entries: list[tuple[str, float, float]] = []
     skipped_stock_ids: list[str] = []
 
     for position in positions:
@@ -331,13 +335,15 @@ def _summarize_positions(
             skipped_stock_ids.append(position.stock_id)
             continue
         quote = quote_service.get_quote(position.stock_id)
-        market_value, _, _ = portfolio_service.build_metrics(position, quote)
-        entries.append((stock.currency, market_value))
+        market_value, unrealized_pl, _ = portfolio_service.build_metrics(position, quote)
+        cost_basis = round(market_value - unrealized_pl, 2)
+        currency = portfolio_service.normalize_currency(stock.currency)
+        entries.append((currency, market_value, cost_basis))
         rows.append(
             PortfolioSummaryPosition(
                 stockId=position.stock_id,
                 symbol=stock.symbol,
-                currency=stock.currency,
+                currency=currency,
                 quantity=position.quantity,
                 lastPrice=quote.last_price if quote is not None else None,
                 marketValue=market_value,

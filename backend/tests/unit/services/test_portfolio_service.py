@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+import pytest
+
 from app.models.quote import QuoteRecord
 from app.services.portfolio_service import PortfolioService
 
@@ -72,3 +74,97 @@ def test_summarize_currency_buckets_avoids_conversion_when_fx_missing() -> None:
         "combinedUsd": 100.0,
         "combinedTwd": 640.0,
     }
+
+
+def test_summarize_currency_buckets_normalizes_currency_labels() -> None:
+    totals = PortfolioService.summarize_currency_buckets(
+        [(" usd ", 100.0), ("twd", 640.0)],
+        32.0,
+    )
+
+    assert totals == {
+        "totalUsd": 100.0,
+        "totalTwd": 640.0,
+        "combinedUsd": 120.0,
+        "combinedTwd": 3840.0,
+    }
+
+
+def test_validate_holding_currency_rejects_mismatch() -> None:
+    stock = SimpleNamespace(currency="TWD")
+
+    with pytest.raises(ValueError, match="does not match"):
+        PortfolioService._validate_holding_currency(stock, "USD")
+
+
+def test_validate_holding_currency_normalizes_supported_values() -> None:
+    stock = SimpleNamespace(currency="USD")
+
+    assert PortfolioService._validate_holding_currency(stock, " usd ") == "USD"
+
+
+def test_summarize_position_buckets_mixed_usd_and_twd_portfolio() -> None:
+    totals = PortfolioService.summarize_position_buckets(
+        [("USD", 220.0, 200.0), ("TWD", 3200.0, 3000.0)],
+        32.0,
+    )
+
+    assert totals["combinedGainUsd"] == 26.25
+    assert totals["combinedGainTwd"] == 840.0
+    assert totals["combinedGainPercent"] == 8.94
+
+
+@pytest.mark.parametrize(
+    ("entries", "expected"),
+    [
+        (
+            [("USD", 220.0, 200.0)],
+            {
+                "combinedGainUsd": 20.0,
+                "combinedGainTwd": 640.0,
+                "combinedGainPercent": 10.0,
+            },
+        ),
+        (
+            [("USD", 180.0, 200.0)],
+            {
+                "combinedGainUsd": -20.0,
+                "combinedGainTwd": -640.0,
+                "combinedGainPercent": -10.0,
+            },
+        ),
+        (
+            [("TWD", 3200.0, 3200.0)],
+            {
+                "combinedGainUsd": 0.0,
+                "combinedGainTwd": 0.0,
+                "combinedGainPercent": 0.0,
+            },
+        ),
+        (
+            [],
+            {
+                "combinedGainUsd": 0.0,
+                "combinedGainTwd": 0.0,
+                "combinedGainPercent": 0.0,
+            },
+        ),
+        (
+            [("USD", 150.0, 0.0)],
+            {
+                "combinedGainUsd": 150.0,
+                "combinedGainTwd": 4800.0,
+                "combinedGainPercent": 0.0,
+            },
+        ),
+    ],
+)
+def test_summarize_position_buckets_calculates_combined_gain(
+    entries: list[tuple[str, float, float]],
+    expected: dict[str, float],
+) -> None:
+    totals = PortfolioService.summarize_position_buckets(entries, 32.0)
+
+    assert totals["combinedGainUsd"] == expected["combinedGainUsd"]
+    assert totals["combinedGainTwd"] == expected["combinedGainTwd"]
+    assert totals["combinedGainPercent"] == expected["combinedGainPercent"]

@@ -5,7 +5,7 @@ import type {
   PortfolioPosition,
   PortfolioSummary,
 } from "@shared/api";
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import type { ReactNode } from "react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -141,6 +141,9 @@ const portfolioSummary: PortfolioSummary = {
   totalTwd: 1_900,
   combinedUsd: 433.84,
   combinedTwd: 13_883.12,
+  combinedGainUsd: 12.34,
+  combinedGainTwd: 394.88,
+  combinedGainPercent: 5.67,
   usdTwdRate: 32,
   fxTimestamp: "2026-04-01T01:00:00Z",
   positions: [
@@ -337,6 +340,19 @@ describe("PortfolioPage", () => {
     expect(screen.getByRole("columnheader", { name: "Avg cost (stock currency)" })).toBeInTheDocument();
     expect(screen.getByText("Apple Inc.")).toBeInTheDocument();
     expect(screen.getByText("TSMC")).toBeInTheDocument();
+  });
+
+  it("renders backend-provided total gain values from the portfolio summary", async () => {
+    renderPortfolioPage("en");
+
+    await waitFor(() => {
+      expect(screen.getByTestId("portfolio-combined-gain-usd")).toHaveTextContent(
+        "+$12.34 (+5.67%)",
+      );
+      expect(screen.getByTestId("portfolio-combined-gain-twd")).toHaveTextContent(
+        "+$394.88 (+5.67%)",
+      );
+    });
   });
 
   it("submits average cost updates from the portfolio table", async () => {

@@ -73,6 +73,9 @@ class PortfolioSummaryResponse(BaseModel):
     totalTwd: float
     combinedUsd: float
     combinedTwd: float
+    combinedGainUsd: float
+    combinedGainTwd: float
+    combinedGainPercent: float
     usdTwdRate: float
     fxTimestamp: str
     positions: list[PortfolioSummaryPosition]
