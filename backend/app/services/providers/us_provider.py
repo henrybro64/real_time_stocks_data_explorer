@@ -128,11 +128,13 @@ class USProvider:
         return list(self._stock_catalog().values())
 
     def search(self, query: str) -> list[StockRecord]:
-        normalized = query.strip().lower()
-        symbol = query.strip().upper()
+        search_query = _strip_us_prefix(query)
+        normalized = search_query.lower()
+        symbol = _normalize_us_symbol(query) or search_query.upper()
+        stocks = self.list_stocks()
         symbol_matches = [
             stock
-            for stock in self.list_stocks()
+            for stock in stocks
             if symbol and stock.symbol.upper().startswith(symbol)
         ]
         if symbol_matches:
@@ -142,14 +144,31 @@ class USProvider:
         else:
             matches = [
                 stock
-                for stock in self.list_stocks()
+                for stock in stocks
                 if normalized in stock.symbol.lower() or normalized in stock.name.lower()
             ]
         matches.sort(key=lambda stock: _search_rank(stock, normalized, symbol))
-        return matches
+        if matches or not symbol:
+            return matches
+        dynamic_stock = self.get_stock(f"US:{symbol}")
+        return [dynamic_stock] if dynamic_stock is not None else []
 
     def get_stock(self, stock_id: str) -> StockRecord | None:
-        return self._stock_catalog().get(stock_id)
+        normalized_stock_id = _normalize_us_stock_id(stock_id)
+        if normalized_stock_id is None:
+            return None
+
+        catalog = self._stock_catalog()
+        stock = catalog.get(normalized_stock_id)
+        if stock is not None:
+            return stock
+
+        dynamic_stock = _fetch_yahoo_chart_stock(normalized_stock_id)
+        if dynamic_stock is None:
+            return None
+        catalog[dynamic_stock.id] = dynamic_stock
+        self.__class__._catalog_cache = catalog
+        return dynamic_stock
 
     def get_quote(self, stock_id: str) -> QuoteRecord | None:
         return self.get_live_quote(stock_id)
@@ -286,6 +305,40 @@ def _looks_like_symbol(symbol: str) -> bool:
     return bool(_SYMBOL_PATTERN.match(symbol))
 
 
+def _strip_us_prefix(value: str) -> str:
+    normalized = value.strip()
+    if normalized.upper().startswith("US:"):
+        return normalized.split(":", 1)[1].strip()
+    return normalized
+
+
+def _normalize_us_symbol(value: str) -> str | None:
+    candidate = _strip_us_prefix(value).upper()
+    if not candidate or not _looks_like_symbol(candidate):
+        return None
+    return candidate
+
+
+def _normalize_us_stock_id(stock_id: str) -> str | None:
+    symbol = _normalize_us_symbol(stock_id)
+    if symbol is None:
+        return None
+    return f"US:{symbol}"
+
+
+def _normalize_us_exchange(raw: object) -> str:
+    if not isinstance(raw, str) or not raw:
+        return "NYSE"
+    upper = raw.upper()
+    if "AMEX" in upper or "ARCA" in upper or upper.startswith("ASE") or upper.startswith("PCX"):
+        return "AMEX"
+    if "NASDAQ" in upper or upper.startswith("NMS") or upper.startswith("NGM") or upper.startswith("NCM"):
+        return "NASDAQ"
+    if "NYSE" in upper or upper.startswith("NYS") or upper.startswith("NYQ"):
+        return "NYSE"
+    return raw.strip()
+
+
 def _search_rank(stock: StockRecord, normalized_query: str, raw_symbol_query: str) -> tuple[int, str]:
     symbol = stock.symbol.upper()
     name = stock.name.lower()
@@ -309,6 +362,74 @@ def _previous_close_from_chart_block(block: dict) -> float | None:
     if len(numeric) < 2:
         return None
     return numeric[-2]
+
+
+def _stock_from_yahoo_chart_meta(stock_id: str, meta: dict[object, object]) -> StockRecord | None:
+    requested_symbol = _normalize_us_symbol(stock_id)
+    if requested_symbol is None:
+        return None
+
+    resolved_symbol_raw = meta.get("symbol")
+    resolved_symbol = (
+        _normalize_us_symbol(str(resolved_symbol_raw))
+        if isinstance(resolved_symbol_raw, str)
+        else requested_symbol
+    )
+    if resolved_symbol is None:
+        resolved_symbol = requested_symbol
+
+    name_raw = meta.get("longName") or meta.get("shortName")
+    name = str(name_raw).strip() if isinstance(name_raw, str) and name_raw.strip() else resolved_symbol
+    currency_raw = meta.get("currency")
+    timezone_raw = meta.get("exchangeTimezoneName")
+    exchange_raw = meta.get("fullExchangeName") or meta.get("exchangeName") or meta.get("exchange")
+
+    return StockRecord(
+        id=f"US:{requested_symbol}",
+        market="US",
+        symbol=resolved_symbol,
+        name=name,
+        name_en=name,
+        exchange=_normalize_us_exchange(exchange_raw),
+        currency=str(currency_raw).strip().upper() if isinstance(currency_raw, str) and currency_raw.strip() else "USD",
+        timezone=str(timezone_raw).strip() if isinstance(timezone_raw, str) and timezone_raw.strip() else "America/New_York",
+    )
+
+
+def _fetch_yahoo_chart_stock(stock_id: str) -> StockRecord | None:
+    symbol = _normalize_us_symbol(stock_id)
+    if symbol is None:
+        return None
+
+    headers = {
+        "User-Agent": _BROWSER_USER_AGENT,
+        "Accept": "application/json,text/plain,*/*",
+    }
+    for candidate in (symbol, f"{symbol}.US"):
+        path_symbol = quote(candidate, safe="-.")
+        url = f"{_YAHOO_CHART_URL}/{path_symbol}?interval=1d&range=5d"
+        try:
+            payload = _load_json_get(url, headers)
+        except (HttpFetchError, TimeoutError, ValueError):
+            continue
+
+        chart = payload.get("chart")
+        if not isinstance(chart, dict) or chart.get("error"):
+            continue
+        results = chart.get("result")
+        if not isinstance(results, list) or not results:
+            continue
+        block = results[0]
+        if not isinstance(block, dict):
+            continue
+        meta = block.get("meta")
+        if not isinstance(meta, dict):
+            continue
+        stock = _stock_from_yahoo_chart_meta(stock_id, meta)
+        if stock is not None:
+            return stock
+
+    return None
 
 
 def _fetch_yahoo_chart_quote(stock: StockRecord) -> QuoteRecord | None:
