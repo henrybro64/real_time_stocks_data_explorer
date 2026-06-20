@@ -160,41 +160,29 @@ class USProvider:
             for stock in stocks
             if symbol and stock.symbol.upper().startswith(symbol)
         ]
+
+        dynamic_stock: StockRecord | None = None
+        if normalized_symbol and (not symbol_matches or len(normalized_symbol) > 2):
+            dynamic_stock = self.get_stock(f"US:{normalized_symbol}")
+
         if symbol_matches:
-            # If the query maps to symbol prefixes, keep results ticker-focused
-            # and avoid unrelated company-name substring matches.
-            matches = symbol_matches
+            matches = list(symbol_matches)
+        elif dynamic_stock is not None:
+            matches = [dynamic_stock]
         else:
             matches = [
                 stock
                 for stock in stocks
                 if normalized in stock.symbol.lower() or normalized in stock.name.lower()
             ]
-        matches.sort(key=lambda stock: _search_rank(stock, normalized, symbol))
 
-        # Unknown tickers (many ETFs): resolve via live metadata when the query
-        # looks like a ticker. Name-substring hits and longer prefix matches
-        # (e.g. ITAP when searching ITA) must not block this fallback, but
-        # short prefix browsing (e.g. "IB" -> IBKR) must not trigger it.
-        if normalized_symbol:
-            has_exact_symbol = any(
-                stock.symbol.upper() == normalized_symbol for stock in matches
-            )
-            should_try_dynamic = not has_exact_symbol and not (
-                symbol_matches and len(normalized_symbol) <= 2
-            )
-            if should_try_dynamic:
-                dynamic_stock = self.get_stock(f"US:{normalized_symbol}")
-                if dynamic_stock is not None:
-                    matches = [dynamic_stock, *matches]
-                    matches.sort(
-                        key=lambda stock: _search_rank(
-                            stock,
-                            normalized,
-                            normalized_symbol,
-                        )
-                    )
+        if dynamic_stock is not None:
+            matches = [dynamic_stock] + [
+                stock for stock in matches if stock.id != dynamic_stock.id
+            ]
 
+        rank_symbol = normalized_symbol or symbol
+        matches.sort(key=lambda stock: _search_rank(stock, normalized, rank_symbol))
         return matches
 
     def get_stock(self, stock_id: str) -> StockRecord | None:
@@ -362,13 +350,22 @@ def _looks_like_crypto_pair_symbol(symbol: str) -> bool:
     return suffix in _CRYPTO_PAIR_SUFFIXES
 
 
+def _yahoo_quote_kind(meta: dict[object, object]) -> str | None:
+    for key in ("quoteType", "instrumentType"):
+        raw = meta.get(key)
+        if isinstance(raw, str):
+            kind = raw.strip().upper()
+            if kind:
+                return kind
+    return None
+
+
 def _yahoo_meta_supports_us_equity_or_etf(meta: dict[object, object]) -> bool:
-    quote_type_raw = meta.get("quoteType")
-    if isinstance(quote_type_raw, str):
-        quote_type = quote_type_raw.strip().upper()
-        if quote_type in _REJECTED_YAHOO_QUOTE_TYPES:
+    kind = _yahoo_quote_kind(meta)
+    if kind is not None:
+        if kind in _REJECTED_YAHOO_QUOTE_TYPES:
             return False
-        if quote_type not in _US_YAHOO_QUOTE_TYPES:
+        if kind not in _US_YAHOO_QUOTE_TYPES:
             return False
 
     currency_raw = meta.get("currency")
