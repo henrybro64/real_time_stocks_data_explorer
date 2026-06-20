@@ -134,8 +134,10 @@ _REJECTED_YAHOO_EXCHANGE_MARKERS = (
     "CCC",
     "FOREX",
     "CURRENCY",
+    " CBOE CA",
+    "CBOE CA",
 )
-_US_LISTED_EXCHANGES = frozenset({"NYSE", "NASDAQ", "AMEX"})
+_US_LISTED_EXCHANGES = frozenset({"NYSE", "NASDAQ", "AMEX", "CBOE"})
 _CRYPTO_PAIR_SUFFIXES = frozenset({"USD", "EUR", "GBP", "JPY", "USDT", "BTC", "ETH"})
 
 
@@ -171,13 +173,17 @@ class USProvider:
         matches.sort(key=lambda stock: _search_rank(stock, normalized, symbol))
 
         # Unknown tickers (many ETFs): resolve via live metadata when the query
-        # looks like a ticker. Name-substring hits must not block this fallback,
-        # but prefix symbol searches (e.g. "IB" -> IBKR) must not trigger it.
-        if normalized_symbol and not symbol_matches:
+        # looks like a ticker. Name-substring hits and longer prefix matches
+        # (e.g. ITAP when searching ITA) must not block this fallback, but
+        # short prefix browsing (e.g. "IB" -> IBKR) must not trigger it.
+        if normalized_symbol:
             has_exact_symbol = any(
                 stock.symbol.upper() == normalized_symbol for stock in matches
             )
-            if not has_exact_symbol:
+            should_try_dynamic = not has_exact_symbol and not (
+                symbol_matches and len(normalized_symbol) <= 2
+            )
+            if should_try_dynamic:
                 dynamic_stock = self.get_stock(f"US:{normalized_symbol}")
                 if dynamic_stock is not None:
                     matches = [dynamic_stock, *matches]
@@ -365,6 +371,11 @@ def _yahoo_meta_supports_us_equity_or_etf(meta: dict[object, object]) -> bool:
         if quote_type not in _US_YAHOO_QUOTE_TYPES:
             return False
 
+    currency_raw = meta.get("currency")
+    if isinstance(currency_raw, str) and currency_raw.strip():
+        if currency_raw.strip().upper() != "USD":
+            return False
+
     exchange_raw = (
         meta.get("fullExchangeName")
         or meta.get("exchangeName")
@@ -409,6 +420,8 @@ def _normalize_us_exchange(raw: object) -> str:
     upper = raw.upper()
     if "AMEX" in upper or "ARCA" in upper or upper.startswith("ASE") or upper.startswith("PCX"):
         return "AMEX"
+    if upper.startswith("BTS") or upper.startswith("BZX") or "CBOE US" in upper:
+        return "CBOE"
     if "NASDAQ" in upper or upper.startswith("NMS") or upper.startswith("NGM") or upper.startswith("NCM"):
         return "NASDAQ"
     if "NYSE" in upper or upper.startswith("NYS") or upper.startswith("NYQ"):
