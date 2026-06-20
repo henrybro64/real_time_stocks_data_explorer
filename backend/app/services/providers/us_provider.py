@@ -130,7 +130,8 @@ class USProvider:
     def search(self, query: str) -> list[StockRecord]:
         search_query = _strip_us_prefix(query)
         normalized = search_query.lower()
-        symbol = _normalize_us_symbol(query) or search_query.upper()
+        normalized_symbol = _normalize_us_symbol(query)
+        symbol = normalized_symbol or search_query.upper()
         stocks = self.list_stocks()
         symbol_matches = [
             stock
@@ -148,10 +149,27 @@ class USProvider:
                 if normalized in stock.symbol.lower() or normalized in stock.name.lower()
             ]
         matches.sort(key=lambda stock: _search_rank(stock, normalized, symbol))
-        if matches or not symbol:
-            return matches
-        dynamic_stock = self.get_stock(f"US:{symbol}")
-        return [dynamic_stock] if dynamic_stock is not None else []
+
+        # Unknown tickers (many ETFs): resolve via live metadata when the query
+        # looks like a ticker. Name-substring hits must not block this fallback,
+        # but prefix symbol searches (e.g. "IB" -> IBKR) must not trigger it.
+        if normalized_symbol and not symbol_matches:
+            has_exact_symbol = any(
+                stock.symbol.upper() == normalized_symbol for stock in matches
+            )
+            if not has_exact_symbol:
+                dynamic_stock = self.get_stock(f"US:{normalized_symbol}")
+                if dynamic_stock is not None:
+                    matches = [dynamic_stock, *matches]
+                    matches.sort(
+                        key=lambda stock: _search_rank(
+                            stock,
+                            normalized,
+                            normalized_symbol,
+                        )
+                    )
+
+        return matches
 
     def get_stock(self, stock_id: str) -> StockRecord | None:
         normalized_stock_id = _normalize_us_stock_id(stock_id)

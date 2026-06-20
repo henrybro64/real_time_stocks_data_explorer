@@ -1,5 +1,6 @@
 import pytest
 
+from app.services.providers import us_provider
 from app.services.quote_service import quote_service
 from app.services.search_service import search_service
 from tests.support import quote_record, stock_record
@@ -123,6 +124,57 @@ def test_quotes_endpoint_returns_stock_and_quote_payload(monkeypatch, client) ->
             },
         }
     ]
+
+
+def test_search_endpoint_resolves_us_etf_missing_from_catalog(monkeypatch, client) -> None:
+    monkeypatch.setattr(us_provider.USProvider, "_catalog_cache", None)
+    monkeypatch.setattr(us_provider.USProvider, "_catalog_cached_at", None)
+    monkeypatch.setattr(
+        us_provider,
+        "_load_catalog_payload",
+        lambda: {
+            "fields": ["ticker", "name", "exchange"],
+            "data": [],
+        },
+    )
+
+    def fake_load_json_get(url: str, headers: dict[str, str]) -> dict[str, object]:
+        del headers
+        assert "/IBAT?" in url
+        return {
+            "chart": {
+                "result": [
+                    {
+                        "meta": {
+                            "symbol": "IBAT",
+                            "longName": "iShares Energy Storage & Materials ETF",
+                            "fullExchangeName": "NYSEArca",
+                            "exchangeTimezoneName": "America/New_York",
+                            "currency": "USD",
+                            "regularMarketPrice": 91.23,
+                        }
+                    }
+                ],
+                "error": None,
+            }
+        }
+
+    monkeypatch.setattr(us_provider, "_load_json_get", fake_load_json_get)
+
+    response = client.get("/api/search", params={"q": "IBAT", "limit": 10})
+
+    assert response.status_code == 200
+    assert response.json()[0] == {
+        "id": "US:IBAT",
+        "market": "US",
+        "symbol": "IBAT",
+        "name": "iShares Energy Storage & Materials ETF",
+        "exchange": "AMEX",
+        "currency": "USD",
+        "timezone": "America/New_York",
+        "nameEn": "iShares Energy Storage & Materials ETF",
+        "nameZhTw": None,
+    }
 
 
 def test_single_quote_endpoint_rejects_unknown_stock_safely(monkeypatch, client) -> None:

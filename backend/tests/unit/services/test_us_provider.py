@@ -16,7 +16,14 @@ def _empty_catalog_payload() -> dict[str, object]:
     }
 
 
-def _chart_payload(symbol: str, *, name: str, exchange: str) -> dict[str, object]:
+def _chart_payload(
+    symbol: str,
+    *,
+    name: str,
+    exchange: str,
+    last_price: float = 91.23,
+    previous_close: float = 90.0,
+) -> dict[str, object]:
     return {
         "chart": {
             "result": [
@@ -27,12 +34,23 @@ def _chart_payload(symbol: str, *, name: str, exchange: str) -> dict[str, object
                         "fullExchangeName": exchange,
                         "exchangeTimezoneName": "America/New_York",
                         "currency": "USD",
-                        "regularMarketPrice": 91.23,
+                        "regularMarketPrice": last_price,
+                        "chartPreviousClose": previous_close,
+                        "regularMarketTime": 1_712_000_000,
                     }
                 }
             ],
             "error": None,
         }
+    }
+
+
+def _catalog_payload_with_ibat_name_collision() -> dict[str, object]:
+    return {
+        "fields": ["ticker", "name", "exchange"],
+        "data": [
+            ["NOPE", "Company with ibat in the name", "NYSE"],
+        ],
     }
 
 
@@ -83,7 +101,11 @@ def test_get_stock_fetches_us_etf_from_yahoo_when_catalog_misses_symbol(
     assert yahoo_calls["count"] == 1
 
 
-def test_search_resolves_prefixed_us_symbol_when_catalog_misses_it(monkeypatch) -> None:
+@pytest.mark.parametrize("query", ["IBAT", "US:IBAT"])
+def test_search_resolves_us_etf_symbol_when_catalog_misses_it(
+    monkeypatch,
+    query: str,
+) -> None:
     monkeypatch.setattr(us_provider, "_load_catalog_payload", _empty_catalog_payload)
 
     def fake_load_json_get(url: str, headers: dict[str, str]) -> dict[str, object]:
@@ -98,8 +120,62 @@ def test_search_resolves_prefixed_us_symbol_when_catalog_misses_it(monkeypatch) 
     monkeypatch.setattr(us_provider, "_load_json_get", fake_load_json_get)
 
     provider = us_provider.USProvider()
-    matches = provider.search("US:IBAT")
+    matches = provider.search(query)
 
     assert [item.id for item in matches] == ["US:IBAT"]
     assert matches[0].symbol == "IBAT"
     assert matches[0].name == "iShares Energy Storage & Materials ETF"
+
+
+def test_search_resolves_ibat_when_unrelated_name_match_exists(monkeypatch) -> None:
+    monkeypatch.setattr(
+        us_provider,
+        "_load_catalog_payload",
+        _catalog_payload_with_ibat_name_collision,
+    )
+
+    def fake_load_json_get(url: str, headers: dict[str, str]) -> dict[str, object]:
+        del headers
+        assert "/IBAT?" in url
+        return _chart_payload(
+            "IBAT",
+            name="iShares Energy Storage & Materials ETF",
+            exchange="NYSEArca",
+        )
+
+    monkeypatch.setattr(us_provider, "_load_json_get", fake_load_json_get)
+
+    provider = us_provider.USProvider()
+    matches = provider.search("IBAT")
+
+    assert matches[0].id == "US:IBAT"
+    assert matches[0].symbol == "IBAT"
+    assert any(item.id == "US:NOPE" for item in matches)
+
+
+def test_get_live_quote_works_after_dynamic_stock_lookup(monkeypatch) -> None:
+    monkeypatch.setattr(us_provider, "_load_catalog_payload", _empty_catalog_payload)
+
+    def fake_load_json_get(url: str, headers: dict[str, str]) -> dict[str, object]:
+        del headers
+        assert "/IBAT?" in url
+        return _chart_payload(
+            "IBAT",
+            name="iShares Energy Storage & Materials ETF",
+            exchange="NYSEArca",
+            last_price=42.5,
+            previous_close=41.0,
+        )
+
+    monkeypatch.setattr(us_provider, "_load_json_get", fake_load_json_get)
+
+    provider = us_provider.USProvider()
+    stock = provider.get_stock("US:IBAT")
+    quote = provider.get_live_quote("US:IBAT")
+
+    assert stock is not None
+    assert quote is not None
+    assert quote.id == "US:IBAT"
+    assert quote.last_price == 42.5
+    assert quote.change == 1.5
+    assert quote.previous_close == 41.0
