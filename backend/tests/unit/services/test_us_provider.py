@@ -22,6 +22,7 @@ def _chart_payload(
     name: str,
     exchange: str,
     quote_type: str = "ETF",
+    currency: str = "USD",
     last_price: float = 91.23,
     previous_close: float = 90.0,
 ) -> dict[str, object]:
@@ -34,7 +35,7 @@ def _chart_payload(
                         "longName": name,
                         "fullExchangeName": exchange,
                         "exchangeTimezoneName": "America/New_York",
-                        "currency": "USD",
+                        "currency": currency,
                         "quoteType": quote_type,
                         "regularMarketPrice": last_price,
                         "chartPreviousClose": previous_close,
@@ -45,6 +46,10 @@ def _chart_payload(
             "error": None,
         }
     }
+
+
+def _chart_payload_from_meta(meta: dict[str, object]) -> dict[str, object]:
+    return {"chart": {"result": [{"meta": meta}], "error": None}}
 
 
 def _catalog_payload_with_ibat_name_collision() -> dict[str, object]:
@@ -237,6 +242,61 @@ def test_get_stock_accepts_cboe_listed_etf_metadata(monkeypatch) -> None:
     assert stock is not None
     assert stock.id == "US:ITA"
     assert stock.exchange == "CBOE"
+
+
+def test_get_stock_accepts_cboe_us_venue_via_bts_exchange_code(monkeypatch) -> None:
+    monkeypatch.setattr(us_provider, "_load_catalog_payload", _empty_catalog_payload)
+
+    def fake_load_json_get(url: str, headers: dict[str, str]) -> dict[str, object]:
+        del headers
+        return _chart_payload_from_meta(
+            {
+                "symbol": "ITA",
+                "longName": "iShares U.S. Aerospace & Defense ETF",
+                "exchangeName": "BTS",
+                "exchangeTimezoneName": "America/New_York",
+                "currency": "USD",
+                "quoteType": "ETF",
+                "regularMarketPrice": 91.23,
+                "chartPreviousClose": 90.0,
+                "regularMarketTime": 1_712_000_000,
+            },
+        )
+
+    monkeypatch.setattr(us_provider, "_load_json_get", fake_load_json_get)
+
+    provider = us_provider.USProvider()
+    stock = provider.get_stock("US:ITA")
+
+    assert stock is not None
+    assert stock.exchange == "CBOE"
+
+
+def test_get_stock_rejects_cboe_ca_and_non_usd_metadata(monkeypatch) -> None:
+    monkeypatch.setattr(us_provider, "_load_catalog_payload", _empty_catalog_payload)
+
+    def fake_load_json_get(url: str, headers: dict[str, str]) -> dict[str, object]:
+        del headers
+        return _chart_payload_from_meta(
+            {
+                "symbol": "META.NE",
+                "longName": "Meta Platforms Inc.",
+                "fullExchangeName": "Cboe CA",
+                "exchangeName": "NEO",
+                "exchangeTimezoneName": "America/Toronto",
+                "currency": "CAD",
+                "regularMarketPrice": 91.23,
+                "chartPreviousClose": 90.0,
+                "regularMarketTime": 1_712_000_000,
+            },
+        )
+
+    monkeypatch.setattr(us_provider, "_load_json_get", fake_load_json_get)
+
+    provider = us_provider.USProvider()
+
+    assert provider.get_stock("US:META.NE") is None
+    assert provider.search("META.NE") == []
 
 
 def _catalog_payload_with_ita_prefix_collision() -> dict[str, object]:

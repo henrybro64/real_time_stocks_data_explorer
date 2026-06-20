@@ -134,6 +134,8 @@ _REJECTED_YAHOO_EXCHANGE_MARKERS = (
     "CCC",
     "FOREX",
     "CURRENCY",
+    " CBOE CA",
+    "CBOE CA",
 )
 _US_LISTED_EXCHANGES = frozenset({"NYSE", "NASDAQ", "AMEX", "CBOE"})
 _CRYPTO_PAIR_SUFFIXES = frozenset({"USD", "EUR", "GBP", "JPY", "USDT", "BTC", "ETH"})
@@ -369,6 +371,11 @@ def _yahoo_meta_supports_us_equity_or_etf(meta: dict[object, object]) -> bool:
         if quote_type not in _US_YAHOO_QUOTE_TYPES:
             return False
 
+    currency_raw = meta.get("currency")
+    if isinstance(currency_raw, str) and currency_raw.strip():
+        if currency_raw.strip().upper() != "USD":
+            return False
+
     exchange_raw = (
         meta.get("fullExchangeName")
         or meta.get("exchangeName")
@@ -413,7 +420,7 @@ def _normalize_us_exchange(raw: object) -> str:
     upper = raw.upper()
     if "AMEX" in upper or "ARCA" in upper or upper.startswith("ASE") or upper.startswith("PCX"):
         return "AMEX"
-    if "CBOE" in upper or upper.startswith("BTS") or upper.startswith("BZX"):
+    if upper.startswith("BTS") or upper.startswith("BZX") or "CBOE US" in upper:
         return "CBOE"
     if "NASDAQ" in upper or upper.startswith("NMS") or upper.startswith("NGM") or upper.startswith("NCM"):
         return "NASDAQ"
