@@ -151,6 +151,7 @@ def test_search_endpoint_resolves_us_etf_missing_from_catalog(monkeypatch, clien
                             "fullExchangeName": "NYSEArca",
                             "exchangeTimezoneName": "America/New_York",
                             "currency": "USD",
+                            "quoteType": "ETF",
                             "regularMarketPrice": 91.23,
                         }
                     }

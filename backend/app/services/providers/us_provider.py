@@ -117,6 +117,26 @@ _BROWSER_USER_AGENT = (
     "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
 )
 _SYMBOL_PATTERN = re.compile(r"^[A-Z][A-Z0-9.\-]{0,9}$")
+_US_YAHOO_QUOTE_TYPES = frozenset({"EQUITY", "ETF"})
+_REJECTED_YAHOO_QUOTE_TYPES = frozenset(
+    {
+        "CRYPTOCURRENCY",
+        "CURRENCY",
+        "FUTURE",
+        "INDEX",
+        "OPTION",
+        "MUTUALFUND",
+        "MONEYMARKET",
+    },
+)
+_REJECTED_YAHOO_EXCHANGE_MARKERS = (
+    "CRYPTO",
+    "CCC",
+    "FOREX",
+    "CURRENCY",
+)
+_US_LISTED_EXCHANGES = frozenset({"NYSE", "NASDAQ", "AMEX"})
+_CRYPTO_PAIR_SUFFIXES = frozenset({"USD", "EUR", "GBP", "JPY", "USDT", "BTC", "ETH"})
 
 
 class USProvider:
@@ -323,6 +343,43 @@ def _looks_like_symbol(symbol: str) -> bool:
     return bool(_SYMBOL_PATTERN.match(symbol))
 
 
+def _looks_like_crypto_pair_symbol(symbol: str) -> bool:
+    upper = symbol.upper()
+    if "-" not in upper:
+        return False
+    _, _, suffix = upper.partition("-")
+    if not suffix:
+        return False
+    # Class shares such as BRK-B use a single-letter suffix.
+    if len(suffix) == 1 and suffix.isalpha():
+        return False
+    return suffix in _CRYPTO_PAIR_SUFFIXES
+
+
+def _yahoo_meta_supports_us_equity_or_etf(meta: dict[object, object]) -> bool:
+    quote_type_raw = meta.get("quoteType")
+    if isinstance(quote_type_raw, str):
+        quote_type = quote_type_raw.strip().upper()
+        if quote_type in _REJECTED_YAHOO_QUOTE_TYPES:
+            return False
+        if quote_type not in _US_YAHOO_QUOTE_TYPES:
+            return False
+
+    exchange_raw = (
+        meta.get("fullExchangeName")
+        or meta.get("exchangeName")
+        or meta.get("exchange")
+    )
+    if not isinstance(exchange_raw, str) or not exchange_raw.strip():
+        return False
+
+    upper = exchange_raw.upper()
+    if any(marker in upper for marker in _REJECTED_YAHOO_EXCHANGE_MARKERS):
+        return False
+
+    return _normalize_us_exchange(exchange_raw) in _US_LISTED_EXCHANGES
+
+
 def _strip_us_prefix(value: str) -> str:
     normalized = value.strip()
     if normalized.upper().startswith("US:"):
@@ -333,6 +390,8 @@ def _strip_us_prefix(value: str) -> str:
 def _normalize_us_symbol(value: str) -> str | None:
     candidate = _strip_us_prefix(value).upper()
     if not candidate or not _looks_like_symbol(candidate):
+        return None
+    if _looks_like_crypto_pair_symbol(candidate):
         return None
     return candidate
 
@@ -401,6 +460,8 @@ def _stock_from_yahoo_chart_meta(stock_id: str, meta: dict[object, object]) -> S
     currency_raw = meta.get("currency")
     timezone_raw = meta.get("exchangeTimezoneName")
     exchange_raw = meta.get("fullExchangeName") or meta.get("exchangeName") or meta.get("exchange")
+    if not _yahoo_meta_supports_us_equity_or_etf(meta):
+        return None
 
     return StockRecord(
         id=f"US:{requested_symbol}",

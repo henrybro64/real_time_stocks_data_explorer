@@ -21,6 +21,7 @@ def _chart_payload(
     *,
     name: str,
     exchange: str,
+    quote_type: str = "ETF",
     last_price: float = 91.23,
     previous_close: float = 90.0,
 ) -> dict[str, object]:
@@ -34,6 +35,7 @@ def _chart_payload(
                         "fullExchangeName": exchange,
                         "exchangeTimezoneName": "America/New_York",
                         "currency": "USD",
+                        "quoteType": quote_type,
                         "regularMarketPrice": last_price,
                         "chartPreviousClose": previous_close,
                         "regularMarketTime": 1_712_000_000,
@@ -179,3 +181,61 @@ def test_get_live_quote_works_after_dynamic_stock_lookup(monkeypatch) -> None:
     assert quote.last_price == 42.5
     assert quote.change == 1.5
     assert quote.previous_close == 41.0
+
+
+def test_get_stock_rejects_crypto_pair_symbols_without_yahoo_call(monkeypatch) -> None:
+    monkeypatch.setattr(us_provider, "_load_catalog_payload", _empty_catalog_payload)
+
+    def fail_load_json_get(url: str, headers: dict[str, str]) -> dict[str, object]:
+        del url, headers
+        raise AssertionError("Yahoo should not be called for crypto pair symbols")
+
+    monkeypatch.setattr(us_provider, "_load_json_get", fail_load_json_get)
+
+    provider = us_provider.USProvider()
+
+    assert provider.get_stock("US:BTC-USD") is None
+    assert provider.search("BTC-USD") == []
+
+
+def test_get_stock_rejects_yahoo_cryptocurrency_metadata(monkeypatch) -> None:
+    monkeypatch.setattr(us_provider, "_load_catalog_payload", _empty_catalog_payload)
+
+    def fake_load_json_get(url: str, headers: dict[str, str]) -> dict[str, object]:
+        del headers
+        return _chart_payload(
+            "BTC-USD",
+            name="Bitcoin USD",
+            exchange="CCC",
+            quote_type="CRYPTOCURRENCY",
+        )
+
+    monkeypatch.setattr(us_provider, "_load_json_get", fake_load_json_get)
+
+    provider = us_provider.USProvider()
+
+    assert provider.get_stock("US:BTCUSD") is None
+
+
+def test_get_stock_accepts_class_share_symbols_with_hyphen(monkeypatch) -> None:
+    monkeypatch.setattr(us_provider, "_load_catalog_payload", _empty_catalog_payload)
+
+    def fake_load_json_get(url: str, headers: dict[str, str]) -> dict[str, object]:
+        del headers
+        assert "/BRK-B?" in url
+        return _chart_payload(
+            "BRK-B",
+            name="Berkshire Hathaway Inc.",
+            exchange="NYSE",
+            quote_type="EQUITY",
+        )
+
+    monkeypatch.setattr(us_provider, "_load_json_get", fake_load_json_get)
+
+    provider = us_provider.USProvider()
+    stock = provider.get_stock("US:BRK-B")
+
+    assert stock is not None
+    assert stock.id == "US:BRK-B"
+    assert stock.symbol == "BRK-B"
+    assert stock.exchange == "NYSE"
