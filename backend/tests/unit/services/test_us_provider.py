@@ -217,6 +217,65 @@ def test_get_stock_rejects_yahoo_cryptocurrency_metadata(monkeypatch) -> None:
     assert provider.get_stock("US:BTCUSD") is None
 
 
+def test_get_stock_accepts_cboe_listed_etf_metadata(monkeypatch) -> None:
+    monkeypatch.setattr(us_provider, "_load_catalog_payload", _empty_catalog_payload)
+
+    def fake_load_json_get(url: str, headers: dict[str, str]) -> dict[str, object]:
+        del headers
+        assert "/ITA?" in url
+        return _chart_payload(
+            "ITA",
+            name="iShares U.S. Aerospace & Defense ETF",
+            exchange="Cboe US",
+        )
+
+    monkeypatch.setattr(us_provider, "_load_json_get", fake_load_json_get)
+
+    provider = us_provider.USProvider()
+    stock = provider.get_stock("US:ITA")
+
+    assert stock is not None
+    assert stock.id == "US:ITA"
+    assert stock.exchange == "CBOE"
+
+
+def _catalog_payload_with_ita_prefix_collision() -> dict[str, object]:
+    return {
+        "fields": ["ticker", "name", "exchange"],
+        "data": [
+            ["ITAP", "Some ITAP Company", "NASDAQ"],
+        ],
+    }
+
+
+def test_search_resolves_ita_when_prefix_matches_exist_without_exact_symbol(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        us_provider,
+        "_load_catalog_payload",
+        _catalog_payload_with_ita_prefix_collision,
+    )
+
+    def fake_load_json_get(url: str, headers: dict[str, str]) -> dict[str, object]:
+        del headers
+        assert "/ITA?" in url
+        return _chart_payload(
+            "ITA",
+            name="iShares U.S. Aerospace & Defense ETF",
+            exchange="Cboe US",
+        )
+
+    monkeypatch.setattr(us_provider, "_load_json_get", fake_load_json_get)
+
+    provider = us_provider.USProvider()
+    matches = provider.search("ITA")
+
+    assert matches[0].id == "US:ITA"
+    assert matches[0].symbol == "ITA"
+    assert any(item.id == "US:ITAP" for item in matches)
+
+
 def test_get_stock_accepts_class_share_symbols_with_hyphen(monkeypatch) -> None:
     monkeypatch.setattr(us_provider, "_load_catalog_payload", _empty_catalog_payload)
 
