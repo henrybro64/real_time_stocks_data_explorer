@@ -157,7 +157,7 @@ def test_search_resolves_ibat_when_unrelated_name_match_exists(monkeypatch) -> N
 
     assert matches[0].id == "US:IBAT"
     assert matches[0].symbol == "IBAT"
-    assert any(item.id == "US:NOPE" for item in matches)
+    assert len(matches) == 1
 
 
 def test_get_live_quote_works_after_dynamic_stock_lookup(monkeypatch) -> None:
@@ -228,10 +228,19 @@ def test_get_stock_accepts_cboe_listed_etf_metadata(monkeypatch) -> None:
     def fake_load_json_get(url: str, headers: dict[str, str]) -> dict[str, object]:
         del headers
         assert "/ITA?" in url
-        return _chart_payload(
-            "ITA",
-            name="iShares U.S. Aerospace & Defense ETF",
-            exchange="Cboe US",
+        return _chart_payload_from_meta(
+            {
+                "symbol": "ITA",
+                "longName": "iShares U.S. Aerospace & Defense ETF",
+                "fullExchangeName": "Cboe US",
+                "exchangeName": "BTS",
+                "exchangeTimezoneName": "America/New_York",
+                "currency": "USD",
+                "instrumentType": "ETF",
+                "regularMarketPrice": 91.23,
+                "chartPreviousClose": 90.0,
+                "regularMarketTime": 1_712_000_000,
+            },
         )
 
     monkeypatch.setattr(us_provider, "_load_json_get", fake_load_json_get)
@@ -242,6 +251,83 @@ def test_get_stock_accepts_cboe_listed_etf_metadata(monkeypatch) -> None:
     assert stock is not None
     assert stock.id == "US:ITA"
     assert stock.exchange == "CBOE"
+
+
+def test_get_stock_accepts_instrument_type_when_quote_type_empty(monkeypatch) -> None:
+    monkeypatch.setattr(us_provider, "_load_catalog_payload", _empty_catalog_payload)
+
+    def fake_load_json_get(url: str, headers: dict[str, str]) -> dict[str, object]:
+        del headers
+        return _chart_payload_from_meta(
+            {
+                "symbol": "ITA",
+                "longName": "iShares U.S. Aerospace & Defense ETF",
+                "fullExchangeName": "Cboe US",
+                "exchangeName": "BTS",
+                "exchangeTimezoneName": "America/New_York",
+                "currency": "USD",
+                "quoteType": "",
+                "instrumentType": "ETF",
+                "regularMarketPrice": 91.23,
+                "chartPreviousClose": 90.0,
+                "regularMarketTime": 1_712_000_000,
+            },
+        )
+
+    monkeypatch.setattr(us_provider, "_load_json_get", fake_load_json_get)
+
+    provider = us_provider.USProvider()
+
+    assert provider.get_stock("US:ITA") is not None
+
+
+def test_search_prefers_live_ita_over_name_substring_catalog_hits(monkeypatch) -> None:
+    monkeypatch.setattr(us_provider, "_load_catalog_payload", _empty_catalog_payload)
+
+    def fake_catalog() -> dict[str, us_provider.StockRecord]:
+        return {
+            f"US:CO{i:03d}": us_provider.StockRecord(
+                id=f"US:CO{i:03d}",
+                market="US",
+                symbol=f"CO{i:03d}",
+                name=f"Capital{i}ita industries",
+                name_en=f"Capital{i}ita industries",
+                exchange="NYSE",
+                currency="USD",
+                timezone="America/New_York",
+            )
+            for i in range(50)
+        }
+
+    def fake_load_json_get(url: str, headers: dict[str, str]) -> dict[str, object]:
+        del headers
+        return _chart_payload_from_meta(
+            {
+                "symbol": "ITA",
+                "longName": "iShares U.S. Aerospace & Defense ETF",
+                "fullExchangeName": "Cboe US",
+                "exchangeName": "BTS",
+                "exchangeTimezoneName": "America/New_York",
+                "currency": "USD",
+                "instrumentType": "ETF",
+                "regularMarketPrice": 91.23,
+                "chartPreviousClose": 90.0,
+                "regularMarketTime": 1_712_000_000,
+            },
+        )
+
+    monkeypatch.setattr(
+        us_provider.USProvider,
+        "_stock_catalog",
+        lambda self: fake_catalog(),
+    )
+    monkeypatch.setattr(us_provider, "_load_json_get", fake_load_json_get)
+
+    provider = us_provider.USProvider()
+    matches = provider.search("ITA")
+
+    assert matches[0].id == "US:ITA"
+    assert len(matches) == 1
 
 
 def test_get_stock_accepts_cboe_us_venue_via_bts_exchange_code(monkeypatch) -> None:
