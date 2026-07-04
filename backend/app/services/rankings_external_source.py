@@ -46,7 +46,7 @@ _REQUEST_TIMEOUT_SECONDS = 8.0
 _REQUEST_RETRIES = 1
 _CACHE_TTL_SECONDS = 600  # Default 10 min; production uses ``settings.rankings_external_cache_ttl_seconds``.
 _CACHE_KEY_PREFIX = "rankings:external:v1:"
-_FETCH_BATCH = 50  # how many rows to ask for and cache; UI tops out at 50
+_US_FETCH_BATCH = 50  # Yahoo U.S. screeners are already top-N and the UI tops out at 50.
 
 
 # Yahoo TW rank pages we know how to parse
@@ -108,9 +108,16 @@ class RankingsExternalSource:
             return None
 
         current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
-        cache_key = f"{_CACHE_KEY_PREFIX}{market}:{ranking_type.value}"
+        cache_key = self._cache_key(market, ranking_type, tw_board)
+        shared_cache_key = (
+            self._cache_key(market, ranking_type, None)
+            if market == "TW" and tw_board in {"TWSE", "TPEx"}
+            else None
+        )
 
         cached = self._read_cache(cache_key, current)
+        if cached is None and shared_cache_key is not None:
+            cached = self._read_cache(shared_cache_key, current)
         if cached is not None:
             filtered = self._filter_tw_board(cached, market, tw_board)[:limit]
             logger.debug(
@@ -139,7 +146,16 @@ class RankingsExternalSource:
             )
             return None
 
-        self._write_cache(cache_key, envelopes, current)
+        if market == "TW":
+            self._write_cache(self._cache_key(market, ranking_type, None), envelopes, current)
+            if tw_board in {"TWSE", "TPEx"}:
+                self._write_cache(
+                    cache_key,
+                    self._filter_tw_board(envelopes, market, tw_board),
+                    current,
+                )
+        else:
+            self._write_cache(cache_key, envelopes, current)
         filtered = self._filter_tw_board(envelopes, market, tw_board)[:limit]
         logger.info(
             "External rankings fetch completed",
@@ -153,6 +169,17 @@ class RankingsExternalSource:
             },
         )
         return filtered
+
+    @staticmethod
+    def _cache_key(
+        market: str,
+        ranking_type: RankingType,
+        tw_board: str | None,
+    ) -> str:
+        if market != "TW":
+            return f"{_CACHE_KEY_PREFIX}{market}:{ranking_type.value}"
+        board_key = tw_board if tw_board in {"TWSE", "TPEx"} else "all"
+        return f"{_CACHE_KEY_PREFIX}{market}:{ranking_type.value}:{board_key}"
 
     @staticmethod
     def _filter_tw_board(
@@ -203,14 +230,14 @@ class RankingsExternalSource:
                     },
                 )
                 return None
-            return envelopes[:_FETCH_BATCH]
+            return envelopes
 
         # market == "US"
         scr_id = _US_SCREENER_ID.get(ranking_type)
         if scr_id is None:
             return None
         try:
-            response = self._us_screener_fetcher(scr_id, _FETCH_BATCH)
+            response = self._us_screener_fetcher(scr_id, _US_FETCH_BATCH)
         except Exception as exc:  # noqa: BLE001 - yfinance can raise many shapes
             logger.warning(
                 "Yahoo U.S. screener failed",
@@ -238,7 +265,7 @@ class RankingsExternalSource:
                 },
             )
             return None
-        return envelopes[:_FETCH_BATCH]
+        return envelopes[:_US_FETCH_BATCH]
 
     def _read_cache(
         self,

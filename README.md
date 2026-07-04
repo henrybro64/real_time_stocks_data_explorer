@@ -138,7 +138,11 @@ Available ranking types per market:
 
 Data sources:
 
-- `volume`, `change_up`, `change_down`: U.S. uses `yfinance.screen("most_actives" | "day_gainers" | "day_losers")`. Taiwan prefers Yahoo rank HTML (`tw.stock.yahoo.com/rank/...`), whose tables can mix `.TW` and `.TWO` names; the app maps suffixes to `TWSE` / `TPEx` and returns only the board requested via `twBoard`. Responses are cached per (market, ranking_type) for ~5 min so reopening the page does not refetch.
+- `volume`, `change_up`, `change_down`: U.S. uses `yfinance.screen("most_actives" | "day_gainers" | "day_losers")`.
+  Taiwan prefers Yahoo rank HTML (`tw.stock.yahoo.com/rank/...`), whose tables can mix
+  `.TW` and `.TWO` names; the app parses the mixed list, filters by the requested
+  `twBoard`, then applies `limit`. The parsed Yahoo rows are cached for ~5 min so
+  reopening the page or switching boards does not immediately refetch.
 - `volume_up`, `volume_down` rank a small curated universe by comparing live volume to the previous in-process baseline, since no public source publishes this metric.
 - Taiwan `net_buy` and `net_sell` use TWSE T86 daily institutional data and are explicitly labeled as daily, not intraday real-time.
 - U.S. institutional `net_buy` / `net_sell` are not supported (no reliable free U.S. institutional source).

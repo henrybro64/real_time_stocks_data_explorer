@@ -79,13 +79,13 @@ class FakeQuoteSource:
         return self._stocks.get(stock_id)
 
 
-def _tw_stock(stock_id: str, symbol: str, name: str):
+def _tw_stock(stock_id: str, symbol: str, name: str, *, exchange: str = "TWSE"):
     return stock_record(
         stock_id,
         market="TW",
         symbol=symbol,
         name=name,
-        exchange="TWSE",
+        exchange=exchange,
         currency="TWD",
         timezone="Asia/Taipei",
         name_en=name,
@@ -587,9 +587,43 @@ def test_volume_rankings_use_external_source_when_available() -> None:
     assert external.calls == [("TW", RankingType.volume, 10, "TWSE")]
     assert response.source == "Yahoo Finance pre-ranked quote rankings."
     assert response.usRankingsScope is None
+    assert response.twBoard == "TWSE"
     assert response.dataFreshnessLabel == (
         "Market open; volume rankings come from Yahoo Finance and refresh every few minutes."
     )
+
+
+def test_tw_tpex_volume_rankings_preserve_requested_board_in_external_response() -> None:
+    yahoo_envelopes = [
+        (
+            _tw_stock("TW:3293", "3293", "鈊象", exchange="TPEx"),
+            _quote("TW:3293", 100, "2026-05-12T10:00:00+08:00"),
+        ),
+        (
+            _tw_stock("TW:6488", "6488", "環球晶", exchange="TPEx"),
+            _quote("TW:6488", 50, "2026-05-12T10:00:00+08:00"),
+        ),
+    ]
+    external = _StubExternalSource({("TW", RankingType.volume): yahoo_envelopes})
+
+    service = RankingsService(
+        quote_source=FakeQuoteSource(stocks={}, quotes={}),
+        volume_baseline_store=InMemoryVolumeBaselineStore(),
+        external_source=external,
+    )
+
+    response = service.get_rankings(
+        "TW",
+        RankingType.volume,
+        limit=10,
+        now=datetime(2026, 5, 12, 3, 0, tzinfo=timezone.utc),
+        tw_board="TPEx",
+    )
+
+    assert [item.stock.symbol for item in response.items] == ["3293", "6488"]
+    assert response.twBoard == "TPEx"
+    assert all(item.stock.exchange == "TPEx" for item in response.items)
+    assert external.calls == [("TW", RankingType.volume, 10, "TPEx")]
 
 
 def test_change_up_rankings_use_external_source_in_yahoo_order() -> None:

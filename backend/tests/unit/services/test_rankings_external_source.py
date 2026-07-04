@@ -98,7 +98,7 @@ def test_parse_tw_volume_page_merges_twse_and_tpex_rows_in_yahoo_order() -> None
     ]
 
 
-def test_fetch_tw_applies_board_filter_while_reusing_one_html_fetch() -> None:
+def test_fetch_tw_reuses_shared_cache_across_board_switches() -> None:
     html_mixed = _tw_rank_html(
         [
             ("上市股", "2330.TW", "100.00", "1.00", "1.00%", "101.00", "99.00", "10K"),
@@ -106,20 +106,85 @@ def test_fetch_tw_applies_board_filter_while_reusing_one_html_fetch() -> None:
         ]
     )
     fetch_calls = {"n": 0}
+    fail_after_first = {"value": False}
 
     def tw_fetcher(slug: str) -> str:
+        if fail_after_first["value"]:
+            raise TimeoutError("shared cache should satisfy board switch")
         fetch_calls["n"] += 1
         return html_mixed
 
     source = RankingsExternalSource(tw_html_fetcher=tw_fetcher, cache_ttl_seconds=60)
     now = datetime(2026, 5, 13, 5, 0, tzinfo=timezone.utc)
 
-    twse_only = source.fetch("TW", RankingType.volume, 10, now=now, tw_board="TWSE")
-    tpex_only = source.fetch("TW", RankingType.volume, 10, now=now, tw_board="TPEx")
+    twse_only = source.fetch(
+        "TW",
+        RankingType.volume,
+        10,
+        now=now,
+        tw_board="TWSE",
+    )
+    fail_after_first["value"] = True
+    tpex_only = source.fetch(
+        "TW",
+        RankingType.volume,
+        10,
+        now=now,
+        tw_board="TPEx",
+    )
+    twse_only_again = source.fetch(
+        "TW",
+        RankingType.volume,
+        10,
+        now=now,
+        tw_board="TWSE",
+    )
+    tpex_only_again = source.fetch(
+        "TW",
+        RankingType.volume,
+        10,
+        now=now,
+        tw_board="TPEx",
+    )
 
     assert [s.symbol for s, _ in twse_only] == ["2330"]
     assert [s.symbol for s, _ in tpex_only] == ["1234"]
+    assert [s.symbol for s, _ in twse_only_again] == ["2330"]
+    assert [s.symbol for s, _ in tpex_only_again] == ["1234"]
     assert fetch_calls["n"] == 1
+
+
+@pytest.mark.parametrize(
+    "ranking_type",
+    [RankingType.volume, RankingType.change_up, RankingType.change_down],
+)
+def test_fetch_tw_tpex_filters_after_parsing_later_rows_beyond_first_50(
+    ranking_type: RankingType,
+) -> None:
+    rows: list[tuple[str, str, str, str, str, str, str, str]] = []
+    for idx in range(55):
+        symbol = f"{1100 + idx}"
+        rows.append(
+            (f"上市股{idx}", f"{symbol}.TW", "100.00", "1.00", "1.00%", "101.00", "99.00", "10K")
+        )
+    for idx in range(20):
+        symbol = f"{2100 + idx}"
+        rows.append(
+            (f"上櫃股{idx}", f"{symbol}.TWO", "50.00", "0.50", "1.01%", "51.00", "49.00", "5K")
+        )
+
+    source = RankingsExternalSource(
+        tw_html_fetcher=lambda slug: _tw_rank_html(rows),
+        cache_ttl_seconds=60,
+    )
+    now = datetime(2026, 5, 13, 5, 0, tzinfo=timezone.utc)
+
+    result = source.fetch("TW", ranking_type, 10, now=now, tw_board="TPEx")
+
+    assert result is not None
+    assert len(result) == 10
+    assert [stock.symbol for stock, _ in result] == [str(2100 + idx) for idx in range(10)]
+    assert all(stock.exchange == "TPEx" for stock, _ in result)
 
 
 def test_parse_tw_change_down_page_flips_sign_on_change_and_percent() -> None:
