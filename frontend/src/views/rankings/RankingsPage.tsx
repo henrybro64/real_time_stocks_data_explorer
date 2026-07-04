@@ -240,7 +240,7 @@ export function RankingsPage() {
       ? usScopeNoticeKeyFromState(rankingType, data)
       : isInstitutionalRanking(rankingType)
         ? twBoard === "TPEx"
-          ? "rankings.notice.twInstScopeTpex"
+          ? "rankings.notice.twInstScopeTpexUnavailable"
           : "rankings.notice.twInstScopeTwse"
         : twBoard === "TPEx"
           ? "rankings.notice.twQuoteScopeTpex"

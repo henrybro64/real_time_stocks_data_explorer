@@ -121,6 +121,35 @@ def test_rankings_endpoint_passes_limit(monkeypatch, client) -> None:
     }
 
 
+@pytest.mark.parametrize("ranking_type", ["net_buy", "net_sell"])
+def test_rankings_endpoint_returns_tpex_institutional_unsupported_shape(
+    client,
+    ranking_type: str,
+) -> None:
+    response = client.get(
+        "/api/rankings",
+        params={"market": "TW", "type": ranking_type, "limit": 50, "twBoard": "TPEx"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["market"] == "TW"
+    assert payload["rankingType"] == ranking_type
+    assert payload["twBoard"] == "TPEx"
+    assert payload["items"] == []
+    assert payload["source"] == "TPEx institutional daily data"
+    assert payload["sourceType"] == "unsupported"
+    assert payload["dataFreshnessLabel"] == "TPEx institutional ranking is not implemented yet."
+    assert payload["warningMessage"] is None
+    assert (
+        payload["unsupportedReason"]
+        == "TPEx institutional net buy/sell ranking is not implemented yet."
+    )
+    assert payload["usRankingsScope"] is None
+    assert isinstance(payload["timestamp"], str) and payload["timestamp"]
+    assert isinstance(payload["isMarketOpen"], bool)
+
+
 def test_rankings_endpoint_validates_market(client) -> None:
     response = client.get("/api/rankings", params={"market": "JP", "type": "volume", "limit": 5})
 
