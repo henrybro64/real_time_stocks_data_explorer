@@ -121,48 +121,33 @@ def test_rankings_endpoint_passes_limit(monkeypatch, client) -> None:
     }
 
 
-def test_rankings_endpoint_returns_tpex_institutional_unsupported_shape(monkeypatch, client) -> None:
-    unsupported = RankingResponse(
-        market="TW",
-        rankingType=RankingType.net_buy,
-        twBoard="TPEx",
-        items=[],
-        timestamp="2026-07-05T01:30:00Z",
-        source="TPEx institutional daily data",
-        sourceType=RankingSourceType.unsupported,
-        isMarketOpen=True,
-        dataFreshnessLabel="TPEx institutional ranking is not implemented yet.",
-        warningMessage=None,
-        unsupportedReason="TPEx institutional net buy/sell ranking is not implemented yet.",
-        usRankingsScope=None,
-    )
-
-    monkeypatch.setattr(
-        rankings_route.rankings_service,
-        "get_rankings",
-        lambda market, ranking_type, limit, tw_board=None: unsupported,
-    )
-
+@pytest.mark.parametrize("ranking_type", ["net_buy", "net_sell"])
+def test_rankings_endpoint_returns_tpex_institutional_unsupported_shape(
+    client,
+    ranking_type: str,
+) -> None:
     response = client.get(
         "/api/rankings",
-        params={"market": "TW", "type": "net_buy", "limit": 50, "twBoard": "TPEx"},
+        params={"market": "TW", "type": ranking_type, "limit": 50, "twBoard": "TPEx"},
     )
 
     assert response.status_code == 200
-    assert response.json() == {
-        "market": "TW",
-        "rankingType": "net_buy",
-        "twBoard": "TPEx",
-        "items": [],
-        "timestamp": "2026-07-05T01:30:00Z",
-        "source": "TPEx institutional daily data",
-        "sourceType": "unsupported",
-        "isMarketOpen": True,
-        "dataFreshnessLabel": "TPEx institutional ranking is not implemented yet.",
-        "warningMessage": None,
-        "unsupportedReason": "TPEx institutional net buy/sell ranking is not implemented yet.",
-        "usRankingsScope": None,
-    }
+    payload = response.json()
+    assert payload["market"] == "TW"
+    assert payload["rankingType"] == ranking_type
+    assert payload["twBoard"] == "TPEx"
+    assert payload["items"] == []
+    assert payload["source"] == "TPEx institutional daily data"
+    assert payload["sourceType"] == "unsupported"
+    assert payload["dataFreshnessLabel"] == "TPEx institutional ranking is not implemented yet."
+    assert payload["warningMessage"] is None
+    assert (
+        payload["unsupportedReason"]
+        == "TPEx institutional net buy/sell ranking is not implemented yet."
+    )
+    assert payload["usRankingsScope"] is None
+    assert isinstance(payload["timestamp"], str) and payload["timestamp"]
+    assert isinstance(payload["isMarketOpen"], bool)
 
 
 def test_rankings_endpoint_validates_market(client) -> None:

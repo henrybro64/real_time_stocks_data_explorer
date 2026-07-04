@@ -140,7 +140,6 @@ type TranslationKey =
   | "rankings.notice.usScopeQuote"
   | "rankings.notice.usScopePending"
   | "rankings.notice.twInstScopeTwse"
-  | "rankings.notice.twInstScopeTpex"
   | "rankings.notice.twInstScopeTpexUnavailable"
   | "rankings.notice.twQuoteScopeTwse"
   | "rankings.notice.twQuoteScopeTpex"
@@ -488,8 +487,6 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
       "U.S. scope for this tab appears after its data finishes loading.",
     "rankings.notice.twInstScopeTwse":
       "Taiwan institutional rankings here are filtered to TWSE-listed (上市) names using TWSE daily T86 data.",
-    "rankings.notice.twInstScopeTpex":
-      "Taiwan institutional rankings here are filtered to TPEx-listed (上櫃) names using TWSE daily T86 data.",
     "rankings.notice.twInstScopeTpexUnavailable":
       "TPEx institutional net buy/sell rankings are not implemented yet in this app.",
     "rankings.notice.twQuoteScopeTwse":
@@ -866,7 +863,6 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
       "美股此分頁使用內建標普五百成分股名單與即時報價排序；無法取得有效報價的代碼會略過（當 Yahoo 選股或批次報價不可用時會走此路徑）。",
     "rankings.notice.usScopePending": "美股此分頁的資料範圍說明會在資料載入完成後顯示。",
     "rankings.notice.twInstScopeTwse": "此處的台股法人排行僅含上市（TWSE）股票，資料來自 TWSE 法人日報表。",
-    "rankings.notice.twInstScopeTpex": "此處的台股法人排行僅含上櫃（TPEx）股票，資料來自 TWSE 法人日報表。",
     "rankings.notice.twInstScopeTpexUnavailable": "上櫃（TPEx）法人買超／賣超排行目前尚未在本應用程式中實作。",
     "rankings.notice.twQuoteScopeTwse":
       "此分頁的台股報價排行僅含上市（TWSE）；優先採用 Yahoo 台股排行頁，否則使用本應用程式的上市報價快照清單。",
