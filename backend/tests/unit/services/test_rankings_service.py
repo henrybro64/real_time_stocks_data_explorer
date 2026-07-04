@@ -809,6 +809,31 @@ def test_us_net_sell_is_explicitly_unsupported() -> None:
     )
 
 
+def test_tw_tpex_institutional_rankings_are_explicitly_unsupported() -> None:
+    service = RankingsService(FakeQuoteSource(stocks={}, quotes={}))
+
+    def should_not_fetch_snapshot(_now):
+        raise AssertionError("TPEx institutional unsupported path should not fetch TWSE T86 data")
+
+    service._fetch_tw_institutional_snapshot = should_not_fetch_snapshot  # type: ignore[method-assign]
+
+    for ranking_type in (RankingType.net_buy, RankingType.net_sell):
+        response = service.get_rankings("TW", ranking_type, limit=50, tw_board="TPEx")
+
+        assert response.market == "TW"
+        assert response.rankingType == ranking_type
+        assert response.twBoard == "TPEx"
+        assert response.items == []
+        assert response.source == "TPEx institutional daily data"
+        assert response.sourceType == RankingSourceType.unsupported
+        assert response.warningMessage is None
+        assert response.dataFreshnessLabel == "TPEx institutional ranking is not implemented yet."
+        assert (
+            response.unsupportedReason
+            == "TPEx institutional net buy/sell ranking is not implemented yet."
+        )
+
+
 def test_tw_net_buy_returns_daily_warning() -> None:
     service = RankingsService(
         FakeQuoteSource(

@@ -390,9 +390,21 @@ describe("RankingsPage", () => {
     });
   });
 
-  it("requests TPEx board when 上櫃 is selected", async () => {
+  it("shows unsupported TPEx institutional state when 上櫃 is selected", async () => {
     const user = userEvent.setup();
-    vi.mocked(fetchRankings).mockResolvedValue(buildResponse({ twBoard: "TPEx" }));
+    vi.mocked(fetchRankings)
+      .mockResolvedValueOnce(buildResponse())
+      .mockResolvedValue(
+        buildResponse({
+          twBoard: "TPEx",
+          items: [],
+          source: "TPEx institutional daily data",
+          sourceType: "unsupported",
+          dataFreshnessLabel: "TPEx institutional ranking is not implemented yet.",
+          warningMessage: null,
+          unsupportedReason: "TPEx institutional net buy/sell ranking is not implemented yet.",
+        }),
+      );
 
     renderRankingsPage();
 
@@ -402,8 +414,16 @@ describe("RankingsPage", () => {
     await waitFor(() => {
       expect(fetchRankings).toHaveBeenLastCalledWith("TW", "net_buy", 50, "TPEx");
     });
-    expect(screen.getByTestId("rankings-scope-note")).toHaveTextContent(
-      "此處的台股法人排行僅含上櫃（TPEx）股票，資料來自 TWSE 法人日報表。",
+    await waitFor(() => {
+      expect(screen.getByTestId("rankings-scope-note")).toHaveTextContent(
+        "上櫃（TPEx）法人買超／賣超排行目前尚未在本應用程式中實作。",
+      );
+    });
+    expect(screen.getByTestId("rankings-freshness-label")).toHaveTextContent(
+      "上櫃（TPEx）法人排行目前尚未實作。",
+    );
+    expect(screen.getByTestId("rankings-unsupported-message")).toHaveTextContent(
+      "上櫃（TPEx）法人買超／賣超排行目前尚未實作。",
     );
   });
 });

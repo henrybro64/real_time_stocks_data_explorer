@@ -79,6 +79,11 @@ _PRE_RANKED_TYPES = {RankingType.volume, RankingType.change_up, RankingType.chan
 _TW_DAILY_WARNING = "台股三大法人買賣超為日資料，非盤中即時資料。"
 _TWSE_T86_URL = "https://www.twse.com.tw/fund/T86"
 _TWSE_T86_SELECT_TYPE = "ALLBUT0999"
+_TPEX_INSTITUTIONAL_SOURCE = "TPEx institutional daily data"
+_TPEX_INSTITUTIONAL_UNSUPPORTED_FRESHNESS = "TPEx institutional ranking is not implemented yet."
+_TPEX_INSTITUTIONAL_UNSUPPORTED_REASON = (
+    "TPEx institutional net buy/sell ranking is not implemented yet."
+)
 _BROWSER_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
@@ -454,6 +459,21 @@ class RankingsService:
         tw_board: TwBoard,
     ) -> RankingResponse:
         market_open = is_market_open("TW", now)
+        if tw_board == "TPEx":
+            return RankingResponse(
+                market="TW",
+                rankingType=ranking_type,
+                twBoard=tw_board,
+                items=[],
+                timestamp=now.isoformat(),
+                source=_TPEX_INSTITUTIONAL_SOURCE,
+                sourceType=RankingSourceType.unsupported,
+                isMarketOpen=market_open,
+                dataFreshnessLabel=_TPEX_INSTITUTIONAL_UNSUPPORTED_FRESHNESS,
+                warningMessage=None,
+                unsupportedReason=_TPEX_INSTITUTIONAL_UNSUPPORTED_REASON,
+            )
+
         institutional_snapshot = self._fetch_tw_institutional_snapshot(now)
         if institutional_snapshot is None:
             return RankingResponse(

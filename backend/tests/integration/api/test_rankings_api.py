@@ -121,6 +121,50 @@ def test_rankings_endpoint_passes_limit(monkeypatch, client) -> None:
     }
 
 
+def test_rankings_endpoint_returns_tpex_institutional_unsupported_shape(monkeypatch, client) -> None:
+    unsupported = RankingResponse(
+        market="TW",
+        rankingType=RankingType.net_buy,
+        twBoard="TPEx",
+        items=[],
+        timestamp="2026-07-05T01:30:00Z",
+        source="TPEx institutional daily data",
+        sourceType=RankingSourceType.unsupported,
+        isMarketOpen=True,
+        dataFreshnessLabel="TPEx institutional ranking is not implemented yet.",
+        warningMessage=None,
+        unsupportedReason="TPEx institutional net buy/sell ranking is not implemented yet.",
+        usRankingsScope=None,
+    )
+
+    monkeypatch.setattr(
+        rankings_route.rankings_service,
+        "get_rankings",
+        lambda market, ranking_type, limit, tw_board=None: unsupported,
+    )
+
+    response = client.get(
+        "/api/rankings",
+        params={"market": "TW", "type": "net_buy", "limit": 50, "twBoard": "TPEx"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "market": "TW",
+        "rankingType": "net_buy",
+        "twBoard": "TPEx",
+        "items": [],
+        "timestamp": "2026-07-05T01:30:00Z",
+        "source": "TPEx institutional daily data",
+        "sourceType": "unsupported",
+        "isMarketOpen": True,
+        "dataFreshnessLabel": "TPEx institutional ranking is not implemented yet.",
+        "warningMessage": None,
+        "unsupportedReason": "TPEx institutional net buy/sell ranking is not implemented yet.",
+        "usRankingsScope": None,
+    }
+
+
 def test_rankings_endpoint_validates_market(client) -> None:
     response = client.get("/api/rankings", params={"market": "JP", "type": "volume", "limit": 5})
 

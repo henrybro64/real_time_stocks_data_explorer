@@ -141,6 +141,7 @@ type TranslationKey =
   | "rankings.notice.usScopePending"
   | "rankings.notice.twInstScopeTwse"
   | "rankings.notice.twInstScopeTpex"
+  | "rankings.notice.twInstScopeTpexUnavailable"
   | "rankings.notice.twQuoteScopeTwse"
   | "rankings.notice.twQuoteScopeTpex"
   | "rankings.twBoard.groupLabel"
@@ -149,6 +150,7 @@ type TranslationKey =
   | "rankings.notice.quoteUnofficial"
   | "rankings.notice.twDaily"
   | "rankings.notice.twInstitutionalUnavailable"
+  | "rankings.notice.twInstitutionalTpexUnavailable"
   | "rankings.freshness.quoteSnapshotOpen"
   | "rankings.freshness.quoteSnapshotClosed"
   | "rankings.freshness.changeSnapshotOpen"
@@ -163,6 +165,7 @@ type TranslationKey =
   | "rankings.freshness.volumeBaselineOpen"
   | "rankings.freshness.volumeBaselineClosed"
   | "rankings.freshness.twInstitutionalUnavailable"
+  | "rankings.freshness.twInstitutionalTpexUnavailable"
   | "rankings.freshness.twNetBuy"
   | "rankings.freshness.twNetSell"
   | "rankings.freshness.twNetBuyClosed"
@@ -170,6 +173,7 @@ type TranslationKey =
   | "rankings.source.quoteProviders"
   | "rankings.source.yahooPreRanked"
   | "rankings.source.sp500Movers"
+  | "rankings.source.tpexInstitutional"
   | "rankings.source.twse"
   | "rankings.source.unsupported"
   | "portfolio.title"
@@ -486,6 +490,8 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
       "Taiwan institutional rankings here are filtered to TWSE-listed (上市) names using TWSE daily T86 data.",
     "rankings.notice.twInstScopeTpex":
       "Taiwan institutional rankings here are filtered to TPEx-listed (上櫃) names using TWSE daily T86 data.",
+    "rankings.notice.twInstScopeTpexUnavailable":
+      "TPEx institutional net buy/sell rankings are not implemented yet in this app.",
     "rankings.notice.twQuoteScopeTwse":
       "Taiwan quote rankings for this tab are filtered to TWSE-listed (上市) names (Yahoo Taiwan rank pages when available, otherwise the app's TWSE quote snapshot list).",
     "rankings.notice.twQuoteScopeTpex":
@@ -497,6 +503,8 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "rankings.notice.twDaily": "Taiwan institutional net buy/sell rankings use daily data, not intraday real-time data.",
     "rankings.notice.twInstitutionalUnavailable":
       "Taiwan institutional daily data is temporarily unavailable from the free public source.",
+    "rankings.notice.twInstitutionalTpexUnavailable":
+      "TPEx institutional net buy/sell rankings are not implemented yet.",
     "rankings.freshness.quoteSnapshotOpen": "Market open; rankings use the latest quote snapshot.",
     "rankings.freshness.quoteSnapshotClosed": "Market closed; rankings use the latest available quote snapshot.",
     "rankings.freshness.changeSnapshotOpen":
@@ -522,6 +530,8 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
       "Market closed; volume change uses the previous quote snapshot baseline.",
     "rankings.freshness.twInstitutionalUnavailable":
       "Taiwan daily institutional ranking is unavailable from the free public source right now.",
+    "rankings.freshness.twInstitutionalTpexUnavailable":
+      "TPEx institutional ranking is not implemented yet.",
     "rankings.freshness.twNetBuy":
       "Taiwan daily institutional ranking sorted by highest institutional net buy/sell shares.",
     "rankings.freshness.twNetSell":
@@ -534,6 +544,7 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "rankings.source.yahooPreRanked": "Yahoo Finance pre-ranked rankings.",
     "rankings.source.sp500Movers":
       "S&P 500 movers from a constituent snapshot plus batched Yahoo Finance quote fields (not Yahoo's predefined gainers/losers screeners).",
+    "rankings.source.tpexInstitutional": "TPEx institutional daily data",
     "rankings.source.twse": "TWSE T86 daily institutional data",
     "rankings.source.unsupported": "Unsupported in Phase 1 free-only rankings",
     "portfolio.title": "Portfolio",
@@ -856,6 +867,7 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "rankings.notice.usScopePending": "美股此分頁的資料範圍說明會在資料載入完成後顯示。",
     "rankings.notice.twInstScopeTwse": "此處的台股法人排行僅含上市（TWSE）股票，資料來自 TWSE 法人日報表。",
     "rankings.notice.twInstScopeTpex": "此處的台股法人排行僅含上櫃（TPEx）股票，資料來自 TWSE 法人日報表。",
+    "rankings.notice.twInstScopeTpexUnavailable": "上櫃（TPEx）法人買超／賣超排行目前尚未在本應用程式中實作。",
     "rankings.notice.twQuoteScopeTwse":
       "此分頁的台股報價排行僅含上市（TWSE）；優先採用 Yahoo 台股排行頁，否則使用本應用程式的上市報價快照清單。",
     "rankings.notice.twQuoteScopeTpex":
@@ -866,6 +878,7 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "rankings.notice.quoteUnofficial": "免費非官方報價來源可能延遲，或暫時無法提供資料。",
     "rankings.notice.twDaily": "台股三大法人買賣超為日資料，非盤中即時資料。",
     "rankings.notice.twInstitutionalUnavailable": "目前無法從免費公開來源取得台股法人日資料。",
+    "rankings.notice.twInstitutionalTpexUnavailable": "上櫃（TPEx）法人買超／賣超排行目前尚未實作。",
     "rankings.freshness.quoteSnapshotOpen": "市場開盤中；排行使用最新報價快照。",
     "rankings.freshness.quoteSnapshotClosed": "市場休市；排行使用最新可得的報價快照。",
     "rankings.freshness.changeSnapshotOpen": "市場開盤中；漲跌幅排行使用最新報價快照。",
@@ -884,6 +897,7 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "rankings.freshness.volumeBaselineOpen": "量變化使用前一次報價快照作為基準。",
     "rankings.freshness.volumeBaselineClosed": "市場休市；量變化使用前一次報價快照作為基準。",
     "rankings.freshness.twInstitutionalUnavailable": "目前無法從免費公開來源取得台股法人日排行。",
+    "rankings.freshness.twInstitutionalTpexUnavailable": "上櫃（TPEx）法人排行目前尚未實作。",
     "rankings.freshness.twNetBuy": "台股法人日排行依三大法人買賣超股數由高到低排序。",
     "rankings.freshness.twNetSell": "台股法人日排行依三大法人買賣超股數由低到高排序。",
     "rankings.freshness.twNetBuyClosed": "市場休市；台股法人日排行依三大法人買賣超股數由高到低排序。",
@@ -892,6 +906,7 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "rankings.source.yahooPreRanked": "Yahoo Finance 預先排序的排行資料。",
     "rankings.source.sp500Movers":
       "標普五百漲跌幅：成分股快照＋Yahoo Finance 批次報價欄位（非 Yahoo 預設漲跌榜選股）。",
+    "rankings.source.tpexInstitutional": "TPEx 法人日資料",
     "rankings.source.twse": "TWSE T86 法人日資料",
     "rankings.source.unsupported": "Phase 1 免費排行尚不支援",
     "portfolio.title": "投資組合",

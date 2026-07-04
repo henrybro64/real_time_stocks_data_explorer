@@ -4,6 +4,7 @@ type RankingsCopyKey =
   | "rankings.notice.quoteUnofficial"
   | "rankings.notice.twDaily"
   | "rankings.notice.twInstitutionalUnavailable"
+  | "rankings.notice.twInstitutionalTpexUnavailable"
   | "rankings.freshness.quoteSnapshotOpen"
   | "rankings.freshness.quoteSnapshotClosed"
   | "rankings.freshness.changeSnapshotOpen"
@@ -18,6 +19,7 @@ type RankingsCopyKey =
   | "rankings.freshness.volumeBaselineOpen"
   | "rankings.freshness.volumeBaselineClosed"
   | "rankings.freshness.twInstitutionalUnavailable"
+  | "rankings.freshness.twInstitutionalTpexUnavailable"
   | "rankings.freshness.twNetBuy"
   | "rankings.freshness.twNetSell"
   | "rankings.freshness.twNetBuyClosed"
@@ -25,6 +27,7 @@ type RankingsCopyKey =
   | "rankings.source.quoteProviders"
   | "rankings.source.yahooPreRanked"
   | "rankings.source.sp500Movers"
+  | "rankings.source.tpexInstitutional"
   | "rankings.source.twse"
   | "rankings.source.unsupported";
 
@@ -54,6 +57,8 @@ const FRESHNESS_LABEL_KEYS: Record<string, RankingsCopyKey> = {
     "rankings.freshness.volumeBaselineClosed",
   "TW daily institutional ranking is unavailable from the free public source right now.":
     "rankings.freshness.twInstitutionalUnavailable",
+  "TPEx institutional ranking is not implemented yet.":
+    "rankings.freshness.twInstitutionalTpexUnavailable",
   "TW daily institutional ranking sorted by highest 三大法人買賣超股數.": "rankings.freshness.twNetBuy",
   "TW daily institutional ranking sorted by most negative 三大法人買賣超股數.": "rankings.freshness.twNetSell",
   "Market closed; TW daily institutional ranking sorted by highest 三大法人買賣超股數.":
@@ -70,6 +75,8 @@ const WARNING_MESSAGE_KEYS: Record<string, RankingsCopyKey> = {
 const UNSUPPORTED_REASON_KEYS: Record<string, RankingsCopyKey> = {
   "TW institutional daily data is temporarily unavailable from the free public source.":
     "rankings.notice.twInstitutionalUnavailable",
+  "TPEx institutional net buy/sell ranking is not implemented yet.":
+    "rankings.notice.twInstitutionalTpexUnavailable",
 };
 
 const SOURCE_KEYS: Record<string, RankingsCopyKey> = {
@@ -77,6 +84,7 @@ const SOURCE_KEYS: Record<string, RankingsCopyKey> = {
   "Yahoo Finance pre-ranked quote rankings.": "rankings.source.yahooPreRanked",
   "S&P 500 movers: constituent snapshot plus batched Yahoo Finance v7 quote fields (free best-effort; not the same universe as Yahoo's predefined gainers/losers screeners).":
     "rankings.source.sp500Movers",
+  "TPEx institutional daily data": "rankings.source.tpexInstitutional",
   "TWSE T86 daily institutional data": "rankings.source.twse",
   "Unsupported in Phase 1 free-only rankings": "rankings.source.unsupported",
 };
