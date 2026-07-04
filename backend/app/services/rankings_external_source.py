@@ -109,8 +109,15 @@ class RankingsExternalSource:
 
         current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
         cache_key = self._cache_key(market, ranking_type, tw_board)
+        shared_cache_key = (
+            self._cache_key(market, ranking_type, None)
+            if market == "TW" and tw_board in {"TWSE", "TPEx"}
+            else None
+        )
 
         cached = self._read_cache(cache_key, current)
+        if cached is None and shared_cache_key is not None:
+            cached = self._read_cache(shared_cache_key, current)
         if cached is not None:
             filtered = self._filter_tw_board(cached, market, tw_board)[:limit]
             logger.debug(
@@ -139,7 +146,16 @@ class RankingsExternalSource:
             )
             return None
 
-        self._write_cache(cache_key, envelopes, current)
+        if market == "TW":
+            self._write_cache(self._cache_key(market, ranking_type, None), envelopes, current)
+            if tw_board in {"TWSE", "TPEx"}:
+                self._write_cache(
+                    cache_key,
+                    self._filter_tw_board(envelopes, market, tw_board),
+                    current,
+                )
+        else:
+            self._write_cache(cache_key, envelopes, current)
         filtered = self._filter_tw_board(envelopes, market, tw_board)[:limit]
         logger.info(
             "External rankings fetch completed",
