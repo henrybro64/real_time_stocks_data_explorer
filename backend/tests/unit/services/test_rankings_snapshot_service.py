@@ -542,3 +542,151 @@ def test_start_background_sampler_passes_poll_seconds_to_thread(monkeypatch) -> 
     service.start_background_sampler(1234)
     assert captured["poll_seconds"] == 1234
 
+
+def test_scheduled_queries_cover_visible_ranking_tabs() -> None:
+    us_types = {query.ranking_type for query in _scheduled_queries() if query.market == "US"}
+    assert {RankingType.change_up, RankingType.change_down, RankingType.valuation_low_pe} <= us_types
+
+
+def test_scheduled_queries_capture_volume_deltas_before_volume_baseline() -> None:
+    queries = _scheduled_queries()
+    us_volume_up = next(
+        index
+        for index, query in enumerate(queries)
+        if query.market == "US" and query.ranking_type == RankingType.volume_up
+    )
+    us_volume = next(
+        index
+        for index, query in enumerate(queries)
+        if query.market == "US" and query.ranking_type == RankingType.volume
+    )
+    assert us_volume_up < us_volume
+
+
+def test_on_demand_serves_scheduler_bounded_snapshot_when_on_demand_missing(monkeypatch) -> None:
+    session_local = _install_in_memory_sessionlocal(monkeypatch)
+    bucket_start = datetime(2026, 7, 3, 13, 30, tzinfo=timezone.utc)
+    with session_local() as session:
+        snapshot = RankingSnapshot(
+            market="US",
+            tw_board="",
+            ranking_type="volume",
+            bucket_start=bucket_start,
+            source="scheduler snapshot",
+            source_type="free-unofficial",
+            source_freshness="scheduler",
+            is_market_open=True,
+            warning_message=None,
+            unsupported_reason=None,
+            capture_scope="scheduler_bounded",
+        )
+        session.add(snapshot)
+        session.flush()
+        session.add(
+            RankingSnapshotItem(
+                snapshot_id=snapshot.id,
+                rank=1,
+                stock_id="US:AAPL",
+                symbol="AAPL",
+                name="Apple Inc.",
+                last_price=200.0,
+                change_percent=1.0,
+                volume=1_000_000,
+                volume_delta=None,
+                volume_delta_percent=None,
+                net_buy=None,
+                net_sell=None,
+                data_time="2026-07-03T09:35:00-04:00",
+                raw_payload_json=None,
+            )
+        )
+        session.commit()
+
+    provider = FakeProvider(
+        bucket_start=bucket_start,
+        response=_response(
+            market="US",
+            ranking_type=RankingType.volume,
+            source_type=RankingSourceType.free_unofficial,
+            timestamp="2026-07-03T13:35:00+00:00",
+            items=[
+                _item(
+                    rank=1,
+                    stock=_stock(
+                        "US:MSFT",
+                        "MSFT",
+                        exchange="NASDAQ",
+                        currency="USD",
+                        timezone_name="America/New_York",
+                    ),
+                    timestamp="2026-07-03T09:35:00-04:00",
+                    volume=2_000_000,
+                )
+            ],
+        ),
+    )
+    service = RankingsSnapshotService(
+        provider_registry=FakeRegistry({("US", "volume", None): provider})
+    )
+
+    result = service.get_rankings(
+        "US",
+        RankingType.volume,
+        limit=5,
+        now=datetime(2026, 7, 3, 13, 35, tzinfo=timezone.utc),
+    )
+
+    assert provider.fetch_calls == 0
+    assert result.sourceType == RankingSourceType.cache
+    assert result.items[0].stock.symbol == "AAPL"
+
+
+def test_load_latest_snapshot_returns_single_newest_row(monkeypatch) -> None:
+    session_local = _install_in_memory_sessionlocal(monkeypatch)
+    query = RankingQuery("US", RankingType.volume)
+    older_bucket = datetime(2026, 7, 3, 13, 0, tzinfo=timezone.utc)
+    newer_bucket = datetime(2026, 7, 3, 13, 30, tzinfo=timezone.utc)
+    with session_local() as session:
+        for bucket_start, symbol in ((older_bucket, "MSFT"), (newer_bucket, "AAPL")):
+            snapshot = RankingSnapshot(
+                market="US",
+                tw_board="",
+                ranking_type="volume",
+                bucket_start=bucket_start,
+                source="test",
+                source_type="free-unofficial",
+                source_freshness="test",
+                is_market_open=True,
+                warning_message=None,
+                unsupported_reason=None,
+                capture_scope="on_demand",
+            )
+            session.add(snapshot)
+            session.flush()
+            session.add(
+                RankingSnapshotItem(
+                    snapshot_id=snapshot.id,
+                    rank=1,
+                    stock_id=f"US:{symbol}",
+                    symbol=symbol,
+                    name=f"{symbol} Corp.",
+                    last_price=100.0,
+                    change_percent=1.0,
+                    volume=1_000_000,
+                    volume_delta=None,
+                    volume_delta_percent=None,
+                    net_buy=None,
+                    net_sell=None,
+                    data_time="2026-07-03T09:35:00-04:00",
+                    raw_payload_json=None,
+                )
+            )
+        session.commit()
+
+    service = RankingsSnapshotService()
+    latest = service._load_latest_snapshot(query)
+
+    assert latest is not None
+    assert latest.snapshot.bucket_start.replace(tzinfo=timezone.utc) == newer_bucket
+    assert latest.items[0].symbol == "AAPL"
+

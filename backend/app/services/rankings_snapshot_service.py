@@ -33,6 +33,8 @@ from sqlalchemy.exc import IntegrityError
 logger = logging.getLogger(__name__)
 
 _MAX_CAPTURE_LIMIT = 50
+_CAPTURE_SCOPE_ON_DEMAND = "on_demand"
+_CAPTURE_SCOPE_SCHEDULER_BOUNDED = "scheduler_bounded"
 _MARKET_CLOSED_FRESHNESS = "Market is closed. Showing latest available free snapshot."
 _PROVIDER_FAILURE_FRESHNESS = (
     "Free data source temporarily unavailable. Showing latest available snapshot if available."
@@ -141,9 +143,28 @@ class RankingsSnapshotService:
             _log_rankings_response(query, response, started_at)
             return response
 
+        if _is_tw_daily_query(query):
+            response = self._get_tw_daily_institutional_rankings(
+                query,
+                limit=limit,
+                now=current,
+            )
+            _log_rankings_response(query, response, started_at)
+            return response
+
         bucket_start = provider.current_bucket_start(query, current)
         if bucket_start is not None:
-            existing = self._load_bucket_snapshot(query, bucket_start)
+            existing = self._load_bucket_snapshot(
+                query,
+                bucket_start,
+                capture_scope=_CAPTURE_SCOPE_ON_DEMAND,
+            )
+            if existing is None:
+                existing = self._load_bucket_snapshot(
+                    query,
+                    bucket_start,
+                    capture_scope=_CAPTURE_SCOPE_SCHEDULER_BOUNDED,
+                )
             if existing is not None:
                 response = self._response_from_snapshot(
                     query,
@@ -204,7 +225,12 @@ class RankingsSnapshotService:
                 _log_rankings_response(query, response, started_at)
                 return response
 
-            self._persist_snapshot(query, bucket_start, live)
+            self._persist_snapshot(
+                query,
+                bucket_start,
+                live,
+                capture_scope=_CAPTURE_SCOPE_ON_DEMAND,
+            )
             response = _truncate_response(live, limit)
             _log_rankings_response(query, response, started_at)
             return response
@@ -237,8 +263,54 @@ class RankingsSnapshotService:
         captured = 0
         for query in _scheduled_queries():
             provider = self._scheduler_provider_registry.get_provider(query)
+            if _is_tw_daily_query(query):
+                try:
+                    response = provider.fetch(
+                        query,
+                        limit=_MAX_CAPTURE_LIMIT,
+                        now=current,
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.exception(
+                        "Scheduled rankings capture failed",
+                        extra={
+                            "event": "rankings_snapshot.scheduler.capture_failed",
+                            "trigger": trigger,
+                            "market": query.market,
+                            "ranking_type": query.ranking_type.value,
+                            "tw_board": query.tw_board,
+                        },
+                    )
+                    continue
+                if response.sourceType == RankingSourceType.unsupported or not response.items:
+                    continue
+                bucket_start = _tw_daily_bucket_start_from_response(response)
+                if bucket_start is None:
+                    continue
+                if (
+                    self._load_bucket_snapshot(
+                        query,
+                        bucket_start,
+                        capture_scope=_CAPTURE_SCOPE_SCHEDULER_BOUNDED,
+                    )
+                    is not None
+                ):
+                    continue
+                self._persist_snapshot(
+                    query,
+                    bucket_start,
+                    response,
+                    capture_scope=_CAPTURE_SCOPE_SCHEDULER_BOUNDED,
+                )
+                captured += 1
+                continue
+
             bucket_start = provider.current_bucket_start(query, current)
-            if bucket_start is None or self._load_bucket_snapshot(query, bucket_start) is not None:
+            if bucket_start is None or self._load_bucket_snapshot(
+                query,
+                bucket_start,
+                capture_scope=_CAPTURE_SCOPE_SCHEDULER_BOUNDED,
+            ) is not None:
                 continue
             try:
                 response = provider.fetch(
@@ -260,15 +332,99 @@ class RankingsSnapshotService:
                 continue
             if response.sourceType == RankingSourceType.unsupported or not response.items:
                 continue
-            self._persist_snapshot(query, bucket_start, response)
+            self._persist_snapshot(
+                query,
+                bucket_start,
+                response,
+                capture_scope=_CAPTURE_SCOPE_SCHEDULER_BOUNDED,
+            )
             captured += 1
         return captured
+
+    def _get_tw_daily_institutional_rankings(
+        self,
+        query: RankingQuery,
+        *,
+        limit: int,
+        now: datetime,
+    ) -> RankingResponse:
+        provider = self._provider_registry.get_provider(query)
+        try:
+            live = provider.fetch(
+                query,
+                limit=max(limit, _MAX_CAPTURE_LIMIT),
+                now=now,
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "Rankings snapshot capture failed",
+                extra={
+                    "event": "rankings_snapshot.capture.failed",
+                    "market": query.market,
+                    "ranking_type": query.ranking_type.value,
+                    "tw_board": query.tw_board,
+                },
+            )
+            latest = self._load_latest_snapshot(query)
+            if latest is not None:
+                return self._response_from_snapshot(
+                    query,
+                    latest,
+                    now,
+                    limit=limit,
+                    freshness_label=_PROVIDER_FAILURE_FRESHNESS,
+                )
+            return _unavailable_response(query, now)
+
+        if live.sourceType == RankingSourceType.unsupported or not live.items:
+            latest = self._load_latest_snapshot(query)
+            if latest is not None:
+                return self._response_from_snapshot(
+                    query,
+                    latest,
+                    now,
+                    limit=limit,
+                    freshness_label=_PROVIDER_FAILURE_FRESHNESS,
+                )
+            return _truncate_response(live, limit)
+
+        bucket_start = _tw_daily_bucket_start_from_response(live)
+        if bucket_start is not None:
+            existing = self._load_bucket_snapshot(
+                query,
+                bucket_start,
+                capture_scope=_CAPTURE_SCOPE_ON_DEMAND,
+            )
+            if existing is None:
+                existing = self._load_bucket_snapshot(
+                    query,
+                    bucket_start,
+                    capture_scope=_CAPTURE_SCOPE_SCHEDULER_BOUNDED,
+                )
+            if existing is not None:
+                return self._response_from_snapshot(
+                    query,
+                    existing,
+                    now,
+                    limit=limit,
+                    freshness_label=_cache_freshness_label(query, now),
+                )
+            self._persist_snapshot(
+                query,
+                bucket_start,
+                live,
+                capture_scope=_CAPTURE_SCOPE_ON_DEMAND,
+            )
+
+        return _truncate_response(live, limit)
 
     def _persist_snapshot(
         self,
         query: RankingQuery,
         bucket_start: datetime,
         response: RankingResponse,
+        *,
+        capture_scope: str = _CAPTURE_SCOPE_ON_DEMAND,
     ) -> _SnapshotEnvelope:
         with SessionLocal() as session:
             snapshot = RankingSnapshot(
@@ -282,6 +438,7 @@ class RankingsSnapshotService:
                 is_market_open=response.isMarketOpen,
                 warning_message=response.warningMessage,
                 unsupported_reason=response.unsupportedReason,
+                capture_scope=capture_scope,
             )
             try:
                 with session.begin_nested():
@@ -292,12 +449,20 @@ class RankingsSnapshotService:
                     )
             except IntegrityError:
                 session.rollback()
-                existing = self._load_bucket_snapshot(query, bucket_start)
+                existing = self._load_bucket_snapshot(
+                    query,
+                    bucket_start,
+                    capture_scope=capture_scope,
+                )
                 if existing is None:
                     raise
                 return existing
             session.commit()
-            created = self._load_bucket_snapshot(query, bucket_start)
+            created = self._load_bucket_snapshot(
+                query,
+                bucket_start,
+                capture_scope=capture_scope,
+            )
             if created is None:
                 raise RuntimeError("Persisted rankings snapshot could not be reloaded")
             return created
@@ -306,18 +471,21 @@ class RankingsSnapshotService:
         self,
         query: RankingQuery,
         bucket_start: datetime,
+        *,
+        capture_scope: str | None = None,
     ) -> _SnapshotEnvelope | None:
         if SessionLocal is None:
             return None
         with SessionLocal() as session:
-            snapshot = session.execute(
-                select(RankingSnapshot).where(
-                    RankingSnapshot.market == query.market,
-                    RankingSnapshot.tw_board == _db_tw_board(query),
-                    RankingSnapshot.ranking_type == query.ranking_type.value,
-                    RankingSnapshot.bucket_start == bucket_start,
-                )
-            ).scalar_one_or_none()
+            statement = select(RankingSnapshot).where(
+                RankingSnapshot.market == query.market,
+                RankingSnapshot.tw_board == _db_tw_board(query),
+                RankingSnapshot.ranking_type == query.ranking_type.value,
+                RankingSnapshot.bucket_start == bucket_start,
+            )
+            if capture_scope is not None:
+                statement = statement.where(RankingSnapshot.capture_scope == capture_scope)
+            snapshot = session.execute(statement).scalar_one_or_none()
             if snapshot is None:
                 return None
             items = list(
@@ -347,7 +515,8 @@ class RankingsSnapshotService:
                     RankingSnapshot.bucket_start.desc(),
                     RankingSnapshot.id.desc(),
                 )
-            ).scalar_one_or_none()
+                .limit(1)
+            ).scalars().first()
             if snapshot is None:
                 return None
             items = list(
@@ -614,18 +783,33 @@ def _us_rankings_scope_from_source(source: str) -> Literal["sp500", "yahoo", "qu
     return None
 
 
+def _tw_daily_bucket_start_from_response(response: RankingResponse) -> datetime | None:
+    if not response.items:
+        return None
+    try:
+        return datetime.fromisoformat(response.items[0].timestamp).astimezone(timezone.utc)
+    except ValueError:
+        return None
+
+
 def _scheduled_queries() -> list[RankingQuery]:
     queries: list[RankingQuery] = [
-        RankingQuery("US", RankingType.volume),
         RankingQuery("US", RankingType.volume_up),
         RankingQuery("US", RankingType.volume_down),
+        RankingQuery("US", RankingType.volume),
+        RankingQuery("US", RankingType.change_up),
+        RankingQuery("US", RankingType.change_down),
+        RankingQuery("US", RankingType.valuation_low_pe),
     ]
     for board in ("TWSE", "TPEx"):
         queries.extend(
             [
-                RankingQuery("TW", RankingType.volume, board),
                 RankingQuery("TW", RankingType.volume_up, board),
                 RankingQuery("TW", RankingType.volume_down, board),
+                RankingQuery("TW", RankingType.volume, board),
+                RankingQuery("TW", RankingType.change_up, board),
+                RankingQuery("TW", RankingType.change_down, board),
+                RankingQuery("TW", RankingType.valuation_low_pe, board),
                 RankingQuery("TW", RankingType.net_buy, board),
                 RankingQuery("TW", RankingType.net_sell, board),
             ]

@@ -249,7 +249,8 @@ class RankingSnapshot(Base):
             "tw_board",
             "ranking_type",
             "bucket_start",
-            name="uq_ranking_snapshots_market_board_type_bucket",
+            "capture_scope",
+            name="uq_ranking_snapshots_market_board_type_bucket_scope",
         ),
         Index(
             "ix_ranking_snapshots_lookup",
@@ -257,6 +258,7 @@ class RankingSnapshot(Base):
             "tw_board",
             "ranking_type",
             "bucket_start",
+            "capture_scope",
         ),
     )
 
@@ -275,6 +277,11 @@ class RankingSnapshot(Base):
     is_market_open: Mapped[bool] = mapped_column(Boolean, nullable=False)
     warning_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     unsupported_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    capture_scope: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        server_default="on_demand",
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),

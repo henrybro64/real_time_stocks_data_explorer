@@ -44,7 +44,7 @@ def test_ranking_snapshots_migration_creates_tables_with_constraints(tmp_path, m
         constraint["name"]
         for constraint in inspector.get_unique_constraints("ranking_snapshots")
     }
-    assert "uq_ranking_snapshots_market_board_type_bucket" in unique_constraints
+    assert "uq_ranking_snapshots_market_board_type_bucket_scope" in unique_constraints
 
 
 def test_ranking_snapshots_migration_prevents_duplicate_bucket_rows(tmp_path, monkeypatch) -> None:
@@ -83,10 +83,56 @@ def test_ranking_snapshots_migration_prevents_duplicate_bucket_rows(tmp_path, mo
                 is_market_open=True,
                 warning_message=None,
                 unsupported_reason=None,
+                capture_scope="on_demand",
             )
         )
         with pytest.raises(IntegrityError):
             session.commit()
+
+
+def test_ranking_snapshots_migration_allows_same_bucket_different_capture_scope(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'ranking_snapshots_scope.db'}"
+    monkeypatch.setattr("app.core.config.settings.database_url", database_url)
+    command.upgrade(_alembic_config(database_url), "head")
+
+    engine = create_engine(database_url)
+    session_local = sessionmaker(bind=engine)
+    bucket_start = datetime(2026, 7, 3, 13, 30, tzinfo=timezone.utc)
+    with session_local() as session:
+        session.add(
+            RankingSnapshot(
+                market="US",
+                tw_board="",
+                ranking_type="volume",
+                bucket_start=bucket_start,
+                source="on-demand",
+                source_type="free-unofficial",
+                source_freshness="on-demand",
+                is_market_open=True,
+                warning_message=None,
+                unsupported_reason=None,
+                capture_scope="on_demand",
+            )
+        )
+        session.add(
+            RankingSnapshot(
+                market="US",
+                tw_board="",
+                ranking_type="volume",
+                bucket_start=bucket_start,
+                source="scheduler",
+                source_type="free-unofficial",
+                source_freshness="scheduler",
+                is_market_open=True,
+                warning_message=None,
+                unsupported_reason=None,
+                capture_scope="scheduler_bounded",
+            )
+        )
+        session.commit()
 
 
 def test_ranking_snapshot_items_store_raw_payload_json(tmp_path, monkeypatch) -> None:
