@@ -422,6 +422,7 @@ def _normalize_stock_id_to_yfinance(stock: StockRecord) -> str:
     return symbol
 
 
+@lru_cache(maxsize=512)
 def _load_yfinance_info(stock: StockRecord) -> dict[str, object] | None:
     try:
         import yfinance as yf  # pylint: disable=import-outside-toplevel
@@ -803,6 +804,11 @@ def _merge_range_markers(out: dict[str, object]) -> dict[str, object]:
         merged.get("fiftyTwoWeekHigh"),
     )
     return merged
+
+
+def get_valuation_snapshot(stock: StockRecord, quote_record: QuoteRecord) -> dict[str, object]:
+    """Shared valuation-only helper for callers that already have stock and quote objects."""
+    return _apply_valuation_enrichment(_null_valuation(), stock, quote_record)
 
 
 def get_key_statistics(stock_id: str) -> dict[str, object] | None:

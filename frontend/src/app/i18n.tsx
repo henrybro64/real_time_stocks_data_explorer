@@ -122,6 +122,7 @@ type TranslationKey =
   | "rankings.tab.volumeDown"
   | "rankings.tab.changeUp"
   | "rankings.tab.changeDown"
+  | "rankings.tab.lowPe"
   | "rankings.tab.netBuy"
   | "rankings.tab.netSell"
   | "rankings.column.rank"
@@ -133,6 +134,9 @@ type TranslationKey =
   | "rankings.column.volume"
   | "rankings.column.volumeChangePercent"
   | "rankings.column.netBuySell"
+  | "rankings.column.peRatio"
+  | "rankings.column.peRatioSource"
+  | "rankings.column.valuationAsOf"
   | "rankings.column.dataTime"
   | "rankings.column.source"
   | "rankings.notice.usScopeYahoo"
@@ -162,6 +166,8 @@ type TranslationKey =
   | "rankings.freshness.yahooChangeClosed"
   | "rankings.freshness.sp500MoversOpen"
   | "rankings.freshness.sp500MoversClosed"
+  | "rankings.freshness.valuationLowPeOpen"
+  | "rankings.freshness.valuationLowPeClosed"
   | "rankings.freshness.volumeBaselineMissing"
   | "rankings.freshness.volumeBaselineOpen"
   | "rankings.freshness.volumeBaselineClosed"
@@ -178,6 +184,7 @@ type TranslationKey =
   | "rankings.source.quoteProviders"
   | "rankings.source.yahooPreRanked"
   | "rankings.source.sp500Movers"
+  | "rankings.source.valuationUniverse"
   | "rankings.source.tpexInstitutional"
   | "rankings.source.twse"
   | "rankings.source.unsupported"
@@ -470,6 +477,7 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "rankings.tab.volumeDown": "Volume down",
     "rankings.tab.changeUp": "Gainers",
     "rankings.tab.changeDown": "Losers",
+    "rankings.tab.lowPe": "Low P/E",
     "rankings.tab.netBuy": "Net buy",
     "rankings.tab.netSell": "Net sell",
     "rankings.column.rank": "Rank",
@@ -481,6 +489,9 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "rankings.column.volume": "Volume",
     "rankings.column.volumeChangePercent": "Volume change %",
     "rankings.column.netBuySell": "Net buy / sell",
+    "rankings.column.peRatio": "P/E",
+    "rankings.column.peRatioSource": "P/E source",
+    "rankings.column.valuationAsOf": "Valuation as of",
     "rankings.column.dataTime": "Data time",
     "rankings.column.source": "Source",
     "rankings.notice.usScopeYahoo":
@@ -530,6 +541,10 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
       "Market open; S&P 500 movers ranked by batched Yahoo quote change % (regular session fields).",
     "rankings.freshness.sp500MoversClosed":
       "Market closed; S&P 500 movers ranked by latest batched Yahoo quote change % (regular session fields).",
+    "rankings.freshness.valuationLowPeOpen":
+      "Market open; valuation rankings use the latest quote snapshot filtered to the highest-volume candidates, then sort by the latest available P/E.",
+    "rankings.freshness.valuationLowPeClosed":
+      "Market closed; valuation rankings use the latest available quote snapshot filtered to the highest-volume candidates, then sort by the latest available P/E.",
     "rankings.freshness.volumeBaselineMissing":
       "Baseline unavailable on the first snapshot; volume change percent stays empty until a later refresh.",
     "rankings.freshness.volumeBaselineOpen": "Volume change uses the previous quote snapshot baseline.",
@@ -559,6 +574,8 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "rankings.source.yahooPreRanked": "Yahoo Finance pre-ranked rankings.",
     "rankings.source.sp500Movers":
       "S&P 500 movers from a constituent snapshot plus batched Yahoo Finance quote fields (not Yahoo's predefined gainers/losers screeners).",
+    "rankings.source.valuationUniverse":
+      "Valuation rankings use the highest-volume current quote candidates, then sort by P/E from the app's available valuation sources.",
     "rankings.source.tpexInstitutional": "TPEx institutional daily data",
     "rankings.source.twse": "TWSE T86 daily institutional data",
     "rankings.source.unsupported": "Unsupported in Phase 1 free-only rankings",
@@ -861,6 +878,7 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "rankings.tab.volumeDown": "量減",
     "rankings.tab.changeUp": "漲幅",
     "rankings.tab.changeDown": "跌幅",
+    "rankings.tab.lowPe": "低本益比",
     "rankings.tab.netBuy": "買超",
     "rankings.tab.netSell": "賣超",
     "rankings.column.rank": "排名",
@@ -872,6 +890,9 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "rankings.column.volume": "成交量",
     "rankings.column.volumeChangePercent": "量變化 %",
     "rankings.column.netBuySell": "買賣超",
+    "rankings.column.peRatio": "本益比",
+    "rankings.column.peRatioSource": "本益比來源",
+    "rankings.column.valuationAsOf": "估值日期",
     "rankings.column.dataTime": "資料時間",
     "rankings.column.source": "來源",
     "rankings.notice.usScopeYahoo": "美股此分頁採用 Yahoo Finance 預先排序的選股結果，涵蓋更廣的美股市場。",
@@ -912,6 +933,10 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
       "市場開盤中；標普五百漲跌幅依 Yahoo 批次報價的盤中漲跌幅欄位排序。",
     "rankings.freshness.sp500MoversClosed":
       "市場休市；標普五百漲跌幅依 Yahoo 批次報價的最新盤中漲跌幅欄位排序。",
+    "rankings.freshness.valuationLowPeOpen":
+      "市場開盤中；低本益比排行先取最新報價快照中的高成交量候選，再依目前可取得的本益比排序。",
+    "rankings.freshness.valuationLowPeClosed":
+      "市場休市；低本益比排行先取最新可得的報價快照中的高成交量候選，再依目前可取得的本益比排序。",
     "rankings.freshness.volumeBaselineMissing": "首次快照尚無基準值；量變化百分比會在後續刷新後顯示。",
     "rankings.freshness.volumeBaselineOpen": "量變化使用前一次報價快照作為基準。",
     "rankings.freshness.volumeBaselineClosed": "市場休市；量變化使用前一次報價快照作為基準。",
@@ -932,6 +957,8 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "rankings.source.yahooPreRanked": "Yahoo Finance 預先排序的排行資料。",
     "rankings.source.sp500Movers":
       "標普五百漲跌幅：成分股快照＋Yahoo Finance 批次報價欄位（非 Yahoo 預設漲跌榜選股）。",
+    "rankings.source.valuationUniverse":
+      "估值排行先取目前高成交量的報價候選，再依本應用程式可取得的本益比資料排序。",
     "rankings.source.tpexInstitutional": "TPEx 法人日資料",
     "rankings.source.twse": "TWSE T86 法人日資料",
     "rankings.source.unsupported": "Phase 1 免費排行尚不支援",

@@ -51,11 +51,13 @@ type RankingsTabLabelKey =
   | "rankings.tab.volumeDown"
   | "rankings.tab.changeUp"
   | "rankings.tab.changeDown"
+  | "rankings.tab.lowPe"
   | "rankings.tab.netBuy"
   | "rankings.tab.netSell";
 
 const TW_RANKING_TABS: Array<{ key: RankingType; labelKey: RankingsTabLabelKey }> = [
   { key: "volume", labelKey: "rankings.tab.volume" },
+  { key: "valuation_low_pe", labelKey: "rankings.tab.lowPe" },
   { key: "change_up", labelKey: "rankings.tab.changeUp" },
   { key: "change_down", labelKey: "rankings.tab.changeDown" },
   { key: "net_buy", labelKey: "rankings.tab.netBuy" },
@@ -68,6 +70,7 @@ const TW_RANKING_TABS: Array<{ key: RankingType; labelKey: RankingsTabLabelKey }
 // types if hit directly.
 const US_RANKING_TABS: Array<{ key: RankingType; labelKey: RankingsTabLabelKey }> = [
   { key: "volume", labelKey: "rankings.tab.volume" },
+  { key: "valuation_low_pe", labelKey: "rankings.tab.lowPe" },
   { key: "change_up", labelKey: "rankings.tab.changeUp" },
   { key: "change_down", labelKey: "rankings.tab.changeDown" },
 ];
@@ -82,6 +85,10 @@ function defaultRankingTypeForMarket(market: RankingMarket): RankingType {
 
 function isInstitutionalRanking(rankingType: RankingType) {
   return rankingType === "net_buy" || rankingType === "net_sell";
+}
+
+function isValuationRanking(rankingType: RankingType) {
+  return rankingType === "valuation_low_pe";
 }
 
 function usScopeNoticeKeyFromState(
@@ -131,6 +138,20 @@ function formatMaybeNumber(value: number | null, formatNumber: (value: number) =
     return "—";
   }
   return formatNumber(value);
+}
+
+function formatMaybePeRatio(value: number | null | undefined, language: "en" | "zh-TW") {
+  if (value == null) {
+    return "—";
+  }
+  return new Intl.NumberFormat(language === "zh-TW" ? "zh-TW" : "en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(value);
+}
+
+function formatMaybeText(value: string | null | undefined) {
+  return value && value.trim() ? value : "—";
 }
 
 function tableTitle(
@@ -235,6 +256,7 @@ export function RankingsPage() {
   const showUnsupported = !!data?.unsupportedReason;
   const localizedSource = data ? getLocalizedRankingsSource(data, t) : "";
   const showNetBuySellColumn = isInstitutionalRanking(rankingType);
+  const showValuationColumns = isValuationRanking(rankingType);
   const scopeNoteKey =
     market === "US"
       ? usScopeNoticeKeyFromState(rankingType, data)
@@ -375,8 +397,13 @@ export function RankingsPage() {
                         <TableHeader>{t("rankings.column.lastPrice")}</TableHeader>
                         <TableHeader>{t("rankings.column.changePercent")}</TableHeader>
                         <TableHeader>{t("rankings.column.volume")}</TableHeader>
-                        <TableHeader>{t("rankings.column.volumeChangePercent")}</TableHeader>
+                        {!showValuationColumns ? (
+                          <TableHeader>{t("rankings.column.volumeChangePercent")}</TableHeader>
+                        ) : null}
                         {showNetBuySellColumn ? <TableHeader>{t("rankings.column.netBuySell")}</TableHeader> : null}
+                        {showValuationColumns ? <TableHeader>{t("rankings.column.peRatio")}</TableHeader> : null}
+                        {showValuationColumns ? <TableHeader>{t("rankings.column.peRatioSource")}</TableHeader> : null}
+                        {showValuationColumns ? <TableHeader>{t("rankings.column.valuationAsOf")}</TableHeader> : null}
                         <TableHeader>{t("rankings.column.dataTime")}</TableHeader>
                         <TableHeader>{t("rankings.column.source")}</TableHeader>
                       </TableRow>
@@ -395,9 +422,20 @@ export function RankingsPage() {
                           </TableCell>
                           <TableCell>{formatMaybePercent(item.changePercent)}</TableCell>
                           <TableCell>{formatMaybeNumber(item.volume, formatNumber)}</TableCell>
-                          <TableCell>{formatMaybePercent(item.volumeDeltaPercent)}</TableCell>
+                          {!showValuationColumns ? (
+                            <TableCell>{formatMaybePercent(item.volumeDeltaPercent)}</TableCell>
+                          ) : null}
                           {showNetBuySellColumn ? (
                             <TableCell>{formatMaybeNumber(item.netBuySellShares, formatNumber)}</TableCell>
+                          ) : null}
+                          {showValuationColumns ? (
+                            <TableCell>{formatMaybePeRatio(item.peRatio, language)}</TableCell>
+                          ) : null}
+                          {showValuationColumns ? (
+                            <TableCell>{formatMaybeText(item.peRatioSource)}</TableCell>
+                          ) : null}
+                          {showValuationColumns ? (
+                            <TableCell>{formatMaybeText(item.valuationAsOf)}</TableCell>
                           ) : null}
                           <TableCell>{formatLastUpdated(item.timestamp)}</TableCell>
                           <TableCell>{localizedSource}</TableCell>

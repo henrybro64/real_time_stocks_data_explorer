@@ -168,6 +168,52 @@ function buildTwQuoteResponse(overrides: Partial<RankingResponse> = {}): Ranking
   };
 }
 
+function buildTwValuationResponse(overrides: Partial<RankingResponse> = {}): RankingResponse {
+  return {
+    market: "TW",
+    rankingType: "valuation_low_pe",
+    items: [
+      {
+        rank: 1,
+        stock: {
+          id: "TW:2330",
+          market: "TW",
+          symbol: "2330",
+          name: "台積電",
+          exchange: "TWSE",
+          currency: "TWD",
+          timezone: "Asia/Taipei",
+          nameEn: "TSMC",
+          nameZhTw: "台積電",
+        },
+        lastPrice: 951,
+        changePercent: 2.4,
+        volume: 195000,
+        volumeDeltaPercent: null,
+        netBuySellShares: null,
+        peRatio: 18.5,
+        peRatioType: "official_daily",
+        peRatioSource: "TWSE official daily P/E",
+        valuationAsOf: "2026-07-03",
+        valuationWarning: null,
+        timestamp: "2026-07-03T13:20:00+08:00",
+      },
+    ],
+    timestamp: "2026-07-03T05:20:00Z",
+    source:
+      "Valuation rankings use the highest-volume current quote candidates, then sort by P/E from the app's available valuation sources.",
+    sourceType: "free-unofficial",
+    isMarketOpen: true,
+    dataFreshnessLabel:
+      "Market open; valuation rankings use the latest quote snapshot filtered to the highest-volume candidates, then sort by the latest available P/E.",
+    warningMessage: "Free unofficial quote source; data may be delayed or unavailable.",
+    unsupportedReason: null,
+    usRankingsScope: null,
+    twBoard: "TWSE",
+    ...overrides,
+  };
+}
+
 function renderRankingsPage(language: "en" | "zh-TW" = "zh-TW") {
   window.localStorage.clear();
   window.localStorage.setItem("stock-ticker-language", language);
@@ -344,6 +390,125 @@ describe("RankingsPage", () => {
         "市場開盤中；漲跌幅排行使用最新報價快照。",
       );
     });
+  });
+
+  it("renders low P/E rankings with valuation columns", async () => {
+    const user = userEvent.setup();
+    vi.mocked(fetchRankings)
+      .mockResolvedValueOnce(buildResponse())
+      .mockResolvedValueOnce(buildTwValuationResponse());
+
+    renderRankingsPage();
+
+    await screen.findByTestId("rankings-row-TW:2330");
+    await user.click(screen.getByTestId("rankings-tab-valuation_low_pe"));
+
+    await waitFor(() => {
+      expect(fetchRankings).toHaveBeenLastCalledWith("TW", "valuation_low_pe", 50, "TWSE");
+    });
+    expect(await screen.findByRole("columnheader", { name: "本益比" })).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "本益比來源" })).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "估值日期" })).toBeInTheDocument();
+    expect(screen.getByText("18.50")).toBeInTheDocument();
+    expect(screen.getByText("TWSE official daily P/E")).toBeInTheDocument();
+    expect(screen.getByText("2026-07-03")).toBeInTheDocument();
+  });
+
+  it("renders U.S. low P/E rankings with valuation columns", async () => {
+    const user = userEvent.setup();
+    vi.mocked(fetchRankings)
+      .mockResolvedValueOnce(buildResponse())
+      .mockResolvedValueOnce(buildUsResponse())
+      .mockResolvedValueOnce(
+        buildUsResponse({
+          rankingType: "valuation_low_pe",
+          items: [
+            {
+              ...buildUsResponse().items[0],
+              peRatio: 22.4,
+              peRatioType: "provider_ttm",
+              peRatioSource: "Yahoo Finance trailing P/E",
+              valuationAsOf: "2026-07-03",
+              valuationWarning: null,
+            },
+          ],
+          source:
+            "Valuation rankings use the highest-volume current quote candidates, then sort by P/E from the app's available valuation sources.",
+          dataFreshnessLabel:
+            "Market open; valuation rankings use the latest quote snapshot filtered to the highest-volume candidates, then sort by the latest available P/E.",
+        }),
+      );
+
+    renderRankingsPage();
+
+    await screen.findByTestId("rankings-row-TW:2330");
+    await user.selectOptions(screen.getByLabelText("市場"), "US");
+    await user.click(screen.getByTestId("rankings-tab-valuation_low_pe"));
+
+    await waitFor(() => {
+      expect(fetchRankings).toHaveBeenLastCalledWith("US", "valuation_low_pe", 50, undefined);
+    });
+    expect(await screen.findByRole("columnheader", { name: "本益比" })).toBeInTheDocument();
+    expect(screen.getByText("22.40")).toBeInTheDocument();
+    expect(screen.getByText("Yahoo Finance trailing P/E")).toBeInTheDocument();
+  });
+
+  it("requests TPEx valuation rankings when 上櫃 board is selected", async () => {
+    const user = userEvent.setup();
+    vi.mocked(fetchRankings)
+      .mockResolvedValueOnce(buildResponse())
+      .mockResolvedValueOnce(
+        buildResponse({
+          twBoard: "TPEx",
+          items: [
+            {
+              ...buildResponse().items[0],
+              stock: {
+                ...buildResponse().items[0].stock,
+                id: "TW:6488",
+                symbol: "6488",
+                name: "環球晶",
+                exchange: "TPEx",
+                nameEn: "GlobalWafers",
+                nameZhTw: "環球晶",
+              },
+            },
+          ],
+        }),
+      )
+      .mockResolvedValueOnce(
+        buildTwValuationResponse({
+          twBoard: "TPEx",
+          items: [
+            {
+              ...buildTwValuationResponse().items[0],
+              stock: {
+                ...buildTwValuationResponse().items[0].stock,
+                id: "TW:6488",
+                symbol: "6488",
+                name: "環球晶",
+                exchange: "TPEx",
+                nameEn: "GlobalWafers",
+                nameZhTw: "環球晶",
+              },
+              peRatio: 14.2,
+              peRatioSource: "TPEx official daily P/E",
+            },
+          ],
+        }),
+      );
+
+    renderRankingsPage();
+
+    await screen.findByTestId("rankings-row-TW:2330");
+    await user.click(screen.getByTestId("rankings-tw-board-tpex"));
+    await user.click(screen.getByTestId("rankings-tab-valuation_low_pe"));
+
+    await waitFor(() => {
+      expect(fetchRankings).toHaveBeenLastCalledWith("TW", "valuation_low_pe", 50, "TPEx");
+    });
+    expect(await screen.findByTestId("rankings-row-TW:6488")).toBeInTheDocument();
+    expect(screen.getByText("TPEx official daily P/E")).toBeInTheDocument();
   });
 
   it("switches U.S. tabs to change-based rankings", async () => {

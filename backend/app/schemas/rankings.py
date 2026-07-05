@@ -14,6 +14,7 @@ class RankingType(str, Enum):
     volume_down = "volume_down"
     change_up = "change_up"
     change_down = "change_down"
+    valuation_low_pe = "valuation_low_pe"
     net_buy = "net_buy"
     net_sell = "net_sell"
 
@@ -33,6 +34,11 @@ class RankingItem(BaseModel):
     volume: int | None = None
     volumeDeltaPercent: float | None = None
     netBuySellShares: int | None = None
+    peRatio: float | None = None
+    peRatioType: str | None = None
+    peRatioSource: str | None = None
+    valuationAsOf: str | None = None
+    valuationWarning: str | None = None
     timestamp: str
 
 

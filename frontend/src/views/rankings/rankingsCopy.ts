@@ -16,6 +16,8 @@ type RankingsCopyKey =
   | "rankings.freshness.yahooChangeClosed"
   | "rankings.freshness.sp500MoversOpen"
   | "rankings.freshness.sp500MoversClosed"
+  | "rankings.freshness.valuationLowPeOpen"
+  | "rankings.freshness.valuationLowPeClosed"
   | "rankings.freshness.volumeBaselineMissing"
   | "rankings.freshness.volumeBaselineOpen"
   | "rankings.freshness.volumeBaselineClosed"
@@ -32,6 +34,7 @@ type RankingsCopyKey =
   | "rankings.source.quoteProviders"
   | "rankings.source.yahooPreRanked"
   | "rankings.source.sp500Movers"
+  | "rankings.source.valuationUniverse"
   | "rankings.source.tpexInstitutional"
   | "rankings.source.twse"
   | "rankings.source.unsupported";
@@ -55,6 +58,10 @@ const FRESHNESS_LABEL_KEYS: Record<string, RankingsCopyKey> = {
     "rankings.freshness.sp500MoversOpen",
   "Market closed; S&P 500 movers ranked by latest batched Yahoo quote change % (regular session fields).":
     "rankings.freshness.sp500MoversClosed",
+  "Market open; valuation rankings use the latest quote snapshot filtered to the highest-volume candidates, then sort by the latest available P/E.":
+    "rankings.freshness.valuationLowPeOpen",
+  "Market closed; valuation rankings use the latest available quote snapshot filtered to the highest-volume candidates, then sort by the latest available P/E.":
+    "rankings.freshness.valuationLowPeClosed",
   "Baseline unavailable on the first snapshot; volume change percent stays empty until a later refresh.":
     "rankings.freshness.volumeBaselineMissing",
   "Volume change uses the previous quote snapshot baseline.": "rankings.freshness.volumeBaselineOpen",
@@ -98,6 +105,8 @@ const SOURCE_KEYS: Record<string, RankingsCopyKey> = {
   "Yahoo Finance pre-ranked quote rankings.": "rankings.source.yahooPreRanked",
   "S&P 500 movers: constituent snapshot plus batched Yahoo Finance v7 quote fields (free best-effort; not the same universe as Yahoo's predefined gainers/losers screeners).":
     "rankings.source.sp500Movers",
+  "Valuation rankings use the highest-volume current quote candidates, then sort by P/E from the app's available valuation sources.":
+    "rankings.source.valuationUniverse",
   "TPEx institutional daily data": "rankings.source.tpexInstitutional",
   "TWSE T86 daily institutional data": "rankings.source.twse",
   "Unsupported in Phase 1 free-only rankings": "rankings.source.unsupported",

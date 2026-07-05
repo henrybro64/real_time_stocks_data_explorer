@@ -119,20 +119,22 @@ class RankingsExternalSource:
         if cached is None and shared_cache_key is not None:
             cached = self._read_cache(shared_cache_key, current)
         if cached is not None:
-            filtered = self._filter_tw_board(cached, market, tw_board)[:limit]
-            logger.debug(
-                "External rankings cache hit",
-                extra={
-                    "event": "rankings.external.cache.hit",
-                    "market": market,
-                    "ranking_type": ranking_type.value,
-                    "tw_board": tw_board,
-                    "item_count": len(filtered),
-                },
-            )
-            return filtered
+            board_filtered = self._filter_tw_board(cached, market, tw_board)
+            filtered = board_filtered[:limit]
+            if len(filtered) >= limit or len(board_filtered) < limit:
+                logger.debug(
+                    "External rankings cache hit",
+                    extra={
+                        "event": "rankings.external.cache.hit",
+                        "market": market,
+                        "ranking_type": ranking_type.value,
+                        "tw_board": tw_board,
+                        "item_count": len(filtered),
+                    },
+                )
+                return filtered
 
-        envelopes = self._fetch_uncached(market, ranking_type, current)
+        envelopes = self._fetch_uncached(market, ranking_type, current, limit)
         if envelopes is None:
             logger.warning(
                 "External rankings source was unavailable",
@@ -196,6 +198,7 @@ class RankingsExternalSource:
         market: str,
         ranking_type: RankingType,
         now: datetime,
+        limit: int,
     ) -> list[tuple[StockRecord, QuoteRecord]] | None:
         if market == "TW":
             slug = _TW_RANK_PATH.get(ranking_type)
@@ -236,8 +239,9 @@ class RankingsExternalSource:
         scr_id = _US_SCREENER_ID.get(ranking_type)
         if scr_id is None:
             return None
+        fetch_count = max(limit, _US_FETCH_BATCH)
         try:
-            response = self._us_screener_fetcher(scr_id, _US_FETCH_BATCH)
+            response = self._us_screener_fetcher(scr_id, fetch_count)
         except Exception as exc:  # noqa: BLE001 - yfinance can raise many shapes
             logger.warning(
                 "Yahoo U.S. screener failed",
@@ -265,7 +269,7 @@ class RankingsExternalSource:
                 },
             )
             return None
-        return envelopes[:_US_FETCH_BATCH]
+        return envelopes[:fetch_count]
 
     def _read_cache(
         self,
