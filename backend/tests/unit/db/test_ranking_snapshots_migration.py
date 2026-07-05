@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 from alembic import command
@@ -11,9 +12,13 @@ from sqlalchemy.orm import sessionmaker
 
 from app.db.models import RankingSnapshot, RankingSnapshotItem
 
+_BACKEND_ROOT = Path(__file__).resolve().parents[3]
+
 
 def _alembic_config(database_url: str) -> Config:
-    config = Config("alembic.ini")
+    config = Config(str(_BACKEND_ROOT / "alembic.ini"))
+    config.set_main_option("script_location", str(_BACKEND_ROOT / "alembic"))
+    config.set_main_option("prepend_sys_path", str(_BACKEND_ROOT))
     config.set_main_option("sqlalchemy.url", database_url)
     return config
 

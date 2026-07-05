@@ -409,13 +409,16 @@ def test_rankings_endpoint_returns_twse_valuation_low_pe_via_service(monkeypatch
         rankings_service_module,
         "get_valuation_snapshots",
         lambda envelopes: {
-            "TW:2330": {
-                "peRatio": 18.5,
-                "peRatioType": "official_daily",
-                "peRatioSource": "TWSE official daily P/E",
-                "valuationAsOf": "2026-07-03",
+            stock.id: {
+                "peRatio": 18.5 if stock.id == "TW:2330" else None,
+                "peRatioType": "official_daily" if stock.id == "TW:2330" else None,
+                "peRatioSource": (
+                    "TWSE official daily P/E" if stock.id == "TW:2330" else None
+                ),
+                "valuationAsOf": "2026-07-03" if stock.id == "TW:2330" else None,
                 "valuationWarning": None,
             }
+            for stock, _ in envelopes
         },
     )
 
