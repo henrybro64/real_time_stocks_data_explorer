@@ -3,6 +3,7 @@ import type { RankingResponse } from "@shared/api";
 type RankingsCopyKey =
   | "rankings.notice.quoteUnofficial"
   | "rankings.notice.twDaily"
+  | "rankings.notice.twDailyTpex"
   | "rankings.notice.twInstitutionalUnavailable"
   | "rankings.notice.twInstitutionalTpexUnavailable"
   | "rankings.freshness.quoteSnapshotOpen"
@@ -24,6 +25,10 @@ type RankingsCopyKey =
   | "rankings.freshness.twNetSell"
   | "rankings.freshness.twNetBuyClosed"
   | "rankings.freshness.twNetSellClosed"
+  | "rankings.freshness.tpexNetBuy"
+  | "rankings.freshness.tpexNetSell"
+  | "rankings.freshness.tpexNetBuyClosed"
+  | "rankings.freshness.tpexNetSellClosed"
   | "rankings.source.quoteProviders"
   | "rankings.source.yahooPreRanked"
   | "rankings.source.sp500Movers"
@@ -57,7 +62,7 @@ const FRESHNESS_LABEL_KEYS: Record<string, RankingsCopyKey> = {
     "rankings.freshness.volumeBaselineClosed",
   "TW daily institutional ranking is unavailable from the free public source right now.":
     "rankings.freshness.twInstitutionalUnavailable",
-  "TPEx institutional ranking is not implemented yet.":
+  "TPEx institutional daily ranking is unavailable from the free public source right now.":
     "rankings.freshness.twInstitutionalTpexUnavailable",
   "TW daily institutional ranking sorted by highest 三大法人買賣超股數.": "rankings.freshness.twNetBuy",
   "TW daily institutional ranking sorted by most negative 三大法人買賣超股數.": "rankings.freshness.twNetSell",
@@ -65,17 +70,26 @@ const FRESHNESS_LABEL_KEYS: Record<string, RankingsCopyKey> = {
     "rankings.freshness.twNetBuyClosed",
   "Market closed; TW daily institutional ranking sorted by most negative 三大法人買賣超股數.":
     "rankings.freshness.twNetSellClosed",
+  "TPEx daily institutional ranking sorted by highest 三大法人買賣超股數.":
+    "rankings.freshness.tpexNetBuy",
+  "TPEx daily institutional ranking sorted by most negative 三大法人買賣超股數.":
+    "rankings.freshness.tpexNetSell",
+  "Market closed; TPEx daily institutional ranking sorted by highest 三大法人買賣超股數.":
+    "rankings.freshness.tpexNetBuyClosed",
+  "Market closed; TPEx daily institutional ranking sorted by most negative 三大法人買賣超股數.":
+    "rankings.freshness.tpexNetSellClosed",
 };
 
 const WARNING_MESSAGE_KEYS: Record<string, RankingsCopyKey> = {
   "Free unofficial quote source; data may be delayed or unavailable.": "rankings.notice.quoteUnofficial",
   "台股三大法人買賣超為日資料，非盤中即時資料。": "rankings.notice.twDaily",
+  "上櫃（TPEx）三大法人買賣超為日資料，非盤中即時資料。": "rankings.notice.twDailyTpex",
 };
 
 const UNSUPPORTED_REASON_KEYS: Record<string, RankingsCopyKey> = {
   "TW institutional daily data is temporarily unavailable from the free public source.":
     "rankings.notice.twInstitutionalUnavailable",
-  "TPEx institutional net buy/sell ranking is not implemented yet.":
+  "TPEx institutional daily data is temporarily unavailable from the free public source.":
     "rankings.notice.twInstitutionalTpexUnavailable",
 };
 
