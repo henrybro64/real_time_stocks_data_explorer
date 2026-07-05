@@ -1016,6 +1016,49 @@ def test_fetch_tpex_institutional_rows_parses_total_net_buy_sell_values(monkeypa
     )
 
 
+def test_fetch_tpex_institutional_rows_falls_back_to_legacy_net_buy_sell_field(monkeypatch) -> None:
+    service = RankingsService(FakeQuoteSource(stocks={}, quotes={}))
+    monkeypatch.setattr(
+        rankings_service_module,
+        "fetch_json",
+        lambda *args, **kwargs: {
+            "date": "20260511",
+            "tables": [
+                {
+                    "date": "115/05/11",
+                    "fields": ["代號", "名稱", "三大法人買賣超股數"],
+                    "data": [["6488", "環球晶", "250,000"]],
+                }
+            ],
+            "stat": "ok",
+        },
+    )
+
+    snapshot = service._fetch_tpex_institutional_rows(date(2026, 5, 11))
+
+    assert snapshot == (date(2026, 5, 11), {"TW:6488": 250000})
+
+
+def test_fetch_tpex_institutional_snapshot_walks_back_until_rows_are_available() -> None:
+    service = RankingsService(FakeQuoteSource(stocks={}, quotes={}))
+    requested_dates: list[date] = []
+
+    def fake_rows(current_date: date):
+        requested_dates.append(current_date)
+        if current_date == date(2026, 5, 10):
+            return (date(2026, 5, 10), {"TW:6488": 123456})
+        return (current_date, {})
+
+    service._fetch_tpex_institutional_rows = fake_rows  # type: ignore[method-assign]
+
+    snapshot = service._fetch_tpex_institutional_snapshot(
+        datetime(2026, 5, 12, 3, 0, tzinfo=timezone.utc),
+    )
+
+    assert snapshot == (date(2026, 5, 10), {"TW:6488": 123456})
+    assert requested_dates[:2] == [date(2026, 5, 11), date(2026, 5, 10)]
+
+
 def test_fetch_tpex_institutional_rows_posts_expected_request_payload(monkeypatch) -> None:
     service = RankingsService(FakeQuoteSource(stocks={}, quotes={}))
     captured: dict[str, object] = {}

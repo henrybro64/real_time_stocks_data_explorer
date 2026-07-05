@@ -701,9 +701,6 @@ class RankingsService:
             parsed[f"TW:{raw_symbol}"] = net_value
         return parsed
 
-    def _fetch_tw_institutional_rows(self, current_date: date) -> dict[str, int]:
-        return self._fetch_twse_institutional_rows(current_date)
-
     def _fetch_tpex_institutional_rows(
         self,
         current_date: date,
