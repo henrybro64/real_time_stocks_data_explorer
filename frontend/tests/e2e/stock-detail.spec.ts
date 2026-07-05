@@ -11,7 +11,9 @@ test("stock detail renders quote, history, key stats, news fallback, and Taiwan-
 
   await expect(page).toHaveURL(/\/stock\/TW(%3A|:)2330$/);
   await expect(page.getByTestId("quote-summary-section")).toBeVisible();
-  await expect(page.getByTestId("key-statistics-section")).toBeVisible();
+  const keyStats = page.getByTestId("key-statistics-section");
+  await expect(keyStats).toBeVisible();
+  await expect(keyStats).toContainText("20.00x");
   await expect(page.getByTestId("stock-news-section")).toBeVisible();
   await expect(page.getByTestId("tw-insights-section")).toBeVisible();
   await expect(page.getByTestId("us-insights-section")).toHaveCount(0);
