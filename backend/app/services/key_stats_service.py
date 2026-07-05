@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import math
 import os
+import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
 from functools import lru_cache
 from urllib.error import HTTPError, URLError
@@ -28,6 +30,10 @@ _TPEX_DAILY_PE_URL = "https://www.tpex.org.tw/www/zh-tw/afterTrading/peQryDate"
 _NULL_OFFICIAL_PE_MARKERS = frozenset({"", "-", "--", "N/A", "NA"})
 _UNSUPPORTED_US_QUOTE_TYPES = frozenset({"ETF", "ETN", "FUND", "MUTUALFUND", "MONEYMARKETFUND", "INDEX"})
 _UNSET = object()
+_YFINANCE_INFO_TTL_SECONDS = 15 * 60
+_YFINANCE_INFO_MAX_SIZE = 512
+_YFINANCE_PRELOAD_WORKERS = 8
+_yfinance_info_cache: dict[str, tuple[float, dict[str, object] | None]] = {}
 
 
 def _yahoo_chart(symbol: str, interval: str, range_name: str) -> dict | None:
@@ -422,19 +428,45 @@ def _normalize_stock_id_to_yfinance(stock: StockRecord) -> str:
     return symbol
 
 
-@lru_cache(maxsize=512)
-def _load_yfinance_info(stock: StockRecord) -> dict[str, object] | None:
-    try:
-        import yfinance as yf  # pylint: disable=import-outside-toplevel
-    except Exception:  # noqa: BLE001 - optional dependency or import failure
-        return None
+def _yfinance_cache_key(stock: StockRecord) -> str:
+    return _normalize_stock_id_to_yfinance(stock)
 
-    ticker = yf.Ticker(_normalize_stock_id_to_yfinance(stock))
-    try:
-        info = dict(ticker.info or {})
-    except Exception:  # noqa: BLE001 - yfinance can fail in many shapes
-        return None
 
+def _read_yfinance_info_cache(key: str) -> dict[str, object] | None | object:
+    cached = _yfinance_info_cache.get(key)
+    if cached is None:
+        return _UNSET
+    fetched_at, payload = cached
+    if time.time() - fetched_at >= _YFINANCE_INFO_TTL_SECONDS:
+        _yfinance_info_cache.pop(key, None)
+        return _UNSET
+    return payload
+
+
+def _purge_yfinance_info_cache(now_epoch: float | None = None) -> None:
+    now = now_epoch if now_epoch is not None else time.time()
+    expired_keys = [
+        key
+        for key, (fetched_at, _) in _yfinance_info_cache.items()
+        if now - fetched_at >= _YFINANCE_INFO_TTL_SECONDS
+    ]
+    for key in expired_keys:
+        _yfinance_info_cache.pop(key, None)
+    overflow = len(_yfinance_info_cache) - _YFINANCE_INFO_MAX_SIZE
+    if overflow <= 0:
+        return
+    oldest_keys = sorted(_yfinance_info_cache, key=lambda key: _yfinance_info_cache[key][0])
+    for key in oldest_keys[:overflow]:
+        _yfinance_info_cache.pop(key, None)
+
+
+def _write_yfinance_info_cache(key: str, payload: dict[str, object] | None) -> None:
+    _yfinance_info_cache[key] = (time.time(), payload)
+    _purge_yfinance_info_cache()
+
+
+def _merge_yfinance_fast_info(info: dict[str, object], ticker: object) -> dict[str, object]:
+    merged = dict(info)
     fast_info = getattr(ticker, "fast_info", None)
     if fast_info is not None:
         for key, target_key in (
@@ -446,9 +478,49 @@ def _load_yfinance_info(stock: StockRecord) -> dict[str, object] | None:
                 value = fast_info.get(key)
             except Exception:  # noqa: BLE001 - yfinance fast_info can raise lazily
                 value = None
-            if value is not None and target_key not in info:
-                info[target_key] = value
+            if value is not None and target_key not in merged:
+                merged[target_key] = value
+    return merged
+
+
+def _fetch_yfinance_info_uncached(stock: StockRecord) -> dict[str, object] | None:
+    try:
+        import yfinance as yf  # pylint: disable=import-outside-toplevel
+    except Exception:  # noqa: BLE001 - optional dependency or import failure
+        return None
+
+    ticker = yf.Ticker(_yfinance_cache_key(stock))
+    try:
+        info = dict(ticker.info or {})
+    except Exception:  # noqa: BLE001 - yfinance can fail in many shapes
+        return None
+    return _merge_yfinance_fast_info(info, ticker)
+
+
+def _load_yfinance_info(stock: StockRecord) -> dict[str, object] | None:
+    key = _yfinance_cache_key(stock)
+    cached = _read_yfinance_info_cache(key)
+    if cached is not _UNSET:
+        return cached if isinstance(cached, dict) else None
+
+    info = _fetch_yfinance_info_uncached(stock)
+    _write_yfinance_info_cache(key, info)
     return info
+
+
+def preload_yfinance_info(stocks: list[StockRecord]) -> None:
+    """Warm the TTL yfinance info cache for many U.S. stocks with parallel lookups."""
+    pending = [
+        stock
+        for stock in stocks
+        if stock.market == "US" and _read_yfinance_info_cache(_yfinance_cache_key(stock)) is _UNSET
+    ]
+    if not pending:
+        return
+
+    worker_count = min(_YFINANCE_PRELOAD_WORKERS, len(pending))
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        list(executor.map(_load_yfinance_info, pending))
 
 
 def _provider_quote_kind(info: dict[str, object] | None) -> str | None:
@@ -809,6 +881,19 @@ def _merge_range_markers(out: dict[str, object]) -> dict[str, object]:
 def get_valuation_snapshot(stock: StockRecord, quote_record: QuoteRecord) -> dict[str, object]:
     """Shared valuation-only helper for callers that already have stock and quote objects."""
     return _apply_valuation_enrichment(_null_valuation(), stock, quote_record)
+
+
+def get_valuation_snapshots(
+    envelopes: list[tuple[StockRecord, QuoteRecord]],
+) -> dict[str, dict[str, object]]:
+    """Batch valuation lookup for ranking flows that already have quote envelopes."""
+    us_stocks = [stock for stock, _ in envelopes if stock.market == "US"]
+    if us_stocks:
+        preload_yfinance_info(us_stocks)
+    return {
+        stock.id: get_valuation_snapshot(stock, quote)
+        for stock, quote in envelopes
+    }
 
 
 def get_key_statistics(stock_id: str) -> dict[str, object] | None:

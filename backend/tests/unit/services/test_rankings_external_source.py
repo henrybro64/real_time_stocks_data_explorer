@@ -14,9 +14,11 @@ from app.schemas.rankings import RankingType
 from app.services import rankings_external_source as module
 from app.services.rankings_external_source import (
     RankingsExternalSource,
+    _CachedEnvelopes,
     _parse_tw_rank_page,
     _parse_us_screener_response,
 )
+from tests.support import quote_record, stock_record
 
 
 # ---------------------------------------------------------------------------
@@ -411,3 +413,160 @@ def test_fetch_dispatches_tw_to_html_fetcher() -> None:
 
     assert seen_slugs == ["change-up"]
     assert result and result[0][0].symbol == "3481"
+
+
+def test_fetch_reuses_exhausted_cache_when_source_returns_fewer_than_requested() -> None:
+    call_count = {"count": 0}
+
+    def fake_us_fetcher(scr_id, count):
+        call_count["count"] += 1
+        return {
+            "quotes": [
+                _us_quote_dict("AAA", price=10.0, prev=8.0, vol=1_000_000),
+                _us_quote_dict("BBB", price=20.0, prev=18.0, vol=500_000),
+            ]
+        }
+
+    source = RankingsExternalSource(
+        us_screener_fetcher=fake_us_fetcher,
+        cache_ttl_seconds=60,
+    )
+    base = datetime(2026, 5, 13, 15, 0, tzinfo=timezone.utc)
+
+    first = source.fetch("US", RankingType.volume, 100, now=base)
+    second = source.fetch("US", RankingType.volume, 50, now=base.replace(minute=0, second=30))
+
+    assert first and second
+    assert len(first) == 2
+    assert len(second) == 2
+    assert call_count["count"] == 1
+
+
+def test_fetch_refetches_when_cached_limit_is_smaller_than_new_request() -> None:
+    call_count = {"count": 0}
+
+    def fake_us_fetcher(scr_id, count):
+        call_count["count"] += 1
+        quotes = [
+            _us_quote_dict(
+                f"SYM{index}",
+                price=10.0 + index,
+                prev=8.0,
+                vol=1_000_000 - index,
+            )
+            for index in range(count)
+        ]
+        return {"quotes": quotes}
+
+    source = RankingsExternalSource(
+        us_screener_fetcher=fake_us_fetcher,
+        cache_ttl_seconds=60,
+    )
+    base = datetime(2026, 5, 13, 15, 0, tzinfo=timezone.utc)
+
+    source.fetch("US", RankingType.volume, 50, now=base)
+    source.fetch("US", RankingType.volume, 100, now=base.replace(minute=0, second=30))
+
+    assert call_count["count"] == 2
+
+
+def test_should_use_cached_envelopes_reuses_board_exhausted_shared_tw_cache() -> None:
+    twse_stock = stock_record(
+        "TW:2330",
+        market="TW",
+        symbol="2330",
+        name="台積電",
+        exchange="TWSE",
+        currency="TWD",
+        timezone="Asia/Taipei",
+    )
+    tpex_stock = stock_record(
+        "TW:3293",
+        market="TW",
+        symbol="3293",
+        name="鈊象",
+        exchange="TPEx",
+        currency="TWD",
+        timezone="Asia/Taipei",
+    )
+    quote = quote_record(
+        "TW:2330",
+        last_price=100.0,
+        change=1.0,
+        change_percent=1.0,
+        previous_close=99.0,
+        timestamp="2026-07-03T13:30:00+08:00",
+        is_market_open=False,
+        volume=100_000,
+    )
+    envelopes = [(twse_stock, quote)] * 95 + [(tpex_stock, quote)] * 5
+    cached = _CachedEnvelopes(
+        fetched_at=datetime(2026, 5, 13, 15, 0, tzinfo=timezone.utc).timestamp(),
+        envelopes=envelopes,
+        requested_limit=100,
+    )
+    board_filtered = RankingsExternalSource._filter_tw_board(envelopes, "TW", "TPEx")
+
+    assert RankingsExternalSource._should_use_cached_envelopes(
+        cached,
+        board_filtered[:50],
+        50,
+        board_filtered_count=len(board_filtered),
+    )
+
+
+def test_fetch_reuses_shared_tw_cache_when_board_subset_is_exhausted() -> None:
+    call_count = {"count": 0}
+
+    def fake_tw_fetcher(slug):  # noqa: ARG001
+        call_count["count"] += 1
+        return _tw_rank_html(
+            [("群創", "3481.TW", "37.50", "2.00", "5.63%", "37.95", "33.85", "1.374M")]
+        )
+
+    source = RankingsExternalSource(
+        tw_html_fetcher=fake_tw_fetcher,
+        cache_ttl_seconds=60,
+    )
+    base = datetime(2026, 5, 13, 15, 0, tzinfo=timezone.utc)
+    twse_stock = stock_record(
+        "TW:2330",
+        market="TW",
+        symbol="2330",
+        name="台積電",
+        exchange="TWSE",
+        currency="TWD",
+        timezone="Asia/Taipei",
+    )
+    tpex_stock = stock_record(
+        "TW:3293",
+        market="TW",
+        symbol="3293",
+        name="鈊象",
+        exchange="TPEx",
+        currency="TWD",
+        timezone="Asia/Taipei",
+    )
+    quote = quote_record(
+        "TW:2330",
+        last_price=100.0,
+        change=1.0,
+        change_percent=1.0,
+        previous_close=99.0,
+        timestamp="2026-07-03T13:30:00+08:00",
+        is_market_open=False,
+        volume=100_000,
+    )
+    shared_envelopes = [(twse_stock, quote)] * 95 + [(tpex_stock, quote)] * 5
+    source._write_cache(
+        source._cache_key("TW", RankingType.volume, None),
+        shared_envelopes,
+        base,
+        requested_limit=100,
+    )
+
+    result = source.fetch("TW", RankingType.volume, 50, now=base, tw_board="TPEx")
+
+    assert result is not None
+    assert len(result) == 5
+    assert call_count["count"] == 0

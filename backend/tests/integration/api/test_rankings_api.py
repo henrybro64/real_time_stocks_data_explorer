@@ -234,8 +234,16 @@ def test_rankings_endpoint_returns_twse_valuation_low_pe_via_service(monkeypatch
     )
     monkeypatch.setattr(
         rankings_service_module,
-        "get_valuation_snapshot",
-        lambda stock, quote: valuations[stock.id],  # noqa: ARG005
+        "get_valuation_snapshots",
+        lambda envelopes: {
+            "TW:2330": {
+                "peRatio": 18.5,
+                "peRatioType": "official_daily",
+                "peRatioSource": "TWSE official daily P/E",
+                "valuationAsOf": "2026-07-03",
+                "valuationWarning": None,
+            }
+        },
     )
 
     response = client.get(

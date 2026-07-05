@@ -536,3 +536,162 @@ def test_get_key_statistics_ignores_non_finite_yfinance_values(monkeypatch) -> N
 @pytest.mark.parametrize("raw_value", [float("nan"), float("inf"), float("-inf")])
 def test_parse_number_rejects_non_finite_numeric_values(raw_value: float) -> None:
     assert key_stats_service._parse_number(raw_value) is None
+
+
+@pytest.fixture
+def _clear_yfinance_info_cache():
+    key_stats_service._yfinance_info_cache.clear()
+    yield
+    key_stats_service._yfinance_info_cache.clear()
+
+
+def test_load_yfinance_info_uses_ttl_cache_and_refetches_after_expiry(
+    monkeypatch,
+    _clear_yfinance_info_cache,
+) -> None:
+    stock = stock_record(
+        "US:AAA",
+        market="US",
+        symbol="AAA",
+        name="Alpha Corp.",
+        exchange="NASDAQ",
+        currency="USD",
+        timezone="America/New_York",
+    )
+    call_count = {"count": 0}
+    current_time = {"value": 1_000_000.0}
+
+    def fake_fetch(current_stock):  # noqa: ARG001
+        call_count["count"] += 1
+        return {"quoteType": "EQUITY", "trailingPE": call_count["count"]}
+
+    monkeypatch.setattr(key_stats_service, "_fetch_yfinance_info_uncached", fake_fetch)
+    monkeypatch.setattr(key_stats_service.time, "time", lambda: current_time["value"])
+
+    first = key_stats_service._load_yfinance_info(stock)
+    second = key_stats_service._load_yfinance_info(stock)
+    current_time["value"] += key_stats_service._YFINANCE_INFO_TTL_SECONDS + 1
+    third = key_stats_service._load_yfinance_info(stock)
+
+    assert first == {"quoteType": "EQUITY", "trailingPE": 1}
+    assert second == first
+    assert third == {"quoteType": "EQUITY", "trailingPE": 2}
+    assert call_count["count"] == 2
+
+
+def test_preload_yfinance_info_warms_pending_us_symbols_in_parallel(
+    monkeypatch,
+    _clear_yfinance_info_cache,
+) -> None:
+    stocks = [
+        stock_record(
+            f"US:{symbol}",
+            market="US",
+            symbol=symbol,
+            name=f"{symbol} Inc.",
+            exchange="NASDAQ",
+            currency="USD",
+            timezone="America/New_York",
+        )
+        for symbol in ("AAA", "BBB", "CCC")
+    ]
+    fetch_calls: list[str] = []
+
+    def fake_fetch(current_stock):
+        fetch_calls.append(current_stock.symbol)
+        return {"quoteType": "EQUITY", "trailingPE": 10.0}
+
+    monkeypatch.setattr(key_stats_service, "_fetch_yfinance_info_uncached", fake_fetch)
+
+    key_stats_service.preload_yfinance_info(stocks)
+
+    assert fetch_calls == ["AAA", "BBB", "CCC"]
+    assert key_stats_service._load_yfinance_info(stocks[0]) == {
+        "quoteType": "EQUITY",
+        "trailingPE": 10.0,
+    }
+
+
+def test_yfinance_info_cache_evicts_oldest_entries_when_max_size_exceeded(
+    monkeypatch,
+    _clear_yfinance_info_cache,
+) -> None:
+    current_time = {"value": 1_000_000.0}
+    monkeypatch.setattr(key_stats_service, "_YFINANCE_INFO_MAX_SIZE", 2)
+    monkeypatch.setattr(key_stats_service.time, "time", lambda: current_time["value"])
+
+    key_stats_service._write_yfinance_info_cache("AAA", {"trailingPE": 1.0})
+    current_time["value"] += 1
+    key_stats_service._write_yfinance_info_cache("BBB", {"trailingPE": 2.0})
+    current_time["value"] += 1
+    key_stats_service._write_yfinance_info_cache("CCC", {"trailingPE": 3.0})
+
+    assert "AAA" not in key_stats_service._yfinance_info_cache
+    assert "BBB" in key_stats_service._yfinance_info_cache
+    assert "CCC" in key_stats_service._yfinance_info_cache
+
+
+def test_get_valuation_snapshots_preloads_us_yfinance_once(monkeypatch) -> None:
+    us_stock = stock_record(
+        "US:AAA",
+        market="US",
+        symbol="AAA",
+        name="Alpha Corp.",
+        exchange="NASDAQ",
+        currency="USD",
+        timezone="America/New_York",
+    )
+    tw_stock = stock_record(
+        "TW:2330",
+        market="TW",
+        symbol="2330",
+        name="台積電",
+        exchange="TWSE",
+        currency="TWD",
+        timezone="Asia/Taipei",
+    )
+    us_quote = quote_record(
+        "US:AAA",
+        last_price=10.0,
+        change=0.5,
+        change_percent=5.0,
+        previous_close=9.5,
+        timestamp="2026-07-03T16:00:00-04:00",
+        is_market_open=False,
+        open_price=9.6,
+        high=10.2,
+        low=9.4,
+        volume=1_000_000,
+    )
+    tw_quote = quote_record(
+        "TW:2330",
+        last_price=945.0,
+        change=5.0,
+        change_percent=0.53,
+        previous_close=940.0,
+        timestamp="2026-07-03T13:30:00+08:00",
+        is_market_open=False,
+        open_price=942.0,
+        high=948.0,
+        low=938.0,
+        volume=123_456,
+    )
+    preload_calls: list[list] = []
+
+    def fake_preload(stocks):
+        preload_calls.append(list(stocks))
+
+    monkeypatch.setattr(key_stats_service, "preload_yfinance_info", fake_preload)
+    monkeypatch.setattr(
+        key_stats_service,
+        "get_valuation_snapshot",
+        lambda stock, quote: {"peRatio": 12.0, "stockId": stock.id},  # noqa: ARG005
+    )
+
+    snapshots = key_stats_service.get_valuation_snapshots(
+        [(us_stock, us_quote), (tw_stock, tw_quote)]
+    )
+
+    assert preload_calls == [[us_stock]]
+    assert snapshots["US:AAA"]["peRatio"] == 12.0
+    assert snapshots["TW:2330"]["peRatio"] == 12.0
