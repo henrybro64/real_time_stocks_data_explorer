@@ -4,8 +4,14 @@ type RankingsCopyKey =
   | "rankings.notice.quoteUnofficial"
   | "rankings.notice.twDaily"
   | "rankings.notice.twDailyTpex"
+  | "rankings.notice.usInstitutionalUnsupported"
   | "rankings.notice.twInstitutionalUnavailable"
   | "rankings.notice.twInstitutionalTpexUnavailable"
+  | "rankings.freshness.closedLatestSnapshot"
+  | "rankings.freshness.cachedCurrentBucket"
+  | "rankings.freshness.cachedTwDaily"
+  | "rankings.freshness.freeSourceFallback"
+  | "rankings.freshness.noCachedSnapshot"
   | "rankings.freshness.quoteSnapshotOpen"
   | "rankings.freshness.quoteSnapshotClosed"
   | "rankings.freshness.changeSnapshotOpen"
@@ -40,6 +46,15 @@ type RankingsCopyKey =
   | "rankings.source.unsupported";
 
 const FRESHNESS_LABEL_KEYS: Record<string, RankingsCopyKey> = {
+  "Market is closed. Showing latest available free snapshot.": "rankings.freshness.closedLatestSnapshot",
+  "Showing the latest saved 30-minute free snapshot for this market window.":
+    "rankings.freshness.cachedCurrentBucket",
+  "Showing the latest saved TW institutional daily snapshot.":
+    "rankings.freshness.cachedTwDaily",
+  "Free data source temporarily unavailable. Showing latest available snapshot if available.":
+    "rankings.freshness.freeSourceFallback",
+  "Free data source temporarily unavailable. No cached snapshot is available yet.":
+    "rankings.freshness.noCachedSnapshot",
   "Market open; rankings use the latest quote snapshot.": "rankings.freshness.quoteSnapshotOpen",
   "Market closed; rankings use the latest available quote snapshot.": "rankings.freshness.quoteSnapshotClosed",
   "Market open; price-move rankings use the latest quote snapshot.":
@@ -94,6 +109,8 @@ const WARNING_MESSAGE_KEYS: Record<string, RankingsCopyKey> = {
 };
 
 const UNSUPPORTED_REASON_KEYS: Record<string, RankingsCopyKey> = {
+  "US institutional net-buy/net-sell is not available in this free-only app.":
+    "rankings.notice.usInstitutionalUnsupported",
   "TW institutional daily data is temporarily unavailable from the free public source.":
     "rankings.notice.twInstitutionalUnavailable",
   "TPEx institutional daily data is temporarily unavailable from the free public source.":
@@ -109,7 +126,7 @@ const SOURCE_KEYS: Record<string, RankingsCopyKey> = {
     "rankings.source.valuationUniverse",
   "TPEx institutional daily data": "rankings.source.tpexInstitutional",
   "TWSE T86 daily institutional data": "rankings.source.twse",
-  "Unsupported in Phase 1 free-only rankings": "rankings.source.unsupported",
+  "Unsupported in this free-only app": "rankings.source.unsupported",
 };
 
 type TranslateRankingsCopy = (key: RankingsCopyKey) => string;

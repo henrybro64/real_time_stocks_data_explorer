@@ -254,6 +254,15 @@ describe("RankingsPage", () => {
     expect(screen.getByTestId("rankings-warning-message")).toHaveTextContent(
       "台股三大法人買賣超為日資料，非盤中即時資料。",
     );
+    expect(screen.getByTestId("rankings-source-type-tag")).toHaveTextContent(
+      "來源類型: 免費公開",
+    );
+    expect(screen.getByTestId("rankings-snapshot-state-tag")).toHaveTextContent(
+      "台股法人日資料",
+    );
+    expect(screen.getByTestId("rankings-snapshot-timestamp")).toHaveTextContent(
+      "快照時間:",
+    );
   });
 
   it("defaults market to US when only U.S. is within hour before open", async () => {
@@ -373,7 +382,7 @@ describe("RankingsPage", () => {
       expect(fetchRankings).toHaveBeenLastCalledWith("TW", "volume", 50, "TWSE");
     });
     expect(screen.getByTestId("rankings-scope-note")).toHaveTextContent(
-      "此分頁的台股報價排行僅含上市（TWSE）；優先採用 Yahoo 台股排行頁，否則使用本應用程式的上市報價快照清單。",
+      "此分頁的台股報價排行僅含上市（TWSE）且來自本應用程式設定的免費報價清單。",
     );
     expect(screen.getByTestId("rankings-warning-message")).toHaveTextContent(
       "免費非官方報價來源可能延遲，或暫時無法提供資料。",
@@ -639,6 +648,69 @@ describe("RankingsPage", () => {
     );
     expect(screen.getByTestId("rankings-unsupported-message")).toHaveTextContent(
       "目前無法從免費公開來源取得上櫃（TPEx）法人日資料。",
+    );
+  });
+
+  it("shows explicit unsupported copy for U.S. institutional tabs", async () => {
+    const user = userEvent.setup();
+    vi.mocked(fetchRankings)
+      .mockResolvedValueOnce(buildResponse())
+      .mockResolvedValueOnce(buildUsResponse())
+      .mockResolvedValueOnce(
+        buildUsResponse({
+          rankingType: "net_buy",
+          items: [],
+          source: "Unsupported in this free-only app",
+          sourceType: "unsupported",
+          dataFreshnessLabel: "Unsupported in this free-only app.",
+          warningMessage: null,
+          unsupportedReason: "US institutional net-buy/net-sell is not available in this free-only app.",
+          usRankingsScope: null,
+        }),
+      );
+
+    renderRankingsPage();
+
+    await screen.findByTestId("rankings-row-TW:2330");
+    await user.selectOptions(screen.getByLabelText("市場"), "US");
+    await user.click(screen.getByTestId("rankings-tab-net_buy"));
+
+    await waitFor(() => {
+      expect(fetchRankings).toHaveBeenLastCalledWith("US", "net_buy", 50, undefined);
+    });
+    expect(screen.getByTestId("rankings-scope-note")).toHaveTextContent(
+      "此免費版本不提供美股法人買超／賣超。",
+    );
+    expect(screen.getByTestId("rankings-source-type-tag")).toHaveTextContent(
+      "來源類型: 不支援",
+    );
+    expect(screen.getByTestId("rankings-snapshot-state-tag")).toHaveTextContent(
+      "不支援",
+    );
+    expect(screen.getByTestId("rankings-unsupported-message")).toHaveTextContent(
+      "此免費版本不提供美股法人買超／賣超。",
+    );
+  });
+
+  it("shows cached snapshot metadata when the API returns cache state", async () => {
+    vi.mocked(fetchRankings).mockResolvedValueOnce(
+      buildTwQuoteResponse({
+        sourceType: "cache",
+        dataFreshnessLabel: "Market is closed. Showing latest available free snapshot.",
+      }),
+    );
+
+    renderRankingsPage();
+
+    expect(await screen.findByTestId("rankings-row-TW:2330")).toBeInTheDocument();
+    expect(screen.getByTestId("rankings-freshness-label")).toHaveTextContent(
+      "市場休市；顯示最新可得的免費快照。",
+    );
+    expect(screen.getByTestId("rankings-source-type-tag")).toHaveTextContent(
+      "來源類型: 快取",
+    );
+    expect(screen.getByTestId("rankings-snapshot-state-tag")).toHaveTextContent(
+      "最新快取快照",
     );
   });
 });

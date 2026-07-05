@@ -137,6 +137,78 @@ def current_snapshot_bucket(market: str, now: datetime | None = None) -> datetim
     return bucket_start.astimezone(timezone.utc)
 
 
+def current_rankings_snapshot_bucket(market: str, now: datetime | None = None) -> datetime | None:
+    return _current_intraday_bucket(market, now, bucket_minutes=30)
+
+
+def latest_trading_day_bucket(
+    market: str,
+    now: datetime | None = None,
+    *,
+    available_after: time | None = None,
+    lookback_days: int = 10,
+) -> datetime | None:
+    current = market_local_time(market, now)
+    candidate_date = current.date()
+    current_time = current.time().replace(second=0, microsecond=0)
+    if available_after is not None and current_time < available_after:
+        candidate_date -= timedelta(days=1)
+
+    for day_offset in range(lookback_days):
+        current_date = candidate_date - timedelta(days=day_offset)
+        trading_probe = datetime.combine(
+            current_date,
+            time(12, 0),
+            tzinfo=MARKET_TIMEZONES[market],
+        )
+        if not is_trading_day(market, trading_probe):
+            continue
+        return datetime.combine(
+            current_date,
+            time(0, 0),
+            tzinfo=MARKET_TIMEZONES[market],
+        ).astimezone(timezone.utc)
+    return None
+
+
+def _current_intraday_bucket(
+    market: str,
+    now: datetime | None,
+    *,
+    bucket_minutes: int,
+) -> datetime | None:
+    current = market_local_time(market, now)
+    if not is_market_open(market, current):
+        return None
+
+    start, end = MARKET_WINDOWS[market]
+    effective_current = current
+    if current.time().replace(second=0, microsecond=0) == end:
+        effective_current = current - timedelta(minutes=1)
+
+    session_start = effective_current.replace(
+        hour=start.hour,
+        minute=start.minute,
+        second=0,
+        microsecond=0,
+    )
+    session_end = effective_current.replace(
+        hour=end.hour,
+        minute=end.minute,
+        second=0,
+        microsecond=0,
+    )
+    minutes_since_start = int(
+        (effective_current - session_start).total_seconds() // 60
+    )
+    bucket_offset_minutes = (minutes_since_start // bucket_minutes) * bucket_minutes
+    bucket_start = session_start + timedelta(minutes=bucket_offset_minutes)
+    bucket_end = bucket_start + timedelta(minutes=bucket_minutes)
+    if bucket_end <= session_start or bucket_start > session_end:
+        return None
+    return bucket_start.astimezone(timezone.utc)
+
+
 def iter_open_snapshot_windows(now: datetime | None = None) -> list[tuple[str, datetime]]:
     current = now or datetime.now(timezone.utc)
     windows: list[tuple[str, datetime]] = []

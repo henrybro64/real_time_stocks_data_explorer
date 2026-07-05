@@ -122,7 +122,8 @@ Notes:
 
 ### Market Rankings (free-only)
 
-The `/rankings` page supports both Taiwan and U.S. markets using only free public data:
+The `/rankings` page supports both Taiwan and U.S. markets using only free data sources and
+persisted Postgres snapshots:
 
 ```text
 GET /api/rankings?market=TW|US&type=volume|volume_up|volume_down|change_up|change_down|net_buy|net_sell&limit=50
@@ -130,23 +131,51 @@ GET /api/rankings?market=TW|US&type=volume|volume_up|volume_down|change_up|chang
 
 Optional query parameter `twBoard` (`TWSE` or `TPEx`, default `TWSE`) applies to Taiwan only.
 
+Normal read behavior:
+
+- when the current bucket snapshot already exists, the API returns the saved snapshot with `sourceType=cache`
+- when the current bucket is missing and fresh free data is available, the API captures and persists a new snapshot
+- when the market is closed, the API returns the latest saved snapshot
+- when a free source fails, the API falls back to the latest saved snapshot when one exists
+- U.S. institutional `net_buy` / `net_sell` remain explicitly unsupported in this free-only app
+
 Available ranking types per market:
 
-- Taiwan UI tabs: `volume`, `change_up`, `change_down` (quote-based) and `net_buy`, `net_sell` (daily institutional)
-- U.S. UI tabs: `volume`, `change_up`, `change_down`
-- Backend also accepts `volume_up` / `volume_down` for either market, but these are our custom "vs previous snapshot" metric and are not exposed in the U.S. UI because Yahoo's pre-ranked sources do not cover them
+- Taiwan UI tabs: `volume`, `valuation_low_pe`, `change_up`, `change_down`, `net_buy`, `net_sell`
+- U.S. UI tabs: `volume`, `valuation_low_pe`, `change_up`, `change_down`, plus explicit unsupported `net_buy`, `net_sell`
+- backend also accepts `volume_up` / `volume_down` for both markets as the app's custom "vs previous snapshot" metric
 
 Data sources:
 
-- `volume`, `change_up`, `change_down`: U.S. uses `yfinance.screen("most_actives" | "day_gainers" | "day_losers")`.
-  Taiwan prefers Yahoo rank HTML (`tw.stock.yahoo.com/rank/...`), whose tables can mix
-  `.TW` and `.TWO` names; the app parses the mixed list, filters by the requested
-  `twBoard`, then applies `limit`. The parsed Yahoo rows are cached for ~5 min so
-  reopening the page or switching boards does not immediately refetch.
-- `volume_up`, `volume_down` rank a small curated universe by comparing live volume to the previous in-process baseline, since no public source publishes this metric.
-- Taiwan `net_buy` and `net_sell` use TWSE T86 daily institutional data and are explicitly labeled as daily, not intraday real-time.
-- U.S. institutional `net_buy` / `net_sell` are not supported (no reliable free U.S. institutional source).
-- If the Yahoo pre-ranked fetch fails, the page falls back to a small curated quote universe so something still renders; if the free public source is fully down the page shows an unavailable state instead of pretending the data is fresh.
+- quote-based rankings (`volume`, `volume_up`, `volume_down`, `change_up`, `change_down`) use the app's configured free quote universes:
+  - `RANKINGS_UNIVERSE_US`
+  - `RANKINGS_UNIVERSE_TW`
+- valuation rankings reuse the quote snapshot candidate set, then sort by the best available free P/E data
+- Taiwan `net_buy` and `net_sell` use public TWSE / TPEx daily institutional data and are explicitly labeled as daily, not intraday real-time
+- U.S. institutional `net_buy` / `net_sell` are unsupported because this app does not add fake data or paid-provider integrations
+- free unofficial quote sources can be delayed, rate-limited, or temporarily unavailable
+
+Snapshot persistence:
+
+- `ranking_snapshots`
+- `ranking_snapshot_items`
+- quote-based rankings use 30-minute buckets during regular market hours
+- Taiwan institutional rankings use daily buckets keyed to the latest available trading day
+- duplicate snapshots for the same market / board / type / bucket are prevented
+
+Scheduler settings:
+
+- `RANKINGS_SNAPSHOT_ENABLED`
+- `RANKINGS_REFRESH_SECONDS`
+- `RANKINGS_UNIVERSE_US`
+- `RANKINGS_UNIVERSE_TW`
+- optional internal capture endpoint token: `RANKINGS_CAPTURE_TOKEN`
+
+Local notes:
+
+- disable the background sampler with `RANKINGS_SNAPSHOT_ENABLED=false`
+- expand or shrink the tracked free ranking universes by editing `RANKINGS_UNIVERSE_US` and `RANKINGS_UNIVERSE_TW`
+- no paid provider keys or paid market-data integrations are required for rankings
 
 ### Threshold Alerts
 

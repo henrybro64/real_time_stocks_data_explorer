@@ -142,12 +142,14 @@ class RankingsService:
         *,
         sp500_quote_batch: Callable[[list[StockRecord]], dict[str, QuoteRecord]] | None = None,
         sp500_symbol_loader: Callable[[], tuple[str, ...]] | None = None,
+        tw_stock_ids_resolver: Callable[[TwBoard], list[str]] | None = None,
     ) -> None:
         self.quote_source = quote_source or quote_service
         self._volume_baselines = volume_baseline_store or default_volume_baseline_store
         self._external_source = external_source or rankings_external_source
         self._sp500_quote_batch = sp500_quote_batch or yahoo_v7_quotes_batch
         self._sp500_symbol_loader = sp500_symbol_loader or load_sp500_symbols
+        self._tw_stock_ids_resolver = tw_stock_ids_resolver or _tw_quote_universe_ids
 
     def get_rankings(
         self,
@@ -427,7 +429,7 @@ class RankingsService:
         if market == "US":
             return self._us_sp500_quote_snapshot_envelopes()
         assert tw_board is not None
-        stock_ids = _tw_quote_universe_ids(tw_board)
+        stock_ids = self._tw_stock_ids_resolver(tw_board)
         return self.quote_source.get_quotes(stock_ids)
 
     def _us_sp500_quote_snapshot_envelopes(self) -> list[tuple[StockRecord, QuoteRecord]]:

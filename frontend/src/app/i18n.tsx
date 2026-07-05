@@ -139,6 +139,17 @@ type TranslationKey =
   | "rankings.column.valuationAsOf"
   | "rankings.column.dataTime"
   | "rankings.column.source"
+  | "rankings.meta.snapshotTimestamp"
+  | "rankings.meta.source"
+  | "rankings.meta.sourceType"
+  | "rankings.sourceType.freePublic"
+  | "rankings.sourceType.freeUnofficial"
+  | "rankings.sourceType.cache"
+  | "rankings.sourceType.unsupported"
+  | "rankings.snapshotState.intraday"
+  | "rankings.snapshotState.daily"
+  | "rankings.snapshotState.cache"
+  | "rankings.snapshotState.unsupported"
   | "rankings.notice.usScopeYahoo"
   | "rankings.notice.usScopeSp500"
   | "rankings.notice.usScopeQuote"
@@ -154,8 +165,14 @@ type TranslationKey =
   | "rankings.notice.quoteUnofficial"
   | "rankings.notice.twDaily"
   | "rankings.notice.twDailyTpex"
+  | "rankings.notice.usInstitutionalUnsupported"
   | "rankings.notice.twInstitutionalUnavailable"
   | "rankings.notice.twInstitutionalTpexUnavailable"
+  | "rankings.freshness.closedLatestSnapshot"
+  | "rankings.freshness.cachedCurrentBucket"
+  | "rankings.freshness.cachedTwDaily"
+  | "rankings.freshness.freeSourceFallback"
+  | "rankings.freshness.noCachedSnapshot"
   | "rankings.freshness.quoteSnapshotOpen"
   | "rankings.freshness.quoteSnapshotClosed"
   | "rankings.freshness.changeSnapshotOpen"
@@ -494,12 +511,23 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "rankings.column.valuationAsOf": "Valuation as of",
     "rankings.column.dataTime": "Data time",
     "rankings.column.source": "Source",
+    "rankings.meta.snapshotTimestamp": "Snapshot",
+    "rankings.meta.source": "Source",
+    "rankings.meta.sourceType": "Source type",
+    "rankings.sourceType.freePublic": "Free public",
+    "rankings.sourceType.freeUnofficial": "Free unofficial",
+    "rankings.sourceType.cache": "Cache",
+    "rankings.sourceType.unsupported": "Unsupported",
+    "rankings.snapshotState.intraday": "30-minute intraday snapshot",
+    "rankings.snapshotState.daily": "Daily TW institutional data",
+    "rankings.snapshotState.cache": "Latest cached snapshot",
+    "rankings.snapshotState.unsupported": "Unsupported",
     "rankings.notice.usScopeYahoo":
       "U.S. quote rankings for this tab come pre-sorted from Yahoo Finance's predefined screeners and cover the broader U.S. market.",
     "rankings.notice.usScopeSp500":
       "U.S. gainers and losers are the largest regular-session % moves among S&P 500 constituents (committed index snapshot) using batched Yahoo Finance quote fields. U.S. volume still prefers Yahoo's broader most-actives screener when available.",
     "rankings.notice.usScopeQuote":
-      "U.S. rankings for this tab use the committed S&P 500 constituent snapshot and live quotes; symbols without a usable quote are omitted (shown when Yahoo's screener or batched quotes are unavailable for this view).",
+      "U.S. rankings for this tab use the app's configured free quote universe and live quotes; symbols without a usable quote are omitted.",
     "rankings.notice.usScopePending":
       "U.S. scope for this tab appears after its data finishes loading.",
     "rankings.notice.twInstScopeTwse":
@@ -509,9 +537,9 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "rankings.notice.twInstScopeTpexUnavailable":
       "TPEx institutional rankings are temporarily unavailable from the free public source.",
     "rankings.notice.twQuoteScopeTwse":
-      "Taiwan quote rankings for this tab are filtered to TWSE-listed (上市) names (Yahoo Taiwan rank pages when available, otherwise the app's TWSE quote snapshot list).",
+      "Taiwan quote rankings for this tab are filtered to TWSE-listed (上市) names from the app's configured free quote universe.",
     "rankings.notice.twQuoteScopeTpex":
-      "Taiwan quote rankings for this tab are filtered to TPEx-listed (上櫃) names (Yahoo Taiwan rank pages when available, otherwise the app's TPEx quote snapshot list).",
+      "Taiwan quote rankings for this tab are filtered to TPEx-listed (上櫃) names from the app's configured free quote universe.",
     "rankings.twBoard.groupLabel": "Board",
     "rankings.twBoard.twse": "Listed (TWSE)",
     "rankings.twBoard.tpex": "TPEx (OTC)",
@@ -519,10 +547,22 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "rankings.notice.twDaily": "Taiwan institutional net buy/sell rankings use daily data, not intraday real-time data.",
     "rankings.notice.twDailyTpex":
       "TPEx institutional net buy/sell rankings use daily data, not intraday real-time data.",
+    "rankings.notice.usInstitutionalUnsupported":
+      "U.S. institutional net buy/sell is not available in this free-only app.",
     "rankings.notice.twInstitutionalUnavailable":
       "Taiwan institutional daily data is temporarily unavailable from the free public source.",
     "rankings.notice.twInstitutionalTpexUnavailable":
       "TPEx institutional daily data is temporarily unavailable from the free public source.",
+    "rankings.freshness.closedLatestSnapshot":
+      "Market is closed. Showing latest available free snapshot.",
+    "rankings.freshness.cachedCurrentBucket":
+      "Showing the latest saved 30-minute free snapshot for this market window.",
+    "rankings.freshness.cachedTwDaily":
+      "Showing the latest saved TW institutional daily snapshot.",
+    "rankings.freshness.freeSourceFallback":
+      "Free data source temporarily unavailable. Showing latest available snapshot if available.",
+    "rankings.freshness.noCachedSnapshot":
+      "Free data source temporarily unavailable. No cached snapshot is available yet.",
     "rankings.freshness.quoteSnapshotOpen": "Market open; rankings use the latest quote snapshot.",
     "rankings.freshness.quoteSnapshotClosed": "Market closed; rankings use the latest available quote snapshot.",
     "rankings.freshness.changeSnapshotOpen":
@@ -578,7 +618,7 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
       "Valuation rankings use the highest-volume current quote candidates, then sort by P/E from the app's available valuation sources.",
     "rankings.source.tpexInstitutional": "TPEx institutional daily data",
     "rankings.source.twse": "TWSE T86 daily institutional data",
-    "rankings.source.unsupported": "Unsupported in Phase 1 free-only rankings",
+    "rankings.source.unsupported": "Unsupported in this free-only app",
     "portfolio.title": "Portfolio",
     "portfolio.description":
       "Your actual positions (what you own). This list is separate from the dashboard watchlist, which is for research and tracking.",
@@ -895,11 +935,22 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "rankings.column.valuationAsOf": "估值日期",
     "rankings.column.dataTime": "資料時間",
     "rankings.column.source": "來源",
+    "rankings.meta.snapshotTimestamp": "快照時間",
+    "rankings.meta.source": "資料來源",
+    "rankings.meta.sourceType": "來源類型",
+    "rankings.sourceType.freePublic": "免費公開",
+    "rankings.sourceType.freeUnofficial": "免費非官方",
+    "rankings.sourceType.cache": "快取",
+    "rankings.sourceType.unsupported": "不支援",
+    "rankings.snapshotState.intraday": "30 分鐘盤中快照",
+    "rankings.snapshotState.daily": "台股法人日資料",
+    "rankings.snapshotState.cache": "最新快取快照",
+    "rankings.snapshotState.unsupported": "不支援",
     "rankings.notice.usScopeYahoo": "美股此分頁採用 Yahoo Finance 預先排序的選股結果，涵蓋更廣的美股市場。",
     "rankings.notice.usScopeSp500":
       "美股漲跌幅排行以標普五百成分股（內建名單快照）為範圍，使用 Yahoo Finance 批次報價欄位排序；美股成交量仍優先採用 Yahoo 全市場熱門成交選股（若可用）。",
     "rankings.notice.usScopeQuote":
-      "美股此分頁使用內建標普五百成分股名單與即時報價排序；無法取得有效報價的代碼會略過（當 Yahoo 選股或批次報價不可用時會走此路徑）。",
+      "美股此分頁使用本應用程式設定的免費報價清單與即時報價排序；無法取得有效報價的代碼會略過。",
     "rankings.notice.usScopePending": "美股此分頁的資料範圍說明會在資料載入完成後顯示。",
     "rankings.notice.twInstScopeTwse": "此處的台股法人排行僅含上市（TWSE）股票，資料來自 TWSE 法人日報表。",
     "rankings.notice.twInstScopeTpex":
@@ -907,18 +958,24 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "rankings.notice.twInstScopeTpexUnavailable":
       "目前無法從免費公開來源取得上櫃（TPEx）法人排行。",
     "rankings.notice.twQuoteScopeTwse":
-      "此分頁的台股報價排行僅含上市（TWSE）；優先採用 Yahoo 台股排行頁，否則使用本應用程式的上市報價快照清單。",
+      "此分頁的台股報價排行僅含上市（TWSE）且來自本應用程式設定的免費報價清單。",
     "rankings.notice.twQuoteScopeTpex":
-      "此分頁的台股報價排行僅含上櫃（TPEx）；優先採用 Yahoo 台股排行頁，否則使用本應用程式的上櫃報價快照清單。",
+      "此分頁的台股報價排行僅含上櫃（TPEx）且來自本應用程式設定的免費報價清單。",
     "rankings.twBoard.groupLabel": "交易別",
     "rankings.twBoard.twse": "上市",
     "rankings.twBoard.tpex": "上櫃",
     "rankings.notice.quoteUnofficial": "免費非官方報價來源可能延遲，或暫時無法提供資料。",
     "rankings.notice.twDaily": "台股三大法人買賣超為日資料，非盤中即時資料。",
     "rankings.notice.twDailyTpex": "上櫃（TPEx）三大法人買賣超為日資料，非盤中即時資料。",
+    "rankings.notice.usInstitutionalUnsupported": "此免費版本不提供美股法人買超／賣超。",
     "rankings.notice.twInstitutionalUnavailable": "目前無法從免費公開來源取得台股法人日資料。",
     "rankings.notice.twInstitutionalTpexUnavailable":
       "目前無法從免費公開來源取得上櫃（TPEx）法人日資料。",
+    "rankings.freshness.closedLatestSnapshot": "市場休市；顯示最新可得的免費快照。",
+    "rankings.freshness.cachedCurrentBucket": "顯示此市場區間內最近儲存的 30 分鐘免費快照。",
+    "rankings.freshness.cachedTwDaily": "顯示最近儲存的台股法人日快照。",
+    "rankings.freshness.freeSourceFallback": "免費資料來源暫時無法使用；若有快照則顯示最新可得快照。",
+    "rankings.freshness.noCachedSnapshot": "免費資料來源暫時無法使用，且目前沒有可用的快照。",
     "rankings.freshness.quoteSnapshotOpen": "市場開盤中；排行使用最新報價快照。",
     "rankings.freshness.quoteSnapshotClosed": "市場休市；排行使用最新可得的報價快照。",
     "rankings.freshness.changeSnapshotOpen": "市場開盤中；漲跌幅排行使用最新報價快照。",
@@ -961,7 +1018,7 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
       "估值排行先取目前高成交量的報價候選，再依本應用程式可取得的本益比資料排序。",
     "rankings.source.tpexInstitutional": "TPEx 法人日資料",
     "rankings.source.twse": "TWSE T86 法人日資料",
-    "rankings.source.unsupported": "Phase 1 免費排行尚不支援",
+    "rankings.source.unsupported": "此免費版本不支援",
     "portfolio.title": "投資組合",
     "portfolio.description":
       "此處為您實際持有的標的，與儀表板的「自選清單」分開；自選清單適合研究與追蹤。",

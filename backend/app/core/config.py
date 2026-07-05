@@ -2,6 +2,10 @@ from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+def _split_csv(value: str) -> tuple[str, ...]:
+    return tuple(part.strip() for part in value.split(",") if part.strip())
+
+
 class Settings(BaseSettings):
     """Application settings loaded from environment (and optional `.env`)."""
 
@@ -31,6 +35,16 @@ class Settings(BaseSettings):
     portfolio_history_poll_seconds: int = Field(default=300, ge=30)
     # Shared secret header token for internal snapshot-capture endpoint.
     portfolio_history_capture_token: str = Field(default="")
+    # Background snapshot capture for free-only rankings persistence.
+    rankings_snapshot_enabled: bool = Field(default=True)
+    rankings_refresh_seconds: int = Field(default=1800, ge=60)
+    rankings_universe_us: str = Field(
+        default="AAPL,MSFT,NVDA,MU,TSLA,AMD,META,AMZN,GOOGL",
+    )
+    rankings_universe_tw: str = Field(
+        default="0050,2330,2317,2454,2303,2881,2882,6488,8299,8271,6215,6643,6562,6451,6462",
+    )
+    rankings_capture_token: str = Field(default="")
     # Backend logging controls.
     log_level: str = Field(default="INFO")
     log_format: str = Field(default="console")
@@ -76,6 +90,14 @@ class Settings(BaseSettings):
     def sqlalchemy_database_url(self) -> str:
         """SQLAlchemy/Alembic URL (same as ``database_url``, trimmed)."""
         return self.database_url.strip()
+
+    @property
+    def parsed_rankings_universe_us(self) -> tuple[str, ...]:
+        return _split_csv(self.rankings_universe_us)
+
+    @property
+    def parsed_rankings_universe_tw(self) -> tuple[str, ...]:
+        return _split_csv(self.rankings_universe_tw)
 
 
 settings = Settings()
