@@ -50,6 +50,7 @@ export type RankingType =
   | "volume_down"
   | "change_up"
   | "change_down"
+  | "valuation_low_pe"
   | "net_buy"
   | "net_sell";
 
@@ -70,6 +71,11 @@ export type RankingItem = {
   volume: number | null;
   volumeDeltaPercent: number | null;
   netBuySellShares: number | null;
+  peRatio?: number | null;
+  peRatioType?: string | null;
+  peRatioSource?: string | null;
+  valuationAsOf?: string | null;
+  valuationWarning?: string | null;
   timestamp: string;
 };
 

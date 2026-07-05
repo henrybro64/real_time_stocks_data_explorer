@@ -20,6 +20,7 @@ from app.schemas.rankings import (
 )
 from app.schemas.stock import StockResponse
 from app.services.http_client import HttpFetchError, fetch_json
+from app.services.key_stats_service import get_valuation_snapshot
 from app.services.market_clock import is_market_open
 from app.services.quote_service import QuoteService, quote_service
 from app.services.rankings_external_source import (
@@ -70,10 +71,22 @@ _UNSUPPORTED_REASONS: dict[RankingType, str] = {
 
 _QUOTE_SOURCE = "Quote rankings from the app's free best-effort quote providers."
 _QUOTE_WARNING = "Free unofficial quote source; data may be delayed or unavailable."
+_VALUATION_SOURCE = (
+    "Valuation rankings use the highest-volume current quote candidates, then sort by "
+    "P/E from the app's available valuation sources."
+)
 _PRE_RANKED_SOURCE = "Yahoo Finance pre-ranked quote rankings."
 _SP500_CHANGE_SOURCE = (
     "S&P 500 movers: constituent snapshot plus batched Yahoo Finance v7 quote fields "
     "(free best-effort; not the same universe as Yahoo's predefined gainers/losers screeners)."
+)
+_VALUATION_FRESHNESS_OPEN = (
+    "Market open; valuation rankings use the latest quote snapshot filtered to the highest-volume "
+    "candidates, then sort by the latest available P/E."
+)
+_VALUATION_FRESHNESS_CLOSED = (
+    "Market closed; valuation rankings use the latest available quote snapshot filtered to the "
+    "highest-volume candidates, then sort by the latest available P/E."
 )
 _PRE_RANKED_TYPES = {RankingType.volume, RankingType.change_up, RankingType.change_down}
 _TW_DAILY_WARNING = "台股三大法人買賣超為日資料，非盤中即時資料。"
@@ -111,6 +124,11 @@ class _RankingCandidate:
     volume: int | None
     volume_delta_percent: float | None
     net_buy_sell_shares: int | None
+    pe_ratio: float | None
+    pe_ratio_type: str | None
+    pe_ratio_source: str | None
+    valuation_as_of: str | None
+    valuation_warning: str | None
     timestamp: str
 
 
@@ -152,6 +170,14 @@ class RankingsService:
                 response = self._build_tw_institutional_ranking(
                     normalized_type, limit, current, effective_tw_board
                 )
+        elif normalized_type == RankingType.valuation_low_pe:
+            response = self._build_valuation_ranking(
+                market,
+                normalized_type,
+                limit,
+                current,
+                effective_tw_board,
+            )
         else:
             response = self._build_quote_ranking(
                 market, normalized_type, limit, current, effective_tw_board
@@ -242,6 +268,11 @@ class RankingsService:
                     volume=quote.volume,
                     volume_delta_percent=volume_delta_percent,
                     net_buy_sell_shares=None,
+                    pe_ratio=None,
+                    pe_ratio_type=None,
+                    pe_ratio_source=None,
+                    valuation_as_of=None,
+                    valuation_warning=None,
                     timestamp=quote.timestamp,
                 )
             )
@@ -287,6 +318,103 @@ class RankingsService:
             warningMessage=_QUOTE_WARNING,
             unsupportedReason=None,
             usRankingsScope="quote" if market == "US" else None,
+        )
+
+    def _build_valuation_ranking(
+        self,
+        market: RankingMarket,
+        ranking_type: RankingType,
+        limit: int,
+        now: datetime,
+        tw_board: TwBoard | None,
+    ) -> RankingResponse:
+        market_open = is_market_open(market, now)
+        envelopes, us_rankings_scope = self._get_valuation_universe_snapshot(
+            market,
+            now,
+            tw_board,
+            universe_limit=max(100, limit),
+        )
+        candidates: list[_RankingCandidate] = []
+
+        for stock, quote in envelopes:
+            valuation = get_valuation_snapshot(stock, quote)
+            pe_ratio = _positive_float(valuation.get("peRatio"))
+            if pe_ratio is None:
+                continue
+            candidates.append(
+                _RankingCandidate(
+                    stock=_stock_schema(stock),
+                    last_price=quote.last_price,
+                    change_percent=quote.change_percent,
+                    volume=quote.volume,
+                    volume_delta_percent=None,
+                    net_buy_sell_shares=None,
+                    pe_ratio=pe_ratio,
+                    pe_ratio_type=_string_or_none(valuation.get("peRatioType")),
+                    pe_ratio_source=_string_or_none(valuation.get("peRatioSource")),
+                    valuation_as_of=_string_or_none(valuation.get("valuationAsOf")),
+                    valuation_warning=_string_or_none(valuation.get("valuationWarning")),
+                    timestamp=quote.timestamp,
+                )
+            )
+
+        ranked_candidates = self._sort_valuation_candidates(candidates)[:limit]
+        items = [
+            _ranking_item(index, candidate)
+            for index, candidate in enumerate(ranked_candidates, start=1)
+        ]
+        freshness = _VALUATION_FRESHNESS_OPEN if market_open else _VALUATION_FRESHNESS_CLOSED
+
+        return RankingResponse(
+            market=market,
+            rankingType=ranking_type,
+            twBoard=tw_board if market == "TW" else None,
+            items=items,
+            timestamp=now.isoformat(),
+            source=_VALUATION_SOURCE,
+            sourceType=RankingSourceType.free_unofficial,
+            isMarketOpen=market_open,
+            dataFreshnessLabel=freshness,
+            warningMessage=_QUOTE_WARNING,
+            unsupportedReason=None,
+            usRankingsScope=us_rankings_scope if market == "US" else None,
+        )
+
+    def _get_valuation_universe_snapshot(
+        self,
+        market: RankingMarket,
+        now: datetime,
+        tw_board: TwBoard | None,
+        *,
+        universe_limit: int,
+    ) -> tuple[list[tuple[StockRecord, QuoteRecord]], str | None]:
+        external_envelopes = self._external_source.fetch(
+            market=market,
+            ranking_type=RankingType.volume,
+            limit=universe_limit,
+            now=now,
+            tw_board=tw_board if market == "TW" else None,
+        )
+        if external_envelopes:
+            return external_envelopes, "yahoo" if market == "US" else None
+
+        fallback = self._sort_envelopes_by_volume(
+            self._get_quote_rankings_snapshot(market, tw_board)
+        )[:universe_limit]
+        return fallback, "quote" if market == "US" else None
+
+    @staticmethod
+    def _sort_envelopes_by_volume(
+        envelopes: list[tuple[StockRecord, QuoteRecord]],
+    ) -> list[tuple[StockRecord, QuoteRecord]]:
+        return sorted(
+            envelopes,
+            key=lambda pair: (
+                pair[1].volume is None,
+                -(pair[1].volume or -1),
+                pair[0].symbol,
+            ),
         )
 
     def _get_quote_rankings_snapshot(
@@ -423,6 +551,11 @@ class RankingsService:
                 volume=quote.volume,
                 volume_delta_percent=None,
                 net_buy_sell_shares=None,
+                pe_ratio=None,
+                pe_ratio_type=None,
+                pe_ratio_source=None,
+                valuation_as_of=None,
+                valuation_warning=None,
                 timestamp=quote.timestamp,
             )
             for stock, quote in envelopes
@@ -506,6 +639,11 @@ class RankingsService:
                     volume=None,
                     volume_delta_percent=None,
                     net_buy_sell_shares=net_buy_sell_shares,
+                    pe_ratio=None,
+                    pe_ratio_type=None,
+                    pe_ratio_source=None,
+                    valuation_as_of=None,
+                    valuation_warning=None,
                     timestamp=ranking_timestamp,
                 )
             )
@@ -877,6 +1015,18 @@ class RankingsService:
         )
 
     @staticmethod
+    def _sort_valuation_candidates(candidates: list[_RankingCandidate]) -> list[_RankingCandidate]:
+        return sorted(
+            candidates,
+            key=lambda item: (
+                item.pe_ratio is None,
+                item.pe_ratio if item.pe_ratio is not None else 10**9,
+                -(item.volume or -1),
+                item.stock.symbol,
+            ),
+        )
+
+    @staticmethod
     def _sort_tw_institutional_candidates(
         candidates: list[_RankingCandidate],
         ranking_type: RankingType,
@@ -927,6 +1077,11 @@ def _ranking_item(rank: int, candidate: _RankingCandidate) -> RankingItem:
         volume=candidate.volume,
         volumeDeltaPercent=candidate.volume_delta_percent,
         netBuySellShares=candidate.net_buy_sell_shares,
+        peRatio=candidate.pe_ratio,
+        peRatioType=candidate.pe_ratio_type,
+        peRatioSource=candidate.pe_ratio_source,
+        valuationAsOf=candidate.valuation_as_of,
+        valuationWarning=candidate.valuation_warning,
         timestamp=candidate.timestamp,
     )
 
@@ -946,6 +1101,28 @@ def _parse_int(value: str) -> int | None:
         return int(float(normalized))
     except ValueError:
         return None
+
+
+def _positive_float(value: object) -> float | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        numeric = float(value)
+        return numeric if numeric > 0 else None
+    if isinstance(value, str):
+        try:
+            numeric = float(value.replace(",", "").strip())
+        except ValueError:
+            return None
+        return numeric if numeric > 0 else None
+    return None
+
+
+def _string_or_none(value: object) -> str | None:
+    if isinstance(value, str):
+        stripped = value.strip()
+        return stripped or None
+    return None
 
 
 def _parse_roc_date(value: str) -> date | None:

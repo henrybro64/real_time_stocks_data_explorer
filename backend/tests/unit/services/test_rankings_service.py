@@ -79,6 +79,19 @@ class FakeQuoteSource:
         return self._stocks.get(stock_id)
 
 
+class StaticExternalSource:
+    def __init__(self, envelopes):
+        self._envelopes = envelopes
+        self.calls: list[tuple[str, RankingType, int, str | None]] = []
+
+    def fetch(self, market, ranking_type, limit, now=None, tw_board=None):  # noqa: ARG002
+        self.calls.append((market, ranking_type, limit, tw_board))
+        envelopes = self._envelopes
+        if market == "TW" and tw_board in {"TWSE", "TPEx"}:
+            envelopes = [pair for pair in envelopes if pair[0].exchange == tw_board]
+        return envelopes[:limit]
+
+
 def _tw_stock(stock_id: str, symbol: str, name: str, *, exchange: str = "TWSE"):
     return stock_record(
         stock_id,
@@ -126,6 +139,23 @@ def _quote(
         is_market_open=True,
         volume=volume,
     )
+
+
+def _valuation_snapshot(
+    pe_ratio: float | None,
+    *,
+    pe_ratio_type: str | None = "official_daily",
+    pe_ratio_source: str | None = "TWSE official daily P/E",
+    valuation_as_of: str | None = "2026-07-03",
+    valuation_warning: str | None = None,
+):
+    return {
+        "peRatio": pe_ratio,
+        "peRatioType": pe_ratio_type,
+        "peRatioSource": pe_ratio_source,
+        "valuationAsOf": valuation_as_of,
+        "valuationWarning": valuation_warning,
+    }
 
 
 def test_volume_ranking_sorts_by_volume_descending() -> None:
@@ -340,6 +370,160 @@ def test_change_down_sorts_by_largest_drop_first() -> None:
 
     assert [item.stock.symbol for item in response.items] == ["2330", "2317"]
     assert [item.changePercent for item in response.items] == [-7.2, -1.5]
+
+
+def test_twse_low_pe_rankings_sort_by_pe_ratio_ascending(monkeypatch) -> None:
+    external_source = StaticExternalSource(
+        [
+            (
+                _tw_stock("TW:2330", "2330", "台積電"),
+                _quote("TW:2330", 310000, "2026-07-03T13:20:00+08:00", last_price=1010.0),
+            ),
+            (
+                _tw_stock("TW:2454", "2454", "聯發科"),
+                _quote("TW:2454", 220000, "2026-07-03T13:20:00+08:00", last_price=1280.0),
+            ),
+            (
+                _tw_stock("TW:2303", "2303", "聯電"),
+                _quote("TW:2303", 450000, "2026-07-03T13:20:00+08:00", last_price=58.0),
+            ),
+        ]
+    )
+    valuations = {
+        "TW:2330": _valuation_snapshot(18.5),
+        "TW:2454": _valuation_snapshot(25.2),
+        "TW:2303": _valuation_snapshot(12.1),
+    }
+    monkeypatch.setattr(
+        rankings_service_module,
+        "get_valuation_snapshot",
+        lambda stock, quote: valuations[stock.id],  # noqa: ARG005
+    )
+    service = RankingsService(
+        quote_source=FakeQuoteSource(stocks={}, quotes={}),
+        external_source=external_source,
+        sp500_quote_batch=_empty_sp500_quotes,
+    )
+
+    response = service.get_rankings("TW", RankingType.valuation_low_pe, limit=3, tw_board="TWSE")
+
+    assert external_source.calls == [("TW", RankingType.volume, 100, "TWSE")]
+    assert response.twBoard == "TWSE"
+    assert [item.stock.symbol for item in response.items] == ["2303", "2330", "2454"]
+    assert [item.peRatio for item in response.items] == [12.1, 18.5, 25.2]
+    assert response.source == (
+        "Valuation rankings use the highest-volume current quote candidates, then sort by "
+        "P/E from the app's available valuation sources."
+    )
+
+
+def test_tpex_low_pe_rankings_respect_requested_board(monkeypatch) -> None:
+    external_source = StaticExternalSource(
+        [
+            (
+                _tw_stock("TW:6488", "6488", "環球晶", exchange="TPEx"),
+                _quote("TW:6488", 180000, "2026-07-03T13:20:00+08:00", last_price=480.0),
+            ),
+            (
+                _tw_stock("TW:8299", "8299", "群聯", exchange="TPEx"),
+                _quote("TW:8299", 90000, "2026-07-03T13:20:00+08:00", last_price=620.0),
+            ),
+            (
+                _tw_stock("TW:2330", "2330", "台積電"),
+                _quote("TW:2330", 500000, "2026-07-03T13:20:00+08:00", last_price=1010.0),
+            ),
+        ]
+    )
+    valuations = {
+        "TW:6488": _valuation_snapshot(14.2, pe_ratio_source="TPEx official daily P/E"),
+        "TW:8299": _valuation_snapshot(20.8, pe_ratio_source="TPEx official daily P/E"),
+        "TW:2330": _valuation_snapshot(18.5),
+    }
+    monkeypatch.setattr(
+        rankings_service_module,
+        "get_valuation_snapshot",
+        lambda stock, quote: valuations[stock.id],  # noqa: ARG005
+    )
+    service = RankingsService(
+        quote_source=FakeQuoteSource(stocks={}, quotes={}),
+        external_source=external_source,
+        sp500_quote_batch=_empty_sp500_quotes,
+    )
+
+    response = service.get_rankings("TW", RankingType.valuation_low_pe, limit=5, tw_board="TPEx")
+
+    assert external_source.calls == [("TW", RankingType.volume, 100, "TPEx")]
+    assert response.twBoard == "TPEx"
+    assert [item.stock.symbol for item in response.items] == ["6488", "8299"]
+    assert all(item.stock.exchange == "TPEx" for item in response.items)
+    assert [item.peRatioSource for item in response.items] == [
+        "TPEx official daily P/E",
+        "TPEx official daily P/E",
+    ]
+
+
+def test_us_low_pe_rankings_exclude_missing_or_invalid_pe_rows(monkeypatch) -> None:
+    external_source = StaticExternalSource(
+        [
+            (
+                _us_stock("US:AAPL", "AAPL", "Apple Inc."),
+                _quote("US:AAPL", 9000000, "2026-07-03T10:10:00-04:00", last_price=210.0),
+            ),
+            (
+                _us_stock("US:MSFT", "MSFT", "Microsoft Corporation"),
+                _quote("US:MSFT", 8000000, "2026-07-03T10:10:00-04:00", last_price=480.0),
+            ),
+            (
+                _us_stock("US:XLK", "XLK", "Technology Select Sector SPDR Fund"),
+                _quote("US:XLK", 7000000, "2026-07-03T10:10:00-04:00", last_price=240.0),
+            ),
+            (
+                _us_stock("US:TSLA", "TSLA", "Tesla, Inc."),
+                _quote("US:TSLA", 6000000, "2026-07-03T10:10:00-04:00", last_price=315.0),
+            ),
+        ]
+    )
+    valuations = {
+        "US:AAPL": _valuation_snapshot(
+            22.4,
+            pe_ratio_type="provider_ttm",
+            pe_ratio_source="Yahoo Finance trailing P/E",
+        ),
+        "US:MSFT": _valuation_snapshot(
+            31.0,
+            pe_ratio_type="provider_ttm",
+            pe_ratio_source="Yahoo Finance trailing P/E",
+        ),
+        "US:XLK": _valuation_snapshot(
+            None,
+            pe_ratio_type=None,
+            pe_ratio_source=None,
+            valuation_as_of=None,
+            valuation_warning="P/E is not reported for ETF or fund instruments.",
+        ),
+        "US:TSLA": _valuation_snapshot(
+            0.0,
+            pe_ratio_type="provider_ttm",
+            pe_ratio_source="Yahoo Finance trailing P/E",
+        ),
+    }
+    monkeypatch.setattr(
+        rankings_service_module,
+        "get_valuation_snapshot",
+        lambda stock, quote: valuations[stock.id],  # noqa: ARG005
+    )
+    service = RankingsService(
+        quote_source=FakeQuoteSource(stocks={}, quotes={}),
+        external_source=external_source,
+        sp500_quote_batch=_empty_sp500_quotes,
+    )
+
+    response = service.get_rankings("US", RankingType.valuation_low_pe, limit=5)
+
+    assert external_source.calls == [("US", RankingType.volume, 100, None)]
+    assert response.usRankingsScope == "yahoo"
+    assert [item.stock.symbol for item in response.items] == ["AAPL", "MSFT"]
+    assert [item.peRatio for item in response.items] == [22.4, 31.0]
 
 
 def test_change_down_falls_back_to_only_negative_movers_in_quote_path() -> None:

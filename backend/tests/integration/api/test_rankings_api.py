@@ -41,6 +41,11 @@ def _sample_response() -> RankingResponse:
                 volume=123456,
                 volumeDeltaPercent=5.0,
                 netBuySellShares=None,
+                peRatio=None,
+                peRatioType=None,
+                peRatioSource=None,
+                valuationAsOf=None,
+                valuationWarning=None,
                 timestamp="2026-05-11T09:30:00+08:00",
             )
         ],
@@ -135,6 +140,11 @@ def test_rankings_endpoint_returns_response_shape(monkeypatch, client) -> None:
                 "volume": 123456,
                 "volumeDeltaPercent": 5.0,
                 "netBuySellShares": None,
+                "peRatio": None,
+                "peRatioType": None,
+                "peRatioSource": None,
+                "valuationAsOf": None,
+                "valuationWarning": None,
                 "timestamp": "2026-05-11T09:30:00+08:00",
             }
         ],
