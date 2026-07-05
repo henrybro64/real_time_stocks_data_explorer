@@ -1,3 +1,5 @@
+import pytest
+
 from app.services import key_stats_service
 from app.services.quote_service import quote_service
 from tests.support import quote_record, stock_record
@@ -321,3 +323,169 @@ def test_get_key_statistics_reports_malformed_official_pe(monkeypatch) -> None:
     assert payload["peTtm"] is None
     assert payload["valuationAsOf"] == "2026-07-03"
     assert payload["valuationWarning"] == "TWSE official daily P/E returned a malformed P/E value."
+
+
+def test_get_key_statistics_uses_finnhub_provider_trailing_pe(monkeypatch) -> None:
+    stock = stock_record(
+        "US:AAPL",
+        market="US",
+        symbol="AAPL",
+        name="Apple Inc.",
+        exchange="NASDAQ",
+        currency="USD",
+        timezone="America/New_York",
+    )
+    quote = quote_record(
+        "US:AAPL",
+        last_price=210.5,
+        change=1.5,
+        change_percent=0.72,
+        previous_close=209.0,
+        timestamp="2026-07-03T16:00:00-04:00",
+        is_market_open=False,
+        open_price=208.5,
+        high=211.2,
+        low=207.9,
+        volume=75_000_000,
+    )
+
+    def finnhub_enrich(payload, current_stock):
+        enriched = dict(payload)
+        enriched["peTtm"] = 31.5
+        enriched["epsTtm"] = 6.8
+        return enriched
+
+    _patch_common(monkeypatch, stock, quote, finnhub_enrich=finnhub_enrich)
+    monkeypatch.setattr(
+        key_stats_service,
+        "_load_yfinance_info",
+        lambda current_stock: {"quoteType": "EQUITY"},
+    )
+
+    payload = key_stats_service.get_key_statistics("US:AAPL")
+
+    assert payload is not None
+    assert payload["peRatio"] == 31.5
+    assert payload["peTtm"] == 31.5
+    assert payload["peRatioType"] == "provider_ttm"
+    assert payload["peRatioSource"] == "Finnhub stock metric"
+    assert payload["epsTtm"] == 6.8
+    assert payload["valuationWarning"] is None
+
+
+def test_get_key_statistics_returns_warning_for_negative_us_eps(monkeypatch) -> None:
+    stock = stock_record(
+        "US:XYZ",
+        market="US",
+        symbol="XYZ",
+        name="Example Corp.",
+        exchange="NASDAQ",
+        currency="USD",
+        timezone="America/New_York",
+    )
+    quote = quote_record(
+        "US:XYZ",
+        last_price=12.0,
+        change=-0.5,
+        change_percent=-4.0,
+        previous_close=12.5,
+        timestamp="2026-07-03T16:00:00-04:00",
+        is_market_open=False,
+        open_price=12.4,
+        high=12.6,
+        low=11.8,
+        volume=1_000_000,
+    )
+    _patch_common(monkeypatch, stock, quote)
+    monkeypatch.setattr(
+        key_stats_service,
+        "_load_yfinance_info",
+        lambda current_stock: {
+            "quoteType": "EQUITY",
+            "trailingEps": -2.5,
+        },
+    )
+
+    payload = key_stats_service.get_key_statistics("US:XYZ")
+
+    assert payload is not None
+    assert payload["peRatio"] is None
+    assert payload["peTtm"] is None
+    assert payload["epsTtm"] == -2.5
+    assert payload["valuationWarning"] == "P/E could not be calculated because EPS TTM was missing or non-positive."
+
+
+def test_get_key_statistics_rejects_tw_etf_valuation(monkeypatch) -> None:
+    stock = stock_record(
+        "TW:0050",
+        market="TW",
+        symbol="0050",
+        name="元大台灣50",
+        exchange="TWSE",
+        currency="TWD",
+        timezone="Asia/Taipei",
+    )
+    quote = quote_record(
+        "TW:0050",
+        last_price=180.0,
+        change=1.0,
+        change_percent=0.56,
+        previous_close=179.0,
+        timestamp="2026-07-03T13:30:00+08:00",
+        is_market_open=False,
+        open_price=179.5,
+        high=181.0,
+        low=178.5,
+        volume=50_000,
+    )
+    _patch_common(monkeypatch, stock, quote)
+    monkeypatch.setattr(
+        key_stats_service,
+        "_fetch_twse_daily_pe_snapshot",
+        lambda target_day: (
+            {"0050": {"peRatio": None, "peStatus": "missing", "priceUsed": None}},
+            "2026-07-03",
+        ),
+    )
+
+    payload = key_stats_service.get_key_statistics("TW:0050")
+
+    assert payload is not None
+    assert payload["peRatio"] is None
+    assert payload["peTtm"] is None
+    assert payload["valuationAsOf"] == "2026-07-03"
+    assert payload["valuationWarning"] == "P/E is not reported for ETF or fund instruments."
+
+
+@pytest.mark.parametrize(
+    ("raw_value", "expected_pe", "expected_status"),
+    [
+        ("18.42", 18.42, None),
+        ("1,234.56", 1234.56, None),
+        ("--", None, "missing"),
+        ("N/A", None, "missing"),
+        ("", None, "missing"),
+        ("not-a-number", None, "malformed"),
+    ],
+)
+def test_parse_official_pe_value_handles_localized_numeric_fields(
+    raw_value: str,
+    expected_pe: float | None,
+    expected_status: str | None,
+) -> None:
+    pe_ratio, pe_status = key_stats_service._parse_official_pe_value(raw_value)
+
+    assert pe_ratio == expected_pe
+    assert pe_status == expected_status
+
+
+@pytest.mark.parametrize(
+    ("raw_value", "expected"),
+    [
+        ("1,234.50", 1234.5),
+        ("--", None),
+        ("N/A", None),
+    ],
+)
+def test_parse_number_handles_official_field_markers(raw_value: str, expected: float | None) -> None:
+    assert key_stats_service._parse_number(raw_value) == expected

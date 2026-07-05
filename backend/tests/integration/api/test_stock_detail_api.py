@@ -4,8 +4,10 @@ from fastapi.testclient import TestClient
 from app.api.routes import history as history_routes
 from app.core.config import settings
 from app.main import app
+from app.services import key_stats_service
 from app.services.news_service import NewsItem, news_service
 from app.services.quote_service import quote_service
+from tests.support import quote_record
 from app.services.stock_analysis_service import (
     ComputedStockAnalysisData,
     StockAnalysisResult,
@@ -58,6 +60,72 @@ def test_history_endpoint_returns_quote_history_for_requested_range(monkeypatch,
     assert payload["chartLayout"]["minY"] == 948.0
     assert payload["chartLayout"]["maxY"] == 960.0
     assert payload["chartLayout"]["trendUp"] is True
+
+
+def test_key_statistics_endpoint_returns_twse_official_pe_via_service(monkeypatch, client) -> None:
+    stock = stock_record(
+        "TW:2330",
+        market="TW",
+        symbol="2330",
+        name="台積電",
+        exchange="TWSE",
+        currency="TWD",
+        timezone="Asia/Taipei",
+        name_en="TSMC",
+        name_zh_tw="台積電",
+    )
+    quote = quote_record(
+        "TW:2330",
+        last_price=950.0,
+        change=5.0,
+        change_percent=0.53,
+        previous_close=945.0,
+        timestamp="2026-07-03T13:30:00+08:00",
+        is_market_open=False,
+        open_price=942.0,
+        high=960.0,
+        low=948.0,
+        volume=123_456,
+    )
+
+    monkeypatch.setattr(
+        quote_service,
+        "get_stock",
+        lambda stock_id: stock if stock_id == "TW:2330" else None,
+    )
+    monkeypatch.setattr(
+        quote_service,
+        "get_quote",
+        lambda stock_id: quote if stock_id == "TW:2330" else None,
+    )
+    monkeypatch.setattr(key_stats_service, "_tw_from_candles", lambda current_stock, base: dict(base))
+    monkeypatch.setattr(
+        key_stats_service,
+        "_finnhub_enrich",
+        lambda payload, current_stock: dict(payload),
+    )
+    monkeypatch.setattr(
+        key_stats_service,
+        "_fetch_twse_daily_pe_snapshot",
+        lambda target_day: (
+            {"2330": {"peRatio": 22.4, "peStatus": None, "priceUsed": 950.0}},
+            "2026-07-03",
+        ),
+    )
+
+    response = client.get("/api/stocks/TW:2330/key-statistics")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["peRatio"] == 22.4
+    assert payload["peTtm"] == 22.4
+    assert payload["peRatioType"] == "official_daily"
+    assert payload["peRatioSource"] == "TWSE official daily P/E"
+    assert payload["priceUsed"] == 950.0
+    assert payload["priceAsOf"] == "2026-07-03"
+    assert payload["valuationAsOf"] == "2026-07-03"
+    assert payload["valuationWarning"] is None
+    assert payload["lastPrice"] == 950.0
 
 
 def test_key_stats_and_news_endpoints_return_safe_payloads(monkeypatch, client) -> None:
