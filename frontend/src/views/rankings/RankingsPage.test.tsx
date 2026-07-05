@@ -390,19 +390,33 @@ describe("RankingsPage", () => {
     });
   });
 
-  it("shows unsupported TPEx institutional state when 上櫃 is selected", async () => {
+  it("shows TPEx institutional scope and ranking labels when 上櫃 is selected", async () => {
     const user = userEvent.setup();
     vi.mocked(fetchRankings)
       .mockResolvedValueOnce(buildResponse())
       .mockResolvedValue(
         buildResponse({
           twBoard: "TPEx",
-          items: [],
+          items: [
+            {
+              ...buildResponse().items[0],
+              stock: {
+                ...buildResponse().items[0].stock,
+                id: "TW:6488",
+                symbol: "6488",
+                name: "環球晶",
+                exchange: "TPEx",
+                nameEn: "GlobalWafers",
+                nameZhTw: "環球晶",
+              },
+              netBuySellShares: 500000,
+            },
+          ],
           source: "TPEx institutional daily data",
-          sourceType: "unsupported",
-          dataFreshnessLabel: "TPEx institutional ranking is not implemented yet.",
-          warningMessage: null,
-          unsupportedReason: "TPEx institutional net buy/sell ranking is not implemented yet.",
+          sourceType: "free-public",
+          dataFreshnessLabel: "TPEx daily institutional ranking sorted by highest 三大法人買賣超股數.",
+          warningMessage: "上櫃（TPEx）三大法人買賣超為日資料，非盤中即時資料。",
+          unsupportedReason: null,
         }),
       );
 
@@ -416,14 +430,50 @@ describe("RankingsPage", () => {
     });
     await waitFor(() => {
       expect(screen.getByTestId("rankings-scope-note")).toHaveTextContent(
-        "上櫃（TPEx）法人買超／賣超排行目前尚未在本應用程式中實作。",
+        "此處的台股法人排行僅含上櫃（TPEx）股票，資料來自 TPEx 法人日明細資料。",
       );
     });
     expect(screen.getByTestId("rankings-freshness-label")).toHaveTextContent(
-      "上櫃（TPEx）法人排行目前尚未實作。",
+      "上櫃（TPEx）法人日排行依三大法人買賣超股數由高到低排序。",
+    );
+    expect(screen.queryByTestId("rankings-unsupported-message")).not.toBeInTheDocument();
+  });
+
+  it("shows TPEx institutional unavailable copy when the source is unavailable", async () => {
+    const user = userEvent.setup();
+    vi.mocked(fetchRankings)
+      .mockResolvedValueOnce(buildResponse())
+      .mockResolvedValue(
+        buildResponse({
+          twBoard: "TPEx",
+          items: [],
+          source: "TPEx institutional daily data",
+          sourceType: "unsupported",
+          dataFreshnessLabel:
+            "TPEx institutional daily ranking is unavailable from the free public source right now.",
+          warningMessage: "上櫃（TPEx）三大法人買賣超為日資料，非盤中即時資料。",
+          unsupportedReason:
+            "TPEx institutional daily data is temporarily unavailable from the free public source.",
+        }),
+      );
+
+    renderRankingsPage();
+
+    await user.click(screen.getByRole("button", { name: "上櫃" }));
+
+    await waitFor(() => {
+      expect(fetchRankings).toHaveBeenLastCalledWith("TW", "net_buy", 50, "TPEx");
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId("rankings-scope-note")).toHaveTextContent(
+        "目前無法從免費公開來源取得上櫃（TPEx）法人排行。",
+      );
+    });
+    expect(screen.getByTestId("rankings-freshness-label")).toHaveTextContent(
+      "目前無法從免費公開來源取得上櫃（TPEx）法人日排行。",
     );
     expect(screen.getByTestId("rankings-unsupported-message")).toHaveTextContent(
-      "上櫃（TPEx）法人買超／賣超排行目前尚未實作。",
+      "目前無法從免費公開來源取得上櫃（TPEx）法人日資料。",
     );
   });
 });

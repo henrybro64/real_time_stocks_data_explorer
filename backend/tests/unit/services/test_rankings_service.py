@@ -809,29 +809,70 @@ def test_us_net_sell_is_explicitly_unsupported() -> None:
     )
 
 
-def test_tw_tpex_institutional_rankings_are_explicitly_unsupported() -> None:
-    service = RankingsService(FakeQuoteSource(stocks={}, quotes={}))
-
-    def should_not_fetch_snapshot(_now):
-        raise AssertionError("TPEx institutional unsupported path should not fetch TWSE T86 data")
-
-    service._fetch_tw_institutional_snapshot = should_not_fetch_snapshot  # type: ignore[method-assign]
-
-    for ranking_type in (RankingType.net_buy, RankingType.net_sell):
-        response = service.get_rankings("TW", ranking_type, limit=50, tw_board="TPEx")
-
-        assert response.market == "TW"
-        assert response.rankingType == ranking_type
-        assert response.twBoard == "TPEx"
-        assert response.items == []
-        assert response.source == "TPEx institutional daily data"
-        assert response.sourceType == RankingSourceType.unsupported
-        assert response.warningMessage is None
-        assert response.dataFreshnessLabel == "TPEx institutional ranking is not implemented yet."
-        assert (
-            response.unsupportedReason
-            == "TPEx institutional net buy/sell ranking is not implemented yet."
+def test_tw_tpex_net_buy_returns_tpex_daily_warning_and_quote_fields() -> None:
+    service = RankingsService(
+        FakeQuoteSource(
+            stocks={
+                "TW:6488": _tw_stock("TW:6488", "6488", "環球晶", exchange="TPEx"),
+                "TW:8299": _tw_stock("TW:8299", "8299", "群聯", exchange="TPEx"),
+            },
+            quotes={
+                "TW:6488": _quote(
+                    "TW:6488",
+                    1500,
+                    "2026-05-12T10:00:00+08:00",
+                    last_price=480.0,
+                    change_percent=2.1,
+                ),
+                "TW:8299": _quote(
+                    "TW:8299",
+                    2500,
+                    "2026-05-12T10:00:00+08:00",
+                    last_price=600.0,
+                    change_percent=-1.4,
+                ),
+            },
         )
+    )
+    service._fetch_tw_institutional_snapshot = lambda now, tw_board="TWSE": (  # type: ignore[method-assign]
+        date(2026, 5, 11),
+        {"TW:6488": 600000, "TW:8299": 100000},
+    )
+
+    response = service.get_rankings("TW", RankingType.net_buy, limit=2, tw_board="TPEx")
+
+    assert [item.stock.symbol for item in response.items] == ["6488", "8299"]
+    assert [item.netBuySellShares for item in response.items] == [600000, 100000]
+    assert [item.lastPrice for item in response.items] == [480.0, 600.0]
+    assert [item.changePercent for item in response.items] == [2.1, -1.4]
+    assert response.source == "TPEx institutional daily data"
+    assert response.sourceType == RankingSourceType.free_public
+    assert response.warningMessage == "上櫃（TPEx）三大法人買賣超為日資料，非盤中即時資料。"
+
+
+def test_tw_tpex_net_sell_returns_tpex_daily_warning() -> None:
+    service = RankingsService(
+        FakeQuoteSource(
+            stocks={
+                "TW:6488": _tw_stock("TW:6488", "6488", "環球晶", exchange="TPEx"),
+                "TW:8299": _tw_stock("TW:8299", "8299", "群聯", exchange="TPEx"),
+            },
+            quotes={
+                "TW:6488": _quote("TW:6488", 1000, "2026-05-12T10:00:00+08:00"),
+                "TW:8299": _quote("TW:8299", 2000, "2026-05-12T10:00:00+08:00"),
+            },
+        )
+    )
+    service._fetch_tw_institutional_snapshot = lambda now, tw_board="TWSE": (  # type: ignore[method-assign]
+        date(2026, 5, 11),
+        {"TW:6488": -500000, "TW:8299": -100000},
+    )
+
+    response = service.get_rankings("TW", RankingType.net_sell, limit=2, tw_board="TPEx")
+
+    assert [item.stock.symbol for item in response.items] == ["6488", "8299"]
+    assert response.source == "TPEx institutional daily data"
+    assert response.warningMessage == "上櫃（TPEx）三大法人買賣超為日資料，非盤中即時資料。"
 
 
 def test_tw_net_buy_returns_daily_warning() -> None:
@@ -847,7 +888,7 @@ def test_tw_net_buy_returns_daily_warning() -> None:
             },
         )
     )
-    service._fetch_tw_institutional_snapshot = lambda now: (  # type: ignore[method-assign]
+    service._fetch_tw_institutional_snapshot = lambda now, tw_board="TWSE": (  # type: ignore[method-assign]
         date(2026, 5, 11),
         {"TW:2330": 500000, "TW:2317": 100000},
     )
@@ -874,7 +915,7 @@ def test_tw_net_buy_ranks_zero_above_negative_values() -> None:
             },
         )
     )
-    service._fetch_tw_institutional_snapshot = lambda now: (  # type: ignore[method-assign]
+    service._fetch_tw_institutional_snapshot = lambda now, tw_board="TWSE": (  # type: ignore[method-assign]
         date(2026, 5, 11),
         {"TW:2330": 500000, "TW:2317": 0, "TW:2454": -100000},
     )
@@ -898,7 +939,7 @@ def test_tw_net_buy_uses_market_wide_public_rows_instead_of_curated_subset() -> 
             },
         )
     )
-    service._fetch_tw_institutional_snapshot = lambda now: (  # type: ignore[method-assign]
+    service._fetch_tw_institutional_snapshot = lambda now, tw_board="TWSE": (  # type: ignore[method-assign]
         date(2026, 5, 11),
         {"TW:1101": 900000, "TW:2330": 500000},
     )
@@ -922,7 +963,7 @@ def test_tw_net_sell_returns_daily_warning() -> None:
             },
         )
     )
-    service._fetch_tw_institutional_snapshot = lambda now: (  # type: ignore[method-assign]
+    service._fetch_tw_institutional_snapshot = lambda now, tw_board="TWSE": (  # type: ignore[method-assign]
         date(2026, 5, 11),
         {"TW:2330": -500000, "TW:2317": -100000},
     )
@@ -933,7 +974,7 @@ def test_tw_net_sell_returns_daily_warning() -> None:
     assert response.warningMessage == "台股三大法人買賣超為日資料，非盤中即時資料。"
 
 
-def test_fetch_tw_institutional_rows_parses_net_buy_sell_values(monkeypatch) -> None:
+def test_fetch_twse_institutional_rows_parses_net_buy_sell_values(monkeypatch) -> None:
     service = RankingsService(FakeQuoteSource(stocks={}, quotes={}))
     monkeypatch.setattr(
         rankings_service_module,
@@ -944,14 +985,169 @@ def test_fetch_tw_institutional_rows_parses_net_buy_sell_values(monkeypatch) -> 
         },
     )
 
-    rows = service._fetch_tw_institutional_rows(date(2026, 5, 11))
+    rows = service._fetch_twse_institutional_rows(date(2026, 5, 11))
 
     assert rows == {"TW:2330": 500000, "TW:2317": -125000}
 
 
+def test_fetch_tpex_institutional_rows_parses_total_net_buy_sell_values(monkeypatch) -> None:
+    service = RankingsService(FakeQuoteSource(stocks={}, quotes={}))
+    monkeypatch.setattr(
+        rankings_service_module,
+        "fetch_json",
+        lambda *args, **kwargs: {
+            "date": "20260511",
+            "tables": [
+                {
+                    "date": "115/05/11",
+                    "fields": ["代號", "名稱", "三大法人買賣超股數合計"],
+                    "data": [["6488", "環球晶", "500,000"], ["8299", "群聯", "-125000"]],
+                }
+            ],
+            "stat": "ok",
+        },
+    )
+
+    snapshot = service._fetch_tpex_institutional_rows(date(2026, 5, 11))
+
+    assert snapshot == (
+        date(2026, 5, 11),
+        {"TW:6488": 500000, "TW:8299": -125000},
+    )
+
+
+def test_fetch_tpex_institutional_rows_falls_back_to_legacy_net_buy_sell_field(monkeypatch) -> None:
+    service = RankingsService(FakeQuoteSource(stocks={}, quotes={}))
+    monkeypatch.setattr(
+        rankings_service_module,
+        "fetch_json",
+        lambda *args, **kwargs: {
+            "date": "20260511",
+            "tables": [
+                {
+                    "date": "115/05/11",
+                    "fields": ["代號", "名稱", "三大法人買賣超股數"],
+                    "data": [["6488", "環球晶", "250,000"]],
+                }
+            ],
+            "stat": "ok",
+        },
+    )
+
+    snapshot = service._fetch_tpex_institutional_rows(date(2026, 5, 11))
+
+    assert snapshot == (date(2026, 5, 11), {"TW:6488": 250000})
+
+
+def test_fetch_tpex_institutional_snapshot_walks_back_until_rows_are_available() -> None:
+    service = RankingsService(FakeQuoteSource(stocks={}, quotes={}))
+    requested_dates: list[date] = []
+
+    def fake_rows(current_date: date):
+        requested_dates.append(current_date)
+        if current_date == date(2026, 5, 10):
+            return (date(2026, 5, 10), {"TW:6488": 123456})
+        return (current_date, {})
+
+    service._fetch_tpex_institutional_rows = fake_rows  # type: ignore[method-assign]
+
+    snapshot = service._fetch_tpex_institutional_snapshot(
+        datetime(2026, 5, 12, 3, 0, tzinfo=timezone.utc),
+    )
+
+    assert snapshot == (date(2026, 5, 10), {"TW:6488": 123456})
+    assert requested_dates[:2] == [date(2026, 5, 11), date(2026, 5, 10)]
+
+
+def test_fetch_tpex_institutional_rows_posts_expected_request_payload(monkeypatch) -> None:
+    service = RankingsService(FakeQuoteSource(stocks={}, quotes={}))
+    captured: dict[str, object] = {}
+
+    def fake_fetch_json(url: str, **kwargs):
+        captured["url"] = url
+        captured["kwargs"] = kwargs
+        return {
+            "date": "20260511",
+            "tables": [
+                {
+                    "date": "115/05/11",
+                    "fields": ["代號", "三大法人買賣超股數合計"],
+                    "data": [["6488", "500,000"]],
+                }
+            ],
+            "stat": "ok",
+        }
+
+    monkeypatch.setattr(rankings_service_module, "fetch_json", fake_fetch_json)
+
+    snapshot = service._fetch_tpex_institutional_rows(date(2026, 5, 11))
+
+    assert snapshot == (date(2026, 5, 11), {"TW:6488": 500000})
+    assert captured["url"] == rankings_service_module._TPEX_DAILY_TRADE_URL
+    assert captured["kwargs"] == {
+        "method": "POST",
+        "data": {
+            "response": "json",
+            "type": "Daily",
+            "sect": rankings_service_module._TPEX_DAILY_TRADE_SECT,
+            "date": "2026/05/11",
+        },
+        "headers": {
+            "User-Agent": rankings_service_module._BROWSER_USER_AGENT,
+            "Accept": "application/json,text/plain,*/*",
+        },
+        "timeout_seconds": 8,
+        "retries": 1,
+        "provider_name": "tpex",
+        "operation_name": "rankings_tpex_institutional_daily",
+        "resource_id": "2026-05-11",
+    }
+
+
+def test_fetch_tpex_institutional_rows_skips_malformed_numeric_fields(monkeypatch) -> None:
+    service = RankingsService(FakeQuoteSource(stocks={}, quotes={}))
+    monkeypatch.setattr(
+        rankings_service_module,
+        "fetch_json",
+        lambda *args, **kwargs: {
+            "date": "20260511",
+            "tables": [
+                {
+                    "date": "115/05/11",
+                    "fields": ["代號", "三大法人買賣超股數合計"],
+                    "data": [["6488", "500,000"], ["8299", "bad"], ["6643", "--"]],
+                }
+            ],
+            "stat": "ok",
+        },
+    )
+
+    snapshot = service._fetch_tpex_institutional_rows(date(2026, 5, 11))
+
+    assert snapshot == (date(2026, 5, 11), {"TW:6488": 500000})
+
+
+def test_fetch_tw_institutional_snapshot_dispatches_by_board() -> None:
+    service = RankingsService(FakeQuoteSource(stocks={}, quotes={}))
+    expected = (date(2026, 5, 11), {"TW:6488": 1})
+
+    def fail_if_called(_now):
+        raise AssertionError("TWSE institutional snapshot should not be used for TPEx")
+
+    service._fetch_twse_institutional_snapshot = fail_if_called  # type: ignore[method-assign]
+    service._fetch_tpex_institutional_snapshot = lambda now: expected  # type: ignore[method-assign]
+
+    snapshot = service._fetch_tw_institutional_snapshot(
+        datetime(2026, 5, 12, 3, 0, tzinfo=timezone.utc),
+        "TPEx",
+    )
+
+    assert snapshot == expected
+
+
 def test_tw_net_buy_degrades_when_public_source_is_unavailable() -> None:
     service = RankingsService(FakeQuoteSource(stocks={}, quotes={}))
-    service._fetch_tw_institutional_snapshot = lambda now: None  # type: ignore[method-assign]
+    service._fetch_tw_institutional_snapshot = lambda now, tw_board="TWSE": None  # type: ignore[method-assign]
 
     response = service.get_rankings("TW", RankingType.net_buy, limit=50)
 
@@ -961,4 +1157,20 @@ def test_tw_net_buy_degrades_when_public_source_is_unavailable() -> None:
     assert (
         response.unsupportedReason
         == "TW institutional daily data is temporarily unavailable from the free public source."
+    )
+
+
+def test_tw_tpex_net_buy_degrades_when_public_source_is_unavailable() -> None:
+    service = RankingsService(FakeQuoteSource(stocks={}, quotes={}))
+    service._fetch_tw_institutional_snapshot = lambda now, tw_board="TWSE": None  # type: ignore[method-assign]
+
+    response = service.get_rankings("TW", RankingType.net_buy, limit=50, tw_board="TPEx")
+
+    assert response.items == []
+    assert response.source == "TPEx institutional daily data"
+    assert response.sourceType == RankingSourceType.unsupported
+    assert response.warningMessage == "上櫃（TPEx）三大法人買賣超為日資料，非盤中即時資料。"
+    assert (
+        response.unsupportedReason
+        == "TPEx institutional daily data is temporarily unavailable from the free public source."
     )

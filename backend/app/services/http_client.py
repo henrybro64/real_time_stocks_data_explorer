@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import time
 from time import perf_counter
+from typing import Literal
 from urllib.parse import urlparse
 
 import httpx
@@ -26,16 +27,20 @@ _PROVIDER_NAMES_BY_HOST = {
     "query1.finance.yahoo.com": "yahoo_finance",
     "stooq.com": "stooq",
     "www.sec.gov": "sec",
+    "www.tpex.org.tw": "tpex",
     "www.twse.com.tw": "twse",
 }
 
 logger = logging.getLogger(__name__)
+HttpMethod = Literal["GET", "POST"]
 
 
 def fetch_json(
     url: str,
     *,
+    method: HttpMethod = "GET",
     params: dict[str, str] | None = None,
+    data: dict[str, str] | None = None,
     headers: dict[str, str] | None = None,
     timeout_seconds: float = _DEFAULT_TIMEOUT_SECONDS,
     retries: int = _DEFAULT_RETRIES,
@@ -46,7 +51,9 @@ def fetch_json(
 ) -> object:
     response = _request_with_retries(
         url,
+        method=method,
         params=params,
+        data=data,
         headers=headers,
         timeout_seconds=timeout_seconds,
         retries=retries,
@@ -64,7 +71,9 @@ def fetch_json(
 def fetch_text(
     url: str,
     *,
+    method: HttpMethod = "GET",
     params: dict[str, str] | None = None,
+    data: dict[str, str] | None = None,
     headers: dict[str, str] | None = None,
     timeout_seconds: float = _DEFAULT_TIMEOUT_SECONDS,
     retries: int = _DEFAULT_RETRIES,
@@ -76,7 +85,9 @@ def fetch_text(
 ) -> str:
     response = _request_with_retries(
         url,
+        method=method,
         params=params,
+        data=data,
         headers=headers,
         timeout_seconds=timeout_seconds,
         retries=retries,
@@ -93,7 +104,9 @@ def fetch_text(
 def _request_with_retries(
     url: str,
     *,
+    method: HttpMethod,
     params: dict[str, str] | None,
+    data: dict[str, str] | None,
     headers: dict[str, str] | None,
     timeout_seconds: float,
     retries: int,
@@ -111,12 +124,15 @@ def _request_with_retries(
     host = parsed.hostname or ""
     effective_provider = provider_name or _PROVIDER_NAMES_BY_HOST.get(host, host or "unknown")
     upstream_path = parsed.path or "/"
+    operation = operation_name or f"http_{method.lower()}"
 
     for attempt in range(attempts):
         try:
-            response = httpx.get(
+            response = httpx.request(
+                method,
                 url,
                 params=params,
+                data=data,
                 headers=headers,
                 timeout=timeout,
                 follow_redirects=True,
@@ -132,7 +148,7 @@ def _request_with_retries(
                 extra={
                     "event": "external_http.request.completed",
                     "provider": effective_provider,
-                    "operation": operation_name or "http_get",
+                    "operation": operation,
                     "resource_id": resource_id,
                     "upstream_host": host,
                     "upstream_path": upstream_path,
@@ -150,7 +166,7 @@ def _request_with_retries(
                     extra={
                         "event": "external_http.request.retry",
                         "provider": effective_provider,
-                        "operation": operation_name or "http_get",
+                        "operation": operation,
                         "resource_id": resource_id,
                         "upstream_host": host,
                         "upstream_path": upstream_path,
@@ -170,9 +186,11 @@ def _request_with_retries(
         and host in allow_insecure_fallback_hosts
     ):
         try:
-            response = httpx.get(
+            response = httpx.request(
+                method,
                 url,
                 params=params,
+                data=data,
                 headers=headers,
                 timeout=timeout,
                 follow_redirects=True,
@@ -183,7 +201,7 @@ def _request_with_retries(
                 extra={
                     "event": "external_http.request.insecure_fallback",
                     "provider": effective_provider,
-                    "operation": operation_name or "http_get",
+                    "operation": operation,
                     "resource_id": resource_id,
                     "upstream_host": host,
                     "upstream_path": upstream_path,
@@ -201,7 +219,7 @@ def _request_with_retries(
                 extra={
                     "event": "external_http.request.failed",
                     "provider": effective_provider,
-                    "operation": operation_name or "http_get",
+                    "operation": operation,
                     "resource_id": resource_id,
                     "upstream_host": host,
                     "upstream_path": upstream_path,
@@ -221,7 +239,7 @@ def _request_with_retries(
             extra={
                 "event": "external_http.request.failed",
                 "provider": effective_provider,
-                "operation": operation_name or "http_get",
+                "operation": operation,
                 "resource_id": resource_id,
                 "upstream_host": host,
                 "upstream_path": upstream_path,
@@ -238,7 +256,7 @@ def _request_with_retries(
         extra={
             "event": "external_http.request.failed",
             "provider": effective_provider,
-            "operation": operation_name or "http_get",
+            "operation": operation,
             "resource_id": resource_id,
             "upstream_host": host,
             "upstream_path": upstream_path,

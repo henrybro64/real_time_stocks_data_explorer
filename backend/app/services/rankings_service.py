@@ -77,12 +77,24 @@ _SP500_CHANGE_SOURCE = (
 )
 _PRE_RANKED_TYPES = {RankingType.volume, RankingType.change_up, RankingType.change_down}
 _TW_DAILY_WARNING = "台股三大法人買賣超為日資料，非盤中即時資料。"
+_TWSE_INSTITUTIONAL_SOURCE = "TWSE T86 daily institutional data"
 _TWSE_T86_URL = "https://www.twse.com.tw/fund/T86"
 _TWSE_T86_SELECT_TYPE = "ALLBUT0999"
+_TW_INSTITUTIONAL_UNAVAILABLE_FRESHNESS = (
+    "TW daily institutional ranking is unavailable from the free public source right now."
+)
+_TW_INSTITUTIONAL_UNAVAILABLE_REASON = (
+    "TW institutional daily data is temporarily unavailable from the free public source."
+)
+_TPEX_DAILY_TRADE_URL = "https://www.tpex.org.tw/www/zh-tw/insti/dailyTrade"
+_TPEX_DAILY_TRADE_SECT = "EW"
 _TPEX_INSTITUTIONAL_SOURCE = "TPEx institutional daily data"
-_TPEX_INSTITUTIONAL_UNSUPPORTED_FRESHNESS = "TPEx institutional ranking is not implemented yet."
-_TPEX_INSTITUTIONAL_UNSUPPORTED_REASON = (
-    "TPEx institutional net buy/sell ranking is not implemented yet."
+_TPEX_DAILY_WARNING = "上櫃（TPEx）三大法人買賣超為日資料，非盤中即時資料。"
+_TPEX_INSTITUTIONAL_UNAVAILABLE_FRESHNESS = (
+    "TPEx institutional daily ranking is unavailable from the free public source right now."
+)
+_TPEX_INSTITUTIONAL_UNAVAILABLE_REASON = (
+    "TPEx institutional daily data is temporarily unavailable from the free public source."
 )
 _BROWSER_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -459,22 +471,7 @@ class RankingsService:
         tw_board: TwBoard,
     ) -> RankingResponse:
         market_open = is_market_open("TW", now)
-        if tw_board == "TPEx":
-            return RankingResponse(
-                market="TW",
-                rankingType=ranking_type,
-                twBoard=tw_board,
-                items=[],
-                timestamp=now.isoformat(),
-                source=_TPEX_INSTITUTIONAL_SOURCE,
-                sourceType=RankingSourceType.unsupported,
-                isMarketOpen=market_open,
-                dataFreshnessLabel=_TPEX_INSTITUTIONAL_UNSUPPORTED_FRESHNESS,
-                warningMessage=None,
-                unsupportedReason=_TPEX_INSTITUTIONAL_UNSUPPORTED_REASON,
-            )
-
-        institutional_snapshot = self._fetch_tw_institutional_snapshot(now)
+        institutional_snapshot = self._fetch_tw_institutional_snapshot(now, tw_board)
         if institutional_snapshot is None:
             return RankingResponse(
                 market="TW",
@@ -482,12 +479,12 @@ class RankingsService:
                 twBoard=tw_board,
                 items=[],
                 timestamp=now.isoformat(),
-                source="TWSE T86 daily institutional data",
+                source=self._tw_institutional_source(tw_board),
                 sourceType=RankingSourceType.unsupported,
                 isMarketOpen=market_open,
-                dataFreshnessLabel="TW daily institutional ranking is unavailable from the free public source right now.",
-                warningMessage=_TW_DAILY_WARNING,
-                unsupportedReason="TW institutional daily data is temporarily unavailable from the free public source.",
+                dataFreshnessLabel=self._tw_institutional_unavailable_freshness(tw_board),
+                warningMessage=self._tw_institutional_warning(tw_board),
+                unsupportedReason=self._tw_institutional_unavailable_reason(tw_board),
             )
 
         ranking_date, institutional_rows = institutional_snapshot
@@ -533,13 +530,11 @@ class RankingsService:
             for index, candidate in enumerate(ranked_candidates, start=1)
         ]
 
-        freshness = (
-            "TW daily institutional ranking sorted by highest 三大法人買賣超股數."
-            if ranking_type == RankingType.net_buy
-            else "TW daily institutional ranking sorted by most negative 三大法人買賣超股數."
+        freshness = self._tw_institutional_freshness_label(
+            tw_board,
+            ranking_type,
+            market_open=market_open,
         )
-        if not market_open:
-            freshness = f"Market closed; {freshness}"
 
         return RankingResponse(
             market="TW",
@@ -547,13 +542,52 @@ class RankingsService:
             twBoard=tw_board,
             items=items,
             timestamp=now.isoformat(),
-            source="TWSE T86 daily institutional data",
+            source=self._tw_institutional_source(tw_board),
             sourceType=RankingSourceType.free_public,
             isMarketOpen=market_open,
             dataFreshnessLabel=freshness,
-            warningMessage=_TW_DAILY_WARNING,
+            warningMessage=self._tw_institutional_warning(tw_board),
             unsupportedReason=None,
         )
+
+    @staticmethod
+    def _tw_institutional_source(tw_board: TwBoard) -> str:
+        return _TPEX_INSTITUTIONAL_SOURCE if tw_board == "TPEx" else _TWSE_INSTITUTIONAL_SOURCE
+
+    @staticmethod
+    def _tw_institutional_warning(tw_board: TwBoard) -> str:
+        return _TPEX_DAILY_WARNING if tw_board == "TPEx" else _TW_DAILY_WARNING
+
+    @staticmethod
+    def _tw_institutional_unavailable_freshness(tw_board: TwBoard) -> str:
+        return (
+            _TPEX_INSTITUTIONAL_UNAVAILABLE_FRESHNESS
+            if tw_board == "TPEx"
+            else _TW_INSTITUTIONAL_UNAVAILABLE_FRESHNESS
+        )
+
+    @staticmethod
+    def _tw_institutional_unavailable_reason(tw_board: TwBoard) -> str:
+        return (
+            _TPEX_INSTITUTIONAL_UNAVAILABLE_REASON
+            if tw_board == "TPEx"
+            else _TW_INSTITUTIONAL_UNAVAILABLE_REASON
+        )
+
+    @staticmethod
+    def _tw_institutional_freshness_label(
+        tw_board: TwBoard,
+        ranking_type: RankingType,
+        *,
+        market_open: bool,
+    ) -> str:
+        market_label = "TPEx daily" if tw_board == "TPEx" else "TW daily"
+        freshness = (
+            f"{market_label} institutional ranking sorted by highest 三大法人買賣超股數."
+            if ranking_type == RankingType.net_buy
+            else f"{market_label} institutional ranking sorted by most negative 三大法人買賣超股數."
+        )
+        return freshness if market_open else f"Market closed; {freshness}"
 
     def _unsupported_response(
         self,
@@ -577,6 +611,15 @@ class RankingsService:
     def _fetch_tw_institutional_snapshot(
         self,
         now: datetime,
+        tw_board: TwBoard = "TWSE",
+    ) -> tuple[date, dict[str, int]] | None:
+        if tw_board == "TPEx":
+            return self._fetch_tpex_institutional_snapshot(now)
+        return self._fetch_twse_institutional_snapshot(now)
+
+    def _fetch_twse_institutional_snapshot(
+        self,
+        now: datetime,
     ) -> tuple[date, dict[str, int]] | None:
         local_now = now.astimezone(_TW_TIMEZONE)
         candidate_date = local_now.date()
@@ -585,12 +628,32 @@ class RankingsService:
 
         for day_offset in range(7):
             current_date = candidate_date - timedelta(days=day_offset)
-            rows = self._fetch_tw_institutional_rows(current_date)
+            rows = self._fetch_twse_institutional_rows(current_date)
             if rows:
                 return current_date, rows
         return None
 
-    def _fetch_tw_institutional_rows(self, current_date: date) -> dict[str, int]:
+    def _fetch_tpex_institutional_snapshot(
+        self,
+        now: datetime,
+    ) -> tuple[date, dict[str, int]] | None:
+        local_now = now.astimezone(_TW_TIMEZONE)
+        candidate_date = local_now.date()
+        if local_now.time() < time(18, 0):
+            candidate_date -= timedelta(days=1)
+
+        for day_offset in range(7):
+            current_date = candidate_date - timedelta(days=day_offset)
+            snapshot = self._fetch_tpex_institutional_rows(current_date)
+            if snapshot is None:
+                continue
+            resolved_date, rows = snapshot
+            if resolved_date > current_date or not rows:
+                continue
+            return resolved_date, rows
+        return None
+
+    def _fetch_twse_institutional_rows(self, current_date: date) -> dict[str, int]:
         try:
             payload = fetch_json(
                 _TWSE_T86_URL,
@@ -637,6 +700,86 @@ class RankingsService:
                 continue
             parsed[f"TW:{raw_symbol}"] = net_value
         return parsed
+
+    def _fetch_tpex_institutional_rows(
+        self,
+        current_date: date,
+    ) -> tuple[date, dict[str, int]] | None:
+        try:
+            payload = fetch_json(
+                _TPEX_DAILY_TRADE_URL,
+                method="POST",
+                data={
+                    "response": "json",
+                    "type": "Daily",
+                    "sect": _TPEX_DAILY_TRADE_SECT,
+                    "date": current_date.strftime("%Y/%m/%d"),
+                },
+                headers={
+                    "User-Agent": _BROWSER_USER_AGENT,
+                    "Accept": "application/json,text/plain,*/*",
+                },
+                timeout_seconds=8,
+                retries=1,
+                provider_name="tpex",
+                operation_name="rankings_tpex_institutional_daily",
+                resource_id=current_date.isoformat(),
+            )
+        except HttpFetchError:
+            return None
+        if not isinstance(payload, dict):
+            return None
+
+        tables = payload.get("tables")
+        if not isinstance(tables, list):
+            return None
+
+        table = next(
+            (
+                row
+                for row in tables
+                if isinstance(row, dict)
+                and isinstance(row.get("fields"), list)
+                and isinstance(row.get("data"), list)
+            ),
+            None,
+        )
+        if table is None:
+            return None
+
+        fields = table.get("fields")
+        rows = table.get("data")
+        if not isinstance(fields, list) or not isinstance(rows, list):
+            return None
+
+        code_index = _field_index(fields, "代號")
+        net_buy_sell_index = _field_index(fields, "三大法人買賣超股數合計")
+        if code_index is None:
+            return None
+        if net_buy_sell_index is None:
+            net_buy_sell_index = _field_index(fields, "三大法人買賣超股數")
+        if net_buy_sell_index is None:
+            return None
+
+        parsed: dict[str, int] = {}
+        for row in rows:
+            if not isinstance(row, list):
+                continue
+            if code_index >= len(row) or net_buy_sell_index >= len(row):
+                continue
+            raw_symbol = str(row[code_index]).strip()
+            raw_net_value = str(row[net_buy_sell_index]).strip()
+            net_value = _parse_int(raw_net_value)
+            if not raw_symbol or net_value is None:
+                continue
+            parsed[f"TW:{raw_symbol}"] = net_value
+
+        resolved_date = (
+            _parse_roc_date(str(table.get("date", "")))
+            or _parse_calendar_date(str(payload.get("date", "")))
+            or current_date
+        )
+        return resolved_date, parsed
 
     @staticmethod
     def _filter_quote_candidates_for_ranking_type(
@@ -801,6 +944,33 @@ def _parse_int(value: str) -> int | None:
         return None
     try:
         return int(float(normalized))
+    except ValueError:
+        return None
+
+
+def _parse_roc_date(value: str) -> date | None:
+    parts = [segment for segment in value.strip().split("/") if segment]
+    if len(parts) != 3:
+        return None
+    try:
+        year = 1911 + int(parts[0])
+        month = int(parts[1])
+        day = int(parts[2])
+        return date(year, month, day)
+    except ValueError:
+        return None
+
+
+def _parse_calendar_date(value: str) -> date | None:
+    digits = "".join(ch for ch in value if ch.isdigit())
+    if len(digits) != 8:
+        return None
+    try:
+        return date(
+            int(digits[0:4]),
+            int(digits[4:6]),
+            int(digits[6:8]),
+        )
     except ValueError:
         return None
 
