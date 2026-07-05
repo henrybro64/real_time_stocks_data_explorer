@@ -119,8 +119,9 @@ class RankingsExternalSource:
         if cached is None and shared_cache_key is not None:
             cached = self._read_cache(shared_cache_key, current)
         if cached is not None:
-            filtered = self._filter_tw_board(cached, market, tw_board)[:limit]
-            if len(filtered) >= limit:
+            board_filtered = self._filter_tw_board(cached, market, tw_board)
+            filtered = board_filtered[:limit]
+            if len(filtered) >= limit or len(board_filtered) < limit:
                 logger.debug(
                     "External rankings cache hit",
                     extra={
