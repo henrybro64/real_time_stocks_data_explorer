@@ -713,4 +713,24 @@ describe("RankingsPage", () => {
       "最新快取快照",
     );
   });
+
+  it("shows provider-failure fallback notice when the API returns fallback freshness", async () => {
+    vi.mocked(fetchRankings).mockResolvedValueOnce(
+      buildTwQuoteResponse({
+        sourceType: "cache",
+        dataFreshnessLabel:
+          "Free data source temporarily unavailable. Showing latest available snapshot if available.",
+      }),
+    );
+
+    renderRankingsPage();
+
+    expect(await screen.findByTestId("rankings-row-TW:2330")).toBeInTheDocument();
+    expect(screen.getByTestId("rankings-freshness-label")).toHaveTextContent(
+      "免費資料來源暫時無法使用；若有快照則顯示最新可得快照。",
+    );
+    expect(screen.getByTestId("rankings-source-type-tag")).toHaveTextContent(
+      "來源類型: 快取",
+    );
+  });
 });

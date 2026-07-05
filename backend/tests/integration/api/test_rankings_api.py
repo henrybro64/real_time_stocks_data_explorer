@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 import pytest
 from fastapi.testclient import TestClient
@@ -15,8 +15,13 @@ from app.schemas.rankings import (
     RankingType,
 )
 from app.schemas.stock import StockResponse
+from app.services import rankings_service as rankings_service_module
+from app.services import rankings_snapshot_service as snapshot_service_module
+from app.services.quote_service import quote_service
+from app.services import rankings_external_source as rankings_external_source_module
 from app.services.ranking_data_providers import RankingProviderRegistry, RankingQuery
 from app.services.rankings_snapshot_service import rankings_snapshot_service
+from tests.support import quote_record, stock_record
 
 
 pytestmark = pytest.mark.integration
@@ -272,3 +277,305 @@ def test_rankings_endpoint_validates_ranking_type(monkeypatch) -> None:
         response = client.get("/api/rankings", params={"market": "TW", "type": "turnover", "limit": 5})
 
     assert response.status_code == 422
+
+
+def _tw_sample_response() -> RankingResponse:
+    return RankingResponse(
+        market="TW",
+        rankingType=RankingType.volume,
+        twBoard="TWSE",
+        items=[
+            RankingItem(
+                rank=1,
+                stock=StockResponse(
+                    id="TW:2330",
+                    market="TW",
+                    symbol="2330",
+                    name="台積電",
+                    exchange="TWSE",
+                    currency="TWD",
+                    timezone="Asia/Taipei",
+                    nameEn="TSMC",
+                    nameZhTw="台積電",
+                ),
+                lastPrice=950.0,
+                changePercent=1.2,
+                volume=123456,
+                volumeDeltaPercent=5.0,
+                netBuySellShares=None,
+                peRatio=None,
+                peRatioType=None,
+                peRatioSource=None,
+                valuationAsOf=None,
+                valuationWarning=None,
+                timestamp="2026-05-11T09:30:00+08:00",
+            )
+        ],
+        timestamp="2026-05-11T01:30:00Z",
+        source="Quote rankings from the app's free best-effort quote providers.",
+        sourceType=RankingSourceType.free_unofficial,
+        isMarketOpen=True,
+        dataFreshnessLabel="Market open; rankings use the latest quote snapshot.",
+        warningMessage="Free unofficial quote source; data may be delayed or unavailable.",
+        unsupportedReason=None,
+        usRankingsScope=None,
+    )
+
+
+def test_rankings_endpoint_returns_response_shape(monkeypatch) -> None:
+    monkeypatch.setattr("app.core.config.settings.rankings_snapshot_enabled", False)
+    monkeypatch.setattr(
+        rankings_snapshot_service,
+        "get_rankings",
+        lambda market, ranking_type, limit, now=None, tw_board=None: _tw_sample_response(),  # noqa: ARG005
+    )
+
+    with TestClient(app) as client:
+        response = client.get("/api/rankings", params={"market": "TW", "type": "volume", "limit": 1})
+
+    assert response.status_code == 200
+    assert response.json()["market"] == "TW"
+    assert response.json()["items"][0]["stock"]["symbol"] == "2330"
+    assert response.json()["sourceType"] == "free-unofficial"
+
+
+def test_rankings_endpoint_passes_limit(monkeypatch) -> None:
+    monkeypatch.setattr("app.core.config.settings.rankings_snapshot_enabled", False)
+    captured: dict[str, object] = {}
+
+    def fake_get_rankings(market, ranking_type, limit, now=None, tw_board=None):  # noqa: ARG001
+        captured["market"] = market
+        captured["ranking_type"] = ranking_type
+        captured["limit"] = limit
+        captured["tw_board"] = tw_board
+        return _tw_sample_response()
+
+    monkeypatch.setattr(rankings_snapshot_service, "get_rankings", fake_get_rankings)
+
+    with TestClient(app) as client:
+        response = client.get("/api/rankings", params={"market": "TW", "type": "volume", "limit": 7})
+
+    assert response.status_code == 200
+    assert captured == {
+        "market": "TW",
+        "ranking_type": RankingType.volume,
+        "limit": 7,
+        "tw_board": None,
+    }
+
+
+def test_rankings_endpoint_returns_twse_valuation_low_pe_via_service(monkeypatch) -> None:
+    monkeypatch.setattr("app.core.config.settings.rankings_snapshot_enabled", False)
+    monkeypatch.setattr(snapshot_service_module, "SessionLocal", None)
+    twse_stock = stock_record(
+        "TW:2330",
+        market="TW",
+        symbol="2330",
+        name="台積電",
+        exchange="TWSE",
+        currency="TWD",
+        timezone="Asia/Taipei",
+        name_en="TSMC",
+        name_zh_tw="台積電",
+    )
+    twse_quote = quote_record(
+        "TW:2330",
+        last_price=950.0,
+        change=5.0,
+        change_percent=0.53,
+        previous_close=945.0,
+        timestamp="2026-07-03T13:30:00+08:00",
+        is_market_open=False,
+        open_price=942.0,
+        high=960.0,
+        low=948.0,
+        volume=310_000,
+    )
+
+    class _VolumeUniverseSource:
+        def fetch(self, market, ranking_type, limit, now=None, tw_board=None):  # noqa: ARG002
+            assert market == "TW"
+            assert ranking_type == RankingType.volume
+            assert limit == 100
+            assert tw_board == "TWSE"
+            return [(twse_stock, twse_quote)]
+
+    monkeypatch.setattr(
+        rankings_external_source_module,
+        "rankings_external_source",
+        _VolumeUniverseSource(),
+    )
+    monkeypatch.setattr(
+        rankings_service_module,
+        "get_valuation_snapshots",
+        lambda envelopes: {
+            "TW:2330": {
+                "peRatio": 18.5,
+                "peRatioType": "official_daily",
+                "peRatioSource": "TWSE official daily P/E",
+                "valuationAsOf": "2026-07-03",
+                "valuationWarning": None,
+            }
+        },
+    )
+
+    with TestClient(app) as client:
+        response = client.get(
+            "/api/rankings",
+            params={"market": "TW", "type": "valuation_low_pe", "limit": 3, "twBoard": "TWSE"},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["rankingType"] == "valuation_low_pe"
+    assert payload["twBoard"] == "TWSE"
+    assert payload["items"][0]["stock"]["symbol"] == "2330"
+    assert payload["items"][0]["peRatio"] == 18.5
+    assert payload["items"][0]["peRatioSource"] == "TWSE official daily P/E"
+    assert payload["items"][0]["valuationAsOf"] == "2026-07-03"
+    assert all(item["stock"]["exchange"] == "TWSE" for item in payload["items"])
+
+
+def _install_tpex_institutional_fixtures(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    net_buy_sell_shares: int,
+) -> None:
+    tpex_stock = stock_record(
+        "TW:6488",
+        market="TW",
+        symbol="6488",
+        name="環球晶",
+        exchange="TPEx",
+        currency="TWD",
+        timezone="Asia/Taipei",
+        name_en="GlobalWafers",
+        name_zh_tw="環球晶",
+    )
+    tpex_quote = quote_record(
+        "TW:6488",
+        last_price=480.0,
+        change=1.5,
+        change_percent=1.5,
+        previous_close=478.5,
+        timestamp="2026-05-12T10:00:00+08:00",
+        is_market_open=True,
+        volume=654321,
+    )
+
+    def get_stock(stock_id: str):
+        return tpex_stock if stock_id == "TW:6488" else None
+
+    def get_quotes(stock_ids: list[str]):
+        if "TW:6488" in stock_ids:
+            return [(tpex_stock, tpex_quote)]
+        return []
+
+    monkeypatch.setattr(quote_service, "get_stock", get_stock)
+    monkeypatch.setattr(quote_service, "get_quotes", get_quotes)
+    monkeypatch.setattr(
+        rankings_service_module.RankingsService,
+        "_fetch_tpex_institutional_snapshot",
+        lambda self, now, tw_board="TWSE": (  # noqa: ARG002
+            date(2026, 5, 11),
+            {"TW:6488": net_buy_sell_shares},
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    ("ranking_type", "net_buy_sell_shares"),
+    [
+        ("net_buy", 500000),
+        ("net_sell", -500000),
+    ],
+)
+def test_rankings_endpoint_returns_tpex_institutional_response_shape(
+    monkeypatch,
+    ranking_type: str,
+    net_buy_sell_shares: int,
+) -> None:
+    monkeypatch.setattr("app.core.config.settings.rankings_snapshot_enabled", False)
+    monkeypatch.setattr(snapshot_service_module, "SessionLocal", None)
+    _install_tpex_institutional_fixtures(
+        monkeypatch,
+        net_buy_sell_shares=net_buy_sell_shares,
+    )
+
+    with TestClient(app) as client:
+        response = client.get(
+            "/api/rankings",
+            params={"market": "TW", "type": ranking_type, "limit": 50, "twBoard": "TPEx"},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["market"] == "TW"
+    assert payload["rankingType"] == ranking_type
+    assert payload["twBoard"] == "TPEx"
+    assert payload["items"][0]["stock"]["symbol"] == "6488"
+    assert payload["items"][0]["stock"]["exchange"] == "TPEx"
+    assert payload["items"][0]["netBuySellShares"] == net_buy_sell_shares
+    assert payload["items"][0]["lastPrice"] == 480.0
+    assert payload["source"] == "TPEx institutional daily data"
+    assert payload["sourceType"] == "free-public"
+    assert "TPEx daily institutional ranking" in payload["dataFreshnessLabel"]
+    assert payload["warningMessage"] == "上櫃（TPEx）三大法人買賣超為日資料，非盤中即時資料。"
+    assert payload["unsupportedReason"] is None
+
+
+@pytest.mark.parametrize("ranking_type", ["net_buy", "net_sell"])
+def test_rankings_endpoint_returns_tpex_institutional_unavailable_shape(
+    monkeypatch,
+    ranking_type: str,
+) -> None:
+    monkeypatch.setattr("app.core.config.settings.rankings_snapshot_enabled", False)
+    monkeypatch.setattr(snapshot_service_module, "SessionLocal", None)
+    monkeypatch.setattr(
+        rankings_service_module.RankingsService,
+        "_fetch_tpex_institutional_snapshot",
+        lambda self, now, tw_board="TWSE": None,  # noqa: ARG002
+    )
+
+    with TestClient(app) as client:
+        response = client.get(
+            "/api/rankings",
+            params={"market": "TW", "type": ranking_type, "limit": 50, "twBoard": "TPEx"},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["items"] == []
+    assert payload["source"] == "TPEx institutional daily data"
+    assert payload["sourceType"] == "unsupported"
+    assert (
+        payload["dataFreshnessLabel"]
+        == "TPEx institutional daily ranking is unavailable from the free public source right now."
+    )
+    assert payload["warningMessage"] == "上櫃（TPEx）三大法人買賣超為日資料，非盤中即時資料。"
+    assert (
+        payload["unsupportedReason"]
+        == "TPEx institutional daily data is temporarily unavailable from the free public source."
+    )
+
+
+@pytest.mark.parametrize("ranking_type", ["net_buy", "net_sell"])
+def test_tw_institutional_rankings_include_daily_warning(
+    monkeypatch,
+    ranking_type: str,
+) -> None:
+    monkeypatch.setattr("app.core.config.settings.rankings_snapshot_enabled", False)
+    monkeypatch.setattr(snapshot_service_module, "SessionLocal", None)
+    _install_tpex_institutional_fixtures(monkeypatch, net_buy_sell_shares=250_000)
+
+    with TestClient(app) as client:
+        response = client.get(
+            "/api/rankings",
+            params={"market": "TW", "type": ranking_type, "limit": 5, "twBoard": "TPEx"},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["warningMessage"] == "上櫃（TPEx）三大法人買賣超為日資料，非盤中即時資料。"
+    assert payload["sourceType"] == "free-public"
+

@@ -147,10 +147,13 @@ Available ranking types per market:
 
 Data sources:
 
-- quote-based rankings (`volume`, `volume_up`, `volume_down`, `change_up`, `change_down`) use the app's configured free quote universes:
+- on-demand `GET /api/rankings` requests use the broader Phase 1 free sources when available:
+  - U.S. `volume` / `change_up` / `change_down` can use Yahoo Finance pre-ranked lists
+  - U.S. `change_*` can also use the built-in S&P 500 constituent snapshot plus batched Yahoo quote fields
+  - `valuation_low_pe` builds from the highest-volume quote candidate set, then sorts by available free P/E data
+- the background snapshot scheduler only polls the configured free universes to avoid unbounded all-market polling:
   - `RANKINGS_UNIVERSE_US`
   - `RANKINGS_UNIVERSE_TW`
-- valuation rankings reuse the quote snapshot candidate set, then sort by the best available free P/E data
 - Taiwan `net_buy` and `net_sell` use public TWSE / TPEx daily institutional data and are explicitly labeled as daily, not intraday real-time
 - U.S. institutional `net_buy` / `net_sell` are unsupported because this app does not add fake data or paid-provider integrations
 - free unofficial quote sources can be delayed, rate-limited, or temporarily unavailable

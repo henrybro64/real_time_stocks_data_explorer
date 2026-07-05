@@ -449,7 +449,10 @@ def test_scheduler_skips_closed_queries_and_continues_after_exceptions(monkeypat
             ),
         }
     )
-    service = RankingsSnapshotService(provider_registry=registry)
+    service = RankingsSnapshotService(
+        provider_registry=registry,
+        scheduler_provider_registry=registry,
+    )
 
     captured = service.capture_scheduled_snapshots(
         now=datetime(2026, 7, 3, 2, 0, tzinfo=timezone.utc),
@@ -470,3 +473,72 @@ def test_scheduler_never_targets_fake_us_institutional_queries() -> None:
         )
         for query in _scheduled_queries()
     )
+
+
+def test_on_demand_registry_uses_external_source_while_scheduler_registry_is_bounded() -> None:
+    from app.services.ranking_data_providers import (
+        _DisabledExternalRankingsSource,
+        ranking_provider_registry,
+        scheduler_ranking_provider_registry,
+    )
+    from app.services.rankings_external_source import RankingsExternalSource
+
+    on_demand_external = ranking_provider_registry._quote_provider._service._external_source
+    scheduler_external = scheduler_ranking_provider_registry._quote_provider._service._external_source
+
+    assert isinstance(on_demand_external, RankingsExternalSource)
+    assert isinstance(scheduler_external, _DisabledExternalRankingsSource)
+
+
+def test_start_background_sampler_skips_when_database_unavailable(monkeypatch) -> None:
+    monkeypatch.setattr(snapshot_service_module, "SessionLocal", None)
+    service = RankingsSnapshotService()
+    service.start_background_sampler(60)
+    assert service._thread is None
+
+
+def test_rankings_snapshot_enabled_setting_gates_sampler_start(monkeypatch) -> None:
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "rankings_snapshot_enabled", False)
+    calls: list[int] = []
+    monkeypatch.setattr(
+        snapshot_service_module.rankings_snapshot_service,
+        "start_background_sampler",
+        lambda poll_seconds: calls.append(poll_seconds),
+    )
+
+    if settings.rankings_snapshot_enabled:
+        snapshot_service_module.rankings_snapshot_service.start_background_sampler(
+            settings.rankings_refresh_seconds,
+        )
+
+    assert calls == []
+
+
+def test_start_background_sampler_passes_poll_seconds_to_thread(monkeypatch) -> None:
+    session_local = _install_in_memory_sessionlocal(monkeypatch)
+    del session_local
+    captured: dict[str, int] = {}
+
+    class FakeThread:
+        def __init__(self, target, args=(), kwargs=None, daemon=False, name=None) -> None:
+            captured["poll_seconds"] = args[0]
+            self._target = target
+            self.daemon = daemon
+            self.name = name
+
+        def is_alive(self) -> bool:
+            return False
+
+        def start(self) -> None:
+            return None
+
+        def join(self, timeout=None) -> None:
+            return None
+
+    monkeypatch.setattr(snapshot_service_module, "Thread", FakeThread)
+    service = RankingsSnapshotService()
+    service.start_background_sampler(1234)
+    assert captured["poll_seconds"] == 1234
+

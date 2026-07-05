@@ -24,6 +24,7 @@ from app.services.ranking_data_providers import (
     RankingProviderRegistry,
     RankingQuery,
     ranking_provider_registry,
+    scheduler_ranking_provider_registry,
 )
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -66,8 +67,12 @@ class RankingsSnapshotService:
     def __init__(
         self,
         provider_registry: RankingProviderRegistry | None = None,
+        scheduler_provider_registry: RankingProviderRegistry | None = None,
     ) -> None:
         self._provider_registry = provider_registry or ranking_provider_registry
+        self._scheduler_provider_registry = (
+            scheduler_provider_registry or scheduler_ranking_provider_registry
+        )
         self._lock = Lock()
         self._stop_event = Event()
         self._thread: Thread | None = None
@@ -231,7 +236,7 @@ class RankingsSnapshotService:
         current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
         captured = 0
         for query in _scheduled_queries():
-            provider = self._provider_registry.get_provider(query)
+            provider = self._scheduler_provider_registry.get_provider(query)
             bucket_start = provider.current_bucket_start(query, current)
             if bucket_start is None or self._load_bucket_snapshot(query, bucket_start) is not None:
                 continue
