@@ -526,6 +526,126 @@ def test_us_low_pe_rankings_exclude_missing_or_invalid_pe_rows(monkeypatch) -> N
     assert [item.peRatio for item in response.items] == [22.4, 31.0]
 
 
+def test_tw_low_pe_rankings_exclude_etf_from_universe(monkeypatch) -> None:
+    external_source = StaticExternalSource(
+        [
+            (
+                _tw_stock("TW:0050", "0050", "元大台灣50"),
+                _quote("TW:0050", 500000, "2026-07-03T13:20:00+08:00", last_price=180.0),
+            ),
+            (
+                _tw_stock("TW:2330", "2330", "台積電"),
+                _quote("TW:2330", 310000, "2026-07-03T13:20:00+08:00", last_price=1010.0),
+            ),
+        ]
+    )
+    valuations = {
+        "TW:0050": _valuation_snapshot(
+            None,
+            valuation_warning="P/E is not reported for ETF or fund instruments.",
+        ),
+        "TW:2330": _valuation_snapshot(20.0),
+    }
+    monkeypatch.setattr(
+        rankings_service_module,
+        "get_valuation_snapshot",
+        lambda stock, quote: valuations[stock.id],  # noqa: ARG005
+    )
+    service = RankingsService(
+        quote_source=FakeQuoteSource(stocks={}, quotes={}),
+        external_source=external_source,
+        sp500_quote_batch=_empty_sp500_quotes,
+    )
+
+    response = service.get_rankings("TW", RankingType.valuation_low_pe, limit=5, tw_board="TWSE")
+
+    assert [item.stock.symbol for item in response.items] == ["2330"]
+    assert response.items[0].peRatio == 20.0
+
+
+def test_us_low_pe_rankings_exclude_negative_eps_rows(monkeypatch) -> None:
+    external_source = StaticExternalSource(
+        [
+            (
+                _us_stock("US:AAPL", "AAPL", "Apple Inc."),
+                _quote("US:AAPL", 9000000, "2026-07-03T10:10:00-04:00", last_price=210.0),
+            ),
+            (
+                _us_stock("US:XYZ", "XYZ", "Example Corp."),
+                _quote("US:XYZ", 8000000, "2026-07-03T10:10:00-04:00", last_price=12.0),
+            ),
+        ]
+    )
+    valuations = {
+        "US:AAPL": _valuation_snapshot(
+            22.4,
+            pe_ratio_type="provider_ttm",
+            pe_ratio_source="Yahoo Finance trailing P/E",
+        ),
+        "US:XYZ": _valuation_snapshot(
+            None,
+            pe_ratio_type=None,
+            pe_ratio_source=None,
+            valuation_warning="P/E could not be calculated because EPS TTM was missing or non-positive.",
+        ),
+    }
+    monkeypatch.setattr(
+        rankings_service_module,
+        "get_valuation_snapshot",
+        lambda stock, quote: valuations[stock.id],  # noqa: ARG005
+    )
+    service = RankingsService(
+        quote_source=FakeQuoteSource(stocks={}, quotes={}),
+        external_source=external_source,
+        sp500_quote_batch=_empty_sp500_quotes,
+    )
+
+    response = service.get_rankings("US", RankingType.valuation_low_pe, limit=5)
+
+    assert [item.stock.symbol for item in response.items] == ["AAPL"]
+
+
+def test_low_pe_rankings_tie_break_equal_pe_by_higher_volume(monkeypatch) -> None:
+    external_source = StaticExternalSource(
+        [
+            (
+                _tw_stock("TW:2330", "2330", "台積電"),
+                _quote("TW:2330", 100000, "2026-07-03T13:20:00+08:00", last_price=1010.0),
+            ),
+            (
+                _tw_stock("TW:2303", "2303", "聯電"),
+                _quote("TW:2303", 300000, "2026-07-03T13:20:00+08:00", last_price=58.0),
+            ),
+        ]
+    )
+    valuations = {
+        "TW:2330": _valuation_snapshot(15.0),
+        "TW:2303": _valuation_snapshot(15.0),
+    }
+    monkeypatch.setattr(
+        rankings_service_module,
+        "get_valuation_snapshot",
+        lambda stock, quote: valuations[stock.id],  # noqa: ARG005
+    )
+    service = RankingsService(
+        quote_source=FakeQuoteSource(stocks={}, quotes={}),
+        external_source=external_source,
+        sp500_quote_batch=_empty_sp500_quotes,
+    )
+
+    response = service.get_rankings("TW", RankingType.valuation_low_pe, limit=5, tw_board="TWSE")
+
+    assert [item.stock.symbol for item in response.items] == ["2303", "2330"]
+    assert [item.volume for item in response.items] == [300000, 100000]
+
+
+def test_positive_float_rejects_non_finite_values() -> None:
+    from app.services.rankings_service import _positive_float
+
+    assert _positive_float(float("nan")) is None
+    assert _positive_float(float("inf")) is None
+
+
 def test_change_down_falls_back_to_only_negative_movers_in_quote_path() -> None:
     """When Yahoo is unavailable, losers tab must not list gainers."""
     external = _StubExternalSource({})

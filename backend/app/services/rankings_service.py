@@ -4,6 +4,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 import logging
+import math
 from time import perf_counter
 from typing import Literal
 from zoneinfo import ZoneInfo
@@ -1108,13 +1109,13 @@ def _positive_float(value: object) -> float | None:
         return None
     if isinstance(value, (int, float)):
         numeric = float(value)
-        return numeric if numeric > 0 else None
+        return numeric if math.isfinite(numeric) and numeric > 0 else None
     if isinstance(value, str):
         try:
             numeric = float(value.replace(",", "").strip())
         except ValueError:
             return None
-        return numeric if numeric > 0 else None
+        return numeric if math.isfinite(numeric) and numeric > 0 else None
     return None
 
 

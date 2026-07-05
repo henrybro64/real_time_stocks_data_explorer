@@ -10,6 +10,7 @@ from app.schemas.rankings import (
     RankingType,
 )
 from app.schemas.stock import StockResponse
+from app.services import rankings_service as rankings_service_module
 from app.services.quote_service import quote_service
 from tests.support import quote_record, stock_record
 
@@ -180,6 +181,77 @@ def test_rankings_endpoint_passes_limit(monkeypatch, client) -> None:
         "limit": 7,
         "tw_board": None,
     }
+
+
+def test_rankings_endpoint_returns_twse_valuation_low_pe_via_service(monkeypatch, client) -> None:
+    twse_stock = stock_record(
+        "TW:2330",
+        market="TW",
+        symbol="2330",
+        name="台積電",
+        exchange="TWSE",
+        currency="TWD",
+        timezone="Asia/Taipei",
+        name_en="TSMC",
+        name_zh_tw="台積電",
+    )
+    twse_quote = quote_record(
+        "TW:2330",
+        last_price=950.0,
+        change=5.0,
+        change_percent=0.53,
+        previous_close=945.0,
+        timestamp="2026-07-03T13:30:00+08:00",
+        is_market_open=False,
+        open_price=942.0,
+        high=960.0,
+        low=948.0,
+        volume=310_000,
+    )
+
+    class _VolumeUniverseSource:
+        def fetch(self, market, ranking_type, limit, now=None, tw_board=None):  # noqa: ARG002
+            assert market == "TW"
+            assert ranking_type == RankingType.volume
+            assert limit == 100
+            assert tw_board == "TWSE"
+            return [(twse_stock, twse_quote)]
+
+    valuations = {
+        "TW:2330": {
+            "peRatio": 18.5,
+            "peRatioType": "official_daily",
+            "peRatioSource": "TWSE official daily P/E",
+            "valuationAsOf": "2026-07-03",
+            "valuationWarning": None,
+        },
+    }
+
+    monkeypatch.setattr(
+        rankings_route.rankings_service,
+        "_external_source",
+        _VolumeUniverseSource(),
+    )
+    monkeypatch.setattr(
+        rankings_service_module,
+        "get_valuation_snapshot",
+        lambda stock, quote: valuations[stock.id],  # noqa: ARG005
+    )
+
+    response = client.get(
+        "/api/rankings",
+        params={"market": "TW", "type": "valuation_low_pe", "limit": 3, "twBoard": "TWSE"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["rankingType"] == "valuation_low_pe"
+    assert payload["twBoard"] == "TWSE"
+    assert payload["items"][0]["stock"]["symbol"] == "2330"
+    assert payload["items"][0]["peRatio"] == 18.5
+    assert payload["items"][0]["peRatioSource"] == "TWSE official daily P/E"
+    assert payload["items"][0]["valuationAsOf"] == "2026-07-03"
+    assert all(item["stock"]["exchange"] == "TWSE" for item in payload["items"])
 
 
 @pytest.mark.parametrize(
