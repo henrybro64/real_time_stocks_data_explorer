@@ -579,7 +579,10 @@ def test_load_yfinance_info_uses_ttl_cache_and_refetches_after_expiry(
     assert call_count["count"] == 2
 
 
-def test_preload_yfinance_info_batches_us_symbols(monkeypatch, _clear_yfinance_info_cache) -> None:
+def test_preload_yfinance_info_warms_pending_us_symbols_in_parallel(
+    monkeypatch,
+    _clear_yfinance_info_cache,
+) -> None:
     stocks = [
         stock_record(
             f"US:{symbol}",
@@ -592,27 +595,40 @@ def test_preload_yfinance_info_batches_us_symbols(monkeypatch, _clear_yfinance_i
         )
         for symbol in ("AAA", "BBB", "CCC")
     ]
-    batch_calls: list[str] = []
+    fetch_calls: list[str] = []
 
-    class FakeTickers:
-        def __init__(self, symbols: str) -> None:
-            batch_calls.append(symbols)
-            self.tickers = {
-                symbol: type("Ticker", (), {"info": {"quoteType": "EQUITY", "trailingPE": 10.0}})()
-                for symbol in symbols.split()
-            }
+    def fake_fetch(current_stock):
+        fetch_calls.append(current_stock.symbol)
+        return {"quoteType": "EQUITY", "trailingPE": 10.0}
 
-    fake_yf = type("yf", (), {"Tickers": FakeTickers})()
-    monkeypatch.setitem(__import__("sys").modules, "yfinance", fake_yf)
-    monkeypatch.setattr(key_stats_service, "_YFINANCE_INFO_BATCH_SIZE", 2)
+    monkeypatch.setattr(key_stats_service, "_fetch_yfinance_info_uncached", fake_fetch)
 
     key_stats_service.preload_yfinance_info(stocks)
 
-    assert batch_calls == ["AAA BBB", "CCC"]
+    assert fetch_calls == ["AAA", "BBB", "CCC"]
     assert key_stats_service._load_yfinance_info(stocks[0]) == {
         "quoteType": "EQUITY",
         "trailingPE": 10.0,
     }
+
+
+def test_yfinance_info_cache_evicts_oldest_entries_when_max_size_exceeded(
+    monkeypatch,
+    _clear_yfinance_info_cache,
+) -> None:
+    current_time = {"value": 1_000_000.0}
+    monkeypatch.setattr(key_stats_service, "_YFINANCE_INFO_MAX_SIZE", 2)
+    monkeypatch.setattr(key_stats_service.time, "time", lambda: current_time["value"])
+
+    key_stats_service._write_yfinance_info_cache("AAA", {"trailingPE": 1.0})
+    current_time["value"] += 1
+    key_stats_service._write_yfinance_info_cache("BBB", {"trailingPE": 2.0})
+    current_time["value"] += 1
+    key_stats_service._write_yfinance_info_cache("CCC", {"trailingPE": 3.0})
+
+    assert "AAA" not in key_stats_service._yfinance_info_cache
+    assert "BBB" in key_stats_service._yfinance_info_cache
+    assert "CCC" in key_stats_service._yfinance_info_cache
 
 
 def test_get_valuation_snapshots_preloads_us_yfinance_once(monkeypatch) -> None:

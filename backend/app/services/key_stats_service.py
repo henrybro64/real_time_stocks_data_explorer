@@ -6,6 +6,7 @@ import json
 import math
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
 from functools import lru_cache
 from urllib.error import HTTPError, URLError
@@ -30,7 +31,8 @@ _NULL_OFFICIAL_PE_MARKERS = frozenset({"", "-", "--", "N/A", "NA"})
 _UNSUPPORTED_US_QUOTE_TYPES = frozenset({"ETF", "ETN", "FUND", "MUTUALFUND", "MONEYMARKETFUND", "INDEX"})
 _UNSET = object()
 _YFINANCE_INFO_TTL_SECONDS = 15 * 60
-_YFINANCE_INFO_BATCH_SIZE = 25
+_YFINANCE_INFO_MAX_SIZE = 512
+_YFINANCE_PRELOAD_WORKERS = 8
 _yfinance_info_cache: dict[str, tuple[float, dict[str, object] | None]] = {}
 
 
@@ -441,8 +443,26 @@ def _read_yfinance_info_cache(key: str) -> dict[str, object] | None | object:
     return payload
 
 
+def _purge_yfinance_info_cache(now_epoch: float | None = None) -> None:
+    now = now_epoch if now_epoch is not None else time.time()
+    expired_keys = [
+        key
+        for key, (fetched_at, _) in _yfinance_info_cache.items()
+        if now - fetched_at >= _YFINANCE_INFO_TTL_SECONDS
+    ]
+    for key in expired_keys:
+        _yfinance_info_cache.pop(key, None)
+    overflow = len(_yfinance_info_cache) - _YFINANCE_INFO_MAX_SIZE
+    if overflow <= 0:
+        return
+    oldest_keys = sorted(_yfinance_info_cache, key=lambda key: _yfinance_info_cache[key][0])
+    for key in oldest_keys[:overflow]:
+        _yfinance_info_cache.pop(key, None)
+
+
 def _write_yfinance_info_cache(key: str, payload: dict[str, object] | None) -> None:
     _yfinance_info_cache[key] = (time.time(), payload)
+    _purge_yfinance_info_cache()
 
 
 def _merge_yfinance_fast_info(info: dict[str, object], ticker: object) -> dict[str, object]:
@@ -489,7 +509,7 @@ def _load_yfinance_info(stock: StockRecord) -> dict[str, object] | None:
 
 
 def preload_yfinance_info(stocks: list[StockRecord]) -> None:
-    """Warm the TTL yfinance info cache for many U.S. stocks with batched lookups."""
+    """Warm the TTL yfinance info cache for many U.S. stocks with parallel lookups."""
     pending = [
         stock
         for stock in stocks
@@ -498,34 +518,9 @@ def preload_yfinance_info(stocks: list[StockRecord]) -> None:
     if not pending:
         return
 
-    try:
-        import yfinance as yf  # pylint: disable=import-outside-toplevel
-    except Exception:  # noqa: BLE001 - optional dependency or import failure
-        for stock in pending:
-            _write_yfinance_info_cache(_yfinance_cache_key(stock), None)
-        return
-
-    for start in range(0, len(pending), _YFINANCE_INFO_BATCH_SIZE):
-        chunk = pending[start : start + _YFINANCE_INFO_BATCH_SIZE]
-        symbols = [_yfinance_cache_key(stock) for stock in chunk]
-        try:
-            tickers = yf.Tickers(" ".join(symbols))
-        except Exception:  # noqa: BLE001 - yfinance can fail in many shapes
-            for stock, symbol in zip(chunk, symbols, strict=True):
-                _write_yfinance_info_cache(symbol, _fetch_yfinance_info_uncached(stock))
-            continue
-
-        ticker_map = getattr(tickers, "tickers", {}) or {}
-        for stock, symbol in zip(chunk, symbols, strict=True):
-            ticker = ticker_map.get(symbol)
-            if ticker is None:
-                _write_yfinance_info_cache(symbol, _fetch_yfinance_info_uncached(stock))
-                continue
-            try:
-                info = _merge_yfinance_fast_info(dict(ticker.info or {}), ticker)
-            except Exception:  # noqa: BLE001 - yfinance can fail in many shapes
-                info = None
-            _write_yfinance_info_cache(symbol, info)
+    worker_count = min(_YFINANCE_PRELOAD_WORKERS, len(pending))
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        list(executor.map(_load_yfinance_info, pending))
 
 
 def _provider_quote_kind(info: dict[str, object] | None) -> str | None:

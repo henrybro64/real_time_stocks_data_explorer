@@ -122,7 +122,12 @@ class RankingsExternalSource:
         if cached_entry is not None:
             board_filtered = self._filter_tw_board(cached_entry.envelopes, market, tw_board)
             filtered = board_filtered[:limit]
-            if self._should_use_cached_envelopes(cached_entry, filtered, limit):
+            if self._should_use_cached_envelopes(
+                cached_entry,
+                filtered,
+                limit,
+                board_filtered_count=len(board_filtered),
+            ):
                 logger.debug(
                     "External rankings cache hit",
                     extra={
@@ -195,10 +200,16 @@ class RankingsExternalSource:
         cached: _CachedEnvelopes,
         filtered: list[tuple[StockRecord, QuoteRecord]],
         limit: int,
+        *,
+        board_filtered_count: int | None = None,
     ) -> bool:
         if len(filtered) >= limit:
             return True
         if len(cached.envelopes) < cached.requested_limit:
+            return True
+        if cached.requested_limit < limit:
+            return False
+        if board_filtered_count is not None and board_filtered_count < limit:
             return True
         return False
 
