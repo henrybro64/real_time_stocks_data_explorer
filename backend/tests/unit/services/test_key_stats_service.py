@@ -355,12 +355,11 @@ def test_get_key_statistics_uses_finnhub_provider_trailing_pe(monkeypatch) -> No
         enriched["epsTtm"] = 6.8
         return enriched
 
+    def yfinance_should_not_load(_current_stock):
+        raise AssertionError("yfinance should not load when Finnhub P/E is available")
+
     _patch_common(monkeypatch, stock, quote, finnhub_enrich=finnhub_enrich)
-    monkeypatch.setattr(
-        key_stats_service,
-        "_load_yfinance_info",
-        lambda current_stock: {"quoteType": "EQUITY"},
-    )
+    monkeypatch.setattr(key_stats_service, "_load_yfinance_info", yfinance_should_not_load)
 
     payload = key_stats_service.get_key_statistics("US:AAPL")
 
@@ -489,3 +488,51 @@ def test_parse_official_pe_value_handles_localized_numeric_fields(
 )
 def test_parse_number_handles_official_field_markers(raw_value: str, expected: float | None) -> None:
     assert key_stats_service._parse_number(raw_value) == expected
+
+
+def test_get_key_statistics_ignores_non_finite_yfinance_values(monkeypatch) -> None:
+    stock = stock_record(
+        "US:XYZ",
+        market="US",
+        symbol="XYZ",
+        name="Example Corp.",
+        exchange="NASDAQ",
+        currency="USD",
+        timezone="America/New_York",
+    )
+    quote = quote_record(
+        "US:XYZ",
+        last_price=12.0,
+        change=-0.5,
+        change_percent=-4.0,
+        previous_close=12.5,
+        timestamp="2026-07-03T16:00:00-04:00",
+        is_market_open=False,
+        open_price=12.4,
+        high=12.6,
+        low=11.8,
+        volume=1_000_000,
+    )
+    _patch_common(monkeypatch, stock, quote)
+    monkeypatch.setattr(
+        key_stats_service,
+        "_load_yfinance_info",
+        lambda current_stock: {
+            "quoteType": "EQUITY",
+            "trailingPE": float("nan"),
+            "trailingEps": float("nan"),
+        },
+    )
+
+    payload = key_stats_service.get_key_statistics("US:XYZ")
+
+    assert payload is not None
+    assert payload["peRatio"] is None
+    assert payload["peTtm"] is None
+    assert payload["epsTtm"] is None
+    assert payload["valuationWarning"] == "P/E could not be calculated because EPS TTM was missing or non-positive."
+
+
+@pytest.mark.parametrize("raw_value", [float("nan"), float("inf"), float("-inf")])
+def test_parse_number_rejects_non_finite_numeric_values(raw_value: float) -> None:
+    assert key_stats_service._parse_number(raw_value) is None

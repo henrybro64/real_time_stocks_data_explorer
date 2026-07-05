@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 from datetime import date, datetime, timedelta
 from functools import lru_cache
@@ -354,16 +355,22 @@ def _positive_float(value: object) -> float | None:
     return parsed
 
 
+def _finite_rounded(value: float) -> float | None:
+    if not math.isfinite(value):
+        return None
+    return round(value, 2)
+
+
 def _parse_number(value: object) -> float | None:
     if isinstance(value, (int, float)):
-        return round(float(value), 2)
+        return _finite_rounded(float(value))
     if not isinstance(value, str):
         return None
     cleaned = value.strip().replace(",", "")
     if not cleaned or cleaned.upper() in _NULL_OFFICIAL_PE_MARKERS or cleaned in {"-", "--"}:
         return None
     try:
-        return round(float(cleaned), 2)
+        return _finite_rounded(float(cleaned))
     except ValueError:
         return None
 
@@ -372,13 +379,19 @@ def _parse_official_pe_value(raw_value: object) -> tuple[float | None, str | Non
     if raw_value is None:
         return None, "missing"
     if isinstance(raw_value, (int, float)):
-        return round(float(raw_value), 2), None
+        parsed = _finite_rounded(float(raw_value))
+        if parsed is None:
+            return None, "missing"
+        return parsed, None
 
     cleaned = str(raw_value).strip().replace(",", "")
     if not cleaned or cleaned.upper() in _NULL_OFFICIAL_PE_MARKERS or cleaned in {"-", "--"}:
         return None, "missing"
     try:
-        return round(float(cleaned), 2), None
+        parsed = _finite_rounded(float(cleaned))
+        if parsed is None:
+            return None, "missing"
+        return parsed, None
     except ValueError:
         return None, "malformed"
 
@@ -647,6 +660,25 @@ def _apply_us_valuation(
     stock: StockRecord,
     quote_record: QuoteRecord,
 ) -> dict[str, object]:
+    legacy_eps = _parse_number(out.get("epsTtm"))
+    legacy_pe = _positive_float(out.get("peTtm"))
+    if legacy_pe is not None:
+        return _set_valuation_fields(
+            out,
+            pe_ratio=legacy_pe,
+            pe_ratio_type="provider_ttm",
+            pe_ratio_source="Finnhub stock metric",
+            eps_ttm=legacy_eps,
+            valuation_as_of=_iso_date_only(quote_record.timestamp),
+        )
+
+    if _looks_like_fund_or_etf(stock):
+        return _set_valuation_fields(
+            out,
+            pe_ratio=None,
+            valuation_warning="P/E is not reported for ETF or fund instruments.",
+        )
+
     yfinance_info = _load_yfinance_info(stock)
     if _looks_like_fund_or_etf(stock, yfinance_info):
         return _set_valuation_fields(
@@ -655,20 +687,8 @@ def _apply_us_valuation(
             valuation_warning="P/E is not reported for ETF or fund instruments.",
         )
 
-    legacy_eps = _parse_number(out.get("epsTtm"))
     yfinance_eps = _parse_number(yfinance_info.get("trailingEps")) if isinstance(yfinance_info, dict) else None
     eps_ttm = legacy_eps if legacy_eps is not None else yfinance_eps
-
-    legacy_pe = _positive_float(out.get("peTtm"))
-    if legacy_pe is not None:
-        return _set_valuation_fields(
-            out,
-            pe_ratio=legacy_pe,
-            pe_ratio_type="provider_ttm",
-            pe_ratio_source="Finnhub stock metric",
-            eps_ttm=eps_ttm,
-            valuation_as_of=_iso_date_only(quote_record.timestamp),
-        )
 
     provider_pe = _positive_float(yfinance_info.get("trailingPE")) if isinstance(yfinance_info, dict) else None
     if provider_pe is not None:
