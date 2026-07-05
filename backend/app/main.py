@@ -23,6 +23,7 @@ from app.middleware.request_context import install_request_context_middleware
 from app.services.alert_service import alert_service
 from app.services.local_auth_service import ensure_bootstrap_local_user
 from app.services.portfolio_history_service import portfolio_history_service
+from app.services.rankings_snapshot_service import rankings_snapshot_service
 
 
 configure_logging()
@@ -128,6 +129,19 @@ def start_alert_evaluator() -> None:
     )
 
 
+@app.on_event("startup")
+def start_rankings_snapshot_sampler() -> None:
+    if not settings.rankings_snapshot_enabled:
+        logger.info(
+            "Rankings snapshot sampler is disabled",
+            extra={"event": "rankings_snapshot.sampler.disabled"},
+        )
+        return
+    rankings_snapshot_service.start_background_sampler(
+        settings.rankings_refresh_seconds,
+    )
+
+
 @app.on_event("shutdown")
 def stop_portfolio_history_sampler() -> None:
     portfolio_history_service.stop_background_sampler()
@@ -136,6 +150,11 @@ def stop_portfolio_history_sampler() -> None:
 @app.on_event("shutdown")
 def stop_alert_evaluator() -> None:
     alert_service.stop_background_evaluator()
+
+
+@app.on_event("shutdown")
+def stop_rankings_snapshot_sampler() -> None:
+    rankings_snapshot_service.stop_background_sampler()
 
 
 @app.get("/health")

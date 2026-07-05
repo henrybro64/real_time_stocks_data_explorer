@@ -1,9 +1,11 @@
 from datetime import date, datetime
 
 from app.services.market_clock import (
+    current_rankings_snapshot_bucket,
     current_snapshot_bucket,
     is_market_open,
     is_within_hour_before_market_open,
+    latest_trading_day_bucket,
 )
 
 
@@ -57,6 +59,67 @@ def test_snapshot_bucket_uses_last_open_hour_at_close_boundary() -> None:
 
     assert bucket is not None
     assert bucket.isoformat() == "2026-03-30T19:00:00+00:00"
+
+
+def test_us_rankings_bucket_uses_0930_window() -> None:
+    now = datetime.fromisoformat("2026-03-30T09:30:00-04:00")
+
+    bucket = current_rankings_snapshot_bucket("US", now)
+
+    assert bucket is not None
+    assert bucket.isoformat() == "2026-03-30T13:30:00+00:00"
+
+
+def test_us_rankings_bucket_keeps_0959_in_same_window() -> None:
+    now = datetime.fromisoformat("2026-03-30T09:59:00-04:00")
+
+    bucket = current_rankings_snapshot_bucket("US", now)
+
+    assert bucket is not None
+    assert bucket.isoformat() == "2026-03-30T13:30:00+00:00"
+
+
+def test_us_rankings_bucket_moves_at_1000() -> None:
+    now = datetime.fromisoformat("2026-03-30T10:00:00-04:00")
+
+    bucket = current_rankings_snapshot_bucket("US", now)
+
+    assert bucket is not None
+    assert bucket.isoformat() == "2026-03-30T14:00:00+00:00"
+
+
+def test_tw_rankings_bucket_uses_0900_window() -> None:
+    now = datetime.fromisoformat("2026-04-01T09:00:00+08:00")
+
+    bucket = current_rankings_snapshot_bucket("TW", now)
+
+    assert bucket is not None
+    assert bucket.isoformat() == "2026-04-01T01:00:00+00:00"
+
+
+def test_tw_rankings_bucket_uses_last_open_window_at_1330_boundary() -> None:
+    now = datetime.fromisoformat("2026-04-01T13:30:00+08:00")
+
+    bucket = current_rankings_snapshot_bucket("TW", now)
+
+    assert bucket is not None
+    assert bucket.isoformat() == "2026-04-01T05:00:00+00:00"
+
+
+def test_tw_daily_bucket_uses_latest_available_trading_day_before_publish(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.services.market_clock._tw_market_holidays",
+        lambda year: frozenset(),
+    )
+
+    bucket = latest_trading_day_bucket(
+        "TW",
+        datetime.fromisoformat("2026-04-06T10:00:00+08:00"),
+        available_after=datetime.fromisoformat("2026-04-06T18:00:00+08:00").time(),
+    )
+
+    assert bucket is not None
+    assert bucket.isoformat() == "2026-04-02T16:00:00+00:00"
 
 
 def test_us_within_hour_before_open_on_trading_day() -> None:

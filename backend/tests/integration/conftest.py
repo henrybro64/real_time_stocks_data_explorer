@@ -21,6 +21,15 @@ from app.db.init_ids import DEFAULT_USER_ID
 from app.db.models import Base, User
 from app.db.session import SessionLocal, engine
 from app.main import app
+from app.services.rankings_snapshot_service import rankings_snapshot_service
+
+
+@pytest.fixture(autouse=True)
+def _disable_rankings_background_sampler(monkeypatch) -> Iterator[None]:
+    monkeypatch.setattr("app.core.config.settings.rankings_snapshot_enabled", False)
+    rankings_snapshot_service.stop_background_sampler()
+    yield
+    rankings_snapshot_service.stop_background_sampler()
 
 
 @pytest.fixture(scope="session", autouse=True)

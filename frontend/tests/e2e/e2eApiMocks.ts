@@ -21,6 +21,151 @@ export const E2E_TW_QUOTE_RESPONSE = {
   quote: E2E_TW_QUOTE,
 };
 
+const E2E_MARKETS = [
+  {
+    market: "TW",
+    label: "台灣市場",
+    timezone: "Asia/Taipei",
+    isOpen: true,
+    localTime: "2026-05-11T10:00:00+08:00",
+    withinHourBeforeOpen: false,
+  },
+  {
+    market: "US",
+    label: "U.S. Market",
+    timezone: "America/New_York",
+    isOpen: false,
+    localTime: "2026-05-10T22:00:00-04:00",
+    withinHourBeforeOpen: false,
+  },
+] as const;
+
+function buildRankingsResponse(url: URL) {
+  const market = (url.searchParams.get("market") ?? "TW") as "TW" | "US";
+  const rankingType = url.searchParams.get("type") ?? "volume";
+  const twBoard = url.searchParams.get("twBoard") ?? "TWSE";
+
+  if (market === "US" && (rankingType === "net_buy" || rankingType === "net_sell")) {
+    return {
+      market: "US",
+      rankingType,
+      items: [],
+      timestamp: "2026-05-11T02:00:00Z",
+      source: "Unsupported in this free-only app",
+      sourceType: "unsupported",
+      isMarketOpen: false,
+      dataFreshnessLabel: "Unsupported in this free-only app.",
+      warningMessage: null,
+      unsupportedReason: "US institutional net-buy/net-sell is not available in this free-only app.",
+      usRankingsScope: null,
+    };
+  }
+
+  if (market === "US") {
+    return {
+      market: "US",
+      rankingType,
+      items: [
+        {
+          rank: 1,
+          stock: {
+            id: "US:AAPL",
+            market: "US",
+            symbol: "AAPL",
+            name: "Apple Inc.",
+            exchange: "NASDAQ",
+            currency: "USD",
+            timezone: "America/New_York",
+            nameEn: "Apple Inc.",
+          },
+          lastPrice: 210.5,
+          changePercent: 1.2,
+          volume: 1000000,
+          volumeDeltaPercent: null,
+          netBuySellShares: null,
+          timestamp: "2026-05-10T16:00:00-04:00",
+        },
+      ],
+      timestamp: "2026-05-10T20:00:00Z",
+      source: "Quote rankings from the app's free best-effort quote providers.",
+      sourceType: "cache",
+      isMarketOpen: false,
+      dataFreshnessLabel: "Market is closed. Showing latest available free snapshot.",
+      warningMessage: "Free unofficial quote source; data may be delayed or unavailable.",
+      unsupportedReason: null,
+      usRankingsScope: "quote",
+    };
+  }
+
+  if (rankingType === "net_buy" || rankingType === "net_sell") {
+    const isTpex = twBoard === "TPEx";
+    return {
+      market: "TW",
+      rankingType,
+      twBoard,
+      items: [
+        {
+          rank: 1,
+          stock: isTpex
+            ? {
+                ...E2E_TW_STOCK_SEARCH_RESULT,
+                id: "TW:6488",
+                symbol: "6488",
+                name: "環球晶",
+                nameEn: "GlobalWafers",
+                exchange: "TPEx",
+              }
+            : E2E_TW_STOCK_SEARCH_RESULT,
+          lastPrice: isTpex ? 480 : E2E_TW_QUOTE.lastPrice,
+          changePercent: isTpex ? 1.4 : E2E_TW_QUOTE.changePercent,
+          volume: isTpex ? 654321 : E2E_TW_QUOTE.volume,
+          volumeDeltaPercent: null,
+          netBuySellShares: rankingType === "net_buy" ? 500000 : -300000,
+          timestamp: "2026-05-10T18:00:00+08:00",
+        },
+      ],
+      timestamp: "2026-05-10T10:00:00Z",
+      source: isTpex ? "TPEx institutional daily data" : "TWSE T86 daily institutional data",
+      sourceType: "free-public",
+      isMarketOpen: true,
+      dataFreshnessLabel: isTpex
+        ? "TPEx daily institutional ranking sorted by highest 三大法人買賣超股數."
+        : "TW daily institutional ranking sorted by highest 三大法人買賣超股數.",
+      warningMessage: isTpex
+        ? "上櫃（TPEx）三大法人買賣超為日資料，非盤中即時資料。"
+        : "台股三大法人買賣超為日資料，非盤中即時資料。",
+      unsupportedReason: null,
+      usRankingsScope: null,
+    };
+  }
+
+  return {
+    market: "TW",
+    rankingType,
+    twBoard,
+    items: [
+      {
+        rank: 1,
+        stock: E2E_TW_STOCK_SEARCH_RESULT,
+        lastPrice: E2E_TW_QUOTE.lastPrice,
+        changePercent: E2E_TW_QUOTE.changePercent,
+        volume: E2E_TW_QUOTE.volume,
+        volumeDeltaPercent: null,
+        netBuySellShares: null,
+        timestamp: E2E_TW_QUOTE.timestamp,
+      },
+    ],
+    timestamp: "2026-05-11T01:00:00Z",
+    source: "Quote rankings from the app's free best-effort quote providers.",
+    sourceType: "cache",
+    isMarketOpen: true,
+    dataFreshnessLabel: "Showing the latest saved 30-minute free snapshot for this market window.",
+    warningMessage: "Free unofficial quote source; data may be delayed or unavailable.",
+    unsupportedReason: null,
+    usRankingsScope: null,
+  };
+}
+
 type PortfolioPositionRow = {
   id: number;
   stockId: string;
@@ -285,6 +430,16 @@ export async function installE2eApiMocks(page: Page): Promise<void> {
         providers: { local: true, google: false, github: false },
         user: { id: "default-user", username: "default-user" },
       });
+      return;
+    }
+
+    if (path === "/api/markets" && request.method() === "GET") {
+      await fulfillJson(route, E2E_MARKETS);
+      return;
+    }
+
+    if (path.startsWith("/api/rankings") && request.method() === "GET") {
+      await fulfillJson(route, buildRankingsResponse(url));
       return;
     }
 

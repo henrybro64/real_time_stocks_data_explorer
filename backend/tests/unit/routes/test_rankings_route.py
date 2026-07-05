@@ -1,5 +1,7 @@
 from datetime import datetime, timezone
 
+from fastapi import HTTPException
+
 from app.api.routes import rankings as rankings_route
 from app.schemas.rankings import (
     RankingItem,
@@ -33,6 +35,11 @@ def _sample_response() -> RankingResponse:
                 volume=123456,
                 volumeDeltaPercent=5.0,
                 netBuySellShares=None,
+                peRatio=None,
+                peRatioType=None,
+                peRatioSource=None,
+                valuationAsOf=None,
+                valuationWarning=None,
                 timestamp="2026-05-11T09:30:00+08:00",
             )
         ],
@@ -48,21 +55,46 @@ def _sample_response() -> RankingResponse:
     )
 
 
-def test_get_rankings_route_delegates_to_service(monkeypatch) -> None:
+def test_get_rankings_route_delegates_to_snapshot_service(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
     def fake_get_rankings(market, ranking_type, limit, tw_board=None):
         captured["market"] = market
         captured["ranking_type"] = ranking_type
         captured["limit"] = limit
+        captured["tw_board"] = tw_board
         return _sample_response()
 
-    monkeypatch.setattr(rankings_route.rankings_service, "get_rankings", fake_get_rankings)
+    monkeypatch.setattr(
+        rankings_route.rankings_snapshot_service,
+        "get_rankings",
+        fake_get_rankings,
+    )
 
-    response = rankings_route.get_rankings(market="TW", ranking_type=RankingType.volume, limit=7)
+    response = rankings_route.get_rankings(
+        market="TW",
+        ranking_type=RankingType.volume,
+        limit=7,
+        tw_board="TWSE",
+    )
 
-    assert captured["market"] == "TW"
-    assert captured["ranking_type"] == RankingType.volume
-    assert captured["limit"] == 7
+    assert captured == {
+        "market": "TW",
+        "ranking_type": RankingType.volume,
+        "limit": 7,
+        "tw_board": "TWSE",
+    }
     assert response.rankingType == RankingType.volume
     assert response.items[0].stock.symbol == "2330"
+
+
+def test_capture_rankings_snapshots_route_requires_configured_token(monkeypatch) -> None:
+    monkeypatch.setattr("app.core.config.settings.rankings_capture_token", "")
+
+    try:
+        rankings_route.capture_rankings_snapshots("any-token")
+    except HTTPException as exc:
+        assert exc.status_code == 503
+        assert exc.detail == "Rankings snapshot capture endpoint is not configured"
+    else:
+        raise AssertionError("Expected rankings capture route to raise HTTPException")

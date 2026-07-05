@@ -43,6 +43,7 @@ type UsScopeNoticeKey =
   | "rankings.notice.usScopeYahoo"
   | "rankings.notice.usScopeSp500"
   | "rankings.notice.usScopeQuote"
+  | "rankings.notice.usInstitutionalUnsupported"
   | "rankings.notice.usScopePending";
 
 type RankingsTabLabelKey =
@@ -55,6 +56,18 @@ type RankingsTabLabelKey =
   | "rankings.tab.netBuy"
   | "rankings.tab.netSell";
 
+type RankingsSourceTypeLabelKey =
+  | "rankings.sourceType.freePublic"
+  | "rankings.sourceType.freeUnofficial"
+  | "rankings.sourceType.cache"
+  | "rankings.sourceType.unsupported";
+
+type RankingsSnapshotStateLabelKey =
+  | "rankings.snapshotState.intraday"
+  | "rankings.snapshotState.daily"
+  | "rankings.snapshotState.cache"
+  | "rankings.snapshotState.unsupported";
+
 const TW_RANKING_TABS: Array<{ key: RankingType; labelKey: RankingsTabLabelKey }> = [
   { key: "volume", labelKey: "rankings.tab.volume" },
   { key: "valuation_low_pe", labelKey: "rankings.tab.lowPe" },
@@ -64,15 +77,13 @@ const TW_RANKING_TABS: Array<{ key: RankingType; labelKey: RankingsTabLabelKey }
   { key: "net_sell", labelKey: "rankings.tab.netSell" },
 ];
 
-// volume_up / volume_down are our custom "vs previous snapshot" metric and are
-// not available from Yahoo's pre-ranked screeners, so we hide those tabs from
-// the U.S. UI to keep the surface area honest. The backend still supports the
-// types if hit directly.
 const US_RANKING_TABS: Array<{ key: RankingType; labelKey: RankingsTabLabelKey }> = [
   { key: "volume", labelKey: "rankings.tab.volume" },
   { key: "valuation_low_pe", labelKey: "rankings.tab.lowPe" },
   { key: "change_up", labelKey: "rankings.tab.changeUp" },
   { key: "change_down", labelKey: "rankings.tab.changeDown" },
+  { key: "net_buy", labelKey: "rankings.tab.netBuy" },
+  { key: "net_sell", labelKey: "rankings.tab.netSell" },
 ];
 
 function tabsForMarket(market: RankingMarket) {
@@ -99,6 +110,9 @@ function usScopeNoticeKeyFromState(
     data != null && data.market === "US" && data.rankingType === rankingType;
   if (!aligned) {
     return "rankings.notice.usScopePending";
+  }
+  if (isInstitutionalRanking(rankingType) && data.unsupportedReason) {
+    return "rankings.notice.usInstitutionalUnsupported";
   }
   switch (data.usRankingsScope) {
     case "sp500":
@@ -168,6 +182,51 @@ function tableTitle(
   return `${marketLabel} ${rankingLabel}`;
 }
 
+function rankingsSourceTypeLabelKey(
+  sourceType: RankingResponse["sourceType"],
+): RankingsSourceTypeLabelKey {
+  switch (sourceType) {
+    case "free-public":
+      return "rankings.sourceType.freePublic";
+    case "free-unofficial":
+      return "rankings.sourceType.freeUnofficial";
+    case "cache":
+      return "rankings.sourceType.cache";
+    default:
+      return "rankings.sourceType.unsupported";
+  }
+}
+
+function rankingsSnapshotStateLabelKey(
+  response: RankingResponse,
+): RankingsSnapshotStateLabelKey {
+  if (response.unsupportedReason) {
+    return "rankings.snapshotState.unsupported";
+  }
+  if (response.sourceType === "cache") {
+    return "rankings.snapshotState.cache";
+  }
+  if (response.market === "TW" && isInstitutionalRanking(response.rankingType)) {
+    return "rankings.snapshotState.daily";
+  }
+  return "rankings.snapshotState.intraday";
+}
+
+function rankingsSourceTypeTagType(
+  sourceType: RankingResponse["sourceType"],
+): "green" | "purple" | "blue" | "gray" {
+  switch (sourceType) {
+    case "free-public":
+      return "green";
+    case "free-unofficial":
+      return "purple";
+    case "cache":
+      return "blue";
+    default:
+      return "gray";
+  }
+}
+
 function getLatestRankingTimestamp(response: RankingResponse) {
   if (response.items.length === 0) {
     return null;
@@ -229,6 +288,9 @@ export function RankingsPage() {
 
   useEffect(() => {
     setRankingType((prev) => {
+      if (market === "US" && isInstitutionalRanking(prev)) {
+        return defaultRankingTypeForMarket(market);
+      }
       const allowed = new Set(tabsForMarket(market).map((tab) => tab.key));
       if (allowed.has(prev)) return prev;
       return defaultRankingTypeForMarket(market);
@@ -255,6 +317,8 @@ export function RankingsPage() {
   const showError = rankingsQuery.error != null && data == null;
   const showUnsupported = !!data?.unsupportedReason;
   const localizedSource = data ? getLocalizedRankingsSource(data, t) : "";
+  const localizedSourceType = data ? t(rankingsSourceTypeLabelKey(data.sourceType)) : "";
+  const localizedSnapshotState = data ? t(rankingsSnapshotStateLabelKey(data)) : "";
   const showNetBuySellColumn = isInstitutionalRanking(rankingType);
   const showValuationColumns = isValuationRanking(rankingType);
   const scopeNoteKey =
@@ -369,6 +433,27 @@ export function RankingsPage() {
                   <p className="app-section-meta" data-testid="rankings-freshness-label">
                     {getLocalizedRankingsFreshnessLabel(data, t)}
                   </p>
+                  <div
+                    className="app-auth-actions"
+                    style={{ display: "flex", flexWrap: "wrap", gap: "0.75rem", alignItems: "center", marginTop: "0.75rem" }}
+                  >
+                    <p className="app-section-meta" data-testid="rankings-snapshot-timestamp">
+                      {t("rankings.meta.snapshotTimestamp")}: {formatLastUpdated(data.timestamp)}
+                    </p>
+                    <p className="app-section-meta" data-testid="rankings-source-label">
+                      {t("rankings.meta.source")}: {localizedSource}
+                    </p>
+                    <Tag
+                      data-testid="rankings-source-type-tag"
+                      size="sm"
+                      type={rankingsSourceTypeTagType(data.sourceType)}
+                    >
+                      {t("rankings.meta.sourceType")}: {localizedSourceType}
+                    </Tag>
+                    <Tag data-testid="rankings-snapshot-state-tag" size="sm" type="cool-gray">
+                      {localizedSnapshotState}
+                    </Tag>
+                  </div>
                   {data.warningMessage ? (
                     <p className="app-section-meta" data-testid="rankings-warning-message">
                       {getLocalizedRankingsWarningMessage(data, t)}
