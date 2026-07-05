@@ -396,8 +396,8 @@ def test_twse_low_pe_rankings_sort_by_pe_ratio_ascending(monkeypatch) -> None:
     }
     monkeypatch.setattr(
         rankings_service_module,
-        "get_valuation_snapshot",
-        lambda stock, quote: valuations[stock.id],  # noqa: ARG005
+        "get_valuation_snapshots",
+        lambda envelopes: {stock.id: valuations[stock.id] for stock, _ in envelopes},  # noqa: ARG005
     )
     service = RankingsService(
         quote_source=FakeQuoteSource(stocks={}, quotes={}),
@@ -441,8 +441,8 @@ def test_tpex_low_pe_rankings_respect_requested_board(monkeypatch) -> None:
     }
     monkeypatch.setattr(
         rankings_service_module,
-        "get_valuation_snapshot",
-        lambda stock, quote: valuations[stock.id],  # noqa: ARG005
+        "get_valuation_snapshots",
+        lambda envelopes: {stock.id: valuations[stock.id] for stock, _ in envelopes},  # noqa: ARG005
     )
     service = RankingsService(
         quote_source=FakeQuoteSource(stocks={}, quotes={}),
@@ -509,8 +509,8 @@ def test_us_low_pe_rankings_exclude_missing_or_invalid_pe_rows(monkeypatch) -> N
     }
     monkeypatch.setattr(
         rankings_service_module,
-        "get_valuation_snapshot",
-        lambda stock, quote: valuations[stock.id],  # noqa: ARG005
+        "get_valuation_snapshots",
+        lambda envelopes: {stock.id: valuations[stock.id] for stock, _ in envelopes},  # noqa: ARG005
     )
     service = RankingsService(
         quote_source=FakeQuoteSource(stocks={}, quotes={}),
@@ -548,8 +548,8 @@ def test_tw_low_pe_rankings_exclude_etf_from_universe(monkeypatch) -> None:
     }
     monkeypatch.setattr(
         rankings_service_module,
-        "get_valuation_snapshot",
-        lambda stock, quote: valuations[stock.id],  # noqa: ARG005
+        "get_valuation_snapshots",
+        lambda envelopes: {stock.id: valuations[stock.id] for stock, _ in envelopes},  # noqa: ARG005
     )
     service = RankingsService(
         quote_source=FakeQuoteSource(stocks={}, quotes={}),
@@ -591,8 +591,8 @@ def test_us_low_pe_rankings_exclude_negative_eps_rows(monkeypatch) -> None:
     }
     monkeypatch.setattr(
         rankings_service_module,
-        "get_valuation_snapshot",
-        lambda stock, quote: valuations[stock.id],  # noqa: ARG005
+        "get_valuation_snapshots",
+        lambda envelopes: {stock.id: valuations[stock.id] for stock, _ in envelopes},  # noqa: ARG005
     )
     service = RankingsService(
         quote_source=FakeQuoteSource(stocks={}, quotes={}),
@@ -624,8 +624,8 @@ def test_low_pe_rankings_tie_break_equal_pe_by_higher_volume(monkeypatch) -> Non
     }
     monkeypatch.setattr(
         rankings_service_module,
-        "get_valuation_snapshot",
-        lambda stock, quote: valuations[stock.id],  # noqa: ARG005
+        "get_valuation_snapshots",
+        lambda envelopes: {stock.id: valuations[stock.id] for stock, _ in envelopes},  # noqa: ARG005
     )
     service = RankingsService(
         quote_source=FakeQuoteSource(stocks={}, quotes={}),

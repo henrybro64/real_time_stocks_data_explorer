@@ -21,7 +21,7 @@ from app.schemas.rankings import (
 )
 from app.schemas.stock import StockResponse
 from app.services.http_client import HttpFetchError, fetch_json
-from app.services.key_stats_service import get_valuation_snapshot
+from app.services.key_stats_service import get_valuation_snapshots
 from app.services.market_clock import is_market_open
 from app.services.quote_service import QuoteService, quote_service
 from app.services.rankings_external_source import (
@@ -337,9 +337,10 @@ class RankingsService:
             universe_limit=max(100, limit),
         )
         candidates: list[_RankingCandidate] = []
+        valuations = get_valuation_snapshots(envelopes)
 
         for stock, quote in envelopes:
-            valuation = get_valuation_snapshot(stock, quote)
+            valuation = valuations[stock.id]
             pe_ratio = _positive_float(valuation.get("peRatio"))
             if pe_ratio is None:
                 continue

@@ -75,6 +75,7 @@ _US_TZ = ZoneInfo("America/New_York")
 class _CachedEnvelopes:
     fetched_at: float  # epoch seconds
     envelopes: list[tuple[StockRecord, QuoteRecord]]
+    requested_limit: int
 
 
 class RankingsExternalSource:
@@ -115,13 +116,13 @@ class RankingsExternalSource:
             else None
         )
 
-        cached = self._read_cache(cache_key, current)
-        if cached is None and shared_cache_key is not None:
-            cached = self._read_cache(shared_cache_key, current)
-        if cached is not None:
-            board_filtered = self._filter_tw_board(cached, market, tw_board)
+        cached_entry = self._read_cache_entry(cache_key, current)
+        if cached_entry is None and shared_cache_key is not None:
+            cached_entry = self._read_cache_entry(shared_cache_key, current)
+        if cached_entry is not None:
+            board_filtered = self._filter_tw_board(cached_entry.envelopes, market, tw_board)
             filtered = board_filtered[:limit]
-            if len(filtered) >= limit or len(board_filtered) < limit:
+            if self._should_use_cached_envelopes(cached_entry, filtered, limit):
                 logger.debug(
                     "External rankings cache hit",
                     extra={
@@ -149,15 +150,21 @@ class RankingsExternalSource:
             return None
 
         if market == "TW":
-            self._write_cache(self._cache_key(market, ranking_type, None), envelopes, current)
+            self._write_cache(
+                self._cache_key(market, ranking_type, None),
+                envelopes,
+                current,
+                requested_limit=limit,
+            )
             if tw_board in {"TWSE", "TPEx"}:
                 self._write_cache(
                     cache_key,
                     self._filter_tw_board(envelopes, market, tw_board),
                     current,
+                    requested_limit=limit,
                 )
         else:
-            self._write_cache(cache_key, envelopes, current)
+            self._write_cache(cache_key, envelopes, current, requested_limit=limit)
         filtered = self._filter_tw_board(envelopes, market, tw_board)[:limit]
         logger.info(
             "External rankings fetch completed",
@@ -182,6 +189,18 @@ class RankingsExternalSource:
             return f"{_CACHE_KEY_PREFIX}{market}:{ranking_type.value}"
         board_key = tw_board if tw_board in {"TWSE", "TPEx"} else "all"
         return f"{_CACHE_KEY_PREFIX}{market}:{ranking_type.value}:{board_key}"
+
+    @staticmethod
+    def _should_use_cached_envelopes(
+        cached: _CachedEnvelopes,
+        filtered: list[tuple[StockRecord, QuoteRecord]],
+        limit: int,
+    ) -> bool:
+        if len(filtered) >= limit:
+            return True
+        if len(cached.envelopes) < cached.requested_limit:
+            return True
+        return False
 
     @staticmethod
     def _filter_tw_board(
@@ -271,17 +290,15 @@ class RankingsExternalSource:
             return None
         return envelopes[:fetch_count]
 
-    def _read_cache(
+    def _read_cache_entry(
         self,
         key: str,
         now: datetime,
-    ) -> list[tuple[StockRecord, QuoteRecord]] | None:
+    ) -> _CachedEnvelopes | None:
         now_epoch = now.timestamp()
-        # 1) In-memory layer (per-pod, instant)
         entry = self._memory_cache.get(key)
         if entry is not None and now_epoch - entry.fetched_at < self._cache_ttl_seconds:
-            return entry.envelopes
-        # 2) Redis layer (shared across pods, optional)
+            return entry
         raw = _redis_get(key)
         if raw is None:
             return None
@@ -291,29 +308,43 @@ class RankingsExternalSource:
             if now_epoch - fetched_at >= self._cache_ttl_seconds:
                 return None
             envelopes = _deserialize_envelopes(payload["envelopes"])
+            requested_limit = int(payload.get("requested_limit", len(envelopes)))
         except (KeyError, TypeError, ValueError) as exc:
             logger.debug("Rankings external cache deserialize failed for %s: %s", key, exc)
             return None
-        # Backfill memory layer so subsequent reads on this pod are O(1)
-        self._memory_cache[key] = _CachedEnvelopes(
+        entry = _CachedEnvelopes(
             fetched_at=fetched_at,
             envelopes=envelopes,
+            requested_limit=requested_limit,
         )
-        return envelopes
+        self._memory_cache[key] = entry
+        return entry
+
+    def _read_cache(
+        self,
+        key: str,
+        now: datetime,
+    ) -> list[tuple[StockRecord, QuoteRecord]] | None:
+        entry = self._read_cache_entry(key, now)
+        return entry.envelopes if entry is not None else None
 
     def _write_cache(
         self,
         key: str,
         envelopes: list[tuple[StockRecord, QuoteRecord]],
         now: datetime,
+        *,
+        requested_limit: int,
     ) -> None:
         fetched_at = now.timestamp()
         self._memory_cache[key] = _CachedEnvelopes(
             fetched_at=fetched_at,
             envelopes=envelopes,
+            requested_limit=requested_limit,
         )
         payload = {
             "fetched_at": fetched_at,
+            "requested_limit": requested_limit,
             "envelopes": _serialize_envelopes(envelopes),
         }
         _redis_setex(key, self._cache_ttl_seconds, json.dumps(payload, ensure_ascii=False))

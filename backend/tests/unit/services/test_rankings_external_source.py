@@ -411,3 +411,58 @@ def test_fetch_dispatches_tw_to_html_fetcher() -> None:
 
     assert seen_slugs == ["change-up"]
     assert result and result[0][0].symbol == "3481"
+
+
+def test_fetch_reuses_exhausted_cache_when_source_returns_fewer_than_requested() -> None:
+    call_count = {"count": 0}
+
+    def fake_us_fetcher(scr_id, count):
+        call_count["count"] += 1
+        return {
+            "quotes": [
+                _us_quote_dict("AAA", price=10.0, prev=8.0, vol=1_000_000),
+                _us_quote_dict("BBB", price=20.0, prev=18.0, vol=500_000),
+            ]
+        }
+
+    source = RankingsExternalSource(
+        us_screener_fetcher=fake_us_fetcher,
+        cache_ttl_seconds=60,
+    )
+    base = datetime(2026, 5, 13, 15, 0, tzinfo=timezone.utc)
+
+    first = source.fetch("US", RankingType.volume, 100, now=base)
+    second = source.fetch("US", RankingType.volume, 50, now=base.replace(minute=0, second=30))
+
+    assert first and second
+    assert len(first) == 2
+    assert len(second) == 2
+    assert call_count["count"] == 1
+
+
+def test_fetch_refetches_when_cached_limit_is_smaller_than_new_request() -> None:
+    call_count = {"count": 0}
+
+    def fake_us_fetcher(scr_id, count):
+        call_count["count"] += 1
+        quotes = [
+            _us_quote_dict(
+                f"SYM{index}",
+                price=10.0 + index,
+                prev=8.0,
+                vol=1_000_000 - index,
+            )
+            for index in range(count)
+        ]
+        return {"quotes": quotes}
+
+    source = RankingsExternalSource(
+        us_screener_fetcher=fake_us_fetcher,
+        cache_ttl_seconds=60,
+    )
+    base = datetime(2026, 5, 13, 15, 0, tzinfo=timezone.utc)
+
+    source.fetch("US", RankingType.volume, 50, now=base)
+    source.fetch("US", RankingType.volume, 100, now=base.replace(minute=0, second=30))
+
+    assert call_count["count"] == 2
