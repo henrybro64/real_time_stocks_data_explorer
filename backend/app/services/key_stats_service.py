@@ -5,11 +5,13 @@ from __future__ import annotations
 import json
 import os
 from datetime import date, datetime, timedelta
+from functools import lru_cache
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
+from app.models.quote import QuoteRecord
 from app.models.stock import StockRecord
 from app.services.quote_service import quote_service
 
@@ -20,6 +22,11 @@ _BROWSER_USER_AGENT = (
 _TIMEOUT = 15
 _YAHOO_CHART = "https://query1.finance.yahoo.com/v8/finance/chart"
 _FINNHUB_API = "https://finnhub.io/api/v1"
+_TWSE_DAILY_PE_URL = "https://www.twse.com.tw/rwd/zh/afterTrading/BWIBBU_d"
+_TPEX_DAILY_PE_URL = "https://www.tpex.org.tw/www/zh-tw/afterTrading/peQryDate"
+_NULL_OFFICIAL_PE_MARKERS = frozenset({"", "-", "--", "N/A", "NA"})
+_UNSUPPORTED_US_QUOTE_TYPES = frozenset({"ETF", "ETN", "FUND", "MUTUALFUND", "MONEYMARKETFUND", "INDEX"})
+_UNSET = object()
 
 
 def _yahoo_chart(symbol: str, interval: str, range_name: str) -> dict | None:
@@ -313,6 +320,413 @@ def _finnhub_enrich(out: dict[str, object], stock: StockRecord) -> dict[str, obj
     return out
 
 
+def _quote_local_date(stock: StockRecord, quote_record: QuoteRecord) -> date:
+    raw_timestamp = quote_record.timestamp.strip()
+    if raw_timestamp:
+        try:
+            return datetime.fromisoformat(raw_timestamp).astimezone(ZoneInfo(stock.timezone)).date()
+        except ValueError:
+            pass
+    return date.today()
+
+
+def _recent_weekdays(anchor: date, limit: int = 5) -> list[date]:
+    days: list[date] = []
+    current = anchor
+    while len(days) < limit:
+        if current.weekday() < 5:
+            days.append(current)
+        current -= timedelta(days=1)
+    return days
+
+
+def _yyyymmdd_to_iso(raw_value: object) -> str | None:
+    cleaned = str(raw_value or "").strip()
+    if len(cleaned) != 8 or not cleaned.isdigit():
+        return None
+    return f"{cleaned[:4]}-{cleaned[4:6]}-{cleaned[6:8]}"
+
+
+def _positive_float(value: object) -> float | None:
+    parsed = _parse_number(value)
+    if parsed is None or parsed <= 0:
+        return None
+    return parsed
+
+
+def _parse_number(value: object) -> float | None:
+    if isinstance(value, (int, float)):
+        return round(float(value), 2)
+    if not isinstance(value, str):
+        return None
+    cleaned = value.strip().replace(",", "")
+    if not cleaned or cleaned.upper() in _NULL_OFFICIAL_PE_MARKERS or cleaned in {"-", "--"}:
+        return None
+    try:
+        return round(float(cleaned), 2)
+    except ValueError:
+        return None
+
+
+def _parse_official_pe_value(raw_value: object) -> tuple[float | None, str | None]:
+    if raw_value is None:
+        return None, "missing"
+    if isinstance(raw_value, (int, float)):
+        return round(float(raw_value), 2), None
+
+    cleaned = str(raw_value).strip().replace(",", "")
+    if not cleaned or cleaned.upper() in _NULL_OFFICIAL_PE_MARKERS or cleaned in {"-", "--"}:
+        return None, "missing"
+    try:
+        return round(float(cleaned), 2), None
+    except ValueError:
+        return None, "malformed"
+
+
+def _field_index(fields: list[object], *names: str) -> int | None:
+    normalized = [str(field).strip() for field in fields]
+    for name in names:
+        try:
+            return normalized.index(name)
+        except ValueError:
+            continue
+    return None
+
+
+def _row_value(row: list[object], index: int | None) -> object | None:
+    if index is None or index < 0 or index >= len(row):
+        return None
+    return row[index]
+
+
+def _normalize_stock_id_to_yfinance(stock: StockRecord) -> str:
+    symbol = stock.symbol.strip().upper()
+    if stock.market == "US":
+        return symbol
+    if stock.market == "TW":
+        suffix = ".TWO" if stock.exchange == "TPEx" else ".TW"
+        return f"{symbol}{suffix}"
+    return symbol
+
+
+def _load_yfinance_info(stock: StockRecord) -> dict[str, object] | None:
+    try:
+        import yfinance as yf  # pylint: disable=import-outside-toplevel
+    except Exception:  # noqa: BLE001 - optional dependency or import failure
+        return None
+
+    ticker = yf.Ticker(_normalize_stock_id_to_yfinance(stock))
+    try:
+        info = dict(ticker.info or {})
+    except Exception:  # noqa: BLE001 - yfinance can fail in many shapes
+        return None
+
+    fast_info = getattr(ticker, "fast_info", None)
+    if fast_info is not None:
+        for key, target_key in (
+            ("currency", "currency"),
+            ("market_cap", "marketCap"),
+            ("lastPrice", "currentPrice"),
+        ):
+            try:
+                value = fast_info.get(key)
+            except Exception:  # noqa: BLE001 - yfinance fast_info can raise lazily
+                value = None
+            if value is not None and target_key not in info:
+                info[target_key] = value
+    return info
+
+
+def _provider_quote_kind(info: dict[str, object] | None) -> str | None:
+    if not isinstance(info, dict):
+        return None
+    for key in ("quoteType", "instrumentType"):
+        raw_value = info.get(key)
+        if isinstance(raw_value, str):
+            kind = raw_value.strip().upper()
+            if kind:
+                return kind
+    return None
+
+
+def _looks_like_fund_or_etf(stock: StockRecord, info: dict[str, object] | None = None) -> bool:
+    kind = _provider_quote_kind(info)
+    if kind in _UNSUPPORTED_US_QUOTE_TYPES:
+        return True
+
+    symbol = stock.symbol.strip().upper()
+    if stock.market == "TW" and symbol.startswith(("00", "02")):
+        return True
+
+    joined_names = " ".join(
+        part
+        for part in (stock.name, stock.name_en, stock.name_zh_tw)
+        if isinstance(part, str) and part.strip()
+    ).upper()
+    return any(marker in joined_names for marker in ("ETF", "ETN", " FUND", "基金", "指數股票型"))
+
+
+def _set_valuation_fields(
+    out: dict[str, object],
+    *,
+    pe_ratio: float | None,
+    pe_ratio_type: str | None = None,
+    pe_ratio_source: str | None = None,
+    price_used: float | None = None,
+    price_as_of: str | None = None,
+    eps_ttm: object = _UNSET,
+    eps_as_of: str | None = None,
+    valuation_as_of: str | None = None,
+    valuation_warning: str | None = None,
+) -> dict[str, object]:
+    merged = dict(out)
+    merged["peRatio"] = pe_ratio
+    merged["peTtm"] = pe_ratio
+    merged["peRatioType"] = pe_ratio_type
+    merged["peRatioSource"] = pe_ratio_source
+    merged["priceUsed"] = price_used
+    merged["priceAsOf"] = price_as_of
+    merged["epsAsOf"] = eps_as_of
+    merged["valuationAsOf"] = valuation_as_of
+    merged["valuationWarning"] = valuation_warning
+    if eps_ttm is not _UNSET:
+        merged["epsTtm"] = eps_ttm
+    return merged
+
+
+@lru_cache(maxsize=32)
+def _fetch_twse_daily_pe_snapshot(target_day: date) -> tuple[dict[str, dict[str, object]], str | None] | None:
+    payload = _http_get_any(
+        f"{_TWSE_DAILY_PE_URL}?{urlencode({'date': target_day.strftime('%Y%m%d'), 'selectType': 'ALL', 'response': 'json'})}"
+    )
+    if not isinstance(payload, dict) or str(payload.get("stat", "")).strip().upper() != "OK":
+        return None
+
+    fields = payload.get("fields")
+    rows = payload.get("data")
+    if not isinstance(fields, list) or not isinstance(rows, list):
+        return None
+
+    symbol_index = _field_index(fields, "證券代號")
+    pe_index = _field_index(fields, "本益比")
+    price_index = _field_index(fields, "收盤價")
+    parsed_rows: dict[str, dict[str, object]] = {}
+    for row in rows:
+        if not isinstance(row, list):
+            continue
+        symbol = str(_row_value(row, symbol_index) or "").strip()
+        if not symbol:
+            continue
+        pe_ratio, pe_status = _parse_official_pe_value(_row_value(row, pe_index))
+        parsed_rows[symbol] = {
+            "peRatio": pe_ratio,
+            "peStatus": pe_status,
+            "priceUsed": _parse_number(_row_value(row, price_index)),
+        }
+    return parsed_rows, _yyyymmdd_to_iso(payload.get("date"))
+
+
+@lru_cache(maxsize=32)
+def _fetch_tpex_daily_pe_snapshot(target_day: date) -> tuple[dict[str, dict[str, object]], str | None] | None:
+    payload = _http_get_any(
+        f"{_TPEX_DAILY_PE_URL}?{urlencode({'date': target_day.strftime('%Y/%m/%d'), 'response': 'json'})}"
+    )
+    if not isinstance(payload, dict) or str(payload.get("stat", "")).strip().lower() != "ok":
+        return None
+
+    tables = payload.get("tables")
+    if not isinstance(tables, list) or not tables or not isinstance(tables[0], dict):
+        return None
+
+    table = tables[0]
+    fields = table.get("fields")
+    rows = table.get("data")
+    if not isinstance(fields, list) or not isinstance(rows, list):
+        return None
+
+    symbol_index = _field_index(fields, "股票代號")
+    pe_index = _field_index(fields, "本益比")
+    parsed_rows: dict[str, dict[str, object]] = {}
+    for row in rows:
+        if not isinstance(row, list):
+            continue
+        symbol = str(_row_value(row, symbol_index) or "").strip()
+        if not symbol:
+            continue
+        pe_ratio, pe_status = _parse_official_pe_value(_row_value(row, pe_index))
+        parsed_rows[symbol] = {
+            "peRatio": pe_ratio,
+            "peStatus": pe_status,
+            "priceUsed": None,
+        }
+    return parsed_rows, _yyyymmdd_to_iso(payload.get("date"))
+
+
+def _apply_tw_official_valuation(
+    out: dict[str, object],
+    stock: StockRecord,
+    quote_record: QuoteRecord,
+) -> tuple[dict[str, object], bool]:
+    fetch_snapshot = _fetch_tpex_daily_pe_snapshot if stock.exchange == "TPEx" else _fetch_twse_daily_pe_snapshot
+    source_label = "TPEx official daily P/E" if stock.exchange == "TPEx" else "TWSE official daily P/E"
+    saw_official_snapshot = False
+
+    for session_day in _recent_weekdays(_quote_local_date(stock, quote_record)):
+        snapshot = fetch_snapshot(session_day)
+        if snapshot is None:
+            continue
+        saw_official_snapshot = True
+        rows, valuation_as_of = snapshot
+        row = rows.get(stock.symbol)
+        if row is None:
+            continue
+
+        pe_ratio = _positive_float(row.get("peRatio"))
+        price_used = _parse_number(row.get("priceUsed"))
+        price_as_of = valuation_as_of if price_used is not None else None
+        if pe_ratio is not None:
+            return (
+                _set_valuation_fields(
+                    out,
+                    pe_ratio=pe_ratio,
+                    pe_ratio_type="official_daily",
+                    pe_ratio_source=source_label,
+                    price_used=price_used,
+                    price_as_of=price_as_of,
+                    valuation_as_of=valuation_as_of,
+                ),
+                True,
+            )
+
+        if row.get("peStatus") == "malformed":
+            return (
+                _set_valuation_fields(
+                    out,
+                    pe_ratio=None,
+                    valuation_as_of=valuation_as_of,
+                    valuation_warning=f"{source_label} returned a malformed P/E value.",
+                ),
+                True,
+            )
+
+        if _looks_like_fund_or_etf(stock):
+            return (
+                _set_valuation_fields(
+                    out,
+                    pe_ratio=None,
+                    valuation_as_of=valuation_as_of,
+                    valuation_warning="P/E is not reported for ETF or fund instruments.",
+                ),
+                True,
+            )
+
+        return (
+            _set_valuation_fields(
+                out,
+                pe_ratio=None,
+                valuation_as_of=valuation_as_of,
+                valuation_warning=f"{source_label} did not report a usable P/E value.",
+            ),
+            True,
+        )
+
+    if _looks_like_fund_or_etf(stock):
+        return (
+            _set_valuation_fields(
+                out,
+                pe_ratio=None,
+                valuation_warning="P/E is not reported for ETF or fund instruments.",
+            ),
+            True,
+        )
+    return out, saw_official_snapshot
+
+
+def _apply_us_valuation(
+    out: dict[str, object],
+    stock: StockRecord,
+    quote_record: QuoteRecord,
+) -> dict[str, object]:
+    yfinance_info = _load_yfinance_info(stock)
+    if _looks_like_fund_or_etf(stock, yfinance_info):
+        return _set_valuation_fields(
+            out,
+            pe_ratio=None,
+            valuation_warning="P/E is not reported for ETF or fund instruments.",
+        )
+
+    legacy_eps = _parse_number(out.get("epsTtm"))
+    yfinance_eps = _parse_number(yfinance_info.get("trailingEps")) if isinstance(yfinance_info, dict) else None
+    eps_ttm = legacy_eps if legacy_eps is not None else yfinance_eps
+
+    legacy_pe = _positive_float(out.get("peTtm"))
+    if legacy_pe is not None:
+        return _set_valuation_fields(
+            out,
+            pe_ratio=legacy_pe,
+            pe_ratio_type="provider_ttm",
+            pe_ratio_source="Finnhub stock metric",
+            eps_ttm=eps_ttm,
+            valuation_as_of=_iso_date_only(quote_record.timestamp),
+        )
+
+    provider_pe = _positive_float(yfinance_info.get("trailingPE")) if isinstance(yfinance_info, dict) else None
+    if provider_pe is not None:
+        return _set_valuation_fields(
+            out,
+            pe_ratio=provider_pe,
+            pe_ratio_type="provider_ttm",
+            pe_ratio_source="Yahoo Finance trailing P/E",
+            eps_ttm=eps_ttm,
+            valuation_as_of=_iso_date_only(quote_record.timestamp),
+        )
+
+    price_used = _positive_float(quote_record.last_price)
+    if price_used is not None and eps_ttm is not None and eps_ttm > 0:
+        return _set_valuation_fields(
+            out,
+            pe_ratio=round(price_used / eps_ttm, 2),
+            pe_ratio_type="calculated_ttm",
+            pe_ratio_source="Calculated from latest price and EPS TTM",
+            price_used=price_used,
+            price_as_of=_iso_date_only(quote_record.timestamp),
+            eps_ttm=eps_ttm,
+            valuation_as_of=_iso_date_only(quote_record.timestamp),
+        )
+
+    return _set_valuation_fields(
+        out,
+        pe_ratio=None,
+        eps_ttm=eps_ttm,
+        valuation_warning="P/E could not be calculated because EPS TTM was missing or non-positive.",
+    )
+
+
+def _apply_valuation_enrichment(
+    out: dict[str, object],
+    stock: StockRecord,
+    quote_record: QuoteRecord,
+) -> dict[str, object]:
+    if stock.market == "TW":
+        enriched, handled = _apply_tw_official_valuation(out, stock, quote_record)
+        if handled:
+            return enriched
+
+    if stock.market == "US":
+        return _apply_us_valuation(out, stock, quote_record)
+
+    legacy_pe = _positive_float(out.get("peTtm"))
+    if legacy_pe is not None:
+        return _set_valuation_fields(
+            out,
+            pe_ratio=legacy_pe,
+            pe_ratio_type="provider_ttm",
+            pe_ratio_source="Finnhub stock metric",
+            eps_ttm=_parse_number(out.get("epsTtm")),
+        )
+    return out
+
+
 def _null_fundamentals() -> dict[str, None]:
     return {
         "marketCap": None,
@@ -325,6 +739,19 @@ def _null_fundamentals() -> dict[str, None]:
         "exDividendDate": None,
         "dividendPayDate": None,
         "nextEarningsDate": None,
+    }
+
+
+def _null_valuation() -> dict[str, None]:
+    return {
+        "peRatio": None,
+        "peRatioType": None,
+        "peRatioSource": None,
+        "priceUsed": None,
+        "priceAsOf": None,
+        "epsAsOf": None,
+        "valuationAsOf": None,
+        "valuationWarning": None,
     }
 
 
@@ -377,6 +804,7 @@ def get_key_statistics(stock_id: str) -> dict[str, object] | None:
         "fiftyTwoWeekHighDate": None,
         "avgVolume10d": None,
         **_null_fundamentals(),
+        **_null_valuation(),
     }
 
     merged: dict[str, object]
@@ -385,4 +813,5 @@ def get_key_statistics(stock_id: str) -> dict[str, object] | None:
     else:
         merged = _tw_from_candles(stock, base)
 
-    return _merge_range_markers(_finnhub_enrich(merged, stock))
+    enriched = _finnhub_enrich(merged, stock)
+    return _merge_range_markers(_apply_valuation_enrichment(enriched, stock, quote))

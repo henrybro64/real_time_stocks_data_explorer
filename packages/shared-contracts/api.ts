@@ -415,8 +415,16 @@ export type KeyStatistics = {
   marketCap: string | null;
   sharesOutstanding: string | null;
   beta: number | null;
+  peRatio: number | null;
+  peRatioType: string | null;
+  peRatioSource: string | null;
+  priceUsed: number | null;
+  priceAsOf: string | null;
   peTtm: number | null;
   epsTtm: number | null;
+  epsAsOf: string | null;
+  valuationAsOf: string | null;
+  valuationWarning: string | null;
   dividendQuarterly: number | null;
   dividendYieldPercent: number | null;
   exDividendDate: string | null;
