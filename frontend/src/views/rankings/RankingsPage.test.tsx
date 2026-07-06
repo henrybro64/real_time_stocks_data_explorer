@@ -234,6 +234,30 @@ function renderRankingsPage(language: "en" | "zh-TW" = "zh-TW") {
   );
 }
 
+function volumeChangeColumnLabel(language: "en" | "zh-TW") {
+  return language === "en" ? "Volume change %" : "量變化 %";
+}
+
+function netBuySellColumnLabel(language: "en" | "zh-TW") {
+  return language === "en" ? "Net buy / sell" : "買賣超";
+}
+
+function expectVolumeChangeColumnAbsent(language: "en" | "zh-TW" = "zh-TW") {
+  expect(
+    screen.queryByRole("columnheader", { name: volumeChangeColumnLabel(language) }),
+  ).not.toBeInTheDocument();
+}
+
+function expectNetBuySellColumnPresent(language: "en" | "zh-TW" = "zh-TW") {
+  expect(screen.getByRole("columnheader", { name: netBuySellColumnLabel(language) })).toBeInTheDocument();
+}
+
+function expectNetBuySellColumnAbsent(language: "en" | "zh-TW" = "zh-TW") {
+  expect(
+    screen.queryByRole("columnheader", { name: netBuySellColumnLabel(language) }),
+  ).not.toBeInTheDocument();
+}
+
 describe("RankingsPage", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -263,6 +287,8 @@ describe("RankingsPage", () => {
     expect(screen.getByTestId("rankings-snapshot-timestamp")).toHaveTextContent(
       "快照時間:",
     );
+    expectNetBuySellColumnPresent();
+    expectVolumeChangeColumnAbsent();
   });
 
   it("defaults market to US when only U.S. is within hour before open", async () => {
@@ -313,6 +339,8 @@ describe("RankingsPage", () => {
     await waitFor(() => {
       expect(fetchRankings).toHaveBeenLastCalledWith("US", "change_down", 50, undefined);
     });
+    expectVolumeChangeColumnAbsent();
+    expectNetBuySellColumnAbsent();
   });
 
   it("renders loading state", () => {
@@ -352,6 +380,8 @@ describe("RankingsPage", () => {
     expect(await screen.findByTestId("rankings-warning-message")).toHaveTextContent(
       "台股三大法人買賣超為日資料，非盤中即時資料。",
     );
+    expectNetBuySellColumnPresent();
+    expectVolumeChangeColumnAbsent();
   });
 
   it("switches Taiwan tabs to quote-based rankings", async () => {
@@ -388,6 +418,8 @@ describe("RankingsPage", () => {
       "免費非官方報價來源可能延遲，或暫時無法提供資料。",
     );
     expect(screen.getByTestId("rankings-realtime-tag")).toHaveTextContent("即時");
+    expectNetBuySellColumnAbsent();
+    expectVolumeChangeColumnAbsent();
 
     await user.click(screen.getByTestId("rankings-tab-change_up"));
 
@@ -399,6 +431,7 @@ describe("RankingsPage", () => {
         "市場開盤中；漲跌幅排行使用最新報價快照。",
       );
     });
+    expectVolumeChangeColumnAbsent();
   });
 
   it("renders low P/E rankings with valuation columns", async () => {
@@ -418,6 +451,8 @@ describe("RankingsPage", () => {
     expect(await screen.findByRole("columnheader", { name: "本益比" })).toBeInTheDocument();
     expect(screen.getByRole("columnheader", { name: "本益比來源" })).toBeInTheDocument();
     expect(screen.getByRole("columnheader", { name: "估值日期" })).toBeInTheDocument();
+    expectNetBuySellColumnAbsent();
+    expectVolumeChangeColumnAbsent();
     expect(screen.getByText("18.50")).toBeInTheDocument();
     expect(screen.getByText("TWSE official daily P/E")).toBeInTheDocument();
     expect(screen.getByText("2026-07-03")).toBeInTheDocument();
@@ -692,8 +727,31 @@ describe("RankingsPage", () => {
     );
   });
 
+  it("hides volume change column in English while keeping institutional columns contextual", async () => {
+    const user = userEvent.setup();
+    vi.mocked(fetchRankings)
+      .mockResolvedValueOnce(buildResponse())
+      .mockResolvedValueOnce(buildUsResponse());
+
+    renderRankingsPage("en");
+
+    expect(await screen.findByRole("heading", { level: 1, name: "Market rankings" })).toBeInTheDocument();
+    await screen.findByTestId("rankings-row-TW:2330");
+    expectNetBuySellColumnPresent("en");
+    expectVolumeChangeColumnAbsent("en");
+
+    await user.selectOptions(screen.getByLabelText("Market"), "US");
+
+    await waitFor(() => {
+      expect(fetchRankings).toHaveBeenLastCalledWith("US", "volume", 50, undefined);
+    });
+    await screen.findByTestId("rankings-row-US:MSFT");
+    expectNetBuySellColumnAbsent("en");
+    expectVolumeChangeColumnAbsent("en");
+  });
+
   it("shows cached snapshot metadata when the API returns cache state", async () => {
-    vi.mocked(fetchRankings).mockResolvedValueOnce(
+    vi.mocked(fetchRankings).mockResolvedValue(
       buildTwQuoteResponse({
         sourceType: "cache",
         dataFreshnessLabel: "Market is closed. Showing latest available free snapshot.",
@@ -715,7 +773,7 @@ describe("RankingsPage", () => {
   });
 
   it("shows provider-failure fallback notice when the API returns fallback freshness", async () => {
-    vi.mocked(fetchRankings).mockResolvedValueOnce(
+    vi.mocked(fetchRankings).mockResolvedValue(
       buildTwQuoteResponse({
         sourceType: "cache",
         dataFreshnessLabel:
