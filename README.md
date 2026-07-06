@@ -87,7 +87,7 @@ REQUEST_ID_HEADER=X-Request-ID
 
 Each API request gets a request ID. If the client sends `X-Request-ID`, the backend reuses it; otherwise it generates one and returns it in the response header when possible. Use that value to trace the request across backend logs.
 
-Detailed field definitions and tracing guidance live in [docs/backend-logging.md](/Users/henrybro/workspace/real_time_stocks_data_explorer/docs/backend-logging.md).
+Detailed field definitions and tracing guidance live in [docs/backend-logging.md](docs/backend-logging.md).
 
 ### AI Stock Analysis
 
@@ -197,7 +197,6 @@ Normal read behavior:
 - when the current bucket is missing and fresh free data is available, the API captures and persists a new snapshot
 - when the market is closed, the API returns the latest saved snapshot
 - when a free source fails, the API falls back to the latest saved snapshot when one exists
-- U.S. institutional `net_buy` / `net_sell` remain explicitly unsupported in this free-only app
 
 Available ranking types per market:
 
@@ -214,7 +213,9 @@ Data sources:
 - the background snapshot scheduler only polls the configured free universes to avoid unbounded all-market polling:
   - `RANKINGS_UNIVERSE_US`
   - `RANKINGS_UNIVERSE_TW`
-- Taiwan `net_buy` and `net_sell` use public TWSE / TPEx daily institutional data and are explicitly labeled as daily, not intraday real-time
+- TWSE `net_buy` / `net_sell` use TWSE T86 daily institutional data
+- TPEx `net_buy` / `net_sell` use TPEx institutional daily data
+- both are daily, not intraday real-time; TPEx institutional rankings can be temporarily unavailable when the free public source is down
 - U.S. institutional `net_buy` / `net_sell` are unsupported because this app does not add fake data or paid-provider integrations
 - free unofficial quote sources can be delayed, rate-limited, or temporarily unavailable
 
