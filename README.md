@@ -197,7 +197,6 @@ Normal read behavior:
 - when the current bucket is missing and fresh free data is available, the API captures and persists a new snapshot
 - when the market is closed, the API returns the latest saved snapshot
 - when a free source fails, the API falls back to the latest saved snapshot when one exists
-- U.S. institutional `net_buy` / `net_sell` remain explicitly unsupported in this free-only app
 
 Available ranking types per market:
 
@@ -215,8 +214,8 @@ Data sources:
   - `RANKINGS_UNIVERSE_US`
   - `RANKINGS_UNIVERSE_TW`
 - TWSE `net_buy` / `net_sell` use TWSE T86 daily institutional data
-- TPEx `net_buy` / `net_sell` use TPEx daily institutional data
-- both are daily, not intraday real-time
+- TPEx `net_buy` / `net_sell` use TPEx institutional daily data
+- both are daily, not intraday real-time; TPEx institutional rankings can be temporarily unavailable when the free public source is down
 - U.S. institutional `net_buy` / `net_sell` are unsupported because this app does not add fake data or paid-provider integrations
 - free unofficial quote sources can be delayed, rate-limited, or temporarily unavailable
 
