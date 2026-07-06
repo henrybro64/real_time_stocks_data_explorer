@@ -6,9 +6,10 @@ import { formatCurrency, formatLastUpdated, formatPercent, formatSignedNumber } 
 
 type Props = {
   item: QuoteResponse;
+  refreshFailed?: boolean;
 };
 
-export function QuoteSummary({ item }: Props) {
+export function QuoteSummary({ item, refreshFailed = false }: Props) {
   const { language, t, formatNumber } = useLanguage();
   const { stock, quote } = item;
 
@@ -41,7 +42,11 @@ export function QuoteSummary({ item }: Props) {
       </div>
       <div className="app-quote-status-row">
         <p className="app-section-meta">{t("quote.updatedAt", { time: formatLastUpdated(quote.timestamp) })}</p>
-        <QuoteFreshnessTag isMarketOpen={quote.isMarketOpen} timestamp={quote.timestamp} />
+        <QuoteFreshnessTag
+          isMarketOpen={quote.isMarketOpen}
+          refreshFailed={refreshFailed}
+          timestamp={quote.timestamp}
+        />
       </div>
       <Grid className="app-stat-grid" condensed fullWidth>
         <Column className="app-stat-column" sm={2} md={4} lg={3}>

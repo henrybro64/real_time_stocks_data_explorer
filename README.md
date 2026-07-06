@@ -142,8 +142,18 @@ How stale vs unavailable is handled in the UI:
 - if a refresh fails but previously loaded data is still available, the UI shows a stale notice
   instead of pretending the cached values are newly refreshed
 - if no usable data is available, the UI shows an unavailable / error state
-- stock detail and watchlist cards both follow this rule, so a failed refresh does not silently
-  look fully current
+- stock detail, search cards, and watchlist cards pass `refreshFailed` into the quote freshness badge
+  so a failed refresh cannot keep showing a "live" tag over cached values
+
+Cross-view request notices (`RequestStateNotice`):
+
+- shared UI notice kinds used across portfolio, assets, markets, watchlist, rankings, and stock detail:
+  - `stale`: latest refresh failed, but previously loaded data is still shown
+  - `unavailable`: provider/data source is temporarily unavailable and no usable cached data exists
+  - `error`: generic request failure
+  - `auth` / `permission`: user/session access problems
+- this is separate from quote badge freshness (`live` / `delayed` / `stale` / `closed`), which is
+  derived from quote timestamps and market-open state
 
 Rankings freshness metadata:
 
@@ -165,6 +175,7 @@ Current implementation notes:
   is not a separate backend `freshnessStatus` field for quote endpoints
 - rankings freshness is more explicit because snapshot/cache/public-source states are already part
   of that backend contract
+- non-institutional rankings also reuse the quote freshness badge for the latest item timestamp
 - free/public and unofficial sources can be delayed, incomplete, rate-limited, or temporarily
   unavailable, so the UI favors clear stale/unavailable messaging over pretending every value is
   live

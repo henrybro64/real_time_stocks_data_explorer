@@ -167,10 +167,12 @@ export function StockDetailPage({ stockId = "" }: Props) {
         {quoteRefreshFailed ? (
           <div className="app-section-stack">
             <RequestStateNotice kind="stale" scopeLabel={decodedStockId} />
-            <QuoteSummary item={quoteQuery.data} />
+            <QuoteSummary item={quoteQuery.data} refreshFailed={quoteRefreshFailed} />
           </div>
         ) : null}
-        {!quoteRefreshFailed ? <QuoteSummary item={quoteQuery.data} /> : null}
+        {!quoteRefreshFailed ? (
+          <QuoteSummary item={quoteQuery.data} refreshFailed={false} />
+        ) : null}
       </Column>
       <Column className="app-column-spacing" sm={4} md={8} lg={16}>
         <Tile className="app-section-tile">

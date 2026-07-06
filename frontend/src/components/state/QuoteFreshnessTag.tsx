@@ -45,7 +45,7 @@ export function QuoteFreshnessTag({
           : "gray";
 
   return (
-    <Tag className={className} size="sm" type={tagType}>
+    <Tag className={className} data-testid="quote-freshness-tag" size="sm" type={tagType}>
       {copy[freshness]}
     </Tag>
   );
