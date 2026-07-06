@@ -120,6 +120,66 @@ Notes:
 - `yfinance` data can be delayed, incomplete, or unavailable for some symbols
 - AI output is informational only and is not financial advice
 
+### Data Freshness And Availability
+
+The app distinguishes between quote freshness, stale cached UI state, and provider-unavailable
+states instead of treating all data as equally current.
+
+Quote-backed stock views (`/stock/[stockId]`, search result cards, watchlist cards):
+
+- backend quote responses expose:
+  - `quote.timestamp`: the provider timestamp / last updated time for the quote
+  - `quote.isMarketOpen`: whether that market was open when the quote was fetched
+- the frontend derives the quote freshness badge from those fields:
+  - `live`
+  - `delayed`
+  - `stale`
+  - `closed`
+- the UI also shows a human-readable "updated at" timestamp next to the quote
+
+How stale vs unavailable is handled in the UI:
+
+- if a refresh fails but previously loaded data is still available, the UI shows a stale notice
+  instead of pretending the cached values are newly refreshed
+- if no usable data is available, the UI shows an unavailable / error state
+- stock detail, search cards, and watchlist cards pass `refreshFailed` into the quote freshness badge
+  so a failed refresh cannot keep showing a "live" tag over cached values
+
+Cross-view request notices (`RequestStateNotice`):
+
+- shared UI notice kinds used across portfolio, assets, markets, watchlist, rankings, and stock detail:
+  - `stale`: latest refresh failed, but previously loaded data is still shown
+  - `unavailable`: provider/data source is temporarily unavailable and no usable cached data exists
+  - `error`: generic request failure
+  - `auth` / `permission`: user/session access problems
+- this is separate from quote badge freshness (`live` / `delayed` / `stale` / `closed`), which is
+  derived from quote timestamps and market-open state
+
+Rankings freshness metadata:
+
+- rankings responses expose:
+  - `timestamp`
+  - `sourceType`
+  - `dataFreshnessLabel`
+  - `warningMessage`
+  - `unsupportedReason`
+- the rankings page renders:
+  - a freshness label
+  - a snapshot timestamp
+  - a source/source-type badge
+  - warning or unsupported copy when relevant
+
+Current implementation notes:
+
+- quote freshness is currently derived on the frontend from `timestamp` + `isMarketOpen`; there
+  is not a separate backend `freshnessStatus` field for quote endpoints
+- rankings freshness is more explicit because snapshot/cache/public-source states are already part
+  of that backend contract
+- non-institutional rankings also reuse the quote freshness badge for the latest item timestamp
+- free/public and unofficial sources can be delayed, incomplete, rate-limited, or temporarily
+  unavailable, so the UI favors clear stale/unavailable messaging over pretending every value is
+  live
+
 ### Market Rankings (free-only)
 
 The `/rankings` page supports both Taiwan and U.S. markets using only free data sources and
