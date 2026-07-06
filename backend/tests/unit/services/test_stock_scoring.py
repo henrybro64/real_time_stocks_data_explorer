@@ -98,6 +98,56 @@ def test_stock_scoring_engine_rejects_duplicate_factor_names() -> None:
         )
 
 
+def test_stock_scoring_engine_rejects_whitespace_padded_duplicate_factor_names() -> None:
+    @dataclass(frozen=True)
+    class _PaddedRevenueGrowthFactor:
+        name: str = " revenue_growth "
+        weight: float = 0.6
+
+        def score(self, stock: _StockSnapshot) -> float:
+            return stock.revenue_growth
+
+    with pytest.raises(ValueError, match="Duplicate scoring factor name: revenue_growth"):
+        StockScoringEngine(
+            [_RevenueGrowthFactor(), _PaddedRevenueGrowthFactor()],
+        )
+
+
+def test_stock_scoring_engine_normalizes_factor_names_in_results() -> None:
+    @dataclass(frozen=True)
+    class _PaddedRevenueGrowthFactor:
+        name: str = " revenue_growth "
+        weight: float = 1.0
+
+        def score(self, stock: _StockSnapshot) -> float:
+            return stock.revenue_growth
+
+    stock = _StockSnapshot(
+        revenue_growth=8.0,
+        eps_growth=0.0,
+        analyst_rating=0.0,
+    )
+    engine = StockScoringEngine([_PaddedRevenueGrowthFactor()])
+
+    result = engine.score(stock)
+
+    assert result.factor_scores[0].factor_name == "revenue_growth"
+
+
+@pytest.mark.parametrize("factor_name", ["", "   "])
+def test_stock_scoring_engine_rejects_empty_factor_names(factor_name: str) -> None:
+    @dataclass(frozen=True)
+    class _BlankNameFactor:
+        name: str = factor_name
+        weight: float = 1.0
+
+        def score(self, stock: _StockSnapshot) -> float:
+            return stock.revenue_growth
+
+    with pytest.raises(ValueError, match="Scoring factor name must not be empty"):
+        StockScoringEngine([_BlankNameFactor()])
+
+
 def test_stock_scoring_engine_handles_empty_factor_list() -> None:
     stock = _StockSnapshot(
         revenue_growth=8.0,

@@ -54,7 +54,7 @@ class StockScoringEngine(Generic[TStock]):
             weight = float(factor.weight)
             factor_scores.append(
                 FactorScore(
-                    factor_name=factor.name,
+                    factor_name=factor.name.strip(),
                     raw_score=raw_score,
                     weight=weight,
                     weighted_score=raw_score * weight,
