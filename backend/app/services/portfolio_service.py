@@ -196,6 +196,15 @@ class PortfolioService:
         return round(position.quantity * position.average_cost, 2)
 
     @staticmethod
+    def convert_to_usd(currency: str, value: float, usd_twd_rate: float) -> float:
+        normalized = PortfolioService.normalize_currency(currency)
+        if normalized == "USD":
+            return value
+        if normalized == "TWD":
+            return value / usd_twd_rate if usd_twd_rate > 0 else 0.0
+        return 0.0
+
+    @staticmethod
     def build_metrics(
         position: PortfolioPosition,
         quote: QuoteRecord | None,
@@ -298,6 +307,24 @@ class PortfolioService:
             "combinedGainTwd": combined_gain_twd,
             "combinedGainPercent": combined_gain_percent,
         }
+
+    @staticmethod
+    def summarize_allocation_percents(
+        entries: list[tuple[str, float]],
+        usd_twd_rate: float,
+    ) -> list[float]:
+        market_values_usd = [
+            PortfolioService.convert_to_usd(currency, market_value, usd_twd_rate)
+            for currency, market_value in entries
+        ]
+        total_market_value_usd = sum(market_values_usd)
+        if total_market_value_usd <= 0:
+            return [0.0] * len(entries)
+
+        return [
+            round((market_value_usd / total_market_value_usd) * 100, 2)
+            for market_value_usd in market_values_usd
+        ]
 
     def _validate_stock(self, stock_id: str) -> StockRecord:
         stock = quote_service.get_stock(stock_id)

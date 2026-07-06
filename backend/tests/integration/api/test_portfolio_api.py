@@ -211,6 +211,100 @@ def test_portfolio_summary_includes_backend_calculated_combined_gain(
     assert response.json()["combinedGainUsd"] == 40.0
     assert response.json()["combinedGainTwd"] == 1280.0
     assert response.json()["combinedGainPercent"] == 11.11
+    assert response.json()["positions"][0]["allocationPercent"] == 100.0
+
+
+def test_portfolio_summary_includes_per_holding_allocation_percent(
+    monkeypatch,
+    client,
+) -> None:
+    stocks = {
+        "US:AAPL": stock_record(
+            "US:AAPL",
+            market="US",
+            symbol="AAPL",
+            name="Apple Inc.",
+            exchange="NASDAQ",
+            currency="USD",
+            timezone="America/New_York",
+            name_en="Apple Inc.",
+        ),
+        "TW:2330": stock_record(
+            "TW:2330",
+            market="TW",
+            symbol="2330",
+            name="台積電",
+            exchange="TWSE",
+            currency="TWD",
+            timezone="Asia/Taipei",
+            name_en="TSMC",
+            name_zh_tw="台積電",
+        ),
+    }
+    quotes = {
+        "US:AAPL": quote_record(
+            "US:AAPL",
+            last_price=200.0,
+            change=1.0,
+            change_percent=0.5,
+            previous_close=199.0,
+            timestamp="2026-04-01T09:30:00-04:00",
+            is_market_open=True,
+        ),
+        "TW:2330": quote_record(
+            "TW:2330",
+            last_price=950.0,
+            change=5.0,
+            change_percent=0.53,
+            previous_close=945.0,
+            timestamp="2026-04-01T09:00:00+08:00",
+            is_market_open=True,
+        ),
+    }
+    monkeypatch.setattr(quote_service, "get_stock", lambda stock_id: stocks.get(stock_id))
+    monkeypatch.setattr(quote_service, "get_quote", lambda stock_id: quotes.get(stock_id))
+    monkeypatch.setattr(
+        portfolio_routes,
+        "get_usd_twd_fx_snapshot",
+        lambda: {
+            "pair": "USD/TWD",
+            "rate": 32.0,
+            "timestamp": "2026-04-01T01:00:00Z",
+        },
+    )
+
+    first = client.post(
+        "/api/portfolio/positions",
+        json={
+            "stockId": "US:AAPL",
+            "quantity": 2,
+            "averageCost": 180,
+            "currency": "USD",
+            "notes": None,
+        },
+    )
+    second = client.post(
+        "/api/portfolio/positions",
+        json={
+            "stockId": "TW:2330",
+            "quantity": 2,
+            "averageCost": 900,
+            "currency": "TWD",
+            "notes": None,
+        },
+    )
+    response = client.get("/api/portfolio/summary")
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert response.status_code == 200
+
+    positions = response.json()["positions"]
+    assert positions[0]["stockId"] == "US:AAPL"
+    assert positions[0]["allocationPercent"] == 77.1
+    assert positions[1]["stockId"] == "TW:2330"
+    assert positions[1]["allocationPercent"] == 22.9
+    assert round(sum(item["allocationPercent"] for item in positions), 2) == 100.0
 
 
 def test_empty_portfolio_summary_returns_zero_gain_metrics(monkeypatch, client) -> None:

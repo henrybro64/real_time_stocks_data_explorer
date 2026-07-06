@@ -156,6 +156,7 @@ const portfolioSummary: PortfolioSummary = {
       quantity: 2,
       lastPrice: 950,
       marketValue: 1_900,
+      allocationPercent: 13.69,
       timestamp: "2026-04-01T09:00:00+08:00",
     },
     {
@@ -165,6 +166,7 @@ const portfolioSummary: PortfolioSummary = {
       quantity: 2,
       lastPrice: 187.23,
       marketValue: 374.46,
+      allocationPercent: 86.31,
       timestamp: "2026-04-01T09:30:00-04:00",
     },
   ],

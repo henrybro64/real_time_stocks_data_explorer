@@ -137,6 +137,25 @@ def test_summarize_currency_buckets_normalizes_currency_labels() -> None:
     }
 
 
+def test_summarize_allocation_percents_mixed_usd_and_twd_portfolio() -> None:
+    allocations = PortfolioService.summarize_allocation_percents(
+        [("USD", 250.0), ("TWD", 3200.0)],
+        32.0,
+    )
+
+    assert allocations == [71.43, 28.57]
+    assert round(sum(allocations), 2) == 100.0
+
+
+def test_summarize_allocation_percents_returns_zero_when_total_is_zero() -> None:
+    allocations = PortfolioService.summarize_allocation_percents(
+        [("USD", 0.0), ("TWD", 0.0)],
+        32.0,
+    )
+
+    assert allocations == [0.0, 0.0]
+
+
 def test_validate_holding_currency_rejects_mismatch() -> None:
     stock = SimpleNamespace(currency="TWD")
 

@@ -155,6 +155,14 @@ def get_portfolio_summary(
     usd_twd_rate = float(fx_snapshot["rate"])
     rows, position_entries, skipped_stock_ids = _summarize_positions(positions)
     totals = portfolio_service.summarize_position_buckets(position_entries, usd_twd_rate)
+    allocation_percents = portfolio_service.summarize_allocation_percents(
+        [(currency, market_value) for currency, market_value, _ in position_entries],
+        usd_twd_rate,
+    )
+    rows_with_allocations = [
+        row.model_copy(update={"allocationPercent": allocation_percent})
+        for row, allocation_percent in zip(rows, allocation_percents, strict=False)
+    ]
 
     return PortfolioSummaryResponse(
         totalUsd=totals["totalUsd"],
@@ -166,7 +174,7 @@ def get_portfolio_summary(
         combinedGainPercent=totals["combinedGainPercent"],
         usdTwdRate=usd_twd_rate,
         fxTimestamp=str(fx_snapshot["timestamp"]),
-        positions=rows,
+        positions=rows_with_allocations,
         skippedStockIds=skipped_stock_ids,
     )
 
@@ -347,6 +355,7 @@ def _summarize_positions(
                 quantity=position.quantity,
                 lastPrice=quote.last_price if quote is not None else None,
                 marketValue=market_value,
+                allocationPercent=0.0,
                 timestamp=quote.timestamp if quote is not None else None,
             )
         )
