@@ -155,6 +155,8 @@ export type PortfolioPosition = {
   stockId: string;
   quantity: number;
   averageCost: number;
+  currentPrice: number | null;
+  costBasis: number;
   currency: string;
   notes: string | null;
   stock: Stock;

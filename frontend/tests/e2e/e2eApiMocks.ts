@@ -171,6 +171,8 @@ type PortfolioPositionRow = {
   stockId: string;
   quantity: number;
   averageCost: number;
+  currentPrice: number | null;
+  costBasis: number;
   currency: string;
   notes: string | null;
   stock: typeof E2E_TW_STOCK_SEARCH_RESULT;
@@ -278,6 +280,8 @@ function buildPortfolioPosition(
     stockId: payload.stockId,
     quantity: payload.quantity,
     averageCost: payload.averageCost,
+    currentPrice: E2E_TW_QUOTE.lastPrice,
+    costBasis,
     currency: payload.currency,
     notes: payload.notes ?? null,
     stock: E2E_TW_STOCK_SEARCH_RESULT,
@@ -574,6 +578,8 @@ export async function installE2eApiMocks(page: Page): Promise<void> {
           ...current,
           quantity,
           averageCost,
+          currentPrice: E2E_TW_QUOTE.lastPrice,
+          costBasis,
           currency: payload.currency ?? current.currency,
           notes: payload.notes ?? current.notes,
           marketValue,

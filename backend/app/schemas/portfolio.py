@@ -24,6 +24,8 @@ class PortfolioPositionResponse(BaseModel):
     stockId: str
     quantity: float
     averageCost: float
+    currentPrice: float | None = None
+    costBasis: float
     currency: str
     notes: str | None = None
     stock: StockResponse

@@ -6,6 +6,14 @@ from app.models.quote import QuoteRecord
 from app.services.portfolio_service import PortfolioService
 
 
+def test_build_cost_basis_rounds_position_value() -> None:
+    position = SimpleNamespace(quantity=1.5, average_cost=100.125)
+
+    cost_basis = PortfolioService.build_cost_basis(position)
+
+    assert cost_basis == 150.19
+
+
 def test_build_metrics_calculates_market_value_and_pl() -> None:
     position = SimpleNamespace(quantity=2.0, average_cost=100.0)
     quote = QuoteRecord(
