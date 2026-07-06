@@ -188,6 +188,7 @@ export type PortfolioSummaryPosition = {
   quantity: number;
   lastPrice: number | null;
   marketValue: number;
+  allocationPercent: number;
   timestamp: string | null;
 };
 

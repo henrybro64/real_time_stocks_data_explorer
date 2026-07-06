@@ -321,6 +321,8 @@ function buildPortfolioSummary(positions: PortfolioPositionRow[]) {
       quantity: position.quantity,
       lastPrice: position.quote.lastPrice,
       marketValue: position.marketValue,
+      allocationPercent:
+        twdTotal === 0 ? 0 : Number(((position.marketValue / twdTotal) * 100).toFixed(2)),
       timestamp: position.quote.timestamp,
     })),
     skippedStockIds: [],

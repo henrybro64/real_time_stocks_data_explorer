@@ -67,6 +67,7 @@ class PortfolioSummaryPosition(BaseModel):
     quantity: float
     lastPrice: float | None = None
     marketValue: float
+    allocationPercent: float
     timestamp: str | None = None
 
 
