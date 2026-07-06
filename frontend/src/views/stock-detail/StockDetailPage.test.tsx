@@ -11,6 +11,18 @@ vi.mock("next/link", () => ({
   default: ({ children, href }: { children: ReactNode; href: string }) => <a href={href}>{children}</a>,
 }));
 
+const { useQueryMock } = vi.hoisted(() => ({
+  useQueryMock: vi.fn(),
+}));
+
+vi.mock("@tanstack/react-query", async () => {
+  const actual = await vi.importActual<typeof import("@tanstack/react-query")>("@tanstack/react-query");
+  return {
+    ...actual,
+    useQuery: (options: { queryKey: unknown[] }) => useQueryMock(options),
+  };
+});
+
 const sampleQuote: QuoteResponse = {
   stock: {
     id: "US:NVDA",
@@ -37,16 +49,6 @@ const sampleQuote: QuoteResponse = {
     isMarketOpen: true,
   },
 };
-
-const useQueryMock = vi.fn();
-
-vi.mock("@tanstack/react-query", async () => {
-  const actual = await vi.importActual<typeof import("@tanstack/react-query")>("@tanstack/react-query");
-  return {
-    ...actual,
-    useQuery: (options: { queryKey: unknown[] }) => useQueryMock(options),
-  };
-});
 
 function renderStockDetailPage() {
   const queryClient = new QueryClient({
