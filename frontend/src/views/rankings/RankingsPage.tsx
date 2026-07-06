@@ -482,9 +482,6 @@ export function RankingsPage() {
                         <TableHeader>{t("rankings.column.lastPrice")}</TableHeader>
                         <TableHeader>{t("rankings.column.changePercent")}</TableHeader>
                         <TableHeader>{t("rankings.column.volume")}</TableHeader>
-                        {!showValuationColumns ? (
-                          <TableHeader>{t("rankings.column.volumeChangePercent")}</TableHeader>
-                        ) : null}
                         {showNetBuySellColumn ? <TableHeader>{t("rankings.column.netBuySell")}</TableHeader> : null}
                         {showValuationColumns ? <TableHeader>{t("rankings.column.peRatio")}</TableHeader> : null}
                         {showValuationColumns ? <TableHeader>{t("rankings.column.peRatioSource")}</TableHeader> : null}
@@ -507,9 +504,6 @@ export function RankingsPage() {
                           </TableCell>
                           <TableCell>{formatMaybePercent(item.changePercent)}</TableCell>
                           <TableCell>{formatMaybeNumber(item.volume, formatNumber)}</TableCell>
-                          {!showValuationColumns ? (
-                            <TableCell>{formatMaybePercent(item.volumeDeltaPercent)}</TableCell>
-                          ) : null}
                           {showNetBuySellColumn ? (
                             <TableCell>{formatMaybeNumber(item.netBuySellShares, formatNumber)}</TableCell>
                           ) : null}

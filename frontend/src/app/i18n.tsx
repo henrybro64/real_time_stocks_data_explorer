@@ -132,7 +132,6 @@ type TranslationKey =
   | "rankings.column.lastPrice"
   | "rankings.column.changePercent"
   | "rankings.column.volume"
-  | "rankings.column.volumeChangePercent"
   | "rankings.column.netBuySell"
   | "rankings.column.peRatio"
   | "rankings.column.peRatioSource"
@@ -504,7 +503,6 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "rankings.column.lastPrice": "Last price",
     "rankings.column.changePercent": "Change %",
     "rankings.column.volume": "Volume",
-    "rankings.column.volumeChangePercent": "Volume change %",
     "rankings.column.netBuySell": "Net buy / sell",
     "rankings.column.peRatio": "P/E",
     "rankings.column.peRatioSource": "P/E source",
@@ -928,7 +926,6 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "rankings.column.lastPrice": "最新價",
     "rankings.column.changePercent": "漲跌幅",
     "rankings.column.volume": "成交量",
-    "rankings.column.volumeChangePercent": "量變化 %",
     "rankings.column.netBuySell": "買賣超",
     "rankings.column.peRatio": "本益比",
     "rankings.column.peRatioSource": "本益比來源",

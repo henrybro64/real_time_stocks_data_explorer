@@ -263,6 +263,7 @@ describe("RankingsPage", () => {
     expect(screen.getByTestId("rankings-snapshot-timestamp")).toHaveTextContent(
       "快照時間:",
     );
+    expect(screen.queryByRole("columnheader", { name: "量變化 %" })).not.toBeInTheDocument();
   });
 
   it("defaults market to US when only U.S. is within hour before open", async () => {
@@ -388,6 +389,7 @@ describe("RankingsPage", () => {
       "免費非官方報價來源可能延遲，或暫時無法提供資料。",
     );
     expect(screen.getByTestId("rankings-realtime-tag")).toHaveTextContent("即時");
+    expect(screen.queryByRole("columnheader", { name: "量變化 %" })).not.toBeInTheDocument();
 
     await user.click(screen.getByTestId("rankings-tab-change_up"));
 
@@ -418,6 +420,7 @@ describe("RankingsPage", () => {
     expect(await screen.findByRole("columnheader", { name: "本益比" })).toBeInTheDocument();
     expect(screen.getByRole("columnheader", { name: "本益比來源" })).toBeInTheDocument();
     expect(screen.getByRole("columnheader", { name: "估值日期" })).toBeInTheDocument();
+    expect(screen.queryByRole("columnheader", { name: "量變化 %" })).not.toBeInTheDocument();
     expect(screen.getByText("18.50")).toBeInTheDocument();
     expect(screen.getByText("TWSE official daily P/E")).toBeInTheDocument();
     expect(screen.getByText("2026-07-03")).toBeInTheDocument();
