@@ -1,3 +1,4 @@
+import pytest
 from fastapi import HTTPException
 
 from app.api.routes import themes as themes_route
@@ -58,10 +59,8 @@ def test_get_theme_stocks_route_returns_404_for_unknown_theme(monkeypatch) -> No
         _raise,
     )
 
-    try:
+    with pytest.raises(HTTPException) as exc_info:
         themes_route.get_theme_stocks("missing")
-    except HTTPException as exc:
-        assert exc.status_code == 404
-        assert exc.detail == "Unknown theme: missing"
-    else:
-        raise AssertionError("Expected HTTPException for unknown theme")
+
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail == "Unknown theme: missing"
