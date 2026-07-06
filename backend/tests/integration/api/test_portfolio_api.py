@@ -174,6 +174,16 @@ def test_portfolio_summary_renormalizes_allocation_when_stocks_are_skipped(
         timezone="America/New_York",
         name_en="Apple Inc.",
     )
+    msft = stock_record(
+        "US:MSFT",
+        market="US",
+        symbol="MSFT",
+        name="Microsoft Corp.",
+        exchange="NASDAQ",
+        currency="USD",
+        timezone="America/New_York",
+        name_en="Microsoft Corp.",
+    )
     aapl_quote = quote_record(
         "US:AAPL",
         last_price=200.0,
@@ -183,16 +193,20 @@ def test_portfolio_summary_renormalizes_allocation_when_stocks_are_skipped(
         timestamp="2026-04-01T09:30:00-04:00",
         is_market_open=True,
     )
-
-    def get_stock(stock_id: str):
-        return aapl if stock_id == "US:AAPL" else None
-
-    monkeypatch.setattr(quote_service, "get_stock", get_stock)
-    monkeypatch.setattr(
-        quote_service,
-        "get_quote",
-        lambda stock_id: aapl_quote if stock_id == "US:AAPL" else None,
+    msft_quote = quote_record(
+        "US:MSFT",
+        last_price=400.0,
+        change=1.0,
+        change_percent=0.5,
+        previous_close=399.0,
+        timestamp="2026-04-01T09:30:00-04:00",
+        is_market_open=True,
     )
+    stocks = {"US:AAPL": aapl, "US:MSFT": msft}
+    quotes = {"US:AAPL": aapl_quote, "US:MSFT": msft_quote}
+
+    monkeypatch.setattr(quote_service, "get_stock", lambda stock_id: stocks.get(stock_id))
+    monkeypatch.setattr(quote_service, "get_quote", lambda stock_id: quotes.get(stock_id))
     monkeypatch.setattr(
         portfolio_routes,
         "get_usd_twd_fx_snapshot",
@@ -222,6 +236,13 @@ def test_portfolio_summary_renormalizes_allocation_when_stocks_are_skipped(
             "currency": "USD",
             "notes": None,
         },
+    )
+
+    monkeypatch.setattr(quote_service, "get_stock", lambda stock_id: aapl if stock_id == "US:AAPL" else None)
+    monkeypatch.setattr(
+        quote_service,
+        "get_quote",
+        lambda stock_id: aapl_quote if stock_id == "US:AAPL" else None,
     )
     response = client.get("/api/portfolio/summary")
 
