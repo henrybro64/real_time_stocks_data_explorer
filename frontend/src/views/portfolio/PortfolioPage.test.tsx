@@ -79,6 +79,8 @@ function buildPosition({
     stockId,
     quantity: 2,
     averageCost: lastPrice - 5,
+    currentPrice: lastPrice,
+    costBasis: (lastPrice - 5) * 2,
     currency,
     notes: null,
     stock: {

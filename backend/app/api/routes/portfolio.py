@@ -336,7 +336,7 @@ def _summarize_positions(
             continue
         quote = quote_service.get_quote(position.stock_id)
         market_value, unrealized_pl, _ = portfolio_service.build_metrics(position, quote)
-        cost_basis = round(market_value - unrealized_pl, 2)
+        cost_basis = portfolio_service.build_cost_basis(position)
         currency = portfolio_service.normalize_currency(stock.currency)
         entries.append((currency, market_value, cost_basis))
         rows.append(
@@ -374,6 +374,8 @@ def _to_response(
         stockId=position.stock_id,
         quantity=position.quantity,
         averageCost=position.average_cost,
+        currentPrice=quote.last_price if quote is not None else None,
+        costBasis=portfolio_service.build_cost_basis(position),
         currency=position.currency,
         notes=position.notes,
         stock=_stock_schema(stock),

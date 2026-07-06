@@ -40,6 +40,8 @@ function buildPosition(id: number, stockId: string): PortfolioPosition {
     stockId,
     quantity: 2,
     averageCost: 100,
+    currentPrice: 105,
+    costBasis: 200,
     currency: "USD",
     notes: null,
     stock: {

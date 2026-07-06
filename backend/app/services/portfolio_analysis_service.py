@@ -375,11 +375,10 @@ def _build_holding(
     usd_twd_rate: float,
 ) -> PortfolioAnalysisHolding:
     currency = stock.currency.strip().upper()
-    cost_basis = round(position.quantity * position.average_cost, 2)
-    market_value = round(position.quantity * quote.last_price, 2)
-    unrealized_pl = round(market_value - cost_basis, 2)
-    unrealized_pl_percent = (
-        0.0 if cost_basis == 0 else round((unrealized_pl / cost_basis) * 100, 2)
+    cost_basis = portfolio_service.build_cost_basis(position)
+    market_value, unrealized_pl, unrealized_pl_percent = portfolio_service.build_metrics(
+        position,
+        quote,
     )
     cost_basis_usd = round(_convert_to_usd(currency, cost_basis, usd_twd_rate), 2)
     cost_basis_twd = round(_convert_to_twd(currency, cost_basis, usd_twd_rate), 2)

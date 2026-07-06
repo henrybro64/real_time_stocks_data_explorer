@@ -192,13 +192,17 @@ class PortfolioService:
                 raise ValueError(f"Asset not found: {asset_id}")
 
     @staticmethod
+    def build_cost_basis(position: PortfolioPosition) -> float:
+        return round(position.quantity * position.average_cost, 2)
+
+    @staticmethod
     def build_metrics(
         position: PortfolioPosition,
         quote: QuoteRecord | None,
     ) -> tuple[float, float, float]:
-        cost_basis = position.quantity * position.average_cost
+        cost_basis = PortfolioService.build_cost_basis(position)
         if quote is None:
-            market_value = round(cost_basis, 2)
+            market_value = cost_basis
             return market_value, 0.0, 0.0
         market_value = round(position.quantity * quote.last_price, 2)
         unrealized_pl = round(market_value - cost_basis, 2)
