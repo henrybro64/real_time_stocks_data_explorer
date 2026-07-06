@@ -503,12 +503,7 @@ def _total_unrealized_pl_percent(
 
 
 def _convert_to_usd(currency: str, value: float, usd_twd_rate: float) -> float:
-    normalized = currency.strip().upper()
-    if normalized == "USD":
-        return value
-    if normalized == "TWD":
-        return value / usd_twd_rate if usd_twd_rate > 0 else 0.0
-    return 0.0
+    return portfolio_service.convert_to_usd(currency, value, usd_twd_rate)
 
 
 def _convert_to_twd(currency: str, value: float, usd_twd_rate: float) -> float:

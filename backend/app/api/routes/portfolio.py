@@ -161,7 +161,7 @@ def get_portfolio_summary(
     )
     rows_with_allocations = [
         row.model_copy(update={"allocationPercent": allocation_percent})
-        for row, allocation_percent in zip(rows, allocation_percents, strict=False)
+        for row, allocation_percent in zip(rows, allocation_percents, strict=True)
     ]
 
     return PortfolioSummaryResponse(

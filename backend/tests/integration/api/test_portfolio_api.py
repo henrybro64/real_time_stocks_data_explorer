@@ -157,6 +157,139 @@ def test_portfolio_summary_skips_unknown_stocks(monkeypatch, client) -> None:
     assert create.status_code == 200
     assert response.status_code == 200
     assert response.json()["skippedStockIds"] == ["US:AAPL"]
+    assert response.json()["positions"] == []
+
+
+def test_portfolio_summary_renormalizes_allocation_when_stocks_are_skipped(
+    monkeypatch,
+    client,
+) -> None:
+    aapl = stock_record(
+        "US:AAPL",
+        market="US",
+        symbol="AAPL",
+        name="Apple Inc.",
+        exchange="NASDAQ",
+        currency="USD",
+        timezone="America/New_York",
+        name_en="Apple Inc.",
+    )
+    aapl_quote = quote_record(
+        "US:AAPL",
+        last_price=200.0,
+        change=1.0,
+        change_percent=0.5,
+        previous_close=199.0,
+        timestamp="2026-04-01T09:30:00-04:00",
+        is_market_open=True,
+    )
+
+    def get_stock(stock_id: str):
+        return aapl if stock_id == "US:AAPL" else None
+
+    monkeypatch.setattr(quote_service, "get_stock", get_stock)
+    monkeypatch.setattr(
+        quote_service,
+        "get_quote",
+        lambda stock_id: aapl_quote if stock_id == "US:AAPL" else None,
+    )
+    monkeypatch.setattr(
+        portfolio_routes,
+        "get_usd_twd_fx_snapshot",
+        lambda: {
+            "pair": "USD/TWD",
+            "rate": 32.0,
+            "timestamp": "2026-04-01T01:00:00Z",
+        },
+    )
+
+    first = client.post(
+        "/api/portfolio/positions",
+        json={
+            "stockId": "US:AAPL",
+            "quantity": 1,
+            "averageCost": 180,
+            "currency": "USD",
+            "notes": None,
+        },
+    )
+    second = client.post(
+        "/api/portfolio/positions",
+        json={
+            "stockId": "US:MSFT",
+            "quantity": 1,
+            "averageCost": 300,
+            "currency": "USD",
+            "notes": None,
+        },
+    )
+    response = client.get("/api/portfolio/summary")
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["skippedStockIds"] == ["US:MSFT"]
+    assert len(payload["positions"]) == 1
+    assert payload["positions"][0]["stockId"] == "US:AAPL"
+    assert payload["positions"][0]["allocationPercent"] == 100.0
+
+
+def test_portfolio_summary_uses_cost_basis_for_allocation_when_quote_missing(
+    monkeypatch,
+    client,
+) -> None:
+    stock = stock_record(
+        "TW:2330",
+        market="TW",
+        symbol="2330",
+        name="台積電",
+        exchange="TWSE",
+        currency="TWD",
+        timezone="Asia/Taipei",
+        name_en="TSMC",
+        name_zh_tw="台積電",
+    )
+    quote = quote_record(
+        "TW:2330",
+        last_price=950.0,
+        change=5.0,
+        change_percent=0.53,
+        previous_close=945.0,
+        timestamp="2026-04-01T09:00:00+08:00",
+        is_market_open=True,
+    )
+    quotes = {"TW:2330": quote}
+
+    monkeypatch.setattr(quote_service, "get_stock", lambda stock_id: stock if stock_id == "TW:2330" else None)
+    monkeypatch.setattr(quote_service, "get_quote", lambda stock_id: quotes.get(stock_id))
+    monkeypatch.setattr(
+        portfolio_routes,
+        "get_usd_twd_fx_snapshot",
+        lambda: {
+            "pair": "USD/TWD",
+            "rate": 32.0,
+            "timestamp": "2026-04-01T01:00:00Z",
+        },
+    )
+
+    create = client.post(
+        "/api/portfolio/positions",
+        json={
+            "stockId": "TW:2330",
+            "quantity": 3,
+            "averageCost": 900,
+            "currency": "TWD",
+            "notes": None,
+        },
+    )
+    quotes["TW:2330"] = None
+    response = client.get("/api/portfolio/summary")
+
+    assert create.status_code == 200
+    assert response.status_code == 200
+    assert response.json()["positions"][0]["marketValue"] == 2700.0
+    assert response.json()["positions"][0]["allocationPercent"] == 100.0
 
 
 def test_portfolio_summary_includes_backend_calculated_combined_gain(
@@ -301,9 +434,9 @@ def test_portfolio_summary_includes_per_holding_allocation_percent(
 
     positions = response.json()["positions"]
     assert positions[0]["stockId"] == "US:AAPL"
-    assert positions[0]["allocationPercent"] == 77.1
+    assert positions[0]["allocationPercent"] == 87.07
     assert positions[1]["stockId"] == "TW:2330"
-    assert positions[1]["allocationPercent"] == 22.9
+    assert positions[1]["allocationPercent"] == 12.93
     assert round(sum(item["allocationPercent"] for item in positions), 2) == 100.0
 
 
@@ -324,6 +457,7 @@ def test_empty_portfolio_summary_returns_zero_gain_metrics(monkeypatch, client) 
     assert response.json()["combinedGainUsd"] == 0.0
     assert response.json()["combinedGainTwd"] == 0.0
     assert response.json()["combinedGainPercent"] == 0.0
+    assert response.json()["positions"] == []
 
 
 def test_portfolio_position_rejects_currency_mismatch(monkeypatch, client) -> None:
