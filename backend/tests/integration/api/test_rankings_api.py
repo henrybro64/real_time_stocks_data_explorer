@@ -17,6 +17,7 @@ from app.schemas.rankings import (
 from app.schemas.stock import StockResponse
 from app.services import rankings_service as rankings_service_module
 from app.services import rankings_snapshot_service as snapshot_service_module
+from app.services import ranking_data_providers as ranking_data_providers_module
 from app.services.quote_service import quote_service
 from app.services import rankings_external_source as rankings_external_source_module
 from app.services.ranking_data_providers import RankingProviderRegistry, RankingQuery
@@ -400,10 +401,16 @@ def test_rankings_endpoint_returns_twse_valuation_low_pe_via_service(monkeypatch
             assert tw_board == "TWSE"
             return [(twse_stock, twse_quote)]
 
+    volume_source = _VolumeUniverseSource()
     monkeypatch.setattr(
         rankings_external_source_module,
         "rankings_external_source",
-        _VolumeUniverseSource(),
+        volume_source,
+    )
+    monkeypatch.setattr(
+        ranking_data_providers_module.ranking_provider_registry._quote_provider._service,
+        "_external_source",
+        volume_source,
     )
     monkeypatch.setattr(
         rankings_service_module,
