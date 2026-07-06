@@ -14,6 +14,45 @@ def test_build_cost_basis_rounds_position_value() -> None:
     assert cost_basis == 150.19
 
 
+def test_build_metrics_cost_basis_stays_consistent_with_rounded_helper() -> None:
+    position = SimpleNamespace(quantity=1.333, average_cost=10.005)
+    quote = QuoteRecord(
+        id="US:AAPL",
+        last_price=10.777,
+        change=0.0,
+        change_percent=0.0,
+        previous_close=10.7,
+        timestamp="2026-04-01T09:30:00-04:00",
+        is_market_open=True,
+    )
+
+    cost_basis = PortfolioService.build_cost_basis(position)
+    market_value, unrealized_pl, unrealized_pl_percent = PortfolioService.build_metrics(
+        position,
+        quote,
+    )
+
+    assert cost_basis == 13.34
+    assert market_value == 14.37
+    assert unrealized_pl == 1.03
+    assert unrealized_pl_percent == 7.72
+    assert round(market_value - unrealized_pl, 2) == cost_basis
+
+
+def test_summarize_position_buckets_uses_true_cost_basis_for_gain_percent() -> None:
+    true_cost_basis = 13.34
+    back_calculated_cost_basis = round(14.37 - 1.03, 2)
+    assert true_cost_basis == back_calculated_cost_basis
+
+    totals = PortfolioService.summarize_position_buckets(
+        [("USD", 14.37, true_cost_basis)],
+        32.0,
+    )
+
+    assert totals["combinedGainUsd"] == 1.03
+    assert totals["combinedGainPercent"] == 7.72
+
+
 def test_build_metrics_calculates_market_value_and_pl() -> None:
     position = SimpleNamespace(quantity=2.0, average_cost=100.0)
     quote = QuoteRecord(

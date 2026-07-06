@@ -79,7 +79,13 @@ def test_portfolio_positions_and_summary_handle_updates_and_missing_quotes(
     assert created["unrealizedPl"] == 100.0
     assert created["unrealizedPlPercent"] == 5.56
     assert update.status_code == 200
-    assert update.json()["quantity"] == 3.0
+    updated = update.json()
+    assert updated["quantity"] == 3.0
+    assert updated["currentPrice"] == 950.0
+    assert updated["costBasis"] == 2700.0
+    assert updated["marketValue"] == 2850.0
+    assert updated["unrealizedPl"] == 150.0
+    assert updated["unrealizedPlPercent"] == 5.56
     assert positions.status_code == 200
     assert positions.json()[0]["quote"] is None
     assert positions.json()[0]["currentPrice"] is None
