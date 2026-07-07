@@ -197,6 +197,10 @@ export type PortfolioSummary = {
   totalTwd: number;
   combinedUsd: number;
   combinedTwd: number;
+  totalCostUsd: number;
+  totalCostTwd: number;
+  combinedCostUsd: number;
+  combinedCostTwd: number;
   combinedGainUsd: number;
   combinedGainTwd: number;
   combinedGainPercent: number;

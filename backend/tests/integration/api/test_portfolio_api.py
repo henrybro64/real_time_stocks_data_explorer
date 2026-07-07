@@ -95,6 +95,8 @@ def test_portfolio_positions_and_summary_handle_updates_and_missing_quotes(
     assert positions.json()[0]["unrealizedPlPercent"] == 0.0
     assert summary.status_code == 200
     assert summary.json()["totalTwd"] == 2700.0
+    assert summary.json()["totalCostTwd"] == 2700.0
+    assert summary.json()["combinedCostUsd"] == 84.38
     assert summary.json()["combinedUsd"] == 84.38
     assert delete.status_code == 204
 
@@ -362,6 +364,8 @@ def test_portfolio_summary_includes_backend_calculated_combined_gain(
 
     assert create.status_code == 200
     assert response.status_code == 200
+    assert response.json()["totalCostUsd"] == 360.0
+    assert response.json()["combinedCostUsd"] == 360.0
     assert response.json()["combinedGainUsd"] == 40.0
     assert response.json()["combinedGainTwd"] == 1280.0
     assert response.json()["combinedGainPercent"] == 11.11
@@ -453,7 +457,13 @@ def test_portfolio_summary_includes_per_holding_allocation_percent(
     assert second.status_code == 200
     assert response.status_code == 200
 
-    positions = response.json()["positions"]
+    payload = response.json()
+    assert payload["totalCostUsd"] == 400.0
+    assert payload["totalCostTwd"] == 1800.0
+    assert payload["combinedCostUsd"] == 456.25
+    assert payload["combinedCostTwd"] == 14600.0
+
+    positions = payload["positions"]
     assert positions[0]["stockId"] == "US:AAPL"
     assert positions[0]["allocationPercent"] == 87.07
     assert positions[1]["stockId"] == "TW:2330"
@@ -475,6 +485,10 @@ def test_empty_portfolio_summary_returns_zero_gain_metrics(monkeypatch, client) 
     response = client.get("/api/portfolio/summary")
 
     assert response.status_code == 200
+    assert response.json()["totalCostUsd"] == 0.0
+    assert response.json()["totalCostTwd"] == 0.0
+    assert response.json()["combinedCostUsd"] == 0.0
+    assert response.json()["combinedCostTwd"] == 0.0
     assert response.json()["combinedGainUsd"] == 0.0
     assert response.json()["combinedGainTwd"] == 0.0
     assert response.json()["combinedGainPercent"] == 0.0

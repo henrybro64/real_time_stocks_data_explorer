@@ -49,6 +49,7 @@ def test_summarize_position_buckets_uses_true_cost_basis_for_gain_percent() -> N
         32.0,
     )
 
+    assert totals["combinedCostUsd"] == true_cost_basis
     assert totals["combinedGainUsd"] == 1.03
     assert totals["combinedGainPercent"] == 7.72
 
@@ -197,6 +198,10 @@ def test_summarize_position_buckets_mixed_usd_and_twd_portfolio() -> None:
         32.0,
     )
 
+    assert totals["totalCostUsd"] == 200.0
+    assert totals["totalCostTwd"] == 3000.0
+    assert totals["combinedCostUsd"] == 293.75
+    assert totals["combinedCostTwd"] == 9400.0
     assert totals["combinedGainUsd"] == 26.25
     assert totals["combinedGainTwd"] == 840.0
     assert totals["combinedGainPercent"] == 8.94
@@ -253,6 +258,15 @@ def test_summarize_position_buckets_calculates_combined_gain(
 ) -> None:
     totals = PortfolioService.summarize_position_buckets(entries, 32.0)
 
+    expected_costs = PortfolioService.summarize_currency_buckets(
+        [(currency, cost_basis) for currency, _, cost_basis in entries],
+        32.0,
+    )
+
+    assert totals["totalCostUsd"] == expected_costs["totalUsd"]
+    assert totals["totalCostTwd"] == expected_costs["totalTwd"]
+    assert totals["combinedCostUsd"] == expected_costs["combinedUsd"]
+    assert totals["combinedCostTwd"] == expected_costs["combinedTwd"]
     assert totals["combinedGainUsd"] == expected["combinedGainUsd"]
     assert totals["combinedGainTwd"] == expected["combinedGainTwd"]
     assert totals["combinedGainPercent"] == expected["combinedGainPercent"]

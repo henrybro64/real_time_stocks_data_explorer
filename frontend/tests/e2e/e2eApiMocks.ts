@@ -371,22 +371,38 @@ function buildPortfolioPosition(
 }
 
 function buildPortfolioSummary(positions: PortfolioPositionRow[]) {
+  const usdTotal = positions
+    .filter((position) => position.currency === "USD")
+    .reduce((sum, position) => sum + position.marketValue, 0);
   const twdTotal = positions
     .filter((position) => position.currency === "TWD")
     .reduce((sum, position) => sum + position.marketValue, 0);
+  const usdCostBasis = positions
+    .filter((position) => position.currency === "USD")
+    .reduce((sum, position) => sum + position.quantity * position.averageCost, 0);
   const twdCostBasis = positions
     .filter((position) => position.currency === "TWD")
     .reduce((sum, position) => sum + position.quantity * position.averageCost, 0);
-  const combinedGainTwd = Number((twdTotal - twdCostBasis).toFixed(2));
-  const combinedGainUsd = Number((combinedGainTwd / 32).toFixed(2));
+  const combinedCostUsd = Number((usdCostBasis + twdCostBasis / 32).toFixed(2));
+  const combinedCostTwd = Number((twdCostBasis + usdCostBasis * 32).toFixed(2));
+  const combinedGainUsd = Number(
+    ((usdTotal - usdCostBasis) + (twdTotal - twdCostBasis) / 32).toFixed(2),
+  );
+  const combinedGainTwd = Number(
+    ((twdTotal - twdCostBasis) + (usdTotal - usdCostBasis) * 32).toFixed(2),
+  );
   const combinedGainPercent =
-    twdCostBasis === 0 ? 0 : Number((((twdTotal - twdCostBasis) / twdCostBasis) * 100).toFixed(2));
+    combinedCostUsd === 0 ? 0 : Number(((combinedGainUsd / combinedCostUsd) * 100).toFixed(2));
 
   return {
-    totalUsd: 0,
+    totalUsd: usdTotal,
     totalTwd: twdTotal,
-    combinedUsd: twdTotal / 32,
-    combinedTwd: twdTotal,
+    combinedUsd: Number((usdTotal + twdTotal / 32).toFixed(2)),
+    combinedTwd: Number((twdTotal + usdTotal * 32).toFixed(2)),
+    totalCostUsd: usdCostBasis,
+    totalCostTwd: twdCostBasis,
+    combinedCostUsd,
+    combinedCostTwd,
     combinedGainUsd,
     combinedGainTwd,
     combinedGainPercent,
