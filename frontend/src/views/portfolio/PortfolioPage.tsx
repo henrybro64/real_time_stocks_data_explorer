@@ -147,6 +147,8 @@ export function PortfolioPage() {
     summaryQuery.data?.combinedUsd ?? (usdTwdRate > 0 ? totalUsd + totalTwd / usdTwdRate : totalUsd);
   const combinedTwd =
     summaryQuery.data?.combinedTwd ?? (usdTwdRate > 0 ? totalTwd + totalUsd * usdTwdRate : totalTwd);
+  const combinedCostUsd = summaryQuery.data?.combinedCostUsd ?? null;
+  const combinedCostTwd = summaryQuery.data?.combinedCostTwd ?? null;
   const combinedGainUsd = summaryQuery.data?.combinedGainUsd ?? null;
   const combinedGainTwd = summaryQuery.data?.combinedGainTwd ?? null;
   const combinedGainPercent = summaryQuery.data?.combinedGainPercent ?? null;
@@ -335,6 +337,10 @@ export function PortfolioPage() {
                 <p className="app-portfolio-combined-amount" data-testid="portfolio-combined-usd">
                   {formatCurrency(combinedUsd, "USD")}
                 </p>
+                <p className="app-section-meta">{t("portfolio.aggregate.totalCostBasis")}</p>
+                <p className="app-portfolio-secondary-amount" data-testid="portfolio-combined-cost-usd">
+                  {combinedCostUsd == null ? "—" : formatCurrency(combinedCostUsd, "USD")}
+                </p>
                 <p className="app-section-meta">{t("portfolio.aggregate.totalGain")}</p>
                 <p
                   className={["app-portfolio-secondary-amount", toneClassName(combinedGainUsd)]
@@ -355,6 +361,10 @@ export function PortfolioPage() {
                 <p className="app-section-meta">{t("portfolio.aggregate.combinedTwd")}</p>
                 <p className="app-portfolio-combined-amount" data-testid="portfolio-combined-twd">
                   {formatCurrency(combinedTwd, "TWD")}
+                </p>
+                <p className="app-section-meta">{t("portfolio.aggregate.totalCostBasis")}</p>
+                <p className="app-portfolio-secondary-amount" data-testid="portfolio-combined-cost-twd">
+                  {combinedCostTwd == null ? "—" : formatCurrency(combinedCostTwd, "TWD")}
                 </p>
                 <p className="app-section-meta">{t("portfolio.aggregate.totalGain")}</p>
                 <p

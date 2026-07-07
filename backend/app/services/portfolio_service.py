@@ -249,6 +249,10 @@ class PortfolioService:
         )
         return {
             **market_totals,
+            "totalCostUsd": cost_totals["totalUsd"],
+            "totalCostTwd": cost_totals["totalTwd"],
+            "combinedCostUsd": cost_totals["combinedUsd"],
+            "combinedCostTwd": cost_totals["combinedTwd"],
             "combinedGainUsd": combined_gain_usd,
             "combinedGainTwd": combined_gain_twd,
             "combinedGainPercent": combined_gain_percent,

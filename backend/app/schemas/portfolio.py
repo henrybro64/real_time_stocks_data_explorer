@@ -76,6 +76,10 @@ class PortfolioSummaryResponse(BaseModel):
     totalTwd: float
     combinedUsd: float
     combinedTwd: float
+    totalCostUsd: float
+    totalCostTwd: float
+    combinedCostUsd: float
+    combinedCostTwd: float
     combinedGainUsd: float
     combinedGainTwd: float
     combinedGainPercent: float

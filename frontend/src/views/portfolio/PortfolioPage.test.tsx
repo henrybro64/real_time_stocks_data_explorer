@@ -143,6 +143,10 @@ const portfolioSummary: PortfolioSummary = {
   totalTwd: 1_900,
   combinedUsd: 433.84,
   combinedTwd: 13_883.12,
+  totalCostUsd: 360,
+  totalCostTwd: 1_800,
+  combinedCostUsd: 400,
+  combinedCostTwd: 12_800,
   combinedGainUsd: 12.34,
   combinedGainTwd: 394.88,
   combinedGainPercent: 5.67,
@@ -350,6 +354,12 @@ describe("PortfolioPage", () => {
     renderPortfolioPage("en");
 
     await waitFor(() => {
+      expect(screen.getByTestId("portfolio-combined-cost-usd")).toHaveTextContent(
+        "$400.00",
+      );
+      expect(screen.getByTestId("portfolio-combined-cost-twd")).toHaveTextContent(
+        "$12,800.00",
+      );
       expect(screen.getByTestId("portfolio-combined-gain-usd")).toHaveTextContent(
         "+$12.34 (+5.67%)",
       );
