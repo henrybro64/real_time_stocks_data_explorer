@@ -40,6 +40,49 @@ const E2E_MARKETS = [
   },
 ] as const;
 
+const E2E_MARKET_INDICES = [
+  {
+    id: "TWSE",
+    market: "TW",
+    label: "TWSE",
+    value: 21950.32,
+    change: 85.44,
+    changePercent: 0.39,
+    timestamp: "2026-05-11T09:00:00+08:00",
+    isMarketOpen: true,
+  },
+  {
+    id: "DJI",
+    market: "US",
+    label: "Dow Jones",
+    value: 39210.17,
+    change: -102.12,
+    changePercent: -0.26,
+    timestamp: "2026-05-10T16:00:00-04:00",
+    isMarketOpen: false,
+  },
+  {
+    id: "IXIC",
+    market: "US",
+    label: "Nasdaq",
+    value: 16980.4,
+    change: 44.11,
+    changePercent: 0.26,
+    timestamp: "2026-05-10T16:00:00-04:00",
+    isMarketOpen: false,
+  },
+  {
+    id: "GSPC",
+    market: "US",
+    label: "S&P 500",
+    value: 5322.55,
+    change: 9.87,
+    changePercent: 0.19,
+    timestamp: "2026-05-10T16:00:00-04:00",
+    isMarketOpen: false,
+  },
+] as const;
+
 function buildRankingsResponse(url: URL) {
   const market = (url.searchParams.get("market") ?? "TW") as "TW" | "US";
   const rankingType = url.searchParams.get("type") ?? "volume";
@@ -211,7 +254,24 @@ type AlertEventRow = {
   message: string;
 };
 
+type E2eAuthUser = {
+  id: string;
+  username: string;
+};
+
+type E2eAuthStatus = {
+  authEnabled: boolean;
+  loggedIn: boolean;
+  providers: {
+    local: boolean;
+    google: boolean;
+    github: boolean;
+  };
+  user: E2eAuthUser | null;
+};
+
 type E2eMockState = {
+  authStatus: E2eAuthStatus;
   watchlistIds: string[];
   alertRules: AlertRuleRow[];
   alertEvents: AlertEventRow[];
@@ -224,10 +284,20 @@ type E2eMockState = {
 const pagesWithApiMocks = new WeakSet<Page>();
 const pageStates = new WeakMap<Page, E2eMockState>();
 
+function defaultAuthStatus(): E2eAuthStatus {
+  return {
+    authEnabled: true,
+    loggedIn: true,
+    providers: { local: true, google: false, github: false },
+    user: { id: "default-user", username: "default-user" },
+  };
+}
+
 function getState(page: Page): E2eMockState {
   let state = pageStates.get(page);
   if (!state) {
     state = {
+      authStatus: defaultAuthStatus(),
       watchlistIds: [],
       alertRules: [],
       alertEvents: [],
@@ -239,6 +309,14 @@ function getState(page: Page): E2eMockState {
     pageStates.set(page, state);
   }
   return state;
+}
+
+export function setE2eAuthenticatedUser(page: Page, user: E2eAuthUser) {
+  const state = getState(page);
+  state.authStatus = {
+    ...defaultAuthStatus(),
+    user: { ...user },
+  };
 }
 
 function apiPath(url: URL): string {
@@ -430,17 +508,17 @@ export async function installE2eApiMocks(page: Page): Promise<void> {
     }
 
     if (path === "/api/auth/status" && request.method() === "GET") {
-      await fulfillJson(route, {
-        authEnabled: true,
-        loggedIn: true,
-        providers: { local: true, google: false, github: false },
-        user: { id: "default-user", username: "default-user" },
-      });
+      await fulfillJson(route, state.authStatus);
       return;
     }
 
     if (path === "/api/markets" && request.method() === "GET") {
       await fulfillJson(route, E2E_MARKETS);
+      return;
+    }
+
+    if (path === "/api/markets/indices" && request.method() === "GET") {
+      await fulfillJson(route, E2E_MARKET_INDICES);
       return;
     }
 
