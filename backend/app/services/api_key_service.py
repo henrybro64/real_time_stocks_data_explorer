@@ -1,8 +1,6 @@
-from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 
-from app.db.models import UserApiKey
-from app.db.session import SessionLocal
+from app.repositories.api_key_repository import api_key_repository
 
 SUPPORTED_PROVIDERS = {"openai", "perplexity"}
 
@@ -36,49 +34,22 @@ class ApiKeyService:
         api_key: str,
     ) -> tuple[bool, str | None]:
         provider = self._normalize_provider(provider)
-        if SessionLocal is None:
-            raise RuntimeError("DATABASE_URL is not configured")
-
         cleaned = api_key.strip()
         if not cleaned:
             raise ValueError("API key cannot be empty")
 
         try:
-            with SessionLocal() as session:
-                row = session.execute(
-                    select(UserApiKey).where(
-                        UserApiKey.user_id == user_id,
-                        UserApiKey.provider == provider,
-                    ),
-                ).scalar_one_or_none()
-                if row is None:
-                    row = UserApiKey(
-                        user_id=user_id,
-                        provider=provider,
-                        api_key=cleaned,
-                    )
-                    session.add(row)
-                else:
-                    row.api_key = cleaned
-                session.commit()
-                masked = cleaned[-4:] if len(cleaned) >= 4 else cleaned
-                return True, masked
+            api_key_repository.upsert(user_id, provider, cleaned)
+            masked = cleaned[-4:] if len(cleaned) >= 4 else cleaned
+            return True, masked
         except SQLAlchemyError as exc:
             raise RuntimeError(
                 "API key storage schema is missing. Run `alembic upgrade head`.",
             ) from exc
 
-    def _get_row(self, user_id: str, provider: str) -> UserApiKey | None:
+    def _get_row(self, user_id: str, provider: str):
         provider = self._normalize_provider(provider)
-        if SessionLocal is None:
-            raise RuntimeError("DATABASE_URL is not configured")
-        with SessionLocal() as session:
-            return session.execute(
-                select(UserApiKey).where(
-                    UserApiKey.user_id == user_id,
-                    UserApiKey.provider == provider,
-                ),
-            ).scalar_one_or_none()
+        return api_key_repository.get_by_user_and_provider(user_id, provider)
 
     @staticmethod
     def _normalize_provider(provider: str) -> str:

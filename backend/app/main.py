@@ -20,11 +20,9 @@ from app.core.config import settings
 from app.core.logging import configure_logging
 from app.db.init_db import seed_default_user
 from app.db.session import SessionLocal
+from app.jobs.runtime import start_enabled_background_jobs, stop_background_jobs
 from app.middleware.request_context import install_request_context_middleware
-from app.services.alert_service import alert_service
 from app.services.local_auth_service import ensure_bootstrap_local_user
-from app.services.portfolio_history_service import portfolio_history_service
-from app.services.rankings_snapshot_service import rankings_snapshot_service
 
 
 configure_logging()
@@ -106,57 +104,13 @@ def bootstrap_local_auth_user() -> None:
 
 
 @app.on_event("startup")
-def start_portfolio_history_sampler() -> None:
-    if not settings.portfolio_history_sampler_enabled:
-        logger.info(
-            "Portfolio history sampler is disabled",
-            extra={"event": "portfolio_history.sampler.disabled"},
-        )
-        return
-    portfolio_history_service.start_background_sampler(
-        settings.portfolio_history_poll_seconds,
-    )
-
-
-@app.on_event("startup")
-def start_alert_evaluator() -> None:
-    if not settings.alert_evaluator_enabled:
-        logger.info(
-            "Alert evaluator is disabled",
-            extra={"event": "alerts.evaluator.disabled"},
-        )
-        return
-    alert_service.start_background_evaluator(
-        settings.alert_evaluator_poll_seconds,
-    )
-
-
-@app.on_event("startup")
-def start_rankings_snapshot_sampler() -> None:
-    if not settings.rankings_snapshot_enabled:
-        logger.info(
-            "Rankings snapshot sampler is disabled",
-            extra={"event": "rankings_snapshot.sampler.disabled"},
-        )
-        return
-    rankings_snapshot_service.start_background_sampler(
-        settings.rankings_refresh_seconds,
-    )
+def start_background_jobs() -> None:
+    start_enabled_background_jobs()
 
 
 @app.on_event("shutdown")
-def stop_portfolio_history_sampler() -> None:
-    portfolio_history_service.stop_background_sampler()
-
-
-@app.on_event("shutdown")
-def stop_alert_evaluator() -> None:
-    alert_service.stop_background_evaluator()
-
-
-@app.on_event("shutdown")
-def stop_rankings_snapshot_sampler() -> None:
-    rankings_snapshot_service.stop_background_sampler()
+def stop_runtime_background_jobs() -> None:
+    stop_background_jobs()
 
 
 @app.get("/health")

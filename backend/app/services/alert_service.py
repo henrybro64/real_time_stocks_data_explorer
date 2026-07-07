@@ -4,16 +4,17 @@ from datetime import datetime, timezone
 import logging
 from threading import Event, Lock, Thread
 
-from sqlalchemy import select
-
+from app.db.session import SessionLocal as DefaultSessionLocal
 from app.db.models import AlertEvent, AlertRule
-from app.db.session import SessionLocal
 from app.models.quote import QuoteRecord
 from app.models.stock import StockRecord
+from app.repositories.alert_repository import alert_repository
 from app.services.quote_service import quote_service
 
 
 logger = logging.getLogger(__name__)
+
+SessionLocal = DefaultSessionLocal
 
 SUPPORTED_ALERT_RULE_TYPES = {"price_above", "price_below"}
 
@@ -26,6 +27,10 @@ class AlertRuleNotFoundError(ValueError):
     pass
 
 
+def _sync_repository_sessionlocal() -> None:
+    alert_repository.set_session_factory_override(SessionLocal)
+
+
 class AlertService:
     def __init__(self) -> None:
         self._lock = Lock()
@@ -36,29 +41,15 @@ class AlertService:
         self._stock_loader = quote_service.get_stock
 
     def list_rules(self, user_id: str) -> list[AlertRule]:
-        if SessionLocal is None:
-            raise RuntimeError("DATABASE_URL is not configured")
-        with SessionLocal() as session:
-            rows = session.execute(
-                select(AlertRule)
-                .where(AlertRule.user_id == user_id)
-                .order_by(AlertRule.created_at.asc(), AlertRule.id.asc()),
-            ).scalars()
-            return list(rows)
+        _sync_repository_sessionlocal()
+        return alert_repository.list_rules(user_id)
 
     def get_rule(self, user_id: str, rule_id: int) -> AlertRule:
-        if SessionLocal is None:
-            raise RuntimeError("DATABASE_URL is not configured")
-        with SessionLocal() as session:
-            rule = session.execute(
-                select(AlertRule).where(
-                    AlertRule.id == rule_id,
-                    AlertRule.user_id == user_id,
-                ),
-            ).scalar_one_or_none()
-            if rule is None:
-                raise AlertRuleNotFoundError(f"Alert rule not found: {rule_id}")
-            return rule
+        _sync_repository_sessionlocal()
+        rule = alert_repository.get_rule(user_id, rule_id)
+        if rule is None:
+            raise AlertRuleNotFoundError(f"Alert rule not found: {rule_id}")
+        return rule
 
     def create_rule(
         self,
@@ -69,23 +60,15 @@ class AlertService:
         threshold_value: float,
         enabled: bool,
     ) -> AlertRule:
-        if SessionLocal is None:
-            raise RuntimeError("DATABASE_URL is not configured")
+        _sync_repository_sessionlocal()
         self._validate_rule_input(stock_id, rule_type, threshold_value)
-
-        with SessionLocal() as session:
-            rule = AlertRule(
-                user_id=user_id,
-                stock_id=stock_id,
-                rule_type=rule_type,
-                threshold_value=threshold_value,
-                enabled=enabled,
-                last_condition_met=False,
-            )
-            session.add(rule)
-            session.commit()
-            session.refresh(rule)
-            return rule
+        return alert_repository.create_rule(
+            user_id=user_id,
+            stock_id=stock_id,
+            rule_type=rule_type,
+            threshold_value=threshold_value,
+            enabled=enabled,
+        )
 
     def update_rule(
         self,
@@ -97,22 +80,12 @@ class AlertService:
         threshold_value: float | None = None,
         enabled: bool | None = None,
     ) -> AlertRule:
-        if SessionLocal is None:
-            raise RuntimeError("DATABASE_URL is not configured")
+        _sync_repository_sessionlocal()
         next_rule_type = rule_type
         next_threshold = threshold_value
         next_stock_id = stock_id
 
-        with SessionLocal() as session:
-            rule = session.execute(
-                select(AlertRule).where(
-                    AlertRule.id == rule_id,
-                    AlertRule.user_id == user_id,
-                ),
-            ).scalar_one_or_none()
-            if rule is None:
-                raise AlertRuleNotFoundError(f"Alert rule not found: {rule_id}")
-
+        def apply_changes(rule: AlertRule) -> None:
             resolved_stock_id = next_stock_id if next_stock_id is not None else rule.stock_id
             resolved_rule_type = next_rule_type if next_rule_type is not None else rule.rule_type
             resolved_threshold = (
@@ -141,24 +114,16 @@ class AlertService:
             if definition_changed:
                 rule.last_condition_met = False
 
-            session.commit()
-            session.refresh(rule)
-            return rule
+        rule = alert_repository.update_rule(user_id, rule_id, apply_changes)
+        if rule is None:
+            raise AlertRuleNotFoundError(f"Alert rule not found: {rule_id}")
+        return rule
 
     def delete_rule(self, user_id: str, rule_id: int) -> None:
-        if SessionLocal is None:
-            raise RuntimeError("DATABASE_URL is not configured")
-        with SessionLocal() as session:
-            rule = session.execute(
-                select(AlertRule).where(
-                    AlertRule.id == rule_id,
-                    AlertRule.user_id == user_id,
-                ),
-            ).scalar_one_or_none()
-            if rule is None:
-                raise AlertRuleNotFoundError(f"Alert rule not found: {rule_id}")
-            session.delete(rule)
-            session.commit()
+        _sync_repository_sessionlocal()
+        deleted = alert_repository.delete_rule(user_id, rule_id)
+        if not deleted:
+            raise AlertRuleNotFoundError(f"Alert rule not found: {rule_id}")
 
     def list_recent_events(
         self,
@@ -166,16 +131,8 @@ class AlertService:
         *,
         limit: int = 20,
     ) -> list[AlertEvent]:
-        if SessionLocal is None:
-            raise RuntimeError("DATABASE_URL is not configured")
-        with SessionLocal() as session:
-            rows = session.execute(
-                select(AlertEvent)
-                .where(AlertEvent.user_id == user_id)
-                .order_by(AlertEvent.triggered_at.desc(), AlertEvent.id.desc())
-                .limit(limit),
-            ).scalars()
-            return list(rows)
+        _sync_repository_sessionlocal()
+        return alert_repository.list_recent_events(user_id, limit=limit)
 
     def evaluate_rules_for_user(
         self,
@@ -183,46 +140,31 @@ class AlertService:
         *,
         now: datetime | None = None,
     ) -> int:
-        if SessionLocal is None:
+        _sync_repository_sessionlocal()
+        if not alert_repository.is_available():
             return 0
         with self._evaluation_lock:
-            with SessionLocal() as session:
-                rules = list(
-                    session.execute(
-                        select(AlertRule)
-                        .where(
-                            AlertRule.user_id == user_id,
-                            AlertRule.enabled.is_(True),
-                        )
-                        .order_by(AlertRule.id.asc())
-                    ).scalars()
-                )
-                if not rules:
-                    return 0
-                return self._evaluate_rules(session, rules, now=now)
+            return alert_repository.evaluate_enabled_rules_for_user(
+                user_id,
+                lambda rules: self._evaluate_rules(rules, now=now),
+            )
 
     def evaluate_rules_for_all_users(
         self,
         *,
         now: datetime | None = None,
     ) -> int:
-        if SessionLocal is None:
+        _sync_repository_sessionlocal()
+        if not alert_repository.is_available():
             return 0
         with self._evaluation_lock:
-            with SessionLocal() as session:
-                rules = list(
-                    session.execute(
-                        select(AlertRule)
-                        .where(AlertRule.enabled.is_(True))
-                        .order_by(AlertRule.user_id.asc(), AlertRule.id.asc())
-                    ).scalars()
-                )
-                if not rules:
-                    return 0
-                return self._evaluate_rules(session, rules, now=now)
+            return alert_repository.evaluate_enabled_rules_for_all_users(
+                lambda rules: self._evaluate_rules(rules, now=now),
+            )
 
     def start_background_evaluator(self, poll_seconds: int) -> None:
-        if SessionLocal is None:
+        _sync_repository_sessionlocal()
+        if not alert_repository.is_available():
             return
         with self._lock:
             if self._thread is not None and self._thread.is_alive():
@@ -254,12 +196,11 @@ class AlertService:
 
     def _evaluate_rules(
         self,
-        session,
         rules: list[AlertRule],
         *,
         now: datetime | None,
-    ) -> int:
-        triggered = 0
+    ) -> list[AlertEvent]:
+        events: list[AlertEvent] = []
         evaluated_at = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
         quotes_by_stock = self._load_quotes({rule.stock_id for rule in rules})
 
@@ -280,26 +221,25 @@ class AlertService:
             rule.last_evaluated_at = evaluated_at
 
             if condition_met and not rule.last_condition_met:
-                event = AlertEvent(
-                    alert_rule_id=rule.id,
-                    user_id=rule.user_id,
-                    stock_id=rule.stock_id,
-                    rule_type=rule.rule_type,
-                    threshold_value=float(rule.threshold_value),
-                    triggered_at=evaluated_at,
-                    observed_price=observed_price,
-                    quote_timestamp=quote.timestamp,
-                    message=self._build_event_message(rule, observed_price),
+                events.append(
+                    AlertEvent(
+                        alert_rule_id=rule.id,
+                        user_id=rule.user_id,
+                        stock_id=rule.stock_id,
+                        rule_type=rule.rule_type,
+                        threshold_value=float(rule.threshold_value),
+                        triggered_at=evaluated_at,
+                        observed_price=observed_price,
+                        quote_timestamp=quote.timestamp,
+                        message=self._build_event_message(rule, observed_price),
+                    )
                 )
-                session.add(event)
                 rule.last_condition_met = True
                 rule.last_triggered_at = evaluated_at
-                triggered += 1
             elif not condition_met and rule.last_condition_met:
                 rule.last_condition_met = False
 
-        session.commit()
-        return triggered
+        return events
 
     def _load_quotes(self, stock_ids: set[str]) -> dict[str, QuoteRecord | None]:
         quotes_by_stock: dict[str, QuoteRecord | None] = {}
