@@ -178,13 +178,15 @@ jobs:
       - name: Publish k3s smoke summary
         if: always()
         run: |
-          if [ -f artifacts/k3s-smoke/summary.txt ]; then
-            {
-              echo "## K3s smoke evidence"
-              echo
-              cat artifacts/k3s-smoke/summary.txt
-            } >> "$GITHUB_STEP_SUMMARY"
+          if [ ! -f artifacts/k3s-smoke/summary.txt ]; then
+            echo "Missing required smoke evidence: artifacts/k3s-smoke/summary.txt" >&2
+            exit 1
           fi
+          {
+            echo "## K3s smoke evidence"
+            echo
+            cat artifacts/k3s-smoke/summary.txt
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload k3s smoke Allure results
         if: always()
         uses: actions/upload-artifact@v7
@@ -198,7 +200,7 @@ jobs:
         with:
           name: k3s-smoke-artifacts
           path: artifacts/k3s-smoke
-          if-no-files-found: warn
+          if-no-files-found: error
 
   allure-report:
     runs-on: ubuntu-latest
