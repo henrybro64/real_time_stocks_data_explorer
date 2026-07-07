@@ -574,6 +574,48 @@ kubectl get nodes
 - applies the same manifests from `k8s/`
 - waits for Redis, Postgres, backend, and frontend to become ready (same as `k3d` mode). **Postgres** can still sit at “0 of 1 …” for **several minutes** while `initdb` runs on the volume; that is normal on first deploy.
 
+### K3s smoke validation evidence
+
+Issue #5 requires proof that the deployment works in a real K3s environment, not just that manifests exist. The repo includes a smoke path for that validation.
+
+Run it locally on Ubuntu / native `k3s`:
+
+```bash
+ARTIFACT_DIR=artifacts/k3s-smoke \
+KUBECTL_CMD="sudo k3s kubectl" \
+pytest backend/tests/smoke/test_k3s_smoke.py
+```
+
+Or run the shell entrypoint directly:
+
+```bash
+ARTIFACT_DIR=artifacts/k3s-smoke ./scripts/ci-k3s-smoke.sh
+```
+
+What it records:
+
+- `./scripts/deploy-k3s.sh k3s`
+- `kubectl get deploy`
+- `kubectl get pods -o wide`
+- `kubectl get svc`
+- `kubectl get pvc`
+- backend migration init-container completion
+- backend `/health`
+- frontend `/api/markets` through the frontend service rewrite
+- backend-container connectivity to Postgres (`SELECT 1`)
+- backend-container connectivity to Redis (`PING`)
+
+Reviewer-facing artifacts are written to `artifacts/k3s-smoke/`:
+
+- `summary.txt`
+- `ci-k3s-smoke.log`
+- `backend-health.json`
+- `frontend-backend-proxy.json`
+- `postgres-probe.txt`
+- `redis-probe.txt`
+
+In GitHub Actions, the `k3s-smoke` job in `.github/workflows/test-and-smoke.yml` runs the same flow on `ubuntu-latest`, uploads `artifacts/k3s-smoke` as `k3s-smoke-artifacts`, and copies `summary.txt` into the job summary.
+
 ### What gets deployed
 
 - `postgres:16-alpine` with a **PersistentVolumeClaim** (default **2Gi**) so database files survive pod restarts and host reboots; data lives on the cluster’s storage provisioner (e.g. k3d local-path).
