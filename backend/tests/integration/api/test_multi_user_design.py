@@ -335,3 +335,36 @@ def test_forged_user_id_in_request_body_is_ignored(
     assert bob_watchlist.json() == {"ids": []}
     assert bob_positions.status_code == 200
     assert bob_positions.json() == []
+
+
+def test_ai_preferences_are_isolated_per_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _enable_local_auth(monkeypatch)
+
+    with TestClient(app) as alice_client, TestClient(app) as bob_client:
+        _register_user(alice_client, "alice")
+        _register_user(bob_client, "bob")
+
+        alice_set = alice_client.put(
+            "/api/ai/preferences",
+            json={"preferredProvider": "openai"},
+        )
+        bob_before = bob_client.get("/api/ai/preferences")
+        bob_set = bob_client.put(
+            "/api/ai/preferences",
+            json={"preferredProvider": "perplexity"},
+        )
+        alice_after = alice_client.get("/api/ai/preferences")
+        bob_after = bob_client.get("/api/ai/preferences")
+
+    assert alice_set.status_code == 200
+    assert alice_set.json() == {"preferredProvider": "openai"}
+    assert bob_before.status_code == 200
+    assert bob_before.json() == {"preferredProvider": None}
+    assert bob_set.status_code == 200
+    assert bob_set.json() == {"preferredProvider": "perplexity"}
+    assert alice_after.status_code == 200
+    assert alice_after.json() == {"preferredProvider": "openai"}
+    assert bob_after.status_code == 200
+    assert bob_after.json() == {"preferredProvider": "perplexity"}
