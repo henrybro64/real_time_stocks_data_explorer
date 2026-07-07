@@ -229,3 +229,109 @@ def test_user_owned_resources_are_isolated_per_session(monkeypatch: pytest.Monke
         "configured": True,
         "keyLast4": "9999",
     }
+
+
+def test_cross_user_watchlist_delete_does_not_remove_other_users_items(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _enable_local_auth(monkeypatch)
+
+    stock = stock_record(
+        "US:AAPL",
+        market="US",
+        symbol="AAPL",
+        name="Apple Inc.",
+        exchange="NASDAQ",
+        currency="USD",
+        timezone="America/New_York",
+        name_en="Apple Inc.",
+    )
+    monkeypatch.setattr(
+        quote_service,
+        "get_stock",
+        lambda stock_id: stock if stock_id == "US:AAPL" else None,
+    )
+
+    with TestClient(app) as alice_client, TestClient(app) as bob_client:
+        _register_user(alice_client, "alice")
+        _register_user(bob_client, "bob")
+
+        alice_add = alice_client.post("/api/watchlist/items", json={"id": "US:AAPL"})
+        bob_delete = bob_client.delete("/api/watchlist/items/US%3AAAPL")
+        alice_watchlist_after = alice_client.get("/api/watchlist")
+        bob_watchlist_after = bob_client.get("/api/watchlist")
+
+    assert alice_add.status_code == 200
+    assert alice_add.json() == {"ids": ["US:AAPL"]}
+    assert bob_delete.status_code == 200
+    assert bob_delete.json() == {"ids": []}
+    assert alice_watchlist_after.status_code == 200
+    assert alice_watchlist_after.json() == {"ids": ["US:AAPL"]}
+    assert bob_watchlist_after.status_code == 200
+    assert bob_watchlist_after.json() == {"ids": []}
+
+
+def test_forged_user_id_in_request_body_is_ignored(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _enable_local_auth(monkeypatch)
+
+    stock = stock_record(
+        "US:AAPL",
+        market="US",
+        symbol="AAPL",
+        name="Apple Inc.",
+        exchange="NASDAQ",
+        currency="USD",
+        timezone="America/New_York",
+        name_en="Apple Inc.",
+    )
+    quote = quote_record(
+        "US:AAPL",
+        last_price=200.0,
+        change=1.0,
+        change_percent=0.5,
+        previous_close=199.0,
+        timestamp="2026-04-01T09:30:00-04:00",
+        is_market_open=True,
+    )
+    monkeypatch.setattr(
+        quote_service,
+        "get_stock",
+        lambda stock_id: stock if stock_id == "US:AAPL" else None,
+    )
+    monkeypatch.setattr(
+        quote_service,
+        "get_quote",
+        lambda stock_id: quote if stock_id == "US:AAPL" else None,
+    )
+
+    with TestClient(app) as alice_client, TestClient(app) as bob_client:
+        _register_user(alice_client, "alice")
+        _register_user(bob_client, "bob")
+
+        alice_watchlist = alice_client.post(
+            "/api/watchlist/items",
+            json={"id": "US:AAPL", "userId": "bob"},
+        )
+        alice_position = alice_client.post(
+            "/api/portfolio/positions",
+            json={
+                "stockId": "US:AAPL",
+                "quantity": 1,
+                "averageCost": 180,
+                "currency": "USD",
+                "userId": "bob",
+            },
+        )
+
+        bob_watchlist = bob_client.get("/api/watchlist")
+        bob_positions = bob_client.get("/api/portfolio/positions")
+
+    assert alice_watchlist.status_code == 200
+    assert alice_watchlist.json() == {"ids": ["US:AAPL"]}
+    assert alice_position.status_code == 200
+    assert bob_watchlist.status_code == 200
+    assert bob_watchlist.json() == {"ids": []}
+    assert bob_positions.status_code == 200
+    assert bob_positions.json() == []

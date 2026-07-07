@@ -40,6 +40,49 @@ const E2E_MARKETS = [
   },
 ] as const;
 
+const E2E_MARKET_INDICES = [
+  {
+    id: "TWSE",
+    market: "TW",
+    label: "TWSE",
+    value: 21950.32,
+    change: 85.44,
+    changePercent: 0.39,
+    timestamp: "2026-05-11T09:00:00+08:00",
+    isMarketOpen: true,
+  },
+  {
+    id: "DJI",
+    market: "US",
+    label: "Dow Jones",
+    value: 39210.17,
+    change: -102.12,
+    changePercent: -0.26,
+    timestamp: "2026-05-10T16:00:00-04:00",
+    isMarketOpen: false,
+  },
+  {
+    id: "IXIC",
+    market: "US",
+    label: "Nasdaq",
+    value: 16980.4,
+    change: 44.11,
+    changePercent: 0.26,
+    timestamp: "2026-05-10T16:00:00-04:00",
+    isMarketOpen: false,
+  },
+  {
+    id: "GSPC",
+    market: "US",
+    label: "S&P 500",
+    value: 5322.55,
+    change: 9.87,
+    changePercent: 0.19,
+    timestamp: "2026-05-10T16:00:00-04:00",
+    isMarketOpen: false,
+  },
+] as const;
+
 function buildRankingsResponse(url: URL) {
   const market = (url.searchParams.get("market") ?? "TW") as "TW" | "US";
   const rankingType = url.searchParams.get("type") ?? "volume";
@@ -211,7 +254,24 @@ type AlertEventRow = {
   message: string;
 };
 
+type E2eAuthUser = {
+  id: string;
+  username: string;
+};
+
+type E2eAuthStatus = {
+  authEnabled: boolean;
+  loggedIn: boolean;
+  providers: {
+    local: boolean;
+    google: boolean;
+    github: boolean;
+  };
+  user: E2eAuthUser | null;
+};
+
 type E2eMockState = {
+  authStatus: E2eAuthStatus;
   watchlistIds: string[];
   alertRules: AlertRuleRow[];
   alertEvents: AlertEventRow[];
@@ -224,10 +284,20 @@ type E2eMockState = {
 const pagesWithApiMocks = new WeakSet<Page>();
 const pageStates = new WeakMap<Page, E2eMockState>();
 
+function defaultAuthStatus(): E2eAuthStatus {
+  return {
+    authEnabled: true,
+    loggedIn: true,
+    providers: { local: true, google: false, github: false },
+    user: { id: "default-user", username: "default-user" },
+  };
+}
+
 function getState(page: Page): E2eMockState {
   let state = pageStates.get(page);
   if (!state) {
     state = {
+      authStatus: defaultAuthStatus(),
       watchlistIds: [],
       alertRules: [],
       alertEvents: [],
@@ -239,6 +309,14 @@ function getState(page: Page): E2eMockState {
     pageStates.set(page, state);
   }
   return state;
+}
+
+export function setE2eAuthenticatedUser(page: Page, user: E2eAuthUser) {
+  const state = getState(page);
+  state.authStatus = {
+    ...defaultAuthStatus(),
+    user: { ...user },
+  };
 }
 
 function apiPath(url: URL): string {
@@ -402,6 +480,89 @@ function buildAlertMessage(ruleType: "price_above" | "price_below", thresholdVal
   return `${E2E_TW_STOCK_SEARCH_RESULT.symbol} ${comparator} ${thresholdValue.toFixed(2)} (observed ${E2E_TW_QUOTE.lastPrice.toFixed(2)}).`;
 }
 
+function evaluateEnabledAlertRule(
+  state: E2eMockState,
+  rule: AlertRuleRow,
+): AlertRuleRow {
+  const timestamp = E2E_TW_QUOTE.timestamp;
+  const met = conditionMet(rule.ruleType, rule.thresholdValue);
+  const evaluated: AlertRuleRow = {
+    ...rule,
+    lastObservedPrice: E2E_TW_QUOTE.lastPrice,
+    lastObservedQuoteTimestamp: timestamp,
+    lastEvaluatedAt: timestamp,
+    updatedAt: timestamp,
+  };
+
+  if (met && !rule.lastConditionMet) {
+    state.alertEvents.unshift({
+      id: state.nextAlertEventId++,
+      alertRuleId: rule.id,
+      stockId: rule.stockId,
+      stock: E2E_TW_STOCK_SEARCH_RESULT,
+      ruleType: rule.ruleType,
+      thresholdValue: rule.thresholdValue,
+      triggeredAt: timestamp,
+      observedPrice: E2E_TW_QUOTE.lastPrice,
+      quoteTimestamp: timestamp,
+      message: buildAlertMessage(rule.ruleType, rule.thresholdValue),
+    });
+    return {
+      ...evaluated,
+      lastConditionMet: true,
+      lastTriggeredAt: timestamp,
+    };
+  }
+
+  if (!met && rule.lastConditionMet) {
+    return {
+      ...evaluated,
+      lastConditionMet: false,
+    };
+  }
+
+  return evaluated;
+}
+
+function applyAlertRulePatch(
+  state: E2eMockState,
+  current: AlertRuleRow,
+  payload: {
+    stockId?: string;
+    ruleType?: "price_above" | "price_below";
+    thresholdValue?: number;
+    enabled?: boolean;
+  },
+): AlertRuleRow {
+  const stockId = payload.stockId ?? current.stockId;
+  const ruleType = payload.ruleType ?? current.ruleType;
+  const thresholdValue = payload.thresholdValue ?? current.thresholdValue;
+  const enabled = payload.enabled ?? current.enabled;
+  const definitionChanged =
+    stockId !== current.stockId ||
+    ruleType !== current.ruleType ||
+    thresholdValue !== current.thresholdValue ||
+    enabled !== current.enabled;
+  const timestamp = E2E_TW_QUOTE.timestamp;
+
+  let updated: AlertRuleRow = {
+    ...current,
+    stockId,
+    stock: E2E_TW_STOCK_SEARCH_RESULT,
+    ruleType,
+    thresholdValue,
+    enabled,
+    lastConditionMet: definitionChanged ? false : current.lastConditionMet,
+    updatedAt: timestamp,
+  };
+
+  if (!updated.enabled) {
+    return updated;
+  }
+
+  return evaluateEnabledAlertRule(state, updated);
+}
+
 export async function installE2eApiMocks(page: Page): Promise<void> {
   if (pagesWithApiMocks.has(page)) {
     return;
@@ -430,17 +591,17 @@ export async function installE2eApiMocks(page: Page): Promise<void> {
     }
 
     if (path === "/api/auth/status" && request.method() === "GET") {
-      await fulfillJson(route, {
-        authEnabled: true,
-        loggedIn: true,
-        providers: { local: true, google: false, github: false },
-        user: { id: "default-user", username: "default-user" },
-      });
+      await fulfillJson(route, state.authStatus);
       return;
     }
 
     if (path === "/api/markets" && request.method() === "GET") {
       await fulfillJson(route, E2E_MARKETS);
+      return;
+    }
+
+    if (path === "/api/markets/indices" && request.method() === "GET") {
+      await fulfillJson(route, E2E_MARKET_INDICES);
       return;
     }
 
@@ -526,6 +687,35 @@ export async function installE2eApiMocks(page: Page): Promise<void> {
       state.watchlistIds = state.watchlistIds.filter((id) => id !== watchlistDeleteId);
       await fulfillJson(route, { ids: [...state.watchlistIds] });
       return;
+    }
+
+    const alertRuleId = path.match(/^\/api\/alerts\/rules\/(\d+)$/);
+    if (alertRuleId) {
+      const ruleId = Number(alertRuleId[1]);
+      const index = state.alertRules.findIndex((row) => row.id === ruleId);
+      if (index < 0) {
+        await fulfillJson(route, { detail: `Alert rule not found: ${ruleId}` }, 404);
+        return;
+      }
+
+      if (request.method() === "PATCH") {
+        const payload = request.postDataJSON() as {
+          stockId?: string;
+          ruleType?: "price_above" | "price_below";
+          thresholdValue?: number;
+          enabled?: boolean;
+        };
+        const updated = applyAlertRulePatch(state, state.alertRules[index], payload);
+        state.alertRules[index] = updated;
+        await fulfillJson(route, updated);
+        return;
+      }
+
+      if (request.method() === "DELETE") {
+        state.alertRules.splice(index, 1);
+        await route.fulfill({ status: 204, body: "" });
+        return;
+      }
     }
 
     if (path === "/api/portfolio/positions" && request.method() === "GET") {
