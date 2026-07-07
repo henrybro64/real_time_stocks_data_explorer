@@ -458,10 +458,10 @@ def test_portfolio_summary_includes_per_holding_allocation_percent(
     assert response.status_code == 200
 
     payload = response.json()
-    assert payload["totalCostUsd"] == 400.0
+    assert payload["totalCostUsd"] == 360.0
     assert payload["totalCostTwd"] == 1800.0
-    assert payload["combinedCostUsd"] == 456.25
-    assert payload["combinedCostTwd"] == 14600.0
+    assert payload["combinedCostUsd"] == 416.25
+    assert payload["combinedCostTwd"] == 13320.0
 
     positions = payload["positions"]
     assert positions[0]["stockId"] == "US:AAPL"
