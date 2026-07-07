@@ -60,6 +60,10 @@ test("watchlist, portfolio, and alerts stay isolated across user sessions", asyn
       { method: "DELETE" },
     );
     expect(bobWatchlistDeleteStatus).toBe(200);
+    const aliceWatchlistAfterBobDelete = await fetchJson<{ ids: string[] }>(page, "/api/watchlist");
+    expect(aliceWatchlistAfterBobDelete.ids).toContain(TW_STOCK_ID);
+    await page.reload();
+    await expect(page.locator("#main-content")).toBeVisible();
     await expectWatchlistCard(page);
 
     await page.goto("/portfolio");
@@ -84,6 +88,13 @@ test("watchlist, portfolio, and alerts stay isolated across user sessions", asyn
       { method: "DELETE" },
     );
     expect(bobDeletePositionStatus).toBe(404);
+    const alicePositionsAfterBobDelete = await fetchJson<Array<{ stockId: string }>>(
+      page,
+      "/api/portfolio/positions",
+    );
+    expect(alicePositionsAfterBobDelete.some((row) => row.stockId === TW_STOCK_ID)).toBe(true);
+    await page.reload();
+    await expect(page.locator("#main-content")).toBeVisible();
     await expectPortfolioPosition(page);
 
     await page.goto("/alerts?stockId=TW%3A2330");
@@ -112,6 +123,10 @@ test("watchlist, portfolio, and alerts stay isolated across user sessions", asyn
     });
     expect(bobPatchRuleStatus).toBe(404);
     expect(bobDeleteRuleStatus).toBe(404);
+    const aliceRulesAfterBobAttack = await fetchJson<Array<{ id: number }>>(page, "/api/alerts/rules");
+    expect(aliceRulesAfterBobAttack.map((row) => row.id)).toContain(aliceRuleId);
+    await page.reload();
+    await expect(page.locator("#main-content")).toBeVisible();
     await expect(page.getByTestId("alerts-rule-row-1")).toBeVisible();
     await expect(page.getByTestId("alerts-event-row-1")).toBeVisible();
   } finally {

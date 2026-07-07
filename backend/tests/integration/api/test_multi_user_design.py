@@ -236,6 +236,22 @@ def test_cross_user_watchlist_delete_does_not_remove_other_users_items(
 ) -> None:
     _enable_local_auth(monkeypatch)
 
+    stock = stock_record(
+        "US:AAPL",
+        market="US",
+        symbol="AAPL",
+        name="Apple Inc.",
+        exchange="NASDAQ",
+        currency="USD",
+        timezone="America/New_York",
+        name_en="Apple Inc.",
+    )
+    monkeypatch.setattr(
+        quote_service,
+        "get_stock",
+        lambda stock_id: stock if stock_id == "US:AAPL" else None,
+    )
+
     with TestClient(app) as alice_client, TestClient(app) as bob_client:
         _register_user(alice_client, "alice")
         _register_user(bob_client, "bob")

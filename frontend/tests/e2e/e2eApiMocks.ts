@@ -480,6 +480,89 @@ function buildAlertMessage(ruleType: "price_above" | "price_below", thresholdVal
   return `${E2E_TW_STOCK_SEARCH_RESULT.symbol} ${comparator} ${thresholdValue.toFixed(2)} (observed ${E2E_TW_QUOTE.lastPrice.toFixed(2)}).`;
 }
 
+function evaluateEnabledAlertRule(
+  state: E2eMockState,
+  rule: AlertRuleRow,
+): AlertRuleRow {
+  const timestamp = E2E_TW_QUOTE.timestamp;
+  const met = conditionMet(rule.ruleType, rule.thresholdValue);
+  const evaluated: AlertRuleRow = {
+    ...rule,
+    lastObservedPrice: E2E_TW_QUOTE.lastPrice,
+    lastObservedQuoteTimestamp: timestamp,
+    lastEvaluatedAt: timestamp,
+    updatedAt: timestamp,
+  };
+
+  if (met && !rule.lastConditionMet) {
+    state.alertEvents.unshift({
+      id: state.nextAlertEventId++,
+      alertRuleId: rule.id,
+      stockId: rule.stockId,
+      stock: E2E_TW_STOCK_SEARCH_RESULT,
+      ruleType: rule.ruleType,
+      thresholdValue: rule.thresholdValue,
+      triggeredAt: timestamp,
+      observedPrice: E2E_TW_QUOTE.lastPrice,
+      quoteTimestamp: timestamp,
+      message: buildAlertMessage(rule.ruleType, rule.thresholdValue),
+    });
+    return {
+      ...evaluated,
+      lastConditionMet: true,
+      lastTriggeredAt: timestamp,
+    };
+  }
+
+  if (!met && rule.lastConditionMet) {
+    return {
+      ...evaluated,
+      lastConditionMet: false,
+    };
+  }
+
+  return evaluated;
+}
+
+function applyAlertRulePatch(
+  state: E2eMockState,
+  current: AlertRuleRow,
+  payload: {
+    stockId?: string;
+    ruleType?: "price_above" | "price_below";
+    thresholdValue?: number;
+    enabled?: boolean;
+  },
+): AlertRuleRow {
+  const stockId = payload.stockId ?? current.stockId;
+  const ruleType = payload.ruleType ?? current.ruleType;
+  const thresholdValue = payload.thresholdValue ?? current.thresholdValue;
+  const enabled = payload.enabled ?? current.enabled;
+  const definitionChanged =
+    stockId !== current.stockId ||
+    ruleType !== current.ruleType ||
+    thresholdValue !== current.thresholdValue ||
+    enabled !== current.enabled;
+  const timestamp = E2E_TW_QUOTE.timestamp;
+
+  let updated: AlertRuleRow = {
+    ...current,
+    stockId,
+    stock: E2E_TW_STOCK_SEARCH_RESULT,
+    ruleType,
+    thresholdValue,
+    enabled,
+    lastConditionMet: definitionChanged ? false : current.lastConditionMet,
+    updatedAt: timestamp,
+  };
+
+  if (!updated.enabled) {
+    return updated;
+  }
+
+  return evaluateEnabledAlertRule(state, updated);
+}
+
 export async function installE2eApiMocks(page: Page): Promise<void> {
   if (pagesWithApiMocks.has(page)) {
     return;
@@ -617,18 +700,12 @@ export async function installE2eApiMocks(page: Page): Promise<void> {
 
       if (request.method() === "PATCH") {
         const payload = request.postDataJSON() as {
+          stockId?: string;
+          ruleType?: "price_above" | "price_below";
           thresholdValue?: number;
           enabled?: boolean;
         };
-        const current = state.alertRules[index];
-        const thresholdValue = payload.thresholdValue ?? current.thresholdValue;
-        const enabled = payload.enabled ?? current.enabled;
-        const updated: AlertRuleRow = {
-          ...current,
-          thresholdValue,
-          enabled,
-          updatedAt: E2E_TW_QUOTE.timestamp,
-        };
+        const updated = applyAlertRulePatch(state, state.alertRules[index], payload);
         state.alertRules[index] = updated;
         await fulfillJson(route, updated);
         return;
