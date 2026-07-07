@@ -76,3 +76,22 @@ The DB-backed service domains now route persistence through repositories such as
 
 This keeps route handlers thin, keeps business logic in services, and keeps SQL/ORM access in one layer.
 
+## Repository Session Wiring
+
+Most repositories resolve the SQLAlchemy session factory through `backend/app/repositories/session.py`, which reads `SessionLocal` from `backend/app/db/session.py`.
+
+Two repositories also support an optional `set_session_factory_override()` hook for unit tests that monkeypatch `SessionLocal` on the service module:
+
+- `alert_repository.py`
+- `ranking_snapshot_repository.py`
+
+Those services call `_sync_repository_sessionlocal()` before repository access so the override tracks the same in-memory session factory used by existing service tests. Other repositories (`watchlist`, `portfolio`, `user`, and so on) rely on the shared `SessionLocal` binding and are covered by service or integration tests.
+
+## Intentionally Unchanged Areas
+
+This refactor focused on DB-backed persistence boundaries. The following areas were already adapter-based or out of scope for the first pass:
+
+- quote/search provider adapters in `backend/app/services/providers/`
+- rankings external fetch logic in `backend/app/services/rankings_service.py` and `ranking_data_providers.py`
+- background worker implementations (still in their service modules; only startup orchestration moved to `jobs/runtime.py`)
+
