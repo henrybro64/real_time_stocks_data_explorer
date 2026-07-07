@@ -46,8 +46,13 @@ The application currently stores the following user-owned entities.
 | Holding / position | `portfolio_positions` | `user_id -> users.id` FK | unique `(user_id, stock_id)`, user-scoped CRUD |
 | Portfolio asset | `portfolio_assets` | `user_id -> users.id` FK | user-scoped CRUD |
 | Portfolio history snapshot | `portfolio_history_snapshots` | `user_id -> users.id` FK | unique `(user_id, snapshot_hour, source_window)`, user-scoped history queries |
+| Alert rule | `alert_rules` | `user_id -> users.id` FK | user-scoped CRUD and evaluation |
+| Alert event | `alert_events` | `user_id -> users.id` FK | user-scoped history queries |
+| AI provider preference | `user_ai_preferences` | primary key `user_ai_preferences.user_id` | user-scoped get/upsert |
 | AI provider API key | `user_api_keys` | `user_id -> users.id` FK | unique `(user_id, provider)`, user-scoped get/upsert |
 | OAuth identity mapping | `oauth_identities` | `user_id -> users.id` FK | unique `(provider, subject)` |
+
+The backend does not currently persist saved layouts or dashboard settings. There is therefore no hidden shared row for those concepts today. If those features are added later, they must follow the same explicit `user_id` ownership pattern.
 
 ## Access Control Enforcement
 
@@ -59,6 +64,7 @@ All user-owned routes depend on `get_effective_user_id()`:
 
 - `backend/app/api/routes/watchlist.py`
 - `backend/app/api/routes/portfolio.py`
+- `backend/app/api/routes/alerts.py`
 - `backend/app/api/routes/ai.py`
 
 That keeps the request identity decision in one place instead of repeating auth logic per route.
@@ -69,6 +75,8 @@ All service methods that operate on user-owned data filter by `user_id`:
 
 - `WatchlistService`
 - `PortfolioService`
+- `AlertService`
+- `UserAiPreferenceService`
 - `ApiKeyService`
 
 Updates and deletes use both the resource id and `user_id`, so one user cannot mutate another user's record by guessing an integer id.
