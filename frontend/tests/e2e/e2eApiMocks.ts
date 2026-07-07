@@ -606,6 +606,41 @@ export async function installE2eApiMocks(page: Page): Promise<void> {
       return;
     }
 
+    const alertRuleId = path.match(/^\/api\/alerts\/rules\/(\d+)$/);
+    if (alertRuleId) {
+      const ruleId = Number(alertRuleId[1]);
+      const index = state.alertRules.findIndex((row) => row.id === ruleId);
+      if (index < 0) {
+        await fulfillJson(route, { detail: `Alert rule not found: ${ruleId}` }, 404);
+        return;
+      }
+
+      if (request.method() === "PATCH") {
+        const payload = request.postDataJSON() as {
+          thresholdValue?: number;
+          enabled?: boolean;
+        };
+        const current = state.alertRules[index];
+        const thresholdValue = payload.thresholdValue ?? current.thresholdValue;
+        const enabled = payload.enabled ?? current.enabled;
+        const updated: AlertRuleRow = {
+          ...current,
+          thresholdValue,
+          enabled,
+          updatedAt: E2E_TW_QUOTE.timestamp,
+        };
+        state.alertRules[index] = updated;
+        await fulfillJson(route, updated);
+        return;
+      }
+
+      if (request.method() === "DELETE") {
+        state.alertRules.splice(index, 1);
+        await route.fulfill({ status: 204, body: "" });
+        return;
+      }
+    }
+
     if (path === "/api/portfolio/positions" && request.method() === "GET") {
       await fulfillJson(route, [...state.portfolioPositions]);
       return;
