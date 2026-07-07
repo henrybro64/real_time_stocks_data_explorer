@@ -162,6 +162,7 @@ jobs:
         run: |
           mkdir -p allure-results/k3s-smoke
           touch allure-results/k3s-smoke/.keep
+          mkdir -p artifacts/k3s-smoke
       - name: Install smoke test dependencies
         run: |
           python -m pip install --upgrade pip
@@ -171,7 +172,21 @@ jobs:
           curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="--write-kubeconfig-mode 644 --disable traefik" sh -
           sudo k3s kubectl get nodes
       - name: Run k3s deployment smoke
-        run: pytest backend/tests/smoke/test_k3s_smoke.py --alluredir allure-results/k3s-smoke
+        run: |
+          ARTIFACT_DIR=artifacts/k3s-smoke \
+          pytest backend/tests/smoke/test_k3s_smoke.py --alluredir allure-results/k3s-smoke
+      - name: Publish k3s smoke summary
+        if: always()
+        run: |
+          if [ ! -f artifacts/k3s-smoke/summary.txt ]; then
+            echo "Missing required smoke evidence: artifacts/k3s-smoke/summary.txt" >&2
+            exit 1
+          fi
+          {
+            echo "## K3s smoke evidence"
+            echo
+            cat artifacts/k3s-smoke/summary.txt
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload k3s smoke Allure results
         if: always()
         uses: actions/upload-artifact@v7
@@ -179,6 +194,13 @@ jobs:
           name: k3s-smoke-allure-results
           path: allure-results/k3s-smoke
           if-no-files-found: warn
+      - name: Upload k3s smoke evidence artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: k3s-smoke-artifacts
+          path: artifacts/k3s-smoke
+          if-no-files-found: error
 
   allure-report:
     runs-on: ubuntu-latest

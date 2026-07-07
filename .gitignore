@@ -154,6 +154,7 @@ blob-report/
 playwright/.cache/
 allure-results/
 allure-report/
+artifacts/k3s-smoke/
 
 # -----------------------------------------------------------------------------
 # Jupyter (if notebooks are added)
