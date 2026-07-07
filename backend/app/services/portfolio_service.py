@@ -1,9 +1,10 @@
-from sqlalchemy import delete, select
-
 from app.db.models import PortfolioAsset, PortfolioPosition
-from app.db.session import SessionLocal
 from app.models.quote import QuoteRecord
 from app.models.stock import StockRecord
+from app.repositories.portfolio_repository import (
+    UNSET as REPOSITORY_UNSET,
+    portfolio_repository,
+)
 from app.services.quote_service import quote_service
 
 SUPPORTED_PORTFOLIO_CURRENCIES = frozenset({"USD", "TWD"})
@@ -11,15 +12,7 @@ SUPPORTED_PORTFOLIO_CURRENCIES = frozenset({"USD", "TWD"})
 
 class PortfolioService:
     def list_positions(self, user_id: str) -> list[PortfolioPosition]:
-        if SessionLocal is None:
-            raise RuntimeError("DATABASE_URL is not configured")
-        with SessionLocal() as session:
-            positions = session.execute(
-                select(PortfolioPosition)
-                .where(PortfolioPosition.user_id == user_id)
-                .order_by(PortfolioPosition.created_at.asc()),
-            ).scalars()
-            return list(positions)
+        return portfolio_repository.list_positions(user_id)
 
     def add_position(
         self,
@@ -30,34 +23,21 @@ class PortfolioService:
         currency: str,
         notes: str | None,
     ) -> PortfolioPosition:
-        if SessionLocal is None:
-            raise RuntimeError("DATABASE_URL is not configured")
         stock = self._validate_stock(stock_id)
         normalized_currency = self._validate_holding_currency(stock, currency)
-
-        with SessionLocal() as session:
-            existing = session.execute(
-                select(PortfolioPosition).where(
-                    PortfolioPosition.user_id == user_id,
-                    PortfolioPosition.stock_id == stock_id,
-                ),
-            ).scalar_one_or_none()
-            if existing is not None:
-                raise ValueError(
-                    f"Position already exists for stock id: {stock_id}",
-                )
-            position = PortfolioPosition(
-                user_id=user_id,
-                stock_id=stock_id,
-                quantity=quantity,
-                average_cost=average_cost,
-                currency=normalized_currency,
-                notes=notes,
+        existing = portfolio_repository.find_position_by_stock(user_id, stock_id)
+        if existing is not None:
+            raise ValueError(
+                f"Position already exists for stock id: {stock_id}",
             )
-            session.add(position)
-            session.commit()
-            session.refresh(position)
-            return position
+        return portfolio_repository.create_position(
+            user_id=user_id,
+            stock_id=stock_id,
+            quantity=quantity,
+            average_cost=average_cost,
+            currency=normalized_currency,
+            notes=notes,
+        )
 
     def update_position(
         self,
@@ -68,55 +48,33 @@ class PortfolioService:
         currency: str | None,
         notes: str | None,
     ) -> PortfolioPosition:
-        if SessionLocal is None:
-            raise RuntimeError("DATABASE_URL is not configured")
-        with SessionLocal() as session:
-            position = session.execute(
-                select(PortfolioPosition).where(
-                    PortfolioPosition.id == position_id,
-                    PortfolioPosition.user_id == user_id,
-                ),
-            ).scalar_one_or_none()
-            if position is None:
-                raise ValueError(f"Position not found: {position_id}")
-            stock = quote_service.get_stock(position.stock_id)
-            if stock is None:
-                raise ValueError(f"Unknown stock id: {position.stock_id}")
-            if quantity is not None:
-                position.quantity = quantity
-            if average_cost is not None:
-                position.average_cost = average_cost
-            if currency is not None:
-                position.currency = self._validate_holding_currency(stock, currency)
-            position.notes = notes
-            session.commit()
-            session.refresh(position)
-            return position
+        position = portfolio_repository.update_position(
+            user_id,
+            position_id,
+            quantity=(
+                quantity if quantity is not None else REPOSITORY_UNSET
+            ),
+            average_cost=(
+                average_cost if average_cost is not None else REPOSITORY_UNSET
+            ),
+            currency=(
+                self._validated_position_currency(user_id, position_id, currency)
+                if currency is not None
+                else REPOSITORY_UNSET
+            ),
+            notes=notes,
+        )
+        if position is None:
+            raise ValueError(f"Position not found: {position_id}")
+        return position
 
     def delete_position(self, user_id: str, position_id: int) -> None:
-        if SessionLocal is None:
-            raise RuntimeError("DATABASE_URL is not configured")
-        with SessionLocal() as session:
-            deleted = session.execute(
-                delete(PortfolioPosition).where(
-                    PortfolioPosition.id == position_id,
-                    PortfolioPosition.user_id == user_id,
-                ),
-            )
-            session.commit()
-            if deleted.rowcount == 0:
-                raise ValueError(f"Position not found: {position_id}")
+        deleted = portfolio_repository.delete_position(user_id, position_id)
+        if deleted == 0:
+            raise ValueError(f"Position not found: {position_id}")
 
     def list_assets(self, user_id: str) -> list[PortfolioAsset]:
-        if SessionLocal is None:
-            raise RuntimeError("DATABASE_URL is not configured")
-        with SessionLocal() as session:
-            assets = session.execute(
-                select(PortfolioAsset)
-                .where(PortfolioAsset.user_id == user_id)
-                .order_by(PortfolioAsset.created_at.asc()),
-            ).scalars()
-            return list(assets)
+        return portfolio_repository.list_assets(user_id)
 
     def add_asset(
         self,
@@ -127,21 +85,14 @@ class PortfolioService:
         value: float,
         notes: str | None,
     ) -> PortfolioAsset:
-        if SessionLocal is None:
-            raise RuntimeError("DATABASE_URL is not configured")
-        with SessionLocal() as session:
-            asset = PortfolioAsset(
-                user_id=user_id,
-                asset_type=asset_type,
-                name=name,
-                currency=currency,
-                value=value,
-                notes=notes,
-            )
-            session.add(asset)
-            session.commit()
-            session.refresh(asset)
-            return asset
+        return portfolio_repository.create_asset(
+            user_id=user_id,
+            asset_type=asset_type,
+            name=name,
+            currency=currency,
+            value=value,
+            notes=notes,
+        )
 
     def update_asset(
         self,
@@ -153,43 +104,23 @@ class PortfolioService:
         value: float | None,
         notes: str | None,
     ) -> PortfolioAsset:
-        if SessionLocal is None:
-            raise RuntimeError("DATABASE_URL is not configured")
-        with SessionLocal() as session:
-            asset = session.execute(
-                select(PortfolioAsset).where(
-                    PortfolioAsset.id == asset_id,
-                    PortfolioAsset.user_id == user_id,
-                ),
-            ).scalar_one_or_none()
-            if asset is None:
-                raise ValueError(f"Asset not found: {asset_id}")
-            if asset_type is not None:
-                asset.asset_type = asset_type
-            if name is not None:
-                asset.name = name
-            if currency is not None:
-                asset.currency = currency
-            if value is not None:
-                asset.value = value
-            asset.notes = notes
-            session.commit()
-            session.refresh(asset)
-            return asset
+        asset = portfolio_repository.update_asset(
+            user_id,
+            asset_id,
+            asset_type=asset_type if asset_type is not None else REPOSITORY_UNSET,
+            name=name if name is not None else REPOSITORY_UNSET,
+            currency=currency if currency is not None else REPOSITORY_UNSET,
+            value=value if value is not None else REPOSITORY_UNSET,
+            notes=notes,
+        )
+        if asset is None:
+            raise ValueError(f"Asset not found: {asset_id}")
+        return asset
 
     def delete_asset(self, user_id: str, asset_id: int) -> None:
-        if SessionLocal is None:
-            raise RuntimeError("DATABASE_URL is not configured")
-        with SessionLocal() as session:
-            deleted = session.execute(
-                delete(PortfolioAsset).where(
-                    PortfolioAsset.id == asset_id,
-                    PortfolioAsset.user_id == user_id,
-                ),
-            )
-            session.commit()
-            if deleted.rowcount == 0:
-                raise ValueError(f"Asset not found: {asset_id}")
+        deleted = portfolio_repository.delete_asset(user_id, asset_id)
+        if deleted == 0:
+            raise ValueError(f"Asset not found: {asset_id}")
 
     @staticmethod
     def build_cost_basis(position: PortfolioPosition) -> float:
@@ -238,6 +169,21 @@ class PortfolioService:
                 f"Unsupported holding currency: {currency!r}. Only USD and TWD are supported.",
             )
         return normalized
+
+    def _validated_position_currency(
+        self,
+        user_id: str,
+        position_id: int,
+        currency: str,
+    ) -> str:
+        positions = portfolio_repository.list_positions(user_id)
+        position = next((row for row in positions if row.id == position_id), None)
+        if position is None:
+            raise ValueError(f"Position not found: {position_id}")
+        stock = quote_service.get_stock(position.stock_id)
+        if stock is None:
+            raise ValueError(f"Unknown stock id: {position.stock_id}")
+        return self._validate_holding_currency(stock, currency)
 
     @staticmethod
     def summarize_currency_buckets(

@@ -20,6 +20,8 @@ packages/
 scripts/   local deployment helpers
 ```
 
+Layering and backend reviewer navigation notes live in [docs/backend-architecture.md](docs/backend-architecture.md).
+
 ## Run
 
 Backend:

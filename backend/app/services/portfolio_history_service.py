@@ -7,13 +7,11 @@ from threading import Event, Lock, Thread
 from time import perf_counter
 
 from app.core.diagnostics import elapsed_ms
-from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
-
-from app.db.models import PortfolioHistorySnapshot, PortfolioPosition, User
-from app.db.session import SessionLocal
+from app.db.models import PortfolioHistorySnapshot, PortfolioPosition
 from app.models.quote import QuoteRecord
-from app.models.stock import StockRecord
+from app.repositories.portfolio_history_repository import (
+    portfolio_history_repository,
+)
 from app.services.fx_service import get_usd_twd_fx_snapshot
 from app.services.market_clock import iter_open_snapshot_windows
 from app.services.portfolio_service import portfolio_service
@@ -62,7 +60,7 @@ class PortfolioHistoryService:
         self._thread: Thread | None = None
 
     def start_background_sampler(self, poll_seconds: int) -> None:
-        if SessionLocal is None:
+        if not portfolio_history_repository.is_available():
             logger.info(
                 "Portfolio history sampler skipped because the database is unavailable",
                 extra={"event": "portfolio_history.sampler.skipped", "reason": "database_unavailable"},
@@ -115,7 +113,7 @@ class PortfolioHistoryService:
         trigger: str = "manual",
     ) -> int:
         started_at = perf_counter()
-        if SessionLocal is None:
+        if not portfolio_history_repository.is_available():
             return 0
         open_windows = iter_open_snapshot_windows(now)
         if not open_windows:
@@ -128,8 +126,7 @@ class PortfolioHistoryService:
                 },
             )
             return 0
-        with SessionLocal() as session:
-            user_ids = list(session.execute(select(User.id)).scalars())
+        user_ids = portfolio_history_repository.list_user_ids()
         total = 0
         for user_id in user_ids:
             total += self.capture_due_snapshots_for_user(
@@ -160,7 +157,7 @@ class PortfolioHistoryService:
         trigger: str = "manual",
     ) -> int:
         started_at = perf_counter()
-        if SessionLocal is None:
+        if not portfolio_history_repository.is_available():
             return 0
         active_windows = open_windows if open_windows is not None else iter_open_snapshot_windows(now)
         if not active_windows:
@@ -178,40 +175,16 @@ class PortfolioHistoryService:
         metrics = self._build_snapshot_metrics(user_id)
         captured_at = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
 
-        with SessionLocal() as session:
-            touched = 0
-            for source_window, snapshot_hour in active_windows:
-                snapshot = PortfolioHistorySnapshot(
-                    user_id=user_id,
-                    snapshot_hour=snapshot_hour,
-                    source_window=source_window,
-                    captured_at=captured_at,
-                    usd_twd_rate=metrics.fx_rate,
-                    holdings_value_usd=metrics.holdings_value_usd,
-                    holdings_value_twd=metrics.holdings_value_twd,
-                    combined_assets_usd=metrics.combined_assets_usd,
-                    combined_assets_twd=metrics.combined_assets_twd,
-                )
-                try:
-                    with session.begin_nested():
-                        session.add(snapshot)
-                        session.flush()
-                except IntegrityError:
-                    snapshot = session.execute(
-                        select(PortfolioHistorySnapshot).where(
-                            PortfolioHistorySnapshot.user_id == user_id,
-                            PortfolioHistorySnapshot.snapshot_hour == snapshot_hour,
-                            PortfolioHistorySnapshot.source_window == source_window,
-                        )
-                    ).scalar_one()
-                    snapshot.captured_at = captured_at
-                    snapshot.usd_twd_rate = metrics.fx_rate
-                    snapshot.holdings_value_usd = metrics.holdings_value_usd
-                    snapshot.holdings_value_twd = metrics.holdings_value_twd
-                    snapshot.combined_assets_usd = metrics.combined_assets_usd
-                    snapshot.combined_assets_twd = metrics.combined_assets_twd
-                touched += 1
-            session.commit()
+        touched = portfolio_history_repository.upsert_snapshots(
+            user_id=user_id,
+            windows=active_windows,
+            captured_at=captured_at,
+            fx_rate=metrics.fx_rate,
+            holdings_value_usd=metrics.holdings_value_usd,
+            holdings_value_twd=metrics.holdings_value_twd,
+            combined_assets_usd=metrics.combined_assets_usd,
+            combined_assets_twd=metrics.combined_assets_twd,
+        )
         logger.log(
             logging.INFO if touched > 0 else logging.DEBUG,
             "Portfolio history capture completed for user",
@@ -234,27 +207,13 @@ class PortfolioHistoryService:
         range_name: str,
         now: datetime | None = None,
     ) -> dict[str, PortfolioHistorySeries]:
-        if SessionLocal is None:
+        if not portfolio_history_repository.is_available():
             raise RuntimeError("DATABASE_URL is not configured")
         self.capture_due_snapshots_for_user(user_id, now=now, trigger="history_read")
 
         now_utc = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
         cutoff = now_utc - _range_delta(range_name)
-
-        with SessionLocal() as session:
-            snapshots = list(
-                session.execute(
-                    select(PortfolioHistorySnapshot)
-                    .where(
-                        PortfolioHistorySnapshot.user_id == user_id,
-                        PortfolioHistorySnapshot.snapshot_hour >= cutoff,
-                    )
-                    .order_by(
-                        PortfolioHistorySnapshot.snapshot_hour.asc(),
-                        PortfolioHistorySnapshot.source_window.asc(),
-                    )
-                ).scalars()
-            )
+        snapshots = portfolio_history_repository.list_snapshots_since(user_id, cutoff)
 
         return {
             "USD": PortfolioHistorySeries(

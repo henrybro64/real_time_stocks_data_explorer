@@ -7,10 +7,7 @@ import hmac
 import secrets
 import uuid
 
-from sqlalchemy import select
-
-from app.db.models import User
-from app.db.session import SessionLocal
+from app.repositories.user_repository import user_repository
 
 
 def _hash_password(password: str, salt: bytes | None = None) -> str:
@@ -47,71 +44,51 @@ def _verify_password(password: str, stored: str) -> bool:
 
 
 def get_user_by_id(user_id: str) -> dict[str, str] | None:
-    if SessionLocal is None:
+    if not user_repository.is_available():
         return None
-    with SessionLocal() as session:
-        row = session.execute(
-            select(User).where(User.id == user_id),
-        ).scalar_one_or_none()
-        if row is None:
-            return None
-        return {"id": row.id, "username": row.username}
+    row = user_repository.get_by_id(user_id)
+    if row is None:
+        return None
+    return {"id": row.id, "username": row.username}
 
 
 def verify_local_login(username: str, password: str) -> str | None:
-    if SessionLocal is None:
+    if not user_repository.is_available():
         raise RuntimeError("DATABASE_URL is not configured")
-    with SessionLocal() as session:
-        row = session.execute(
-            select(User).where(User.username == username),
-        ).scalar_one_or_none()
-        if row is None or not row.password_hash:
-            return None
-        if not _verify_password(password, row.password_hash):
-            return None
-        return row.id
+    row = user_repository.get_by_username(username)
+    if row is None or not row.password_hash:
+        return None
+    if not _verify_password(password, row.password_hash):
+        return None
+    return row.id
 
 
 def register_local_user(username: str, password: str) -> str:
-    if SessionLocal is None:
+    if not user_repository.is_available():
         raise RuntimeError("DATABASE_URL is not configured")
     uname = username.strip()
     if not uname:
         raise ValueError("Username is required")
-    with SessionLocal() as session:
-        existing = session.execute(
-            select(User).where(User.username == uname),
-        ).scalar_one_or_none()
-        if existing is not None:
-            raise ValueError("Username already exists")
-        user = User(
-            id=f"u-{uuid.uuid4().hex[:16]}",
-            username=uname[:64],
-            password_hash=_hash_password(password),
-        )
-        session.add(user)
-        session.commit()
-        return user.id
+    existing = user_repository.get_by_username(uname)
+    if existing is not None:
+        raise ValueError("Username already exists")
+    user = user_repository.create_local_user(
+        user_id=f"u-{uuid.uuid4().hex[:16]}",
+        username=uname[:64],
+        password_hash=_hash_password(password),
+    )
+    return user.id
 
 
 def ensure_bootstrap_local_user(username: str, password: str) -> None:
     """Create or reset a configured bootstrap local user account."""
-    if SessionLocal is None:
+    if not user_repository.is_available():
         return
     uname = username.strip()
     if not uname or not password:
         return
-    with SessionLocal() as session:
-        row = session.execute(
-            select(User).where(User.username == uname),
-        ).scalar_one_or_none()
-        if row is None:
-            row = User(
-                id=f"u-{uuid.uuid4().hex[:16]}",
-                username=uname[:64],
-                password_hash=_hash_password(password),
-            )
-            session.add(row)
-        else:
-            row.password_hash = _hash_password(password)
-        session.commit()
+    user_repository.upsert_local_user_password(
+        user_id=f"u-{uuid.uuid4().hex[:16]}",
+        username=uname[:64],
+        password_hash=_hash_password(password),
+    )
