@@ -18,6 +18,28 @@ describe("PriceChart", () => {
     expect(screen.getByText("沒有可顯示的圖表資料。")).toBeInTheDocument();
   });
 
+  it("shows an empty state when candles exist but chart layout is missing", () => {
+    renderWithLanguage(
+      <PriceChart
+        candles={[
+          {
+            time: "2026-04-01T09:00:00+08:00",
+            open: 100,
+            high: 110,
+            low: 95,
+            close: 102,
+            volume: 1000,
+          },
+        ]}
+        chartLayout={null}
+        currency="USD"
+        range="1D"
+      />,
+    );
+
+    expect(screen.getByText("沒有可顯示的圖表資料。")).toBeInTheDocument();
+  });
+
   it("renders chart metadata when candles and layout are available", () => {
     renderWithLanguage(
       <PriceChart

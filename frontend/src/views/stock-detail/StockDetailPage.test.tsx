@@ -12,7 +12,21 @@ vi.mock("next/link", () => ({
 }));
 
 vi.mock("../../components/chart/PriceChart", () => ({
-  PriceChart: () => <div data-testid="price-chart-mock">price-chart</div>,
+  PriceChart: ({
+    candles,
+    isActive = true,
+  }: {
+    candles: unknown[];
+    isActive?: boolean;
+  }) => {
+    if (!isActive) {
+      return null;
+    }
+    if (candles.length === 0) {
+      return <div data-testid="price-chart-empty">沒有可顯示的圖表資料。</div>;
+    }
+    return <div data-testid="price-chart-mock">price-chart</div>;
+  },
 }));
 
 vi.mock("../../components/ai/AiInsightPanel", () => ({
@@ -206,6 +220,23 @@ describe("StockDetailPage", () => {
     expect(screen.getByText("找不到股票代碼。")).toBeInTheDocument();
   });
 
+  it("shows a loading state while the quote is loading", () => {
+    mockQueries({ quoteLoading: true });
+    renderStockDetailPage("TW%3A2330");
+
+    expect(screen.getByText("載入股票明細中")).toBeInTheDocument();
+    expect(screen.queryByTestId("quote-summary-section")).not.toBeInTheDocument();
+  });
+
+  it("shows an error notice when the quote fails without cached data", () => {
+    mockQueries({ quoteError: true });
+    renderStockDetailPage("TW%3A2330");
+
+    expect(screen.getByText("載入失敗")).toBeInTheDocument();
+    expect(screen.getByText(/TW:2330發生載入問題/)).toBeInTheDocument();
+    expect(screen.queryByTestId("quote-summary-section")).not.toBeInTheDocument();
+  });
+
   it("decodes the stock id from the URL and renders symbol metadata", () => {
     mockQueries({ quote: sampleTaiwanQuote, history: sampleHistory });
     renderStockDetailPage("TW%3A2330");
@@ -223,12 +254,37 @@ describe("StockDetailPage", () => {
     expect(screen.getAllByTestId("price-chart-mock").length).toBeGreaterThan(0);
   });
 
+  it("shows a loading indicator while history is loading", () => {
+    mockQueries({ quote: sampleTaiwanQuote, historyLoading: true });
+    renderStockDetailPage("TW%3A2330");
+
+    expect(screen.getByText("載入股票明細中")).toBeInTheDocument();
+    expect(screen.queryByTestId("price-chart-mock")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("stock-detail-chart-empty")).not.toBeInTheDocument();
+  });
+
   it("shows a clear chart empty state when OHLC history is unavailable", () => {
     mockQueries({ quote: sampleTaiwanQuote, history: undefined, historyError: true });
     renderStockDetailPage("TW%3A2330");
 
     expect(screen.getByTestId("stock-detail-chart-empty")).toHaveTextContent("沒有可顯示的圖表資料。");
     expect(screen.queryByTestId("price-chart-mock")).not.toBeInTheDocument();
+  });
+
+  it("shows the chart empty state when history returns no candles", () => {
+    mockQueries({
+      quote: sampleTaiwanQuote,
+      history: {
+        ...sampleHistory,
+        candles: [],
+        chartLayout: null,
+      },
+    });
+    renderStockDetailPage("TW%3A2330");
+
+    expect(screen.getAllByTestId("price-chart-empty").length).toBeGreaterThan(0);
+    expect(screen.queryByTestId("price-chart-mock")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("stock-detail-chart-empty")).not.toBeInTheDocument();
   });
 
   it("shows Taiwan placeholder tabs for institutional and margin short sections", () => {
