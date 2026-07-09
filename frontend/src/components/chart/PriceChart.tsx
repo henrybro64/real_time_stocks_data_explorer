@@ -2,7 +2,7 @@
 
 import { Tile } from "@carbon/react";
 import type { Candle, ChartLayout } from "@shared/quote";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { AppLanguage } from "../../app/i18n";
 import { useLanguage } from "../../app/i18n";
 import { formatCurrency } from "../../services/format/quote";
@@ -102,12 +102,34 @@ export function PriceChart({ candles, chartLayout, currency, isActive = true, ra
   const wrapRef = useRef<HTMLDivElement>(null);
   const [activeIndex, setActiveIndex] = useState<number | null>(null);
   const [tooltipStyle, setTooltipStyle] = useState<{ left: number; top: number }>({ left: 0, top: 0 });
+  const [viewportEpoch, setViewportEpoch] = useState(0);
 
   const pointCoords = chartLayout?.points ?? [];
   const minY = chartLayout?.minY ?? 0;
   const maxY = chartLayout?.maxY ?? 0;
   const yTicks = chartLayout?.yAxisTicks ?? [];
   const xTickIndices = chartLayout?.xAxisTickIndices ?? [];
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const bumpViewportEpoch = () => {
+      setViewportEpoch((current) => current + 1);
+    };
+
+    window.addEventListener("orientationchange", bumpViewportEpoch);
+    window.addEventListener("resize", bumpViewportEpoch);
+    return () => {
+      window.removeEventListener("orientationchange", bumpViewportEpoch);
+      window.removeEventListener("resize", bumpViewportEpoch);
+    };
+  }, []);
+
+  useEffect(() => {
+    setActiveIndex(null);
+  }, [viewportEpoch, range, candles.length]);
 
   const updateFromClientX = useCallback(
     (clientX: number, clientY: number) => {
@@ -143,10 +165,19 @@ export function PriceChart({ candles, chartLayout, currency, isActive = true, ra
 
   const handlePointerDown = useCallback(
     (e: React.PointerEvent) => {
+      if (e.pointerType === "touch") {
+        e.currentTarget.setPointerCapture(e.pointerId);
+      }
       updateFromClientX(e.clientX, e.clientY);
     },
     [updateFromClientX],
   );
+
+  const handlePointerUp = useCallback((e: React.PointerEvent) => {
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    }
+  }, []);
 
   const handlePointerLeave = useCallback(() => {
     setActiveIndex(null);
@@ -197,7 +228,7 @@ export function PriceChart({ candles, chartLayout, currency, isActive = true, ra
   const guideLines = [15, 40, 65, 90];
 
   return (
-    <div className="app-chart-panel">
+    <div className="app-chart-panel" data-viewport-epoch={viewportEpoch}>
       <div className="app-section-header">
         <div>
           <h2 className="app-chart-heading">{t("chart.title")}</h2>
@@ -229,6 +260,8 @@ export function PriceChart({ candles, chartLayout, currency, isActive = true, ra
           className="app-chart-svg-wrap"
           onPointerMove={handlePointerMove}
           onPointerDown={handlePointerDown}
+          onPointerUp={handlePointerUp}
+          onPointerCancel={handlePointerUp}
           onPointerLeave={handlePointerLeave}
           role="presentation"
         >

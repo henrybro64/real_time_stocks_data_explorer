@@ -1,5 +1,17 @@
 :root {
   color-scheme: dark;
+  --app-vh: 100vh;
+  --app-safe-left: env(safe-area-inset-left, 0px);
+  --app-safe-right: env(safe-area-inset-right, 0px);
+  --app-shell-inline-padding: clamp(0.5rem, 1.4vw, 1rem);
+  --app-page-inline-padding: clamp(1rem, 2vw, 1.5rem);
+  --app-chart-height: 18rem;
+}
+
+@supports (height: 100dvh) {
+  :root {
+    --app-vh: 100dvh;
+  }
 }
 
 * {
@@ -13,7 +25,7 @@ html {
 body {
   margin: 0;
   min-width: 320px;
-  min-height: 100vh;
+  min-height: var(--app-vh);
   color: var(--cds-text-primary);
   font-family: var(--font-body), "Segoe UI", sans-serif;
   background:
@@ -23,7 +35,7 @@ body {
 }
 
 .app-auth-gate {
-  min-height: 100vh;
+  min-height: var(--app-vh);
   display: grid;
   place-items: center;
 }
@@ -39,7 +51,7 @@ input {
 }
 
 #root {
-  min-height: 100vh;
+  min-height: var(--app-vh);
 }
 
 .app-shell-header {
@@ -55,6 +67,8 @@ input {
     linear-gradient(90deg, rgba(93, 147, 255, 0.2), rgba(83, 255, 218, 0.06)),
     rgba(8, 12, 22, 0.92);
   backdrop-filter: blur(8px);
+  padding-left: calc(1rem + var(--app-safe-left));
+  padding-right: calc(1rem + var(--app-safe-right));
 }
 
 .app-shell-header .cds--header__name {
@@ -83,23 +97,23 @@ input {
 }
 
 .app-content {
-  min-height: 100vh;
+  min-height: var(--app-vh);
   background: transparent;
 }
 
 .app-page-theme {
-  min-height: calc(100vh - 3rem);
+  min-height: calc(var(--app-vh) - 3rem);
   padding-bottom: 4rem;
 }
 
 .app-shell-layout {
   width: 100%;
   max-width: 99rem;
-  margin: 0;
+  margin: 0 auto;
   padding-top: 0.75rem;
-  padding-left: 0.25rem;
+  padding-inline: var(--app-shell-inline-padding);
   display: grid;
-  grid-template-columns: 16rem minmax(0, 1fr);
+  grid-template-columns: minmax(13.5rem, 15rem) minmax(0, 1fr);
   gap: 1.25rem;
 }
 
@@ -297,7 +311,8 @@ input {
 }
 
 .app-page-grid {
-  padding-inline: 1rem;
+  padding-left: calc(var(--app-page-inline-padding) + var(--app-safe-left));
+  padding-right: calc(var(--app-page-inline-padding) + var(--app-safe-right));
   row-gap: 1rem;
 }
 
@@ -502,7 +517,7 @@ input {
 }
 
 .app-watchlist-grid {
-  grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr));
+  grid-template-columns: 1fr;
 }
 
 .app-watchlist-loading-wrap {
@@ -600,6 +615,7 @@ input {
 .app-watchlist-grid-explorer .app-stock-card-actions {
   padding-top: 0.55rem;
   border-top: 1px solid rgba(93, 108, 136, 0.28);
+  flex-wrap: wrap;
 }
 
 .app-watchlist-grid-explorer .app-stock-card-actions .cds--btn {
@@ -636,12 +652,25 @@ input {
   min-height: 100%;
 }
 
+.app-stock-card-link {
+  cursor: pointer;
+}
+
+.app-stock-card-link:focus-visible {
+  outline: 2px solid var(--cds-focus, #ffffff);
+  outline-offset: 0.3rem;
+}
+
 .app-stock-card-top,
 .app-stock-card-actions {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 1rem;
+}
+
+.app-stock-card-actions {
+  flex-wrap: wrap;
 }
 
 .app-stock-card-price-block {
@@ -818,7 +847,7 @@ input {
 .app-chart-frame {
   display: grid;
   grid-template-columns: 4.5rem minmax(0, 1fr);
-  grid-template-rows: minmax(18rem, 1fr) auto;
+  grid-template-rows: minmax(var(--app-chart-height), 1fr) auto;
   gap: 0.35rem 0.85rem;
   align-items: stretch;
   margin-block: 0.5rem 0.75rem;
@@ -848,7 +877,7 @@ input {
   flex-direction: column;
   justify-content: space-between;
   flex: 1;
-  min-height: 14rem;
+  min-height: calc(var(--app-chart-height) - 4rem);
   font-size: 0.75rem;
   color: var(--cds-text-secondary);
   text-align: right;
@@ -863,8 +892,13 @@ input {
   grid-column: 2;
   grid-row: 1;
   position: relative;
-  min-height: 18rem;
+  min-height: var(--app-chart-height);
   cursor: crosshair;
+  /* Keep vertical page scroll on iPad; chart inspection still works via pointer events. */
+  touch-action: pan-y;
+  user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
 }
 
 .app-chart-empty-overlay {
@@ -1033,7 +1067,7 @@ input {
 .app-chart-svg {
   display: block;
   width: 100%;
-  height: 18rem;
+  height: var(--app-chart-height);
   border: 1px solid var(--cds-border-subtle-01);
   background:
     radial-gradient(circle at top right, rgba(69, 137, 255, 0.08), rgba(255, 255, 255, 0) 38%),
@@ -1187,6 +1221,8 @@ input {
 .app-portfolio-table-wrap {
   width: 100%;
   overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-x: contain;
 }
 
 .app-portfolio-table-wrap .cds--data-table {
@@ -1391,7 +1427,99 @@ input {
   background: #8a63ff;
 }
 
-@media (max-width: 768px) {
+@media (min-width: 768px) and (max-width: 1023px) {
+  :root {
+    --app-chart-height: 26.25rem;
+  }
+
+  .app-shell-layout {
+    grid-template-columns: 1fr;
+    padding-top: 1rem;
+  }
+
+  .app-shell-left-column {
+    order: 2;
+  }
+
+  .app-shell-left-panel {
+    position: static;
+  }
+
+  .app-shell-content {
+    order: 1;
+  }
+
+  .app-watchlist-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .app-section-header {
+    flex-wrap: wrap;
+  }
+
+  .app-stock-detail-chart .app-chart-frame {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto minmax(var(--app-chart-height), 1fr) auto;
+  }
+
+  .app-stock-detail-chart .app-chart-y-axis {
+    grid-column: 1;
+    grid-row: 1;
+    flex-direction: row;
+    justify-content: space-between;
+    min-height: auto;
+    text-align: left;
+  }
+
+  .app-stock-detail-chart .app-chart-y-ticks {
+    flex-direction: row;
+    flex: 0 1 auto;
+    min-height: 0;
+    gap: 0.75rem;
+    text-align: left;
+  }
+
+  .app-stock-detail-chart .app-chart-svg-wrap {
+    grid-column: 1;
+    grid-row: 2;
+  }
+
+  .app-stock-detail-chart .app-chart-x-axis {
+    grid-column: 1;
+    grid-row: 3;
+  }
+}
+
+@media (min-width: 1024px) and (max-width: 1279px) {
+  :root {
+    --app-chart-height: 28.75rem;
+  }
+
+  .app-shell-layout {
+    grid-template-columns: minmax(12.5rem, 13.5rem) minmax(0, 1fr);
+    gap: 1rem;
+  }
+
+  .app-watchlist-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 1280px) {
+  :root {
+    --app-chart-height: 32.5rem;
+  }
+
+  .app-watchlist-grid {
+    grid-template-columns: repeat(auto-fit, minmax(15.5rem, 1fr));
+  }
+}
+
+@media (max-width: 767px) {
+  :root {
+    --app-chart-height: 16rem;
+  }
+
   .app-shell-layout {
     grid-template-columns: 1fr;
     padding-top: 1rem;
@@ -1423,19 +1551,19 @@ input {
     grid-template-columns: 1fr;
   }
 
-  .app-chart-svg {
-    height: 16rem;
+  .app-stock-card-actions .cds--btn {
+    flex: 1 1 100%;
   }
 }
 
 /* Carbon-style login (g100) */
 .app-login-root {
-  min-height: 100vh;
+  min-height: var(--app-vh);
   position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 2rem 1rem;
+  padding: 2rem calc(1rem + var(--app-safe-right)) 2rem calc(1rem + var(--app-safe-left));
 }
 
 .app-login-backdrop {
@@ -1501,4 +1629,40 @@ input {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.app-rankings-row-link {
+  cursor: pointer;
+}
+
+.app-rankings-row-link:hover td {
+  background: rgba(69, 137, 255, 0.08);
+}
+
+.app-rankings-symbol-link,
+.app-rankings-name-link {
+  text-decoration: none;
+  color: inherit;
+}
+
+.app-rankings-symbol-link:hover,
+.app-rankings-name-link:hover {
+  text-decoration: underline;
+}
+
+.app-rankings-tabs .cds--btn {
+  min-height: 2.5rem;
+}
+
+.app-stock-card-actions .cds--btn,
+.app-rankings-tabs .cds--btn {
+  min-width: 2.75rem;
+}
+
+@media (min-width: 768px) {
+  .app-rankings-controls {
+    position: sticky;
+    top: 3rem;
+    z-index: 4;
+  }
 }

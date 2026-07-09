@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import type { ReactNode } from "react";
 import { Exo_2, Rajdhani } from "next/font/google";
 import "@carbon/styles/css/styles.css";
@@ -24,6 +24,12 @@ export const metadata: Metadata = {
     icon: "/icon.svg",
     shortcut: "/icon.svg",
   },
+};
+
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  viewportFit: "cover",
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {

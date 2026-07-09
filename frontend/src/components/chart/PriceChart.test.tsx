@@ -1,5 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
+import { act } from "react";
 
 import { LanguageProvider } from "../../app/i18n";
 import { PriceChart } from "./PriceChart";
@@ -61,8 +62,69 @@ describe("PriceChart", () => {
     expect(screen.getByText("價格（USD）")).toBeInTheDocument();
     expect(screen.getByText("日期")).toBeInTheDocument();
     expect(
-      screen.getByText("將游標移到圖表上或點選，可檢視該時間點的開高低收與成交量。"),
+      screen.getByText("將游標移到圖表上、點選或拖曳，可檢視該時間點的開高低收與成交量。"),
     ).toBeInTheDocument();
+  });
+
+  it("clears the active crosshair after an orientation change", () => {
+    const { container } = renderWithLanguage(
+      <PriceChart
+        candles={[
+          {
+            time: "2026-04-01T09:00:00+08:00",
+            open: 100,
+            high: 110,
+            low: 95,
+            close: 102,
+            volume: 1000,
+          },
+          {
+            time: "2026-04-01T10:00:00+08:00",
+            open: 102,
+            high: 120,
+            low: 101,
+            close: 118,
+            volume: 1500,
+          },
+        ]}
+        chartLayout={{
+          minY: 95,
+          maxY: 120,
+          pointsPolyline: "0,100 100,0",
+          points: [
+            { x: 0, y: 100 },
+            { x: 100, y: 0 },
+          ],
+          yAxisTicks: [118, 114, 110, 106, 102],
+          xAxisTickIndices: [0, 1],
+          firstClose: 102,
+          lastClose: 118,
+          trendUp: true,
+        }}
+        currency="USD"
+        range="1D"
+      />,
+    );
+
+    const wrap = container.querySelector(".app-chart-svg-wrap");
+    expect(wrap).not.toBeNull();
+    act(() => {
+      wrap?.dispatchEvent(
+        new MouseEvent("pointerdown", {
+          bubbles: true,
+          clientX: 40,
+          clientY: 40,
+        }),
+      );
+    });
+    expect(container.querySelector(".app-chart-candle-body-active")).not.toBeNull();
+
+    act(() => {
+      window.dispatchEvent(new Event("orientationchange"));
+    });
+
+    expect(container.querySelector(".app-chart-candle-body-active")).toBeNull();
+    expect(container.querySelector(".app-chart-panel")?.getAttribute("data-viewport-epoch")).toBe("1");
   });
 
   it("renders candlestick bodies for each candle in the series", () => {

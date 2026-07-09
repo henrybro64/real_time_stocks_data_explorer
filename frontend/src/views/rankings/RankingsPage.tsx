@@ -20,6 +20,8 @@ import {
 import { useQuery } from "@tanstack/react-query";
 import type { MarketStatus, RankingResponse, RankingType } from "@shared/api";
 import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
 
 import { getDisplayStockName, useLanguage } from "../../app/i18n";
 import { QuoteFreshnessTag } from "../../components/state/QuoteFreshnessTag";
@@ -269,6 +271,7 @@ function RankingRealtimeTag({ response }: { response: RankingResponse }) {
 }
 
 export function RankingsPage() {
+  const router = useRouter();
   const { language, t, formatNumber } = useLanguage();
   const [marketOverride, setMarketOverride] = useState<RankingMarket | null>(null);
   const marketsQuery = useQuery<MarketStatus[]>({
@@ -354,7 +357,7 @@ export function RankingsPage() {
       </Column>
 
       <Column className="app-column-spacing" sm={4} md={8} lg={16}>
-        <Tile className="app-section-tile">
+        <Tile className="app-section-tile app-rankings-controls">
           <div className="app-section-header">
             <div>
               <p className="app-eyebrow">{t("rankings.market")}</p>
@@ -402,7 +405,7 @@ export function RankingsPage() {
               </div>
             </div>
           ) : null}
-          <div className="app-shell-brand" style={{ marginTop: "1rem" }}>
+          <div className="app-shell-brand app-rankings-tabs" style={{ marginTop: "1rem" }}>
             <div className="app-auth-actions" style={{ display: "flex", flexWrap: "wrap", gap: "0.75rem" }}>
               {rankingTabs.map((tab) => (
                 <Button
@@ -491,14 +494,32 @@ export function RankingsPage() {
                       </TableRow>
                     </TableHead>
                     <TableBody>
-                      {data.items.map((item) => (
-                        <TableRow data-testid={`rankings-row-${item.stock.id}`} key={item.stock.id}>
+                      {data.items.map((item) => {
+                        const detailHref = `/stock/${encodeURIComponent(item.stock.id)}`;
+                        return (
+                        <TableRow
+                          className="app-rankings-row-link"
+                          data-testid={`rankings-row-${item.stock.id}`}
+                          key={item.stock.id}
+                          onClick={(event) => {
+                            if (shouldIgnoreRankingsNavigation(event.target)) {
+                              return;
+                            }
+                            router.push(detailHref);
+                          }}
+                        >
                           <TableCell>{item.rank}</TableCell>
                           <TableCell>
-                            <span className="app-result-symbol">{item.stock.symbol}</span>
+                            <Link className="app-rankings-symbol-link" href={detailHref}>
+                              <span className="app-result-symbol">{item.stock.symbol}</span>
+                            </Link>
                           </TableCell>
                           {market === "TW" ? <TableCell>{item.stock.exchange}</TableCell> : null}
-                          <TableCell>{getDisplayStockName(item.stock, language)}</TableCell>
+                          <TableCell>
+                            <Link className="app-rankings-name-link" href={detailHref}>
+                              {getDisplayStockName(item.stock, language)}
+                            </Link>
+                          </TableCell>
                           <TableCell>
                             {formatMaybeCurrency(item.lastPrice, item.stock.currency)}
                           </TableCell>
@@ -519,7 +540,8 @@ export function RankingsPage() {
                           <TableCell>{formatLastUpdated(item.timestamp)}</TableCell>
                           <TableCell>{localizedSource}</TableCell>
                         </TableRow>
-                      ))}
+                        );
+                      })}
                     </TableBody>
                   </Table>
                 </TableContainer>
@@ -534,4 +556,10 @@ export function RankingsPage() {
       </Column>
     </Grid>
   );
+}
+
+function shouldIgnoreRankingsNavigation(target: EventTarget | null) {
+  return target instanceof HTMLElement
+    ? Boolean(target.closest("a, button, input, select, textarea, summary, [role='button']"))
+    : false;
 }

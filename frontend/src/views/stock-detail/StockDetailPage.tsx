@@ -175,7 +175,7 @@ export function StockDetailPage({ stockId = "" }: Props) {
         ) : null}
       </Column>
       <Column className="app-column-spacing" sm={4} md={8} lg={16}>
-        <Tile className="app-section-tile">
+        <Tile className="app-section-tile app-stock-detail-chart">
           {chartNoticeKind ? (
             <div className="app-state-notice-wrap">
               <RequestStateNotice kind={chartNoticeKind} scopeLabel={t("chart.title")} />
