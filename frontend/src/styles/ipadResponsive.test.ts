@@ -31,11 +31,22 @@ describe("iPad responsive layout contracts", () => {
     expect(css).toContain("--app-safe-left: env(safe-area-inset-left, 0px);");
     expect(css).toContain("--app-safe-right: env(safe-area-inset-right, 0px);");
     expect(css).toContain("@supports (height: 100dvh)");
-    expect(css).toContain("touch-action: none;");
+    expect(css).toContain("touch-action: pan-y;");
   });
 
   it("keeps ranking category controls sticky for tablet browsing", () => {
     expect(css).toContain(".app-rankings-controls");
-    expect(css).toMatch(/\.app-rankings-controls \{[\s\S]*position: sticky;/);
+    expect(css).toMatch(
+      /@media \(min-width: 768px\)[\s\S]*\.app-rankings-controls \{\s*position: sticky;/,
+    );
+  });
+
+  it("stacks stock-detail chart axes correctly on tablet widths", () => {
+    expect(css).toMatch(
+      /\.app-stock-detail-chart \.app-chart-x-axis \{\s*grid-column: 1;\s*grid-row: 3;/,
+    );
+    expect(css).toMatch(
+      /\.app-stock-detail-chart \.app-chart-y-ticks \{\s*flex-direction: row;[\s\S]*min-height: 0;/,
+    );
   });
 });

@@ -811,8 +811,17 @@ describe("RankingsPage", () => {
     renderRankingsPage();
 
     const row = await screen.findByTestId("rankings-row-TW:2330");
-    await user.click(row);
+    const priceCell = row.querySelectorAll("td")[4];
+    expect(priceCell).toBeTruthy();
+    await user.click(priceCell!);
 
     expect(pushMock).toHaveBeenCalledWith("/stock/TW%3A2330");
+  });
+
+  it("exposes a real stock detail link inside ranking rows", async () => {
+    renderRankingsPage();
+
+    const link = await screen.findByRole("link", { name: "2330" });
+    expect(link).toHaveAttribute("href", "/stock/TW%3A2330");
   });
 });

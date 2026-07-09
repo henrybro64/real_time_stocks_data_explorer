@@ -20,6 +20,7 @@ import {
 import { useQuery } from "@tanstack/react-query";
 import type { MarketStatus, RankingResponse, RankingType } from "@shared/api";
 import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 
 import { getDisplayStockName, useLanguage } from "../../app/i18n";
@@ -493,29 +494,32 @@ export function RankingsPage() {
                       </TableRow>
                     </TableHead>
                     <TableBody>
-                      {data.items.map((item) => (
+                      {data.items.map((item) => {
+                        const detailHref = `/stock/${encodeURIComponent(item.stock.id)}`;
+                        return (
                         <TableRow
-                          aria-label={`${getDisplayStockName(item.stock, language)} ${t("stock.viewDetails")}`}
                           className="app-rankings-row-link"
                           data-testid={`rankings-row-${item.stock.id}`}
                           key={item.stock.id}
-                          onClick={() => router.push(`/stock/${encodeURIComponent(item.stock.id)}`)}
-                          onKeyDown={(event) => {
-                            if (event.key !== "Enter" && event.key !== " ") {
+                          onClick={(event) => {
+                            if (shouldIgnoreRankingsNavigation(event.target)) {
                               return;
                             }
-                            event.preventDefault();
-                            router.push(`/stock/${encodeURIComponent(item.stock.id)}`);
+                            router.push(detailHref);
                           }}
-                          role="link"
-                          tabIndex={0}
                         >
                           <TableCell>{item.rank}</TableCell>
                           <TableCell>
-                            <span className="app-result-symbol">{item.stock.symbol}</span>
+                            <Link className="app-rankings-symbol-link" href={detailHref}>
+                              <span className="app-result-symbol">{item.stock.symbol}</span>
+                            </Link>
                           </TableCell>
                           {market === "TW" ? <TableCell>{item.stock.exchange}</TableCell> : null}
-                          <TableCell>{getDisplayStockName(item.stock, language)}</TableCell>
+                          <TableCell>
+                            <Link className="app-rankings-name-link" href={detailHref}>
+                              {getDisplayStockName(item.stock, language)}
+                            </Link>
+                          </TableCell>
                           <TableCell>
                             {formatMaybeCurrency(item.lastPrice, item.stock.currency)}
                           </TableCell>
@@ -536,7 +540,8 @@ export function RankingsPage() {
                           <TableCell>{formatLastUpdated(item.timestamp)}</TableCell>
                           <TableCell>{localizedSource}</TableCell>
                         </TableRow>
-                      ))}
+                        );
+                      })}
                     </TableBody>
                   </Table>
                 </TableContainer>
@@ -551,4 +556,10 @@ export function RankingsPage() {
       </Column>
     </Grid>
   );
+}
+
+function shouldIgnoreRankingsNavigation(target: EventTarget | null) {
+  return target instanceof HTMLElement
+    ? Boolean(target.closest("a, button, input, select, textarea, summary, [role='button']"))
+    : false;
 }

@@ -894,7 +894,8 @@ input {
   position: relative;
   min-height: var(--app-chart-height);
   cursor: crosshair;
-  touch-action: none;
+  /* Keep vertical page scroll on iPad; chart inspection still works via pointer events. */
+  touch-action: pan-y;
   user-select: none;
   -webkit-touch-callout: none;
   -webkit-user-select: none;
@@ -1470,6 +1471,14 @@ input {
     text-align: left;
   }
 
+  .app-stock-detail-chart .app-chart-y-ticks {
+    flex-direction: row;
+    flex: 0 1 auto;
+    min-height: 0;
+    gap: 0.75rem;
+    text-align: left;
+  }
+
   .app-stock-detail-chart .app-chart-svg-wrap {
     grid-column: 1;
     grid-row: 2;
@@ -1477,6 +1486,7 @@ input {
 
   .app-stock-detail-chart .app-chart-x-axis {
     grid-column: 1;
+    grid-row: 3;
   }
 }
 
@@ -1629,15 +1639,15 @@ input {
   background: rgba(69, 137, 255, 0.08);
 }
 
-.app-rankings-row-link:focus-visible {
-  outline: 2px solid var(--cds-focus, #ffffff);
-  outline-offset: -2px;
+.app-rankings-symbol-link,
+.app-rankings-name-link {
+  text-decoration: none;
+  color: inherit;
 }
 
-.app-rankings-controls {
-  position: sticky;
-  top: 3rem;
-  z-index: 4;
+.app-rankings-symbol-link:hover,
+.app-rankings-name-link:hover {
+  text-decoration: underline;
 }
 
 .app-rankings-tabs .cds--btn {
@@ -1647,4 +1657,12 @@ input {
 .app-stock-card-actions .cds--btn,
 .app-rankings-tabs .cds--btn {
   min-width: 2.75rem;
+}
+
+@media (min-width: 768px) {
+  .app-rankings-controls {
+    position: sticky;
+    top: 3rem;
+    z-index: 4;
+  }
 }
