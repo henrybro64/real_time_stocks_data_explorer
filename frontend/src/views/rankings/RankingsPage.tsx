@@ -20,6 +20,7 @@ import {
 import { useQuery } from "@tanstack/react-query";
 import type { MarketStatus, RankingResponse, RankingType } from "@shared/api";
 import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 
 import { getDisplayStockName, useLanguage } from "../../app/i18n";
 import { QuoteFreshnessTag } from "../../components/state/QuoteFreshnessTag";
@@ -269,6 +270,7 @@ function RankingRealtimeTag({ response }: { response: RankingResponse }) {
 }
 
 export function RankingsPage() {
+  const router = useRouter();
   const { language, t, formatNumber } = useLanguage();
   const [marketOverride, setMarketOverride] = useState<RankingMarket | null>(null);
   const marketsQuery = useQuery<MarketStatus[]>({
@@ -492,7 +494,22 @@ export function RankingsPage() {
                     </TableHead>
                     <TableBody>
                       {data.items.map((item) => (
-                        <TableRow data-testid={`rankings-row-${item.stock.id}`} key={item.stock.id}>
+                        <TableRow
+                          aria-label={`${getDisplayStockName(item.stock, language)} ${t("stock.viewDetails")}`}
+                          className="app-rankings-row-link"
+                          data-testid={`rankings-row-${item.stock.id}`}
+                          key={item.stock.id}
+                          onClick={() => router.push(`/stock/${encodeURIComponent(item.stock.id)}`)}
+                          onKeyDown={(event) => {
+                            if (event.key !== "Enter" && event.key !== " ") {
+                              return;
+                            }
+                            event.preventDefault();
+                            router.push(`/stock/${encodeURIComponent(item.stock.id)}`);
+                          }}
+                          role="link"
+                          tabIndex={0}
+                        >
                           <TableCell>{item.rank}</TableCell>
                           <TableCell>
                             <span className="app-result-symbol">{item.stock.symbol}</span>

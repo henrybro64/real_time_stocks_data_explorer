@@ -4,7 +4,8 @@ import { Button, InlineLoading, Tag, Tile } from "@carbon/react";
 import { useQuery } from "@tanstack/react-query";
 import type { ChartLayout, Quote } from "@shared/quote";
 import type { Stock } from "@shared/stock";
-import { useId } from "react";
+import { useId, type KeyboardEvent, type MouseEvent } from "react";
+import { useRouter } from "next/navigation";
 import { getDisplayStockName, useLanguage } from "../../app/i18n";
 import { fetchHistory, fetchQuote } from "../../services/api/client";
 import { QuoteFreshnessTag } from "../state/QuoteFreshnessTag";
@@ -35,6 +36,7 @@ export function StockCard({
   addLabel,
   removeLabel,
 }: Props) {
+  const router = useRouter();
   const { language, t, formatNumber } = useLanguage();
   const quoteQuery = useQuery({
     queryKey: ["card-quote", stock.id],
@@ -57,9 +59,36 @@ export function StockCard({
   const quote = initialQuote ?? quoteQuery.data;
   const chartLayout = historyQuery.data?.chartLayout ?? null;
   const quoteRefreshFailed = initialQuote === undefined && quoteQuery.isError && quote != null;
+  const detailHref = `/stock/${encodeURIComponent(stock.id)}`;
+
+  const handleCardClick = (event: MouseEvent<HTMLDivElement>) => {
+    if (shouldIgnoreNavigation(event.target)) {
+      return;
+    }
+    router.push(detailHref);
+  };
+
+  const handleCardKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.target !== event.currentTarget) {
+      return;
+    }
+    if (event.key !== "Enter" && event.key !== " ") {
+      return;
+    }
+    event.preventDefault();
+    router.push(detailHref);
+  };
 
   return (
-    <Tile className="app-stock-card" data-testid={`stock-card-${stock.id}`}>
+    <Tile
+      aria-label={`${getDisplayStockName(stock, language)} ${t("stock.viewDetails")}`}
+      className="app-stock-card app-stock-card-link"
+      data-testid={`stock-card-${stock.id}`}
+      onClick={handleCardClick}
+      onKeyDown={handleCardKeyDown}
+      role="link"
+      tabIndex={0}
+    >
       <div className="app-stock-card-top">
         <div>
           <p className="app-result-symbol">
@@ -136,7 +165,7 @@ export function StockCard({
       <div className="app-stock-card-actions">
         <Button
           data-testid={`stock-card-view-${stock.id}`}
-          href={`/stock/${encodeURIComponent(stock.id)}`}
+          href={detailHref}
           kind="tertiary"
           size="sm"
         >
@@ -161,6 +190,12 @@ export function StockCard({
       </div>
     </Tile>
   );
+}
+
+function shouldIgnoreNavigation(target: EventTarget | null) {
+  return target instanceof HTMLElement
+    ? Boolean(target.closest("button, a, input, select, textarea, summary, [role='button'], [role='link']"))
+    : false;
 }
 
 function Sparkline({
