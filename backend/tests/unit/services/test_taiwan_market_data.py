@@ -275,6 +275,8 @@ def test_is_taiwan_no_data_payload_detects_holiday_and_empty_shapes() -> None:
     assert taiwan_market_data.is_taiwan_no_data_payload({"stat": "OK", "data": []})
     assert taiwan_market_data.is_taiwan_no_data_payload({"tables": []})
     assert taiwan_market_data.is_taiwan_no_data_payload("查無資料")
+    assert taiwan_market_data.is_taiwan_no_data_payload("Sorry, no data found")
+    assert taiwan_market_data.is_taiwan_no_data_payload("No Data")
     assert not taiwan_market_data.is_taiwan_no_data_payload(
         {"stat": "OK", "data": [["2330", "台積電"]]}
     )
@@ -310,6 +312,124 @@ def test_fetch_twse_data_caches_by_market_date_request(monkeypatch) -> None:
             {"response": "json", "date": "20260709"},
         )
     ]
+
+
+def test_fetch_twse_data_uses_short_ttl_for_no_data_payloads(monkeypatch) -> None:
+    client = TaiwanMarketDataClient()
+    calls = {"count": 0}
+    payloads = [
+        {"stat": "Sorry, no data found"},
+        {"stat": "OK", "data": [["2330", "台積電"]]},
+    ]
+
+    def fake_fetch_json(url: str, **kwargs):
+        index = min(calls["count"], len(payloads) - 1)
+        calls["count"] += 1
+        return payloads[index]
+
+    monkeypatch.setattr(taiwan_market_data, "fetch_json", fake_fetch_json)
+
+    first = client.fetch_twse_data(
+        "https://www.twse.com.tw/fund/T86",
+        params={"response": "json", "date": "20260709"},
+        cache_ttl=timedelta(hours=12),
+    )
+    assert taiwan_market_data.is_taiwan_no_data_payload(first)
+    assert calls["count"] == 1
+
+    # Within the short no-data TTL, reuse the empty payload.
+    second = client.fetch_twse_data(
+        "https://www.twse.com.tw/fund/T86",
+        params={"response": "json", "date": "20260709"},
+        cache_ttl=timedelta(hours=12),
+    )
+    assert second == first
+    assert calls["count"] == 1
+
+    # After the short no-data TTL expires, refetch so newly published data is visible.
+    entry = next(iter(client._cache.values()))
+    object.__setattr__(
+        entry,
+        "cached_at",
+        entry.cached_at - timedelta(minutes=3),
+    )
+
+    third = client.fetch_twse_data(
+        "https://www.twse.com.tw/fund/T86",
+        params={"response": "json", "date": "20260709"},
+        cache_ttl=timedelta(hours=12),
+    )
+    assert third == {"stat": "OK", "data": [["2330", "台積電"]]}
+    assert calls["count"] == 2
+
+
+def test_fetch_text_cache_key_includes_encoding_and_headers(monkeypatch) -> None:
+    client = TaiwanMarketDataClient()
+    calls: list[dict[str, object]] = []
+
+    def fake_fetch_text(url: str, **kwargs):
+        calls.append(
+            {
+                "encoding": kwargs.get("encoding"),
+                "headers": kwargs.get("headers"),
+            }
+        )
+        return f"payload-{kwargs.get('encoding')}"
+
+    monkeypatch.setattr(taiwan_market_data, "fetch_text", fake_fetch_text)
+
+    first = client.fetch_twse_text(
+        "https://isin.twse.com.tw/isin/C_public.jsp?strMode=2",
+        encoding=None,
+        headers={"Accept": "text/html"},
+    )
+    second = client.fetch_twse_text(
+        "https://isin.twse.com.tw/isin/C_public.jsp?strMode=2",
+        encoding="big5",
+        headers={"Accept": "text/csv"},
+    )
+    third = client.fetch_twse_text(
+        "https://isin.twse.com.tw/isin/C_public.jsp?strMode=2",
+        encoding="big5",
+        headers={"Accept": "text/csv"},
+    )
+
+    assert first != second
+    assert second == third
+    assert len(calls) == 2
+    assert calls[0]["encoding"] is None
+    assert calls[1]["encoding"] == "big5"
+
+
+def test_resolve_taiwan_market_skips_default_quote_source_when_known_stocks_resolve(
+    monkeypatch,
+) -> None:
+    known = stock_record(
+        "TW:2330",
+        market="TW",
+        symbol="2330",
+        name="台積電",
+        exchange="TWSE",
+        currency="TWD",
+        timezone="Asia/Taipei",
+    )
+
+    def fail_default_quote_source():
+        raise AssertionError("default quote source should not be used")
+
+    monkeypatch.setattr(
+        taiwan_market_data,
+        "_default_quote_source",
+        fail_default_quote_source,
+    )
+
+    assert (
+        taiwan_market_data.resolve_taiwan_market(
+            "2330",
+            known_stocks=[known],
+        )
+        == "TWSE"
+    )
 
 
 def test_fetch_tpex_data_supports_post_payloads(monkeypatch) -> None:

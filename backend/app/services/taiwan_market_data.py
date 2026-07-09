@@ -18,6 +18,9 @@ TaiwanMarket = Literal["TWSE", "TPEx", "UNKNOWN"]
 _DEFAULT_TIMEOUT_SECONDS = 8.0
 _DEFAULT_RETRIES = 1
 _DEFAULT_CACHE_TTL = timedelta(hours=12)
+# Empty/no-data responses are often temporary (pre-publish / holiday probes).
+# Never pin them for the full dataset TTL.
+_NO_DATA_CACHE_TTL = timedelta(minutes=2)
 _DEFAULT_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
@@ -50,7 +53,16 @@ class TaiwanMarketDataClient:
 
     def __init__(self) -> None:
         self._cache: dict[
-            tuple[str, str, str, str, tuple[tuple[str, str], ...], tuple[tuple[str, str], ...]],
+            tuple[
+                str,
+                str,
+                str,
+                str,
+                str | None,
+                tuple[tuple[str, str], ...],
+                tuple[tuple[str, str], ...],
+                tuple[tuple[str, str], ...],
+            ],
             _CacheEntry,
         ] = {}
 
@@ -200,22 +212,28 @@ class TaiwanMarketDataClient:
         resource_id: str | None,
         encoding: str | None = None,
     ) -> object:
+        merged_headers = dict(_DEFAULT_HEADERS)
+        if headers:
+            merged_headers.update(headers)
+
         cache_key = (
             provider_name,
             response_kind,
             method,
             url,
+            encoding,
             tuple(sorted((params or {}).items())),
             tuple(sorted((data or {}).items())),
+            tuple(sorted(merged_headers.items())),
         )
         now = datetime.now(UTC)
         cached = self._cache.get(cache_key)
-        if cached is not None and now - cached.cached_at < cache_ttl:
-            return cached.payload
-
-        merged_headers = dict(_DEFAULT_HEADERS)
-        if headers:
-            merged_headers.update(headers)
+        effective_ttl = cache_ttl
+        if cached is not None:
+            if is_taiwan_no_data_payload(cached.payload):
+                effective_ttl = min(cache_ttl, _NO_DATA_CACHE_TTL)
+            if now - cached.cached_at < effective_ttl:
+                return cached.payload
 
         try:
             if response_kind == "text":
@@ -250,6 +268,8 @@ class TaiwanMarketDataClient:
             # responses without crashing the process.
             raise
 
+        # Empty/no-data payloads are cached with a short TTL on read so pre-publish
+        # probes do not block later fetches after the official file is available.
         self._cache[cache_key] = _CacheEntry(cached_at=now, payload=payload)
         return payload
 
@@ -405,6 +425,9 @@ def resolve_taiwan_market(
                 or normalize_taiwan_symbol(stock.symbol) == normalize_taiwan_symbol(raw)
             )
         )
+        # Prefer already-provided metadata and avoid cold-cache remote catalog lookups.
+        if exact_matches:
+            return _resolve_from_matches(exact_matches)
 
     quote_lookup = quote_source or _default_quote_source()
     stock = quote_lookup.get_stock(stock_id)
@@ -538,7 +561,8 @@ def is_taiwan_no_data_payload(payload: object) -> bool:
         return True
     if isinstance(payload, str):
         stripped = payload.strip()
-        return not stripped or any(marker in stripped for marker in _NO_DATA_STAT_MARKERS)
+        lowered = stripped.lower()
+        return not stripped or any(marker in lowered for marker in _NO_DATA_STAT_MARKERS)
     if not isinstance(payload, dict):
         return False
 
