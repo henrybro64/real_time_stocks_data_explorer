@@ -22,6 +22,7 @@ import { QuoteSummary } from "../../components/quote/QuoteSummary";
 import { RequestStateNotice, errorToNoticeKind } from "../../components/state/RequestStateNotice";
 import { TwInsightsPanel } from "../../components/tw-insights/TwInsightsPanel";
 import { UsInsightsPanel } from "../../components/us-insights/UsInsightsPanel";
+import { TaiwanSignalsPanel } from "./TaiwanSignalsPanel";
 import {
   fetchHistory,
   fetchKeyStatistics,
@@ -207,9 +208,18 @@ export function StockDetailPage({ stockId = "" }: Props) {
                 ))}
               </TabPanels>
             </Tabs>
-          ) : null}
+          ) : (
+            <Tile className="app-empty-state" data-testid="stock-detail-chart-empty">
+              {t("chart.noData")}
+            </Tile>
+          )}
         </Tile>
       </Column>
+      {isTaiwanStock ? (
+        <Column className="app-column-spacing" sm={4} md={8} lg={16}>
+          <TaiwanSignalsPanel />
+        </Column>
+      ) : null}
       <Column className="app-column-spacing" sm={4} md={8} lg={16}>
         {keyStatsQuery.isError && !keyStatsQuery.data ? (
           <RequestStateNotice kind={keyStatsNoticeKind ?? "error"} scopeLabel={sectionLabels.keyStats} />

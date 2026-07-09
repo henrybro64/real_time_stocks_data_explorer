@@ -103,6 +103,21 @@ describe("StockCard", () => {
     expect(pushMock).toHaveBeenCalledWith("/stock/TW%3A2330");
   });
 
+  it("navigates to stock detail when Enter or Space is pressed on the focused card", async () => {
+    const user = userEvent.setup();
+    renderCard();
+    const card = screen.getByTestId("stock-card-TW:2330");
+
+    card.focus();
+    await user.keyboard("{Enter}");
+    expect(pushMock).toHaveBeenCalledWith("/stock/TW%3A2330");
+
+    pushMock.mockClear();
+    card.focus();
+    await user.keyboard(" ");
+    expect(pushMock).toHaveBeenCalledWith("/stock/TW%3A2330");
+  });
+
   it("does not navigate when an action button is clicked", async () => {
     const user = userEvent.setup();
     const { onToggle } = renderCard();
@@ -112,4 +127,11 @@ describe("StockCard", () => {
     expect(onToggle).toHaveBeenCalledWith("TW:2330");
     expect(pushMock).not.toHaveBeenCalled();
   });
+
+  it("exposes a direct view-details link to the bookmarkable stock route", () => {
+    renderCard();
+
+    expect(screen.getByTestId("stock-card-view-TW:2330")).toHaveAttribute("href", "/stock/TW%3A2330");
+  });
 });
+
