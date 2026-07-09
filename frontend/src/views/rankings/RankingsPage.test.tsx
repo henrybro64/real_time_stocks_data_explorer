@@ -23,6 +23,19 @@ vi.mock("next/link", () => ({
   default: ({ children, href }: { children: ReactNode; href: string }) => <a href={href}>{children}</a>,
 }));
 
+const pushMock = vi.fn();
+
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({
+    push: pushMock,
+    replace: vi.fn(),
+    prefetch: vi.fn(),
+    back: vi.fn(),
+    forward: vi.fn(),
+    refresh: vi.fn(),
+  }),
+}));
+
 function buildMarketStatus(overrides: Partial<MarketStatus> & Pick<MarketStatus, "market">): MarketStatus {
   const base: MarketStatus =
     overrides.market === "US"
@@ -261,6 +274,7 @@ function expectNetBuySellColumnAbsent(language: "en" | "zh-TW" = "zh-TW") {
 describe("RankingsPage", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    pushMock.mockReset();
     vi.mocked(fetchMarkets).mockResolvedValue(defaultMarketsPayload());
     vi.mocked(fetchRankings).mockResolvedValue(buildResponse());
   });
@@ -790,5 +804,15 @@ describe("RankingsPage", () => {
     expect(screen.getByTestId("rankings-source-type-tag")).toHaveTextContent(
       "來源類型: 快取",
     );
+  });
+
+  it("navigates to stock detail when a ranking row is activated", async () => {
+    const user = userEvent.setup();
+    renderRankingsPage();
+
+    const row = await screen.findByTestId("rankings-row-TW:2330");
+    await user.click(row);
+
+    expect(pushMock).toHaveBeenCalledWith("/stock/TW%3A2330");
   });
 });

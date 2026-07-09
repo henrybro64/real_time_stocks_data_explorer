@@ -62,7 +62,7 @@ export function StockCard({
   const detailHref = `/stock/${encodeURIComponent(stock.id)}`;
 
   const handleCardClick = (event: MouseEvent<HTMLDivElement>) => {
-    if (shouldIgnoreNavigation(event.target)) {
+    if (shouldIgnoreNavigation(event.target, event.currentTarget)) {
       return;
     }
     router.push(detailHref);
@@ -192,10 +192,12 @@ export function StockCard({
   );
 }
 
-function shouldIgnoreNavigation(target: EventTarget | null) {
-  return target instanceof HTMLElement
-    ? Boolean(target.closest("button, a, input, select, textarea, summary, [role='button'], [role='link']"))
-    : false;
+function shouldIgnoreNavigation(target: EventTarget | null, currentTarget: EventTarget | null) {
+  if (!(target instanceof HTMLElement) || !(currentTarget instanceof HTMLElement)) {
+    return false;
+  }
+  const interactive = target.closest("button, a, input, select, textarea, summary, [role='button']");
+  return Boolean(interactive && interactive !== currentTarget && currentTarget.contains(interactive));
 }
 
 function Sparkline({

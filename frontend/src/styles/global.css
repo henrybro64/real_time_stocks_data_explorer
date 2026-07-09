@@ -1428,7 +1428,7 @@ input {
 
 @media (min-width: 768px) and (max-width: 1023px) {
   :root {
-    --app-chart-height: 23rem;
+    --app-chart-height: 26.25rem;
   }
 
   .app-shell-layout {
@@ -1455,11 +1455,34 @@ input {
   .app-section-header {
     flex-wrap: wrap;
   }
+
+  .app-stock-detail-chart .app-chart-frame {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto minmax(var(--app-chart-height), 1fr) auto;
+  }
+
+  .app-stock-detail-chart .app-chart-y-axis {
+    grid-column: 1;
+    grid-row: 1;
+    flex-direction: row;
+    justify-content: space-between;
+    min-height: auto;
+    text-align: left;
+  }
+
+  .app-stock-detail-chart .app-chart-svg-wrap {
+    grid-column: 1;
+    grid-row: 2;
+  }
+
+  .app-stock-detail-chart .app-chart-x-axis {
+    grid-column: 1;
+  }
 }
 
 @media (min-width: 1024px) and (max-width: 1279px) {
   :root {
-    --app-chart-height: 27rem;
+    --app-chart-height: 28.75rem;
   }
 
   .app-shell-layout {
@@ -1474,7 +1497,7 @@ input {
 
 @media (min-width: 1280px) {
   :root {
-    --app-chart-height: 29rem;
+    --app-chart-height: 32.5rem;
   }
 
   .app-watchlist-grid {
@@ -1609,4 +1632,19 @@ input {
 .app-rankings-row-link:focus-visible {
   outline: 2px solid var(--cds-focus, #ffffff);
   outline-offset: -2px;
+}
+
+.app-rankings-controls {
+  position: sticky;
+  top: 3rem;
+  z-index: 4;
+}
+
+.app-rankings-tabs .cds--btn {
+  min-height: 2.5rem;
+}
+
+.app-stock-card-actions .cds--btn,
+.app-rankings-tabs .cds--btn {
+  min-width: 2.75rem;
 }

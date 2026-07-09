@@ -356,7 +356,7 @@ export function RankingsPage() {
       </Column>
 
       <Column className="app-column-spacing" sm={4} md={8} lg={16}>
-        <Tile className="app-section-tile">
+        <Tile className="app-section-tile app-rankings-controls">
           <div className="app-section-header">
             <div>
               <p className="app-eyebrow">{t("rankings.market")}</p>
@@ -404,7 +404,7 @@ export function RankingsPage() {
               </div>
             </div>
           ) : null}
-          <div className="app-shell-brand" style={{ marginTop: "1rem" }}>
+          <div className="app-shell-brand app-rankings-tabs" style={{ marginTop: "1rem" }}>
             <div className="app-auth-actions" style={{ display: "flex", flexWrap: "wrap", gap: "0.75rem" }}>
               {rankingTabs.map((tab) => (
                 <Button
