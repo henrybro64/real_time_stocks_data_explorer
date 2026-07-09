@@ -98,6 +98,13 @@ type TranslationKey =
   | "detail.selectHistoryRange"
   | "detail.backToDashboard"
   | "detail.createAlert"
+  | "detail.twSignals.eyebrow"
+  | "detail.twSignals.title"
+  | "detail.twSignals.description"
+  | "detail.twSignals.institutionalTitle"
+  | "detail.twSignals.marginShortTitle"
+  | "detail.twSignals.institutionalPlaceholder"
+  | "detail.twSignals.marginShortPlaceholder"
   | "quote.updatedAt"
   | "quote.open"
   | "quote.high"
@@ -469,6 +476,16 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "detail.selectHistoryRange": "Select history range",
     "detail.backToDashboard": "Back to dashboard",
     "detail.createAlert": "Create alert",
+    "detail.twSignals.eyebrow": "Taiwan market signals",
+    "detail.twSignals.title": "Institutional & margin data",
+    "detail.twSignals.description":
+      "These sections are reserved for Taiwan institutional flow and margin/short changes. No simulated values are shown until live data is available.",
+    "detail.twSignals.institutionalTitle": "Institutional activity",
+    "detail.twSignals.marginShortTitle": "Margin / short changes",
+    "detail.twSignals.institutionalPlaceholder":
+      "三大法人買賣超 will appear here. This placeholder intentionally shows no mock financial values.",
+    "detail.twSignals.marginShortPlaceholder":
+      "資券變化 will appear here. This placeholder intentionally shows no mock financial values.",
     "quote.updatedAt": "Updated {time}",
     "quote.open": "Open",
     "quote.high": "High",
@@ -893,6 +910,15 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "detail.selectHistoryRange": "選擇歷史區間",
     "detail.backToDashboard": "返回儀表板",
     "detail.createAlert": "建立警示",
+    "detail.twSignals.eyebrow": "台股市場訊號",
+    "detail.twSignals.title": "法人與資券資料",
+    "detail.twSignals.description": "此區塊預留給三大法人買賣超與資券變化；在正式資料接上前，不會顯示任何模擬數值。",
+    "detail.twSignals.institutionalTitle": "法人動態",
+    "detail.twSignals.marginShortTitle": "資券變化",
+    "detail.twSignals.institutionalPlaceholder":
+      "三大法人買賣超將顯示於此。此預留區塊刻意不顯示任何模擬金融數值。",
+    "detail.twSignals.marginShortPlaceholder":
+      "資券變化將顯示於此。此預留區塊刻意不顯示任何模擬金融數值。",
     "quote.updatedAt": "更新時間 {time}",
     "quote.open": "開盤",
     "quote.high": "最高",

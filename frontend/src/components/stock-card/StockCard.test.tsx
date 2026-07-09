@@ -112,4 +112,11 @@ describe("StockCard", () => {
     expect(onToggle).toHaveBeenCalledWith("TW:2330");
     expect(pushMock).not.toHaveBeenCalled();
   });
+
+  it("exposes a direct view-details link to the bookmarkable stock route", () => {
+    renderCard();
+
+    expect(screen.getByTestId("stock-card-view-TW:2330")).toHaveAttribute("href", "/stock/TW%3A2330");
+  });
 });
+
