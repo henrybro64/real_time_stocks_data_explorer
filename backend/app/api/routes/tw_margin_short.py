@@ -49,13 +49,7 @@ def get_tw_margin_short(
 def _tw_margin_short_summary_schema(
     record: TaiwanMarginShortRecord,
 ) -> TaiwanMarginShortSummaryResponse:
-    return TaiwanMarginShortSummaryResponse(
-        marginBalanceLots=record.margin_balance_lots,
-        shortMarginBalanceLots=record.short_margin_balance_lots,
-        borrowedShortBalanceLots=record.borrowed_short_balance_lots,
-        borrowedShortBalanceChangeLots=record.borrowed_short_balance_change_lots,
-        borrowedShortBalanceChangeAmount10k=record.borrowed_short_balance_change_amount_10k,
-    )
+    return TaiwanMarginShortSummaryResponse(**_lot_fields(record))
 
 
 def _tw_margin_short_history_point_schema(
@@ -64,12 +58,18 @@ def _tw_margin_short_history_point_schema(
     return TaiwanMarginShortHistoryPointResponse(
         date=record.date,
         closePrice=record.close_price,
-        marginBalanceLots=record.margin_balance_lots,
-        shortMarginBalanceLots=record.short_margin_balance_lots,
-        borrowedShortBalanceLots=record.borrowed_short_balance_lots,
-        borrowedShortBalanceChangeLots=record.borrowed_short_balance_change_lots,
-        borrowedShortBalanceChangeAmount10k=record.borrowed_short_balance_change_amount_10k,
+        **_lot_fields(record),
     )
+
+
+def _lot_fields(record: TaiwanMarginShortRecord) -> dict[str, float | int | None]:
+    return {
+        "marginBalanceLots": record.margin_balance_lots,
+        "shortMarginBalanceLots": record.short_margin_balance_lots,
+        "borrowedShortBalanceLots": record.borrowed_short_balance_lots,
+        "borrowedShortBalanceChangeLots": record.borrowed_short_balance_change_lots,
+        "borrowedShortBalanceChangeAmount10k": record.borrowed_short_balance_change_amount_10k,
+    }
 
 
 def _tw_margin_short_schema(

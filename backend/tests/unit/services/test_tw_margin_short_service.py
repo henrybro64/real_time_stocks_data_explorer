@@ -71,6 +71,93 @@ _TWSE_CLOSE_FIELDS = [
 ]
 
 
+def _nan_ya_stock():
+    return stock_record(
+        "TW:1303",
+        market="TW",
+        symbol="1303",
+        name="南亞",
+        exchange="TWSE",
+        currency="TWD",
+        timezone="Asia/Taipei",
+        name_en="Nan Ya Plastics",
+        name_zh_tw="南亞",
+    )
+
+
+def _margin_point(
+    *,
+    date_value: str = "2026-07-09",
+    symbol: str = "1303",
+    name: str = "南亞",
+    margin_balance_lots: float = 31_339.0,
+    short_margin_balance_lots: float = 0.0,
+) -> _MarginPoint:
+    return _MarginPoint(
+        date=date_value,
+        symbol=symbol,
+        name=name,
+        margin_balance_lots=margin_balance_lots,
+        short_margin_balance_lots=short_margin_balance_lots,
+    )
+
+
+def _borrowed_point(
+    *,
+    date_value: str = "2026-07-09",
+    symbol: str = "1303",
+    name: str = "南亞",
+    current_shares: int = 12_345_000,
+    previous_shares: int | None = 12_204_000,
+) -> _BorrowedShortPoint:
+    return _BorrowedShortPoint(
+        date=date_value,
+        symbol=symbol,
+        name=name,
+        borrowed_short_balance_shares=current_shares,
+        previous_borrowed_short_balance_shares=previous_shares,
+    )
+
+
+def _close_point(
+    *,
+    date_value: str = "2026-07-09",
+    symbol: str = "1303",
+    market: str = "TWSE",
+    close_price: float | None = 185.0,
+) -> _ClosePoint:
+    return _ClosePoint(
+        date=date_value,
+        symbol=symbol,
+        market=market,  # type: ignore[arg-type]
+        close_price=close_price,
+    )
+
+
+def _twse_margin_payload(target_date: date, *, margin_lots: str = "31,339") -> dict:
+    return {
+        "date": target_date.strftime("%Y%m%d"),
+        "fields": ["placeholder"],
+        "data": [["1303", "南亞", "0", "0", "0", "31,000", margin_lots, "0", "0", "0", "0", "0", "0", "0", "0", ""]],
+    }
+
+
+def _twse_short_payload(target_date: date) -> dict:
+    return {
+        "date": target_date.strftime("%Y%m%d"),
+        "fields": ["placeholder"],
+        "data": [["1303", "南亞", "0", "0", "0", "0", "0", "0", "12,204,000", "0", "0", "0", "12,345,000", "0", " "]],
+    }
+
+
+def _twse_close_payload(target_date: date, *, price: str = "185", market_label: str = "集中市場") -> dict:
+    return {
+        "date": target_date.strftime("%Y%m%d"),
+        "fields": _TWSE_CLOSE_FIELDS,
+        "data": [["1303", "南亞", "0", "0", "0", "0", price, "0", market_label]],
+    }
+
+
 def test_parse_twse_margin_row_reads_margin_and_short_balances() -> None:
     row = [
         "0050",
@@ -217,26 +304,9 @@ def test_merge_daily_points_converts_share_balances_to_lots_for_100_share_produc
 
 def test_merge_daily_points_rounds_amount_to_nearest_int() -> None:
     record = _merge_daily_points(
-        margin_point=_MarginPoint(
-            date="2026-07-09",
-            symbol="1303",
-            name="南亞",
-            margin_balance_lots=31_339.0,
-            short_margin_balance_lots=0.0,
-        ),
-        borrowed_point=_BorrowedShortPoint(
-            date="2026-07-09",
-            symbol="1303",
-            name="南亞",
-            borrowed_short_balance_shares=12_345_000,
-            previous_borrowed_short_balance_shares=12_204_000,
-        ),
-        close_point=_ClosePoint(
-            date="2026-07-09",
-            symbol="1303",
-            market="TWSE",
-            close_price=185.0,
-        ),
+        margin_point=_margin_point(),
+        borrowed_point=_borrowed_point(),
+        close_point=_close_point(),
     )
 
     assert record is not None
@@ -246,26 +316,9 @@ def test_merge_daily_points_rounds_amount_to_nearest_int() -> None:
 
 def test_merge_daily_points_sets_change_and_amount_to_none_when_previous_missing() -> None:
     record = _merge_daily_points(
-        margin_point=_MarginPoint(
-            date="2026-07-09",
-            symbol="1303",
-            name="南亞",
-            margin_balance_lots=31_339.0,
-            short_margin_balance_lots=0.0,
-        ),
-        borrowed_point=_BorrowedShortPoint(
-            date="2026-07-09",
-            symbol="1303",
-            name="南亞",
-            borrowed_short_balance_shares=12_345_000,
-            previous_borrowed_short_balance_shares=None,
-        ),
-        close_point=_ClosePoint(
-            date="2026-07-09",
-            symbol="1303",
-            market="TWSE",
-            close_price=185.0,
-        ),
+        margin_point=_margin_point(),
+        borrowed_point=_borrowed_point(previous_shares=None),
+        close_point=_close_point(),
     )
 
     assert record is not None
@@ -275,20 +328,8 @@ def test_merge_daily_points_sets_change_and_amount_to_none_when_previous_missing
 
 def test_merge_daily_points_sets_amount_to_none_when_close_missing() -> None:
     record = _merge_daily_points(
-        margin_point=_MarginPoint(
-            date="2026-07-09",
-            symbol="1303",
-            name="南亞",
-            margin_balance_lots=31_339.0,
-            short_margin_balance_lots=0.0,
-        ),
-        borrowed_point=_BorrowedShortPoint(
-            date="2026-07-09",
-            symbol="1303",
-            name="南亞",
-            borrowed_short_balance_shares=12_345_000,
-            previous_borrowed_short_balance_shares=12_204_000,
-        ),
+        margin_point=_margin_point(),
+        borrowed_point=_borrowed_point(),
         close_point=None,
     )
 
@@ -476,29 +517,13 @@ def test_service_supports_tpex_symbols() -> None:
 
 
 def test_service_raises_upstream_error_when_required_feed_is_unavailable() -> None:
-    stock = stock_record(
-        "TW:1303",
-        market="TW",
-        symbol="1303",
-        name="南亞",
-        exchange="TWSE",
-        currency="TWD",
-        timezone="Asia/Taipei",
-    )
+    stock = _nan_ya_stock()
 
     service = TaiwanMarginShortService(
         quote_source=FakeQuoteSource(stock),
-        twse_margin_fetcher=lambda _target_date: {
-            "date": "20260708",
-            "fields": ["placeholder"],
-            "data": [["1303", "南亞", "0", "0", "0", "31,000", "31,339", "0", "0", "0", "0", "0", "0", "0", "0", ""]],
-        },
+        twse_margin_fetcher=lambda target_date: _twse_margin_payload(target_date),
         twse_borrowed_short_fetcher=lambda _target_date: _raise_http_fetch_error(),
-        twse_close_fetcher=lambda _target_date: {
-            "date": "20260708",
-            "fields": _TWSE_CLOSE_FIELDS,
-            "data": [["1303", "南亞", "0", "0", "0", "0", "185", "0", "集中市場"]],
-        },
+        twse_close_fetcher=_twse_close_payload,
         now_provider=lambda: datetime(2026, 7, 10, 1, 0, tzinfo=UTC),
     )
 
@@ -578,27 +603,9 @@ def test_parse_close_supplement_row_maps_twse_and_tpex_markets() -> None:
 
 
 def test_merge_daily_points_returns_none_when_dates_or_symbols_mismatch() -> None:
-    margin = _MarginPoint(
-        date="2026-07-09",
-        symbol="1303",
-        name="南亞",
-        margin_balance_lots=31_339.0,
-        short_margin_balance_lots=0.0,
-    )
-    borrowed = _BorrowedShortPoint(
-        date="2026-07-08",
-        symbol="1303",
-        name="南亞",
-        borrowed_short_balance_shares=12_345_000,
-        previous_borrowed_short_balance_shares=12_204_000,
-    )
-    other_symbol = _BorrowedShortPoint(
-        date="2026-07-09",
-        symbol="2330",
-        name="台積電",
-        borrowed_short_balance_shares=12_345_000,
-        previous_borrowed_short_balance_shares=12_204_000,
-    )
+    margin = _margin_point()
+    borrowed = _borrowed_point(date_value="2026-07-08")
+    other_symbol = _borrowed_point(symbol="2330", name="台積電")
 
     assert _merge_daily_points(margin_point=margin, borrowed_point=borrowed, close_point=None) is None
     assert (
@@ -613,26 +620,12 @@ def test_borrowed_short_change_amount_rounds_negative_values_to_nearest_int() ->
     assert _round_nearest_int(-2608.4) == -2608
 
     record = _merge_daily_points(
-        margin_point=_MarginPoint(
-            date="2026-07-09",
-            symbol="1303",
-            name="南亞",
-            margin_balance_lots=31_339.0,
-            short_margin_balance_lots=0.0,
+        margin_point=_margin_point(),
+        borrowed_point=_borrowed_point(
+            current_shares=12_204_000,
+            previous_shares=12_345_000,
         ),
-        borrowed_point=_BorrowedShortPoint(
-            date="2026-07-09",
-            symbol="1303",
-            name="南亞",
-            borrowed_short_balance_shares=12_204_000,
-            previous_borrowed_short_balance_shares=12_345_000,
-        ),
-        close_point=_ClosePoint(
-            date="2026-07-09",
-            symbol="1303",
-            market="TWSE",
-            close_price=185.0,
-        ),
+        close_point=_close_point(),
     )
 
     assert record is not None
@@ -641,15 +634,7 @@ def test_borrowed_short_change_amount_rounds_negative_values_to_nearest_int() ->
 
 
 def test_service_returns_empty_history_when_symbol_has_no_available_rows() -> None:
-    stock = stock_record(
-        "TW:1303",
-        market="TW",
-        symbol="1303",
-        name="南亞",
-        exchange="TWSE",
-        currency="TWD",
-        timezone="Asia/Taipei",
-    )
+    stock = _nan_ya_stock()
 
     service = TaiwanMarginShortService(
         quote_source=FakeQuoteSource(stock),
@@ -702,53 +687,23 @@ def test_service_raises_for_non_taiwan_stock() -> None:
 
 
 def test_service_dedupes_history_when_holiday_probes_resolve_to_same_trading_date() -> None:
-    stock = stock_record(
-        "TW:1303",
-        market="TW",
-        symbol="1303",
-        name="南亞",
-        exchange="TWSE",
-        currency="TWD",
-        timezone="Asia/Taipei",
-    )
+    stock = _nan_ya_stock()
 
-    def margin_payload(resolved: str, margin_lots: str) -> dict:
-        return {
-            "date": resolved.replace("-", ""),
-            "fields": ["placeholder"],
-            "data": [["1303", "南亞", "0", "0", "0", "31,000", margin_lots, "0", "0", "0", "0", "0", "0", "0", "0", ""]],
-        }
-
-    def short_payload(resolved: str) -> dict:
-        return {
-            "date": resolved.replace("-", ""),
-            "fields": ["placeholder"],
-            "data": [["1303", "南亞", "0", "0", "0", "0", "0", "0", "12,204,000", "0", "0", "0", "12,345,000", "0", " "]],
-        }
-
-    def close_payload(resolved: str, price: str) -> dict:
-        return {
-            "date": resolved.replace("-", ""),
-            "fields": _TWSE_CLOSE_FIELDS,
-            "data": [["1303", "南亞", "0", "0", "0", "0", price, "0", "集中市場"]],
-        }
-
-    # Monday holiday probe resolves to Friday's trading payload date.
     payloads = {
         date(2026, 7, 13): (
-            margin_payload("2026-07-10", "31,339"),
-            short_payload("2026-07-10"),
-            close_payload("2026-07-10", "185"),
+            {**_twse_margin_payload(date(2026, 7, 10)), "date": "20260710"},
+            {**_twse_short_payload(date(2026, 7, 10)), "date": "20260710"},
+            {**_twse_close_payload(date(2026, 7, 10)), "date": "20260710"},
         ),
         date(2026, 7, 10): (
-            margin_payload("2026-07-10", "31,339"),
-            short_payload("2026-07-10"),
-            close_payload("2026-07-10", "185"),
+            _twse_margin_payload(date(2026, 7, 10)),
+            _twse_short_payload(date(2026, 7, 10)),
+            _twse_close_payload(date(2026, 7, 10)),
         ),
         date(2026, 7, 9): (
-            margin_payload("2026-07-09", "31,000"),
-            short_payload("2026-07-09"),
-            close_payload("2026-07-09", "184"),
+            _twse_margin_payload(date(2026, 7, 9), margin_lots="31,000"),
+            _twse_short_payload(date(2026, 7, 9)),
+            _twse_close_payload(date(2026, 7, 9), price="184"),
         ),
     }
 
@@ -762,7 +717,6 @@ def test_service_dedupes_history_when_holiday_probes_resolve_to_same_trading_dat
         twse_margin_fetcher=lambda target_date: pick(target_date, 0),
         twse_borrowed_short_fetcher=lambda target_date: pick(target_date, 1),
         twse_close_fetcher=lambda target_date: pick(target_date, 2),
-        # Tuesday morning local -> candidate start Monday 2026-07-13.
         now_provider=lambda: datetime(2026, 7, 14, 1, 0, tzinfo=UTC),
     )
 
@@ -775,44 +729,18 @@ def test_service_dedupes_history_when_holiday_probes_resolve_to_same_trading_dat
 
 
 def test_service_skips_weekend_candidate_dates_without_fetching() -> None:
-    stock = stock_record(
-        "TW:1303",
-        market="TW",
-        symbol="1303",
-        name="南亞",
-        exchange="TWSE",
-        currency="TWD",
-        timezone="Asia/Taipei",
-    )
+    stock = _nan_ya_stock()
     fetched_dates: list[date] = []
 
     def tracking_fetcher(target_date: date):
         fetched_dates.append(target_date)
-        return {
-            "date": target_date.strftime("%Y%m%d"),
-            "fields": ["placeholder"],
-            "data": [["1303", "南亞", "0", "0", "0", "31,000", "31,339", "0", "0", "0", "0", "0", "0", "0", "0", ""]],
-        }
-
-    def short_fetcher(target_date: date):
-        return {
-            "date": target_date.strftime("%Y%m%d"),
-            "fields": ["placeholder"],
-            "data": [["1303", "南亞", "0", "0", "0", "0", "0", "0", "12,204,000", "0", "0", "0", "12,345,000", "0", " "]],
-        }
-
-    def close_fetcher(target_date: date):
-        return {
-            "date": target_date.strftime("%Y%m%d"),
-            "fields": _TWSE_CLOSE_FIELDS,
-            "data": [["1303", "南亞", "0", "0", "0", "0", "185", "0", "集中市場"]],
-        }
+        return _twse_margin_payload(target_date)
 
     service = TaiwanMarginShortService(
         quote_source=FakeQuoteSource(stock),
         twse_margin_fetcher=tracking_fetcher,
-        twse_borrowed_short_fetcher=short_fetcher,
-        twse_close_fetcher=close_fetcher,
+        twse_borrowed_short_fetcher=_twse_short_payload,
+        twse_close_fetcher=_twse_close_payload,
         now_provider=lambda: datetime(2026, 7, 12, 1, 0, tzinfo=UTC),
     )
 
@@ -823,44 +751,18 @@ def test_service_skips_weekend_candidate_dates_without_fetching() -> None:
 
 
 def test_service_reuses_short_lived_result_cache() -> None:
-    stock = stock_record(
-        "TW:1303",
-        market="TW",
-        symbol="1303",
-        name="南亞",
-        exchange="TWSE",
-        currency="TWD",
-        timezone="Asia/Taipei",
-    )
+    stock = _nan_ya_stock()
     calls = {"count": 0}
 
     def counting_fetcher(target_date: date):
         calls["count"] += 1
-        return {
-            "date": target_date.strftime("%Y%m%d"),
-            "fields": ["placeholder"],
-            "data": [["1303", "南亞", "0", "0", "0", "31,000", "31,339", "0", "0", "0", "0", "0", "0", "0", "0", ""]],
-        }
-
-    def short_fetcher(target_date: date):
-        return {
-            "date": target_date.strftime("%Y%m%d"),
-            "fields": ["placeholder"],
-            "data": [["1303", "南亞", "0", "0", "0", "0", "0", "0", "12,204,000", "0", "0", "0", "12,345,000", "0", " "]],
-        }
-
-    def close_fetcher(target_date: date):
-        return {
-            "date": target_date.strftime("%Y%m%d"),
-            "fields": _TWSE_CLOSE_FIELDS,
-            "data": [["1303", "南亞", "0", "0", "0", "0", "185", "0", "集中市場"]],
-        }
+        return _twse_margin_payload(target_date)
 
     service = TaiwanMarginShortService(
         quote_source=FakeQuoteSource(stock),
         twse_margin_fetcher=counting_fetcher,
-        twse_borrowed_short_fetcher=short_fetcher,
-        twse_close_fetcher=close_fetcher,
+        twse_borrowed_short_fetcher=_twse_short_payload,
+        twse_close_fetcher=_twse_close_payload,
         now_provider=lambda: datetime(2026, 7, 10, 1, 0, tzinfo=UTC),
     )
 

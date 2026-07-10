@@ -295,57 +295,78 @@ class TaiwanMarginShortService:
 
 
 def _fetch_twse_margin_payload(current_date: date) -> object:
-    return fetch_twse_data(
+    return _fetch_twse_dated_payload(
         _TWSE_MARGIN_URL,
-        params={
-            "response": "json",
-            "date": current_date.strftime("%Y%m%d"),
-            "selectType": "ALL",
-        },
+        current_date,
         operation_name="tw_margin_short_twse_margin_daily",
-        resource_id=current_date.isoformat(),
+        select_type="ALL",
     )
 
 
 def _fetch_twse_borrowed_short_payload(current_date: date) -> object:
-    return fetch_twse_data(
+    return _fetch_twse_dated_payload(
         _TWSE_BORROWED_SHORT_URL,
-        params={
-            "response": "json",
-            "date": current_date.strftime("%Y%m%d"),
-        },
+        current_date,
         operation_name="tw_margin_short_twse_borrowed_short_daily",
-        resource_id=current_date.isoformat(),
     )
 
 
 def _fetch_twse_close_payload(current_date: date) -> object:
-    return fetch_twse_data(
+    return _fetch_twse_dated_payload(
         _TWSE_CLOSE_SUPPLEMENT_URL,
-        params={
-            "response": "json",
-            "date": current_date.strftime("%Y%m%d"),
-            "selectType": _TWSE_CLOSE_SUPPLEMENT_SELECT_TYPE,
-        },
+        current_date,
         operation_name="tw_margin_short_twse_close_daily",
-        resource_id=current_date.isoformat(),
+        select_type=_TWSE_CLOSE_SUPPLEMENT_SELECT_TYPE,
     )
 
 
 def _fetch_tpex_margin_payload(current_date: date) -> object:
-    return fetch_tpex_data(
+    return _fetch_tpex_dated_payload(
         _TPEX_MARGIN_URL,
-        params={"date": current_date.strftime("%Y/%m/%d")},
+        current_date,
         operation_name="tw_margin_short_tpex_margin_daily",
-        resource_id=current_date.isoformat(),
     )
 
 
 def _fetch_tpex_borrowed_short_payload(current_date: date) -> object:
-    return fetch_tpex_data(
+    return _fetch_tpex_dated_payload(
         _TPEX_BORROWED_SHORT_URL,
-        params={"date": current_date.strftime("%Y/%m/%d")},
+        current_date,
         operation_name="tw_margin_short_tpex_borrowed_short_daily",
+    )
+
+
+def _fetch_twse_dated_payload(
+    url: str,
+    current_date: date,
+    *,
+    operation_name: str,
+    select_type: str | None = None,
+) -> object:
+    params: dict[str, str] = {
+        "response": "json",
+        "date": current_date.strftime("%Y%m%d"),
+    }
+    if select_type is not None:
+        params["selectType"] = select_type
+    return fetch_twse_data(
+        url,
+        params=params,
+        operation_name=operation_name,
+        resource_id=current_date.isoformat(),
+    )
+
+
+def _fetch_tpex_dated_payload(
+    url: str,
+    current_date: date,
+    *,
+    operation_name: str,
+) -> object:
+    return fetch_tpex_data(
+        url,
+        params={"date": current_date.strftime("%Y/%m/%d")},
+        operation_name=operation_name,
         resource_id=current_date.isoformat(),
     )
 
@@ -488,19 +509,23 @@ def _extract_close_supplement_point(
 ) -> _ClosePoint | None:
     if not isinstance(payload, dict):
         return None
-    rows = payload.get("data")
     fields = payload.get("fields")
-    if not isinstance(rows, list) or not isinstance(fields, list):
+    if not isinstance(fields, list):
         return None
 
-    record_date = normalize_taiwan_date(payload.get("date")) or current_date.isoformat()
-    for row in rows:
-        if not isinstance(row, list):
-            continue
-        point = _parse_close_supplement_row(row, fields, record_date=record_date)
-        if point is not None and point.symbol == symbol and point.market == market:
-            return point
-    return None
+    point = _extract_twse_table_point(
+        payload,
+        symbol=symbol,
+        current_date=current_date,
+        parse_row=lambda row, record_date: _parse_close_supplement_row(
+            row,
+            fields,
+            record_date=record_date,
+        ),
+    )
+    if point is None or point.market != market:
+        return None
+    return point
 
 
 def _first_tpex_table(payload: object | None) -> dict[str, object] | None:
@@ -529,17 +554,12 @@ def _parse_twse_margin_row(
     symbol = normalize_taiwan_symbol(_row_at(row, 0))
     if symbol is None:
         return None
-    name = str(_row_at(row, 1) or "").strip()
-    margin_balance_lots = _parse_lots_float(_row_at(row, 6))
-    short_margin_balance_lots = _parse_lots_float(_row_at(row, 12))
-    if margin_balance_lots is None or short_margin_balance_lots is None:
-        return None
-    return _MarginPoint(
-        date=record_date,
+    return _build_margin_point(
+        record_date=record_date,
         symbol=symbol,
-        name=name,
-        margin_balance_lots=margin_balance_lots,
-        short_margin_balance_lots=short_margin_balance_lots,
+        name=str(_row_at(row, 1) or "").strip(),
+        margin_balance_lots=_parse_lots_float(_row_at(row, 6)),
+        short_margin_balance_lots=_parse_lots_float(_row_at(row, 12)),
     )
 
 
@@ -552,9 +572,23 @@ def _parse_tpex_margin_row(
     symbol = normalize_taiwan_symbol(taiwan_row_value(row, fields, "代號"))
     if symbol is None:
         return None
-    name = str(taiwan_row_value(row, fields, "名稱") or "").strip()
-    margin_balance_lots = _parse_lots_float(taiwan_row_value(row, fields, "資餘額"))
-    short_margin_balance_lots = _parse_lots_float(taiwan_row_value(row, fields, "券餘額"))
+    return _build_margin_point(
+        record_date=record_date,
+        symbol=symbol,
+        name=str(taiwan_row_value(row, fields, "名稱") or "").strip(),
+        margin_balance_lots=_parse_lots_float(taiwan_row_value(row, fields, "資餘額")),
+        short_margin_balance_lots=_parse_lots_float(taiwan_row_value(row, fields, "券餘額")),
+    )
+
+
+def _build_margin_point(
+    *,
+    record_date: str,
+    symbol: str,
+    name: str,
+    margin_balance_lots: float | None,
+    short_margin_balance_lots: float | None,
+) -> _MarginPoint | None:
     if margin_balance_lots is None or short_margin_balance_lots is None:
         return None
     return _MarginPoint(
