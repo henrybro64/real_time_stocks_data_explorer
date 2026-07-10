@@ -136,6 +136,7 @@ class TaiwanMarginShortService:
         )
         self._now_provider = now_provider or _utc_now
         self._result_cache = {}
+        self._close_fetch_enabled = True
 
     def get_margin_short(
         self,
@@ -158,6 +159,7 @@ class TaiwanMarginShortService:
                 quote_source=self._quote_source,
                 unknown_market_error=_UNKNOWN_TW_MARKET_ERROR,
             )
+            self._close_fetch_enabled = True
 
             def fetch_day(current_date: date) -> tuple[TaiwanMarginShortRecord | None, bool]:
                 lookup = self._fetch_record_for_day(market, current_date, symbol)
@@ -215,6 +217,7 @@ class TaiwanMarginShortService:
                 margin_extractor=_extract_tpex_margin_point,
                 borrowed_extractor=_extract_tpex_borrowed_short_point,
                 close_market="TPEx",
+                payload_kind="tpex",
             )
         return self._fetch_board_record(
             current_date,
@@ -224,6 +227,7 @@ class TaiwanMarginShortService:
             margin_extractor=_extract_twse_margin_point,
             borrowed_extractor=_extract_twse_borrowed_short_point,
             close_market="TWSE",
+            payload_kind="twse",
         )
 
     def _fetch_board_record(
@@ -236,33 +240,75 @@ class TaiwanMarginShortService:
         margin_extractor: Callable[..., _MarginPoint | None],
         borrowed_extractor: Callable[..., _BorrowedShortPoint | None],
         close_market: TWBoard,
+        payload_kind: Literal["twse", "tpex"],
     ) -> _DailyLookupResult:
-        margin_payload, margin_succeeded = _safe_payload_fetch(margin_fetcher, current_date)
-        borrowed_payload, borrowed_succeeded = _safe_payload_fetch(borrowed_fetcher, current_date)
-        close_payload, _ = _safe_payload_fetch(self._twse_close_fetcher, current_date)
+        margin_payload, margin_succeeded = _safe_core_payload_fetch(
+            margin_fetcher,
+            current_date,
+            payload_kind=payload_kind,
+        )
+        borrowed_payload, borrowed_succeeded = _safe_core_payload_fetch(
+            borrowed_fetcher,
+            current_date,
+            payload_kind=payload_kind,
+        )
 
-        record = _merge_daily_points(
-            margin_point=margin_extractor(
-                margin_payload,
-                symbol=symbol,
-                current_date=current_date,
-            ),
-            borrowed_point=borrowed_extractor(
-                borrowed_payload,
-                symbol=symbol,
-                current_date=current_date,
-            ),
-            close_point=_extract_close_supplement_point(
-                close_payload,
-                symbol=symbol,
-                market=close_market,
-                current_date=current_date,
-            ),
+        margin_point = margin_extractor(
+            margin_payload,
+            symbol=symbol,
+            current_date=current_date,
+        )
+        borrowed_point = borrowed_extractor(
+            borrowed_payload,
+            symbol=symbol,
+            current_date=current_date,
+        )
+        close_point = self._optional_close_point(
+            current_date,
+            symbol=symbol,
+            market=close_market,
+            margin_point=margin_point,
+            borrowed_point=borrowed_point,
         )
         return _DailyLookupResult(
-            record=record,
+            record=_merge_daily_points(
+                margin_point=margin_point,
+                borrowed_point=borrowed_point,
+                close_point=close_point,
+            ),
             # The close supplement is optional and must not hide core upstream failures.
             request_succeeded=margin_succeeded and borrowed_succeeded,
+        )
+
+    def _optional_close_point(
+        self,
+        current_date: date,
+        *,
+        symbol: str,
+        market: TWBoard,
+        margin_point: _MarginPoint | None,
+        borrowed_point: _BorrowedShortPoint | None,
+    ) -> _ClosePoint | None:
+        # Skip optional close work when core points are missing or the feed already failed.
+        if (
+            not self._close_fetch_enabled
+            or margin_point is None
+            or borrowed_point is None
+        ):
+            return None
+
+        close_payload, close_ok = _safe_optional_payload_fetch(
+            self._twse_close_fetcher,
+            current_date,
+        )
+        if not close_ok:
+            self._close_fetch_enabled = False
+            return None
+        return _extract_close_supplement_point(
+            close_payload,
+            symbol=symbol,
+            market=market,
+            current_date=current_date,
         )
 
 
@@ -337,13 +383,33 @@ def _fetch_tpex_dated_payload(
 ) -> object:
     return fetch_tpex_data(
         url,
-        params={"date": current_date.strftime("%Y/%m/%d")},
+        params={
+            "response": "json",
+            "date": current_date.strftime("%Y/%m/%d"),
+        },
         operation_name=operation_name,
         resource_id=current_date.isoformat(),
     )
 
 
-def _safe_payload_fetch(
+def _safe_core_payload_fetch(
+    fetcher: PayloadFetcher,
+    current_date: date,
+    *,
+    payload_kind: Literal["twse", "tpex"],
+) -> tuple[object | None, bool]:
+    try:
+        payload = fetcher(current_date)
+    except HttpFetchError:
+        return None, False
+    if is_taiwan_no_data_payload(payload):
+        return payload, True
+    if not _has_expected_table_shape(payload, payload_kind=payload_kind):
+        return None, False
+    return payload, True
+
+
+def _safe_optional_payload_fetch(
     fetcher: PayloadFetcher,
     current_date: date,
 ) -> tuple[object | None, bool]:
@@ -353,9 +419,21 @@ def _safe_payload_fetch(
         return None, False
     if is_taiwan_no_data_payload(payload):
         return payload, True
-    if not isinstance(payload, dict):
+    if not _has_expected_table_shape(payload, payload_kind="twse"):
         return None, False
     return payload, True
+
+
+def _has_expected_table_shape(
+    payload: object,
+    *,
+    payload_kind: Literal["twse", "tpex"],
+) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    if payload_kind == "tpex":
+        return _first_tpex_table(payload) is not None
+    return isinstance(payload.get("data"), list) and isinstance(payload.get("fields"), list)
 
 
 def _extract_twse_margin_point(

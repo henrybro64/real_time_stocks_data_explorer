@@ -11,6 +11,7 @@ from app.services.tw_margin_short_service import (
     _ClosePoint,
     _MarginPoint,
     _close_supplement_market,
+    _fetch_tpex_dated_payload,
     _merge_daily_points,
     _parse_close_supplement_row,
     _parse_tpex_borrowed_short_row,
@@ -764,6 +765,96 @@ def test_service_reuses_short_lived_result_cache() -> None:
 
     assert first.latest_date == second.latest_date
     assert calls["count"] == first_count
+
+
+def test_service_raises_when_core_feeds_return_malformed_json_bodies() -> None:
+    stock = _nan_ya_stock()
+    malformed = {"stat": "error", "message": "schema changed"}
+
+    service = TaiwanMarginShortService(
+        quote_source=FakeQuoteSource(stock),
+        twse_margin_fetcher=lambda _target_date: malformed,
+        twse_borrowed_short_fetcher=lambda _target_date: malformed,
+        twse_close_fetcher=_twse_close_payload,
+        now_provider=lambda: datetime(2026, 7, 10, 1, 0, tzinfo=UTC),
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="Taiwan margin-short data is temporarily unavailable from official sources.",
+    ):
+        service.get_margin_short("TW:1303", days=1)
+
+
+def test_fetch_tpex_dated_payload_requests_json_response(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_fetch_tpex_data(url, **kwargs):
+        captured["url"] = url
+        captured["kwargs"] = kwargs
+        return {"date": "2026/07/08", "tables": []}
+
+    monkeypatch.setattr(
+        "app.services.tw_margin_short_service.fetch_tpex_data",
+        fake_fetch_tpex_data,
+    )
+
+    _fetch_tpex_dated_payload(
+        "https://www.tpex.org.tw/www/zh-tw/margin/balance",
+        date(2026, 7, 8),
+        operation_name="tw_margin_short_tpex_margin_daily",
+    )
+
+    assert captured["kwargs"]["params"] == {
+        "response": "json",
+        "date": "2026/07/08",
+    }
+
+
+def test_service_skips_optional_close_when_core_points_missing() -> None:
+    stock = _nan_ya_stock()
+    close_calls = {"count": 0}
+
+    def close_fetcher(target_date: date):
+        close_calls["count"] += 1
+        return _twse_close_payload(target_date)
+
+    service = TaiwanMarginShortService(
+        quote_source=FakeQuoteSource(stock),
+        twse_margin_fetcher=lambda _target_date: {"stat": "OK", "date": "20260708"},
+        twse_borrowed_short_fetcher=_twse_short_payload,
+        twse_close_fetcher=close_fetcher,
+        now_provider=lambda: datetime(2026, 7, 10, 1, 0, tzinfo=UTC),
+    )
+
+    with pytest.raises(RuntimeError, match="temporarily unavailable"):
+        service.get_margin_short("TW:1303", days=1)
+
+    assert close_calls["count"] == 0
+
+
+def test_service_disables_optional_close_after_first_hard_failure() -> None:
+    stock = _nan_ya_stock()
+    close_calls = {"count": 0}
+
+    def close_fetcher(_target_date: date):
+        close_calls["count"] += 1
+        raise HttpFetchError("close unavailable")
+
+    service = TaiwanMarginShortService(
+        quote_source=FakeQuoteSource(stock),
+        twse_margin_fetcher=_twse_margin_payload,
+        twse_borrowed_short_fetcher=_twse_short_payload,
+        twse_close_fetcher=close_fetcher,
+        now_provider=lambda: datetime(2026, 7, 10, 1, 0, tzinfo=UTC),
+    )
+
+    result = service.get_margin_short("TW:1303", days=2)
+
+    assert result.summary is not None
+    assert result.summary.close_price is None
+    assert result.summary.borrowed_short_balance_change_amount_10k is None
+    assert close_calls["count"] == 1
 
 
 def _raise_http_fetch_error() -> object:
