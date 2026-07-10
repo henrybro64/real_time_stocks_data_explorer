@@ -511,11 +511,19 @@ def parse_taiwan_number(value: object) -> float | None:
     return numeric if math.isfinite(numeric) else None
 
 
-def shares_to_lots(value: object) -> float | None:
+def shares_to_lots(value: object, *, symbol: str | None = None) -> float | None:
     shares = parse_taiwan_number(value)
     if shares is None:
         return None
-    return shares / 1000.0
+    return shares / float(taiwan_shares_per_lot(symbol))
+
+
+def taiwan_shares_per_lot(symbol: str | None = None) -> int:
+    """Return shares per 張. Most TW equities use 1000; some FX ETFs use 100."""
+    normalized = normalize_taiwan_symbol(symbol) if symbol is not None else None
+    if normalized is not None and len(normalized) >= 6 and normalized[5] in {"K", "C"}:
+        return 100
+    return 1000
 
 
 def normalize_taiwan_symbol(value: object) -> str | None:

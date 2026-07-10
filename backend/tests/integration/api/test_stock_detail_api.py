@@ -356,3 +356,75 @@ def test_tw_insights_endpoint_only_allows_tw_stocks(monkeypatch, client) -> None
     assert us_response.json() == {
         "detail": "Taiwan insights are only available for TW stocks"
     }
+
+
+def test_institutional_investors_endpoint_returns_lots_summary_and_history(monkeypatch, client) -> None:
+    from app.api.routes import tw_institutional as institutional_routes
+    from app.services.tw_institutional_service import (
+        TaiwanInstitutionalInvestorRecord,
+        TaiwanInstitutionalInvestorsResult,
+    )
+
+    record = TaiwanInstitutionalInvestorRecord(
+        date="2026-07-09",
+        symbol="2330",
+        name="台積電",
+        foreign_net_shares=12_345_000,
+        investment_trust_net_shares=1_200_000,
+        dealer_self_net_shares=-500_000,
+        dealer_hedge_net_shares=-300_000,
+        dealer_net_shares=-800_000,
+        total_net_shares=12_745_000,
+    )
+    result = TaiwanInstitutionalInvestorsResult(
+        stock_id="TW:2330",
+        symbol="2330",
+        market="TWSE",
+        latest_date="2026-07-09",
+        summary=record,
+        history=(record,),
+        source="TWSE T86 daily institutional data",
+    )
+
+    monkeypatch.setattr(
+        institutional_routes.tw_institutional_service,
+        "get_institutional_investors",
+        lambda stock_id, *, days: result,
+    )
+
+    response = client.get("/api/stocks/TW:2330/institutional-investors", params={"days": 90})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["stockId"] == "TW:2330"
+    assert payload["symbol"] == "2330"
+    assert payload["market"] == "TWSE"
+    assert payload["latestDate"] == "2026-07-09"
+    assert payload["summary"] == {
+        "foreignNetLots": 12345.0,
+        "investmentTrustNetLots": 1200.0,
+        "dealerNetLots": -800.0,
+        "totalNetLots": 12745.0,
+        "dealerSelfNetLots": -500.0,
+        "dealerHedgeNetLots": -300.0,
+    }
+    assert payload["history"][0]["date"] == "2026-07-09"
+    assert payload["source"] == "TWSE T86 daily institutional data"
+
+
+def test_institutional_investors_endpoint_rejects_non_taiwan_stocks(monkeypatch, client) -> None:
+    from app.api.routes import tw_institutional as institutional_routes
+
+    def raise_non_tw(stock_id: str, *, days: int):
+        raise ValueError("Taiwan institutional data is only available for TW stocks")
+
+    monkeypatch.setattr(
+        institutional_routes.tw_institutional_service,
+        "get_institutional_investors",
+        raise_non_tw,
+    )
+
+    response = client.get("/api/stocks/US:AAPL/institutional-investors")
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Taiwan institutional data is only available for TW stocks"
