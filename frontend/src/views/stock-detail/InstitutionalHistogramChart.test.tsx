@@ -29,6 +29,25 @@ describe("InstitutionalHistogramChart", () => {
     expect(bars[0]).toHaveClass("app-tw-market-bar-positive");
     expect(bars[1]).toHaveClass("app-tw-market-bar-negative");
     expect(bars[2]).toHaveClass("app-tw-market-bar-neutral");
+    expect(bars[2]).toHaveAttribute("height", "0");
+    expect(bars[2]).toHaveAttribute("y", "50");
+  });
+
+  it("keeps zero-value bars on the baseline with no positive extent", () => {
+    const { container } = render(
+      <InstitutionalHistogramChart
+        dateRangeLabel="2026/07/06 - 2026/07/06"
+        emptyLabel="此區間沒有可繪製的法人資料。"
+        language="zh-TW"
+        points={[{ date: "2026-07-06", value: 0 }]}
+        title="投信買賣超(張)"
+      />,
+    );
+
+    const bar = container.querySelector("rect");
+    expect(bar).toHaveClass("app-tw-market-bar-neutral");
+    expect(bar).toHaveAttribute("height", "0");
+    expect(bar).toHaveAttribute("y", "50");
   });
 
   it("skips non-finite values without crashing", () => {

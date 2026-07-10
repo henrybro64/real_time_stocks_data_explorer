@@ -14,7 +14,7 @@ type Props = {
 
 const HISTORY_DAYS = 90;
 
-export function InstitutionalInvestorsPanel({ stockId }: Props) {
+export function InstitutionalInvestorsPanel({ stockId }: Readonly<Props>) {
   const { language, t, formatNumber } = useLanguage();
   const copy = language === "zh-TW"
     ? {
