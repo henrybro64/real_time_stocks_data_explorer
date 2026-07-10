@@ -48,3 +48,53 @@ test("stock detail route is bookmarkable and reload-safe", async ({ page }) => {
   await expect(page.getByTestId("quote-summary-section")).toBeVisible();
   await expect(page.getByTestId("tw-stock-signals-section")).toBeVisible();
 });
+
+test("TW institutional section shows empty state when API returns no data", async ({ page }) => {
+  await page.route("**/api/stocks/*/institutional-investors*", async (route) => {
+    if (route.request().method() !== "GET") {
+      await route.continue();
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        stockId: "TW:2330",
+        symbol: "2330",
+        market: "TWSE",
+        latestDate: null,
+        summary: null,
+        history: [],
+        source: "TWSE T86 daily institutional data",
+      }),
+    });
+  });
+
+  await page.goto("/stock/TW%3A2330");
+  await expect(page.getByTestId("tw-stock-signals-section")).toBeVisible();
+  await expect(page.getByTestId("tw-stock-signals-institutional-panel")).toContainText(
+    "目前沒有可顯示的三大法人資料。",
+  );
+  await expect(page.getByTestId("tw-institutional-summary")).toHaveCount(0);
+});
+
+test("TW institutional section shows error notice when API fails", async ({ page }) => {
+  await page.route("**/api/stocks/*/institutional-investors*", async (route) => {
+    if (route.request().method() !== "GET") {
+      await route.continue();
+      return;
+    }
+    await route.fulfill({
+      status: 502,
+      contentType: "application/json",
+      body: JSON.stringify({
+        detail: "Taiwan institutional data is temporarily unavailable from official sources.",
+      }),
+    });
+  });
+
+  await page.goto("/stock/TW%3A2330");
+  await expect(page.getByTestId("tw-stock-signals-section")).toBeVisible();
+  await expect(page.getByText("資料來源暫時不可用")).toBeVisible();
+  await expect(page.getByTestId("tw-institutional-summary")).toHaveCount(0);
+});

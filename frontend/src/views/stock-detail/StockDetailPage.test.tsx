@@ -396,10 +396,33 @@ describe("StockDetailPage", () => {
     expect(screen.getByText(/法人動態發生載入問題/)).toBeInTheDocument();
   });
 
+  it("shows the institutional latestDate in the summary header", () => {
+    mockQueries({ quote: sampleTaiwanQuote, history: sampleHistory });
+    renderStockDetailPage("TW%3A2330");
+
+    expect(screen.getByTestId("tw-institutional-summary")).toHaveTextContent("2026/07/06");
+  });
+
+  it("keeps institutional summary visible with a stale notice when refresh fails", () => {
+    mockQueries({
+      quote: sampleTaiwanQuote,
+      history: sampleHistory,
+      institutional: sampleInstitutional,
+      institutionalError: true,
+    });
+    renderStockDetailPage("TW%3A2330");
+
+    expect(screen.getByText("顯示較舊資料")).toBeInTheDocument();
+    expect(screen.getByTestId("tw-institutional-summary")).toHaveTextContent("+12,345 張");
+  });
+
   it("does not show Taiwan signal placeholders for US stocks", () => {
     mockQueries({ quote: sampleQuote, history: { ...sampleHistory, stock: sampleQuote.stock } });
     renderStockDetailPage("US%3ANVDA");
 
     expect(screen.queryByTestId("tw-stock-signals-section")).not.toBeInTheDocument();
+    expect(useQueryMock.mock.calls.every((call) => call[0]?.queryKey?.[0] !== "institutional-investors")).toBe(
+      true,
+    );
   });
 });
