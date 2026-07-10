@@ -73,3 +73,41 @@ def test_margin_short_endpoint_rejects_non_taiwan_stocks(monkeypatch, client) ->
 
     assert response.status_code == 404
     assert response.json()["detail"] == "Taiwan margin-short data is only available for TW stocks"
+
+
+def test_margin_short_endpoint_returns_400_for_unknown_market(monkeypatch, client) -> None:
+    from app.api.routes import tw_margin_short as margin_short_routes
+
+    def raise_unknown(stock_id: str, *, days: int):
+        raise ValueError("Taiwan margin-short market is unavailable for this stock")
+
+    monkeypatch.setattr(
+        margin_short_routes.tw_margin_short_service,
+        "get_margin_short",
+        raise_unknown,
+    )
+
+    response = client.get("/api/stocks/TW:1303/margin-short")
+
+    assert response.status_code == 400
+    assert "unavailable for this stock" in response.json()["detail"]
+
+
+def test_margin_short_endpoint_returns_502_when_upstream_unavailable(monkeypatch, client) -> None:
+    from app.api.routes import tw_margin_short as margin_short_routes
+
+    def raise_upstream(stock_id: str, *, days: int):
+        raise RuntimeError(
+            "Taiwan margin-short data is temporarily unavailable from official sources."
+        )
+
+    monkeypatch.setattr(
+        margin_short_routes.tw_margin_short_service,
+        "get_margin_short",
+        raise_upstream,
+    )
+
+    response = client.get("/api/stocks/TW:1303/margin-short")
+
+    assert response.status_code == 502
+    assert "temporarily unavailable" in response.json()["detail"]

@@ -120,3 +120,22 @@ def test_margin_short_route_maps_unknown_market_as_bad_request(monkeypatch) -> N
         assert exc.status_code == 400
     else:
         raise AssertionError("Expected HTTPException")
+
+
+def test_margin_short_route_maps_non_tw_stock_as_not_found(monkeypatch) -> None:
+    def raise_non_tw(*args, **kwargs):
+        raise ValueError("Taiwan margin-short data is only available for TW stocks")
+
+    monkeypatch.setattr(
+        margin_short_route.tw_margin_short_service,
+        "get_margin_short",
+        raise_non_tw,
+    )
+
+    try:
+        margin_short_route.get_tw_margin_short("US:AAPL", days=30)
+    except HTTPException as exc:
+        assert exc.status_code == 404
+        assert "only available for TW stocks" in str(exc.detail)
+    else:
+        raise AssertionError("Expected HTTPException")
