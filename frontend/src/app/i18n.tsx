@@ -103,7 +103,6 @@ type TranslationKey =
   | "detail.twSignals.description"
   | "detail.twSignals.institutionalTitle"
   | "detail.twSignals.marginShortTitle"
-  | "detail.twSignals.institutionalPlaceholder"
   | "detail.twSignals.marginShortPlaceholder"
   | "quote.updatedAt"
   | "quote.open"
@@ -479,11 +478,9 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "detail.twSignals.eyebrow": "Taiwan market signals",
     "detail.twSignals.title": "Institutional & margin data",
     "detail.twSignals.description":
-      "These sections are reserved for Taiwan institutional flow and margin/short changes. No simulated values are shown until live data is available.",
+      "Taiwan institutional activity is shown with official daily data. Margin and short-balance changes remain reserved until that feed is implemented.",
     "detail.twSignals.institutionalTitle": "Institutional activity",
     "detail.twSignals.marginShortTitle": "Margin / short changes",
-    "detail.twSignals.institutionalPlaceholder":
-      "三大法人買賣超 will appear here. This placeholder intentionally shows no mock financial values.",
     "detail.twSignals.marginShortPlaceholder":
       "資券變化 will appear here. This placeholder intentionally shows no mock financial values.",
     "quote.updatedAt": "Updated {time}",
@@ -912,11 +909,9 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "detail.createAlert": "建立警示",
     "detail.twSignals.eyebrow": "台股市場訊號",
     "detail.twSignals.title": "法人與資券資料",
-    "detail.twSignals.description": "此區塊預留給三大法人買賣超與資券變化；在正式資料接上前，不會顯示任何模擬數值。",
+    "detail.twSignals.description": "此區塊已接上三大法人日買賣超；資券變化仍保留待後續資料源接入，不會顯示任何模擬金融數值。",
     "detail.twSignals.institutionalTitle": "法人動態",
     "detail.twSignals.marginShortTitle": "資券變化",
-    "detail.twSignals.institutionalPlaceholder":
-      "三大法人買賣超將顯示於此。此預留區塊刻意不顯示任何模擬金融數值。",
     "detail.twSignals.marginShortPlaceholder":
       "資券變化將顯示於此。此預留區塊刻意不顯示任何模擬金融數值。",
     "quote.updatedAt": "更新時間 {time}",

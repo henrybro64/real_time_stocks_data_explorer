@@ -445,6 +445,43 @@ const E2E_TW_INSIGHTS = {
   },
 };
 
+const E2E_TW_INSTITUTIONAL = {
+  stockId: TW_STOCK_ID,
+  symbol: "2330",
+  market: "TWSE",
+  latestDate: "2026-07-06",
+  summary: {
+    foreignNetLots: 12345,
+    investmentTrustNetLots: 1200,
+    dealerNetLots: -800,
+    totalNetLots: 12745,
+  },
+  history: [
+    {
+      date: "2026-07-04",
+      foreignNetLots: 500,
+      investmentTrustNetLots: 100,
+      dealerNetLots: -50,
+      totalNetLots: 550,
+    },
+    {
+      date: "2026-07-05",
+      foreignNetLots: -200,
+      investmentTrustNetLots: 300,
+      dealerNetLots: 100,
+      totalNetLots: 200,
+    },
+    {
+      date: "2026-07-06",
+      foreignNetLots: 12345,
+      investmentTrustNetLots: 1200,
+      dealerNetLots: -800,
+      totalNetLots: 12745,
+    },
+  ],
+  source: "TWSE T86 daily institutional data",
+};
+
 const E2E_HISTORY_RESPONSE = {
   stock: E2E_TW_STOCK_SEARCH_RESULT,
   range: "1D",
@@ -887,6 +924,10 @@ export async function installE2eApiMocks(page: Page): Promise<void> {
       }
       if (path.endsWith("/news") && request.method() === "GET") {
         await fulfillJson(route, []);
+        return;
+      }
+      if (path.endsWith("/institutional-investors") && request.method() === "GET") {
+        await fulfillJson(route, E2E_TW_INSTITUTIONAL);
         return;
       }
       if (path.endsWith("/tw-insights") && request.method() === "GET") {

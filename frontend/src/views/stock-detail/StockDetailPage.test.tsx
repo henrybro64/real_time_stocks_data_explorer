@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { HistoryResponse, QuoteResponse } from "@shared/api";
+import type { HistoryResponse, QuoteResponse, TaiwanInstitutionalInvestorsResponse } from "@shared/api";
 import { render, screen } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -141,6 +141,43 @@ const sampleHistory: HistoryResponse = {
   },
 };
 
+const sampleInstitutional: TaiwanInstitutionalInvestorsResponse = {
+  stockId: "TW:2330",
+  symbol: "2330",
+  market: "TWSE",
+  latestDate: "2026-07-06",
+  summary: {
+    foreignNetLots: 12345,
+    investmentTrustNetLots: 1200,
+    dealerNetLots: -800,
+    totalNetLots: 12745,
+  },
+  history: [
+    {
+      date: "2026-07-04",
+      foreignNetLots: 500,
+      investmentTrustNetLots: 100,
+      dealerNetLots: -50,
+      totalNetLots: 550,
+    },
+    {
+      date: "2026-07-05",
+      foreignNetLots: -200,
+      investmentTrustNetLots: 300,
+      dealerNetLots: 100,
+      totalNetLots: 200,
+    },
+    {
+      date: "2026-07-06",
+      foreignNetLots: 12345,
+      investmentTrustNetLots: 1200,
+      dealerNetLots: -800,
+      totalNetLots: 12745,
+    },
+  ],
+  source: "TWSE T86 daily institutional data",
+};
+
 function renderStockDetailPage(stockId = "US%3ANVDA") {
   const queryClient = new QueryClient({
     defaultOptions: {
@@ -166,6 +203,9 @@ function mockQueries(options: {
   history?: HistoryResponse | undefined;
   historyError?: boolean;
   historyLoading?: boolean;
+  institutional?: TaiwanInstitutionalInvestorsResponse | undefined;
+  institutionalError?: boolean;
+  institutionalLoading?: boolean;
 }) {
   useQueryMock.mockImplementation((queryOptions: { queryKey: unknown[] }) => {
     const key = queryOptions.queryKey[0];
@@ -183,6 +223,14 @@ function mockQueries(options: {
         isError: Boolean(options.historyError),
         isLoading: Boolean(options.historyLoading),
         error: options.historyError ? new Error("history failed") : null,
+      };
+    }
+    if (key === "institutional-investors") {
+      return {
+        data: "institutional" in options ? options.institutional : sampleInstitutional,
+        isError: Boolean(options.institutionalError),
+        isLoading: Boolean(options.institutionalLoading),
+        error: options.institutionalError ? new Error("institutional failed") : null,
       };
     }
     return {
@@ -287,17 +335,85 @@ describe("StockDetailPage", () => {
     expect(screen.queryByTestId("stock-detail-chart-empty")).not.toBeInTheDocument();
   });
 
-  it("shows Taiwan placeholder tabs for institutional and margin short sections", () => {
+  it("renders Taiwan institutional summary and charts plus the margin-short placeholder tab", () => {
     mockQueries({ quote: sampleTaiwanQuote, history: sampleHistory });
     renderStockDetailPage("TW%3A2330");
 
     expect(screen.getByTestId("tw-stock-signals-section")).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "法人動態" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "資券變化" })).toBeInTheDocument();
-    expect(screen.getByTestId("tw-stock-signals-institutional-panel")).toHaveTextContent(
-      /三大法人買賣超將顯示於此/,
-    );
+    expect(screen.getByTestId("tw-institutional-summary")).toHaveTextContent("三大法人買賣超");
+    expect(screen.getByTestId("tw-institutional-summary")).toHaveTextContent("+12,345 張");
+    expect(screen.getByTestId("tw-institutional-summary")).toHaveTextContent("+1,200 張");
+    expect(screen.getByTestId("tw-institutional-summary")).toHaveTextContent("-800 張");
+    expect(screen.getByTestId("tw-institutional-summary")).toHaveTextContent("+12,745 張");
+    expect(screen.getByLabelText("外資買賣超(張)")).toBeInTheDocument();
+    expect(screen.getByLabelText("投信買賣超(張)")).toBeInTheDocument();
+    expect(screen.getByLabelText("自營商買賣超(張)")).toBeInTheDocument();
     expect(screen.getByTestId("tw-stock-signals-margin-short-panel")).toHaveTextContent(/資券變化將顯示於此/);
+  });
+
+  it("shows a Taiwan institutional loading state while the section is fetching", () => {
+    mockQueries({
+      quote: sampleTaiwanQuote,
+      history: sampleHistory,
+      institutional: undefined,
+      institutionalLoading: true,
+    });
+    renderStockDetailPage("TW%3A2330");
+
+    expect(screen.getByText("載入法人動態中")).toBeInTheDocument();
+  });
+
+  it("shows a Taiwan institutional unavailable message when the API returns no data", () => {
+    mockQueries({
+      quote: sampleTaiwanQuote,
+      history: sampleHistory,
+      institutional: {
+        ...sampleInstitutional,
+        latestDate: null,
+        summary: null,
+        history: [],
+      },
+    });
+    renderStockDetailPage("TW%3A2330");
+
+    expect(screen.getByTestId("tw-stock-signals-institutional-panel")).toHaveTextContent(
+      "目前沒有可顯示的三大法人資料。",
+    );
+  });
+
+  it("shows a Taiwan institutional error notice when the API fails", () => {
+    mockQueries({
+      quote: sampleTaiwanQuote,
+      history: sampleHistory,
+      institutional: undefined,
+      institutionalError: true,
+    });
+    renderStockDetailPage("TW%3A2330");
+
+    expect(screen.getByText("載入失敗")).toBeInTheDocument();
+    expect(screen.getByText(/法人動態發生載入問題/)).toBeInTheDocument();
+  });
+
+  it("shows the institutional latestDate in the summary header", () => {
+    mockQueries({ quote: sampleTaiwanQuote, history: sampleHistory });
+    renderStockDetailPage("TW%3A2330");
+
+    expect(screen.getByTestId("tw-institutional-summary")).toHaveTextContent("2026/07/06");
+  });
+
+  it("keeps institutional summary visible with a stale notice when refresh fails", () => {
+    mockQueries({
+      quote: sampleTaiwanQuote,
+      history: sampleHistory,
+      institutional: sampleInstitutional,
+      institutionalError: true,
+    });
+    renderStockDetailPage("TW%3A2330");
+
+    expect(screen.getByText("顯示較舊資料")).toBeInTheDocument();
+    expect(screen.getByTestId("tw-institutional-summary")).toHaveTextContent("+12,345 張");
   });
 
   it("does not show Taiwan signal placeholders for US stocks", () => {
@@ -305,5 +421,8 @@ describe("StockDetailPage", () => {
     renderStockDetailPage("US%3ANVDA");
 
     expect(screen.queryByTestId("tw-stock-signals-section")).not.toBeInTheDocument();
+    expect(useQueryMock.mock.calls.every((call) => call[0]?.queryKey?.[0] !== "institutional-investors")).toBe(
+      true,
+    );
   });
 });
