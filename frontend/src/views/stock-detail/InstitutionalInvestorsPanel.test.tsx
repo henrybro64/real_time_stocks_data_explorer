@@ -47,7 +47,10 @@ const samplePayload: TaiwanInstitutionalInvestorsResponse = {
   source: "TWSE T86 daily institutional data",
 };
 
-function renderPanel(stockId = "TW:2330") {
+function renderPanel(stockId = "TW:2330", language: "en" | "zh-TW" = "zh-TW") {
+  window.localStorage.clear();
+  window.localStorage.setItem("stock-ticker-language", language);
+
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: {
@@ -71,6 +74,7 @@ function renderPanel(stockId = "TW:2330") {
 describe("InstitutionalInvestorsPanel", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    window.localStorage.clear();
   });
 
   it("calls the institutional API with stockId and days=90", async () => {
@@ -107,6 +111,23 @@ describe("InstitutionalInvestorsPanel", () => {
     expect(screen.getByLabelText("自營商買賣超(張)")).toBeInTheDocument();
   });
 
+  it("renders English lot units and chart titles when language is en", async () => {
+    vi.mocked(fetchTaiwanInstitutionalInvestors).mockResolvedValue(samplePayload);
+
+    renderPanel("TW:2330", "en");
+
+    const summary = await screen.findByTestId("tw-institutional-summary");
+    await waitFor(() => {
+      expect(summary).toHaveTextContent("Institutional net activity");
+    });
+    expect(summary).toHaveTextContent("+12,345 lots");
+    expect(summary).toHaveTextContent("0 lots");
+    expect(summary).toHaveTextContent("-800 lots");
+    expect(screen.getByLabelText("Foreign net lots")).toBeInTheDocument();
+    expect(screen.getByLabelText("Investment trust net lots")).toBeInTheDocument();
+    expect(screen.getByLabelText("Dealer net lots")).toBeInTheDocument();
+  });
+
   it("uses backend totalNetLots instead of summing history locally", async () => {
     const payload: TaiwanInstitutionalInvestorsResponse = {
       ...samplePayload,
@@ -125,6 +146,30 @@ describe("InstitutionalInvestorsPanel", () => {
     const summary = await screen.findByTestId("tw-institutional-summary");
     expect(summary).toHaveTextContent("+999 張");
     expect(summary).not.toHaveTextContent("+600 張");
+  });
+
+  it("keeps summary visible and shows empty chart copy when a series has no finite points", async () => {
+    vi.mocked(fetchTaiwanInstitutionalInvestors).mockResolvedValue({
+      ...samplePayload,
+      history: [
+        {
+          date: "2026-07-06",
+          foreignNetLots: 12345,
+          investmentTrustNetLots: Number.NaN,
+          dealerNetLots: -800,
+          totalNetLots: 11545,
+        },
+      ],
+    });
+
+    renderPanel();
+
+    expect(await screen.findByTestId("tw-institutional-summary")).toHaveTextContent("+12,345 張");
+    expect(screen.getByTestId("tw-institutional-chart-empty")).toHaveTextContent(
+      "此區間沒有可繪製的法人資料。",
+    );
+    expect(screen.getByLabelText("外資買賣超(張)")).toBeInTheDocument();
+    expect(screen.getByLabelText("自營商買賣超(張)")).toBeInTheDocument();
   });
 
   it("shows a loading state while the section is fetching", () => {
@@ -152,12 +197,12 @@ describe("InstitutionalInvestorsPanel", () => {
     });
   });
 
-  it("shows empty copy for 404 TW-not-found responses", async () => {
+  it("shows empty copy for any 404 without depending on English detail text", async () => {
     vi.mocked(fetchTaiwanInstitutionalInvestors).mockRejectedValue(
-      new ApiError("Stock not found", {
+      new ApiError("not found", {
         kind: "not_found",
         status: 404,
-        detail: "Stock not found",
+        detail: "localized backend message",
       }),
     );
 

@@ -7,6 +7,7 @@ type InstitutionalHistoryPoint = {
 
 type Props = {
   dateRangeLabel: string;
+  emptyLabel: string;
   language: "en" | "zh-TW";
   points: InstitutionalHistoryPoint[];
   title: string;
@@ -15,11 +16,25 @@ type Props = {
 const PLOT_HEIGHT = 44;
 const BASELINE_Y = 50;
 
-export function InstitutionalHistogramChart({ dateRangeLabel, language, points, title }: Props) {
+export function InstitutionalHistogramChart({
+  dateRangeLabel,
+  emptyLabel,
+  language,
+  points,
+  title,
+}: Props) {
   const validPoints = points.filter((point) => Number.isFinite(point.value));
 
   if (validPoints.length === 0) {
-    return null;
+    return (
+      <section className="app-subtile app-tw-inst-chart-card" data-testid="tw-institutional-chart-empty">
+        <div className="app-tw-inst-chart-header">
+          <h4 className="app-tw-inst-chart-title">{title}</h4>
+          {dateRangeLabel ? <p className="app-section-meta">{dateRangeLabel}</p> : null}
+        </div>
+        <p className="app-supporting-copy">{emptyLabel}</p>
+      </section>
+    );
   }
 
   const maxAbsValue = Math.max(...validPoints.map((point) => Math.abs(point.value)), 1);
@@ -29,7 +44,7 @@ export function InstitutionalHistogramChart({ dateRangeLabel, language, points, 
   const endLabel = formatAxisDate(validPoints[validPoints.length - 1]?.date ?? "", language);
 
   return (
-    <section className="app-subtile app-tw-inst-chart-card">
+    <section className="app-subtile app-tw-inst-chart-card" data-testid="tw-institutional-chart">
       <div className="app-tw-inst-chart-header">
         <h4 className="app-tw-inst-chart-title">{title}</h4>
         <p className="app-section-meta">{dateRangeLabel}</p>
@@ -45,6 +60,7 @@ export function InstitutionalHistogramChart({ dateRangeLabel, language, points, 
             aria-label={title}
             className="app-tw-inst-chart-svg"
             preserveAspectRatio="none"
+            role="img"
             viewBox="0 0 100 100"
           >
             <line className="app-tw-inst-chart-zero-line" x1="0" x2="100" y1={BASELINE_Y} y2={BASELINE_Y} />

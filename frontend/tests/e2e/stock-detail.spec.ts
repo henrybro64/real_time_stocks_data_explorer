@@ -98,3 +98,53 @@ test("TW institutional section shows error notice when API fails", async ({ page
   await expect(page.getByText("資料來源暫時不可用")).toBeVisible();
   await expect(page.getByTestId("tw-institutional-summary")).toHaveCount(0);
 });
+
+test("TW institutional section shows loading then summary", async ({ page }) => {
+  let releaseResponse: (() => void) | null = null;
+  const gate = new Promise<void>((resolve) => {
+    releaseResponse = resolve;
+  });
+
+  await page.route("**/api/stocks/*/institutional-investors*", async (route) => {
+    if (route.request().method() !== "GET") {
+      await route.continue();
+      return;
+    }
+    await gate;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        stockId: "TW:2330",
+        symbol: "2330",
+        market: "TWSE",
+        latestDate: "2026-07-06",
+        summary: {
+          foreignNetLots: 12345,
+          investmentTrustNetLots: 1200,
+          dealerNetLots: -800,
+          totalNetLots: 12745,
+        },
+        history: [
+          {
+            date: "2026-07-06",
+            foreignNetLots: 12345,
+            investmentTrustNetLots: 1200,
+            dealerNetLots: -800,
+            totalNetLots: 12745,
+          },
+        ],
+        source: "TWSE T86 daily institutional data",
+      }),
+    });
+  });
+
+  await page.goto("/stock/TW%3A2330");
+  await expect(page.getByTestId("tw-stock-signals-section")).toBeVisible();
+  await expect(page.getByText("載入法人動態中")).toBeVisible();
+
+  releaseResponse?.();
+
+  await expect(page.getByTestId("tw-institutional-summary")).toContainText("+12,345 張");
+  await expect(page.getByLabel("外資買賣超(張)")).toBeVisible();
+});

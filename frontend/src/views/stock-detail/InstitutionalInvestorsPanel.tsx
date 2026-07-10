@@ -18,6 +18,7 @@ export function InstitutionalInvestorsPanel({ stockId }: Props) {
   const { language, t, formatNumber } = useLanguage();
   const copy = language === "zh-TW"
     ? {
+        chartEmpty: "此區間沒有可繪製的法人資料。",
         chartForeign: "外資買賣超(張)",
         chartInvestmentTrust: "投信買賣超(張)",
         chartDealer: "自營商買賣超(張)",
@@ -26,12 +27,14 @@ export function InstitutionalInvestorsPanel({ stockId }: Props) {
         foreign: "外資",
         investmentTrust: "投信",
         loading: "載入法人動態中",
+        lotsUnit: "張",
         records: (count: number) => `近 ${count} 筆交易日資料`,
         source: (source: string) => `來源：${source}`,
         total: "合計",
         dealer: "自營商",
       }
     : {
+        chartEmpty: "No plottable institutional history for this range.",
         chartForeign: "Foreign net lots",
         chartInvestmentTrust: "Investment trust net lots",
         chartDealer: "Dealer net lots",
@@ -40,6 +43,7 @@ export function InstitutionalInvestorsPanel({ stockId }: Props) {
         foreign: "Foreign",
         investmentTrust: "Investment trust",
         loading: "Loading institutional activity",
+        lotsUnit: "lots",
         records: (count: number) => `Latest ${count} trading records`,
         source: (source: string) => `Source: ${source}`,
         total: "Total",
@@ -59,13 +63,9 @@ export function InstitutionalInvestorsPanel({ stockId }: Props) {
   const latestDate = formatDisplayDate(payload?.latestDate ?? null, language);
   const dateRangeLabel = buildDateRangeLabel(history, language);
   const apiError = institutionalQuery.error ? toApiError(institutionalQuery.error) : null;
+  // Any 404 from this TW-only endpoint means the stock/market is unsupported for this feed.
   const shouldShowUnavailableCopy =
-    summary == null &&
-    history.length === 0 &&
-    apiError != null &&
-    apiError.kind === "not_found" &&
-    (apiError.detail?.includes("Stock not found") ||
-      apiError.detail?.includes("only available for TW stocks"));
+    summary == null && history.length === 0 && apiError?.kind === "not_found";
 
   if (!payload && institutionalQuery.isLoading) {
     return <InlineLoading description={copy.loading} status="active" />;
@@ -113,7 +113,9 @@ export function InstitutionalInvestorsPanel({ stockId }: Props) {
           {summaryRows.map((row) => (
             <div className="app-tw-inst-summary-row" key={row.label}>
               <dt>{row.label}</dt>
-              <dd className={twMarketToneClass(row.value)}>{formatSignedLots(row.value, formatNumber)}</dd>
+              <dd className={twMarketToneClass(row.value)}>
+                {formatSignedLots(row.value, formatNumber, copy.lotsUnit)}
+              </dd>
             </div>
           ))}
         </dl>
@@ -125,18 +127,21 @@ export function InstitutionalInvestorsPanel({ stockId }: Props) {
 
       <InstitutionalHistogramChart
         dateRangeLabel={dateRangeLabel}
+        emptyLabel={copy.chartEmpty}
         language={language}
         points={history.map((point) => ({ date: point.date, value: point.foreignNetLots }))}
         title={copy.chartForeign}
       />
       <InstitutionalHistogramChart
         dateRangeLabel={dateRangeLabel}
+        emptyLabel={copy.chartEmpty}
         language={language}
         points={history.map((point) => ({ date: point.date, value: point.investmentTrustNetLots }))}
         title={copy.chartInvestmentTrust}
       />
       <InstitutionalHistogramChart
         dateRangeLabel={dateRangeLabel}
+        emptyLabel={copy.chartEmpty}
         language={language}
         points={history.map((point) => ({ date: point.date, value: point.dealerNetLots }))}
         title={copy.chartDealer}
@@ -175,15 +180,19 @@ function formatDisplayDate(
   }).format(date);
 }
 
-function formatSignedLots(value: number, formatNumber: (value: number) => string): string {
+function formatSignedLots(
+  value: number,
+  formatNumber: (value: number) => string,
+  lotsUnit: string,
+): string {
   const absoluteValue = formatLocalizedLots(Math.abs(value), formatNumber);
   if (value > 0) {
-    return `+${absoluteValue} 張`;
+    return `+${absoluteValue} ${lotsUnit}`;
   }
   if (value < 0) {
-    return `-${absoluteValue} 張`;
+    return `-${absoluteValue} ${lotsUnit}`;
   }
-  return `${absoluteValue} 張`;
+  return `${absoluteValue} ${lotsUnit}`;
 }
 
 function formatLocalizedLots(value: number, formatNumber: (value: number) => string): string {

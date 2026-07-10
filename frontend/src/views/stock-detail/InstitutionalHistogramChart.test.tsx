@@ -8,6 +8,7 @@ describe("InstitutionalHistogramChart", () => {
     const { container } = render(
       <InstitutionalHistogramChart
         dateRangeLabel="2026/07/04 - 2026/07/06"
+        emptyLabel="此區間沒有可繪製的法人資料。"
         language="zh-TW"
         points={[
           { date: "2026-07-04", value: 500 },
@@ -18,8 +19,9 @@ describe("InstitutionalHistogramChart", () => {
       />,
     );
 
+    expect(screen.getByTestId("tw-institutional-chart")).toBeInTheDocument();
     expect(screen.getByText("外資買賣超(張)")).toBeInTheDocument();
-    expect(screen.getByLabelText("外資買賣超(張)")).toBeInTheDocument();
+    expect(screen.getByRole("img", { name: "外資買賣超(張)" })).toBeInTheDocument();
     expect(container.querySelector(".app-tw-inst-chart-zero-line")).toBeInTheDocument();
 
     const bars = container.querySelectorAll("rect");
@@ -33,6 +35,7 @@ describe("InstitutionalHistogramChart", () => {
     const { container } = render(
       <InstitutionalHistogramChart
         dateRangeLabel="2026/07/04 - 2026/07/05"
+        emptyLabel="No plottable institutional history for this range."
         language="en"
         points={[
           { date: "2026-07-04", value: Number.NaN },
@@ -47,10 +50,11 @@ describe("InstitutionalHistogramChart", () => {
     expect(container.querySelector("rect")).toHaveClass("app-tw-market-bar-positive");
   });
 
-  it("returns null when all points are invalid", () => {
-    const { container } = render(
+  it("shows an empty chart message when all points are invalid", () => {
+    render(
       <InstitutionalHistogramChart
         dateRangeLabel=""
+        emptyLabel="此區間沒有可繪製的法人資料。"
         language="zh-TW"
         points={[
           { date: "2026-07-04", value: Number.NaN },
@@ -60,6 +64,10 @@ describe("InstitutionalHistogramChart", () => {
       />,
     );
 
-    expect(container).toBeEmptyDOMElement();
+    expect(screen.getByTestId("tw-institutional-chart-empty")).toHaveTextContent(
+      "此區間沒有可繪製的法人資料。",
+    );
+    expect(screen.getByText("投信買賣超(張)")).toBeInTheDocument();
+    expect(screen.queryByRole("img")).not.toBeInTheDocument();
   });
 });
