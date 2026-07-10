@@ -286,6 +286,133 @@ def test_service_supports_tpex_symbols() -> None:
     assert "TPEx" in result.source
 
 
+def test_service_dedupes_tpex_history_when_weekend_probes_resolve_to_same_trading_date() -> None:
+    stock = stock_record(
+        "TW:6488",
+        market="TW",
+        symbol="6488",
+        name="環球晶",
+        exchange="TPEx",
+        currency="TWD",
+        timezone="Asia/Taipei",
+    )
+    fields = [
+        "代號",
+        "名稱",
+        "買進股數",
+        "賣出股數",
+        "買賣超股數",
+        "買進股數",
+        "賣出股數",
+        "買賣超股數",
+        "買進股數",
+        "賣出股數",
+        "買賣超股數",
+        "買進股數",
+        "賣出股數",
+        "買賣超股數",
+        "買進股數",
+        "賣出股數",
+        "買賣超股數",
+        "買進股數",
+        "賣出股數",
+        "買賣超股數",
+        "買進股數",
+        "賣出股數",
+        "買賣超股數",
+        "三大法人買賣超股數合計",
+    ]
+
+    def row_for(symbol: str, foreign: str, trust: str, dealer: str, total: str) -> list[str]:
+        return [
+            symbol,
+            "環球晶",
+            "0",
+            "0",
+            foreign,
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            trust,
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            dealer,
+            total,
+        ]
+
+    payloads = {
+        # Weekend probes both resolve to Friday 2026-07-10 in the payload date.
+        date(2026, 7, 12): {
+            "date": "2026/07/10",
+            "tables": [
+                {
+                    "date": "115/07/10",
+                    "fields": fields,
+                    "data": [row_for("6488", "1,000", "2,000", "300", "3,300")],
+                }
+            ],
+        },
+        date(2026, 7, 11): {
+            "date": "2026/07/10",
+            "tables": [
+                {
+                    "date": "115/07/10",
+                    "fields": fields,
+                    "data": [row_for("6488", "1,000", "2,000", "300", "3,300")],
+                }
+            ],
+        },
+        date(2026, 7, 10): {
+            "date": "2026/07/10",
+            "tables": [
+                {
+                    "date": "115/07/10",
+                    "fields": fields,
+                    "data": [row_for("6488", "1,000", "2,000", "300", "3,300")],
+                }
+            ],
+        },
+        date(2026, 7, 9): {
+            "date": "2026/07/09",
+            "tables": [
+                {
+                    "date": "115/07/09",
+                    "fields": fields,
+                    "data": [row_for("6488", "4,000", "5,000", "600", "9,600")],
+                }
+            ],
+        },
+    }
+
+    service = TaiwanInstitutionalInvestorsService(
+        quote_source=FakeQuoteSource(stock),
+        tpex_fetcher=lambda target_date: payloads.get(
+            target_date,
+            {"stat": "查無資料", "tables": []},
+        ),
+        # Sunday evening local time so candidate start is 2026-07-12.
+        now_provider=lambda: datetime(2026, 7, 12, 12, 0, tzinfo=UTC),
+    )
+
+    result = service.get_institutional_investors("TW:6488", days=2)
+
+    assert [item.date for item in result.history] == ["2026-07-09", "2026-07-10"]
+    assert result.latest_date == "2026-07-10"
+    assert result.summary is not None
+    assert result.summary.foreign_net_shares == 1_000
+
+
 def test_service_returns_empty_history_when_symbol_has_no_available_rows() -> None:
     stock = stock_record(
         "TW:2330",

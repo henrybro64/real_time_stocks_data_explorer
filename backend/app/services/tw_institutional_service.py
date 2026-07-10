@@ -125,6 +125,7 @@ class TaiwanInstitutionalInvestorsService:
 
         requested_days = max(days, 1)
         history: list[TaiwanInstitutionalInvestorRecord] = []
+        seen_dates: set[str] = set()
         successful_fetches = 0
         start_date = _candidate_start_date(self._now_provider())
 
@@ -139,6 +140,11 @@ class TaiwanInstitutionalInvestorsService:
                 successful_fetches += 1
             if lookup.record is None:
                 continue
+            # Official payloads may resolve weekend/holiday probes to the prior
+            # trading date. Count distinct trading dates only.
+            if lookup.record.date in seen_dates:
+                continue
+            seen_dates.add(lookup.record.date)
             history.append(lookup.record)
             if len(history) >= requested_days:
                 break
