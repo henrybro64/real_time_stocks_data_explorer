@@ -8,7 +8,7 @@ type Props = {
   stockId: string;
 };
 
-export function TaiwanSignalsPanel({ stockId }: Props) {
+export function TaiwanSignalsPanel({ stockId }: Readonly<Props>) {
   const { t } = useLanguage();
 
   return (

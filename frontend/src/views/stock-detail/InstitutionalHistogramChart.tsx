@@ -22,7 +22,7 @@ export function InstitutionalHistogramChart({
   language,
   points,
   title,
-}: Props) {
+}: Readonly<Props>) {
   const validPoints = points.filter((point) => Number.isFinite(point.value));
 
   if (validPoints.length === 0) {
@@ -75,7 +75,7 @@ export function InstitutionalHistogramChart({
               return (
                 <rect
                   key={`${point.date}-${index}`}
-                  className={point.value > 0 ? "app-tw-market-bar-positive" : point.value < 0 ? "app-tw-market-bar-negative" : "app-tw-market-bar-neutral"}
+                  className={twMarketBarClass(point.value)}
                   height={height}
                   rx={0.45}
                   ry={0.45}
@@ -102,6 +102,16 @@ function formatAxisValue(value: number, language: "en" | "zh-TW"): string {
   return new Intl.NumberFormat(language === "zh-TW" ? "zh-TW" : "en-US", {
     maximumFractionDigits: value % 1 === 0 ? 0 : 1,
   }).format(value);
+}
+
+function twMarketBarClass(value: number): string {
+  if (value > 0) {
+    return "app-tw-market-bar-positive";
+  }
+  if (value < 0) {
+    return "app-tw-market-bar-negative";
+  }
+  return "app-tw-market-bar-neutral";
 }
 
 function formatTooltipValue(value: number, language: "en" | "zh-TW"): string {
