@@ -2,8 +2,13 @@
 
 import { Tab, TabList, TabPanel, TabPanels, Tabs, Tile } from "@carbon/react";
 import { useLanguage } from "../../app/i18n";
+import { InstitutionalInvestorsPanel } from "./InstitutionalInvestorsPanel";
 
-export function TaiwanSignalsPanel() {
+type Props = {
+  stockId: string;
+};
+
+export function TaiwanSignalsPanel({ stockId }: Props) {
   const { t } = useLanguage();
 
   return (
@@ -22,7 +27,7 @@ export function TaiwanSignalsPanel() {
         </TabList>
         <TabPanels>
           <TabPanel data-testid="tw-stock-signals-institutional-panel">
-            <p className="app-supporting-copy">{t("detail.twSignals.institutionalPlaceholder")}</p>
+            <InstitutionalInvestorsPanel stockId={stockId} />
           </TabPanel>
           <TabPanel data-testid="tw-stock-signals-margin-short-panel">
             <p className="app-supporting-copy">{t("detail.twSignals.marginShortPlaceholder")}</p>

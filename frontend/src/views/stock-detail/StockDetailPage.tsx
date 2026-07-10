@@ -217,7 +217,7 @@ export function StockDetailPage({ stockId = "" }: Props) {
       </Column>
       {isTaiwanStock ? (
         <Column className="app-column-spacing" sm={4} md={8} lg={16}>
-          <TaiwanSignalsPanel />
+          <TaiwanSignalsPanel stockId={decodedStockId} />
         </Column>
       ) : null}
       <Column className="app-column-spacing" sm={4} md={8} lg={16}>

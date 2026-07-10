@@ -26,6 +26,7 @@ import type {
   PortfolioSummary,
   QuoteResponse,
   StockAnalysisResponse,
+  TaiwanInstitutionalInvestorsResponse,
   TWStockInsights,
   USStockInsights,
   WatchlistResponse,
@@ -262,6 +263,12 @@ export function fetchKeyStatistics(stockId: string) {
 
 export function fetchStockNews(stockId: string) {
   return fetchJson<NewsItem[]>(`/stocks/${encodeURIComponent(stockId)}/news`);
+}
+
+export function fetchTaiwanInstitutionalInvestors(stockId: string, days = 90) {
+  return fetchJson<TaiwanInstitutionalInvestorsResponse>(
+    `/stocks/${encodeURIComponent(stockId)}/institutional-investors?days=${days}`,
+  );
 }
 
 export function fetchTwStockInsights(stockId: string) {

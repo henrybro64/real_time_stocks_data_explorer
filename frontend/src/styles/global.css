@@ -1427,6 +1427,136 @@ input {
   background: #8a63ff;
 }
 
+.app-tw-inst-summary-card,
+.app-tw-inst-chart-card {
+  display: grid;
+  gap: 0.85rem;
+}
+
+.app-tw-inst-summary-head,
+.app-tw-inst-summary-meta,
+.app-tw-inst-chart-header {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 0.4rem 1rem;
+  align-items: baseline;
+}
+
+.app-tw-inst-summary-title,
+.app-tw-inst-chart-title {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.app-tw-inst-summary-date {
+  margin: 0;
+  color: var(--cds-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.app-tw-inst-summary-list {
+  display: grid;
+  gap: 0.55rem;
+  margin: 0;
+}
+
+.app-tw-inst-summary-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: baseline;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid var(--cds-border-subtle-01);
+}
+
+.app-tw-inst-summary-row:last-child {
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+
+.app-tw-inst-summary-row dt,
+.app-tw-inst-summary-row dd {
+  margin: 0;
+}
+
+.app-tw-inst-summary-row dd {
+  font-size: 1.05rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.app-tw-inst-chart-shell {
+  display: grid;
+  grid-template-columns: 4rem minmax(0, 1fr);
+  gap: 0.75rem;
+  align-items: stretch;
+}
+
+.app-tw-inst-chart-y-axis {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  color: var(--cds-text-secondary);
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+  min-height: 12rem;
+}
+
+.app-tw-inst-chart-plot {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.app-tw-inst-chart-svg {
+  display: block;
+  width: 100%;
+  height: 12rem;
+  border-radius: 0.35rem;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0), rgba(15, 98, 254, 0.02)),
+    var(--cds-layer-hover);
+}
+
+.app-tw-inst-chart-zero-line {
+  stroke: var(--cds-border-strong-01);
+  stroke-dasharray: 2 2;
+  stroke-width: 0.45;
+}
+
+.app-tw-inst-chart-x-axis {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  color: var(--cds-text-secondary);
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.app-tw-market-positive {
+  color: var(--cds-support-error);
+}
+
+.app-tw-market-negative {
+  color: var(--cds-support-success);
+}
+
+.app-tw-market-neutral {
+  color: var(--cds-text-secondary);
+}
+
+.app-tw-market-bar-positive {
+  fill: var(--cds-support-error);
+}
+
+.app-tw-market-bar-negative {
+  fill: var(--cds-support-success);
+}
+
+.app-tw-market-bar-neutral {
+  fill: var(--cds-text-secondary);
+}
+
 @media (min-width: 768px) and (max-width: 1023px) {
   :root {
     --app-chart-height: 26.25rem;
@@ -1553,6 +1683,15 @@ input {
 
   .app-stock-card-actions .cds--btn {
     flex: 1 1 100%;
+  }
+
+  .app-tw-inst-chart-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .app-tw-inst-chart-y-axis {
+    flex-direction: row;
+    min-height: auto;
   }
 }
 

@@ -24,7 +24,13 @@ test("stock detail renders quote, history, key stats, news fallback, and Taiwan-
   await expect(signals).toBeVisible();
   await expect(signals.getByRole("tab", { name: "法人動態" })).toBeVisible();
   await expect(signals.getByRole("tab", { name: "資券變化" })).toBeVisible();
-  await expect(page.getByTestId("tw-stock-signals-institutional-panel")).toContainText("三大法人買賣超");
+  await expect(page.getByTestId("tw-institutional-summary")).toContainText("+12,345 張");
+  await expect(page.getByTestId("tw-institutional-summary")).toContainText("+1,200 張");
+  await expect(page.getByTestId("tw-institutional-summary")).toContainText("-800 張");
+  await expect(page.getByTestId("tw-institutional-summary")).toContainText("+12,745 張");
+  await expect(page.getByLabel("外資買賣超(張)")).toBeVisible();
+  await expect(page.getByLabel("投信買賣超(張)")).toBeVisible();
+  await expect(page.getByLabel("自營商買賣超(張)")).toBeVisible();
   await signals.getByRole("tab", { name: "資券變化" }).click();
   await expect(page.getByTestId("tw-stock-signals-margin-short-panel")).toContainText("資券變化");
 
@@ -42,4 +48,3 @@ test("stock detail route is bookmarkable and reload-safe", async ({ page }) => {
   await expect(page.getByTestId("quote-summary-section")).toBeVisible();
   await expect(page.getByTestId("tw-stock-signals-section")).toBeVisible();
 });
-
