@@ -61,8 +61,8 @@ def test_shares_to_lots_uses_100_unit_lot_for_foreign_currency_etfs() -> None:
     assert taiwan_market_data.taiwan_shares_per_lot("00677K") == 100
     assert taiwan_market_data.taiwan_shares_per_lot("00900C") == 100
     assert taiwan_market_data.taiwan_shares_per_lot("2330") == 1000
-    assert taiwan_market_data.shares_to_lots(1_000, symbol="00677K") == 10.0
-    assert taiwan_market_data.shares_to_lots(1_000, symbol="2330") == 1.0
+    assert taiwan_market_data.shares_to_lots(1_000, symbol="00677K") == pytest.approx(10.0)
+    assert taiwan_market_data.shares_to_lots(1_000, symbol="2330") == pytest.approx(1.0)
 
 
 def test_normalize_taiwan_symbol_removes_prefix_and_yahoo_suffix() -> None:
