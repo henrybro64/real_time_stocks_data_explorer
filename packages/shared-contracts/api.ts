@@ -122,6 +122,31 @@ export type TaiwanInstitutionalInvestorsResponse = {
   source: string;
 };
 
+/**
+ * Taiwan 資券變化 values.
+ * Balances/changes are in 張 (lots). Amounts are in 萬元 and use
+ * `(Δshares × closePrice) / 10_000` (null when previous balance or close is missing).
+ */
+export type TaiwanMarginShortPoint = {
+  date?: string;
+  closePrice?: number | null;
+  marginBalanceLots: number;
+  shortMarginBalanceLots: number;
+  borrowedShortBalanceLots: number;
+  borrowedShortBalanceChangeLots?: number | null;
+  borrowedShortBalanceChangeAmount10k?: number | null;
+};
+
+export type TaiwanMarginShortResponse = {
+  stockId: string;
+  symbol: string;
+  market: "TWSE" | "TPEx";
+  latestDate: string | null;
+  summary: TaiwanMarginShortPoint | null;
+  history: Array<TaiwanMarginShortPoint & { date: string }>;
+  source: string;
+};
+
 export type WatchlistResponse = {
   ids: string[];
 };
