@@ -101,6 +101,27 @@ export type HistoryResponse = {
   chartLayout: ChartLayout | null;
 };
 
+/** Taiwan 三大法人買賣超 values are returned in 張 (lots = shares / 1000). */
+export type TaiwanInstitutionalInvestorPoint = {
+  date?: string;
+  foreignNetLots: number;
+  investmentTrustNetLots: number;
+  dealerNetLots: number;
+  totalNetLots: number;
+  dealerSelfNetLots?: number | null;
+  dealerHedgeNetLots?: number | null;
+};
+
+export type TaiwanInstitutionalInvestorsResponse = {
+  stockId: string;
+  symbol: string;
+  market: "TWSE" | "TPEx" | string;
+  latestDate: string | null;
+  summary: TaiwanInstitutionalInvestorPoint | null;
+  history: Array<TaiwanInstitutionalInvestorPoint & { date: string }>;
+  source: string;
+};
+
 export type WatchlistResponse = {
   ids: string[];
 };

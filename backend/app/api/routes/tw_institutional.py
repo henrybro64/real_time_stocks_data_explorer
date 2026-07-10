@@ -5,6 +5,7 @@ from app.schemas.tw_institutional import (
     TaiwanInstitutionalInvestorsResponse,
     TaiwanInstitutionalInvestorSummaryResponse,
 )
+from app.services.taiwan_market_data import shares_to_lots
 from app.services.tw_institutional_service import (
     TaiwanInstitutionalInvestorRecord,
     TaiwanInstitutionalInvestorsResult,
@@ -12,7 +13,7 @@ from app.services.tw_institutional_service import (
 )
 
 
-router = APIRouter(prefix="/stocks", tags=["history"])
+router = APIRouter(prefix="/stocks", tags=["tw-institutional"])
 
 
 @router.get(
@@ -87,6 +88,7 @@ def _tw_institutional_schema(
 
 
 def _lots_from_shares(shares: int | None) -> float | None:
-    if shares is None:
+    lots = shares_to_lots(shares)
+    if lots is None:
         return None
-    return round(shares / 1000.0, 3)
+    return round(lots, 3)

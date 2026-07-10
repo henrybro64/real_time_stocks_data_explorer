@@ -1,6 +1,6 @@
 from fastapi import HTTPException
 
-from app.api.routes import tw_institutional as history_route
+from app.api.routes import tw_institutional as institutional_route
 from app.services.tw_institutional_service import (
     TaiwanInstitutionalInvestorRecord,
     TaiwanInstitutionalInvestorsResult,
@@ -31,7 +31,7 @@ def _sample_institutional_result() -> TaiwanInstitutionalInvestorsResult:
 
 
 def test_tw_institutional_schema_converts_shares_to_lots() -> None:
-    payload = history_route._tw_institutional_schema(_sample_institutional_result()).model_dump()
+    payload = institutional_route._tw_institutional_schema(_sample_institutional_result()).model_dump()
 
     assert payload == {
         "stockId": "TW:2330",
@@ -70,12 +70,12 @@ def test_institutional_route_delegates_to_service(monkeypatch) -> None:
         return _sample_institutional_result()
 
     monkeypatch.setattr(
-        history_route.tw_institutional_service,
+        institutional_route.tw_institutional_service,
         "get_institutional_investors",
         fake_get,
     )
 
-    response = history_route.get_tw_institutional_investors("TW:2330", days=30)
+    response = institutional_route.get_tw_institutional_investors("TW:2330", days=30)
 
     assert captured == {"stock_id": "TW:2330", "days": 30}
     assert response.latestDate == "2026-07-09"
@@ -83,19 +83,53 @@ def test_institutional_route_delegates_to_service(monkeypatch) -> None:
     assert response.summary.totalNetLots == 12.945
 
 
-def test_institutional_route_maps_service_errors(monkeypatch) -> None:
+def test_institutional_route_maps_not_found_errors(monkeypatch) -> None:
     def raise_not_found(*args, **kwargs):
         raise ValueError("Stock not found")
 
     monkeypatch.setattr(
-        history_route.tw_institutional_service,
+        institutional_route.tw_institutional_service,
         "get_institutional_investors",
         raise_not_found,
     )
     try:
-        history_route.get_tw_institutional_investors("TW:9999", days=30)
+        institutional_route.get_tw_institutional_investors("TW:9999", days=30)
     except HTTPException as exc:
         assert exc.status_code == 404
         assert exc.detail == "Stock not found"
+    else:
+        raise AssertionError("Expected HTTPException")
+
+
+def test_institutional_route_maps_upstream_errors(monkeypatch) -> None:
+    def raise_upstream(*args, **kwargs):
+        raise RuntimeError("Taiwan institutional data is temporarily unavailable from official sources.")
+
+    monkeypatch.setattr(
+        institutional_route.tw_institutional_service,
+        "get_institutional_investors",
+        raise_upstream,
+    )
+    try:
+        institutional_route.get_tw_institutional_investors("TW:2330", days=30)
+    except HTTPException as exc:
+        assert exc.status_code == 502
+    else:
+        raise AssertionError("Expected HTTPException")
+
+
+def test_institutional_route_maps_unknown_market_as_bad_request(monkeypatch) -> None:
+    def raise_unknown(*args, **kwargs):
+        raise ValueError("Taiwan institutional market is unavailable for this stock")
+
+    monkeypatch.setattr(
+        institutional_route.tw_institutional_service,
+        "get_institutional_investors",
+        raise_unknown,
+    )
+    try:
+        institutional_route.get_tw_institutional_investors("TW:2330", days=30)
+    except HTTPException as exc:
+        assert exc.status_code == 400
     else:
         raise AssertionError("Expected HTTPException")

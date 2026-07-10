@@ -24,7 +24,8 @@ if TYPE_CHECKING:
     from app.services.quote_service import QuoteService
 
 _TW_TIMEZONE = ZoneInfo("Asia/Taipei")
-_TWSE_T86_URL = "https://www.twse.com.tw/rwd/zh/fund/T86"
+# Keep aligned with rankings_service / official TWSE fund endpoints.
+_TWSE_T86_URL = "https://www.twse.com.tw/fund/T86"
 _TWSE_T86_SELECT_TYPE = "ALLBUT0999"
 _TPEX_DAILY_TRADE_URL = "https://www.tpex.org.tw/www/zh-tw/insti/dailyTrade"
 _TPEX_DAILY_TRADE_SECT = "EW"
@@ -426,10 +427,11 @@ def _dealer_net_shares(
     dealer_hedge_net_shares: int | None,
     official_dealer_net_shares: int | None,
 ) -> int | None:
-    if dealer_self_net_shares is not None and dealer_hedge_net_shares is not None:
-        return dealer_self_net_shares + dealer_hedge_net_shares
+    # Prefer the official combined 自營商買賣超 when present; keep split fields for UI.
     if official_dealer_net_shares is not None:
         return official_dealer_net_shares
+    if dealer_self_net_shares is not None and dealer_hedge_net_shares is not None:
+        return dealer_self_net_shares + dealer_hedge_net_shares
     if dealer_self_net_shares is not None or dealer_hedge_net_shares is not None:
         return (dealer_self_net_shares or 0) + (dealer_hedge_net_shares or 0)
     return None
