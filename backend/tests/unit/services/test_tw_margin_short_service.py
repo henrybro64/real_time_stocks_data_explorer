@@ -19,20 +19,7 @@ from app.services.tw_margin_short_service import (
     _parse_twse_margin_row,
     _round_nearest_int,
 )
-from tests.support import stock_record
-
-
-class FakeQuoteSource:
-    def __init__(self, stock):
-        self._stock = stock
-
-    def get_stock(self, stock_id: str):
-        if self._stock is not None and self._stock.id == stock_id:
-            return self._stock
-        return None
-
-    def list_stocks(self):
-        return [self._stock] if self._stock is not None else []
+from tests.support import FakeQuoteSource, stock_record
 
 
 _TPEX_MARGIN_FIELDS = [

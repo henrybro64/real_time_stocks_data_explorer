@@ -73,3 +73,22 @@ def candle_record(
         close=close,
         volume=volume,
     )
+
+
+class FakeQuoteSource:
+    def __init__(self, stock=None, stocks=None):
+        self._stock = stock
+        self._stocks = list(stocks or ([] if stock is None else [stock]))
+
+    def get_stock(self, stock_id: str):
+        if self._stock is not None and self._stock.id == stock_id:
+            return self._stock
+        for stock in self._stocks:
+            if stock.id == stock_id:
+                return stock
+        return None
+
+    def list_stocks(self):
+        if self._stocks:
+            return list(self._stocks)
+        return [self._stock] if self._stock is not None else []

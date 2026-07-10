@@ -2,13 +2,17 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime
 import math
 from typing import TYPE_CHECKING, Callable, Literal
-from zoneinfo import ZoneInfo
 
 from app.models.stock import StockRecord
 from app.services.http_client import HttpFetchError
+from app.services.taiwan_history_scan import (
+    RESULT_CACHE_TTL,
+    candidate_start_date,
+    collect_dated_history,
+)
 from app.services.taiwan_market_data import (
     TaiwanMarket,
     fetch_tpex_data,
@@ -25,13 +29,8 @@ from app.services.taiwan_market_data import (
 if TYPE_CHECKING:
     from app.services.quote_service import QuoteService
 
-_TW_TIMEZONE = ZoneInfo("Asia/Taipei")
-_START_LOOKBACK_HOUR = 18
 _DEFAULT_HISTORY_DAYS = 90
-_MIN_SCAN_WINDOW_DAYS = 100
-_SCAN_WINDOW_MULTIPLIER = 2
-_MAX_SCAN_WINDOW_DAYS = 360
-_RESULT_CACHE_TTL = timedelta(minutes=5)
+_RESULT_CACHE_TTL = RESULT_CACHE_TTL
 
 _TWSE_MARGIN_URL = "https://www.twse.com.tw/rwd/zh/marginTrading/MI_MARGN"
 _TWSE_BORROWED_SHORT_URL = "https://www.twse.com.tw/rwd/zh/marginTrading/TWT93U"
@@ -167,7 +166,7 @@ class TaiwanMarginShortService:
             market=market,
             symbol=symbol,
             requested_days=requested_days,
-            start_date=_candidate_start_date(now),
+            start_date=candidate_start_date(now),
         )
 
         if not history and successful_fetches == 0:
@@ -209,24 +208,16 @@ class TaiwanMarginShortService:
         requested_days: int,
         start_date: date,
     ) -> tuple[list[TaiwanMarginShortRecord], int]:
-        history: list[TaiwanMarginShortRecord] = []
-        seen_dates: set[str] = set()
-        successful_fetches = 0
-
-        for current_date in _iter_candidate_weekdays(start_date, _scan_window_days(requested_days)):
+        def fetch_day(current_date: date) -> tuple[TaiwanMarginShortRecord | None, bool]:
             lookup = self._fetch_record_for_day(market, current_date, symbol)
-            if lookup.request_succeeded:
-                successful_fetches += 1
-            if lookup.record is None:
-                continue
-            if lookup.record.date in seen_dates:
-                continue
-            seen_dates.add(lookup.record.date)
-            history.append(lookup.record)
-            if len(history) >= requested_days:
-                break
+            return lookup.record, lookup.request_succeeded
 
-        return history, successful_fetches
+        return collect_dated_history(
+            requested_days=requested_days,
+            start_date=start_date,
+            fetch_day=fetch_day,
+            record_date=lambda record: record.date,
+        )
 
     def _fetch_record_for_day(
         self,
@@ -791,30 +782,6 @@ def _parse_share_int(value: object) -> int | None:
     if numeric is None:
         return None
     return int(numeric)
-
-
-def _candidate_start_date(now: datetime) -> date:
-    local_now = now.astimezone(_TW_TIMEZONE)
-    candidate = local_now.date()
-    if local_now.hour < _START_LOOKBACK_HOUR:
-        candidate -= timedelta(days=1)
-    return candidate
-
-
-def _iter_candidate_weekdays(start_date: date, window_days: int):
-    for day_offset in range(window_days):
-        current_date = start_date - timedelta(days=day_offset)
-        if current_date.weekday() >= 5:
-            continue
-        yield current_date
-
-
-def _scan_window_days(days: int) -> int:
-    requested = max(days, 1)
-    return min(
-        _MAX_SCAN_WINDOW_DAYS,
-        max(_MIN_SCAN_WINDOW_DAYS, requested * _SCAN_WINDOW_MULTIPLIER),
-    )
 
 
 def _row_at(row: Sequence[object], index: int) -> object | None:
