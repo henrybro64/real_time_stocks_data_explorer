@@ -6,12 +6,12 @@ from datetime import UTC, date, datetime
 import math
 from typing import TYPE_CHECKING, Callable, Literal
 
-from app.models.stock import StockRecord
 from app.services.http_client import HttpFetchError
 from app.services.taiwan_history_scan import (
     RESULT_CACHE_TTL,
     candidate_start_date,
     collect_dated_history,
+    get_cached_or_compute,
 )
 from app.services.taiwan_market_data import (
     TaiwanMarket,
@@ -21,7 +21,8 @@ from app.services.taiwan_market_data import (
     normalize_taiwan_date,
     normalize_taiwan_symbol,
     parse_taiwan_number,
-    resolve_taiwan_market,
+    require_taiwan_stock,
+    require_twse_or_tpex_symbol,
     shares_to_lots,
     taiwan_row_value,
 )
@@ -86,12 +87,6 @@ class _DailyLookupResult:
 
 
 @dataclass(frozen=True)
-class _ResultCacheEntry:
-    cached_at: datetime
-    result: TaiwanMarginShortResult
-
-
-@dataclass(frozen=True)
 class _MarginPoint:
     date: str
     symbol: str
@@ -140,7 +135,7 @@ class TaiwanMarginShortService:
             tpex_borrowed_short_fetcher or _fetch_tpex_borrowed_short_payload
         )
         self._now_provider = now_provider or _utc_now
-        self._result_cache: dict[tuple[str, int], _ResultCacheEntry] = {}
+        self._result_cache = {}
 
     def get_margin_short(
         self,
@@ -149,74 +144,60 @@ class TaiwanMarginShortService:
         days: int = _DEFAULT_HISTORY_DAYS,
     ) -> TaiwanMarginShortResult:
         requested_days = max(days, 1)
-        cache_key = (stock_id, requested_days)
         now = self._now_provider()
-        cached = self._result_cache.get(cache_key)
-        if cached is not None and now - cached.cached_at < _RESULT_CACHE_TTL:
-            return cached.result
 
-        stock = self._quote_source.get_stock(stock_id)
-        if stock is None:
-            raise ValueError(_STOCK_NOT_FOUND_ERROR)
-        if stock.market != "TW":
-            raise ValueError(_NON_TW_STOCK_ERROR)
+        def compute() -> TaiwanMarginShortResult:
+            stock = require_taiwan_stock(
+                stock_id,
+                quote_source=self._quote_source,
+                not_found_error=_STOCK_NOT_FOUND_ERROR,
+                non_taiwan_error=_NON_TW_STOCK_ERROR,
+            )
+            market, symbol = require_twse_or_tpex_symbol(
+                stock,
+                quote_source=self._quote_source,
+                unknown_market_error=_UNKNOWN_TW_MARKET_ERROR,
+            )
 
-        market, symbol = self._resolve_market_and_symbol(stock)
-        history, successful_fetches = self._collect_history(
-            market=market,
-            symbol=symbol,
-            requested_days=requested_days,
-            start_date=candidate_start_date(now),
+            def fetch_day(current_date: date) -> tuple[TaiwanMarginShortRecord | None, bool]:
+                lookup = self._fetch_record_for_day(market, current_date, symbol)
+                return lookup.record, lookup.request_succeeded
+
+            history, successful_fetches = collect_dated_history(
+                requested_days=requested_days,
+                start_date=candidate_start_date(now),
+                fetch_day=fetch_day,
+                record_date=lambda record: record.date,
+            )
+            if not history and successful_fetches == 0:
+                raise RuntimeError(_UPSTREAM_UNAVAILABLE_ERROR)
+            return self._to_result(stock.id, symbol, market, history)
+
+        return get_cached_or_compute(
+            self._result_cache,
+            (stock_id, requested_days),
+            now=now,
+            ttl=_RESULT_CACHE_TTL,
+            compute=compute,
         )
 
-        if not history and successful_fetches == 0:
-            raise RuntimeError(_UPSTREAM_UNAVAILABLE_ERROR)
-
-        history.reverse()
-        latest = history[-1] if history else None
-        result = TaiwanMarginShortResult(
-            stock_id=stock.id,
+    def _to_result(
+        self,
+        stock_id: str,
+        symbol: str,
+        market: TWBoard,
+        history: list[TaiwanMarginShortRecord],
+    ) -> TaiwanMarginShortResult:
+        ordered = list(reversed(history))
+        latest = ordered[-1] if ordered else None
+        return TaiwanMarginShortResult(
+            stock_id=stock_id,
             symbol=symbol,
             market=market,
             latest_date=latest.date if latest is not None else None,
             summary=latest,
-            history=tuple(history),
+            history=tuple(ordered),
             source=_source_for_market(market),
-        )
-        self._result_cache[cache_key] = _ResultCacheEntry(cached_at=now, result=result)
-        return result
-
-    def _resolve_market_and_symbol(self, stock: StockRecord) -> tuple[TWBoard, str]:
-        market = resolve_taiwan_market(
-            stock.id,
-            quote_source=self._quote_source,
-            known_stocks=[stock],
-        )
-        if market not in {"TWSE", "TPEx"}:
-            raise ValueError(_UNKNOWN_TW_MARKET_ERROR)
-
-        symbol = normalize_taiwan_symbol(stock.symbol) or normalize_taiwan_symbol(stock.id)
-        if symbol is None:
-            raise ValueError(_UNKNOWN_TW_MARKET_ERROR)
-        return market, symbol
-
-    def _collect_history(
-        self,
-        *,
-        market: TWBoard,
-        symbol: str,
-        requested_days: int,
-        start_date: date,
-    ) -> tuple[list[TaiwanMarginShortRecord], int]:
-        def fetch_day(current_date: date) -> tuple[TaiwanMarginShortRecord | None, bool]:
-            lookup = self._fetch_record_for_day(market, current_date, symbol)
-            return lookup.record, lookup.request_succeeded
-
-        return collect_dated_history(
-            requested_days=requested_days,
-            start_date=start_date,
-            fetch_day=fetch_day,
-            record_date=lambda record: record.date,
         )
 
     def _fetch_record_for_day(

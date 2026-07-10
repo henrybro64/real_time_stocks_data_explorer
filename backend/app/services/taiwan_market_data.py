@@ -396,6 +396,42 @@ def fetch_tpex_text(
     )
 
 
+def require_taiwan_stock(
+    stock_id: str,
+    *,
+    quote_source: QuoteService,
+    not_found_error: str,
+    non_taiwan_error: str,
+) -> StockRecord:
+    stock = quote_source.get_stock(stock_id)
+    if stock is None:
+        raise ValueError(not_found_error)
+    if stock.market != "TW":
+        raise ValueError(non_taiwan_error)
+    return stock
+
+
+def require_twse_or_tpex_symbol(
+    stock: StockRecord,
+    *,
+    quote_source: QuoteService,
+    unknown_market_error: str,
+) -> tuple[Literal["TWSE", "TPEx"], str]:
+    """Resolve a TW stock to an official board plus normalized symbol, or raise."""
+    market = resolve_taiwan_market(
+        stock.id,
+        quote_source=quote_source,
+        known_stocks=[stock],
+    )
+    if market != "TWSE" and market != "TPEx":
+        raise ValueError(unknown_market_error)
+
+    symbol = normalize_taiwan_symbol(stock.symbol) or normalize_taiwan_symbol(stock.id)
+    if symbol is None:
+        raise ValueError(unknown_market_error)
+    return market, symbol
+
+
 def resolve_taiwan_market(
     symbol_or_stock_id: str,
     *,

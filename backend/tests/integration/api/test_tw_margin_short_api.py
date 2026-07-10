@@ -1,37 +1,15 @@
 import pytest
 
+from tests.support import sample_margin_short_result
+
 
 pytestmark = pytest.mark.integration
 
 
 def test_margin_short_endpoint_returns_summary_and_history(monkeypatch, client) -> None:
     from app.api.routes import tw_margin_short as margin_short_routes
-    from app.services.tw_margin_short_service import (
-        TaiwanMarginShortRecord,
-        TaiwanMarginShortResult,
-    )
 
-    record = TaiwanMarginShortRecord(
-        date="2026-07-09",
-        symbol="1303",
-        name="南亞",
-        close_price=185.0,
-        margin_balance_lots=31_339.0,
-        short_margin_balance_lots=0.0,
-        borrowed_short_balance_lots=12_345.0,
-        borrowed_short_balance_change_lots=141.0,
-        borrowed_short_balance_change_amount_10k=2609,
-    )
-    result = TaiwanMarginShortResult(
-        stock_id="TW:1303",
-        symbol="1303",
-        market="TWSE",
-        latest_date="2026-07-09",
-        summary=record,
-        history=(record,),
-        source="TWSE official margin and borrowed-short daily data",
-    )
-
+    result = sample_margin_short_result()
     monkeypatch.setattr(
         margin_short_routes.tw_margin_short_service,
         "get_margin_short",

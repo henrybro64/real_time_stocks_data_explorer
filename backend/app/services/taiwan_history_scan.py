@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Hashable, Iterator
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
-from typing import TypeVar
+from typing import Generic, TypeVar
 from zoneinfo import ZoneInfo
 
 _TW_TIMEZONE = ZoneInfo("Asia/Taipei")
@@ -13,6 +14,13 @@ _MAX_SCAN_WINDOW_DAYS = 360
 RESULT_CACHE_TTL = timedelta(minutes=5)
 
 T = TypeVar("T")
+K = TypeVar("K", bound=Hashable)
+
+
+@dataclass(frozen=True)
+class ResultCacheEntry(Generic[T]):
+    cached_at: datetime
+    result: T
 
 
 def candidate_start_date(now: datetime) -> date:
@@ -38,6 +46,22 @@ def scan_window_days(days: int) -> int:
         _MAX_SCAN_WINDOW_DAYS,
         max(_MIN_SCAN_WINDOW_DAYS, requested * _SCAN_WINDOW_MULTIPLIER),
     )
+
+
+def get_cached_or_compute(
+    cache: dict[K, ResultCacheEntry[T]],
+    key: K,
+    *,
+    now: datetime,
+    ttl: timedelta,
+    compute: Callable[[], T],
+) -> T:
+    cached = cache.get(key)
+    if cached is not None and now - cached.cached_at < ttl:
+        return cached.result
+    result = compute()
+    cache[key] = ResultCacheEntry(cached_at=now, result=result)
+    return result
 
 
 def collect_dated_history(

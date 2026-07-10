@@ -92,3 +92,31 @@ class FakeQuoteSource:
         if self._stocks:
             return list(self._stocks)
         return [self._stock] if self._stock is not None else []
+
+
+def sample_margin_short_result():
+    from app.services.tw_margin_short_service import (
+        TaiwanMarginShortRecord,
+        TaiwanMarginShortResult,
+    )
+
+    record = TaiwanMarginShortRecord(
+        date="2026-07-09",
+        symbol="1303",
+        name="南亞",
+        close_price=185.0,
+        margin_balance_lots=31_339.0,
+        short_margin_balance_lots=0.0,
+        borrowed_short_balance_lots=12_345.0,
+        borrowed_short_balance_change_lots=141.0,
+        borrowed_short_balance_change_amount_10k=2609,
+    )
+    return TaiwanMarginShortResult(
+        stock_id="TW:1303",
+        symbol="1303",
+        market="TWSE",
+        latest_date="2026-07-09",
+        summary=record,
+        history=(record,),
+        source="TWSE official margin and borrowed-short daily data",
+    )
