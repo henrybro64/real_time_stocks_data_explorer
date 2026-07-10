@@ -15,6 +15,7 @@ from app.api.routes.rankings import router as rankings_router
 from app.api.routes.search import router as search_router
 from app.api.routes.stream import router as stream_router
 from app.api.routes.themes import router as themes_router
+from app.api.routes.tw_institutional import router as tw_institutional_router
 from app.api.routes.watchlist import router as watchlist_router
 from app.core.config import settings
 from app.core.logging import configure_logging
@@ -52,6 +53,7 @@ app.include_router(themes_router, prefix=settings.api_prefix)
 app.include_router(search_router, prefix=settings.api_prefix)
 app.include_router(quotes_router, prefix=settings.api_prefix)
 app.include_router(history_router, prefix=settings.api_prefix)
+app.include_router(tw_institutional_router, prefix=settings.api_prefix)
 app.include_router(watchlist_router, prefix=settings.api_prefix)
 app.include_router(portfolio_router, prefix=settings.api_prefix)
 app.include_router(ai_router, prefix=settings.api_prefix)
