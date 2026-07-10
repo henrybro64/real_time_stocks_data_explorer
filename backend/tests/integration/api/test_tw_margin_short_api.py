@@ -53,7 +53,7 @@ def test_margin_short_endpoint_returns_summary_and_history(monkeypatch, client) 
         "borrowedShortBalanceChangeLots": 141.0,
         "borrowedShortBalanceChangeAmount10k": 2609,
     }
-    assert payload["history"][0]["closePrice"] == 185.0
+    assert payload["history"][0]["closePrice"] == pytest.approx(185.0)
     assert payload["source"] == "TWSE official margin and borrowed-short daily data"
 
 

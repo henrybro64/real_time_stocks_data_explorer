@@ -95,8 +95,8 @@ def test_parse_twse_margin_row_reads_margin_and_short_balances() -> None:
 
     assert point is not None
     assert point.symbol == "0050"
-    assert point.margin_balance_lots == 13_306.0
-    assert point.short_margin_balance_lots == 942.0
+    assert point.margin_balance_lots == pytest.approx(13_306.0)
+    assert point.short_margin_balance_lots == pytest.approx(942.0)
 
 
 def test_parse_tpex_margin_row_reads_margin_and_short_balances() -> None:
@@ -127,8 +127,8 @@ def test_parse_tpex_margin_row_reads_margin_and_short_balances() -> None:
 
     assert point is not None
     assert point.symbol == "1303"
-    assert point.margin_balance_lots == 31_339.0
-    assert point.short_margin_balance_lots == 0.0
+    assert point.margin_balance_lots == pytest.approx(31_339.0)
+    assert point.short_margin_balance_lots == pytest.approx(0.0)
 
 
 def test_parse_twse_borrowed_short_row_extracts_previous_and_current_shares() -> None:

@@ -1,4 +1,5 @@
 from fastapi import HTTPException
+import pytest
 
 from app.api.routes import tw_margin_short as margin_short_route
 from app.services.tw_margin_short_service import (
@@ -37,12 +38,12 @@ def test_tw_margin_short_schema_preserves_lot_and_amount_fields() -> None:
     assert payload["symbol"] == "1303"
     assert payload["market"] == "TWSE"
     assert payload["latestDate"] == "2026-07-09"
-    assert payload["summary"]["marginBalanceLots"] == 31_339.0
-    assert payload["summary"]["shortMarginBalanceLots"] == 0.0
-    assert payload["summary"]["borrowedShortBalanceLots"] == 12_345.0
-    assert payload["summary"]["borrowedShortBalanceChangeLots"] == 141.0
+    assert payload["summary"]["marginBalanceLots"] == pytest.approx(31_339.0)
+    assert payload["summary"]["shortMarginBalanceLots"] == pytest.approx(0.0)
+    assert payload["summary"]["borrowedShortBalanceLots"] == pytest.approx(12_345.0)
+    assert payload["summary"]["borrowedShortBalanceChangeLots"] == pytest.approx(141.0)
     assert payload["summary"]["borrowedShortBalanceChangeAmount10k"] == 2609
-    assert payload["history"][0]["closePrice"] == 185.0
+    assert payload["history"][0]["closePrice"] == pytest.approx(185.0)
 
 
 def test_margin_short_route_delegates_to_service(monkeypatch) -> None:
