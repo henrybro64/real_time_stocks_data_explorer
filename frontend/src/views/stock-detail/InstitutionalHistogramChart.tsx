@@ -65,9 +65,13 @@ export function InstitutionalHistogramChart({
           >
             <line className="app-tw-inst-chart-zero-line" x1="0" x2="100" y1={BASELINE_Y} y2={BASELINE_Y} />
             {validPoints.map((point, index) => {
-              const height = Math.max((Math.abs(point.value) / maxAbsValue) * PLOT_HEIGHT, 1);
+              const isZero = point.value === 0;
+              const height = isZero
+                ? 0
+                : Math.max((Math.abs(point.value) / maxAbsValue) * PLOT_HEIGHT, 1);
               const x = (index * step) + ((step - barWidth) / 2);
-              const y = point.value >= 0 ? BASELINE_Y - height : BASELINE_Y;
+              // Keep exact zeros on the baseline with no positive/negative extent.
+              const y = point.value > 0 ? BASELINE_Y - height : BASELINE_Y;
               return (
                 <rect
                   key={`${point.date}-${index}`}
