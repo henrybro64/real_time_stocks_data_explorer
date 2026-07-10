@@ -492,3 +492,73 @@ def test_service_raises_when_official_source_is_unavailable() -> None:
 
     with pytest.raises(RuntimeError, match="temporarily unavailable"):
         service.get_institutional_investors("TW:6488", days=1)
+
+
+def test_service_skips_weekend_candidate_dates_without_fetching(monkeypatch) -> None:
+    stock = stock_record(
+        "TW:2330",
+        market="TW",
+        symbol="2330",
+        name="台積電",
+        exchange="TWSE",
+        currency="TWD",
+        timezone="Asia/Taipei",
+    )
+    fetched_dates: list[date] = []
+
+    def tracking_fetcher(target_date: date):
+        fetched_dates.append(target_date)
+        return {
+            "date": target_date.strftime("%Y%m%d"),
+            "fields": _TWSE_FIELDS,
+            "data": [["2330", "台積電", "1,000", "2,000", "3,000", "1,000", "2,000"]],
+        }
+
+    service = TaiwanInstitutionalInvestorsService(
+        quote_source=FakeQuoteSource(stock),
+        twse_fetcher=tracking_fetcher,
+        # Sunday local morning -> candidate start Saturday after lookback.
+        now_provider=lambda: datetime(2026, 7, 12, 1, 0, tzinfo=UTC),
+    )
+
+    service.get_institutional_investors("TW:2330", days=2)
+
+    assert fetched_dates
+    assert all(day.weekday() < 5 for day in fetched_dates)
+
+
+def test_service_reuses_short_lived_result_cache() -> None:
+    stock = stock_record(
+        "TW:2330",
+        market="TW",
+        symbol="2330",
+        name="台積電",
+        exchange="TWSE",
+        currency="TWD",
+        timezone="Asia/Taipei",
+    )
+    calls = {"count": 0}
+
+    def counting_fetcher(target_date: date):
+        calls["count"] += 1
+        return {
+            "date": target_date.strftime("%Y%m%d"),
+            "fields": _TWSE_FIELDS,
+            "data": [["2330", "台積電", "1,000", "2,000", "3,000", "1,000", "2,000"]],
+        }
+
+    service = TaiwanInstitutionalInvestorsService(
+        quote_source=FakeQuoteSource(stock),
+        twse_fetcher=counting_fetcher,
+        now_provider=lambda: datetime(2026, 7, 10, 1, 0, tzinfo=UTC),
+    )
+
+    first = service.get_institutional_investors("TW:2330", days=1)
+    first_count = calls["count"]
+    assert first_count > 0
+
+    second = service.get_institutional_investors("TW:2330", days=1)
+
+    assert first.latest_date == second.latest_date
+    # Second call should hit the short-lived result cache, not refetch market days.
+    assert calls["count"] == first_count

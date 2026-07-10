@@ -101,7 +101,7 @@ export type HistoryResponse = {
   chartLayout: ChartLayout | null;
 };
 
-/** Taiwan 三大法人買賣超 values are returned in 張 (lots = shares / 1000). */
+/** Taiwan 三大法人買賣超 values are returned in 張 (lots). */
 export type TaiwanInstitutionalInvestorPoint = {
   date?: string;
   foreignNetLots: number;
@@ -115,7 +115,7 @@ export type TaiwanInstitutionalInvestorPoint = {
 export type TaiwanInstitutionalInvestorsResponse = {
   stockId: string;
   symbol: string;
-  market: "TWSE" | "TPEx" | string;
+  market: "TWSE" | "TPEx";
   latestDate: string | null;
   summary: TaiwanInstitutionalInvestorPoint | null;
   history: Array<TaiwanInstitutionalInvestorPoint & { date: string }>;

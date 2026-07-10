@@ -6,6 +6,7 @@ from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Callable, Literal
 from zoneinfo import ZoneInfo
 
+from app.models.stock import StockRecord
 from app.services.http_client import HttpFetchError
 from app.services.taiwan_market_data import (
     TaiwanMarket,
@@ -33,9 +34,10 @@ _TWSE_SOURCE = "TWSE T86 daily institutional data"
 _TPEX_SOURCE = "TPEx institutional daily data"
 _START_LOOKBACK_HOUR = 18
 _DEFAULT_HISTORY_DAYS = 90
-_MIN_SCAN_WINDOW_DAYS = 120
-_SCAN_WINDOW_MULTIPLIER = 3
-_MAX_SCAN_WINDOW_DAYS = 540
+_MIN_SCAN_WINDOW_DAYS = 100
+_SCAN_WINDOW_MULTIPLIER = 2
+_MAX_SCAN_WINDOW_DAYS = 360
+_RESULT_CACHE_TTL = timedelta(minutes=5)
 
 _STOCK_NOT_FOUND_ERROR = "Stock not found"
 _NON_TW_STOCK_ERROR = "Taiwan institutional data is only available for TW stocks"
@@ -85,6 +87,12 @@ class _DailyLookupResult:
     request_succeeded: bool
 
 
+@dataclass(frozen=True)
+class _ResultCacheEntry:
+    cached_at: datetime
+    result: TaiwanInstitutionalInvestorsResult
+
+
 class TaiwanInstitutionalInvestorsService:
     def __init__(
         self,
@@ -98,6 +106,7 @@ class TaiwanInstitutionalInvestorsService:
         self._twse_fetcher = twse_fetcher or _fetch_twse_payload
         self._tpex_fetcher = tpex_fetcher or _fetch_tpex_payload
         self._now_provider = now_provider or _utc_now
+        self._result_cache: dict[tuple[str, int], _ResultCacheEntry] = {}
 
     def get_institutional_investors(
         self,
@@ -105,12 +114,45 @@ class TaiwanInstitutionalInvestorsService:
         *,
         days: int = _DEFAULT_HISTORY_DAYS,
     ) -> TaiwanInstitutionalInvestorsResult:
+        requested_days = max(days, 1)
+        cache_key = (stock_id, requested_days)
+        now = self._now_provider()
+        cached = self._result_cache.get(cache_key)
+        if cached is not None and now - cached.cached_at < _RESULT_CACHE_TTL:
+            return cached.result
+
         stock = self._quote_source.get_stock(stock_id)
         if stock is None:
             raise ValueError(_STOCK_NOT_FOUND_ERROR)
         if stock.market != "TW":
             raise ValueError(_NON_TW_STOCK_ERROR)
 
+        market, symbol = self._resolve_market_and_symbol(stock)
+        history, successful_fetches = self._collect_history(
+            market=market,
+            symbol=symbol,
+            requested_days=requested_days,
+            start_date=_candidate_start_date(now),
+        )
+
+        if not history and successful_fetches == 0:
+            raise RuntimeError(_UPSTREAM_UNAVAILABLE_ERROR)
+
+        history.reverse()
+        latest = history[-1] if history else None
+        result = TaiwanInstitutionalInvestorsResult(
+            stock_id=stock.id,
+            symbol=symbol,
+            market=market,
+            latest_date=latest.date if latest is not None else None,
+            summary=latest,
+            history=tuple(history),
+            source=_source_for_market(market),
+        )
+        self._result_cache[cache_key] = _ResultCacheEntry(cached_at=now, result=result)
+        return result
+
+    def _resolve_market_and_symbol(self, stock: StockRecord) -> tuple[TWBoard, str]:
         market = resolve_taiwan_market(
             stock.id,
             quote_source=self._quote_source,
@@ -122,26 +164,27 @@ class TaiwanInstitutionalInvestorsService:
         symbol = normalize_taiwan_symbol(stock.symbol) or normalize_taiwan_symbol(stock.id)
         if symbol is None:
             raise ValueError(_UNKNOWN_TW_MARKET_ERROR)
+        return market, symbol
 
-        requested_days = max(days, 1)
+    def _collect_history(
+        self,
+        *,
+        market: TWBoard,
+        symbol: str,
+        requested_days: int,
+        start_date: date,
+    ) -> tuple[list[TaiwanInstitutionalInvestorRecord], int]:
         history: list[TaiwanInstitutionalInvestorRecord] = []
         seen_dates: set[str] = set()
         successful_fetches = 0
-        start_date = _candidate_start_date(self._now_provider())
 
-        for day_offset in range(_scan_window_days(requested_days)):
-            current_date = start_date - timedelta(days=day_offset)
-            lookup = self._fetch_record_for_day(
-                market,
-                current_date,
-                symbol,
-            )
+        for current_date in _iter_candidate_weekdays(start_date, _scan_window_days(requested_days)):
+            lookup = self._fetch_record_for_day(market, current_date, symbol)
             if lookup.request_succeeded:
                 successful_fetches += 1
             if lookup.record is None:
                 continue
-            # Official payloads may resolve weekend/holiday probes to the prior
-            # trading date. Count distinct trading dates only.
+            # Official payloads may resolve holiday probes to a prior trading date.
             if lookup.record.date in seen_dates:
                 continue
             seen_dates.add(lookup.record.date)
@@ -149,20 +192,7 @@ class TaiwanInstitutionalInvestorsService:
             if len(history) >= requested_days:
                 break
 
-        if not history and successful_fetches == 0:
-            raise RuntimeError(_UPSTREAM_UNAVAILABLE_ERROR)
-
-        history.reverse()
-        latest = history[-1] if history else None
-        return TaiwanInstitutionalInvestorsResult(
-            stock_id=stock.id,
-            symbol=symbol,
-            market=market,
-            latest_date=latest.date if latest is not None else None,
-            summary=latest,
-            history=tuple(history),
-            source=_source_for_market(market),
-        )
+        return history, successful_fetches
 
     def _fetch_record_for_day(
         self,
@@ -290,6 +320,15 @@ def _candidate_start_date(now: datetime) -> date:
     if local_now.hour < _START_LOOKBACK_HOUR:
         candidate -= timedelta(days=1)
     return candidate
+
+
+def _iter_candidate_weekdays(start_date: date, window_days: int):
+    """Yield weekdays only so weekend probes do not hit official endpoints."""
+    for day_offset in range(window_days):
+        current_date = start_date - timedelta(days=day_offset)
+        if current_date.weekday() >= 5:
+            continue
+        yield current_date
 
 
 def _scan_window_days(days: int) -> int:

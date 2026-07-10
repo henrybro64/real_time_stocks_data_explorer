@@ -1,3 +1,7 @@
+from __future__ import annotations
+
+from typing import Annotated
+
 from fastapi import APIRouter, HTTPException, Query
 
 from app.schemas.tw_institutional import (
@@ -18,11 +22,15 @@ router = APIRouter(prefix="/stocks", tags=["tw-institutional"])
 
 @router.get(
     "/{stock_id}/institutional-investors",
-    response_model=TaiwanInstitutionalInvestorsResponse,
+    responses={
+        404: {"description": "Stock not found or not a Taiwan stock"},
+        400: {"description": "Taiwan institutional market is unavailable for this stock"},
+        502: {"description": "Official upstream temporarily unavailable"},
+    },
 )
 def get_tw_institutional_investors(
     stock_id: str,
-    days: int = Query(default=90, ge=1, le=180),
+    days: Annotated[int, Query(ge=1, le=180)] = 90,
 ) -> TaiwanInstitutionalInvestorsResponse:
     try:
         result = tw_institutional_service.get_institutional_investors(
@@ -46,12 +54,13 @@ def _tw_institutional_summary_schema(
     record: TaiwanInstitutionalInvestorRecord,
 ) -> TaiwanInstitutionalInvestorSummaryResponse:
     return TaiwanInstitutionalInvestorSummaryResponse(
-        foreignNetLots=_lots_from_shares(record.foreign_net_shares) or 0.0,
-        investmentTrustNetLots=_lots_from_shares(record.investment_trust_net_shares) or 0.0,
-        dealerNetLots=_lots_from_shares(record.dealer_net_shares) or 0.0,
-        totalNetLots=_lots_from_shares(record.total_net_shares) or 0.0,
-        dealerSelfNetLots=_lots_from_shares(record.dealer_self_net_shares),
-        dealerHedgeNetLots=_lots_from_shares(record.dealer_hedge_net_shares),
+        foreignNetLots=_lots_from_shares(record.foreign_net_shares, record.symbol) or 0.0,
+        investmentTrustNetLots=_lots_from_shares(record.investment_trust_net_shares, record.symbol)
+        or 0.0,
+        dealerNetLots=_lots_from_shares(record.dealer_net_shares, record.symbol) or 0.0,
+        totalNetLots=_lots_from_shares(record.total_net_shares, record.symbol) or 0.0,
+        dealerSelfNetLots=_lots_from_shares(record.dealer_self_net_shares, record.symbol),
+        dealerHedgeNetLots=_lots_from_shares(record.dealer_hedge_net_shares, record.symbol),
     )
 
 
@@ -60,12 +69,13 @@ def _tw_institutional_history_point_schema(
 ) -> TaiwanInstitutionalInvestorHistoryPointResponse:
     return TaiwanInstitutionalInvestorHistoryPointResponse(
         date=record.date,
-        foreignNetLots=_lots_from_shares(record.foreign_net_shares) or 0.0,
-        investmentTrustNetLots=_lots_from_shares(record.investment_trust_net_shares) or 0.0,
-        dealerNetLots=_lots_from_shares(record.dealer_net_shares) or 0.0,
-        totalNetLots=_lots_from_shares(record.total_net_shares) or 0.0,
-        dealerSelfNetLots=_lots_from_shares(record.dealer_self_net_shares),
-        dealerHedgeNetLots=_lots_from_shares(record.dealer_hedge_net_shares),
+        foreignNetLots=_lots_from_shares(record.foreign_net_shares, record.symbol) or 0.0,
+        investmentTrustNetLots=_lots_from_shares(record.investment_trust_net_shares, record.symbol)
+        or 0.0,
+        dealerNetLots=_lots_from_shares(record.dealer_net_shares, record.symbol) or 0.0,
+        totalNetLots=_lots_from_shares(record.total_net_shares, record.symbol) or 0.0,
+        dealerSelfNetLots=_lots_from_shares(record.dealer_self_net_shares, record.symbol),
+        dealerHedgeNetLots=_lots_from_shares(record.dealer_hedge_net_shares, record.symbol),
     )
 
 
@@ -87,8 +97,8 @@ def _tw_institutional_schema(
     )
 
 
-def _lots_from_shares(shares: int | None) -> float | None:
-    lots = shares_to_lots(shares)
+def _lots_from_shares(shares: int | None, symbol: str) -> float | None:
+    lots = shares_to_lots(shares, symbol=symbol)
     if lots is None:
         return None
     return round(lots, 3)
