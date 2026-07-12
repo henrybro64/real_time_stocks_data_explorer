@@ -40,7 +40,6 @@ logger = logging.getLogger(__name__)
 
 TWBoard = Literal["TWSE", "TPEx"]
 DatasetKind = Literal["institutional", "margin_short"]
-_TW_TIMEZONE = ZoneInfo("Asia/Taipei")
 _DEFAULT_RECENT_DAYS = 7
 _MARKETS: tuple[TWBoard, ...] = ("TWSE", "TPEx")
 
