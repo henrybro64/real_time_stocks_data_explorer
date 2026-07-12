@@ -263,6 +263,76 @@ class TaiwanInstitutionalInvestorsService:
         return _DailyLookupResult(record=None, request_succeeded=True)
 
 
+def parse_all_institutional_records(
+    payload: object,
+    *,
+    market: TWBoard,
+    current_date: date,
+) -> list[TaiwanInstitutionalInvestorRecord]:
+    """Parse every usable row from a full-market institutional daily payload."""
+    if is_taiwan_no_data_payload(payload) or not isinstance(payload, dict):
+        return []
+
+    if market == "TWSE":
+        rows = payload.get("data")
+        fields = payload.get("fields")
+        if not isinstance(rows, list) or not isinstance(fields, list):
+            return []
+        record_date = normalize_taiwan_date(payload.get("date")) or current_date.isoformat()
+        parse_row = _parse_twse_row
+        parsed_rows: list[TaiwanInstitutionalInvestorRecord] = []
+        for row in rows:
+            if not isinstance(row, list):
+                continue
+            record = parse_row(row, fields, record_date=record_date)
+            if record is not None:
+                parsed_rows.append(record)
+        return parsed_rows
+
+    tables = payload.get("tables")
+    if not isinstance(tables, list):
+        return []
+    table = next(
+        (
+            item
+            for item in tables
+            if isinstance(item, dict)
+            and isinstance(item.get("fields"), list)
+            and isinstance(item.get("data"), list)
+        ),
+        None,
+    )
+    if table is None:
+        return []
+    rows = table.get("data")
+    fields = table.get("fields")
+    if not isinstance(rows, list) or not isinstance(fields, list):
+        return []
+    record_date = (
+        normalize_taiwan_date(table.get("date"))
+        or normalize_taiwan_date(payload.get("date"))
+        or current_date.isoformat()
+    )
+    parsed_rows = []
+    for row in rows:
+        if not isinstance(row, list):
+            continue
+        record = _parse_tpex_row(row, fields, record_date=record_date)
+        if record is not None:
+            parsed_rows.append(record)
+    return parsed_rows
+
+
+def fetch_institutional_market_payload(market: TWBoard, current_date: date) -> object:
+    if market == "TPEx":
+        return _fetch_tpex_payload(current_date)
+    return _fetch_twse_payload(current_date)
+
+
+def institutional_source_for_market(market: TWBoard) -> str:
+    return _source_for_market(market)
+
+
 def _fetch_twse_payload(current_date: date) -> object:
     return fetch_twse_data(
         _TWSE_T86_URL,

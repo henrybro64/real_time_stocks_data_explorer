@@ -1,9 +1,14 @@
+from __future__ import annotations
+
 import logging
 
 from app.core.config import settings
 from app.services.alert_service import alert_service
 from app.services.portfolio_history_service import portfolio_history_service
 from app.services.rankings_snapshot_service import rankings_snapshot_service
+from app.services.taiwan_market_data_refresh_service import (
+    taiwan_market_data_refresh_service,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -40,8 +45,21 @@ def start_enabled_background_jobs() -> None:
             settings.rankings_refresh_seconds,
         )
 
+    if not settings.taiwan_market_data_refresh_enabled:
+        logger.info(
+            "Taiwan market data refresh sampler is disabled",
+            extra={"event": "taiwan_market_data.sampler.disabled"},
+        )
+    else:
+        taiwan_market_data_refresh_service.start_background_sampler(
+            settings.taiwan_market_data_refresh_poll_seconds,
+            refresh_hour=settings.taiwan_market_data_refresh_hour,
+            recent_days=settings.taiwan_market_data_refresh_recent_days,
+        )
+
 
 def stop_background_jobs() -> None:
     portfolio_history_service.stop_background_sampler()
     alert_service.stop_background_evaluator()
     rankings_snapshot_service.stop_background_sampler()
+    taiwan_market_data_refresh_service.stop_background_sampler()

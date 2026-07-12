@@ -243,6 +243,40 @@ Local notes:
 - expand or shrink the tracked free ranking universes by editing `RANKINGS_UNIVERSE_US` and `RANKINGS_UNIVERSE_TW`
 - no paid provider keys or paid market-data integrations are required for rankings
 
+### Taiwan detail-page market data refresh (write-side)
+
+Scheduled backend job that persists TWSE/TPEx **三大法人買賣超** and **資券變化** daily rows so later read-path work (#105) can serve from Postgres instead of live-scraping on every detail-page click.
+
+This owns **write-side only**: schema, idempotent upsert, scheduled refresh, and manual backfill. Live `/api/tw-institutional` and `/api/tw-margin-short` handlers are unchanged until the read cutover.
+
+Persisted tables:
+
+- `taiwan_institutional_daily` — unique on `(market, symbol, date)`
+- `taiwan_margin_short_daily` — unique on `(market, symbol, date)`
+
+Scheduler settings:
+
+- `TAIWAN_MARKET_DATA_REFRESH_ENABLED` (default `true`)
+- `TAIWAN_MARKET_DATA_REFRESH_DAYS` — full backfill window for capture (default `120`)
+- `TAIWAN_MARKET_DATA_REFRESH_RECENT_DAYS` — scheduler window (default `7`)
+- `TAIWAN_MARKET_DATA_REFRESH_POLL_SECONDS` (default `3600`)
+- `TAIWAN_MARKET_DATA_REFRESH_HOUR` — local Asia/Taipei hour gate (default `18`)
+- `TAIWAN_MARKET_DATA_TIMEZONE` (default `Asia/Taipei`)
+- optional internal capture token: `TAIWAN_MARKET_DATA_CAPTURE_TOKEN`
+
+Manual backfill (token-gated):
+
+```text
+POST /api/taiwan-market-data/capture?days=120
+Header: X-Taiwan-Market-Data-Token: <token>
+```
+
+Behavior notes:
+
+- probes weekdays only; skips official no-data days; continues after per-source fetch/upsert errors
+- scheduler refreshes recent days only after the configured Taipei hour; use the capture endpoint for ~90–120 day backfill
+- disable locally with `TAIWAN_MARKET_DATA_REFRESH_ENABLED=false`
+
 ### Threshold Alerts
 
 The app now supports user-scoped threshold alerts with persistent rules and durable event history:

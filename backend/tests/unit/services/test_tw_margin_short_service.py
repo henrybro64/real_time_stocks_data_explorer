@@ -19,6 +19,7 @@ from app.services.tw_margin_short_service import (
     _parse_twse_borrowed_short_row,
     _parse_twse_margin_row,
     _round_nearest_int,
+    parse_all_margin_short_records,
 )
 from tests.support import FakeQuoteSource, stock_record
 
@@ -172,6 +173,22 @@ def test_parse_twse_margin_row_reads_margin_and_short_balances() -> None:
     assert point.symbol == "0050"
     assert point.margin_balance_lots == pytest.approx(13_306.0)
     assert point.short_margin_balance_lots == pytest.approx(942.0)
+
+
+def test_parse_all_margin_short_records_merges_twse_payloads() -> None:
+    records = parse_all_margin_short_records(
+        market="TWSE",
+        current_date=date(2026, 7, 9),
+        margin_payload=_twse_margin_payload(date(2026, 7, 9)),
+        borrowed_payload=_twse_short_payload(date(2026, 7, 9)),
+        close_payload=_twse_close_payload(date(2026, 7, 9)),
+    )
+
+    assert len(records) == 1
+    assert records[0].symbol == "1303"
+    assert records[0].margin_balance_lots == pytest.approx(31_339.0)
+    assert records[0].borrowed_short_balance_lots == pytest.approx(12_345.0)
+    assert records[0].close_price == pytest.approx(185.0)
 
 
 def test_parse_tpex_margin_row_reads_margin_and_short_balances() -> None:

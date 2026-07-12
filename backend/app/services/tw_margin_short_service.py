@@ -849,6 +849,144 @@ def _row_at(row: Sequence[object], index: int) -> object | None:
     return row[index]
 
 
+def parse_all_margin_short_records(
+    *,
+    market: TWBoard,
+    current_date: date,
+    margin_payload: object | None,
+    borrowed_payload: object | None,
+    close_payload: object | None,
+) -> list[TaiwanMarginShortRecord]:
+    """Merge full-market margin + borrowed-short (+ optional close) payloads for one day."""
+    if market == "TPEx":
+        margin_points = _extract_all_tpex_table_points(
+            margin_payload,
+            current_date=current_date,
+            parse_row=_parse_tpex_margin_row,
+        )
+        borrowed_points = _extract_all_tpex_table_points(
+            borrowed_payload,
+            current_date=current_date,
+            parse_row=lambda row, fields, record_date: _parse_tpex_borrowed_short_row(
+                row,
+                record_date=record_date,
+            ),
+        )
+    else:
+        margin_points = _extract_all_twse_table_points(
+            margin_payload,
+            current_date=current_date,
+            parse_row=_parse_twse_margin_row,
+        )
+        borrowed_points = _extract_all_twse_table_points(
+            borrowed_payload,
+            current_date=current_date,
+            parse_row=_parse_twse_borrowed_short_row,
+        )
+
+    close_by_symbol = {
+        point.symbol: point
+        for point in _extract_all_close_supplement_points(
+            close_payload,
+            market=market,
+            current_date=current_date,
+        )
+    }
+    borrowed_by_symbol = {point.symbol: point for point in borrowed_points}
+    records: list[TaiwanMarginShortRecord] = []
+    for margin_point in margin_points:
+        borrowed_point = borrowed_by_symbol.get(margin_point.symbol)
+        if borrowed_point is None:
+            continue
+        record = _merge_daily_points(
+            margin_point=margin_point,
+            borrowed_point=borrowed_point,
+            close_point=close_by_symbol.get(margin_point.symbol),
+        )
+        if record is not None:
+            records.append(record)
+    return records
+
+
+def _extract_all_twse_table_points(
+    payload: object | None,
+    *,
+    current_date: date,
+    parse_row: Callable[..., object | None],
+) -> list:
+    if not isinstance(payload, dict):
+        return []
+    rows = payload.get("data")
+    fields = payload.get("fields")
+    if not isinstance(rows, list) or not isinstance(fields, list):
+        return []
+    record_date = normalize_taiwan_date(payload.get("date")) or current_date.isoformat()
+    points = []
+    for row in rows:
+        if not isinstance(row, list):
+            continue
+        point = parse_row(row, record_date=record_date)
+        if point is not None:
+            points.append(point)
+    return points
+
+
+def _extract_all_tpex_table_points(
+    payload: object | None,
+    *,
+    current_date: date,
+    parse_row: Callable[..., object | None],
+) -> list:
+    payload_dict = payload if isinstance(payload, dict) else None
+    table = _first_tpex_table(payload)
+    if table is None:
+        return []
+    rows = table.get("data")
+    fields = table.get("fields")
+    if not isinstance(rows, list) or not isinstance(fields, list):
+        return []
+    record_date = (
+        normalize_taiwan_date(table.get("date"))
+        or normalize_taiwan_date(payload_dict.get("date") if payload_dict is not None else None)
+        or current_date.isoformat()
+    )
+    points = []
+    for row in rows:
+        if not isinstance(row, list):
+            continue
+        point = parse_row(row, fields, record_date=record_date)
+        if point is not None:
+            points.append(point)
+    return points
+
+
+def _extract_all_close_supplement_points(
+    payload: object | None,
+    *,
+    market: TWBoard,
+    current_date: date,
+) -> list[_ClosePoint]:
+    if not isinstance(payload, dict):
+        return []
+    fields = payload.get("fields")
+    if not isinstance(fields, list):
+        return []
+    points = _extract_all_twse_table_points(
+        payload,
+        current_date=current_date,
+        parse_row=lambda row, record_date: _parse_close_supplement_row(
+            row,
+            fields,
+            record_date=record_date,
+        ),
+    )
+    return [point for point in points if point.market == market]
+
+
+def margin_short_source_for_market(market: TaiwanMarket) -> str:
+    return _source_for_market(market)
+
+
 def _source_for_market(market: TaiwanMarket) -> str:
     return _TPEX_SOURCE if market == "TPEx" else _TWSE_SOURCE
 
