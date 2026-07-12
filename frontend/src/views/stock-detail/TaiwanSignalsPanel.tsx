@@ -3,6 +3,7 @@
 import { Tab, TabList, TabPanel, TabPanels, Tabs, Tile } from "@carbon/react";
 import { useLanguage } from "../../app/i18n";
 import { InstitutionalInvestorsPanel } from "./InstitutionalInvestorsPanel";
+import { MarginShortPanel } from "./MarginShortPanel";
 
 type Props = {
   stockId: string;
@@ -30,7 +31,7 @@ export function TaiwanSignalsPanel({ stockId }: Readonly<Props>) {
             <InstitutionalInvestorsPanel stockId={stockId} />
           </TabPanel>
           <TabPanel data-testid="tw-stock-signals-margin-short-panel">
-            <p className="app-supporting-copy">{t("detail.twSignals.marginShortPlaceholder")}</p>
+            <MarginShortPanel stockId={stockId} />
           </TabPanel>
         </TabPanels>
       </Tabs>

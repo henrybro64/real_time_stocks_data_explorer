@@ -1,8 +1,10 @@
 "use client";
 
+import { formatAxisDate } from "./twSignalsFormat";
+
 type InstitutionalHistoryPoint = {
   date: string;
-  value: number;
+  value: number | null | undefined;
 };
 
 type Props = {
@@ -23,7 +25,9 @@ export function InstitutionalHistogramChart({
   points,
   title,
 }: Readonly<Props>) {
-  const validPoints = points.filter((point) => Number.isFinite(point.value));
+  const validPoints = points
+    .map((point, index) => ({ ...point, index }))
+    .filter((point) => Number.isFinite(point.value));
 
   if (validPoints.length === 0) {
     return (
@@ -37,11 +41,12 @@ export function InstitutionalHistogramChart({
     );
   }
 
-  const maxAbsValue = Math.max(...validPoints.map((point) => Math.abs(point.value)), 1);
-  const step = 100 / validPoints.length;
+  const maxAbsValue = Math.max(...validPoints.map((point) => Math.abs(point.value as number)), 1);
+  // Keep original timeline slots so missing/null values leave gaps instead of compressing bars.
+  const step = 100 / Math.max(points.length, 1);
   const barWidth = Math.max(Math.min(step * 0.72, 8), 0.9);
-  const startLabel = formatAxisDate(validPoints[0]?.date ?? "", language);
-  const endLabel = formatAxisDate(validPoints[validPoints.length - 1]?.date ?? "", language);
+  const startLabel = formatAxisDate(points[0]?.date ?? "", language);
+  const endLabel = formatAxisDate(points[points.length - 1]?.date ?? "", language);
 
   return (
     <section className="app-subtile app-tw-inst-chart-card" data-testid="tw-institutional-chart">
@@ -64,18 +69,19 @@ export function InstitutionalHistogramChart({
             viewBox="0 0 100 100"
           >
             <line className="app-tw-inst-chart-zero-line" x1="0" x2="100" y1={BASELINE_Y} y2={BASELINE_Y} />
-            {validPoints.map((point, index) => {
-              const isZero = point.value === 0;
+            {validPoints.map((point) => {
+              const value = point.value as number;
+              const isZero = value === 0;
               const height = isZero
                 ? 0
-                : Math.max((Math.abs(point.value) / maxAbsValue) * PLOT_HEIGHT, 1);
-              const x = (index * step) + ((step - barWidth) / 2);
+                : Math.max((Math.abs(value) / maxAbsValue) * PLOT_HEIGHT, 1);
+              const x = (point.index * step) + ((step - barWidth) / 2);
               // Keep exact zeros on the baseline with no positive/negative extent.
-              const y = point.value > 0 ? BASELINE_Y - height : BASELINE_Y;
+              const y = value > 0 ? BASELINE_Y - height : BASELINE_Y;
               return (
                 <rect
-                  key={`${point.date}-${index}`}
-                  className={twMarketBarClass(point.value)}
+                  key={`${point.date}-${point.index}`}
+                  className={twMarketBarClass(value)}
                   height={height}
                   rx={0.45}
                   ry={0.45}
@@ -83,7 +89,7 @@ export function InstitutionalHistogramChart({
                   x={x}
                   y={y}
                 >
-                  <title>{`${point.date} ${formatTooltipValue(point.value, language)}`}</title>
+                  <title>{`${point.date} ${formatTooltipValue(value, language)}`}</title>
                 </rect>
               );
             })}
@@ -126,18 +132,4 @@ function formatTooltipValue(value: number, language: "en" | "zh-TW"): string {
     return `-${absoluteValue}`;
   }
   return absoluteValue;
-}
-
-function formatAxisDate(rawDate: string, language: "en" | "zh-TW"): string {
-  if (!rawDate) {
-    return "—";
-  }
-  const date = new Date(`${rawDate}T00:00:00`);
-  if (Number.isNaN(date.getTime())) {
-    return rawDate;
-  }
-  return new Intl.DateTimeFormat(language === "zh-TW" ? "zh-TW" : "en-US", {
-    month: "numeric",
-    day: "numeric",
-  }).format(date);
 }

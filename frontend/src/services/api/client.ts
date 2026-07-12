@@ -27,6 +27,7 @@ import type {
   QuoteResponse,
   StockAnalysisResponse,
   TaiwanInstitutionalInvestorsResponse,
+  TaiwanMarginShortResponse,
   TWStockInsights,
   USStockInsights,
   WatchlistResponse,
@@ -268,6 +269,12 @@ export function fetchStockNews(stockId: string) {
 export function fetchTaiwanInstitutionalInvestors(stockId: string, days = 90) {
   return fetchJson<TaiwanInstitutionalInvestorsResponse>(
     `/stocks/${encodeURIComponent(stockId)}/institutional-investors?days=${days}`,
+  );
+}
+
+export function fetchTaiwanMarginShort(stockId: string, days = 90) {
+  return fetchJson<TaiwanMarginShortResponse>(
+    `/stocks/${encodeURIComponent(stockId)}/margin-short?days=${days}`,
   );
 }
 
