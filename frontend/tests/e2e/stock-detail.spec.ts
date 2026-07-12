@@ -32,7 +32,14 @@ test("stock detail renders quote, history, key stats, news fallback, and Taiwan-
   await expect(page.getByLabel("投信買賣超(張)")).toBeVisible();
   await expect(page.getByLabel("自營商買賣超(張)")).toBeVisible();
   await signals.getByRole("tab", { name: "資券變化" }).click();
-  await expect(page.getByTestId("tw-stock-signals-margin-short-panel")).toContainText("資券變化");
+  await expect(page.getByTestId("tw-margin-short-summary")).toContainText("31,339 張");
+  await expect(page.getByTestId("tw-margin-short-summary")).toContainText("0 張");
+  await expect(page.getByTestId("tw-margin-short-summary")).toContainText("+141 張");
+  await expect(page.getByTestId("tw-margin-short-summary")).toContainText("+2,609 萬");
+  await expect(page.getByLabel("融資餘額(張)")).toBeVisible();
+  await expect(page.getByLabel("融券餘額(張)")).toBeVisible();
+  await expect(page.getByLabel("借券賣出餘額增減張數")).toBeVisible();
+  await expect(page.getByLabel("借券賣出餘額增減金額(萬)")).toBeVisible();
 
   await page.getByRole("tab", { name: "1W" }).click();
   await expect(page.getByRole("tab", { name: "1W", selected: true })).toBeVisible();
@@ -147,4 +154,110 @@ test("TW institutional section shows loading then summary", async ({ page }) => 
 
   await expect(page.getByTestId("tw-institutional-summary")).toContainText("+12,345 張");
   await expect(page.getByLabel("外資買賣超(張)")).toBeVisible();
+});
+
+test("TW margin-short section shows empty state when API returns no data", async ({ page }) => {
+  await page.route("**/api/stocks/*/margin-short*", async (route) => {
+    if (route.request().method() !== "GET") {
+      await route.continue();
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        stockId: "TW:2330",
+        symbol: "2330",
+        market: "TWSE",
+        latestDate: null,
+        summary: null,
+        history: [],
+        source: "TWSE official margin and borrowed-short daily data",
+      }),
+    });
+  });
+
+  await page.goto("/stock/TW%3A2330");
+  const signals = page.getByTestId("tw-stock-signals-section");
+  await signals.getByRole("tab", { name: "資券變化" }).click();
+  await expect(page.getByTestId("tw-stock-signals-margin-short-panel")).toContainText(
+    "目前沒有可顯示的資券資料。",
+  );
+  await expect(page.getByTestId("tw-margin-short-summary")).toHaveCount(0);
+});
+
+test("TW margin-short section shows error notice when API fails", async ({ page }) => {
+  await page.route("**/api/stocks/*/margin-short*", async (route) => {
+    if (route.request().method() !== "GET") {
+      await route.continue();
+      return;
+    }
+    await route.fulfill({
+      status: 502,
+      contentType: "application/json",
+      body: JSON.stringify({
+        detail: "Taiwan margin-short data is temporarily unavailable from official sources.",
+      }),
+    });
+  });
+
+  await page.goto("/stock/TW%3A2330");
+  const signals = page.getByTestId("tw-stock-signals-section");
+  await signals.getByRole("tab", { name: "資券變化" }).click();
+  await expect(page.getByText("資料來源暫時不可用")).toBeVisible();
+  await expect(page.getByTestId("tw-margin-short-summary")).toHaveCount(0);
+});
+
+test("TW margin-short section shows loading then summary", async ({ page }) => {
+  let releaseResponse: (() => void) | null = null;
+  const gate = new Promise<void>((resolve) => {
+    releaseResponse = resolve;
+  });
+
+  await page.route("**/api/stocks/*/margin-short*", async (route) => {
+    if (route.request().method() !== "GET") {
+      await route.continue();
+      return;
+    }
+    await gate;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        stockId: "TW:2330",
+        symbol: "2330",
+        market: "TWSE",
+        latestDate: "2026-07-06",
+        summary: {
+          marginBalanceLots: 31339,
+          shortMarginBalanceLots: 0,
+          borrowedShortBalanceLots: 12345,
+          borrowedShortBalanceChangeLots: 141,
+          borrowedShortBalanceChangeAmount10k: 2609,
+        },
+        history: [
+          {
+            date: "2026-07-06",
+            closePrice: 185,
+            marginBalanceLots: 31339,
+            shortMarginBalanceLots: 0,
+            borrowedShortBalanceLots: 12345,
+            borrowedShortBalanceChangeLots: 141,
+            borrowedShortBalanceChangeAmount10k: 2609,
+          },
+        ],
+        source: "TWSE official margin and borrowed-short daily data",
+      }),
+    });
+  });
+
+  await page.goto("/stock/TW%3A2330");
+  const signals = page.getByTestId("tw-stock-signals-section");
+  await signals.getByRole("tab", { name: "資券變化" }).click();
+  await expect(page.getByText("載入資券變化中")).toBeVisible();
+
+  releaseResponse?.();
+
+  await expect(page.getByTestId("tw-margin-short-summary")).toContainText("31,339 張");
+  await expect(page.getByLabel("融資餘額(張)")).toBeVisible();
 });

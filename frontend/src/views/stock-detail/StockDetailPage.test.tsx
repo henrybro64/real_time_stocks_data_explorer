@@ -1,5 +1,10 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { HistoryResponse, QuoteResponse, TaiwanInstitutionalInvestorsResponse } from "@shared/api";
+import type {
+  HistoryResponse,
+  QuoteResponse,
+  TaiwanInstitutionalInvestorsResponse,
+  TaiwanMarginShortResponse,
+} from "@shared/api";
 import { render, screen } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -178,6 +183,50 @@ const sampleInstitutional: TaiwanInstitutionalInvestorsResponse = {
   source: "TWSE T86 daily institutional data",
 };
 
+const sampleMarginShort: TaiwanMarginShortResponse = {
+  stockId: "TW:2330",
+  symbol: "2330",
+  market: "TWSE",
+  latestDate: "2026-07-06",
+  summary: {
+    marginBalanceLots: 31339,
+    shortMarginBalanceLots: 0,
+    borrowedShortBalanceLots: 12345,
+    borrowedShortBalanceChangeLots: 141,
+    borrowedShortBalanceChangeAmount10k: 2609,
+  },
+  history: [
+    {
+      date: "2026-07-04",
+      closePrice: 181,
+      marginBalanceLots: 31000,
+      shortMarginBalanceLots: 200,
+      borrowedShortBalanceLots: 12100,
+      borrowedShortBalanceChangeLots: -20,
+      borrowedShortBalanceChangeAmount10k: -362,
+    },
+    {
+      date: "2026-07-05",
+      closePrice: 183,
+      marginBalanceLots: 31220,
+      shortMarginBalanceLots: 120,
+      borrowedShortBalanceLots: 12204,
+      borrowedShortBalanceChangeLots: 104,
+      borrowedShortBalanceChangeAmount10k: 1903,
+    },
+    {
+      date: "2026-07-06",
+      closePrice: 185,
+      marginBalanceLots: 31339,
+      shortMarginBalanceLots: 0,
+      borrowedShortBalanceLots: 12345,
+      borrowedShortBalanceChangeLots: 141,
+      borrowedShortBalanceChangeAmount10k: 2609,
+    },
+  ],
+  source: "TWSE official margin and borrowed-short daily data",
+};
+
 function renderStockDetailPage(stockId = "US%3ANVDA") {
   const queryClient = new QueryClient({
     defaultOptions: {
@@ -206,6 +255,9 @@ function mockQueries(options: {
   institutional?: TaiwanInstitutionalInvestorsResponse | undefined;
   institutionalError?: boolean;
   institutionalLoading?: boolean;
+  marginShort?: TaiwanMarginShortResponse | undefined;
+  marginShortError?: boolean;
+  marginShortLoading?: boolean;
 }) {
   useQueryMock.mockImplementation((queryOptions: { queryKey: unknown[] }) => {
     const key = queryOptions.queryKey[0];
@@ -231,6 +283,14 @@ function mockQueries(options: {
         isError: Boolean(options.institutionalError),
         isLoading: Boolean(options.institutionalLoading),
         error: options.institutionalError ? new Error("institutional failed") : null,
+      };
+    }
+    if (key === "margin-short") {
+      return {
+        data: "marginShort" in options ? options.marginShort : sampleMarginShort,
+        isError: Boolean(options.marginShortError),
+        isLoading: Boolean(options.marginShortLoading),
+        error: options.marginShortError ? new Error("margin-short failed") : null,
       };
     }
     return {
@@ -335,7 +395,7 @@ describe("StockDetailPage", () => {
     expect(screen.queryByTestId("stock-detail-chart-empty")).not.toBeInTheDocument();
   });
 
-  it("renders Taiwan institutional summary and charts plus the margin-short placeholder tab", () => {
+  it("renders Taiwan institutional and margin-short summaries plus the chart tabs", () => {
     mockQueries({ quote: sampleTaiwanQuote, history: sampleHistory });
     renderStockDetailPage("TW%3A2330");
 
@@ -350,7 +410,15 @@ describe("StockDetailPage", () => {
     expect(screen.getByLabelText("外資買賣超(張)")).toBeInTheDocument();
     expect(screen.getByLabelText("投信買賣超(張)")).toBeInTheDocument();
     expect(screen.getByLabelText("自營商買賣超(張)")).toBeInTheDocument();
-    expect(screen.getByTestId("tw-stock-signals-margin-short-panel")).toHaveTextContent(/資券變化將顯示於此/);
+    expect(screen.getByTestId("tw-margin-short-summary")).toHaveTextContent("資券變化");
+    expect(screen.getByTestId("tw-margin-short-summary")).toHaveTextContent("31,339 張");
+    expect(screen.getByTestId("tw-margin-short-summary")).toHaveTextContent("0 張");
+    expect(screen.getByTestId("tw-margin-short-summary")).toHaveTextContent("+141 張");
+    expect(screen.getByTestId("tw-margin-short-summary")).toHaveTextContent("+2,609 萬");
+    expect(screen.getByLabelText("融資餘額(張)")).toBeInTheDocument();
+    expect(screen.getByLabelText("融券餘額(張)")).toBeInTheDocument();
+    expect(screen.getByLabelText("借券賣出餘額增減張數")).toBeInTheDocument();
+    expect(screen.getByLabelText("借券賣出餘額增減金額(萬)")).toBeInTheDocument();
   });
 
   it("shows a Taiwan institutional loading state while the section is fetching", () => {
@@ -381,6 +449,48 @@ describe("StockDetailPage", () => {
     expect(screen.getByTestId("tw-stock-signals-institutional-panel")).toHaveTextContent(
       "目前沒有可顯示的三大法人資料。",
     );
+  });
+
+  it("shows a Taiwan margin-short loading state while the section is fetching", () => {
+    mockQueries({
+      quote: sampleTaiwanQuote,
+      history: sampleHistory,
+      marginShort: undefined,
+      marginShortLoading: true,
+    });
+    renderStockDetailPage("TW%3A2330");
+
+    expect(screen.getByText("載入資券變化中")).toBeInTheDocument();
+  });
+
+  it("shows a Taiwan margin-short empty state when the API returns no data", () => {
+    mockQueries({
+      quote: sampleTaiwanQuote,
+      history: sampleHistory,
+      marginShort: {
+        ...sampleMarginShort,
+        latestDate: null,
+        summary: null,
+        history: [],
+      },
+    });
+    renderStockDetailPage("TW%3A2330");
+
+    expect(screen.getByTestId("tw-stock-signals-margin-short-panel")).toHaveTextContent(
+      "目前沒有可顯示的資券資料。",
+    );
+  });
+
+  it("shows a Taiwan margin-short error notice when the API fails", () => {
+    mockQueries({
+      quote: sampleTaiwanQuote,
+      history: sampleHistory,
+      marginShort: undefined,
+      marginShortError: true,
+    });
+    renderStockDetailPage("TW%3A2330");
+
+    expect(screen.getByText("載入失敗")).toBeInTheDocument();
   });
 
   it("shows a Taiwan institutional error notice when the API fails", () => {

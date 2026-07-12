@@ -482,6 +482,50 @@ const E2E_TW_INSTITUTIONAL = {
   source: "TWSE T86 daily institutional data",
 };
 
+const E2E_TW_MARGIN_SHORT = {
+  stockId: "TW:2330",
+  symbol: "2330",
+  market: "TWSE",
+  latestDate: "2026-07-06",
+  summary: {
+    marginBalanceLots: 31339,
+    shortMarginBalanceLots: 0,
+    borrowedShortBalanceLots: 12345,
+    borrowedShortBalanceChangeLots: 141,
+    borrowedShortBalanceChangeAmount10k: 2609,
+  },
+  history: [
+    {
+      date: "2026-07-04",
+      closePrice: 181,
+      marginBalanceLots: 31000,
+      shortMarginBalanceLots: 200,
+      borrowedShortBalanceLots: 12100,
+      borrowedShortBalanceChangeLots: -20,
+      borrowedShortBalanceChangeAmount10k: -362,
+    },
+    {
+      date: "2026-07-05",
+      closePrice: 183,
+      marginBalanceLots: 31220,
+      shortMarginBalanceLots: 120,
+      borrowedShortBalanceLots: 12204,
+      borrowedShortBalanceChangeLots: 104,
+      borrowedShortBalanceChangeAmount10k: 1903,
+    },
+    {
+      date: "2026-07-06",
+      closePrice: 185,
+      marginBalanceLots: 31339,
+      shortMarginBalanceLots: 0,
+      borrowedShortBalanceLots: 12345,
+      borrowedShortBalanceChangeLots: 141,
+      borrowedShortBalanceChangeAmount10k: 2609,
+    },
+  ],
+  source: "TWSE official margin and borrowed-short daily data",
+};
+
 const E2E_HISTORY_RESPONSE = {
   stock: E2E_TW_STOCK_SEARCH_RESULT,
   range: "1D",
@@ -928,6 +972,10 @@ export async function installE2eApiMocks(page: Page): Promise<void> {
       }
       if (path.endsWith("/institutional-investors") && request.method() === "GET") {
         await fulfillJson(route, E2E_TW_INSTITUTIONAL);
+        return;
+      }
+      if (path.endsWith("/margin-short") && request.method() === "GET") {
+        await fulfillJson(route, E2E_TW_MARGIN_SHORT);
         return;
       }
       if (path.endsWith("/tw-insights") && request.method() === "GET") {
