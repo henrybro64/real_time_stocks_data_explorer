@@ -242,7 +242,29 @@ class PortfolioHistorySnapshot(Base):
     combined_assets_twd: Mapped[float] = mapped_column(nullable=False)
 
 
-class TaiwanInstitutionalDaily(Base):
+class TaiwanMarketDailyColumns:
+    """Shared identity/audit columns for Taiwan daily market-data tables."""
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    market: Mapped[str] = mapped_column(String(8), nullable=False)
+    symbol: Mapped[str] = mapped_column(String(32), nullable=False)
+    date: Mapped[date] = mapped_column(Date(), nullable=False)
+    name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    source: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
+class TaiwanInstitutionalDaily(TaiwanMarketDailyColumns, Base):
     __tablename__ = "taiwan_institutional_daily"
     __table_args__ = (
         UniqueConstraint(
@@ -259,32 +281,15 @@ class TaiwanInstitutionalDaily(Base):
         ),
     )
 
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    market: Mapped[str] = mapped_column(String(8), nullable=False)
-    symbol: Mapped[str] = mapped_column(String(32), nullable=False)
-    date: Mapped[date] = mapped_column(Date(), nullable=False)
-    name: Mapped[str | None] = mapped_column(String(128), nullable=True)
     foreign_net_shares: Mapped[int] = mapped_column(nullable=False)
     investment_trust_net_shares: Mapped[int] = mapped_column(nullable=False)
     dealer_self_net_shares: Mapped[int | None] = mapped_column(nullable=True)
     dealer_hedge_net_shares: Mapped[int | None] = mapped_column(nullable=True)
     dealer_net_shares: Mapped[int] = mapped_column(nullable=False)
     total_net_shares: Mapped[int] = mapped_column(nullable=False)
-    source: Mapped[str] = mapped_column(Text, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        server_default=func.now(),
-        nullable=False,
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        server_default=func.now(),
-        onupdate=func.now(),
-        nullable=False,
-    )
 
 
-class TaiwanMarginShortDaily(Base):
+class TaiwanMarginShortDaily(TaiwanMarketDailyColumns, Base):
     __tablename__ = "taiwan_margin_short_daily"
     __table_args__ = (
         UniqueConstraint(
@@ -301,11 +306,6 @@ class TaiwanMarginShortDaily(Base):
         ),
     )
 
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    market: Mapped[str] = mapped_column(String(8), nullable=False)
-    symbol: Mapped[str] = mapped_column(String(32), nullable=False)
-    date: Mapped[date] = mapped_column(Date(), nullable=False)
-    name: Mapped[str | None] = mapped_column(String(128), nullable=True)
     close_price: Mapped[float | None] = mapped_column(Float, nullable=True)
     margin_balance_lots: Mapped[float] = mapped_column(Float, nullable=False)
     short_margin_balance_lots: Mapped[float] = mapped_column(Float, nullable=False)
@@ -316,18 +316,6 @@ class TaiwanMarginShortDaily(Base):
     )
     borrowed_short_balance_change_amount_10k: Mapped[int | None] = mapped_column(
         nullable=True,
-    )
-    source: Mapped[str] = mapped_column(Text, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        server_default=func.now(),
-        nullable=False,
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        server_default=func.now(),
-        onupdate=func.now(),
-        nullable=False,
     )
 
 

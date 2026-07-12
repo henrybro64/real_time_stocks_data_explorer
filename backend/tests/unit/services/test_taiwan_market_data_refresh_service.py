@@ -575,3 +575,35 @@ def test_sampler_runs_after_refresh_hour(monkeypatch) -> None:
     service._run_sampler(poll_seconds=1, refresh_hour=18, recent_days=7)
 
     assert calls == ["scheduler"]
+    assert service._last_scheduler_local_date == date(2026, 7, 10)
+
+
+def test_sampler_skips_second_run_same_local_day(monkeypatch) -> None:
+    calls: list[str] = []
+    late = datetime(2026, 7, 10, 12, 0, tzinfo=UTC)
+    service = TaiwanMarketDataRefreshService(
+        institutional_repository=FakeInstitutionalRepo(),
+        margin_short_repository=FakeMarginRepo(),
+        now_provider=lambda: late,
+    )
+    service._last_scheduler_local_date = date(2026, 7, 10)
+    monkeypatch.setattr(
+        service,
+        "refresh_recent",
+        lambda **kwargs: calls.append(kwargs["trigger"]),
+    )
+
+    wait_state = {"entered": False}
+
+    def fake_wait(timeout=None):
+        if timeout == 0:
+            if wait_state["entered"]:
+                return True
+            wait_state["entered"] = True
+            return False
+        return True
+
+    monkeypatch.setattr(service._stop_event, "wait", fake_wait)
+    service._run_sampler(poll_seconds=1, refresh_hour=18, recent_days=7)
+
+    assert calls == []

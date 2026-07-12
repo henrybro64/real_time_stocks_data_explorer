@@ -115,6 +115,32 @@ class TaiwanMarketDataRefreshService:
         self._lock = Lock()
         self._stop_event = Event()
         self._thread: Thread | None = None
+        self._last_scheduler_local_date: date | None = None
+
+    @staticmethod
+    def _day_result(
+        *,
+        dataset: DatasetKind,
+        market: TWBoard,
+        current_date: date,
+        resolved_date: str | None = None,
+        rows_fetched: int = 0,
+        rows_inserted: int = 0,
+        rows_updated: int = 0,
+        skipped_no_data: bool = False,
+        error: str | None = None,
+    ) -> DatasetDayResult:
+        return DatasetDayResult(
+            dataset=dataset,
+            market=market,
+            requested_date=current_date.isoformat(),
+            resolved_date=resolved_date,
+            rows_fetched=rows_fetched,
+            rows_inserted=rows_inserted,
+            rows_updated=rows_updated,
+            skipped_no_data=skipped_no_data,
+            error=error,
+        )
 
     def start_background_sampler(
         self,
@@ -235,15 +261,10 @@ class TaiwanMarketDataRefreshService:
 
     def _refresh_institutional_day(self, market: TWBoard, current_date: date) -> DatasetDayResult:
         if not self._institutional_repository.is_available():
-            return DatasetDayResult(
+            return self._day_result(
                 dataset="institutional",
                 market=market,
-                requested_date=current_date.isoformat(),
-                resolved_date=None,
-                rows_fetched=0,
-                rows_inserted=0,
-                rows_updated=0,
-                skipped_no_data=False,
+                current_date=current_date,
                 error="database_unavailable",
             )
 
@@ -264,27 +285,18 @@ class TaiwanMarketDataRefreshService:
                     "error": str(exc),
                 },
             )
-            return DatasetDayResult(
+            return self._day_result(
                 dataset="institutional",
                 market=market,
-                requested_date=current_date.isoformat(),
-                resolved_date=None,
-                rows_fetched=0,
-                rows_inserted=0,
-                rows_updated=0,
-                skipped_no_data=False,
+                current_date=current_date,
                 error=str(exc),
             )
 
         if is_taiwan_no_data_payload(payload):
-            return DatasetDayResult(
+            return self._day_result(
                 dataset="institutional",
                 market=market,
-                requested_date=current_date.isoformat(),
-                resolved_date=None,
-                rows_fetched=0,
-                rows_inserted=0,
-                rows_updated=0,
+                current_date=current_date,
                 skipped_no_data=True,
             )
 
@@ -309,41 +321,29 @@ class TaiwanMarketDataRefreshService:
                     "requested_date": current_date.isoformat(),
                 },
             )
-            return DatasetDayResult(
+            return self._day_result(
                 dataset="institutional",
                 market=market,
-                requested_date=current_date.isoformat(),
-                resolved_date=None,
-                rows_fetched=0,
-                rows_inserted=0,
-                rows_updated=0,
-                skipped_no_data=False,
+                current_date=current_date,
                 error=str(exc),
             )
 
-        resolved = records[0].date if records else None
-        return DatasetDayResult(
+        return self._day_result(
             dataset="institutional",
             market=market,
-            requested_date=current_date.isoformat(),
-            resolved_date=resolved,
+            current_date=current_date,
+            resolved_date=records[0].date if records else None,
             rows_fetched=len(records),
             rows_inserted=stats.inserted,
             rows_updated=stats.updated,
-            skipped_no_data=False,
         )
 
     def _refresh_margin_short_day(self, market: TWBoard, current_date: date) -> DatasetDayResult:
         if not self._margin_short_repository.is_available():
-            return DatasetDayResult(
+            return self._day_result(
                 dataset="margin_short",
                 market=market,
-                requested_date=current_date.isoformat(),
-                resolved_date=None,
-                rows_fetched=0,
-                rows_inserted=0,
-                rows_updated=0,
-                skipped_no_data=False,
+                current_date=current_date,
                 error="database_unavailable",
             )
 
@@ -364,15 +364,10 @@ class TaiwanMarketDataRefreshService:
                     "error": str(exc),
                 },
             )
-            return DatasetDayResult(
+            return self._day_result(
                 dataset="margin_short",
                 market=market,
-                requested_date=current_date.isoformat(),
-                resolved_date=None,
-                rows_fetched=0,
-                rows_inserted=0,
-                rows_updated=0,
-                skipped_no_data=False,
+                current_date=current_date,
                 error=str(exc),
             )
 
@@ -395,14 +390,10 @@ class TaiwanMarketDataRefreshService:
         if is_taiwan_no_data_payload(margin_payload) and is_taiwan_no_data_payload(
             borrowed_payload
         ):
-            return DatasetDayResult(
+            return self._day_result(
                 dataset="margin_short",
                 market=market,
-                requested_date=current_date.isoformat(),
-                resolved_date=None,
-                rows_fetched=0,
-                rows_inserted=0,
-                rows_updated=0,
+                current_date=current_date,
                 skipped_no_data=True,
             )
 
@@ -429,28 +420,21 @@ class TaiwanMarketDataRefreshService:
                     "requested_date": current_date.isoformat(),
                 },
             )
-            return DatasetDayResult(
+            return self._day_result(
                 dataset="margin_short",
                 market=market,
-                requested_date=current_date.isoformat(),
-                resolved_date=None,
-                rows_fetched=0,
-                rows_inserted=0,
-                rows_updated=0,
-                skipped_no_data=False,
+                current_date=current_date,
                 error=str(exc),
             )
 
-        resolved = records[0].date if records else None
-        return DatasetDayResult(
+        return self._day_result(
             dataset="margin_short",
             market=market,
-            requested_date=current_date.isoformat(),
-            resolved_date=resolved,
+            current_date=current_date,
+            resolved_date=records[0].date if records else None,
             rows_fetched=len(records),
             rows_inserted=stats.inserted,
             rows_updated=stats.updated,
-            skipped_no_data=False,
         )
 
     def _run_sampler(self, poll_seconds: int, refresh_hour: int, recent_days: int) -> None:
@@ -460,10 +444,10 @@ class TaiwanMarketDataRefreshService:
         local_tz = ZoneInfo(timezone_name)
         while not self._stop_event.wait(0):
             now = self._now_provider()
-            local_hour = now.astimezone(local_tz).hour
-            if local_hour >= refresh_hour:
-                self.refresh_recent(trigger="scheduler", recent_days=recent_days)
-            else:
+            local_now = now.astimezone(local_tz)
+            local_hour = local_now.hour
+            local_day = local_now.date()
+            if local_hour < refresh_hour:
                 logger.info(
                     "Taiwan market data refresh skipped before local publish hour",
                     extra={
@@ -473,6 +457,18 @@ class TaiwanMarketDataRefreshService:
                         "timezone": timezone_name,
                     },
                 )
+            elif self._last_scheduler_local_date == local_day:
+                logger.info(
+                    "Taiwan market data refresh skipped; already ran today",
+                    extra={
+                        "event": "taiwan_market_data.scheduler.skipped_already_ran",
+                        "local_date": local_day.isoformat(),
+                        "timezone": timezone_name,
+                    },
+                )
+            else:
+                self.refresh_recent(trigger="scheduler", recent_days=recent_days)
+                self._last_scheduler_local_date = local_day
             if self._stop_event.wait(poll_seconds):
                 return
 

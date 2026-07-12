@@ -274,7 +274,7 @@ Header: X-Taiwan-Market-Data-Token: <token>
 Behavior notes:
 
 - probes weekdays only; skips official no-data days; continues after per-source fetch/upsert errors
-- scheduler refreshes recent days only after the configured Taipei hour; use the capture endpoint for ~90–120 day backfill
+- scheduler refreshes recent days once per local day after the configured Taipei hour; use the capture endpoint for ~90–120 day backfill
 - disable locally with `TAIWAN_MARKET_DATA_REFRESH_ENABLED=false`
 
 ### Threshold Alerts
