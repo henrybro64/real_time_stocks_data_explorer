@@ -124,6 +124,18 @@ class TaiwanMarketDataRefreshService:
         refresh_hour: int,
         recent_days: int,
     ) -> None:
+        if (
+            not self._institutional_repository.is_available()
+            or not self._margin_short_repository.is_available()
+        ):
+            logger.info(
+                "Taiwan market data refresh sampler skipped because the database is unavailable",
+                extra={
+                    "event": "taiwan_market_data.sampler.skipped",
+                    "reason": "database_unavailable",
+                },
+            )
+            return
         with self._lock:
             if self._thread is not None and self._thread.is_alive():
                 return
@@ -343,7 +355,6 @@ class TaiwanMarketDataRefreshService:
             else:
                 margin_payload = self._twse_margin_fetcher(current_date)
                 borrowed_payload = self._twse_borrowed_short_fetcher(current_date)
-            close_payload = self._twse_close_fetcher(current_date)
         except HttpFetchError as exc:
             logger.warning(
                 "Margin-short refresh fetch failed",
@@ -365,6 +376,22 @@ class TaiwanMarketDataRefreshService:
                 skipped_no_data=False,
                 error=str(exc),
             )
+
+        # Close supplement is optional (matches live read path); never abort core upsert.
+        close_payload: object | None
+        try:
+            close_payload = self._twse_close_fetcher(current_date)
+        except HttpFetchError as exc:
+            logger.warning(
+                "Margin-short close supplement fetch failed; continuing without close",
+                extra={
+                    "event": "taiwan_market_data.margin_short.close_fetch_error",
+                    "market": market,
+                    "requested_date": current_date.isoformat(),
+                    "error": str(exc),
+                },
+            )
+            close_payload = None
 
         if is_taiwan_no_data_payload(margin_payload) and is_taiwan_no_data_payload(
             borrowed_payload
@@ -428,9 +455,13 @@ class TaiwanMarketDataRefreshService:
         )
 
     def _run_sampler(self, poll_seconds: int, refresh_hour: int, recent_days: int) -> None:
+        from app.core.config import settings
+
+        timezone_name = settings.taiwan_market_data_timezone or "Asia/Taipei"
+        local_tz = ZoneInfo(timezone_name)
         while not self._stop_event.wait(0):
             now = self._now_provider()
-            local_hour = now.astimezone(_TW_TIMEZONE).hour
+            local_hour = now.astimezone(local_tz).hour
             if local_hour >= refresh_hour:
                 self.refresh_recent(trigger="scheduler", recent_days=recent_days)
             else:
@@ -440,6 +471,7 @@ class TaiwanMarketDataRefreshService:
                         "event": "taiwan_market_data.scheduler.skipped_before_hour",
                         "local_hour": local_hour,
                         "refresh_hour": refresh_hour,
+                        "timezone": timezone_name,
                     },
                 )
             if self._stop_event.wait(poll_seconds):

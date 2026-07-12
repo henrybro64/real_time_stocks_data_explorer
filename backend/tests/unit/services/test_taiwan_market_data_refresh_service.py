@@ -332,6 +332,166 @@ def test_refresh_upserts_margin_short_when_payloads_present() -> None:
     assert margin_repo.calls[0][0] == "TWSE"
 
 
+def test_refresh_upserts_tpex_margin_short_when_payloads_present() -> None:
+    margin_repo = FakeMarginRepo()
+    tpex_margin = {
+        "date": "20260709",
+        "tables": [
+            {
+                "date": "115/07/09",
+                "fields": [
+                    "代號",
+                    "名稱",
+                    "前資餘額(張)",
+                    "資買",
+                    "資賣",
+                    "現償",
+                    "資餘額",
+                    "資屬證金",
+                    "資使用率(%)",
+                    "資限額",
+                    "前券餘額(張)",
+                    "券賣",
+                    "券買",
+                    "券償",
+                    "券餘額",
+                    "券屬證金",
+                    "券使用率(%)",
+                    "券限額",
+                    "資券相抵(張)",
+                    "備註",
+                ],
+                "data": [
+                    [
+                        "6488",
+                        "環球晶",
+                        "10,000",
+                        "0",
+                        "0",
+                        "0",
+                        "10,200",
+                        "0",
+                        "0.1",
+                        "100,000",
+                        "5",
+                        "0",
+                        "0",
+                        "0",
+                        "4",
+                        "0",
+                        "0.0",
+                        "100,000",
+                        "0",
+                        "",
+                    ]
+                ],
+            }
+        ],
+    }
+    tpex_borrowed = {
+        "date": "20260709",
+        "tables": [
+            {
+                "date": "115/07/09",
+                "fields": ["placeholder"] * 15,
+                "data": [
+                    [
+                        "6488",
+                        "環球晶",
+                        "5,000",
+                        "0",
+                        "0",
+                        "0",
+                        "4,000",
+                        "0",
+                        "2,000,000",
+                        "0",
+                        "0",
+                        "0",
+                        "2,100,000",
+                        "0",
+                        "",
+                    ]
+                ],
+            }
+        ],
+    }
+    service = _service(
+        margin_repo=margin_repo,
+        twse_institutional=lambda _d: _no_data_payload(),
+        tpex_institutional=lambda _d: _no_data_payload(),
+        twse_margin=lambda _d: _no_data_payload(),
+        twse_borrowed=lambda _d: _no_data_payload(),
+        tpex_margin=lambda _d: tpex_margin,
+        tpex_borrowed=lambda _d: tpex_borrowed,
+    )
+
+    summary = service.refresh(days=1, trigger="tpex-margin-test")
+    tpex_results = [
+        item
+        for item in summary.results
+        if item.dataset == "margin_short" and item.market == "TPEx"
+    ]
+    assert tpex_results
+    assert tpex_results[0].rows_fetched >= 1
+    assert any(market == "TPEx" for market, _source, _count in margin_repo.calls)
+
+
+def test_refresh_continues_when_optional_close_fetch_fails() -> None:
+    margin_repo = FakeMarginRepo()
+
+    def failing_close(_current_date: date):
+        raise HttpFetchError("close feed down")
+
+    service = _service(
+        margin_repo=margin_repo,
+        twse_institutional=lambda _d: _no_data_payload(),
+        tpex_institutional=lambda _d: _no_data_payload(),
+        twse_margin=lambda _d: _twse_margin_payload(),
+        twse_borrowed=lambda _d: _twse_borrowed_payload(),
+        twse_close=failing_close,
+        tpex_margin=lambda _d: _no_data_payload(),
+        tpex_borrowed=lambda _d: _no_data_payload(),
+    )
+
+    summary = service.refresh(days=1, trigger="close-optional")
+    twse_ok = [
+        item
+        for item in summary.results
+        if item.dataset == "margin_short"
+        and item.market == "TWSE"
+        and item.rows_fetched > 0
+        and item.error is None
+    ]
+    assert twse_ok
+    assert margin_repo.calls
+
+
+def test_refresh_continues_when_upsert_raises() -> None:
+    class FailingInstitutionalRepo(FakeInstitutionalRepo):
+        def upsert_records(self, *, market, source, records):
+            raise RuntimeError("upsert boom")
+
+    institutional_repo = FailingInstitutionalRepo()
+    service = _service(
+        institutional_repo=institutional_repo,
+        twse_institutional=lambda _d: _twse_institutional_payload(),
+        tpex_institutional=lambda _d: _tpex_institutional_payload(),
+        twse_margin=lambda _d: _no_data_payload(),
+        twse_borrowed=lambda _d: _no_data_payload(),
+        tpex_margin=lambda _d: _no_data_payload(),
+        tpex_borrowed=lambda _d: _no_data_payload(),
+    )
+
+    summary = service.refresh(days=1, trigger="upsert-fail", include_margin_short=False)
+    assert summary.error_count >= 1
+    assert all(
+        item.error is not None
+        for item in summary.results
+        if item.dataset == "institutional"
+    )
+
+
 def test_refresh_reports_database_unavailable() -> None:
     institutional_repo = FakeInstitutionalRepo()
     institutional_repo.available = False
@@ -343,6 +503,17 @@ def test_refresh_reports_database_unavailable() -> None:
     summary = service.refresh(days=1, trigger="db-down", include_margin_short=False)
     assert all(item.error == "database_unavailable" for item in summary.results)
     assert institutional_repo.calls == []
+
+
+def test_sampler_skips_when_database_unavailable() -> None:
+    institutional_repo = FakeInstitutionalRepo()
+    institutional_repo.available = False
+    service = TaiwanMarketDataRefreshService(
+        institutional_repository=institutional_repo,
+        margin_short_repository=FakeMarginRepo(),
+    )
+    service.start_background_sampler(60, refresh_hour=18, recent_days=7)
+    assert service._thread is None
 
 
 def test_sampler_skips_before_refresh_hour(monkeypatch) -> None:

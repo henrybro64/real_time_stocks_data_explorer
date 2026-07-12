@@ -84,6 +84,76 @@ def test_parse_all_institutional_records_parses_full_twse_payload() -> None:
     assert records[0].total_net_shares == 3_300
 
 
+def test_parse_all_institutional_records_parses_full_tpex_payload() -> None:
+    fields = [
+        "代號",
+        "名稱",
+        "買進股數",
+        "賣出股數",
+        "買賣超股數",
+        "買進股數",
+        "賣出股數",
+        "買賣超股數",
+        "買進股數",
+        "賣出股數",
+        "買賣超股數",
+        "買進股數",
+        "賣出股數",
+        "買賣超股數",
+        "買進股數",
+        "賣出股數",
+        "買賣超股數",
+        "買進股數",
+        "賣出股數",
+        "買賣超股數",
+        "買進股數",
+        "賣出股數",
+        "買賣超股數",
+        "三大法人買賣超股數合計",
+    ]
+    row = [
+        "6488",
+        "環球晶",
+        "0",
+        "0",
+        "1,000",
+        "0",
+        "0",
+        "0",
+        "0",
+        "0",
+        "0",
+        "0",
+        "0",
+        "2,000",
+        "0",
+        "0",
+        "100",
+        "0",
+        "0",
+        "200",
+        "0",
+        "0",
+        "300",
+        "3,300",
+    ]
+    payload = {
+        "date": "2026/07/09",
+        "tables": [{"date": "115/07/09", "fields": fields, "data": [row]}],
+    }
+
+    records = parse_all_institutional_records(
+        payload,
+        market="TPEx",
+        current_date=date(2026, 7, 9),
+    )
+
+    assert len(records) == 1
+    assert records[0].symbol == "6488"
+    assert records[0].foreign_net_shares == 1_000
+    assert records[0].total_net_shares == 3_300
+
+
 def test_parse_twse_row_falls_back_to_dealer_split_when_combined_missing() -> None:
     fields = [
         "證券代號",

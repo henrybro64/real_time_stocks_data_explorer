@@ -191,6 +191,105 @@ def test_parse_all_margin_short_records_merges_twse_payloads() -> None:
     assert records[0].close_price == pytest.approx(185.0)
 
 
+def test_parse_all_margin_short_records_merges_tpex_payloads() -> None:
+    margin_payload = {
+        "date": "20260709",
+        "tables": [
+            {
+                "date": "115/07/09",
+                "fields": _TPEX_MARGIN_FIELDS,
+                "data": [
+                    [
+                        "6488",
+                        "環球晶",
+                        "10,000",
+                        "0",
+                        "0",
+                        "0",
+                        "10,200",
+                        "0",
+                        "0.1",
+                        "100,000",
+                        "5",
+                        "0",
+                        "0",
+                        "0",
+                        "4",
+                        "0",
+                        "0.0",
+                        "100,000",
+                        "0",
+                        "",
+                    ]
+                ],
+            }
+        ],
+    }
+    borrowed_payload = {
+        "date": "20260709",
+        "tables": [
+            {
+                "date": "115/07/09",
+                "fields": [
+                    "股票代號",
+                    "股票名稱",
+                    "前日餘額",
+                    "賣出",
+                    "買進",
+                    "現券",
+                    "當日餘額",
+                    "限額",
+                    "前日餘額",
+                    "當日賣出",
+                    "當日還券",
+                    "當日調整數額",
+                    "當日餘額",
+                    "次一營業日可借券賣出限額",
+                    "備註",
+                ],
+                "data": [
+                    [
+                        "6488",
+                        "環球晶",
+                        "5,000",
+                        "0",
+                        "0",
+                        "0",
+                        "4,000",
+                        "0",
+                        "2,000,000",
+                        "0",
+                        "0",
+                        "0",
+                        "2,100,000",
+                        "0",
+                        "",
+                    ]
+                ],
+            }
+        ],
+    }
+    close_payload = {
+        "date": "20260709",
+        "fields": _TWSE_CLOSE_FIELDS,
+        "data": [["6488", "環球晶", "0", "0", "0", "0", "510", "0", "櫃檯買賣中心"]],
+    }
+
+    records = parse_all_margin_short_records(
+        market="TPEx",
+        current_date=date(2026, 7, 9),
+        margin_payload=margin_payload,
+        borrowed_payload=borrowed_payload,
+        close_payload=close_payload,
+    )
+
+    assert len(records) == 1
+    assert records[0].symbol == "6488"
+    assert records[0].margin_balance_lots == pytest.approx(10_200.0)
+    assert records[0].borrowed_short_balance_lots == pytest.approx(2_100.0)
+    assert records[0].close_price == pytest.approx(510.0)
+
+
 def test_parse_tpex_margin_row_reads_margin_and_short_balances() -> None:
     row = [
         "1303",

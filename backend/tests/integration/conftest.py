@@ -22,6 +22,9 @@ from app.db.models import Base, User
 from app.db.session import SessionLocal, engine
 from app.main import app
 from app.services.rankings_snapshot_service import rankings_snapshot_service
+from app.services.taiwan_market_data_refresh_service import (
+    taiwan_market_data_refresh_service,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -30,6 +33,17 @@ def _disable_rankings_background_sampler(monkeypatch) -> Iterator[None]:
     rankings_snapshot_service.stop_background_sampler()
     yield
     rankings_snapshot_service.stop_background_sampler()
+
+
+@pytest.fixture(autouse=True)
+def _disable_taiwan_market_data_background_sampler(monkeypatch) -> Iterator[None]:
+    monkeypatch.setattr(
+        "app.core.config.settings.taiwan_market_data_refresh_enabled",
+        False,
+    )
+    taiwan_market_data_refresh_service.stop_background_sampler()
+    yield
+    taiwan_market_data_refresh_service.stop_background_sampler()
 
 
 @pytest.fixture(scope="session", autouse=True)
