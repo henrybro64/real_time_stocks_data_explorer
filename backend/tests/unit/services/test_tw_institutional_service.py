@@ -10,6 +10,7 @@ from app.services.tw_institutional_service import (
     _dealer_net_shares,
     _parse_tpex_row,
     _parse_twse_row,
+    parse_all_institutional_records,
 )
 from tests.support import stock_record
 
@@ -60,6 +61,97 @@ def test_parse_twse_row_aggregates_dealer_split_and_total() -> None:
     # Prefer official combined 自營商買賣超 when present.
     assert record.dealer_net_shares == 89_863
     assert record.total_net_shares == -12_615_453
+
+
+def test_parse_all_institutional_records_parses_full_twse_payload() -> None:
+    payload = {
+        "date": "20260709",
+        "fields": _TWSE_FIELDS,
+        "data": [
+            ["2330", "台積電", "1,000", "2,000", "300", "100", "200"],
+            ["2317", "鴻海", "500", "100", "50", "20", "30"],
+        ],
+    }
+
+    records = parse_all_institutional_records(
+        payload,
+        market="TWSE",
+        current_date=date(2026, 7, 9),
+    )
+
+    assert [item.symbol for item in records] == ["2330", "2317"]
+    assert records[0].date == "2026-07-09"
+    assert records[0].total_net_shares == 3_300
+
+
+def test_parse_all_institutional_records_parses_full_tpex_payload() -> None:
+    fields = [
+        "代號",
+        "名稱",
+        "買進股數",
+        "賣出股數",
+        "買賣超股數",
+        "買進股數",
+        "賣出股數",
+        "買賣超股數",
+        "買進股數",
+        "賣出股數",
+        "買賣超股數",
+        "買進股數",
+        "賣出股數",
+        "買賣超股數",
+        "買進股數",
+        "賣出股數",
+        "買賣超股數",
+        "買進股數",
+        "賣出股數",
+        "買賣超股數",
+        "買進股數",
+        "賣出股數",
+        "買賣超股數",
+        "三大法人買賣超股數合計",
+    ]
+    row = [
+        "6488",
+        "環球晶",
+        "0",
+        "0",
+        "1,000",
+        "0",
+        "0",
+        "0",
+        "0",
+        "0",
+        "0",
+        "0",
+        "0",
+        "2,000",
+        "0",
+        "0",
+        "100",
+        "0",
+        "0",
+        "200",
+        "0",
+        "0",
+        "300",
+        "3,300",
+    ]
+    payload = {
+        "date": "2026/07/09",
+        "tables": [{"date": "115/07/09", "fields": fields, "data": [row]}],
+    }
+
+    records = parse_all_institutional_records(
+        payload,
+        market="TPEx",
+        current_date=date(2026, 7, 9),
+    )
+
+    assert len(records) == 1
+    assert records[0].symbol == "6488"
+    assert records[0].foreign_net_shares == 1_000
+    assert records[0].total_net_shares == 3_300
 
 
 def test_parse_twse_row_falls_back_to_dealer_split_when_combined_missing() -> None:

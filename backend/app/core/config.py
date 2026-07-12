@@ -45,6 +45,14 @@ class Settings(BaseSettings):
         default="0050,2330,2317,2454,2303,2881,2882,6488,8299,8271,6215,6643,6562,6451,6462",
     )
     rankings_capture_token: str = Field(default="")
+    # Taiwan detail-page market data refresh (institutional + margin-short write path).
+    taiwan_market_data_refresh_enabled: bool = Field(default=True)
+    taiwan_market_data_refresh_days: int = Field(default=120, ge=1, le=360)
+    taiwan_market_data_refresh_recent_days: int = Field(default=7, ge=1, le=30)
+    taiwan_market_data_refresh_poll_seconds: int = Field(default=3600, ge=300)
+    taiwan_market_data_refresh_hour: int = Field(default=18, ge=0, le=23)
+    taiwan_market_data_timezone: str = Field(default="Asia/Taipei")
+    taiwan_market_data_capture_token: str = Field(default="")
     # Backend logging controls.
     log_level: str = Field(default="INFO")
     log_format: str = Field(default="console")

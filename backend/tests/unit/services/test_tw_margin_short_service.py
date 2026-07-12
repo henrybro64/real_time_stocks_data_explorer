@@ -19,6 +19,7 @@ from app.services.tw_margin_short_service import (
     _parse_twse_borrowed_short_row,
     _parse_twse_margin_row,
     _round_nearest_int,
+    parse_all_margin_short_records,
 )
 from tests.support import FakeQuoteSource, stock_record
 
@@ -172,6 +173,121 @@ def test_parse_twse_margin_row_reads_margin_and_short_balances() -> None:
     assert point.symbol == "0050"
     assert point.margin_balance_lots == pytest.approx(13_306.0)
     assert point.short_margin_balance_lots == pytest.approx(942.0)
+
+
+def test_parse_all_margin_short_records_merges_twse_payloads() -> None:
+    records = parse_all_margin_short_records(
+        market="TWSE",
+        current_date=date(2026, 7, 9),
+        margin_payload=_twse_margin_payload(date(2026, 7, 9)),
+        borrowed_payload=_twse_short_payload(date(2026, 7, 9)),
+        close_payload=_twse_close_payload(date(2026, 7, 9)),
+    )
+
+    assert len(records) == 1
+    assert records[0].symbol == "1303"
+    assert records[0].margin_balance_lots == pytest.approx(31_339.0)
+    assert records[0].borrowed_short_balance_lots == pytest.approx(12_345.0)
+    assert records[0].close_price == pytest.approx(185.0)
+
+
+def test_parse_all_margin_short_records_merges_tpex_payloads() -> None:
+    margin_payload = {
+        "date": "20260709",
+        "tables": [
+            {
+                "date": "115/07/09",
+                "fields": _TPEX_MARGIN_FIELDS,
+                "data": [
+                    [
+                        "6488",
+                        "環球晶",
+                        "10,000",
+                        "0",
+                        "0",
+                        "0",
+                        "10,200",
+                        "0",
+                        "0.1",
+                        "100,000",
+                        "5",
+                        "0",
+                        "0",
+                        "0",
+                        "4",
+                        "0",
+                        "0.0",
+                        "100,000",
+                        "0",
+                        "",
+                    ]
+                ],
+            }
+        ],
+    }
+    borrowed_payload = {
+        "date": "20260709",
+        "tables": [
+            {
+                "date": "115/07/09",
+                "fields": [
+                    "股票代號",
+                    "股票名稱",
+                    "前日餘額",
+                    "賣出",
+                    "買進",
+                    "現券",
+                    "當日餘額",
+                    "限額",
+                    "前日餘額",
+                    "當日賣出",
+                    "當日還券",
+                    "當日調整數額",
+                    "當日餘額",
+                    "次一營業日可借券賣出限額",
+                    "備註",
+                ],
+                "data": [
+                    [
+                        "6488",
+                        "環球晶",
+                        "5,000",
+                        "0",
+                        "0",
+                        "0",
+                        "4,000",
+                        "0",
+                        "2,000,000",
+                        "0",
+                        "0",
+                        "0",
+                        "2,100,000",
+                        "0",
+                        "",
+                    ]
+                ],
+            }
+        ],
+    }
+    close_payload = {
+        "date": "20260709",
+        "fields": _TWSE_CLOSE_FIELDS,
+        "data": [["6488", "環球晶", "0", "0", "0", "0", "510", "0", "櫃檯買賣中心"]],
+    }
+
+    records = parse_all_margin_short_records(
+        market="TPEx",
+        current_date=date(2026, 7, 9),
+        margin_payload=margin_payload,
+        borrowed_payload=borrowed_payload,
+        close_payload=close_payload,
+    )
+
+    assert len(records) == 1
+    assert records[0].symbol == "6488"
+    assert records[0].margin_balance_lots == pytest.approx(10_200.0)
+    assert records[0].borrowed_short_balance_lots == pytest.approx(2_100.0)
+    assert records[0].close_price == pytest.approx(510.0)
 
 
 def test_parse_tpex_margin_row_reads_margin_and_short_balances() -> None:
@@ -652,8 +768,9 @@ def test_service_returns_empty_history_when_symbol_has_no_available_rows() -> No
 
 
 def test_service_raises_for_missing_stock() -> None:
+    service = TaiwanMarginShortService(quote_source=FakeQuoteSource(None))
     with pytest.raises(ValueError, match="Stock not found"):
-        TaiwanMarginShortService(quote_source=FakeQuoteSource(None)).get_margin_short("TW:0000")
+        service.get_margin_short("TW:0000")
 
 
 @pytest.mark.parametrize(
@@ -673,8 +790,9 @@ def test_service_rejects_non_taiwan_markets(stock_id: str, symbol: str, name: st
         currency="USD",
         timezone="UTC",
     )
+    service = TaiwanMarginShortService(quote_source=FakeQuoteSource(foreign))
     with pytest.raises(ValueError, match="only available for TW stocks"):
-        TaiwanMarginShortService(quote_source=FakeQuoteSource(foreign)).get_margin_short(stock_id)
+        service.get_margin_short(stock_id)
 
 
 def test_service_dedupes_history_when_holiday_probes_resolve_to_same_trading_date() -> None:

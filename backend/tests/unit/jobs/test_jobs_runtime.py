@@ -10,8 +10,9 @@ def test_start_enabled_background_jobs_skips_disabled_samplers(monkeypatch) -> N
     monkeypatch.setattr(settings, "portfolio_history_sampler_enabled", False)
     monkeypatch.setattr(settings, "alert_evaluator_enabled", False)
     monkeypatch.setattr(settings, "rankings_snapshot_enabled", False)
+    monkeypatch.setattr(settings, "taiwan_market_data_refresh_enabled", False)
 
-    started = {"portfolio": [], "alert": [], "rankings": []}
+    started = {"portfolio": [], "alert": [], "rankings": [], "taiwan": []}
     monkeypatch.setattr(
         jobs_runtime_module.portfolio_history_service,
         "start_background_sampler",
@@ -27,10 +28,15 @@ def test_start_enabled_background_jobs_skips_disabled_samplers(monkeypatch) -> N
         "start_background_sampler",
         lambda poll_seconds: started["rankings"].append(poll_seconds),
     )
+    monkeypatch.setattr(
+        jobs_runtime_module.taiwan_market_data_refresh_service,
+        "start_background_sampler",
+        lambda poll_seconds, **kwargs: started["taiwan"].append((poll_seconds, kwargs)),
+    )
 
     start_enabled_background_jobs()
 
-    assert started == {"portfolio": [], "alert": [], "rankings": []}
+    assert started == {"portfolio": [], "alert": [], "rankings": [], "taiwan": []}
 
 
 def test_start_enabled_background_jobs_starts_enabled_samplers(monkeypatch) -> None:
@@ -42,8 +48,12 @@ def test_start_enabled_background_jobs_starts_enabled_samplers(monkeypatch) -> N
     monkeypatch.setattr(settings, "alert_evaluator_poll_seconds", 222)
     monkeypatch.setattr(settings, "rankings_snapshot_enabled", True)
     monkeypatch.setattr(settings, "rankings_refresh_seconds", 333)
+    monkeypatch.setattr(settings, "taiwan_market_data_refresh_enabled", True)
+    monkeypatch.setattr(settings, "taiwan_market_data_refresh_poll_seconds", 444)
+    monkeypatch.setattr(settings, "taiwan_market_data_refresh_hour", 18)
+    monkeypatch.setattr(settings, "taiwan_market_data_refresh_recent_days", 7)
 
-    started = {"portfolio": [], "alert": [], "rankings": []}
+    started = {"portfolio": [], "alert": [], "rankings": [], "taiwan": []}
     monkeypatch.setattr(
         jobs_runtime_module.portfolio_history_service,
         "start_background_sampler",
@@ -59,14 +69,24 @@ def test_start_enabled_background_jobs_starts_enabled_samplers(monkeypatch) -> N
         "start_background_sampler",
         lambda poll_seconds: started["rankings"].append(poll_seconds),
     )
+    monkeypatch.setattr(
+        jobs_runtime_module.taiwan_market_data_refresh_service,
+        "start_background_sampler",
+        lambda poll_seconds, **kwargs: started["taiwan"].append((poll_seconds, kwargs)),
+    )
 
     start_enabled_background_jobs()
 
-    assert started == {"portfolio": [111], "alert": [222], "rankings": [333]}
+    assert started == {
+        "portfolio": [111],
+        "alert": [222],
+        "rankings": [333],
+        "taiwan": [(444, {"refresh_hour": 18, "recent_days": 7})],
+    }
 
 
 def test_stop_background_jobs_stops_all_samplers(monkeypatch) -> None:
-    stopped = {"portfolio": 0, "alert": 0, "rankings": 0}
+    stopped = {"portfolio": 0, "alert": 0, "rankings": 0, "taiwan": 0}
     monkeypatch.setattr(
         jobs_runtime_module.portfolio_history_service,
         "stop_background_sampler",
@@ -82,7 +102,12 @@ def test_stop_background_jobs_stops_all_samplers(monkeypatch) -> None:
         "stop_background_sampler",
         lambda: stopped.__setitem__("rankings", stopped["rankings"] + 1),
     )
+    monkeypatch.setattr(
+        jobs_runtime_module.taiwan_market_data_refresh_service,
+        "stop_background_sampler",
+        lambda: stopped.__setitem__("taiwan", stopped["taiwan"] + 1),
+    )
 
     stop_background_jobs()
 
-    assert stopped == {"portfolio": 1, "alert": 1, "rankings": 1}
+    assert stopped == {"portfolio": 1, "alert": 1, "rankings": 1, "taiwan": 1}

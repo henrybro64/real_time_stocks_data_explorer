@@ -164,12 +164,18 @@ class TaiwanInstitutionalInvestorsService:
         return collect_dated_history(
             requested_days=requested_days,
             start_date=start_date,
-            fetch_day=lambda day: (
-                (lookup := self._fetch_record_for_day(market, day, symbol)).record,
-                lookup.request_succeeded,
-            ),
+            fetch_day=lambda day: self._history_day_lookup(market, day, symbol),
             record_date=attrgetter("date"),
         )
+
+    def _history_day_lookup(
+        self,
+        market: TWBoard,
+        day: date,
+        symbol: str,
+    ) -> tuple[TaiwanInstitutionalInvestorRecord | None, bool]:
+        lookup = self._fetch_record_for_day(market, day, symbol)
+        return lookup.record, lookup.request_succeeded
 
     def _fetch_record_for_day(
         self,
@@ -261,6 +267,96 @@ class TaiwanInstitutionalInvestorsService:
                 continue
             return _DailyLookupResult(record=record, request_succeeded=True)
         return _DailyLookupResult(record=None, request_succeeded=True)
+
+
+def parse_all_institutional_records(
+    payload: object,
+    *,
+    market: TWBoard,
+    current_date: date,
+) -> list[TaiwanInstitutionalInvestorRecord]:
+    """Parse every usable row from a full-market institutional daily payload."""
+    if is_taiwan_no_data_payload(payload) or not isinstance(payload, dict):
+        return []
+    if market == "TWSE":
+        return _parse_all_twse_institutional_records(payload, current_date=current_date)
+    return _parse_all_tpex_institutional_records(payload, current_date=current_date)
+
+
+def _parse_rows_with_fields(
+    rows: object,
+    fields: object,
+    *,
+    record_date: str,
+    parse_row,
+) -> list[TaiwanInstitutionalInvestorRecord]:
+    if not isinstance(rows, list) or not isinstance(fields, list):
+        return []
+    parsed_rows: list[TaiwanInstitutionalInvestorRecord] = []
+    for row in rows:
+        if not isinstance(row, list):
+            continue
+        record = parse_row(row, fields, record_date=record_date)
+        if record is not None:
+            parsed_rows.append(record)
+    return parsed_rows
+
+
+def _parse_all_twse_institutional_records(
+    payload: dict,
+    *,
+    current_date: date,
+) -> list[TaiwanInstitutionalInvestorRecord]:
+    record_date = normalize_taiwan_date(payload.get("date")) or current_date.isoformat()
+    return _parse_rows_with_fields(
+        payload.get("data"),
+        payload.get("fields"),
+        record_date=record_date,
+        parse_row=_parse_twse_row,
+    )
+
+
+def _parse_all_tpex_institutional_records(
+    payload: dict,
+    *,
+    current_date: date,
+) -> list[TaiwanInstitutionalInvestorRecord]:
+    tables = payload.get("tables")
+    if not isinstance(tables, list):
+        return []
+    table = next(
+        (
+            item
+            for item in tables
+            if isinstance(item, dict)
+            and isinstance(item.get("fields"), list)
+            and isinstance(item.get("data"), list)
+        ),
+        None,
+    )
+    if table is None:
+        return []
+    record_date = (
+        normalize_taiwan_date(table.get("date"))
+        or normalize_taiwan_date(payload.get("date"))
+        or current_date.isoformat()
+    )
+    return _parse_rows_with_fields(
+        table.get("data"),
+        table.get("fields"),
+        record_date=record_date,
+        parse_row=_parse_tpex_row,
+    )
+
+
+def fetch_institutional_market_payload(market: TWBoard, current_date: date) -> object:
+    if market == "TPEx":
+        return _fetch_tpex_payload(current_date)
+    return _fetch_twse_payload(current_date)
+
+
+def institutional_source_for_market(market: TWBoard) -> str:
+    return _source_for_market(market)
 
 
 def _fetch_twse_payload(current_date: date) -> object:
