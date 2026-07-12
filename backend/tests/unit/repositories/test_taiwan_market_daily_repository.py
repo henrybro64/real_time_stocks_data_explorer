@@ -4,10 +4,8 @@ from sqlalchemy import create_engine, event, select
 from sqlalchemy.orm import sessionmaker
 
 from app.db.models import Base, TaiwanInstitutionalDaily, TaiwanMarginShortDaily
-from app.repositories.taiwan_institutional_daily_repository import (
+from app.repositories.taiwan_market_daily_repository import (
     TaiwanInstitutionalDailyRepository,
-)
-from app.repositories.taiwan_margin_short_daily_repository import (
     TaiwanMarginShortDailyRepository,
 )
 from app.services.tw_institutional_service import TaiwanInstitutionalInvestorRecord

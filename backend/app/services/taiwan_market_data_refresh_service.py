@@ -9,10 +9,8 @@ from typing import Callable, Literal
 from zoneinfo import ZoneInfo
 
 from app.core.diagnostics import elapsed_ms
-from app.repositories.taiwan_institutional_daily_repository import (
+from app.repositories.taiwan_market_daily_repository import (
     taiwan_institutional_daily_repository,
-)
-from app.repositories.taiwan_margin_short_daily_repository import (
     taiwan_margin_short_daily_repository,
 )
 from app.services.http_client import HttpFetchError

@@ -3,11 +3,8 @@ from __future__ import annotations
 from datetime import UTC, date, datetime
 from zoneinfo import ZoneInfo
 
-from app.repositories.taiwan_institutional_daily_repository import (
-    InstitutionalDailyUpsertStats,
-)
-from app.repositories.taiwan_margin_short_daily_repository import (
-    MarginShortDailyUpsertStats,
+from app.repositories.taiwan_market_daily_repository import (
+    DailyUpsertStats,
 )
 from app.services.http_client import HttpFetchError
 from app.services.taiwan_market_data_refresh_service import TaiwanMarketDataRefreshService
@@ -23,7 +20,7 @@ class FakeInstitutionalRepo:
 
     def upsert_records(self, *, market, source, records):
         self.calls.append((market, source, len(records)))
-        return InstitutionalDailyUpsertStats(inserted=len(records), updated=0)
+        return DailyUpsertStats(inserted=len(records), updated=0)
 
 
 class FakeMarginRepo:
@@ -36,7 +33,7 @@ class FakeMarginRepo:
 
     def upsert_records(self, *, market, source, records):
         self.calls.append((market, source, len(records)))
-        return MarginShortDailyUpsertStats(inserted=len(records), updated=0)
+        return DailyUpsertStats(inserted=len(records), updated=0)
 
 
 def _twse_institutional_payload(symbol: str = "2330") -> dict:

@@ -264,21 +264,28 @@ class TaiwanMarketDailyColumns:
     )
 
 
-class TaiwanInstitutionalDaily(TaiwanMarketDailyColumns, Base):
-    __tablename__ = "taiwan_institutional_daily"
-    __table_args__ = (
+def _taiwan_daily_table_args(unique_name: str, index_name: str) -> tuple:
+    return (
         UniqueConstraint(
             "market",
             "symbol",
             "date",
-            name="uq_taiwan_institutional_daily_market_symbol_date",
+            name=unique_name,
         ),
         Index(
-            "ix_taiwan_institutional_daily_lookup",
+            index_name,
             "market",
             "symbol",
             "date",
         ),
+    )
+
+
+class TaiwanInstitutionalDaily(TaiwanMarketDailyColumns, Base):
+    __tablename__ = "taiwan_institutional_daily"
+    __table_args__ = _taiwan_daily_table_args(
+        "uq_taiwan_institutional_daily_market_symbol_date",
+        "ix_taiwan_institutional_daily_lookup",
     )
 
     foreign_net_shares: Mapped[int] = mapped_column(nullable=False)
@@ -291,19 +298,9 @@ class TaiwanInstitutionalDaily(TaiwanMarketDailyColumns, Base):
 
 class TaiwanMarginShortDaily(TaiwanMarketDailyColumns, Base):
     __tablename__ = "taiwan_margin_short_daily"
-    __table_args__ = (
-        UniqueConstraint(
-            "market",
-            "symbol",
-            "date",
-            name="uq_taiwan_margin_short_daily_market_symbol_date",
-        ),
-        Index(
-            "ix_taiwan_margin_short_daily_lookup",
-            "market",
-            "symbol",
-            "date",
-        ),
+    __table_args__ = _taiwan_daily_table_args(
+        "uq_taiwan_margin_short_daily_market_symbol_date",
+        "ix_taiwan_margin_short_daily_lookup",
     )
 
     close_price: Mapped[float | None] = mapped_column(Float, nullable=True)
