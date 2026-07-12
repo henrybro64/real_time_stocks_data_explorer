@@ -768,8 +768,9 @@ def test_service_returns_empty_history_when_symbol_has_no_available_rows() -> No
 
 
 def test_service_raises_for_missing_stock() -> None:
+    service = TaiwanMarginShortService(quote_source=FakeQuoteSource(None))
     with pytest.raises(ValueError, match="Stock not found"):
-        TaiwanMarginShortService(quote_source=FakeQuoteSource(None)).get_margin_short("TW:0000")
+        service.get_margin_short("TW:0000")
 
 
 @pytest.mark.parametrize(
@@ -789,8 +790,9 @@ def test_service_rejects_non_taiwan_markets(stock_id: str, symbol: str, name: st
         currency="USD",
         timezone="UTC",
     )
+    service = TaiwanMarginShortService(quote_source=FakeQuoteSource(foreign))
     with pytest.raises(ValueError, match="only available for TW stocks"):
-        TaiwanMarginShortService(quote_source=FakeQuoteSource(foreign)).get_margin_short(stock_id)
+        service.get_margin_short(stock_id)
 
 
 def test_service_dedupes_history_when_holiday_probes_resolve_to_same_trading_date() -> None:

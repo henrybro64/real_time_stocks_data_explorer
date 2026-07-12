@@ -3,6 +3,8 @@ from __future__ import annotations
 from sqlalchemy import create_engine, event, select
 from sqlalchemy.orm import sessionmaker
 
+import pytest
+
 from app.db.models import Base, TaiwanInstitutionalDaily, TaiwanMarginShortDaily
 from app.repositories.taiwan_market_daily_repository import (
     TaiwanInstitutionalDailyRepository,
@@ -139,7 +141,7 @@ def test_margin_short_repository_upsert_is_idempotent() -> None:
 
     history = repository.list_history(market="TWSE", symbol="2330", limit=5)
     assert len(history) == 1
-    assert history[0].margin_balance_lots == 18.5
+    assert history[0].margin_balance_lots == pytest.approx(18.5)
     assert history[0].source == "twse-margin-updated"
 
     with session_local() as session:

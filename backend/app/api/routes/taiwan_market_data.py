@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Annotated
+
 from fastapi import APIRouter, Header, HTTPException, Query
 
 from app.core.config import settings
@@ -11,10 +13,16 @@ from app.services.taiwan_market_data_refresh_service import (
 router = APIRouter(prefix="/taiwan-market-data", tags=["taiwan-market-data"])
 
 
-@router.post("/capture")
+@router.post(
+    "/capture",
+    responses={
+        403: {"description": "Forbidden"},
+        503: {"description": "Taiwan market data capture endpoint is not configured"},
+    },
+)
 def capture_taiwan_market_data(
-    days: int | None = Query(default=None, ge=1, le=360),
-    x_taiwan_market_data_token: str | None = Header(default=None),
+    days: Annotated[int | None, Query(ge=1, le=360)] = None,
+    x_taiwan_market_data_token: Annotated[str | None, Header()] = None,
 ) -> dict[str, object]:
     expected = settings.taiwan_market_data_capture_token.strip()
     if not expected:

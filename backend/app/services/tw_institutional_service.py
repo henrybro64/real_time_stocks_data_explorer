@@ -164,12 +164,18 @@ class TaiwanInstitutionalInvestorsService:
         return collect_dated_history(
             requested_days=requested_days,
             start_date=start_date,
-            fetch_day=lambda day: (
-                (lookup := self._fetch_record_for_day(market, day, symbol)).record,
-                lookup.request_succeeded,
-            ),
+            fetch_day=lambda day: self._history_day_lookup(market, day, symbol),
             record_date=attrgetter("date"),
         )
+
+    def _history_day_lookup(
+        self,
+        market: TWBoard,
+        day: date,
+        symbol: str,
+    ) -> tuple[TaiwanInstitutionalInvestorRecord | None, bool]:
+        lookup = self._fetch_record_for_day(market, day, symbol)
+        return lookup.record, lookup.request_succeeded
 
     def _fetch_record_for_day(
         self,
@@ -272,23 +278,49 @@ def parse_all_institutional_records(
     """Parse every usable row from a full-market institutional daily payload."""
     if is_taiwan_no_data_payload(payload) or not isinstance(payload, dict):
         return []
-
     if market == "TWSE":
-        rows = payload.get("data")
-        fields = payload.get("fields")
-        if not isinstance(rows, list) or not isinstance(fields, list):
-            return []
-        record_date = normalize_taiwan_date(payload.get("date")) or current_date.isoformat()
-        parse_row = _parse_twse_row
-        parsed_rows: list[TaiwanInstitutionalInvestorRecord] = []
-        for row in rows:
-            if not isinstance(row, list):
-                continue
-            record = parse_row(row, fields, record_date=record_date)
-            if record is not None:
-                parsed_rows.append(record)
-        return parsed_rows
+        return _parse_all_twse_institutional_records(payload, current_date=current_date)
+    return _parse_all_tpex_institutional_records(payload, current_date=current_date)
 
+
+def _parse_rows_with_fields(
+    rows: object,
+    fields: object,
+    *,
+    record_date: str,
+    parse_row,
+) -> list[TaiwanInstitutionalInvestorRecord]:
+    if not isinstance(rows, list) or not isinstance(fields, list):
+        return []
+    parsed_rows: list[TaiwanInstitutionalInvestorRecord] = []
+    for row in rows:
+        if not isinstance(row, list):
+            continue
+        record = parse_row(row, fields, record_date=record_date)
+        if record is not None:
+            parsed_rows.append(record)
+    return parsed_rows
+
+
+def _parse_all_twse_institutional_records(
+    payload: dict,
+    *,
+    current_date: date,
+) -> list[TaiwanInstitutionalInvestorRecord]:
+    record_date = normalize_taiwan_date(payload.get("date")) or current_date.isoformat()
+    return _parse_rows_with_fields(
+        payload.get("data"),
+        payload.get("fields"),
+        record_date=record_date,
+        parse_row=_parse_twse_row,
+    )
+
+
+def _parse_all_tpex_institutional_records(
+    payload: dict,
+    *,
+    current_date: date,
+) -> list[TaiwanInstitutionalInvestorRecord]:
     tables = payload.get("tables")
     if not isinstance(tables, list):
         return []
@@ -304,23 +336,17 @@ def parse_all_institutional_records(
     )
     if table is None:
         return []
-    rows = table.get("data")
-    fields = table.get("fields")
-    if not isinstance(rows, list) or not isinstance(fields, list):
-        return []
     record_date = (
         normalize_taiwan_date(table.get("date"))
         or normalize_taiwan_date(payload.get("date"))
         or current_date.isoformat()
     )
-    parsed_rows = []
-    for row in rows:
-        if not isinstance(row, list):
-            continue
-        record = _parse_tpex_row(row, fields, record_date=record_date)
-        if record is not None:
-            parsed_rows.append(record)
-    return parsed_rows
+    return _parse_rows_with_fields(
+        table.get("data"),
+        table.get("fields"),
+        record_date=record_date,
+        parse_row=_parse_tpex_row,
+    )
 
 
 def fetch_institutional_market_payload(market: TWBoard, current_date: date) -> object:
