@@ -103,7 +103,6 @@ type TranslationKey =
   | "detail.twSignals.description"
   | "detail.twSignals.institutionalTitle"
   | "detail.twSignals.marginShortTitle"
-  | "detail.twSignals.marginShortPlaceholder"
   | "quote.updatedAt"
   | "quote.open"
   | "quote.high"
@@ -481,8 +480,6 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
       "Taiwan institutional activity and margin / short changes are shown with official daily data when available.",
     "detail.twSignals.institutionalTitle": "Institutional activity",
     "detail.twSignals.marginShortTitle": "Margin / short changes",
-    "detail.twSignals.marginShortPlaceholder":
-      "資券變化 will appear here. This placeholder intentionally shows no mock financial values.",
     "quote.updatedAt": "Updated {time}",
     "quote.open": "Open",
     "quote.high": "High",
@@ -912,8 +909,6 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "detail.twSignals.description": "此區塊顯示台股三大法人日買賣超與資券變化，皆以官方日資料為主。",
     "detail.twSignals.institutionalTitle": "法人動態",
     "detail.twSignals.marginShortTitle": "資券變化",
-    "detail.twSignals.marginShortPlaceholder":
-      "資券變化將顯示於此。此預留區塊刻意不顯示任何模擬金融數值。",
     "quote.updatedAt": "更新時間 {time}",
     "quote.open": "開盤",
     "quote.high": "最高",

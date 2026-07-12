@@ -111,10 +111,63 @@ describe("MarginShortPanel", () => {
     expect(values[2]).toHaveClass("app-tw-market-positive");
     expect(values[3]).toHaveClass("app-tw-market-positive");
 
+    expect(screen.getAllByTestId("tw-signal-line-chart")).toHaveLength(2);
+    expect(screen.getAllByTestId("tw-institutional-chart")).toHaveLength(2);
     expect(screen.getByLabelText("融資餘額(張)")).toBeInTheDocument();
     expect(screen.getByLabelText("融券餘額(張)")).toBeInTheDocument();
     expect(screen.getByLabelText("借券賣出餘額增減張數")).toBeInTheDocument();
     expect(screen.getByLabelText("借券賣出餘額增減金額(萬)")).toBeInTheDocument();
+  });
+
+  it("formats negative borrowed-short changes with minus signs and negative tone", async () => {
+    vi.mocked(fetchTaiwanMarginShort).mockResolvedValue({
+      ...samplePayload,
+      summary: {
+        ...samplePayload.summary!,
+        borrowedShortBalanceChangeLots: -141,
+        borrowedShortBalanceChangeAmount10k: -2609,
+      },
+      history: [
+        {
+          ...samplePayload.history[0],
+          borrowedShortBalanceChangeLots: -104,
+          borrowedShortBalanceChangeAmount10k: -1903,
+        },
+        {
+          ...samplePayload.history[1],
+          borrowedShortBalanceChangeLots: -141,
+          borrowedShortBalanceChangeAmount10k: -2609,
+        },
+      ],
+    });
+
+    renderPanel();
+
+    const summary = await screen.findByTestId("tw-margin-short-summary");
+    expect(summary).toHaveTextContent("-141 張");
+    expect(summary).toHaveTextContent("-2,609 萬");
+
+    const values = summary.querySelectorAll("dd");
+    expect(values[2]).toHaveClass("app-tw-market-negative");
+    expect(values[3]).toHaveClass("app-tw-market-negative");
+  });
+
+  it("renders an em dash when borrowed-short change amount is null in the summary", async () => {
+    vi.mocked(fetchTaiwanMarginShort).mockResolvedValue({
+      ...samplePayload,
+      summary: {
+        ...samplePayload.summary!,
+        borrowedShortBalanceChangeAmount10k: null,
+      },
+    });
+
+    renderPanel();
+
+    const summary = await screen.findByTestId("tw-margin-short-summary");
+    expect(summary).toHaveTextContent("+141 張");
+    const amountRow = summary.querySelectorAll("dd")[3];
+    expect(amountRow).toHaveTextContent("—");
+    expect(amountRow).toHaveClass("app-tw-market-neutral");
   });
 
   it("renders English labels and units when language is en", async () => {
@@ -154,6 +207,57 @@ describe("MarginShortPanel", () => {
     expect(screen.getByTestId("tw-institutional-chart-empty")).toHaveTextContent(
       "此區間沒有可繪製的資券資料。",
     );
+  });
+
+  it("keeps histogram timeline gaps when amount is null for a middle day", async () => {
+    vi.mocked(fetchTaiwanMarginShort).mockResolvedValue({
+      ...samplePayload,
+      history: [
+        {
+          date: "2026-07-07",
+          closePrice: 183,
+          marginBalanceLots: 31200,
+          shortMarginBalanceLots: 100,
+          borrowedShortBalanceLots: 12100,
+          borrowedShortBalanceChangeLots: 80,
+          borrowedShortBalanceChangeAmount10k: 1464,
+        },
+        {
+          date: "2026-07-08",
+          closePrice: null,
+          marginBalanceLots: 31220,
+          shortMarginBalanceLots: 120,
+          borrowedShortBalanceLots: 12204,
+          borrowedShortBalanceChangeLots: 104,
+          borrowedShortBalanceChangeAmount10k: null,
+        },
+        {
+          date: "2026-07-09",
+          closePrice: 185,
+          marginBalanceLots: 31339,
+          shortMarginBalanceLots: 0,
+          borrowedShortBalanceLots: 12345,
+          borrowedShortBalanceChangeLots: 141,
+          borrowedShortBalanceChangeAmount10k: 2609,
+        },
+      ],
+    });
+
+    const { container } = renderPanel();
+
+    await screen.findByTestId("tw-margin-short-summary");
+    const amountChart = screen
+      .getAllByTestId("tw-institutional-chart")
+      .find((chart) => chart.querySelector('[aria-label="借券賣出餘額增減金額(萬)"]'));
+    expect(amountChart).toBeTruthy();
+
+    const bars = amountChart!.querySelectorAll("rect");
+    expect(bars).toHaveLength(2);
+    const firstX = Number(bars[0]?.getAttribute("x"));
+    const secondX = Number(bars[1]?.getAttribute("x"));
+    expect(secondX).toBeGreaterThan(50);
+    expect(secondX).toBeGreaterThan(firstX + 20);
+    expect(container.querySelectorAll('[data-testid="tw-signal-line-chart"]')).toHaveLength(2);
   });
 
   it("shows a loading state while the section is fetching", () => {

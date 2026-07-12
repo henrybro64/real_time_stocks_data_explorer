@@ -1,5 +1,7 @@
 "use client";
 
+import { formatAxisDate } from "./twSignalsFormat";
+
 type TaiwanSignalLinePoint = {
   date: string;
   value: number | null | undefined;
@@ -29,7 +31,7 @@ export function TaiwanSignalLineChart({
 
   if (validPoints.length === 0) {
     return (
-      <section className="app-subtile app-tw-inst-chart-card" data-testid="tw-margin-short-line-chart-empty">
+      <section className="app-subtile app-tw-inst-chart-card" data-testid="tw-signal-line-chart-empty">
         <div className="app-tw-inst-chart-header">
           <h4 className="app-tw-inst-chart-title">{title}</h4>
           {dateRangeLabel ? <p className="app-section-meta">{dateRangeLabel}</p> : null}
@@ -57,7 +59,7 @@ export function TaiwanSignalLineChart({
   const endLabel = formatAxisDate(points[points.length - 1]?.date ?? "", language);
 
   return (
-    <section className="app-subtile app-tw-inst-chart-card" data-testid="tw-margin-short-line-chart">
+    <section className="app-subtile app-tw-inst-chart-card" data-testid="tw-signal-line-chart">
       <div className="app-tw-inst-chart-header">
         <h4 className="app-tw-inst-chart-title">{title}</h4>
         <p className="app-section-meta">{dateRangeLabel}</p>
@@ -131,18 +133,4 @@ function formatAxisValue(value: number, language: "en" | "zh-TW"): string {
     minimumFractionDigits: 0,
     maximumFractionDigits: Number.isInteger(value) ? 0 : 1,
   }).format(value);
-}
-
-function formatAxisDate(rawDate: string, language: "en" | "zh-TW"): string {
-  if (!rawDate) {
-    return "—";
-  }
-  const date = new Date(`${rawDate}T00:00:00`);
-  if (Number.isNaN(date.getTime())) {
-    return rawDate;
-  }
-  return new Intl.DateTimeFormat(language === "zh-TW" ? "zh-TW" : "en-US", {
-    month: "numeric",
-    day: "numeric",
-  }).format(date);
 }

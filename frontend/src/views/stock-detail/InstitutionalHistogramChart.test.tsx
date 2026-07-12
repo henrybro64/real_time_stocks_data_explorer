@@ -50,6 +50,38 @@ describe("InstitutionalHistogramChart", () => {
     expect(bar).toHaveAttribute("y", "50");
   });
 
+  it("preserves original timeline slots when values are missing", () => {
+    const { container } = render(
+      <InstitutionalHistogramChart
+        dateRangeLabel="2026/07/04 - 2026/07/06"
+        emptyLabel="No plottable institutional history for this range."
+        language="en"
+        points={[
+          { date: "2026-07-04", value: 500 },
+          { date: "2026-07-05", value: Number.NaN },
+          { date: "2026-07-06", value: -200 },
+        ]}
+        title="Foreign net lots"
+      />,
+    );
+
+    const bars = container.querySelectorAll("rect");
+    expect(bars).toHaveLength(2);
+    expect(bars[0]).toHaveClass("app-tw-market-bar-positive");
+    expect(bars[1]).toHaveClass("app-tw-market-bar-negative");
+
+    const firstX = Number(bars[0]?.getAttribute("x"));
+    const secondX = Number(bars[1]?.getAttribute("x"));
+    // With 3 timeline slots, the second plotted bar (index 2) must sit after the midpoint,
+    // not compress next to the first bar as if only two points existed.
+    expect(secondX).toBeGreaterThan(50);
+    expect(secondX).toBeGreaterThan(firstX + 20);
+
+    const axisLabels = container.querySelectorAll(".app-tw-inst-chart-x-axis span");
+    expect(axisLabels[0]).toHaveTextContent("7/4");
+    expect(axisLabels[1]).toHaveTextContent("7/6");
+  });
+
   it("skips non-finite values without crashing", () => {
     const { container } = render(
       <InstitutionalHistogramChart

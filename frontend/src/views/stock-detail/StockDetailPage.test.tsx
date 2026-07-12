@@ -491,6 +491,20 @@ describe("StockDetailPage", () => {
     renderStockDetailPage("TW%3A2330");
 
     expect(screen.getByText("載入失敗")).toBeInTheDocument();
+    expect(screen.getByText(/資券變化發生載入問題/)).toBeInTheDocument();
+  });
+
+  it("keeps margin-short summary visible with a stale notice when refresh fails", () => {
+    mockQueries({
+      quote: sampleTaiwanQuote,
+      history: sampleHistory,
+      marginShort: sampleMarginShort,
+      marginShortError: true,
+    });
+    renderStockDetailPage("TW%3A2330");
+
+    expect(screen.getByText("顯示較舊資料")).toBeInTheDocument();
+    expect(screen.getByTestId("tw-margin-short-summary")).toHaveTextContent("31,339 張");
   });
 
   it("shows a Taiwan institutional error notice when the API fails", () => {
@@ -531,8 +545,11 @@ describe("StockDetailPage", () => {
     renderStockDetailPage("US%3ANVDA");
 
     expect(screen.queryByTestId("tw-stock-signals-section")).not.toBeInTheDocument();
-    expect(useQueryMock.mock.calls.every((call) => call[0]?.queryKey?.[0] !== "institutional-investors")).toBe(
-      true,
-    );
+    expect(
+      useQueryMock.mock.calls.every((call) => call[0]?.queryKey?.[0] !== "institutional-investors"),
+    ).toBe(true);
+    expect(
+      useQueryMock.mock.calls.every((call) => call[0]?.queryKey?.[0] !== "margin-short"),
+    ).toBe(true);
   });
 });

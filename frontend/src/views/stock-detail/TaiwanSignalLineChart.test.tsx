@@ -19,7 +19,7 @@ describe("TaiwanSignalLineChart", () => {
       />,
     );
 
-    expect(screen.getByTestId("tw-margin-short-line-chart")).toBeInTheDocument();
+    expect(screen.getByTestId("tw-signal-line-chart")).toBeInTheDocument();
     expect(screen.getByRole("img", { name: "融資餘額(張)" })).toBeInTheDocument();
     expect(container.querySelector(".app-value-chart-line")).toBeInTheDocument();
     expect(container.querySelectorAll("circle")).toHaveLength(3);
@@ -58,7 +58,7 @@ describe("TaiwanSignalLineChart", () => {
       />,
     );
 
-    expect(screen.getByTestId("tw-margin-short-line-chart-empty")).toHaveTextContent(
+    expect(screen.getByTestId("tw-signal-line-chart-empty")).toHaveTextContent(
       "此區間沒有可繪製的資券資料。",
     );
     expect(screen.queryByRole("img")).not.toBeInTheDocument();
