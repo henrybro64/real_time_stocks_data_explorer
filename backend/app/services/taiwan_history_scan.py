@@ -70,13 +70,24 @@ def collect_dated_history(
     start_date: date,
     fetch_day: Callable[[date], tuple[T | None, bool]],
     record_date: Callable[[T], str],
+    window_days: int | None = None,
 ) -> tuple[list[T], int]:
-    """Scan weekdays backward, dedupe by resolved trading date, stop at requested_days."""
+    """Scan weekdays backward, dedupe by resolved trading date, stop at requested_days.
+
+    ``window_days`` caps how many calendar days to probe. When omitted, uses the
+    historical scan window sized for multi-month backfills. Read-path live fallback
+    should pass the scheduler recent window (``TAIWAN_MARKET_DATA_REFRESH_RECENT_DAYS``).
+    """
     history: list[T] = []
     seen_dates: set[str] = set()
     successful_fetches = 0
+    probe_window = (
+        max(window_days, 1)
+        if window_days is not None
+        else scan_window_days(requested_days)
+    )
 
-    for current_date in iter_candidate_weekdays(start_date, scan_window_days(requested_days)):
+    for current_date in iter_candidate_weekdays(start_date, probe_window):
         record, request_succeeded = fetch_day(current_date)
         if request_succeeded:
             successful_fetches += 1

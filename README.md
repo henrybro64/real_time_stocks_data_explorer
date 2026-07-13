@@ -243,11 +243,21 @@ Local notes:
 - expand or shrink the tracked free ranking universes by editing `RANKINGS_UNIVERSE_US` and `RANKINGS_UNIVERSE_TW`
 - no paid provider keys or paid market-data integrations are required for rankings
 
-### Taiwan detail-page market data refresh (write-side)
+### Taiwan detail-page market data (write + institutional read)
 
-Scheduled backend job that persists TWSE/TPEx **三大法人買賣超** and **資券變化** daily rows so later read-path work (#105) can serve from Postgres instead of live-scraping on every detail-page click.
+Scheduled backend job that persists TWSE/TPEx **三大法人買賣超** and **資券變化** daily rows. The institutional detail API reads from that store on normal requests.
 
-This owns **write-side only**: schema, idempotent upsert, scheduled refresh, and manual backfill. Live `/api/tw-institutional` and `/api/tw-margin-short` handlers are unchanged until the read cutover.
+**Write-side** (#97): schema, idempotent upsert, scheduled refresh, and manual backfill for both institutional and 資券 tables.
+
+**Read-side** (#105, institutional only — 資券 read cutover remains a follow-up): `GET /api/stocks/{stock_id}/institutional-investors` serves from `taiwan_institutional_daily`.
+
+Read policy:
+
+- Fresh store (latest row within `TAIWAN_MARKET_DATA_REFRESH_RECENT_DAYS` of the Taiwan candidate start) → return stored history only; no live probes. Response `source` is prefixed with `Persisted`.
+- Empty / unavailable / stale store → probe only that same recent weekday window live, merge with stored rows (live wins on date collisions), and best-effort upsert any successful live rows back into the store so later clicks heal without waiting for the scheduler. Response `source` uses the official feed label when live rows contributed.
+- It does **not** walk months of full-market payloads per click.
+
+**Deploy prerequisite (cold start):** before relying on detail-page institutional history in an environment, run the #97 capture/backfill (`POST /api/taiwan-market-data/capture?days=120` or an equivalent seeded `taiwan_institutional_daily` load) and keep the refresh scheduler enabled. An empty store only returns the small recent live window (not ~90 trading days), so charts look short until backfill has populated the table.
 
 Persisted tables:
 
@@ -258,7 +268,7 @@ Scheduler settings:
 
 - `TAIWAN_MARKET_DATA_REFRESH_ENABLED` (default `true`)
 - `TAIWAN_MARKET_DATA_REFRESH_DAYS` — full backfill window for capture (default `120`)
-- `TAIWAN_MARKET_DATA_REFRESH_RECENT_DAYS` — scheduler window (default `7`)
+- `TAIWAN_MARKET_DATA_REFRESH_RECENT_DAYS` — scheduler recent window **and** institutional read-path freshness / live-fallback probe size (default `7`)
 - `TAIWAN_MARKET_DATA_REFRESH_POLL_SECONDS` (default `3600`)
 - `TAIWAN_MARKET_DATA_REFRESH_HOUR` — local Asia/Taipei hour gate (default `18`)
 - `TAIWAN_MARKET_DATA_TIMEZONE` (default `Asia/Taipei`)
@@ -275,7 +285,11 @@ Behavior notes:
 
 - probes weekdays only; skips official no-data days; continues after per-source fetch/upsert errors
 - scheduler refreshes recent days once per local day after the configured Taipei hour; use the capture endpoint for ~90–120 day backfill
+- **cold start:** empty `taiwan_institutional_daily` only yields the recent live window on detail reads — run capture before expecting full history charts
+- institutional live fallback best-effort upserts successful rows so a stale/empty store can heal without waiting for the next scheduler tick
 - disable locally with `TAIWAN_MARKET_DATA_REFRESH_ENABLED=false`
+- institutional API history dates are unique; holiday / no-data days are simply absent
+- #105 covers institutional reads only; 資券 (`taiwan_margin_short_daily`) read cutover is a follow-up
 
 ### Threshold Alerts
 

@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from operator import attrgetter
-from typing import TYPE_CHECKING, Callable, Literal
+from typing import TYPE_CHECKING, Callable, Literal, Protocol
 
 from app.services.http_client import HttpFetchError
 from app.services.taiwan_history_scan import (
@@ -28,6 +28,7 @@ from app.services.taiwan_market_data import (
 )
 
 if TYPE_CHECKING:
+    from app.db.models import TaiwanInstitutionalDaily
     from app.services.quote_service import QuoteService
 
 # Keep aligned with rankings_service / official TWSE fund endpoints.
@@ -39,6 +40,12 @@ _TWSE_SOURCE = "TWSE T86 daily institutional data"
 _TPEX_SOURCE = "TPEx institutional daily data"
 _DEFAULT_HISTORY_DAYS = 90
 _RESULT_CACHE_TTL = RESULT_CACHE_TTL
+
+# Read-path policy (#105): serve from taiwan_institutional_daily for normal
+# detail-page requests. When the store is empty/unavailable/stale, probe only the
+# scheduler's recent weekday window live — never the historical multi-month walk.
+# Freshness + live probe size both follow TAIWAN_MARKET_DATA_REFRESH_RECENT_DAYS.
+_PERSISTED_SOURCE_PREFIX = "Persisted "
 
 _STOCK_NOT_FOUND_ERROR = "Stock not found"
 _NON_TW_STOCK_ERROR = "Taiwan institutional data is only available for TW stocks"
@@ -56,6 +63,26 @@ _TPEX_DEALER_NET_OFFSET = 20
 TWBoard = Literal["TWSE", "TPEx"]
 PayloadFetcher = Callable[[date], object]
 NowProvider = Callable[[], datetime]
+
+
+class InstitutionalDailyStore(Protocol):
+    def is_available(self) -> bool: ...
+
+    def list_history(
+        self,
+        *,
+        market: str,
+        symbol: str,
+        limit: int,
+    ) -> list[TaiwanInstitutionalDaily]: ...
+
+    def upsert_records(
+        self,
+        *,
+        market: str,
+        source: str,
+        records: list[TaiwanInstitutionalInvestorRecord],
+    ) -> object: ...
 
 
 @dataclass(frozen=True)
@@ -96,11 +123,15 @@ class TaiwanInstitutionalInvestorsService:
         twse_fetcher: PayloadFetcher | None = None,
         tpex_fetcher: PayloadFetcher | None = None,
         now_provider: NowProvider | None = None,
+        store: InstitutionalDailyStore | None = None,
+        use_default_store: bool = True,
     ) -> None:
         self._quote_source = quote_source or _default_quote_source()
         self._twse_fetcher = twse_fetcher or _fetch_twse_payload
         self._tpex_fetcher = tpex_fetcher or _fetch_tpex_payload
         self._now_provider = now_provider or _utc_now
+        self._store = store
+        self._use_default_store = use_default_store and store is None
         self._result_cache = {}
 
     def get_institutional_investors(
@@ -124,16 +155,35 @@ class TaiwanInstitutionalInvestorsService:
                 quote_source=self._quote_source,
                 unknown_market_error=_UNKNOWN_TW_MARKET_ERROR,
             )
-            history, successful_fetches = self._collect_history(
+            start_date = candidate_start_date(now)
+            stored = self._load_stored_history(
                 market=market,
                 symbol=symbol,
                 requested_days=requested_days,
-                start_date=candidate_start_date(now),
             )
-            if not history and successful_fetches == 0:
-                raise RuntimeError(_UPSTREAM_UNAVAILABLE_ERROR)
+            live_history: list[TaiwanInstitutionalInvestorRecord] = []
+            successful_fetches = 0
+            served_from_store_only = False
 
-            history.reverse()
+            if _stored_history_is_fresh(stored, start_date=start_date):
+                history = stored
+                served_from_store_only = True
+            else:
+                live_history, successful_fetches = self._collect_live_fallback(
+                    market=market,
+                    symbol=symbol,
+                    requested_days=requested_days,
+                    start_date=start_date,
+                )
+                if live_history:
+                    self._persist_live_fallback(market=market, records=live_history)
+                history = _merge_history(stored, live_history, requested_days=requested_days)
+                if not history and successful_fetches == 0 and not stored:
+                    raise RuntimeError(_UPSTREAM_UNAVAILABLE_ERROR)
+                # Official source only when live rows contributed; otherwise keep
+                # persisted attribution for stale-store / empty-live responses.
+                served_from_store_only = not live_history
+
             latest = history[-1] if history else None
             return TaiwanInstitutionalInvestorsResult(
                 stock_id=stock.id,
@@ -142,7 +192,7 @@ class TaiwanInstitutionalInvestorsService:
                 latest_date=latest.date if latest is not None else None,
                 summary=latest,
                 history=tuple(history),
-                source=_source_for_market(market),
+                source=_response_source(market, served_from_store_only=served_from_store_only),
             )
 
         return get_cached_or_compute(
@@ -153,7 +203,63 @@ class TaiwanInstitutionalInvestorsService:
             compute=compute,
         )
 
-    def _collect_history(
+    def _resolve_store(self) -> InstitutionalDailyStore | None:
+        if self._store is not None:
+            return self._store
+        if not self._use_default_store:
+            return None
+        from app.repositories.taiwan_market_daily_repository import (
+            taiwan_institutional_daily_repository,
+        )
+
+        return taiwan_institutional_daily_repository
+
+    def _load_stored_history(
+        self,
+        *,
+        market: TWBoard,
+        symbol: str,
+        requested_days: int,
+    ) -> list[TaiwanInstitutionalInvestorRecord]:
+        store = self._resolve_store()
+        if store is None or not store.is_available():
+            return []
+        try:
+            rows = store.list_history(
+                market=market,
+                symbol=symbol,
+                limit=requested_days,
+            )
+        except Exception:  # noqa: BLE001 - store outages fall back to bounded live
+            # Store outages must not block the detail page; fall back to bounded live.
+            return []
+        # Repository returns newest-first; API history is chronological ascending.
+        records = [_record_from_stored_row(row) for row in rows]
+        records.reverse()
+        return _dedupe_history_by_date(records)
+
+    def _persist_live_fallback(
+        self,
+        *,
+        market: TWBoard,
+        records: Sequence[TaiwanInstitutionalInvestorRecord],
+    ) -> None:
+        """Best-effort heal of the store from bounded live rows (never fails the read)."""
+        if not records:
+            return
+        store = self._resolve_store()
+        if store is None or not store.is_available():
+            return
+        try:
+            store.upsert_records(
+                market=market,
+                source=_source_for_market(market),
+                records=list(records),
+            )
+        except Exception:  # noqa: BLE001 - store healing must not block detail reads
+            return
+
+    def _collect_live_fallback(
         self,
         *,
         market: TWBoard,
@@ -161,12 +267,15 @@ class TaiwanInstitutionalInvestorsService:
         requested_days: int,
         start_date: date,
     ) -> tuple[list[TaiwanInstitutionalInvestorRecord], int]:
-        return collect_dated_history(
+        history, successful_fetches = collect_dated_history(
             requested_days=requested_days,
             start_date=start_date,
             fetch_day=lambda day: self._history_day_lookup(market, day, symbol),
             record_date=attrgetter("date"),
+            window_days=_read_path_window_days(),
         )
+        history.reverse()
+        return history, successful_fetches
 
     def _history_day_lookup(
         self,
@@ -545,6 +654,78 @@ def _row_at(row: Sequence[object], index: int) -> object | None:
 
 def _source_for_market(market: TaiwanMarket) -> str:
     return _TPEX_SOURCE if market == "TPEx" else _TWSE_SOURCE
+
+
+def _response_source(market: TaiwanMarket, *, served_from_store_only: bool) -> str:
+    base = _source_for_market(market)
+    if served_from_store_only:
+        return f"{_PERSISTED_SOURCE_PREFIX}{base}"
+    return base
+
+
+def _read_path_window_days() -> int:
+    """Freshness + live probe window; aligned with the #97 recent refresh window."""
+    from app.core.config import settings
+
+    return max(settings.taiwan_market_data_refresh_recent_days, 1)
+
+
+def _record_from_stored_row(row: TaiwanInstitutionalDaily) -> TaiwanInstitutionalInvestorRecord:
+    return TaiwanInstitutionalInvestorRecord(
+        date=row.date.isoformat(),
+        symbol=row.symbol,
+        name=row.name or "",
+        foreign_net_shares=row.foreign_net_shares,
+        investment_trust_net_shares=row.investment_trust_net_shares,
+        dealer_self_net_shares=row.dealer_self_net_shares,
+        dealer_hedge_net_shares=row.dealer_hedge_net_shares,
+        dealer_net_shares=row.dealer_net_shares,
+        total_net_shares=row.total_net_shares,
+    )
+
+
+def _stored_history_is_fresh(
+    history: Sequence[TaiwanInstitutionalInvestorRecord],
+    *,
+    start_date: date,
+    max_age_days: int | None = None,
+) -> bool:
+    if not history:
+        return False
+    try:
+        latest_date = date.fromisoformat(history[-1].date)
+    except ValueError:
+        return False
+    age_days = max_age_days if max_age_days is not None else _read_path_window_days()
+    return latest_date >= start_date - timedelta(days=age_days)
+
+
+def _dedupe_history_by_date(
+    history: Sequence[TaiwanInstitutionalInvestorRecord],
+) -> list[TaiwanInstitutionalInvestorRecord]:
+    """Keep chronological order with unique trading dates (last write wins)."""
+    by_date: dict[str, TaiwanInstitutionalInvestorRecord] = {}
+    for record in history:
+        by_date[record.date] = record
+    return [by_date[key] for key in sorted(by_date)]
+
+
+def _merge_history(
+    stored: Sequence[TaiwanInstitutionalInvestorRecord],
+    live: Sequence[TaiwanInstitutionalInvestorRecord],
+    *,
+    requested_days: int,
+) -> list[TaiwanInstitutionalInvestorRecord]:
+    """Merge store + bounded live rows; live wins on the same trading date."""
+    by_date: dict[str, TaiwanInstitutionalInvestorRecord] = {
+        record.date: record for record in stored
+    }
+    for record in live:
+        by_date[record.date] = record
+    merged = [by_date[key] for key in sorted(by_date)]
+    if len(merged) <= requested_days:
+        return merged
+    return merged[-requested_days:]
 
 
 def _utc_now() -> datetime:
