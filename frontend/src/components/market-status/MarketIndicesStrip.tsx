@@ -112,8 +112,14 @@ export function MarketIndicesStrip({ error, isLoading = false, items }: Props) {
     maximumFractionDigits: 2,
     signDisplay: "always",
   });
-  const resolvedItems = resolveMarketIndexSlots(items);
-  const noticeKind = sectionNoticeKind(error, resolvedItems);
+  // Cold start: HomePage passes [] while the first request is in flight. Do not invent
+  // unavailable placeholders or outage notices until a response (or error) exists.
+  const isInitialLoad = Boolean(isLoading && items.length === 0 && !error);
+  const resolvedItems =
+    isInitialLoad || (Boolean(error) && items.length === 0)
+      ? []
+      : resolveMarketIndexSlots(items);
+  const noticeKind = isInitialLoad ? null : sectionNoticeKind(error, resolvedItems);
 
   return (
     <Tile className="app-section-tile">

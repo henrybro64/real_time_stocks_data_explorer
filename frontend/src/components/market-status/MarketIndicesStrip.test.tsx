@@ -90,4 +90,13 @@ describe("MarketIndicesStrip", () => {
     expect(screen.getByText("Taiwan Stock Exchange")).toBeInTheDocument();
     expect(screen.getByText("DOW Jones")).toBeInTheDocument();
   });
+
+  it("does not flash unavailable cards during the initial loading state", () => {
+    renderWithLanguage(<MarketIndicesStrip isLoading items={[]} />);
+
+    expect(screen.getByText("載入市場指數中")).toBeInTheDocument();
+    expect(screen.queryByTestId("market-index-card-TWSE:TAIEX")).not.toBeInTheDocument();
+    expect(screen.queryByText("資料來源暫時不可用")).not.toBeInTheDocument();
+    expect(screen.queryByText("暫時無法取得")).not.toBeInTheDocument();
+  });
 });
