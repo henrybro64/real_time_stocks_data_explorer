@@ -400,6 +400,7 @@ def test_institutional_investors_endpoint_returns_lots_summary_and_history(monke
     assert payload["symbol"] == "2330"
     assert payload["market"] == "TWSE"
     assert payload["latestDate"] == "2026-07-09"
+    assert payload["sharesPerLot"] == 1000
     assert payload["summary"] == {
         "foreignNetLots": 12345.0,
         "investmentTrustNetLots": 1200.0,
@@ -410,6 +411,54 @@ def test_institutional_investors_endpoint_returns_lots_summary_and_history(monke
     }
     assert payload["history"][0]["date"] == "2026-07-09"
     assert payload["source"] == "TWSE T86 daily institutional data"
+
+
+def test_institutional_investors_endpoint_applies_100_unit_lots_for_fx_etf(
+    monkeypatch,
+    client,
+) -> None:
+    from app.api.routes import tw_institutional as institutional_routes
+    from app.services.tw_institutional_service import (
+        TaiwanInstitutionalInvestorRecord,
+        TaiwanInstitutionalInvestorsResult,
+    )
+
+    record = TaiwanInstitutionalInvestorRecord(
+        date="2026-07-09",
+        symbol="00677K",
+        name="富邦VIX",
+        foreign_net_shares=1_000,
+        investment_trust_net_shares=0,
+        dealer_self_net_shares=0,
+        dealer_hedge_net_shares=0,
+        dealer_net_shares=0,
+        total_net_shares=1_000,
+    )
+    result = TaiwanInstitutionalInvestorsResult(
+        stock_id="TW:00677K",
+        symbol="00677K",
+        market="TWSE",
+        latest_date="2026-07-09",
+        summary=record,
+        history=(record,),
+        source="TWSE T86 daily institutional data",
+    )
+
+    monkeypatch.setattr(
+        institutional_routes.tw_institutional_service,
+        "get_institutional_investors",
+        lambda stock_id, *, days: result,
+    )
+
+    response = client.get("/api/stocks/TW:00677K/institutional-investors", params={"days": 90})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["sharesPerLot"] == 100
+    # 1000 shares / 100 = 10 張 (not 1.0 from a hardcoded /1000).
+    assert payload["summary"]["foreignNetLots"] == pytest.approx(10.0)
+    assert payload["summary"]["totalNetLots"] == pytest.approx(10.0)
+    assert payload["history"][0]["foreignNetLots"] == pytest.approx(10.0)
 
 
 def test_institutional_investors_endpoint_rejects_non_taiwan_stocks(monkeypatch, client) -> None:
@@ -516,6 +565,7 @@ def test_institutional_investors_endpoint_serves_from_persisted_store(
     assert [point["date"] for point in payload["history"]] == ["2026-07-07", "2026-07-08"]
     assert payload["summary"]["foreignNetLots"] == pytest.approx(1000.0)
     assert payload["summary"]["totalNetLots"] == pytest.approx(3300.0)
+    assert payload["sharesPerLot"] == 1000
     assert payload["source"].startswith("Persisted ")
     # Fresh store-backed reads must not probe official full-market payloads.
     assert live_calls == []

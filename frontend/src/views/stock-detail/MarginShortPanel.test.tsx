@@ -49,6 +49,7 @@ const samplePayload: TaiwanMarginShortResponse = {
       borrowedShortBalanceChangeAmount10k: 2609,
     },
   ],
+  sharesPerLot: 1000,
   source: "TWSE official margin and borrowed-short daily data",
 };
 

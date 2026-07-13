@@ -548,6 +548,11 @@ def parse_taiwan_number(value: object) -> float | None:
 
 
 def shares_to_lots(value: object, *, symbol: str | None = None) -> float | None:
+    """Convert share/beneficiary-unit counts to 張 using ``taiwan_shares_per_lot``.
+
+    Callers must not hardcode ``/1000``; pass the Taiwan symbol so foreign-currency
+    ETF lot sizes are applied. Returns ``None`` when ``value`` cannot be parsed.
+    """
     shares = parse_taiwan_number(value)
     if shares is None:
         return None
@@ -555,7 +560,26 @@ def shares_to_lots(value: object, *, symbol: str | None = None) -> float | None:
 
 
 def taiwan_shares_per_lot(symbol: str | None = None) -> int:
-    """Return shares per 張. Most TW equities use 1000; some FX ETFs use 100."""
+    """Return shares (受益權單位) per 張 for Taiwan instruments.
+
+    Rules (aligned with common TWSE/TPEx dual-currency / 加掛 ETF symbol conventions):
+
+    - Default equities and most instruments: ``1000``
+    - Foreign-currency (加掛) ETF symbols whose **sixth** character is ``K``
+      (equity ETF) or ``C`` (bond ETF): ``100``
+
+    This is a **heuristic**, not a product registry. Limitations:
+
+    - Issuers may select another multiple of 100 for some 加掛 ETFs; when the
+      exact product lot size is unknown we still use ``100`` for ``K``/``C``
+      symbols (the common dual-ETF case) rather than guessing further.
+    - Other FX ETF suffix letters (for example leverage ``M`` / inverse ``S``)
+      keep the default ``1000`` until product-specific rules are added.
+    - Does **not** infer TWSE vs TPEx from digit patterns; only the symbol text
+      (after normalizing prefixes/suffixes) is inspected.
+    - Detail API responses also expose ``sharesPerLot`` so clients can see which
+      divisor was applied without reconstructing the rule.
+    """
     normalized = normalize_taiwan_symbol(symbol) if symbol is not None else None
     if normalized is not None and len(normalized) >= 6 and normalized[5] in {"K", "C"}:
         return 100

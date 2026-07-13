@@ -9,7 +9,7 @@ from app.schemas.tw_institutional import (
     TaiwanInstitutionalInvestorsResponse,
     TaiwanInstitutionalInvestorSummaryResponse,
 )
-from app.services.taiwan_market_data import shares_to_lots
+from app.services.taiwan_market_data import shares_to_lots, taiwan_shares_per_lot
 from app.services.tw_institutional_service import (
     TaiwanInstitutionalInvestorRecord,
     TaiwanInstitutionalInvestorsResult,
@@ -93,6 +93,7 @@ def _tw_institutional_schema(
             else None
         ),
         history=[_tw_institutional_history_point_schema(item) for item in result.history],
+        sharesPerLot=taiwan_shares_per_lot(result.symbol),
         source=result.source,
     )
 

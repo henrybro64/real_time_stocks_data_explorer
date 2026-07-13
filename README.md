@@ -247,6 +247,14 @@ Local notes:
 
 Scheduled backend job that persists TWSE/TPEx **三大法人買賣超** and **資券變化** daily rows. The institutional detail API reads from that store on normal requests.
 
+**Lot size (張):** detail APIs expose values in 張 via the shared `shares_to_lots` / `taiwan_shares_per_lot` helpers, and include response field `sharesPerLot` so clients can verify the divisor without re-converting.
+
+- Default equities / most instruments: **1000** shares per 張
+- Foreign-currency (加掛) ETF symbols whose **sixth** character is **`K`** or **`C`**: **100**
+- This is a **symbol heuristic**, not a full ETF product registry — issuers may choose another multiple of 100 for some 加掛 products; leverage/inverse suffixes such as `M`/`S` keep the default **1000** until product-specific rules are added
+- Callers must not hardcode `/1000`; treat `*Lots` fields as already-normalized 張
+- Ranking pages do not use this helper (out of scope for #106)
+
 **Write-side** (#97): schema, idempotent upsert, scheduled refresh, and manual backfill for both institutional and 資券 tables.
 
 **Read-side** (#105, institutional only — 資券 read cutover remains a follow-up): `GET /api/stocks/{stock_id}/institutional-investors` serves from `taiwan_institutional_daily`.

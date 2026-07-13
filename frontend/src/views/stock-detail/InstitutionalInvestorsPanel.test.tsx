@@ -44,6 +44,7 @@ const samplePayload: TaiwanInstitutionalInvestorsResponse = {
       totalNetLots: 11545,
     },
   ],
+  sharesPerLot: 1000,
   source: "TWSE T86 daily institutional data",
 };
 

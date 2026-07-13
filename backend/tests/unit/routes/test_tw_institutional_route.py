@@ -45,6 +45,7 @@ def test_tw_institutional_schema_converts_shares_to_lots() -> None:
     assert payload["summary"]["dealerSelfNetLots"] == pytest.approx(-0.8)
     assert payload["summary"]["dealerHedgeNetLots"] == pytest.approx(0.2)
     assert payload["history"][0]["date"] == "2026-07-09"
+    assert payload["sharesPerLot"] == 1000
     assert payload["source"] == "TWSE T86 daily institutional data"
 
 
@@ -72,8 +73,39 @@ def test_tw_institutional_schema_uses_100_unit_lots_for_foreign_currency_etfs() 
 
     payload = institutional_route._tw_institutional_schema(result).model_dump()
 
+    # 1000 shares / 100 shares-per-lot = 10 張 (not 1.0 from a hardcoded /1000).
     assert payload["summary"]["foreignNetLots"] == pytest.approx(10.0)
     assert payload["summary"]["totalNetLots"] == pytest.approx(10.0)
+    assert payload["sharesPerLot"] == 100
+
+
+def test_tw_institutional_schema_uses_100_unit_lots_for_bond_fx_etf_c_suffix() -> None:
+    record = TaiwanInstitutionalInvestorRecord(
+        date="2026-07-09",
+        symbol="00900C",
+        name="債券外幣ETF",
+        foreign_net_shares=2_500,
+        investment_trust_net_shares=0,
+        dealer_self_net_shares=0,
+        dealer_hedge_net_shares=0,
+        dealer_net_shares=0,
+        total_net_shares=2_500,
+    )
+    result = TaiwanInstitutionalInvestorsResult(
+        stock_id="TW:00900C",
+        symbol="00900C",
+        market="TWSE",
+        latest_date="2026-07-09",
+        summary=record,
+        history=(record,),
+        source="TWSE T86 daily institutional data",
+    )
+
+    payload = institutional_route._tw_institutional_schema(result).model_dump()
+
+    assert payload["summary"]["foreignNetLots"] == pytest.approx(25.0)
+    assert payload["summary"]["totalNetLots"] == pytest.approx(25.0)
+    assert payload["sharesPerLot"] == 100
 
 
 def test_institutional_route_delegates_to_service(monkeypatch) -> None:

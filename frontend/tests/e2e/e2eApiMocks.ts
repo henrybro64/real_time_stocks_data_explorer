@@ -487,6 +487,7 @@ const E2E_TW_INSTITUTIONAL = {
       totalNetLots: 12745,
     },
   ],
+  sharesPerLot: 1000,
   source: "TWSE T86 daily institutional data",
 };
 
@@ -531,6 +532,7 @@ const E2E_TW_MARGIN_SHORT = {
       borrowedShortBalanceChangeAmount10k: 2609,
     },
   ],
+  sharesPerLot: 1000,
   source: "TWSE official margin and borrowed-short daily data",
 };
 
