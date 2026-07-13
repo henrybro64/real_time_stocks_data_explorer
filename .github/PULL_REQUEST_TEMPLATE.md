@@ -11,7 +11,7 @@
 
 Use when touching institutional, 資券, Taiwan refresh/store, or shared Taiwan helpers.
 
-Follow [docs/taiwan-market-data-sonar-checklist.md](docs/taiwan-market-data-sonar-checklist.md):
+Follow [docs/taiwan-market-data-sonar-checklist.md](https://github.com/henrybro64/real_time_stocks_data_explorer/blob/main/docs/taiwan-market-data-sonar-checklist.md):
 
 - [ ] SonarCloud PR dashboard reviewed; failed conditions listed
 - [ ] Shared Taiwan helpers reused (`parse_taiwan_number`, `shares_to_lots`, history-scan helpers) — no local `/1000` or copied calendar walks

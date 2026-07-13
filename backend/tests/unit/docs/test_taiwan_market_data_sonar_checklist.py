@@ -88,8 +88,13 @@ def test_checklist_referenced_test_files_exist_on_disk() -> None:
 def test_pull_request_template_links_taiwan_sonar_checklist() -> None:
     assert _PR_TEMPLATE.is_file(), f"missing PR template at {_PR_TEMPLATE}"
     text = _PR_TEMPLATE.read_text(encoding="utf-8")
-    # Repo-root relative path (not ../docs/...) so GitHub renders the link correctly.
-    assert "](docs/taiwan-market-data-sonar-checklist.md)" in text
+    # PR descriptions resolve relative links under /pull/<n>/, so the template must
+    # use an absolute blob URL (not docs/... or ../docs/...).
+    assert (
+        "](https://github.com/henrybro64/real_time_stocks_data_explorer/blob/main/"
+        "docs/taiwan-market-data-sonar-checklist.md)"
+    ) in text
+    assert "](docs/taiwan-market-data-sonar-checklist.md)" not in text
     assert "../docs/" not in text
     assert "SonarCloud" in text
     assert "Deferred" in text or "deferred" in text
