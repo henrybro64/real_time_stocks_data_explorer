@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from typing import Any
 
 from fastapi import APIRouter
 
@@ -35,7 +36,7 @@ def get_markets() -> list[dict[str, str | bool]]:
 
 
 @router.get("/indices")
-def get_market_indices() -> list[dict[str, str | bool | float]]:
+def get_market_indices() -> list[dict[str, Any]]:
     return [
         {
             "id": item.id,
@@ -46,6 +47,8 @@ def get_market_indices() -> list[dict[str, str | bool | float]]:
             "changePercent": item.change_percent,
             "timestamp": item.timestamp,
             "isMarketOpen": item.is_market_open,
+            "status": item.status,
+            "unavailableReason": item.unavailable_reason,
         }
         for item in market_index_service.get_latest()
     ]

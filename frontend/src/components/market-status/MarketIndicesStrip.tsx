@@ -1,7 +1,7 @@
 import { InlineLoading, Tag, Tile } from "@carbon/react";
 import type { MarketIndex } from "@shared/api";
 import { useLanguage } from "../../app/i18n";
-import { RequestStateNotice, errorToNoticeKind } from "../state/RequestStateNotice";
+import { RequestStateNotice, errorToNoticeKind, type RequestNoticeKind } from "../state/RequestStateNotice";
 import { formatLastUpdated, formatPercent } from "../../services/format/quote";
 
 type Props = {
@@ -9,6 +9,73 @@ type Props = {
   isLoading?: boolean;
   items: MarketIndex[];
 };
+
+const EXPECTED_INDEX_SLOTS: ReadonlyArray<Pick<MarketIndex, "id" | "market" | "label">> = [
+  { id: "TWSE:TAIEX", market: "TW", label: "Taiwan Stock Exchange" },
+  { id: "^DJI", market: "US", label: "DOW Jones" },
+  { id: "^NDQ", market: "US", label: "Nasdaq" },
+  { id: "^SPX", market: "US", label: "S&P 500" },
+];
+
+function isUnavailable(item: MarketIndex): boolean {
+  return item.status === "unavailable" || item.value == null;
+}
+
+function sessionTagType(item: MarketIndex, unavailable: boolean): "green" | "gray" {
+  if (unavailable || !item.isMarketOpen) {
+    return "gray";
+  }
+  return "green";
+}
+
+function sessionTagLabel(
+  item: MarketIndex,
+  unavailable: boolean,
+  copy: { live: string; closed: string; unavailable: string },
+): string {
+  if (unavailable) {
+    return copy.unavailable;
+  }
+  return item.isMarketOpen ? copy.live : copy.closed;
+}
+
+function sectionNoticeKind(
+  error: unknown,
+  resolvedItems: MarketIndex[],
+): RequestNoticeKind | null {
+  if (error) {
+    const hasUsableData = resolvedItems.some((item) => !isUnavailable(item));
+    return hasUsableData ? "stale" : errorToNoticeKind(error);
+  }
+  // Partial provider failures are shown on the cards; only escalate when every slot failed.
+  if (resolvedItems.length > 0 && resolvedItems.every(isUnavailable)) {
+    return "unavailable";
+  }
+  return null;
+}
+
+/** Keep a stable four-card layout even if the API omits a slot. */
+export function resolveMarketIndexSlots(items: MarketIndex[]): MarketIndex[] {
+  const byId = new Map(items.map((item) => [item.id, item]));
+  return EXPECTED_INDEX_SLOTS.map((slot) => {
+    const existing = byId.get(slot.id);
+    if (existing) {
+      return existing;
+    }
+    return {
+      id: slot.id,
+      market: slot.market,
+      label: slot.label,
+      value: null,
+      change: null,
+      changePercent: null,
+      timestamp: new Date(0).toISOString(),
+      isMarketOpen: false,
+      status: "unavailable",
+      unavailableReason: "missing_from_response",
+    };
+  });
+}
 
 export function MarketIndicesStrip({ error, isLoading = false, items }: Props) {
   const { language } = useLanguage();
@@ -21,7 +88,9 @@ export function MarketIndicesStrip({ error, isLoading = false, items }: Props) {
           loading: "載入市場指數中",
           live: "開盤中",
           closed: "已收盤",
+          unavailable: "暫時無法取得",
           updated: "更新",
+          emDash: "—",
         }
       : {
           eyebrow: "Latest market prices",
@@ -30,7 +99,9 @@ export function MarketIndicesStrip({ error, isLoading = false, items }: Props) {
           loading: "Loading market indices",
           live: "Live",
           closed: "Closed",
+          unavailable: "Temporarily unavailable",
           updated: "Updated",
+          emDash: "—",
         };
   const numberFormat = new Intl.NumberFormat(language === "zh-TW" ? "zh-TW" : "en-US", {
     minimumFractionDigits: 2,
@@ -41,7 +112,14 @@ export function MarketIndicesStrip({ error, isLoading = false, items }: Props) {
     maximumFractionDigits: 2,
     signDisplay: "always",
   });
-  const noticeKind = error ? (items.length > 0 ? "stale" : errorToNoticeKind(error)) : null;
+  // Cold start: HomePage passes [] while the first request is in flight. Do not invent
+  // unavailable placeholders or outage notices until a response (or error) exists.
+  const isInitialLoad = Boolean(isLoading && items.length === 0 && !error);
+  const resolvedItems =
+    isInitialLoad || (Boolean(error) && items.length === 0)
+      ? []
+      : resolveMarketIndexSlots(items);
+  const noticeKind = isInitialLoad ? null : sectionNoticeKind(error, resolvedItems);
 
   return (
     <Tile className="app-section-tile">
@@ -59,23 +137,43 @@ export function MarketIndicesStrip({ error, isLoading = false, items }: Props) {
       ) : null}
       {isLoading ? <InlineLoading description={copy.loading} status="active" /> : null}
       <div className="app-market-grid">
-        {items.map((item) => (
-          <Tile key={item.id} className="app-subtile">
-            <div className="app-market-card-top">
-              <strong>{item.label}</strong>
-              <Tag size="sm" type={item.isMarketOpen ? "green" : "gray"}>
-                {item.isMarketOpen ? copy.live : copy.closed}
-              </Tag>
-            </div>
-            <p className="app-stock-card-price">{numberFormat.format(item.value)}</p>
-            <p className={item.change >= 0 ? "app-positive app-stock-card-change" : "app-negative app-stock-card-change"}>
-              {signedNumberFormat.format(item.change)} ({formatPercent(item.changePercent)})
-            </p>
-            <p className="app-section-meta">
-              {copy.updated} {formatLastUpdated(item.timestamp)}
-            </p>
-          </Tile>
-        ))}
+        {resolvedItems.map((item) => {
+          const unavailable = isUnavailable(item);
+          return (
+            <Tile key={item.id} className="app-subtile" data-testid={`market-index-card-${item.id}`}>
+              <div className="app-market-card-top">
+                <strong>{item.label}</strong>
+                <Tag size="sm" type={sessionTagType(item, unavailable)}>
+                  {sessionTagLabel(item, unavailable, copy)}
+                </Tag>
+              </div>
+              {unavailable ? (
+                <>
+                  <p className="app-stock-card-price">{copy.emDash}</p>
+                  <div className="app-state-notice-wrap">
+                    <RequestStateNotice compact kind="unavailable" scopeLabel={item.label} />
+                  </div>
+                </>
+              ) : (
+                <>
+                  <p className="app-stock-card-price">{numberFormat.format(item.value ?? 0)}</p>
+                  <p
+                    className={
+                      (item.change ?? 0) >= 0
+                        ? "app-positive app-stock-card-change"
+                        : "app-negative app-stock-card-change"
+                    }
+                  >
+                    {signedNumberFormat.format(item.change ?? 0)} ({formatPercent(item.changePercent ?? 0)})
+                  </p>
+                  <p className="app-section-meta">
+                    {copy.updated} {formatLastUpdated(item.timestamp)}
+                  </p>
+                </>
+              )}
+            </Tile>
+          );
+        })}
       </div>
     </Tile>
   );
