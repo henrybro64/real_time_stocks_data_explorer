@@ -255,6 +255,8 @@ Scheduled backend job that persists TWSE/TPEx **三大法人買賣超** and **�
 - Callers must not hardcode `/1000`; treat `*Lots` fields as already-normalized 張
 - Ranking pages do not use this helper (out of scope for #106)
 
+**SonarCloud:** Taiwan market-data backend PRs must clear the quality gate in addition to pytest/Playwright/k3s. Functional CI alone is not enough when the Sonar check is required — follow the [Taiwan market-data SonarCloud checklist](docs/taiwan-market-data-sonar-checklist.md).
+
 **Write-side** (#97): schema, idempotent upsert, scheduled refresh, and manual backfill for both institutional and 資券 tables.
 
 **Read-side** (#105, institutional only — 資券 read cutover remains a follow-up): `GET /api/stocks/{stock_id}/institutional-investors` serves from `taiwan_institutional_daily`.
