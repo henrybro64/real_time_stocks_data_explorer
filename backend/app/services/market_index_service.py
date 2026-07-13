@@ -35,6 +35,11 @@ _BROWSER_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
 )
+_TW_INDEX_ID = "TWSE:TAIEX"
+_TW_INDEX_LABEL = "Taiwan Stock Exchange"
+_TW_YAHOO_SYMBOL = "^TWII"
+_TZ_TAIPEI = "Asia/Taipei"
+_TZ_NEW_YORK = "America/New_York"
 
 IndexStatus = Literal["ok", "unavailable"]
 IndexFetcher = Callable[[], "MarketIndexRecord | None"]
@@ -62,7 +67,7 @@ class _IndexSlot:
 
 
 _INDEX_CATALOG: tuple[_IndexSlot, ...] = (
-    _IndexSlot(id="TWSE:TAIEX", market="TW", label="Taiwan Stock Exchange"),
+    _IndexSlot(id=_TW_INDEX_ID, market="TW", label=_TW_INDEX_LABEL),
     _IndexSlot(id="^DJI", market="US", label="DOW Jones"),
     _IndexSlot(id="^NDQ", market="US", label="Nasdaq"),
     _IndexSlot(id="^SPX", market="US", label="S&P 500"),
@@ -87,11 +92,11 @@ class MarketIndexService:
         self._twse_fetcher = twse_fetcher or _fetch_twse_index
         self._yahoo_taiwan_fetcher = yahoo_taiwan_fetcher or (
             lambda: _fetch_yahoo_index(
-                "^TWII",
-                "TWSE:TAIEX",
-                "Taiwan Stock Exchange",
+                _TW_YAHOO_SYMBOL,
+                _TW_INDEX_ID,
+                _TW_INDEX_LABEL,
                 market="TW",
-                timezone_name="Asia/Taipei",
+                timezone_name=_TZ_TAIPEI,
             )
         )
         self._stooq_fetcher = stooq_fetcher or _fetch_stooq_index
@@ -101,21 +106,19 @@ class MarketIndexService:
                 record_id,
                 label,
                 market="US",
-                timezone_name="America/New_York",
+                timezone_name=_TZ_NEW_YORK,
             )
         )
 
     def get_latest(self) -> list[MarketIndexRecord]:
         """Always return the fixed dashboard catalog (never omit a market slot)."""
+        tw_slot, *us_slots = _INDEX_CATALOG
         return [
-            self._resolve_taiwan(),
-            self._resolve_us("^DJI", "DOW Jones"),
-            self._resolve_us("^NDQ", "Nasdaq"),
-            self._resolve_us("^SPX", "S&P 500"),
+            self._resolve_taiwan(tw_slot),
+            *[self._resolve_us(slot) for slot in us_slots],
         ]
 
-    def _resolve_taiwan(self) -> MarketIndexRecord:
-        slot = _INDEX_CATALOG[0]
+    def _resolve_taiwan(self, slot: _IndexSlot) -> MarketIndexRecord:
         try:
             record = self._twse_fetcher()
         except Exception as exc:  # noqa: BLE001 - never drop the dashboard slot
@@ -142,7 +145,7 @@ class MarketIndexService:
                     "event": "market_index.yahoo_tw.error",
                     "provider": "yahoo_finance",
                     "index_id": slot.id,
-                    "yahoo_symbol": "^TWII",
+                    "yahoo_symbol": _TW_YAHOO_SYMBOL,
                     "error_type": type(exc).__name__,
                     "error": str(exc),
                 },
@@ -155,7 +158,7 @@ class MarketIndexService:
                     "event": "market_index.twse.fallback_used",
                     "provider": "yahoo_finance",
                     "index_id": slot.id,
-                    "yahoo_symbol": "^TWII",
+                    "yahoo_symbol": _TW_YAHOO_SYMBOL,
                 },
             )
             return fallback
@@ -175,17 +178,16 @@ class MarketIndexService:
             reason="taiwan_provider_unavailable",
         )
 
-    def _resolve_us(self, symbol: str, label: str) -> MarketIndexRecord:
-        slot = next(item for item in _INDEX_CATALOG if item.id == symbol)
+    def _resolve_us(self, slot: _IndexSlot) -> MarketIndexRecord:
         try:
-            record = self._stooq_fetcher(symbol, label)
+            record = self._stooq_fetcher(slot.id, slot.label)
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "US Stooq index fetch raised; trying Yahoo fallback",
                 extra={
                     "event": "market_index.stooq.error",
                     "provider": "stooq",
-                    "index_id": symbol,
+                    "index_id": slot.id,
                     "error_type": type(exc).__name__,
                     "error": str(exc),
                 },
@@ -194,16 +196,16 @@ class MarketIndexService:
         if record is not None:
             return record
 
-        yahoo_symbol = _US_YAHOO_SYMBOLS[symbol]
+        yahoo_symbol = _US_YAHOO_SYMBOLS[slot.id]
         try:
-            fallback = self._yahoo_us_fetcher(yahoo_symbol, symbol, label)
+            fallback = self._yahoo_us_fetcher(yahoo_symbol, slot.id, slot.label)
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "US Yahoo index fallback raised",
                 extra={
                     "event": "market_index.yahoo_us.error",
                     "provider": "yahoo_finance",
-                    "index_id": symbol,
+                    "index_id": slot.id,
                     "yahoo_symbol": yahoo_symbol,
                     "error_type": type(exc).__name__,
                     "error": str(exc),
@@ -216,7 +218,7 @@ class MarketIndexService:
                 extra={
                     "event": "market_index.stooq.fallback_used",
                     "provider": "yahoo_finance",
-                    "index_id": symbol,
+                    "index_id": slot.id,
                     "yahoo_symbol": yahoo_symbol,
                 },
             )
@@ -228,7 +230,7 @@ class MarketIndexService:
                 "event": "market_index.us.unavailable",
                 "provider": "stooq",
                 "fallback_provider": "yahoo_finance",
-                "index_id": symbol,
+                "index_id": slot.id,
                 "request_url": _STOOQ_QUOTE_URL,
             },
         )
@@ -236,7 +238,7 @@ class MarketIndexService:
 
 
 def _unavailable_index(slot: _IndexSlot, *, reason: str) -> MarketIndexRecord:
-    timezone_name = "Asia/Taipei" if slot.market == "TW" else "America/New_York"
+    timezone_name = _TZ_TAIPEI if slot.market == "TW" else _TZ_NEW_YORK
     now = datetime.now(ZoneInfo(timezone_name))
     return MarketIndexRecord(
         id=slot.id,
@@ -310,8 +312,8 @@ def _fetch_stooq_index(stooq_symbol: str, label: str) -> MarketIndexRecord | Non
     previous_close = open_value if open_value is not None else close_value
     change = close_value - previous_close
     change_percent = (change / previous_close * 100) if previous_close else 0.0
-    quote_time = _parse_stooq_timestamp(date_text, time_text, "America/New_York")
-    market_now = datetime.now(ZoneInfo("America/New_York"))
+    quote_time = _parse_stooq_timestamp(date_text, time_text, _TZ_NEW_YORK)
+    market_now = datetime.now(ZoneInfo(_TZ_NEW_YORK))
 
     return MarketIndexRecord(
         id=stooq_symbol,
@@ -340,7 +342,7 @@ def _fetch_twse_index() -> MarketIndexRecord | None:
         _log_fetch_failure(
             event="market_index.twse.fetch_failed",
             provider="twse_mis",
-            index_id="TWSE:TAIEX",
+            index_id=_TW_INDEX_ID,
             request_url=_TWSE_INDEX_URL,
             exc=exc,
         )
@@ -351,7 +353,7 @@ def _fetch_twse_index() -> MarketIndexRecord | None:
         _log_parse_failure(
             event="market_index.twse.empty_payload",
             provider="twse_mis",
-            index_id="TWSE:TAIEX",
+            index_id=_TW_INDEX_ID,
             request_url=_TWSE_INDEX_URL,
             detail="missing_or_empty_msgArray",
         )
@@ -361,7 +363,7 @@ def _fetch_twse_index() -> MarketIndexRecord | None:
         _log_parse_failure(
             event="market_index.twse.malformed_payload",
             provider="twse_mis",
-            index_id="TWSE:TAIEX",
+            index_id=_TW_INDEX_ID,
             request_url=_TWSE_INDEX_URL,
             detail="msgArray_item_not_object",
         )
@@ -375,7 +377,7 @@ def _fetch_twse_index() -> MarketIndexRecord | None:
         _log_parse_failure(
             event="market_index.twse.malformed_payload",
             provider="twse_mis",
-            index_id="TWSE:TAIEX",
+            index_id=_TW_INDEX_ID,
             request_url=_TWSE_INDEX_URL,
             detail="missing_price_fields",
         )
@@ -383,13 +385,13 @@ def _fetch_twse_index() -> MarketIndexRecord | None:
 
     change = value - previous_close
     change_percent = change / previous_close * 100
-    quote_time = _parse_twse_timestamp(raw_date, raw_time, "Asia/Taipei")
-    market_now = datetime.now(ZoneInfo("Asia/Taipei"))
+    quote_time = _parse_twse_timestamp(raw_date, raw_time, _TZ_TAIPEI)
+    market_now = datetime.now(ZoneInfo(_TZ_TAIPEI))
 
     return MarketIndexRecord(
-        id="TWSE:TAIEX",
+        id=_TW_INDEX_ID,
         market="TW",
-        label="Taiwan Stock Exchange",
+        label=_TW_INDEX_LABEL,
         value=round(value, 2),
         change=round(change, 2),
         change_percent=round(change_percent, 2),

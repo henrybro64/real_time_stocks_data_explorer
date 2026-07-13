@@ -84,6 +84,10 @@ describe("MarketIndicesStrip", () => {
     );
 
     expect(screen.getByTestId("market-index-card-TWSE:TAIEX")).toBeInTheDocument();
-    expect(screen.getAllByText("資料來源暫時不可用").length).toBeGreaterThan(0);
+    expect(screen.getByTestId("market-index-card-^DJI")).toBeInTheDocument();
+    // Partial failure: one card notice only; no section-level outage banner.
+    expect(screen.getAllByText("資料來源暫時不可用")).toHaveLength(1);
+    expect(screen.getByText("Taiwan Stock Exchange")).toBeInTheDocument();
+    expect(screen.getByText("DOW Jones")).toBeInTheDocument();
   });
 });

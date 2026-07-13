@@ -1,7 +1,7 @@
 import { InlineLoading, Tag, Tile } from "@carbon/react";
 import type { MarketIndex } from "@shared/api";
 import { useLanguage } from "../../app/i18n";
-import { RequestStateNotice, errorToNoticeKind } from "../state/RequestStateNotice";
+import { RequestStateNotice, errorToNoticeKind, type RequestNoticeKind } from "../state/RequestStateNotice";
 import { formatLastUpdated, formatPercent } from "../../services/format/quote";
 
 type Props = {
@@ -19,6 +19,39 @@ const EXPECTED_INDEX_SLOTS: ReadonlyArray<Pick<MarketIndex, "id" | "market" | "l
 
 function isUnavailable(item: MarketIndex): boolean {
   return item.status === "unavailable" || item.value == null;
+}
+
+function sessionTagType(item: MarketIndex, unavailable: boolean): "green" | "gray" {
+  if (unavailable || !item.isMarketOpen) {
+    return "gray";
+  }
+  return "green";
+}
+
+function sessionTagLabel(
+  item: MarketIndex,
+  unavailable: boolean,
+  copy: { live: string; closed: string; unavailable: string },
+): string {
+  if (unavailable) {
+    return copy.unavailable;
+  }
+  return item.isMarketOpen ? copy.live : copy.closed;
+}
+
+function sectionNoticeKind(
+  error: unknown,
+  resolvedItems: MarketIndex[],
+): RequestNoticeKind | null {
+  if (error) {
+    const hasUsableData = resolvedItems.some((item) => !isUnavailable(item));
+    return hasUsableData ? "stale" : errorToNoticeKind(error);
+  }
+  // Partial provider failures are shown on the cards; only escalate when every slot failed.
+  if (resolvedItems.length > 0 && resolvedItems.every(isUnavailable)) {
+    return "unavailable";
+  }
+  return null;
 }
 
 /** Keep a stable four-card layout even if the API omits a slot. */
@@ -80,14 +113,7 @@ export function MarketIndicesStrip({ error, isLoading = false, items }: Props) {
     signDisplay: "always",
   });
   const resolvedItems = resolveMarketIndexSlots(items);
-  const hasUnavailable = resolvedItems.some(isUnavailable);
-  const noticeKind = error
-    ? resolvedItems.some((item) => !isUnavailable(item))
-      ? "stale"
-      : errorToNoticeKind(error)
-    : hasUnavailable
-      ? "unavailable"
-      : null;
+  const noticeKind = sectionNoticeKind(error, resolvedItems);
 
   return (
     <Tile className="app-section-tile">
@@ -111,8 +137,8 @@ export function MarketIndicesStrip({ error, isLoading = false, items }: Props) {
             <Tile key={item.id} className="app-subtile" data-testid={`market-index-card-${item.id}`}>
               <div className="app-market-card-top">
                 <strong>{item.label}</strong>
-                <Tag size="sm" type={unavailable ? "gray" : item.isMarketOpen ? "green" : "gray"}>
-                  {unavailable ? copy.unavailable : item.isMarketOpen ? copy.live : copy.closed}
+                <Tag size="sm" type={sessionTagType(item, unavailable)}>
+                  {sessionTagLabel(item, unavailable, copy)}
                 </Tag>
               </div>
               {unavailable ? (
