@@ -76,6 +76,8 @@ The DB-backed service domains now route persistence through repositories such as
 
 This keeps route handlers thin, keeps business logic in services, and keeps SQL/ORM access in one layer.
 
+Taiwan market-data services (institutional, 資券, daily refresh/store) share helpers under `taiwan_market_data.py` and `taiwan_history_scan.py`. PRs in that area must also clear SonarCloud — see [taiwan-market-data-sonar-checklist.md](taiwan-market-data-sonar-checklist.md).
+
 ## Repository Session Wiring
 
 Most repositories resolve the SQLAlchemy session factory through `backend/app/repositories/session.py`, which reads `SessionLocal` from `backend/app/db/session.py`.
