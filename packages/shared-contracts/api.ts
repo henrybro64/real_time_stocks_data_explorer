@@ -104,7 +104,15 @@ export type HistoryResponse = {
   chartLayout: ChartLayout | null;
 };
 
-/** Taiwan 三大法人買賣超 values are returned in 張 (lots). */
+/**
+ * Taiwan 三大法人買賣超 values are returned in 張 (lots).
+ * Lot size is symbol-aware: most equities use 1000 shares/張; foreign-currency
+ * (加掛) ETF symbols whose sixth character is `K` or `C` use 100 shares/張.
+ * Conversion is centralized in the backend `shares_to_lots` helper — clients
+ * should treat `*NetLots` as already-normalized 張 and must not re-divide.
+ * `sharesPerLot` mirrors the divisor used for this symbol (heuristic, not a
+ * full product registry — see README lot-size notes).
+ */
 export type TaiwanInstitutionalInvestorPoint = {
   date?: string;
   foreignNetLots: number;
@@ -122,13 +130,18 @@ export type TaiwanInstitutionalInvestorsResponse = {
   latestDate: string | null;
   summary: TaiwanInstitutionalInvestorPoint | null;
   history: Array<TaiwanInstitutionalInvestorPoint & { date: string }>;
+  /** Shares (受益權單位) per 張 used for this symbol (1000 default; 100 for K/C). */
+  sharesPerLot: number;
   source: string;
 };
 
 /**
  * Taiwan 資券變化 values.
- * Balances/changes are in 張 (lots). Amounts are in 萬元 and use
+ * Balances/changes are in 張 (lots) using the same symbol-aware lot size as
+ * institutional data (1000 default; 100 for sixth-character `K`/`C` FX ETFs).
+ * Amounts are in 萬元 and use
  * `(Δshares × closePrice) / 10_000` (null when previous balance or close is missing).
+ * `sharesPerLot` is the same heuristic divisor as the institutional API.
  */
 export type TaiwanMarginShortPoint = {
   date?: string;
@@ -147,6 +160,8 @@ export type TaiwanMarginShortResponse = {
   latestDate: string | null;
   summary: TaiwanMarginShortPoint | null;
   history: Array<TaiwanMarginShortPoint & { date: string }>;
+  /** Shares (受益權單位) per 張 used for this symbol (1000 default; 100 for K/C). */
+  sharesPerLot: number;
   source: string;
 };
 

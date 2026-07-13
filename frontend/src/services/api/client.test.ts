@@ -17,6 +17,7 @@ describe("fetchTaiwanInstitutionalInvestors", () => {
         latestDate: null,
         summary: null,
         history: [],
+        sharesPerLot: 1000,
         source: "TWSE T86 daily institutional data",
       }),
     });
@@ -45,6 +46,7 @@ describe("fetchTaiwanMarginShort", () => {
         latestDate: null,
         summary: null,
         history: [],
+        sharesPerLot: 1000,
         source: "TWSE official margin and borrowed-short daily data",
       }),
     });

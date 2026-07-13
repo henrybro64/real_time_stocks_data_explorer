@@ -377,6 +377,7 @@ def test_parse_tpex_borrowed_short_row_extracts_previous_and_current_shares() ->
 
 
 def test_merge_daily_points_converts_share_balances_to_lots_for_100_share_products() -> None:
+    """資券 borrowed-short shares reuse shares_to_lots (100-unit K/C FX ETFs)."""
     record = _merge_daily_points(
         margin_point=_MarginPoint(
             date="2026-07-09",
@@ -401,6 +402,7 @@ def test_merge_daily_points_converts_share_balances_to_lots_for_100_share_produc
     )
 
     assert record is not None
+    # 1500 / 100 = 15 張; delta 500 / 100 = 5 張 (not 1.5 / 0.5 from /1000).
     assert record.borrowed_short_balance_lots == pytest.approx(15.0)
     assert record.borrowed_short_balance_change_lots == pytest.approx(5.0)
     assert record.borrowed_short_balance_change_amount_10k == 10

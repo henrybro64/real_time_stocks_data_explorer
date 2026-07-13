@@ -72,6 +72,7 @@ test("TW institutional section shows empty state when API returns no data", asyn
         latestDate: null,
         summary: null,
         history: [],
+        sharesPerLot: 1000,
         source: "TWSE T86 daily institutional data",
       }),
     });
@@ -141,6 +142,7 @@ test("TW institutional section shows loading then summary", async ({ page }) => 
             totalNetLots: 12745,
           },
         ],
+        sharesPerLot: 1000,
         source: "TWSE T86 daily institutional data",
       }),
     });
@@ -172,6 +174,7 @@ test("TW margin-short section shows empty state when API returns no data", async
         latestDate: null,
         summary: null,
         history: [],
+        sharesPerLot: 1000,
         source: "TWSE official margin and borrowed-short daily data",
       }),
     });
@@ -246,6 +249,7 @@ test("TW margin-short section shows loading then summary", async ({ page }) => {
             borrowedShortBalanceChangeAmount10k: 2609,
           },
         ],
+        sharesPerLot: 1000,
         source: "TWSE official margin and borrowed-short daily data",
       }),
     });

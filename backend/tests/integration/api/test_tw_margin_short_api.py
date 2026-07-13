@@ -24,6 +24,7 @@ def test_margin_short_endpoint_returns_summary_and_history(monkeypatch, client) 
     assert payload["symbol"] == "1303"
     assert payload["market"] == "TWSE"
     assert payload["latestDate"] == "2026-07-09"
+    assert payload["sharesPerLot"] == 1000
     assert payload["summary"] == {
         "marginBalanceLots": 31339.0,
         "shortMarginBalanceLots": 0.0,
@@ -33,6 +34,50 @@ def test_margin_short_endpoint_returns_summary_and_history(monkeypatch, client) 
     }
     assert payload["history"][0]["closePrice"] == pytest.approx(185.0)
     assert payload["source"] == "TWSE official margin and borrowed-short daily data"
+
+
+def test_margin_short_endpoint_exposes_100_unit_shares_per_lot_for_fx_etf(
+    monkeypatch,
+    client,
+) -> None:
+    from app.api.routes import tw_margin_short as margin_short_routes
+    from app.services.tw_margin_short_service import (
+        TaiwanMarginShortRecord,
+        TaiwanMarginShortResult,
+    )
+
+    record = TaiwanMarginShortRecord(
+        date="2026-07-09",
+        symbol="00677K",
+        name="富邦VIX",
+        close_price=200.0,
+        margin_balance_lots=10.0,
+        short_margin_balance_lots=2.0,
+        borrowed_short_balance_lots=15.0,
+        borrowed_short_balance_change_lots=5.0,
+        borrowed_short_balance_change_amount_10k=10,
+    )
+    result = TaiwanMarginShortResult(
+        stock_id="TW:00677K",
+        symbol="00677K",
+        market="TWSE",
+        latest_date="2026-07-09",
+        summary=record,
+        history=(record,),
+        source="TWSE official margin and borrowed-short daily data",
+    )
+    monkeypatch.setattr(
+        margin_short_routes.tw_margin_short_service,
+        "get_margin_short",
+        lambda stock_id, *, days: result,
+    )
+
+    response = client.get("/api/stocks/TW:00677K/margin-short", params={"days": 90})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["sharesPerLot"] == 100
+    assert payload["summary"]["borrowedShortBalanceLots"] == pytest.approx(15.0)
 
 
 def test_margin_short_endpoint_rejects_non_taiwan_stocks(monkeypatch, client) -> None:

@@ -18,6 +18,40 @@ def test_tw_margin_short_schema_preserves_lot_and_amount_fields() -> None:
     assert payload["summary"]["borrowedShortBalanceChangeLots"] == pytest.approx(141.0)
     assert payload["summary"]["borrowedShortBalanceChangeAmount10k"] == 2609
     assert payload["history"][0]["closePrice"] == pytest.approx(185.0)
+    assert payload["sharesPerLot"] == 1000
+
+
+def test_tw_margin_short_schema_exposes_100_unit_shares_per_lot_for_fx_etf() -> None:
+    from app.services.tw_margin_short_service import (
+        TaiwanMarginShortRecord,
+        TaiwanMarginShortResult,
+    )
+
+    record = TaiwanMarginShortRecord(
+        date="2026-07-09",
+        symbol="00677K",
+        name="富邦VIX",
+        close_price=200.0,
+        margin_balance_lots=10.0,
+        short_margin_balance_lots=2.0,
+        borrowed_short_balance_lots=15.0,
+        borrowed_short_balance_change_lots=5.0,
+        borrowed_short_balance_change_amount_10k=10,
+    )
+    result = TaiwanMarginShortResult(
+        stock_id="TW:00677K",
+        symbol="00677K",
+        market="TWSE",
+        latest_date="2026-07-09",
+        summary=record,
+        history=(record,),
+        source="TWSE official margin and borrowed-short daily data",
+    )
+
+    payload = margin_short_route._tw_margin_short_schema(result).model_dump()
+
+    assert payload["sharesPerLot"] == 100
+    assert payload["summary"]["borrowedShortBalanceLots"] == pytest.approx(15.0)
 
 
 def test_margin_short_route_delegates_to_service(monkeypatch) -> None:

@@ -62,7 +62,25 @@ def test_shares_to_lots_uses_100_unit_lot_for_foreign_currency_etfs() -> None:
     assert taiwan_market_data.taiwan_shares_per_lot("00900C") == 100
     assert taiwan_market_data.taiwan_shares_per_lot("2330") == 1000
     assert taiwan_market_data.shares_to_lots(1_000, symbol="00677K") == pytest.approx(10.0)
+    assert taiwan_market_data.shares_to_lots(1_000, symbol="00900C") == pytest.approx(10.0)
     assert taiwan_market_data.shares_to_lots(1_000, symbol="2330") == pytest.approx(1.0)
+
+
+def test_taiwan_shares_per_lot_normalizes_prefixes_and_defaults_safely() -> None:
+    # Normalized stock ids / Yahoo suffixes still detect the sixth-character rule.
+    assert taiwan_market_data.taiwan_shares_per_lot("TW:00677K") == 100
+    assert taiwan_market_data.taiwan_shares_per_lot("00677k.TW") == 100
+    assert taiwan_market_data.taiwan_shares_per_lot("00900c.TWO") == 100
+
+    # Unknown / non-matching symbols keep the equity default and must not raise.
+    assert taiwan_market_data.taiwan_shares_per_lot(None) == 1000
+    assert taiwan_market_data.taiwan_shares_per_lot("") == 1000
+    assert taiwan_market_data.taiwan_shares_per_lot("233") == 1000
+    assert taiwan_market_data.taiwan_shares_per_lot("0050") == 1000
+    assert taiwan_market_data.taiwan_shares_per_lot("00631L") == 1000  # leverage, not FX K/C
+    assert taiwan_market_data.taiwan_shares_per_lot("not-a-symbol") == 1000
+    assert taiwan_market_data.shares_to_lots(2_000, symbol=None) == pytest.approx(2.0)
+    assert taiwan_market_data.shares_to_lots("--", symbol="00677K") is None
 
 
 def test_normalize_taiwan_symbol_removes_prefix_and_yahoo_suffix() -> None:

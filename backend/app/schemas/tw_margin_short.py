@@ -4,7 +4,7 @@ from pydantic import BaseModel, Field
 
 
 class TaiwanMarginShortSummaryResponse(BaseModel):
-    """Balances/changes are in 張; amount is 萬元 via (Δshares × close) / 10_000."""
+    """Balances/changes in 張 (1000 default; 100 for K/C FX ETFs); amount is 萬元 via (Δshares × close) / 10_000."""
 
     marginBalanceLots: float
     shortMarginBalanceLots: float
@@ -33,4 +33,5 @@ class TaiwanMarginShortResponse(BaseModel):
     latestDate: str | None = None
     summary: TaiwanMarginShortSummaryResponse | None = None
     history: list[TaiwanMarginShortHistoryPointResponse]
+    sharesPerLot: int
     source: str

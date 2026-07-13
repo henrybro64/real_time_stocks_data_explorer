@@ -9,6 +9,7 @@ from app.schemas.tw_margin_short import (
     TaiwanMarginShortResponse,
     TaiwanMarginShortSummaryResponse,
 )
+from app.services.taiwan_market_data import taiwan_shares_per_lot
 from app.services.tw_margin_short_service import (
     TaiwanMarginShortRecord,
     TaiwanMarginShortResult,
@@ -86,5 +87,6 @@ def _tw_margin_short_schema(
             else None
         ),
         history=[_tw_margin_short_history_point_schema(item) for item in result.history],
+        sharesPerLot=taiwan_shares_per_lot(result.symbol),
         source=result.source,
     )
