@@ -428,3 +428,94 @@ def test_institutional_investors_endpoint_rejects_non_taiwan_stocks(monkeypatch,
 
     assert response.status_code == 404
     assert response.json()["detail"] == "Taiwan institutional data is only available for TW stocks"
+
+
+def test_institutional_investors_endpoint_serves_from_persisted_store(
+    monkeypatch,
+    client,
+) -> None:
+    from datetime import UTC, datetime
+
+    from app.api.routes import tw_institutional as institutional_routes
+    from app.repositories.taiwan_market_daily_repository import (
+        taiwan_institutional_daily_repository,
+    )
+    from app.services.tw_institutional_service import TaiwanInstitutionalInvestorRecord
+    from tests.support import stock_record
+
+    stock = stock_record(
+        "TW:2330",
+        market="TW",
+        symbol="2330",
+        name="台積電",
+        exchange="TWSE",
+        currency="TWD",
+        timezone="Asia/Taipei",
+        name_en="TSMC",
+        name_zh_tw="台積電",
+    )
+
+    class FakeQuoteSource:
+        def get_stock(self, stock_id: str):
+            return stock if stock.id == stock_id else None
+
+        def list_stocks(self):
+            return [stock]
+
+    live_calls: list = []
+
+    taiwan_institutional_daily_repository.upsert_records(
+        market="TWSE",
+        source="TWSE T86 daily institutional data",
+        records=[
+            TaiwanInstitutionalInvestorRecord(
+                date="2026-07-08",
+                symbol="2330",
+                name="台積電",
+                foreign_net_shares=1_000_000,
+                investment_trust_net_shares=2_000_000,
+                dealer_self_net_shares=100_000,
+                dealer_hedge_net_shares=200_000,
+                dealer_net_shares=300_000,
+                total_net_shares=3_300_000,
+            ),
+            TaiwanInstitutionalInvestorRecord(
+                date="2026-07-07",
+                symbol="2330",
+                name="台積電",
+                foreign_net_shares=4_000_000,
+                investment_trust_net_shares=5_000_000,
+                dealer_self_net_shares=100_000,
+                dealer_hedge_net_shares=500_000,
+                dealer_net_shares=600_000,
+                total_net_shares=9_600_000,
+            ),
+        ],
+    )
+
+    service = institutional_routes.tw_institutional_service
+    service._result_cache.clear()
+    monkeypatch.setattr(service, "_quote_source", FakeQuoteSource())
+    monkeypatch.setattr(
+        service,
+        "_twse_fetcher",
+        lambda target_date: live_calls.append(target_date) or {"stat": "查無資料"},
+    )
+    monkeypatch.setattr(
+        service,
+        "_now_provider",
+        lambda: datetime(2026, 7, 10, 1, 0, tzinfo=UTC),
+    )
+
+    response = client.get("/api/stocks/TW:2330/institutional-investors", params={"days": 90})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["market"] == "TWSE"
+    assert payload["latestDate"] == "2026-07-08"
+    assert [point["date"] for point in payload["history"]] == ["2026-07-07", "2026-07-08"]
+    assert payload["summary"]["foreignNetLots"] == pytest.approx(1000.0)
+    assert payload["summary"]["totalNetLots"] == pytest.approx(3300.0)
+    assert payload["source"].startswith("Persisted ")
+    # Fresh store-backed reads must not probe official full-market payloads.
+    assert live_calls == []
