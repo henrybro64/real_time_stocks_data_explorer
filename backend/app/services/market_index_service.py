@@ -1,16 +1,20 @@
 from __future__ import annotations
 
 import json
+import logging
 import ssl
 from dataclasses import dataclass
 from datetime import datetime
 from http.client import RemoteDisconnected
+from typing import Callable, Literal
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
 from app.services.market_clock import is_market_open
+
+logger = logging.getLogger(__name__)
 
 _REQUEST_TIMEOUT_SECONDS = 8
 
@@ -32,53 +36,223 @@ _BROWSER_USER_AGENT = (
     "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
 )
 
+IndexStatus = Literal["ok", "unavailable"]
+IndexFetcher = Callable[[], "MarketIndexRecord | None"]
+
 
 @dataclass(frozen=True)
 class MarketIndexRecord:
     id: str
     market: str
     label: str
-    value: float
-    change: float
-    change_percent: float
+    value: float | None
+    change: float | None
+    change_percent: float | None
     timestamp: str
     is_market_open: bool
+    status: IndexStatus = "ok"
+    unavailable_reason: str | None = None
+
+
+@dataclass(frozen=True)
+class _IndexSlot:
+    id: str
+    market: str
+    label: str
+
+
+_INDEX_CATALOG: tuple[_IndexSlot, ...] = (
+    _IndexSlot(id="TWSE:TAIEX", market="TW", label="Taiwan Stock Exchange"),
+    _IndexSlot(id="^DJI", market="US", label="DOW Jones"),
+    _IndexSlot(id="^NDQ", market="US", label="Nasdaq"),
+    _IndexSlot(id="^SPX", market="US", label="S&P 500"),
+)
+
+_US_YAHOO_SYMBOLS = {
+    "^DJI": "^DJI",
+    "^NDQ": "^IXIC",
+    "^SPX": "^GSPC",
+}
 
 
 class MarketIndexService:
+    def __init__(
+        self,
+        *,
+        twse_fetcher: IndexFetcher | None = None,
+        yahoo_taiwan_fetcher: IndexFetcher | None = None,
+        stooq_fetcher: Callable[[str, str], MarketIndexRecord | None] | None = None,
+        yahoo_us_fetcher: Callable[[str, str, str], MarketIndexRecord | None] | None = None,
+    ) -> None:
+        self._twse_fetcher = twse_fetcher or _fetch_twse_index
+        self._yahoo_taiwan_fetcher = yahoo_taiwan_fetcher or (
+            lambda: _fetch_yahoo_index(
+                "^TWII",
+                "TWSE:TAIEX",
+                "Taiwan Stock Exchange",
+                market="TW",
+                timezone_name="Asia/Taipei",
+            )
+        )
+        self._stooq_fetcher = stooq_fetcher or _fetch_stooq_index
+        self._yahoo_us_fetcher = yahoo_us_fetcher or (
+            lambda yahoo_symbol, record_id, label: _fetch_yahoo_index(
+                yahoo_symbol,
+                record_id,
+                label,
+                market="US",
+                timezone_name="America/New_York",
+            )
+        )
+
     def get_latest(self) -> list[MarketIndexRecord]:
-        records: list[MarketIndexRecord] = []
+        """Always return the fixed dashboard catalog (never omit a market slot)."""
+        return [
+            self._resolve_taiwan(),
+            self._resolve_us("^DJI", "DOW Jones"),
+            self._resolve_us("^NDQ", "Nasdaq"),
+            self._resolve_us("^SPX", "S&P 500"),
+        ]
 
-        twse = _fetch_twse_index()
-        if twse is not None:
-            records.append(twse)
+    def _resolve_taiwan(self) -> MarketIndexRecord:
+        slot = _INDEX_CATALOG[0]
+        try:
+            record = self._twse_fetcher()
+        except Exception as exc:  # noqa: BLE001 - never drop the dashboard slot
+            logger.warning(
+                "Taiwan index provider raised; trying fallback",
+                extra={
+                    "event": "market_index.twse.error",
+                    "provider": "twse_mis",
+                    "index_id": slot.id,
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                },
+            )
+            record = None
+        if record is not None:
+            return record
 
-        for symbol, label in (
-            ("^DJI", "DOW Jones"),
-            ("^NDQ", "Nasdaq"),
-            ("^SPX", "S&P 500"),
-        ):
-            record = _fetch_stooq_index(symbol, label)
-            if record is None:
-                # Fallback when Stooq is rate-limited/unavailable.
-                yahoo_symbol = {
-                    "^DJI": "^DJI",
-                    "^NDQ": "^IXIC",
-                    "^SPX": "^GSPC",
-                }[symbol]
-                record = _fetch_yahoo_index(yahoo_symbol, symbol, label)
-            if record is not None:
-                records.append(record)
+        try:
+            fallback = self._yahoo_taiwan_fetcher()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Taiwan Yahoo fallback raised",
+                extra={
+                    "event": "market_index.yahoo_tw.error",
+                    "provider": "yahoo_finance",
+                    "index_id": slot.id,
+                    "yahoo_symbol": "^TWII",
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                },
+            )
+            fallback = None
+        if fallback is not None:
+            logger.warning(
+                "Taiwan index using Yahoo fallback after TWSE failure",
+                extra={
+                    "event": "market_index.twse.fallback_used",
+                    "provider": "yahoo_finance",
+                    "index_id": slot.id,
+                    "yahoo_symbol": "^TWII",
+                },
+            )
+            return fallback
 
-        return records
+        logger.warning(
+            "Taiwan index unavailable after primary and fallback providers failed",
+            extra={
+                "event": "market_index.twse.unavailable",
+                "provider": "twse_mis",
+                "fallback_provider": "yahoo_finance",
+                "index_id": slot.id,
+                "request_url": _TWSE_INDEX_URL,
+            },
+        )
+        return _unavailable_index(
+            slot,
+            reason="taiwan_provider_unavailable",
+        )
+
+    def _resolve_us(self, symbol: str, label: str) -> MarketIndexRecord:
+        slot = next(item for item in _INDEX_CATALOG if item.id == symbol)
+        try:
+            record = self._stooq_fetcher(symbol, label)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "US Stooq index fetch raised; trying Yahoo fallback",
+                extra={
+                    "event": "market_index.stooq.error",
+                    "provider": "stooq",
+                    "index_id": symbol,
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                },
+            )
+            record = None
+        if record is not None:
+            return record
+
+        yahoo_symbol = _US_YAHOO_SYMBOLS[symbol]
+        try:
+            fallback = self._yahoo_us_fetcher(yahoo_symbol, symbol, label)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "US Yahoo index fallback raised",
+                extra={
+                    "event": "market_index.yahoo_us.error",
+                    "provider": "yahoo_finance",
+                    "index_id": symbol,
+                    "yahoo_symbol": yahoo_symbol,
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                },
+            )
+            fallback = None
+        if fallback is not None:
+            logger.warning(
+                "US index using Yahoo fallback after Stooq failure",
+                extra={
+                    "event": "market_index.stooq.fallback_used",
+                    "provider": "yahoo_finance",
+                    "index_id": symbol,
+                    "yahoo_symbol": yahoo_symbol,
+                },
+            )
+            return fallback
+
+        logger.warning(
+            "US index unavailable after Stooq and Yahoo providers failed",
+            extra={
+                "event": "market_index.us.unavailable",
+                "provider": "stooq",
+                "fallback_provider": "yahoo_finance",
+                "index_id": symbol,
+                "request_url": _STOOQ_QUOTE_URL,
+            },
+        )
+        return _unavailable_index(slot, reason="us_provider_unavailable")
 
 
-market_index_service = MarketIndexService()
+def _unavailable_index(slot: _IndexSlot, *, reason: str) -> MarketIndexRecord:
+    timezone_name = "Asia/Taipei" if slot.market == "TW" else "America/New_York"
+    now = datetime.now(ZoneInfo(timezone_name))
+    return MarketIndexRecord(
+        id=slot.id,
+        market=slot.market,
+        label=slot.label,
+        value=None,
+        change=None,
+        change_percent=None,
+        timestamp=now.isoformat(),
+        is_market_open=is_market_open(slot.market, now),
+        status="unavailable",
+        unavailable_reason=reason,
+    )
 
 
-def _fetch_stooq_index(
-    stooq_symbol: str, label: str
-) -> MarketIndexRecord | None:
+def _fetch_stooq_index(stooq_symbol: str, label: str) -> MarketIndexRecord | None:
     try:
         payload = _load_text(
             _STOOQ_QUOTE_URL,
@@ -88,29 +262,55 @@ def _fetch_stooq_index(
                 "Accept": "text/csv,text/plain,*/*",
             },
         )
-    except _FETCH_ERRORS:
+    except _FETCH_ERRORS as exc:
+        _log_fetch_failure(
+            event="market_index.stooq.fetch_failed",
+            provider="stooq",
+            index_id=stooq_symbol,
+            request_url=_STOOQ_QUOTE_URL,
+            exc=exc,
+        )
         return None
 
     rows = payload.strip().splitlines()
     if not rows:
+        _log_parse_failure(
+            event="market_index.stooq.empty_payload",
+            provider="stooq",
+            index_id=stooq_symbol,
+            request_url=_STOOQ_QUOTE_URL,
+            detail="empty_csv",
+        )
         return None
 
     parts = [part.strip() for part in rows[0].split(",")]
     if len(parts) < 8:
+        _log_parse_failure(
+            event="market_index.stooq.malformed_payload",
+            provider="stooq",
+            index_id=stooq_symbol,
+            request_url=_STOOQ_QUOTE_URL,
+            detail="csv_columns_lt_8",
+        )
         return None
 
     date_text, time_text = parts[1], parts[2]
     open_value = _parse_float(parts[3])
     close_value = _parse_float(parts[6])
     if close_value is None:
+        _log_parse_failure(
+            event="market_index.stooq.malformed_payload",
+            provider="stooq",
+            index_id=stooq_symbol,
+            request_url=_STOOQ_QUOTE_URL,
+            detail="missing_close",
+        )
         return None
 
     previous_close = open_value if open_value is not None else close_value
     change = close_value - previous_close
     change_percent = (change / previous_close * 100) if previous_close else 0.0
-    quote_time = _parse_stooq_timestamp(
-        date_text, time_text, "America/New_York"
-    )
+    quote_time = _parse_stooq_timestamp(date_text, time_text, "America/New_York")
     market_now = datetime.now(ZoneInfo("America/New_York"))
 
     return MarketIndexRecord(
@@ -121,7 +321,6 @@ def _fetch_stooq_index(
         change=round(change, 2),
         change_percent=round(change_percent, 2),
         timestamp=quote_time.isoformat(),
-        # Use current exchange-local time for session status.
         is_market_open=is_market_open("US", market_now),
     )
 
@@ -137,14 +336,35 @@ def _fetch_twse_index() -> MarketIndexRecord | None:
                 "Referer": "https://mis.twse.com.tw/stock/index.jsp",
             },
         )
-    except _FETCH_ERRORS:
+    except _FETCH_ERRORS as exc:
+        _log_fetch_failure(
+            event="market_index.twse.fetch_failed",
+            provider="twse_mis",
+            index_id="TWSE:TAIEX",
+            request_url=_TWSE_INDEX_URL,
+            exc=exc,
+        )
         return None
 
     msg_array = payload.get("msgArray")
     if not isinstance(msg_array, list) or not msg_array:
+        _log_parse_failure(
+            event="market_index.twse.empty_payload",
+            provider="twse_mis",
+            index_id="TWSE:TAIEX",
+            request_url=_TWSE_INDEX_URL,
+            detail="missing_or_empty_msgArray",
+        )
         return None
     first = msg_array[0]
     if not isinstance(first, dict):
+        _log_parse_failure(
+            event="market_index.twse.malformed_payload",
+            provider="twse_mis",
+            index_id="TWSE:TAIEX",
+            request_url=_TWSE_INDEX_URL,
+            detail="msgArray_item_not_object",
+        )
         return None
 
     value = _parse_float(str(first.get("z") or ""))
@@ -152,6 +372,13 @@ def _fetch_twse_index() -> MarketIndexRecord | None:
     raw_date = str(first.get("d") or "")
     raw_time = str(first.get("t") or "")
     if value is None or previous_close in {None, 0}:
+        _log_parse_failure(
+            event="market_index.twse.malformed_payload",
+            provider="twse_mis",
+            index_id="TWSE:TAIEX",
+            request_url=_TWSE_INDEX_URL,
+            detail="missing_price_fields",
+        )
         return None
 
     change = value - previous_close
@@ -167,13 +394,17 @@ def _fetch_twse_index() -> MarketIndexRecord | None:
         change=round(change, 2),
         change_percent=round(change_percent, 2),
         timestamp=quote_time.isoformat(),
-        # Use current exchange-local time for session status.
         is_market_open=is_market_open("TW", market_now),
     )
 
 
 def _fetch_yahoo_index(
-    yahoo_symbol: str, record_id: str, label: str
+    yahoo_symbol: str,
+    record_id: str,
+    label: str,
+    *,
+    market: str,
+    timezone_name: str,
 ) -> MarketIndexRecord | None:
     path_symbol = quote(yahoo_symbol, safe="^-.")
     url = f"{_YAHOO_CHART_URL}/{path_symbol}?interval=1d&range=5d"
@@ -183,14 +414,35 @@ def _fetch_yahoo_index(
     }
     try:
         payload = _load_json_get(url, headers)
-    except _FETCH_ERRORS:
+    except _FETCH_ERRORS as exc:
+        _log_fetch_failure(
+            event="market_index.yahoo.fetch_failed",
+            provider="yahoo_finance",
+            index_id=record_id,
+            request_url=url,
+            exc=exc,
+        )
         return None
 
     chart = payload.get("chart")
     if not isinstance(chart, dict) or chart.get("error"):
+        _log_parse_failure(
+            event="market_index.yahoo.malformed_payload",
+            provider="yahoo_finance",
+            index_id=record_id,
+            request_url=url,
+            detail="chart_error_or_missing",
+        )
         return None
     results = chart.get("result")
     if not isinstance(results, list) or not results:
+        _log_parse_failure(
+            event="market_index.yahoo.empty_payload",
+            provider="yahoo_finance",
+            index_id=record_id,
+            request_url=url,
+            detail="empty_result",
+        )
         return None
     block = results[0]
     if not isinstance(block, dict):
@@ -201,15 +453,20 @@ def _fetch_yahoo_index(
 
     last_price = meta.get("regularMarketPrice")
     prev_close = meta.get("chartPreviousClose")
-    if not isinstance(last_price, (int, float)) or not isinstance(
-        prev_close, (int, float)
-    ):
+    if not isinstance(last_price, (int, float)) or not isinstance(prev_close, (int, float)):
+        _log_parse_failure(
+            event="market_index.yahoo.malformed_payload",
+            provider="yahoo_finance",
+            index_id=record_id,
+            request_url=url,
+            detail="missing_price_fields",
+        )
         return None
     if prev_close == 0:
         return None
 
     market_time = meta.get("regularMarketTime")
-    tz = ZoneInfo("America/New_York")
+    tz = ZoneInfo(timezone_name)
     quote_time = (
         datetime.fromtimestamp(market_time, tz=tz)
         if isinstance(market_time, (int, float))
@@ -221,19 +478,60 @@ def _fetch_yahoo_index(
 
     return MarketIndexRecord(
         id=record_id,
-        market="US",
+        market=market,
         label=label,
         value=round(float(last_price), 2),
         change=round(change, 2),
         change_percent=round(change_percent, 2),
         timestamp=quote_time.isoformat(),
-        is_market_open=is_market_open("US", market_now),
+        is_market_open=is_market_open(market, market_now),
     )
 
 
-def _load_json(
-    url: str, params: dict[str, str], headers: dict[str, str]
-) -> dict:
+def _log_fetch_failure(
+    *,
+    event: str,
+    provider: str,
+    index_id: str,
+    request_url: str,
+    exc: BaseException,
+) -> None:
+    status_code = getattr(exc, "code", None)
+    logger.warning(
+        "Market index provider fetch failed",
+        extra={
+            "event": event,
+            "provider": provider,
+            "index_id": index_id,
+            "request_url": request_url,
+            "http_status": status_code,
+            "error_type": type(exc).__name__,
+            "error": str(exc),
+        },
+    )
+
+
+def _log_parse_failure(
+    *,
+    event: str,
+    provider: str,
+    index_id: str,
+    request_url: str,
+    detail: str,
+) -> None:
+    logger.warning(
+        "Market index provider payload unusable",
+        extra={
+            "event": event,
+            "provider": provider,
+            "index_id": index_id,
+            "request_url": request_url,
+            "detail": detail,
+        },
+    )
+
+
+def _load_json(url: str, params: dict[str, str], headers: dict[str, str]) -> dict:
     request = Request(f"{url}?{urlencode(params)}")
     for key, value in headers.items():
         request.add_header(key, value)
@@ -253,9 +551,7 @@ def _load_json(
             return json.load(response)
 
 
-def _load_text(
-    url: str, params: dict[str, str], headers: dict[str, str]
-) -> str:
+def _load_text(url: str, params: dict[str, str], headers: dict[str, str]) -> str:
     request = Request(f"{url}?{urlencode(params)}")
     for key, value in headers.items():
         request.add_header(key, value)
@@ -281,9 +577,7 @@ def _parse_float(raw_value: str) -> float | None:
         return None
 
 
-def _parse_stooq_timestamp(
-    raw_date: str, raw_time: str, timezone_name: str
-) -> datetime:
+def _parse_stooq_timestamp(raw_date: str, raw_time: str, timezone_name: str) -> datetime:
     tz = ZoneInfo(timezone_name)
     if (
         len(raw_date) == 8
@@ -292,24 +586,22 @@ def _parse_stooq_timestamp(
         and raw_time.isdigit()
     ):
         try:
-            return datetime.strptime(
-                f"{raw_date}{raw_time}", "%Y%m%d%H%M%S"
-            ).replace(tzinfo=tz)
+            return datetime.strptime(f"{raw_date}{raw_time}", "%Y%m%d%H%M%S").replace(
+                tzinfo=tz
+            )
         except ValueError:
             return datetime.now(tz)
     return datetime.now(tz)
 
 
-def _parse_twse_timestamp(
-    raw_date: str, raw_time: str, timezone_name: str
-) -> datetime:
+def _parse_twse_timestamp(raw_date: str, raw_time: str, timezone_name: str) -> datetime:
     tz = ZoneInfo(timezone_name)
     if len(raw_date) == 8 and raw_date.isdigit():
         try:
             if raw_time:
-                return datetime.strptime(
-                    f"{raw_date}{raw_time}", "%Y%m%d%H:%M:%S"
-                ).replace(tzinfo=tz)
+                return datetime.strptime(f"{raw_date}{raw_time}", "%Y%m%d%H:%M:%S").replace(
+                    tzinfo=tz
+                )
             return datetime.strptime(raw_date, "%Y%m%d").replace(
                 hour=13,
                 minute=30,
@@ -324,3 +616,6 @@ def _should_retry_insecure(url: str, exc: URLError) -> bool:
     if "twse.com.tw" not in url:
         return False
     return isinstance(exc.reason, ssl.SSLCertVerificationError)
+
+
+market_index_service = MarketIndexService()

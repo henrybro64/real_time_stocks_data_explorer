@@ -42,27 +42,31 @@ const E2E_MARKETS = [
 
 const E2E_MARKET_INDICES = [
   {
-    id: "TWSE",
+    id: "TWSE:TAIEX",
     market: "TW",
-    label: "TWSE",
+    label: "Taiwan Stock Exchange",
     value: 21950.32,
     change: 85.44,
     changePercent: 0.39,
     timestamp: "2026-05-11T09:00:00+08:00",
     isMarketOpen: true,
+    status: "ok",
+    unavailableReason: null,
   },
   {
-    id: "DJI",
+    id: "^DJI",
     market: "US",
-    label: "Dow Jones",
+    label: "DOW Jones",
     value: 39210.17,
     change: -102.12,
     changePercent: -0.26,
     timestamp: "2026-05-10T16:00:00-04:00",
     isMarketOpen: false,
+    status: "ok",
+    unavailableReason: null,
   },
   {
-    id: "IXIC",
+    id: "^NDQ",
     market: "US",
     label: "Nasdaq",
     value: 16980.4,
@@ -70,9 +74,11 @@ const E2E_MARKET_INDICES = [
     changePercent: 0.26,
     timestamp: "2026-05-10T16:00:00-04:00",
     isMarketOpen: false,
+    status: "ok",
+    unavailableReason: null,
   },
   {
-    id: "GSPC",
+    id: "^SPX",
     market: "US",
     label: "S&P 500",
     value: 5322.55,
@@ -80,6 +86,8 @@ const E2E_MARKET_INDICES = [
     changePercent: 0.19,
     timestamp: "2026-05-10T16:00:00-04:00",
     isMarketOpen: false,
+    status: "ok",
+    unavailableReason: null,
   },
 ] as const;
 

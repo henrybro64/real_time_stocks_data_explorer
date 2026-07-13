@@ -17,11 +17,14 @@ export type MarketIndex = {
   id: string;
   market: MarketCode;
   label: string;
-  value: number;
-  change: number;
-  changePercent: number;
+  value: number | null;
+  change: number | null;
+  changePercent: number | null;
   timestamp: string;
   isMarketOpen: boolean;
+  /** Present on newer API responses; omitted by older clients/mocks. */
+  status?: "ok" | "unavailable";
+  unavailableReason?: string | null;
 };
 
 export type FxRate = {
