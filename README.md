@@ -254,7 +254,7 @@ Scheduled backend job that persists TWSE/TPEx **三大法人買賣超** and **�
 Read policy:
 
 - Fresh store (latest row within `TAIWAN_MARKET_DATA_REFRESH_RECENT_DAYS` of the Taiwan candidate start) → return stored history only; no live probes. Response `source` is prefixed with `Persisted`.
-- Empty / unavailable / stale store → probe only that same recent weekday window live, merge with stored rows (live wins on date collisions), and best-effort upsert any successful live rows back into the store so later clicks heal without waiting for the scheduler. Response `source` uses the official feed label when live rows contributed.
+- Empty / unavailable / stale store → probe only that same recent **weekday** window live (calendar span expanded like the #97 scheduler), merge with stored rows (live wins on date collisions), and best-effort upsert any successful live rows back into the store so later clicks heal without waiting for the scheduler. Response `source` uses the official feed label when live rows contributed.
 - It does **not** walk months of full-market payloads per click.
 
 **Deploy prerequisite (cold start):** before relying on detail-page institutional history in an environment, run the #97 capture/backfill (`POST /api/taiwan-market-data/capture?days=120` or an equivalent seeded `taiwan_institutional_daily` load) and keep the refresh scheduler enabled. An empty store only returns the small recent live window (not ~90 trading days), so charts look short until backfill has populated the table.
@@ -268,7 +268,7 @@ Scheduler settings:
 
 - `TAIWAN_MARKET_DATA_REFRESH_ENABLED` (default `true`)
 - `TAIWAN_MARKET_DATA_REFRESH_DAYS` — full backfill window for capture (default `120`)
-- `TAIWAN_MARKET_DATA_REFRESH_RECENT_DAYS` — scheduler recent window **and** institutional read-path freshness / live-fallback probe size (default `7`)
+- `TAIWAN_MARKET_DATA_REFRESH_RECENT_DAYS` — scheduler recent **weekday** count **and** institutional read-path freshness / live-fallback weekday probe limit (default `7`; calendar span is expanded to cover weekends)
 - `TAIWAN_MARKET_DATA_REFRESH_POLL_SECONDS` (default `3600`)
 - `TAIWAN_MARKET_DATA_REFRESH_HOUR` — local Asia/Taipei hour gate (default `18`)
 - `TAIWAN_MARKET_DATA_TIMEZONE` (default `Asia/Taipei`)

@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Callable, Literal, Protocol
 from app.services.http_client import HttpFetchError
 from app.services.taiwan_history_scan import (
     RESULT_CACHE_TTL,
+    calendar_window_for_weekdays,
     candidate_start_date,
     collect_dated_history,
     get_cached_or_compute,
@@ -267,12 +268,16 @@ class TaiwanInstitutionalInvestorsService:
         requested_days: int,
         start_date: date,
     ) -> tuple[list[TaiwanInstitutionalInvestorRecord], int]:
+        # RECENT_DAYS is a weekday count (same as the #97 scheduler). Expand to a
+        # calendar span and stop after that many weekday probes.
+        recent_weekdays = _read_path_window_days()
         history, successful_fetches = collect_dated_history(
             requested_days=requested_days,
             start_date=start_date,
             fetch_day=lambda day: self._history_day_lookup(market, day, symbol),
             record_date=attrgetter("date"),
-            window_days=_read_path_window_days(),
+            window_days=calendar_window_for_weekdays(recent_weekdays),
+            weekday_limit=recent_weekdays,
         )
         history.reverse()
         return history, successful_fetches

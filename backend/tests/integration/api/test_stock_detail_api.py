@@ -514,8 +514,8 @@ def test_institutional_investors_endpoint_serves_from_persisted_store(
     assert payload["market"] == "TWSE"
     assert payload["latestDate"] == "2026-07-08"
     assert [point["date"] for point in payload["history"]] == ["2026-07-07", "2026-07-08"]
-    assert payload["summary"]["foreignNetLots"] == 1000.0
-    assert payload["summary"]["totalNetLots"] == 3300.0
+    assert payload["summary"]["foreignNetLots"] == pytest.approx(1000.0)
+    assert payload["summary"]["totalNetLots"] == pytest.approx(3300.0)
     assert payload["source"].startswith("Persisted ")
     # Fresh store-backed reads must not probe official full-market payloads.
     assert live_calls == []

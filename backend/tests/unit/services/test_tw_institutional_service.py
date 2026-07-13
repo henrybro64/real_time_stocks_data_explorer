@@ -877,6 +877,50 @@ def test_service_uses_bounded_live_fallback_when_store_empty() -> None:
     ]
 
 
+def test_service_live_fallback_probes_prior_weekday_when_recent_days_is_one_on_weekend(
+    monkeypatch,
+) -> None:
+    """RECENT_DAYS is a weekday count; weekend starts must still reach Friday."""
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "taiwan_market_data_refresh_recent_days", 1)
+
+    stock = stock_record(
+        "TW:2330",
+        market="TW",
+        symbol="2330",
+        name="台積電",
+        exchange="TWSE",
+        currency="TWD",
+        timezone="Asia/Taipei",
+    )
+    payloads = {
+        date(2026, 7, 10): {
+            "date": "20260710",
+            "fields": _TWSE_FIELDS,
+            "data": [["2330", "台積電", "1,000", "2,000", "3,000", "1,000", "2,000"]],
+        },
+    }
+    fetched: list[date] = []
+
+    def tracking_fetcher(target_date: date):
+        fetched.append(target_date)
+        return payloads.get(target_date, {"stat": "查無資料", "data": []})
+
+    service = TaiwanInstitutionalInvestorsService(
+        quote_source=FakeQuoteSource(stock),
+        twse_fetcher=tracking_fetcher,
+        # Sunday 01:00 UTC = Sunday 09:00 Taipei → candidate start Saturday.
+        now_provider=lambda: datetime(2026, 7, 12, 1, 0, tzinfo=UTC),
+        store=FakeInstitutionalStore(),
+    )
+
+    result = service.get_institutional_investors("TW:2330", days=90)
+
+    assert fetched == [date(2026, 7, 10)]
+    assert result.latest_date == "2026-07-10"
+
+
 def test_service_merges_stale_store_with_bounded_live_and_dedupes_dates() -> None:
     stock = stock_record(
         "TW:2330",
