@@ -320,6 +320,24 @@ describe("AlertsPage", () => {
     expect(screen.getByText("Threshold value must be greater than 0")).toBeInTheDocument();
   });
 
+  it("keeps a save banner when pause fails with a stock validation detail", async () => {
+    const user = userEvent.setup();
+    vi.mocked(updateAlertRule).mockRejectedValue(
+      new ApiError("Bad Request", {
+        status: 400,
+        kind: "validation",
+        detail: "Unknown stock id: US:AAPL",
+      }),
+    );
+
+    renderAlertsPage();
+    const ruleRow = await screen.findByTestId("alerts-rule-row-1");
+    await user.click(within(ruleRow).getByRole("button", { name: "Pause" }));
+
+    expect(await screen.findByText("Could not save")).toBeInTheDocument();
+    expect(screen.getByText("Unknown stock id: US:AAPL")).toBeInTheDocument();
+  });
+
   it("supports editing and deleting an existing alert rule", async () => {
     const user = userEvent.setup();
     const updatedRule = buildRule({

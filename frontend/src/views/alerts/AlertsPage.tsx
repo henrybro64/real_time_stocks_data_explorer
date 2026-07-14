@@ -62,9 +62,11 @@ export function AlertsPage({ initialStockId = "" }: Props) {
       ? (alerts.events.length > 0 ? "stale" : errorToNoticeKind(alerts.eventsQuery.error))
       : null;
   const mutationApiError = alerts.mutationError != null ? toApiError(alerts.mutationError) : null;
-  // Stock-id validation belongs on the field; keep the banner for other save failures.
+  // Suppress the save banner only when a form submit already attached a field error.
+  // Row actions (pause/resume/delete) keep the banner even for stock validation details.
   const mutationNoticeKind =
-    mutationApiError != null && !isAlertStockValidationDetail(mutationApiError.detail)
+    mutationApiError != null &&
+    !(stockFieldError != null && isAlertStockValidationDetail(mutationApiError.detail))
       ? errorToNoticeKind(mutationApiError)
       : null;
   const isSubmitDisabled =
@@ -314,27 +316,29 @@ export function AlertsPage({ initialStockId = "" }: Props) {
                           <Button
                             kind="ghost"
                             size="sm"
-                            onClick={() =>
+                            onClick={() => {
+                              setStockFieldError(null);
                               alerts.updateMutation.mutate({
                                 ruleId: rule.id,
                                 payload: { enabled: !rule.enabled },
-                              })
-                            }
+                              });
+                            }}
                           >
                             {rule.enabled ? t("alerts.actions.pause") : t("alerts.actions.resume")}
                           </Button>
                           <Button
                             kind="ghost"
                             size="sm"
-                            onClick={() =>
+                            onClick={() => {
+                              setStockFieldError(null);
                               alerts.deleteMutation.mutate(rule.id, {
                                 onSuccess: () => {
                                   if (editingRuleId === rule.id) {
                                     resetForm();
                                   }
                                 },
-                              })
-                            }
+                              });
+                            }}
                           >
                             {t("alerts.actions.delete")}
                           </Button>

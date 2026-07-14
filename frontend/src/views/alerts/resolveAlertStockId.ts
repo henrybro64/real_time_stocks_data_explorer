@@ -1,4 +1,4 @@
-import type { Stock } from "@shared/api";
+import type { Stock } from "@shared/stock";
 import { searchStocks } from "../../services/api/client";
 
 export type AlertStockResolutionCode = "unknown" | "ambiguous";

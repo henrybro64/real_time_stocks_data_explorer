@@ -85,9 +85,11 @@ class AlertService:
         _sync_repository_sessionlocal()
         next_rule_type = rule_type
         next_threshold = threshold_value
-        next_stock_id = self._resolve_stock_id(stock_id) if stock_id is not None else None
 
         def apply_changes(rule: AlertRule) -> None:
+            # Resolve after the repository loads the owned rule so missing/cross-user
+            # updates stay 404 instead of becoming stock validation 400s.
+            next_stock_id = self._resolve_stock_id(stock_id) if stock_id is not None else None
             resolved_stock_id = next_stock_id if next_stock_id is not None else rule.stock_id
             resolved_rule_type = next_rule_type if next_rule_type is not None else rule.rule_type
             resolved_threshold = (

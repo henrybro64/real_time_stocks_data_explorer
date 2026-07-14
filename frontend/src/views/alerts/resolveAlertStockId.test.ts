@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import type { Stock } from "@shared/api";
+import type { Stock } from "@shared/stock";
 import {
   AlertStockResolutionError,
   resolveAlertStockId,
