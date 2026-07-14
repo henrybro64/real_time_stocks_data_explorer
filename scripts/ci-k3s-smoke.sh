@@ -40,6 +40,57 @@ run_kubectl() {
   "${KUBECTL_ARR[@]}" "$@"
 }
 
+dump_proxy_failure_evidence() {
+  {
+    echo
+    echo "## Frontend/backend logs after /api/markets failure"
+  } | tee -a "${SUMMARY_FILE}"
+  run_kubectl -n "${NAMESPACE}" logs deploy/stock-ticker-frontend --tail=200 \
+    >"${ARTIFACT_DIR}/frontend-pod.log" 2>&1 || true
+  run_kubectl -n "${NAMESPACE}" logs deploy/stock-ticker-backend -c backend --tail=200 \
+    >"${ARTIFACT_DIR}/backend-pod.log" 2>&1 || true
+  run_kubectl -n "${NAMESPACE}" exec deploy/stock-ticker-frontend -- \
+    sh -c 'printf "BACKEND_PROXY_URL=%s\n" "${BACKEND_PROXY_URL:-}"' \
+    >"${ARTIFACT_DIR}/frontend-backend-proxy-env.txt" 2>&1 || true
+}
+
+# Retry HTTP GETs so brief Next.js rewrite / CoreDNS races do not fail the smoke.
+curl_get_ok() {
+  local url="$1"
+  local out_file="$2"
+  local attempts="${3:-10}"
+  local delay_seconds="${4:-3}"
+  local attempt http_code body curl_status
+
+  for ((attempt = 1; attempt <= attempts; attempt++)); do
+    printf '+ curl attempt %s/%s %s\n' "${attempt}" "${attempts}" "${url}" >&2
+    set +e
+    body="$(curl -sS -w '\n%{http_code}' --max-time 20 "${url}")"
+    curl_status=$?
+    set -e
+    if [[ "${curl_status}" -eq 0 ]]; then
+      http_code="$(printf '%s\n' "${body}" | tail -n 1)"
+      body="$(printf '%s\n' "${body}" | sed '$d')"
+      if [[ "${http_code}" == "200" ]]; then
+        printf '%s\n' "${body}" >"${out_file}"
+        printf '%s\n' "${body}"
+        return 0
+      fi
+      printf 'HTTP %s for %s\n' "${http_code}" "${url}" >&2
+      printf '%s\n' "${body}" >"${out_file}.attempt-${attempt}.http-${http_code}.txt"
+    else
+      printf 'curl exit %s for %s\n' "${curl_status}" "${url}" >&2
+    fi
+    if [[ "${attempt}" -lt "${attempts}" ]]; then
+      sleep "${delay_seconds}"
+    fi
+  done
+
+  dump_proxy_failure_evidence
+  echo "Failed to GET ${url} after ${attempts} attempts" >&2
+  return 1
+}
+
 snapshot_kubectl() {
   local title="$1"
   shift
@@ -105,17 +156,20 @@ echo "Checking backend /health through service port-forward"
 run_kubectl -n "${NAMESPACE}" port-forward svc/stock-ticker-backend 8000:8000 >"${ARTIFACT_DIR}/backend-port-forward.log" 2>&1 &
 BACKEND_PORT_FORWARD_PID=$!
 sleep 5
-backend_health="$(run_cmd curl -fsS http://127.0.0.1:8000/health)"
-printf '%s\n' "${backend_health}" > "${ARTIFACT_DIR}/backend-health.json"
+backend_health="$(curl_get_ok http://127.0.0.1:8000/health "${ARTIFACT_DIR}/backend-health.json" 8 2)"
 grep -q '"status":"ok"' <<< "${backend_health}"
 append_summary_section "Backend /health" "${backend_health}"
+
+echo "Checking backend /api/markets through service port-forward"
+backend_markets="$(curl_get_ok http://127.0.0.1:8000/api/markets "${ARTIFACT_DIR}/backend-markets.json" 8 2)"
+grep -q '"market"' <<< "${backend_markets}"
+append_summary_section "Backend /api/markets" "${backend_markets}"
 
 echo "Checking frontend -> backend service DNS path via Next.js rewrite"
 run_kubectl -n "${NAMESPACE}" port-forward svc/stock-ticker-frontend 3000:3000 >"${ARTIFACT_DIR}/frontend-port-forward.log" 2>&1 &
 FRONTEND_PORT_FORWARD_PID=$!
 sleep 5
-frontend_proxy="$(run_cmd curl -fsS http://127.0.0.1:3000/api/markets)"
-printf '%s\n' "${frontend_proxy}" > "${ARTIFACT_DIR}/frontend-backend-proxy.json"
+frontend_proxy="$(curl_get_ok http://127.0.0.1:3000/api/markets "${ARTIFACT_DIR}/frontend-backend-proxy.json" 12 3)"
 grep -q '"market"' <<< "${frontend_proxy}"
 append_summary_section "Frontend /api/markets via frontend service" "${frontend_proxy}"
 
