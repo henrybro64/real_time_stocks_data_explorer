@@ -50,10 +50,22 @@ def _install_stock_quote_mocks(
             volume=1_000_000,
         )
 
+    def search(query: str):
+        needle = query.strip().upper()
+        symbol = stock.symbol.upper()
+        if needle in {symbol, stock.id.upper()} or needle == symbol:
+            return [stock]
+        return []
+
+    def resolve_stock_id(raw: str) -> str:
+        return quote_service.resolve_stock_id(raw)
+
     monkeypatch.setattr(quote_service, "get_stock", get_stock)
     monkeypatch.setattr(quote_service, "get_quote", get_quote)
+    monkeypatch.setattr(quote_service, "search", search)
     monkeypatch.setattr(alert_service, "_stock_loader", get_stock)
     monkeypatch.setattr(alert_service, "_quote_loader", get_quote)
+    monkeypatch.setattr(alert_service, "_stock_resolver", resolve_stock_id)
 
 
 def _enable_local_auth(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -177,6 +189,27 @@ def test_alert_rule_rejects_unknown_stock(monkeypatch: pytest.MonkeyPatch, clien
 
     assert response.status_code == 400
     assert response.json() == {"detail": "Unknown stock id: US:NOPE"}
+
+
+def test_alert_rule_resolves_bare_and_lowercase_tickers(
+    monkeypatch: pytest.MonkeyPatch,
+    client,
+) -> None:
+    price_state = {"last_price": 205.0}
+    _install_stock_quote_mocks(monkeypatch, price_state=price_state)
+
+    for stock_id in ("AAPL", "aapl", "  AAPL  "):
+        response = client.post(
+            "/api/alerts/rules",
+            json={
+                "stockId": stock_id,
+                "ruleType": "price_above",
+                "thresholdValue": 200,
+                "enabled": True,
+            },
+        )
+        assert response.status_code == 200, stock_id
+        assert response.json()["stockId"] == "US:AAPL"
 
 
 def test_alert_rules_and_events_are_isolated_per_authenticated_user(

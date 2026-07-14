@@ -11,7 +11,9 @@ import {
   deleteAlertRule,
   fetchAlertEvents,
   fetchAlertRules,
+  searchStocks,
   updateAlertRule,
+  ApiError,
 } from "../../services/api/client";
 import { AlertsPage } from "./AlertsPage";
 
@@ -28,6 +30,7 @@ vi.mock("../../services/api/client", async () => {
     createAlertRule: vi.fn(),
     updateAlertRule: vi.fn(),
     deleteAlertRule: vi.fn(),
+    searchStocks: vi.fn(),
   };
 });
 
@@ -104,6 +107,7 @@ describe("AlertsPage", () => {
     vi.mocked(createAlertRule).mockResolvedValue(buildRule());
     vi.mocked(updateAlertRule).mockResolvedValue(buildRule());
     vi.mocked(deleteAlertRule).mockResolvedValue(undefined);
+    vi.mocked(searchStocks).mockResolvedValue([buildRule().stock!]);
   });
 
   it("renders alert rules and recent events", async () => {
@@ -129,7 +133,7 @@ describe("AlertsPage", () => {
     renderAlertsPage({ initialStockId: "US:AAPL" });
 
     expect(await screen.findByRole("heading", { level: 1, name: "Threshold alerts" })).toBeInTheDocument();
-    expect(screen.getByLabelText("Stock ID")).toHaveValue("US:AAPL");
+    expect(screen.getByLabelText("Stock symbol")).toHaveValue("US:AAPL");
 
     await user.clear(screen.getByLabelText("Threshold price"));
     await user.type(screen.getByLabelText("Threshold price"), "210");
@@ -145,6 +149,175 @@ describe("AlertsPage", () => {
     });
 
     expect(await screen.findByTestId("alerts-rule-row-2")).toBeInTheDocument();
+  });
+
+  it("resolves bare and lowercase tickers to canonical stock ids before create", async () => {
+    const user = userEvent.setup();
+    vi.mocked(fetchAlertRules).mockResolvedValue([]);
+    vi.mocked(fetchAlertEvents).mockResolvedValue([]);
+    vi.mocked(searchStocks).mockResolvedValue([
+      {
+        id: "US:AAPL",
+        market: "US",
+        symbol: "AAPL",
+        name: "Apple Inc.",
+        exchange: "NASDAQ",
+        currency: "USD",
+        timezone: "America/New_York",
+        nameEn: "Apple Inc.",
+        nameZhTw: "蘋果",
+      },
+    ]);
+
+    renderAlertsPage();
+    expect(await screen.findByRole("heading", { level: 1, name: "Threshold alerts" })).toBeInTheDocument();
+
+    await user.type(screen.getByLabelText("Stock symbol"), "aapl");
+    await user.type(screen.getByLabelText("Threshold price"), "200");
+    await user.click(screen.getByTestId("alert-submit-button"));
+
+    await waitFor(() => {
+      expect(createAlertRule).toHaveBeenCalledWith({
+        stockId: "US:AAPL",
+        ruleType: "price_above",
+        thresholdValue: 200,
+        enabled: true,
+      });
+    });
+  });
+
+  it("resolves Taiwan numeric tickers to TW: prefix before create", async () => {
+    const user = userEvent.setup();
+    vi.mocked(fetchAlertRules).mockResolvedValue([]);
+    vi.mocked(fetchAlertEvents).mockResolvedValue([]);
+
+    renderAlertsPage();
+    expect(await screen.findByRole("heading", { level: 1, name: "Threshold alerts" })).toBeInTheDocument();
+
+    await user.type(screen.getByLabelText("Stock symbol"), "2330");
+    await user.type(screen.getByLabelText("Threshold price"), "800");
+    await user.click(screen.getByTestId("alert-submit-button"));
+
+    await waitFor(() => {
+      expect(createAlertRule).toHaveBeenCalledWith({
+        stockId: "TW:2330",
+        ruleType: "price_above",
+        thresholdValue: 800,
+        enabled: true,
+      });
+    });
+    expect(searchStocks).not.toHaveBeenCalled();
+  });
+
+  it("shows field-level validation instead of load-failed for unknown tickers", async () => {
+    const user = userEvent.setup();
+    vi.mocked(fetchAlertRules).mockResolvedValue([]);
+    vi.mocked(fetchAlertEvents).mockResolvedValue([]);
+    vi.mocked(searchStocks).mockResolvedValue([]);
+    vi.mocked(createAlertRule).mockRejectedValue(
+      new ApiError("Bad Request", {
+        status: 400,
+        kind: "validation",
+        detail: "Unknown stock id: US:ZZZZZ",
+      }),
+    );
+
+    renderAlertsPage();
+    expect(await screen.findByRole("heading", { level: 1, name: "Threshold alerts" })).toBeInTheDocument();
+
+    await user.type(screen.getByLabelText("Stock symbol"), "ZZZZZ");
+    await user.type(screen.getByLabelText("Threshold price"), "200");
+    await user.click(screen.getByTestId("alert-submit-button"));
+
+    expect(
+      await screen.findByText(
+        "Stock not found: US:ZZZZZ. Enter a ticker or choose a canonical ID such as US:AAPL.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Could not save")).not.toBeInTheDocument();
+    expect(screen.queryByText("Load failed")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Stock symbol")).toHaveValue("US:ZZZZZ");
+    expect(screen.getByLabelText("Threshold price")).toHaveValue(200);
+  });
+
+  it("shows field-level validation for ambiguous symbols without a save banner", async () => {
+    const user = userEvent.setup();
+    vi.mocked(fetchAlertRules).mockResolvedValue([]);
+    vi.mocked(fetchAlertEvents).mockResolvedValue([]);
+    vi.mocked(searchStocks).mockResolvedValue([
+      {
+        id: "TW:1111",
+        market: "TW",
+        symbol: "FOO",
+        name: "Foo One",
+        exchange: "TWSE",
+        currency: "TWD",
+        timezone: "Asia/Taipei",
+        nameEn: "Foo One",
+        nameZhTw: "Foo One",
+      },
+      {
+        id: "TW:2222",
+        market: "TW",
+        symbol: "FOO",
+        name: "Foo Two",
+        exchange: "TWSE",
+        currency: "TWD",
+        timezone: "Asia/Taipei",
+        nameEn: "Foo Two",
+        nameZhTw: "Foo Two",
+      },
+    ]);
+
+    renderAlertsPage();
+    expect(await screen.findByRole("heading", { level: 1, name: "Threshold alerts" })).toBeInTheDocument();
+
+    await user.type(screen.getByLabelText("Stock symbol"), "FOO");
+    await user.type(screen.getByLabelText("Threshold price"), "200");
+    await user.click(screen.getByTestId("alert-submit-button"));
+
+    expect(
+      await screen.findByText('Ambiguous symbol "FOO". Choose one of: TW:1111, TW:2222'),
+    ).toBeInTheDocument();
+    expect(createAlertRule).not.toHaveBeenCalled();
+    expect(screen.queryByText("Could not save")).not.toBeInTheDocument();
+    expect(screen.queryByText("Load failed")).not.toBeInTheDocument();
+  });
+
+  it("keeps a save banner for non-stock validation failures", async () => {
+    const user = userEvent.setup();
+    vi.mocked(fetchAlertRules).mockResolvedValue([]);
+    vi.mocked(fetchAlertEvents).mockResolvedValue([]);
+    vi.mocked(searchStocks).mockResolvedValue([
+      {
+        id: "US:AAPL",
+        market: "US",
+        symbol: "AAPL",
+        name: "Apple Inc.",
+        exchange: "NASDAQ",
+        currency: "USD",
+        timezone: "America/New_York",
+        nameEn: "Apple Inc.",
+        nameZhTw: "蘋果",
+      },
+    ]);
+    vi.mocked(createAlertRule).mockRejectedValue(
+      new ApiError("Bad Request", {
+        status: 400,
+        kind: "validation",
+        detail: "Threshold value must be greater than 0",
+      }),
+    );
+
+    renderAlertsPage();
+    expect(await screen.findByRole("heading", { level: 1, name: "Threshold alerts" })).toBeInTheDocument();
+
+    await user.type(screen.getByLabelText("Stock symbol"), "AAPL");
+    await user.type(screen.getByLabelText("Threshold price"), "200");
+    await user.click(screen.getByTestId("alert-submit-button"));
+
+    expect(await screen.findByText("Could not save")).toBeInTheDocument();
+    expect(screen.getByText("Threshold value must be greater than 0")).toBeInTheDocument();
   });
 
   it("supports editing and deleting an existing alert rule", async () => {

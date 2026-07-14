@@ -39,6 +39,65 @@ class QuoteService:
         provider = self.providers.get(market)
         return provider.get_stock(stock_id) if provider else None
 
+    def resolve_stock_id(self, raw: str) -> str:
+        """Resolve a user-facing ticker or canonical ID to ``MARKET:SYMBOL``.
+
+        Accepts values like ``AAPL``, ``aapl``, ``US:AAPL``, and ``2330``.
+        Raises ``ValueError`` when the input is unknown or ambiguous across markets.
+
+        Shared algorithm with frontend ``resolveAlertStockId``:
+        1. Canonical ``MARKET:SYMBOL`` (verify via ``get_stock``)
+        2. All-digit bare input → ``TW:{digits}`` (verify via ``get_stock``)
+        3. Prefer ``US:{SYMBOL}`` via ``get_stock`` before search ambiguity
+        4. Exact symbol match / single search hit; refuse silent multi-match picks
+        """
+        query = raw.strip()
+        if not query:
+            raise ValueError(f"Unknown stock id: {raw}")
+
+        if ":" in query:
+            market_raw, symbol_raw = query.split(":", 1)
+            market = market_raw.strip().upper()
+            symbol = symbol_raw.strip()
+            if market not in self.providers:
+                raise ValueError(f"Unknown stock id: {query}")
+            if market == "US":
+                symbol = symbol.upper()
+            candidate = f"{market}:{symbol}"
+            if self.get_stock(candidate) is not None:
+                return candidate
+            raise ValueError(f"Unknown stock id: {query}")
+
+        if query.isdigit():
+            candidate = f"TW:{query}"
+            if self.get_stock(candidate) is not None:
+                return candidate
+            raise ValueError(f"Unknown stock id: {query}")
+
+        us_candidate = f"US:{query.upper()}"
+        if self.get_stock(us_candidate) is not None:
+            return us_candidate
+
+        matches = self.search(query)
+        exact_symbol_matches = [
+            stock for stock in matches if stock.symbol.upper() == query.upper()
+        ]
+        if len(exact_symbol_matches) == 1:
+            return exact_symbol_matches[0].id
+        if len(exact_symbol_matches) > 1:
+            choices = ", ".join(sorted({stock.id for stock in exact_symbol_matches}))
+            raise ValueError(
+                f'Ambiguous stock symbol "{query}". Choose one of: {choices}'
+            )
+        if len(matches) == 1:
+            return matches[0].id
+        if len(matches) > 1:
+            choices = ", ".join(sorted({stock.id for stock in matches[:5]}))
+            raise ValueError(
+                f'Ambiguous stock symbol "{query}". Choose one of: {choices}'
+            )
+        raise ValueError(f"Unknown stock id: {query}")
+
     def get_quote(self, stock_id: str) -> QuoteRecord | None:
         cached = get_cached_quote(stock_id)
         if cached is not None:
