@@ -11,6 +11,27 @@ from app.services.alert_service import AlertService
 from tests.support import quote_record, stock_record
 
 
+def _stub_resolve_stock_id(get_stock):
+    def resolve_stock_id(raw: str) -> str:
+        cleaned = raw.strip()
+        if not cleaned:
+            raise ValueError(f"Unknown stock id: {raw}")
+        if ":" in cleaned:
+            market, symbol = cleaned.split(":", 1)
+            market = market.strip().upper()
+            symbol = symbol.strip().upper() if market == "US" else symbol.strip()
+            candidate = f"{market}:{symbol}"
+        elif cleaned.isdigit():
+            candidate = f"TW:{cleaned}"
+        else:
+            candidate = f"US:{cleaned.upper()}"
+        if get_stock(candidate) is not None:
+            return candidate
+        raise ValueError(f"Unknown stock id: {cleaned}")
+
+    return resolve_stock_id
+
+
 def _build_test_alert_service(monkeypatch, *, initial_price: float = 205.0):
     engine = create_engine("sqlite+pysqlite:///:memory:")
 
@@ -43,30 +64,8 @@ def _build_test_alert_service(monkeypatch, *, initial_price: float = 205.0):
             else None
         )
 
-    def resolve_stock_id(raw: str) -> str:
-        cleaned = raw.strip()
-        if not cleaned:
-            raise ValueError(f"Unknown stock id: {raw}")
-        if ":" in cleaned:
-            market, symbol = cleaned.split(":", 1)
-            market = market.strip().upper()
-            symbol = symbol.strip().upper() if market == "US" else symbol.strip()
-            candidate = f"{market}:{symbol}"
-            if get_stock(candidate) is not None:
-                return candidate
-            raise ValueError(f"Unknown stock id: {cleaned}")
-        if cleaned.isdigit():
-            candidate = f"TW:{cleaned}"
-            if get_stock(candidate) is not None:
-                return candidate
-            raise ValueError(f"Unknown stock id: {cleaned}")
-        us_candidate = f"US:{cleaned.upper()}"
-        if get_stock(us_candidate) is not None:
-            return us_candidate
-        raise ValueError(f"Unknown stock id: {cleaned}")
-
     service._stock_loader = get_stock
-    service._stock_resolver = resolve_stock_id
+    service._stock_resolver = _stub_resolve_stock_id(get_stock)
     service._quote_loader = lambda stock_id: quote_record(
         "US:AAPL",
         last_price=price_state["last_price"],

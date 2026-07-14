@@ -56,47 +56,59 @@ class QuoteService:
             raise ValueError(f"Unknown stock id: {raw}")
 
         if ":" in query:
-            market_raw, symbol_raw = query.split(":", 1)
-            market = market_raw.strip().upper()
-            symbol = symbol_raw.strip()
-            if market not in self.providers:
-                raise ValueError(f"Unknown stock id: {query}")
-            if market == "US":
-                symbol = symbol.upper()
-            candidate = f"{market}:{symbol}"
-            if self.get_stock(candidate) is not None:
-                return candidate
-            raise ValueError(f"Unknown stock id: {query}")
-
+            return self._resolve_canonical_stock_id(query)
         if query.isdigit():
-            candidate = f"TW:{query}"
-            if self.get_stock(candidate) is not None:
-                return candidate
-            raise ValueError(f"Unknown stock id: {query}")
+            return self._require_existing_stock(f"TW:{query}", query)
 
         us_candidate = f"US:{query.upper()}"
         if self.get_stock(us_candidate) is not None:
             return us_candidate
+        return self._resolve_stock_id_from_search(query)
 
+    def _resolve_canonical_stock_id(self, query: str) -> str:
+        market_raw, symbol_raw = query.split(":", 1)
+        market = market_raw.strip().upper()
+        symbol = symbol_raw.strip()
+        if market not in self.providers:
+            raise ValueError(f"Unknown stock id: {query}")
+        if market == "US":
+            symbol = symbol.upper()
+        return self._require_existing_stock(f"{market}:{symbol}", query)
+
+    def _require_existing_stock(self, candidate: str, display: str) -> str:
+        if self.get_stock(candidate) is not None:
+            return candidate
+        raise ValueError(f"Unknown stock id: {display}")
+
+    def _resolve_stock_id_from_search(self, query: str) -> str:
         matches = self.search(query)
         exact_symbol_matches = [
             stock for stock in matches if stock.symbol.upper() == query.upper()
         ]
-        if len(exact_symbol_matches) == 1:
-            return exact_symbol_matches[0].id
-        if len(exact_symbol_matches) > 1:
-            choices = ", ".join(sorted({stock.id for stock in exact_symbol_matches}))
-            raise ValueError(
-                f'Ambiguous stock symbol "{query}". Choose one of: {choices}'
-            )
-        if len(matches) == 1:
-            return matches[0].id
-        if len(matches) > 1:
-            choices = ", ".join(sorted({stock.id for stock in matches[:5]}))
-            raise ValueError(
-                f'Ambiguous stock symbol "{query}". Choose one of: {choices}'
-            )
+        resolved = self._pick_unique_stock_id(exact_symbol_matches, query)
+        if resolved is not None:
+            return resolved
+        resolved = self._pick_unique_stock_id(matches, query, limit=5)
+        if resolved is not None:
+            return resolved
         raise ValueError(f"Unknown stock id: {query}")
+
+    @staticmethod
+    def _pick_unique_stock_id(
+        stocks: list[StockRecord],
+        query: str,
+        *,
+        limit: int | None = None,
+    ) -> str | None:
+        if len(stocks) == 1:
+            return stocks[0].id
+        if len(stocks) > 1:
+            ids = {stock.id for stock in (stocks if limit is None else stocks[:limit])}
+            choices = ", ".join(sorted(ids))
+            raise ValueError(
+                f'Ambiguous stock symbol "{query}". Choose one of: {choices}'
+            )
+        return None
 
     def get_quote(self, stock_id: str) -> QuoteRecord | None:
         cached = get_cached_quote(stock_id)

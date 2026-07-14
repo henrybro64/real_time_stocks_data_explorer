@@ -27,6 +27,11 @@ export class AlertStockResolutionError extends Error {
 
 const SUPPORTED_MARKETS = new Set(["US", "TW"]);
 
+function sortedUniqueIds(ids: Iterable<string>, limit?: number): string {
+  const unique = [...new Set(ids)].sort((left, right) => left.localeCompare(right));
+  return (limit == null ? unique : unique.slice(0, limit)).join(", ");
+}
+
 /**
  * Resolve a user-facing ticker or canonical ID to MARKET:SYMBOL before alert submit.
  *
@@ -76,19 +81,25 @@ export async function resolveAlertStockId(
     return exact[0].id;
   }
   if (exact.length > 1) {
-    const choices = [...new Set(exact.map((stock) => stock.id))].sort().join(", ");
-    throw new AlertStockResolutionError("ambiguous", query, choices);
+    throw new AlertStockResolutionError(
+      "ambiguous",
+      query,
+      sortedUniqueIds(exact.map((stock) => stock.id)),
+    );
   }
 
   if (matches.length === 1) {
     return matches[0].id;
   }
   if (matches.length > 1) {
-    const choices = [...new Set(matches.map((stock) => stock.id))]
-      .sort()
-      .slice(0, 5)
-      .join(", ");
-    throw new AlertStockResolutionError("ambiguous", query, choices);
+    throw new AlertStockResolutionError(
+      "ambiguous",
+      query,
+      sortedUniqueIds(
+        matches.map((stock) => stock.id),
+        5,
+      ),
+    );
   }
 
   // No search hits: still normalize bare Latin tickers for backend dynamic US lookup

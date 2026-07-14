@@ -12,13 +12,13 @@ export type RequestNoticeKind =
   | "error"
   | "stale";
 
-type Props = {
+type Props = Readonly<{
   className?: string;
   compact?: boolean;
   detail?: string | null;
   kind: RequestNoticeKind;
   scopeLabel: string;
-};
+}>;
 
 export function errorToNoticeKind(error: unknown): RequestNoticeKind {
   const apiError = toApiError(error);
