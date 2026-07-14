@@ -5,7 +5,7 @@ import type { Stock } from "@shared/stock";
 
 export type AppLanguage = "en" | "zh-TW";
 
-type TranslationKey =
+export type TranslationKey =
   | "nav.dashboard"
   | "nav.alerts"
   | "nav.markets"
@@ -52,12 +52,16 @@ type TranslationKey =
   | "alerts.form.editTitle"
   | "alerts.form.stockId"
   | "alerts.form.stockIdPlaceholder"
+  | "alerts.form.stockIdHelper"
   | "alerts.form.ruleType"
   | "alerts.form.threshold"
   | "alerts.form.enabled"
   | "alerts.form.submitCreate"
   | "alerts.form.submitUpdate"
   | "alerts.form.cancelEdit"
+  | "alerts.error.unknownStock"
+  | "alerts.error.unknownStockId"
+  | "alerts.error.ambiguousStock"
   | "alerts.rules.title"
   | "alerts.rules.empty"
   | "alerts.events.title"
@@ -426,14 +430,20 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "alerts.form.eyebrow": "Rule editor",
     "alerts.form.createTitle": "Create alert rule",
     "alerts.form.editTitle": "Edit alert rule",
-    "alerts.form.stockId": "Stock ID",
-    "alerts.form.stockIdPlaceholder": "For example: US:AAPL or TW:2330",
+    "alerts.form.stockId": "Stock symbol",
+    "alerts.form.stockIdPlaceholder": "For example: AAPL, 2330, or US:AAPL",
+    "alerts.form.stockIdHelper": "Enter a ticker like AAPL / 2330, or a canonical ID like US:AAPL.",
     "alerts.form.ruleType": "Rule type",
     "alerts.form.threshold": "Threshold price",
     "alerts.form.enabled": "Rule status",
     "alerts.form.submitCreate": "Create alert",
     "alerts.form.submitUpdate": "Save changes",
     "alerts.form.cancelEdit": "Cancel",
+    "alerts.error.unknownStock": "Stock not found. Enter a ticker or choose a canonical ID such as US:AAPL.",
+    "alerts.error.unknownStockId":
+      "Stock not found: {stockId}. Enter a ticker or choose a canonical ID such as US:AAPL.",
+    "alerts.error.ambiguousStock":
+      'Ambiguous symbol "{query}". Choose one of: {choices}',
     "alerts.rules.title": "Current rules",
     "alerts.rules.empty": "No alert rules yet. Create one above to start tracking threshold events.",
     "alerts.events.title": "Recent events",
@@ -856,14 +866,20 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "alerts.form.eyebrow": "規則編輯器",
     "alerts.form.createTitle": "新增警示規則",
     "alerts.form.editTitle": "編輯警示規則",
-    "alerts.form.stockId": "股票 ID",
-    "alerts.form.stockIdPlaceholder": "例如 US:AAPL 或 TW:2330",
+    "alerts.form.stockId": "股票代號",
+    "alerts.form.stockIdPlaceholder": "例如 AAPL、2330，或 US:AAPL",
+    "alerts.form.stockIdHelper": "可輸入一般代號（如 AAPL / 2330），或標準 ID（如 US:AAPL）。",
     "alerts.form.ruleType": "規則類型",
     "alerts.form.threshold": "門檻價格",
     "alerts.form.enabled": "規則狀態",
     "alerts.form.submitCreate": "建立警示",
     "alerts.form.submitUpdate": "儲存變更",
     "alerts.form.cancelEdit": "取消",
+    "alerts.error.unknownStock": "找不到股票。請輸入代號，或使用標準 ID（例如 US:AAPL）。",
+    "alerts.error.unknownStockId":
+      "找不到股票 {stockId}。請輸入代號，或使用標準 ID（例如 US:AAPL）。",
+    "alerts.error.ambiguousStock":
+      "股票代號「{query}」有多筆相符，請選擇：{choices}",
     "alerts.rules.title": "目前規則",
     "alerts.rules.empty": "目前沒有警示規則。請先在上方建立一筆。",
     "alerts.events.title": "最近事件",

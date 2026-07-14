@@ -2,13 +2,35 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+import pytest
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 
 import app.services.alert_service as alert_service_module
 from app.db.models import AlertEvent, Base, User
-from app.services.alert_service import AlertService
+from app.services.alert_service import AlertRuleNotFoundError, AlertService, AlertValidationError
 from tests.support import quote_record, stock_record
+
+
+def _stub_resolve_stock_id(get_stock):
+    def resolve_stock_id(raw: str) -> str:
+        cleaned = raw.strip()
+        if not cleaned:
+            raise ValueError(f"Unknown stock id: {raw}")
+        if ":" in cleaned:
+            market, symbol = cleaned.split(":", 1)
+            market = market.strip().upper()
+            symbol = symbol.strip().upper() if market == "US" else symbol.strip()
+            candidate = f"{market}:{symbol}"
+        elif cleaned.isdigit():
+            candidate = f"TW:{cleaned}"
+        else:
+            candidate = f"US:{cleaned.upper()}"
+        if get_stock(candidate) is not None:
+            return candidate
+        raise ValueError(f"Unknown stock id: {cleaned}")
+
+    return resolve_stock_id
 
 
 def _build_test_alert_service(monkeypatch, *, initial_price: float = 205.0):
@@ -26,16 +48,25 @@ def _build_test_alert_service(monkeypatch, *, initial_price: float = 205.0):
 
     price_state = {"last_price": initial_price}
     service = AlertService()
-    service._stock_loader = lambda stock_id: stock_record(
-        "US:AAPL",
-        market="US",
-        symbol="AAPL",
-        name="Apple Inc.",
-        exchange="NASDAQ",
-        currency="USD",
-        timezone="America/New_York",
-        name_en="Apple Inc.",
-    ) if stock_id == "US:AAPL" else None
+
+    def get_stock(stock_id: str):
+        return (
+            stock_record(
+                "US:AAPL",
+                market="US",
+                symbol="AAPL",
+                name="Apple Inc.",
+                exchange="NASDAQ",
+                currency="USD",
+                timezone="America/New_York",
+                name_en="Apple Inc.",
+            )
+            if stock_id == "US:AAPL"
+            else None
+        )
+
+    service._stock_loader = get_stock
+    service._stock_resolver = _stub_resolve_stock_id(get_stock)
     service._quote_loader = lambda stock_id: quote_record(
         "US:AAPL",
         last_price=price_state["last_price"],
@@ -110,6 +141,50 @@ def test_evaluate_rules_deduplicates_continuous_matches_and_preserves_history_on
     with session_local() as session:
         rows = list(session.query(AlertEvent).all())
     assert len(rows) == 2
+
+
+def test_create_rule_resolves_bare_and_lowercase_tickers(monkeypatch) -> None:
+    service, _session_local, _price_state = _build_test_alert_service(monkeypatch)
+
+    for raw in ("AAPL", "aapl", "  AAPL  "):
+        rule = service.create_rule(
+            "user-1",
+            stock_id=raw,
+            rule_type="price_above",
+            threshold_value=200.0,
+            enabled=True,
+        )
+        assert rule.stock_id == "US:AAPL"
+
+
+def test_update_missing_rule_prefers_not_found_over_stock_validation(monkeypatch) -> None:
+    service, _session_local, _price_state = _build_test_alert_service(monkeypatch)
+
+    with pytest.raises(AlertRuleNotFoundError, match="Alert rule not found: 999"):
+        service.update_rule(
+            "user-1",
+            rule_id=999,
+            stock_id="ZZZZZ",
+            threshold_value=210.0,
+        )
+
+
+def test_update_existing_rule_still_validates_unknown_stock(monkeypatch) -> None:
+    service, _session_local, _price_state = _build_test_alert_service(monkeypatch)
+    rule = service.create_rule(
+        "user-1",
+        stock_id="US:AAPL",
+        rule_type="price_above",
+        threshold_value=200.0,
+        enabled=True,
+    )
+
+    with pytest.raises(AlertValidationError, match="Unknown stock id: ZZZZZ"):
+        service.update_rule(
+            "user-1",
+            rule_id=rule.id,
+            stock_id="ZZZZZ",
+        )
 
 
 def test_price_below_rule_uses_strict_threshold_boundary(monkeypatch) -> None:

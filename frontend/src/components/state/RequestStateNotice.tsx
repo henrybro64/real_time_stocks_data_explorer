@@ -4,14 +4,21 @@ import Link from "next/link";
 import { useLanguage } from "../../app/i18n";
 import { toApiError } from "../../services/api/client";
 
-export type RequestNoticeKind = "auth" | "permission" | "unavailable" | "error" | "stale";
+export type RequestNoticeKind =
+  | "auth"
+  | "permission"
+  | "unavailable"
+  | "validation"
+  | "error"
+  | "stale";
 
-type Props = {
+type Props = Readonly<{
   className?: string;
   compact?: boolean;
+  detail?: string | null;
   kind: RequestNoticeKind;
   scopeLabel: string;
-};
+}>;
 
 export function errorToNoticeKind(error: unknown): RequestNoticeKind {
   const apiError = toApiError(error);
@@ -22,14 +29,23 @@ export function errorToNoticeKind(error: unknown): RequestNoticeKind {
       return "permission";
     case "unavailable":
       return "unavailable";
+    case "validation":
+      return "validation";
     default:
       return "error";
   }
 }
 
-export function RequestStateNotice({ className = "", compact = false, kind, scopeLabel }: Props) {
+export function RequestStateNotice({
+  className = "",
+  compact = false,
+  detail = null,
+  kind,
+  scopeLabel,
+}: Props) {
   const { language } = useLanguage();
   const scope = language === "en" ? scopeLabel.toLowerCase() : scopeLabel;
+  const detailText = detail?.trim() ? detail.trim() : null;
 
   const copy =
     language === "zh-TW"
@@ -47,6 +63,11 @@ export function RequestStateNotice({ className = "", compact = false, kind, scop
           unavailable: {
             title: "資料來源暫時不可用",
             body: `${scope}目前無法從資料提供方取得，請稍後再試。`,
+            action: null,
+          },
+          validation: {
+            title: "無法儲存",
+            body: detailText ?? `${scope}輸入有誤，請修正後再試。`,
             action: null,
           },
           error: {
@@ -74,6 +95,11 @@ export function RequestStateNotice({ className = "", compact = false, kind, scop
           unavailable: {
             title: "Provider unavailable",
             body: `The data provider for ${scope} is temporarily unavailable.`,
+            action: null,
+          },
+          validation: {
+            title: "Could not save",
+            body: detailText ?? `Check the ${scope} form and try again.`,
             action: null,
           },
           error: {

@@ -5,7 +5,7 @@ test("alerts page creates a threshold rule and shows the triggered event history
   await page.goto("/alerts?stockId=TW%3A2330");
   await expect(page.locator("#main-content")).toBeVisible();
 
-  await expect(page.getByLabel("股票 ID")).toHaveValue("TW:2330");
+  await expect(page.getByLabel("股票代號")).toHaveValue("TW:2330");
   await page.getByLabel("門檻價格").fill("940");
   await page.getByTestId("alert-submit-button").click();
 

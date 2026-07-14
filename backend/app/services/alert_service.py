@@ -39,6 +39,7 @@ class AlertService:
         self._thread: Thread | None = None
         self._quote_loader = quote_service.get_quote
         self._stock_loader = quote_service.get_stock
+        self._stock_resolver = quote_service.resolve_stock_id
 
     def list_rules(self, user_id: str) -> list[AlertRule]:
         _sync_repository_sessionlocal()
@@ -61,10 +62,11 @@ class AlertService:
         enabled: bool,
     ) -> AlertRule:
         _sync_repository_sessionlocal()
-        self._validate_rule_input(stock_id, rule_type, threshold_value)
+        resolved_stock_id = self._resolve_stock_id(stock_id)
+        self._validate_rule_input(resolved_stock_id, rule_type, threshold_value)
         return alert_repository.create_rule(
             user_id=user_id,
-            stock_id=stock_id,
+            stock_id=resolved_stock_id,
             rule_type=rule_type,
             threshold_value=threshold_value,
             enabled=enabled,
@@ -83,9 +85,11 @@ class AlertService:
         _sync_repository_sessionlocal()
         next_rule_type = rule_type
         next_threshold = threshold_value
-        next_stock_id = stock_id
 
         def apply_changes(rule: AlertRule) -> None:
+            # Resolve after the repository loads the owned rule so missing/cross-user
+            # updates stay 404 instead of becoming stock validation 400s.
+            next_stock_id = self._resolve_stock_id(stock_id) if stock_id is not None else None
             resolved_stock_id = next_stock_id if next_stock_id is not None else rule.stock_id
             resolved_rule_type = next_rule_type if next_rule_type is not None else rule.rule_type
             resolved_threshold = (
@@ -98,8 +102,8 @@ class AlertService:
             )
 
             definition_changed = False
-            if stock_id is not None and stock_id != rule.stock_id:
-                rule.stock_id = stock_id
+            if next_stock_id is not None and next_stock_id != rule.stock_id:
+                rule.stock_id = next_stock_id
                 definition_changed = True
             if rule_type is not None and rule_type != rule.rule_type:
                 rule.rule_type = rule_type
@@ -264,6 +268,12 @@ class AlertService:
         stock = self._stock_loader(stock_id)
         if stock is None:
             raise AlertValidationError(f"Unknown stock id: {stock_id}")
+
+    def _resolve_stock_id(self, stock_id: str) -> str:
+        try:
+            return self._stock_resolver(stock_id)
+        except ValueError as exc:
+            raise AlertValidationError(str(exc)) from exc
 
     @staticmethod
     def _condition_met(rule_type: str, observed_price: float, threshold_value: float) -> bool:

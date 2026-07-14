@@ -24,7 +24,17 @@ import { useState } from "react";
 import { getDisplayStockName, useLanguage } from "../../app/i18n";
 import { useAlerts } from "../../hooks/useAlerts";
 import { RequestStateNotice, errorToNoticeKind } from "../../components/state/RequestStateNotice";
+import { toApiError } from "../../services/api/client";
 import { formatCurrency, formatLastUpdated } from "../../services/format/quote";
+import {
+  AlertStockResolutionError,
+  resolveAlertStockId,
+} from "./resolveAlertStockId";
+import {
+  formatAlertStockResolutionMessage,
+  isAlertStockValidationDetail,
+  localizeAlertStockApiDetail,
+} from "./alertStockValidationCopy";
 
 type Props = {
   initialStockId?: string;
@@ -38,6 +48,8 @@ export function AlertsPage({ initialStockId = "" }: Props) {
   const [draftRuleType, setDraftRuleType] = useState<AlertRuleType>("price_above");
   const [draftThresholdValue, setDraftThresholdValue] = useState("");
   const [draftEnabled, setDraftEnabled] = useState(true);
+  const [stockFieldError, setStockFieldError] = useState<string | null>(null);
+  const [isResolvingStock, setIsResolvingStock] = useState(false);
 
   const rulesLoading = alerts.rulesQuery.isLoading && alerts.rules.length === 0;
   const eventsLoading = alerts.eventsQuery.isLoading && alerts.events.length === 0;
@@ -49,9 +61,17 @@ export function AlertsPage({ initialStockId = "" }: Props) {
     alerts.eventsQuery.error != null
       ? (alerts.events.length > 0 ? "stale" : errorToNoticeKind(alerts.eventsQuery.error))
       : null;
-  const mutationNoticeKind = alerts.mutationError != null ? errorToNoticeKind(alerts.mutationError) : null;
+  const mutationApiError = alerts.mutationError != null ? toApiError(alerts.mutationError) : null;
+  // Suppress the save banner only when a form submit already attached a field error.
+  // Row actions (pause/resume/delete) keep the banner even for stock validation details.
+  const mutationNoticeKind =
+    mutationApiError != null &&
+    !(stockFieldError != null && isAlertStockValidationDetail(mutationApiError.detail))
+      ? errorToNoticeKind(mutationApiError)
+      : null;
   const isSubmitDisabled =
     alerts.isMutating ||
+    isResolvingStock ||
     draftStockId.trim().length === 0 ||
     !Number.isFinite(Number(draftThresholdValue)) ||
     Number(draftThresholdValue) <= 0;
@@ -62,6 +82,7 @@ export function AlertsPage({ initialStockId = "" }: Props) {
     setDraftRuleType("price_above");
     setDraftThresholdValue("");
     setDraftEnabled(true);
+    setStockFieldError(null);
   };
 
   const beginEdit = (rule: AlertRule) => {
@@ -70,25 +91,54 @@ export function AlertsPage({ initialStockId = "" }: Props) {
     setDraftRuleType(rule.ruleType);
     setDraftThresholdValue(String(rule.thresholdValue));
     setDraftEnabled(rule.enabled);
+    setStockFieldError(null);
   };
 
-  const submitForm = () => {
+  const applyMutationStockError = (error: unknown) => {
+    const apiError = toApiError(error);
+    if (apiError.kind !== "validation" || !apiError.detail) {
+      return;
+    }
+    if (isAlertStockValidationDetail(apiError.detail)) {
+      setStockFieldError(localizeAlertStockApiDetail(apiError.detail, t));
+    }
+  };
+
+  const submitForm = async () => {
+    setStockFieldError(null);
+    alerts.createMutation.reset();
+    alerts.updateMutation.reset();
+    alerts.deleteMutation.reset();
+
+    let resolvedStockId: string;
+    try {
+      setIsResolvingStock(true);
+      resolvedStockId = await resolveAlertStockId(draftStockId);
+    } catch (error) {
+      const message =
+        error instanceof AlertStockResolutionError
+          ? formatAlertStockResolutionMessage(error, t)
+          : t("alerts.error.unknownStock");
+      setStockFieldError(message);
+      return;
+    } finally {
+      setIsResolvingStock(false);
+    }
+
+    setDraftStockId(resolvedStockId);
     const payload = {
-      stockId: draftStockId.trim(),
+      stockId: resolvedStockId,
       ruleType: draftRuleType,
       thresholdValue: Number(draftThresholdValue),
       enabled: draftEnabled,
     };
-
-    alerts.createMutation.reset();
-    alerts.updateMutation.reset();
-    alerts.deleteMutation.reset();
 
     if (editingRuleId == null) {
       alerts.createMutation.mutate(payload, {
         onSuccess: () => {
           resetForm();
         },
+        onError: applyMutationStockError,
       });
       return;
     }
@@ -102,6 +152,7 @@ export function AlertsPage({ initialStockId = "" }: Props) {
         onSuccess: () => {
           resetForm();
         },
+        onError: applyMutationStockError,
       },
     );
   };
@@ -127,16 +178,28 @@ export function AlertsPage({ initialStockId = "" }: Props) {
           </div>
           {mutationNoticeKind ? (
             <div className="app-state-notice-wrap">
-              <RequestStateNotice kind={mutationNoticeKind} scopeLabel={t("alerts.title")} />
+              <RequestStateNotice
+                kind={mutationNoticeKind}
+                scopeLabel={t("alerts.form.createTitle")}
+                detail={
+                  mutationNoticeKind === "validation" ? mutationApiError?.detail : null
+                }
+              />
             </div>
           ) : null}
           <div className="app-alerts-form">
             <TextInput
               id="alert-stock-id"
               labelText={t("alerts.form.stockId")}
+              helperText={t("alerts.form.stockIdHelper")}
               placeholder={t("alerts.form.stockIdPlaceholder")}
               value={draftStockId}
-              onChange={(event) => setDraftStockId(event.currentTarget.value)}
+              invalid={stockFieldError != null}
+              invalidText={stockFieldError ?? undefined}
+              onChange={(event) => {
+                setDraftStockId(event.currentTarget.value);
+                setStockFieldError(null);
+              }}
             />
             <Select
               id="alert-rule-type"
@@ -168,7 +231,9 @@ export function AlertsPage({ initialStockId = "" }: Props) {
             <div className="app-alerts-form-actions">
               <Button
                 data-testid="alert-submit-button"
-                onClick={submitForm}
+                onClick={() => {
+                  void submitForm();
+                }}
                 disabled={isSubmitDisabled}
               >
                 {editingRuleId == null ? t("alerts.form.submitCreate") : t("alerts.form.submitUpdate")}
@@ -251,27 +316,29 @@ export function AlertsPage({ initialStockId = "" }: Props) {
                           <Button
                             kind="ghost"
                             size="sm"
-                            onClick={() =>
+                            onClick={() => {
+                              setStockFieldError(null);
                               alerts.updateMutation.mutate({
                                 ruleId: rule.id,
                                 payload: { enabled: !rule.enabled },
-                              })
-                            }
+                              });
+                            }}
                           >
                             {rule.enabled ? t("alerts.actions.pause") : t("alerts.actions.resume")}
                           </Button>
                           <Button
                             kind="ghost"
                             size="sm"
-                            onClick={() =>
+                            onClick={() => {
+                              setStockFieldError(null);
                               alerts.deleteMutation.mutate(rule.id, {
                                 onSuccess: () => {
                                   if (editingRuleId === rule.id) {
                                     resetForm();
                                   }
                                 },
-                              })
-                            }
+                              });
+                            }}
                           >
                             {t("alerts.actions.delete")}
                           </Button>
