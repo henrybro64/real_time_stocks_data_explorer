@@ -300,11 +300,18 @@ def test_is_taiwan_no_data_payload_detects_holiday_and_empty_shapes() -> None:
     assert taiwan_market_data.is_taiwan_no_data_payload({"stat": "Sorry, no data found"})
     assert taiwan_market_data.is_taiwan_no_data_payload({"stat": "OK", "data": []})
     assert taiwan_market_data.is_taiwan_no_data_payload({"tables": []})
+    assert taiwan_market_data.is_taiwan_no_data_payload({"tables": [{"data": []}]})
     assert taiwan_market_data.is_taiwan_no_data_payload("查無資料")
     assert taiwan_market_data.is_taiwan_no_data_payload("Sorry, no data found")
     assert taiwan_market_data.is_taiwan_no_data_payload("No Data")
     assert not taiwan_market_data.is_taiwan_no_data_payload(
         {"stat": "OK", "data": [["2330", "台積電"]]}
+    )
+    assert not taiwan_market_data.is_taiwan_no_data_payload(
+        {"tables": [{"data": [["115/07/01", "10"]]}]}
+    )
+    assert not taiwan_market_data.is_taiwan_no_data_payload(
+        {"tables": [{"title": "daily"}]}
     )
 
 
@@ -386,6 +393,53 @@ def test_fetch_twse_data_uses_short_ttl_for_no_data_payloads(monkeypatch) -> Non
         cache_ttl=timedelta(hours=12),
     )
     assert third == {"stat": "OK", "data": [["2330", "台積電"]]}
+    assert calls["count"] == 2
+
+
+def test_fetch_tpex_data_uses_short_ttl_for_nested_empty_tables(monkeypatch) -> None:
+    client = TaiwanMarketDataClient()
+    calls = {"count": 0}
+    payloads = [
+        {"tables": [{"data": []}]},
+        {"tables": [{"data": [["115/07/01", "10"]]}]},
+    ]
+
+    def fake_fetch_json(url: str, **kwargs):
+        index = min(calls["count"], len(payloads) - 1)
+        calls["count"] += 1
+        return payloads[index]
+
+    monkeypatch.setattr(taiwan_market_data, "fetch_json", fake_fetch_json)
+
+    first = client.fetch_tpex_data(
+        "https://www.tpex.org.tw/www/zh-tw/afterTrading/tradingStock",
+        params={"code": "6488", "date": "2026/07/01", "response": "json"},
+        cache_ttl=timedelta(hours=12),
+    )
+    assert taiwan_market_data.is_taiwan_no_data_payload(first)
+    assert calls["count"] == 1
+
+    second = client.fetch_tpex_data(
+        "https://www.tpex.org.tw/www/zh-tw/afterTrading/tradingStock",
+        params={"code": "6488", "date": "2026/07/01", "response": "json"},
+        cache_ttl=timedelta(hours=12),
+    )
+    assert second == first
+    assert calls["count"] == 1
+
+    entry = next(iter(client._cache.values()))
+    object.__setattr__(
+        entry,
+        "cached_at",
+        entry.cached_at - timedelta(minutes=3),
+    )
+
+    third = client.fetch_tpex_data(
+        "https://www.tpex.org.tw/www/zh-tw/afterTrading/tradingStock",
+        params={"code": "6488", "date": "2026/07/01", "response": "json"},
+        cache_ttl=timedelta(hours=12),
+    )
+    assert third == {"tables": [{"data": [["115/07/01", "10"]]}]}
     assert calls["count"] == 2
 
 

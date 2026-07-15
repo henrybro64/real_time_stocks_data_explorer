@@ -76,10 +76,10 @@ def _twse_row(minguo_day: str, volume: str = "1,000") -> list[str]:
     ]
 
 
-def _tpex_row(minguo_day: str, lots: str = "4,452") -> list[str]:
+def _tpex_row(minguo_day: str, thousand_shares: str = "4,452") -> list[str]:
     return [
         minguo_day,
-        lots,
+        thousand_shares,
         "4,333,718",
         "1,015.00",
         "1,040.00",
@@ -190,8 +190,8 @@ def test_parse_tpex_daily_rows_sorts_and_dedupes(
         return [
             _tpex_row("115/07/03"),
             _tpex_row("115/07/01"),
-            _tpex_row("115/07/02", lots="1,000"),
-            _tpex_row("115/07/02", lots="2,000"),
+            _tpex_row("115/07/02", thousand_shares="1,000"),
+            _tpex_row("115/07/02", thousand_shares="2,000"),
             ["bad"],
             "not-a-row",
         ]
@@ -276,7 +276,23 @@ def test_twse_no_data_stat_remains_legitimate_empty(
     assert provider.get_history(TWSE_STOCK.id, "1W") == []
 
 
-def test_tpex_volume_uses_taiwan_shares_per_lot_for_fx_etfs(
+def test_newer_month_hard_failure_does_not_return_stale_older_candles(
+    provider: tw_provider.TWProvider,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def flaky_fetch(self, stock, month_date: date) -> list[list[object]]:
+        if month_date == date(2026, 7, 1):
+            raise HttpFetchError("current month timeout")
+        return [_tpex_row("115/06/30")]
+
+    monkeypatch.setattr(tw_provider.TWProvider, "_fetch_tpex_month_rows", flaky_fetch)
+    _freeze_provider_clock(monkeypatch)
+
+    with pytest.raises(RuntimeError, match="temporarily unavailable"):
+        provider.get_history(TPEX_STOCK.id, "1W")
+
+
+def test_tpex_volume_scales_thousand_shares_not_lot_size(
     provider: tw_provider.TWProvider,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -299,14 +315,15 @@ def test_tpex_volume_uses_taiwan_shares_per_lot_for_fx_etfs(
     monkeypatch.setattr(
         tw_provider.TWProvider,
         "_fetch_tpex_month_rows",
-        lambda self, stock, month_date: [_tpex_row("115/07/01", lots="10")],
+        lambda self, stock, month_date: [_tpex_row("115/07/01", thousand_shares="10")],
     )
     _freeze_provider_clock(monkeypatch)
 
     candles = provider.get_history(fx_etf.id, "1W")
 
     assert candles
-    assert candles[0].volume == 1_000  # 10 lots * 100 shares/lot
+    # tradingStock volume is 成交仟股; 10 → 10,000 shares (not lot-size * 10).
+    assert candles[0].volume == 10_000
 
 
 def test_provider_timeouts_raise_runtime_error_instead_of_silent_empty(
@@ -343,6 +360,10 @@ def test_extract_tpex_daily_rows_rejects_unrecognized_payloads() -> None:
         tw_provider._extract_tpex_daily_rows([])
     with pytest.raises(ValueError, match="missing tables/aaData/data"):
         tw_provider._extract_tpex_daily_rows({"stat": "ok", "message": "blocked"})
+    with pytest.raises(ValueError, match="missing usable data"):
+        tw_provider._extract_tpex_daily_rows({"tables": [{"title": "daily"}]})
+    with pytest.raises(ValueError, match="tables\\[\\]\\.data field is not a list"):
+        tw_provider._extract_tpex_daily_rows({"tables": [{"data": {"rows": []}}]})
 
 
 def test_fetch_tpex_month_rows_uses_official_endpoint(

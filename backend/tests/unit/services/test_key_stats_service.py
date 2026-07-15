@@ -456,6 +456,62 @@ def test_get_key_statistics_rejects_tw_etf_valuation(monkeypatch) -> None:
     assert payload["valuationWarning"] == "P/E is not reported for ETF or fund instruments."
 
 
+def test_tw_from_candles_tolerates_history_outages(monkeypatch) -> None:
+    stock = stock_record(
+        "TW:6488",
+        market="TW",
+        symbol="6488",
+        name="環球晶",
+        exchange="TPEx",
+        currency="TWD",
+        timezone="Asia/Taipei",
+    )
+    quote = quote_record(
+        "TW:6488",
+        last_price=950.0,
+        change=5.0,
+        change_percent=0.53,
+        previous_close=945.0,
+        timestamp="2026-07-03T13:30:00+08:00",
+        is_market_open=False,
+        open_price=946.0,
+        high=955.0,
+        low=940.0,
+        volume=1_000_000,
+    )
+    monkeypatch.setattr(quote_service, "get_stock", lambda stock_id: stock)
+    monkeypatch.setattr(quote_service, "get_quote", lambda stock_id: quote)
+    monkeypatch.setattr(
+        quote_service,
+        "get_history",
+        lambda stock_id, range_name: (_ for _ in ()).throw(
+            RuntimeError("Taiwan daily history temporarily unavailable for TW:6488 (TPEx)")
+        ),
+    )
+    monkeypatch.setattr(
+        key_stats_service,
+        "_finnhub_enrich",
+        lambda payload, current_stock: dict(payload),
+    )
+    monkeypatch.setattr(
+        key_stats_service,
+        "_fetch_tpex_daily_pe_snapshot",
+        lambda target_day: (
+            {"6488": {"peRatio": 12.5, "peStatus": None, "priceUsed": 950.0}},
+            "2026-07-03",
+        ),
+    )
+
+    payload = key_stats_service.get_key_statistics("TW:6488")
+
+    assert payload is not None
+    assert payload["open"] == 946.0
+    assert payload["volume"] == 1_000_000
+    assert payload["fiftyTwoWeekLow"] is None
+    assert payload["avgVolume10d"] is None
+    assert payload["peRatio"] == 12.5
+
+
 @pytest.mark.parametrize(
     ("raw_value", "expected_pe", "expected_status"),
     [

@@ -647,6 +647,15 @@ def is_taiwan_no_data_payload(payload: object) -> bool:
         return True
     if isinstance(tables, list) and len(tables) == 0 and data is None:
         return True
+    # TPEx history shape: tables: [{ data: [] }] — treat as temporary empty for short TTL.
+    if isinstance(tables, list) and tables and data is None:
+        if all(
+            isinstance(table, dict)
+            and isinstance(table.get("data"), list)
+            and len(table["data"]) == 0
+            for table in tables
+        ):
+            return True
     return False
 
 

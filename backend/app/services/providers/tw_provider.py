@@ -13,7 +13,6 @@ from app.services.http_client import HttpFetchError, fetch_json, fetch_text
 from app.models.quote import CandleRecord, QuoteRecord
 from app.models.stock import StockRecord
 from app.services.market_clock import is_market_open
-from app.services.taiwan_market_data import taiwan_shares_per_lot
 
 logger = logging.getLogger(__name__)
 
@@ -189,6 +188,8 @@ TW_STOCKS: dict[str, StockRecord] = {
 _REALTIME_URL = "https://mis.twse.com.tw/stock/api/getStockInfo.jsp"
 _HISTORY_URL = "https://www.twse.com.tw/exchangeReport/STOCK_DAY"
 _TPEX_HISTORY_URL = "https://www.tpex.org.tw/www/zh-tw/afterTrading/tradingStock"
+# TPEx tradingStock volume column is 成交仟股 (thousand shares), not lots.
+_TPEX_HISTORY_VOLUME_SCALE = 1000
 _COMPANY_LIST_URL = "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"
 _ISIN_LISTED_URL = "https://isin.twse.com.tw/isin/C_public.jsp?strMode=2"
 _ISIN_OTC_URL = "https://isin.twse.com.tw/isin/C_public.jsp?strMode=4"
@@ -515,7 +516,7 @@ class TWProvider:
                 )
 
             volume_scale = (
-                taiwan_shares_per_lot(stock.symbol) if stock.exchange == "TPEx" else 1
+                _TPEX_HISTORY_VOLUME_SCALE if stock.exchange == "TPEx" else 1
             )
             for row in rows:
                 if not isinstance(row, list):
@@ -530,6 +531,29 @@ class TWProvider:
 
         candles = sorted(candles_by_time.values(), key=lambda item: item.time)
         trimmed = candles[-limit:]
+
+        # Any hard month failure → unavailable, even if older months returned rows.
+        # Otherwise a failed current month can surface stale prior-month candles.
+        if fetch_failures > 0:
+            logger.warning(
+                "Taiwan daily history temporarily unavailable",
+                extra={
+                    "event": "tw.history.unavailable",
+                    "stock_id": stock.id,
+                    "exchange": stock.exchange,
+                    "range_name": range_name,
+                    "source": source,
+                    "fetch_attempts": fetch_attempts,
+                    "fetch_failures": fetch_failures,
+                    "soft_rejections": soft_rejections,
+                    "candle_count": len(trimmed),
+                    "duration_ms": elapsed_ms(started_at),
+                },
+            )
+            raise RuntimeError(
+                f"Taiwan daily history temporarily unavailable for {stock.id} ({stock.exchange})"
+            )
+
         if trimmed:
             logger.info(
                 "Taiwan daily history fetch completed",
@@ -545,27 +569,7 @@ class TWProvider:
             )
             return trimmed
 
-        # Any hard month failure with zero candles (including partial outages) → unavailable.
         # Soft-only empty months (recognized no-data shapes) stay a legitimate empty result.
-        if fetch_failures > 0:
-            logger.warning(
-                "Taiwan daily history temporarily unavailable",
-                extra={
-                    "event": "tw.history.unavailable",
-                    "stock_id": stock.id,
-                    "exchange": stock.exchange,
-                    "range_name": range_name,
-                    "source": source,
-                    "fetch_attempts": fetch_attempts,
-                    "fetch_failures": fetch_failures,
-                    "soft_rejections": soft_rejections,
-                    "duration_ms": elapsed_ms(started_at),
-                },
-            )
-            raise RuntimeError(
-                f"Taiwan daily history temporarily unavailable for {stock.id} ({stock.exchange})"
-            )
-
         logger.info(
             "Taiwan daily history returned no candles",
             extra={
@@ -809,13 +813,16 @@ def _extract_tpex_daily_rows(payload: object) -> list[list[object]]:
 
     tables = payload.get("tables")
     if isinstance(tables, list):
+        if not tables:
+            return []
         for table in tables:
-            if not isinstance(table, dict):
+            if not isinstance(table, dict) or "data" not in table:
                 continue
             rows = table.get("data")
-            if isinstance(rows, list):
-                return [row for row in rows if isinstance(row, list)]
-        return []
+            if not isinstance(rows, list):
+                raise ValueError("TPEx history tables[].data field is not a list")
+            return [row for row in rows if isinstance(row, list)]
+        raise ValueError("TPEx history tables present but missing usable data")
 
     for key in ("aaData", "data"):
         if key not in payload:
