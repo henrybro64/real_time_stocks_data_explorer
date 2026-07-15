@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import math
 import re
+from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from time import perf_counter
 from urllib.parse import quote
@@ -15,6 +16,14 @@ from app.models.stock import StockRecord
 from app.services.market_clock import is_market_open
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class _DailyHistoryCollection:
+    candles_by_time: dict[str, CandleRecord]
+    fetch_attempts: int
+    fetch_failures: int
+    soft_rejections: int
 
 
 TW_STOCKS: dict[str, StockRecord] = {
@@ -466,12 +475,52 @@ class TWProvider:
         started_at = perf_counter()
         today = datetime.now(ZoneInfo(stock.timezone)).date()
         months_to_fetch = max(2, math.ceil(limit / 20) + 1)
+        volume_scale = _TPEX_HISTORY_VOLUME_SCALE if stock.exchange == "TPEx" else 1
+        collected = self._collect_daily_history_months(
+            stock,
+            today=today,
+            months_to_fetch=months_to_fetch,
+            range_name=range_name,
+            source=source,
+            volume_scale=volume_scale,
+        )
+        trimmed = sorted(collected.candles_by_time.values(), key=lambda item: item.time)[-limit:]
+        if collected.fetch_failures > 0:
+            _raise_history_unavailable(
+                stock,
+                range_name=range_name,
+                source=source,
+                fetch_attempts=collected.fetch_attempts,
+                fetch_failures=collected.fetch_failures,
+                soft_rejections=collected.soft_rejections,
+                candle_count=len(trimmed),
+                duration_ms=elapsed_ms(started_at),
+            )
+        return _finish_daily_history(
+            stock,
+            trimmed=trimmed,
+            range_name=range_name,
+            source=source,
+            fetch_attempts=collected.fetch_attempts,
+            fetch_failures=collected.fetch_failures,
+            soft_rejections=collected.soft_rejections,
+            duration_ms=elapsed_ms(started_at),
+        )
+
+    def _collect_daily_history_months(
+        self,
+        stock: StockRecord,
+        *,
+        today: date,
+        months_to_fetch: int,
+        range_name: str,
+        source: str,
+        volume_scale: int,
+    ) -> _DailyHistoryCollection:
         candles_by_time: dict[str, CandleRecord] = {}
         fetch_attempts = 0
         fetch_failures = 0
         soft_rejections = 0
-        volume_scale = _TPEX_HISTORY_VOLUME_SCALE if stock.exchange == "TPEx" else 1
-
         for month_offset in range(months_to_fetch):
             month_date = _month_anchor(today, month_offset)
             fetch_attempts += 1
@@ -489,7 +538,6 @@ class TWProvider:
                     duration_ms=elapsed_ms(month_started_at),
                 )
                 continue
-
             if not rows:
                 soft_rejections += 1
                 _log_history_month_empty(
@@ -500,51 +548,12 @@ class TWProvider:
                     duration_ms=elapsed_ms(month_started_at),
                 )
             _ingest_daily_rows(candles_by_time, rows, stock.timezone, volume_scale)
-
-        trimmed = sorted(candles_by_time.values(), key=lambda item: item.time)[-limit:]
-        # Any hard month failure → unavailable, even if older months returned rows.
-        if fetch_failures > 0:
-            _raise_history_unavailable(
-                stock,
-                range_name=range_name,
-                source=source,
-                fetch_attempts=fetch_attempts,
-                fetch_failures=fetch_failures,
-                soft_rejections=soft_rejections,
-                candle_count=len(trimmed),
-                duration_ms=elapsed_ms(started_at),
-            )
-
-        if trimmed:
-            logger.info(
-                "Taiwan daily history fetch completed",
-                extra={
-                    "event": "tw.history.completed",
-                    "stock_id": stock.id,
-                    "exchange": stock.exchange,
-                    "range_name": range_name,
-                    "source": source,
-                    "candle_count": len(trimmed),
-                    "duration_ms": elapsed_ms(started_at),
-                },
-            )
-            return trimmed
-
-        logger.info(
-            "Taiwan daily history returned no candles",
-            extra={
-                "event": "tw.history.empty",
-                "stock_id": stock.id,
-                "exchange": stock.exchange,
-                "range_name": range_name,
-                "source": source,
-                "fetch_attempts": fetch_attempts,
-                "fetch_failures": fetch_failures,
-                "soft_rejections": soft_rejections,
-                "duration_ms": elapsed_ms(started_at),
-            },
+        return _DailyHistoryCollection(
+            candles_by_time=candles_by_time,
+            fetch_attempts=fetch_attempts,
+            fetch_failures=fetch_failures,
+            soft_rejections=soft_rejections,
         )
-        return []
 
     def _fetch_month_rows(self, stock: StockRecord, month_date: date) -> list[list[object]]:
         if stock.exchange == "TWSE":
@@ -864,6 +873,49 @@ def _raise_history_unavailable(
     raise RuntimeError(
         f"Taiwan daily history temporarily unavailable for {stock.id} ({stock.exchange})"
     )
+
+
+def _finish_daily_history(
+    stock: StockRecord,
+    *,
+    trimmed: list[CandleRecord],
+    range_name: str,
+    source: str,
+    fetch_attempts: int,
+    fetch_failures: int,
+    soft_rejections: int,
+    duration_ms: float,
+) -> list[CandleRecord]:
+    if trimmed:
+        logger.info(
+            "Taiwan daily history fetch completed",
+            extra={
+                "event": "tw.history.completed",
+                "stock_id": stock.id,
+                "exchange": stock.exchange,
+                "range_name": range_name,
+                "source": source,
+                "candle_count": len(trimmed),
+                "duration_ms": duration_ms,
+            },
+        )
+        return trimmed
+
+    logger.info(
+        "Taiwan daily history returned no candles",
+        extra={
+            "event": "tw.history.empty",
+            "stock_id": stock.id,
+            "exchange": stock.exchange,
+            "range_name": range_name,
+            "source": source,
+            "fetch_attempts": fetch_attempts,
+            "fetch_failures": fetch_failures,
+            "soft_rejections": soft_rejections,
+            "duration_ms": duration_ms,
+        },
+    )
+    return []
 
 
 def _list_of_list_rows(rows: object, *, field_name: str) -> list[list[object]]:

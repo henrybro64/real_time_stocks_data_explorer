@@ -645,32 +645,43 @@ def _is_no_data_text(payload: str) -> bool:
 def _dict_has_no_data_stat_marker(payload: dict) -> bool:
     for key in ("stat", "status", "message", "msg"):
         raw = payload.get(key)
-        if isinstance(raw, str):
-            lowered = raw.strip().lower()
-            if any(marker in lowered for marker in _NO_DATA_STAT_MARKERS):
-                return True
+        if _text_has_no_data_marker(raw):
+            return True
     return False
+
+
+def _text_has_no_data_marker(raw: object) -> bool:
+    if not isinstance(raw, str):
+        return False
+    lowered = raw.strip().lower()
+    return any(marker in lowered for marker in _NO_DATA_STAT_MARKERS)
 
 
 def _dict_has_empty_data_or_tables(payload: dict) -> bool:
     data = payload.get("data")
     tables = payload.get("tables")
-    if isinstance(data, list) and len(data) == 0 and tables is None:
+    if _is_empty_list(data) and tables is None:
         return True
-    if isinstance(tables, list) and len(tables) == 0 and data is None:
+    if _is_empty_list(tables) and data is None:
         return True
-    # TPEx history shape: tables: [{ data: [] }] — treat as temporary empty for short TTL.
-    return (
-        isinstance(tables, list)
-        and bool(tables)
-        and data is None
-        and all(
-            isinstance(table, dict)
-            and isinstance(table.get("data"), list)
-            and len(table["data"]) == 0
-            for table in tables
-        )
-    )
+    return data is None and _tables_are_nested_empty(tables)
+
+
+def _is_empty_list(value: object) -> bool:
+    return isinstance(value, list) and len(value) == 0
+
+
+def _tables_are_nested_empty(tables: object) -> bool:
+    if not isinstance(tables, list) or not tables:
+        return False
+    return all(_table_has_empty_data(table) for table in tables)
+
+
+def _table_has_empty_data(table: object) -> bool:
+    if not isinstance(table, dict):
+        return False
+    rows = table.get("data")
+    return isinstance(rows, list) and len(rows) == 0
 
 
 def _resolve_from_matches(matches: Iterable[StockRecord]) -> TaiwanMarket:
