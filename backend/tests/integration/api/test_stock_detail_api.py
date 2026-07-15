@@ -125,8 +125,8 @@ def test_history_endpoint_accepts_declared_ranges_for_twse_and_tpex(
     assert payload["range"] == range_name
     assert len(payload["candles"]) == 2
     assert payload["chartLayout"] is not None
-    assert payload["chartLayout"]["minY"] == 95.0
-    assert payload["chartLayout"]["maxY"] == 112.0
+    assert payload["chartLayout"]["minY"] == pytest.approx(95.0)
+    assert payload["chartLayout"]["maxY"] == pytest.approx(112.0)
 
 
 def test_history_endpoint_returns_502_when_provider_is_temporarily_unavailable(

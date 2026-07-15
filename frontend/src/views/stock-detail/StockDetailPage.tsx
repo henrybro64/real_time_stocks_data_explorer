@@ -184,7 +184,8 @@ export function StockDetailPage({ stockId = "" }: Props) {
           ) : null}
           {!historyQuery.data && historyQuery.isLoading ? (
             <InlineLoading description={t("detail.loading")} status="active" />
-          ) : historyQuery.data ? (
+          ) : null}
+          {historyQuery.data ? (
             <Tabs
               onChange={({ selectedIndex: nextIndex }) => setRange(RANGES[nextIndex] ?? "1D")}
               selectedIndex={selectedIndex}
@@ -208,11 +209,12 @@ export function StockDetailPage({ stockId = "" }: Props) {
                 ))}
               </TabPanels>
             </Tabs>
-          ) : chartNoticeKind ? null : (
+          ) : null}
+          {!historyQuery.data && !historyQuery.isLoading && !chartNoticeKind ? (
             <Tile className="app-empty-state" data-testid="stock-detail-chart-empty">
               {t("chart.noData")}
             </Tile>
-          )}
+          ) : null}
         </Tile>
       </Column>
       {isTaiwanStock ? (

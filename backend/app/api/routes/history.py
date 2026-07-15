@@ -43,7 +43,14 @@ from app.services.user_ai_provider_service import resolve_user_ai_provider
 router = APIRouter(prefix="/stocks", tags=["history"])
 
 
-@router.get("/{stock_id}/history", response_model=HistoryEnvelope)
+@router.get(
+    "/{stock_id}/history",
+    response_model=HistoryEnvelope,
+    responses={
+        404: {"description": "Stock not found"},
+        502: {"description": "Official upstream temporarily unavailable"},
+    },
+)
 def get_history(
     stock_id: str,
     range_name: str = Query(default="1D", alias="range"),

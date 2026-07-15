@@ -481,13 +481,13 @@ def test_tw_from_candles_tolerates_history_outages(monkeypatch) -> None:
     )
     monkeypatch.setattr(quote_service, "get_stock", lambda stock_id: stock)
     monkeypatch.setattr(quote_service, "get_quote", lambda stock_id: quote)
-    monkeypatch.setattr(
-        quote_service,
-        "get_history",
-        lambda stock_id, range_name: (_ for _ in ()).throw(
-            RuntimeError("Taiwan daily history temporarily unavailable for TW:6488 (TPEx)")
-        ),
-    )
+
+    def failing_history(stock_id: str, range_name: str):
+        raise RuntimeError(
+            "Taiwan daily history temporarily unavailable for TW:6488 (TPEx)"
+        )
+
+    monkeypatch.setattr(quote_service, "get_history", failing_history)
     monkeypatch.setattr(
         key_stats_service,
         "_finnhub_enrich",
@@ -505,11 +505,11 @@ def test_tw_from_candles_tolerates_history_outages(monkeypatch) -> None:
     payload = key_stats_service.get_key_statistics("TW:6488")
 
     assert payload is not None
-    assert payload["open"] == 946.0
+    assert payload["open"] == pytest.approx(946.0)
     assert payload["volume"] == 1_000_000
     assert payload["fiftyTwoWeekLow"] is None
     assert payload["avgVolume10d"] is None
-    assert payload["peRatio"] == 12.5
+    assert payload["peRatio"] == pytest.approx(12.5)
 
 
 @pytest.mark.parametrize(

@@ -673,8 +673,8 @@ function buildTpexHistoryForRange(range: string) {
       ...E2E_TPEX_HISTORY_RESPONSE.chartLayout,
       minY,
       maxY,
-      firstClose: closes[0],
-      lastClose: closes[closes.length - 1],
+      firstClose: closes.at(0),
+      lastClose: closes.at(-1),
       points: candles.map((_, index) => ({
         x: candles.length === 1 ? 50 : (index / Math.max(candles.length - 1, 1)) * 100,
         y: 50,
@@ -1060,13 +1060,15 @@ export async function installE2eApiMocks(page: Page): Promise<void> {
     }
 
     if (path.startsWith("/api/quotes") && request.method() === "GET") {
-      const ids = (url.searchParams.get("ids") ?? "")
-        .split(",")
-        .map((id) => id.trim())
-        .filter(Boolean);
+      const ids = new Set(
+        (url.searchParams.get("ids") ?? "")
+          .split(",")
+          .map((id) => id.trim())
+          .filter(Boolean),
+      );
       const items = [
-        ...(ids.includes(TW_STOCK_ID) ? [E2E_TW_QUOTE_RESPONSE] : []),
-        ...(ids.includes(TPEX_STOCK_ID) ? [E2E_TPEX_QUOTE_RESPONSE] : []),
+        ...(ids.has(TW_STOCK_ID) ? [E2E_TW_QUOTE_RESPONSE] : []),
+        ...(ids.has(TPEX_STOCK_ID) ? [E2E_TPEX_QUOTE_RESPONSE] : []),
       ];
       await fulfillJson(route, items);
       return;

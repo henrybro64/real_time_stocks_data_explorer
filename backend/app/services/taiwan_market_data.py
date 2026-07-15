@@ -628,19 +628,31 @@ def is_taiwan_no_data_payload(payload: object) -> bool:
     if payload is None:
         return True
     if isinstance(payload, str):
-        stripped = payload.strip()
-        lowered = stripped.lower()
-        return not stripped or any(marker in lowered for marker in _NO_DATA_STAT_MARKERS)
+        return _is_no_data_text(payload)
     if not isinstance(payload, dict):
         return False
+    if _dict_has_no_data_stat_marker(payload):
+        return True
+    return _dict_has_empty_data_or_tables(payload)
 
+
+def _is_no_data_text(payload: str) -> bool:
+    stripped = payload.strip()
+    lowered = stripped.lower()
+    return not stripped or any(marker in lowered for marker in _NO_DATA_STAT_MARKERS)
+
+
+def _dict_has_no_data_stat_marker(payload: dict) -> bool:
     for key in ("stat", "status", "message", "msg"):
         raw = payload.get(key)
         if isinstance(raw, str):
             lowered = raw.strip().lower()
             if any(marker in lowered for marker in _NO_DATA_STAT_MARKERS):
                 return True
+    return False
 
+
+def _dict_has_empty_data_or_tables(payload: dict) -> bool:
     data = payload.get("data")
     tables = payload.get("tables")
     if isinstance(data, list) and len(data) == 0 and tables is None:
@@ -648,15 +660,17 @@ def is_taiwan_no_data_payload(payload: object) -> bool:
     if isinstance(tables, list) and len(tables) == 0 and data is None:
         return True
     # TPEx history shape: tables: [{ data: [] }] — treat as temporary empty for short TTL.
-    if isinstance(tables, list) and tables and data is None:
-        if all(
+    return (
+        isinstance(tables, list)
+        and bool(tables)
+        and data is None
+        and all(
             isinstance(table, dict)
             and isinstance(table.get("data"), list)
             and len(table["data"]) == 0
             for table in tables
-        ):
-            return True
-    return False
+        )
+    )
 
 
 def _resolve_from_matches(matches: Iterable[StockRecord]) -> TaiwanMarket:

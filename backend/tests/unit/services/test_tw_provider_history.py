@@ -90,6 +90,10 @@ def _tpex_row(minguo_day: str, thousand_shares: str = "4,452") -> list[str]:
     ]
 
 
+def _raise_assertion(message: str):
+    raise AssertionError(message)
+
+
 @pytest.fixture
 def provider(monkeypatch: pytest.MonkeyPatch) -> tw_provider.TWProvider:
     monkeypatch.setattr(
@@ -115,7 +119,7 @@ def test_get_history_1d_uses_quote_candles_for_twse_and_tpex(
     monkeypatch.setattr(
         tw_provider.TWProvider,
         "_fetch_daily_history",
-        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("daily fetch should not run for 1D")),
+        lambda *args, **kwargs: _raise_assertion("daily fetch should not run for 1D"),
     )
 
     for stock_id in (TWSE_STOCK.id, TPEX_STOCK.id):
@@ -175,10 +179,10 @@ def test_get_history_selects_tpex_source_for_daily_ranges(
     assert candles
     assert all(call.startswith("tpex:") for call in calls)
     assert len(candles) <= tw_provider._daily_limit(range_name)
-    assert candles[0].open == 1015.0
-    assert candles[0].high == 1040.0
-    assert candles[0].low == 936.0
-    assert candles[0].close == 950.0
+    assert candles[0].open == pytest.approx(1015.0)
+    assert candles[0].high == pytest.approx(1040.0)
+    assert candles[0].low == pytest.approx(936.0)
+    assert candles[0].close == pytest.approx(950.0)
     assert candles[0].volume == 4_452_000
 
 
@@ -200,7 +204,7 @@ def test_parse_tpex_daily_rows_sorts_and_dedupes(
     monkeypatch.setattr(
         tw_provider.TWProvider,
         "_fetch_twse_month_rows",
-        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("unexpected")),
+        lambda *args, **kwargs: _raise_assertion("unexpected"),
     )
     _freeze_provider_clock(monkeypatch)
 

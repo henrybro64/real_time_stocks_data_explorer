@@ -449,7 +449,7 @@ class TWProvider:
         *,
         range_name: str,
     ) -> list[CandleRecord]:
-        source = "twse_stock_day" if stock.exchange == "TWSE" else "tpex_trading_stock"
+        source = _daily_history_source(stock.exchange)
         if stock.exchange not in {"TWSE", "TPEx"}:
             logger.warning(
                 "Unsupported Taiwan exchange for daily history",
@@ -465,93 +465,54 @@ class TWProvider:
 
         started_at = perf_counter()
         today = datetime.now(ZoneInfo(stock.timezone)).date()
-        # Fetch enough monthly slices to satisfy the requested candle limit.
         months_to_fetch = max(2, math.ceil(limit / 20) + 1)
         candles_by_time: dict[str, CandleRecord] = {}
         fetch_attempts = 0
         fetch_failures = 0
         soft_rejections = 0
+        volume_scale = _TPEX_HISTORY_VOLUME_SCALE if stock.exchange == "TPEx" else 1
 
         for month_offset in range(months_to_fetch):
             month_date = _month_anchor(today, month_offset)
             fetch_attempts += 1
             month_started_at = perf_counter()
             try:
-                rows = (
-                    self._fetch_twse_month_rows(stock, month_date)
-                    if stock.exchange == "TWSE"
-                    else self._fetch_tpex_month_rows(stock, month_date)
-                )
+                rows = self._fetch_month_rows(stock, month_date)
             except (HttpFetchError, TimeoutError, ValueError) as exc:
                 fetch_failures += 1
-                logger.warning(
-                    "Taiwan daily history month fetch failed",
-                    extra={
-                        "event": "tw.history.month_failed",
-                        "stock_id": stock.id,
-                        "exchange": stock.exchange,
-                        "range_name": range_name,
-                        "source": source,
-                        "month": month_date.isoformat(),
-                        "error_type": type(exc).__name__,
-                        "error_detail": str(exc)[:300],
-                        "duration_ms": elapsed_ms(month_started_at),
-                    },
+                _log_history_month_failed(
+                    stock,
+                    range_name=range_name,
+                    source=source,
+                    month_date=month_date,
+                    exc=exc,
+                    duration_ms=elapsed_ms(month_started_at),
                 )
                 continue
 
             if not rows:
                 soft_rejections += 1
-                logger.info(
-                    "Taiwan daily history month returned no rows",
-                    extra={
-                        "event": "tw.history.month_empty",
-                        "stock_id": stock.id,
-                        "exchange": stock.exchange,
-                        "range_name": range_name,
-                        "source": source,
-                        "month": month_date.isoformat(),
-                        "duration_ms": elapsed_ms(month_started_at),
-                    },
+                _log_history_month_empty(
+                    stock,
+                    range_name=range_name,
+                    source=source,
+                    month_date=month_date,
+                    duration_ms=elapsed_ms(month_started_at),
                 )
+            _ingest_daily_rows(candles_by_time, rows, stock.timezone, volume_scale)
 
-            volume_scale = (
-                _TPEX_HISTORY_VOLUME_SCALE if stock.exchange == "TPEx" else 1
-            )
-            for row in rows:
-                if not isinstance(row, list):
-                    continue
-                candle = _parse_daily_row(
-                    [str(cell) for cell in row],
-                    stock.timezone,
-                    volume_scale=volume_scale,
-                )
-                if candle is not None:
-                    candles_by_time[candle.time] = candle
-
-        candles = sorted(candles_by_time.values(), key=lambda item: item.time)
-        trimmed = candles[-limit:]
-
+        trimmed = sorted(candles_by_time.values(), key=lambda item: item.time)[-limit:]
         # Any hard month failure → unavailable, even if older months returned rows.
-        # Otherwise a failed current month can surface stale prior-month candles.
         if fetch_failures > 0:
-            logger.warning(
-                "Taiwan daily history temporarily unavailable",
-                extra={
-                    "event": "tw.history.unavailable",
-                    "stock_id": stock.id,
-                    "exchange": stock.exchange,
-                    "range_name": range_name,
-                    "source": source,
-                    "fetch_attempts": fetch_attempts,
-                    "fetch_failures": fetch_failures,
-                    "soft_rejections": soft_rejections,
-                    "candle_count": len(trimmed),
-                    "duration_ms": elapsed_ms(started_at),
-                },
-            )
-            raise RuntimeError(
-                f"Taiwan daily history temporarily unavailable for {stock.id} ({stock.exchange})"
+            _raise_history_unavailable(
+                stock,
+                range_name=range_name,
+                source=source,
+                fetch_attempts=fetch_attempts,
+                fetch_failures=fetch_failures,
+                soft_rejections=soft_rejections,
+                candle_count=len(trimmed),
+                duration_ms=elapsed_ms(started_at),
             )
 
         if trimmed:
@@ -569,7 +530,6 @@ class TWProvider:
             )
             return trimmed
 
-        # Soft-only empty months (recognized no-data shapes) stay a legitimate empty result.
         logger.info(
             "Taiwan daily history returned no candles",
             extra={
@@ -585,6 +545,11 @@ class TWProvider:
             },
         )
         return []
+
+    def _fetch_month_rows(self, stock: StockRecord, month_date: date) -> list[list[object]]:
+        if stock.exchange == "TWSE":
+            return self._fetch_twse_month_rows(stock, month_date)
+        return self._fetch_tpex_month_rows(stock, month_date)
 
     def _fetch_twse_month_rows(self, stock: StockRecord, month_date: date) -> list[list[object]]:
         payload = _load_json(
@@ -801,6 +766,132 @@ def _is_twse_no_data_stat(stat: object) -> bool:
     return any(marker in stat for marker in _TWSE_NO_DATA_STAT_MARKERS)
 
 
+def _daily_history_source(exchange: str) -> str:
+    return "twse_stock_day" if exchange == "TWSE" else "tpex_trading_stock"
+
+
+def _ingest_daily_rows(
+    candles_by_time: dict[str, CandleRecord],
+    rows: list[list[object]],
+    timezone_name: str,
+    volume_scale: int,
+) -> None:
+    for row in rows:
+        if not isinstance(row, list):
+            continue
+        candle = _parse_daily_row(
+            [str(cell) for cell in row],
+            timezone_name,
+            volume_scale=volume_scale,
+        )
+        if candle is not None:
+            candles_by_time[candle.time] = candle
+
+
+def _log_history_month_failed(
+    stock: StockRecord,
+    *,
+    range_name: str,
+    source: str,
+    month_date: date,
+    exc: Exception,
+    duration_ms: float,
+) -> None:
+    logger.warning(
+        "Taiwan daily history month fetch failed",
+        extra={
+            "event": "tw.history.month_failed",
+            "stock_id": stock.id,
+            "exchange": stock.exchange,
+            "range_name": range_name,
+            "source": source,
+            "month": month_date.isoformat(),
+            "error_type": type(exc).__name__,
+            "error_detail": str(exc)[:300],
+            "duration_ms": duration_ms,
+        },
+    )
+
+
+def _log_history_month_empty(
+    stock: StockRecord,
+    *,
+    range_name: str,
+    source: str,
+    month_date: date,
+    duration_ms: float,
+) -> None:
+    logger.info(
+        "Taiwan daily history month returned no rows",
+        extra={
+            "event": "tw.history.month_empty",
+            "stock_id": stock.id,
+            "exchange": stock.exchange,
+            "range_name": range_name,
+            "source": source,
+            "month": month_date.isoformat(),
+            "duration_ms": duration_ms,
+        },
+    )
+
+
+def _raise_history_unavailable(
+    stock: StockRecord,
+    *,
+    range_name: str,
+    source: str,
+    fetch_attempts: int,
+    fetch_failures: int,
+    soft_rejections: int,
+    candle_count: int,
+    duration_ms: float,
+) -> None:
+    logger.warning(
+        "Taiwan daily history temporarily unavailable",
+        extra={
+            "event": "tw.history.unavailable",
+            "stock_id": stock.id,
+            "exchange": stock.exchange,
+            "range_name": range_name,
+            "source": source,
+            "fetch_attempts": fetch_attempts,
+            "fetch_failures": fetch_failures,
+            "soft_rejections": soft_rejections,
+            "candle_count": candle_count,
+            "duration_ms": duration_ms,
+        },
+    )
+    raise RuntimeError(
+        f"Taiwan daily history temporarily unavailable for {stock.id} ({stock.exchange})"
+    )
+
+
+def _list_of_list_rows(rows: object, *, field_name: str) -> list[list[object]]:
+    if rows is None:
+        return []
+    if not isinstance(rows, list):
+        raise ValueError(f"TPEx history {field_name} field is not a list")
+    return [row for row in rows if isinstance(row, list)]
+
+
+def _extract_tpex_tables_rows(tables: list[object]) -> list[list[object]]:
+    if not tables:
+        return []
+    for table in tables:
+        if not isinstance(table, dict) or "data" not in table:
+            continue
+        return _list_of_list_rows(table.get("data"), field_name="tables[].data")
+    raise ValueError("TPEx history tables present but missing usable data")
+
+
+def _extract_tpex_legacy_rows(payload: dict) -> list[list[object]] | None:
+    for key in ("aaData", "data"):
+        if key not in payload:
+            continue
+        return _list_of_list_rows(payload.get(key), field_name=key)
+    return None
+
+
 def _extract_tpex_daily_rows(payload: object) -> list[list[object]]:
     """Normalize modern tables[].data and legacy aaData/data TPEx shapes.
 
@@ -813,26 +904,11 @@ def _extract_tpex_daily_rows(payload: object) -> list[list[object]]:
 
     tables = payload.get("tables")
     if isinstance(tables, list):
-        if not tables:
-            return []
-        for table in tables:
-            if not isinstance(table, dict) or "data" not in table:
-                continue
-            rows = table.get("data")
-            if not isinstance(rows, list):
-                raise ValueError("TPEx history tables[].data field is not a list")
-            return [row for row in rows if isinstance(row, list)]
-        raise ValueError("TPEx history tables present but missing usable data")
+        return _extract_tpex_tables_rows(tables)
 
-    for key in ("aaData", "data"):
-        if key not in payload:
-            continue
-        rows = payload.get(key)
-        if rows is None:
-            return []
-        if not isinstance(rows, list):
-            raise ValueError(f"TPEx history {key} field is not a list")
-        return [row for row in rows if isinstance(row, list)]
+    legacy_rows = _extract_tpex_legacy_rows(payload)
+    if legacy_rows is not None:
+        return legacy_rows
 
     raise ValueError("TPEx history payload missing tables/aaData/data")
 
