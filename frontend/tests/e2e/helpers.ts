@@ -4,6 +4,8 @@ import { installE2eApiMocks } from "./e2eApiMocks";
 
 export const TW_STOCK_ID = "TW:2330";
 export const TW_STOCK_SYMBOL = "2330";
+export const TPEX_STOCK_ID = "TW:6488";
+export const TPEX_STOCK_SYMBOL = "6488";
 
 export const E2E_TW_STOCK_SEARCH_RESULT = {
   id: TW_STOCK_ID,

@@ -1,6 +1,7 @@
 import { expect, test } from "./setup";
 
-import { openHome, searchFromHome, TW_STOCK_ID } from "./helpers";
+import { installE2eApiMocks } from "./e2eApiMocks";
+import { openHome, searchFromHome, TPEX_STOCK_ID, TW_STOCK_ID } from "./helpers";
 
 
 test("stock detail renders quote, history, key stats, news fallback, and Taiwan-only insights", async ({ page }) => {
@@ -43,6 +44,37 @@ test("stock detail renders quote, history, key stats, news fallback, and Taiwan-
 
   await page.getByRole("tab", { name: "1W" }).click();
   await expect(page.getByRole("tab", { name: "1W", selected: true })).toBeVisible();
+});
+
+test("TPEx stock detail charts render for every supported history range", async ({ page }) => {
+  await installE2eApiMocks(page);
+  await page.goto(`/stock/${encodeURIComponent(TPEX_STOCK_ID)}`);
+
+  await expect(page.getByTestId("quote-summary-section")).toBeVisible();
+  await expect(page.getByTestId("quote-summary-section")).toContainText("6488");
+  await expect(page.getByTestId("quote-summary-section")).toContainText("環球晶");
+  await expect(page.getByTestId("price-chart")).toBeVisible();
+  await expect(page.getByTestId("price-chart")).toHaveAttribute("data-range", "1D");
+  await expect(page.getByText("沒有可顯示的圖表資料。")).toHaveCount(0);
+
+  const expectedCounts: Record<string, string> = {
+    "1W": "3",
+    "1M": "5",
+    "3M": "7",
+    "6M": "9",
+    "1Y": "11",
+  };
+  for (const range of ["1W", "1M", "3M", "6M", "1Y"] as const) {
+    await page.getByRole("tab", { name: range }).click();
+    await expect(page.getByRole("tab", { name: range, selected: true })).toBeVisible();
+    await expect(page.getByTestId("price-chart")).toBeVisible();
+    await expect(page.getByTestId("price-chart")).toHaveAttribute("data-range", range);
+    await expect(page.getByTestId("price-chart")).toHaveAttribute(
+      "data-candle-count",
+      expectedCounts[range],
+    );
+    await expect(page.getByText("沒有可顯示的圖表資料。")).toHaveCount(0);
+  }
 });
 
 test("stock detail route is bookmarkable and reload-safe", async ({ page }) => {

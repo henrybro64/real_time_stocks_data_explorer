@@ -48,7 +48,10 @@ def get_history(
     stock_id: str,
     range_name: str = Query(default="1D", alias="range"),
 ) -> HistoryEnvelope:
-    data = quote_service.get_history(stock_id, range_name)
+    try:
+        data = quote_service.get_history(stock_id, range_name)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
     if data is None:
         raise HTTPException(status_code=404, detail="Stock not found")
     stock, candles = data

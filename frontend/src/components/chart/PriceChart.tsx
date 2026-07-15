@@ -188,11 +188,19 @@ export function PriceChart({ candles, chartLayout, currency, isActive = true, ra
   }
 
   if (candles.length === 0) {
-    return <Tile className="app-empty-state">{t("chart.noData")}</Tile>;
+    return (
+      <Tile className="app-empty-state" data-testid="price-chart-empty">
+        {t("chart.noData")}
+      </Tile>
+    );
   }
 
   if (!chartLayout || pointCoords.length === 0 || yTicks.length === 0) {
-    return <Tile className="app-empty-state">{t("chart.noData")}</Tile>;
+    return (
+      <Tile className="app-empty-state" data-testid="price-chart-empty">
+        {t("chart.noData")}
+      </Tile>
+    );
   }
 
   const bodyWidth = candleBodyWidth(pointCoords);
@@ -228,7 +236,13 @@ export function PriceChart({ candles, chartLayout, currency, isActive = true, ra
   const guideLines = [15, 40, 65, 90];
 
   return (
-    <div className="app-chart-panel" data-viewport-epoch={viewportEpoch}>
+    <div
+      className="app-chart-panel"
+      data-testid="price-chart"
+      data-range={range}
+      data-candle-count={candles.length}
+      data-viewport-epoch={viewportEpoch}
+    >
       <div className="app-section-header">
         <div>
           <h2 className="app-chart-heading">{t("chart.title")}</h2>

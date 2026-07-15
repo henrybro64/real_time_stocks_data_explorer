@@ -62,6 +62,90 @@ def test_history_endpoint_returns_quote_history_for_requested_range(monkeypatch,
     assert payload["chartLayout"]["trendUp"] is True
 
 
+@pytest.mark.parametrize(
+    ("stock_id", "symbol", "exchange", "name"),
+    [
+        ("TW:2330", "2330", "TWSE", "台積電"),
+        ("TW:6488", "6488", "TPEx", "環球晶"),
+    ],
+)
+@pytest.mark.parametrize("range_name", ["1D", "1W", "1M", "3M", "6M", "1Y"])
+def test_history_endpoint_accepts_declared_ranges_for_twse_and_tpex(
+    monkeypatch,
+    client,
+    stock_id: str,
+    symbol: str,
+    exchange: str,
+    name: str,
+    range_name: str,
+) -> None:
+    stock = stock_record(
+        stock_id,
+        market="TW",
+        symbol=symbol,
+        name=name,
+        exchange=exchange,
+        currency="TWD",
+        timezone="Asia/Taipei",
+        name_en=name,
+        name_zh_tw=name,
+    )
+    candles = [
+        candle_record(
+            time="2026-07-01T13:30:00+08:00",
+            open_price=100.0,
+            high=110.0,
+            low=95.0,
+            close=105.0,
+            volume=1_000_000,
+        ),
+        candle_record(
+            time="2026-07-02T13:30:00+08:00",
+            open_price=105.0,
+            high=112.0,
+            low=104.0,
+            close=110.0,
+            volume=1_200_000,
+        ),
+    ]
+    monkeypatch.setattr(
+        quote_service,
+        "get_history",
+        lambda requested_id, requested_range: (stock, candles)
+        if requested_id == stock_id and requested_range == range_name
+        else None,
+    )
+
+    response = client.get(f"/api/stocks/{stock_id}/history", params={"range": range_name})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["stock"]["id"] == stock_id
+    assert payload["stock"]["exchange"] == exchange
+    assert payload["range"] == range_name
+    assert len(payload["candles"]) == 2
+    assert payload["chartLayout"] is not None
+    assert payload["chartLayout"]["minY"] == 95.0
+    assert payload["chartLayout"]["maxY"] == 112.0
+
+
+def test_history_endpoint_returns_502_when_provider_is_temporarily_unavailable(
+    monkeypatch,
+    client,
+) -> None:
+    def failing_history(stock_id: str, range_name: str):
+        raise RuntimeError(
+            f"Taiwan daily history temporarily unavailable for {stock_id} (TPEx)"
+        )
+
+    monkeypatch.setattr(quote_service, "get_history", failing_history)
+
+    response = client.get("/api/stocks/TW:6488/history", params={"range": "1W"})
+
+    assert response.status_code == 502
+    assert "temporarily unavailable" in response.json()["detail"]
+
+
 def test_key_statistics_endpoint_returns_twse_official_pe_via_service(monkeypatch, client) -> None:
     stock = stock_record(
         "TW:2330",

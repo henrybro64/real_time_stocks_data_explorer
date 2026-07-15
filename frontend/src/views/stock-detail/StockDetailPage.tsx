@@ -208,7 +208,7 @@ export function StockDetailPage({ stockId = "" }: Props) {
                 ))}
               </TabPanels>
             </Tabs>
-          ) : (
+          ) : chartNoticeKind ? null : (
             <Tile className="app-empty-state" data-testid="stock-detail-chart-empty">
               {t("chart.noData")}
             </Tile>
