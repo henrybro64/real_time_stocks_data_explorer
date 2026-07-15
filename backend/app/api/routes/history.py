@@ -43,12 +43,21 @@ from app.services.user_ai_provider_service import resolve_user_ai_provider
 router = APIRouter(prefix="/stocks", tags=["history"])
 
 
-@router.get("/{stock_id}/history", response_model=HistoryEnvelope)
+@router.get(
+    "/{stock_id}/history",
+    responses={
+        404: {"description": "Stock not found"},
+        502: {"description": "Official upstream temporarily unavailable"},
+    },
+)
 def get_history(
     stock_id: str,
     range_name: str = Query(default="1D", alias="range"),
 ) -> HistoryEnvelope:
-    data = quote_service.get_history(stock_id, range_name)
+    try:
+        data = quote_service.get_history(stock_id, range_name)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
     if data is None:
         raise HTTPException(status_code=404, detail="Stock not found")
     stock, candles = data

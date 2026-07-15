@@ -1,6 +1,6 @@
 import type { Page, Route } from "@playwright/test";
 
-import { E2E_TW_STOCK_SEARCH_RESULT, TW_STOCK_ID } from "./helpers";
+import { E2E_TW_STOCK_SEARCH_RESULT, TPEX_STOCK_ID, TW_STOCK_ID } from "./helpers";
 
 export const E2E_TW_QUOTE = {
   id: TW_STOCK_ID,
@@ -16,9 +16,40 @@ export const E2E_TW_QUOTE = {
   isMarketOpen: true,
 };
 
+export const E2E_TPEX_STOCK = {
+  id: TPEX_STOCK_ID,
+  market: "TW",
+  symbol: "6488",
+  name: "環球晶",
+  nameEn: "GlobalWafers",
+  nameZhTw: "環球晶",
+  exchange: "TPEx",
+  currency: "TWD",
+  timezone: "Asia/Taipei",
+} as const;
+
+export const E2E_TPEX_QUOTE = {
+  id: TPEX_STOCK_ID,
+  lastPrice: 950,
+  change: -65,
+  changePercent: -6.4,
+  previousClose: 1015,
+  open: 1015,
+  high: 1040,
+  low: 936,
+  volume: 4_452_000,
+  timestamp: "2026-05-11T09:00:00+08:00",
+  isMarketOpen: true,
+};
+
 export const E2E_TW_QUOTE_RESPONSE = {
   stock: E2E_TW_STOCK_SEARCH_RESULT,
   quote: E2E_TW_QUOTE,
+};
+
+export const E2E_TPEX_QUOTE_RESPONSE = {
+  stock: E2E_TPEX_STOCK,
+  quote: E2E_TPEX_QUOTE,
 };
 
 const E2E_MARKETS = [
@@ -556,8 +587,108 @@ const E2E_HISTORY_RESPONSE = {
       { x: 0, y: 100 },
       { x: 100, y: 0 },
     ],
+    pointsPolyline: "0,100 100,0",
+    trendUp: true,
+    firstClose: 940,
+    lastClose: 950,
+    yAxisTicks: [938, 945, 952],
+    xAxisTickIndices: [0],
   },
 };
+
+const E2E_TPEX_HISTORY_RESPONSE = {
+  stock: E2E_TPEX_STOCK,
+  range: "1D",
+  candles: [
+    {
+      time: "2026-05-05T13:30:00+08:00",
+      open: 980,
+      high: 1000,
+      low: 970,
+      close: 990,
+      volume: 3_000_000,
+    },
+    {
+      time: "2026-05-06T13:30:00+08:00",
+      open: 990,
+      high: 1010,
+      low: 985,
+      close: 1005,
+      volume: 3_200_000,
+    },
+    {
+      time: "2026-05-11T13:30:00+08:00",
+      open: 1015,
+      high: 1040,
+      low: 936,
+      close: 950,
+      volume: 4_452_000,
+    },
+  ],
+  chartLayout: {
+    minY: 936,
+    maxY: 1040,
+    points: [
+      { x: 0, y: 70 },
+      { x: 50, y: 40 },
+      { x: 100, y: 80 },
+    ],
+    pointsPolyline: "0,70 50,40 100,80",
+    trendUp: false,
+    firstClose: 990,
+    lastClose: 950,
+    yAxisTicks: [936, 988, 1040],
+    xAxisTickIndices: [0, 1, 2],
+  },
+};
+
+function buildTpexHistoryForRange(range: string) {
+  const candleCountByRange: Record<string, number> = {
+    "1D": 1,
+    "1W": 3,
+    "1M": 5,
+    "3M": 7,
+    "6M": 9,
+    "1Y": 11,
+  };
+  const count = candleCountByRange[range] ?? 3;
+  const base = E2E_TPEX_HISTORY_RESPONSE.candles;
+  const candles = Array.from({ length: count }, (_, index) => {
+    const template = base[index % base.length];
+    const day = String(5 + index).padStart(2, "0");
+    return {
+      ...template,
+      time: `2026-05-${day}T13:30:00+08:00`,
+      close: 900 + index * 10,
+    };
+  });
+  const closes = candles.map((candle) => candle.close);
+  const minY = Math.min(...candles.map((candle) => candle.low));
+  const maxY = Math.max(...candles.map((candle) => candle.high));
+  return {
+    ...E2E_TPEX_HISTORY_RESPONSE,
+    range,
+    candles,
+    chartLayout: {
+      ...E2E_TPEX_HISTORY_RESPONSE.chartLayout,
+      minY,
+      maxY,
+      firstClose: closes.at(0),
+      lastClose: closes.at(-1),
+      points: candles.map((_, index) => ({
+        x: candles.length === 1 ? 50 : (index / Math.max(candles.length - 1, 1)) * 100,
+        y: 50,
+      })),
+      pointsPolyline: candles
+        .map((_, index) => {
+          const x = candles.length === 1 ? 50 : (index / Math.max(candles.length - 1, 1)) * 100;
+          return `${x},50`;
+        })
+        .join(" "),
+      xAxisTickIndices: candles.map((_, index) => index),
+    },
+  };
+}
 
 const E2E_PORTFOLIO_HISTORY = {
   range: "1M",
@@ -922,19 +1053,88 @@ export async function installE2eApiMocks(page: Page): Promise<void> {
         await fulfillJson(route, E2E_TW_QUOTE_RESPONSE);
         return;
       }
+      if (stockId === TPEX_STOCK_ID) {
+        await fulfillJson(route, E2E_TPEX_QUOTE_RESPONSE);
+        return;
+      }
     }
 
     if (path.startsWith("/api/quotes") && request.method() === "GET") {
-      const ids = (url.searchParams.get("ids") ?? "")
-        .split(",")
-        .map((id) => id.trim())
-        .filter(Boolean);
-      const items = ids.includes(TW_STOCK_ID) ? [E2E_TW_QUOTE_RESPONSE] : [];
+      const ids = new Set(
+        (url.searchParams.get("ids") ?? "")
+          .split(",")
+          .map((id) => id.trim())
+          .filter(Boolean),
+      );
+      const items = [
+        ...(ids.has(TW_STOCK_ID) ? [E2E_TW_QUOTE_RESPONSE] : []),
+        ...(ids.has(TPEX_STOCK_ID) ? [E2E_TPEX_QUOTE_RESPONSE] : []),
+      ];
       await fulfillJson(route, items);
       return;
     }
 
     const stockId = stockIdFromStocksPath(path);
+    if (stockId === TPEX_STOCK_ID) {
+      if (path.endsWith("/history") && request.method() === "GET") {
+        const range = url.searchParams.get("range") ?? "1D";
+        await fulfillJson(route, buildTpexHistoryForRange(range));
+        return;
+      }
+      if (path.endsWith("/key-statistics") && request.method() === "GET") {
+        await fulfillJson(route, {
+          open: E2E_TPEX_QUOTE.open,
+          previousClose: E2E_TPEX_QUOTE.previousClose,
+          volume: E2E_TPEX_QUOTE.volume,
+          lastPrice: E2E_TPEX_QUOTE.lastPrice,
+          dayLow: E2E_TPEX_QUOTE.low,
+          dayHigh: E2E_TPEX_QUOTE.high,
+          fiftyTwoWeekLow: 700,
+          fiftyTwoWeekHigh: 1200,
+          fiftyTwoWeekLowDate: "2025-05-11",
+          fiftyTwoWeekHighDate: "2026-05-11",
+          avgVolume10d: 3_000_000,
+          marketCap: "400B",
+          sharesOutstanding: "430M",
+          beta: 1.2,
+          peRatio: 18,
+          peRatioType: "official_daily",
+          peRatioSource: "TPEx official daily P/E",
+          priceUsed: E2E_TPEX_QUOTE.lastPrice,
+          priceAsOf: "2026-07-01",
+          peTtm: 18,
+          epsTtm: 52,
+          epsAsOf: null,
+          valuationAsOf: "2026-07-01",
+          valuationWarning: null,
+          dividendQuarterly: 2,
+          dividendYieldPercent: 1.1,
+          exDividendDate: "2026-06-01",
+          dividendPayDate: "2026-07-01",
+          nextEarningsDate: "2026-07-15",
+          dayRangeMarkerPercent: 40,
+          week52RangeMarkerPercent: 50,
+        });
+        return;
+      }
+      if (path.endsWith("/news") && request.method() === "GET") {
+        await fulfillJson(route, []);
+        return;
+      }
+      if (path.endsWith("/institutional-investors") && request.method() === "GET") {
+        await fulfillJson(route, { ...E2E_TW_INSTITUTIONAL, stockId: TPEX_STOCK_ID, symbol: "6488", market: "TPEx" });
+        return;
+      }
+      if (path.endsWith("/margin-short") && request.method() === "GET") {
+        await fulfillJson(route, { ...E2E_TW_MARGIN_SHORT, stockId: TPEX_STOCK_ID, symbol: "6488", market: "TPEx" });
+        return;
+      }
+      if (path.endsWith("/tw-insights") && request.method() === "GET") {
+        await fulfillJson(route, E2E_TW_INSIGHTS);
+        return;
+      }
+    }
+
     if (stockId === TW_STOCK_ID) {
       if (path.endsWith("/history") && request.method() === "GET") {
         await fulfillJson(route, { ...E2E_HISTORY_RESPONSE, range: url.searchParams.get("range") ?? "1D" });

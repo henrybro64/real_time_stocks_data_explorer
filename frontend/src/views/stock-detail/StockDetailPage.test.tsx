@@ -5,11 +5,12 @@ import type {
   TaiwanInstitutionalInvestorsResponse,
   TaiwanMarginShortResponse,
 } from "@shared/api";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { LanguageProvider } from "../../app/i18n";
+import { ApiError } from "../../services/api/client";
 import { StockDetailPage } from "./StockDetailPage";
 
 vi.mock("next/link", () => ({
@@ -20,9 +21,11 @@ vi.mock("../../components/chart/PriceChart", () => ({
   PriceChart: ({
     candles,
     isActive = true,
+    range,
   }: {
     candles: unknown[];
     isActive?: boolean;
+    range: string;
   }) => {
     if (!isActive) {
       return null;
@@ -30,7 +33,11 @@ vi.mock("../../components/chart/PriceChart", () => ({
     if (candles.length === 0) {
       return <div data-testid="price-chart-empty">沒有可顯示的圖表資料。</div>;
     }
-    return <div data-testid="price-chart-mock">price-chart</div>;
+    return (
+      <div data-testid="price-chart-mock" data-range={range} data-candle-count={candles.length}>
+        price-chart:{range}:{candles.length}
+      </div>
+    );
   },
 }));
 
@@ -252,7 +259,7 @@ function mockQueries(options: {
   quoteError?: boolean;
   quoteLoading?: boolean;
   history?: HistoryResponse | undefined;
-  historyError?: boolean;
+  historyError?: boolean | ApiError;
   historyLoading?: boolean;
   institutional?: TaiwanInstitutionalInvestorsResponse | undefined;
   institutionalError?: boolean;
@@ -272,11 +279,17 @@ function mockQueries(options: {
       };
     }
     if (key === "history") {
+      const historyError =
+        options.historyError instanceof Error
+          ? options.historyError
+          : options.historyError
+            ? new Error("history failed")
+            : null;
       return {
         data: options.history,
-        isError: Boolean(options.historyError),
+        isError: Boolean(historyError),
         isLoading: Boolean(options.historyLoading),
-        error: options.historyError ? new Error("history failed") : null,
+        error: historyError,
       };
     }
     if (key === "institutional-investors") {
@@ -373,11 +386,20 @@ describe("StockDetailPage", () => {
     expect(screen.queryByTestId("stock-detail-chart-empty")).not.toBeInTheDocument();
   });
 
-  it("shows a clear chart empty state when OHLC history is unavailable", () => {
-    mockQueries({ quote: sampleTaiwanQuote, history: undefined, historyError: true });
-    renderStockDetailPage("TW%3A2330");
+  it("shows a provider unavailable notice when history fails without cached data", () => {
+    mockQueries({
+      quote: sampleTaiwanQuote,
+      history: undefined,
+      historyError: new ApiError("Taiwan daily history temporarily unavailable for TW:6488 (TPEx)", {
+        kind: "unavailable",
+        status: 502,
+        detail: "Taiwan daily history temporarily unavailable for TW:6488 (TPEx)",
+      }),
+    });
+    renderStockDetailPage("TW%3A6488");
 
-    expect(screen.getByTestId("stock-detail-chart-empty")).toHaveTextContent("沒有可顯示的圖表資料。");
+    expect(screen.getByText("資料來源暫時不可用")).toBeInTheDocument();
+    expect(screen.queryByTestId("stock-detail-chart-empty")).not.toBeInTheDocument();
     expect(screen.queryByTestId("price-chart-mock")).not.toBeInTheDocument();
   });
 
@@ -395,6 +417,147 @@ describe("StockDetailPage", () => {
     expect(screen.getAllByTestId("price-chart-empty").length).toBeGreaterThan(0);
     expect(screen.queryByTestId("price-chart-mock")).not.toBeInTheDocument();
     expect(screen.queryByTestId("stock-detail-chart-empty")).not.toBeInTheDocument();
+  });
+
+  it("switches history query keys per range and does not keep stale candles", () => {
+    const tpexQuote: QuoteResponse = {
+      ...sampleTaiwanQuote,
+      stock: {
+        ...sampleTaiwanQuote.stock,
+        id: "TW:6488",
+        symbol: "6488",
+        name: "環球晶",
+        exchange: "TPEx",
+        nameEn: "GlobalWafers",
+        nameZhTw: "環球晶",
+      },
+      quote: {
+        ...sampleTaiwanQuote.quote,
+        id: "TW:6488",
+      },
+    };
+    const historyByRange: Record<string, HistoryResponse> = {
+      "1D": {
+        ...sampleHistory,
+        stock: tpexQuote.stock,
+        range: "1D",
+        candles: [
+          {
+            time: "2026-04-21T01:00:00Z",
+            open: 970,
+            high: 985,
+            low: 968,
+            close: 980,
+            volume: 1_000_000,
+          },
+        ],
+      },
+      "1W": {
+        ...sampleHistory,
+        stock: tpexQuote.stock,
+        range: "1W",
+        candles: [
+          {
+            time: "2026-04-14T05:30:00Z",
+            open: 900,
+            high: 910,
+            low: 890,
+            close: 905,
+            volume: 2_000_000,
+          },
+          {
+            time: "2026-04-15T05:30:00Z",
+            open: 905,
+            high: 920,
+            low: 900,
+            close: 915,
+            volume: 2_100_000,
+          },
+        ],
+      },
+      "1M": {
+        ...sampleHistory,
+        stock: tpexQuote.stock,
+        range: "1M",
+        candles: [
+          {
+            time: "2026-03-21T05:30:00Z",
+            open: 850,
+            high: 860,
+            low: 840,
+            close: 855,
+            volume: 3_000_000,
+          },
+          {
+            time: "2026-03-28T05:30:00Z",
+            open: 855,
+            high: 870,
+            low: 850,
+            close: 865,
+            volume: 3_100_000,
+          },
+          {
+            time: "2026-04-10T05:30:00Z",
+            open: 865,
+            high: 880,
+            low: 860,
+            close: 875,
+            volume: 3_200_000,
+          },
+        ],
+      },
+    };
+
+    useQueryMock.mockImplementation((queryOptions: { queryKey: unknown[] }) => {
+      const key = queryOptions.queryKey[0];
+      if (key === "quote") {
+        return { data: tpexQuote, isError: false, isLoading: false, error: null };
+      }
+      if (key === "history") {
+        const range = String(queryOptions.queryKey[2] ?? "1D");
+        return {
+          data: historyByRange[range] ?? historyByRange["1D"],
+          isError: false,
+          isLoading: false,
+          error: null,
+        };
+      }
+      return { data: undefined, isError: false, isLoading: false, error: null };
+    });
+
+    renderStockDetailPage("TW%3A6488");
+
+    expect(screen.getByTestId("price-chart-mock")).toHaveAttribute("data-range", "1D");
+    expect(screen.getByTestId("price-chart-mock")).toHaveAttribute("data-candle-count", "1");
+
+    fireEvent.click(screen.getByRole("tab", { name: "1W" }));
+    expect(screen.getByRole("tab", { name: "1W", selected: true })).toBeInTheDocument();
+    expect(screen.getByTestId("price-chart-mock")).toHaveAttribute("data-range", "1W");
+    expect(screen.getByTestId("price-chart-mock")).toHaveAttribute("data-candle-count", "2");
+    expect(
+      useQueryMock.mock.calls.some(
+        (call) =>
+          Array.isArray(call[0]?.queryKey) &&
+          call[0].queryKey[0] === "history" &&
+          call[0].queryKey[1] === "TW:6488" &&
+          call[0].queryKey[2] === "1W",
+      ),
+    ).toBe(true);
+
+    fireEvent.click(screen.getByRole("tab", { name: "1M" }));
+    expect(screen.getByTestId("price-chart-mock")).toHaveAttribute("data-range", "1M");
+    expect(screen.getByTestId("price-chart-mock")).toHaveAttribute("data-candle-count", "3");
+    expect(screen.queryByText("price-chart:1W:2")).not.toBeInTheDocument();
+  });
+
+  it("keeps all declared history range tabs available for chart selection", () => {
+    mockQueries({ quote: sampleTaiwanQuote, history: sampleHistory });
+    renderStockDetailPage("TW%3A2330");
+
+    expect(screen.getByRole("tab", { name: "1D", selected: true })).toBeInTheDocument();
+    for (const range of ["1W", "1M", "3M", "6M", "1Y"] as const) {
+      expect(screen.getByRole("tab", { name: range })).toBeInTheDocument();
+    }
   });
 
   it("renders Taiwan institutional and margin-short summaries plus the chart tabs", () => {

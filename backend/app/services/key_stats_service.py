@@ -147,7 +147,11 @@ def _us_from_yahoo(stock: StockRecord, base: dict[str, object]) -> dict[str, obj
 
 def _tw_from_candles(stock: StockRecord, base: dict[str, object]) -> dict[str, object]:
     out: dict[str, object] = dict(base)
-    data = quote_service.get_history(stock.id, "1Y")
+    try:
+        data = quote_service.get_history(stock.id, "1Y")
+    except RuntimeError:
+        # History outages map to 502 on /history; key-stats should still return quote-based fields.
+        return out
     if data is None:
         return out
     _, candles = data
