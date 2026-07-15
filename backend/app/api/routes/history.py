@@ -45,7 +45,6 @@ router = APIRouter(prefix="/stocks", tags=["history"])
 
 @router.get(
     "/{stock_id}/history",
-    response_model=HistoryEnvelope,
     responses={
         404: {"description": "Stock not found"},
         502: {"description": "Official upstream temporarily unavailable"},
