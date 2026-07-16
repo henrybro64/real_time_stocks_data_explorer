@@ -301,6 +301,10 @@ describe("RankingsPage", () => {
     expect(screen.getByTestId("rankings-snapshot-timestamp")).toHaveTextContent(
       "快照時間:",
     );
+    expect(screen.getByTestId("rankings-change-percent-TW:2330")).toHaveClass(
+      "app-price-up",
+      "app-price-convention-taiwan",
+    );
     expectNetBuySellColumnPresent();
     expectVolumeChangeColumnAbsent();
   });
@@ -318,6 +322,10 @@ describe("RankingsPage", () => {
       expect(fetchRankings).toHaveBeenCalledWith("US", "volume", 50, undefined);
     });
     expect(await screen.findByTestId("rankings-row-US:MSFT")).toBeInTheDocument();
+    expect(screen.getByTestId("rankings-change-percent-US:MSFT")).toHaveClass(
+      "app-price-up",
+      "app-price-convention-us",
+    );
   });
 
   it("switches markets and ranking tabs", async () => {

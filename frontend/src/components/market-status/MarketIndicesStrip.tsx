@@ -3,6 +3,7 @@ import type { MarketIndex } from "@shared/api";
 import { useLanguage } from "../../app/i18n";
 import { RequestStateNotice, errorToNoticeKind, type RequestNoticeKind } from "../state/RequestStateNotice";
 import { formatLastUpdated, formatPercent } from "../../services/format/quote";
+import { priceToneClassForMarket } from "../../services/market-data/priceTone";
 
 type Props = {
   error?: unknown;
@@ -158,11 +159,8 @@ export function MarketIndicesStrip({ error, isLoading = false, items }: Props) {
                 <>
                   <p className="app-stock-card-price">{numberFormat.format(item.value ?? 0)}</p>
                   <p
-                    className={
-                      (item.change ?? 0) >= 0
-                        ? "app-positive app-stock-card-change"
-                        : "app-negative app-stock-card-change"
-                    }
+                    className={`${priceToneClassForMarket(item.market, item.change ?? 0)} app-stock-card-change`}
+                    data-testid={`market-index-change-${item.id}`}
                   >
                     {signedNumberFormat.format(item.change ?? 0)} ({formatPercent(item.changePercent ?? 0)})
                   </p>

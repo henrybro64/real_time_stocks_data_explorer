@@ -1,6 +1,12 @@
 import type { Page, Route } from "@playwright/test";
 
-import { E2E_TW_STOCK_SEARCH_RESULT, TPEX_STOCK_ID, TW_STOCK_ID } from "./helpers";
+import {
+  E2E_TW_STOCK_SEARCH_RESULT,
+  E2E_US_STOCK_SEARCH_RESULT,
+  TPEX_STOCK_ID,
+  TW_STOCK_ID,
+  US_STOCK_ID,
+} from "./helpers";
 
 export const E2E_TW_QUOTE = {
   id: TW_STOCK_ID,
@@ -14,6 +20,25 @@ export const E2E_TW_QUOTE = {
   volume: 1_000_000,
   timestamp: "2026-05-11T09:00:00+08:00",
   isMarketOpen: true,
+};
+
+export const E2E_US_QUOTE = {
+  id: US_STOCK_ID,
+  lastPrice: 190.5,
+  change: 2.25,
+  changePercent: 1.2,
+  previousClose: 188.25,
+  open: 188.8,
+  high: 191.2,
+  low: 187.9,
+  volume: 45_000_000,
+  timestamp: "2026-05-10T16:00:00-04:00",
+  isMarketOpen: false,
+};
+
+export const E2E_US_QUOTE_RESPONSE = {
+  stock: E2E_US_STOCK_SEARCH_RESULT,
+  quote: E2E_US_QUOTE,
 };
 
 export const E2E_TPEX_STOCK = {
@@ -567,6 +592,43 @@ const E2E_TW_MARGIN_SHORT = {
   source: "TWSE official margin and borrowed-short daily data",
 };
 
+const E2E_US_HISTORY_RESPONSE = {
+  stock: E2E_US_STOCK_SEARCH_RESULT,
+  range: "1D",
+  candles: [
+    {
+      time: "2026-05-10T10:00:00-04:00",
+      open: 188,
+      high: 189.5,
+      low: 187.5,
+      close: 189,
+      volume: 10_000_000,
+    },
+    {
+      time: "2026-05-10T11:00:00-04:00",
+      open: 189,
+      high: 191,
+      low: 188.8,
+      close: 190.5,
+      volume: 12_000_000,
+    },
+  ],
+  chartLayout: {
+    minY: 187.5,
+    maxY: 191,
+    points: [
+      { x: 0, y: 70 },
+      { x: 100, y: 20 },
+    ],
+    pointsPolyline: "0,70 100,20",
+    trendUp: true,
+    firstClose: 189,
+    lastClose: 190.5,
+    yAxisTicks: [187.5, 189.25, 191],
+    xAxisTickIndices: [0, 1],
+  },
+};
+
 const E2E_HISTORY_RESPONSE = {
   stock: E2E_TW_STOCK_SEARCH_RESULT,
   range: "1D",
@@ -1057,6 +1119,10 @@ export async function installE2eApiMocks(page: Page): Promise<void> {
         await fulfillJson(route, E2E_TPEX_QUOTE_RESPONSE);
         return;
       }
+      if (stockId === US_STOCK_ID) {
+        await fulfillJson(route, E2E_US_QUOTE_RESPONSE);
+        return;
+      }
     }
 
     if (path.startsWith("/api/quotes") && request.method() === "GET") {
@@ -1069,6 +1135,7 @@ export async function installE2eApiMocks(page: Page): Promise<void> {
       const items = [
         ...(ids.has(TW_STOCK_ID) ? [E2E_TW_QUOTE_RESPONSE] : []),
         ...(ids.has(TPEX_STOCK_ID) ? [E2E_TPEX_QUOTE_RESPONSE] : []),
+        ...(ids.has(US_STOCK_ID) ? [E2E_US_QUOTE_RESPONSE] : []),
       ];
       await fulfillJson(route, items);
       return;
@@ -1190,6 +1257,72 @@ export async function installE2eApiMocks(page: Page): Promise<void> {
       }
       if (path.endsWith("/tw-insights") && request.method() === "GET") {
         await fulfillJson(route, E2E_TW_INSIGHTS);
+        return;
+      }
+    }
+
+    if (stockId === US_STOCK_ID) {
+      if (path.endsWith("/history") && request.method() === "GET") {
+        await fulfillJson(route, {
+          ...E2E_US_HISTORY_RESPONSE,
+          range: url.searchParams.get("range") ?? "1D",
+        });
+        return;
+      }
+      if (path.endsWith("/key-statistics") && request.method() === "GET") {
+        await fulfillJson(route, {
+          open: E2E_US_QUOTE.open,
+          previousClose: E2E_US_QUOTE.previousClose,
+          volume: E2E_US_QUOTE.volume,
+          lastPrice: E2E_US_QUOTE.lastPrice,
+          dayLow: E2E_US_QUOTE.low,
+          dayHigh: E2E_US_QUOTE.high,
+          fiftyTwoWeekLow: 150,
+          fiftyTwoWeekHigh: 220,
+          fiftyTwoWeekLowDate: "2025-05-11",
+          fiftyTwoWeekHighDate: "2026-05-11",
+          avgVolume10d: 40_000_000,
+          marketCap: "2900B",
+          sharesOutstanding: "15B",
+          beta: 1.2,
+          peRatio: 28,
+          peRatioType: "ttm",
+          peRatioSource: "Yahoo Finance",
+          priceUsed: E2E_US_QUOTE.lastPrice,
+          priceAsOf: "2026-05-10",
+          peTtm: 28,
+          epsTtm: 6.8,
+          epsAsOf: null,
+          valuationAsOf: "2026-05-10",
+          valuationWarning: null,
+          dividendQuarterly: 0.24,
+          dividendYieldPercent: 0.5,
+          exDividendDate: "2026-05-01",
+          dividendPayDate: "2026-05-15",
+          nextEarningsDate: "2026-07-30",
+          dayRangeMarkerPercent: 70,
+          week52RangeMarkerPercent: 55,
+        });
+        return;
+      }
+      if (path.endsWith("/news") && request.method() === "GET") {
+        await fulfillJson(route, []);
+        return;
+      }
+      if (path.endsWith("/us-insights") && request.method() === "GET") {
+        await fulfillJson(route, {
+          peer: {
+            asOf: "2026-05-10",
+            sector: "Technology",
+            industry: "Consumer Electronics",
+            compareUrl: "https://example.com/peers",
+            companySymbol: "AAPL",
+            companyRankBy1m: 3,
+            companyCount: 12,
+            companyReturns: null,
+            topMovers: [],
+          },
+        });
         return;
       }
     }

@@ -99,4 +99,34 @@ describe("MarketIndicesStrip", () => {
     expect(screen.queryByText("資料來源暫時不可用")).not.toBeInTheDocument();
     expect(screen.queryByText("暫時無法取得")).not.toBeInTheDocument();
   });
+
+  it("applies market-specific price tone classes to index changes", () => {
+    renderWithLanguage(
+      <MarketIndicesStrip
+        items={[
+          okIndex({
+            id: "TWSE:TAIEX",
+            market: "TW",
+            label: "Taiwan Stock Exchange",
+            change: 85.44,
+            changePercent: 0.39,
+          }),
+          okIndex({ id: "^DJI", market: "US", label: "DOW Jones", change: -102.12, changePercent: -0.26 }),
+          okIndex({ id: "^NDQ", market: "US", label: "Nasdaq" }),
+          okIndex({ id: "^SPX", market: "US", label: "S&P 500" }),
+        ]}
+      />,
+    );
+
+    expect(screen.getByTestId("market-index-change-TWSE:TAIEX")).toHaveClass(
+      "app-price-up",
+      "app-price-convention-taiwan",
+    );
+    expect(screen.getByTestId("market-index-change-^DJI")).toHaveClass(
+      "app-price-down",
+      "app-price-convention-us",
+    );
+    expect(screen.getByTestId("market-index-change-TWSE:TAIEX")).toHaveTextContent("+");
+    expect(screen.getByTestId("market-index-change-^DJI")).toHaveTextContent("-");
+  });
 });

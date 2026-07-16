@@ -337,6 +337,29 @@ describe("PortfolioPage", () => {
     expect(usRow).toHaveTextContent("374.46");
   });
 
+  it("applies market-specific price tone classes to per-position quote changes", async () => {
+    renderPortfolioPage();
+
+    expect(await screen.findByTestId("portfolio-quote-change-TW:2330")).toHaveClass(
+      "app-price-up",
+      "app-price-convention-taiwan",
+    );
+    expect(screen.getByTestId("portfolio-quote-change-percent-TW:2330")).toHaveClass(
+      "app-price-up",
+      "app-price-convention-taiwan",
+    );
+    expect(screen.getByTestId("portfolio-quote-change-US:AAPL")).toHaveClass(
+      "app-price-up",
+      "app-price-convention-us",
+    );
+    expect(screen.getByTestId("portfolio-quote-change-percent-US:AAPL")).toHaveClass(
+      "app-price-up",
+      "app-price-convention-us",
+    );
+    expect(screen.getByTestId("portfolio-quote-change-TW:2330")).toHaveTextContent("+");
+    expect(screen.getByTestId("portfolio-quote-change-US:AAPL")).toHaveTextContent("+");
+  });
+
   it("shows the updated English currency labels when English is selected", async () => {
     renderPortfolioPage("en");
 
@@ -366,6 +389,21 @@ describe("PortfolioPage", () => {
       expect(screen.getByTestId("portfolio-combined-gain-twd")).toHaveTextContent(
         "+$394.88 (+5.67%)",
       );
+    });
+  });
+
+  it("applies currency-specific price tones to aggregate gain/loss", async () => {
+    renderPortfolioPage("en");
+
+    await waitFor(() => {
+      const usdGain = screen.getByTestId("portfolio-combined-gain-usd");
+      const twdGain = screen.getByTestId("portfolio-combined-gain-twd");
+      expect(usdGain).toHaveTextContent("+");
+      expect(twdGain).toHaveTextContent("+");
+      expect(usdGain).toHaveClass("app-price-up", "app-price-convention-us");
+      expect(twdGain).toHaveClass("app-price-up", "app-price-convention-taiwan");
+      expect(usdGain).not.toHaveClass("app-positive");
+      expect(twdGain).not.toHaveClass("app-positive");
     });
   });
 
@@ -464,6 +502,9 @@ describe("PortfolioPage", () => {
     expect(await screen.findByTestId("portfolio-ai-empty-error")).toHaveTextContent(
       "Your portfolio has no holdings to analyze.",
     );
+    const emptyError = screen.getByTestId("portfolio-ai-empty-error");
+    expect(emptyError).toHaveClass("app-negative");
+    expect(emptyError.className).not.toMatch(/app-price-/);
   });
 
   it("renders the backend portfolio analysis response", async () => {

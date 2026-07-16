@@ -784,6 +784,47 @@ input {
   color: var(--cds-support-error);
 }
 
+/*
+ * Price-direction tones (market-aware).
+ * Keep .app-positive/.app-negative for non-price status.
+ * Chart stroke hex vars must stay aligned with PRICE_STROKE_COLORS in priceTone.ts.
+ */
+.app-price-convention-us,
+[data-price-convention="us"] {
+  --app-price-up: #24a148;
+  --app-price-down: #da1e28;
+  --app-price-up-fill: rgba(36, 161, 72, 0.28);
+  --app-price-down-fill: rgba(218, 30, 40, 0.24);
+  --app-price-up-wick: rgba(36, 161, 72, 0.96);
+  --app-price-down-wick: rgba(218, 30, 40, 0.96);
+}
+
+.app-price-convention-taiwan,
+[data-price-convention="taiwan"] {
+  --app-price-up: #da1e28;
+  --app-price-down: #24a148;
+  --app-price-up-fill: rgba(218, 30, 40, 0.24);
+  --app-price-down-fill: rgba(36, 161, 72, 0.28);
+  --app-price-up-wick: rgba(218, 30, 40, 0.96);
+  --app-price-down-wick: rgba(36, 161, 72, 0.96);
+}
+
+.app-price-convention-us.app-price-up {
+  color: var(--cds-support-success);
+}
+
+.app-price-convention-us.app-price-down {
+  color: var(--cds-support-error);
+}
+
+.app-price-convention-taiwan.app-price-up {
+  color: var(--cds-support-error);
+}
+
+.app-price-convention-taiwan.app-price-down {
+  color: var(--cds-support-success);
+}
+
 .app-quote-summary {
   padding-bottom: 1rem;
 }
@@ -1029,14 +1070,15 @@ input {
   stroke-width: 0.35;
 }
 
+/* Candle colors consume market convention vars set on [data-price-convention]. */
 .app-chart-candle-body-up {
-  fill: rgba(36, 161, 72, 0.28);
-  stroke: #24a148;
+  fill: var(--app-price-up-fill);
+  stroke: var(--app-price-up);
 }
 
 .app-chart-candle-body-down {
-  fill: rgba(218, 30, 40, 0.24);
-  stroke: #da1e28;
+  fill: var(--app-price-down-fill);
+  stroke: var(--app-price-down);
 }
 
 .app-chart-candle-body-active {
@@ -1049,11 +1091,11 @@ input {
 }
 
 .app-chart-candle-wick-up {
-  stroke: rgba(36, 161, 72, 0.96);
+  stroke: var(--app-price-up-wick);
 }
 
 .app-chart-candle-wick-down {
-  stroke: rgba(218, 30, 40, 0.96);
+  stroke: var(--app-price-down-wick);
 }
 
 .app-chart-candle-wick-active {

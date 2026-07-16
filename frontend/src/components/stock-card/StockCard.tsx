@@ -3,7 +3,7 @@
 import { Button, InlineLoading, Tag, Tile } from "@carbon/react";
 import { useQuery } from "@tanstack/react-query";
 import type { ChartLayout, Quote } from "@shared/quote";
-import type { Stock } from "@shared/stock";
+import type { MarketCode, Stock } from "@shared/stock";
 import { useId, type KeyboardEvent, type MouseEvent } from "react";
 import { useRouter } from "next/navigation";
 import { getDisplayStockName, useLanguage } from "../../app/i18n";
@@ -17,6 +17,11 @@ import {
   formatPercent,
   formatSignedNumber,
 } from "../../services/format/quote";
+import {
+  priceColorConventionFromMarket,
+  priceStrokeColor,
+  priceToneClassForMarket,
+} from "../../services/market-data/priceTone";
 
 type Props = {
   stock: Stock;
@@ -103,7 +108,10 @@ export function StockCard({
         <>
           <div className="app-stock-card-price-block">
             <p className="app-stock-card-price">{formatCurrency(quote.lastPrice, stock.currency)}</p>
-            <p className={quote.change >= 0 ? "app-positive app-stock-card-change" : "app-negative app-stock-card-change"}>
+            <p
+              className={`${priceToneClassForMarket(stock.market, quote.change)} app-stock-card-change`}
+              data-testid={`stock-card-change-${stock.id}`}
+            >
               {formatSignedNumber(quote.change, stock.currency)} ({formatPercent(quote.changePercent)})
             </p>
           </div>
@@ -127,6 +135,7 @@ export function StockCard({
             currency={stock.currency}
             error={historyQuery.error}
             isLoading={historyQuery.isLoading}
+            market={stock.market}
             scopeLabel={`${stock.symbol} ${t("stock.weekRange")}`}
           />
           <dl className="app-stock-card-meta">
@@ -205,17 +214,20 @@ function Sparkline({
   error,
   isLoading,
   currency,
+  market,
   scopeLabel,
 }: {
   chartLayout: ChartLayout | null;
   error?: unknown;
   isLoading: boolean;
   currency: "USD" | "TWD";
+  market: MarketCode;
   scopeLabel: string;
 }) {
   const { t } = useLanguage();
   const gradId = useId().replace(/:/g, "");
   const noticeKind = error ? (chartLayout ? "stale" : errorToNoticeKind(error)) : null;
+  const convention = priceColorConventionFromMarket(market);
 
   if (isLoading) {
     return (
@@ -239,28 +251,31 @@ function Sparkline({
 
   const { pointsPolyline, trendUp, firstClose, lastClose } = chartLayout;
   const points = pointsPolyline;
+  const stroke = priceStrokeColor(convention, trendUp);
+  const rangeToneClass = priceToneClassForMarket(market, trendUp ? 1 : -1);
 
   return (
     <div className="app-stock-card-sparkline">
       {noticeKind ? <RequestStateNotice compact kind={noticeKind} scopeLabel={scopeLabel} /> : null}
       <div className="app-stock-card-sparkline-header">
         <p className="app-section-meta">{t("stock.weekRange")}</p>
-        <p className={trendUp ? "app-positive app-stock-card-range" : "app-negative app-stock-card-range"}>
+        <p className={`${rangeToneClass} app-stock-card-range`}>
           {formatCurrency(firstClose, currency)} {"->"} {formatCurrency(lastClose, currency)}
         </p>
       </div>
       <svg className="app-stock-card-sparkline-svg" viewBox="0 0 100 100" preserveAspectRatio="none">
         <defs>
           <linearGradient id={gradId} x1="0%" y1="0%" x2="0%" y2="100%">
-            <stop offset="0%" stopColor={trendUp ? "#24a148" : "#da1e28"} stopOpacity="0.22" />
-            <stop offset="100%" stopColor={trendUp ? "#24a148" : "#da1e28"} stopOpacity="0.02" />
+            <stop offset="0%" stopColor={stroke} stopOpacity="0.22" />
+            <stop offset="100%" stopColor={stroke} stopOpacity="0.02" />
           </linearGradient>
         </defs>
         <polygon points={`0,100 ${points} 100,100`} fill={`url(#${gradId})`} />
         <polyline
+          data-testid={`stock-card-sparkline-stroke-${market}`}
           points={points}
           fill="none"
-          stroke={trendUp ? "#24a148" : "#da1e28"}
+          stroke={stroke}
           strokeWidth="2"
           vectorEffect="non-scaling-stroke"
         />

@@ -12,7 +12,7 @@ function renderWithLanguage(ui: React.ReactElement) {
 describe("PriceChart", () => {
   it("shows an empty state when no candles are available", () => {
     renderWithLanguage(
-      <PriceChart candles={[]} chartLayout={null} currency="USD" range="1D" />,
+      <PriceChart candles={[]} chartLayout={null} currency="USD" market="US" range="1D" />,
     );
 
     expect(screen.getByText("沒有可顯示的圖表資料。")).toBeInTheDocument();
@@ -33,6 +33,7 @@ describe("PriceChart", () => {
         ]}
         chartLayout={null}
         currency="USD"
+        market="US"
         range="1D"
       />,
     );
@@ -76,6 +77,7 @@ describe("PriceChart", () => {
           trendUp: true,
         }}
         currency="USD"
+        market="US"
         range="1D"
       />,
     );
@@ -124,6 +126,7 @@ describe("PriceChart", () => {
           trendUp: true,
         }}
         currency="USD"
+        market="US"
         range="1D"
       />,
     );
@@ -194,11 +197,63 @@ describe("PriceChart", () => {
           trendUp: true,
         }}
         currency="USD"
+        market="US"
         range="1D"
       />,
     );
 
     expect(container.querySelectorAll(".app-chart-candle-body")).toHaveLength(3);
     expect(container.querySelectorAll(".app-chart-candle-wick")).toHaveLength(3);
+    expect(container.querySelector(".app-chart-panel")?.getAttribute("data-price-convention")).toBe("us");
+    expect(container.querySelectorAll(".app-chart-candle-body-up")).toHaveLength(2);
+    expect(container.querySelectorAll(".app-chart-candle-body-down")).toHaveLength(1);
+  });
+
+  it("uses the Taiwan price convention attribute for TW market charts", () => {
+    const { container } = renderWithLanguage(
+      <PriceChart
+        candles={[
+          {
+            time: "2026-04-01T09:00:00+08:00",
+            open: 100,
+            high: 110,
+            low: 95,
+            close: 102,
+            volume: 1000,
+          },
+          {
+            time: "2026-04-01T10:00:00+08:00",
+            open: 102,
+            high: 105,
+            low: 90,
+            close: 92,
+            volume: 1200,
+          },
+        ]}
+        chartLayout={{
+          minY: 90,
+          maxY: 110,
+          pointsPolyline: "0,40 100,90",
+          points: [
+            { x: 0, y: 40 },
+            { x: 100, y: 90 },
+          ],
+          yAxisTicks: [110, 100, 90],
+          xAxisTickIndices: [0, 1],
+          firstClose: 102,
+          lastClose: 92,
+          trendUp: false,
+        }}
+        currency="TWD"
+        market="TW"
+        range="1W"
+      />,
+    );
+
+    expect(container.querySelector(".app-chart-panel")?.getAttribute("data-price-convention")).toBe("taiwan");
+    expect(container.querySelectorAll(".app-chart-candle-body-up")).toHaveLength(1);
+    expect(container.querySelectorAll(".app-chart-candle-body-down")).toHaveLength(1);
+    expect(container.querySelectorAll(".app-chart-candle-wick-up")).toHaveLength(1);
+    expect(container.querySelectorAll(".app-chart-candle-wick-down")).toHaveLength(1);
   });
 });

@@ -3,6 +3,7 @@ import type { QuoteResponse } from "@shared/api";
 import { getDisplayStockName, useLanguage } from "../../app/i18n";
 import { QuoteFreshnessTag } from "../state/QuoteFreshnessTag";
 import { formatCurrency, formatLastUpdated, formatPercent, formatSignedNumber } from "../../services/format/quote";
+import { priceToneClassForMarket } from "../../services/market-data/priceTone";
 
 type Props = {
   item: QuoteResponse;
@@ -36,7 +37,10 @@ export function QuoteSummary({ item, refreshFailed = false }: Props) {
       </div>
       <div className="app-detail-price-row">
         <p className="app-detail-price">{formatCurrency(quote.lastPrice, stock.currency)}</p>
-        <p className={quote.change >= 0 ? "app-positive app-detail-change" : "app-negative app-detail-change"}>
+        <p
+          className={`${priceToneClassForMarket(stock.market, quote.change)} app-detail-change`}
+          data-testid="quote-summary-change"
+        >
           {formatSignedNumber(quote.change, stock.currency)} ({formatPercent(quote.changePercent)})
         </p>
       </div>

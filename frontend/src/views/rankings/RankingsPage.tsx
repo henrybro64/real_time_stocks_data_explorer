@@ -28,6 +28,7 @@ import { QuoteFreshnessTag } from "../../components/state/QuoteFreshnessTag";
 import { RequestStateNotice, errorToNoticeKind } from "../../components/state/RequestStateNotice";
 import { fetchMarkets, fetchRankings } from "../../services/api/client";
 import { formatCurrency, formatLastUpdated, formatPercent } from "../../services/format/quote";
+import { priceToneClassForMarket } from "../../services/market-data/priceTone";
 import {
   getLocalizedRankingsFreshnessLabel,
   getLocalizedRankingsSource,
@@ -523,7 +524,18 @@ export function RankingsPage() {
                           <TableCell>
                             {formatMaybeCurrency(item.lastPrice, item.stock.currency)}
                           </TableCell>
-                          <TableCell>{formatMaybePercent(item.changePercent)}</TableCell>
+                          <TableCell>
+                            {item.changePercent == null ? (
+                              "—"
+                            ) : (
+                              <span
+                                className={priceToneClassForMarket(item.stock.market, item.changePercent)}
+                                data-testid={`rankings-change-percent-${item.stock.id}`}
+                              >
+                                {formatMaybePercent(item.changePercent)}
+                              </span>
+                            )}
+                          </TableCell>
                           <TableCell>{formatMaybeNumber(item.volume, formatNumber)}</TableCell>
                           {showNetBuySellColumn ? (
                             <TableCell>{formatMaybeNumber(item.netBuySellShares, formatNumber)}</TableCell>
