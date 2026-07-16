@@ -6,6 +6,8 @@ export const TW_STOCK_ID = "TW:2330";
 export const TW_STOCK_SYMBOL = "2330";
 export const TPEX_STOCK_ID = "TW:6488";
 export const TPEX_STOCK_SYMBOL = "6488";
+export const US_STOCK_ID = "US:AAPL";
+export const US_STOCK_SYMBOL = "AAPL";
 
 export const E2E_TW_STOCK_SEARCH_RESULT = {
   id: TW_STOCK_ID,
@@ -17,6 +19,18 @@ export const E2E_TW_STOCK_SEARCH_RESULT = {
   exchange: "TWSE",
   currency: "TWD",
   timezone: "Asia/Taipei",
+} as const;
+
+export const E2E_US_STOCK_SEARCH_RESULT = {
+  id: US_STOCK_ID,
+  market: "US",
+  symbol: US_STOCK_SYMBOL,
+  name: "Apple Inc.",
+  nameEn: "Apple Inc.",
+  nameZhTw: null,
+  exchange: "NASDAQ",
+  currency: "USD",
+  timezone: "America/New_York",
 } as const;
 
 /** Home search uses React `useDeferredValue`; portfolio search is immediate. Allow slow CI. */

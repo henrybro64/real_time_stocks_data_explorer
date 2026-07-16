@@ -37,6 +37,10 @@ import {
 } from "../../services/api/client";
 import { formatCurrency, formatLastUpdated, formatPercent, formatSignedNumber } from "../../services/format/quote";
 import {
+  priceToneClassForDisplayCurrency,
+  priceToneClassForMarket,
+} from "../../services/market-data/priceTone";
+import {
   classifyPortfolioAnalysisError,
   PORTFOLIO_ANALYSIS_AI_TEMPORARILY_UNAVAILABLE_WARNING,
 } from "./portfolioAnalysisErrors";
@@ -47,18 +51,6 @@ function toDisplayCurrency(currency: string): DisplayCurrency | null {
   return currency === "USD" || currency === "TWD" ? currency : null;
 }
 
-function toneClassName(value: number | null): string | undefined {
-  if (value == null) {
-    return undefined;
-  }
-  if (value > 0) {
-    return "app-positive";
-  }
-  if (value < 0) {
-    return "app-negative";
-  }
-  return undefined;
-}
 
 export function PortfolioPage() {
   const { t, language, formatNumber } = useLanguage();
@@ -343,7 +335,10 @@ export function PortfolioPage() {
                 </p>
                 <p className="app-section-meta">{t("portfolio.aggregate.totalGain")}</p>
                 <p
-                  className={["app-portfolio-secondary-amount", toneClassName(combinedGainUsd)]
+                  className={[
+                    "app-portfolio-secondary-amount",
+                    priceToneClassForDisplayCurrency("USD", combinedGainUsd),
+                  ]
                     .filter(Boolean)
                     .join(" ")}
                   data-testid="portfolio-combined-gain-usd"
@@ -368,7 +363,10 @@ export function PortfolioPage() {
                 </p>
                 <p className="app-section-meta">{t("portfolio.aggregate.totalGain")}</p>
                 <p
-                  className={["app-portfolio-secondary-amount", toneClassName(combinedGainTwd)]
+                  className={[
+                    "app-portfolio-secondary-amount",
+                    priceToneClassForDisplayCurrency("TWD", combinedGainTwd),
+                  ]
                     .filter(Boolean)
                     .join(" ")}
                   data-testid="portfolio-combined-gain-twd"
@@ -803,7 +801,10 @@ export function PortfolioPage() {
                         <TableCell>{renderCurrencyValue(position.marketValue, position.stock.currency)}</TableCell>
                         <TableCell>
                           {position.quote != null ? (
-                            <span className={position.quote.change >= 0 ? "app-positive" : "app-negative"}>
+                            <span
+                              className={priceToneClassForMarket(position.stock.market, position.quote.change)}
+                              data-testid={`portfolio-quote-change-${position.stockId}`}
+                            >
                               {formatSignedNumber(position.quote.change, position.stock.currency)}
                             </span>
                           ) : (
@@ -812,7 +813,13 @@ export function PortfolioPage() {
                         </TableCell>
                         <TableCell>
                           {position.quote != null ? (
-                            <span className={position.quote.changePercent >= 0 ? "app-positive" : "app-negative"}>
+                            <span
+                              className={priceToneClassForMarket(
+                                position.stock.market,
+                                position.quote.changePercent,
+                              )}
+                              data-testid={`portfolio-quote-change-percent-${position.stockId}`}
+                            >
                               {formatPercent(position.quote.changePercent)}
                             </span>
                           ) : (

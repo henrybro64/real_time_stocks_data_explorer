@@ -203,6 +203,7 @@ export function StockDetailPage({ stockId = "" }: Props) {
                       chartLayout={historyQuery.data.chartLayout}
                       currency={historyQuery.data.stock.currency}
                       isActive={item === range}
+                      market={historyQuery.data.stock.market}
                       range={item}
                     />
                   </TabPanel>

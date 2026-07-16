@@ -75,4 +75,78 @@ describe("QuoteSummary", () => {
 
     expect(screen.getByTestId("quote-freshness-tag")).toHaveTextContent("過舊");
   });
+
+  it("uses the U.S. price tone convention for positive changes", () => {
+    renderSummary();
+
+    const change = screen.getByTestId("quote-summary-change");
+    expect(change).toHaveClass("app-price-up", "app-price-convention-us");
+    expect(change).toHaveTextContent("+");
+    expect(change).not.toHaveClass("app-positive");
+  });
+
+  it("uses the Taiwan price tone convention for positive changes", () => {
+    const taiwanQuote: QuoteResponse = {
+      stock: {
+        id: "TW:2330",
+        market: "TW",
+        symbol: "2330",
+        name: "台積電",
+        exchange: "TWSE",
+        currency: "TWD",
+        timezone: "Asia/Taipei",
+        nameEn: "TSMC",
+        nameZhTw: "台積電",
+      },
+      quote: {
+        ...sampleQuote.quote,
+        id: "TW:2330",
+        change: 12,
+        changePercent: 1.24,
+      },
+    };
+
+    render(
+      <LanguageProvider>
+        <QuoteSummary item={taiwanQuote} />
+      </LanguageProvider>,
+    );
+
+    const change = screen.getByTestId("quote-summary-change");
+    expect(change).toHaveClass("app-price-up", "app-price-convention-taiwan");
+    expect(change).toHaveTextContent("+");
+    expect(change).not.toHaveClass("app-positive");
+  });
+
+  it("uses the Taiwan price tone convention for negative changes", () => {
+    const taiwanQuote: QuoteResponse = {
+      stock: {
+        id: "TW:2330",
+        market: "TW",
+        symbol: "2330",
+        name: "台積電",
+        exchange: "TWSE",
+        currency: "TWD",
+        timezone: "Asia/Taipei",
+        nameEn: "TSMC",
+        nameZhTw: "台積電",
+      },
+      quote: {
+        ...sampleQuote.quote,
+        id: "TW:2330",
+        change: -8,
+        changePercent: -0.82,
+      },
+    };
+
+    render(
+      <LanguageProvider>
+        <QuoteSummary item={taiwanQuote} />
+      </LanguageProvider>,
+    );
+
+    const change = screen.getByTestId("quote-summary-change");
+    expect(change).toHaveClass("app-price-down", "app-price-convention-taiwan");
+    expect(change).toHaveTextContent("-");
+  });
 });

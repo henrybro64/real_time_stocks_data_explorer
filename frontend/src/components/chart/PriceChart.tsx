@@ -1,17 +1,21 @@
 "use client";
 
 import { Tile } from "@carbon/react";
+import type { MarketCode } from "@shared/stock";
 import type { Candle, ChartLayout } from "@shared/quote";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { AppLanguage } from "../../app/i18n";
 import { useLanguage } from "../../app/i18n";
 import { formatCurrency } from "../../services/format/quote";
+import { priceColorConventionFromMarket } from "../../services/market-data/priceTone";
 
 type Props = {
   candles: Candle[];
   chartLayout: ChartLayout | null;
   currency: "USD" | "TWD";
   isActive?: boolean;
+  /** Required so TW charts cannot silently fall back to the U.S. palette. */
+  market: MarketCode;
   range: string;
 };
 
@@ -97,12 +101,20 @@ function formatTooltipDate(iso: string, language: AppLanguage, range: string): s
   }).format(d);
 }
 
-export function PriceChart({ candles, chartLayout, currency, isActive = true, range }: Props) {
+export function PriceChart({
+  candles,
+  chartLayout,
+  currency,
+  isActive = true,
+  market,
+  range,
+}: Props) {
   const { t, language, formatNumber } = useLanguage();
   const wrapRef = useRef<HTMLDivElement>(null);
   const [activeIndex, setActiveIndex] = useState<number | null>(null);
   const [tooltipStyle, setTooltipStyle] = useState<{ left: number; top: number }>({ left: 0, top: 0 });
   const [viewportEpoch, setViewportEpoch] = useState(0);
+  const priceConvention = priceColorConventionFromMarket(market);
 
   const pointCoords = chartLayout?.points ?? [];
   const minY = chartLayout?.minY ?? 0;
@@ -239,6 +251,7 @@ export function PriceChart({ candles, chartLayout, currency, isActive = true, ra
     <div
       className="app-chart-panel"
       data-testid="price-chart"
+      data-price-convention={priceConvention}
       data-range={range}
       data-candle-count={candles.length}
       data-viewport-epoch={viewportEpoch}
