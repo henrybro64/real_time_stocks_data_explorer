@@ -285,7 +285,13 @@ class TWProvider:
             return cached_quote
         return None
 
-    def get_history(self, stock_id: str, range_name: str) -> list[CandleRecord]:
+    def get_history(
+        self,
+        stock_id: str,
+        range_name: str,
+        *,
+        limit: int | None = None,
+    ) -> list[CandleRecord]:
         stock = self.get_stock(stock_id)
         if stock is None:
             return []
@@ -310,9 +316,10 @@ class TWProvider:
                 return _approximate_intraday_candles(stock, cached_quote)
             return []
 
+        daily_limit = limit if limit is not None else _daily_limit(range_name)
         candles = self._fetch_daily_history(
             stock,
-            limit=_daily_limit(range_name),
+            limit=daily_limit,
             range_name=range_name,
         )
         if candles:
@@ -480,6 +487,7 @@ class TWProvider:
             stock,
             today=today,
             months_to_fetch=months_to_fetch,
+            limit=limit,
             range_name=range_name,
             source=source,
             volume_scale=volume_scale,
@@ -513,6 +521,7 @@ class TWProvider:
         *,
         today: date,
         months_to_fetch: int,
+        limit: int,
         range_name: str,
         source: str,
         volume_scale: int,
@@ -522,6 +531,10 @@ class TWProvider:
         fetch_failures = 0
         soft_rejections = 0
         for month_offset in range(months_to_fetch):
+            # Newest months first; stop once the requested candle budget is met so
+            # a transient failure in an unused older surplus month cannot 502.
+            if len(candles_by_time) >= limit:
+                break
             month_date = _month_anchor(today, month_offset)
             fetch_attempts += 1
             month_started_at = perf_counter()

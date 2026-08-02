@@ -2,12 +2,22 @@
 
 import { Tile } from "@carbon/react";
 import type { MarketCode } from "@shared/stock";
-import type { Candle, ChartLayout } from "@shared/quote";
+import type {
+  Candle,
+  ChartLayout,
+  ChartPoint,
+  MovingAverageSeries,
+  SmaDirection,
+  SmaPoint,
+} from "@shared/quote";
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { AppLanguage } from "../../app/i18n";
+import type { AppLanguage, TranslationKey } from "../../app/i18n";
 import { useLanguage } from "../../app/i18n";
 import { formatCurrency } from "../../services/format/quote";
-import { priceColorConventionFromMarket } from "../../services/market-data/priceTone";
+import {
+  priceColorConventionFromMarket,
+  priceToneClassForMarket,
+} from "../../services/market-data/priceTone";
 
 type Props = {
   candles: Candle[];
@@ -16,8 +26,22 @@ type Props = {
   isActive?: boolean;
   /** Required so TW charts cannot silently fall back to the U.S. palette. */
   market: MarketCode;
+  movingAverages?: MovingAverageSeries | null;
   range: string;
 };
+
+type SmaSeriesKey = keyof MovingAverageSeries;
+
+const SMA_SERIES: ReadonlyArray<{
+  key: SmaSeriesKey;
+  testId: string;
+  lineClass: string;
+  labelKey: TranslationKey;
+}> = [
+  { key: "sma10", testId: "price-chart-sma-10", lineClass: "app-chart-sma-10", labelKey: "chart.sma10" },
+  { key: "sma20", testId: "price-chart-sma-20", lineClass: "app-chart-sma-20", labelKey: "chart.sma20" },
+  { key: "sma60", testId: "price-chart-sma-60", lineClass: "app-chart-sma-60", labelKey: "chart.sma60" },
+];
 
 type CandleGeometry = {
   x: number;
@@ -101,12 +125,90 @@ function formatTooltipDate(iso: string, language: AppLanguage, range: string): s
   }).format(d);
 }
 
+function formatSmaValue(value: number): string {
+  return value.toFixed(2);
+}
+
+function directionArrow(direction: SmaDirection | null): string | null {
+  if (direction === "up") {
+    return "↑";
+  }
+  if (direction === "down") {
+    return "↓";
+  }
+  if (direction === "flat") {
+    return "→";
+  }
+  return null;
+}
+
+function directionToneClass(
+  market: MarketCode,
+  direction: SmaDirection | null,
+): string | undefined {
+  if (direction === "up") {
+    return priceToneClassForMarket(market, 1);
+  }
+  if (direction === "down") {
+    return priceToneClassForMarket(market, -1);
+  }
+  if (direction === "flat") {
+    return "app-chart-sma-direction-flat";
+  }
+  return undefined;
+}
+
+/** Build SVG polyline segments; never connect across null SMA values. */
+function buildSmaPolylineSegments(
+  series: SmaPoint[],
+  points: ChartPoint[],
+  minY: number,
+  maxY: number,
+): string[] {
+  const segments: string[] = [];
+  let current: string[] = [];
+
+  const flush = () => {
+    if (current.length > 0) {
+      segments.push(current.join(" "));
+      current = [];
+    }
+  };
+
+  for (let index = 0; index < series.length; index += 1) {
+    const value = series[index]?.value;
+    const x = points[index]?.x;
+    if (value == null || x == null || !Number.isFinite(value) || !Number.isFinite(x)) {
+      flush();
+      continue;
+    }
+    const y = priceToY(value, minY, maxY);
+    if (!Number.isFinite(y)) {
+      flush();
+      continue;
+    }
+    current.push(`${x},${y}`);
+  }
+  flush();
+  return segments;
+}
+
+function latestDefinedSmaIndex(series: SmaPoint[]): number | null {
+  for (let index = series.length - 1; index >= 0; index -= 1) {
+    if (series[index]?.value != null) {
+      return index;
+    }
+  }
+  return null;
+}
+
 export function PriceChart({
   candles,
   chartLayout,
   currency,
   isActive = true,
   market,
+  movingAverages = null,
   range,
 }: Props) {
   const { t, language, formatNumber } = useLanguage();
@@ -244,6 +346,29 @@ export function PriceChart({
   const activeCandle = activeIndex !== null ? candles[activeIndex] ?? null : null;
   const activeGeometry = activeIndex !== null ? candleGeometries[activeIndex] ?? null : null;
   const activeCoord = activeGeometry !== null ? { x: activeGeometry.x, y: activeGeometry.closeY } : null;
+  const legendItems =
+    movingAverages == null
+      ? []
+      : SMA_SERIES.flatMap(({ key, labelKey, lineClass }) => {
+          const pointIndex =
+            activeIndex ?? latestDefinedSmaIndex(movingAverages[key]);
+          if (pointIndex == null) {
+            return [];
+          }
+          const point = movingAverages[key][pointIndex];
+          if (point?.value == null) {
+            return [];
+          }
+          return [
+            {
+              key,
+              labelKey,
+              lineClass,
+              value: point.value,
+              direction: point.direction,
+            },
+          ];
+        });
 
   const guideLines = [15, 40, 65, 90];
 
@@ -255,6 +380,7 @@ export function PriceChart({
       data-range={range}
       data-candle-count={candles.length}
       data-viewport-epoch={viewportEpoch}
+      data-has-sma={movingAverages != null ? "true" : "false"}
     >
       <div className="app-section-header">
         <div>
@@ -292,6 +418,42 @@ export function PriceChart({
           onPointerLeave={handlePointerLeave}
           role="presentation"
         >
+          {legendItems.length > 0 ? (
+            <div
+              className="app-chart-sma-legend"
+              data-testid="price-chart-sma-legend"
+              aria-label={t("chart.smaLegend")}
+            >
+              {legendItems.map(({ key, labelKey, lineClass, value, direction }) => {
+                const arrow = directionArrow(direction);
+                const toneClass = directionToneClass(market, direction);
+                return (
+                  <span
+                    key={key}
+                    className={`app-chart-sma-legend-item ${lineClass.replace("app-chart-sma-", "app-chart-sma-legend-")}`}
+                  >
+                    <span className="app-chart-sma-legend-label">{t(labelKey)}</span>
+                    <span className="app-chart-sma-legend-value">{formatSmaValue(value)}</span>
+                    {arrow != null ? (
+                      <span
+                        className={["app-chart-sma-legend-arrow", toneClass].filter(Boolean).join(" ")}
+                        aria-label={
+                          direction === "up"
+                            ? t("chart.smaDirectionUp")
+                            : direction === "down"
+                              ? t("chart.smaDirectionDown")
+                              : t("chart.smaDirectionFlat")
+                        }
+                      >
+                        {arrow}
+                      </span>
+                    ) : null}
+                  </span>
+                );
+              })}
+            </div>
+          ) : null}
+
           <svg className="app-chart-svg" viewBox="0 0 100 100" preserveAspectRatio="none">
             {guideLines.map((position) => (
               <line key={position} className="app-chart-grid-line" x1="0" x2="100" y1={position} y2={position} />
@@ -328,6 +490,34 @@ export function PriceChart({
                 />
               </g>
             ))}
+
+            {movingAverages != null
+              ? SMA_SERIES.map(({ key, testId, lineClass, labelKey }) => {
+                  const segments = buildSmaPolylineSegments(
+                    movingAverages[key],
+                    pointCoords,
+                    minY,
+                    maxY,
+                  );
+                  if (segments.length === 0) {
+                    return null;
+                  }
+                  return (
+                    <g key={key} data-testid={testId} aria-label={t(labelKey)} role="img">
+                      {segments.map((points, segmentIndex) => (
+                        <polyline
+                          key={`${key}-${segmentIndex}`}
+                          className={`app-chart-sma-line ${lineClass}`}
+                          points={points}
+                          fill="none"
+                          vectorEffect="non-scaling-stroke"
+                          pointerEvents="none"
+                        />
+                      ))}
+                    </g>
+                  );
+                })
+              : null}
 
             {activeCoord !== null ? (
               <>
@@ -384,6 +574,20 @@ export function PriceChart({
                   <dt>{t("stock.volume")}</dt>
                   <dd>{formatNumber(activeCandle.volume)}</dd>
                 </div>
+                {movingAverages != null && activeIndex != null
+                  ? SMA_SERIES.map(({ key, labelKey }) => {
+                      const value = movingAverages[key][activeIndex]?.value;
+                      if (value == null) {
+                        return null;
+                      }
+                      return (
+                        <div key={key} className="app-chart-tooltip-row" data-testid={`price-chart-tooltip-${key}`}>
+                          <dt>{t(labelKey)}</dt>
+                          <dd>{formatSmaValue(value)}</dd>
+                        </div>
+                      );
+                    })
+                  : null}
               </dl>
             </div>
           ) : null}

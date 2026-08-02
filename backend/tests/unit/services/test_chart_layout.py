@@ -40,6 +40,33 @@ def test_build_chart_layout_handles_flat_series() -> None:
     assert layout["trendUp"] is True
 
 
+def test_build_chart_layout_includes_extra_sma_values_in_y_scale() -> None:
+    candles = [
+        CandleRecord(
+            time="2026-04-01T09:00:00+08:00",
+            open=120.0,
+            high=121.0,
+            low=119.0,
+            close=120.0,
+            volume=1000,
+        ),
+        CandleRecord(
+            time="2026-04-01T10:00:00+08:00",
+            open=118.0,
+            high=119.0,
+            low=117.0,
+            close=118.0,
+            volume=1000,
+        ),
+    ]
+
+    layout = build_chart_layout(candles, extra_values=[110.0, 130.0])
+
+    assert layout is not None
+    assert layout["minY"] == 110.0
+    assert layout["maxY"] == 130.0
+
+
 def test_build_chart_layout_tracks_range_and_trend_direction() -> None:
     candles = [
         CandleRecord(

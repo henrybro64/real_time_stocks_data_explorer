@@ -70,10 +70,17 @@ def build_value_chart_layout(values: list[float]) -> dict[str, object] | None:
     return _build_line_chart_layout(values)
 
 
-def build_chart_layout(candles: list[CandleRecord]) -> dict[str, object] | None:
+def build_chart_layout(
+    candles: list[CandleRecord],
+    *,
+    extra_values: list[float] | None = None,
+) -> dict[str, object] | None:
     if not candles:
         return None
     closes = [float(candle.close) for candle in candles]
     min_y = min(float(candle.low) for candle in candles)
     max_y = max(float(candle.high) for candle in candles)
+    if extra_values:
+        min_y = min(min_y, min(extra_values))
+        max_y = max(max_y, max(extra_values))
     return _build_line_chart_layout(closes, lo=min_y, hi=max_y)

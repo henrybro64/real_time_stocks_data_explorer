@@ -64,6 +64,9 @@ test("TPEx stock detail charts render for every supported history range", async 
     "6M": "9",
     "1Y": "11",
   };
+  await expect(page.getByTestId("price-chart")).toHaveAttribute("data-has-sma", "false");
+  await expect(page.getByTestId("price-chart-sma-legend")).toHaveCount(0);
+
   for (const range of ["1W", "1M", "3M", "6M", "1Y"] as const) {
     await page.getByRole("tab", { name: range }).click();
     await expect(page.getByRole("tab", { name: range, selected: true })).toBeVisible();
@@ -74,6 +77,20 @@ test("TPEx stock detail charts render for every supported history range", async 
       expectedCounts[range],
     );
     await expect(page.getByText("沒有可顯示的圖表資料。")).toHaveCount(0);
+
+    if (range === "1W") {
+      await expect(page.getByTestId("price-chart")).toHaveAttribute("data-has-sma", "false");
+      await expect(page.getByTestId("price-chart-sma-legend")).toHaveCount(0);
+    } else {
+      await expect(page.getByTestId("price-chart")).toHaveAttribute("data-has-sma", "true");
+      await expect(page.getByTestId("price-chart-sma-legend")).toBeVisible();
+      await expect(page.getByTestId("price-chart-sma-10")).toBeVisible();
+      await expect(page.getByTestId("price-chart-sma-20")).toBeVisible();
+      await expect(page.getByTestId("price-chart-sma-60")).toBeVisible();
+      await expect(page.getByTestId("price-chart-sma-legend")).toContainText("SMA10");
+      await expect(page.getByTestId("price-chart-sma-legend")).toContainText("SMA20");
+      await expect(page.getByTestId("price-chart-sma-legend")).toContainText("SMA60");
+    }
   }
 });
 

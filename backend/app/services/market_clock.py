@@ -21,6 +21,9 @@ MARKET_WINDOWS = {
     "TW": (time(9, 0), time(13, 30)),
 }
 
+# NYSE/Nasdaq early close is 13:00 ET on these recurring session types.
+_US_EARLY_CLOSE = time(13, 0)
+
 _TWSE_HOLIDAY_URL = "https://www.twse.com.tw/holidaySchedule/holidaySchedule"
 _BROWSER_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -78,11 +81,24 @@ def is_trading_day(market: str, now: datetime | None = None) -> bool:
     raise KeyError(market)
 
 
+def market_session_close(market: str, on_date: date) -> time:
+    """Return the regular or early session close for ``market`` on ``on_date``."""
+    _start, default_close = MARKET_WINDOWS[market]
+    if market == "US" and on_date in _us_early_close_days(on_date.year):
+        return _US_EARLY_CLOSE
+    return default_close
+
+
+def market_session_window(market: str, on_date: date) -> tuple[time, time]:
+    start, _default_close = MARKET_WINDOWS[market]
+    return start, market_session_close(market, on_date)
+
+
 def is_market_open(market: str, now: datetime | None = None) -> bool:
     current = market_local_time(market, now)
     if not is_trading_day(market, current):
         return False
-    start, end = MARKET_WINDOWS[market]
+    start, end = market_session_window(market, current.date())
     current_time = current.time().replace(second=0, microsecond=0)
     return start <= current_time <= end
 
@@ -113,7 +129,7 @@ def current_snapshot_bucket(market: str, now: datetime | None = None) -> datetim
     if not is_market_open(market, current):
         return None
 
-    start, end = MARKET_WINDOWS[market]
+    start, end = market_session_window(market, current.date())
     effective_current = current
     if current.time().replace(second=0, microsecond=0) == end:
         effective_current = current - timedelta(minutes=1)
@@ -181,7 +197,7 @@ def _current_intraday_bucket(
     if not is_market_open(market, current):
         return None
 
-    start, end = MARKET_WINDOWS[market]
+    start, end = market_session_window(market, current.date())
     effective_current = current
     if current.time().replace(second=0, microsecond=0) == end:
         effective_current = current - timedelta(minutes=1)
@@ -288,6 +304,28 @@ def _us_market_holidays(year: int) -> frozenset[date]:
     if next_new_year_observed.year == year:
         holidays.add(next_new_year_observed)
     return frozenset(holidays)
+
+
+@lru_cache(maxsize=16)
+def _us_early_close_days(year: int) -> frozenset[date]:
+    """U.S. equity sessions that close at 13:00 ET instead of 16:00."""
+    holidays = _us_market_holidays(year)
+    early_closes: set[date] = set()
+
+    thanksgiving = _nth_weekday(year, 11, 3, 4)
+    day_after_thanksgiving = thanksgiving + timedelta(days=1)
+    if day_after_thanksgiving not in holidays and day_after_thanksgiving.weekday() < 5:
+        early_closes.add(day_after_thanksgiving)
+
+    christmas_eve = date(year, 12, 24)
+    if christmas_eve not in holidays and christmas_eve.weekday() < 5:
+        early_closes.add(christmas_eve)
+
+    july_third = date(year, 7, 3)
+    if july_third not in holidays and july_third.weekday() < 5:
+        early_closes.add(july_third)
+
+    return frozenset(early_closes)
 
 
 def _tw_market_holidays(year: int) -> frozenset[date]:

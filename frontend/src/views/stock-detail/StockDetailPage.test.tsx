@@ -21,10 +21,12 @@ vi.mock("../../components/chart/PriceChart", () => ({
   PriceChart: ({
     candles,
     isActive = true,
+    movingAverages = null,
     range,
   }: {
     candles: unknown[];
     isActive?: boolean;
+    movingAverages?: unknown;
     range: string;
   }) => {
     if (!isActive) {
@@ -34,7 +36,12 @@ vi.mock("../../components/chart/PriceChart", () => ({
       return <div data-testid="price-chart-empty">沒有可顯示的圖表資料。</div>;
     }
     return (
-      <div data-testid="price-chart-mock" data-range={range} data-candle-count={candles.length}>
+      <div
+        data-testid="price-chart-mock"
+        data-range={range}
+        data-candle-count={candles.length}
+        data-has-sma={movingAverages != null ? "true" : "false"}
+      >
         price-chart:{range}:{candles.length}
       </div>
     );
@@ -151,6 +158,7 @@ const sampleHistory: HistoryResponse = {
     yAxisTicks: [960, 975, 990],
     xAxisTickIndices: [0],
   },
+  movingAverages: null,
 };
 
 const sampleInstitutional: TaiwanInstitutionalInvestorsResponse = {
@@ -505,6 +513,23 @@ describe("StockDetailPage", () => {
             volume: 3_200_000,
           },
         ],
+        movingAverages: {
+          sma10: [
+            { time: "2026-03-21T05:30:00Z", value: 850.1, direction: "up" },
+            { time: "2026-03-28T05:30:00Z", value: 860.2, direction: "up" },
+            { time: "2026-04-10T05:30:00Z", value: 870.3, direction: "up" },
+          ],
+          sma20: [
+            { time: "2026-03-21T05:30:00Z", value: 840.1, direction: "down" },
+            { time: "2026-03-28T05:30:00Z", value: 845.2, direction: "up" },
+            { time: "2026-04-10T05:30:00Z", value: 850.3, direction: "up" },
+          ],
+          sma60: [
+            { time: "2026-03-21T05:30:00Z", value: 800.1, direction: null },
+            { time: "2026-03-28T05:30:00Z", value: 805.2, direction: "flat" },
+            { time: "2026-04-10T05:30:00Z", value: 810.3, direction: "up" },
+          ],
+        },
       },
     };
 
@@ -529,11 +554,13 @@ describe("StockDetailPage", () => {
 
     expect(screen.getByTestId("price-chart-mock")).toHaveAttribute("data-range", "1D");
     expect(screen.getByTestId("price-chart-mock")).toHaveAttribute("data-candle-count", "1");
+    expect(screen.getByTestId("price-chart-mock")).toHaveAttribute("data-has-sma", "false");
 
     fireEvent.click(screen.getByRole("tab", { name: "1W" }));
     expect(screen.getByRole("tab", { name: "1W", selected: true })).toBeInTheDocument();
     expect(screen.getByTestId("price-chart-mock")).toHaveAttribute("data-range", "1W");
     expect(screen.getByTestId("price-chart-mock")).toHaveAttribute("data-candle-count", "2");
+    expect(screen.getByTestId("price-chart-mock")).toHaveAttribute("data-has-sma", "false");
     expect(
       useQueryMock.mock.calls.some(
         (call) =>
@@ -547,6 +574,7 @@ describe("StockDetailPage", () => {
     fireEvent.click(screen.getByRole("tab", { name: "1M" }));
     expect(screen.getByTestId("price-chart-mock")).toHaveAttribute("data-range", "1M");
     expect(screen.getByTestId("price-chart-mock")).toHaveAttribute("data-candle-count", "3");
+    expect(screen.getByTestId("price-chart-mock")).toHaveAttribute("data-has-sma", "true");
     expect(screen.queryByText("price-chart:1W:2")).not.toBeInTheDocument();
   });
 

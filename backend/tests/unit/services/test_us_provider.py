@@ -444,3 +444,23 @@ def test_get_stock_accepts_class_share_symbols_with_hyphen(monkeypatch) -> None:
     assert stock.id == "US:BRK-B"
     assert stock.symbol == "BRK-B"
     assert stock.exchange == "NYSE"
+
+
+@pytest.mark.parametrize(
+    ("range_name", "min_candles", "expected"),
+    [
+        ("1M", None, ("1d", "1mo")),
+        ("3M", None, ("1d", "3mo")),
+        ("3M", 65, ("1d", "3mo")),
+        ("3M", 90, ("1d", "6mo")),
+        ("3M", 125, ("1d", "1y")),  # 3M + SMA warm-up must escalate past 6mo
+        ("6M", 190, ("1d", "1y")),
+        ("1Y", 320, ("1d", "2y")),
+    ],
+)
+def test_yahoo_history_window_escalates_for_sma_warmup(
+    range_name: str,
+    min_candles: int | None,
+    expected: tuple[str, str],
+) -> None:
+    assert us_provider._yahoo_history_window(range_name, min_candles=min_candles) == expected

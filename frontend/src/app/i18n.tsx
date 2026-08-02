@@ -119,6 +119,13 @@ export type TranslationKey =
   | "chart.axisDate"
   | "chart.candleClose"
   | "chart.interactHint"
+  | "chart.sma10"
+  | "chart.sma20"
+  | "chart.sma60"
+  | "chart.smaLegend"
+  | "chart.smaDirectionUp"
+  | "chart.smaDirectionDown"
+  | "chart.smaDirectionFlat"
   | "rankings.title"
   | "rankings.description"
   | "rankings.market"
@@ -502,6 +509,13 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "chart.axisDate": "Date",
     "chart.candleClose": "Close",
     "chart.interactHint": "Hover, click, or drag on the chart to inspect open, high, low, close, and volume for that time.",
+    "chart.sma10": "SMA10",
+    "chart.sma20": "SMA20",
+    "chart.sma60": "SMA60",
+    "chart.smaLegend": "Moving averages",
+    "chart.smaDirectionUp": "Up",
+    "chart.smaDirectionDown": "Down",
+    "chart.smaDirectionFlat": "Flat",
     "rankings.title": "Market rankings",
     "rankings.description":
       "Free-only rankings. Both Taiwan and U.S. show quote-based rankings over a limited tracked universe rather than full-market data. Taiwan also includes daily institutional net buy/sell rankings.",
@@ -937,6 +951,13 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "chart.axisDate": "日期",
     "chart.candleClose": "收盤",
     "chart.interactHint": "將游標移到圖表上、點選或拖曳，可檢視該時間點的開高低收與成交量。",
+    "chart.sma10": "SMA10",
+    "chart.sma20": "SMA20",
+    "chart.sma60": "SMA60",
+    "chart.smaLegend": "移動平均線",
+    "chart.smaDirectionUp": "上漲",
+    "chart.smaDirectionDown": "下跌",
+    "chart.smaDirectionFlat": "持平",
     "rankings.title": "市場排行",
     "rankings.description":
       "免費排行頁。台股與美股皆提供以報價資料為主的排行（目前僅涵蓋有限追蹤清單），並非全市場排行；台股另保留三大法人日買超／賣超。",

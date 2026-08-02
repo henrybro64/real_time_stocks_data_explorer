@@ -592,6 +592,32 @@ const E2E_TW_MARGIN_SHORT = {
   source: "TWSE official margin and borrowed-short daily data",
 };
 
+function buildMovingAveragesForCandles(
+  candles: Array<{ time: string; close: number }>,
+  range: string,
+) {
+  if (range === "1D" || range === "1W") {
+    return null;
+  }
+  return {
+    sma10: candles.map((candle, index) => ({
+      time: candle.time,
+      value: Number((candle.close - 1.1).toFixed(2)),
+      direction: index === 0 ? "up" : index % 2 === 0 ? "up" : "down",
+    })),
+    sma20: candles.map((candle, index) => ({
+      time: candle.time,
+      value: Number((candle.close - 2.2).toFixed(2)),
+      direction: index === 0 ? "down" : index % 2 === 0 ? "down" : "up",
+    })),
+    sma60: candles.map((candle, index) => ({
+      time: candle.time,
+      value: Number((candle.close - 5.5).toFixed(2)),
+      direction: index === 0 ? null : "flat",
+    })),
+  };
+}
+
 const E2E_US_HISTORY_RESPONSE = {
   stock: E2E_US_STOCK_SEARCH_RESULT,
   range: "1D",
@@ -627,6 +653,7 @@ const E2E_US_HISTORY_RESPONSE = {
     yAxisTicks: [187.5, 189.25, 191],
     xAxisTickIndices: [0, 1],
   },
+  movingAverages: null,
 };
 
 const E2E_HISTORY_RESPONSE = {
@@ -656,6 +683,7 @@ const E2E_HISTORY_RESPONSE = {
     yAxisTicks: [938, 945, 952],
     xAxisTickIndices: [0],
   },
+  movingAverages: null,
 };
 
 const E2E_TPEX_HISTORY_RESPONSE = {
@@ -702,6 +730,7 @@ const E2E_TPEX_HISTORY_RESPONSE = {
     yAxisTicks: [936, 988, 1040],
     xAxisTickIndices: [0, 1, 2],
   },
+  movingAverages: null,
 };
 
 function buildTpexHistoryForRange(range: string) {
@@ -727,14 +756,24 @@ function buildTpexHistoryForRange(range: string) {
   const closes = candles.map((candle) => candle.close);
   const minY = Math.min(...candles.map((candle) => candle.low));
   const maxY = Math.max(...candles.map((candle) => candle.high));
+  const movingAverages = buildMovingAveragesForCandles(candles, range);
+  const smaValues =
+    movingAverages == null
+      ? []
+      : [...movingAverages.sma10, ...movingAverages.sma20, ...movingAverages.sma60]
+          .map((point) => point.value)
+          .filter((value): value is number => value != null);
+  const scaledMinY = smaValues.length > 0 ? Math.min(minY, ...smaValues) : minY;
+  const scaledMaxY = smaValues.length > 0 ? Math.max(maxY, ...smaValues) : maxY;
   return {
     ...E2E_TPEX_HISTORY_RESPONSE,
     range,
     candles,
+    movingAverages,
     chartLayout: {
       ...E2E_TPEX_HISTORY_RESPONSE.chartLayout,
-      minY,
-      maxY,
+      minY: scaledMinY,
+      maxY: scaledMaxY,
       firstClose: closes.at(0),
       lastClose: closes.at(-1),
       points: candles.map((_, index) => ({
@@ -1204,7 +1243,12 @@ export async function installE2eApiMocks(page: Page): Promise<void> {
 
     if (stockId === TW_STOCK_ID) {
       if (path.endsWith("/history") && request.method() === "GET") {
-        await fulfillJson(route, { ...E2E_HISTORY_RESPONSE, range: url.searchParams.get("range") ?? "1D" });
+        const range = url.searchParams.get("range") ?? "1D";
+        await fulfillJson(route, {
+          ...E2E_HISTORY_RESPONSE,
+          range,
+          movingAverages: buildMovingAveragesForCandles(E2E_HISTORY_RESPONSE.candles, range),
+        });
         return;
       }
       if (path.endsWith("/key-statistics") && request.method() === "GET") {
@@ -1263,9 +1307,11 @@ export async function installE2eApiMocks(page: Page): Promise<void> {
 
     if (stockId === US_STOCK_ID) {
       if (path.endsWith("/history") && request.method() === "GET") {
+        const range = url.searchParams.get("range") ?? "1D";
         await fulfillJson(route, {
           ...E2E_US_HISTORY_RESPONSE,
-          range: url.searchParams.get("range") ?? "1D",
+          range,
+          movingAverages: buildMovingAveragesForCandles(E2E_US_HISTORY_RESPONSE.candles, range),
         });
         return;
       }

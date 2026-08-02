@@ -212,12 +212,20 @@ class USProvider:
 
         return _fetch_live_quote(stock)
 
-    def get_history(self, stock_id: str, range_name: str) -> list[CandleRecord]:
+    def get_history(
+        self,
+        stock_id: str,
+        range_name: str,
+        *,
+        limit: int | None = None,
+    ) -> list[CandleRecord]:
         stock = self.get_stock(stock_id)
         if stock is None:
             return []
 
-        live_history = _fetch_yahoo_history(stock, range_name)
+        live_history = _fetch_yahoo_history(stock, range_name, min_candles=limit)
+        if live_history and limit is not None:
+            return live_history[-limit:]
         if live_history:
             return live_history
         return []
@@ -731,12 +739,17 @@ def _fetch_live_quote(stock: StockRecord) -> QuoteRecord | None:
     return None
 
 
-def _fetch_yahoo_history(stock: StockRecord, range_name: str) -> list[CandleRecord]:
+def _fetch_yahoo_history(
+    stock: StockRecord,
+    range_name: str,
+    *,
+    min_candles: int | None = None,
+) -> list[CandleRecord]:
     headers = {
         "User-Agent": _BROWSER_USER_AGENT,
         "Accept": "application/json,text/plain,*/*",
     }
-    interval, range_param = _yahoo_history_window(range_name)
+    interval, range_param = _yahoo_history_window(range_name, min_candles=min_candles)
     for candidate in (stock.symbol, f"{stock.symbol}.US"):
         path_symbol = quote(candidate, safe="-.")
         url = f"{_YAHOO_CHART_URL}/{path_symbol}?interval={interval}&range={range_param}"
@@ -821,20 +834,35 @@ def _fetch_yahoo_history(stock: StockRecord, range_name: str) -> list[CandleReco
     return []
 
 
-def _yahoo_history_window(range_name: str) -> tuple[str, str]:
+def _yahoo_history_window(
+    range_name: str,
+    *,
+    min_candles: int | None = None,
+) -> tuple[str, str]:
     if range_name == "1D":
         return "5m", "1d"
     if range_name == "1W":
         return "30m", "5d"
-    if range_name == "1M":
-        return "1d", "1mo"
-    if range_name == "3M":
+
+    base_window = {
+        "1M": ("1d", "1mo"),
+        "3M": ("1d", "3mo"),
+        "6M": ("1d", "6mo"),
+        "1Y": ("1d", "1y"),
+    }.get(range_name, ("1d", "1mo"))
+
+    if min_candles is None:
+        return base_window
+
+    # Escalate the Yahoo window so SMA warm-up candles are available.
+    # Keep generous headroom: 3M+60≈125 trading days needs more than ~6mo.
+    if min_candles <= 65:
         return "1d", "3mo"
-    if range_name == "6M":
+    if min_candles <= 95:
         return "1d", "6mo"
-    if range_name == "1Y":
+    if min_candles <= 220:
         return "1d", "1y"
-    return "1d", "1mo"
+    return "1d", "2y"
 
 
 def _fetch_stooq_quote(stock: StockRecord) -> QuoteRecord | None:
