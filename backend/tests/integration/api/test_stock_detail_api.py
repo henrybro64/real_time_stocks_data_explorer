@@ -1,3 +1,6 @@
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -95,9 +98,13 @@ def test_history_endpoint_accepts_declared_ranges_for_twse_and_tpex(
         name_en=name,
         name_zh_tw=name,
     )
+    # Keep fixture dates inside every daily SMA calendar window (1M lookback).
+    tz = ZoneInfo("Asia/Taipei")
+    day_one = (datetime.now(tz).date() - timedelta(days=3)).isoformat()
+    day_two = (datetime.now(tz).date() - timedelta(days=2)).isoformat()
     candles = [
         candle_record(
-            time="2026-07-01T13:30:00+08:00",
+            time=f"{day_one}T13:30:00+08:00",
             open_price=100.0,
             high=110.0,
             low=95.0,
@@ -105,7 +112,7 @@ def test_history_endpoint_accepts_declared_ranges_for_twse_and_tpex(
             volume=1_000_000,
         ),
         candle_record(
-            time="2026-07-02T13:30:00+08:00",
+            time=f"{day_two}T13:30:00+08:00",
             open_price=105.0,
             high=112.0,
             low=104.0,

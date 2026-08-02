@@ -1,3 +1,6 @@
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+
 from fastapi import HTTPException
 
 from app.api.routes import history as history_routes
@@ -54,17 +57,27 @@ def test_history_route_returns_aligned_moving_averages_for_daily_ranges(monkeypa
         name_en="Apple",
         name_zh_tw=None,
     )
-    candles = [
-        candle_record(
-            time=f"2026-{(index // 28) + 1:02d}-{(index % 28) + 1:02d}T15:00:00-05:00",
-            open_price=100.0 + index,
-            high=101.0 + index,
-            low=99.0 + index,
-            close=100.0 + index,
-            volume=1_000,
+    tz = ZoneInfo("America/New_York")
+    now = datetime(2026, 8, 2, 16, 0, tzinfo=tz)
+    candles = []
+    day_offset = 0
+    while len(candles) < 90:
+        day = now - timedelta(days=day_offset)
+        day_offset += 1
+        if day.weekday() >= 5:
+            continue
+        index = 90 - len(candles) - 1
+        candles.append(
+            candle_record(
+                time=day.replace(hour=16, minute=0, second=0, microsecond=0).isoformat(),
+                open_price=100.0 + index,
+                high=101.0 + index,
+                low=99.0 + index,
+                close=100.0 + index,
+                volume=1_000,
+            )
         )
-        for index in range(90)
-    ]
+    candles.reverse()
     captured: dict[str, object] = {}
 
     def fake_history(stock_id: str, range_name: str, **kwargs):
@@ -72,15 +85,20 @@ def test_history_route_returns_aligned_moving_averages_for_daily_ranges(monkeypa
         return stock, candles
 
     monkeypatch.setattr(history_routes.quote_service, "get_history", fake_history)
+    monkeypatch.setattr(
+        "app.services.moving_average.market_local_time",
+        lambda market, current=None: now,
+    )
 
     response = history_routes.get_history("US:AAPL", range_name="1M")
 
     assert captured["limit"] == 90
     assert response.movingAverages is not None
-    assert len(response.candles) == 30
-    assert len(response.movingAverages.sma10) == 30
-    assert len(response.movingAverages.sma20) == 30
-    assert len(response.movingAverages.sma60) == 30
+    # Calendar 1M window keeps ~20–23 sessions, not a fixed 30-session slice.
+    assert 15 <= len(response.candles) <= 23
+    assert len(response.movingAverages.sma10) == len(response.candles)
+    assert len(response.movingAverages.sma20) == len(response.candles)
+    assert len(response.movingAverages.sma60) == len(response.candles)
     assert response.movingAverages.sma10[0].time == response.candles[0].time
     assert response.movingAverages.sma60[0].value is not None
     assert response.chartLayout is not None
