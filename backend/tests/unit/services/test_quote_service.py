@@ -59,7 +59,8 @@ class StubUSProvider:
             )
         return None
 
-    def get_history(self, stock_id: str, range_name: str):
+    def get_history(self, stock_id: str, range_name: str, *, limit: int | None = None):
+        del limit
         return []
 
 

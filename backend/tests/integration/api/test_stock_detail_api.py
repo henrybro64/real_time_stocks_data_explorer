@@ -48,7 +48,11 @@ def test_history_endpoint_returns_quote_history_for_requested_range(monkeypatch,
             volume=2_000,
         ),
     ]
-    monkeypatch.setattr(quote_service, "get_history", lambda stock_id, range_name: (stock, candles))
+    monkeypatch.setattr(
+        quote_service,
+        "get_history",
+        lambda stock_id, range_name, **_kwargs: (stock, candles),
+    )
 
     response = client.get("/api/stocks/TW:2330/history", params={"range": "1W"})
 
@@ -60,6 +64,7 @@ def test_history_endpoint_returns_quote_history_for_requested_range(monkeypatch,
     assert payload["chartLayout"]["minY"] == 948.0
     assert payload["chartLayout"]["maxY"] == 960.0
     assert payload["chartLayout"]["trendUp"] is True
+    assert payload["movingAverages"] is None
 
 
 @pytest.mark.parametrize(
@@ -111,7 +116,7 @@ def test_history_endpoint_accepts_declared_ranges_for_twse_and_tpex(
     monkeypatch.setattr(
         quote_service,
         "get_history",
-        lambda requested_id, requested_range: (stock, candles)
+        lambda requested_id, requested_range, **_kwargs: (stock, candles)
         if requested_id == stock_id and requested_range == range_name
         else None,
     )
@@ -127,13 +132,22 @@ def test_history_endpoint_accepts_declared_ranges_for_twse_and_tpex(
     assert payload["chartLayout"] is not None
     assert payload["chartLayout"]["minY"] == pytest.approx(95.0)
     assert payload["chartLayout"]["maxY"] == pytest.approx(112.0)
+    if range_name in {"1D", "1W"}:
+        assert payload["movingAverages"] is None
+    else:
+        assert payload["movingAverages"] is not None
+        assert len(payload["movingAverages"]["sma10"]) == 2
+        assert len(payload["movingAverages"]["sma20"]) == 2
+        assert len(payload["movingAverages"]["sma60"]) == 2
+        assert payload["movingAverages"]["sma10"][0]["time"] == payload["candles"][0]["time"]
+        assert payload["movingAverages"]["sma10"][0]["value"] is None
 
 
 def test_history_endpoint_returns_502_when_provider_is_temporarily_unavailable(
     monkeypatch,
     client,
 ) -> None:
-    def failing_history(stock_id: str, range_name: str):
+    def failing_history(stock_id: str, range_name: str, **_kwargs):
         raise RuntimeError(
             f"Taiwan daily history temporarily unavailable for {stock_id} (TPEx)"
         )

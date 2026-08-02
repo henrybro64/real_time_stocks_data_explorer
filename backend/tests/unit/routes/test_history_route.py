@@ -29,7 +29,7 @@ def test_history_route_returns_envelope_for_available_candles(monkeypatch) -> No
     monkeypatch.setattr(
         history_routes.quote_service,
         "get_history",
-        lambda stock_id, range_name: (stock, candles),
+        lambda stock_id, range_name, **_kwargs: (stock, candles),
     )
 
     response = history_routes.get_history("TW:6488", range_name="1W")
@@ -39,10 +39,56 @@ def test_history_route_returns_envelope_for_available_candles(monkeypatch) -> No
     assert response.range == "1W"
     assert len(response.candles) == 1
     assert response.chartLayout is not None
+    assert response.movingAverages is None
+
+
+def test_history_route_returns_aligned_moving_averages_for_daily_ranges(monkeypatch) -> None:
+    stock = stock_record(
+        "US:AAPL",
+        market="US",
+        symbol="AAPL",
+        name="Apple",
+        exchange="NASDAQ",
+        currency="USD",
+        timezone="America/New_York",
+        name_en="Apple",
+        name_zh_tw=None,
+    )
+    candles = [
+        candle_record(
+            time=f"2026-{(index // 28) + 1:02d}-{(index % 28) + 1:02d}T15:00:00-05:00",
+            open_price=100.0 + index,
+            high=101.0 + index,
+            low=99.0 + index,
+            close=100.0 + index,
+            volume=1_000,
+        )
+        for index in range(90)
+    ]
+    captured: dict[str, object] = {}
+
+    def fake_history(stock_id: str, range_name: str, **kwargs):
+        captured["limit"] = kwargs.get("limit")
+        return stock, candles
+
+    monkeypatch.setattr(history_routes.quote_service, "get_history", fake_history)
+
+    response = history_routes.get_history("US:AAPL", range_name="1M")
+
+    assert captured["limit"] == 90
+    assert response.movingAverages is not None
+    assert len(response.candles) == 30
+    assert len(response.movingAverages.sma10) == 30
+    assert len(response.movingAverages.sma20) == 30
+    assert len(response.movingAverages.sma60) == 30
+    assert response.movingAverages.sma10[0].time == response.candles[0].time
+    assert response.movingAverages.sma60[0].value is not None
+    assert response.chartLayout is not None
+    assert response.chartLayout.minY <= min(candle.low for candle in response.candles)
 
 
 def test_history_route_maps_provider_runtime_errors_to_502(monkeypatch) -> None:
-    def failing_history(stock_id: str, range_name: str):
+    def failing_history(stock_id: str, range_name: str, **_kwargs):
         raise RuntimeError(
             f"Taiwan daily history temporarily unavailable for {stock_id} (TPEx)"
         )
@@ -62,7 +108,7 @@ def test_history_route_maps_missing_stock_to_404(monkeypatch) -> None:
     monkeypatch.setattr(
         history_routes.quote_service,
         "get_history",
-        lambda stock_id, range_name: None,
+        lambda stock_id, range_name, **_kwargs: None,
     )
 
     try:

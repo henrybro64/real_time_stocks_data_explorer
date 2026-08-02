@@ -17,12 +17,15 @@ from app.schemas.quote import (
     CandleResponse,
     ChartLayoutResponse,
     HistoryEnvelope,
+    MovingAverageSeriesResponse,
+    SmaPointResponse,
 )
 from app.schemas.stock import StockResponse
 from app.schemas.tw_insights import TWStockInsightsResponse
 from app.schemas.us_insights import USStockInsightsResponse
-from app.services.chart_layout import build_chart_layout
+from app.services.history_chart_service import get_history_chart
 from app.services.key_stats_service import get_key_statistics
+from app.services.moving_average import MovingAverageSeriesRecord, SmaPointRecord
 from app.services.news_service import news_service
 from app.services.quote_service import quote_service
 from app.services.ai_providers import AIProvider
@@ -55,19 +58,20 @@ def get_history(
     range_name: str = Query(default="1D", alias="range"),
 ) -> HistoryEnvelope:
     try:
-        data = quote_service.get_history(stock_id, range_name)
+        payload = get_history_chart(stock_id, range_name)
     except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
-    if data is None:
+    if payload is None:
         raise HTTPException(status_code=404, detail="Stock not found")
-    stock, candles = data
-    layout_raw = build_chart_layout(candles)
-    chart_layout = ChartLayoutResponse(**layout_raw) if layout_raw else None
+    chart_layout = (
+        ChartLayoutResponse(**payload.chart_layout) if payload.chart_layout else None
+    )
     return HistoryEnvelope(
-        stock=_stock_schema(stock),
+        stock=_stock_schema(payload.stock),
         range=range_name,
-        candles=[_candle_schema(candle) for candle in candles],
+        candles=[_candle_schema(candle) for candle in payload.candles],
         chartLayout=chart_layout,
+        movingAverages=_moving_averages_schema(payload.moving_averages),
     )
 
 
@@ -203,6 +207,26 @@ def _candle_schema(candle: CandleRecord) -> CandleResponse:
         low=candle.low,
         close=candle.close,
         volume=candle.volume,
+    )
+
+
+def _sma_point_schema(point: SmaPointRecord) -> SmaPointResponse:
+    return SmaPointResponse(
+        time=point.time,
+        value=point.value,
+        direction=point.direction,
+    )
+
+
+def _moving_averages_schema(
+    series: MovingAverageSeriesRecord | None,
+) -> MovingAverageSeriesResponse | None:
+    if series is None:
+        return None
+    return MovingAverageSeriesResponse(
+        sma10=[_sma_point_schema(point) for point in series.sma10],
+        sma20=[_sma_point_schema(point) for point in series.sma20],
+        sma60=[_sma_point_schema(point) for point in series.sma60],
     )
 
 

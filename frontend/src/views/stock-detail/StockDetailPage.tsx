@@ -204,6 +204,7 @@ export function StockDetailPage({ stockId = "" }: Props) {
                       currency={historyQuery.data.stock.currency}
                       isActive={item === range}
                       market={historyQuery.data.stock.market}
+                      movingAverages={historyQuery.data.movingAverages}
                       range={item}
                     />
                   </TabPanel>

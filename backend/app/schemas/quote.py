@@ -1,6 +1,11 @@
+from typing import Literal
+
 from pydantic import BaseModel
 
 from app.schemas.stock import StockResponse
+
+
+SmaDirectionResponse = Literal["up", "down", "flat"]
 
 
 class QuoteResponse(BaseModel):
@@ -48,9 +53,22 @@ class ChartLayoutResponse(BaseModel):
     trendUp: bool
 
 
+class SmaPointResponse(BaseModel):
+    time: str
+    value: float | None = None
+    direction: SmaDirectionResponse | None = None
+
+
+class MovingAverageSeriesResponse(BaseModel):
+    sma10: list[SmaPointResponse]
+    sma20: list[SmaPointResponse]
+    sma60: list[SmaPointResponse]
+
+
 class HistoryEnvelope(BaseModel):
     stock: StockResponse
     range: str
     candles: list[CandleResponse]
     chartLayout: ChartLayoutResponse | None = None
+    movingAverages: MovingAverageSeriesResponse | None = None
 

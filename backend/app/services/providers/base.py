@@ -15,5 +15,11 @@ class StockProvider(Protocol):
 
     def get_quote(self, stock_id: str) -> QuoteRecord | None: ...
 
-    def get_history(self, stock_id: str, range_name: str) -> list[CandleRecord]: ...
+    def get_history(
+        self,
+        stock_id: str,
+        range_name: str,
+        *,
+        limit: int | None = None,
+    ) -> list[CandleRecord]: ...
 

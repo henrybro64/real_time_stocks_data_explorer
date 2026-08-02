@@ -285,7 +285,13 @@ class TWProvider:
             return cached_quote
         return None
 
-    def get_history(self, stock_id: str, range_name: str) -> list[CandleRecord]:
+    def get_history(
+        self,
+        stock_id: str,
+        range_name: str,
+        *,
+        limit: int | None = None,
+    ) -> list[CandleRecord]:
         stock = self.get_stock(stock_id)
         if stock is None:
             return []
@@ -310,9 +316,10 @@ class TWProvider:
                 return _approximate_intraday_candles(stock, cached_quote)
             return []
 
+        daily_limit = limit if limit is not None else _daily_limit(range_name)
         candles = self._fetch_daily_history(
             stock,
-            limit=_daily_limit(range_name),
+            limit=daily_limit,
             range_name=range_name,
         )
         if candles:

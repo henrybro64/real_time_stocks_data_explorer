@@ -38,3 +38,17 @@ export type ChartLayout = {
   trendUp: boolean;
 };
 
+export type SmaDirection = "up" | "down" | "flat";
+
+export type SmaPoint = {
+  time: string;
+  value: number | null;
+  direction: SmaDirection | null;
+};
+
+export type MovingAverageSeries = {
+  sma10: SmaPoint[];
+  sma20: SmaPoint[];
+  sma60: SmaPoint[];
+};
+

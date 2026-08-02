@@ -1,4 +1,4 @@
-import type { Candle, ChartLayout, Quote, TimeRange } from "./quote";
+import type { Candle, ChartLayout, MovingAverageSeries, Quote, TimeRange } from "./quote";
 import type { MarketCode, Stock } from "./stock";
 
 export type SearchResult = Stock;
@@ -102,6 +102,7 @@ export type HistoryResponse = {
   range: TimeRange;
   candles: Candle[];
   chartLayout: ChartLayout | null;
+  movingAverages: MovingAverageSeries | null;
 };
 
 /**

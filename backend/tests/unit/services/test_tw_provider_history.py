@@ -403,3 +403,32 @@ def test_daily_limit_matrix() -> None:
     assert tw_provider._daily_limit("3M") == 65
     assert tw_provider._daily_limit("6M") == 130
     assert tw_provider._daily_limit("1Y") == 260
+
+
+def test_get_history_passes_explicit_limit_for_sma_warmup(
+    provider: tw_provider.TWProvider,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_daily(self, stock, *, limit: int, range_name: str):
+        captured["limit"] = limit
+        captured["range"] = range_name
+        return [
+            CandleRecord(
+                time="2026-07-01T13:30:00+08:00",
+                open=1,
+                high=2,
+                low=1,
+                close=1.5,
+                volume=1000,
+            )
+        ]
+
+    monkeypatch.setattr(tw_provider.TWProvider, "_fetch_daily_history", fake_daily)
+
+    candles = provider.get_history(TPEX_STOCK.id, "3M", limit=125)
+
+    assert captured["limit"] == 125
+    assert captured["range"] == "3M"
+    assert len(candles) == 1

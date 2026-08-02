@@ -238,7 +238,13 @@ class QuoteService:
                 envelopes.append((stock, quote))
         return envelopes
 
-    def get_history(self, stock_id: str, range_name: str) -> tuple[StockRecord, list[CandleRecord]] | None:
+    def get_history(
+        self,
+        stock_id: str,
+        range_name: str,
+        *,
+        limit: int | None = None,
+    ) -> tuple[StockRecord, list[CandleRecord]] | None:
         market = self._market_from_id(stock_id)
         provider = self.providers.get(market)
         if provider is None:
@@ -266,7 +272,7 @@ class QuoteService:
             return None
         started_at = perf_counter()
         try:
-            candles = provider.get_history(stock_id, range_name)
+            candles = provider.get_history(stock_id, range_name, limit=limit)
         except Exception as exc:
             logger.exception(
                 "History provider raised an unexpected error",
