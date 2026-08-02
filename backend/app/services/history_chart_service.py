@@ -15,8 +15,7 @@ from app.services.moving_average import (
     completed_daily_candles,
     history_fetch_limit,
     supports_daily_moving_averages,
-    trim_moving_averages,
-    visible_daily_limit,
+    visible_daily_candles,
 )
 from app.services.quote_service import quote_service
 
@@ -43,7 +42,6 @@ def get_history_chart(stock_id: str, range_name: str) -> HistoryChartPayload | N
         )
 
     fetch_limit = history_fetch_limit(range_name)
-    visible_limit = visible_daily_limit(range_name)
     data = quote_service.get_history(stock_id, range_name, limit=fetch_limit)
     if data is None:
         return None
@@ -59,8 +57,10 @@ def get_history_chart(stock_id: str, range_name: str) -> HistoryChartPayload | N
     completed = completed_daily_candles(full_candles, stock.market)
     completed_averages = build_moving_averages(completed)
     full_averages = align_moving_averages_to_candles(completed_averages, full_candles)
-    visible_candles = full_candles[-visible_limit:]
-    visible_averages = trim_moving_averages(full_averages, visible_count=len(visible_candles))
+    # Keep SMA warm-up candles out of the payload while preserving the labeled
+    # calendar window (e.g. Yahoo 1mo), not a fixed trading-session count.
+    visible_candles = visible_daily_candles(full_candles, range_name, stock.market)
+    visible_averages = align_moving_averages_to_candles(full_averages, visible_candles)
     layout = build_chart_layout(
         visible_candles,
         extra_values=collect_sma_values(visible_averages),

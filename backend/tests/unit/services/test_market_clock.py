@@ -6,6 +6,7 @@ from app.services.market_clock import (
     is_market_open,
     is_within_hour_before_market_open,
     latest_trading_day_bucket,
+    market_session_close,
 )
 
 
@@ -39,6 +40,18 @@ def test_us_market_is_closed_on_observed_independence_day() -> None:
     now = datetime.fromisoformat("2026-07-03T10:00:00-04:00")
 
     assert is_market_open("US", now) is False
+
+
+def test_us_early_close_day_after_thanksgiving() -> None:
+    # 2026-11-26 Thanksgiving; 2026-11-27 Black Friday early close at 13:00 ET.
+    assert market_session_close("US", date(2026, 11, 27)).isoformat() == "13:00:00"
+    assert market_session_close("US", date(2026, 11, 24)).isoformat() == "16:00:00"
+
+    during_session = datetime.fromisoformat("2026-11-27T12:00:00-05:00")
+    after_early_close = datetime.fromisoformat("2026-11-27T14:00:00-05:00")
+
+    assert is_market_open("US", during_session) is True
+    assert is_market_open("US", after_early_close) is False
 
 
 def test_tw_market_is_closed_on_configured_holiday(monkeypatch) -> None:

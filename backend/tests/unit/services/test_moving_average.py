@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from app.models.quote import CandleRecord
@@ -14,6 +14,7 @@ from app.services.moving_average import (
     is_daily_candle_complete,
     supports_daily_moving_averages,
     trim_moving_averages,
+    visible_daily_candles,
     visible_daily_limit,
 )
 
@@ -147,3 +148,51 @@ def test_incomplete_same_day_daily_bar_is_excluded_from_sma_inputs() -> None:
     )
     assert averages.sma10[-1].time == forming.time
     assert averages.sma10[-1].value is None
+
+
+def test_us_early_close_session_marks_daily_bar_complete_at_1300() -> None:
+    # 2026-11-27 is the day after Thanksgiving (Black Friday early close).
+    tz = ZoneInfo("America/New_York")
+    candle = CandleRecord(
+        time="2026-11-27T13:00:00-05:00",
+        open=100,
+        high=101,
+        low=99,
+        close=100.5,
+        volume=1_000,
+    )
+    after_early_close = datetime(2026, 11, 27, 14, 0, tzinfo=tz)
+    before_early_close = datetime(2026, 11, 27, 12, 30, tzinfo=tz)
+
+    assert is_daily_candle_complete(candle, "US", now=after_early_close)
+    assert not is_daily_candle_complete(candle, "US", now=before_early_close)
+
+
+def test_visible_daily_candles_use_calendar_lookback_not_session_count() -> None:
+    tz = ZoneInfo("America/New_York")
+    now = datetime(2026, 8, 2, 16, 0, tzinfo=tz)
+    candles: list[CandleRecord] = []
+    for offset in range(90, -1, -1):
+        day = now - timedelta(days=offset)
+        if day.weekday() >= 5:
+            continue
+        candles.append(
+            CandleRecord(
+                time=day.isoformat(),
+                open=100,
+                high=101,
+                low=99,
+                close=100.5,
+                volume=1_000,
+            )
+        )
+
+    visible = visible_daily_candles(candles, "1M", "US", now=now)
+
+    # A calendar month has ~20–23 sessions, not the old fixed 30-session slice.
+    assert 15 <= len(visible) <= 23
+    assert all(
+        datetime.fromisoformat(candle.time).date() >= (now - timedelta(days=30)).date()
+        for candle in visible
+    )
+    assert visible[-1].time == candles[-1].time

@@ -7,22 +7,36 @@ supplied by the caller; this module does not fetch market data.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Literal
 
 from app.models.quote import CandleRecord
-from app.services.market_clock import MARKET_TIMEZONES, MARKET_WINDOWS, market_local_time
+from app.services.market_clock import (
+    MARKET_TIMEZONES,
+    market_local_time,
+    market_session_close,
+)
 
 SmaDirection = Literal["up", "down", "flat"]
 
 SMA_PERIODS = (10, 20, 60)
 SMA_WARMUP_CANDLES = 60
 
+# Approximate trading-session counts used only for provider fetch sizing.
 VISIBLE_DAILY_LIMITS: dict[str, int] = {
     "1M": 30,
     "3M": 65,
     "6M": 130,
     "1Y": 260,
+}
+
+# Visible chart window after warm-up is trimmed by calendar lookback so range
+# labels stay aligned with Yahoo-style calendar windows (not ~N sessions).
+VISIBLE_DAILY_LOOKBACK_DAYS: dict[str, int] = {
+    "1M": 30,
+    "3M": 91,
+    "6M": 183,
+    "1Y": 365,
 }
 
 DAILY_SMA_RANGES = frozenset(VISIBLE_DAILY_LIMITS)
@@ -65,8 +79,7 @@ def is_daily_candle_complete(
 ) -> bool:
     """Return whether ``candle`` is a finished daily session for ``market``."""
     timezone = MARKET_TIMEZONES.get(market)
-    window = MARKET_WINDOWS.get(market)
-    if timezone is None or window is None:
+    if timezone is None:
         return True
 
     current = market_local_time(market, now)
@@ -78,7 +91,7 @@ def is_daily_candle_complete(
         return True
     if candle_local.date() > current.date():
         return False
-    _, close = window
+    close = market_session_close(market, candle_local.date())
     current_time = current.time().replace(second=0, microsecond=0)
     return current_time >= close
 
@@ -91,6 +104,32 @@ def completed_daily_candles(
 ) -> list[CandleRecord]:
     """Drop any still-forming same-day daily bar from SMA inputs."""
     return [candle for candle in candles if is_daily_candle_complete(candle, market, now=now)]
+
+
+def visible_daily_candles(
+    candles: list[CandleRecord],
+    range_name: str,
+    market: str,
+    *,
+    now: datetime | None = None,
+) -> list[CandleRecord]:
+    """Keep candles inside the requested calendar window (warm-up trimmed out)."""
+    lookback_days = VISIBLE_DAILY_LOOKBACK_DAYS.get(range_name)
+    if lookback_days is None:
+        return list(candles)
+
+    timezone = MARKET_TIMEZONES.get(market)
+    current = market_local_time(market, now)
+    cutoff = (current - timedelta(days=lookback_days)).date()
+    visible: list[CandleRecord] = []
+    for candle in candles:
+        candle_dt = datetime.fromisoformat(candle.time)
+        if candle_dt.tzinfo is None and timezone is not None:
+            candle_dt = candle_dt.replace(tzinfo=timezone)
+        candle_local = candle_dt.astimezone(timezone) if timezone is not None else candle_dt
+        if candle_local.date() >= cutoff:
+            visible.append(candle)
+    return visible
 
 
 def compute_sma_series(candles: list[CandleRecord], window: int) -> list[SmaPointRecord]:

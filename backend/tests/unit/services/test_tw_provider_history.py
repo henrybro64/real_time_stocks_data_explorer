@@ -405,6 +405,34 @@ def test_daily_limit_matrix() -> None:
     assert tw_provider._daily_limit("1Y") == 260
 
 
+def test_surplus_older_month_is_not_fetched_once_limit_is_met(
+    provider: tw_provider.TWProvider,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    def fake_tpex(self, stock, month_date: date) -> list[list[object]]:
+        calls.append(month_date.isoformat())
+        if month_date <= date(2026, 2, 1):
+            raise HttpFetchError("oldest surplus month failed")
+        return [
+            _tpex_row(f"115/{month_date.month:02d}/{day:02d}")
+            for day in range(1, 21)
+        ]
+
+    monkeypatch.setattr(tw_provider.TWProvider, "_fetch_tpex_month_rows", fake_tpex)
+    _freeze_provider_clock(monkeypatch)
+
+    # limit=90 would otherwise expand months_to_fetch into older surplus months;
+    # dense recent months should satisfy the budget first and skip the failing ones.
+    candles = provider.get_history(TPEX_STOCK.id, "1M", limit=90)
+
+    assert len(candles) == 90
+    assert "2026-02-01" not in calls
+    assert "2026-01-01" not in calls
+    assert all(call >= "2026-03-01" for call in calls)
+
+
 def test_get_history_passes_explicit_limit_for_sma_warmup(
     provider: tw_provider.TWProvider,
     monkeypatch: pytest.MonkeyPatch,
