@@ -34,4 +34,74 @@ describe("getQuoteFreshness", () => {
       getQuoteFreshness("2026-04-21T11:57:00Z", true, { now, refreshFailed: true }),
     ).toBe("stale");
   });
+
+  it("uses API freshness metadata for refreshing and unavailable states", () => {
+    expect(
+      getQuoteFreshness("", false, {
+        hasQuote: false,
+        meta: {
+          cachedAt: null,
+          ageSeconds: null,
+          stale: true,
+          source: "none",
+          refreshStatus: "queued",
+        },
+      }),
+    ).toBe("refreshing");
+
+    expect(
+      getQuoteFreshness("", false, {
+        hasQuote: false,
+        meta: {
+          cachedAt: null,
+          ageSeconds: null,
+          stale: true,
+          source: "none",
+          refreshStatus: "unavailable",
+        },
+      }),
+    ).toBe("unavailable");
+
+    expect(
+      getQuoteFreshness("2026-04-21T11:00:00Z", true, {
+        hasQuote: true,
+        meta: {
+          cachedAt: "2026-04-21T11:00:00Z",
+          ageSeconds: 600,
+          stale: true,
+          source: "redis",
+          refreshStatus: "refreshing",
+        },
+      }),
+    ).toBe("refreshing");
+
+    expect(
+      getQuoteFreshness("2026-04-21T11:59:00Z", true, {
+        hasQuote: true,
+        now,
+        meta: {
+          cachedAt: "2026-04-21T11:59:00Z",
+          ageSeconds: 10,
+          stale: false,
+          source: "redis",
+          refreshStatus: "idle",
+        },
+      }),
+    ).toBe("live");
+
+    // Recently cached but market data itself is 20 minutes old → not Live.
+    expect(
+      getQuoteFreshness("2026-04-21T11:40:00Z", true, {
+        hasQuote: true,
+        now,
+        meta: {
+          cachedAt: "2026-04-21T11:59:50Z",
+          ageSeconds: 10,
+          stale: false,
+          source: "redis",
+          refreshStatus: "idle",
+        },
+      }),
+    ).toBe("stale");
+  });
 });

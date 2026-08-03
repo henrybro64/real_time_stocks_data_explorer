@@ -132,6 +132,20 @@ export function StockDetailPage({ stockId = "" }: Props) {
     );
   }
 
+  const quotePayload = quoteQuery.data;
+  const quote = quotePayload.quote;
+  if (!quote) {
+    return (
+      <Grid className="app-page-grid" fullWidth>
+        <Column sm={4} md={8} lg={16}>
+          <Tile className="app-empty-state">
+            <InlineLoading description={t("detail.loading")} status="active" />
+          </Tile>
+        </Column>
+      </Grid>
+    );
+  }
+  const summaryItem = { stock: quotePayload.stock, quote };
   const quoteRefreshFailed = quoteQuery.isError && quoteQuery.data != null;
   const sectionLabels =
     language === "zh-TW"
@@ -168,11 +182,15 @@ export function StockDetailPage({ stockId = "" }: Props) {
         {quoteRefreshFailed ? (
           <div className="app-section-stack">
             <RequestStateNotice kind="stale" scopeLabel={decodedStockId} />
-            <QuoteSummary item={quoteQuery.data} refreshFailed={quoteRefreshFailed} />
+            <QuoteSummary
+              freshness={quotePayload.freshness}
+              item={summaryItem}
+              refreshFailed={quoteRefreshFailed}
+            />
           </div>
         ) : null}
         {!quoteRefreshFailed ? (
-          <QuoteSummary item={quoteQuery.data} refreshFailed={false} />
+          <QuoteSummary freshness={quotePayload.freshness} item={summaryItem} refreshFailed={false} />
         ) : null}
       </Column>
       <Column className="app-column-spacing" sm={4} md={8} lg={16}>
@@ -233,7 +251,7 @@ export function StockDetailPage({ stockId = "" }: Props) {
               <RequestStateNotice compact kind={keyStatsNoticeKind} scopeLabel={sectionLabels.keyStats} />
             ) : null}
             <KeyStatisticsPanel
-              currency={quoteQuery.data.stock.currency}
+              currency={quotePayload.stock.currency}
               isLoading={keyStatsQuery.isLoading}
               stats={keyStatsQuery.data ?? null}
             />

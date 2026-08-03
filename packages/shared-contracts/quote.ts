@@ -14,6 +14,18 @@ export type Quote = {
   isMarketOpen: boolean;
 };
 
+export type QuoteCacheSource = "redis" | "memory" | "provider" | "none";
+export type QuoteRefreshStatus = "idle" | "queued" | "refreshing" | "unavailable";
+
+/** Cache-first batch freshness metadata from GET /quotes. */
+export type QuoteFreshnessMeta = {
+  cachedAt: string | null;
+  ageSeconds: number | null;
+  stale: boolean;
+  source: QuoteCacheSource;
+  refreshStatus: QuoteRefreshStatus;
+};
+
 export type Candle = {
   time: string;
   open: number;

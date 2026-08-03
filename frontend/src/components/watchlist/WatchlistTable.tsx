@@ -1,5 +1,6 @@
 import { Button, InlineLoading, Tag, Tile } from "@carbon/react";
 import type { QuoteResponse } from "@shared/api";
+import type { QuoteFreshnessMeta } from "@shared/quote";
 import type { Stock } from "@shared/stock";
 import { useLanguage } from "../../app/i18n";
 import type { RequestNoticeKind } from "../state/RequestStateNotice";
@@ -9,6 +10,7 @@ import { StockCard } from "../stock-card/StockCard";
 type WatchlistItem = {
   stock: Stock;
   quote?: QuoteResponse["quote"];
+  freshness?: QuoteFreshnessMeta | null;
 };
 
 type Props = {
@@ -67,9 +69,10 @@ export function WatchlistTable({
             ) : null}
           </div>
           <div className="app-watchlist-grid app-watchlist-grid-explorer">
-            {items.map(({ stock, quote }) => (
+            {items.map(({ stock, quote, freshness }) => (
               <StockCard
                 key={stock.id}
+                freshness={freshness}
                 isTracked
                 onToggle={onRemove}
                 quote={quote}

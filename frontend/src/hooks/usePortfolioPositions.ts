@@ -66,6 +66,9 @@ export function usePortfolioPositions() {
     resetErrors();
     try {
       const quote = await fetchQuote(stockId);
+      if (quote.quote == null) {
+        throw new Error("Quote unavailable");
+      }
       addMutation.mutate({
         stockId,
         quantity: 1,

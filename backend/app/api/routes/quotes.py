@@ -2,9 +2,9 @@ from fastapi import APIRouter, HTTPException, Query
 
 from app.models.quote import QuoteRecord
 from app.models.stock import StockRecord
-from app.schemas.quote import QuoteEnvelope, QuoteResponse
+from app.schemas.quote import QuoteEnvelope, QuoteFreshnessResponse, QuoteResponse
 from app.schemas.stock import StockResponse
-from app.services.quote_service import quote_service
+from app.services.quote_service import QuoteBatchItem, quote_service
 
 
 router = APIRouter(prefix="/quotes", tags=["quotes"])
@@ -14,18 +14,41 @@ router = APIRouter(prefix="/quotes", tags=["quotes"])
 def get_quotes(ids: str = Query(...)) -> list[QuoteEnvelope]:
     stock_ids = [item.strip() for item in ids.split(",") if item.strip()]
     return [
-        QuoteEnvelope(stock=_stock_schema(stock), quote=_quote_schema(quote))
-        for stock, quote in quote_service.get_quotes(stock_ids)
+        _batch_item_schema(item)
+        for item in quote_service.get_quotes_cache_first(stock_ids)
     ]
 
 
-@router.get("/{stock_id}", response_model=QuoteEnvelope)
+@router.get(
+    "/{stock_id}",
+    response_model=QuoteEnvelope,
+    responses={
+        404: {"description": "Stock not found"},
+        502: {"description": "Quote provider unavailable"},
+    },
+)
 def get_quote(stock_id: str) -> QuoteEnvelope:
-    stock = quote_service.get_stock(stock_id)
-    quote = quote_service.get_quote(stock_id)
-    if stock is None or quote is None:
+    try:
+        item = quote_service.get_quote_detail(stock_id)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail="Quote provider unavailable") from exc
+    if item is None or item.quote is None:
         raise HTTPException(status_code=404, detail="Stock not found")
-    return QuoteEnvelope(stock=_stock_schema(stock), quote=_quote_schema(quote))
+    return _batch_item_schema(item)
+
+
+def _batch_item_schema(item: QuoteBatchItem) -> QuoteEnvelope:
+    return QuoteEnvelope(
+        stock=_stock_schema(item.stock),
+        quote=_quote_schema(item.quote) if item.quote is not None else None,
+        freshness=QuoteFreshnessResponse(
+            cachedAt=item.cached_at,
+            ageSeconds=item.age_seconds,
+            stale=item.stale,
+            source=item.source,
+            refreshStatus=item.refresh_status,
+        ),
+    )
 
 
 def _stock_schema(stock: StockRecord) -> StockResponse:
@@ -56,4 +79,3 @@ def _quote_schema(quote: QuoteRecord) -> QuoteResponse:
         timestamp=quote.timestamp,
         isMarketOpen=quote.is_market_open,
     )
-

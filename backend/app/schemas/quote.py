@@ -6,6 +6,8 @@ from app.schemas.stock import StockResponse
 
 
 SmaDirectionResponse = Literal["up", "down", "flat"]
+QuoteCacheSourceResponse = Literal["redis", "memory", "provider", "none"]
+QuoteRefreshStatusResponse = Literal["idle", "queued", "refreshing", "unavailable"]
 
 
 class QuoteResponse(BaseModel):
@@ -22,6 +24,14 @@ class QuoteResponse(BaseModel):
     volume: int | None = None
 
 
+class QuoteFreshnessResponse(BaseModel):
+    cachedAt: str | None = None
+    ageSeconds: float | None = None
+    stale: bool = False
+    source: QuoteCacheSourceResponse = "none"
+    refreshStatus: QuoteRefreshStatusResponse = "idle"
+
+
 class CandleResponse(BaseModel):
     time: str
     open: float
@@ -33,7 +43,8 @@ class CandleResponse(BaseModel):
 
 class QuoteEnvelope(BaseModel):
     stock: StockResponse
-    quote: QuoteResponse
+    quote: QuoteResponse | None = None
+    freshness: QuoteFreshnessResponse | None = None
 
 
 class ChartPoint(BaseModel):

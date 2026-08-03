@@ -1,16 +1,18 @@
 import { Button, Column, Grid, Tag, Tile } from "@carbon/react";
-import type { QuoteResponse } from "@shared/api";
+import type { Quote, QuoteFreshnessMeta } from "@shared/quote";
+import type { Stock } from "@shared/stock";
 import { getDisplayStockName, useLanguage } from "../../app/i18n";
 import { QuoteFreshnessTag } from "../state/QuoteFreshnessTag";
 import { formatCurrency, formatLastUpdated, formatPercent, formatSignedNumber } from "../../services/format/quote";
 import { priceToneClassForMarket } from "../../services/market-data/priceTone";
 
 type Props = {
-  item: QuoteResponse;
+  item: { stock: Stock; quote: Quote };
   refreshFailed?: boolean;
+  freshness?: QuoteFreshnessMeta | null;
 };
 
-export function QuoteSummary({ item, refreshFailed = false }: Props) {
+export function QuoteSummary({ item, refreshFailed = false, freshness = null }: Readonly<Props>) {
   const { language, t, formatNumber } = useLanguage();
   const { stock, quote } = item;
 
@@ -47,6 +49,8 @@ export function QuoteSummary({ item, refreshFailed = false }: Props) {
       <div className="app-quote-status-row">
         <p className="app-section-meta">{t("quote.updatedAt", { time: formatLastUpdated(quote.timestamp) })}</p>
         <QuoteFreshnessTag
+          freshnessMeta={freshness}
+          hasQuote
           isMarketOpen={quote.isMarketOpen}
           refreshFailed={refreshFailed}
           timestamp={quote.timestamp}

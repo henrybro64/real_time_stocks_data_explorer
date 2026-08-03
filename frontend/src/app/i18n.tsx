@@ -95,6 +95,7 @@ export type TranslationKey =
   | "stock.add"
   | "stock.quoteLoadError"
   | "stock.quoteLoading"
+  | "stock.quoteRefreshing"
   | "stock.weekRange"
   | "stock.weekRangeNoData"
   | "detail.invalidStockId"
@@ -484,6 +485,7 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "stock.add": "Add",
     "stock.quoteLoadError": "Unable to load quote right now.",
     "stock.quoteLoading": "Loading quote",
+    "stock.quoteRefreshing": "Refreshing quote",
     "stock.weekRange": "1W",
     "stock.weekRangeNoData": "No 1-week trend data yet",
     "detail.invalidStockId": "Stock ID not found.",
@@ -927,6 +929,7 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "stock.add": "加入",
     "stock.quoteLoadError": "目前無法載入報價。",
     "stock.quoteLoading": "載入報價中",
+    "stock.quoteRefreshing": "更新報價中",
     "stock.weekRange": "近一週",
     "stock.weekRangeNoData": "近一週走勢暫時無資料",
     "detail.invalidStockId": "找不到股票代碼。",

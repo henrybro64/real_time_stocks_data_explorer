@@ -40,4 +40,21 @@ describe("QuoteFreshnessTag", () => {
 
     expect(screen.getByTestId("quote-freshness-tag")).toHaveTextContent("過舊");
   });
+
+  it("shows updating from API freshness metadata", () => {
+    renderTag({
+      freshnessMeta: {
+        cachedAt: null,
+        ageSeconds: null,
+        stale: true,
+        source: "none",
+        refreshStatus: "queued",
+      },
+      hasQuote: false,
+      isMarketOpen: false,
+      timestamp: "",
+    });
+
+    expect(screen.getByTestId("quote-freshness-tag")).toHaveTextContent("更新中");
+  });
 });
