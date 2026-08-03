@@ -25,7 +25,8 @@ router = APIRouter(prefix="/stocks", tags=["tw-margin-short"])
     responses={
         404: {"description": "Stock not found or not a Taiwan stock"},
         400: {"description": "Taiwan margin-short market is unavailable for this stock"},
-        502: {"description": "Official upstream temporarily unavailable"},
+        502: {"description": "Official upstream unavailable, access denied, or schema failure"},
+        503: {"description": "Official upstream rate-limited"},
     },
 )
 def get_tw_margin_short(
@@ -43,7 +44,9 @@ def get_tw_margin_short(
             raise HTTPException(status_code=404, detail=detail) from exc
         raise HTTPException(status_code=400, detail=detail) from exc
     except RuntimeError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        detail = str(exc)
+        status_code = 503 if "rate-limited" in detail else 502
+        raise HTTPException(status_code=status_code, detail=detail) from exc
     return _tw_margin_short_schema(result)
 
 
@@ -89,4 +92,5 @@ def _tw_margin_short_schema(
         history=[_tw_margin_short_history_point_schema(item) for item in result.history],
         sharesPerLot=taiwan_shares_per_lot(result.symbol),
         source=result.source,
+        emptyReason=result.empty_reason,
     )

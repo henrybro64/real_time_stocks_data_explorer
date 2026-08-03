@@ -27,6 +27,7 @@ _CHECKLIST_TEST_PATHS = (
     "backend/tests/unit/routes/test_tw_institutional_route.py",
     "backend/tests/unit/services/test_tw_margin_short_service.py",
     "backend/tests/unit/routes/test_tw_margin_short_route.py",
+    "backend/tests/unit/services/test_http_client.py",
     "backend/tests/unit/services/test_taiwan_market_data_refresh_service.py",
     "backend/tests/unit/repositories/test_taiwan_market_daily_repository.py",
     "backend/tests/unit/db/test_taiwan_market_daily_migration.py",

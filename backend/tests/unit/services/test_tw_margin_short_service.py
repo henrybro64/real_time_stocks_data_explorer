@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, date, datetime
+from pathlib import Path
 
 import pytest
 
@@ -23,10 +25,22 @@ from app.services.tw_margin_short_service import (
     _parse_twse_borrowed_short_row,
     _parse_twse_margin_row,
     _round_nearest_int,
+    _twse_stock_table,
+    _upstream_error_for_scan,
     parse_all_margin_short_records,
     resolve_tpex_borrowed_short_columns,
+    resolve_twse_margin_columns,
 )
 from tests.support import FakeQuoteSource, stock_record
+
+_FIXTURES = Path(__file__).resolve().parents[2] / "fixtures" / "tw_margin_short"
+
+
+def _load_fixture(name: str) -> object:
+    path = _FIXTURES / name
+    if path.suffix == ".html":
+        return path.read_text(encoding="utf-8")
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 _TPEX_MARGIN_FIELDS = [
@@ -1088,7 +1102,7 @@ def test_service_raises_when_core_feeds_return_malformed_json_bodies() -> None:
 
     with pytest.raises(
         RuntimeError,
-        match="Taiwan margin-short data is temporarily unavailable from official sources.",
+        match="Taiwan margin-short official response could not be interpreted.",
     ):
         service.get_margin_short("TW:1303", days=1)
 
@@ -1115,6 +1129,36 @@ def test_fetch_tpex_dated_payload_requests_json_response(monkeypatch) -> None:
     assert captured["kwargs"]["params"] == {
         "response": "json",
         "date": "2026/07/08",
+    }
+
+
+def test_fetch_twse_dated_payload_requests_select_type_and_yyyymmdd(monkeypatch) -> None:
+    from app.services.tw_margin_short_service import _fetch_twse_dated_payload
+
+    captured: dict[str, object] = {}
+
+    def fake_fetch_twse_data(url, **kwargs):
+        captured["url"] = url
+        captured["kwargs"] = kwargs
+        return {"stat": "OK", "tables": []}
+
+    monkeypatch.setattr(
+        "app.services.tw_margin_short_service.fetch_twse_data",
+        fake_fetch_twse_data,
+    )
+
+    _fetch_twse_dated_payload(
+        "https://www.twse.com.tw/rwd/zh/marginTrading/MI_MARGN",
+        date(2026, 7, 31),
+        operation_name="tw_margin_short_twse_margin_daily",
+        select_type="ALL",
+    )
+
+    assert captured["url"].endswith("/MI_MARGN")
+    assert captured["kwargs"]["params"] == {
+        "response": "json",
+        "date": "20260731",
+        "selectType": "ALL",
     }
 
 
@@ -1228,7 +1272,7 @@ def test_service_raises_when_hard_failure_mixes_with_soft_absence() -> None:
 
     with pytest.raises(
         RuntimeError,
-        match="Taiwan margin-short data is temporarily unavailable from official sources.",
+        match="Taiwan margin-short official response could not be interpreted.",
     ):
         service.get_margin_short("TW:1303", days=1)
 
@@ -1398,3 +1442,364 @@ def test_service_structured_logs_include_stock_id_and_http_outcome(monkeypatch) 
 
 def _raise_http_fetch_error() -> object:
     raise HttpFetchError("upstream unavailable")
+
+
+def _raise_http_fetch_error_with(
+    *,
+    classification: str,
+    status_code: int | None = None,
+    content_type: str | None = None,
+) -> object:
+    raise HttpFetchError(
+        "classified upstream failure",
+        status_code=status_code,
+        content_type=content_type,
+        classification=classification,  # type: ignore[arg-type]
+    )
+
+
+def _globalwafers_stock():
+    return stock_record(
+        "TW:6488",
+        market="TW",
+        symbol="6488",
+        name="環球晶",
+        exchange="TPEx",
+        currency="TWD",
+        timezone="Asia/Taipei",
+        name_en="GlobalWafers",
+        name_zh_tw="環球晶",
+    )
+
+
+def test_twse_stock_table_prefers_per_symbol_tables_envelope() -> None:
+    payload = _load_fixture("twse_mi_margn_tables_success.json")
+    table = _twse_stock_table(payload)
+
+    assert table is not None
+    assert "代號" in table["fields"]
+    assert table["data"][0][0] == "1303"
+
+
+def test_extract_twse_margin_point_reads_live_mi_margn_tables_fixture() -> None:
+    outcome = _extract_twse_margin_point(
+        _load_fixture("twse_mi_margn_tables_success.json"),
+        symbol="1303",
+        current_date=date(2026, 7, 31),
+    )
+
+    assert outcome.status == "found"
+    assert outcome.point is not None
+    assert outcome.point.margin_balance_lots == pytest.approx(33_805.0)
+    assert outcome.point.short_margin_balance_lots == pytest.approx(3_013.0)
+
+
+def test_extract_twse_borrowed_short_point_reads_twt93u_fixture() -> None:
+    outcome = _extract_twse_borrowed_short_point(
+        _load_fixture("twse_twt93u_success.json"),
+        symbol="1303",
+        current_date=date(2026, 7, 31),
+    )
+
+    assert outcome.status == "found"
+    assert outcome.point is not None
+    assert outcome.point.borrowed_short_balance_shares == 12_345_000
+    assert outcome.point.previous_borrowed_short_balance_shares == 12_204_000
+
+
+def test_resolve_twse_margin_columns_uses_duplicate_today_balance_labels() -> None:
+    payload = _load_fixture("twse_mi_margn_tables_success.json")
+    fields = payload["tables"][1]["fields"]
+    columns = resolve_twse_margin_columns(fields)
+
+    assert columns == (0, 1, 6, 12)
+
+
+def test_service_parses_twse_tables_envelope_end_to_end() -> None:
+    stock = _nan_ya_stock()
+    margin_payload = _load_fixture("twse_mi_margn_tables_success.json")
+    borrowed_payload = _load_fixture("twse_twt93u_success.json")
+
+    service = TaiwanMarginShortService(
+        quote_source=FakeQuoteSource(stock),
+        twse_margin_fetcher=lambda _target_date: margin_payload,
+        twse_borrowed_short_fetcher=lambda _target_date: borrowed_payload,
+        twse_close_fetcher=_twse_close_payload,
+        now_provider=lambda: datetime(2026, 8, 1, 1, 0, tzinfo=UTC),
+    )
+
+    result = service.get_margin_short("TW:1303", days=1)
+
+    assert result.summary is not None
+    assert result.summary.margin_balance_lots == pytest.approx(33_805.0)
+    assert result.summary.short_margin_balance_lots == pytest.approx(3_013.0)
+    assert result.summary.borrowed_short_balance_lots == pytest.approx(12_345.0)
+
+
+def test_service_parses_tpex_fixture_payloads_end_to_end() -> None:
+    stock = _globalwafers_stock()
+
+    service = TaiwanMarginShortService(
+        quote_source=FakeQuoteSource(stock),
+        tpex_margin_fetcher=lambda _target_date: _load_fixture(
+            "tpex_margin_balance_success.json"
+        ),
+        tpex_borrowed_short_fetcher=lambda _target_date: _load_fixture(
+            "tpex_margin_sbl_success.json"
+        ),
+        twse_close_fetcher=lambda target_date: _twse_close_payload(
+            target_date,
+            price="510",
+            market_label="櫃檯買賣中心",
+        ),
+        now_provider=lambda: datetime(2026, 8, 1, 1, 0, tzinfo=UTC),
+    )
+
+    result = service.get_margin_short("TW:6488", days=1)
+
+    assert result.market == "TPEx"
+    assert result.summary is not None
+    assert result.summary.margin_balance_lots == pytest.approx(10_200.0)
+    assert result.summary.borrowed_short_balance_lots == pytest.approx(2_100.0)
+
+
+def test_service_returns_empty_success_for_official_no_data() -> None:
+    stock = _nan_ya_stock()
+    no_data = _load_fixture("twse_official_no_data.json")
+
+    service = TaiwanMarginShortService(
+        quote_source=FakeQuoteSource(stock),
+        twse_margin_fetcher=lambda _target_date: no_data,
+        twse_borrowed_short_fetcher=lambda _target_date: no_data,
+        twse_close_fetcher=_twse_close_payload,
+        now_provider=lambda: datetime(2026, 8, 3, 1, 0, tzinfo=UTC),
+    )
+
+    result = service.get_margin_short("TW:1303", days=2)
+
+    assert result.latest_date is None
+    assert result.summary is None
+    assert result.history == ()
+    assert result.empty_reason == "not_published"
+
+
+def test_service_returns_empty_success_for_tpex_official_no_data() -> None:
+    stock = _globalwafers_stock()
+    no_data = _load_fixture("tpex_official_no_data.json")
+
+    service = TaiwanMarginShortService(
+        quote_source=FakeQuoteSource(stock),
+        tpex_margin_fetcher=lambda _target_date: no_data,
+        tpex_borrowed_short_fetcher=lambda _target_date: no_data,
+        twse_close_fetcher=_twse_close_payload,
+        now_provider=lambda: datetime(2026, 8, 3, 1, 0, tzinfo=UTC),
+    )
+
+    result = service.get_margin_short("TW:6488", days=2)
+
+    assert result.history == ()
+    assert result.summary is None
+    assert result.empty_reason == "not_published"
+
+
+def test_service_raises_when_soft_empty_days_mix_with_schema_failures() -> None:
+    """Holiday no-data must not mask weekday schema failures into empty 200."""
+    stock = _nan_ya_stock()
+    no_data = _load_fixture("twse_official_no_data.json")
+    unexpected = _load_fixture("unexpected_schema.json")
+
+    def fetcher(target_date: date) -> object:
+        # Mondays: schema drift. Other weekdays: official no-data (soft success).
+        if target_date.weekday() == 0:
+            return unexpected
+        return no_data
+
+    service = TaiwanMarginShortService(
+        quote_source=FakeQuoteSource(stock),
+        twse_margin_fetcher=fetcher,
+        twse_borrowed_short_fetcher=fetcher,
+        twse_close_fetcher=_twse_close_payload,
+        now_provider=lambda: datetime(2026, 8, 3, 1, 0, tzinfo=UTC),  # Monday
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="Taiwan margin-short official response could not be interpreted.",
+    ):
+        service.get_margin_short("TW:1303", days=2)
+
+
+def test_service_empty_reason_no_data_for_stock_when_symbol_absent() -> None:
+    stock = stock_record(
+        "TW:9999",
+        market="TW",
+        symbol="9999",
+        name="測試股",
+        exchange="TWSE",
+        currency="TWD",
+        timezone="Asia/Taipei",
+        name_en="Test Co",
+        name_zh_tw="測試股",
+    )
+    margin = _load_fixture("twse_mi_margn_tables_success.json")
+    borrowed = _load_fixture("twse_twt93u_success.json")
+
+    # Fixtures contain other symbols, not 9999 → symbol_absent soft empty.
+    service = TaiwanMarginShortService(
+        quote_source=FakeQuoteSource(stock),
+        twse_margin_fetcher=lambda _target_date: margin,
+        twse_borrowed_short_fetcher=lambda _target_date: borrowed,
+        twse_close_fetcher=_twse_close_payload,
+        now_provider=lambda: datetime(2026, 8, 3, 1, 0, tzinfo=UTC),
+    )
+
+    result = service.get_margin_short("TW:9999", days=2)
+
+    assert result.history == ()
+    assert result.empty_reason == "no_data_for_stock"
+
+
+def test_service_raises_schema_error_for_unexpected_fixture_envelope() -> None:
+    stock = _nan_ya_stock()
+    unexpected = _load_fixture("unexpected_schema.json")
+
+    service = TaiwanMarginShortService(
+        quote_source=FakeQuoteSource(stock),
+        twse_margin_fetcher=lambda _target_date: unexpected,
+        twse_borrowed_short_fetcher=lambda _target_date: unexpected,
+        twse_close_fetcher=_twse_close_payload,
+        now_provider=lambda: datetime(2026, 8, 3, 1, 0, tzinfo=UTC),
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="Taiwan margin-short official response could not be interpreted.",
+    ):
+        service.get_margin_short("TW:1303", days=1)
+
+
+@pytest.mark.parametrize(
+    ("classification", "status_code", "match"),
+    [
+        ("auth_denied", 401, "official source denied access"),
+        ("auth_denied", 403, "official source denied access"),
+        ("rate_limited", 429, "official source is rate-limited"),
+        ("network_failure", None, "temporarily unavailable from official sources"),
+        ("unexpected_content", 200, "could not be interpreted"),
+    ],
+)
+def test_service_raises_classified_http_failures(
+    classification: str,
+    status_code: int | None,
+    match: str,
+) -> None:
+    stock = _nan_ya_stock()
+
+    def failing(_target_date: date) -> object:
+        return _raise_http_fetch_error_with(
+            classification=classification,
+            status_code=status_code,
+            content_type="text/html" if classification == "unexpected_content" else "application/json",
+        )
+
+    service = TaiwanMarginShortService(
+        quote_source=FakeQuoteSource(stock),
+        twse_margin_fetcher=failing,
+        twse_borrowed_short_fetcher=failing,
+        twse_close_fetcher=_twse_close_payload,
+        now_provider=lambda: datetime(2026, 8, 3, 1, 0, tzinfo=UTC),
+    )
+
+    with pytest.raises(RuntimeError, match=match):
+        service.get_margin_short("TW:1303", days=1)
+
+
+def test_upstream_error_for_scan_prefers_auth_then_rate_limit_then_schema() -> None:
+    from app.services.tw_margin_short_service import _ScanDiagnostics
+
+    diagnostics = _ScanDiagnostics(auth_denied=1, rate_limited=3, schema_errors=5, http_errors=9)
+    assert "denied access" in _upstream_error_for_scan(diagnostics)
+
+    diagnostics = _ScanDiagnostics(rate_limited=2, schema_errors=5, http_errors=9)
+    assert "rate-limited" in _upstream_error_for_scan(diagnostics)
+
+    diagnostics = _ScanDiagnostics(schema_errors=2, parse_errors=1, http_errors=9)
+    assert "could not be interpreted" in _upstream_error_for_scan(diagnostics)
+
+    diagnostics = _ScanDiagnostics(unexpected_content=2, http_errors=9)
+    assert "could not be interpreted" in _upstream_error_for_scan(diagnostics)
+
+    diagnostics = _ScanDiagnostics(http_errors=2)
+    assert "temporarily unavailable" in _upstream_error_for_scan(diagnostics)
+
+
+def test_http_failure_fixtures_match_classifier_contract() -> None:
+    """Wire contract fixtures for 401/403/429/HTML/timeout into classification asserts."""
+    from app.services.http_client import classify_http_failure
+
+    for name, expected in (
+        ("http_401.json", "auth_denied"),
+        ("http_403.json", "auth_denied"),
+        ("http_429.json", "rate_limited"),
+    ):
+        fixture = _load_fixture(name)
+        assert isinstance(fixture, dict)
+        assert (
+            classify_http_failure(
+                int(fixture["status_code"]),
+                content_type=str(fixture.get("content_type")),
+            )
+            == expected
+        )
+
+    html = _load_fixture("html_response.html")
+    assert isinstance(html, str)
+    assert "<html" in html.lower()
+    assert (
+        classify_http_failure(200, content_type="text/html", json_parse_failed=True)
+        == "unexpected_content"
+    )
+
+    timeout = _load_fixture("network_timeout.json")
+    assert isinstance(timeout, dict)
+    assert timeout["error_type"] == "ConnectTimeout"
+    assert classify_http_failure(None) == "network_failure"
+
+
+def test_fetch_twse_dated_payload_uses_browser_like_headers(monkeypatch) -> None:
+    from app.services import taiwan_market_data
+    from app.services.taiwan_market_data import _DEFAULT_HEADERS
+    from app.services.tw_margin_short_service import _fetch_twse_dated_payload
+
+    captured: dict[str, object] = {}
+
+    def fake_fetch_json(url, **kwargs):
+        captured["headers"] = kwargs.get("headers")
+        return {"stat": "OK", "tables": []}
+
+    monkeypatch.setattr(taiwan_market_data, "fetch_json", fake_fetch_json)
+    taiwan_market_data.taiwan_market_data_client.clear_cache()
+
+    _fetch_twse_dated_payload(
+        "https://www.twse.com.tw/rwd/zh/marginTrading/MI_MARGN",
+        date(2026, 7, 31),
+        operation_name="tw_margin_short_twse_margin_daily",
+        select_type="ALL",
+    )
+
+    headers = captured["headers"]
+    assert isinstance(headers, dict)
+    assert headers.get("User-Agent") == _DEFAULT_HEADERS["User-Agent"]
+    assert "application/json" in str(headers.get("Accept", ""))
+
+
+def test_core_request_succeeded_treats_auth_and_rate_limit_as_hard_failures() -> None:
+    found = _SourceOutcome(status="found")
+    absent = _SourceOutcome(status="symbol_absent")
+    auth = _SourceOutcome(status="auth_denied")
+    rate = _SourceOutcome(status="rate_limited")
+
+    assert _core_request_succeeded(found, auth) is True
+    assert _core_request_succeeded(auth, absent) is False
+    assert _core_request_succeeded(rate, absent) is False
+    assert _core_request_succeeded(auth, rate) is False

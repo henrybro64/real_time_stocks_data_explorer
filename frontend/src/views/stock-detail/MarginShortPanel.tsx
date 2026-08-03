@@ -30,6 +30,7 @@ export function MarginShortPanel({ stockId }: Readonly<Props>) {
         amountUnit: "萬",
         chartEmpty: "此區間沒有可繪製的資券資料。",
         empty: "目前沒有可顯示的資券資料。",
+        emptyNotPublished: "官方資券資料尚未公布，請稍後再試。",
         loading: "載入資券變化中",
         borrowedShortBalance: "借券賣出餘額(張)",
         lotsChange: "借券賣出餘額增減張數",
@@ -46,6 +47,7 @@ export function MarginShortPanel({ stockId }: Readonly<Props>) {
         borrowedShortBalance: "Borrowed short balance (lots)",
         chartEmpty: "No plottable margin / short history for this range.",
         empty: "No margin / short data is available for this stock yet.",
+        emptyNotPublished: "Official margin / short data is not published yet. Try again later.",
         loading: "Loading margin / short changes",
         lotsChange: "Borrowed short balance change (lots)",
         lotsUnit: "lots",
@@ -71,6 +73,8 @@ export function MarginShortPanel({ stockId }: Readonly<Props>) {
   const apiError = marginShortQuery.error ? toApiError(marginShortQuery.error) : null;
   const shouldShowUnavailableCopy =
     summary == null && history.length === 0 && apiError?.kind === "not_found";
+  const emptyCopy =
+    payload?.emptyReason === "not_published" ? copy.emptyNotPublished : copy.empty;
 
   if (!payload && marginShortQuery.isLoading) {
     return <InlineLoading description={copy.loading} status="active" />;
@@ -83,6 +87,7 @@ export function MarginShortPanel({ stockId }: Readonly<Props>) {
   if (!payload && marginShortQuery.isError) {
     return (
       <RequestStateNotice
+        detail={apiError?.detail ?? null}
         kind={errorToNoticeKind(marginShortQuery.error)}
         scopeLabel={t("detail.twSignals.marginShortTitle")}
       />
@@ -90,7 +95,7 @@ export function MarginShortPanel({ stockId }: Readonly<Props>) {
   }
 
   if (!payload || !summary || history.length === 0) {
-    return <p className="app-supporting-copy">{copy.empty}</p>;
+    return <p className="app-supporting-copy">{emptyCopy}</p>;
   }
 
   const summaryRows = [

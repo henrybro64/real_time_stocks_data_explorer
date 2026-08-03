@@ -46,6 +46,10 @@ export function RequestStateNotice({
   const { language } = useLanguage();
   const scope = language === "en" ? scopeLabel.toLowerCase() : scopeLabel;
   const detailText = detail?.trim() ? detail.trim() : null;
+  const detailLower = detailText?.toLowerCase() ?? "";
+  const isProviderSchemaFailure = detailLower.includes("could not be interpreted");
+  const isProviderRateLimited = detailLower.includes("rate-limited");
+  const isProviderAccessDenied = detailLower.includes("denied access");
 
   const copy =
     language === "zh-TW"
@@ -56,13 +60,23 @@ export function RequestStateNotice({
             action: "前往登入",
           },
           permission: {
-            title: "沒有權限",
-            body: `您目前沒有權限存取${scope}。`,
+            title: isProviderAccessDenied ? "官方資料來源拒絕存取" : "沒有權限",
+            body: isProviderAccessDenied
+              ? `${scope}的官方資料來源回傳了拒絕存取的回應。這不是本站登入問題。`
+              : `您目前沒有權限存取${scope}。`,
             action: null,
           },
           unavailable: {
-            title: "資料來源暫時不可用",
-            body: `${scope}目前無法從資料提供方取得，請稍後再試。`,
+            title: isProviderSchemaFailure
+              ? "官方資料格式無法解析"
+              : isProviderRateLimited
+                ? "官方資料來源流量受限"
+                : "資料來源暫時不可用",
+            body: isProviderSchemaFailure
+              ? `${scope}已連上官方來源，但回應格式無法判讀，請稍後再試。`
+              : isProviderRateLimited
+                ? `${scope}的官方資料來源目前受到流量限制，請稍後再試。`
+                : `${scope}目前無法從資料提供方取得，請稍後再試。`,
             action: null,
           },
           validation: {
@@ -88,13 +102,23 @@ export function RequestStateNotice({
             action: "Sign in",
           },
           permission: {
-            title: "Permission denied",
-            body: `You do not have permission to access ${scope}.`,
+            title: isProviderAccessDenied ? "Official source denied access" : "Permission denied",
+            body: isProviderAccessDenied
+              ? `The official data source for ${scope} returned an access-denied response. This is not a site sign-in problem.`
+              : `You do not have permission to access ${scope}.`,
             action: null,
           },
           unavailable: {
-            title: "Provider unavailable",
-            body: `The data provider for ${scope} is temporarily unavailable.`,
+            title: isProviderSchemaFailure
+              ? "Official response could not be interpreted"
+              : isProviderRateLimited
+                ? "Official source rate-limited"
+                : "Provider unavailable",
+            body: isProviderSchemaFailure
+              ? `${scope} reached the official source, but the response shape could not be interpreted.`
+              : isProviderRateLimited
+                ? `The official data source for ${scope} is rate-limited right now.`
+                : `The data provider for ${scope} is temporarily unavailable.`,
             action: null,
           },
           validation: {
