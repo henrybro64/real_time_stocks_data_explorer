@@ -89,10 +89,53 @@ def test_mget_reads_bulk_redis_entries(monkeypatch) -> None:
 
 
 def test_refresh_lock_deduplicates_memory() -> None:
-    assert cache.try_acquire_refresh_lock("US:AAPL") is True
-    assert cache.try_acquire_refresh_lock("US:AAPL") is False
-    cache.release_refresh_lock("US:AAPL")
-    assert cache.try_acquire_refresh_lock("US:AAPL") is True
+    token = cache.try_acquire_refresh_lock("US:AAPL")
+    assert token is not None
+    assert cache.try_acquire_refresh_lock("US:AAPL") is None
+    cache.release_refresh_lock("US:AAPL", token)
+    assert cache.try_acquire_refresh_lock("US:AAPL") is not None
+
+
+def test_release_refresh_lock_ignores_foreign_owner_token() -> None:
+    token = cache.try_acquire_refresh_lock("US:AAPL")
+    assert token is not None
+    cache.release_refresh_lock("US:AAPL", "not-the-owner")
+    assert cache.try_acquire_refresh_lock("US:AAPL") is None
+    cache.release_refresh_lock("US:AAPL", token)
+    assert cache.try_acquire_refresh_lock("US:AAPL") is not None
+
+
+def test_redis_mget_failure_falls_back_to_memory(monkeypatch) -> None:
+    quote = quote_record(
+        "US:AAPL",
+        last_price=1.0,
+        change=0.0,
+        change_percent=0.0,
+        previous_close=1.0,
+        timestamp="2026-04-01T09:30:00-04:00",
+        is_market_open=True,
+    )
+    cache.set_cached_quote("US:AAPL", quote)
+    client = MagicMock()
+    client.mget.side_effect = RuntimeError("redis down")
+    monkeypatch.setattr(cache, "_redis", lambda: client)
+
+    entries = cache.get_cached_quote_entries(["US:AAPL"])
+
+    assert set(entries) == {"US:AAPL"}
+    assert entries["US:AAPL"].quote.last_price == pytest.approx(1.0)
+
+
+def test_corrupt_payload_is_treated_as_miss() -> None:
+    with cache._memory_lock:
+        cache._memory_quotes["US:AAPL"] = (
+            1e18,
+            json.dumps({"quote": {"id": "US:AAPL"}}),
+        )
+
+    entries = cache.get_cached_quote_entries(["US:AAPL"])
+
+    assert entries == {}
 
 
 def test_legacy_payload_without_cached_at_still_deserializes() -> None:

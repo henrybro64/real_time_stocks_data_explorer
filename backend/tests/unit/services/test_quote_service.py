@@ -140,9 +140,9 @@ def test_cache_first_batch_returns_stale_immediately_and_queues_refresh() -> Non
     service = _service_with_provider(provider)
     refreshed = threading.Event()
 
-    def capture_refresh(svc: QuoteService, stock_id: str) -> None:
+    def capture_refresh(svc: QuoteService, stock_id: str, token: str) -> None:
         refreshed.set()
-        svc._refresh_quote_in_background(stock_id)
+        svc._refresh_quote_in_background(stock_id, token)
 
     service._refresh_scheduler = capture_refresh
     cache.set_cached_quote("US:AAPL", provider._quotes["US:AAPL"])
@@ -175,7 +175,7 @@ def test_cache_first_miss_without_provider_is_unavailable() -> None:
     service.get_stock = lambda stock_id: stock if stock_id == "US:AAPL" else None  # type: ignore[method-assign]
     service.providers = {}
     scheduled: list[str] = []
-    service._refresh_scheduler = lambda svc, stock_id: scheduled.append(stock_id)
+    service._refresh_scheduler = lambda svc, stock_id, token: scheduled.append(stock_id)
 
     items = service.get_quotes_cache_first(["US:AAPL"])
 
@@ -190,9 +190,9 @@ def test_cache_first_batch_missing_symbol_is_partial_and_queues_refresh() -> Non
     service = _service_with_provider(provider)
     refreshed = threading.Event()
 
-    def capture_refresh(svc: QuoteService, stock_id: str) -> None:
+    def capture_refresh(svc: QuoteService, stock_id: str, token: str) -> None:
         refreshed.set()
-        svc._refresh_quote_in_background(stock_id)
+        svc._refresh_quote_in_background(stock_id, token)
 
     service._refresh_scheduler = capture_refresh
     cache.set_cached_quote("US:AAPL", provider._quotes["US:AAPL"])
@@ -211,9 +211,17 @@ def test_cache_first_batch_does_not_wait_for_slow_provider() -> None:
     provider = StubUSProvider()
     provider.quote_delay_seconds = 0.5
     service = _service_with_provider(provider)
+    done = threading.Event()
+    scheduled_token: dict[str, str] = {}
+
+    def capture_refresh(svc: QuoteService, stock_id: str, token: str) -> None:
+        scheduled_token[stock_id] = token
+        # Do not run the slow provider inline — keep the batch response fast.
+        done.set()
+
+    service._refresh_scheduler = capture_refresh
     cache.set_cached_quote("US:AAPL", provider._quotes["US:AAPL"])
 
-    # Missing MSFT will queue a slow refresh; response must still be fast.
     started = time.perf_counter()
     items = service.get_quotes_cache_first(["US:AAPL", "US:MSFT"])
     elapsed = time.perf_counter() - started
@@ -221,6 +229,9 @@ def test_cache_first_batch_does_not_wait_for_slow_provider() -> None:
     assert elapsed < 0.25
     assert items[0].quote is not None
     assert items[1].quote is None
+    assert done.wait(timeout=1.0)
+    # Release the acquired lease so later tests are not affected.
+    cache.release_refresh_lock("US:MSFT", scheduled_token["US:MSFT"])
 
 
 def test_duplicate_concurrent_requests_enqueue_one_refresh() -> None:
@@ -229,7 +240,8 @@ def test_duplicate_concurrent_requests_enqueue_one_refresh() -> None:
     scheduled: list[str] = []
     lock = threading.Lock()
 
-    def capture_refresh(svc: QuoteService, stock_id: str) -> None:
+    def capture_refresh(svc: QuoteService, stock_id: str, token: str) -> None:
+        del token
         with lock:
             scheduled.append(stock_id)
 
@@ -248,7 +260,8 @@ def test_stale_duplicate_requests_mark_refreshing_not_idle() -> None:
     service = _service_with_provider(provider)
     scheduled: list[str] = []
 
-    def capture_refresh(svc: QuoteService, stock_id: str) -> None:
+    def capture_refresh(svc: QuoteService, stock_id: str, token: str) -> None:
+        del token
         scheduled.append(stock_id)
 
     service._refresh_scheduler = capture_refresh
@@ -276,8 +289,8 @@ def test_cache_first_keeps_stale_quote_when_background_refresh_fails() -> None:
     service = _service_with_provider(provider)
     done = threading.Event()
 
-    def run_refresh(svc: QuoteService, stock_id: str) -> None:
-        svc._refresh_quote_in_background(stock_id)
+    def run_refresh(svc: QuoteService, stock_id: str, token: str) -> None:
+        svc._refresh_quote_in_background(stock_id, token)
         done.set()
 
     service._refresh_scheduler = run_refresh
@@ -298,6 +311,37 @@ def test_cache_first_keeps_stale_quote_when_background_refresh_fails() -> None:
     assert second[0].quote is not None
     assert second[0].quote.last_price == pytest.approx(187.0)
     assert second[0].stale is True
+    # Failure backoff surfaces stale idle instead of perpetual "Updating".
+    assert second[0].refresh_status == "idle"
+
+
+def test_get_quotes_does_not_serve_stale_fallback_for_rankings() -> None:
+    provider = StubUSProvider()
+    provider.fail_ids.add("US:AAPL")
+    service = _service_with_provider(provider)
+    cache.set_cached_quote("US:AAPL", provider._quotes["US:AAPL"])
+    with cache._memory_lock:
+        raw = cache._memory_quotes["US:AAPL"][1]
+    payload = __import__("json").loads(raw)
+    payload["cached_at"] = "2026-01-01T00:00:00Z"
+    with cache._memory_lock:
+        cache._memory_quotes["US:AAPL"] = (1e18, __import__("json").dumps(payload))
+
+    with pytest.raises(RuntimeError, match="provider failed"):
+        service.get_quotes(["US:AAPL"])
+
+
+def test_get_quote_detail_reports_provider_source_on_uncached_fetch() -> None:
+    provider = StubUSProvider()
+    service = _service_with_provider(provider)
+
+    item = service.get_quote_detail("US:AAPL")
+
+    assert item is not None
+    assert item.quote is not None
+    assert item.source == "provider"
+    assert item.stale is False
+    assert provider.quote_calls == ["US:AAPL"]
 
 
 def test_get_quote_detail_includes_cache_freshness() -> None:

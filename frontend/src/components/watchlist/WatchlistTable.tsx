@@ -1,5 +1,6 @@
 import { Button, InlineLoading, Tag, Tile } from "@carbon/react";
 import type { QuoteResponse } from "@shared/api";
+import type { QuoteFreshnessMeta } from "@shared/quote";
 import type { Stock } from "@shared/stock";
 import { useLanguage } from "../../app/i18n";
 import type { RequestNoticeKind } from "../state/RequestStateNotice";
@@ -9,7 +10,7 @@ import { StockCard } from "../stock-card/StockCard";
 type WatchlistItem = {
   stock: Stock;
   quote?: QuoteResponse["quote"];
-  freshness?: QuoteResponse["freshness"];
+  freshness?: QuoteFreshnessMeta | null;
 };
 
 type Props = {

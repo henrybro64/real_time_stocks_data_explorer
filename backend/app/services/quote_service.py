@@ -13,10 +13,14 @@ from app.models.stock import StockRecord
 from app.services.providers.tw_provider import TWProvider
 from app.services.providers.us_provider import USProvider
 from app.services.quote_redis_cache import (
+    clear_refresh_failure,
     get_cached_quote_entries,
     get_cached_quote_entry,
+    record_refresh_failure,
     redis_enabled,
+    refresh_failure_active,
     release_refresh_lock,
+    renew_refresh_lock,
     set_cached_quote,
     try_acquire_refresh_lock,
 )
@@ -139,8 +143,12 @@ class QuoteService:
             )
         return None
 
-    def get_quote(self, stock_id: str) -> QuoteRecord | None:
-        """On-demand quote for detail pages: fresh cache hit, else blocking fetch."""
+    def get_quote(self, stock_id: str, *, allow_stale: bool = True) -> QuoteRecord | None:
+        """On-demand quote: fresh cache hit, else blocking fetch.
+
+        ``allow_stale=False`` (rankings) skips hard-TTL fallback so callers do not
+        treat up-to-15-minute-old data as a current snapshot.
+        """
         cached = get_cached_quote_entry(stock_id)
         if cached is not None and not cached.stale:
             logger.debug(
@@ -156,7 +164,7 @@ class QuoteService:
         try:
             quote = self._fetch_quote_from_provider(stock_id)
         except Exception:
-            if cached is not None:
+            if allow_stale and cached is not None:
                 logger.info(
                     "Quote refresh failed; serving stale cache",
                     extra={
@@ -170,8 +178,7 @@ class QuoteService:
         if quote is not None:
             set_cached_quote(stock_id, quote)
             return quote
-        # Keep serving the last cached value after an empty refresh.
-        if cached is not None:
+        if allow_stale and cached is not None:
             logger.info(
                 "Quote refresh empty; serving stale cache",
                 extra={
@@ -188,14 +195,67 @@ class QuoteService:
         stock = self.get_stock(stock_id)
         if stock is None:
             return None
-        quote = self.get_quote(stock_id)
-        if quote is None:
-            return None
-        return self._detail_item_from_cache(stock, quote)
+
+        cached = get_cached_quote_entry(stock_id)
+        if cached is not None and not cached.stale:
+            source: CacheSource = "redis" if redis_enabled() else "memory"
+            return QuoteBatchItem(
+                stock=stock,
+                quote=cached.quote,
+                cached_at=cached.cached_at.isoformat().replace("+00:00", "Z"),
+                age_seconds=round(cached.age_seconds, 3),
+                stale=False,
+                source=source,
+                refresh_status="idle",
+            )
+
+        try:
+            quote = self._fetch_quote_from_provider(stock_id)
+        except Exception:
+            if cached is None:
+                raise
+            source = "redis" if redis_enabled() else "memory"
+            return QuoteBatchItem(
+                stock=stock,
+                quote=cached.quote,
+                cached_at=cached.cached_at.isoformat().replace("+00:00", "Z"),
+                age_seconds=round(cached.age_seconds, 3),
+                stale=True,
+                source=source,
+                refresh_status="idle",
+            )
+
+        if quote is not None:
+            set_cached_quote(stock_id, quote)
+            return QuoteBatchItem(
+                stock=stock,
+                quote=quote,
+                cached_at=None,
+                age_seconds=0.0,
+                stale=False,
+                source="provider",
+                refresh_status="idle",
+            )
+
+        if cached is not None:
+            source = "redis" if redis_enabled() else "memory"
+            return QuoteBatchItem(
+                stock=stock,
+                quote=cached.quote,
+                cached_at=cached.cached_at.isoformat().replace("+00:00", "Z"),
+                age_seconds=round(cached.age_seconds, 3),
+                stale=True,
+                source=source,
+                refresh_status="idle",
+            )
+        return None
 
     def get_quotes(self, stock_ids: list[str]) -> list[tuple[StockRecord, QuoteRecord]]:
-        """Blocking batch used by rankings and other paths that need filled quotes."""
-        return self._collect_quotes(stock_ids, self.get_quote)
+        """Blocking batch for rankings: require fresh/provider data, not hard-stale."""
+        return self._collect_quotes(
+            stock_ids,
+            lambda stock_id: self.get_quote(stock_id, allow_stale=False),
+        )
 
     def get_quotes_cache_first(self, stock_ids: list[str]) -> list[QuoteBatchItem]:
         """Watchlist/stream path: return cache immediately and refresh asynchronously."""
@@ -225,7 +285,7 @@ class QuoteService:
 
             refresh_status: RefreshStatus = "idle"
             if cached.stale:
-                refresh_status = self._refresh_status_after_enqueue(stock_id)
+                refresh_status = self._stale_refresh_status(stock_id)
             items.append(
                 QuoteBatchItem(
                     stock=stock,
@@ -239,38 +299,19 @@ class QuoteService:
             )
         return items
 
-    def _detail_item_from_cache(
-        self,
-        stock: StockRecord,
-        quote: QuoteRecord,
-    ) -> QuoteBatchItem:
-        entry = get_cached_quote_entry(stock.id)
-        if entry is None:
-            return QuoteBatchItem(
-                stock=stock,
-                quote=quote,
-                cached_at=None,
-                age_seconds=None,
-                stale=False,
-                source="provider",
-                refresh_status="idle",
-            )
-        source: CacheSource = "redis" if redis_enabled() else "memory"
-        return QuoteBatchItem(
-            stock=stock,
-            quote=quote,
-            cached_at=entry.cached_at.isoformat().replace("+00:00", "Z"),
-            age_seconds=round(entry.age_seconds, 3),
-            stale=entry.stale,
-            source=source,
-            refresh_status="idle",
-        )
-
     def _miss_refresh_status(self, stock_id: str) -> RefreshStatus:
         """Cache miss: queue async refresh, or mark unavailable when no provider exists."""
         market = self._market_from_id(stock_id)
         if self.providers.get(market) is None:
             return "unavailable"
+        if refresh_failure_active(stock_id):
+            return "unavailable"
+        return self._refresh_status_after_enqueue(stock_id)
+
+    def _stale_refresh_status(self, stock_id: str) -> RefreshStatus:
+        """Stale hit: enqueue refresh unless a recent failure is still backing off."""
+        if refresh_failure_active(stock_id):
+            return "idle"
         return self._refresh_status_after_enqueue(stock_id)
 
     def _refresh_status_after_enqueue(self, stock_id: str) -> RefreshStatus:
@@ -342,16 +383,22 @@ class QuoteService:
         return envelopes
 
     def _enqueue_refresh(self, stock_id: str) -> bool:
-        if not try_acquire_refresh_lock(stock_id):
+        token = try_acquire_refresh_lock(stock_id)
+        if token is None:
             return False
-        self._refresh_scheduler(self, stock_id)
+        self._refresh_scheduler(self, stock_id, token)
         return True
 
-    def _refresh_quote_in_background(self, stock_id: str) -> None:
+    def _refresh_quote_in_background(self, stock_id: str, token: str) -> None:
+        # Renew/reclaim when the worker actually starts so queued tasks cannot
+        # outlive the lease and allow duplicate provider fetches.
+        if not renew_refresh_lock(stock_id, token):
+            return
         try:
             quote = self._fetch_quote_from_provider(stock_id)
             if quote is not None:
                 set_cached_quote(stock_id, quote)
+                clear_refresh_failure(stock_id)
                 logger.info(
                     "Background quote refresh completed",
                     extra={
@@ -360,6 +407,7 @@ class QuoteService:
                     },
                 )
             else:
+                record_refresh_failure(stock_id)
                 logger.warning(
                     "Background quote refresh returned no data",
                     extra={
@@ -368,6 +416,7 @@ class QuoteService:
                     },
                 )
         except Exception as exc:
+            record_refresh_failure(stock_id)
             logger.warning(
                 "Background quote refresh failed",
                 extra={
@@ -378,7 +427,7 @@ class QuoteService:
                 },
             )
         finally:
-            release_refresh_lock(stock_id)
+            release_refresh_lock(stock_id, token)
 
     def _fetch_quote_from_provider(self, stock_id: str) -> QuoteRecord | None:
         market = self._market_from_id(stock_id)
@@ -507,8 +556,8 @@ class QuoteService:
         return list(self.providers.values())
 
 
-def _schedule_quote_refresh(service: QuoteService, stock_id: str) -> None:
-    _refresh_executor.submit(service._refresh_quote_in_background, stock_id)
+def _schedule_quote_refresh(service: QuoteService, stock_id: str, token: str) -> None:
+    _refresh_executor.submit(service._refresh_quote_in_background, stock_id, token)
 
 
 quote_service = QuoteService()

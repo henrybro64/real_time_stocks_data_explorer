@@ -171,36 +171,14 @@ export function StockCard({
             </div>
           </dl>
         </>
-      ) : quoteQuery.isError ? (
-        <RequestStateNotice compact kind={errorToNoticeKind(quoteQuery.error)} scopeLabel={stock.symbol} />
-      ) : pendingUnavailable ? (
-        <div className="app-stock-card-status-row">
-          <QuoteFreshnessTag
-            freshnessMeta={freshness}
-            hasQuote={false}
-            isMarketOpen={false}
-            timestamp=""
-          />
-          <RequestStateNotice compact kind="unavailable" scopeLabel={stock.symbol} />
-        </div>
       ) : (
-        <div className="app-stock-card-status-row">
-          <QuoteFreshnessTag
-            freshnessMeta={
-              freshness ?? {
-                cachedAt: null,
-                ageSeconds: null,
-                stale: true,
-                source: "none",
-                refreshStatus: "queued",
-              }
-            }
-            hasQuote={false}
-            isMarketOpen={false}
-            timestamp=""
-          />
-          <InlineLoading description={t("stock.quoteRefreshing")} status="active" />
-        </div>
+        <StockCardPendingBody
+          error={quoteQuery.isError ? quoteQuery.error : null}
+          freshness={freshness}
+          pendingUnavailable={pendingUnavailable}
+          stockSymbol={stock.symbol}
+          refreshingLabel={t("stock.quoteRefreshing")}
+        />
       )}
 
       <div className="app-stock-card-actions">
@@ -239,6 +217,56 @@ function shouldIgnoreNavigation(target: EventTarget | null, currentTarget: Event
   }
   const interactive = target.closest("button, a, input, select, textarea, summary, [role='button']");
   return Boolean(interactive && interactive !== currentTarget && currentTarget.contains(interactive));
+}
+
+function StockCardPendingBody({
+  error,
+  freshness,
+  pendingUnavailable,
+  stockSymbol,
+  refreshingLabel,
+}: Readonly<{
+  error: unknown | null;
+  freshness: QuoteFreshnessMeta | null;
+  pendingUnavailable: boolean;
+  stockSymbol: string;
+  refreshingLabel: string;
+}>) {
+  if (error != null) {
+    return <RequestStateNotice compact kind={errorToNoticeKind(error)} scopeLabel={stockSymbol} />;
+  }
+  if (pendingUnavailable) {
+    return (
+      <div className="app-stock-card-status-row">
+        <QuoteFreshnessTag
+          freshnessMeta={freshness}
+          hasQuote={false}
+          isMarketOpen={false}
+          timestamp=""
+        />
+        <RequestStateNotice compact kind="unavailable" scopeLabel={stockSymbol} />
+      </div>
+    );
+  }
+  return (
+    <div className="app-stock-card-status-row">
+      <QuoteFreshnessTag
+        freshnessMeta={
+          freshness ?? {
+            cachedAt: null,
+            ageSeconds: null,
+            stale: true,
+            source: "none",
+            refreshStatus: "queued",
+          }
+        }
+        hasQuote={false}
+        isMarketOpen={false}
+        timestamp=""
+      />
+      <InlineLoading description={refreshingLabel} status="active" />
+    </div>
+  );
 }
 
 function Sparkline({

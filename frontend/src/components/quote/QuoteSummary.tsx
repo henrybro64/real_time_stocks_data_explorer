@@ -12,7 +12,7 @@ type Props = {
   freshness?: QuoteFreshnessMeta | null;
 };
 
-export function QuoteSummary({ item, refreshFailed = false, freshness = null }: Props) {
+export function QuoteSummary({ item, refreshFailed = false, freshness = null }: Readonly<Props>) {
   const { language, t, formatNumber } = useLanguage();
   const { stock, quote } = item;
 

@@ -25,12 +25,25 @@ export function getQuoteFreshness(
   const meta = options.meta;
   if (meta != null) {
     return freshnessFromMeta(meta, {
+      timestamp,
       isMarketOpen,
       hasQuote: options.hasQuote ?? true,
       refreshFailed: options.refreshFailed ?? false,
+      now: options.now ?? new Date(),
     });
   }
 
+  return freshnessFromTimestamp(timestamp, isMarketOpen, {
+    now: options.now ?? new Date(),
+    refreshFailed: options.refreshFailed ?? false,
+  });
+}
+
+function freshnessFromTimestamp(
+  timestamp: string,
+  isMarketOpen: boolean,
+  options: { now: Date; refreshFailed: boolean },
+): QuoteFreshness {
   const asOf = new Date(timestamp);
   if (Number.isNaN(asOf.getTime())) {
     return "stale";
@@ -40,8 +53,7 @@ export function getQuoteFreshness(
     return "closed";
   }
 
-  const now = options.now ?? new Date();
-  const ageMinutes = Math.max(0, (now.getTime() - asOf.getTime()) / 60_000);
+  const ageMinutes = Math.max(0, (options.now.getTime() - asOf.getTime()) / 60_000);
 
   if (options.refreshFailed && ageMinutes >= 2) {
     return "stale";
@@ -57,7 +69,13 @@ export function getQuoteFreshness(
 
 function freshnessFromMeta(
   meta: QuoteFreshnessMeta,
-  options: { isMarketOpen: boolean; hasQuote: boolean; refreshFailed: boolean },
+  options: {
+    timestamp: string;
+    isMarketOpen: boolean;
+    hasQuote: boolean;
+    refreshFailed: boolean;
+    now: Date;
+  },
 ): QuoteFreshness {
   if (!options.hasQuote) {
     if (meta.refreshStatus === "unavailable") {
@@ -77,7 +95,13 @@ function freshnessFromMeta(
   if (meta.refreshStatus === "queued" || meta.refreshStatus === "refreshing") {
     return "refreshing";
   }
-  const ageSeconds = meta.ageSeconds ?? 0;
+
+  const quoteAgeSeconds = ageSecondsFromTimestamp(options.timestamp, options.now);
+  const cacheAgeSeconds = meta.ageSeconds ?? 0;
+  const ageSeconds = Math.max(cacheAgeSeconds, quoteAgeSeconds ?? 0);
+  if (quoteAgeSeconds == null && meta.ageSeconds == null) {
+    return "stale";
+  }
   if (ageSeconds <= 120) {
     return "live";
   }
@@ -85,4 +109,12 @@ function freshnessFromMeta(
     return "delayed";
   }
   return "stale";
+}
+
+function ageSecondsFromTimestamp(timestamp: string, now: Date): number | null {
+  const asOf = new Date(timestamp);
+  if (Number.isNaN(asOf.getTime())) {
+    return null;
+  }
+  return Math.max(0, (now.getTime() - asOf.getTime()) / 1000);
 }

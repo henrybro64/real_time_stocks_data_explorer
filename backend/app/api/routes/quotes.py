@@ -19,7 +19,14 @@ def get_quotes(ids: str = Query(...)) -> list[QuoteEnvelope]:
     ]
 
 
-@router.get("/{stock_id}", response_model=QuoteEnvelope)
+@router.get(
+    "/{stock_id}",
+    response_model=QuoteEnvelope,
+    responses={
+        404: {"description": "Stock not found"},
+        502: {"description": "Quote provider unavailable"},
+    },
+)
 def get_quote(stock_id: str) -> QuoteEnvelope:
     try:
         item = quote_service.get_quote_detail(stock_id)

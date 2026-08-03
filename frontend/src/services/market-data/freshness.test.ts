@@ -78,6 +78,7 @@ describe("getQuoteFreshness", () => {
     expect(
       getQuoteFreshness("2026-04-21T11:59:00Z", true, {
         hasQuote: true,
+        now,
         meta: {
           cachedAt: "2026-04-21T11:59:00Z",
           ageSeconds: 10,
@@ -87,5 +88,20 @@ describe("getQuoteFreshness", () => {
         },
       }),
     ).toBe("live");
+
+    // Recently cached but market data itself is 20 minutes old → not Live.
+    expect(
+      getQuoteFreshness("2026-04-21T11:40:00Z", true, {
+        hasQuote: true,
+        now,
+        meta: {
+          cachedAt: "2026-04-21T11:59:50Z",
+          ageSeconds: 10,
+          stale: false,
+          source: "redis",
+          refreshStatus: "idle",
+        },
+      }),
+    ).toBe("stale");
   });
 });
