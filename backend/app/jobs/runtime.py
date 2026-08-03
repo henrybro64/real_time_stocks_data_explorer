@@ -5,6 +5,7 @@ import logging
 from app.core.config import settings
 from app.services.alert_service import alert_service
 from app.services.portfolio_history_service import portfolio_history_service
+from app.services.quote_refresher_service import quote_refresher_service
 from app.services.rankings_snapshot_service import rankings_snapshot_service
 from app.services.taiwan_market_data_refresh_service import (
     taiwan_market_data_refresh_service,
@@ -57,9 +58,18 @@ def start_enabled_background_jobs() -> None:
             recent_days=settings.taiwan_market_data_refresh_recent_days,
         )
 
+    if not settings.quote_refresher_enabled:
+        logger.info(
+            "Quote refresher is disabled",
+            extra={"event": "quote_refresher.sampler.disabled"},
+        )
+    else:
+        quote_refresher_service.start_background_sampler()
+
 
 def stop_background_jobs() -> None:
     portfolio_history_service.stop_background_sampler()
     alert_service.stop_background_evaluator()
     rankings_snapshot_service.stop_background_sampler()
     taiwan_market_data_refresh_service.stop_background_sampler()
+    quote_refresher_service.stop_background_sampler()

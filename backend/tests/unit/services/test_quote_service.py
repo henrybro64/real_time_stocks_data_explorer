@@ -6,6 +6,7 @@ import time
 import pytest
 
 from app.services import quote_redis_cache as cache
+from app.services.http_client import HttpFetchError
 from app.services.quote_service import QuoteService
 from tests.support import quote_record, stock_record
 
@@ -98,6 +99,9 @@ def _reset_quote_cache(monkeypatch):
     monkeypatch.setattr(cache.settings, "quote_cache_ttl_seconds", 60)
     monkeypatch.setattr(cache.settings, "quote_cache_hard_ttl_seconds", 900)
     monkeypatch.setattr(cache.settings, "quote_refresh_lock_seconds", 30)
+    # Keep request-path SWR enqueue tests exercising the local scheduler.
+    monkeypatch.setattr(cache.settings, "quote_refresher_enabled", False)
+    monkeypatch.setattr(cache.settings, "quote_refresher_owns_upstream", False)
     yield
     cache.clear_quote_cache_for_tests()
 
@@ -409,3 +413,132 @@ def test_cache_first_response_includes_freshness_metadata() -> None:
     assert item.source in {"memory", "redis"}
     assert item.refresh_status == "idle"
     assert item.stale is False
+
+
+def test_cache_first_does_not_enqueue_when_refresher_owns_upstream(monkeypatch) -> None:
+    monkeypatch.setattr(cache.settings, "quote_refresher_enabled", True)
+    monkeypatch.setattr(cache.settings, "quote_refresher_owns_upstream", True)
+    monkeypatch.setattr(
+        "app.services.quote_refresher_service.quote_refresher_service.is_sampler_running",
+        lambda: True,
+    )
+    provider = StubUSProvider()
+    service = _service_with_provider(provider)
+    scheduled: list[str] = []
+    service._refresh_scheduler = (
+        lambda svc, stock_id, token: scheduled.append(stock_id)
+    )
+
+    items = service.get_quotes_cache_first(["US:AAPL"])
+
+    assert items[0].quote is None
+    assert items[0].refresh_status == "queued"
+    assert scheduled == []
+    assert provider.quote_calls == []
+
+
+def test_get_quote_does_not_hit_provider_when_refresher_owns_upstream(monkeypatch) -> None:
+    monkeypatch.setattr(cache.settings, "quote_refresher_enabled", True)
+    monkeypatch.setattr(cache.settings, "quote_refresher_owns_upstream", True)
+    monkeypatch.setattr(
+        "app.services.quote_refresher_service.quote_refresher_service.is_sampler_running",
+        lambda: True,
+    )
+    provider = StubUSProvider()
+    service = _service_with_provider(provider)
+    cache.set_cached_quote("US:AAPL", provider._quotes["US:AAPL"])
+    with cache._memory_lock:
+        raw = cache._memory_quotes["US:AAPL"][1]
+    payload = __import__("json").loads(raw)
+    payload["cached_at"] = "2026-01-01T00:00:00Z"
+    with cache._memory_lock:
+        cache._memory_quotes["US:AAPL"] = (1e18, __import__("json").dumps(payload))
+    requested: list[str] = []
+    monkeypatch.setattr(
+        service,
+        "_request_background_refresh",
+        lambda stock_id: requested.append(stock_id),
+    )
+
+    quote = service.get_quote("US:AAPL")
+
+    assert quote is not None
+    assert quote.last_price == pytest.approx(187.0)
+    assert provider.quote_calls == []
+    assert requested == ["US:AAPL"]
+
+
+def test_get_quote_falls_back_to_provider_when_refresher_not_running(monkeypatch) -> None:
+    monkeypatch.setattr(cache.settings, "quote_refresher_enabled", True)
+    monkeypatch.setattr(cache.settings, "quote_refresher_owns_upstream", True)
+    monkeypatch.setattr(
+        "app.services.quote_refresher_service.quote_refresher_service.is_sampler_running",
+        lambda: False,
+    )
+    provider = StubUSProvider()
+    service = _service_with_provider(provider)
+
+    quote = service.get_quote("US:AAPL")
+
+    assert quote is not None
+    assert provider.quote_calls == ["US:AAPL"]
+
+
+def test_get_quote_detail_serves_stale_without_provider_when_refresher_owns(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(cache.settings, "quote_refresher_enabled", True)
+    monkeypatch.setattr(cache.settings, "quote_refresher_owns_upstream", True)
+    monkeypatch.setattr(
+        "app.services.quote_refresher_service.quote_refresher_service.is_sampler_running",
+        lambda: True,
+    )
+    provider = StubUSProvider()
+    service = _service_with_provider(provider)
+    cache.set_cached_quote("US:AAPL", provider._quotes["US:AAPL"])
+    with cache._memory_lock:
+        raw = cache._memory_quotes["US:AAPL"][1]
+    payload = __import__("json").loads(raw)
+    payload["cached_at"] = "2026-01-01T00:00:00Z"
+    with cache._memory_lock:
+        cache._memory_quotes["US:AAPL"] = (1e18, __import__("json").dumps(payload))
+    requested: list[str] = []
+    monkeypatch.setattr(
+        service,
+        "_request_background_refresh",
+        lambda stock_id: requested.append(stock_id),
+    )
+
+    item = service.get_quote_detail("US:AAPL")
+
+    assert item is not None
+    assert item.quote is not None
+    assert item.stale is True
+    assert item.refresh_status == "queued"
+    assert provider.quote_calls == []
+    assert requested == ["US:AAPL"]
+
+
+def test_fetch_quote_for_refresh_recovers_swallowed_http_error(monkeypatch) -> None:
+    provider = StubUSProvider()
+    service = _service_with_provider(provider)
+    err = HttpFetchError(
+        "rate limited",
+        status_code=429,
+        classification="rate_limited",
+        retry_after_seconds=12.0,
+    )
+
+    def swallow(_stock_id: str):
+        from app.services import http_client as http_client_module
+
+        http_client_module._remember_http_fetch_error(err)
+        return None
+
+    provider.get_quote = swallow  # type: ignore[method-assign]
+
+    attempt = service.fetch_quote_for_refresh("US:AAPL")
+
+    assert attempt.quote is None
+    assert attempt.error is err
+    assert attempt.error.retry_after_seconds == pytest.approx(12.0)

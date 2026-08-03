@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from time import perf_counter
 from typing import Literal
@@ -29,16 +30,20 @@ class HttpFetchError(RuntimeError):
         status_code: int | None = None,
         content_type: str | None = None,
         classification: HttpFailureClassification = "network_failure",
+        retry_after_seconds: float | None = None,
     ) -> None:
         super().__init__(message)
         self.status_code = status_code
         self.content_type = content_type
         self.classification = classification
+        self.retry_after_seconds = retry_after_seconds
 
 
 _DEFAULT_TIMEOUT_SECONDS = 10.0
 _DEFAULT_RETRIES = 2
 _RETRYABLE_STATUS_CODES = {408, 425, 429, 500, 502, 503, 504}
+# Cap Retry-After sleeps so a hostile/large header cannot stall worker threads.
+_MAX_RETRY_AFTER_SLEEP_SECONDS = 30.0
 _PROVIDER_NAMES_BY_HOST = {
     "api.openai.com": "openai",
     "api.perplexity.ai": "perplexity",
@@ -55,6 +60,22 @@ _PROVIDER_NAMES_BY_HOST = {
 
 logger = logging.getLogger(__name__)
 HttpMethod = Literal["GET", "POST"]
+_thread_state = threading.local()
+
+
+def clear_last_http_fetch_error() -> None:
+    """Clear per-thread last upstream failure (for refresh diagnostics)."""
+    _thread_state.last_error = None
+
+
+def get_last_http_fetch_error() -> HttpFetchError | None:
+    """Return the last HttpFetchError observed on this thread, if any."""
+    return getattr(_thread_state, "last_error", None)
+
+
+def _remember_http_fetch_error(exc: HttpFetchError) -> HttpFetchError:
+    _thread_state.last_error = exc
+    return exc
 
 
 def classify_http_failure(
@@ -76,6 +97,30 @@ def classify_http_failure(
     if status_code is not None and status_code >= 400:
         return "http_error"
     return "network_failure"
+
+
+def parse_retry_after_seconds(value: str | None) -> float | None:
+    """Parse an HTTP Retry-After header into seconds when possible."""
+    if value is None:
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    try:
+        seconds = float(text)
+    except ValueError:
+        return None
+    if seconds < 0:
+        return None
+    return seconds
+
+
+def capped_retry_sleep_seconds(retry_after: float | None, *, attempt: int) -> float:
+    """Backoff sleep for retries, honoring Retry-After with a hard ceiling."""
+    base = 0.25 * (attempt + 1)
+    if retry_after is None:
+        return base
+    return min(max(base, float(retry_after)), _MAX_RETRY_AFTER_SLEEP_SECONDS)
 
 
 def fetch_json(
@@ -179,6 +224,7 @@ def _request_with_retries(
     effective_provider = provider_name or _PROVIDER_NAMES_BY_HOST.get(host, host or "unknown")
     upstream_path = parsed.path or "/"
     operation = operation_name or f"http_{method.lower()}"
+    clear_last_http_fetch_error()
 
     for attempt in range(attempts):
         # Clear prior-attempt response metadata so a later network timeout cannot
@@ -198,6 +244,9 @@ def _request_with_retries(
             last_status_code = response.status_code
             last_content_type = response.headers.get("content-type")
             if response.status_code in _RETRYABLE_STATUS_CODES:
+                retry_after = parse_retry_after_seconds(
+                    response.headers.get("retry-after")
+                )
                 raise HttpFetchError(
                     f"Retryable HTTP {response.status_code} from {url}",
                     status_code=response.status_code,
@@ -206,6 +255,7 @@ def _request_with_retries(
                         response.status_code,
                         content_type=last_content_type,
                     ),
+                    retry_after_seconds=retry_after,
                 )
             response.raise_for_status()
             logger.debug(
@@ -233,6 +283,10 @@ def _request_with_retries(
                 last_status_code = exc.status_code
                 last_content_type = exc.content_type
             if attempt < attempts - 1:
+                retry_after = None
+                if isinstance(exc, HttpFetchError):
+                    retry_after = exc.retry_after_seconds
+                sleep_seconds = capped_retry_sleep_seconds(retry_after, attempt=attempt)
                 logger.warning(
                     "External HTTP request attempt failed",
                     extra={
@@ -249,9 +303,11 @@ def _request_with_retries(
                         "duration_ms": elapsed_ms(started_at),
                         "error_type": type(exc).__name__,
                         "error": str(exc),
+                        "retry_after_seconds": retry_after,
+                        "sleep_seconds": sleep_seconds,
                     },
                 )
-                time.sleep(0.25 * (attempt + 1))
+                time.sleep(sleep_seconds)
                 continue
 
     if (
@@ -313,11 +369,13 @@ def _request_with_retries(
                     "tls_verification_disabled": True,
                 },
             )
-            raise HttpFetchError(
-                f"HTTP request failed for {url}",
-                status_code=status_code,
-                content_type=content_type,
-                classification=classification,
+            raise _remember_http_fetch_error(
+                HttpFetchError(
+                    f"HTTP request failed for {url}",
+                    status_code=status_code,
+                    content_type=content_type,
+                    classification=classification,
+                )
             ) from exc
 
     if last_error is not None:
@@ -354,12 +412,14 @@ def _request_with_retries(
             },
         )
         if isinstance(last_error, HttpFetchError):
-            raise last_error
-        raise HttpFetchError(
-            f"HTTP request failed for {url}",
-            status_code=status_code,
-            content_type=content_type,
-            classification=classification,
+            raise _remember_http_fetch_error(last_error)
+        raise _remember_http_fetch_error(
+            HttpFetchError(
+                f"HTTP request failed for {url}",
+                status_code=status_code,
+                content_type=content_type,
+                classification=classification,
+            )
         ) from last_error
     logger.warning(
         "External HTTP request failed",
@@ -375,7 +435,9 @@ def _request_with_retries(
             "response_classification": "network_failure",
         },
     )
-    raise HttpFetchError(
-        f"HTTP request failed for {url}",
-        classification="network_failure",
+    raise _remember_http_fetch_error(
+        HttpFetchError(
+            f"HTTP request failed for {url}",
+            classification="network_failure",
+        )
     )
