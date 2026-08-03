@@ -334,7 +334,9 @@ def test_cache_first_response_includes_freshness_metadata() -> None:
     assert item.stale is False
 
 
-def test_cache_first_does_not_enqueue_when_refresher_owns_upstream(monkeypatch) -> None:
+def test_cache_first_requests_background_refresh_when_refresher_owns_upstream(
+    monkeypatch,
+) -> None:
     monkeypatch.setattr(cache.settings, "quote_refresher_enabled", True)
     monkeypatch.setattr(cache.settings, "quote_refresher_owns_upstream", True)
     monkeypatch.setattr(
@@ -344,8 +346,14 @@ def test_cache_first_does_not_enqueue_when_refresher_owns_upstream(monkeypatch) 
     provider = StubUSProvider()
     service = _service_with_provider(provider)
     scheduled: list[str] = []
+    requested: list[str] = []
     service._refresh_scheduler = (
         lambda svc, stock_id, token: scheduled.append(stock_id)
+    )
+    monkeypatch.setattr(
+        service,
+        "_request_background_refresh",
+        lambda stock_id: requested.append(stock_id),
     )
 
     items = service.get_quotes_cache_first(["US:AAPL"])
@@ -353,6 +361,7 @@ def test_cache_first_does_not_enqueue_when_refresher_owns_upstream(monkeypatch) 
     assert items[0].quote is None
     assert items[0].refresh_status == "queued"
     assert scheduled == []
+    assert requested == ["US:AAPL"]
     assert provider.quote_calls == []
 
 

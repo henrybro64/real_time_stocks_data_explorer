@@ -157,3 +157,32 @@ def test_legacy_payload_without_cached_at_still_deserializes() -> None:
     assert entry.quote.id == "US:AAPL"
     assert entry.stale is True
     assert entry.age_seconds >= 60
+
+
+def test_redis_reconnects_after_initial_connect_failure(monkeypatch) -> None:
+    monkeypatch.setattr(cache.settings, "redis_url", "redis://localhost:6379/0")
+    cache._client = False
+    cache._client_retry_after_monotonic = 0.0
+    attempts = {"count": 0}
+
+    class FakeRedis:
+        def ping(self):
+            return True
+
+    def fake_from_url(*_args, **_kwargs):
+        attempts["count"] += 1
+        if attempts["count"] == 1:
+            raise ConnectionError("down")
+        return FakeRedis()
+
+    fake_redis_lib = MagicMock()
+    fake_redis_lib.from_url = fake_from_url
+    monkeypatch.setitem(__import__("sys").modules, "redis", fake_redis_lib)
+
+    assert cache._redis() is None
+    assert cache._client is False
+    # Cooldown elapsed.
+    cache._client_retry_after_monotonic = 0.0
+    client = cache._redis()
+    assert client is not None
+    assert attempts["count"] == 2

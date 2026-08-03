@@ -484,3 +484,42 @@ def test_cycle_timeout_counts_stragglers(monkeypatch) -> None:
     stats = refresher.run_cycle()
     gate.set()
     assert stats.timed_out >= 1
+    assert "US:AAPL" in refresher._priority_refresh or "US:MSFT" in refresher._priority_refresh
+
+
+def test_open_market_refresh_uses_poll_cadence_not_soft_ttl(monkeypatch) -> None:
+    monkeypatch.setattr(cache.settings, "quote_refresher_open_poll_seconds", 45)
+    monkeypatch.setattr(cache.settings, "quote_cache_ttl_seconds", 60)
+    refresher, stub = _service(watchlist=["US:AAPL"])
+    cache.set_cached_quote("US:AAPL", stub._quotes["US:AAPL"])
+    with cache._memory_lock:
+        raw = cache._memory_quotes["US:AAPL"][1]
+    payload = __import__("json").loads(raw)
+    # Age 50s: older than open poll (45) but still soft-fresh (<60).
+    from datetime import UTC, datetime, timedelta
+
+    cached_at = (datetime.now(UTC) - timedelta(seconds=50)).isoformat().replace(
+        "+00:00", "Z"
+    )
+    payload["cached_at"] = cached_at
+    with cache._memory_lock:
+        cache._memory_quotes["US:AAPL"] = (1e18, __import__("json").dumps(payload))
+
+    stats = refresher.run_cycle()
+
+    assert stats.refreshed == 1
+    assert stub.quote_calls == ["US:AAPL"]
+
+
+def test_priority_rotation_puts_timed_out_symbols_first() -> None:
+    refresher, _ = _service(watchlist=["US:AAPL", "US:MSFT"])
+    refresher._priority_refresh = ["US:MSFT"]
+    ordered = refresher._order_symbols_for_cycle(["US:AAPL", "US:MSFT"])
+    assert ordered[0] == "US:MSFT"
+
+
+def test_immediate_refresh_empty_outcome_notes_circuit_failure() -> None:
+    refresher, stub = _service(watchlist=[])
+    stub.get_quote = lambda _stock_id: None  # type: ignore[method-assign]
+    refresher._safe_immediate_refresh("US:AAPL")
+    assert refresher._circuits["US"].consecutive_failures >= 1

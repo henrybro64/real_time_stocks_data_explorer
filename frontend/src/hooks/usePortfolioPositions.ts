@@ -66,10 +66,11 @@ export function usePortfolioPositions() {
     resetErrors();
     try {
       let quote = await fetchQuote(stockId);
-      // Cold miss while the background refresher owns upstream: wait briefly once.
+      // Cold miss while the background refresher owns upstream: wait longer than
+      // max jitter (2s) plus network/queue slack before giving up.
       if (quote.quote == null) {
         await new Promise((resolve) => {
-          window.setTimeout(resolve, 1500);
+          window.setTimeout(resolve, 4000);
         });
         quote = await fetchQuote(stockId);
       }

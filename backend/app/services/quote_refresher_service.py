@@ -21,11 +21,15 @@ from app.core.config import settings
 from app.core.diagnostics import elapsed_ms
 from app.repositories.portfolio_repository import portfolio_repository
 from app.repositories.watchlist_repository import watchlist_repository
-from app.services.http_client import HttpFetchError
+from app.services.http_client import (
+    HttpFetchError,
+    set_provider_request_spacing,
+)
 from app.services.market_clock import is_market_open, is_within_hour_before_market_open
 from app.services.quote_redis_cache import (
     get_cached_quote_entries,
     redis_enabled,
+    refresh_lock_seconds,
     release_refresh_lock,
     renew_refresh_lock,
     set_cached_quote,
@@ -37,6 +41,13 @@ logger = logging.getLogger(__name__)
 
 _LEADER_KEY = "quote:refresher:v1:leader"
 _MARKETS = ("US", "TW")
+_HTTP_PROVIDER_TO_MARKET = {
+    "yahoo_finance": "US",
+    "stooq": "US",
+    "twse": "TW",
+    "twse_openapi": "TW",
+    "tpex": "TW",
+}
 _RELEASE_LEADER_SCRIPT = """
 if redis.call("get", KEYS[1]) == ARGV[1] then
   return redis.call("del", KEYS[1])
@@ -113,6 +124,9 @@ class QuoteRefresherService:
         self._in_flight = 0
         self._in_flight_lock = threading.Lock()
         self._in_flight_peak = 0
+        self._cycle_cursor = 0
+        self._priority_refresh: list[str] = []
+        self._priority_lock = threading.Lock()
 
     def is_sampler_running(self) -> bool:
         with self._lock:
@@ -181,10 +195,13 @@ class QuoteRefresherService:
 
     def _safe_immediate_refresh(self, stock_id: str) -> None:
         try:
-            self._refresh_one(stock_id)
-            with self._immediate_lock:
-                self._immediate.discard(stock_id)
+            outcome = self._refresh_one(stock_id)
+            self._apply_refresh_outcome(stock_id, outcome)
+            if outcome == "refreshed":
+                with self._immediate_lock:
+                    self._immediate.discard(stock_id)
         except Exception as exc:  # noqa: BLE001 - never kill caller paths
+            self._apply_refresh_exception(stock_id, exc)
             logger.warning(
                 "Immediate quote refresh failed",
                 extra={
@@ -258,12 +275,14 @@ class QuoteRefresherService:
         stock_ids: list[str],
         stats: QuoteRefreshCycleStats,
     ) -> list[str]:
+        ordered_ids = self._order_symbols_for_cycle(stock_ids)
         now = self._now_provider()
         open_markets = self.open_markets(now=now)
+        open_min_age = float(settings.quote_refresher_open_poll_seconds)
         closed_min_age = float(settings.quote_refresher_closed_poll_seconds)
-        cached = get_cached_quote_entries(stock_ids)
+        cached = get_cached_quote_entries(ordered_ids)
         to_refresh: list[str] = []
-        for stock_id in stock_ids:
+        for stock_id in ordered_ids:
             market = stock_id.split(":", 1)[0]
             if self._circuit_is_open(market):
                 stats.skipped_circuit += 1
@@ -272,7 +291,8 @@ class QuoteRefresherService:
             if entry is not None:
                 stats.cache_age_seconds_sample.append(entry.age_seconds)
             if market in open_markets:
-                if entry is not None and not entry.stale:
+                # Refresh on the configured open cadence, not soft-TTL freshness.
+                if entry is not None and entry.age_seconds < open_min_age:
                     stats.skipped_fresh += 1
                     continue
             elif entry is not None and entry.age_seconds < closed_min_age:
@@ -280,6 +300,26 @@ class QuoteRefresherService:
                 continue
             to_refresh.append(stock_id)
         return to_refresh
+
+    def _order_symbols_for_cycle(self, stock_ids: list[str]) -> list[str]:
+        """Prioritize previously timed-out IDs and rotate the remainder."""
+        if not stock_ids:
+            return []
+        id_set = set(stock_ids)
+        with self._priority_lock:
+            priority = [sid for sid in self._priority_refresh if sid in id_set]
+            self._priority_refresh = [sid for sid in self._priority_refresh if sid in id_set]
+        remaining = [sid for sid in stock_ids if sid not in set(priority)]
+        if remaining:
+            offset = self._cycle_cursor % len(remaining)
+            remaining = remaining[offset:] + remaining[:offset]
+            self._cycle_cursor = (self._cycle_cursor + 1) % len(remaining)
+        return [*priority, *remaining]
+
+    def _note_timed_out_priority(self, stock_id: str) -> None:
+        with self._priority_lock:
+            if stock_id not in self._priority_refresh:
+                self._priority_refresh.append(stock_id)
 
     def _run_refresh_batch(
         self,
@@ -299,6 +339,11 @@ class QuoteRefresherService:
                 stock_id = futures[future]
                 recorded.add(stock_id)
                 self._record_future_outcome(future, stock_id, stats)
+                with self._priority_lock:
+                    if stock_id in self._priority_refresh:
+                        self._priority_refresh = [
+                            item for item in self._priority_refresh if item != stock_id
+                        ]
         except FuturesTimeout:
             self._finalize_timed_out_futures(futures, recorded, stats)
         with self._in_flight_lock:
@@ -317,15 +362,41 @@ class QuoteRefresherService:
                 recorded.add(stock_id)
                 self._record_future_outcome(future, stock_id, stats)
                 continue
-            future.cancel()
+            cancelled = future.cancel()
             stats.timed_out += 1
+            self._note_timed_out_priority(stock_id)
             logger.warning(
                 "Quote refresher cycle timed out waiting for symbol",
                 extra={
                     "event": "quote_refresher.cycle.timeout_symbol",
                     "stock_id": stock_id,
+                    "cancelled": cancelled,
                 },
             )
+            if cancelled:
+                continue
+            # Running futures cannot be cancelled; still account their eventual
+            # outcome so 429/Retry-After update backoff/circuit state.
+            future.add_done_callback(
+                lambda done, sid=stock_id: self._record_late_future_outcome(done, sid)
+            )
+
+    def _record_late_future_outcome(self, future: Future[str], stock_id: str) -> None:
+        try:
+            late_stats = QuoteRefreshCycleStats()
+            self._record_future_outcome(future, stock_id, late_stats)
+            logger.info(
+                "Quote refresher recorded late future outcome",
+                extra={
+                    "event": "quote_refresher.cycle.late_outcome",
+                    "stock_id": stock_id,
+                    "symbols_refreshed": late_stats.refreshed,
+                    "symbols_failed": late_stats.failed,
+                    "failure_by_classification": late_stats.failure_by_classification,
+                },
+            )
+        except Exception as exc:  # noqa: BLE001 - never raise into pool callbacks
+            logger.debug("Late future outcome handling failed: %s", exc)
 
     def jitter_seconds(self) -> float:
         upper = float(settings.quote_refresher_jitter_seconds)
@@ -365,10 +436,23 @@ class QuoteRefresherService:
             return "locked"
         if not renew_refresh_lock(stock_id, token):
             return "locked"
+        stop_heartbeat = threading.Event()
+        heartbeat = threading.Thread(
+            target=self._renew_lock_until,
+            args=(stock_id, token, stop_heartbeat),
+            daemon=True,
+            name=f"quote-lock-{stock_id}",
+        )
+        heartbeat.start()
         with self._in_flight_lock:
             self._in_flight += 1
             self._in_flight_peak = max(self._in_flight_peak, self._in_flight)
+        previous_spacing = None
         try:
+            from app.services.http_client import get_provider_request_spacing
+
+            previous_spacing = get_provider_request_spacing()
+            set_provider_request_spacing(self._spacing_for_http_provider)
             attempt = self._quote_source.fetch_quote_for_refresh(stock_id)
             if attempt.quote is not None:
                 set_cached_quote(stock_id, attempt.quote)
@@ -379,9 +463,29 @@ class QuoteRefresherService:
                 raise attempt.error
             return "empty"
         finally:
+            set_provider_request_spacing(previous_spacing)
+            stop_heartbeat.set()
+            heartbeat.join(timeout=1.0)
             with self._in_flight_lock:
                 self._in_flight = max(0, self._in_flight - 1)
             release_refresh_lock(stock_id, token)
+
+    def _renew_lock_until(
+        self,
+        stock_id: str,
+        token: str,
+        stop_event: threading.Event,
+    ) -> None:
+        interval = max(5.0, float(refresh_lock_seconds()) / 3.0)
+        while not stop_event.wait(interval):
+            if not renew_refresh_lock(stock_id, token):
+                return
+
+    def _spacing_for_http_provider(self, provider_name: str) -> None:
+        market = _HTTP_PROVIDER_TO_MARKET.get(provider_name)
+        if market is None:
+            return
+        self._wait_for_provider_slot(market)
 
     def _wait_for_provider_slot(self, market: str) -> None:
         interval = float(settings.quote_refresher_min_interval_seconds)
@@ -514,47 +618,69 @@ class QuoteRefresherService:
         stock_id: str,
         stats: QuoteRefreshCycleStats,
     ) -> None:
-        market = stock_id.split(":", 1)[0]
         try:
             outcome = future.result()
         except Exception as exc:  # noqa: BLE001 - isolate per-symbol failures
+            self._apply_refresh_exception(stock_id, exc, stats=stats)
+            return
+        self._apply_refresh_outcome(stock_id, outcome, stats=stats)
+
+    def _apply_refresh_exception(
+        self,
+        stock_id: str,
+        exc: Exception,
+        *,
+        stats: QuoteRefreshCycleStats | None = None,
+    ) -> None:
+        market = stock_id.split(":", 1)[0]
+        classification = _classification_from_exc(exc)
+        if stats is not None:
             stats.failed += 1
             stats.provider_requests[market] = stats.provider_requests.get(market, 0) + 1
-            classification = _classification_from_exc(exc)
             stats.failure_by_classification[classification] = (
                 stats.failure_by_classification.get(classification, 0) + 1
             )
-            self._note_provider_failure(
-                market,
-                classification=classification,
-                retry_after_seconds=_retry_after_from_exc(exc),
-            )
-            return
+        self._note_provider_failure(
+            market,
+            classification=classification,
+            retry_after_seconds=_retry_after_from_exc(exc),
+        )
+
+    def _apply_refresh_outcome(
+        self,
+        stock_id: str,
+        outcome: str,
+        *,
+        stats: QuoteRefreshCycleStats | None = None,
+    ) -> None:
+        market = stock_id.split(":", 1)[0]
         if outcome == "refreshed":
-            stats.refreshed += 1
-            stats.provider_requests[market] = stats.provider_requests.get(market, 0) + 1
-            stats.success_by_provider[market] = (
-                stats.success_by_provider.get(market, 0) + 1
-            )
+            if stats is not None:
+                stats.refreshed += 1
+                stats.provider_requests[market] = (
+                    stats.provider_requests.get(market, 0) + 1
+                )
+                stats.success_by_provider[market] = (
+                    stats.success_by_provider.get(market, 0) + 1
+                )
             self._note_provider_success(market)
-        elif outcome == "locked":
-            stats.skipped_locked += 1
-        elif outcome == "circuit":
-            stats.skipped_circuit += 1
-        elif outcome == "empty":
+            return
+        if outcome == "locked":
+            if stats is not None:
+                stats.skipped_locked += 1
+            return
+        if outcome == "circuit":
+            if stats is not None:
+                stats.skipped_circuit += 1
+            return
+        classification = "empty" if outcome == "empty" else "http_error"
+        if stats is not None:
             stats.failed += 1
             stats.provider_requests[market] = stats.provider_requests.get(market, 0) + 1
-            stats.failure_by_classification["empty"] = (
-                stats.failure_by_classification.get("empty", 0) + 1
+            stats.failure_by_classification[classification] = (
+                stats.failure_by_classification.get(classification, 0) + 1
             )
-            self._note_provider_failure(market, classification="empty")
-        else:
-            stats.failed += 1
-            stats.provider_requests[market] = stats.provider_requests.get(market, 0) + 1
-            stats.failure_by_classification["http_error"] = (
-                stats.failure_by_classification.get("http_error", 0) + 1
-            )
-            self._note_provider_failure(market, classification="http_error")
+        self._note_provider_failure(market, classification=classification)
 
     def _log_cycle(self, stats: QuoteRefreshCycleStats) -> None:
         with self._circuit_lock:

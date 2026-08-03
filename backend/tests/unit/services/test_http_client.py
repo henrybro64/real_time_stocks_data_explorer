@@ -8,10 +8,18 @@ import pytest
 from app.services.http_client import (
     HttpFetchError,
     classify_http_failure,
+    clear_last_http_fetch_error,
     fetch_json,
     get_last_http_fetch_error,
     parse_retry_after_seconds,
 )
+
+
+@pytest.fixture(autouse=True)
+def _clear_http_thread_state() -> None:
+    clear_last_http_fetch_error()
+    yield
+    clear_last_http_fetch_error()
 
 
 def test_classify_http_failure_maps_auth_rate_limit_and_json() -> None:
@@ -67,12 +75,17 @@ def test_fetch_json_raises_rate_limited_for_http_429(monkeypatch) -> None:
 
 
 def test_parse_retry_after_seconds() -> None:
+    from datetime import UTC, datetime, timedelta
+
     from app.services.http_client import parse_retry_after_seconds
 
     assert parse_retry_after_seconds("12") == pytest.approx(12.0)
     assert parse_retry_after_seconds(" 3.5 ") == pytest.approx(3.5)
     assert parse_retry_after_seconds(None) is None
-    assert parse_retry_after_seconds("Wed, 01 Jan 2020") is None
+    assert parse_retry_after_seconds("not-a-date") is None
+    future = datetime.now(UTC) + timedelta(seconds=45)
+    http_date = future.strftime("%a, %d %b %Y %H:%M:%S GMT")
+    assert parse_retry_after_seconds(http_date) == pytest.approx(45.0, abs=2.0)
 
 
 def test_fetch_json_honors_retry_after_on_retry_sleep(monkeypatch) -> None:
@@ -208,3 +221,23 @@ def test_fetch_json_does_not_reuse_prior_rate_limit_after_timeout(monkeypatch) -
     assert calls["count"] == 2
     assert exc_info.value.classification == "network_failure"
     assert exc_info.value.status_code is None
+
+
+def test_remember_keeps_rate_limit_across_fallback_requests() -> None:
+    from app.services import http_client as http_client_module
+
+    http_client_module.clear_last_http_fetch_error()
+    rate = HttpFetchError(
+        "rate limited",
+        status_code=429,
+        classification="rate_limited",
+        retry_after_seconds=12.0,
+    )
+    emptyish = HttpFetchError(
+        "bad payload",
+        status_code=200,
+        classification="unexpected_content",
+    )
+    assert http_client_module._remember_http_fetch_error(rate) is rate
+    assert http_client_module._remember_http_fetch_error(emptyish) is emptyish
+    assert http_client_module.get_last_http_fetch_error() is rate

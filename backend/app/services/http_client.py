@@ -4,7 +4,7 @@ import logging
 import threading
 import time
 from time import perf_counter
-from typing import Literal
+from typing import Callable, Literal
 from urllib.parse import urlparse
 
 import httpx
@@ -74,8 +74,31 @@ def get_last_http_fetch_error() -> HttpFetchError | None:
 
 
 def _remember_http_fetch_error(exc: HttpFetchError) -> HttpFetchError:
+    """Track actionable failures for refresh diagnostics; always return ``exc``.
+
+    Rate-limit / auth failures stay sticky in thread-local storage across
+    fallback requests so ``get_last_http_fetch_error`` can still see Retry-After
+    after a later empty/unusable response. Raise sites must still raise the
+    current ``exc`` (not the sticky value).
+    """
+    previous = getattr(_thread_state, "last_error", None)
+    if (
+        previous is not None
+        and previous.classification in {"rate_limited", "auth_denied"}
+        and exc.classification not in {"rate_limited", "auth_denied"}
+    ):
+        return exc
     _thread_state.last_error = exc
     return exc
+
+
+def set_provider_request_spacing(hook: Callable[[str], None] | None) -> None:
+    """Install a per-thread hook invoked before each upstream HTTP attempt."""
+    _thread_state.provider_spacing_hook = hook
+
+
+def get_provider_request_spacing() -> Callable[[str], None] | None:
+    return getattr(_thread_state, "provider_spacing_hook", None)
 
 
 def classify_http_failure(
@@ -100,7 +123,7 @@ def classify_http_failure(
 
 
 def parse_retry_after_seconds(value: str | None) -> float | None:
-    """Parse an HTTP Retry-After header into seconds when possible."""
+    """Parse an HTTP Retry-After header (delay-seconds or HTTP-date) into seconds."""
     if value is None:
         return None
     text = value.strip()
@@ -109,10 +132,22 @@ def parse_retry_after_seconds(value: str | None) -> float | None:
     try:
         seconds = float(text)
     except ValueError:
+        seconds = None
+    if seconds is not None:
+        if seconds < 0:
+            return None
+        return seconds
+    try:
+        from datetime import UTC, datetime
+        from email.utils import parsedate_to_datetime
+
+        when = parsedate_to_datetime(text)
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=UTC)
+        delta = (when - datetime.now(UTC)).total_seconds()
+        return max(0.0, delta)
+    except Exception:
         return None
-    if seconds < 0:
-        return None
-    return seconds
 
 
 def capped_retry_sleep_seconds(retry_after: float | None, *, attempt: int) -> float:
@@ -224,13 +259,20 @@ def _request_with_retries(
     effective_provider = provider_name or _PROVIDER_NAMES_BY_HOST.get(host, host or "unknown")
     upstream_path = parsed.path or "/"
     operation = operation_name or f"http_{method.lower()}"
-    clear_last_http_fetch_error()
+    # Do not clear thread-local last_error here: a provider operation may issue
+    # several fallback requests and needs the first rate-limit/auth failure kept.
 
     for attempt in range(attempts):
         # Clear prior-attempt response metadata so a later network timeout cannot
         # inherit an earlier 401/429 and misclassify the final failure.
         last_status_code = None
         last_content_type = None
+        spacing_hook = get_provider_request_spacing()
+        if spacing_hook is not None:
+            try:
+                spacing_hook(effective_provider)
+            except Exception as spacing_exc:  # noqa: BLE001 - never block HTTP
+                logger.debug("Provider spacing hook failed: %s", spacing_exc)
         try:
             response = httpx.request(
                 method,

@@ -392,6 +392,7 @@ class QuoteService:
         if refresh_failure_active(stock_id):
             return "unavailable"
         if self._background_refresher_owns_upstream():
+            self._request_background_refresh(stock_id)
             return "queued"
         return self._refresh_status_after_enqueue(stock_id)
 
@@ -400,6 +401,7 @@ class QuoteService:
         if refresh_failure_active(stock_id):
             return "idle"
         if self._background_refresher_owns_upstream():
+            self._request_background_refresh(stock_id)
             return "queued"
         return self._refresh_status_after_enqueue(stock_id)
 
