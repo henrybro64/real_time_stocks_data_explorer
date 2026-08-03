@@ -161,8 +161,8 @@ def test_legacy_payload_without_cached_at_still_deserializes() -> None:
 
 def test_redis_reconnects_after_initial_connect_failure(monkeypatch) -> None:
     monkeypatch.setattr(cache.settings, "redis_url", "redis://localhost:6379/0")
-    cache._client = False
-    cache._client_retry_after_monotonic = 0.0
+    monkeypatch.setattr(cache, "_client", False)
+    monkeypatch.setattr(cache, "_client_retry_after_monotonic", 0.0)
     attempts = {"count": 0}
 
     class FakeRedis:
@@ -182,7 +182,7 @@ def test_redis_reconnects_after_initial_connect_failure(monkeypatch) -> None:
     assert cache._redis() is None
     assert cache._client is False
     # Cooldown elapsed.
-    cache._client_retry_after_monotonic = 0.0
+    monkeypatch.setattr(cache, "_client_retry_after_monotonic", 0.0)
     client = cache._redis()
     assert client is not None
     assert attempts["count"] == 2

@@ -136,7 +136,11 @@ def test_fetch_json_caps_large_retry_after_sleep(monkeypatch) -> None:
         fetch_json("https://www.twse.com.tw/rwd/zh/marginTrading/TWT93U", retries=1)
 
     assert sleeps == [pytest.approx(30.0)]
-    assert get_last_http_fetch_error() is exc_info.value
+    assert exc_info.value.classification == "network_failure"
+    last = get_last_http_fetch_error()
+    assert last is not None
+    assert last.classification == "rate_limited"
+    assert last.retry_after_seconds == pytest.approx(3600.0)
 
 
 def test_fetch_json_raises_unexpected_content_for_html_body(monkeypatch) -> None:
@@ -238,6 +242,6 @@ def test_remember_keeps_rate_limit_across_fallback_requests() -> None:
         status_code=200,
         classification="unexpected_content",
     )
-    assert http_client_module._remember_http_fetch_error(rate) is rate
-    assert http_client_module._remember_http_fetch_error(emptyish) is emptyish
+    http_client_module._remember_http_fetch_error(rate)
+    http_client_module._remember_http_fetch_error(emptyish)
     assert http_client_module.get_last_http_fetch_error() is rate

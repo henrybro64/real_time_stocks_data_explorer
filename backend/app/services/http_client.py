@@ -73,13 +73,12 @@ def get_last_http_fetch_error() -> HttpFetchError | None:
     return getattr(_thread_state, "last_error", None)
 
 
-def _remember_http_fetch_error(exc: HttpFetchError) -> HttpFetchError:
-    """Track actionable failures for refresh diagnostics; always return ``exc``.
+def _remember_http_fetch_error(exc: HttpFetchError) -> None:
+    """Track actionable failures for refresh diagnostics.
 
     Rate-limit / auth failures stay sticky in thread-local storage across
     fallback requests so ``get_last_http_fetch_error`` can still see Retry-After
-    after a later empty/unusable response. Raise sites must still raise the
-    current ``exc`` (not the sticky value).
+    after a later empty/unusable response.
     """
     previous = getattr(_thread_state, "last_error", None)
     if (
@@ -87,9 +86,8 @@ def _remember_http_fetch_error(exc: HttpFetchError) -> HttpFetchError:
         and previous.classification in {"rate_limited", "auth_denied"}
         and exc.classification not in {"rate_limited", "auth_denied"}
     ):
-        return exc
+        return
     _thread_state.last_error = exc
-    return exc
 
 
 def set_provider_request_spacing(hook: Callable[[str], None] | None) -> None:
@@ -324,6 +322,7 @@ def _request_with_retries(
             elif isinstance(exc, HttpFetchError):
                 last_status_code = exc.status_code
                 last_content_type = exc.content_type
+                _remember_http_fetch_error(exc)
             if attempt < attempts - 1:
                 retry_after = None
                 if isinstance(exc, HttpFetchError):
@@ -411,14 +410,14 @@ def _request_with_retries(
                     "tls_verification_disabled": True,
                 },
             )
-            raise _remember_http_fetch_error(
-                HttpFetchError(
-                    f"HTTP request failed for {url}",
-                    status_code=status_code,
-                    content_type=content_type,
-                    classification=classification,
-                )
-            ) from exc
+            err = HttpFetchError(
+                f"HTTP request failed for {url}",
+                status_code=status_code,
+                content_type=content_type,
+                classification=classification,
+            )
+            _remember_http_fetch_error(err)
+            raise err from exc
 
     if last_error is not None:
         if isinstance(last_error, HttpFetchError):
@@ -454,15 +453,16 @@ def _request_with_retries(
             },
         )
         if isinstance(last_error, HttpFetchError):
-            raise _remember_http_fetch_error(last_error)
-        raise _remember_http_fetch_error(
-            HttpFetchError(
-                f"HTTP request failed for {url}",
-                status_code=status_code,
-                content_type=content_type,
-                classification=classification,
-            )
-        ) from last_error
+            _remember_http_fetch_error(last_error)
+            raise last_error
+        err = HttpFetchError(
+            f"HTTP request failed for {url}",
+            status_code=status_code,
+            content_type=content_type,
+            classification=classification,
+        )
+        _remember_http_fetch_error(err)
+        raise err from last_error
     logger.warning(
         "External HTTP request failed",
         extra={
@@ -477,9 +477,9 @@ def _request_with_retries(
             "response_classification": "network_failure",
         },
     )
-    raise _remember_http_fetch_error(
-        HttpFetchError(
-            f"HTTP request failed for {url}",
-            classification="network_failure",
-        )
+    err = HttpFetchError(
+        f"HTTP request failed for {url}",
+        classification="network_failure",
     )
+    _remember_http_fetch_error(err)
+    raise err

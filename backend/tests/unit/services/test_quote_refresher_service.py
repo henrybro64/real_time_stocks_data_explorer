@@ -10,29 +10,13 @@ from app.services import quote_redis_cache as cache
 from app.services.http_client import HttpFetchError
 from app.services.quote_refresher_service import QuoteRefresherService
 from app.services.quote_service import QuoteService
-from tests.support import StubUSProvider, quote_record, stock_record
-
-
-class FakeWatchlistRepo:
-    def __init__(self, ids: list[str] | None = None) -> None:
-        self.ids = list(ids or [])
-
-    def is_available(self) -> bool:
-        return True
-
-    def list_distinct_stock_ids(self) -> list[str]:
-        return list(self.ids)
-
-
-class FakePortfolioRepo:
-    def __init__(self, ids: list[str] | None = None) -> None:
-        self.ids = list(ids or [])
-
-    def is_available(self) -> bool:
-        return True
-
-    def list_distinct_position_stock_ids(self) -> list[str]:
-        return list(self.ids)
+from tests.support import (
+    FakeTrackedIdsRepo,
+    StubUSProvider,
+    age_memory_cached_quote,
+    quote_record,
+    stock_record,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -82,8 +66,8 @@ def _service(
         return low
 
     refresher = QuoteRefresherService(
-        watchlist_repo=FakeWatchlistRepo(watchlist),
-        portfolio_repo=FakePortfolioRepo(portfolio),
+        watchlist_repo=FakeTrackedIdsRepo(watchlist),
+        portfolio_repo=FakeTrackedIdsRepo(portfolio),
         quote_source=quote_source,
         now_provider=lambda: now or datetime(2026, 5, 12, 14, 0, tzinfo=UTC),
         sleep_fn=lambda _seconds: None,
@@ -305,12 +289,7 @@ def test_exponential_backoff_increases_with_failures() -> None:
 def test_stale_cache_remains_available_during_provider_outage() -> None:
     stub = StubUSProvider()
     cache.set_cached_quote("US:AAPL", stub._quotes["US:AAPL"])
-    with cache._memory_lock:
-        raw = cache._memory_quotes["US:AAPL"][1]
-    payload = __import__("json").loads(raw)
-    payload["cached_at"] = "2026-01-01T00:00:00Z"
-    with cache._memory_lock:
-        cache._memory_quotes["US:AAPL"] = (1e18, __import__("json").dumps(payload))
+    age_memory_cached_quote("US:AAPL")
     stub.fail_ids.add("US:AAPL")
     stub.fail_exc = HttpFetchError(
         "forbidden",
@@ -429,8 +408,8 @@ def test_closed_market_symbols_refresh_on_closed_cadence(monkeypatch) -> None:
     quote_source = QuoteService()
     quote_source.providers = {"US": stub, "TW": stub}
     refresher = QuoteRefresherService(
-        watchlist_repo=FakeWatchlistRepo(["US:AAPL", "TW:2330"]),
-        portfolio_repo=FakePortfolioRepo([]),
+        watchlist_repo=FakeTrackedIdsRepo(["US:AAPL", "TW:2330"]),
+        portfolio_repo=FakeTrackedIdsRepo([]),
         quote_source=quote_source,
         now_provider=lambda: datetime(2026, 5, 12, 14, 0, tzinfo=UTC),
         sleep_fn=lambda _seconds: None,
@@ -492,18 +471,12 @@ def test_open_market_refresh_uses_poll_cadence_not_soft_ttl(monkeypatch) -> None
     monkeypatch.setattr(cache.settings, "quote_cache_ttl_seconds", 60)
     refresher, stub = _service(watchlist=["US:AAPL"])
     cache.set_cached_quote("US:AAPL", stub._quotes["US:AAPL"])
-    with cache._memory_lock:
-        raw = cache._memory_quotes["US:AAPL"][1]
-    payload = __import__("json").loads(raw)
-    # Age 50s: older than open poll (45) but still soft-fresh (<60).
     from datetime import UTC, datetime, timedelta
 
     cached_at = (datetime.now(UTC) - timedelta(seconds=50)).isoformat().replace(
         "+00:00", "Z"
     )
-    payload["cached_at"] = cached_at
-    with cache._memory_lock:
-        cache._memory_quotes["US:AAPL"] = (1e18, __import__("json").dumps(payload))
+    age_memory_cached_quote("US:AAPL", cached_at=cached_at)
 
     stats = refresher.run_cycle()
 

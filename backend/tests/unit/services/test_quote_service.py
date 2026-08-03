@@ -8,7 +8,7 @@ import pytest
 from app.services import quote_redis_cache as cache
 from app.services.http_client import HttpFetchError
 from app.services.quote_service import QuoteService
-from tests.support import StubUSProvider
+from tests.support import StubUSProvider, age_memory_cached_quote
 
 
 @pytest.fixture(autouse=True)
@@ -29,6 +29,16 @@ def _service_with_provider(provider: StubUSProvider) -> QuoteService:
     service = QuoteService()
     service.providers = {"US": provider}
     return service
+
+
+
+def _enable_refresher_owns_upstream(monkeypatch) -> None:
+    monkeypatch.setattr(cache.settings, "quote_refresher_enabled", True)
+    monkeypatch.setattr(cache.settings, "quote_refresher_owns_upstream", True)
+    monkeypatch.setattr(
+        "app.services.quote_refresher_service.quote_refresher_service.is_sampler_running",
+        lambda: True,
+    )
 
 
 def test_get_live_quotes_uses_live_us_provider_and_skips_missing_symbols() -> None:
@@ -69,15 +79,7 @@ def test_cache_first_batch_returns_stale_immediately_and_queues_refresh() -> Non
 
     service._refresh_scheduler = capture_refresh
     cache.set_cached_quote("US:AAPL", provider._quotes["US:AAPL"])
-    # Force soft-stale by rewriting payload age.
-    entry = cache.get_cached_quote_entry("US:AAPL")
-    assert entry is not None
-    with cache._memory_lock:
-        raw = cache._memory_quotes["US:AAPL"][1]
-    payload = __import__("json").loads(raw)
-    payload["cached_at"] = "2026-01-01T00:00:00Z"
-    with cache._memory_lock:
-        cache._memory_quotes["US:AAPL"] = (1e18, __import__("json").dumps(payload))
+    age_memory_cached_quote("US:AAPL")
 
     started = time.perf_counter()
     items = service.get_quotes_cache_first(["US:AAPL"])
@@ -189,12 +191,7 @@ def test_stale_duplicate_requests_mark_refreshing_not_idle() -> None:
 
     service._refresh_scheduler = capture_refresh
     cache.set_cached_quote("US:AAPL", provider._quotes["US:AAPL"])
-    with cache._memory_lock:
-        raw = cache._memory_quotes["US:AAPL"][1]
-    payload = __import__("json").loads(raw)
-    payload["cached_at"] = "2026-01-01T00:00:00Z"
-    with cache._memory_lock:
-        cache._memory_quotes["US:AAPL"] = (1e18, __import__("json").dumps(payload))
+    age_memory_cached_quote("US:AAPL")
 
     first = service.get_quotes_cache_first(["US:AAPL"])
     second = service.get_quotes_cache_first(["US:AAPL"])
@@ -218,12 +215,7 @@ def test_cache_first_keeps_stale_quote_when_background_refresh_fails() -> None:
 
     service._refresh_scheduler = run_refresh
     cache.set_cached_quote("US:AAPL", provider._quotes["US:AAPL"])
-    with cache._memory_lock:
-        raw = cache._memory_quotes["US:AAPL"][1]
-    payload = __import__("json").loads(raw)
-    payload["cached_at"] = "2026-01-01T00:00:00Z"
-    with cache._memory_lock:
-        cache._memory_quotes["US:AAPL"] = (1e18, __import__("json").dumps(payload))
+    age_memory_cached_quote("US:AAPL")
 
     first = service.get_quotes_cache_first(["US:AAPL"])
     assert first[0].quote is not None
@@ -243,12 +235,7 @@ def test_get_quotes_does_not_serve_stale_fallback_for_rankings() -> None:
     provider.fail_ids.add("US:AAPL")
     service = _service_with_provider(provider)
     cache.set_cached_quote("US:AAPL", provider._quotes["US:AAPL"])
-    with cache._memory_lock:
-        raw = cache._memory_quotes["US:AAPL"][1]
-    payload = __import__("json").loads(raw)
-    payload["cached_at"] = "2026-01-01T00:00:00Z"
-    with cache._memory_lock:
-        cache._memory_quotes["US:AAPL"] = (1e18, __import__("json").dumps(payload))
+    age_memory_cached_quote("US:AAPL")
 
     with pytest.raises(RuntimeError, match="provider failed"):
         service.get_quotes(["US:AAPL"])
@@ -287,12 +274,7 @@ def test_get_quote_keeps_stale_cache_when_provider_fails() -> None:
     provider.fail_ids.add("US:AAPL")
     service = _service_with_provider(provider)
     cache.set_cached_quote("US:AAPL", provider._quotes["US:AAPL"])
-    with cache._memory_lock:
-        raw = cache._memory_quotes["US:AAPL"][1]
-    payload = __import__("json").loads(raw)
-    payload["cached_at"] = "2026-01-01T00:00:00Z"
-    with cache._memory_lock:
-        cache._memory_quotes["US:AAPL"] = (1e18, __import__("json").dumps(payload))
+    age_memory_cached_quote("US:AAPL")
 
     quote = service.get_quote("US:AAPL")
 
@@ -305,12 +287,7 @@ def test_get_quote_returns_stale_cache_when_provider_returns_none() -> None:
     provider = StubUSProvider()
     service = _service_with_provider(provider)
     cache.set_cached_quote("US:AAPL", provider._quotes["US:AAPL"])
-    with cache._memory_lock:
-        raw = cache._memory_quotes["US:AAPL"][1]
-    payload = __import__("json").loads(raw)
-    payload["cached_at"] = "2026-01-01T00:00:00Z"
-    with cache._memory_lock:
-        cache._memory_quotes["US:AAPL"] = (1e18, __import__("json").dumps(payload))
+    age_memory_cached_quote("US:AAPL")
     provider._quotes.pop("US:AAPL")
 
     quote = service.get_quote("US:AAPL")
@@ -337,12 +314,7 @@ def test_cache_first_response_includes_freshness_metadata() -> None:
 def test_cache_first_requests_background_refresh_when_refresher_owns_upstream(
     monkeypatch,
 ) -> None:
-    monkeypatch.setattr(cache.settings, "quote_refresher_enabled", True)
-    monkeypatch.setattr(cache.settings, "quote_refresher_owns_upstream", True)
-    monkeypatch.setattr(
-        "app.services.quote_refresher_service.quote_refresher_service.is_sampler_running",
-        lambda: True,
-    )
+    _enable_refresher_owns_upstream(monkeypatch)
     provider = StubUSProvider()
     service = _service_with_provider(provider)
     scheduled: list[str] = []
@@ -366,21 +338,11 @@ def test_cache_first_requests_background_refresh_when_refresher_owns_upstream(
 
 
 def test_get_quote_does_not_hit_provider_when_refresher_owns_upstream(monkeypatch) -> None:
-    monkeypatch.setattr(cache.settings, "quote_refresher_enabled", True)
-    monkeypatch.setattr(cache.settings, "quote_refresher_owns_upstream", True)
-    monkeypatch.setattr(
-        "app.services.quote_refresher_service.quote_refresher_service.is_sampler_running",
-        lambda: True,
-    )
+    _enable_refresher_owns_upstream(monkeypatch)
     provider = StubUSProvider()
     service = _service_with_provider(provider)
     cache.set_cached_quote("US:AAPL", provider._quotes["US:AAPL"])
-    with cache._memory_lock:
-        raw = cache._memory_quotes["US:AAPL"][1]
-    payload = __import__("json").loads(raw)
-    payload["cached_at"] = "2026-01-01T00:00:00Z"
-    with cache._memory_lock:
-        cache._memory_quotes["US:AAPL"] = (1e18, __import__("json").dumps(payload))
+    age_memory_cached_quote("US:AAPL")
     requested: list[str] = []
     monkeypatch.setattr(
         service,
@@ -415,21 +377,11 @@ def test_get_quote_falls_back_to_provider_when_refresher_not_running(monkeypatch
 def test_get_quote_detail_serves_stale_without_provider_when_refresher_owns(
     monkeypatch,
 ) -> None:
-    monkeypatch.setattr(cache.settings, "quote_refresher_enabled", True)
-    monkeypatch.setattr(cache.settings, "quote_refresher_owns_upstream", True)
-    monkeypatch.setattr(
-        "app.services.quote_refresher_service.quote_refresher_service.is_sampler_running",
-        lambda: True,
-    )
+    _enable_refresher_owns_upstream(monkeypatch)
     provider = StubUSProvider()
     service = _service_with_provider(provider)
     cache.set_cached_quote("US:AAPL", provider._quotes["US:AAPL"])
-    with cache._memory_lock:
-        raw = cache._memory_quotes["US:AAPL"][1]
-    payload = __import__("json").loads(raw)
-    payload["cached_at"] = "2026-01-01T00:00:00Z"
-    with cache._memory_lock:
-        cache._memory_quotes["US:AAPL"] = (1e18, __import__("json").dumps(payload))
+    age_memory_cached_quote("US:AAPL")
     requested: list[str] = []
     monkeypatch.setattr(
         service,
