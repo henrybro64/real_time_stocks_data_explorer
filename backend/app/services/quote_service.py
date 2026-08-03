@@ -34,6 +34,7 @@ logger = logging.getLogger(__name__)
 
 RefreshStatus = Literal["idle", "queued", "refreshing", "unavailable"]
 CacheSource = Literal["redis", "memory", "provider", "none"]
+_UTC_Z_SUFFIX = "+00:00"
 
 _refresh_executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="quote-swr")
 
@@ -55,6 +56,14 @@ class QuoteFetchAttempt:
 
     quote: QuoteRecord | None
     error: HttpFetchError | None = None
+
+
+def _format_cached_at(cached_at) -> str:
+    return cached_at.isoformat().replace(_UTC_Z_SUFFIX, "Z")
+
+
+def _cache_source() -> CacheSource:
+    return "redis" if redis_enabled() else "memory"
 
 
 class QuoteService:
@@ -229,58 +238,32 @@ class QuoteService:
 
         cached = get_cached_quote_entry(stock_id)
         if cached is not None and not cached.stale:
-            source: CacheSource = "redis" if redis_enabled() else "memory"
-            return QuoteBatchItem(
-                stock=stock,
-                quote=cached.quote,
-                cached_at=cached.cached_at.isoformat().replace("+00:00", "Z"),
-                age_seconds=round(cached.age_seconds, 3),
-                stale=False,
-                source=source,
-                refresh_status="idle",
+            return self._batch_item_from_cache(
+                stock, cached, stale=False, refresh_status="idle"
             )
 
         if self._background_refresher_owns_upstream():
             self._request_background_refresh(stock_id)
             if cached is not None:
-                source = "redis" if redis_enabled() else "memory"
-                return QuoteBatchItem(
-                    stock=stock,
-                    quote=cached.quote,
-                    cached_at=cached.cached_at.isoformat().replace("+00:00", "Z"),
-                    age_seconds=round(cached.age_seconds, 3),
-                    stale=True,
-                    source=source,
-                    refresh_status="queued",
+                return self._batch_item_from_cache(
+                    stock, cached, stale=True, refresh_status="queued"
                 )
-            return QuoteBatchItem(
-                stock=stock,
-                quote=None,
-                cached_at=None,
-                age_seconds=None,
-                stale=True,
-                source="none",
-                refresh_status="queued",
-            )
+            return self._empty_batch_item(stock, refresh_status="queued")
 
+        return self._detail_from_provider(stock, cached)
+
+    def _detail_from_provider(self, stock: StockRecord, cached) -> QuoteBatchItem | None:
         try:
-            quote = self._fetch_quote_from_provider(stock_id)
+            quote = self._fetch_quote_from_provider(stock.id)
         except Exception:
             if cached is None:
                 raise
-            source = "redis" if redis_enabled() else "memory"
-            return QuoteBatchItem(
-                stock=stock,
-                quote=cached.quote,
-                cached_at=cached.cached_at.isoformat().replace("+00:00", "Z"),
-                age_seconds=round(cached.age_seconds, 3),
-                stale=True,
-                source=source,
-                refresh_status="idle",
+            return self._batch_item_from_cache(
+                stock, cached, stale=True, refresh_status="idle"
             )
 
         if quote is not None:
-            set_cached_quote(stock_id, quote)
+            set_cached_quote(stock.id, quote)
             return QuoteBatchItem(
                 stock=stock,
                 quote=quote,
@@ -290,19 +273,45 @@ class QuoteService:
                 source="provider",
                 refresh_status="idle",
             )
-
         if cached is not None:
-            source = "redis" if redis_enabled() else "memory"
-            return QuoteBatchItem(
-                stock=stock,
-                quote=cached.quote,
-                cached_at=cached.cached_at.isoformat().replace("+00:00", "Z"),
-                age_seconds=round(cached.age_seconds, 3),
-                stale=True,
-                source=source,
-                refresh_status="idle",
+            return self._batch_item_from_cache(
+                stock, cached, stale=True, refresh_status="idle"
             )
         return None
+
+    @staticmethod
+    def _batch_item_from_cache(
+        stock: StockRecord,
+        cached,
+        *,
+        stale: bool,
+        refresh_status: RefreshStatus,
+    ) -> QuoteBatchItem:
+        return QuoteBatchItem(
+            stock=stock,
+            quote=cached.quote,
+            cached_at=_format_cached_at(cached.cached_at),
+            age_seconds=round(cached.age_seconds, 3),
+            stale=stale,
+            source=_cache_source(),
+            refresh_status=refresh_status,
+        )
+
+    @staticmethod
+    def _empty_batch_item(
+        stock: StockRecord,
+        *,
+        refresh_status: RefreshStatus,
+    ) -> QuoteBatchItem:
+        return QuoteBatchItem(
+            stock=stock,
+            quote=None,
+            cached_at=None,
+            age_seconds=None,
+            stale=True,
+            source="none",
+            refresh_status=refresh_status,
+        )
 
     def fetch_quote_for_refresh(self, stock_id: str) -> QuoteFetchAttempt:
         """Provider fetch for the background refresher with preserved failure metadata.
@@ -346,7 +355,6 @@ class QuoteService:
         """Watchlist/stream path: return cache immediately and refresh asynchronously."""
         unique_ids = list(dict.fromkeys(stock_ids))
         cached_by_id = get_cached_quote_entries(unique_ids)
-        source: CacheSource = "redis" if redis_enabled() else "memory"
         items: list[QuoteBatchItem] = []
 
         for stock_id in unique_ids:
@@ -356,13 +364,8 @@ class QuoteService:
             cached = cached_by_id.get(stock_id)
             if cached is None:
                 items.append(
-                    QuoteBatchItem(
-                        stock=stock,
-                        quote=None,
-                        cached_at=None,
-                        age_seconds=None,
-                        stale=True,
-                        source="none",
+                    self._empty_batch_item(
+                        stock,
                         refresh_status=self._miss_refresh_status(stock_id),
                     )
                 )
@@ -372,13 +375,10 @@ class QuoteService:
             if cached.stale:
                 refresh_status = self._stale_refresh_status(stock_id)
             items.append(
-                QuoteBatchItem(
-                    stock=stock,
-                    quote=cached.quote,
-                    cached_at=cached.cached_at.isoformat().replace("+00:00", "Z"),
-                    age_seconds=round(cached.age_seconds, 3),
+                self._batch_item_from_cache(
+                    stock,
+                    cached,
                     stale=cached.stale,
-                    source=source,
                     refresh_status=refresh_status,
                 )
             )

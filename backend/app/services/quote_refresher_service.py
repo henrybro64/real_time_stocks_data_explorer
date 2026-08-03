@@ -104,7 +104,7 @@ class QuoteRefresherService:
         }
         self._circuit_lock = threading.Lock()
         self._rate_lock = threading.Lock()
-        self._next_provider_slot: dict[str, float] = {market: 0.0 for market in _MARKETS}
+        self._next_provider_slot: dict[str, float] = dict.fromkeys(_MARKETS, 0.0)
         max_workers = max(int(settings.quote_refresher_max_concurrency), 1)
         self._pool = ThreadPoolExecutor(
             max_workers=max_workers,
@@ -240,74 +240,92 @@ class QuoteRefresherService:
             stock_ids, duplicates = self.collect_tracked_stock_ids()
             stats.considered = len(stock_ids)
             stats.duplicates_collapsed = duplicates
-            now = self._now_provider()
-            open_markets = self.open_markets(now=now)
-            closed_min_age = float(settings.quote_refresher_closed_poll_seconds)
-            cached = get_cached_quote_entries(stock_ids)
-            to_refresh: list[str] = []
-            for stock_id in stock_ids:
-                market = stock_id.split(":", 1)[0]
-                if self._circuit_is_open(market):
-                    stats.skipped_circuit += 1
-                    continue
-                entry = cached.get(stock_id)
-                if entry is not None:
-                    stats.cache_age_seconds_sample.append(entry.age_seconds)
-                if market in open_markets:
-                    if entry is not None and not entry.stale:
-                        stats.skipped_fresh += 1
-                        continue
-                else:
-                    # Closed market: refresh only when missing or older than closed cadence.
-                    if entry is not None and entry.age_seconds < closed_min_age:
-                        stats.skipped_closed_fresh += 1
-                        continue
-                to_refresh.append(stock_id)
-
+            to_refresh = self._select_symbols_to_refresh(stock_ids, stats)
             if not to_refresh:
                 stats.duration_ms = elapsed_ms(started_at)
                 self._log_cycle(stats)
                 return stats
 
-            futures: dict[Future[str], str] = {
-                self._pool.submit(self._refresh_one, stock_id): stock_id
-                for stock_id in to_refresh
-            }
-            timeout = float(settings.quote_refresher_cycle_timeout_seconds)
-            recorded: set[str] = set()
-            with self._in_flight_lock:
-                self._in_flight_peak = 0
-            try:
-                completed = as_completed(futures, timeout=timeout)
-                for future in completed:
-                    stock_id = futures[future]
-                    recorded.add(stock_id)
-                    self._record_future_outcome(future, stock_id, stats)
-            except FuturesTimeout:
-                for future, stock_id in futures.items():
-                    if stock_id in recorded:
-                        continue
-                    if future.done() and not future.cancelled():
-                        recorded.add(stock_id)
-                        self._record_future_outcome(future, stock_id, stats)
-                        continue
-                    future.cancel()
-                    stats.timed_out += 1
-                    logger.warning(
-                        "Quote refresher cycle timed out waiting for symbol",
-                        extra={
-                            "event": "quote_refresher.cycle.timeout_symbol",
-                            "stock_id": stock_id,
-                        },
-                    )
-
-            with self._in_flight_lock:
-                stats.in_flight_peak = self._in_flight_peak
+            self._run_refresh_batch(to_refresh, stats)
             stats.duration_ms = elapsed_ms(started_at)
             self._log_cycle(stats)
             return stats
         finally:
             self._release_cycle_leadership(leader_token)
+
+    def _select_symbols_to_refresh(
+        self,
+        stock_ids: list[str],
+        stats: QuoteRefreshCycleStats,
+    ) -> list[str]:
+        now = self._now_provider()
+        open_markets = self.open_markets(now=now)
+        closed_min_age = float(settings.quote_refresher_closed_poll_seconds)
+        cached = get_cached_quote_entries(stock_ids)
+        to_refresh: list[str] = []
+        for stock_id in stock_ids:
+            market = stock_id.split(":", 1)[0]
+            if self._circuit_is_open(market):
+                stats.skipped_circuit += 1
+                continue
+            entry = cached.get(stock_id)
+            if entry is not None:
+                stats.cache_age_seconds_sample.append(entry.age_seconds)
+            if market in open_markets:
+                if entry is not None and not entry.stale:
+                    stats.skipped_fresh += 1
+                    continue
+            elif entry is not None and entry.age_seconds < closed_min_age:
+                stats.skipped_closed_fresh += 1
+                continue
+            to_refresh.append(stock_id)
+        return to_refresh
+
+    def _run_refresh_batch(
+        self,
+        to_refresh: list[str],
+        stats: QuoteRefreshCycleStats,
+    ) -> None:
+        futures: dict[Future[str], str] = {
+            self._pool.submit(self._refresh_one, stock_id): stock_id
+            for stock_id in to_refresh
+        }
+        timeout = float(settings.quote_refresher_cycle_timeout_seconds)
+        recorded: set[str] = set()
+        with self._in_flight_lock:
+            self._in_flight_peak = 0
+        try:
+            for future in as_completed(futures, timeout=timeout):
+                stock_id = futures[future]
+                recorded.add(stock_id)
+                self._record_future_outcome(future, stock_id, stats)
+        except FuturesTimeout:
+            self._finalize_timed_out_futures(futures, recorded, stats)
+        with self._in_flight_lock:
+            stats.in_flight_peak = self._in_flight_peak
+
+    def _finalize_timed_out_futures(
+        self,
+        futures: dict[Future[str], str],
+        recorded: set[str],
+        stats: QuoteRefreshCycleStats,
+    ) -> None:
+        for future, stock_id in futures.items():
+            if stock_id in recorded:
+                continue
+            if future.done() and not future.cancelled():
+                recorded.add(stock_id)
+                self._record_future_outcome(future, stock_id, stats)
+                continue
+            future.cancel()
+            stats.timed_out += 1
+            logger.warning(
+                "Quote refresher cycle timed out waiting for symbol",
+                extra={
+                    "event": "quote_refresher.cycle.timeout_symbol",
+                    "stock_id": stock_id,
+                },
+            )
 
     def jitter_seconds(self) -> float:
         upper = float(settings.quote_refresher_jitter_seconds)
@@ -334,7 +352,9 @@ class QuoteRefresherService:
 
     def _refresh_one(self, stock_id: str) -> str:
         market = stock_id.split(":", 1)[0]
-        if self._circuit_is_open(market):
+        # Soft backoff is evaluated at cycle planning time only so one failure
+        # cannot abort sibling symbols already submitted in this cycle.
+        if self._hard_circuit_is_open(market):
             return "circuit"
         delay = self.jitter_seconds()
         if delay > 0:
@@ -438,6 +458,12 @@ class QuoteRefresherService:
         with self._circuit_lock:
             state = self._circuits.setdefault(market, ProviderCircuitState())
             return state.is_open()
+
+    def _hard_circuit_is_open(self, market: str) -> bool:
+        """True only after the failure threshold trips the open window."""
+        with self._circuit_lock:
+            state = self._circuits.setdefault(market, ProviderCircuitState())
+            return time.monotonic() < state.open_until_monotonic
 
     def _note_provider_success(self, market: str) -> None:
         with self._circuit_lock:

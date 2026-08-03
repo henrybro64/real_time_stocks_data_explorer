@@ -10,7 +10,7 @@ from app.services import quote_redis_cache as cache
 from app.services.http_client import HttpFetchError
 from app.services.quote_refresher_service import QuoteRefresherService
 from app.services.quote_service import QuoteService
-from tests.support import quote_record, stock_record
+from tests.support import StubUSProvider, quote_record, stock_record
 
 
 class FakeWatchlistRepo:
@@ -33,68 +33,6 @@ class FakePortfolioRepo:
 
     def list_distinct_position_stock_ids(self) -> list[str]:
         return list(self.ids)
-
-
-class StubUSProvider:
-    market = "US"
-
-    def __init__(self) -> None:
-        self.quote_calls: list[str] = []
-        self._stocks = {
-            "US:AAPL": stock_record(
-                "US:AAPL",
-                market="US",
-                symbol="AAPL",
-                name="Apple Inc.",
-                exchange="NASDAQ",
-                currency="USD",
-                timezone="America/New_York",
-                name_en="Apple Inc.",
-            ),
-            "US:MSFT": stock_record(
-                "US:MSFT",
-                market="US",
-                symbol="MSFT",
-                name="Microsoft Corporation",
-                exchange="NASDAQ",
-                currency="USD",
-                timezone="America/New_York",
-                name_en="Microsoft Corporation.",
-            ),
-        }
-        self._quotes = {
-            stock_id: quote_record(
-                stock_id,
-                last_price=100.0,
-                change=1.0,
-                change_percent=1.0,
-                previous_close=99.0,
-                timestamp="2026-05-12T10:00:00-04:00",
-                is_market_open=True,
-                volume=100,
-            )
-            for stock_id in self._stocks
-        }
-        self.fail_ids: set[str] = set()
-        self.fail_exc: Exception | None = None
-
-    def get_stock(self, stock_id: str):
-        return self._stocks.get(stock_id)
-
-    def get_quote(self, stock_id: str):
-        self.quote_calls.append(stock_id)
-        if stock_id in self.fail_ids:
-            raise self.fail_exc or RuntimeError(f"failed {stock_id}")
-        return self._quotes.get(stock_id)
-
-    def list_stocks(self):
-        return list(self._stocks.values())
-
-    def search(self, query: str):
-        return []
-
-    def get_history(self, stock_id: str, range_name: str, *, limit: int | None = None):
-        return []
 
 
 @pytest.fixture(autouse=True)
@@ -206,6 +144,33 @@ def test_run_cycle_continues_after_one_symbol_failure() -> None:
     assert set(stub.quote_calls) == {"US:AAPL", "US:MSFT"}
     assert cache.get_cached_quote("US:MSFT") is not None
     assert cache.get_cached_quote("US:AAPL") is None
+
+
+def test_run_cycle_continues_when_failure_finishes_first() -> None:
+    """Regression: soft backoff must not abort sibling symbols mid-cycle."""
+    stub = StubUSProvider()
+    stub.fail_ids.add("US:AAPL")
+    fail_done = threading.Event()
+    original_get_quote = stub.get_quote
+
+    def gated_get_quote(stock_id: str):
+        if stock_id == "US:MSFT":
+            fail_done.wait(timeout=2.0)
+        try:
+            return original_get_quote(stock_id)
+        finally:
+            if stock_id == "US:AAPL":
+                fail_done.set()
+
+    stub.get_quote = gated_get_quote  # type: ignore[method-assign]
+    refresher, _ = _service(watchlist=["US:AAPL", "US:MSFT"], provider=stub)
+
+    stats = refresher.run_cycle()
+
+    assert stats.failed == 1
+    assert stats.refreshed == 1
+    assert stats.skipped_circuit == 0
+    assert set(stub.quote_calls) == {"US:AAPL", "US:MSFT"}
 
 
 def test_circuit_skip_does_not_count_as_failure(monkeypatch) -> None:
@@ -358,7 +323,7 @@ def test_stale_cache_remains_available_during_provider_outage() -> None:
 
     cached = cache.get_cached_quote("US:AAPL")
     assert cached is not None
-    assert cached.last_price == pytest.approx(100.0)
+    assert cached.last_price == pytest.approx(187.0)
 
 
 def test_distributed_lock_skips_duplicate_refresh() -> None:

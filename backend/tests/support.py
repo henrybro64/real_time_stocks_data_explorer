@@ -75,6 +75,92 @@ def candle_record(
     )
 
 
+class StubUSProvider:
+    """Shared US provider stub for quote service / refresher unit tests."""
+
+    market = "US"
+
+    def __init__(self) -> None:
+        self.quote_calls: list[str] = []
+        self.live_quote_calls: list[str] = []
+        self._stocks = {
+            "US:AAPL": stock_record(
+                "US:AAPL",
+                market="US",
+                symbol="AAPL",
+                name="Apple Inc.",
+                exchange="NASDAQ",
+                currency="USD",
+                timezone="America/New_York",
+                name_en="Apple Inc.",
+            ),
+            "US:MSFT": stock_record(
+                "US:MSFT",
+                market="US",
+                symbol="MSFT",
+                name="Microsoft Corporation",
+                exchange="NASDAQ",
+                currency="USD",
+                timezone="America/New_York",
+                name_en="Microsoft Corporation",
+            ),
+        }
+        self._quotes = {
+            "US:AAPL": quote_record(
+                "US:AAPL",
+                last_price=187.0,
+                change=1.0,
+                change_percent=0.5,
+                previous_close=186.0,
+                timestamp="2026-05-12T10:00:00-04:00",
+                is_market_open=True,
+                volume=100,
+            ),
+            "US:MSFT": quote_record(
+                "US:MSFT",
+                last_price=100.0,
+                change=1.0,
+                change_percent=1.0,
+                previous_close=99.0,
+                timestamp="2026-05-12T10:00:00-04:00",
+                is_market_open=True,
+                volume=300,
+            ),
+        }
+        self.quote_delay_seconds = 0.0
+        self.fail_ids: set[str] = set()
+        self.fail_exc: Exception | None = None
+
+    def list_stocks(self):
+        return list(self._stocks.values())
+
+    def search(self, query: str):
+        return []
+
+    def get_stock(self, stock_id: str):
+        return self._stocks.get(stock_id)
+
+    def get_quote(self, stock_id: str):
+        self.quote_calls.append(stock_id)
+        if self.quote_delay_seconds:
+            import time
+
+            time.sleep(self.quote_delay_seconds)
+        if stock_id in self.fail_ids:
+            raise self.fail_exc or RuntimeError(f"provider failed for {stock_id}")
+        return self._quotes.get(stock_id)
+
+    def get_live_quote(self, stock_id: str):
+        self.live_quote_calls.append(stock_id)
+        if stock_id == "US:MSFT":
+            return self._quotes["US:MSFT"]
+        return None
+
+    def get_history(self, stock_id: str, range_name: str, *, limit: int | None = None):
+        del range_name, limit
+        return []
+
+
 class FakeQuoteSource:
     def __init__(self, stock=None, stocks=None):
         self._stock = stock
