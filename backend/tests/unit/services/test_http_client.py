@@ -89,3 +89,55 @@ def test_fetch_json_raises_network_failure_for_timeout(monkeypatch) -> None:
 
     assert exc_info.value.classification == "network_failure"
     assert exc_info.value.status_code is None
+
+
+def test_fetch_json_does_not_reuse_prior_attempt_status_after_timeout(monkeypatch) -> None:
+    """A later timeout must not inherit an earlier 401/429 classification."""
+    denied = MagicMock()
+    denied.status_code = 401
+    denied.headers = {"content-type": "application/json"}
+    denied.raise_for_status.side_effect = httpx.HTTPStatusError(
+        "denied",
+        request=MagicMock(),
+        response=denied,
+    )
+    calls = {"count": 0}
+
+    def fake_request(*_args, **_kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return denied
+        raise httpx.ConnectTimeout("timed out on retry")
+
+    monkeypatch.setattr("app.services.http_client.httpx.request", fake_request)
+    monkeypatch.setattr("app.services.http_client.time.sleep", lambda _seconds: None)
+
+    with pytest.raises(HttpFetchError) as exc_info:
+        fetch_json("https://www.twse.com.tw/rwd/zh/marginTrading/MI_MARGN", retries=1)
+
+    assert calls["count"] == 2
+    assert exc_info.value.classification == "network_failure"
+    assert exc_info.value.status_code is None
+
+
+def test_fetch_json_does_not_reuse_prior_rate_limit_after_timeout(monkeypatch) -> None:
+    rate_limited = MagicMock()
+    rate_limited.status_code = 429
+    rate_limited.headers = {"content-type": "application/json"}
+    calls = {"count": 0}
+
+    def fake_request(*_args, **_kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return rate_limited
+        raise httpx.ConnectTimeout("timed out on retry")
+
+    monkeypatch.setattr("app.services.http_client.httpx.request", fake_request)
+    monkeypatch.setattr("app.services.http_client.time.sleep", lambda _seconds: None)
+
+    with pytest.raises(HttpFetchError) as exc_info:
+        fetch_json("https://www.twse.com.tw/rwd/zh/marginTrading/TWT93U", retries=1)
+
+    assert calls["count"] == 2
+    assert exc_info.value.classification == "network_failure"
+    assert exc_info.value.status_code is None

@@ -181,6 +181,10 @@ def _request_with_retries(
     operation = operation_name or f"http_{method.lower()}"
 
     for attempt in range(attempts):
+        # Clear prior-attempt response metadata so a later network timeout cannot
+        # inherit an earlier 401/429 and misclassify the final failure.
+        last_status_code = None
+        last_content_type = None
         try:
             response = httpx.request(
                 method,
@@ -225,6 +229,9 @@ def _request_with_retries(
             if isinstance(exc, httpx.HTTPStatusError):
                 last_status_code = exc.response.status_code
                 last_content_type = exc.response.headers.get("content-type")
+            elif isinstance(exc, HttpFetchError):
+                last_status_code = exc.status_code
+                last_content_type = exc.content_type
             if attempt < attempts - 1:
                 logger.warning(
                     "External HTTP request attempt failed",
@@ -315,15 +322,18 @@ def _request_with_retries(
 
     if last_error is not None:
         if isinstance(last_error, HttpFetchError):
+            # Prefer the final exception's own metadata — never fall back to an
+            # earlier attempt's status after a no-response network failure.
             classification = last_error.classification
-            status_code = last_error.status_code or last_status_code
-            content_type = last_error.content_type or last_content_type
+            status_code = last_error.status_code
+            content_type = last_error.content_type
+        elif isinstance(last_error, httpx.HTTPStatusError):
+            status_code = last_error.response.status_code
+            content_type = last_error.response.headers.get("content-type")
+            classification = classify_http_failure(status_code, content_type=content_type)
         else:
             status_code = last_status_code
             content_type = last_content_type
-            if isinstance(last_error, httpx.HTTPStatusError):
-                status_code = last_error.response.status_code
-                content_type = last_error.response.headers.get("content-type")
             classification = classify_http_failure(status_code, content_type=content_type)
         logger.warning(
             "External HTTP request failed",
