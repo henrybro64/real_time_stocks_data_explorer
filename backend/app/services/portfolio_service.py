@@ -5,6 +5,7 @@ from app.repositories.portfolio_repository import (
     UNSET as REPOSITORY_UNSET,
     portfolio_repository,
 )
+from app.services.quote_refresher_service import quote_refresher_service
 from app.services.quote_service import quote_service
 
 SUPPORTED_PORTFOLIO_CURRENCIES = frozenset({"USD", "TWD"})
@@ -30,7 +31,7 @@ class PortfolioService:
             raise ValueError(
                 f"Position already exists for stock id: {stock_id}",
             )
-        return portfolio_repository.create_position(
+        position = portfolio_repository.create_position(
             user_id=user_id,
             stock_id=stock_id,
             quantity=quantity,
@@ -38,6 +39,8 @@ class PortfolioService:
             currency=normalized_currency,
             notes=notes,
         )
+        quote_refresher_service.request_immediate_refresh(stock_id)
+        return position
 
     def update_position(
         self,

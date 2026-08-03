@@ -23,8 +23,11 @@ logger = logging.getLogger(__name__)
 
 _KEY_PREFIX = "quote:v1:"
 _LOCK_PREFIX = "quote:refresh:v1:"
-# redis.Redis | False after first init attempt
+# redis.Redis | False after a failed/disabled init attempt
 _client: Any = None
+# When connect fails, retry after this monotonic deadline (0 = retry immediately).
+_client_retry_after_monotonic: float = 0.0
+_CLIENT_RETRY_SECONDS = 30.0
 
 # In-process fallback when Redis is unavailable (tests / no REDIS_URL).
 _memory_lock = threading.Lock()
@@ -78,14 +81,14 @@ def refresh_failure_backoff_seconds() -> int:
 
 
 def _redis() -> Any:
-    """Lazy Redis client; False means disabled (no URL or connect failed)."""
-    global _client
-    if _client is False:
-        return None
-    if _client is not None:
+    """Lazy Redis client; reconnects after a cooldown when the first connect fails."""
+    global _client, _client_retry_after_monotonic
+    if _client is not None and _client is not False:
         return _client
     if not settings.redis_url:
         _client = False
+        return None
+    if _client is False and time.monotonic() < _client_retry_after_monotonic:
         return None
     try:
         import redis as redis_lib
@@ -98,11 +101,13 @@ def _redis() -> Any:
         )
         r.ping()
         _client = r
+        _client_retry_after_monotonic = 0.0
         logger.info("Quote Redis cache enabled")
         return _client
     except Exception as exc:
-        logger.warning("Quote Redis cache disabled: %s", exc)
+        logger.warning("Quote Redis cache unavailable (will retry): %s", exc)
         _client = False
+        _client_retry_after_monotonic = time.monotonic() + _CLIENT_RETRY_SECONDS
         return None
 
 
@@ -360,12 +365,13 @@ def refresh_failure_active(stock_id: str) -> bool:
 
 def clear_quote_cache_for_tests() -> None:
     """Test helper: drop in-process cache/locks and forget Redis client."""
-    global _client
+    global _client, _client_retry_after_monotonic
     with _memory_lock:
         _memory_quotes.clear()
         _memory_refresh_locks.clear()
         _memory_refresh_failures.clear()
     _client = None
+    _client_retry_after_monotonic = 0.0
 
 
 def _purge_expired_memory_locked() -> None:

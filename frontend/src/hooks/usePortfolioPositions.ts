@@ -65,7 +65,15 @@ export function usePortfolioPositions() {
   const addByStockId = async (stockId: string) => {
     resetErrors();
     try {
-      const quote = await fetchQuote(stockId);
+      let quote = await fetchQuote(stockId);
+      // Cold miss while the background refresher owns upstream: wait longer than
+      // max jitter (2s) plus network/queue slack before giving up.
+      if (quote.quote == null) {
+        await new Promise((resolve) => {
+          window.setTimeout(resolve, 4000);
+        });
+        quote = await fetchQuote(stockId);
+      }
       if (quote.quote == null) {
         throw new Error("Quote unavailable");
       }

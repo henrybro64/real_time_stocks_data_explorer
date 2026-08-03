@@ -75,6 +75,147 @@ def candle_record(
     )
 
 
+class StubUSProvider:
+    """Shared US provider stub for quote service / refresher unit tests."""
+
+    market = "US"
+
+    def __init__(self) -> None:
+        self.quote_calls: list[str] = []
+        self.live_quote_calls: list[str] = []
+        self._stocks = {
+            "US:AAPL": stock_record(
+                "US:AAPL",
+                market="US",
+                symbol="AAPL",
+                name="Apple Inc.",
+                exchange="NASDAQ",
+                currency="USD",
+                timezone="America/New_York",
+                name_en="Apple Inc.",
+            ),
+            "US:MSFT": stock_record(
+                "US:MSFT",
+                market="US",
+                symbol="MSFT",
+                name="Microsoft Corporation",
+                exchange="NASDAQ",
+                currency="USD",
+                timezone="America/New_York",
+                name_en="Microsoft Corporation",
+            ),
+        }
+        self._quotes = {
+            "US:AAPL": quote_record(
+                "US:AAPL",
+                last_price=187.0,
+                change=1.0,
+                change_percent=0.5,
+                previous_close=186.0,
+                timestamp="2026-05-12T10:00:00-04:00",
+                is_market_open=True,
+                volume=100,
+            ),
+            "US:MSFT": quote_record(
+                "US:MSFT",
+                last_price=100.0,
+                change=1.0,
+                change_percent=1.0,
+                previous_close=99.0,
+                timestamp="2026-05-12T10:00:00-04:00",
+                is_market_open=True,
+                volume=300,
+            ),
+        }
+        self.quote_delay_seconds = 0.0
+        self.fail_ids: set[str] = set()
+        self.fail_exc: Exception | None = None
+
+    def list_stocks(self):
+        return list(self._stocks.values())
+
+    def search(self, query: str):
+        return []
+
+    def get_stock(self, stock_id: str):
+        return self._stocks.get(stock_id)
+
+    def get_quote(self, stock_id: str):
+        self.quote_calls.append(stock_id)
+        if self.quote_delay_seconds:
+            import time
+
+            time.sleep(self.quote_delay_seconds)
+        if stock_id in self.fail_ids:
+            raise self.fail_exc or RuntimeError(f"provider failed for {stock_id}")
+        return self._quotes.get(stock_id)
+
+    def get_live_quote(self, stock_id: str):
+        self.live_quote_calls.append(stock_id)
+        if stock_id == "US:MSFT":
+            return self._quotes["US:MSFT"]
+        return None
+
+    def get_history(self, stock_id: str, range_name: str, *, limit: int | None = None):
+        del range_name, limit
+        return []
+
+
+class FakeTrackedIdsRepo:
+    """In-memory watchlist/portfolio repo stub for refresher unit tests."""
+
+    def __init__(self, ids: list[str] | None = None) -> None:
+        self.ids = list(ids or [])
+
+    def is_available(self) -> bool:
+        return True
+
+    def list_distinct_stock_ids(self) -> list[str]:
+        return list(self.ids)
+
+    def list_distinct_position_stock_ids(self) -> list[str]:
+        return list(self.ids)
+
+
+def age_memory_cached_quote(
+    stock_id: str,
+    *,
+    cached_at: str = "2026-01-01T00:00:00Z",
+) -> None:
+    """Force a soft-stale cache entry in the in-process quote cache."""
+    import json
+
+    from app.services import quote_redis_cache as cache
+
+    with cache._memory_lock:
+        raw = cache._memory_quotes[stock_id][1]
+    payload = json.loads(raw)
+    payload["cached_at"] = cached_at
+    with cache._memory_lock:
+        cache._memory_quotes[stock_id] = (1e18, json.dumps(payload))
+
+
+def install_in_memory_sessionlocal(monkeypatch):
+    """Create a SQLite SessionLocal for repository unit tests."""
+    from sqlalchemy import create_engine, event
+    from sqlalchemy.orm import sessionmaker
+
+    from app.db.models import Base
+
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+
+    @event.listens_for(engine, "connect")
+    def _enable_sqlite_foreign_keys(dbapi_connection, _connection_record) -> None:
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
+
+    session_local = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    Base.metadata.create_all(bind=engine)
+    monkeypatch.setattr("app.repositories.session.SessionLocal", session_local)
+    return session_local
+
+
 class FakeQuoteSource:
     def __init__(self, stock=None, stocks=None):
         self._stock = stock

@@ -10,6 +10,11 @@ from typing import Literal
 from app.core.diagnostics import elapsed_ms
 from app.models.quote import CandleRecord, QuoteRecord
 from app.models.stock import StockRecord
+from app.services.http_client import (
+    HttpFetchError,
+    clear_last_http_fetch_error,
+    get_last_http_fetch_error,
+)
 from app.services.providers.tw_provider import TWProvider
 from app.services.providers.us_provider import USProvider
 from app.services.quote_redis_cache import (
@@ -29,6 +34,7 @@ logger = logging.getLogger(__name__)
 
 RefreshStatus = Literal["idle", "queued", "refreshing", "unavailable"]
 CacheSource = Literal["redis", "memory", "provider", "none"]
+_UTC_Z_SUFFIX = "+00:00"
 
 _refresh_executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="quote-swr")
 
@@ -42,6 +48,22 @@ class QuoteBatchItem:
     stale: bool
     source: CacheSource
     refresh_status: RefreshStatus
+
+
+@dataclass(frozen=True)
+class QuoteFetchAttempt:
+    """Result of a provider fetch, including swallowed HttpFetchError metadata."""
+
+    quote: QuoteRecord | None
+    error: HttpFetchError | None = None
+
+
+def _format_cached_at(cached_at) -> str:
+    return cached_at.isoformat().replace(_UTC_Z_SUFFIX, "Z")
+
+
+def _cache_source() -> CacheSource:
+    return "redis" if redis_enabled() else "memory"
 
 
 class QuoteService:
@@ -148,6 +170,10 @@ class QuoteService:
 
         ``allow_stale=False`` (rankings) skips hard-TTL fallback so callers do not
         treat up-to-15-minute-old data as a current snapshot.
+
+        When the background refresher owns upstream and ``allow_stale`` is True
+        (watchlist/portfolio/detail UI), this path never calls providers — it
+        serves cache and asks the refresher to warm the symbol.
         """
         cached = get_cached_quote_entry(stock_id)
         if cached is not None and not cached.stale:
@@ -160,6 +186,20 @@ class QuoteService:
                 },
             )
             return cached.quote
+
+        if self._background_refresher_owns_upstream() and allow_stale:
+            self._request_background_refresh(stock_id)
+            if cached is not None:
+                logger.debug(
+                    "Quote served from stale cache; refresher owns upstream",
+                    extra={
+                        "event": "quote.cache.stale_serve_refresher",
+                        "stock_id": stock_id,
+                        "age_seconds": cached.age_seconds,
+                    },
+                )
+                return cached.quote
+            return None
 
         try:
             quote = self._fetch_quote_from_provider(stock_id)
@@ -191,42 +231,39 @@ class QuoteService:
         return None
 
     def get_quote_detail(self, stock_id: str) -> QuoteBatchItem | None:
-        """Blocking detail-page quote with accurate freshness metadata."""
+        """Detail-page quote with accurate freshness metadata."""
         stock = self.get_stock(stock_id)
         if stock is None:
             return None
 
         cached = get_cached_quote_entry(stock_id)
         if cached is not None and not cached.stale:
-            source: CacheSource = "redis" if redis_enabled() else "memory"
-            return QuoteBatchItem(
-                stock=stock,
-                quote=cached.quote,
-                cached_at=cached.cached_at.isoformat().replace("+00:00", "Z"),
-                age_seconds=round(cached.age_seconds, 3),
-                stale=False,
-                source=source,
-                refresh_status="idle",
+            return self._batch_item_from_cache(
+                stock, cached, stale=False, refresh_status="idle"
             )
 
+        if self._background_refresher_owns_upstream():
+            self._request_background_refresh(stock_id)
+            if cached is not None:
+                return self._batch_item_from_cache(
+                    stock, cached, stale=True, refresh_status="queued"
+                )
+            return self._empty_batch_item(stock, refresh_status="queued")
+
+        return self._detail_from_provider(stock, cached)
+
+    def _detail_from_provider(self, stock: StockRecord, cached) -> QuoteBatchItem | None:
         try:
-            quote = self._fetch_quote_from_provider(stock_id)
+            quote = self._fetch_quote_from_provider(stock.id)
         except Exception:
             if cached is None:
                 raise
-            source = "redis" if redis_enabled() else "memory"
-            return QuoteBatchItem(
-                stock=stock,
-                quote=cached.quote,
-                cached_at=cached.cached_at.isoformat().replace("+00:00", "Z"),
-                age_seconds=round(cached.age_seconds, 3),
-                stale=True,
-                source=source,
-                refresh_status="idle",
+            return self._batch_item_from_cache(
+                stock, cached, stale=True, refresh_status="idle"
             )
 
         if quote is not None:
-            set_cached_quote(stock_id, quote)
+            set_cached_quote(stock.id, quote)
             return QuoteBatchItem(
                 stock=stock,
                 quote=quote,
@@ -236,19 +273,76 @@ class QuoteService:
                 source="provider",
                 refresh_status="idle",
             )
-
         if cached is not None:
-            source = "redis" if redis_enabled() else "memory"
-            return QuoteBatchItem(
-                stock=stock,
-                quote=cached.quote,
-                cached_at=cached.cached_at.isoformat().replace("+00:00", "Z"),
-                age_seconds=round(cached.age_seconds, 3),
-                stale=True,
-                source=source,
-                refresh_status="idle",
+            return self._batch_item_from_cache(
+                stock, cached, stale=True, refresh_status="idle"
             )
         return None
+
+    @staticmethod
+    def _batch_item_from_cache(
+        stock: StockRecord,
+        cached,
+        *,
+        stale: bool,
+        refresh_status: RefreshStatus,
+    ) -> QuoteBatchItem:
+        return QuoteBatchItem(
+            stock=stock,
+            quote=cached.quote,
+            cached_at=_format_cached_at(cached.cached_at),
+            age_seconds=round(cached.age_seconds, 3),
+            stale=stale,
+            source=_cache_source(),
+            refresh_status=refresh_status,
+        )
+
+    @staticmethod
+    def _empty_batch_item(
+        stock: StockRecord,
+        *,
+        refresh_status: RefreshStatus,
+    ) -> QuoteBatchItem:
+        return QuoteBatchItem(
+            stock=stock,
+            quote=None,
+            cached_at=None,
+            age_seconds=None,
+            stale=True,
+            source="none",
+            refresh_status=refresh_status,
+        )
+
+    def fetch_quote_for_refresh(self, stock_id: str) -> QuoteFetchAttempt:
+        """Provider fetch for the background refresher with preserved failure metadata.
+
+        US/TW providers often swallow ``HttpFetchError`` and return ``None``. This
+        method recovers the last per-thread HTTP failure so Retry-After / 429 / 403
+        classifications still reach the refresher circuit breaker.
+        """
+        clear_last_http_fetch_error()
+        try:
+            quote = self._fetch_quote_from_provider(stock_id)
+        except HttpFetchError as exc:
+            return QuoteFetchAttempt(quote=None, error=exc)
+        if quote is not None:
+            return QuoteFetchAttempt(quote=quote)
+        return QuoteFetchAttempt(quote=None, error=get_last_http_fetch_error())
+
+    def _request_background_refresh(self, stock_id: str) -> None:
+        try:
+            from app.services.quote_refresher_service import quote_refresher_service
+
+            quote_refresher_service.request_immediate_refresh(stock_id)
+        except Exception as exc:  # noqa: BLE001 - never fail reads for enqueue hints
+            logger.debug(
+                "Could not request background quote refresh",
+                extra={
+                    "event": "quote.refresh.request_failed",
+                    "stock_id": stock_id,
+                    "error_type": type(exc).__name__,
+                },
+            )
 
     def get_quotes(self, stock_ids: list[str]) -> list[tuple[StockRecord, QuoteRecord]]:
         """Blocking batch for rankings: require fresh/provider data, not hard-stale."""
@@ -261,7 +355,6 @@ class QuoteService:
         """Watchlist/stream path: return cache immediately and refresh asynchronously."""
         unique_ids = list(dict.fromkeys(stock_ids))
         cached_by_id = get_cached_quote_entries(unique_ids)
-        source: CacheSource = "redis" if redis_enabled() else "memory"
         items: list[QuoteBatchItem] = []
 
         for stock_id in unique_ids:
@@ -271,13 +364,8 @@ class QuoteService:
             cached = cached_by_id.get(stock_id)
             if cached is None:
                 items.append(
-                    QuoteBatchItem(
-                        stock=stock,
-                        quote=None,
-                        cached_at=None,
-                        age_seconds=None,
-                        stale=True,
-                        source="none",
+                    self._empty_batch_item(
+                        stock,
                         refresh_status=self._miss_refresh_status(stock_id),
                     )
                 )
@@ -287,13 +375,10 @@ class QuoteService:
             if cached.stale:
                 refresh_status = self._stale_refresh_status(stock_id)
             items.append(
-                QuoteBatchItem(
-                    stock=stock,
-                    quote=cached.quote,
-                    cached_at=cached.cached_at.isoformat().replace("+00:00", "Z"),
-                    age_seconds=round(cached.age_seconds, 3),
+                self._batch_item_from_cache(
+                    stock,
+                    cached,
                     stale=cached.stale,
-                    source=source,
                     refresh_status=refresh_status,
                 )
             )
@@ -306,13 +391,35 @@ class QuoteService:
             return "unavailable"
         if refresh_failure_active(stock_id):
             return "unavailable"
+        if self._background_refresher_owns_upstream():
+            self._request_background_refresh(stock_id)
+            return "queued"
         return self._refresh_status_after_enqueue(stock_id)
 
     def _stale_refresh_status(self, stock_id: str) -> RefreshStatus:
         """Stale hit: enqueue refresh unless a recent failure is still backing off."""
         if refresh_failure_active(stock_id):
             return "idle"
+        if self._background_refresher_owns_upstream():
+            self._request_background_refresh(stock_id)
+            return "queued"
         return self._refresh_status_after_enqueue(stock_id)
+
+    @staticmethod
+    def _background_refresher_owns_upstream() -> bool:
+        from app.core.config import settings
+
+        if not (
+            settings.quote_refresher_enabled and settings.quote_refresher_owns_upstream
+        ):
+            return False
+        try:
+            from app.services.quote_refresher_service import quote_refresher_service
+
+            # Only suppress request-path upstream when the sampler is actually alive.
+            return quote_refresher_service.is_sampler_running()
+        except Exception:
+            return False
 
     def _refresh_status_after_enqueue(self, stock_id: str) -> RefreshStatus:
         """Queue a refresh when possible; report in-flight work when lock is held."""

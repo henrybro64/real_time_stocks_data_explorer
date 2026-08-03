@@ -4,13 +4,16 @@ from sqlalchemy import delete, select
 
 from app.db.models import PortfolioAsset, PortfolioPosition
 
-from .session import require_session_factory
+from .session import database_is_configured, require_session_factory
 
 
 UNSET = object()
 
 
 class PortfolioRepository:
+    def is_available(self) -> bool:
+        return database_is_configured()
+
     def list_positions(self, user_id: str) -> list[PortfolioPosition]:
         session_factory = require_session_factory()
         with session_factory() as session:
@@ -20,6 +23,17 @@ class PortfolioRepository:
                 .order_by(PortfolioPosition.created_at.asc()),
             ).scalars()
             return list(positions)
+
+    def list_distinct_position_stock_ids(self) -> list[str]:
+        """Return every stock ID held in any user's portfolio (deduplicated)."""
+        session_factory = require_session_factory()
+        with session_factory() as session:
+            rows = session.execute(
+                select(PortfolioPosition.stock_id)
+                .distinct()
+                .order_by(PortfolioPosition.stock_id.asc()),
+            ).all()
+        return [row[0] for row in rows]
 
     def find_position_by_stock(
         self,

@@ -21,7 +21,6 @@ def get_quotes(ids: str = Query(...)) -> list[QuoteEnvelope]:
 
 @router.get(
     "/{stock_id}",
-    response_model=QuoteEnvelope,
     responses={
         404: {"description": "Stock not found"},
         502: {"description": "Quote provider unavailable"},
@@ -32,8 +31,9 @@ def get_quote(stock_id: str) -> QuoteEnvelope:
         item = quote_service.get_quote_detail(stock_id)
     except Exception as exc:
         raise HTTPException(status_code=502, detail="Quote provider unavailable") from exc
-    if item is None or item.quote is None:
+    if item is None:
         raise HTTPException(status_code=404, detail="Stock not found")
+    # Allow null quote with freshness when the refresher owns upstream (cold miss).
     return _batch_item_schema(item)
 
 

@@ -25,10 +25,31 @@ class Settings(BaseSettings):
     redis_url: str = Field(default="")
     # Soft TTL: cached quotes younger than this are considered fresh.
     quote_cache_ttl_seconds: int = Field(default=60, ge=1)
-    # Hard TTL: Redis/memory retention for stale-while-revalidate (default 15m).
-    quote_cache_hard_ttl_seconds: int = Field(default=900, ge=1)
+    # Hard TTL: Redis/memory retention for stale-while-revalidate (default 1h so
+    # outages longer than the soft window still serve last-known quotes).
+    quote_cache_hard_ttl_seconds: int = Field(default=3600, ge=1)
     # Dedup window for async quote refresh locks.
     quote_refresh_lock_seconds: int = Field(default=30, ge=1, le=300)
+    # Background refresher keeps watchlist/portfolio quotes warm in Redis.
+    quote_refresher_enabled: bool = Field(default=True)
+    # Open-market poll interval between refresher cycles (seconds).
+    quote_refresher_open_poll_seconds: int = Field(default=45, ge=15, le=300)
+    # Closed-market poll interval (seconds).
+    quote_refresher_closed_poll_seconds: int = Field(default=900, ge=60, le=7200)
+    # Max concurrent upstream quote fetches in the refresher.
+    quote_refresher_max_concurrency: int = Field(default=3, ge=1, le=8)
+    # Minimum spacing between upstream requests per provider (seconds).
+    quote_refresher_min_interval_seconds: float = Field(default=0.35, ge=0.0, le=5.0)
+    # Hard deadline for one refresher cycle (seconds).
+    quote_refresher_cycle_timeout_seconds: int = Field(default=40, ge=10, le=300)
+    # Random jitter applied before each symbol fetch (seconds).
+    quote_refresher_jitter_seconds: float = Field(default=2.0, ge=0.0, le=30.0)
+    # When true, UI read paths do not call providers while the sampler is alive.
+    quote_refresher_owns_upstream: bool = Field(default=True)
+    # Circuit breaker: consecutive provider failures before pausing that market.
+    quote_refresher_circuit_failure_threshold: int = Field(default=5, ge=2, le=50)
+    # Circuit breaker open duration (seconds) after threshold is hit.
+    quote_refresher_circuit_open_seconds: int = Field(default=120, ge=30, le=3600)
     # TTL for Redis-cached stock AI narrative (metrics are always recomputed).
     stock_analysis_cache_ttl_seconds: int = Field(default=1_209_600, ge=60, le=3_153_600)
     # TTL for Yahoo / TW pre-ranked rank pages (Redis + in-memory).

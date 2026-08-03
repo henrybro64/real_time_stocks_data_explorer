@@ -47,8 +47,14 @@ The runtime currently manages:
 - portfolio history snapshot sampling
 - alert rule evaluation
 - rankings snapshot capture
+- Taiwan market-data refresh
+- quote cache refresher (watchlist/portfolio warm path)
 
 The worker implementations remain in their corresponding service modules, while startup orchestration lives in one defined jobs location.
+
+The quote refresher runs inside the backend process (same pattern as the other samplers). With `replicas: 1` this is sufficient; when Redis is configured, a per-cycle Redis leader lock (fail-closed if Redis is down) ensures only one replica executes each refresh cycle. Configure cadence via `QUOTE_REFRESHER_*` settings. Prefer provider safety: open-market defaults are tens of seconds, not sub-second polling.
+
+When `QUOTE_REFRESHER_OWNS_UPSTREAM=true` (default) **and the sampler thread is alive**, watchlist batch, portfolio, and stock-detail read paths serve Redis/memory cache and do not call providers directly; they request an immediate refresher warm-up on the shared bounded pool instead. If the sampler is not running, request paths fall back to on-demand fetches. Rankings (`get_quotes` with `allow_stale=False`) may still fetch on demand. Closed-market symbols continue to refresh on the closed cadence even while another market is open. Per-provider spacing (`QUOTE_REFRESHER_MIN_INTERVAL_SECONDS`) and a cycle deadline (`QUOTE_REFRESHER_CYCLE_TIMEOUT_SECONDS`) keep free-tier providers from being stampeded.
 
 ## Configuration
 

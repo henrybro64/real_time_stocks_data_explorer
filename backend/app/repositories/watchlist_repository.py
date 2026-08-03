@@ -19,6 +19,17 @@ class WatchlistRepository:
             ).all()
         return [row[0] for row in rows]
 
+    def list_distinct_stock_ids(self) -> list[str]:
+        """Return every stock ID present on any user's watchlist (deduplicated)."""
+        session_factory = require_session_factory()
+        with session_factory() as session:
+            rows = session.execute(
+                select(WatchlistItem.stock_id)
+                .distinct()
+                .order_by(WatchlistItem.stock_id.asc()),
+            ).all()
+        return [row[0] for row in rows]
+
     def add_if_missing(self, user_id: str, stock_id: str) -> None:
         session_factory = require_session_factory()
         with session_factory() as session:
