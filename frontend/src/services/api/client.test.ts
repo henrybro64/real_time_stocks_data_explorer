@@ -58,4 +58,35 @@ describe("fetchTaiwanMarginShort", () => {
     const [requestUrl] = fetchMock.mock.calls[0] ?? [];
     expect(String(requestUrl)).toContain("/api/stocks/TW%3A1303/margin-short?days=90");
   });
+
+  it.each([
+    {
+      status: 502,
+      detail: "Taiwan margin-short official source denied access.",
+      kind: "permission",
+    },
+    {
+      status: 503,
+      detail: "Taiwan margin-short official source is rate-limited.",
+      kind: "unavailable",
+    },
+    {
+      status: 502,
+      detail: "Taiwan margin-short official response could not be interpreted.",
+      kind: "unavailable",
+    },
+  ] as const)("classifies margin-short $status $kind failures from detail text", async ({ status, detail, kind }) => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status,
+      json: async () => ({ detail }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(fetchTaiwanMarginShort("TW:1303", 90)).rejects.toMatchObject({
+      status,
+      detail,
+      kind,
+    });
+  });
 });

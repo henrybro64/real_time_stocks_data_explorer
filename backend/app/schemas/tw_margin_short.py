@@ -40,3 +40,4 @@ class TaiwanMarginShortResponse(BaseModel):
     history: list[TaiwanMarginShortHistoryPointResponse]
     sharesPerLot: int
     source: str
+    emptyReason: Literal["not_published", "no_data_for_stock"] | None = None

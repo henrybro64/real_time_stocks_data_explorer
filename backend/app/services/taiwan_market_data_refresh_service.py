@@ -25,13 +25,16 @@ from app.services.tw_institutional_service import (
     parse_all_institutional_records,
 )
 from app.services.tw_margin_short_service import (
+    SourceStatus,
     _fetch_tpex_borrowed_short_payload,
     _fetch_tpex_margin_payload,
     _fetch_twse_borrowed_short_payload,
     _fetch_twse_close_payload,
     _fetch_twse_margin_payload,
+    assess_margin_short_core_payload,
     margin_short_source_for_market,
     parse_all_margin_short_records,
+    refresh_error_for_core_statuses,
 )
 
 logger = logging.getLogger(__name__)
@@ -343,10 +346,17 @@ class TaiwanMarketDataRefreshService:
         *,
         market: TWBoard,
         source_type: str,
-    ) -> tuple[object | None, str | None]:
+        payload_kind: Literal["twse", "tpex"],
+    ) -> tuple[object | None, str | None, SourceStatus]:
+        """Return ``(usable_payload, error_message, status)`` for one core feed."""
         try:
-            return fetcher(current_date), None
+            payload = fetcher(current_date)
         except HttpFetchError as exc:
+            status, _usable = assess_margin_short_core_payload(
+                None,
+                payload_kind=payload_kind,
+                error=exc,
+            )
             logger.warning(
                 "Margin-short refresh core fetch failed",
                 extra={
@@ -354,10 +364,34 @@ class TaiwanMarketDataRefreshService:
                     "market": market,
                     "requested_date": current_date.isoformat(),
                     "source_type": source_type,
+                    "http_status_code": getattr(exc, "status_code", None),
+                    "content_type": getattr(exc, "content_type", None),
+                    "response_classification": getattr(exc, "classification", None)
+                    or status,
                     "error": str(exc),
                 },
             )
-            return None, str(exc)
+            return None, str(exc), status
+
+        status, usable = assess_margin_short_core_payload(
+            payload,
+            payload_kind=payload_kind,
+        )
+        if status == "schema_error":
+            logger.warning(
+                "Margin-short refresh core payload schema error",
+                extra={
+                    "event": "taiwan_market_data.margin_short.schema_error",
+                    "market": market,
+                    "requested_date": current_date.isoformat(),
+                    "source_type": source_type,
+                    "response_classification": "unexpected-schema",
+                },
+            )
+            return None, "schema_error", status
+        if status == "no_data":
+            return None, None, status
+        return usable, None, status
 
     def _refresh_margin_short_day(self, market: TWBoard, current_date: date) -> DatasetDayResult:
         if not self._margin_short_repository.is_available():
@@ -370,27 +404,40 @@ class TaiwanMarketDataRefreshService:
 
         # Fetch core sources independently so one HTTP outage still allows partial
         # rows from the successful feed (matches live TaiwanMarginShortService).
+        payload_kind: Literal["twse", "tpex"]
         if market == "TPEx":
             margin_fetcher = self._tpex_margin_fetcher
             borrowed_fetcher = self._tpex_borrowed_short_fetcher
+            payload_kind = "tpex"
         else:
             margin_fetcher = self._twse_margin_fetcher
             borrowed_fetcher = self._twse_borrowed_short_fetcher
+            payload_kind = "twse"
 
-        margin_payload, margin_error = self._fetch_optional_core_payload(
+        margin_payload, margin_error, margin_status = self._fetch_optional_core_payload(
             margin_fetcher,
             current_date,
             market=market,
             source_type="margin",
+            payload_kind=payload_kind,
         )
-        borrowed_payload, borrowed_error = self._fetch_optional_core_payload(
+        borrowed_payload, borrowed_error, borrowed_status = self._fetch_optional_core_payload(
             borrowed_fetcher,
             current_date,
             market=market,
             source_type="borrowed-short",
+            payload_kind=payload_kind,
         )
         if margin_payload is None and borrowed_payload is None:
-            error = margin_error or borrowed_error or "upstream_unavailable"
+            soft_empty_error = refresh_error_for_core_statuses(margin_status, borrowed_status)
+            if soft_empty_error is None:
+                return self._day_result(
+                    dataset="margin_short",
+                    market=market,
+                    current_date=current_date,
+                    skipped_no_data=True,
+                )
+            error = margin_error or borrowed_error or soft_empty_error
             return self._day_result(
                 dataset="margin_short",
                 market=market,
@@ -409,29 +456,20 @@ class TaiwanMarketDataRefreshService:
                     "event": "taiwan_market_data.margin_short.close_fetch_error",
                     "market": market,
                     "requested_date": current_date.isoformat(),
+                    "http_status_code": getattr(exc, "status_code", None),
+                    "content_type": getattr(exc, "content_type", None),
+                    "response_classification": getattr(exc, "classification", None),
                     "error": str(exc),
                 },
             )
             close_payload = None
 
-        margin_empty = margin_payload is None or is_taiwan_no_data_payload(margin_payload)
-        borrowed_empty = borrowed_payload is None or is_taiwan_no_data_payload(
-            borrowed_payload
-        )
-        if margin_empty and borrowed_empty:
-            return self._day_result(
-                dataset="margin_short",
-                market=market,
-                current_date=current_date,
-                skipped_no_data=True,
-            )
-
         try:
             records = parse_all_margin_short_records(
                 market=market,
                 current_date=current_date,
-                margin_payload=None if margin_empty else margin_payload,
-                borrowed_payload=None if borrowed_empty else borrowed_payload,
+                margin_payload=margin_payload,
+                borrowed_payload=borrowed_payload,
                 close_payload=close_payload,
             )
             source = margin_short_source_for_market(market)

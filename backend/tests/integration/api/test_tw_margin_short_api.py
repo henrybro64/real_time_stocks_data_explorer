@@ -136,6 +136,43 @@ def test_margin_short_endpoint_returns_502_when_upstream_unavailable(monkeypatch
     assert "temporarily unavailable" in response.json()["detail"]
 
 
+def test_margin_short_endpoint_returns_classified_errors_for_twse_and_tpex(
+    monkeypatch,
+    client,
+) -> None:
+    from app.api.routes import tw_margin_short as margin_short_routes
+
+    cases = (
+        (
+            "TW:1303",
+            "Taiwan margin-short official source denied access.",
+            502,
+            "denied access",
+        ),
+        (
+            "TW:6488",
+            "Taiwan margin-short official source is rate-limited.",
+            503,
+            "rate-limited",
+        ),
+        (
+            "TW:1303",
+            "Taiwan margin-short official response could not be interpreted.",
+            502,
+            "could not be interpreted",
+        ),
+    )
+    for stock_id, detail, status_code, needle in cases:
+        monkeypatch.setattr(
+            margin_short_routes.tw_margin_short_service,
+            "get_margin_short",
+            lambda _stock_id, *, days, detail=detail: (_ for _ in ()).throw(RuntimeError(detail)),
+        )
+        response = client.get(f"/api/stocks/{stock_id}/margin-short")
+        assert response.status_code == status_code
+        assert needle in response.json()["detail"]
+
+
 def test_margin_short_endpoint_returns_partial_balances_for_tpex(monkeypatch, client) -> None:
     from app.api.routes import tw_margin_short as margin_short_routes
     from app.services.tw_margin_short_service import (

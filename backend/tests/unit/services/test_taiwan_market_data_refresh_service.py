@@ -362,6 +362,37 @@ def test_refresh_upserts_partial_margin_short_when_borrowed_http_fails() -> None
     assert margin_repo.records[0].borrowed_short_balance_lots is None
 
 
+def test_refresh_marks_schema_error_instead_of_silent_zero_row_upsert() -> None:
+    margin_repo = FakeMarginRepo()
+    bad_payload = {
+        "stat": "OK",
+        "date": "20260709",
+        "message": "unexpected envelope without stock tables",
+    }
+
+    service = _service(
+        margin_repo=margin_repo,
+        twse_institutional=lambda _d: _no_data_payload(),
+        tpex_institutional=lambda _d: _no_data_payload(),
+        twse_margin=lambda _d: bad_payload,
+        twse_borrowed=lambda _d: bad_payload,
+        tpex_margin=lambda _d: _no_data_payload(),
+        tpex_borrowed=lambda _d: _no_data_payload(),
+    )
+
+    summary = service.refresh(days=1, trigger="schema-fail")
+    twse_margin_results = [
+        item
+        for item in summary.results
+        if item.dataset == "margin_short" and item.market == "TWSE"
+    ]
+
+    assert twse_margin_results
+    assert twse_margin_results[0].error is not None
+    assert "interpreted" in twse_margin_results[0].error or twse_margin_results[0].error == "schema_error"
+    assert not margin_repo.calls
+
+
 def test_refresh_upserts_tpex_margin_short_when_payloads_present() -> None:
     margin_repo = FakeMarginRepo()
     tpex_margin = {

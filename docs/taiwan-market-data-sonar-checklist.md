@@ -29,7 +29,7 @@ Use this checklist for PRs that change any of:
 | --- | --- |
 | Shared Taiwan helpers | `backend/app/services/taiwan_market_data.py`, `taiwan_history_scan.py` |
 | Institutional API | `tw_institutional_service.py`, `api/routes/tw_institutional.py` |
-| 資券 API | `tw_margin_short_service.py`, `api/routes/tw_margin_short.py` |
+| 資券 API | `tw_margin_short_service.py`, `api/routes/tw_margin_short.py`, `http_client.py`, `docs/taiwan-margin-short-endpoints.md` |
 | Refresh / store | `taiwan_market_data_refresh_service.py`, `taiwan_market_daily_repository.py`, related migrations |
 | Jobs / settings | `backend/app/jobs/runtime.py`, `core/config.py` Taiwan refresh flags |
 
@@ -71,7 +71,8 @@ python -m pytest backend/tests/unit/services/test_tw_institutional_service.py \
 
 # 資券
 python -m pytest backend/tests/unit/services/test_tw_margin_short_service.py \
-  backend/tests/unit/routes/test_tw_margin_short_route.py -q
+  backend/tests/unit/routes/test_tw_margin_short_route.py \
+  backend/tests/unit/services/test_http_client.py -q
 
 # Refresh + store + capture route
 python -m pytest backend/tests/unit/services/test_taiwan_market_data_refresh_service.py \

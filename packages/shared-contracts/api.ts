@@ -167,6 +167,8 @@ export type TaiwanMarginShortResponse = {
   /** Shares (受益權單位) per 張 used for this symbol (1000 default; 100 for K/C). */
   sharesPerLot: number;
   source: string;
+  /** Present when history is empty: unpublished official files vs stock not in tables. */
+  emptyReason?: "not_published" | "no_data_for_stock" | null;
 };
 
 export type WatchlistResponse = {

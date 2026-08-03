@@ -101,10 +101,16 @@ function classifyApiErrorKind(status: number | null, detail: string | null, mess
   if (status === 401 || text.includes("not authenticated") || text.includes("invalid username or password")) {
     return "auth";
   }
-  if (status === 403 || text.includes("forbidden") || text.includes("permission")) {
+  if (
+    status === 403 ||
+    text.includes("forbidden") ||
+    text.includes("permission") ||
+    text.includes("denied access")
+  ) {
     return "permission";
   }
   if (
+    status === 429 ||
     status === 502 ||
     status === 503 ||
     status === 504 ||
@@ -113,7 +119,9 @@ function classifyApiErrorKind(status: number | null, detail: string | null, mess
     text.includes("network request failed") ||
     text.includes("timeout") ||
     text.includes("temporarily unavailable") ||
-    text.includes("provider unavailable")
+    text.includes("provider unavailable") ||
+    text.includes("rate-limited") ||
+    text.includes("could not be interpreted")
   ) {
     return "unavailable";
   }

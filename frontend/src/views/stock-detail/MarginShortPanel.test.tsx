@@ -355,12 +355,29 @@ describe("MarginShortPanel", () => {
       latestDate: null,
       summary: null,
       history: [],
+      emptyReason: "no_data_for_stock",
     });
 
     renderPanel();
 
     await waitFor(() => {
       expect(screen.getByText("目前沒有可顯示的資券資料。")).toBeInTheDocument();
+    });
+  });
+
+  it("shows not-published copy when official source has not released data yet", async () => {
+    vi.mocked(fetchTaiwanMarginShort).mockResolvedValue({
+      ...samplePayload,
+      latestDate: null,
+      summary: null,
+      history: [],
+      emptyReason: "not_published",
+    });
+
+    renderPanel();
+
+    await waitFor(() => {
+      expect(screen.getByText("官方資券資料尚未公布，請稍後再試。")).toBeInTheDocument();
     });
   });
 
@@ -394,6 +411,56 @@ describe("MarginShortPanel", () => {
     await waitFor(() => {
       expect(screen.getByText("資料來源暫時不可用")).toBeInTheDocument();
       expect(screen.getByText(/資券變化目前無法從資料提供方取得/)).toBeInTheDocument();
+    });
+  });
+
+  it("shows schema-failure notice when official response cannot be interpreted", async () => {
+    vi.mocked(fetchTaiwanMarginShort).mockRejectedValue(
+      new ApiError("Taiwan margin-short official response could not be interpreted.", {
+        kind: "unavailable",
+        status: 502,
+        detail: "Taiwan margin-short official response could not be interpreted.",
+      }),
+    );
+
+    renderPanel();
+
+    await waitFor(() => {
+      expect(screen.getByText("官方資料格式無法解析")).toBeInTheDocument();
+      expect(screen.getByText(/回應格式無法判讀/)).toBeInTheDocument();
+    });
+  });
+
+  it("shows rate-limit notice for 503 official source throttling", async () => {
+    vi.mocked(fetchTaiwanMarginShort).mockRejectedValue(
+      new ApiError("Taiwan margin-short official source is rate-limited.", {
+        kind: "unavailable",
+        status: 503,
+        detail: "Taiwan margin-short official source is rate-limited.",
+      }),
+    );
+
+    renderPanel();
+
+    await waitFor(() => {
+      expect(screen.getByText("官方資料來源流量受限")).toBeInTheDocument();
+    });
+  });
+
+  it("shows official access-denied notice instead of app permission wording", async () => {
+    vi.mocked(fetchTaiwanMarginShort).mockRejectedValue(
+      new ApiError("Taiwan margin-short official source denied access.", {
+        kind: "permission",
+        status: 502,
+        detail: "Taiwan margin-short official source denied access.",
+      }),
+    );
+
+    renderPanel();
+
+    await waitFor(() => {
+      expect(screen.getByText("官方資料來源拒絕存取")).toBeInTheDocument();
+      expect(screen.getByText(/不是本站登入問題/)).toBeInTheDocument();
     });
   });
 

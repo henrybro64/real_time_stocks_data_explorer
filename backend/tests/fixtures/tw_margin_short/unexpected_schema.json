@@ -1,0 +1,6 @@
+{
+  "stat": "OK",
+  "date": "20260731",
+  "message": "unexpected envelope without stock tables",
+  "payload": {"nested": true}
+}

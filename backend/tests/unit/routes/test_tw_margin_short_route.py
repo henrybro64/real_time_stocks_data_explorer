@@ -147,6 +147,45 @@ def test_margin_short_route_maps_upstream_errors(monkeypatch) -> None:
         raise AssertionError("Expected HTTPException")
 
 
+def test_margin_short_route_maps_rate_limited_to_503(monkeypatch) -> None:
+    def raise_rate_limited(*args, **kwargs):
+        raise RuntimeError("Taiwan margin-short official source is rate-limited.")
+
+    monkeypatch.setattr(
+        margin_short_route.tw_margin_short_service,
+        "get_margin_short",
+        raise_rate_limited,
+    )
+
+    try:
+        margin_short_route.get_tw_margin_short("TW:1303", days=30)
+    except HTTPException as exc:
+        assert exc.status_code == 503
+        assert "rate-limited" in str(exc.detail)
+    else:
+        raise AssertionError("Expected HTTPException")
+
+
+def test_margin_short_route_maps_schema_and_auth_failures_to_502(monkeypatch) -> None:
+    cases = (
+        "Taiwan margin-short official response could not be interpreted.",
+        "Taiwan margin-short official source denied access.",
+    )
+    for detail in cases:
+        monkeypatch.setattr(
+            margin_short_route.tw_margin_short_service,
+            "get_margin_short",
+            lambda *args, detail=detail, **kwargs: (_ for _ in ()).throw(RuntimeError(detail)),
+        )
+        try:
+            margin_short_route.get_tw_margin_short("TW:1303", days=30)
+        except HTTPException as exc:
+            assert exc.status_code == 502
+            assert str(exc.detail) == detail
+        else:
+            raise AssertionError(f"Expected HTTPException for {detail}")
+
+
 def test_margin_short_route_maps_unknown_market_as_bad_request(monkeypatch) -> None:
     def raise_unknown(*args, **kwargs):
         raise ValueError("Taiwan margin-short market is unavailable for this stock")

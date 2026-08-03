@@ -54,4 +54,40 @@ describe("RequestStateNotice", () => {
     renderWithLanguage(<RequestStateNotice kind="error" scopeLabel="門檻警示" />, "zh-TW");
     expect(screen.getByText("載入失敗")).toBeInTheDocument();
   });
+
+  it("surfaces official schema and rate-limit messaging from detail text", () => {
+    renderWithLanguage(
+      <RequestStateNotice
+        kind="unavailable"
+        scopeLabel="資券變化"
+        detail="Taiwan margin-short official response could not be interpreted."
+      />,
+      "zh-TW",
+    );
+    expect(screen.getByText("官方資料格式無法解析")).toBeInTheDocument();
+    expect(screen.getByText(/回應格式無法判讀/)).toBeInTheDocument();
+
+    renderWithLanguage(
+      <RequestStateNotice
+        kind="unavailable"
+        scopeLabel="資券變化"
+        detail="Taiwan margin-short official source is rate-limited."
+      />,
+      "en",
+    );
+    expect(screen.getByText("Official source rate-limited")).toBeInTheDocument();
+  });
+
+  it("uses official access-denied wording instead of app permission copy", () => {
+    renderWithLanguage(
+      <RequestStateNotice
+        kind="permission"
+        scopeLabel="Margin / short changes"
+        detail="Taiwan margin-short official source denied access."
+      />,
+      "en",
+    );
+    expect(screen.getByText("Official source denied access")).toBeInTheDocument();
+    expect(screen.getByText(/not a site sign-in problem/)).toBeInTheDocument();
+  });
 });

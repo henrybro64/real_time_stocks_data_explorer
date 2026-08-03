@@ -1,3 +1,18 @@
+"""Official TWSE/TPEx margin-short endpoints and failure classification.
+
+Endpoint contracts (verified 2026-08-03; see docs/taiwan-margin-short-endpoints.md):
+
+- TWSE margin ``MI_MARGN`` (GET, public JSON, ``date=YYYYMMDD``, ``selectType=ALL``):
+  stock balances live in ``tables[*]`` with ``代號``/``今日餘額`` columns.
+- TWSE borrowed-short ``TWT93U`` (GET, public JSON): top-level ``fields``/``data``.
+- TWSE close supplement ``TWT72U`` (optional).
+- TPEx margin ``/margin/balance`` and borrowed-short ``/margin/sbl`` (GET, public JSON,
+  ``date=YYYY/MM/DD``) use ``tables[0].fields`` / ``tables[0].data``.
+
+These endpoints are unauthenticated public HTTP APIs. Access-control responses
+(401/403) and rate limits (429) are classified separately from official no-data.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Sequence
@@ -5,8 +20,10 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime
 import logging
 import math
+from time import perf_counter
 from typing import TYPE_CHECKING, Callable, Literal
 
+from app.core.diagnostics import elapsed_ms
 from app.services.http_client import HttpFetchError
 from app.services.taiwan_history_scan import (
     RESULT_CACHE_TTL,
@@ -56,6 +73,15 @@ _UNKNOWN_TW_MARKET_ERROR = "Taiwan margin-short market is unavailable for this s
 _UPSTREAM_UNAVAILABLE_ERROR = (
     "Taiwan margin-short data is temporarily unavailable from official sources."
 )
+_UPSTREAM_SCHEMA_ERROR = (
+    "Taiwan margin-short official response could not be interpreted."
+)
+_UPSTREAM_AUTH_DENIED_ERROR = (
+    "Taiwan margin-short official source denied access."
+)
+_UPSTREAM_RATE_LIMITED_ERROR = (
+    "Taiwan margin-short official source is rate-limited."
+)
 
 TWBoard = Literal["TWSE", "TPEx"]
 PayloadFetcher = Callable[[date], object]
@@ -75,6 +101,9 @@ class TaiwanMarginShortRecord:
     borrowed_short_balance_change_amount_10k: int | None
 
 
+EmptyReason = Literal["not_published", "no_data_for_stock"]
+
+
 @dataclass(frozen=True)
 class TaiwanMarginShortResult:
     stock_id: str
@@ -84,6 +113,7 @@ class TaiwanMarginShortResult:
     summary: TaiwanMarginShortRecord | None
     history: tuple[TaiwanMarginShortRecord, ...]
     source: str
+    empty_reason: EmptyReason | None = None
 
 
 SourceStatus = Literal[
@@ -93,15 +123,28 @@ SourceStatus = Literal[
     "no_data",
     "schema_error",
     "http_error",
+    "auth_denied",
+    "rate_limited",
+    "unexpected_content",
 ]
 
 _SOFT_EMPTY_STATUSES = frozenset({"symbol_absent", "no_data"})
+_HARD_STATUS_COUNTER_ATTR = {
+    "http_error": "http_errors",
+    "auth_denied": "auth_denied",
+    "rate_limited": "rate_limited",
+    "schema_error": "schema_errors",
+    "parse_error": "parse_errors",
+    "unexpected_content": "unexpected_content",
+}
 
 
 @dataclass(frozen=True)
 class _DailyLookupResult:
     record: TaiwanMarginShortRecord | None
     request_succeeded: bool
+    margin_outcome: _SourceOutcome
+    borrowed_outcome: _SourceOutcome
 
 
 @dataclass(frozen=True)
@@ -137,6 +180,81 @@ class _SourceOutcome:
     reason: str | None = None
     row_count: int | None = None
     field_count: int | None = None
+    http_status_code: int | None = None
+    content_type: str | None = None
+    response_classification: str | None = None
+
+
+@dataclass
+class _ScanDiagnostics:
+    """Aggregate probe outcomes across the history scan window."""
+
+    attempts: int = 0
+    successful_days: int = 0
+    records_produced: int = 0
+    soft_empty_days: int = 0
+    official_no_data_days: int = 0
+    symbol_absent_days: int = 0
+    http_errors: int = 0
+    auth_denied: int = 0
+    rate_limited: int = 0
+    schema_errors: int = 0
+    parse_errors: int = 0
+    unexpected_content: int = 0
+
+    @property
+    def hard_failure_count(self) -> int:
+        return (
+            self.http_errors
+            + self.auth_denied
+            + self.rate_limited
+            + self.schema_errors
+            + self.parse_errors
+            + self.unexpected_content
+        )
+
+    def note_day(
+        self,
+        *,
+        margin: _SourceOutcome,
+        borrowed: _SourceOutcome,
+        record: TaiwanMarginShortRecord | None,
+        request_succeeded: bool,
+    ) -> None:
+        self.attempts += 1
+        if request_succeeded:
+            self.successful_days += 1
+        if record is not None:
+            self.records_produced += 1
+        self._note_soft_empty_day(margin, borrowed)
+        self._note_hard_outcomes(margin, borrowed)
+
+    def _note_soft_empty_day(
+        self,
+        margin: _SourceOutcome,
+        borrowed: _SourceOutcome,
+    ) -> None:
+        if (
+            margin.status not in _SOFT_EMPTY_STATUSES
+            or borrowed.status not in _SOFT_EMPTY_STATUSES
+        ):
+            return
+        self.soft_empty_days += 1
+        if margin.status == "no_data" and borrowed.status == "no_data":
+            self.official_no_data_days += 1
+        if margin.status == "symbol_absent" or borrowed.status == "symbol_absent":
+            self.symbol_absent_days += 1
+
+    def _note_hard_outcomes(
+        self,
+        margin: _SourceOutcome,
+        borrowed: _SourceOutcome,
+    ) -> None:
+        for outcome in (margin, borrowed):
+            counter_attr = _HARD_STATUS_COUNTER_ATTR.get(outcome.status)
+            if counter_attr is None:
+                continue
+            setattr(self, counter_attr, getattr(self, counter_attr) + 1)
 
 
 @dataclass(frozen=True)
@@ -161,7 +279,9 @@ _TPEX_BORROWED_CURR_SHORT_LABELS = ("當日餘額", *_TPEX_BORROWED_CURR_UNIQUE_
 _TPEX_BORROWED_SECTION_MARKERS = (
     "當日還券",
     "當日調整數額",
+    "當日調整",
     "次一營業日可借券賣出限額",
+    "次一營業日可限額",
     "借券賣出當日還券",
     "借券賣出當日調整數額",
     "借券賣出當日賣出",
@@ -219,6 +339,7 @@ class TaiwanMarginShortService:
                 unknown_market_error=_UNKNOWN_TW_MARKET_ERROR,
             )
             self._close_fetch_enabled = True
+            diagnostics = _ScanDiagnostics()
 
             def fetch_day(current_date: date) -> tuple[TaiwanMarginShortRecord | None, bool]:
                 lookup = self._fetch_record_for_day(
@@ -226,6 +347,12 @@ class TaiwanMarginShortService:
                     current_date,
                     symbol,
                     stock_id=stock.id,
+                )
+                diagnostics.note_day(
+                    margin=lookup.margin_outcome,
+                    borrowed=lookup.borrowed_outcome,
+                    record=lookup.record,
+                    request_succeeded=lookup.request_succeeded,
                 )
                 return lookup.record, lookup.request_succeeded
 
@@ -235,9 +362,64 @@ class TaiwanMarginShortService:
                 fetch_day=fetch_day,
                 record_date=lambda record: record.date,
             )
-            if not history and successful_fetches == 0:
-                raise RuntimeError(_UPSTREAM_UNAVAILABLE_ERROR)
-            return self._to_result(stock.id, symbol, market, history)
+            # Soft-empty days (holiday / unpublished / symbol absent) count as
+            # successful probes. Hard failures mixed into an otherwise empty
+            # window must still raise — never return a normal empty history.
+            if not history and (
+                successful_fetches == 0 or diagnostics.hard_failure_count > 0
+            ):
+                error_message = _upstream_error_for_scan(diagnostics)
+                logger.warning(
+                    "Taiwan margin-short scan produced no usable days",
+                    extra={
+                        "event": "tw_margin_short.scan_failed",
+                        "stock_id": stock.id,
+                        "symbol": symbol,
+                        "exchange": market,
+                        "attempts": diagnostics.attempts,
+                        "successful_days": diagnostics.successful_days,
+                        "records_produced": diagnostics.records_produced,
+                        "soft_empty_days": diagnostics.soft_empty_days,
+                        "official_no_data_days": diagnostics.official_no_data_days,
+                        "symbol_absent_days": diagnostics.symbol_absent_days,
+                        "http_errors": diagnostics.http_errors,
+                        "auth_denied": diagnostics.auth_denied,
+                        "rate_limited": diagnostics.rate_limited,
+                        "schema_errors": diagnostics.schema_errors,
+                        "parse_errors": diagnostics.parse_errors,
+                        "unexpected_content": diagnostics.unexpected_content,
+                        "error_detail": error_message,
+                    },
+                )
+                raise RuntimeError(error_message)
+            logger.info(
+                "Taiwan margin-short scan completed",
+                extra={
+                    "event": "tw_margin_short.scan_completed",
+                    "stock_id": stock.id,
+                    "symbol": symbol,
+                    "exchange": market,
+                    "attempts": diagnostics.attempts,
+                    "successful_days": diagnostics.successful_days,
+                    "records_produced": diagnostics.records_produced,
+                    "soft_empty_days": diagnostics.soft_empty_days,
+                    "official_no_data_days": diagnostics.official_no_data_days,
+                    "symbol_absent_days": diagnostics.symbol_absent_days,
+                    "schema_errors": diagnostics.schema_errors,
+                    "parse_errors": diagnostics.parse_errors,
+                    "http_errors": diagnostics.http_errors,
+                    "auth_denied": diagnostics.auth_denied,
+                    "rate_limited": diagnostics.rate_limited,
+                    "unexpected_content": diagnostics.unexpected_content,
+                },
+            )
+            return self._to_result(
+                stock.id,
+                symbol,
+                market,
+                history,
+                empty_reason=_empty_reason_for_scan(diagnostics, history),
+            )
 
         return get_cached_or_compute(
             self._result_cache,
@@ -253,6 +435,8 @@ class TaiwanMarginShortService:
         symbol: str,
         market: TWBoard,
         history: list[TaiwanMarginShortRecord],
+        *,
+        empty_reason: EmptyReason | None = None,
     ) -> TaiwanMarginShortResult:
         ordered = list(reversed(history))
         latest = ordered[-1] if ordered else None
@@ -264,6 +448,7 @@ class TaiwanMarginShortService:
             summary=latest,
             history=tuple(ordered),
             source=_source_for_market(market),
+            empty_reason=empty_reason if not ordered else None,
         )
 
     def _fetch_record_for_day(
@@ -371,6 +556,8 @@ class TaiwanMarginShortService:
         return _DailyLookupResult(
             record=record,
             request_succeeded=request_succeeded,
+            margin_outcome=margin_outcome,
+            borrowed_outcome=borrowed_outcome,
         )
 
     def _optional_close_point(
@@ -501,6 +688,7 @@ def _fetch_and_extract_core_source(
     stock_id: str,
     extractor: Callable[..., _SourceOutcome],
 ) -> _SourceOutcome:
+    started_at = perf_counter()
     log_base = {
         "stock_id": stock_id,
         "symbol": symbol,
@@ -511,16 +699,28 @@ def _fetch_and_extract_core_source(
     try:
         payload = fetcher(current_date)
     except HttpFetchError as exc:
+        status = _source_status_from_http_error(exc)
         logger.warning(
             "Taiwan margin-short upstream HTTP failure",
             extra={
                 **log_base,
                 "event": "tw_margin_short.fetch_http_error",
                 "http_success": False,
+                "http_status_code": getattr(exc, "status_code", None),
+                "content_type": getattr(exc, "content_type", None),
+                "response_classification": getattr(exc, "classification", None)
+                or status,
+                "duration_ms": elapsed_ms(started_at),
                 "parser_failure_reason": str(exc),
             },
         )
-        return _SourceOutcome(status="http_error", reason=str(exc))
+        return _SourceOutcome(
+            status=status,
+            reason=str(exc),
+            http_status_code=getattr(exc, "status_code", None),
+            content_type=getattr(exc, "content_type", None),
+            response_classification=getattr(exc, "classification", None),
+        )
 
     if is_taiwan_no_data_payload(payload):
         logger.info(
@@ -529,6 +729,8 @@ def _fetch_and_extract_core_source(
                 **log_base,
                 "event": "tw_margin_short.fetch_no_data",
                 "http_success": True,
+                "response_classification": "official-no-data",
+                "duration_ms": elapsed_ms(started_at),
             },
         )
         return _SourceOutcome(status="no_data", reason="official_no_data")
@@ -540,12 +742,20 @@ def _fetch_and_extract_core_source(
                 **log_base,
                 "event": "tw_margin_short.fetch_schema_error",
                 "http_success": True,
+                "response_classification": "unexpected-schema",
+                "duration_ms": elapsed_ms(started_at),
                 "parser_failure_reason": "unexpected_table_shape",
             },
         )
         return _SourceOutcome(status="schema_error", reason="unexpected_table_shape")
 
     outcome = extractor(payload, symbol=symbol, current_date=current_date)
+    classification = {
+        "found": "success-table",
+        "symbol_absent": "success-table",
+        "parse_error": "unexpected-schema",
+        "schema_error": "unexpected-schema",
+    }.get(outcome.status, outcome.status)
     logger.info(
         "Taiwan margin-short source parse",
         extra={
@@ -553,6 +763,8 @@ def _fetch_and_extract_core_source(
             "event": "tw_margin_short.source_parse",
             "http_success": True,
             "status": outcome.status,
+            "response_classification": classification,
+            "duration_ms": elapsed_ms(started_at),
             "row_count": outcome.row_count,
             "field_count": outcome.field_count,
             "matching_symbol_found": outcome.status in {"found", "parse_error"},
@@ -586,7 +798,102 @@ def _has_expected_table_shape(
         return False
     if payload_kind == "tpex":
         return _first_tpex_table(payload) is not None
-    return isinstance(payload.get("data"), list) and isinstance(payload.get("fields"), list)
+    return _twse_stock_table(payload) is not None
+
+
+def assess_margin_short_core_payload(
+    payload: object | None,
+    *,
+    payload_kind: Literal["twse", "tpex"],
+    error: Exception | None = None,
+) -> tuple[SourceStatus, object | None]:
+    """Classify a refresh-path core fetch into status + usable parse payload.
+
+    Returns ``("found", payload)`` when the envelope has the expected table shape.
+    Schema / HTTP failures return a hard status with ``None`` payload so callers
+    do not silently upsert zero rows from unparseable responses.
+    """
+    if error is not None:
+        if isinstance(error, HttpFetchError):
+            return _source_status_from_http_error(error), None
+        return "http_error", None
+    if payload is None:
+        return "http_error", None
+    if is_taiwan_no_data_payload(payload):
+        return "no_data", None
+    if not _has_expected_table_shape(payload, payload_kind=payload_kind):
+        return "schema_error", None
+    return "found", payload
+
+
+def refresh_error_for_core_statuses(
+    margin_status: SourceStatus,
+    borrowed_status: SourceStatus,
+) -> str | None:
+    """Map dual-core refresh outcomes to a day-level error, or ``None`` if soft-empty."""
+    if (
+        margin_status in _SOFT_EMPTY_STATUSES
+        and borrowed_status in _SOFT_EMPTY_STATUSES
+    ):
+        return None
+    ordered = (
+        (_UPSTREAM_AUTH_DENIED_ERROR, ("auth_denied",)),
+        (_UPSTREAM_RATE_LIMITED_ERROR, ("rate_limited",)),
+        (
+            _UPSTREAM_SCHEMA_ERROR,
+            ("schema_error", "parse_error", "unexpected_content"),
+        ),
+        (_UPSTREAM_UNAVAILABLE_ERROR, ("http_error",)),
+    )
+    for message, statuses in ordered:
+        if margin_status in statuses or borrowed_status in statuses:
+            return message
+    return _UPSTREAM_UNAVAILABLE_ERROR
+
+
+def _source_status_from_http_error(exc: HttpFetchError) -> SourceStatus:
+    classification = getattr(exc, "classification", None)
+    if classification == "auth_denied":
+        return "auth_denied"
+    if classification == "rate_limited":
+        return "rate_limited"
+    if classification == "unexpected_content":
+        return "unexpected_content"
+    return "http_error"
+
+
+def _upstream_error_for_scan(diagnostics: _ScanDiagnostics) -> str:
+    """Choose the most specific upstream error after a fully failed scan."""
+    # Prefer access-control and rate-limit signals over schema/unavailable, even when
+    # those categories appear less often across the weekday probe window.
+    ordered = (
+        (_UPSTREAM_AUTH_DENIED_ERROR, diagnostics.auth_denied),
+        (_UPSTREAM_RATE_LIMITED_ERROR, diagnostics.rate_limited),
+        (
+            _UPSTREAM_SCHEMA_ERROR,
+            diagnostics.schema_errors
+            + diagnostics.parse_errors
+            + diagnostics.unexpected_content,
+        ),
+        (_UPSTREAM_UNAVAILABLE_ERROR, diagnostics.http_errors),
+    )
+    for message, count in ordered:
+        if count > 0:
+            return message
+    return _UPSTREAM_UNAVAILABLE_ERROR
+
+
+def _empty_reason_for_scan(
+    diagnostics: _ScanDiagnostics,
+    history: Sequence[TaiwanMarginShortRecord],
+) -> EmptyReason | None:
+    if history:
+        return None
+    if diagnostics.symbol_absent_days > 0:
+        return "no_data_for_stock"
+    if diagnostics.official_no_data_days > 0:
+        return "not_published"
+    return "no_data_for_stock"
 
 
 def _core_request_succeeded(
@@ -597,8 +904,7 @@ def _core_request_succeeded(
 
     - Any ``found`` core source succeeds (partial rows are valid).
     - Both sides soft-empty (``no_data`` / ``symbol_absent``) is legitimate empty.
-    - Hard failures (``http_error`` / ``schema_error`` / ``parse_error``) without a
-      compensating ``found`` must not look like ordinary no-data.
+    - Hard failures without a compensating ``found`` must not look like ordinary no-data.
     """
     if margin_outcome.status == "found" or borrowed_outcome.status == "found":
         return True
@@ -606,6 +912,44 @@ def _core_request_succeeded(
         margin_outcome.status in _SOFT_EMPTY_STATUSES
         and borrowed_outcome.status in _SOFT_EMPTY_STATUSES
     )
+
+
+def _twse_stock_table(payload: object | None) -> dict[str, object] | None:
+    """Return the per-stock TWSE table from either legacy or tables-envelope payloads.
+
+    Verified 2026-08-03: ``MI_MARGN`` returns ``tables`` where table[0] is a market
+    summary and table[1] holds per-symbol 融資/融券 balances. Legacy fixtures still
+    use top-level ``fields`` / ``data``.
+    """
+    if not isinstance(payload, dict):
+        return None
+    top_fields = payload.get("fields")
+    top_data = payload.get("data")
+    if isinstance(top_fields, list) and isinstance(top_data, list):
+        return {
+            "fields": top_fields,
+            "data": top_data,
+            "date": payload.get("date"),
+        }
+
+    tables = payload.get("tables")
+    if not isinstance(tables, list):
+        return None
+    best: dict[str, object] | None = None
+    best_rows = -1
+    for table in tables:
+        if not isinstance(table, dict):
+            continue
+        fields = table.get("fields")
+        data = table.get("data")
+        if not isinstance(fields, list) or not isinstance(data, list) or not data:
+            continue
+        if taiwan_field_index(fields, "代號", "證券代號", "股票代號") is None:
+            continue
+        if len(data) > best_rows:
+            best = table
+            best_rows = len(data)
+    return best
 
 
 def _record_completeness(record: TaiwanMarginShortRecord | None) -> str:
@@ -684,40 +1028,34 @@ def _extract_twse_table_point(
 ) -> _SourceOutcome:
     if not isinstance(payload, dict):
         return _SourceOutcome(status="schema_error", reason="payload_not_dict")
-    rows = payload.get("data")
-    fields = payload.get("fields")
+    table = _twse_stock_table(payload)
+    if table is None:
+        return _SourceOutcome(status="schema_error", reason="missing_data_or_fields")
+    rows = table.get("data")
+    fields = table.get("fields")
     if not isinstance(rows, list) or not isinstance(fields, list):
         return _SourceOutcome(status="schema_error", reason="missing_data_or_fields")
 
-    record_date = normalize_taiwan_date(payload.get("date")) or current_date.isoformat()
-    saw_matching_symbol = False
-    for row in rows:
-        if not isinstance(row, list):
-            continue
-        row_symbol = normalize_taiwan_symbol(_row_at(row, 0))
-        if row_symbol != symbol:
-            continue
-        saw_matching_symbol = True
-        point = parse_row(row, record_date=record_date)
-        if point is not None and getattr(point, "symbol", None) == symbol:
-            return _SourceOutcome(
-                status="found",
-                point=point,
-                row_count=len(rows),
-                field_count=len(fields),
-            )
-    if saw_matching_symbol:
-        return _SourceOutcome(
-            status="parse_error",
-            row_count=len(rows),
-            field_count=len(fields),
-            reason="symbol_row_unparseable",
+    record_date = (
+        normalize_taiwan_date(table.get("date"))
+        or normalize_taiwan_date(payload.get("date"))
+        or current_date.isoformat()
+    )
+
+    def row_symbol(row: Sequence[object]) -> str | None:
+        return normalize_taiwan_symbol(
+            taiwan_row_value(row, fields, "代號", "證券代號", "股票代號")
+            if fields and fields != ["placeholder"]
+            else _row_at(row, 0)
         )
-    return _SourceOutcome(
-        status="symbol_absent",
+
+    return _scan_rows_for_symbol(
+        rows,
+        symbol=symbol,
+        row_symbol=row_symbol,
+        parse_row=lambda row: parse_row(row, fields=fields, record_date=record_date),
         row_count=len(rows),
         field_count=len(fields),
-        reason="symbol_not_in_table",
     )
 
 
@@ -743,36 +1081,15 @@ def _extract_tpex_table_point(
         or normalize_taiwan_date(payload_dict.get("date") if payload_dict is not None else None)
         or current_date.isoformat()
     )
-    saw_matching_symbol = False
-    for row in rows:
-        if not isinstance(row, list):
-            continue
-        row_symbol = normalize_taiwan_symbol(
+    return _scan_rows_for_symbol(
+        rows,
+        symbol=symbol,
+        row_symbol=lambda row: normalize_taiwan_symbol(
             taiwan_row_value(row, fields, "代號", "股票代號", "證券代號")
-        )
-        if row_symbol != symbol:
-            continue
-        saw_matching_symbol = True
-        point = parse_row(row, fields, record_date=record_date)
-        if point is not None and getattr(point, "symbol", None) == symbol:
-            return _SourceOutcome(
-                status="found",
-                point=point,
-                row_count=len(rows),
-                field_count=len(fields),
-            )
-    if saw_matching_symbol:
-        return _SourceOutcome(
-            status="parse_error",
-            row_count=len(rows),
-            field_count=len(fields),
-            reason="symbol_row_unparseable",
-        )
-    return _SourceOutcome(
-        status="symbol_absent",
+        ),
+        parse_row=lambda row: parse_row(row, fields, record_date=record_date),
         row_count=len(rows),
         field_count=len(fields),
-        reason="symbol_not_in_table",
     )
 
 
@@ -806,41 +1123,62 @@ def _extract_tpex_borrowed_short_table_point(
         or normalize_taiwan_date(payload_dict.get("date") if payload_dict is not None else None)
         or current_date.isoformat()
     )
-    saw_matching_symbol = False
-    for row in rows:
-        if not isinstance(row, list):
-            continue
-        row_symbol = normalize_taiwan_symbol(
+    return _scan_rows_for_symbol(
+        rows,
+        symbol=symbol,
+        row_symbol=lambda row: normalize_taiwan_symbol(
             taiwan_row_value_at(row, columns.symbol_index)
-        )
-        if row_symbol != symbol:
-            continue
-        saw_matching_symbol = True
-        point = _parse_tpex_borrowed_short_row(
+        ),
+        parse_row=lambda row: _parse_tpex_borrowed_short_row(
             row,
             fields,
             record_date=record_date,
             columns=columns,
-        )
-        if point is not None and point.symbol == symbol:
+        ),
+        row_count=len(rows),
+        field_count=len(fields),
+        found_reason="index_fallback" if columns.used_index_fallback else None,
+    )
+
+
+def _scan_rows_for_symbol(
+    rows: Sequence[object],
+    *,
+    symbol: str,
+    row_symbol: Callable[[Sequence[object]], str | None],
+    parse_row: Callable[[Sequence[object]], object | None],
+    row_count: int,
+    field_count: int,
+    found_reason: str | None = None,
+) -> _SourceOutcome:
+    """Scan table rows for ``symbol`` and classify found / parse_error / absent."""
+    saw_matching_symbol = False
+    for row in rows:
+        if not isinstance(row, list):
+            continue
+        if row_symbol(row) != symbol:
+            continue
+        saw_matching_symbol = True
+        point = parse_row(row)
+        if point is not None and getattr(point, "symbol", None) == symbol:
             return _SourceOutcome(
                 status="found",
                 point=point,
-                row_count=len(rows),
-                field_count=len(fields),
-                reason="index_fallback" if columns.used_index_fallback else None,
+                row_count=row_count,
+                field_count=field_count,
+                reason=found_reason,
             )
     if saw_matching_symbol:
         return _SourceOutcome(
             status="parse_error",
-            row_count=len(rows),
-            field_count=len(fields),
+            row_count=row_count,
+            field_count=field_count,
             reason="symbol_row_unparseable",
         )
     return _SourceOutcome(
         status="symbol_absent",
-        row_count=len(rows),
-        field_count=len(fields),
+        row_count=row_count,
+        field_count=field_count,
         reason="symbol_not_in_table",
     )
 
@@ -862,9 +1200,9 @@ def _extract_close_supplement_point(
         payload,
         symbol=symbol,
         current_date=current_date,
-        parse_row=lambda row, record_date: _parse_close_supplement_row(
+        parse_row=lambda row, record_date, fields=None: _parse_close_supplement_row(
             row,
-            fields,
+            fields if fields is not None else payload.get("fields") or [],
             record_date=record_date,
         ),
     )
@@ -894,7 +1232,24 @@ def _parse_twse_margin_row(
     row: Sequence[object],
     *,
     record_date: str,
+    fields: Sequence[object] | None = None,
 ) -> _MarginPoint | None:
+    if fields and list(fields) != ["placeholder"]:
+        columns = resolve_twse_margin_columns(fields)
+        if columns is not None:
+            symbol = normalize_taiwan_symbol(taiwan_row_value_at(row, columns[0]))
+            if symbol is None:
+                return None
+            return _build_margin_point(
+                record_date=record_date,
+                symbol=symbol,
+                name=str(taiwan_row_value_at(row, columns[1]) or "").strip(),
+                margin_balance_lots=_parse_lots_float(taiwan_row_value_at(row, columns[2])),
+                short_margin_balance_lots=_parse_lots_float(
+                    taiwan_row_value_at(row, columns[3])
+                ),
+            )
+
     if len(row) <= 12:
         return None
     symbol = normalize_taiwan_symbol(_row_at(row, 0))
@@ -907,6 +1262,32 @@ def _parse_twse_margin_row(
         margin_balance_lots=_parse_lots_float(_row_at(row, 6)),
         short_margin_balance_lots=_parse_lots_float(_row_at(row, 12)),
     )
+
+
+def resolve_twse_margin_columns(
+    fields: Sequence[object],
+) -> tuple[int, int, int, int] | None:
+    """Resolve symbol/name/margin/short column indexes for TWSE MI_MARGN stock tables."""
+    symbol_index = taiwan_field_index(fields, "代號", "證券代號", "股票代號")
+    name_index = taiwan_field_index(fields, "名稱", "證券名稱", "股票名稱")
+    if symbol_index is None:
+        return None
+    if name_index is None:
+        name_index = 1
+
+    margin_index = taiwan_field_index(fields, "融資今日餘額", "資餘額")
+    short_index = taiwan_field_index(fields, "融券今日餘額", "券餘額")
+    if margin_index is None or short_index is None:
+        today_indices = taiwan_field_indices(fields, "今日餘額")
+        if len(today_indices) >= 2:
+            margin_index = today_indices[0]
+            short_index = today_indices[1]
+    if margin_index is None or short_index is None:
+        if len(fields) > 12:
+            return symbol_index, name_index, 6, 12
+        return None
+    return symbol_index, name_index, margin_index, short_index
+
 
 
 def _parse_tpex_margin_row(
@@ -950,7 +1331,19 @@ def _parse_twse_borrowed_short_row(
     row: Sequence[object],
     *,
     record_date: str,
+    fields: Sequence[object] | None = None,
 ) -> _BorrowedShortPoint | None:
+    if fields and list(fields) != ["placeholder"]:
+        columns = resolve_tpex_borrowed_short_columns(fields)
+        if columns is not None:
+            return _parse_borrowed_short_row(
+                row,
+                record_date=record_date,
+                symbol_index=columns.symbol_index,
+                name_index=columns.name_index,
+                previous_balance_index=columns.previous_balance_index,
+                current_balance_index=columns.current_balance_index,
+            )
     return _parse_borrowed_short_row(
         row,
         record_date=record_date,
@@ -1038,22 +1431,37 @@ def _select_borrowed_short_columns_with_markers(
     best: tuple[tuple[int, int, int], int, int] | None = None
     for previous_index in previous_candidates:
         for current_index in current_candidates:
-            if previous_index >= current_index:
-                continue
-            markers_between = sum(
-                1 for marker in marker_indices if previous_index < marker < current_index
+            scored = _score_borrowed_short_column_pair(
+                previous_index,
+                current_index,
+                marker_indices,
             )
-            if markers_between <= 0:
+            if scored is None:
                 continue
-            # Prefer the tightest pair that still wraps section markers, then the
-            # later block (borrowed-short is usually after the margin section).
-            span = current_index - previous_index
-            score = (-span, previous_index, current_index)
-            if best is None or score > best[0]:
-                best = (score, previous_index, current_index)
+            if best is None or scored[0] > best[0]:
+                best = scored
     if best is None:
         return None
     return best[1], best[2]
+
+
+def _score_borrowed_short_column_pair(
+    previous_index: int,
+    current_index: int,
+    marker_indices: Sequence[int],
+) -> tuple[tuple[int, int, int], int, int] | None:
+    if previous_index >= current_index:
+        return None
+    markers_between = sum(
+        1 for marker in marker_indices if previous_index < marker < current_index
+    )
+    if markers_between <= 0:
+        return None
+    # Prefer the tightest pair that still wraps section markers, then the
+    # later block (borrowed-short is usually after the margin section).
+    span = current_index - previous_index
+    score = (-span, previous_index, current_index)
+    return score, previous_index, current_index
 
 
 def _parse_tpex_borrowed_short_row(
@@ -1129,54 +1537,29 @@ def _merge_daily_points(
     borrowed_point: _BorrowedShortPoint | None,
     close_point: _ClosePoint | None,
 ) -> TaiwanMarginShortRecord | None:
-    if margin_point is None and borrowed_point is None:
+    identity = _aligned_core_identity(margin_point, borrowed_point)
+    if identity is None:
         return None
-
-    if margin_point is not None and borrowed_point is not None:
-        if margin_point.symbol != borrowed_point.symbol:
-            return None
-        if margin_point.date != borrowed_point.date:
-            return None
-
-    record_date = margin_point.date if margin_point is not None else borrowed_point.date  # type: ignore[union-attr]
-    symbol = margin_point.symbol if margin_point is not None else borrowed_point.symbol  # type: ignore[union-attr]
-    name = ""
-    if margin_point is not None and margin_point.name:
-        name = margin_point.name
-    elif borrowed_point is not None:
-        name = borrowed_point.name
+    record_date, symbol, name = identity
 
     close_price = (
         close_point.close_price
         if close_point is not None and close_point.date == record_date
         else None
     )
+    borrowed_metrics = _borrowed_short_metrics(borrowed_point, close_price)
+    if margin_point is None and borrowed_metrics is None:
+        return None
 
     borrowed_short_balance_lots: float | None = None
     borrowed_short_change_lots: float | None = None
     borrowed_short_change_amount_10k: int | None = None
-    if borrowed_point is not None:
-        borrowed_short_balance_lots = _lots_from_shares(
-            borrowed_point.borrowed_short_balance_shares,
-            borrowed_point.symbol,
-        )
-        if borrowed_short_balance_lots is None:
-            # Keep margin-only data when borrowed shares cannot be converted.
-            borrowed_point = None
-        else:
-            borrowed_short_change_lots = _borrowed_short_change_lots(
-                borrowed_point.borrowed_short_balance_shares,
-                borrowed_point.previous_borrowed_short_balance_shares,
-                borrowed_point.symbol,
-            )
-            borrowed_short_change_amount_10k = _borrowed_short_change_amount_10k(
-                borrowed_point.borrowed_short_balance_shares,
-                borrowed_point.previous_borrowed_short_balance_shares,
-                close_price,
-            )
-
-    if margin_point is None and borrowed_point is None:
-        return None
+    if borrowed_metrics is not None:
+        (
+            borrowed_short_balance_lots,
+            borrowed_short_change_lots,
+            borrowed_short_change_amount_10k,
+        ) = borrowed_metrics
 
     return TaiwanMarginShortRecord(
         date=record_date,
@@ -1192,6 +1575,52 @@ def _merge_daily_points(
         borrowed_short_balance_lots=borrowed_short_balance_lots,
         borrowed_short_balance_change_lots=borrowed_short_change_lots,
         borrowed_short_balance_change_amount_10k=borrowed_short_change_amount_10k,
+    )
+
+
+def _aligned_core_identity(
+    margin_point: _MarginPoint | None,
+    borrowed_point: _BorrowedShortPoint | None,
+) -> tuple[str, str, str] | None:
+    """Return ``(date, symbol, name)`` when core points are compatible."""
+    if margin_point is not None and borrowed_point is not None:
+        if margin_point.symbol != borrowed_point.symbol:
+            return None
+        if margin_point.date != borrowed_point.date:
+            return None
+        name = margin_point.name or borrowed_point.name
+        return margin_point.date, margin_point.symbol, name
+    if margin_point is not None:
+        return margin_point.date, margin_point.symbol, margin_point.name
+    if borrowed_point is not None:
+        return borrowed_point.date, borrowed_point.symbol, borrowed_point.name
+    return None
+
+
+def _borrowed_short_metrics(
+    borrowed_point: _BorrowedShortPoint | None,
+    close_price: float | None,
+) -> tuple[float, float | None, int | None] | None:
+    if borrowed_point is None:
+        return None
+    balance_lots = _lots_from_shares(
+        borrowed_point.borrowed_short_balance_shares,
+        borrowed_point.symbol,
+    )
+    if balance_lots is None:
+        return None
+    return (
+        balance_lots,
+        _borrowed_short_change_lots(
+            borrowed_point.borrowed_short_balance_shares,
+            borrowed_point.previous_borrowed_short_balance_shares,
+            borrowed_point.symbol,
+        ),
+        _borrowed_short_change_amount_10k(
+            borrowed_point.borrowed_short_balance_shares,
+            borrowed_point.previous_borrowed_short_balance_shares,
+            close_price,
+        ),
     )
 
 
@@ -1364,16 +1793,23 @@ def _extract_all_twse_table_points(
 ) -> list:
     if not isinstance(payload, dict):
         return []
-    rows = payload.get("data")
-    fields = payload.get("fields")
+    table = _twse_stock_table(payload)
+    if table is None:
+        return []
+    rows = table.get("data")
+    fields = table.get("fields")
     if not isinstance(rows, list) or not isinstance(fields, list):
         return []
-    record_date = normalize_taiwan_date(payload.get("date")) or current_date.isoformat()
+    record_date = (
+        normalize_taiwan_date(table.get("date"))
+        or normalize_taiwan_date(payload.get("date"))
+        or current_date.isoformat()
+    )
     points = []
     for row in rows:
         if not isinstance(row, list):
             continue
-        point = parse_row(row, record_date=record_date)
+        point = parse_row(row, fields=fields, record_date=record_date)
         if point is not None:
             points.append(point)
     return points
@@ -1422,9 +1858,9 @@ def _extract_all_close_supplement_points(
     points = _extract_all_twse_table_points(
         payload,
         current_date=current_date,
-        parse_row=lambda row, record_date: _parse_close_supplement_row(
+        parse_row=lambda row, record_date, fields=None: _parse_close_supplement_row(
             row,
-            fields,
+            fields if fields is not None else payload.get("fields") or [],
             record_date=record_date,
         ),
     )
