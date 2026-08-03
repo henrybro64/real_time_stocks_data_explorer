@@ -1583,22 +1583,18 @@ def _aligned_core_identity(
     borrowed_point: _BorrowedShortPoint | None,
 ) -> tuple[str, str, str] | None:
     """Return ``(date, symbol, name)`` when core points are compatible."""
-    if margin_point is None and borrowed_point is None:
-        return None
     if margin_point is not None and borrowed_point is not None:
         if margin_point.symbol != borrowed_point.symbol:
             return None
         if margin_point.date != borrowed_point.date:
             return None
-    primary = margin_point if margin_point is not None else borrowed_point
-    if primary is None:
-        return None
-    name = ""
-    if margin_point is not None and margin_point.name:
-        name = margin_point.name
-    elif borrowed_point is not None:
-        name = borrowed_point.name
-    return primary.date, primary.symbol, name
+        name = margin_point.name or borrowed_point.name
+        return margin_point.date, margin_point.symbol, name
+    if margin_point is not None:
+        return margin_point.date, margin_point.symbol, margin_point.name
+    if borrowed_point is not None:
+        return borrowed_point.date, borrowed_point.symbol, borrowed_point.name
+    return None
 
 
 def _borrowed_short_metrics(
