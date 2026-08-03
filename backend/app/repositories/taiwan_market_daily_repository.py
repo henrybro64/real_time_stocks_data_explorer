@@ -37,11 +37,16 @@ def _copy_record_fields(
     source: str,
     fields: tuple[str, ...],
     nullable_name: bool = True,
+    preserve_existing_when_null: frozenset[str] | None = None,
 ) -> None:
+    preserve = preserve_existing_when_null or frozenset()
     for field in fields:
         value = getattr(record, field)
         if field == "name" and nullable_name:
             value = value or None
+        if field in preserve and value is None:
+            # Keep previously stored values when a partial refresh omits a source.
+            continue
         setattr(existing, field, value)
     existing.source = source
 
@@ -72,9 +77,16 @@ class _TaiwanDailyRepository(SessionBoundRepository, Generic[ModelT, RecordT]):
         records: list[RecordT],
         build_row,
         fields: tuple[str, ...],
+        preserve_existing_when_null: frozenset[str] | None = None,
     ) -> DailyUpsertStats:
         def apply_update(existing: ModelT, record: RecordT, row_source: str) -> None:
-            _copy_record_fields(existing, record, source=row_source, fields=fields)
+            _copy_record_fields(
+                existing,
+                record,
+                source=row_source,
+                fields=fields,
+                preserve_existing_when_null=preserve_existing_when_null,
+            )
 
         return upsert_market_symbol_date_rows(
             self._session_factory(),
@@ -145,6 +157,9 @@ class TaiwanMarginShortDailyRepository(
         "borrowed_short_balance_change_lots",
         "borrowed_short_balance_change_amount_10k",
     )
+    # Partial day merges emit nulls for the missing core source; never overwrite
+    # previously populated balances/close with those absent-source nulls.
+    _PRESERVE_WHEN_NULL = frozenset(_FIELDS)
 
     def upsert_records(
         self,
@@ -176,6 +191,7 @@ class TaiwanMarginShortDailyRepository(
             records=records,
             build_row=build_row,
             fields=self._FIELDS,
+            preserve_existing_when_null=self._PRESERVE_WHEN_NULL,
         )
 
 

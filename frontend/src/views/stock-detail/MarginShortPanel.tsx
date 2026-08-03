@@ -31,6 +31,7 @@ export function MarginShortPanel({ stockId }: Readonly<Props>) {
         chartEmpty: "此區間沒有可繪製的資券資料。",
         empty: "目前沒有可顯示的資券資料。",
         loading: "載入資券變化中",
+        borrowedShortBalance: "借券賣出餘額(張)",
         lotsChange: "借券賣出餘額增減張數",
         lotsUnit: "張",
         marginBalance: "融資餘額(張)",
@@ -42,6 +43,7 @@ export function MarginShortPanel({ stockId }: Readonly<Props>) {
     : {
         amountChange: "Borrowed short balance change amount (10k TWD)",
         amountUnit: "10k TWD",
+        borrowedShortBalance: "Borrowed short balance (lots)",
         chartEmpty: "No plottable margin / short history for this range.",
         empty: "No margin / short data is available for this stock yet.",
         loading: "Loading margin / short changes",
@@ -94,6 +96,12 @@ export function MarginShortPanel({ stockId }: Readonly<Props>) {
   const summaryRows = [
     { label: copy.marginBalance, value: summary.marginBalanceLots, signed: false, unit: copy.lotsUnit },
     { label: copy.shortMarginBalance, value: summary.shortMarginBalanceLots, signed: false, unit: copy.lotsUnit },
+    {
+      label: copy.borrowedShortBalance,
+      value: summary.borrowedShortBalanceLots,
+      signed: false,
+      unit: copy.lotsUnit,
+    },
     { label: copy.lotsChange, value: summary.borrowedShortBalanceChangeLots, signed: true, unit: copy.lotsUnit },
     { label: copy.amountChange, value: summary.borrowedShortBalanceChangeAmount10k, signed: true, unit: copy.amountUnit },
   ];
@@ -143,6 +151,16 @@ export function MarginShortPanel({ stockId }: Readonly<Props>) {
         language={language}
         points={history.map((point) => ({ date: point.date, value: point.shortMarginBalanceLots }))}
         title={copy.shortMarginBalance}
+      />
+      <TaiwanSignalLineChart
+        dateRangeLabel={dateRangeLabel}
+        emptyLabel={copy.chartEmpty}
+        language={language}
+        points={history.map((point) => ({
+          date: point.date,
+          value: point.borrowedShortBalanceLots,
+        }))}
+        title={copy.borrowedShortBalance}
       />
       <InstitutionalHistogramChart
         dateRangeLabel={dateRangeLabel}

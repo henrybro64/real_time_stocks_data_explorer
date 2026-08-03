@@ -109,13 +109,15 @@ describe("MarginShortPanel", () => {
     const values = summary.querySelectorAll("dd");
     expect(values[0]).toHaveClass("app-tw-market-neutral");
     expect(values[1]).toHaveClass("app-tw-market-neutral");
-    expect(values[2]).toHaveClass("app-tw-market-positive");
+    expect(values[2]).toHaveClass("app-tw-market-neutral");
     expect(values[3]).toHaveClass("app-tw-market-positive");
+    expect(values[4]).toHaveClass("app-tw-market-positive");
 
-    expect(screen.getAllByTestId("tw-signal-line-chart")).toHaveLength(2);
+    expect(screen.getAllByTestId("tw-signal-line-chart")).toHaveLength(3);
     expect(screen.getAllByTestId("tw-institutional-chart")).toHaveLength(2);
     expect(screen.getByLabelText("融資餘額(張)")).toBeInTheDocument();
     expect(screen.getByLabelText("融券餘額(張)")).toBeInTheDocument();
+    expect(screen.getByLabelText("借券賣出餘額(張)")).toBeInTheDocument();
     expect(screen.getByLabelText("借券賣出餘額增減張數")).toBeInTheDocument();
     expect(screen.getByLabelText("借券賣出餘額增減金額(萬)")).toBeInTheDocument();
   });
@@ -149,8 +151,8 @@ describe("MarginShortPanel", () => {
     expect(summary).toHaveTextContent("-2,609 萬");
 
     const values = summary.querySelectorAll("dd");
-    expect(values[2]).toHaveClass("app-tw-market-negative");
     expect(values[3]).toHaveClass("app-tw-market-negative");
+    expect(values[4]).toHaveClass("app-tw-market-negative");
   });
 
   it("renders an em dash when borrowed-short change amount is null in the summary", async () => {
@@ -166,7 +168,7 @@ describe("MarginShortPanel", () => {
 
     const summary = await screen.findByTestId("tw-margin-short-summary");
     expect(summary).toHaveTextContent("+141 張");
-    const amountRow = summary.querySelectorAll("dd")[3];
+    const amountRow = summary.querySelectorAll("dd")[4];
     expect(amountRow).toHaveTextContent("—");
     expect(amountRow).toHaveClass("app-tw-market-neutral");
   });
@@ -205,7 +207,46 @@ describe("MarginShortPanel", () => {
     const values = summary.querySelectorAll("dd");
     expect(values[2]).toHaveTextContent("—");
     expect(values[3]).toHaveTextContent("—");
+    expect(values[4]).toHaveTextContent("—");
     expect(screen.getAllByTestId("tw-signal-line-chart")).toHaveLength(2);
+    expect(screen.getByTestId("tw-signal-line-chart-empty")).toBeInTheDocument();
+  });
+
+  it("renders borrowed-only balance when margin fields and change metrics are null", async () => {
+    vi.mocked(fetchTaiwanMarginShort).mockResolvedValue({
+      ...samplePayload,
+      summary: {
+        marginBalanceLots: null,
+        shortMarginBalanceLots: null,
+        borrowedShortBalanceLots: 2100,
+        borrowedShortBalanceChangeLots: null,
+        borrowedShortBalanceChangeAmount10k: null,
+      },
+      history: [
+        {
+          date: "2026-07-09",
+          closePrice: null,
+          marginBalanceLots: null,
+          shortMarginBalanceLots: null,
+          borrowedShortBalanceLots: 2100,
+          borrowedShortBalanceChangeLots: null,
+          borrowedShortBalanceChangeAmount10k: null,
+        },
+      ],
+    });
+
+    renderPanel();
+
+    const summary = await screen.findByTestId("tw-margin-short-summary");
+    expect(summary).toHaveTextContent("2,100 張");
+    const values = summary.querySelectorAll("dd");
+    expect(values[0]).toHaveTextContent("—");
+    expect(values[1]).toHaveTextContent("—");
+    expect(values[2]).toHaveTextContent("2,100 張");
+    expect(values[3]).toHaveTextContent("—");
+    expect(values[4]).toHaveTextContent("—");
+    expect(screen.getByLabelText("借券賣出餘額(張)")).toBeInTheDocument();
+    expect(screen.getAllByTestId("tw-signal-line-chart")).toHaveLength(1);
   });
 
   it("renders English labels and units when language is en", async () => {
@@ -295,7 +336,7 @@ describe("MarginShortPanel", () => {
     const secondX = Number(bars[1]?.getAttribute("x"));
     expect(secondX).toBeGreaterThan(50);
     expect(secondX).toBeGreaterThan(firstX + 20);
-    expect(container.querySelectorAll('[data-testid="tw-signal-line-chart"]')).toHaveLength(2);
+    expect(container.querySelectorAll('[data-testid="tw-signal-line-chart"]')).toHaveLength(3);
   });
 
   it("shows a loading state while the section is fetching", () => {

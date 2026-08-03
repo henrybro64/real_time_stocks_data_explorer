@@ -1367,8 +1367,16 @@ def test_parse_all_margin_short_records_keeps_partial_symbol_rows() -> None:
     assert by_symbol["2330"].borrowed_short_balance_lots == pytest.approx(1_100.0)
 
 
-def test_service_structured_logs_include_stock_id_and_http_outcome(caplog) -> None:
-    import logging
+def test_service_structured_logs_include_stock_id_and_http_outcome(monkeypatch) -> None:
+    captured: list[dict[str, object]] = []
+
+    def capture_info(message: str, *args, extra=None, **kwargs) -> None:
+        captured.append({"message": message, "extra": dict(extra or {})})
+
+    monkeypatch.setattr(
+        "app.services.tw_margin_short_service.logger.info",
+        capture_info,
+    )
 
     stock = _nan_ya_stock()
     service = TaiwanMarginShortService(
@@ -1379,26 +1387,13 @@ def test_service_structured_logs_include_stock_id_and_http_outcome(caplog) -> No
         now_provider=lambda: datetime(2026, 7, 10, 1, 0, tzinfo=UTC),
     )
 
-    with caplog.at_level(logging.INFO, logger="app.services.tw_margin_short_service"):
-        service.get_margin_short("TW:1303", days=1)
+    service.get_margin_short("TW:1303", days=1)
 
-    merge_records = [
-        record
-        for record in caplog.records
-        if getattr(record, "event", None) == "tw_margin_short.daily_merge"
-        or (
-            isinstance(getattr(record, "msg", None), str)
-            and "daily merge" in record.getMessage()
-        )
-    ]
-    assert merge_records
-    # stdlib LoggerAdapter-style extras land on the LogRecord when using `extra=`.
-    assert any(getattr(record, "stock_id", None) == "TW:1303" for record in caplog.records)
-    assert any(getattr(record, "http_success", None) is True for record in caplog.records)
-    assert any(
-        getattr(record, "event", None) == "tw_margin_short.source_parse"
-        for record in caplog.records
-    )
+    extras = [entry["extra"] for entry in captured if isinstance(entry["extra"], dict)]
+    assert any(extra.get("event") == "tw_margin_short.daily_merge" for extra in extras)
+    assert any(extra.get("stock_id") == "TW:1303" for extra in extras)
+    assert any(extra.get("http_success") is True for extra in extras)
+    assert any(extra.get("event") == "tw_margin_short.source_parse" for extra in extras)
 
 
 def _raise_http_fetch_error() -> object:
