@@ -27,12 +27,14 @@ class FakeMarginRepo:
     def __init__(self) -> None:
         self.available = True
         self.calls: list[tuple[str, str, int]] = []
+        self.records: list[object] = []
 
     def is_available(self) -> bool:
         return self.available
 
     def upsert_records(self, *, market, source, records):
         self.calls.append((market, source, len(records)))
+        self.records = list(records)
         return DailyUpsertStats(inserted=len(records), updated=0)
 
 
@@ -327,6 +329,37 @@ def test_refresh_upserts_margin_short_when_payloads_present() -> None:
     assert twse_margin_results[0].rows_fetched >= 1
     assert margin_repo.calls
     assert margin_repo.calls[0][0] == "TWSE"
+
+
+def test_refresh_upserts_partial_margin_short_when_borrowed_http_fails() -> None:
+    margin_repo = FakeMarginRepo()
+
+    def failing_borrowed(_current_date: date):
+        raise HttpFetchError("borrowed-short down")
+
+    service = _service(
+        margin_repo=margin_repo,
+        twse_institutional=lambda _d: _no_data_payload(),
+        tpex_institutional=lambda _d: _no_data_payload(),
+        twse_margin=lambda _d: _twse_margin_payload(),
+        twse_borrowed=failing_borrowed,
+        tpex_margin=lambda _d: _no_data_payload(),
+        tpex_borrowed=lambda _d: _no_data_payload(),
+    )
+
+    summary = service.refresh(days=1, trigger="partial-http")
+    twse_margin_results = [
+        item
+        for item in summary.results
+        if item.dataset == "margin_short" and item.market == "TWSE"
+    ]
+
+    assert twse_margin_results
+    assert twse_margin_results[0].error is None
+    assert twse_margin_results[0].rows_fetched >= 1
+    assert margin_repo.records
+    assert margin_repo.records[0].margin_balance_lots == 31_339.0
+    assert margin_repo.records[0].borrowed_short_balance_lots is None
 
 
 def test_refresh_upserts_tpex_margin_short_when_payloads_present() -> None:

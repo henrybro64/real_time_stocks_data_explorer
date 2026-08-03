@@ -147,9 +147,12 @@ export type TaiwanInstitutionalInvestorsResponse = {
 export type TaiwanMarginShortPoint = {
   date?: string;
   closePrice?: number | null;
-  marginBalanceLots: number;
-  shortMarginBalanceLots: number;
-  borrowedShortBalanceLots: number;
+  /** Null when the official margin feed had no matching row for this date. */
+  marginBalanceLots: number | null;
+  /** Null when the official margin feed had no matching row for this date. */
+  shortMarginBalanceLots: number | null;
+  /** Null when the official borrowed-short feed had no matching row for this date. */
+  borrowedShortBalanceLots: number | null;
   borrowedShortBalanceChangeLots?: number | null;
   borrowedShortBalanceChangeAmount10k?: number | null;
 };

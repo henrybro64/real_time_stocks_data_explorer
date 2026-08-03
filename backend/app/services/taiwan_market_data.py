@@ -612,6 +612,18 @@ def taiwan_field_index(fields: Sequence[object], *labels: str) -> int | None:
     return None
 
 
+def taiwan_field_indices(fields: Sequence[object], *labels: str) -> list[int]:
+    """Return every matching field index (useful when official tables repeat labels)."""
+    normalized_labels = {label.strip() for label in labels if label.strip()}
+    if not normalized_labels:
+        return []
+    return [
+        index
+        for index, field in enumerate(fields)
+        if str(field).strip() in normalized_labels
+    ]
+
+
 def taiwan_row_value(
     row: Sequence[object],
     fields: Sequence[object],
@@ -619,6 +631,15 @@ def taiwan_row_value(
 ) -> object | None:
     index = taiwan_field_index(fields, *labels)
     if index is None or index >= len(row):
+        return None
+    return row[index]
+
+
+def taiwan_row_value_at(
+    row: Sequence[object],
+    index: int | None,
+) -> object | None:
+    if index is None or index < 0 or index >= len(row):
         return None
     return row[index]
 

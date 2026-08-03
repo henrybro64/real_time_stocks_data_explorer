@@ -51,18 +51,23 @@ def _margin_short_record(
     *,
     symbol: str = "2330",
     trade_date: str = "2026-07-09",
-    margin_balance_lots: float = 12.0,
+    margin_balance_lots: float | None = 12.0,
+    short_margin_balance_lots: float | None = 3.0,
+    borrowed_short_balance_lots: float | None = 4.0,
+    borrowed_short_balance_change_lots: float | None = 0.5,
+    borrowed_short_balance_change_amount_10k: int | None = 2,
+    close_price: float | None = 950.0,
 ) -> TaiwanMarginShortRecord:
     return TaiwanMarginShortRecord(
         date=trade_date,
         symbol=symbol,
         name="台積電",
-        close_price=950.0,
+        close_price=close_price,
         margin_balance_lots=margin_balance_lots,
-        short_margin_balance_lots=3.0,
-        borrowed_short_balance_lots=4.0,
-        borrowed_short_balance_change_lots=0.5,
-        borrowed_short_balance_change_amount_10k=2,
+        short_margin_balance_lots=short_margin_balance_lots,
+        borrowed_short_balance_lots=borrowed_short_balance_lots,
+        borrowed_short_balance_change_lots=borrowed_short_balance_change_lots,
+        borrowed_short_balance_change_amount_10k=borrowed_short_balance_change_amount_10k,
     )
 
 
@@ -147,6 +152,42 @@ def test_margin_short_repository_upsert_is_idempotent() -> None:
     with session_local() as session:
         rows = session.execute(select(TaiwanMarginShortDaily)).scalars().all()
         assert len(rows) == 1
+
+
+def test_margin_short_repository_preserves_populated_fields_on_partial_upsert() -> None:
+    session_local = _build_session_local()
+    repository = TaiwanMarginShortDailyRepository()
+    repository.set_session_factory_override(session_local)
+
+    repository.upsert_records(
+        market="TWSE",
+        source="twse-complete",
+        records=[_margin_short_record()],
+    )
+    repository.upsert_records(
+        market="TWSE",
+        source="twse-margin-only",
+        records=[
+            _margin_short_record(
+                margin_balance_lots=20.0,
+                short_margin_balance_lots=1.0,
+                borrowed_short_balance_lots=None,
+                borrowed_short_balance_change_lots=None,
+                borrowed_short_balance_change_amount_10k=None,
+                close_price=None,
+            )
+        ],
+    )
+
+    history = repository.list_history(market="TWSE", symbol="2330", limit=5)
+    assert len(history) == 1
+    assert history[0].margin_balance_lots == pytest.approx(20.0)
+    assert history[0].short_margin_balance_lots == pytest.approx(1.0)
+    assert history[0].borrowed_short_balance_lots == pytest.approx(4.0)
+    assert history[0].borrowed_short_balance_change_lots == pytest.approx(0.5)
+    assert history[0].borrowed_short_balance_change_amount_10k == 2
+    assert history[0].close_price == pytest.approx(950.0)
+    assert history[0].source == "twse-margin-only"
 
 
 def test_repositories_empty_records_noop() -> None:

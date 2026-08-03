@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
+import logging
 import math
 from typing import TYPE_CHECKING, Callable, Literal
 
@@ -24,8 +25,13 @@ from app.services.taiwan_market_data import (
     require_taiwan_stock,
     require_twse_or_tpex_symbol,
     shares_to_lots,
+    taiwan_field_index,
+    taiwan_field_indices,
     taiwan_row_value,
+    taiwan_row_value_at,
 )
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from app.services.quote_service import QuoteService
@@ -62,9 +68,9 @@ class TaiwanMarginShortRecord:
     symbol: str
     name: str
     close_price: float | None
-    margin_balance_lots: float
-    short_margin_balance_lots: float
-    borrowed_short_balance_lots: float
+    margin_balance_lots: float | None
+    short_margin_balance_lots: float | None
+    borrowed_short_balance_lots: float | None
     borrowed_short_balance_change_lots: float | None
     borrowed_short_balance_change_amount_10k: int | None
 
@@ -78,6 +84,18 @@ class TaiwanMarginShortResult:
     summary: TaiwanMarginShortRecord | None
     history: tuple[TaiwanMarginShortRecord, ...]
     source: str
+
+
+SourceStatus = Literal[
+    "found",
+    "symbol_absent",
+    "parse_error",
+    "no_data",
+    "schema_error",
+    "http_error",
+]
+
+_SOFT_EMPTY_STATUSES = frozenset({"symbol_absent", "no_data"})
 
 
 @dataclass(frozen=True)
@@ -110,6 +128,47 @@ class _ClosePoint:
     symbol: str
     market: TWBoard
     close_price: float | None
+
+
+@dataclass(frozen=True)
+class _SourceOutcome:
+    status: SourceStatus
+    point: object | None = None
+    reason: str | None = None
+    row_count: int | None = None
+    field_count: int | None = None
+
+
+@dataclass(frozen=True)
+class _TpexBorrowedShortColumns:
+    symbol_index: int
+    name_index: int
+    previous_balance_index: int
+    current_balance_index: int
+    used_index_fallback: bool = False
+
+
+_TPEX_BORROWED_SYMBOL_LABELS = ("股票代號", "證券代號", "代號")
+_TPEX_BORROWED_NAME_LABELS = ("股票名稱", "證券名稱", "名稱")
+_TPEX_BORROWED_PREV_UNIQUE_LABELS = ("借券賣出前日餘額", "借券前日餘額")
+_TPEX_BORROWED_CURR_UNIQUE_LABELS = (
+    "借券賣出當日餘額",
+    "借券當日餘額",
+    "借券賣出餘額",
+)
+_TPEX_BORROWED_PREV_SHORT_LABELS = ("前日餘額", *_TPEX_BORROWED_PREV_UNIQUE_LABELS)
+_TPEX_BORROWED_CURR_SHORT_LABELS = ("當日餘額", *_TPEX_BORROWED_CURR_UNIQUE_LABELS)
+_TPEX_BORROWED_SECTION_MARKERS = (
+    "當日還券",
+    "當日調整數額",
+    "次一營業日可借券賣出限額",
+    "借券賣出當日還券",
+    "借券賣出當日調整數額",
+    "借券賣出當日賣出",
+)
+# Documented fallback for TWSE-aligned TPEx layouts when field labels cannot be resolved.
+_TPEX_BORROWED_FALLBACK_PREV_INDEX = 8
+_TPEX_BORROWED_FALLBACK_CURR_INDEX = 12
 
 
 class TaiwanMarginShortService:
@@ -162,7 +221,12 @@ class TaiwanMarginShortService:
             self._close_fetch_enabled = True
 
             def fetch_day(current_date: date) -> tuple[TaiwanMarginShortRecord | None, bool]:
-                lookup = self._fetch_record_for_day(market, current_date, symbol)
+                lookup = self._fetch_record_for_day(
+                    market,
+                    current_date,
+                    symbol,
+                    stock_id=stock.id,
+                )
                 return lookup.record, lookup.request_succeeded
 
             history, successful_fetches = collect_dated_history(
@@ -207,11 +271,14 @@ class TaiwanMarginShortService:
         market: TWBoard,
         current_date: date,
         symbol: str,
+        *,
+        stock_id: str,
     ) -> _DailyLookupResult:
         if market == "TPEx":
             return self._fetch_board_record(
                 current_date,
                 symbol,
+                stock_id=stock_id,
                 margin_fetcher=self._tpex_margin_fetcher,
                 borrowed_fetcher=self._tpex_borrowed_short_fetcher,
                 margin_extractor=_extract_tpex_margin_point,
@@ -222,6 +289,7 @@ class TaiwanMarginShortService:
         return self._fetch_board_record(
             current_date,
             symbol,
+            stock_id=stock_id,
             margin_fetcher=self._twse_margin_fetcher,
             borrowed_fetcher=self._twse_borrowed_short_fetcher,
             margin_extractor=_extract_twse_margin_point,
@@ -235,49 +303,74 @@ class TaiwanMarginShortService:
         current_date: date,
         symbol: str,
         *,
+        stock_id: str,
         margin_fetcher: PayloadFetcher,
         borrowed_fetcher: PayloadFetcher,
-        margin_extractor: Callable[..., _MarginPoint | None],
-        borrowed_extractor: Callable[..., _BorrowedShortPoint | None],
+        margin_extractor: Callable[..., _SourceOutcome],
+        borrowed_extractor: Callable[..., _SourceOutcome],
         close_market: TWBoard,
         payload_kind: Literal["twse", "tpex"],
     ) -> _DailyLookupResult:
-        margin_payload, margin_succeeded = _safe_core_payload_fetch(
+        margin_outcome = _fetch_and_extract_core_source(
             margin_fetcher,
             current_date,
             payload_kind=payload_kind,
+            source_type="margin",
+            market=close_market,
+            symbol=symbol,
+            stock_id=stock_id,
+            extractor=margin_extractor,
         )
-        borrowed_payload, borrowed_succeeded = _safe_core_payload_fetch(
+        borrowed_outcome = _fetch_and_extract_core_source(
             borrowed_fetcher,
             current_date,
             payload_kind=payload_kind,
+            source_type="borrowed-short",
+            market=close_market,
+            symbol=symbol,
+            stock_id=stock_id,
+            extractor=borrowed_extractor,
         )
 
-        margin_point = margin_extractor(
-            margin_payload,
-            symbol=symbol,
-            current_date=current_date,
+        margin_point = (
+            margin_outcome.point if isinstance(margin_outcome.point, _MarginPoint) else None
         )
-        borrowed_point = borrowed_extractor(
-            borrowed_payload,
-            symbol=symbol,
-            current_date=current_date,
+        borrowed_point = (
+            borrowed_outcome.point
+            if isinstance(borrowed_outcome.point, _BorrowedShortPoint)
+            else None
         )
         close_point = self._optional_close_point(
             current_date,
             symbol=symbol,
             market=close_market,
-            margin_point=margin_point,
             borrowed_point=borrowed_point,
         )
+        record = _merge_daily_points(
+            margin_point=margin_point,
+            borrowed_point=borrowed_point,
+            close_point=close_point,
+        )
+        completeness = _record_completeness(record)
+        request_succeeded = _core_request_succeeded(margin_outcome, borrowed_outcome)
+        logger.info(
+            "Taiwan margin-short daily merge",
+            extra={
+                "event": "tw_margin_short.daily_merge",
+                "stock_id": stock_id,
+                "symbol": symbol,
+                "exchange": close_market,
+                "requested_date": current_date.isoformat(),
+                "margin_status": margin_outcome.status,
+                "borrowed_short_status": borrowed_outcome.status,
+                "record_completeness": completeness,
+                "request_succeeded": request_succeeded,
+                "discarded": record is None,
+            },
+        )
         return _DailyLookupResult(
-            record=_merge_daily_points(
-                margin_point=margin_point,
-                borrowed_point=borrowed_point,
-                close_point=close_point,
-            ),
-            # The close supplement is optional and must not hide core upstream failures.
-            request_succeeded=margin_succeeded and borrowed_succeeded,
+            record=record,
+            request_succeeded=request_succeeded,
         )
 
     def _optional_close_point(
@@ -286,15 +379,10 @@ class TaiwanMarginShortService:
         *,
         symbol: str,
         market: TWBoard,
-        margin_point: _MarginPoint | None,
         borrowed_point: _BorrowedShortPoint | None,
     ) -> _ClosePoint | None:
-        # Skip optional close work when core points are missing or the feed already failed.
-        if (
-            not self._close_fetch_enabled
-            or margin_point is None
-            or borrowed_point is None
-        ):
+        # Close is only useful for borrowed-short amount; skip when unavailable.
+        if not self._close_fetch_enabled or borrowed_point is None:
             return None
 
         close_payload, close_ok = _safe_optional_payload_fetch(
@@ -303,6 +391,16 @@ class TaiwanMarginShortService:
         )
         if not close_ok:
             self._close_fetch_enabled = False
+            logger.info(
+                "Taiwan margin-short close supplement unavailable",
+                extra={
+                    "event": "tw_margin_short.close_unavailable",
+                    "symbol": symbol,
+                    "exchange": market,
+                    "requested_date": current_date.isoformat(),
+                    "source_type": "close",
+                },
+            )
             return None
         return _extract_close_supplement_point(
             close_payload,
@@ -392,21 +490,76 @@ def _fetch_tpex_dated_payload(
     )
 
 
-def _safe_core_payload_fetch(
+def _fetch_and_extract_core_source(
     fetcher: PayloadFetcher,
     current_date: date,
     *,
     payload_kind: Literal["twse", "tpex"],
-) -> tuple[object | None, bool]:
+    source_type: str,
+    market: TWBoard,
+    symbol: str,
+    stock_id: str,
+    extractor: Callable[..., _SourceOutcome],
+) -> _SourceOutcome:
+    log_base = {
+        "stock_id": stock_id,
+        "symbol": symbol,
+        "exchange": market,
+        "requested_date": current_date.isoformat(),
+        "source_type": source_type,
+    }
     try:
         payload = fetcher(current_date)
-    except HttpFetchError:
-        return None, False
+    except HttpFetchError as exc:
+        logger.warning(
+            "Taiwan margin-short upstream HTTP failure",
+            extra={
+                **log_base,
+                "event": "tw_margin_short.fetch_http_error",
+                "http_success": False,
+                "parser_failure_reason": str(exc),
+            },
+        )
+        return _SourceOutcome(status="http_error", reason=str(exc))
+
     if is_taiwan_no_data_payload(payload):
-        return payload, True
+        logger.info(
+            "Taiwan margin-short upstream returned no-data",
+            extra={
+                **log_base,
+                "event": "tw_margin_short.fetch_no_data",
+                "http_success": True,
+            },
+        )
+        return _SourceOutcome(status="no_data", reason="official_no_data")
+
     if not _has_expected_table_shape(payload, payload_kind=payload_kind):
-        return None, False
-    return payload, True
+        logger.warning(
+            "Taiwan margin-short unexpected table shape",
+            extra={
+                **log_base,
+                "event": "tw_margin_short.fetch_schema_error",
+                "http_success": True,
+                "parser_failure_reason": "unexpected_table_shape",
+            },
+        )
+        return _SourceOutcome(status="schema_error", reason="unexpected_table_shape")
+
+    outcome = extractor(payload, symbol=symbol, current_date=current_date)
+    logger.info(
+        "Taiwan margin-short source parse",
+        extra={
+            **log_base,
+            "event": "tw_margin_short.source_parse",
+            "http_success": True,
+            "status": outcome.status,
+            "row_count": outcome.row_count,
+            "field_count": outcome.field_count,
+            "matching_symbol_found": outcome.status in {"found", "parse_error"},
+            "parser_failure_reason": outcome.reason,
+        },
+    )
+    return outcome
 
 
 def _safe_optional_payload_fetch(
@@ -436,12 +589,43 @@ def _has_expected_table_shape(
     return isinstance(payload.get("data"), list) and isinstance(payload.get("fields"), list)
 
 
+def _core_request_succeeded(
+    margin_outcome: _SourceOutcome,
+    borrowed_outcome: _SourceOutcome,
+) -> bool:
+    """Return whether this calendar day counts as a successful upstream probe.
+
+    - Any ``found`` core source succeeds (partial rows are valid).
+    - Both sides soft-empty (``no_data`` / ``symbol_absent``) is legitimate empty.
+    - Hard failures (``http_error`` / ``schema_error`` / ``parse_error``) without a
+      compensating ``found`` must not look like ordinary no-data.
+    """
+    if margin_outcome.status == "found" or borrowed_outcome.status == "found":
+        return True
+    return (
+        margin_outcome.status in _SOFT_EMPTY_STATUSES
+        and borrowed_outcome.status in _SOFT_EMPTY_STATUSES
+    )
+
+
+def _record_completeness(record: TaiwanMarginShortRecord | None) -> str:
+    if record is None:
+        return "discarded"
+    has_margin = record.margin_balance_lots is not None
+    has_borrowed = record.borrowed_short_balance_lots is not None
+    if has_margin and has_borrowed:
+        return "complete"
+    if has_margin or has_borrowed:
+        return "partial"
+    return "discarded"
+
+
 def _extract_twse_margin_point(
     payload: object | None,
     *,
     symbol: str,
     current_date: date,
-) -> _MarginPoint | None:
+) -> _SourceOutcome:
     return _extract_twse_table_point(
         payload,
         symbol=symbol,
@@ -455,7 +639,7 @@ def _extract_twse_borrowed_short_point(
     *,
     symbol: str,
     current_date: date,
-) -> _BorrowedShortPoint | None:
+) -> _SourceOutcome:
     return _extract_twse_table_point(
         payload,
         symbol=symbol,
@@ -469,7 +653,7 @@ def _extract_tpex_margin_point(
     *,
     symbol: str,
     current_date: date,
-) -> _MarginPoint | None:
+) -> _SourceOutcome:
     return _extract_tpex_table_point(
         payload,
         symbol=symbol,
@@ -483,15 +667,11 @@ def _extract_tpex_borrowed_short_point(
     *,
     symbol: str,
     current_date: date,
-) -> _BorrowedShortPoint | None:
-    return _extract_tpex_table_point(
+) -> _SourceOutcome:
+    return _extract_tpex_borrowed_short_table_point(
         payload,
         symbol=symbol,
         current_date=current_date,
-        parse_row=lambda row, fields, record_date: _parse_tpex_borrowed_short_row(
-            row,
-            record_date=record_date,
-        ),
     )
 
 
@@ -501,22 +681,44 @@ def _extract_twse_table_point(
     symbol: str,
     current_date: date,
     parse_row: Callable[..., object | None],
-):
+) -> _SourceOutcome:
     if not isinstance(payload, dict):
-        return None
+        return _SourceOutcome(status="schema_error", reason="payload_not_dict")
     rows = payload.get("data")
     fields = payload.get("fields")
     if not isinstance(rows, list) or not isinstance(fields, list):
-        return None
+        return _SourceOutcome(status="schema_error", reason="missing_data_or_fields")
 
     record_date = normalize_taiwan_date(payload.get("date")) or current_date.isoformat()
+    saw_matching_symbol = False
     for row in rows:
         if not isinstance(row, list):
             continue
+        row_symbol = normalize_taiwan_symbol(_row_at(row, 0))
+        if row_symbol != symbol:
+            continue
+        saw_matching_symbol = True
         point = parse_row(row, record_date=record_date)
         if point is not None and getattr(point, "symbol", None) == symbol:
-            return point
-    return None
+            return _SourceOutcome(
+                status="found",
+                point=point,
+                row_count=len(rows),
+                field_count=len(fields),
+            )
+    if saw_matching_symbol:
+        return _SourceOutcome(
+            status="parse_error",
+            row_count=len(rows),
+            field_count=len(fields),
+            reason="symbol_row_unparseable",
+        )
+    return _SourceOutcome(
+        status="symbol_absent",
+        row_count=len(rows),
+        field_count=len(fields),
+        reason="symbol_not_in_table",
+    )
 
 
 def _extract_tpex_table_point(
@@ -525,29 +727,122 @@ def _extract_tpex_table_point(
     symbol: str,
     current_date: date,
     parse_row: Callable[..., object | None],
-):
+) -> _SourceOutcome:
     payload_dict = payload if isinstance(payload, dict) else None
     table = _first_tpex_table(payload)
     if table is None:
-        return None
+        return _SourceOutcome(status="schema_error", reason="missing_tpex_table")
 
     rows = table.get("data")
     fields = table.get("fields")
     if not isinstance(rows, list) or not isinstance(fields, list):
-        return None
+        return _SourceOutcome(status="schema_error", reason="missing_data_or_fields")
 
     record_date = (
         normalize_taiwan_date(table.get("date"))
         or normalize_taiwan_date(payload_dict.get("date") if payload_dict is not None else None)
         or current_date.isoformat()
     )
+    saw_matching_symbol = False
     for row in rows:
         if not isinstance(row, list):
             continue
+        row_symbol = normalize_taiwan_symbol(
+            taiwan_row_value(row, fields, "代號", "股票代號", "證券代號")
+        )
+        if row_symbol != symbol:
+            continue
+        saw_matching_symbol = True
         point = parse_row(row, fields, record_date=record_date)
         if point is not None and getattr(point, "symbol", None) == symbol:
-            return point
-    return None
+            return _SourceOutcome(
+                status="found",
+                point=point,
+                row_count=len(rows),
+                field_count=len(fields),
+            )
+    if saw_matching_symbol:
+        return _SourceOutcome(
+            status="parse_error",
+            row_count=len(rows),
+            field_count=len(fields),
+            reason="symbol_row_unparseable",
+        )
+    return _SourceOutcome(
+        status="symbol_absent",
+        row_count=len(rows),
+        field_count=len(fields),
+        reason="symbol_not_in_table",
+    )
+
+
+def _extract_tpex_borrowed_short_table_point(
+    payload: object | None,
+    *,
+    symbol: str,
+    current_date: date,
+) -> _SourceOutcome:
+    payload_dict = payload if isinstance(payload, dict) else None
+    table = _first_tpex_table(payload)
+    if table is None:
+        return _SourceOutcome(status="schema_error", reason="missing_tpex_table")
+
+    rows = table.get("data")
+    fields = table.get("fields")
+    if not isinstance(rows, list) or not isinstance(fields, list):
+        return _SourceOutcome(status="schema_error", reason="missing_data_or_fields")
+
+    columns = resolve_tpex_borrowed_short_columns(fields)
+    if columns is None:
+        return _SourceOutcome(
+            status="schema_error",
+            reason="unresolved_borrowed_short_columns",
+            row_count=len(rows),
+            field_count=len(fields),
+        )
+
+    record_date = (
+        normalize_taiwan_date(table.get("date"))
+        or normalize_taiwan_date(payload_dict.get("date") if payload_dict is not None else None)
+        or current_date.isoformat()
+    )
+    saw_matching_symbol = False
+    for row in rows:
+        if not isinstance(row, list):
+            continue
+        row_symbol = normalize_taiwan_symbol(
+            taiwan_row_value_at(row, columns.symbol_index)
+        )
+        if row_symbol != symbol:
+            continue
+        saw_matching_symbol = True
+        point = _parse_tpex_borrowed_short_row(
+            row,
+            fields,
+            record_date=record_date,
+            columns=columns,
+        )
+        if point is not None and point.symbol == symbol:
+            return _SourceOutcome(
+                status="found",
+                point=point,
+                row_count=len(rows),
+                field_count=len(fields),
+                reason="index_fallback" if columns.used_index_fallback else None,
+            )
+    if saw_matching_symbol:
+        return _SourceOutcome(
+            status="parse_error",
+            row_count=len(rows),
+            field_count=len(fields),
+            reason="symbol_row_unparseable",
+        )
+    return _SourceOutcome(
+        status="symbol_absent",
+        row_count=len(rows),
+        field_count=len(fields),
+        reason="symbol_not_in_table",
+    )
 
 
 def _extract_close_supplement_point(
@@ -563,7 +858,7 @@ def _extract_close_supplement_point(
     if not isinstance(fields, list):
         return None
 
-    point = _extract_twse_table_point(
+    outcome = _extract_twse_table_point(
         payload,
         symbol=symbol,
         current_date=current_date,
@@ -573,6 +868,7 @@ def _extract_close_supplement_point(
             record_date=record_date,
         ),
     )
+    point = outcome.point if isinstance(outcome.point, _ClosePoint) else None
     if point is None or point.market != market:
         return None
     return point
@@ -655,30 +951,128 @@ def _parse_twse_borrowed_short_row(
     *,
     record_date: str,
 ) -> _BorrowedShortPoint | None:
-    return _parse_borrowed_short_balance_row(row, record_date=record_date)
-
-
-def _parse_tpex_borrowed_short_row(
-    row: Sequence[object],
-    *,
-    record_date: str,
-) -> _BorrowedShortPoint | None:
-    # TPEx SBL rows currently share TWSE column indices for previous/current balances.
-    return _parse_borrowed_short_balance_row(row, record_date=record_date)
-
-
-def _parse_borrowed_short_balance_row(
-    row: Sequence[object],
-    *,
-    record_date: str,
-) -> _BorrowedShortPoint | None:
     return _parse_borrowed_short_row(
         row,
         record_date=record_date,
         symbol_index=0,
         name_index=1,
-        previous_balance_index=8,
-        current_balance_index=12,
+        previous_balance_index=_TPEX_BORROWED_FALLBACK_PREV_INDEX,
+        current_balance_index=_TPEX_BORROWED_FALLBACK_CURR_INDEX,
+    )
+
+
+def resolve_tpex_borrowed_short_columns(
+    fields: Sequence[object],
+) -> _TpexBorrowedShortColumns | None:
+    """Resolve TPEx borrowed-short columns from official field metadata.
+
+    Live TPEx SBL tables often repeat short labels such as ``前日餘額`` /
+    ``當日餘額`` for both the margin and borrowed-short sections. Prefer unique
+    ``借券賣出*`` labels when present; otherwise choose the occurrence that sits
+    in the borrowed-short section (identified by markers such as ``當日還券``).
+    Fall back to TWSE-aligned indexes 8/12 only when labels cannot be resolved.
+    """
+    symbol_index = taiwan_field_index(fields, *_TPEX_BORROWED_SYMBOL_LABELS)
+    name_index = taiwan_field_index(fields, *_TPEX_BORROWED_NAME_LABELS)
+    if symbol_index is None:
+        return None
+    if name_index is None:
+        name_index = 1
+
+    previous_index = taiwan_field_index(fields, *_TPEX_BORROWED_PREV_UNIQUE_LABELS)
+    current_index = taiwan_field_index(fields, *_TPEX_BORROWED_CURR_UNIQUE_LABELS)
+
+    if previous_index is None or current_index is None:
+        previous_candidates = taiwan_field_indices(fields, *_TPEX_BORROWED_PREV_SHORT_LABELS)
+        current_candidates = taiwan_field_indices(fields, *_TPEX_BORROWED_CURR_SHORT_LABELS)
+        marker_indices = taiwan_field_indices(fields, *_TPEX_BORROWED_SECTION_MARKERS)
+
+        marked = _select_borrowed_short_columns_with_markers(
+            previous_candidates,
+            current_candidates,
+            marker_indices,
+        )
+        if marked is not None:
+            previous_index, current_index = marked
+        elif len(previous_candidates) >= 2 and len(current_candidates) >= 2:
+            # Live TPEx tables put the borrowed-short block last.
+            previous_index = previous_candidates[-1]
+            current_index = current_candidates[-1]
+        elif len(previous_candidates) == 1 and len(current_candidates) == 1:
+            previous_index = previous_candidates[0]
+            current_index = current_candidates[0]
+
+    if (
+        previous_index is not None
+        and current_index is not None
+        and previous_index != current_index
+    ):
+        return _TpexBorrowedShortColumns(
+            symbol_index=symbol_index,
+            name_index=name_index,
+            previous_balance_index=previous_index,
+            current_balance_index=current_index,
+            used_index_fallback=False,
+        )
+
+    if len(fields) > _TPEX_BORROWED_FALLBACK_CURR_INDEX:
+        return _TpexBorrowedShortColumns(
+            symbol_index=symbol_index,
+            name_index=name_index,
+            previous_balance_index=_TPEX_BORROWED_FALLBACK_PREV_INDEX,
+            current_balance_index=_TPEX_BORROWED_FALLBACK_CURR_INDEX,
+            used_index_fallback=True,
+        )
+    return None
+
+
+def _select_borrowed_short_columns_with_markers(
+    previous_candidates: Sequence[int],
+    current_candidates: Sequence[int],
+    marker_indices: Sequence[int],
+) -> tuple[int, int] | None:
+    """Pick the prev/curr pair that best wraps borrowed-short section markers."""
+    if not marker_indices or not previous_candidates or not current_candidates:
+        return None
+
+    best: tuple[tuple[int, int, int], int, int] | None = None
+    for previous_index in previous_candidates:
+        for current_index in current_candidates:
+            if previous_index >= current_index:
+                continue
+            markers_between = sum(
+                1 for marker in marker_indices if previous_index < marker < current_index
+            )
+            if markers_between <= 0:
+                continue
+            # Prefer the tightest pair that still wraps section markers, then the
+            # later block (borrowed-short is usually after the margin section).
+            span = current_index - previous_index
+            score = (-span, previous_index, current_index)
+            if best is None or score > best[0]:
+                best = (score, previous_index, current_index)
+    if best is None:
+        return None
+    return best[1], best[2]
+
+
+def _parse_tpex_borrowed_short_row(
+    row: Sequence[object],
+    fields: Sequence[object],
+    *,
+    record_date: str,
+    columns: _TpexBorrowedShortColumns | None = None,
+) -> _BorrowedShortPoint | None:
+    resolved = columns or resolve_tpex_borrowed_short_columns(fields)
+    if resolved is None:
+        return None
+    return _parse_borrowed_short_row(
+        row,
+        record_date=record_date,
+        symbol_index=resolved.symbol_index,
+        name_index=resolved.name_index,
+        previous_balance_index=resolved.previous_balance_index,
+        current_balance_index=resolved.current_balance_index,
     )
 
 
@@ -691,14 +1085,14 @@ def _parse_borrowed_short_row(
     previous_balance_index: int,
     current_balance_index: int,
 ) -> _BorrowedShortPoint | None:
-    if len(row) <= current_balance_index:
+    if len(row) <= max(symbol_index, name_index, previous_balance_index, current_balance_index):
         return None
-    symbol = normalize_taiwan_symbol(_row_at(row, symbol_index))
+    symbol = normalize_taiwan_symbol(taiwan_row_value_at(row, symbol_index))
     if symbol is None:
         return None
-    name = str(_row_at(row, name_index) or "").strip()
-    current_balance_shares = _parse_share_int(_row_at(row, current_balance_index))
-    previous_balance_shares = _parse_share_int(_row_at(row, previous_balance_index))
+    name = str(taiwan_row_value_at(row, name_index) or "").strip()
+    current_balance_shares = _parse_share_int(taiwan_row_value_at(row, current_balance_index))
+    previous_balance_shares = _parse_share_int(taiwan_row_value_at(row, previous_balance_index))
     if current_balance_shares is None:
         return None
     return _BorrowedShortPoint(
@@ -735,43 +1129,66 @@ def _merge_daily_points(
     borrowed_point: _BorrowedShortPoint | None,
     close_point: _ClosePoint | None,
 ) -> TaiwanMarginShortRecord | None:
-    if margin_point is None or borrowed_point is None:
+    if margin_point is None and borrowed_point is None:
         return None
-    if margin_point.symbol != borrowed_point.symbol:
-        return None
-    if margin_point.date != borrowed_point.date:
-        return None
+
+    if margin_point is not None and borrowed_point is not None:
+        if margin_point.symbol != borrowed_point.symbol:
+            return None
+        if margin_point.date != borrowed_point.date:
+            return None
+
+    record_date = margin_point.date if margin_point is not None else borrowed_point.date  # type: ignore[union-attr]
+    symbol = margin_point.symbol if margin_point is not None else borrowed_point.symbol  # type: ignore[union-attr]
+    name = ""
+    if margin_point is not None and margin_point.name:
+        name = margin_point.name
+    elif borrowed_point is not None:
+        name = borrowed_point.name
 
     close_price = (
         close_point.close_price
-        if close_point is not None and close_point.date == margin_point.date
+        if close_point is not None and close_point.date == record_date
         else None
     )
-    borrowed_short_balance_lots = _lots_from_shares(
-        borrowed_point.borrowed_short_balance_shares,
-        borrowed_point.symbol,
-    )
-    if borrowed_short_balance_lots is None:
+
+    borrowed_short_balance_lots: float | None = None
+    borrowed_short_change_lots: float | None = None
+    borrowed_short_change_amount_10k: int | None = None
+    if borrowed_point is not None:
+        borrowed_short_balance_lots = _lots_from_shares(
+            borrowed_point.borrowed_short_balance_shares,
+            borrowed_point.symbol,
+        )
+        if borrowed_short_balance_lots is None:
+            # Keep margin-only data when borrowed shares cannot be converted.
+            borrowed_point = None
+        else:
+            borrowed_short_change_lots = _borrowed_short_change_lots(
+                borrowed_point.borrowed_short_balance_shares,
+                borrowed_point.previous_borrowed_short_balance_shares,
+                borrowed_point.symbol,
+            )
+            borrowed_short_change_amount_10k = _borrowed_short_change_amount_10k(
+                borrowed_point.borrowed_short_balance_shares,
+                borrowed_point.previous_borrowed_short_balance_shares,
+                close_price,
+            )
+
+    if margin_point is None and borrowed_point is None:
         return None
 
-    borrowed_short_change_lots = _borrowed_short_change_lots(
-        borrowed_point.borrowed_short_balance_shares,
-        borrowed_point.previous_borrowed_short_balance_shares,
-        borrowed_point.symbol,
-    )
-    borrowed_short_change_amount_10k = _borrowed_short_change_amount_10k(
-        borrowed_point.borrowed_short_balance_shares,
-        borrowed_point.previous_borrowed_short_balance_shares,
-        close_price,
-    )
-
     return TaiwanMarginShortRecord(
-        date=margin_point.date,
-        symbol=margin_point.symbol,
-        name=margin_point.name or borrowed_point.name,
+        date=record_date,
+        symbol=symbol,
+        name=name,
         close_price=close_price,
-        margin_balance_lots=margin_point.margin_balance_lots,
-        short_margin_balance_lots=margin_point.short_margin_balance_lots,
+        margin_balance_lots=(
+            margin_point.margin_balance_lots if margin_point is not None else None
+        ),
+        short_margin_balance_lots=(
+            margin_point.short_margin_balance_lots if margin_point is not None else None
+        ),
         borrowed_short_balance_lots=borrowed_short_balance_lots,
         borrowed_short_balance_change_lots=borrowed_short_change_lots,
         borrowed_short_balance_change_amount_10k=borrowed_short_change_amount_10k,
@@ -864,13 +1281,9 @@ def parse_all_margin_short_records(
             current_date=current_date,
             parse_row=_parse_tpex_margin_row,
         )
-        borrowed_points = _extract_all_tpex_table_points(
+        borrowed_points = _extract_all_tpex_borrowed_short_points(
             borrowed_payload,
             current_date=current_date,
-            parse_row=lambda row, fields, record_date: _parse_tpex_borrowed_short_row(
-                row,
-                record_date=record_date,
-            ),
         )
     else:
         margin_points = _extract_all_twse_table_points(
@@ -892,20 +1305,55 @@ def parse_all_margin_short_records(
             current_date=current_date,
         )
     }
+    margin_by_symbol = {point.symbol: point for point in margin_points}
     borrowed_by_symbol = {point.symbol: point for point in borrowed_points}
+    symbols = sorted(set(margin_by_symbol) | set(borrowed_by_symbol))
     records: list[TaiwanMarginShortRecord] = []
-    for margin_point in margin_points:
-        borrowed_point = borrowed_by_symbol.get(margin_point.symbol)
-        if borrowed_point is None:
-            continue
+    for symbol in symbols:
         record = _merge_daily_points(
-            margin_point=margin_point,
-            borrowed_point=borrowed_point,
-            close_point=close_by_symbol.get(margin_point.symbol),
+            margin_point=margin_by_symbol.get(symbol),
+            borrowed_point=borrowed_by_symbol.get(symbol),
+            close_point=close_by_symbol.get(symbol),
         )
         if record is not None:
             records.append(record)
     return records
+
+
+def _extract_all_tpex_borrowed_short_points(
+    payload: object | None,
+    *,
+    current_date: date,
+) -> list[_BorrowedShortPoint]:
+    payload_dict = payload if isinstance(payload, dict) else None
+    table = _first_tpex_table(payload)
+    if table is None:
+        return []
+    rows = table.get("data")
+    fields = table.get("fields")
+    if not isinstance(rows, list) or not isinstance(fields, list):
+        return []
+    columns = resolve_tpex_borrowed_short_columns(fields)
+    if columns is None:
+        return []
+    record_date = (
+        normalize_taiwan_date(table.get("date"))
+        or normalize_taiwan_date(payload_dict.get("date") if payload_dict is not None else None)
+        or current_date.isoformat()
+    )
+    points: list[_BorrowedShortPoint] = []
+    for row in rows:
+        if not isinstance(row, list):
+            continue
+        point = _parse_tpex_borrowed_short_row(
+            row,
+            fields,
+            record_date=record_date,
+            columns=columns,
+        )
+        if point is not None:
+            points.append(point)
+    return points
 
 
 def _extract_all_twse_table_points(

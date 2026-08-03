@@ -304,9 +304,9 @@ class TaiwanMarginShortDaily(TaiwanMarketDailyColumns, Base):
     )
 
     close_price: Mapped[float | None] = mapped_column(Float, nullable=True)
-    margin_balance_lots: Mapped[float] = mapped_column(Float, nullable=False)
-    short_margin_balance_lots: Mapped[float] = mapped_column(Float, nullable=False)
-    borrowed_short_balance_lots: Mapped[float] = mapped_column(Float, nullable=False)
+    margin_balance_lots: Mapped[float | None] = mapped_column(Float, nullable=True)
+    short_margin_balance_lots: Mapped[float | None] = mapped_column(Float, nullable=True)
+    borrowed_short_balance_lots: Mapped[float | None] = mapped_column(Float, nullable=True)
     borrowed_short_balance_change_lots: Mapped[float | None] = mapped_column(
         Float,
         nullable=True,
