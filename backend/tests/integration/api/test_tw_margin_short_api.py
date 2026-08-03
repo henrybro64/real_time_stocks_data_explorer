@@ -134,3 +134,46 @@ def test_margin_short_endpoint_returns_502_when_upstream_unavailable(monkeypatch
 
     assert response.status_code == 502
     assert "temporarily unavailable" in response.json()["detail"]
+
+
+def test_margin_short_endpoint_returns_partial_balances_for_tpex(monkeypatch, client) -> None:
+    from app.api.routes import tw_margin_short as margin_short_routes
+    from app.services.tw_margin_short_service import (
+        TaiwanMarginShortRecord,
+        TaiwanMarginShortResult,
+    )
+
+    record = TaiwanMarginShortRecord(
+        date="2026-07-09",
+        symbol="6488",
+        name="環球晶",
+        close_price=None,
+        margin_balance_lots=10_200.0,
+        short_margin_balance_lots=4.0,
+        borrowed_short_balance_lots=None,
+        borrowed_short_balance_change_lots=None,
+        borrowed_short_balance_change_amount_10k=None,
+    )
+    result = TaiwanMarginShortResult(
+        stock_id="TW:6488",
+        symbol="6488",
+        market="TPEx",
+        latest_date="2026-07-09",
+        summary=record,
+        history=(record,),
+        source="TPEx official margin and borrowed-short daily data",
+    )
+    monkeypatch.setattr(
+        margin_short_routes.tw_margin_short_service,
+        "get_margin_short",
+        lambda stock_id, *, days: result,
+    )
+
+    response = client.get("/api/stocks/TW:6488/margin-short", params={"days": 30})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["market"] == "TPEx"
+    assert payload["summary"]["marginBalanceLots"] == pytest.approx(10_200.0)
+    assert payload["summary"]["borrowedShortBalanceLots"] is None
+    assert payload["history"][0]["borrowedShortBalanceLots"] is None

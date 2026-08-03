@@ -171,6 +171,43 @@ describe("MarginShortPanel", () => {
     expect(amountRow).toHaveClass("app-tw-market-neutral");
   });
 
+  it("renders partial margin-only rows when borrowed-short balances are null", async () => {
+    vi.mocked(fetchTaiwanMarginShort).mockResolvedValue({
+      ...samplePayload,
+      market: "TPEx",
+      stockId: "TW:6488",
+      symbol: "6488",
+      summary: {
+        marginBalanceLots: 10200,
+        shortMarginBalanceLots: 4,
+        borrowedShortBalanceLots: null,
+        borrowedShortBalanceChangeLots: null,
+        borrowedShortBalanceChangeAmount10k: null,
+      },
+      history: [
+        {
+          date: "2026-07-09",
+          closePrice: null,
+          marginBalanceLots: 10200,
+          shortMarginBalanceLots: 4,
+          borrowedShortBalanceLots: null,
+          borrowedShortBalanceChangeLots: null,
+          borrowedShortBalanceChangeAmount10k: null,
+        },
+      ],
+    });
+
+    renderPanel("TW:6488");
+
+    const summary = await screen.findByTestId("tw-margin-short-summary");
+    expect(summary).toHaveTextContent("10,200 張");
+    expect(summary).toHaveTextContent("4 張");
+    const values = summary.querySelectorAll("dd");
+    expect(values[2]).toHaveTextContent("—");
+    expect(values[3]).toHaveTextContent("—");
+    expect(screen.getAllByTestId("tw-signal-line-chart")).toHaveLength(2);
+  });
+
   it("renders English labels and units when language is en", async () => {
     vi.mocked(fetchTaiwanMarginShort).mockResolvedValue(samplePayload);
 

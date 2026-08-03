@@ -57,6 +57,14 @@ def test_taiwan_market_daily_migration_creates_tables_with_constraints(
     assert "ix_taiwan_institutional_daily_lookup" in institutional_indexes
     assert "ix_taiwan_margin_short_daily_lookup" in margin_indexes
 
+    margin_columns = {
+        column["name"]: column
+        for column in inspector.get_columns("taiwan_margin_short_daily")
+    }
+    assert margin_columns["margin_balance_lots"]["nullable"] is True
+    assert margin_columns["short_margin_balance_lots"]["nullable"] is True
+    assert margin_columns["borrowed_short_balance_lots"]["nullable"] is True
+
 
 def test_taiwan_institutional_daily_prevents_duplicate_market_symbol_date(
     tmp_path,
@@ -103,6 +111,69 @@ def test_taiwan_institutional_daily_prevents_duplicate_market_symbol_date(
         )
         with pytest.raises(IntegrityError):
             session.commit()
+
+
+def test_margin_short_nullable_migration_downgrade_drops_partial_rows(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'taiwan_margin_short_downgrade.db'}"
+    monkeypatch.setattr("app.core.config.settings.database_url", database_url)
+    config = _alembic_config(database_url)
+    command.upgrade(config, "head")
+
+    engine = create_engine(database_url)
+    session_local = sessionmaker(bind=engine)
+    with session_local() as session:
+        session.add(
+            TaiwanMarginShortDaily(
+                market="TWSE",
+                symbol="1303",
+                date=date(2026, 7, 9),
+                name="南亞",
+                close_price=185.0,
+                margin_balance_lots=31_339.0,
+                short_margin_balance_lots=0.0,
+                borrowed_short_balance_lots=None,
+                borrowed_short_balance_change_lots=None,
+                borrowed_short_balance_change_amount_10k=None,
+                source="twse-partial",
+            )
+        )
+        session.add(
+            TaiwanMarginShortDaily(
+                market="TWSE",
+                symbol="2330",
+                date=date(2026, 7, 9),
+                name="台積電",
+                close_price=1000.0,
+                margin_balance_lots=10.0,
+                short_margin_balance_lots=1.0,
+                borrowed_short_balance_lots=2.0,
+                borrowed_short_balance_change_lots=0.1,
+                borrowed_short_balance_change_amount_10k=1,
+                source="twse-complete",
+            )
+        )
+        session.commit()
+
+    command.downgrade(config, "20260712_0011")
+
+    engine = create_engine(database_url)
+    inspector = inspect(engine)
+    margin_columns = {
+        column["name"]: column
+        for column in inspector.get_columns("taiwan_margin_short_daily")
+    }
+    assert margin_columns["margin_balance_lots"]["nullable"] is False
+    assert margin_columns["borrowed_short_balance_lots"]["nullable"] is False
+
+    session_local = sessionmaker(bind=engine)
+    with session_local() as session:
+        rows = session.query(TaiwanMarginShortDaily).all()
+        assert len(rows) == 1
+        assert rows[0].symbol == "2330"
+        assert rows[0].borrowed_short_balance_lots == pytest.approx(2.0)
 
 
 def test_taiwan_margin_short_daily_prevents_duplicate_market_symbol_date(

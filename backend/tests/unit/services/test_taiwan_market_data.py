@@ -91,6 +91,15 @@ def test_normalize_taiwan_symbol_removes_prefix_and_yahoo_suffix() -> None:
     assert taiwan_market_data.normalize_taiwan_symbol("") is None
 
 
+def test_taiwan_field_indices_returns_all_duplicate_matches() -> None:
+    fields = ["前日餘額", "當日餘額", "前日餘額", "當日餘額"]
+
+    assert taiwan_market_data.taiwan_field_indices(fields, "前日餘額") == [0, 2]
+    assert taiwan_market_data.taiwan_field_indices(fields, "當日餘額") == [1, 3]
+    assert taiwan_market_data.taiwan_row_value_at(["a", "b", "c"], 1) == "b"
+    assert taiwan_market_data.taiwan_row_value_at(["a", "b", "c"], 9) is None
+
+
 def test_taiwan_field_helpers_support_twse_like_row_fixture() -> None:
     fields = ["證券代號", "證券名稱", "三大法人買賣超股數", "日期"]
     row = ["2330", "台積電", "1,234,000", "115/07/09"]

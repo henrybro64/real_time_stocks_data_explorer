@@ -10,7 +10,11 @@ from app.services.tw_margin_short_service import (
     _BorrowedShortPoint,
     _ClosePoint,
     _MarginPoint,
+    _SourceOutcome,
     _close_supplement_market,
+    _core_request_succeeded,
+    _extract_twse_borrowed_short_point,
+    _extract_twse_margin_point,
     _fetch_tpex_dated_payload,
     _merge_daily_points,
     _parse_close_supplement_row,
@@ -20,6 +24,7 @@ from app.services.tw_margin_short_service import (
     _parse_twse_margin_row,
     _round_nearest_int,
     parse_all_margin_short_records,
+    resolve_tpex_borrowed_short_columns,
 )
 from tests.support import FakeQuoteSource, stock_record
 
@@ -44,6 +49,43 @@ _TPEX_MARGIN_FIELDS = [
     "券使用率(%)",
     "券限額",
     "資券相抵(張)",
+    "備註",
+]
+
+# Mirrors the live TPEx `/margin/sbl` response shape (duplicate short labels).
+_TPEX_SBL_FIELDS = [
+    "股票代號",
+    "股票名稱",
+    "前日餘額",
+    "賣出",
+    "買進",
+    "現券",
+    "當日餘額",
+    "限額",
+    "前日餘額",
+    "當日賣出",
+    "當日還券",
+    "當日調整數額",
+    "當日餘額",
+    "次一營業日可借券賣出限額",
+    "備註",
+]
+
+_TPEX_SBL_UNIQUE_FIELDS = [
+    "股票代號",
+    "股票名稱",
+    "融券前日餘額",
+    "融券賣出",
+    "融券買進",
+    "融券現券",
+    "融券當日餘額",
+    "融券限額",
+    "借券賣出前日餘額",
+    "借券賣出當日賣出",
+    "借券賣出當日還券",
+    "借券賣出當日調整數額",
+    "借券賣出當日餘額",
+    "次一營業日可借券賣出限額",
     "備註",
 ]
 
@@ -230,23 +272,7 @@ def test_parse_all_margin_short_records_merges_tpex_payloads() -> None:
         "tables": [
             {
                 "date": "115/07/09",
-                "fields": [
-                    "股票代號",
-                    "股票名稱",
-                    "前日餘額",
-                    "賣出",
-                    "買進",
-                    "現券",
-                    "當日餘額",
-                    "限額",
-                    "前日餘額",
-                    "當日賣出",
-                    "當日還券",
-                    "當日調整數額",
-                    "當日餘額",
-                    "次一營業日可借券賣出限額",
-                    "備註",
-                ],
+                "fields": _TPEX_SBL_FIELDS,
                 "data": [
                     [
                         "6488",
@@ -368,12 +394,130 @@ def test_parse_tpex_borrowed_short_row_extracts_previous_and_current_shares() ->
         "",
     ]
 
-    point = _parse_tpex_borrowed_short_row(row, record_date="2026-07-09")
+    point = _parse_tpex_borrowed_short_row(row, _TPEX_SBL_FIELDS, record_date="2026-07-09")
 
     assert point is not None
     assert point.symbol == "6488"
     assert point.previous_borrowed_short_balance_shares == 2_000_000
     assert point.borrowed_short_balance_shares == 2_100_000
+
+
+def test_resolve_tpex_borrowed_short_columns_uses_unique_official_labels() -> None:
+    columns = resolve_tpex_borrowed_short_columns(_TPEX_SBL_UNIQUE_FIELDS)
+
+    assert columns is not None
+    assert columns.previous_balance_index == 8
+    assert columns.current_balance_index == 12
+    assert columns.used_index_fallback is False
+
+
+def test_resolve_tpex_borrowed_short_columns_handles_reordered_duplicate_labels() -> None:
+    # Borrowed-short section first (with markers), margin-like duplicates last.
+    # Last-duplicate-wins would wrongly pick indexes 8/9.
+    reordered = [
+        "股票代號",
+        "股票名稱",
+        "前日餘額",
+        "當日賣出",
+        "當日還券",
+        "當日調整數額",
+        "當日餘額",
+        "次一營業日可借券賣出限額",
+        "前日餘額",
+        "當日餘額",
+        "備註",
+    ]
+    columns = resolve_tpex_borrowed_short_columns(reordered)
+
+    assert columns is not None
+    assert columns.previous_balance_index == 2
+    assert columns.current_balance_index == 6
+    assert columns.used_index_fallback is False
+
+
+def test_resolve_tpex_borrowed_short_columns_uses_documented_index_fallback() -> None:
+    fields = [
+        "股票代號",
+        "股票名稱",
+        "col2",
+        "col3",
+        "col4",
+        "col5",
+        "col6",
+        "col7",
+        "col8",
+        "col9",
+        "col10",
+        "col11",
+        "col12",
+        "col13",
+    ]
+    columns = resolve_tpex_borrowed_short_columns(fields)
+
+    assert columns is not None
+    assert columns.used_index_fallback is True
+    assert columns.previous_balance_index == 8
+    assert columns.current_balance_index == 12
+
+
+def test_parse_tpex_borrowed_short_row_ignores_margin_section_duplicates() -> None:
+    """Regression: first 前日餘額/當日餘額 belong to 融券, not 借券賣出."""
+    row = [
+        "6488",
+        "環球晶",
+        "29,000",
+        "129,000",
+        "16,000",
+        "0",
+        "142,000",
+        "119,528,431",
+        "10,024,000",
+        "1,144,000",
+        "67,000",
+        "0",
+        "11,101,000",
+        "2,477,593",
+        "",
+    ]
+
+    point = _parse_tpex_borrowed_short_row(row, _TPEX_SBL_FIELDS, record_date="2026-07-31")
+
+    assert point is not None
+    assert point.previous_borrowed_short_balance_shares == 10_024_000
+    assert point.borrowed_short_balance_shares == 11_101_000
+
+
+def test_parse_tpex_borrowed_short_row_supports_unique_label_aliases() -> None:
+    row = [
+        "6488",
+        "環球晶",
+        "5,000",
+        "0",
+        "0",
+        "0",
+        "4,000",
+        "0",
+        "2,000,000",
+        "0",
+        "0",
+        "0",
+        "2,100,000",
+        "0",
+        "",
+    ]
+
+    point = _parse_tpex_borrowed_short_row(
+        row,
+        _TPEX_SBL_UNIQUE_FIELDS,
+        record_date="2026-07-09",
+    )
+
+    assert point is not None
+    assert point.borrowed_short_balance_shares == 2_100_000
+
+
+def test_resolve_tpex_borrowed_short_columns_reports_unknown_schema() -> None:
+    assert resolve_tpex_borrowed_short_columns(["foo", "bar"]) is None
 
 
 def test_merge_daily_points_converts_share_balances_to_lots_for_100_share_products() -> None:
@@ -575,23 +719,7 @@ def test_service_supports_tpex_symbols() -> None:
         "tables": [
             {
                 "date": "115/07/08",
-                "fields": [
-                    "股票代號",
-                    "股票名稱",
-                    "前日餘額",
-                    "賣出",
-                    "買進",
-                    "現券",
-                    "當日餘額",
-                    "限額",
-                    "前日餘額",
-                    "當日賣出",
-                    "當日還券",
-                    "當日調整數額",
-                    "當日餘額",
-                    "次一營業日可借券賣出限額",
-                    "備註",
-                ],
+                "fields": _TPEX_SBL_FIELDS,
                 "data": [["6488", "環球晶", "5,000", "0", "0", "0", "4,000", "0", "2,000,000", "0", "0", "0", "2,100,000", "0", ""]],
             }
         ],
@@ -622,12 +750,30 @@ def test_service_supports_tpex_symbols() -> None:
     assert result.summary.borrowed_short_balance_change_amount_10k == 5100
 
 
-def test_service_raises_upstream_error_when_required_feed_is_unavailable() -> None:
+def test_service_returns_partial_history_when_one_core_feed_http_fails() -> None:
     stock = _nan_ya_stock()
 
     service = TaiwanMarginShortService(
         quote_source=FakeQuoteSource(stock),
         twse_margin_fetcher=lambda target_date: _twse_margin_payload(target_date),
+        twse_borrowed_short_fetcher=lambda _target_date: _raise_http_fetch_error(),
+        twse_close_fetcher=_twse_close_payload,
+        now_provider=lambda: datetime(2026, 7, 10, 1, 0, tzinfo=UTC),
+    )
+
+    result = service.get_margin_short("TW:1303", days=1)
+
+    assert result.summary is not None
+    assert result.summary.margin_balance_lots == pytest.approx(31_339.0)
+    assert result.summary.borrowed_short_balance_lots is None
+
+
+def test_service_raises_upstream_error_when_both_core_feeds_are_unavailable() -> None:
+    stock = _nan_ya_stock()
+
+    service = TaiwanMarginShortService(
+        quote_source=FakeQuoteSource(stock),
+        twse_margin_fetcher=lambda _target_date: _raise_http_fetch_error(),
         twse_borrowed_short_fetcher=lambda _target_date: _raise_http_fetch_error(),
         twse_close_fetcher=_twse_close_payload,
         now_provider=lambda: datetime(2026, 7, 10, 1, 0, tzinfo=UTC),
@@ -718,7 +864,48 @@ def test_merge_daily_points_returns_none_when_dates_or_symbols_mismatch() -> Non
         _merge_daily_points(margin_point=margin, borrowed_point=other_symbol, close_point=None)
         is None
     )
-    assert _merge_daily_points(margin_point=None, borrowed_point=borrowed, close_point=None) is None
+
+
+def test_merge_daily_points_keeps_margin_when_borrowed_short_is_absent() -> None:
+    record = _merge_daily_points(
+        margin_point=_margin_point(),
+        borrowed_point=None,
+        close_point=None,
+    )
+
+    assert record is not None
+    assert record.margin_balance_lots == pytest.approx(31_339.0)
+    assert record.short_margin_balance_lots == pytest.approx(0.0)
+    assert record.borrowed_short_balance_lots is None
+    assert record.borrowed_short_balance_change_lots is None
+
+
+def test_merge_daily_points_keeps_borrowed_short_when_margin_is_absent() -> None:
+    record = _merge_daily_points(
+        margin_point=None,
+        borrowed_point=_borrowed_point(),
+        close_point=_close_point(),
+    )
+
+    assert record is not None
+    assert record.margin_balance_lots is None
+    assert record.short_margin_balance_lots is None
+    assert record.borrowed_short_balance_lots == pytest.approx(12_345.0)
+    assert record.borrowed_short_balance_change_lots == pytest.approx(141.0)
+    assert record.borrowed_short_balance_change_amount_10k == 2609
+
+
+def test_merge_daily_points_normalizes_explicit_zero_borrowed_short_balance() -> None:
+    record = _merge_daily_points(
+        margin_point=_margin_point(),
+        borrowed_point=_borrowed_point(current_shares=0, previous_shares=0),
+        close_point=_close_point(),
+    )
+
+    assert record is not None
+    assert record.borrowed_short_balance_lots == pytest.approx(0.0)
+    assert record.borrowed_short_balance_change_lots == pytest.approx(0.0)
+    assert record.borrowed_short_balance_change_amount_10k == 0
 
 
 def test_borrowed_short_change_amount_rounds_negative_values_to_nearest_int() -> None:
@@ -931,7 +1118,7 @@ def test_fetch_tpex_dated_payload_requests_json_response(monkeypatch) -> None:
     }
 
 
-def test_service_skips_optional_close_when_core_points_missing() -> None:
+def test_service_keeps_borrowed_short_when_margin_schema_is_invalid() -> None:
     stock = _nan_ya_stock()
     close_calls = {"count": 0}
 
@@ -947,9 +1134,39 @@ def test_service_skips_optional_close_when_core_points_missing() -> None:
         now_provider=lambda: datetime(2026, 7, 10, 1, 0, tzinfo=UTC),
     )
 
-    with pytest.raises(RuntimeError, match="temporarily unavailable"):
-        service.get_margin_short("TW:1303", days=1)
+    result = service.get_margin_short("TW:1303", days=1)
 
+    assert result.summary is not None
+    assert result.summary.margin_balance_lots is None
+    assert result.summary.borrowed_short_balance_lots == pytest.approx(12_345.0)
+    assert close_calls["count"] == 1
+
+
+def test_service_skips_optional_close_when_borrowed_short_point_missing() -> None:
+    stock = _nan_ya_stock()
+    close_calls = {"count": 0}
+
+    def close_fetcher(target_date: date):
+        close_calls["count"] += 1
+        return _twse_close_payload(target_date)
+
+    service = TaiwanMarginShortService(
+        quote_source=FakeQuoteSource(stock),
+        twse_margin_fetcher=_twse_margin_payload,
+        twse_borrowed_short_fetcher=lambda _target_date: {
+            "date": "20260708",
+            "fields": ["placeholder"],
+            "data": [["2330", "台積電", "0", "0", "0", "0", "0", "0", "1,000", "0", "0", "0", "1,100", "0", " "]],
+        },
+        twse_close_fetcher=close_fetcher,
+        now_provider=lambda: datetime(2026, 7, 10, 1, 0, tzinfo=UTC),
+    )
+
+    result = service.get_margin_short("TW:1303", days=1)
+
+    assert result.summary is not None
+    assert result.summary.margin_balance_lots == pytest.approx(31_339.0)
+    assert result.summary.borrowed_short_balance_lots is None
     assert close_calls["count"] == 0
 
 
@@ -975,6 +1192,213 @@ def test_service_disables_optional_close_after_first_hard_failure() -> None:
     assert result.summary.close_price is None
     assert result.summary.borrowed_short_balance_change_amount_10k is None
     assert close_calls["count"] == 1
+
+
+def test_core_request_succeeded_requires_found_or_both_soft_empty() -> None:
+    found = _SourceOutcome(status="found")
+    absent = _SourceOutcome(status="symbol_absent")
+    no_data = _SourceOutcome(status="no_data")
+    schema_error = _SourceOutcome(status="schema_error")
+    http_error = _SourceOutcome(status="http_error")
+    parse_error = _SourceOutcome(status="parse_error")
+
+    assert _core_request_succeeded(found, http_error) is True
+    assert _core_request_succeeded(schema_error, found) is True
+    assert _core_request_succeeded(absent, no_data) is True
+    assert _core_request_succeeded(schema_error, absent) is False
+    assert _core_request_succeeded(http_error, no_data) is False
+    assert _core_request_succeeded(parse_error, absent) is False
+    assert _core_request_succeeded(http_error, schema_error) is False
+
+
+def test_service_raises_when_hard_failure_mixes_with_soft_absence() -> None:
+    stock = _nan_ya_stock()
+
+    service = TaiwanMarginShortService(
+        quote_source=FakeQuoteSource(stock),
+        twse_margin_fetcher=lambda _target_date: {"stat": "OK", "date": "20260708"},
+        twse_borrowed_short_fetcher=lambda target_date: {
+            "date": target_date.strftime("%Y%m%d"),
+            "fields": ["placeholder"],
+            "data": [["2330", "台積電", "0", "0", "0", "0", "0", "0", "1,000", "0", "0", "0", "1,100", "0", " "]],
+        },
+        twse_close_fetcher=_twse_close_payload,
+        now_provider=lambda: datetime(2026, 7, 10, 1, 0, tzinfo=UTC),
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="Taiwan margin-short data is temporarily unavailable from official sources.",
+    ):
+        service.get_margin_short("TW:1303", days=1)
+
+
+def test_extract_twse_marks_matching_unparseable_row_as_parse_error() -> None:
+    payload = {
+        "date": "20260708",
+        "fields": ["placeholder"],
+        "data": [
+            [
+                "1303",
+                "南亞",
+                "0",
+                "0",
+                "0",
+                "0",
+                "-",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "-",
+                "0",
+                "0",
+                "",
+            ]
+        ],
+    }
+
+    outcome = _extract_twse_margin_point(
+        payload,
+        symbol="1303",
+        current_date=date(2026, 7, 8),
+    )
+
+    assert outcome.status == "parse_error"
+    assert outcome.reason == "symbol_row_unparseable"
+    assert outcome.point is None
+
+
+def test_extract_twse_borrowed_short_marks_matching_unparseable_row_as_parse_error() -> None:
+    payload = {
+        "date": "20260708",
+        "fields": ["placeholder"],
+        "data": [
+            [
+                "1303",
+                "南亞",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "bad",
+                "0",
+                "0",
+                "0",
+                "-",
+                "0",
+                " ",
+            ]
+        ],
+    }
+
+    outcome = _extract_twse_borrowed_short_point(
+        payload,
+        symbol="1303",
+        current_date=date(2026, 7, 8),
+    )
+
+    assert outcome.status == "parse_error"
+    assert outcome.reason == "symbol_row_unparseable"
+
+
+def test_parse_all_margin_short_records_keeps_partial_symbol_rows() -> None:
+    records = parse_all_margin_short_records(
+        market="TWSE",
+        current_date=date(2026, 7, 9),
+        margin_payload={
+            "date": "20260709",
+            "fields": ["placeholder"],
+            "data": [
+                [
+                    "1303",
+                    "南亞",
+                    "0",
+                    "0",
+                    "0",
+                    "0",
+                    "31,339",
+                    "0",
+                    "0",
+                    "0",
+                    "0",
+                    "0",
+                    "0",
+                    "0",
+                    "0",
+                    "",
+                ]
+            ],
+        },
+        borrowed_payload={
+            "date": "20260709",
+            "fields": ["placeholder"],
+            "data": [
+                [
+                    "2330",
+                    "台積電",
+                    "0",
+                    "0",
+                    "0",
+                    "0",
+                    "0",
+                    "0",
+                    "1,000,000",
+                    "0",
+                    "0",
+                    "0",
+                    "1,100,000",
+                    "0",
+                    " ",
+                ]
+            ],
+        },
+        close_payload=None,
+    )
+
+    by_symbol = {record.symbol: record for record in records}
+    assert set(by_symbol) == {"1303", "2330"}
+    assert by_symbol["1303"].margin_balance_lots == pytest.approx(31_339.0)
+    assert by_symbol["1303"].borrowed_short_balance_lots is None
+    assert by_symbol["2330"].margin_balance_lots is None
+    assert by_symbol["2330"].borrowed_short_balance_lots == pytest.approx(1_100.0)
+
+
+def test_service_structured_logs_include_stock_id_and_http_outcome(caplog) -> None:
+    import logging
+
+    stock = _nan_ya_stock()
+    service = TaiwanMarginShortService(
+        quote_source=FakeQuoteSource(stock),
+        twse_margin_fetcher=_twse_margin_payload,
+        twse_borrowed_short_fetcher=_twse_short_payload,
+        twse_close_fetcher=_twse_close_payload,
+        now_provider=lambda: datetime(2026, 7, 10, 1, 0, tzinfo=UTC),
+    )
+
+    with caplog.at_level(logging.INFO, logger="app.services.tw_margin_short_service"):
+        service.get_margin_short("TW:1303", days=1)
+
+    merge_records = [
+        record
+        for record in caplog.records
+        if getattr(record, "event", None) == "tw_margin_short.daily_merge"
+        or (
+            isinstance(getattr(record, "msg", None), str)
+            and "daily merge" in record.getMessage()
+        )
+    ]
+    assert merge_records
+    # stdlib LoggerAdapter-style extras land on the LogRecord when using `extra=`.
+    assert any(getattr(record, "stock_id", None) == "TW:1303" for record in caplog.records)
+    assert any(getattr(record, "http_success", None) is True for record in caplog.records)
+    assert any(
+        getattr(record, "event", None) == "tw_margin_short.source_parse"
+        for record in caplog.records
+    )
 
 
 def _raise_http_fetch_error() -> object:

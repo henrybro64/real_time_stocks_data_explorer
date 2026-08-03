@@ -4,11 +4,16 @@ from pydantic import BaseModel, Field
 
 
 class TaiwanMarginShortSummaryResponse(BaseModel):
-    """Balances/changes in 張 (1000 default; 100 for K/C FX ETFs); amount is 萬元 via (Δshares × close) / 10_000."""
+    """Balances/changes in 張 (1000 default; 100 for K/C FX ETFs); amount is 萬元 via (Δshares × close) / 10_000.
 
-    marginBalanceLots: float
-    shortMarginBalanceLots: float
-    borrowedShortBalanceLots: float
+    Balance fields are nullable when only one core official source (margin or
+    borrowed-short) contributed a row for that date. They are required keys
+    (explicit null) whenever a summary object is present.
+    """
+
+    marginBalanceLots: float | None
+    shortMarginBalanceLots: float | None
+    borrowedShortBalanceLots: float | None
     borrowedShortBalanceChangeLots: float | None = None
     borrowedShortBalanceChangeAmount10k: int | None = Field(
         default=None,
@@ -19,9 +24,9 @@ class TaiwanMarginShortSummaryResponse(BaseModel):
 class TaiwanMarginShortHistoryPointResponse(BaseModel):
     date: str
     closePrice: float | None = None
-    marginBalanceLots: float
-    shortMarginBalanceLots: float
-    borrowedShortBalanceLots: float
+    marginBalanceLots: float | None
+    shortMarginBalanceLots: float | None
+    borrowedShortBalanceLots: float | None
     borrowedShortBalanceChangeLots: float | None = None
     borrowedShortBalanceChangeAmount10k: int | None = None
 

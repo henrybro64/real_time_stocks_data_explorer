@@ -21,6 +21,40 @@ def test_tw_margin_short_schema_preserves_lot_and_amount_fields() -> None:
     assert payload["sharesPerLot"] == 1000
 
 
+def test_tw_margin_short_schema_allows_partial_nullable_balances() -> None:
+    from app.services.tw_margin_short_service import (
+        TaiwanMarginShortRecord,
+        TaiwanMarginShortResult,
+    )
+
+    record = TaiwanMarginShortRecord(
+        date="2026-07-09",
+        symbol="6488",
+        name="環球晶",
+        close_price=None,
+        margin_balance_lots=10_200.0,
+        short_margin_balance_lots=4.0,
+        borrowed_short_balance_lots=None,
+        borrowed_short_balance_change_lots=None,
+        borrowed_short_balance_change_amount_10k=None,
+    )
+    result = TaiwanMarginShortResult(
+        stock_id="TW:6488",
+        symbol="6488",
+        market="TPEx",
+        latest_date="2026-07-09",
+        summary=record,
+        history=(record,),
+        source="TPEx official margin and borrowed-short daily data",
+    )
+
+    payload = margin_short_route._tw_margin_short_schema(result).model_dump()
+
+    assert payload["summary"]["marginBalanceLots"] == pytest.approx(10_200.0)
+    assert payload["summary"]["borrowedShortBalanceLots"] is None
+    assert payload["history"][0]["borrowedShortBalanceLots"] is None
+
+
 def test_tw_margin_short_schema_exposes_100_unit_shares_per_lot_for_fx_etf() -> None:
     from app.services.tw_margin_short_service import (
         TaiwanMarginShortRecord,
