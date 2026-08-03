@@ -2,7 +2,7 @@
 
 import { Button, InlineLoading, Tag, Tile } from "@carbon/react";
 import { useQuery } from "@tanstack/react-query";
-import type { ChartLayout, Quote } from "@shared/quote";
+import type { ChartLayout, Quote, QuoteFreshnessMeta } from "@shared/quote";
 import type { MarketCode, Stock } from "@shared/stock";
 import { useId, type KeyboardEvent, type MouseEvent } from "react";
 import { useRouter } from "next/navigation";
@@ -25,7 +25,9 @@ import {
 
 type Props = {
   stock: Stock;
-  quote?: Quote;
+  /** `undefined` = hydrate via single-quote API; `null` = batch pending refresh. */
+  quote?: Quote | null;
+  freshness?: QuoteFreshnessMeta | null;
   isTracked: boolean;
   onToggle: (stockId: string) => void;
   /** Override Add / Remove button labels (e.g. portfolio vs watchlist). */
@@ -36,6 +38,7 @@ type Props = {
 export function StockCard({
   stock,
   quote: initialQuote,
+  freshness: initialFreshness = null,
   isTracked,
   onToggle,
   addLabel,
@@ -45,10 +48,7 @@ export function StockCard({
   const { language, t, formatNumber } = useLanguage();
   const quoteQuery = useQuery({
     queryKey: ["card-quote", stock.id],
-    queryFn: async () => {
-      const response = await fetchQuote(stock.id);
-      return response.quote;
-    },
+    queryFn: async () => fetchQuote(stock.id),
     enabled: initialQuote === undefined,
     refetchInterval: 30_000,
     staleTime: 15_000,
@@ -61,10 +61,14 @@ export function StockCard({
     staleTime: 30_000,
   });
 
-  const quote = initialQuote ?? quoteQuery.data;
+  const quote =
+    initialQuote === undefined ? quoteQuery.data?.quote ?? undefined : initialQuote ?? undefined;
+  const freshness =
+    initialQuote === undefined ? quoteQuery.data?.freshness ?? null : initialFreshness;
   const chartLayout = historyQuery.data?.chartLayout ?? null;
   const quoteRefreshFailed = initialQuote === undefined && quoteQuery.isError && quote != null;
   const detailHref = `/stock/${encodeURIComponent(stock.id)}`;
+  const pendingUnavailable = quote == null && freshness?.refreshStatus === "unavailable";
 
   const handleCardClick = (event: MouseEvent<HTMLDivElement>) => {
     if (shouldIgnoreNavigation(event.target, event.currentTarget)) {
@@ -117,6 +121,8 @@ export function StockCard({
           </div>
           <div className="app-stock-card-status-row">
             <QuoteFreshnessTag
+              freshnessMeta={freshness}
+              hasQuote
               isMarketOpen={quote.isMarketOpen}
               refreshFailed={quoteRefreshFailed}
               timestamp={quote.timestamp}
@@ -167,8 +173,34 @@ export function StockCard({
         </>
       ) : quoteQuery.isError ? (
         <RequestStateNotice compact kind={errorToNoticeKind(quoteQuery.error)} scopeLabel={stock.symbol} />
+      ) : pendingUnavailable ? (
+        <div className="app-stock-card-status-row">
+          <QuoteFreshnessTag
+            freshnessMeta={freshness}
+            hasQuote={false}
+            isMarketOpen={false}
+            timestamp=""
+          />
+          <RequestStateNotice compact kind="unavailable" scopeLabel={stock.symbol} />
+        </div>
       ) : (
-        <InlineLoading description={t("stock.quoteLoading")} status="active" />
+        <div className="app-stock-card-status-row">
+          <QuoteFreshnessTag
+            freshnessMeta={
+              freshness ?? {
+                cachedAt: null,
+                ageSeconds: null,
+                stale: true,
+                source: "none",
+                refreshStatus: "queued",
+              }
+            }
+            hasQuote={false}
+            isMarketOpen={false}
+            timestamp=""
+          />
+          <InlineLoading description={t("stock.quoteRefreshing")} status="active" />
+        </div>
       )}
 
       <div className="app-stock-card-actions">

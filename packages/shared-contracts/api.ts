@@ -1,4 +1,11 @@
-import type { Candle, ChartLayout, MovingAverageSeries, Quote, TimeRange } from "./quote";
+import type {
+  Candle,
+  ChartLayout,
+  MovingAverageSeries,
+  Quote,
+  QuoteFreshnessMeta,
+  TimeRange,
+} from "./quote";
 import type { MarketCode, Stock } from "./stock";
 
 export type SearchResult = Stock;
@@ -42,7 +49,8 @@ export type NewsItem = {
 
 export type QuoteResponse = {
   stock: Stock;
-  quote: Quote;
+  quote: Quote | null;
+  freshness?: QuoteFreshnessMeta;
 };
 
 export type QuotesResponse = QuoteResponse[];

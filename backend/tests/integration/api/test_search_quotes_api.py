@@ -1,7 +1,7 @@
 import pytest
 
 from app.services.providers import us_provider
-from app.services.quote_service import quote_service
+from app.services.quote_service import QuoteBatchItem, quote_service
 from app.services.search_service import search_service
 from tests.support import quote_record, stock_record
 
@@ -91,39 +91,60 @@ def test_quotes_endpoint_returns_stock_and_quote_payload(monkeypatch, client) ->
         low=185.2,
         volume=1_250_000,
     )
-    monkeypatch.setattr(quote_service, "get_quotes", lambda ids: [(stock, quote)])
+    monkeypatch.setattr(
+        quote_service,
+        "get_quotes_cache_first",
+        lambda ids: [
+            QuoteBatchItem(
+                stock=stock,
+                quote=quote,
+                cached_at="2026-04-01T13:30:00Z",
+                age_seconds=5.0,
+                stale=False,
+                source="memory",
+                refresh_status="idle",
+            )
+        ],
+    )
 
-    response = client.get("/api/quotes", params={"ids": "US:AAPL"})
+  response = client.get("/api/quotes", params={"ids": "US:AAPL"})
 
-    assert response.status_code == 200
-    assert response.json() == [
-        {
-            "stock": {
-                "id": "US:AAPL",
-                "market": "US",
-                "symbol": "AAPL",
-                "name": "Apple Inc.",
-                "exchange": "NASDAQ",
-                "currency": "USD",
-                "timezone": "America/New_York",
-                "nameEn": "Apple Inc.",
-                "nameZhTw": None,
-            },
-            "quote": {
-                "id": "US:AAPL",
-                "lastPrice": 187.23,
-                "change": 1.5,
-                "changePercent": 0.81,
-                "previousClose": 185.73,
-                "timestamp": "2026-04-01T09:30:00-04:00",
-                "isMarketOpen": True,
-                "open": 186.1,
-                "high": 188.0,
-                "low": 185.2,
-                "volume": 1_250_000,
-            },
-        }
-    ]
+  assert response.status_code == 200
+  assert response.json() == [
+      {
+          "stock": {
+              "id": "US:AAPL",
+              "market": "US",
+              "symbol": "AAPL",
+              "name": "Apple Inc.",
+              "exchange": "NASDAQ",
+              "currency": "USD",
+              "timezone": "America/New_York",
+              "nameEn": "Apple Inc.",
+              "nameZhTw": None,
+          },
+          "quote": {
+              "id": "US:AAPL",
+              "lastPrice": 187.23,
+              "change": 1.5,
+              "changePercent": 0.81,
+              "previousClose": 185.73,
+              "timestamp": "2026-04-01T09:30:00-04:00",
+              "isMarketOpen": True,
+              "open": 186.1,
+              "high": 188.0,
+              "low": 185.2,
+              "volume": 1_250_000,
+          },
+          "freshness": {
+              "cachedAt": "2026-04-01T13:30:00Z",
+              "ageSeconds": 5.0,
+              "stale": False,
+              "source": "memory",
+              "refreshStatus": "idle",
+          },
+      }
+  ]
 
 
 def test_search_endpoint_resolves_us_etf_missing_from_catalog(monkeypatch, client) -> None:

@@ -9,6 +9,7 @@ import { StockCard } from "../stock-card/StockCard";
 type WatchlistItem = {
   stock: Stock;
   quote?: QuoteResponse["quote"];
+  freshness?: QuoteResponse["freshness"];
 };
 
 type Props = {
@@ -67,9 +68,10 @@ export function WatchlistTable({
             ) : null}
           </div>
           <div className="app-watchlist-grid app-watchlist-grid-explorer">
-            {items.map(({ stock, quote }) => (
+            {items.map(({ stock, quote, freshness }) => (
               <StockCard
                 key={stock.id}
+                freshness={freshness}
                 isTracked
                 onToggle={onRemove}
                 quote={quote}

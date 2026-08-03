@@ -23,8 +23,12 @@ class Settings(BaseSettings):
     database_url: str = Field(default="")
     # Redis for optional quote caching. Maps env REDIS_URL.
     redis_url: str = Field(default="")
-    # TTL for cached quote payloads when Redis is enabled.
+    # Soft TTL: cached quotes younger than this are considered fresh.
     quote_cache_ttl_seconds: int = Field(default=60, ge=1)
+    # Hard TTL: Redis/memory retention for stale-while-revalidate (default 15m).
+    quote_cache_hard_ttl_seconds: int = Field(default=900, ge=1)
+    # Dedup window for async quote refresh locks.
+    quote_refresh_lock_seconds: int = Field(default=30, ge=1, le=300)
     # TTL for Redis-cached stock AI narrative (metrics are always recomputed).
     stock_analysis_cache_ttl_seconds: int = Field(default=1_209_600, ge=60, le=3_153_600)
     # TTL for Yahoo / TW pre-ranked rank pages (Redis + in-memory).
