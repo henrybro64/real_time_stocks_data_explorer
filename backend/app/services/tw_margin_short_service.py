@@ -129,6 +129,14 @@ SourceStatus = Literal[
 ]
 
 _SOFT_EMPTY_STATUSES = frozenset({"symbol_absent", "no_data"})
+_HARD_STATUS_COUNTER_ATTR = {
+    "http_error": "http_errors",
+    "auth_denied": "auth_denied",
+    "rate_limited": "rate_limited",
+    "schema_error": "schema_errors",
+    "parse_error": "parse_errors",
+    "unexpected_content": "unexpected_content",
+}
 
 
 @dataclass(frozen=True)
@@ -218,31 +226,35 @@ class _ScanDiagnostics:
             self.successful_days += 1
         if record is not None:
             self.records_produced += 1
+        self._note_soft_empty_day(margin, borrowed)
+        self._note_hard_outcomes(margin, borrowed)
+
+    def _note_soft_empty_day(
+        self,
+        margin: _SourceOutcome,
+        borrowed: _SourceOutcome,
+    ) -> None:
         if (
-            margin.status in _SOFT_EMPTY_STATUSES
-            and borrowed.status in _SOFT_EMPTY_STATUSES
+            margin.status not in _SOFT_EMPTY_STATUSES
+            or borrowed.status not in _SOFT_EMPTY_STATUSES
         ):
-            self.soft_empty_days += 1
-            if margin.status == "no_data" and borrowed.status == "no_data":
-                self.official_no_data_days += 1
-            if (
-                margin.status == "symbol_absent"
-                or borrowed.status == "symbol_absent"
-            ):
-                self.symbol_absent_days += 1
+            return
+        self.soft_empty_days += 1
+        if margin.status == "no_data" and borrowed.status == "no_data":
+            self.official_no_data_days += 1
+        if margin.status == "symbol_absent" or borrowed.status == "symbol_absent":
+            self.symbol_absent_days += 1
+
+    def _note_hard_outcomes(
+        self,
+        margin: _SourceOutcome,
+        borrowed: _SourceOutcome,
+    ) -> None:
         for outcome in (margin, borrowed):
-            if outcome.status == "http_error":
-                self.http_errors += 1
-            elif outcome.status == "auth_denied":
-                self.auth_denied += 1
-            elif outcome.status == "rate_limited":
-                self.rate_limited += 1
-            elif outcome.status == "schema_error":
-                self.schema_errors += 1
-            elif outcome.status == "parse_error":
-                self.parse_errors += 1
-            elif outcome.status == "unexpected_content":
-                self.unexpected_content += 1
+            counter_attr = _HARD_STATUS_COUNTER_ATTR.get(outcome.status)
+            if counter_attr is None:
+                continue
+            setattr(self, counter_attr, getattr(self, counter_attr) + 1)
 
 
 @dataclass(frozen=True)
@@ -1029,38 +1041,21 @@ def _extract_twse_table_point(
         or normalize_taiwan_date(payload.get("date"))
         or current_date.isoformat()
     )
-    saw_matching_symbol = False
-    for row in rows:
-        if not isinstance(row, list):
-            continue
-        row_symbol = normalize_taiwan_symbol(
+
+    def row_symbol(row: Sequence[object]) -> str | None:
+        return normalize_taiwan_symbol(
             taiwan_row_value(row, fields, "代號", "證券代號", "股票代號")
             if fields and fields != ["placeholder"]
             else _row_at(row, 0)
         )
-        if row_symbol != symbol:
-            continue
-        saw_matching_symbol = True
-        point = parse_row(row, fields=fields, record_date=record_date)
-        if point is not None and getattr(point, "symbol", None) == symbol:
-            return _SourceOutcome(
-                status="found",
-                point=point,
-                row_count=len(rows),
-                field_count=len(fields),
-            )
-    if saw_matching_symbol:
-        return _SourceOutcome(
-            status="parse_error",
-            row_count=len(rows),
-            field_count=len(fields),
-            reason="symbol_row_unparseable",
-        )
-    return _SourceOutcome(
-        status="symbol_absent",
+
+    return _scan_rows_for_symbol(
+        rows,
+        symbol=symbol,
+        row_symbol=row_symbol,
+        parse_row=lambda row: parse_row(row, fields=fields, record_date=record_date),
         row_count=len(rows),
         field_count=len(fields),
-        reason="symbol_not_in_table",
     )
 
 
@@ -1086,36 +1081,15 @@ def _extract_tpex_table_point(
         or normalize_taiwan_date(payload_dict.get("date") if payload_dict is not None else None)
         or current_date.isoformat()
     )
-    saw_matching_symbol = False
-    for row in rows:
-        if not isinstance(row, list):
-            continue
-        row_symbol = normalize_taiwan_symbol(
+    return _scan_rows_for_symbol(
+        rows,
+        symbol=symbol,
+        row_symbol=lambda row: normalize_taiwan_symbol(
             taiwan_row_value(row, fields, "代號", "股票代號", "證券代號")
-        )
-        if row_symbol != symbol:
-            continue
-        saw_matching_symbol = True
-        point = parse_row(row, fields, record_date=record_date)
-        if point is not None and getattr(point, "symbol", None) == symbol:
-            return _SourceOutcome(
-                status="found",
-                point=point,
-                row_count=len(rows),
-                field_count=len(fields),
-            )
-    if saw_matching_symbol:
-        return _SourceOutcome(
-            status="parse_error",
-            row_count=len(rows),
-            field_count=len(fields),
-            reason="symbol_row_unparseable",
-        )
-    return _SourceOutcome(
-        status="symbol_absent",
+        ),
+        parse_row=lambda row: parse_row(row, fields, record_date=record_date),
         row_count=len(rows),
         field_count=len(fields),
-        reason="symbol_not_in_table",
     )
 
 
@@ -1149,41 +1123,62 @@ def _extract_tpex_borrowed_short_table_point(
         or normalize_taiwan_date(payload_dict.get("date") if payload_dict is not None else None)
         or current_date.isoformat()
     )
-    saw_matching_symbol = False
-    for row in rows:
-        if not isinstance(row, list):
-            continue
-        row_symbol = normalize_taiwan_symbol(
+    return _scan_rows_for_symbol(
+        rows,
+        symbol=symbol,
+        row_symbol=lambda row: normalize_taiwan_symbol(
             taiwan_row_value_at(row, columns.symbol_index)
-        )
-        if row_symbol != symbol:
-            continue
-        saw_matching_symbol = True
-        point = _parse_tpex_borrowed_short_row(
+        ),
+        parse_row=lambda row: _parse_tpex_borrowed_short_row(
             row,
             fields,
             record_date=record_date,
             columns=columns,
-        )
-        if point is not None and point.symbol == symbol:
+        ),
+        row_count=len(rows),
+        field_count=len(fields),
+        found_reason="index_fallback" if columns.used_index_fallback else None,
+    )
+
+
+def _scan_rows_for_symbol(
+    rows: Sequence[object],
+    *,
+    symbol: str,
+    row_symbol: Callable[[Sequence[object]], str | None],
+    parse_row: Callable[[Sequence[object]], object | None],
+    row_count: int,
+    field_count: int,
+    found_reason: str | None = None,
+) -> _SourceOutcome:
+    """Scan table rows for ``symbol`` and classify found / parse_error / absent."""
+    saw_matching_symbol = False
+    for row in rows:
+        if not isinstance(row, list):
+            continue
+        if row_symbol(row) != symbol:
+            continue
+        saw_matching_symbol = True
+        point = parse_row(row)
+        if point is not None and getattr(point, "symbol", None) == symbol:
             return _SourceOutcome(
                 status="found",
                 point=point,
-                row_count=len(rows),
-                field_count=len(fields),
-                reason="index_fallback" if columns.used_index_fallback else None,
+                row_count=row_count,
+                field_count=field_count,
+                reason=found_reason,
             )
     if saw_matching_symbol:
         return _SourceOutcome(
             status="parse_error",
-            row_count=len(rows),
-            field_count=len(fields),
+            row_count=row_count,
+            field_count=field_count,
             reason="symbol_row_unparseable",
         )
     return _SourceOutcome(
         status="symbol_absent",
-        row_count=len(rows),
-        field_count=len(fields),
+        row_count=row_count,
+        field_count=field_count,
         reason="symbol_not_in_table",
     )
 
@@ -1436,22 +1431,37 @@ def _select_borrowed_short_columns_with_markers(
     best: tuple[tuple[int, int, int], int, int] | None = None
     for previous_index in previous_candidates:
         for current_index in current_candidates:
-            if previous_index >= current_index:
-                continue
-            markers_between = sum(
-                1 for marker in marker_indices if previous_index < marker < current_index
+            scored = _score_borrowed_short_column_pair(
+                previous_index,
+                current_index,
+                marker_indices,
             )
-            if markers_between <= 0:
+            if scored is None:
                 continue
-            # Prefer the tightest pair that still wraps section markers, then the
-            # later block (borrowed-short is usually after the margin section).
-            span = current_index - previous_index
-            score = (-span, previous_index, current_index)
-            if best is None or score > best[0]:
-                best = (score, previous_index, current_index)
+            if best is None or scored[0] > best[0]:
+                best = scored
     if best is None:
         return None
     return best[1], best[2]
+
+
+def _score_borrowed_short_column_pair(
+    previous_index: int,
+    current_index: int,
+    marker_indices: Sequence[int],
+) -> tuple[tuple[int, int, int], int, int] | None:
+    if previous_index >= current_index:
+        return None
+    markers_between = sum(
+        1 for marker in marker_indices if previous_index < marker < current_index
+    )
+    if markers_between <= 0:
+        return None
+    # Prefer the tightest pair that still wraps section markers, then the
+    # later block (borrowed-short is usually after the margin section).
+    span = current_index - previous_index
+    score = (-span, previous_index, current_index)
+    return score, previous_index, current_index
 
 
 def _parse_tpex_borrowed_short_row(
@@ -1527,54 +1537,29 @@ def _merge_daily_points(
     borrowed_point: _BorrowedShortPoint | None,
     close_point: _ClosePoint | None,
 ) -> TaiwanMarginShortRecord | None:
-    if margin_point is None and borrowed_point is None:
+    identity = _aligned_core_identity(margin_point, borrowed_point)
+    if identity is None:
         return None
-
-    if margin_point is not None and borrowed_point is not None:
-        if margin_point.symbol != borrowed_point.symbol:
-            return None
-        if margin_point.date != borrowed_point.date:
-            return None
-
-    record_date = margin_point.date if margin_point is not None else borrowed_point.date  # type: ignore[union-attr]
-    symbol = margin_point.symbol if margin_point is not None else borrowed_point.symbol  # type: ignore[union-attr]
-    name = ""
-    if margin_point is not None and margin_point.name:
-        name = margin_point.name
-    elif borrowed_point is not None:
-        name = borrowed_point.name
+    record_date, symbol, name = identity
 
     close_price = (
         close_point.close_price
         if close_point is not None and close_point.date == record_date
         else None
     )
+    borrowed_metrics = _borrowed_short_metrics(borrowed_point, close_price)
+    if margin_point is None and borrowed_metrics is None:
+        return None
 
     borrowed_short_balance_lots: float | None = None
     borrowed_short_change_lots: float | None = None
     borrowed_short_change_amount_10k: int | None = None
-    if borrowed_point is not None:
-        borrowed_short_balance_lots = _lots_from_shares(
-            borrowed_point.borrowed_short_balance_shares,
-            borrowed_point.symbol,
-        )
-        if borrowed_short_balance_lots is None:
-            # Keep margin-only data when borrowed shares cannot be converted.
-            borrowed_point = None
-        else:
-            borrowed_short_change_lots = _borrowed_short_change_lots(
-                borrowed_point.borrowed_short_balance_shares,
-                borrowed_point.previous_borrowed_short_balance_shares,
-                borrowed_point.symbol,
-            )
-            borrowed_short_change_amount_10k = _borrowed_short_change_amount_10k(
-                borrowed_point.borrowed_short_balance_shares,
-                borrowed_point.previous_borrowed_short_balance_shares,
-                close_price,
-            )
-
-    if margin_point is None and borrowed_point is None:
-        return None
+    if borrowed_metrics is not None:
+        (
+            borrowed_short_balance_lots,
+            borrowed_short_change_lots,
+            borrowed_short_change_amount_10k,
+        ) = borrowed_metrics
 
     return TaiwanMarginShortRecord(
         date=record_date,
@@ -1590,6 +1575,56 @@ def _merge_daily_points(
         borrowed_short_balance_lots=borrowed_short_balance_lots,
         borrowed_short_balance_change_lots=borrowed_short_change_lots,
         borrowed_short_balance_change_amount_10k=borrowed_short_change_amount_10k,
+    )
+
+
+def _aligned_core_identity(
+    margin_point: _MarginPoint | None,
+    borrowed_point: _BorrowedShortPoint | None,
+) -> tuple[str, str, str] | None:
+    """Return ``(date, symbol, name)`` when core points are compatible."""
+    if margin_point is None and borrowed_point is None:
+        return None
+    if margin_point is not None and borrowed_point is not None:
+        if margin_point.symbol != borrowed_point.symbol:
+            return None
+        if margin_point.date != borrowed_point.date:
+            return None
+    primary = margin_point if margin_point is not None else borrowed_point
+    if primary is None:
+        return None
+    name = ""
+    if margin_point is not None and margin_point.name:
+        name = margin_point.name
+    elif borrowed_point is not None:
+        name = borrowed_point.name
+    return primary.date, primary.symbol, name
+
+
+def _borrowed_short_metrics(
+    borrowed_point: _BorrowedShortPoint | None,
+    close_price: float | None,
+) -> tuple[float, float | None, int | None] | None:
+    if borrowed_point is None:
+        return None
+    balance_lots = _lots_from_shares(
+        borrowed_point.borrowed_short_balance_shares,
+        borrowed_point.symbol,
+    )
+    if balance_lots is None:
+        return None
+    return (
+        balance_lots,
+        _borrowed_short_change_lots(
+            borrowed_point.borrowed_short_balance_shares,
+            borrowed_point.previous_borrowed_short_balance_shares,
+            borrowed_point.symbol,
+        ),
+        _borrowed_short_change_amount_10k(
+            borrowed_point.borrowed_short_balance_shares,
+            borrowed_point.previous_borrowed_short_balance_shares,
+            close_price,
+        ),
     )
 
 
