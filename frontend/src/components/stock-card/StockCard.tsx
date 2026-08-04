@@ -50,21 +50,25 @@ export function StockCard({
     queryKey: ["card-quote", stock.id],
     queryFn: async () => fetchQuote(stock.id),
     enabled: initialQuote === undefined,
-    refetchInterval: 30_000,
-    staleTime: 15_000,
-  });
-
-  const historyQuery = useQuery({
-    queryKey: ["card-history", stock.id, "1W"],
-    queryFn: () => fetchHistory(stock.id, "1W"),
-    refetchInterval: 60_000,
+    // Align with watchlist / refresher open cadence; avoid outpacing Redis warm-up.
+    refetchInterval: 45_000,
     staleTime: 30_000,
+    refetchIntervalInBackground: false,
   });
 
   const quote =
     initialQuote === undefined ? quoteQuery.data?.quote ?? undefined : initialQuote ?? undefined;
   const freshness =
     initialQuote === undefined ? quoteQuery.data?.freshness ?? null : initialFreshness;
+  const quoteMarketOpen = quote?.isMarketOpen ?? true;
+
+  const historyQuery = useQuery({
+    queryKey: ["card-history", stock.id, "1W"],
+    queryFn: () => fetchHistory(stock.id, "1W"),
+    staleTime: quoteMarketOpen ? 120_000 : 240_000,
+    refetchInterval: quoteMarketOpen ? 180_000 : 300_000,
+    refetchIntervalInBackground: false,
+  });
   const chartLayout = historyQuery.data?.chartLayout ?? null;
   const quoteRefreshFailed = initialQuote === undefined && quoteQuery.isError && quote != null;
   const detailHref = `/stock/${encodeURIComponent(stock.id)}`;
