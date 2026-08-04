@@ -515,28 +515,24 @@ class QuoteRefresherService:
                 extra={"event": "quote_refresher.leader.redis_unavailable"},
             )
             return None
-        from app.services import quote_redis_cache as cache_module
+        from app.services.quote_redis_cache import run_redis
 
-        client = cache_module._redis()
-        if client is None:
-            logger.warning(
-                "Quote refresher skipping cycle; Redis client missing",
-                extra={"event": "quote_refresher.leader.redis_unavailable"},
-            )
-            return None
         ttl = max(
             int(settings.quote_refresher_open_poll_seconds),
             int(settings.quote_refresher_cycle_timeout_seconds),
         ) + 15
         token = uuid4().hex
-        try:
-            acquired = bool(client.set(_LEADER_KEY, token, nx=True, ex=ttl))
-        except Exception as exc:
+        acquired = run_redis(
+            "quote refresher leader lock",
+            lambda client: bool(client.set(_LEADER_KEY, token, nx=True, ex=ttl)),
+            kind="write",
+        )
+        if acquired is None:
             logger.warning(
                 "Quote refresher leader lock failed; skipping cycle",
                 extra={
                     "event": "quote_refresher.leader.failed",
-                    "error_type": type(exc).__name__,
+                    "error_type": "redis_unavailable",
                 },
             )
             return None
@@ -545,18 +541,13 @@ class QuoteRefresherService:
     def _release_cycle_leadership(self, token: str) -> None:
         if token == "local":
             return
-        from app.services import quote_redis_cache as cache_module
+        from app.services.quote_redis_cache import run_redis
 
-        client = cache_module._redis()
-        if client is None:
-            return
-        try:
-            client.eval(_RELEASE_LEADER_SCRIPT, 1, _LEADER_KEY, token)
-        except Exception as exc:
-            logger.debug(
-                "Quote refresher leader release failed: %s",
-                exc,
-            )
+        run_redis(
+            "quote refresher leader release",
+            lambda client: client.eval(_RELEASE_LEADER_SCRIPT, 1, _LEADER_KEY, token),
+            kind="write",
+        )
 
     def _circuit_is_open(self, market: str) -> bool:
         with self._circuit_lock:

@@ -398,6 +398,50 @@ def test_quote_cache_health_omits_secrets_and_reflects_retry_state(monkeypatch) 
     assert "redis://" not in serialized
 
 
+def test_backoff_delay_does_not_overflow_for_large_failure_counts(monkeypatch) -> None:
+    monkeypatch.setattr(cache.settings, "quote_redis_retry_base_seconds", 5.0)
+    monkeypatch.setattr(cache.settings, "quote_redis_retry_max_seconds", 60.0)
+    monkeypatch.setattr(cache.settings, "quote_redis_retry_jitter_seconds", 0.0)
+    monkeypatch.setattr(cache.random, "uniform", lambda _a, _b: 0.0)
+
+    assert cache._next_retry_delay_seconds(1) == pytest.approx(5.0)
+    assert cache._next_retry_delay_seconds(2) == pytest.approx(10.0)
+    assert cache._next_retry_delay_seconds(4) == pytest.approx(40.0)
+    assert cache._next_retry_delay_seconds(5) == pytest.approx(60.0)
+    # Far beyond the previous 2**exponent overflow cliff (~1025 failures).
+    assert cache._next_retry_delay_seconds(10_000) == pytest.approx(60.0)
+
+
+def test_note_redis_failure_clears_connecting_even_after_many_failures(monkeypatch) -> None:
+    monkeypatch.setattr(cache.settings, "redis_url", "redis://localhost:6379/0")
+    monkeypatch.setattr(cache, "_connecting", True)
+    monkeypatch.setattr(cache, "_consecutive_failures", 2_000)
+
+    cache._note_redis_failure(ConnectionError("down"), invalidate=True, clear_connecting=True)
+
+    assert cache._connecting is False
+    assert cache._client is False
+    assert cache.get_quote_cache_health()["state"] == "retry_wait"
+
+
+def test_run_redis_invalidates_shared_client_on_connection_drop(monkeypatch) -> None:
+    monkeypatch.setattr(cache.settings, "redis_url", "redis://localhost:6379/0")
+
+    class DeadRedis:
+        def get(self, _key):
+            raise ConnectionError("connection reset")
+
+    monkeypatch.setattr(cache, "_client", DeadRedis())
+    monkeypatch.setattr(cache, "_client_retry_after_monotonic", 0.0)
+
+    assert cache.run_redis("shared get", lambda client: client.get("k"), kind="read") is None
+    assert cache._client is False
+    health = cache.get_quote_cache_health()
+    assert health["connected"] is False
+    assert health["state"] == "retry_wait"
+    assert health["last_error_category"] == "connect"
+
+
 def test_health_payload_exposes_fields_expected_by_http_surface() -> None:
     """`/health` nests this dict; keep the contract testable without importing app.main."""
     payload = cache.get_quote_cache_health()

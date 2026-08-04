@@ -58,7 +58,7 @@ When `QUOTE_REFRESHER_OWNS_UPSTREAM=true` (default) **and the sampler thread is 
 
 ### Quote Redis cache resilience
 
-`backend/app/services/quote_redis_cache.py` keeps Redis optional. When `REDIS_URL` is unset, quotes use the in-process memory cache. When Redis is configured, connect and runtime connection/timeout failures invalidate the client and schedule a reconnect after exponential backoff with jitter (`QUOTE_REDIS_RETRY_BASE_SECONDS`, `QUOTE_REDIS_RETRY_MAX_SECONDS`, `QUOTE_REDIS_RETRY_JITTER_SECONDS`). Concurrent reconnect attempts singleflight inside each process. Soft TTL marks freshness; hard TTL retains stale payloads for SWR. `/health` exposes a nested `quote_cache` diagnostic object (configured/connected/retry state, last ping/read/write success times, last error category) without Redis credentials or the URL.
+`backend/app/services/quote_redis_cache.py` keeps Redis optional. When `REDIS_URL` is unset, quotes use the in-process memory cache. When Redis is configured, connect and runtime connection/timeout failures invalidate the client and schedule a reconnect after exponential backoff with jitter (`QUOTE_REDIS_RETRY_BASE_SECONDS`, `QUOTE_REDIS_RETRY_MAX_SECONDS`, `QUOTE_REDIS_RETRY_JITTER_SECONDS`). Concurrent reconnect attempts singleflight inside each process. Soft TTL marks freshness; hard TTL retains stale payloads for SWR. Shared Redis consumers (quote refresher leader lock, rankings/analysis caches) must use `run_redis(...)` so connection drops update cache health instead of leaving a dead client marked connected. `/health` exposes a nested `quote_cache` diagnostic object (configured/connected/retry state, last ping/read/write success times, last error category) without Redis credentials or the URL.
 
 ## Configuration
 

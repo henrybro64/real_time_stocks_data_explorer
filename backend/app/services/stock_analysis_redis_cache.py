@@ -17,28 +17,23 @@ _KEY_PREFIX = "stock_analysis:v1:"
 
 
 def _redis_get(key: str) -> str | None:
-    from app.services.quote_redis_cache import _redis  # pylint: disable=import-outside-toplevel
+    from app.services.quote_redis_cache import run_redis  # pylint: disable=import-outside-toplevel
 
-    client = _redis()
-    if client is None:
-        return None
-    try:
-        return client.get(key)
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("Redis get stock analysis %s: %s", key, exc)
-        return None
+    return run_redis(
+        f"stock analysis get {key}",
+        lambda client: client.get(key),
+        kind="read",
+    )
 
 
 def _redis_setex(key: str, ttl_seconds: int, value: str) -> None:
-    from app.services.quote_redis_cache import _redis  # pylint: disable=import-outside-toplevel
+    from app.services.quote_redis_cache import run_redis  # pylint: disable=import-outside-toplevel
 
-    client = _redis()
-    if client is None:
-        return
-    try:
-        client.setex(key, ttl_seconds, value)
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("Redis set stock analysis %s: %s", key, exc)
+    run_redis(
+        f"stock analysis setex {key}",
+        lambda client: client.setex(key, ttl_seconds, value),
+        kind="write",
+    )
 
 
 def stock_analysis_cache_key(user_id: str, stock_id: str, provider_bucket: str) -> str:

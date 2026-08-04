@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Protocol
 
-from app.services.quote_redis_cache import _redis
+from app.services.quote_redis_cache import run_redis
 
 logger = logging.getLogger(__name__)
 
@@ -48,27 +48,28 @@ class CompositeVolumeBaselineStore:
 
 
 def _get_redis_baseline(stock_id: str) -> int | None:
-    client = _redis()
-    if client is None:
-        return None
-    try:
+    def _read(client):
         raw = client.get(_KEY_PREFIX + stock_id)
         if raw is None:
             return None
-        return int(raw)
-    except Exception as exc:
-        logger.debug("Redis get rankings baseline %s: %s", stock_id, exc)
-        return None
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return None
+
+    return run_redis(
+        f"rankings baseline get {stock_id}",
+        _read,
+        kind="read",
+    )
 
 
 def _set_redis_baseline(stock_id: str, volume: int) -> None:
-    client = _redis()
-    if client is None:
-        return
-    try:
-        client.set(_KEY_PREFIX + stock_id, str(volume))
-    except Exception as exc:
-        logger.debug("Redis set rankings baseline %s: %s", stock_id, exc)
+    run_redis(
+        f"rankings baseline set {stock_id}",
+        lambda client: client.set(_KEY_PREFIX + stock_id, str(volume)),
+        kind="write",
+    )
 
 
 default_volume_baseline_store = CompositeVolumeBaselineStore()

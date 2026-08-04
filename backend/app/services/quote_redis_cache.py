@@ -167,11 +167,20 @@ def _retry_jitter_seconds() -> float:
 
 
 def _next_retry_delay_seconds(failure_count: int) -> float:
-    """Exponential backoff with jitter; failure_count is 1-based after a failure."""
-    exponent = max(failure_count - 1, 0)
-    base = min(_retry_base_seconds() * (2**exponent), _retry_max_seconds())
+    """Exponential backoff with jitter; failure_count is 1-based after a failure.
+
+    Doubles from the base until the max cap so large failure counts cannot
+    overflow ``2**exponent`` before ``min()`` applies.
+    """
+    delay = _retry_base_seconds()
+    max_delay = _retry_max_seconds()
+    for _ in range(max(failure_count - 1, 0)):
+        if delay >= max_delay:
+            delay = max_delay
+            break
+        delay = min(delay * 2.0, max_delay)
     jitter = random.uniform(0.0, _retry_jitter_seconds()) if _retry_jitter_seconds() else 0.0
-    return min(base + jitter, _retry_max_seconds() + _retry_jitter_seconds())
+    return min(delay + jitter, max_delay + _retry_jitter_seconds())
 
 
 def _classify_redis_error(exc: BaseException) -> str:
@@ -234,7 +243,10 @@ def _note_redis_failure(
     with _client_lock:
         _consecutive_failures += 1
         failures = _consecutive_failures
-        delay = _next_retry_delay_seconds(failures)
+        try:
+            delay = _next_retry_delay_seconds(failures)
+        except Exception:
+            delay = _retry_max_seconds() + _retry_jitter_seconds()
         _client_retry_after_monotonic = time.monotonic() + delay
         _last_error_at = datetime.now(UTC)
         _last_error_category = category
@@ -318,6 +330,20 @@ def _run_redis(
         else:
             logger.debug("Redis %s failed: %s", operation, exc)
         return None
+
+
+def run_redis(
+    operation: str,
+    fn: Callable[[Any], T],
+    *,
+    kind: RedisSuccessKind = "read",
+) -> T | None:
+    """Public shared-client helper for Redis ops outside this module.
+
+    Prefer this over calling ``_redis()`` directly so connection drops invalidate
+    the client and update ``/health`` quote_cache state.
+    """
+    return _run_redis(operation, fn, kind=kind)
 
 
 def _serialize(quote: QuoteRecord, *, cached_at: datetime) -> dict[str, Any]:
