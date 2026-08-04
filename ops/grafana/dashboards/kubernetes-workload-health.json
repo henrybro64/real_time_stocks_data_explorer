@@ -1,0 +1,802 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "title": "Ready pods",
+      "type": "stat",
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 0,
+        "y": 0
+      },
+      "id": 1,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "value"
+      },
+      "targets": [
+        {
+          "expr": "sum(kube_pod_status_ready{namespace=\"stock-ticker\",condition=\"true\"}) or vector(0)",
+          "legendFormat": "ready",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "Not-ready pods",
+      "type": "stat",
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 4,
+        "y": 0
+      },
+      "id": 2,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "value"
+      },
+      "targets": [
+        {
+          "expr": "count(kube_pod_status_ready{namespace=\"stock-ticker\",condition=\"true\"} == 0) or vector(0)",
+          "legendFormat": "not-ready",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "Container restarts (range)",
+      "type": "stat",
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 8,
+        "y": 0
+      },
+      "id": 3,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "value"
+      },
+      "targets": [
+        {
+          "expr": "sum(increase(kube_pod_container_status_restarts_total{namespace=\"stock-ticker\"}[$__range])) or vector(0)",
+          "legendFormat": "restarts",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "Unavailable deployment replicas",
+      "type": "stat",
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 12,
+        "y": 0
+      },
+      "id": 4,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "value"
+      },
+      "targets": [
+        {
+          "expr": "sum(kube_deployment_status_replicas_unavailable{namespace=\"stock-ticker\"}) or vector(0)",
+          "legendFormat": "unavailable",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "Pods in warning/failure phases",
+      "type": "stat",
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 16,
+        "y": 0
+      },
+      "id": 5,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "value"
+      },
+      "targets": [
+        {
+          "expr": "count(kube_pod_status_phase{namespace=\"stock-ticker\",phase=~\"Pending|Failed|Unknown\"} == 1) or vector(0)",
+          "legendFormat": "warning",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "Desired vs available replicas by Deployment",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 4
+      },
+      "id": 10,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "kube_deployment_spec_replicas{namespace=\"stock-ticker\"}",
+          "legendFormat": "{{deployment}} desired",
+          "refId": "A"
+        },
+        {
+          "expr": "kube_deployment_status_replicas_available{namespace=\"stock-ticker\"}",
+          "legendFormat": "{{deployment}} available",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "title": "Pod readiness over time",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 4
+      },
+      "id": 11,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "kube_pod_status_ready{namespace=\"stock-ticker\",condition=\"true\"}",
+          "legendFormat": "{{pod}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "Container restart rate",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 12
+      },
+      "id": 12,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "sum by (pod, container) (rate(kube_pod_container_status_restarts_total{namespace=\"stock-ticker\"}[5m]))",
+          "legendFormat": "{{pod}}/{{container}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "CPU usage by pod/container",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 12
+      },
+      "id": 13,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "cores"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "sum by (pod, container) (rate(container_cpu_usage_seconds_total{namespace=\"stock-ticker\",container!=\"\",container!=\"POD\"}[5m]))",
+          "legendFormat": "{{pod}}/{{container}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "Memory working set by pod/container",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 20
+      },
+      "id": 14,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "sum by (pod, container) (container_memory_working_set_bytes{namespace=\"stock-ticker\",container!=\"\",container!=\"POD\"})",
+          "legendFormat": "{{pod}}/{{container}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "Memory usage vs limits",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 20
+      },
+      "id": 15,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "max": 1
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "sum by (pod, container) (container_memory_working_set_bytes{namespace=\"stock-ticker\",container!=\"\",container!=\"POD\"}) / sum by (pod, container) (container_spec_memory_limit_bytes{namespace=\"stock-ticker\",container!=\"\",container!=\"POD\"} > 0)",
+          "legendFormat": "{{pod}}/{{container}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "Waiting reasons (CrashLoopBackOff / ImagePull / Config)",
+      "type": "table",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 28
+      },
+      "id": 20,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "kube_pod_container_status_waiting_reason{namespace=\"stock-ticker\",reason=~\"CrashLoopBackOff|ImagePullBackOff|ErrImagePull|CreateContainerConfigError|InvalidImageName\"} > 0",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "",
+          "refId": "A"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "labelsToFields",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "Value": false,
+              "__name__": true
+            },
+            "renameByName": {
+              "pod": "Pod",
+              "container": "Container",
+              "reason": "Reason",
+              "Value": "Active"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "title": "Last terminated reasons (OOMKilled / Error)",
+      "type": "table",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 28
+      },
+      "id": 21,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "kube_pod_container_status_last_terminated_reason{namespace=\"stock-ticker\",reason=~\"OOMKilled|Error|Completed\"} > 0",
+          "format": "table",
+          "instant": true,
+          "refId": "A"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "labelsToFields",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true
+            },
+            "renameByName": {
+              "pod": "Pod",
+              "container": "Container",
+              "reason": "Reason",
+              "Value": "Active"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "title": "Pending / Failed / Unknown pods",
+      "type": "table",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 36
+      },
+      "id": 22,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "kube_pod_status_phase{namespace=\"stock-ticker\",phase=~\"Pending|Failed|Unknown\"} == 1",
+          "format": "table",
+          "instant": true,
+          "refId": "A"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "labelsToFields",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true
+            },
+            "renameByName": {
+              "pod": "Pod",
+              "phase": "Phase",
+              "Value": "Active"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "title": "CPU / memory requests and limits (configured)",
+      "type": "table",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 36
+      },
+      "id": 23,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "kube_pod_container_resource_requests{namespace=\"stock-ticker\",resource=~\"cpu|memory\"}",
+          "format": "table",
+          "instant": true,
+          "refId": "A"
+        },
+        {
+          "expr": "kube_pod_container_resource_limits{namespace=\"stock-ticker\",resource=~\"cpu|memory\"}",
+          "format": "table",
+          "instant": true,
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "title": "Node readiness",
+      "type": "stat",
+      "gridPos": {
+        "h": 4,
+        "w": 8,
+        "x": 0,
+        "y": 44
+      },
+      "id": 30,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "sum(kube_node_status_condition{condition=\"Ready\",status=\"true\"}) or vector(0)",
+          "legendFormat": "ready nodes",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "Pod start / restart recency (age seconds)",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 16,
+        "x": 8,
+        "y": 44
+      },
+      "id": 31,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "time() - kube_pod_start_time{namespace=\"stock-ticker\"}",
+          "legendFormat": "{{pod}} age",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "Unschedulable / not-scheduled pods",
+      "type": "table",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 52
+      },
+      "id": 32,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "kube_pod_status_reason{namespace=\"stock-ticker\",reason=\"Unschedulable\"} == 1",
+          "format": "table",
+          "instant": true,
+          "refId": "A",
+          "legendFormat": "unschedulable"
+        },
+        {
+          "expr": "kube_pod_status_scheduled{namespace=\"stock-ticker\",condition=\"false\"} == 1",
+          "format": "table",
+          "instant": true,
+          "refId": "B",
+          "legendFormat": "not-scheduled"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "labelsToFields",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true
+            },
+            "renameByName": {
+              "pod": "Pod",
+              "reason": "Reason",
+              "condition": "Condition",
+              "Value": "Active"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "title": "CronJob / Job failures (history capture and batch)",
+      "type": "table",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 52
+      },
+      "id": 33,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "kube_job_status_failed{namespace=\"stock-ticker\"} > 0",
+          "format": "table",
+          "instant": true,
+          "refId": "A"
+        },
+        {
+          "expr": "kube_cronjob_status_active{namespace=\"stock-ticker\"}",
+          "format": "table",
+          "instant": true,
+          "refId": "B"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "labelsToFields",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true
+            },
+            "renameByName": {
+              "job_name": "Job",
+              "cronjob": "CronJob",
+              "namespace": "Namespace",
+              "Value": "Value"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "title": "Failed Jobs (count)",
+      "type": "stat",
+      "gridPos": {
+        "h": 4,
+        "w": 8,
+        "x": 0,
+        "y": 60
+      },
+      "id": 34,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "value"
+      },
+      "targets": [
+        {
+          "expr": "sum(kube_job_status_failed{namespace=\"stock-ticker\"}) or vector(0)",
+          "legendFormat": "failed jobs",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "Active CronJob runs",
+      "type": "stat",
+      "gridPos": {
+        "h": 4,
+        "w": 8,
+        "x": 8,
+        "y": 60
+      },
+      "id": 35,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "value"
+      },
+      "targets": [
+        {
+          "expr": "sum(kube_cronjob_status_active{namespace=\"stock-ticker\"}) or vector(0)",
+          "legendFormat": "active",
+          "refId": "A"
+        }
+      ]
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "tags": [
+    "kubernetes",
+    "stock-ticker",
+    "workload-health"
+  ],
+  "templating": {
+    "list": []
+  },
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "Kubernetes Workload Health",
+  "uid": "stock-ticker-k8s-workload-health",
+  "version": 2
+}

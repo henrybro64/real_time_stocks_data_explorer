@@ -84,6 +84,13 @@ spec:
               port: postgres
             periodSeconds: 30
             timeoutSeconds: 3
+          resources:
+            requests:
+              cpu: 50m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 1Gi
       volumes:
         - name: data
           persistentVolumeClaim:

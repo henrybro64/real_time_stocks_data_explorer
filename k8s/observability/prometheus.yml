@@ -1,0 +1,73 @@
+# Source-of-truth Prometheus scrape config for the stock-ticker observability stack.
+# Mounted into the Prometheus pod via ConfigMap in k8s/observability/prometheus.yaml.
+#
+# k3s notes:
+# - kube-state-metrics is scraped in-cluster over HTTP.
+# - node/kubelet/cAdvisor metrics are reached through the Kubernetes API node proxy
+#   using the Prometheus ServiceAccount token (see prometheus-rbac.yaml).
+# - TLS to the API server uses insecure_skip_verify because k3s serves a cluster CA
+#   that is not always mounted as a file Prometheus can validate out of the box.
+# - Individual readiness/liveness probe *attempt* counts are not reliably exposed by
+#   kube-state-metrics; dashboards use pod ready state and restart/termination reasons.
+
+global:
+  scrape_interval: 30s
+  evaluation_interval: 30s
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+        labels:
+          namespace: stock-ticker
+          workload: prometheus
+
+  - job_name: kube-state-metrics
+    static_configs:
+      - targets: ["kube-state-metrics:8080"]
+        labels:
+          namespace: stock-ticker
+          workload: kube-state-metrics
+
+  - job_name: kubernetes-nodes
+    scheme: https
+    tls_config:
+      insecure_skip_verify: true
+    bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+    kubernetes_sd_configs:
+      - role: node
+    relabel_configs:
+      # Keep only the node name; avoid copying all node labels (cardinality).
+      - source_labels: [__meta_kubernetes_node_name]
+        target_label: node
+      - target_label: __address__
+        replacement: kubernetes.default.svc:443
+      - source_labels: [__meta_kubernetes_node_name]
+        regex: (.+)
+        target_label: __metrics_path__
+        replacement: /api/v1/nodes/${1}/proxy/metrics
+
+  - job_name: kubernetes-cadvisor
+    scheme: https
+    tls_config:
+      insecure_skip_verify: true
+    bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+    kubernetes_sd_configs:
+      - role: node
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_node_name]
+        target_label: node
+      - target_label: __address__
+        replacement: kubernetes.default.svc:443
+      - source_labels: [__meta_kubernetes_node_name]
+        regex: (.+)
+        target_label: __metrics_path__
+        replacement: /api/v1/nodes/${1}/proxy/metrics/cadvisor
+    metric_relabel_configs:
+      # Keep container series for the stock-ticker namespace only.
+      - source_labels: [namespace]
+        regex: stock-ticker
+        action: keep
+      - source_labels: [container]
+        regex: POD|
+        action: drop

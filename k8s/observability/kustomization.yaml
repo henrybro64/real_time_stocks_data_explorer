@@ -1,0 +1,23 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: stock-ticker
+resources:
+  - kube-state-metrics.yaml
+  - prometheus-rbac.yaml
+  - prometheus.yaml
+  - grafana.yaml
+configMapGenerator:
+  - name: prometheus-config
+    files:
+      - prometheus.yml
+  - name: grafana-datasources
+    files:
+      - datasources.yaml=grafana/datasources.yaml
+  - name: grafana-dashboard-provider
+    files:
+      - dashboards.yaml=grafana/dashboards.yaml
+  - name: grafana-dashboards
+    files:
+      - kubernetes-workload-health.json=grafana/kubernetes-workload-health.json
+generatorOptions:
+  disableNameSuffixHash: true

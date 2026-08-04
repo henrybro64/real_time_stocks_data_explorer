@@ -20,6 +20,7 @@ Usage:
   ./scripts/k8s-teardown.sh k3s
 
 Removes everything from kubectl apply -k k8s (including the Postgres PVC and its data).
+Also removes k8s/observability when that overlay is present (Prometheus/Grafana RBAC).
 
 Optional: KUBECTL_CMD=kubectl ./scripts/k8s-teardown.sh k3s
 EOF
@@ -55,6 +56,12 @@ fi
 
 echo "Deleting resources from ${ROOT_DIR}/k8s ..."
 echo "(This waits until the namespace is fully removed; the shell may look idle for a bit.)"
+if ${KUBECTL_CMD} get deploy -n "${NAMESPACE}" prometheus &>/dev/null \
+  || ${KUBECTL_CMD} get deploy -n "${NAMESPACE}" grafana &>/dev/null \
+  || ${KUBECTL_CMD} get clusterrole stock-ticker-prometheus &>/dev/null; then
+  echo "Deleting observability overlay from ${ROOT_DIR}/k8s/observability ..."
+  ${KUBECTL_CMD} delete -k "${ROOT_DIR}/k8s/observability" --ignore-not-found=true --wait=false || true
+fi
 ${KUBECTL_CMD} delete -k "${ROOT_DIR}/k8s" --wait=true --timeout=300s
 
 echo
