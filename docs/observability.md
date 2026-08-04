@@ -163,7 +163,7 @@ CronJob/Job panels.
 1. **Unavailable deployment replicas** and **Desired vs available replicas**
    identify the Deployment.
 2. Check whether pods are Pending (scheduling/PVC) or failing readiness.
-3. Open **Unschedulable / not-scheduled pods** for `Unschedulable` reasons
+3. Open **Not scheduled (PodScheduled=false)** for scheduling failures
    (node pressure, PVC, affinity) vs CrashLoop-style failures.
 
 ### CronJob / history-capture Job failures

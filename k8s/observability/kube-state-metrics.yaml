@@ -14,7 +14,6 @@ rules:
   - apiGroups: [""]
     resources:
       - configmaps
-      - secrets
       - nodes
       - pods
       - services
@@ -111,6 +110,8 @@ spec:
           args:
             - --port=8080
             - --telemetry-port=8081
+            # Explicit allow-list: do not collect Secrets (dashboard does not need them).
+            - --resources=certificatesigningrequests,configmaps,cronjobs,daemonsets,deployments,endpoints,endpointslices,horizontalpodautoscalers,ingresses,jobs,leases,limitranges,mutatingwebhookconfigurations,namespaces,networkpolicies,nodes,persistentvolumeclaims,persistentvolumes,poddisruptionbudgets,pods,replicasets,replicationcontrollers,resourcequotas,services,statefulsets,storageclasses,validatingwebhookconfigurations,volumeattachments
           ports:
             - name: http-metrics
               containerPort: 8080

@@ -111,7 +111,7 @@
       },
       "targets": [
         {
-          "expr": "count(kube_pod_status_ready{namespace=\"stock-ticker\",condition=\"true\"} == 0) or vector(0)",
+          "expr": "count(\n  (kube_pod_status_ready{namespace=\"stock-ticker\",condition=\"true\"} == 0)\n  unless on(namespace, pod)\n  (kube_pod_status_phase{namespace=\"stock-ticker\",phase=\"Succeeded\"} == 1)\n) or vector(0)",
           "legendFormat": "not-ready",
           "refId": "A"
         }
@@ -600,7 +600,7 @@
       ]
     },
     {
-      "title": "Unschedulable / not-scheduled pods",
+      "title": "Not scheduled (PodScheduled=false)",
       "type": "table",
       "gridPos": {
         "h": 8,
@@ -615,17 +615,10 @@
       },
       "targets": [
         {
-          "expr": "kube_pod_status_reason{namespace=\"stock-ticker\",reason=\"Unschedulable\"} == 1",
-          "format": "table",
-          "instant": true,
-          "refId": "A",
-          "legendFormat": "unschedulable"
-        },
-        {
           "expr": "kube_pod_status_scheduled{namespace=\"stock-ticker\",condition=\"false\"} == 1",
           "format": "table",
           "instant": true,
-          "refId": "B",
+          "refId": "A",
           "legendFormat": "not-scheduled"
         }
       ],
@@ -643,7 +636,6 @@
             },
             "renameByName": {
               "pod": "Pod",
-              "reason": "Reason",
               "condition": "Condition",
               "Value": "Active"
             }
@@ -667,16 +659,22 @@
       },
       "targets": [
         {
-          "expr": "kube_job_status_failed{namespace=\"stock-ticker\"} > 0",
+          "expr": "kube_job_failed{namespace=\"stock-ticker\",condition=\"true\"} == 1",
           "format": "table",
           "instant": true,
           "refId": "A"
         },
         {
-          "expr": "kube_cronjob_status_active{namespace=\"stock-ticker\"}",
+          "expr": "kube_job_status_failed{namespace=\"stock-ticker\"} > 0",
           "format": "table",
           "instant": true,
           "refId": "B"
+        },
+        {
+          "expr": "kube_cronjob_status_active{namespace=\"stock-ticker\"}",
+          "format": "table",
+          "instant": true,
+          "refId": "C"
         }
       ],
       "transformations": [
@@ -743,7 +741,7 @@
       },
       "targets": [
         {
-          "expr": "sum(kube_job_status_failed{namespace=\"stock-ticker\"}) or vector(0)",
+          "expr": "count(kube_job_failed{namespace=\"stock-ticker\",condition=\"true\"} == 1) or vector(0)",
           "legendFormat": "failed jobs",
           "refId": "A"
         }
@@ -798,5 +796,5 @@
   "timezone": "browser",
   "title": "Kubernetes Workload Health",
   "uid": "stock-ticker-k8s-workload-health",
-  "version": 2
+  "version": 3
 }

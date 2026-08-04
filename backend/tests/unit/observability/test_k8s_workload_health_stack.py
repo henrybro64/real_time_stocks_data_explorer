@@ -54,8 +54,9 @@ _REQUIRED_DASHBOARD_EXPR_SNIPPETS = (
     "ImagePullBackOff",
     "OOMKilled",
     "Pending",
-    "Unschedulable",
+    "phase=\"Succeeded\"",
     "kube_pod_status_scheduled",
+    "kube_job_failed",
     "kube_job_status_failed",
     "kube_cronjob_status_active",
     "kube_pod_container_resource_requests",
@@ -92,7 +93,7 @@ def test_observability_docs_cover_setup_and_troubleshooting() -> None:
         "OOMKilled",
         "ImagePullBackOff",
         "unavailable replicas",
-        "Unschedulable",
+        "PodScheduled",
         "CronJob",
         "port-forward",
         "30300",
@@ -188,7 +189,33 @@ def test_observability_kustomization_lists_expected_resources() -> None:
     assert "grafana-datasources" in names
     assert "grafana-dashboard-provider" in names
     assert "grafana-dashboards" in names
-    assert kust.get("generatorOptions", {}).get("disableNameSuffixHash") is True
+    # Hashed ConfigMap names must remain enabled so content changes roll pods.
+    assert kust.get("generatorOptions", {}).get("disableNameSuffixHash") is not True
+
+
+def test_kube_state_metrics_does_not_collect_or_rbac_secrets() -> None:
+    docs = _load_all_yaml(_OBS / "kube-state-metrics.yaml")
+    role = next(doc for doc in docs if doc.get("kind") == "ClusterRole")
+    core_resources: set[str] = set()
+    for rule in role.get("rules") or []:
+        if rule.get("apiGroups") == [""]:
+            core_resources.update(rule.get("resources") or [])
+    assert "secrets" not in core_resources
+
+    deploy = next(doc for doc in docs if doc.get("kind") == "Deployment")
+    args = deploy["spec"]["template"]["spec"]["containers"][0].get("args") or []
+    resources_arg = next((arg for arg in args if arg.startswith("--resources=")), "")
+    assert resources_arg, "kube-state-metrics should pin an explicit --resources allow-list"
+    assert "secrets" not in resources_arg.split("=", 1)[1].split(",")
+
+
+def test_teardown_cleans_observability_before_namespace_early_return() -> None:
+    script = (_REPO / "scripts" / "k8s-teardown.sh").read_text(encoding="utf-8")
+    assert "delete_observability_overlay" in script
+    obs_idx = script.index("delete_observability_overlay")
+    early_idx = script.index('Namespace ${NAMESPACE} not found')
+    assert obs_idx < early_idx, "observability cleanup must run before namespace early exit"
+    assert "stock-ticker-kube-state-metrics" in script
 
 
 def test_observability_manifests_are_valid_yaml_with_required_kinds() -> None:
@@ -336,5 +363,16 @@ def test_observability_kustomize_build_succeeds() -> None:
     assert ("Deployment", "prometheus") in kinds
     assert ("Deployment", "grafana") in kinds
     assert ("Deployment", "kube-state-metrics") in kinds
-    assert ("ConfigMap", "prometheus-config") in kinds
-    assert ("ConfigMap", "grafana-dashboards") in kinds
+    # Hashed ConfigMap names change with content; only require the prefix.
+    assert any(
+        kind == "ConfigMap" and isinstance(name, str) and name.startswith("prometheus-config")
+        for kind, name in kinds
+    )
+    assert any(
+        kind == "ConfigMap" and isinstance(name, str) and name.startswith("grafana-dashboards")
+        for kind, name in kinds
+    )
+    rendered_text = result.stdout
+    # Deployments must reference the hashed ConfigMap names after kustomize build.
+    assert "prometheus-config-" in rendered_text
+    assert "grafana-dashboards-" in rendered_text

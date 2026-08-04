@@ -19,5 +19,5 @@ configMapGenerator:
   - name: grafana-dashboards
     files:
       - kubernetes-workload-health.json=grafana/kubernetes-workload-health.json
-generatorOptions:
-  disableNameSuffixHash: true
+# Keep generated ConfigMap name hashes so content changes rewrite Deployment
+# volume references and trigger pod rollouts (no sidecar reloader).
