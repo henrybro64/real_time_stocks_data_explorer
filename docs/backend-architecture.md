@@ -56,6 +56,10 @@ The quote refresher runs inside the backend process (same pattern as the other s
 
 When `QUOTE_REFRESHER_OWNS_UPSTREAM=true` (default) **and the sampler thread is alive**, watchlist batch, portfolio, and stock-detail read paths serve Redis/memory cache and do not call providers directly; they request an immediate refresher warm-up on the shared bounded pool instead. If the sampler is not running, request paths fall back to on-demand fetches. Rankings (`get_quotes` with `allow_stale=False`) may still fetch on demand. Closed-market symbols continue to refresh on the closed cadence even while another market is open. Per-provider spacing (`QUOTE_REFRESHER_MIN_INTERVAL_SECONDS`) and a cycle deadline (`QUOTE_REFRESHER_CYCLE_TIMEOUT_SECONDS`) keep free-tier providers from being stampeded.
 
+### Quote Redis cache resilience
+
+`backend/app/services/quote_redis_cache.py` keeps Redis optional. When `REDIS_URL` is unset, quotes use the in-process memory cache. When Redis is configured, connect and runtime connection/timeout failures invalidate the client and schedule a reconnect after exponential backoff with jitter (`QUOTE_REDIS_RETRY_BASE_SECONDS`, `QUOTE_REDIS_RETRY_MAX_SECONDS`, `QUOTE_REDIS_RETRY_JITTER_SECONDS`). Concurrent reconnect attempts singleflight inside each process. Soft TTL marks freshness; hard TTL retains stale payloads for SWR. `/health` exposes a nested `quote_cache` diagnostic object (configured/connected/retry state, last ping/read/write success times, last error category) without Redis credentials or the URL.
+
 ## Configuration
 
 Application configuration is centralized in `backend/app/core/config.py`.

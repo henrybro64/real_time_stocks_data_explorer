@@ -28,6 +28,12 @@ class Settings(BaseSettings):
     # Hard TTL: Redis/memory retention for stale-while-revalidate (default 1h so
     # outages longer than the soft window still serve last-known quotes).
     quote_cache_hard_ttl_seconds: int = Field(default=3600, ge=1)
+    # Base cooldown before retrying Redis after a connect/runtime failure.
+    quote_redis_retry_base_seconds: float = Field(default=5.0, ge=1.0, le=120.0)
+    # Cap for exponential Redis reconnect backoff.
+    quote_redis_retry_max_seconds: float = Field(default=60.0, ge=5.0, le=600.0)
+    # Random jitter added to Redis reconnect cooldown.
+    quote_redis_retry_jitter_seconds: float = Field(default=2.0, ge=0.0, le=30.0)
     # Dedup window for async quote refresh locks.
     quote_refresh_lock_seconds: int = Field(default=30, ge=1, le=300)
     # Background refresher keeps watchlist/portfolio quotes warm in Redis.

@@ -120,5 +120,10 @@ def stop_runtime_background_jobs() -> None:
 
 
 @app.get("/health")
-def healthcheck() -> dict[str, str]:
-    return {"status": "ok"}
+def healthcheck() -> dict:
+    from app.services.quote_redis_cache import get_quote_cache_health
+
+    return {
+        "status": "ok",
+        "quote_cache": get_quote_cache_health(),
+    }
