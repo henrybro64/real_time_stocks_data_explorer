@@ -653,28 +653,23 @@ def _coerce_float(value: Any) -> float | None:
 
 
 def _redis_get(key: str) -> str | None:
-    from app.services.quote_redis_cache import _redis  # pylint: disable=import-outside-toplevel
+    from app.services.quote_redis_cache import run_redis  # pylint: disable=import-outside-toplevel
 
-    client = _redis()
-    if client is None:
-        return None
-    try:
-        return client.get(key)
-    except Exception as exc:  # noqa: BLE001 - logging only
-        logger.debug("Rankings external cache Redis get %s: %s", key, exc)
-        return None
+    return run_redis(
+        f"rankings external get {key}",
+        lambda client: client.get(key),
+        kind="read",
+    )
 
 
 def _redis_setex(key: str, ttl_seconds: int, value: str) -> None:
-    from app.services.quote_redis_cache import _redis  # pylint: disable=import-outside-toplevel
+    from app.services.quote_redis_cache import run_redis  # pylint: disable=import-outside-toplevel
 
-    client = _redis()
-    if client is None:
-        return
-    try:
-        client.setex(key, ttl_seconds, value)
-    except Exception as exc:  # noqa: BLE001 - logging only
-        logger.debug("Rankings external cache Redis setex %s: %s", key, exc)
+    run_redis(
+        f"rankings external setex {key}",
+        lambda client: client.setex(key, ttl_seconds, value),
+        kind="write",
+    )
 
 
 def _serialize_envelopes(
