@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 
 from app.services.market_clock import (
     MARKET_TIMEZONES,
@@ -9,6 +9,11 @@ from app.services.market_clock import (
     is_within_hour_before_market_open,
     market_label,
     market_local_time,
+)
+from app.services.commodity_service import (
+    CommodityUnavailableError,
+    commodity_quote_to_api,
+    get_wti_crude_oil_quote,
 )
 from app.services.fx_service import get_usd_twd_fx_snapshot
 from app.services.market_index_service import market_index_service
@@ -55,5 +60,21 @@ def get_market_indices() -> list[dict[str, Any]]:
 
 
 @router.get("/fx/usd-twd")
-def get_usd_twd_fx_rate() -> dict[str, str | float]:
+def get_usd_twd_fx_rate() -> dict[str, Any]:
     return get_usd_twd_fx_snapshot()
+
+
+@router.get(
+    "/commodities/wti-crude-oil",
+    responses={502: {"description": "Commodity provider unavailable"}},
+)
+def get_wti_crude_oil() -> dict[str, Any]:
+    """WTI front-month futures (Yahoo ``CL=F``); informational only."""
+    try:
+        quote = get_wti_crude_oil_quote()
+    except CommodityUnavailableError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail="WTI crude oil quote provider unavailable",
+        ) from exc
+    return commodity_quote_to_api(quote)

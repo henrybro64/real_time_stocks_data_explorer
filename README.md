@@ -182,6 +182,21 @@ Current implementation notes:
   unavailable, so the UI favors clear stale/unavailable messaging over pretending every value is
   live
 
+### Market Snapshot (USD/TWD + WTI)
+
+The home dashboard Market Snapshot section uses:
+
+```text
+GET /api/markets/fx/usd-twd
+GET /api/markets/commodities/wti-crude-oil
+```
+
+- USD/TWD reuses the existing FX snapshot (Yahoo `TWD=X`), with optional change fields when prior close is available
+- WTI uses Yahoo front-month futures `CL=F` (informational only; contracts may roll; not a physical spot feed)
+- Both endpoints soft-cache for about 60 seconds and may serve a retained quote as `status: "stale"` for up to ~15 minutes after a provider failure
+- If FX has no retained quote, the API may still return a synthetic `status: "fallback"` rate for portfolio math; the Market Snapshot UI treats fallback as unavailable
+- Free Yahoo sources can be delayed or rate-limited; the UI keeps prior values as stale when a refresh fails
+
 ### Market Rankings (free-only)
 
 The `/rankings` page supports both Taiwan and U.S. markets using only free data sources and

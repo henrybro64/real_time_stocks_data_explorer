@@ -8,6 +8,7 @@ import type { Stock } from "@shared/stock";
 import { useLanguage } from "../../app/i18n";
 import { MarketIndicesStrip } from "../../components/market-status/MarketIndicesStrip";
 import { MarketStatusStrip } from "../../components/market-status/MarketStatusStrip";
+import { MarketSnapshot } from "../../components/market-snapshot/MarketSnapshot";
 import { StockSearch } from "../../components/search/StockSearch";
 import { WatchlistTable } from "../../components/watchlist/WatchlistTable";
 import { useWatchlist } from "../../hooks/useWatchlist";
@@ -115,8 +116,8 @@ export function HomePage() {
   ]);
 
   return (
-    <Grid className="app-page-grid" fullWidth>
-      <Column className="app-column-spacing" sm={4} md={8} lg={12}>
+    <Grid className="app-page-grid app-home-page-grid" fullWidth>
+      <Column className="app-column-spacing app-home-hero-column" sm={4} md={8} lg={12}>
         <Tile className="app-hero-tile">
           <div className="app-hero-content">
             <h1 className="app-hero-title">{t("home.hero.title")}</h1>
@@ -132,7 +133,7 @@ export function HomePage() {
           </div>
         </Tile>
       </Column>
-      <Column className="app-column-spacing" sm={4} md={8} lg={4}>
+      <Column className="app-column-spacing app-home-summary-column" sm={4} md={8} lg={4}>
         <Tile className="app-summary-tile">
           <p className="app-eyebrow">{t("home.summary.title")}</p>
           <dl className="app-kpi-list">
@@ -152,17 +153,26 @@ export function HomePage() {
           </div>
         </Tile>
       </Column>
-      <Column className="app-column-spacing" id="markets" sm={4} md={8} lg={16}>
+      <Column
+        className="app-column-spacing app-home-snapshot-column"
+        id="market-snapshot"
+        sm={4}
+        md={8}
+        lg={16}
+      >
+        <MarketSnapshot />
+      </Column>
+      <Column className="app-column-spacing app-home-markets-column" id="markets" sm={4} md={8} lg={16}>
         <MarketStatusStrip error={marketsQuery.error} isLoading={marketsQuery.isLoading} markets={marketsQuery.data ?? []} />
       </Column>
-      <Column className="app-column-spacing" sm={4} md={8} lg={16}>
+      <Column className="app-column-spacing app-home-indices-column" sm={4} md={8} lg={16}>
         <MarketIndicesStrip
           error={marketIndicesQuery.error}
           isLoading={marketIndicesQuery.isLoading}
           items={marketIndicesQuery.data ?? []}
         />
       </Column>
-      <Column className="app-column-spacing" sm={4} md={8} lg={16}>
+      <Column className="app-column-spacing app-home-search-column" sm={4} md={8} lg={16}>
         <StockSearch
           isSearching={searchQuery.isFetching}
           query={query}
@@ -172,7 +182,7 @@ export function HomePage() {
           onToggle={watchlist.toggle}
         />
       </Column>
-      <Column className="app-column-spacing" id="watchlist" sm={4} md={8} lg={16}>
+      <Column className="app-column-spacing app-home-watchlist-column" id="watchlist" sm={4} md={8} lg={16}>
         <WatchlistTable
           isLoading={
             watchlist.ids.length === 0 &&
