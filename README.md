@@ -425,6 +425,13 @@ To **remove the app**, use `./scripts/k8s-teardown.sh k3d|k3s` or `kubectl delet
 
 The helper script for this flow is `scripts/deploy-k3s.sh`.
 
+Optional Kubernetes workload health monitoring (Prometheus, Grafana, kube-state-metrics)
+is documented in [`docs/observability.md`](docs/observability.md). Apply it with
+`kubectl apply -k k8s/observability` or `OBSERVABILITY=1 ./scripts/deploy-k3s.sh k3d|k3s`.
+It is **not** part of the default deploy or k3s smoke path. This overlay owns the
+shared Prometheus/Grafana install for issue #136; application `/metrics` dashboards
+belong in issue #28 and should reuse this stack rather than deploying a second one.
+
 Important:
 
 - macOS should use `k3d`, not native `k3s`

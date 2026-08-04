@@ -16,6 +16,13 @@ spec:
             - name: capture-history
               image: curlimages/curl:8.7.1
               imagePullPolicy: IfNotPresent
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 32Mi
+                limits:
+                  cpu: 100m
+                  memory: 64Mi
               env:
                 - name: CAPTURE_TOKEN
                   valueFrom:

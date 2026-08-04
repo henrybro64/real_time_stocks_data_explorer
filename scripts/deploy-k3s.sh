@@ -21,6 +21,10 @@ Modes:
   k3d  Build images locally and import them into an existing k3d cluster.
   k3s  Build images locally and import them into a native k3s containerd store.
 
+Optional env:
+  OBSERVABILITY=1  Also apply k8s/observability (Prometheus, Grafana, kube-state-metrics).
+                   See docs/observability.md. Default smoke path leaves this off.
+
 k3d one-time setup (before first deploy):
   k3d cluster create stock-ticker
   kubectl config use-context k3d-stock-ticker
@@ -183,6 +187,14 @@ deploy_manifests() {
 
   echo "Waiting for frontend"
   ${KUBECTL_CMD} -n "${NAMESPACE}" rollout status deployment/stock-ticker-frontend --timeout=180s
+
+  if [[ "${OBSERVABILITY:-0}" == "1" ]]; then
+    echo "Applying observability stack (Prometheus / Grafana / kube-state-metrics)"
+    ${KUBECTL_CMD} apply -k "${ROOT_DIR}/k8s/observability"
+    ${KUBECTL_CMD} -n "${NAMESPACE}" rollout status deployment/kube-state-metrics --timeout=180s
+    ${KUBECTL_CMD} -n "${NAMESPACE}" rollout status deployment/prometheus --timeout=180s
+    ${KUBECTL_CMD} -n "${NAMESPACE}" rollout status deployment/grafana --timeout=180s
+  fi
 }
 
 if [[ -z "${MODE}" ]]; then
@@ -237,3 +249,13 @@ From other PCs on the LAN (NodePort — use your node's IP, e.g. from kubectl ge
   http://<node-ip>:30080
   If the browser cannot connect, allow the port: sudo ufw allow 30080/tcp
 EOF
+
+if [[ "${OBSERVABILITY:-0}" == "1" ]]; then
+  cat <<EOF
+
+Observability (see docs/observability.md):
+  ${KUBECTL_CMD} -n ${NAMESPACE} port-forward svc/grafana 3000:3000
+  Grafana NodePort: http://<node-ip>:30300
+  Dashboard: Kubernetes Workload Health
+EOF
+fi
