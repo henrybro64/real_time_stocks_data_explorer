@@ -8,12 +8,15 @@ import {
   LEGACY_WATCHLIST_REFETCH_INTERVAL_OTHER_MS,
   LEGACY_WATCHLIST_REFETCH_INTERVAL_TW_MS,
   marketCodesFromStockIds,
+  quotesAreWarming,
   quotesNeedFasterRefresh,
   resolveWatchlistQuoteQueryTiming,
   WATCHLIST_QUOTE_REFETCH_INTERVAL_CLOSED_MS,
   WATCHLIST_QUOTE_REFETCH_INTERVAL_OPEN_MS,
+  WATCHLIST_QUOTE_REFETCH_INTERVAL_WARMING_MS,
   WATCHLIST_QUOTE_STALE_TIME_CLOSED_MS,
   WATCHLIST_QUOTE_STALE_TIME_OPEN_MS,
+  WATCHLIST_QUOTE_STALE_TIME_WARMING_MS,
 } from "./watchlistQuoteQuery";
 
 const TW_OPEN: MarketStatus = {
@@ -29,6 +32,13 @@ const TW_CLOSED: MarketStatus = {
   ...TW_OPEN,
   isOpen: false,
   localTime: "2026-07-13T20:00:00+08:00",
+};
+
+const TW_PRE_OPEN: MarketStatus = {
+  ...TW_OPEN,
+  isOpen: false,
+  localTime: "2026-07-13T08:30:00+08:00",
+  withinHourBeforeOpen: true,
 };
 
 const US_OPEN: MarketStatus = {
@@ -85,6 +95,18 @@ const staleQuote: QuoteResponse = {
   },
 };
 
+const warmingQuote: QuoteResponse = {
+  ...freshQuote,
+  quote: null,
+  freshness: {
+    cachedAt: null,
+    ageSeconds: null,
+    stale: false,
+    source: "none",
+    refreshStatus: "refreshing",
+  },
+};
+
 describe("marketCodesFromStockIds", () => {
   it("extracts unique TW/US markets from stock ids", () => {
     expect(marketCodesFromStockIds(["TW:2330", "US:AAPL", "TW:2317"])).toEqual(["TW", "US"]);
@@ -108,6 +130,48 @@ describe("isAnyTrackedMarketOpen", () => {
     expect(isAnyTrackedMarketOpen(["TW:2330"], null)).toBe(true);
     expect(isAnyTrackedMarketOpen(["TW:2330"], [])).toBe(true);
   });
+
+  it("returns true during the hour-before-open window even when isOpen is false", () => {
+    expect(isAnyTrackedMarketOpen(["TW:2330"], [TW_PRE_OPEN, US_CLOSED])).toBe(true);
+  });
+});
+
+describe("quotesAreWarming", () => {
+  it("returns false for fresh quotes", () => {
+    expect(quotesAreWarming([freshQuote])).toBe(false);
+  });
+
+  it("returns true when quote is missing while refresh is in flight", () => {
+    expect(quotesAreWarming([warmingQuote])).toBe(true);
+    expect(
+      quotesAreWarming([
+        {
+          ...warmingQuote,
+          freshness: {
+            ...warmingQuote.freshness!,
+            refreshStatus: "queued",
+          },
+        },
+      ]),
+    ).toBe(true);
+  });
+
+  it("returns false when quote is missing but refresh is unavailable", () => {
+    expect(
+      quotesAreWarming([
+        {
+          ...warmingQuote,
+          freshness: {
+            cachedAt: null,
+            ageSeconds: null,
+            stale: false,
+            source: "none",
+            refreshStatus: "unavailable",
+          },
+        },
+      ]),
+    ).toBe(false);
+  });
 });
 
 describe("quotesNeedFasterRefresh", () => {
@@ -119,22 +183,8 @@ describe("quotesNeedFasterRefresh", () => {
     expect(quotesNeedFasterRefresh([freshQuote, staleQuote])).toBe(true);
   });
 
-  it("returns true when quote is missing while refresh is in flight", () => {
-    expect(
-      quotesNeedFasterRefresh([
-        {
-          ...freshQuote,
-          quote: undefined,
-          freshness: {
-            cachedAt: null,
-            ageSeconds: null,
-            stale: false,
-            source: "none",
-            refreshStatus: "refreshing",
-          },
-        },
-      ]),
-    ).toBe(true);
+  it("does not treat warming-only rows as soft-stale open-cadence triggers", () => {
+    expect(quotesNeedFasterRefresh([warmingQuote])).toBe(false);
   });
 });
 
@@ -150,7 +200,7 @@ describe("resolveWatchlistQuoteQueryTiming", () => {
     expect(timing.refetchInterval).toBe(WATCHLIST_QUOTE_REFETCH_INTERVAL_OPEN_MS);
     expect(timing.refetchInterval).toBe(BACKEND_QUOTE_REFRESHER_OPEN_POLL_MS);
     expect(timing.refetchInterval).toBeGreaterThan(LEGACY_WATCHLIST_REFETCH_INTERVAL_TW_MS);
-    expect(timing.refetchInterval).toBeGreaterThan(LEGACY_WATCHLIST_REFETCH_INTERVAL_OTHER_MS);
+    expect(timing.refetchInterval).toBeGreaterThanOrEqual(LEGACY_WATCHLIST_REFETCH_INTERVAL_OTHER_MS);
     expect(timing.refetchIntervalInBackground).toBe(false);
     expect(timing.refetchOnMount).toBe(true);
     expect(timing.refetchOnWindowFocus).toBe(true);
@@ -185,6 +235,17 @@ describe("resolveWatchlistQuoteQueryTiming", () => {
     expect(timing.staleTime).toBe(WATCHLIST_QUOTE_STALE_TIME_OPEN_MS);
   });
 
+  it("uses open cadence during the pre-open window", () => {
+    const timing = resolveWatchlistQuoteQueryTiming({
+      stockIds: ["TW:2330"],
+      markets: [TW_PRE_OPEN, US_CLOSED],
+      quotes: [freshQuote],
+    });
+
+    expect(timing.refetchInterval).toBe(WATCHLIST_QUOTE_REFETCH_INTERVAL_OPEN_MS);
+    expect(timing.staleTime).toBe(WATCHLIST_QUOTE_STALE_TIME_OPEN_MS);
+  });
+
   it("uses open cadence when markets are closed but quote freshness is stale", () => {
     const timing = resolveWatchlistQuoteQueryTiming({
       stockIds: ["TW:2330"],
@@ -194,5 +255,18 @@ describe("resolveWatchlistQuoteQueryTiming", () => {
 
     expect(timing.refetchInterval).toBe(WATCHLIST_QUOTE_REFETCH_INTERVAL_OPEN_MS);
     expect(timing.staleTime).toBe(WATCHLIST_QUOTE_STALE_TIME_OPEN_MS);
+  });
+
+  it("uses a short retry cadence while a cold quote is warming", () => {
+    const timing = resolveWatchlistQuoteQueryTiming({
+      stockIds: ["TW:2330"],
+      markets: [TW_OPEN, US_CLOSED],
+      quotes: [warmingQuote],
+    });
+
+    expect(timing.staleTime).toBe(WATCHLIST_QUOTE_STALE_TIME_WARMING_MS);
+    expect(timing.refetchInterval).toBe(WATCHLIST_QUOTE_REFETCH_INTERVAL_WARMING_MS);
+    expect(timing.refetchInterval).toBeLessThan(WATCHLIST_QUOTE_REFETCH_INTERVAL_OPEN_MS);
+    expect(timing.refetchIntervalInBackground).toBe(false);
   });
 });
