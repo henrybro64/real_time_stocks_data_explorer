@@ -16,8 +16,8 @@ export function formatPercent(value: number) {
   return `${value >= 0 ? "+" : ""}${value.toFixed(2)}%`;
 }
 
-export function formatLastUpdated(timestamp: string) {
-  return new Intl.DateTimeFormat("zh-TW", {
+export function formatLastUpdated(timestamp: string, locale: string = "zh-TW") {
+  return new Intl.DateTimeFormat(locale, {
     hour: "2-digit",
     minute: "2-digit",
     month: "numeric",
@@ -25,8 +25,8 @@ export function formatLastUpdated(timestamp: string) {
   }).format(new Date(timestamp));
 }
 
-export function formatLastUpdatedWithSeconds(timestamp: string) {
-  return new Intl.DateTimeFormat("zh-TW", {
+export function formatLastUpdatedWithSeconds(timestamp: string, locale: string = "zh-TW") {
+  return new Intl.DateTimeFormat(locale, {
     hour: "2-digit",
     minute: "2-digit",
     second: "2-digit",

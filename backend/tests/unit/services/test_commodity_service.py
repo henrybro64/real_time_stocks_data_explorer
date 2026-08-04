@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-import math
+import threading
+import time
 
 import pytest
 
@@ -73,12 +74,21 @@ def test_missing_previous_close_yields_null_change() -> None:
     assert quote.change_percent is None
 
 
-@pytest.mark.parametrize("price", [0, -1, float("nan"), float("inf")])
-def test_invalid_price_is_rejected(price: float) -> None:
-    payload = _yahoo_payload(price=price if math.isfinite(price) else 1.0)
-    if not math.isfinite(price):
-        payload["chart"]["result"][0]["meta"]["regularMarketPrice"] = price
+@pytest.mark.parametrize("price", [float("nan"), float("inf"), float("-inf")])
+def test_non_finite_price_is_rejected(price: float) -> None:
+    payload = _yahoo_payload(price=1.0)
+    payload["chart"]["result"][0]["meta"]["regularMarketPrice"] = price
     assert commodity_service._normalize_yahoo_wti_payload(payload) is None
+
+
+@pytest.mark.parametrize("price", [0.0, -37.63])
+def test_zero_and_negative_futures_prices_are_accepted(price: float) -> None:
+    quote = commodity_service._normalize_yahoo_wti_payload(
+        _yahoo_payload(price=price, previous_close=10.0),
+    )
+    assert quote is not None
+    assert quote.price == pytest.approx(price)
+    assert quote.change == pytest.approx(price - 10.0)
 
 
 def test_provider_failure_with_no_cache_raises(monkeypatch) -> None:
@@ -127,6 +137,50 @@ def test_stale_retained_quote_served_after_soft_ttl_provider_failure(monkeypatch
     assert second.status == "stale"
     assert second.price == pytest.approx(68.45)
     assert calls["count"] == 2
+
+
+def test_expired_refresh_is_singleflight_across_threads(monkeypatch) -> None:
+    calls = {"count": 0}
+    started = threading.Event()
+    release = threading.Event()
+
+    def fake_fetch(*_a, **_k):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return _yahoo_payload(price=68.45)
+        started.set()
+        assert release.wait(timeout=2.0)
+        return _yahoo_payload(price=70.25)
+
+    monkeypatch.setattr(commodity_service, "fetch_json", fake_fetch)
+    warm = commodity_service.get_wti_crude_oil_quote()
+    assert warm.status == "ok"
+    assert calls["count"] == 1
+
+    monkeypatch.setattr(
+        commodity_service,
+        "payload_age_seconds",
+        lambda _payload: commodity_service._SOFT_TTL_SECONDS + 1,
+    )
+
+    results: list[object] = []
+
+    def worker() -> None:
+        results.append(commodity_service.get_wti_crude_oil_quote())
+
+    threads = [threading.Thread(target=worker) for _ in range(4)]
+    for thread in threads:
+        thread.start()
+    assert started.wait(timeout=2.0)
+    # Give waiters a moment to join the singleflight gate.
+    time.sleep(0.05)
+    release.set()
+    for thread in threads:
+        thread.join(timeout=2.0)
+
+    assert calls["count"] == 2
+    assert len(results) == 4
+    assert all(getattr(item, "price", None) == pytest.approx(70.25) for item in results)
 
 
 def test_commodity_quote_to_api_uses_camel_case() -> None:

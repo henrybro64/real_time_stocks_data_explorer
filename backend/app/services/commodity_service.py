@@ -20,6 +20,7 @@ from app.services.market_snapshot_cache import (
     get_cached_snapshot,
     make_cache_payload,
     payload_age_seconds,
+    run_snapshot_refresh_singleflight,
     set_cached_snapshot,
 )
 
@@ -71,6 +72,17 @@ def clear_wti_cache_for_tests() -> None:
 
 def get_wti_crude_oil_quote() -> CommodityQuoteRecord:
     """Return a fresh, soft-cached, or hard-retained stale WTI quote."""
+    cached_payload = get_cached_snapshot(_CACHE_KEY)
+    cached_quote = _extract_quote(cached_payload)
+    cached_age = payload_age_seconds(cached_payload) if cached_payload is not None else None
+    if cached_quote is not None and cached_age is not None and cached_age < _SOFT_TTL_SECONDS:
+        return replace(cached_quote, status="ok")
+
+    return run_snapshot_refresh_singleflight(_CACHE_KEY, _refresh_wti_crude_oil_quote)
+
+
+def _refresh_wti_crude_oil_quote() -> CommodityQuoteRecord:
+    # Re-check after winning singleflight; another caller may have filled the cache.
     cached_payload = get_cached_snapshot(_CACHE_KEY)
     cached_quote = _extract_quote(cached_payload)
     cached_age = payload_age_seconds(cached_payload) if cached_payload is not None else None
@@ -152,11 +164,12 @@ def _normalize_yahoo_wti_payload(payload: dict[str, Any]) -> CommodityQuoteRecor
     if not isinstance(meta, dict):
         return None
 
-    price = _coerce_positive_finite(meta.get("regularMarketPrice"))
+    # Futures can trade at or below zero; reject only non-finite values.
+    price = _coerce_finite(meta.get("regularMarketPrice"))
     if price is None:
         return None
 
-    previous_close = _coerce_positive_finite(
+    previous_close = _coerce_finite(
         meta.get("chartPreviousClose")
         if meta.get("chartPreviousClose") is not None
         else meta.get("previousClose")
@@ -165,7 +178,8 @@ def _normalize_yahoo_wti_payload(payload: dict[str, Any]) -> CommodityQuoteRecor
     change_percent: float | None = None
     if previous_close is not None:
         change = round(price - previous_close, 4)
-        change_percent = round((change / previous_close) * 100, 4)
+        if previous_close != 0:
+            change_percent = round((change / previous_close) * 100, 4)
 
     market_time = meta.get("regularMarketTime")
     if isinstance(market_time, (int, float)):
@@ -193,11 +207,11 @@ def _normalize_yahoo_wti_payload(payload: dict[str, Any]) -> CommodityQuoteRecor
     )
 
 
-def _coerce_positive_finite(value: object) -> float | None:
+def _coerce_finite(value: object) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
     number = float(value)
-    if not math.isfinite(number) or number <= 0:
+    if not math.isfinite(number):
         return None
     return number
 

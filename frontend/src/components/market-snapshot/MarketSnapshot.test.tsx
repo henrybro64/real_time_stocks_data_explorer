@@ -95,6 +95,8 @@ describe("MarketSnapshot", () => {
     expect(screen.getByText("USD/TWD Exchange Rate")).toBeInTheDocument();
     expect(screen.getByText("WTI Crude Oil")).toBeInTheDocument();
     expect(screen.queryByText(/marketSnapshot\./)).not.toBeInTheDocument();
+    // Locale-aware timestamps must not leak zh-TW day-period markers under English UI.
+    expect(screen.queryByText(/上午|下午/)).not.toBeInTheDocument();
   });
 
   it("shows positive, negative, and unchanged change tones", async () => {

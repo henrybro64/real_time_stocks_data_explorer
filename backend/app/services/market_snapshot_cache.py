@@ -6,11 +6,12 @@ Uses the quote Redis client wrapper so Redis connection failures update
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import UTC, datetime
 import json
 import threading
 import time
-from typing import Any
+from typing import Any, TypeVar
 
 from app.services.quote_redis_cache import run_redis
 
@@ -19,10 +20,28 @@ _KEY_PREFIX = "market:snapshot:v1:"
 _memory_lock = threading.Lock()
 _memory_payloads: dict[str, tuple[float, str]] = {}
 
+_gates_lock = threading.Lock()
+
+T = TypeVar("T")
+
+
+class _RefreshGate:
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.cond = threading.Condition(self.lock)
+        self.refreshing = False
+        self.result: tuple[Any] | None = None
+        self.error: BaseException | None = None
+
+
+_refresh_gates: dict[str, _RefreshGate] = {}
+
 
 def clear_market_snapshot_cache_for_tests() -> None:
     with _memory_lock:
         _memory_payloads.clear()
+    with _gates_lock:
+        _refresh_gates.clear()
 
 
 def get_cached_snapshot(key: str) -> dict[str, Any] | None:
@@ -69,6 +88,46 @@ def payload_age_seconds(payload: dict[str, Any]) -> float | None:
     except ValueError:
         return None
     return (datetime.now(UTC) - instant).total_seconds()
+
+
+def run_snapshot_refresh_singleflight(key: str, refresh_fn: Callable[[], T]) -> T:
+    """Run one refresh per concurrent wave; waiters reuse the leader result."""
+    gate = _gate_for(key)
+    with gate.cond:
+        while gate.refreshing:
+            gate.cond.wait(timeout=35.0)
+            if not gate.refreshing:
+                if gate.error is not None:
+                    raise gate.error
+                if gate.result is not None:
+                    return gate.result[0]  # type: ignore[no-any-return]
+                break
+        gate.refreshing = True
+        gate.result = None
+        gate.error = None
+
+    try:
+        value = refresh_fn()
+        with gate.cond:
+            gate.result = (value,)
+            return value
+    except BaseException as exc:
+        with gate.cond:
+            gate.error = exc
+        raise
+    finally:
+        with gate.cond:
+            gate.refreshing = False
+            gate.cond.notify_all()
+
+
+def _gate_for(key: str) -> _RefreshGate:
+    with _gates_lock:
+        gate = _refresh_gates.get(key)
+        if gate is None:
+            gate = _RefreshGate()
+            _refresh_gates[key] = gate
+        return gate
 
 
 def _redis_key(key: str) -> str:

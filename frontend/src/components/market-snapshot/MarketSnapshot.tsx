@@ -64,6 +64,7 @@ type SnapshotCardProps = {
   isStale: boolean;
   isUnavailable: boolean;
   signedNumberFormat: Intl.NumberFormat;
+  dateLocale: string;
 };
 
 function SnapshotCard({
@@ -79,6 +80,7 @@ function SnapshotCard({
   isStale,
   isUnavailable,
   signedNumberFormat,
+  dateLocale,
 }: SnapshotCardProps) {
   const { t } = useLanguage();
   const toneClass = changeToneClass(changeConvention, change);
@@ -125,7 +127,7 @@ function SnapshotCard({
           ) : null}
           {timestamp ? (
             <p className="app-section-meta">
-              {t("marketSnapshot.updated")} {formatLastUpdated(timestamp)}
+              {t("marketSnapshot.updated")} {formatLastUpdated(timestamp, dateLocale)}
             </p>
           ) : null}
           {source ? (
@@ -215,6 +217,7 @@ export function MarketSnapshot() {
           isStale={fxStale}
           isUnavailable={fxUnavailable}
           signedNumberFormat={signedNumberFormat}
+          dateLocale={numberLocale}
         />
         <SnapshotCard
           testId="market-snapshot-wti"
@@ -229,6 +232,7 @@ export function MarketSnapshot() {
           isStale={oilStale}
           isUnavailable={oilUnavailable}
           signedNumberFormat={signedNumberFormat}
+          dateLocale={numberLocale}
         />
       </div>
     </Tile>

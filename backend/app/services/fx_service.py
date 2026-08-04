@@ -14,6 +14,7 @@ from app.services.market_snapshot_cache import (
     get_cached_snapshot,
     make_cache_payload,
     payload_age_seconds,
+    run_snapshot_refresh_singleflight,
     set_cached_snapshot,
 )
 
@@ -41,6 +42,17 @@ def clear_fx_cache_for_tests() -> None:
 
 
 def get_usd_twd_fx_snapshot() -> dict[str, Any]:
+    cached_payload = get_cached_snapshot(_CACHE_KEY)
+    cached_snapshot = _extract_snapshot(cached_payload)
+    cached_age = payload_age_seconds(cached_payload) if cached_payload is not None else None
+    if cached_snapshot is not None and cached_age is not None and cached_age < _SOFT_TTL_SECONDS:
+        return {**cached_snapshot, "status": "ok"}
+
+    return run_snapshot_refresh_singleflight(_CACHE_KEY, _refresh_usd_twd_fx_snapshot)
+
+
+def _refresh_usd_twd_fx_snapshot() -> dict[str, Any]:
+    # Re-check after winning singleflight; another caller may have filled the cache.
     cached_payload = get_cached_snapshot(_CACHE_KEY)
     cached_snapshot = _extract_snapshot(cached_payload)
     cached_age = payload_age_seconds(cached_payload) if cached_payload is not None else None
