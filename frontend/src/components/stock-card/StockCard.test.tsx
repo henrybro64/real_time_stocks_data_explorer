@@ -104,6 +104,35 @@ describe("StockCard", () => {
     });
   });
 
+  it("uses calm history polling and disables background refetch", async () => {
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false },
+        mutations: { retry: false },
+      },
+    });
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <LanguageProvider>
+          <StockCard isTracked={false} onToggle={vi.fn()} quote={quote} stock={stock} />
+        </LanguageProvider>
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => {
+      expect(fetchHistoryMock).toHaveBeenCalled();
+    });
+
+    const historyQuery = queryClient.getQueryCache().find({
+      queryKey: ["card-history", stock.id, "1W"],
+    });
+    const options = historyQuery?.observers[0]?.options;
+    expect(options?.staleTime).toBe(120_000);
+    expect(options?.refetchInterval).toBe(180_000);
+    expect(options?.refetchIntervalInBackground).toBe(false);
+  });
+
   it("navigates to stock detail when the card body is clicked", async () => {
     const user = userEvent.setup();
     renderCard();

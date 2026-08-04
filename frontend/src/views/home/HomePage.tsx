@@ -1,8 +1,8 @@
 "use client";
 
 import { Column, Grid, InlineLoading, Tile } from "@carbon/react";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { useDeferredValue, useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
 import type { MarketIndex, MarketStatus, QuoteResponse } from "@shared/api";
 import type { Stock } from "@shared/stock";
 import { useLanguage } from "../../app/i18n";
@@ -12,6 +12,7 @@ import { StockSearch } from "../../components/search/StockSearch";
 import { WatchlistTable } from "../../components/watchlist/WatchlistTable";
 import { useWatchlist } from "../../hooks/useWatchlist";
 import { fetchMarketIndices, fetchMarkets, fetchQuotes, searchStocks } from "../../services/api/client";
+import { resolveWatchlistQuoteQueryTiming } from "./watchlistQuoteQuery";
 import { deriveWatchlistNoticeKind } from "./watchlistState";
 
 export function HomePage() {
@@ -24,17 +25,21 @@ export function HomePage() {
     queryKey: ["markets"],
     queryFn: fetchMarkets,
     refetchInterval: 60_000,
+    staleTime: 60_000,
+    refetchIntervalInBackground: false,
   });
 
   const marketIndicesQuery = useQuery<MarketIndex[]>({
     queryKey: ["market-indices"],
     queryFn: fetchMarketIndices,
+    staleTime: 30_000,
+    refetchIntervalInBackground: false,
     refetchInterval: (query) => {
       const items = query.state.data;
       if (!items || items.length === 0) {
-        return 30_000;
+        return 60_000;
       }
-      return items.some((item) => item.isMarketOpen) ? 5_000 : 60_000;
+      return items.some((item) => item.isMarketOpen) ? 30_000 : 120_000;
     },
   });
 
@@ -42,11 +47,23 @@ export function HomePage() {
     queryKey: ["watchlist-quotes", watchlist.ids],
     queryFn: () => fetchQuotes(watchlist.ids),
     enabled: watchlist.ids.length > 0,
-    refetchInterval: () => {
-      const hasTaiwanStocks = watchlist.ids.some((id) => id.startsWith("TW:"));
-      return hasTaiwanStocks ? 2_000 : 5_000;
-    },
-    refetchIntervalInBackground: true,
+    placeholderData: keepPreviousData,
+    staleTime: (query) =>
+      resolveWatchlistQuoteQueryTiming({
+        stockIds: watchlist.ids,
+        markets: marketsQuery.data,
+        quotes: query.state.data,
+      }).staleTime,
+    refetchInterval: (query) =>
+      resolveWatchlistQuoteQueryTiming({
+        stockIds: watchlist.ids,
+        markets: marketsQuery.data,
+        quotes: query.state.data,
+      }).refetchInterval,
+    refetchIntervalInBackground: false,
+    refetchOnMount: true,
+    refetchOnWindowFocus: true,
+    refetchOnReconnect: true,
   });
 
   const searchQuery = useQuery<Stock[]>({
