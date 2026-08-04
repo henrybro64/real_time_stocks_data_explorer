@@ -27,6 +27,16 @@ export type TranslationKey =
   | "home.summary.markets"
   | "home.summary.tracked"
   | "home.summary.loading"
+  | "marketSnapshot.title"
+  | "marketSnapshot.eyebrow"
+  | "marketSnapshot.fxLabel"
+  | "marketSnapshot.oilLabel"
+  | "marketSnapshot.perBarrel"
+  | "marketSnapshot.updated"
+  | "marketSnapshot.loading"
+  | "marketSnapshot.source"
+  | "marketSnapshot.twdUnit"
+  | "marketSnapshot.stale"
   | "marketStatus.title"
   | "marketStatus.syncCount"
   | "marketStatus.loading"
@@ -414,6 +424,16 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "home.summary.markets": "Markets",
     "home.summary.tracked": "Tracked",
     "home.summary.loading": "Syncing market data",
+    "marketSnapshot.title": "Market Snapshot",
+    "marketSnapshot.eyebrow": "Key figures",
+    "marketSnapshot.fxLabel": "USD/TWD Exchange Rate",
+    "marketSnapshot.oilLabel": "WTI Crude Oil",
+    "marketSnapshot.perBarrel": "/ barrel",
+    "marketSnapshot.updated": "Updated",
+    "marketSnapshot.loading": "Loading market snapshot",
+    "marketSnapshot.source": "Source",
+    "marketSnapshot.twdUnit": "TWD",
+    "marketSnapshot.stale": "Stale",
     "marketStatus.title": "Market status",
     "marketStatus.syncCount": "{count} markets synced",
     "marketStatus.loading": "Updating market status",
@@ -859,6 +879,16 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "home.summary.markets": "市場數",
     "home.summary.tracked": "追蹤中",
     "home.summary.loading": "同步市場資料中",
+    "marketSnapshot.title": "市場快覽",
+    "marketSnapshot.eyebrow": "重要指標",
+    "marketSnapshot.fxLabel": "美金／台幣匯率",
+    "marketSnapshot.oilLabel": "WTI 原油",
+    "marketSnapshot.perBarrel": "/ 桶",
+    "marketSnapshot.updated": "更新",
+    "marketSnapshot.loading": "載入市場快覽中",
+    "marketSnapshot.source": "來源",
+    "marketSnapshot.twdUnit": "新台幣",
+    "marketSnapshot.stale": "過舊",
     "marketStatus.title": "市場狀態",
     "marketStatus.syncCount": "同步 {count} 個市場",
     "marketStatus.loading": "更新市場狀態",

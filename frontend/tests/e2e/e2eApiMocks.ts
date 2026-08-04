@@ -1144,6 +1144,27 @@ export async function installE2eApiMocks(page: Page): Promise<void> {
         pair: "USD/TWD",
         rate: 32,
         timestamp: "2026-05-11T01:00:00Z",
+        change: 0.05,
+        changePercent: 0.16,
+        source: "Yahoo Finance",
+        status: "ok",
+      });
+      return;
+    }
+
+    if (path === "/api/markets/commodities/wti-crude-oil" && request.method() === "GET") {
+      await fulfillJson(route, {
+        symbol: "CL=F",
+        name: "WTI Crude Oil",
+        price: 68.45,
+        currency: "USD",
+        unit: "barrel",
+        change: -0.74,
+        changePercent: -1.07,
+        timestamp: "2026-05-11T01:05:00Z",
+        source: "Yahoo Finance",
+        isMarketOpen: false,
+        status: "ok",
       });
       return;
     }

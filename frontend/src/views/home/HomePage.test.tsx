@@ -40,6 +40,10 @@ vi.mock("../../components/market-status/MarketIndicesStrip", () => ({
   MarketIndicesStrip: () => <div data-testid="market-indices-strip" />,
 }));
 
+vi.mock("../../components/market-snapshot/MarketSnapshot", () => ({
+  MarketSnapshot: () => <div data-testid="market-snapshot-section" />,
+}));
+
 vi.mock("../../components/watchlist/WatchlistTable", () => ({
   WatchlistTable: ({
     isRefreshing,

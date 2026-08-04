@@ -10,6 +10,7 @@ import type {
   MarketIndex,
   MarketStatus,
   FxRate,
+  CommodityQuote,
   NewsItem,
   AiProviderPreference,
   ApiKeyStatus,
@@ -229,6 +230,10 @@ export function fetchMarketIndices() {
 
 export function fetchUsdTwdFxRate() {
   return fetchJson<FxRate>("/markets/fx/usd-twd");
+}
+
+export function fetchWtiCrudeOilQuote() {
+  return fetchJson<CommodityQuote>("/markets/commodities/wti-crude-oil");
 }
 
 export function searchStocks(query: string) {

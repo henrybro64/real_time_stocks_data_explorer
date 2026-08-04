@@ -516,6 +516,57 @@ input {
   grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
 }
 
+.app-market-snapshot-grid {
+  grid-template-columns: 1fr;
+}
+
+@media (min-width: 42rem) {
+  .app-market-snapshot-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.app-market-snapshot-loading {
+  min-height: 4.5rem;
+  display: grid;
+  align-content: center;
+}
+
+.app-price-unchanged {
+  color: var(--cds-text-secondary, #525252);
+}
+
+/* Mobile: hero → snapshot → summary so key figures stay near the first viewport. */
+@media (max-width: 41.99rem) {
+  .app-home-hero-column {
+    order: 1;
+  }
+
+  .app-home-snapshot-column {
+    order: 2;
+  }
+
+  .app-home-summary-column {
+    order: 3;
+  }
+
+  .app-home-markets-column {
+    order: 4;
+  }
+
+  .app-home-indices-column {
+    order: 5;
+  }
+
+  .app-home-search-column {
+    order: 6;
+  }
+
+  .app-home-watchlist-column {
+    order: 7;
+  }
+}
+
 .app-watchlist-grid {
   grid-template-columns: 1fr;
 }

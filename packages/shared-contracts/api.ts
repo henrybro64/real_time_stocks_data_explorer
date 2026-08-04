@@ -38,6 +38,32 @@ export type FxRate = {
   pair: "USD/TWD" | string;
   rate: number;
   timestamp: string;
+  /** Absolute change vs prior close when the provider supplies it. */
+  change?: number | null;
+  changePercent?: number | null;
+  source?: string;
+  /**
+   * `ok` = live/provider value (or soft-cached).
+   * `stale` = last-known provider value after a refresh failure.
+   * `fallback` = synthetic constant used only so portfolio math can continue.
+   */
+  status?: "ok" | "stale" | "fallback";
+};
+
+/** Informational commodity quote (e.g. WTI front-month futures). */
+export type CommodityQuote = {
+  symbol: string;
+  name: string;
+  price: number;
+  currency: "USD";
+  unit: "barrel";
+  change: number | null;
+  changePercent: number | null;
+  timestamp: string;
+  source: string;
+  isMarketOpen?: boolean | null;
+  /** `stale` when serving retained cache after a provider failure. */
+  status?: "ok" | "stale";
 };
 
 export type NewsItem = {
