@@ -1257,3 +1257,113 @@ def test_tw_daily_weekday_holiday_lookup_skips_closed_session(monkeypatch) -> No
     ) == friday_bucket
 
 
+def test_tw_daily_cache_lookup_skips_holiday_http_on_weekday_hit(monkeypatch) -> None:
+    def _should_not_fetch(year: int) -> frozenset[date]:
+        raise AssertionError(f"holiday calendar should not run for {year}")
+
+    monkeypatch.setattr(
+        "app.services.market_clock._tw_market_holidays",
+        _should_not_fetch,
+    )
+    session_local = _install_in_memory_sessionlocal(monkeypatch)
+    bucket_start = datetime(2026, 7, 2, 10, 0, tzinfo=timezone.utc)
+    _seed_tw_net_buy_snapshot(
+        session_local,
+        bucket_start=bucket_start,
+        item_timestamp="2026-07-02T18:00:00+08:00",
+    )
+    service = RankingsSnapshotService(
+        provider_registry=FakeRegistry(
+            {
+                ("TW", "net_buy", "TWSE"): FakeProvider(
+                    bucket_start=bucket_start,
+                    error=RuntimeError("cache hit should not live-fetch"),
+                )
+            }
+        )
+    )
+    query = RankingQuery("TW", RankingType.net_buy, "TWSE")
+
+    cached = service._load_applicable_tw_daily_snapshot(
+        query,
+        datetime(2026, 7, 3, 2, 0, tzinfo=timezone.utc),
+    )
+
+    assert cached is not None
+    assert cached.snapshot.bucket_start.replace(tzinfo=timezone.utc) == bucket_start
+
+
+def test_tw_daily_long_closure_without_expected_bucket_reuses_latest_snapshot(monkeypatch) -> None:
+    holidays = {date(2026, 1, day) for day in range(1, 32)} | {
+        date(2026, 2, day) for day in range(1, 15)
+    }
+    monkeypatch.setattr(
+        "app.services.market_clock._tw_market_holidays",
+        lambda year: holidays if year == 2026 else frozenset(),
+    )
+    session_local = _install_in_memory_sessionlocal(monkeypatch)
+    last_open_bucket = datetime(2025, 12, 31, 10, 0, tzinfo=timezone.utc)
+    _seed_tw_net_buy_snapshot(
+        session_local,
+        bucket_start=last_open_bucket,
+        item_timestamp="2025-12-31T18:00:00+08:00",
+    )
+    provider = FakeProvider(
+        bucket_start=last_open_bucket,
+        error=RuntimeError("long holiday closures should reuse the latest snapshot"),
+    )
+    service = RankingsSnapshotService(
+        provider_registry=FakeRegistry({("TW", "net_buy", "TWSE"): provider})
+    )
+    now = datetime.fromisoformat("2026-02-14T19:00:00+08:00")
+
+    result = service.get_rankings(
+        "TW",
+        RankingType.net_buy,
+        limit=5,
+        now=now,
+        tw_board="TWSE",
+    )
+
+    assert tw_institutional_daily_snapshot_bucket(now) is None
+    assert provider.fetch_calls == 0
+    assert result.sourceType == RankingSourceType.cache
+    assert result.items[0].stock.symbol == "2330"
+
+
+def test_scheduler_skips_tw_daily_fetch_when_long_closure_has_latest_snapshot(monkeypatch) -> None:
+    holidays = {date(2026, 1, day) for day in range(1, 32)} | {
+        date(2026, 2, day) for day in range(1, 15)
+    }
+    monkeypatch.setattr(
+        "app.services.market_clock._tw_market_holidays",
+        lambda year: holidays if year == 2026 else frozenset(),
+    )
+    session_local = _install_in_memory_sessionlocal(monkeypatch)
+    last_open_bucket = datetime(2025, 12, 31, 10, 0, tzinfo=timezone.utc)
+    _seed_tw_daily_snapshot(
+        session_local,
+        bucket_start=last_open_bucket,
+        item_timestamp="2025-12-31T18:00:00+08:00",
+        capture_scope="scheduler_bounded",
+    )
+    query = RankingQuery("TW", RankingType.net_buy, "TWSE")
+    monkeypatch.setattr(snapshot_service_module, "_scheduled_queries", lambda: [query])
+    provider = FakeProvider(
+        bucket_start=last_open_bucket,
+        error=RuntimeError("long holiday closures should not live-fetch"),
+    )
+    registry = FakeRegistry({("TW", "net_buy", "TWSE"): provider})
+    service = RankingsSnapshotService(
+        provider_registry=registry,
+        scheduler_provider_registry=registry,
+    )
+    now = datetime.fromisoformat("2026-02-14T19:00:00+08:00")
+
+    captured = service.capture_scheduled_snapshots(now=now, trigger="test")
+
+    assert tw_institutional_daily_snapshot_bucket(now) is None
+    assert captured == 0
+    assert provider.fetch_calls == 0
+
+

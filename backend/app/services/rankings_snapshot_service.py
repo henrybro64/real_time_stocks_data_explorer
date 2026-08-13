@@ -272,11 +272,10 @@ class RankingsSnapshotService:
         for query in _scheduled_queries():
             provider = self._scheduler_provider_registry.get_provider(query)
             if _is_tw_daily_query(query):
-                expected_bucket = tw_institutional_daily_snapshot_bucket(current)
-                if expected_bucket is not None and self._load_bucket_snapshot(
+                if self._load_applicable_tw_daily_snapshot(
                     query,
-                    expected_bucket,
-                    capture_scope=_CAPTURE_SCOPE_SCHEDULER_BOUNDED,
+                    current,
+                    capture_scopes=(_CAPTURE_SCOPE_SCHEDULER_BOUNDED,),
                 ) is not None:
                     continue
                 try:
@@ -428,22 +427,53 @@ class RankingsSnapshotService:
         self,
         query: RankingQuery,
         now: datetime,
+        *,
+        capture_scopes: tuple[str, ...] = (
+            _CAPTURE_SCOPE_ON_DEMAND,
+            _CAPTURE_SCOPE_SCHEDULER_BOUNDED,
+        ),
     ) -> _SnapshotEnvelope | None:
+        weekend_bucket = tw_institutional_daily_snapshot_bucket(
+            now,
+            include_exchange_holidays=False,
+        )
+        if weekend_bucket is not None:
+            existing = self._load_tw_daily_snapshot_for_bucket(
+                query,
+                weekend_bucket,
+                capture_scopes=capture_scopes,
+            )
+            if existing is not None:
+                return existing
         expected_bucket = tw_institutional_daily_snapshot_bucket(now)
+        if expected_bucket is not None and expected_bucket != weekend_bucket:
+            existing = self._load_tw_daily_snapshot_for_bucket(
+                query,
+                expected_bucket,
+                capture_scopes=capture_scopes,
+            )
+            if existing is not None:
+                return existing
         if expected_bucket is None:
-            return None
-        existing = self._load_bucket_snapshot(
-            query,
-            expected_bucket,
-            capture_scope=_CAPTURE_SCOPE_ON_DEMAND,
-        )
-        if existing is not None:
-            return existing
-        return self._load_bucket_snapshot(
-            query,
-            expected_bucket,
-            capture_scope=_CAPTURE_SCOPE_SCHEDULER_BOUNDED,
-        )
+            return self._load_latest_snapshot(query)
+        return None
+
+    def _load_tw_daily_snapshot_for_bucket(
+        self,
+        query: RankingQuery,
+        bucket_start: datetime,
+        *,
+        capture_scopes: tuple[str, ...],
+    ) -> _SnapshotEnvelope | None:
+        for capture_scope in capture_scopes:
+            existing = self._load_bucket_snapshot(
+                query,
+                bucket_start,
+                capture_scope=capture_scope,
+            )
+            if existing is not None:
+                return existing
+        return None
 
     def _persist_snapshot(
         self,

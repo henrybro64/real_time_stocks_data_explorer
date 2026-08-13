@@ -162,6 +162,8 @@ def current_rankings_snapshot_bucket(market: str, now: datetime | None = None) -
 # snapshot lookup, persist, and item timestamps. Separate from
 # settings.taiwan_market_data_refresh_hour, which gates the detail-page store job.
 TW_DAILY_PUBLISH_TIME = time(18, 0)
+# Lunar New Year closures can exceed the generic 10-day trading-day lookback.
+TW_INSTITUTIONAL_DAILY_LOOKBACK_DAYS = 21
 
 
 def latest_trading_day_bucket(
@@ -170,6 +172,7 @@ def latest_trading_day_bucket(
     *,
     available_after: time | None = None,
     lookback_days: int = 10,
+    include_exchange_holidays: bool = True,
 ) -> datetime | None:
     current = market_local_time(market, now)
     candidate_date = current.date()
@@ -184,7 +187,10 @@ def latest_trading_day_bucket(
             time(12, 0),
             tzinfo=MARKET_TIMEZONES[market],
         )
-        if not is_trading_day(market, trading_probe):
+        if include_exchange_holidays:
+            if not is_trading_day(market, trading_probe):
+                continue
+        elif trading_probe.weekday() >= 5:
             continue
         return datetime.combine(
             current_date,
@@ -215,17 +221,27 @@ def tw_institutional_daily_bucket_from_timestamp(raw: str) -> datetime | None:
     return tw_institutional_daily_bucket_for_date(ranking_date)
 
 
-def tw_institutional_daily_snapshot_bucket(now: datetime | None = None) -> datetime | None:
+def tw_institutional_daily_snapshot_bucket(
+    now: datetime | None = None,
+    *,
+    include_exchange_holidays: bool = True,
+) -> datetime | None:
     """Return the 18:00 Asia/Taipei bucket for the latest published TW daily file.
 
     Institutional rankings are end-of-day. Before 18:00 Taipei the previous
     trading day's snapshot is still the applicable cache key; at/after 18:00
     today's trading day becomes the expected key.
+
+    Set ``include_exchange_holidays=False`` to skip the TWSE holiday HTTP lookup
+    and treat weekdays as trading days. Snapshot cache reads use that first so a
+    normal weekday/weekend hit does not block on the holiday calendar.
     """
     trading_day_start = latest_trading_day_bucket(
         "TW",
         now,
         available_after=TW_DAILY_PUBLISH_TIME,
+        lookback_days=TW_INSTITUTIONAL_DAILY_LOOKBACK_DAYS,
+        include_exchange_holidays=include_exchange_holidays,
     )
     if trading_day_start is None:
         return None
@@ -375,23 +391,23 @@ def _us_early_close_days(year: int) -> frozenset[date]:
 
 
 def _tw_market_holidays(year: int) -> frozenset[date]:
-    try:
-        return _tw_market_holidays_cached(year)
-    except HttpFetchError:
-        logger.warning("Failed to fetch TWSE holiday schedule for %s", year)
-        return frozenset()
+    return _tw_market_holidays_cached(year)
 
 
 @lru_cache(maxsize=8)
 def _tw_market_holidays_cached(year: int) -> frozenset[date]:
     query_year = year - 1911
-    html = fetch_text(
-        _TWSE_HOLIDAY_URL,
-        params={"response": "html", "queryYear": str(query_year)},
-        headers={"User-Agent": _BROWSER_USER_AGENT},
-        timeout_seconds=8.0,
-        retries=1,
-    )
+    try:
+        html = fetch_text(
+            _TWSE_HOLIDAY_URL,
+            params={"response": "html", "queryYear": str(query_year)},
+            headers={"User-Agent": _BROWSER_USER_AGENT},
+            timeout_seconds=8.0,
+            retries=1,
+        )
+    except HttpFetchError:
+        logger.warning("Failed to fetch TWSE holiday schedule for %s", year)
+        return frozenset()
 
     parser = _TableRowParser()
     parser.feed(html)

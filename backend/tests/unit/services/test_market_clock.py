@@ -1,7 +1,10 @@
 from datetime import date, datetime
 
+from app.services.http_client import HttpFetchError
 from app.services.market_clock import (
     TW_DAILY_PUBLISH_TIME,
+    _tw_market_holidays,
+    _tw_market_holidays_cached,
     current_rankings_snapshot_bucket,
     current_snapshot_bucket,
     is_market_open,
@@ -201,6 +204,59 @@ def test_tw_institutional_daily_snapshot_bucket_skips_weekday_holiday(monkeypatc
 
     assert bucket is not None
     assert bucket.isoformat() == "2026-04-03T10:00:00+00:00"
+
+
+def test_tw_institutional_daily_snapshot_bucket_spans_long_holiday_closure(monkeypatch) -> None:
+    holidays = {date(2026, 2, day) for day in range(10, 21)}
+    monkeypatch.setattr(
+        "app.services.market_clock._tw_market_holidays",
+        lambda year: holidays if year == 2026 else frozenset(),
+    )
+
+    bucket = tw_institutional_daily_snapshot_bucket(
+        datetime.fromisoformat("2026-02-20T19:00:00+08:00"),
+    )
+
+    assert bucket is not None
+    assert bucket.isoformat() == "2026-02-09T10:00:00+00:00"
+
+
+def test_tw_institutional_daily_snapshot_bucket_can_skip_holiday_http(monkeypatch) -> None:
+    def _should_not_fetch(year: int) -> frozenset[date]:
+        raise AssertionError(f"holiday calendar should not run for {year}")
+
+    monkeypatch.setattr(
+        "app.services.market_clock._tw_market_holidays",
+        _should_not_fetch,
+    )
+
+    bucket = tw_institutional_daily_snapshot_bucket(
+        datetime.fromisoformat("2026-07-03T10:00:00+08:00"),
+        include_exchange_holidays=False,
+    )
+
+    assert bucket is not None
+    assert bucket.isoformat() == "2026-07-02T10:00:00+00:00"
+
+
+def test_tw_market_holidays_caches_fetch_failure(monkeypatch) -> None:
+    calls = {"count": 0}
+
+    def _boom(*_args, **_kwargs):
+        calls["count"] += 1
+        raise HttpFetchError("TWSE holiday schedule unavailable")
+
+    monkeypatch.setattr("app.services.market_clock.fetch_text", _boom)
+    _tw_market_holidays_cached.cache_clear()
+    try:
+        first = _tw_market_holidays(2026)
+        second = _tw_market_holidays(2026)
+    finally:
+        _tw_market_holidays_cached.cache_clear()
+
+    assert first == frozenset()
+    assert second == frozenset()
+    assert calls["count"] == 1
 
 
 def test_tw_institutional_daily_bucket_from_timestamp_normalizes_to_publish_time() -> None:
