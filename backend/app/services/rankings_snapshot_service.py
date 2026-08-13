@@ -21,7 +21,11 @@ from app.schemas.rankings import (
     TwBoard,
 )
 from app.schemas.stock import StockResponse
-from app.services.market_clock import is_market_open
+from app.services.market_clock import (
+    is_market_open,
+    tw_institutional_daily_bucket_from_timestamp,
+    tw_institutional_daily_snapshot_bucket,
+)
 from app.services.ranking_data_providers import (
     RankingMarket,
     RankingProviderRegistry,
@@ -268,6 +272,13 @@ class RankingsSnapshotService:
         for query in _scheduled_queries():
             provider = self._scheduler_provider_registry.get_provider(query)
             if _is_tw_daily_query(query):
+                expected_bucket = tw_institutional_daily_snapshot_bucket(current)
+                if expected_bucket is not None and self._load_bucket_snapshot(
+                    query,
+                    expected_bucket,
+                    capture_scope=_CAPTURE_SCOPE_SCHEDULER_BOUNDED,
+                ) is not None:
+                    continue
                 try:
                     response = provider.fetch(
                         query,
@@ -352,6 +363,16 @@ class RankingsSnapshotService:
         limit: int,
         now: datetime,
     ) -> RankingResponse:
+        cached = self._load_applicable_tw_daily_snapshot(query, now)
+        if cached is not None:
+            return self._response_from_snapshot(
+                query,
+                cached,
+                now,
+                limit=limit,
+                freshness_label=_cache_freshness_label(query, now),
+            )
+
         provider = self._provider_registry.get_provider(query)
         try:
             live = provider.fetch(
@@ -394,25 +415,6 @@ class RankingsSnapshotService:
 
         bucket_start = _tw_daily_bucket_start_from_response(live)
         if bucket_start is not None:
-            existing = self._load_bucket_snapshot(
-                query,
-                bucket_start,
-                capture_scope=_CAPTURE_SCOPE_ON_DEMAND,
-            )
-            if existing is None:
-                existing = self._load_bucket_snapshot(
-                    query,
-                    bucket_start,
-                    capture_scope=_CAPTURE_SCOPE_SCHEDULER_BOUNDED,
-                )
-            if existing is not None:
-                return self._response_from_snapshot(
-                    query,
-                    existing,
-                    now,
-                    limit=limit,
-                    freshness_label=_cache_freshness_label(query, now),
-                )
             self._persist_snapshot(
                 query,
                 bucket_start,
@@ -421,6 +423,27 @@ class RankingsSnapshotService:
             )
 
         return _truncate_response(live, limit)
+
+    def _load_applicable_tw_daily_snapshot(
+        self,
+        query: RankingQuery,
+        now: datetime,
+    ) -> _SnapshotEnvelope | None:
+        expected_bucket = tw_institutional_daily_snapshot_bucket(now)
+        if expected_bucket is None:
+            return None
+        existing = self._load_bucket_snapshot(
+            query,
+            expected_bucket,
+            capture_scope=_CAPTURE_SCOPE_ON_DEMAND,
+        )
+        if existing is not None:
+            return existing
+        return self._load_bucket_snapshot(
+            query,
+            expected_bucket,
+            capture_scope=_CAPTURE_SCOPE_SCHEDULER_BOUNDED,
+        )
 
     def _persist_snapshot(
         self,
@@ -667,10 +690,7 @@ def _us_rankings_scope_from_source(source: str) -> Literal["sp500", "yahoo", "qu
 def _tw_daily_bucket_start_from_response(response: RankingResponse) -> datetime | None:
     if not response.items:
         return None
-    try:
-        return datetime.fromisoformat(response.items[0].timestamp).astimezone(timezone.utc)
-    except ValueError:
-        return None
+    return tw_institutional_daily_bucket_from_timestamp(response.items[0].timestamp)
 
 
 def _scheduled_queries() -> list[RankingQuery]:

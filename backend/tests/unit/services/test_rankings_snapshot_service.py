@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
+
+import pytest
 
 import app.services.rankings_snapshot_service as snapshot_service_module
 from app.db.models import Base, RankingSnapshot, RankingSnapshotItem
@@ -11,8 +13,13 @@ from app.schemas.rankings import (
     RankingType,
 )
 from app.schemas.stock import StockResponse
-from app.services.ranking_data_providers import RankingProviderRegistry, RankingQuery
+from app.services.ranking_data_providers import (
+    FreeTWInstitutionalDailyProvider,
+    RankingProviderRegistry,
+    RankingQuery,
+)
 from app.services.rankings_snapshot_service import RankingsSnapshotService, _scheduled_queries
+from app.services.market_clock import tw_institutional_daily_snapshot_bucket
 from sqlalchemy import create_engine, event, select
 from sqlalchemy.orm import sessionmaker
 
@@ -354,7 +361,7 @@ def test_us_institutional_queries_remain_unsupported(monkeypatch) -> None:
 
 def test_tw_daily_capture_uses_free_public_then_cached_limit(monkeypatch) -> None:
     _install_in_memory_sessionlocal(monkeypatch)
-    bucket_start = datetime(2026, 7, 2, 16, 0, tzinfo=timezone.utc)
+    bucket_start = datetime(2026, 7, 2, 10, 0, tzinfo=timezone.utc)
     response = _response(
         market="TW",
         ranking_type=RankingType.net_buy,
@@ -400,6 +407,7 @@ def test_tw_daily_capture_uses_free_public_then_cached_limit(monkeypatch) -> Non
 
     assert first.sourceType == RankingSourceType.free_public
     assert second.sourceType == RankingSourceType.cache
+    assert provider.fetch_calls == 1
     assert len(second.items) == 1
     assert second.items[0].stock.exchange == "TPEx"
 
@@ -428,7 +436,7 @@ def test_scheduler_skips_closed_queries_and_continues_after_exceptions(monkeypat
                 error=RuntimeError("temporary failure"),
             ),
             ("TW", "net_buy", "TWSE"): FakeProvider(
-                bucket_start=datetime(2026, 7, 2, 16, 0, tzinfo=timezone.utc),
+                bucket_start=datetime(2026, 7, 2, 10, 0, tzinfo=timezone.utc),
                 response=_response(
                     market="TW",
                     ranking_type=RankingType.net_buy,
@@ -460,6 +468,42 @@ def test_scheduler_skips_closed_queries_and_continues_after_exceptions(monkeypat
     )
 
     assert captured == 1
+    with session_local() as session:
+        snapshots = list(session.execute(select(RankingSnapshot)).scalars())
+    assert len(snapshots) == 1
+    assert snapshots[0].bucket_start.replace(tzinfo=timezone.utc) == datetime(
+        2026, 7, 2, 10, 0, tzinfo=timezone.utc
+    )
+
+
+def test_scheduler_skips_tw_daily_fetch_when_expected_bucket_already_cached(monkeypatch) -> None:
+    _disable_tw_holidays(monkeypatch)
+    session_local = _install_in_memory_sessionlocal(monkeypatch)
+    now = datetime(2026, 7, 3, 2, 0, tzinfo=timezone.utc)
+    expected_bucket = tw_institutional_daily_snapshot_bucket(now)
+    assert expected_bucket is not None
+    _seed_tw_daily_snapshot(
+        session_local,
+        bucket_start=expected_bucket,
+        item_timestamp="2026-07-02T18:00:00+08:00",
+        capture_scope="scheduler_bounded",
+    )
+    query = RankingQuery("TW", RankingType.net_buy, "TWSE")
+    monkeypatch.setattr(snapshot_service_module, "_scheduled_queries", lambda: [query])
+    provider = FakeProvider(
+        bucket_start=expected_bucket,
+        error=RuntimeError("scheduler should not fetch when the expected bucket exists"),
+    )
+    registry = FakeRegistry({("TW", "net_buy", "TWSE"): provider})
+    service = RankingsSnapshotService(
+        provider_registry=registry,
+        scheduler_provider_registry=registry,
+    )
+
+    captured = service.capture_scheduled_snapshots(now=now, trigger="test")
+
+    assert captured == 0
+    assert provider.fetch_calls == 0
     with session_local() as session:
         snapshots = list(session.execute(select(RankingSnapshot)).scalars())
     assert len(snapshots) == 1
@@ -689,4 +733,527 @@ def test_load_latest_snapshot_returns_single_newest_row(monkeypatch) -> None:
     assert latest is not None
     assert latest.snapshot.bucket_start.replace(tzinfo=timezone.utc) == newer_bucket
     assert latest.items[0].symbol == "AAPL"
+
+
+def _disable_tw_holidays(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.services.market_clock._tw_market_holidays",
+        lambda year: frozenset(),
+    )
+
+
+def _tw_daily_item(
+    *,
+    timestamp: str,
+    shares: int = 500_000,
+    stock_id: str = "TW:2330",
+    symbol: str = "2330",
+    exchange: str = "TWSE",
+) -> RankingItem:
+    return _item(
+        rank=1,
+        stock=_stock(
+            stock_id,
+            symbol,
+            exchange=exchange,
+            currency="TWD",
+            timezone_name="Asia/Taipei",
+        ),
+        timestamp=timestamp,
+        net_buy_sell_shares=shares,
+    )
+
+
+def _tw_net_buy_item(*, timestamp: str, shares: int = 500_000) -> RankingItem:
+    return _tw_daily_item(timestamp=timestamp, shares=shares)
+
+
+def _tw_daily_response(
+    *,
+    ranking_type: RankingType,
+    tw_board: str,
+    timestamp: str,
+    item_timestamp: str,
+    shares: int = 500_000,
+    stock_id: str = "TW:2330",
+    symbol: str = "2330",
+    exchange: str = "TWSE",
+) -> RankingResponse:
+    source = (
+        "TPEx institutional daily data"
+        if tw_board == "TPEx"
+        else "TWSE T86 daily institutional data"
+    )
+    warning = (
+        "上櫃（TPEx）三大法人買賣超為日資料，非盤中即時資料。"
+        if tw_board == "TPEx"
+        else "台股三大法人買賣超為日資料，非盤中即時資料。"
+    )
+    return _response(
+        market="TW",
+        ranking_type=ranking_type,
+        source_type=RankingSourceType.free_public,
+        timestamp=timestamp,
+        tw_board=tw_board,
+        source=source,
+        warning=warning,
+        items=[
+            _tw_daily_item(
+                timestamp=item_timestamp,
+                shares=shares,
+                stock_id=stock_id,
+                symbol=symbol,
+                exchange=exchange,
+            )
+        ],
+    )
+
+
+def _tw_net_buy_response(
+    *,
+    timestamp: str,
+    item_timestamp: str,
+    shares: int = 500_000,
+) -> RankingResponse:
+    return _tw_daily_response(
+        ranking_type=RankingType.net_buy,
+        tw_board="TWSE",
+        timestamp=timestamp,
+        item_timestamp=item_timestamp,
+        shares=shares,
+    )
+
+
+def _seed_tw_daily_snapshot(
+    session_local,
+    *,
+    bucket_start: datetime,
+    item_timestamp: str,
+    capture_scope: str = "on_demand",
+    ranking_type: RankingType = RankingType.net_buy,
+    tw_board: str = "TWSE",
+    stock_id: str = "TW:2330",
+    symbol: str = "2330",
+    exchange: str = "TWSE",
+    shares: int = 500_000,
+) -> None:
+    source = (
+        "TPEx institutional daily data"
+        if tw_board == "TPEx"
+        else "TWSE T86 daily institutional data"
+    )
+    warning = (
+        "上櫃（TPEx）三大法人買賣超為日資料，非盤中即時資料。"
+        if tw_board == "TPEx"
+        else "台股三大法人買賣超為日資料，非盤中即時資料。"
+    )
+    with session_local() as session:
+        snapshot = RankingSnapshot(
+            market="TW",
+            tw_board=tw_board,
+            ranking_type=ranking_type.value,
+            bucket_start=bucket_start,
+            source=source,
+            source_type="free-public",
+            source_freshness="Showing the latest saved TW institutional daily snapshot.",
+            is_market_open=False,
+            warning_message=warning,
+            unsupported_reason=None,
+            capture_scope=capture_scope,
+        )
+        session.add(snapshot)
+        session.flush()
+        session.add(
+            RankingSnapshotItem(
+                snapshot_id=snapshot.id,
+                rank=1,
+                stock_id=stock_id,
+                symbol=symbol,
+                name=f"{symbol} Corp.",
+                last_price=101.0,
+                change_percent=None,
+                volume=None,
+                volume_delta=None,
+                volume_delta_percent=None,
+                net_buy=shares if ranking_type == RankingType.net_buy else None,
+                net_sell=shares if ranking_type == RankingType.net_sell else None,
+                data_time=item_timestamp,
+                raw_payload_json=_tw_daily_item(
+                    timestamp=item_timestamp,
+                    shares=shares,
+                    stock_id=stock_id,
+                    symbol=symbol,
+                    exchange=exchange,
+                ).model_dump(mode="json"),
+            )
+        )
+        session.commit()
+
+
+def _seed_tw_net_buy_snapshot(
+    session_local,
+    *,
+    bucket_start: datetime,
+    item_timestamp: str,
+    capture_scope: str = "on_demand",
+) -> None:
+    _seed_tw_daily_snapshot(
+        session_local,
+        bucket_start=bucket_start,
+        item_timestamp=item_timestamp,
+        capture_scope=capture_scope,
+    )
+
+
+@pytest.mark.parametrize(
+    ("ranking_type", "tw_board", "stock_id", "symbol", "exchange"),
+    [
+        (RankingType.net_buy, "TWSE", "TW:2330", "2330", "TWSE"),
+        (RankingType.net_sell, "TWSE", "TW:2330", "2330", "TWSE"),
+        (RankingType.net_buy, "TPEx", "TW:6488", "6488", "TPEx"),
+        (RankingType.net_sell, "TPEx", "TW:6488", "6488", "TPEx"),
+    ],
+)
+def test_tw_daily_cache_hit_skips_live_fetch(
+    monkeypatch,
+    ranking_type: RankingType,
+    tw_board: str,
+    stock_id: str,
+    symbol: str,
+    exchange: str,
+) -> None:
+    _disable_tw_holidays(monkeypatch)
+    session_local = _install_in_memory_sessionlocal(monkeypatch)
+    bucket_start = datetime(2026, 7, 2, 10, 0, tzinfo=timezone.utc)
+    _seed_tw_daily_snapshot(
+        session_local,
+        bucket_start=bucket_start,
+        item_timestamp="2026-07-02T18:00:00+08:00",
+        ranking_type=ranking_type,
+        tw_board=tw_board,
+        stock_id=stock_id,
+        symbol=symbol,
+        exchange=exchange,
+    )
+    provider = FakeProvider(
+        bucket_start=bucket_start,
+        response=_tw_daily_response(
+            ranking_type=ranking_type,
+            tw_board=tw_board,
+            timestamp="2026-07-03T10:00:00+08:00",
+            item_timestamp="2026-07-02T18:00:00+08:00",
+            stock_id=stock_id,
+            symbol=symbol,
+            exchange=exchange,
+        ),
+    )
+    service = RankingsSnapshotService(
+        provider_registry=FakeRegistry({("TW", ranking_type.value, tw_board): provider})
+    )
+
+    result = service.get_rankings(
+        "TW",
+        ranking_type,
+        limit=5,
+        now=datetime(2026, 7, 3, 2, 0, tzinfo=timezone.utc),
+        tw_board=tw_board,
+    )
+
+    assert provider.fetch_calls == 0
+    assert result.sourceType == RankingSourceType.cache
+    assert result.rankingType == ranking_type
+    assert result.twBoard == tw_board
+    assert result.dataFreshnessLabel == "Showing the latest saved TW institutional daily snapshot."
+    assert result.items[0].stock.symbol == symbol
+    assert result.items[0].stock.exchange == exchange
+    assert result.items[0].netBuySellShares == 500_000
+
+
+def test_tw_daily_cache_miss_fetches_live_and_persists(monkeypatch) -> None:
+    _disable_tw_holidays(monkeypatch)
+    session_local = _install_in_memory_sessionlocal(monkeypatch)
+    provider = FakeProvider(
+        bucket_start=datetime(2026, 7, 2, 10, 0, tzinfo=timezone.utc),
+        response=_tw_net_buy_response(
+            timestamp="2026-07-03T10:00:00+08:00",
+            item_timestamp="2026-07-02T18:00:00+08:00",
+        ),
+    )
+    service = RankingsSnapshotService(
+        provider_registry=FakeRegistry({("TW", "net_buy", "TWSE"): provider})
+    )
+
+    result = service.get_rankings(
+        "TW",
+        RankingType.net_buy,
+        limit=5,
+        now=datetime(2026, 7, 3, 2, 0, tzinfo=timezone.utc),
+        tw_board="TWSE",
+    )
+
+    assert provider.fetch_calls == 1
+    assert result.sourceType == RankingSourceType.free_public
+    with session_local() as session:
+        snapshots = list(session.execute(select(RankingSnapshot)).scalars())
+    assert len(snapshots) == 1
+    assert snapshots[0].bucket_start.replace(tzinfo=timezone.utc) == datetime(
+        2026, 7, 2, 10, 0, tzinfo=timezone.utc
+    )
+
+
+def test_tw_daily_provider_failure_falls_back_to_latest_snapshot(monkeypatch) -> None:
+    _disable_tw_holidays(monkeypatch)
+    session_local = _install_in_memory_sessionlocal(monkeypatch)
+    _seed_tw_net_buy_snapshot(
+        session_local,
+        bucket_start=datetime(2026, 7, 1, 10, 0, tzinfo=timezone.utc),
+        item_timestamp="2026-07-01T18:00:00+08:00",
+    )
+    provider = FakeProvider(
+        bucket_start=datetime(2026, 7, 3, 10, 0, tzinfo=timezone.utc),
+        error=RuntimeError("TWSE T86 unavailable"),
+    )
+    service = RankingsSnapshotService(
+        provider_registry=FakeRegistry({("TW", "net_buy", "TWSE"): provider})
+    )
+
+    result = service.get_rankings(
+        "TW",
+        RankingType.net_buy,
+        limit=5,
+        now=datetime(2026, 7, 3, 10, 30, tzinfo=timezone.utc),
+        tw_board="TWSE",
+    )
+
+    assert provider.fetch_calls == 1
+    assert result.sourceType == RankingSourceType.cache
+    assert (
+        result.dataFreshnessLabel
+        == "Free data source temporarily unavailable. Showing latest available snapshot if available."
+    )
+    assert result.items[0].stock.symbol == "2330"
+
+
+def test_tw_daily_provider_failure_without_snapshot_returns_unavailable(monkeypatch) -> None:
+    _disable_tw_holidays(monkeypatch)
+    _install_in_memory_sessionlocal(monkeypatch)
+    provider = FakeProvider(
+        bucket_start=datetime(2026, 7, 2, 10, 0, tzinfo=timezone.utc),
+        error=RuntimeError("TWSE T86 unavailable"),
+    )
+    service = RankingsSnapshotService(
+        provider_registry=FakeRegistry({("TW", "net_buy", "TWSE"): provider})
+    )
+
+    result = service.get_rankings(
+        "TW",
+        RankingType.net_buy,
+        limit=5,
+        now=datetime(2026, 7, 3, 2, 0, tzinfo=timezone.utc),
+        tw_board="TWSE",
+    )
+
+    assert provider.fetch_calls == 1
+    assert result.items == []
+    assert (
+        result.dataFreshnessLabel
+        == "Free data source temporarily unavailable. No cached snapshot is available yet."
+    )
+
+
+def test_tw_daily_before_taipei_cutoff_reuses_previous_trading_day_snapshot(
+    monkeypatch,
+) -> None:
+    _disable_tw_holidays(monkeypatch)
+    session_local = _install_in_memory_sessionlocal(monkeypatch)
+    previous_day_bucket = datetime(2026, 7, 2, 10, 0, tzinfo=timezone.utc)
+    _seed_tw_net_buy_snapshot(
+        session_local,
+        bucket_start=previous_day_bucket,
+        item_timestamp="2026-07-02T18:00:00+08:00",
+    )
+    provider = FakeProvider(
+        bucket_start=previous_day_bucket,
+        response=_tw_net_buy_response(
+            timestamp="2026-07-03T17:59:00+08:00",
+            item_timestamp="2026-07-03T18:00:00+08:00",
+            shares=999_000,
+        ),
+    )
+    service = RankingsSnapshotService(
+        provider_registry=FakeRegistry({("TW", "net_buy", "TWSE"): provider})
+    )
+
+    result = service.get_rankings(
+        "TW",
+        RankingType.net_buy,
+        limit=5,
+        now=datetime.fromisoformat("2026-07-03T17:59:00+08:00"),
+        tw_board="TWSE",
+    )
+
+    assert provider.fetch_calls == 0
+    assert result.sourceType == RankingSourceType.cache
+    assert result.items[0].netBuySellShares == 500_000
+
+
+def test_tw_daily_after_taipei_cutoff_does_not_treat_previous_day_as_current(
+    monkeypatch,
+) -> None:
+    _disable_tw_holidays(monkeypatch)
+    session_local = _install_in_memory_sessionlocal(monkeypatch)
+    previous_day_bucket = datetime(2026, 7, 2, 10, 0, tzinfo=timezone.utc)
+    _seed_tw_net_buy_snapshot(
+        session_local,
+        bucket_start=previous_day_bucket,
+        item_timestamp="2026-07-02T18:00:00+08:00",
+    )
+    today_response = _tw_net_buy_response(
+        timestamp="2026-07-03T18:05:00+08:00",
+        item_timestamp="2026-07-03T18:00:00+08:00",
+        shares=800_000,
+    )
+    provider = FakeProvider(
+        bucket_start=datetime(2026, 7, 3, 10, 0, tzinfo=timezone.utc),
+        response=today_response,
+    )
+    service = RankingsSnapshotService(
+        provider_registry=FakeRegistry({("TW", "net_buy", "TWSE"): provider})
+    )
+
+    result = service.get_rankings(
+        "TW",
+        RankingType.net_buy,
+        limit=5,
+        now=datetime.fromisoformat("2026-07-03T18:05:00+08:00"),
+        tw_board="TWSE",
+    )
+
+    assert provider.fetch_calls == 1
+    assert result.sourceType == RankingSourceType.free_public
+    assert result.items[0].netBuySellShares == 800_000
+    with session_local() as session:
+        snapshots = list(session.execute(select(RankingSnapshot)).scalars())
+    assert len(snapshots) == 2
+
+
+def test_tw_daily_midnight_item_timestamp_persists_under_lookup_bucket(monkeypatch) -> None:
+    _disable_tw_holidays(monkeypatch)
+    session_local = _install_in_memory_sessionlocal(monkeypatch)
+    now = datetime(2026, 7, 3, 2, 0, tzinfo=timezone.utc)
+    expected_bucket = tw_institutional_daily_snapshot_bucket(now)
+    provider = FakeProvider(
+        bucket_start=datetime(2026, 7, 2, 16, 0, tzinfo=timezone.utc),
+        response=_tw_net_buy_response(
+            timestamp="2026-07-03T10:00:00+08:00",
+            item_timestamp="2026-07-02T00:00:00+08:00",
+        ),
+    )
+    service = RankingsSnapshotService(
+        provider_registry=FakeRegistry({("TW", "net_buy", "TWSE"): provider})
+    )
+
+    first = service.get_rankings(
+        "TW",
+        RankingType.net_buy,
+        limit=5,
+        now=now,
+        tw_board="TWSE",
+    )
+    second = service.get_rankings(
+        "TW",
+        RankingType.net_buy,
+        limit=5,
+        now=now,
+        tw_board="TWSE",
+    )
+
+    assert expected_bucket is not None
+    assert provider.fetch_calls == 1
+    assert first.sourceType == RankingSourceType.free_public
+    assert second.sourceType == RankingSourceType.cache
+    with session_local() as session:
+        snapshots = list(session.execute(select(RankingSnapshot)).scalars())
+    assert len(snapshots) == 1
+    assert snapshots[0].bucket_start.replace(tzinfo=timezone.utc) == expected_bucket
+
+
+def test_tw_institutional_provider_current_bucket_matches_snapshot_lookup(monkeypatch) -> None:
+    _disable_tw_holidays(monkeypatch)
+    now = datetime.fromisoformat("2026-07-03T17:59:00+08:00")
+    provider = FreeTWInstitutionalDailyProvider()
+    query = RankingQuery("TW", RankingType.net_buy, "TWSE")
+
+    assert provider.current_bucket_start(query, now) == tw_institutional_daily_snapshot_bucket(now)
+    assert provider.current_bucket_start(query, now) == datetime(
+        2026, 7, 2, 10, 0, tzinfo=timezone.utc
+    )
+
+
+def test_tw_daily_weekend_lookup_uses_friday_snapshot(monkeypatch) -> None:
+    _disable_tw_holidays(monkeypatch)
+    session_local = _install_in_memory_sessionlocal(monkeypatch)
+    friday_bucket = datetime(2026, 4, 3, 10, 0, tzinfo=timezone.utc)
+    _seed_tw_net_buy_snapshot(
+        session_local,
+        bucket_start=friday_bucket,
+        item_timestamp="2026-04-03T18:00:00+08:00",
+    )
+    provider = FakeProvider(
+        bucket_start=friday_bucket,
+        error=RuntimeError("weekend requests should reuse Friday's daily snapshot"),
+    )
+    service = RankingsSnapshotService(
+        provider_registry=FakeRegistry({("TW", "net_buy", "TWSE"): provider})
+    )
+
+    result = service.get_rankings(
+        "TW",
+        RankingType.net_buy,
+        limit=5,
+        now=datetime.fromisoformat("2026-04-04T10:00:00+08:00"),
+        tw_board="TWSE",
+    )
+
+    assert provider.fetch_calls == 0
+    assert result.sourceType == RankingSourceType.cache
+    assert tw_institutional_daily_snapshot_bucket(
+        datetime.fromisoformat("2026-04-04T10:00:00+08:00"),
+    ) == friday_bucket
+
+
+def test_tw_daily_weekday_holiday_lookup_skips_closed_session(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.services.market_clock._tw_market_holidays",
+        lambda year: frozenset({date(2026, 4, 6)}) if year == 2026 else frozenset(),
+    )
+    session_local = _install_in_memory_sessionlocal(monkeypatch)
+    friday_bucket = datetime(2026, 4, 3, 10, 0, tzinfo=timezone.utc)
+    _seed_tw_net_buy_snapshot(
+        session_local,
+        bucket_start=friday_bucket,
+        item_timestamp="2026-04-03T18:00:00+08:00",
+    )
+    provider = FakeProvider(
+        bucket_start=friday_bucket,
+        error=RuntimeError("holiday Monday should still use Friday's daily snapshot"),
+    )
+    service = RankingsSnapshotService(
+        provider_registry=FakeRegistry({("TW", "net_buy", "TWSE"): provider})
+    )
+
+    result = service.get_rankings(
+        "TW",
+        RankingType.net_buy,
+        limit=5,
+        now=datetime.fromisoformat("2026-04-06T19:00:00+08:00"),
+        tw_board="TWSE",
+    )
+
+    assert provider.fetch_calls == 0
+    assert result.sourceType == RankingSourceType.cache
+    assert tw_institutional_daily_snapshot_bucket(
+        datetime.fromisoformat("2026-04-06T19:00:00+08:00"),
+    ) == friday_bucket
+
 

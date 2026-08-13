@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 import logging
 import math
 from time import perf_counter
@@ -22,7 +22,11 @@ from app.schemas.rankings import (
 from app.schemas.stock import StockResponse
 from app.services.http_client import HttpFetchError, fetch_json
 from app.services.key_stats_service import get_valuation_snapshots
-from app.services.market_clock import is_market_open
+from app.services.market_clock import (
+    TW_DAILY_PUBLISH_TIME,
+    is_market_open,
+    tw_institutional_daily_bucket_for_date,
+)
 from app.services.quote_service import QuoteService, quote_service
 from app.services.rankings_external_source import (
     RankingsExternalSource,
@@ -626,10 +630,8 @@ class RankingsService:
 
         ranking_date, institutional_rows = institutional_snapshot
         candidates: list[_RankingCandidate] = []
-        ranking_timestamp = datetime.combine(
-            ranking_date,
-            time(18, 0),
-            tzinfo=_TW_TIMEZONE,
+        ranking_timestamp = tw_institutional_daily_bucket_for_date(ranking_date).astimezone(
+            _TW_TIMEZONE
         ).isoformat()
         for stock_id, net_buy_sell_shares in institutional_rows.items():
             stock = self.quote_source.get_stock(stock_id)
@@ -765,7 +767,7 @@ class RankingsService:
     ) -> tuple[date, dict[str, int]] | None:
         local_now = now.astimezone(_TW_TIMEZONE)
         candidate_date = local_now.date()
-        if local_now.time() < time(18, 0):
+        if local_now.time().replace(second=0, microsecond=0) < TW_DAILY_PUBLISH_TIME:
             candidate_date -= timedelta(days=1)
 
         for day_offset in range(7):
@@ -781,7 +783,7 @@ class RankingsService:
     ) -> tuple[date, dict[str, int]] | None:
         local_now = now.astimezone(_TW_TIMEZONE)
         candidate_date = local_now.date()
-        if local_now.time() < time(18, 0):
+        if local_now.time().replace(second=0, microsecond=0) < TW_DAILY_PUBLISH_TIME:
             candidate_date -= timedelta(days=1)
 
         for day_offset in range(7):

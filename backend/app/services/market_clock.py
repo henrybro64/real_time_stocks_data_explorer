@@ -157,6 +157,13 @@ def current_rankings_snapshot_bucket(market: str, now: datetime | None = None) -
     return _current_intraday_bucket(market, now, bucket_minutes=30)
 
 
+# End-of-day TW institutional files (T86 / TPEx dailyTrade) become the applicable
+# rankings cache key at 18:00 Asia/Taipei. Keep this as the single cutoff used by
+# snapshot lookup, persist, and item timestamps. Separate from
+# settings.taiwan_market_data_refresh_hour, which gates the detail-page store job.
+TW_DAILY_PUBLISH_TIME = time(18, 0)
+
+
 def latest_trading_day_bucket(
     market: str,
     now: datetime | None = None,
@@ -185,6 +192,45 @@ def latest_trading_day_bucket(
             tzinfo=MARKET_TIMEZONES[market],
         ).astimezone(timezone.utc)
     return None
+
+
+def tw_institutional_daily_bucket_for_date(ranking_date: date) -> datetime:
+    """Return the UTC cache key for a TW institutional ranking date (18:00 Taipei)."""
+    return datetime.combine(
+        ranking_date,
+        TW_DAILY_PUBLISH_TIME,
+        tzinfo=MARKET_TIMEZONES["TW"],
+    ).astimezone(timezone.utc)
+
+
+def tw_institutional_daily_bucket_from_timestamp(raw: str) -> datetime | None:
+    """Normalize a live item timestamp onto the shared 18:00 Taipei daily key."""
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    ranking_date = parsed.astimezone(MARKET_TIMEZONES["TW"]).date()
+    return tw_institutional_daily_bucket_for_date(ranking_date)
+
+
+def tw_institutional_daily_snapshot_bucket(now: datetime | None = None) -> datetime | None:
+    """Return the 18:00 Asia/Taipei bucket for the latest published TW daily file.
+
+    Institutional rankings are end-of-day. Before 18:00 Taipei the previous
+    trading day's snapshot is still the applicable cache key; at/after 18:00
+    today's trading day becomes the expected key.
+    """
+    trading_day_start = latest_trading_day_bucket(
+        "TW",
+        now,
+        available_after=TW_DAILY_PUBLISH_TIME,
+    )
+    if trading_day_start is None:
+        return None
+    ranking_date = trading_day_start.astimezone(MARKET_TIMEZONES["TW"]).date()
+    return tw_institutional_daily_bucket_for_date(ranking_date)
 
 
 def _current_intraday_bucket(

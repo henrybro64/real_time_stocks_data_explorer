@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, time, timezone
+from datetime import datetime, timezone
 from typing import Literal, Protocol
 
 from app.core.config import settings
@@ -14,7 +14,7 @@ from app.schemas.rankings import (
 from app.services.market_clock import (
     current_rankings_snapshot_bucket,
     is_market_open,
-    latest_trading_day_bucket,
+    tw_institutional_daily_snapshot_bucket,
 )
 from app.services.providers.us_provider import yahoo_v7_quotes_batch
 from app.services.quote_service import QuoteService, quote_service
@@ -24,7 +24,6 @@ from app.services.sp500_constituents import load_sp500_symbols
 
 
 RankingMarket = Literal["US", "TW"]
-_TW_DAILY_PUBLISH_TIME = time(18, 0)
 _UNSUPPORTED_US_INSTITUTIONAL_REASON = (
     "US institutional net-buy/net-sell is not available in this free-only app."
 )
@@ -158,11 +157,7 @@ class FreeTWInstitutionalDailyProvider:
         now: datetime,
     ) -> datetime | None:
         del query
-        return latest_trading_day_bucket(
-            "TW",
-            now,
-            available_after=_TW_DAILY_PUBLISH_TIME,
-        )
+        return tw_institutional_daily_snapshot_bucket(now)
 
     def fetch(
         self,
