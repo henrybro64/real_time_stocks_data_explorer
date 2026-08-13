@@ -589,3 +589,98 @@ def test_tw_institutional_rankings_include_daily_warning(
     assert payload["warningMessage"] == "上櫃（TPEx）三大法人買賣超為日資料，非盤中即時資料。"
     assert payload["sourceType"] == "free-public"
 
+
+def test_tw_institutional_rankings_use_applicable_snapshot_before_live_fetch(
+    monkeypatch,
+    db_session,
+) -> None:
+    monkeypatch.setattr(
+        "app.core.config.settings.rankings_snapshot_enabled",
+        False,
+    )
+    monkeypatch.setattr(
+        "app.services.market_clock._tw_market_holidays",
+        lambda year: frozenset(),
+    )
+
+    class _FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):  # type: ignore[override]
+            frozen = datetime(2026, 7, 3, 2, 0, tzinfo=timezone.utc)
+            if tz is None:
+                return frozen.replace(tzinfo=None)
+            return frozen.astimezone(tz)
+
+    monkeypatch.setattr(snapshot_service_module, "datetime", _FrozenDateTime)
+    bucket_start = datetime(2026, 7, 2, 10, 0, tzinfo=timezone.utc)
+    snapshot = RankingSnapshot(
+        market="TW",
+        tw_board="TWSE",
+        ranking_type="net_buy",
+        bucket_start=bucket_start,
+        source="TWSE T86 daily institutional data",
+        source_type="free-public",
+        source_freshness=(
+            "Showing the latest saved TW institutional daily snapshot."
+        ),
+        is_market_open=False,
+        warning_message="台股三大法人買賣超為日資料，非盤中即時資料。",
+        unsupported_reason=None,
+        capture_scope="on_demand",
+    )
+    db_session.add(snapshot)
+    db_session.flush()
+    db_session.add(
+        RankingSnapshotItem(
+            snapshot_id=snapshot.id,
+            rank=1,
+            stock_id="TW:2330",
+            symbol="2330",
+            name="TSMC",
+            last_price=101.0,
+            change_percent=None,
+            volume=None,
+            volume_delta=None,
+            volume_delta_percent=None,
+            net_buy=500_000,
+            net_sell=None,
+            data_time="2026-07-02T18:00:00+08:00",
+            raw_payload_json={
+                "stock": {
+                    "id": "TW:2330",
+                    "market": "TW",
+                    "symbol": "2330",
+                    "name": "TSMC",
+                    "exchange": "TWSE",
+                    "currency": "TWD",
+                    "timezone": "Asia/Taipei",
+                    "nameEn": "TSMC",
+                    "nameZhTw": None,
+                }
+            },
+        )
+    )
+    db_session.commit()
+    provider = FakeProvider(bucket_start=bucket_start, response=None)
+    monkeypatch.setattr(
+        rankings_snapshot_service,
+        "_provider_registry",
+        FakeRegistry({("TW", "net_buy", "TWSE"): provider}),
+    )
+
+    with TestClient(app) as client:
+        response = client.get(
+            "/api/rankings",
+            params={
+                "market": "TW",
+                "type": "net_buy",
+                "limit": 5,
+                "twBoard": "TWSE",
+            },
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["sourceType"] == "cache"
+    assert payload["items"][0]["stock"]["symbol"] == "2330"
+    assert provider.fetch_calls == 0
