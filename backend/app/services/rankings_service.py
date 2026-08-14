@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeout
 from dataclasses import dataclass
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 import logging
 import math
 from time import perf_counter
@@ -26,7 +28,6 @@ from app.services.market_clock import (
     TW_DAILY_PUBLISH_TIME,
     TW_INSTITUTIONAL_DAILY_LOOKBACK_DAYS,
     is_market_open,
-    is_trading_day,
     tw_institutional_daily_bucket_for_date,
 )
 from app.services.quote_service import QuoteService, quote_service
@@ -129,6 +130,11 @@ _TW_INSTITUTIONAL_FETCH_BUDGET_SECONDS = 6.0
 _TW_INSTITUTIONAL_REQUEST_TIMEOUT_SECONDS = 2.5
 _TW_INSTITUTIONAL_REQUEST_RETRIES = 0
 _TW_INSTITUTIONAL_MIN_PROBE_SECONDS = 0.4
+# Bound wait time even when httpx per-operation timeouts allow a trickling body.
+_TW_INSTITUTIONAL_PROBE_EXECUTOR = ThreadPoolExecutor(
+    max_workers=2,
+    thread_name_prefix="tw-inst-rankings",
+)
 
 _T = TypeVar("_T")
 
@@ -777,40 +783,50 @@ class RankingsService:
         self,
         now: datetime,
     ) -> tuple[date, dict[str, int]] | None:
-        def _probe(
-            current_date: date,
-            timeout_seconds: float,
-        ) -> tuple[date, dict[str, int]] | None:
-            rows = self._fetch_twse_institutional_rows(
-                current_date,
-                timeout_seconds=timeout_seconds,
-            )
-            if not rows:
-                return None
-            return current_date, rows
-
-        return self._probe_tw_institutional_dates(now, board="TWSE", probe=_probe)
+        return self._probe_tw_institutional_dates(
+            now,
+            board="TWSE",
+            probe=self._probe_twse_institutional_date,
+        )
 
     def _fetch_tpex_institutional_snapshot(
         self,
         now: datetime,
     ) -> tuple[date, dict[str, int]] | None:
-        def _probe(
-            current_date: date,
-            timeout_seconds: float,
-        ) -> tuple[date, dict[str, int]] | None:
-            snapshot = self._fetch_tpex_institutional_rows(
-                current_date,
-                timeout_seconds=timeout_seconds,
-            )
-            if snapshot is None:
-                return None
-            resolved_date, rows = snapshot
-            if resolved_date > current_date or not rows:
-                return None
-            return resolved_date, rows
+        return self._probe_tw_institutional_dates(
+            now,
+            board="TPEx",
+            probe=self._probe_tpex_institutional_date,
+        )
 
-        return self._probe_tw_institutional_dates(now, board="TPEx", probe=_probe)
+    def _probe_twse_institutional_date(
+        self,
+        current_date: date,
+        timeout_seconds: float,
+    ) -> tuple[date, dict[str, int]] | None:
+        rows = self._fetch_twse_institutional_rows(
+            current_date,
+            timeout_seconds=timeout_seconds,
+        )
+        if not rows:
+            return None
+        return current_date, rows
+
+    def _probe_tpex_institutional_date(
+        self,
+        current_date: date,
+        timeout_seconds: float,
+    ) -> tuple[date, dict[str, int]] | None:
+        snapshot = self._fetch_tpex_institutional_rows(
+            current_date,
+            timeout_seconds=timeout_seconds,
+        )
+        if snapshot is None:
+            return None
+        resolved_date, rows = snapshot
+        if resolved_date > current_date or not rows:
+            return None
+        return resolved_date, rows
 
     def _probe_tw_institutional_dates(
         self,
@@ -819,10 +835,13 @@ class RankingsService:
         board: str,
         probe: Callable[[date, float], _T | None],
     ) -> _T | None:
-        """Walk publishable TW trading days under a shared interactive time budget."""
+        """Walk publishable TW weekdays under a shared interactive wall-clock budget."""
         started_at = perf_counter()
+        # Materialize weekdays first so candidate generation never blocks the
+        # budget on TWSE holiday-calendar HTTP (cold cache / outage).
+        candidate_dates = list(self._iter_tw_institutional_candidate_dates(now))
         probes = 0
-        for current_date in self._iter_tw_institutional_candidate_dates(now):
+        for current_date in candidate_dates:
             if probes >= _TW_INSTITUTIONAL_MAX_WEEKDAY_PROBES:
                 break
             remaining = _TW_INSTITUTIONAL_FETCH_BUDGET_SECONDS - (
@@ -840,37 +859,68 @@ class RankingsService:
                 )
                 break
             probes += 1
-            result = probe(
+            probe_timeout = min(_TW_INSTITUTIONAL_REQUEST_TIMEOUT_SECONDS, remaining)
+            result = self._call_tw_institutional_probe_with_deadline(
+                probe,
                 current_date,
-                min(_TW_INSTITUTIONAL_REQUEST_TIMEOUT_SECONDS, remaining),
+                probe_timeout,
+                board=board,
             )
             if result is not None:
                 return result
         return None
 
     @staticmethod
-    def _iter_tw_institutional_candidate_dates(now: datetime) -> Iterator[date]:
-        """Trading dates only, starting from the latest publishable day.
+    def _call_tw_institutional_probe_with_deadline(
+        probe: Callable[[date, float], _T | None],
+        current_date: date,
+        timeout_seconds: float,
+        *,
+        board: str,
+    ) -> _T | None:
+        """Wait at most ``timeout_seconds`` wall-clock for one date probe.
 
-        Weekends and TW exchange holidays are skipped so closed sessions do not
-        burn the shared fetch budget before falling back to the prior open day.
+        ``httpx.Timeout`` bounds idle connect/read/write, not total response
+        duration. A trickling body can therefore outlive the interactive budget
+        unless the caller enforces an end-to-end wait deadline.
+        """
+        future = _TW_INSTITUTIONAL_PROBE_EXECUTOR.submit(
+            probe,
+            current_date,
+            timeout_seconds,
+        )
+        try:
+            return future.result(timeout=timeout_seconds)
+        except FuturesTimeout:
+            logger.info(
+                "TW institutional rankings probe exceeded wall-clock deadline",
+                extra={
+                    "event": "rankings.tw_institutional.probe_deadline",
+                    "board": board,
+                    "date": current_date.isoformat(),
+                    "timeout_seconds": timeout_seconds,
+                },
+            )
+            return None
+
+    @staticmethod
+    def _iter_tw_institutional_candidate_dates(now: datetime) -> Iterator[date]:
+        """Weekday dates only, starting from the latest publishable day.
+
+        Weekends are skipped without network I/O so Saturday/Sunday do not burn
+        the shared fetch budget. Weekday exchange holidays are not filtered here:
+        consulting the TWSE holiday page can stall longer than the whole budget
+        when the cache is cold, so a closed weekday is absorbed as one bounded
+        probe instead.
         """
         local_now = now.astimezone(_TW_TIMEZONE)
         candidate_date = local_now.date()
         if local_now.time().replace(second=0, microsecond=0) < TW_DAILY_PUBLISH_TIME:
             candidate_date -= timedelta(days=1)
-        for current_date in iter_candidate_weekdays(
+        return iter_candidate_weekdays(
             candidate_date,
             TW_INSTITUTIONAL_DAILY_LOOKBACK_DAYS,
-        ):
-            probe_at = datetime.combine(
-                current_date,
-                time(12, 0),
-                tzinfo=_TW_TIMEZONE,
-            )
-            if not is_trading_day("TW", probe_at):
-                continue
-            yield current_date
+        )
 
     def _fetch_twse_institutional_rows(
         self,
