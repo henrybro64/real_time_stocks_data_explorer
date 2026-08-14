@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 import logging
 import math
 from time import perf_counter
-from typing import Literal
+from typing import Literal, TypeVar
 from zoneinfo import ZoneInfo
 
 from app.core.diagnostics import elapsed_ms
@@ -24,7 +24,9 @@ from app.services.http_client import HttpFetchError, fetch_json
 from app.services.key_stats_service import get_valuation_snapshots
 from app.services.market_clock import (
     TW_DAILY_PUBLISH_TIME,
+    TW_INSTITUTIONAL_DAILY_LOOKBACK_DAYS,
     is_market_open,
+    is_trading_day,
     tw_institutional_daily_bucket_for_date,
 )
 from app.services.quote_service import QuoteService, quote_service
@@ -38,6 +40,7 @@ from app.services.rankings_volume_baseline_cache import (
 )
 from app.services.providers.us_provider import yahoo_v7_quotes_batch
 from app.services.sp500_constituents import load_sp500_symbols
+from app.services.taiwan_history_scan import iter_candidate_weekdays
 
 logger = logging.getLogger(__name__)
 
@@ -119,6 +122,15 @@ _BROWSER_USER_AGENT = (
     "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
 )
 _TW_TIMEZONE = ZoneInfo("Asia/Taipei")
+# Rankings must stay interactive: walking many prior dates with long per-request
+# timeouts can stall the page for well over a minute on a bad upstream day.
+_TW_INSTITUTIONAL_MAX_WEEKDAY_PROBES = 5
+_TW_INSTITUTIONAL_FETCH_BUDGET_SECONDS = 6.0
+_TW_INSTITUTIONAL_REQUEST_TIMEOUT_SECONDS = 2.5
+_TW_INSTITUTIONAL_REQUEST_RETRIES = 0
+_TW_INSTITUTIONAL_MIN_PROBE_SECONDS = 0.4
+
+_T = TypeVar("_T")
 
 
 @dataclass
@@ -765,39 +777,107 @@ class RankingsService:
         self,
         now: datetime,
     ) -> tuple[date, dict[str, int]] | None:
-        local_now = now.astimezone(_TW_TIMEZONE)
-        candidate_date = local_now.date()
-        if local_now.time().replace(second=0, microsecond=0) < TW_DAILY_PUBLISH_TIME:
-            candidate_date -= timedelta(days=1)
+        def _probe(
+            current_date: date,
+            timeout_seconds: float,
+        ) -> tuple[date, dict[str, int]] | None:
+            rows = self._fetch_twse_institutional_rows(
+                current_date,
+                timeout_seconds=timeout_seconds,
+            )
+            if not rows:
+                return None
+            return current_date, rows
 
-        for day_offset in range(7):
-            current_date = candidate_date - timedelta(days=day_offset)
-            rows = self._fetch_twse_institutional_rows(current_date)
-            if rows:
-                return current_date, rows
-        return None
+        return self._probe_tw_institutional_dates(now, board="TWSE", probe=_probe)
 
     def _fetch_tpex_institutional_snapshot(
         self,
         now: datetime,
     ) -> tuple[date, dict[str, int]] | None:
+        def _probe(
+            current_date: date,
+            timeout_seconds: float,
+        ) -> tuple[date, dict[str, int]] | None:
+            snapshot = self._fetch_tpex_institutional_rows(
+                current_date,
+                timeout_seconds=timeout_seconds,
+            )
+            if snapshot is None:
+                return None
+            resolved_date, rows = snapshot
+            if resolved_date > current_date or not rows:
+                return None
+            return resolved_date, rows
+
+        return self._probe_tw_institutional_dates(now, board="TPEx", probe=_probe)
+
+    def _probe_tw_institutional_dates(
+        self,
+        now: datetime,
+        *,
+        board: str,
+        probe: Callable[[date, float], _T | None],
+    ) -> _T | None:
+        """Walk publishable TW trading days under a shared interactive time budget."""
+        started_at = perf_counter()
+        probes = 0
+        for current_date in self._iter_tw_institutional_candidate_dates(now):
+            if probes >= _TW_INSTITUTIONAL_MAX_WEEKDAY_PROBES:
+                break
+            remaining = _TW_INSTITUTIONAL_FETCH_BUDGET_SECONDS - (
+                perf_counter() - started_at
+            )
+            if remaining < _TW_INSTITUTIONAL_MIN_PROBE_SECONDS:
+                logger.info(
+                    "TW institutional rankings stopped date walk-back after budget",
+                    extra={
+                        "event": "rankings.tw_institutional.budget_exhausted",
+                        "board": board,
+                        "probes": probes,
+                        "duration_ms": elapsed_ms(started_at),
+                    },
+                )
+                break
+            probes += 1
+            result = probe(
+                current_date,
+                min(_TW_INSTITUTIONAL_REQUEST_TIMEOUT_SECONDS, remaining),
+            )
+            if result is not None:
+                return result
+        return None
+
+    @staticmethod
+    def _iter_tw_institutional_candidate_dates(now: datetime) -> Iterator[date]:
+        """Trading dates only, starting from the latest publishable day.
+
+        Weekends and TW exchange holidays are skipped so closed sessions do not
+        burn the shared fetch budget before falling back to the prior open day.
+        """
         local_now = now.astimezone(_TW_TIMEZONE)
         candidate_date = local_now.date()
         if local_now.time().replace(second=0, microsecond=0) < TW_DAILY_PUBLISH_TIME:
             candidate_date -= timedelta(days=1)
-
-        for day_offset in range(7):
-            current_date = candidate_date - timedelta(days=day_offset)
-            snapshot = self._fetch_tpex_institutional_rows(current_date)
-            if snapshot is None:
+        for current_date in iter_candidate_weekdays(
+            candidate_date,
+            TW_INSTITUTIONAL_DAILY_LOOKBACK_DAYS,
+        ):
+            probe_at = datetime.combine(
+                current_date,
+                time(12, 0),
+                tzinfo=_TW_TIMEZONE,
+            )
+            if not is_trading_day("TW", probe_at):
                 continue
-            resolved_date, rows = snapshot
-            if resolved_date > current_date or not rows:
-                continue
-            return resolved_date, rows
-        return None
+            yield current_date
 
-    def _fetch_twse_institutional_rows(self, current_date: date) -> dict[str, int]:
+    def _fetch_twse_institutional_rows(
+        self,
+        current_date: date,
+        *,
+        timeout_seconds: float = _TW_INSTITUTIONAL_REQUEST_TIMEOUT_SECONDS,
+    ) -> dict[str, int]:
         try:
             payload = fetch_json(
                 _TWSE_T86_URL,
@@ -810,8 +890,8 @@ class RankingsService:
                     "User-Agent": _BROWSER_USER_AGENT,
                     "Accept": "application/json,text/plain,*/*",
                 },
-                timeout_seconds=8,
-                retries=1,
+                timeout_seconds=timeout_seconds,
+                retries=_TW_INSTITUTIONAL_REQUEST_RETRIES,
                 provider_name="twse",
                 operation_name="rankings_tw_institutional_daily",
                 resource_id=current_date.isoformat(),
@@ -848,6 +928,8 @@ class RankingsService:
     def _fetch_tpex_institutional_rows(
         self,
         current_date: date,
+        *,
+        timeout_seconds: float = _TW_INSTITUTIONAL_REQUEST_TIMEOUT_SECONDS,
     ) -> tuple[date, dict[str, int]] | None:
         try:
             payload = fetch_json(
@@ -863,8 +945,8 @@ class RankingsService:
                     "User-Agent": _BROWSER_USER_AGENT,
                     "Accept": "application/json,text/plain,*/*",
                 },
-                timeout_seconds=8,
-                retries=1,
+                timeout_seconds=timeout_seconds,
+                retries=_TW_INSTITUTIONAL_REQUEST_RETRIES,
                 provider_name="tpex",
                 operation_name="rankings_tpex_institutional_daily",
                 resource_id=current_date.isoformat(),

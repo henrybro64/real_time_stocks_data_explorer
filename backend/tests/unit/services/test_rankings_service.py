@@ -1343,24 +1343,408 @@ def test_fetch_tpex_institutional_rows_falls_back_to_legacy_net_buy_sell_field(m
     assert snapshot == (date(2026, 5, 11), {"TW:6488": 250000})
 
 
-def test_fetch_tpex_institutional_snapshot_walks_back_until_rows_are_available() -> None:
+def test_fetch_tpex_institutional_snapshot_walks_back_until_rows_are_available(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.services.market_clock._tw_market_holidays",
+        lambda year: frozenset(),
+    )
     service = RankingsService(FakeQuoteSource(stocks={}, quotes={}))
     requested_dates: list[date] = []
 
-    def fake_rows(current_date: date):
+    def fake_rows(current_date: date, *, timeout_seconds: float = 2.5):  # noqa: ARG001
         requested_dates.append(current_date)
-        if current_date == date(2026, 5, 10):
-            return (date(2026, 5, 10), {"TW:6488": 123456})
+        if current_date == date(2026, 5, 8):
+            return (date(2026, 5, 8), {"TW:6488": 123456})
+        return (current_date, {})
+
+    service._fetch_tpex_institutional_rows = fake_rows  # type: ignore[method-assign]
+
+    # Monday 11:00 Taipei -> publishable start is Friday 2026-05-08 after
+    # weekend skip from Sunday candidate (before 18:00).
+    snapshot = service._fetch_tpex_institutional_snapshot(
+        datetime(2026, 5, 11, 3, 0, tzinfo=timezone.utc),
+    )
+
+    assert snapshot == (date(2026, 5, 8), {"TW:6488": 123456})
+    assert requested_dates[0] == date(2026, 5, 8)
+    assert all(day.weekday() < 5 for day in requested_dates)
+
+
+def test_tw_institutional_snapshot_skips_weekend_dates_without_fetching(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.services.market_clock._tw_market_holidays",
+        lambda year: frozenset(),
+    )
+    service = RankingsService(FakeQuoteSource(stocks={}, quotes={}))
+    requested_dates: list[date] = []
+
+    def fake_rows(current_date: date, *, timeout_seconds: float = 2.5):  # noqa: ARG001
+        requested_dates.append(current_date)
+        return {"TW:2330": 1} if current_date == date(2026, 7, 10) else {}
+
+    service._fetch_twse_institutional_rows = fake_rows  # type: ignore[method-assign]
+
+    # Sunday 09:00 Taipei -> candidate start Saturday, then Friday after weekend skip.
+    snapshot = service._fetch_twse_institutional_snapshot(
+        datetime(2026, 7, 12, 1, 0, tzinfo=timezone.utc),
+    )
+
+    assert snapshot == (date(2026, 7, 10), {"TW:2330": 1})
+    assert requested_dates == [date(2026, 7, 10)]
+    assert all(day.weekday() < 5 for day in requested_dates)
+
+
+def test_tw_institutional_snapshot_monday_morning_falls_back_past_weekend(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.services.market_clock._tw_market_holidays",
+        lambda year: frozenset(),
+    )
+    service = RankingsService(FakeQuoteSource(stocks={}, quotes={}))
+    requested_dates: list[date] = []
+
+    def fake_rows(current_date: date, *, timeout_seconds: float = 2.5):  # noqa: ARG001
+        requested_dates.append(current_date)
+        return {"TW:2330": 42} if current_date == date(2026, 7, 10) else {}
+
+    service._fetch_twse_institutional_rows = fake_rows  # type: ignore[method-assign]
+
+    # Monday 09:00 Taipei -> candidate start Sunday, skip weekend to Friday.
+    snapshot = service._fetch_twse_institutional_snapshot(
+        datetime(2026, 7, 13, 1, 0, tzinfo=timezone.utc),
+    )
+
+    assert snapshot == (date(2026, 7, 10), {"TW:2330": 42})
+    assert requested_dates == [date(2026, 7, 10)]
+    assert date(2026, 7, 11) not in requested_dates  # Saturday
+    assert date(2026, 7, 12) not in requested_dates  # Sunday
+
+
+def test_tw_tpex_institutional_snapshot_skips_weekend_dates_without_fetching(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.services.market_clock._tw_market_holidays",
+        lambda year: frozenset(),
+    )
+    service = RankingsService(FakeQuoteSource(stocks={}, quotes={}))
+    requested_dates: list[date] = []
+
+    def fake_rows(current_date: date, *, timeout_seconds: float = 2.5):  # noqa: ARG001
+        requested_dates.append(current_date)
+        if current_date == date(2026, 7, 10):
+            return (date(2026, 7, 10), {"TW:6488": 9})
         return (current_date, {})
 
     service._fetch_tpex_institutional_rows = fake_rows  # type: ignore[method-assign]
 
     snapshot = service._fetch_tpex_institutional_snapshot(
-        datetime(2026, 5, 12, 3, 0, tzinfo=timezone.utc),
+        datetime(2026, 7, 12, 1, 0, tzinfo=timezone.utc),
     )
 
-    assert snapshot == (date(2026, 5, 10), {"TW:6488": 123456})
-    assert requested_dates[:2] == [date(2026, 5, 11), date(2026, 5, 10)]
+    assert snapshot == (date(2026, 7, 10), {"TW:6488": 9})
+    assert requested_dates == [date(2026, 7, 10)]
+    assert all(day.weekday() < 5 for day in requested_dates)
+
+
+def test_iter_tw_institutional_candidate_dates_skips_weekends_and_respects_publish_cutoff(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.services.market_clock._tw_market_holidays",
+        lambda year: frozenset(),
+    )
+    # Before 18:00 Taipei on Monday: start from Sunday, then skip to Friday.
+    before_cutoff = list(
+        RankingsService._iter_tw_institutional_candidate_dates(
+            datetime(2026, 7, 13, 1, 0, tzinfo=timezone.utc),
+        )
+    )
+    assert before_cutoff[0] == date(2026, 7, 10)
+    assert all(day.weekday() < 5 for day in before_cutoff)
+
+    # At 18:00 Taipei on Friday: today's trading day becomes publishable.
+    at_cutoff = list(
+        RankingsService._iter_tw_institutional_candidate_dates(
+            datetime(2026, 7, 10, 10, 0, tzinfo=timezone.utc),
+        )
+    )
+    assert at_cutoff[0] == date(2026, 7, 10)
+    assert all(day.weekday() < 5 for day in at_cutoff)
+
+
+def test_iter_tw_institutional_candidate_dates_skips_weekday_holidays(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.services.market_clock._tw_market_holidays",
+        lambda year: frozenset({date(2026, 4, 6)}) if year == 2026 else frozenset(),
+    )
+
+    # Monday 2026-04-06 is a holiday; before 18:00 candidate is Sunday 04-05,
+    # then weekend skip + holiday skip should land on Friday 04-03.
+    candidates = list(
+        RankingsService._iter_tw_institutional_candidate_dates(
+            datetime(2026, 4, 6, 10, 0, tzinfo=timezone.utc),
+        )
+    )
+
+    assert candidates[0] == date(2026, 4, 3)
+    assert date(2026, 4, 6) not in candidates
+    assert all(day.weekday() < 5 for day in candidates)
+
+
+def test_tw_institutional_snapshot_skips_weekday_holiday_without_fetching(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.services.market_clock._tw_market_holidays",
+        lambda year: frozenset({date(2026, 4, 6)}) if year == 2026 else frozenset(),
+    )
+    service = RankingsService(FakeQuoteSource(stocks={}, quotes={}))
+    requested_dates: list[date] = []
+
+    def fake_rows(current_date: date, *, timeout_seconds: float = 2.5):  # noqa: ARG001
+        requested_dates.append(current_date)
+        return {"TW:2330": 3} if current_date == date(2026, 4, 3) else {}
+
+    service._fetch_twse_institutional_rows = fake_rows  # type: ignore[method-assign]
+
+    # After 18:00 on holiday Monday: publishable day is the holiday itself,
+    # which must be skipped before Friday is probed.
+    snapshot = service._fetch_twse_institutional_snapshot(
+        datetime(2026, 4, 6, 11, 0, tzinfo=timezone.utc),
+    )
+
+    assert snapshot == (date(2026, 4, 3), {"TW:2330": 3})
+    assert requested_dates == [date(2026, 4, 3)]
+    assert date(2026, 4, 6) not in requested_dates
+
+
+def test_tw_institutional_snapshot_caps_weekday_probes_even_when_fast(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.services.market_clock._tw_market_holidays",
+        lambda year: frozenset(),
+    )
+    service = RankingsService(FakeQuoteSource(stocks={}, quotes={}))
+    requested_dates: list[date] = []
+
+    monkeypatch.setattr(
+        rankings_service_module,
+        "_TW_INSTITUTIONAL_MAX_WEEKDAY_PROBES",
+        3,
+    )
+
+    def fake_rows(current_date: date, *, timeout_seconds: float = 2.5):  # noqa: ARG001
+        requested_dates.append(current_date)
+        return {}
+
+    service._fetch_twse_institutional_rows = fake_rows  # type: ignore[method-assign]
+
+    snapshot = service._fetch_twse_institutional_snapshot(
+        datetime(2026, 7, 10, 3, 0, tzinfo=timezone.utc),
+    )
+
+    assert snapshot is None
+    assert len(requested_dates) == 3
+    assert all(day.weekday() < 5 for day in requested_dates)
+
+
+def test_tw_institutional_snapshot_continues_walkback_when_empty_responses_are_fast(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.services.market_clock._tw_market_holidays",
+        lambda year: frozenset(),
+    )
+    service = RankingsService(FakeQuoteSource(stocks={}, quotes={}))
+    requested_dates: list[date] = []
+
+    def fake_rows(current_date: date, *, timeout_seconds: float = 2.5):  # noqa: ARG001
+        requested_dates.append(current_date)
+        if current_date == date(2026, 7, 7):
+            return {"TW:2330": 7}
+        return {}
+
+    service._fetch_twse_institutional_rows = fake_rows  # type: ignore[method-assign]
+
+    # Friday 11:00 Taipei -> start Thursday 07-09, then Wed/Tue/Mon until Monday 07-07.
+    snapshot = service._fetch_twse_institutional_snapshot(
+        datetime(2026, 7, 10, 3, 0, tzinfo=timezone.utc),
+    )
+
+    assert snapshot == (date(2026, 7, 7), {"TW:2330": 7})
+    assert requested_dates == [
+        date(2026, 7, 9),
+        date(2026, 7, 8),
+        date(2026, 7, 7),
+    ]
+
+
+def test_tw_institutional_fetch_budget_binds_wall_clock_over_uncapped_probes() -> None:
+    """Budget must be the binding interactive limit, not probe×timeout×retries."""
+    budget = rankings_service_module._TW_INSTITUTIONAL_FETCH_BUDGET_SECONDS
+    timeout = rankings_service_module._TW_INSTITUTIONAL_REQUEST_TIMEOUT_SECONDS
+    retries = rankings_service_module._TW_INSTITUTIONAL_REQUEST_RETRIES
+    min_probe = rankings_service_module._TW_INSTITUTIONAL_MIN_PROBE_SECONDS
+    uncapped = (
+        rankings_service_module._TW_INSTITUTIONAL_MAX_WEEKDAY_PROBES
+        * timeout
+        * (1 + retries)
+    )
+
+    assert retries == 0
+    assert min_probe > 0
+    assert budget <= 10
+    assert uncapped > budget
+    # A probe may start with remaining >= min_probe, so wall clock can slightly
+    # exceed the budget by at most one remaining-capped request.
+    assert budget + timeout <= 12
+
+
+def test_tw_institutional_snapshot_wall_clock_stays_within_budget_plus_last_probe(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.services.market_clock._tw_market_holidays",
+        lambda year: frozenset(),
+    )
+    service = RankingsService(FakeQuoteSource(stocks={}, quotes={}))
+    clock = {"now": 0.0}
+    timeouts: list[float] = []
+
+    monkeypatch.setattr(
+        rankings_service_module,
+        "_TW_INSTITUTIONAL_FETCH_BUDGET_SECONDS",
+        3.0,
+    )
+    monkeypatch.setattr(
+        rankings_service_module,
+        "_TW_INSTITUTIONAL_REQUEST_TIMEOUT_SECONDS",
+        2.5,
+    )
+    monkeypatch.setattr(
+        rankings_service_module,
+        "_TW_INSTITUTIONAL_MIN_PROBE_SECONDS",
+        0.4,
+    )
+    monkeypatch.setattr(
+        rankings_service_module,
+        "perf_counter",
+        lambda: clock["now"],
+    )
+
+    def fake_rows(current_date: date, *, timeout_seconds: float = 2.5):  # noqa: ARG001
+        timeouts.append(timeout_seconds)
+        # Consume the full allotted timeout so wall clock tracks the budget path.
+        clock["now"] += timeout_seconds
+        return {}
+
+    service._fetch_twse_institutional_rows = fake_rows  # type: ignore[method-assign]
+
+    snapshot = service._fetch_twse_institutional_snapshot(
+        datetime(2026, 7, 10, 3, 0, tzinfo=timezone.utc),
+    )
+
+    assert snapshot is None
+    assert timeouts
+    assert sum(timeouts) <= 3.0 + 1e-9
+    assert clock["now"] <= 3.0 + 1e-9
+    assert all(
+        timeout <= rankings_service_module._TW_INSTITUTIONAL_REQUEST_TIMEOUT_SECONDS
+        for timeout in timeouts
+    )
+
+
+def test_tw_institutional_snapshot_stops_when_slow_responses_exhaust_budget(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.services.market_clock._tw_market_holidays",
+        lambda year: frozenset(),
+    )
+    service = RankingsService(FakeQuoteSource(stocks={}, quotes={}))
+    requested_dates: list[date] = []
+    clock = {"now": 0.0}
+
+    monkeypatch.setattr(
+        rankings_service_module,
+        "_TW_INSTITUTIONAL_FETCH_BUDGET_SECONDS",
+        1.0,
+    )
+    monkeypatch.setattr(
+        rankings_service_module,
+        "_TW_INSTITUTIONAL_MIN_PROBE_SECONDS",
+        0.2,
+    )
+    monkeypatch.setattr(
+        rankings_service_module,
+        "perf_counter",
+        lambda: clock["now"],
+    )
+
+    def fake_rows(current_date: date, *, timeout_seconds: float = 2.5):  # noqa: ARG001
+        requested_dates.append(current_date)
+        # Each probe burns most of the remaining budget.
+        clock["now"] += 0.7
+        return {}
+
+    service._fetch_twse_institutional_rows = fake_rows  # type: ignore[method-assign]
+
+    snapshot = service._fetch_twse_institutional_snapshot(
+        datetime(2026, 7, 10, 3, 0, tzinfo=timezone.utc),
+    )
+
+    assert snapshot is None
+    assert len(requested_dates) == 2
+    assert len(requested_dates) < rankings_service_module._TW_INSTITUTIONAL_MAX_WEEKDAY_PROBES
+    assert all(day.weekday() < 5 for day in requested_dates)
+
+
+def test_tw_tpex_institutional_snapshot_stops_when_slow_responses_exhaust_budget(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.services.market_clock._tw_market_holidays",
+        lambda year: frozenset(),
+    )
+    service = RankingsService(FakeQuoteSource(stocks={}, quotes={}))
+    requested_dates: list[date] = []
+    clock = {"now": 0.0}
+
+    monkeypatch.setattr(
+        rankings_service_module,
+        "_TW_INSTITUTIONAL_FETCH_BUDGET_SECONDS",
+        1.0,
+    )
+    monkeypatch.setattr(
+        rankings_service_module,
+        "_TW_INSTITUTIONAL_MIN_PROBE_SECONDS",
+        0.2,
+    )
+    monkeypatch.setattr(
+        rankings_service_module,
+        "perf_counter",
+        lambda: clock["now"],
+    )
+
+    def fake_rows(current_date: date, *, timeout_seconds: float = 2.5):  # noqa: ARG001
+        requested_dates.append(current_date)
+        clock["now"] += 0.7
+        return (current_date, {})
+
+    service._fetch_tpex_institutional_rows = fake_rows  # type: ignore[method-assign]
+
+    snapshot = service._fetch_tpex_institutional_snapshot(
+        datetime(2026, 7, 10, 3, 0, tzinfo=timezone.utc),
+    )
+
+    assert snapshot is None
+    assert len(requested_dates) == 2
+    assert len(requested_dates) < rankings_service_module._TW_INSTITUTIONAL_MAX_WEEKDAY_PROBES
 
 
 def test_fetch_tpex_institutional_rows_posts_expected_request_payload(monkeypatch) -> None:
@@ -1400,8 +1784,8 @@ def test_fetch_tpex_institutional_rows_posts_expected_request_payload(monkeypatc
             "User-Agent": rankings_service_module._BROWSER_USER_AGENT,
             "Accept": "application/json,text/plain,*/*",
         },
-        "timeout_seconds": 8,
-        "retries": 1,
+        "timeout_seconds": rankings_service_module._TW_INSTITUTIONAL_REQUEST_TIMEOUT_SECONDS,
+        "retries": rankings_service_module._TW_INSTITUTIONAL_REQUEST_RETRIES,
         "provider_name": "tpex",
         "operation_name": "rankings_tpex_institutional_daily",
         "resource_id": "2026-05-11",
@@ -1429,6 +1813,130 @@ def test_fetch_tpex_institutional_rows_skips_malformed_numeric_fields(monkeypatc
     snapshot = service._fetch_tpex_institutional_rows(date(2026, 5, 11))
 
     assert snapshot == (date(2026, 5, 11), {"TW:6488": 500000})
+
+
+def test_tw_institutional_snapshot_passes_remaining_budget_as_timeout(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.services.market_clock._tw_market_holidays",
+        lambda year: frozenset(),
+    )
+    service = RankingsService(FakeQuoteSource(stocks={}, quotes={}))
+    timeouts: list[float] = []
+    clock = {"now": 0.0}
+
+    monkeypatch.setattr(
+        rankings_service_module,
+        "_TW_INSTITUTIONAL_FETCH_BUDGET_SECONDS",
+        3.0,
+    )
+    monkeypatch.setattr(
+        rankings_service_module,
+        "_TW_INSTITUTIONAL_REQUEST_TIMEOUT_SECONDS",
+        2.5,
+    )
+    monkeypatch.setattr(
+        rankings_service_module,
+        "_TW_INSTITUTIONAL_MIN_PROBE_SECONDS",
+        0.2,
+    )
+    monkeypatch.setattr(
+        rankings_service_module,
+        "perf_counter",
+        lambda: clock["now"],
+    )
+
+    def fake_rows(current_date: date, *, timeout_seconds: float = 2.5):
+        del current_date
+        timeouts.append(timeout_seconds)
+        clock["now"] += 1.0
+        return {}
+
+    service._fetch_twse_institutional_rows = fake_rows  # type: ignore[method-assign]
+
+    service._fetch_twse_institutional_snapshot(
+        datetime(2026, 7, 10, 3, 0, tzinfo=timezone.utc),
+    )
+
+    assert timeouts
+    assert timeouts[0] == 2.5
+    assert timeouts[1] == pytest.approx(2.0)
+
+
+def test_fetch_twse_institutional_rows_uses_bounded_timeout_and_retries(monkeypatch) -> None:
+    service = RankingsService(FakeQuoteSource(stocks={}, quotes={}))
+    captured: dict[str, object] = {}
+
+    def fake_fetch_json(url: str, **kwargs):
+        captured["url"] = url
+        captured["kwargs"] = kwargs
+        return {
+            "fields": ["證券代號", "三大法人買賣超股數"],
+            "data": [["2330", "1"]],
+        }
+
+    monkeypatch.setattr(rankings_service_module, "fetch_json", fake_fetch_json)
+
+    rows = service._fetch_twse_institutional_rows(date(2026, 5, 11))
+
+    assert rows == {"TW:2330": 1}
+    assert captured["url"] == rankings_service_module._TWSE_T86_URL
+    assert (
+        captured["kwargs"]["timeout_seconds"]
+        == rankings_service_module._TW_INSTITUTIONAL_REQUEST_TIMEOUT_SECONDS
+    )
+    assert (
+        captured["kwargs"]["retries"]
+        == rankings_service_module._TW_INSTITUTIONAL_REQUEST_RETRIES
+    )
+
+
+def test_tw_net_buy_degrades_when_budget_exhausted_before_rows_found(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.services.market_clock._tw_market_holidays",
+        lambda year: frozenset(),
+    )
+    service = RankingsService(FakeQuoteSource(stocks={}, quotes={}))
+    clock = {"now": 0.0}
+
+    monkeypatch.setattr(
+        rankings_service_module,
+        "_TW_INSTITUTIONAL_FETCH_BUDGET_SECONDS",
+        0.5,
+    )
+    monkeypatch.setattr(
+        rankings_service_module,
+        "_TW_INSTITUTIONAL_MIN_PROBE_SECONDS",
+        0.4,
+    )
+    monkeypatch.setattr(
+        rankings_service_module,
+        "perf_counter",
+        lambda: clock["now"],
+    )
+
+    def fake_rows(current_date: date, *, timeout_seconds: float = 2.5):  # noqa: ARG001
+        clock["now"] += 0.5
+        return {}
+
+    service._fetch_twse_institutional_rows = fake_rows  # type: ignore[method-assign]
+
+    response = service.get_rankings(
+        "TW",
+        RankingType.net_buy,
+        limit=50,
+        now=datetime(2026, 7, 10, 3, 0, tzinfo=timezone.utc),
+    )
+
+    assert response.items == []
+    assert response.sourceType == RankingSourceType.unsupported
+    assert (
+        response.unsupportedReason
+        == "TW institutional daily data is temporarily unavailable from the free public source."
+    )
 
 
 def test_fetch_tw_institutional_snapshot_dispatches_by_board() -> None:
