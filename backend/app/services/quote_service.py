@@ -37,6 +37,8 @@ CacheSource = Literal["redis", "memory", "provider", "none"]
 _UTC_Z_SUFFIX = "+00:00"
 
 _refresh_executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="quote-swr")
+_quote_batch_executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="quote-batch")
+_QUOTE_BATCH_MAX_WORKERS = 8
 
 
 @dataclass(frozen=True)
@@ -349,6 +351,7 @@ class QuoteService:
         return self._collect_quotes(
             stock_ids,
             lambda stock_id: self.get_quote(stock_id, allow_stale=False),
+            concurrent=True,
         )
 
     def get_quotes_cache_first(self, stock_ids: list[str]) -> list[QuoteBatchItem]:
@@ -480,14 +483,40 @@ class QuoteService:
         self,
         stock_ids: list[str],
         fetcher: Callable[[str], QuoteRecord | None],
+        *,
+        concurrent: bool = False,
     ) -> list[tuple[StockRecord, QuoteRecord]]:
-        envelopes: list[tuple[StockRecord, QuoteRecord]] = []
-        for stock_id in stock_ids:
-            stock = self.get_stock(stock_id)
-            quote = fetcher(stock_id)
-            if stock and quote:
-                envelopes.append((stock, quote))
-        return envelopes
+        unique_ids = list(dict.fromkeys(stock_ids))
+        if not unique_ids:
+            return []
+
+        def _one(stock_id: str) -> tuple[StockRecord, QuoteRecord] | None:
+            try:
+                stock = self.get_stock(stock_id)
+                quote = fetcher(stock_id)
+            except Exception:
+                logger.exception(
+                    "Quote batch lookup failed for one symbol",
+                    extra={
+                        "event": "quote.batch.symbol_failed",
+                        "stock_id": stock_id,
+                    },
+                )
+                return None
+            if stock is None or quote is None:
+                return None
+            return (stock, quote)
+
+        worker_count = min(_QUOTE_BATCH_MAX_WORKERS, len(unique_ids))
+        if not concurrent or worker_count <= 1:
+            results = [_one(stock_id) for stock_id in unique_ids]
+        else:
+            futures = [
+                _quote_batch_executor.submit(_one, stock_id)
+                for stock_id in unique_ids
+            ]
+            results = [future.result() for future in futures]
+        return [envelope for envelope in results if envelope is not None]
 
     def _enqueue_refresh(self, stock_id: str) -> bool:
         token = try_acquire_refresh_lock(stock_id)

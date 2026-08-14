@@ -673,12 +673,9 @@ class RankingsService:
             )
 
         ranked_candidates = self._sort_tw_institutional_candidates(candidates, ranking_type)[:limit]
-        quotes_by_id = {
-            stock.id: quote
-            for stock, quote in self.quote_source.get_quotes(
-                [candidate.stock.id for candidate in ranked_candidates]
-            )
-        }
+        quotes_by_id = self._fetch_tw_institutional_enrichment_quotes(
+            [candidate.stock.id for candidate in ranked_candidates]
+        )
         for candidate in ranked_candidates:
             quote = quotes_by_id.get(candidate.stock.id)
             if quote is None:
@@ -711,6 +708,39 @@ class RankingsService:
             warningMessage=self._tw_institutional_warning(tw_board),
             unsupportedReason=None,
         )
+
+    def _fetch_tw_institutional_enrichment_quotes(
+        self,
+        stock_ids: list[str],
+    ) -> dict[str, QuoteRecord]:
+        """Attach display quotes after ranking, without a serial provider loop.
+
+        Prefer a cache-first batch read when the quote source supports it.
+        Only fresh (non-stale) cache hits skip ``get_quotes``; stale and missing
+        ids are filled with bounded-concurrent lookups. Ranking order is applied
+        by the caller, not by quote completion order.
+        """
+        if not stock_ids:
+            return {}
+        quotes_by_id: dict[str, QuoteRecord] = {}
+        cache_first = getattr(self.quote_source, "get_quotes_cache_first", None)
+        if callable(cache_first):
+            items = cache_first(stock_ids)
+            for item in items:
+                quote = _fresh_cached_enrichment_quote(item)
+                if quote is None:
+                    continue
+                quotes_by_id[item.stock.id] = quote
+        missing = [stock_id for stock_id in stock_ids if stock_id not in quotes_by_id]
+        if not missing:
+            return quotes_by_id
+        quotes_by_id.update(
+            {
+                stock.id: quote
+                for stock, quote in self.quote_source.get_quotes(missing)
+            }
+        )
+        return quotes_by_id
 
     @staticmethod
     def _tw_institutional_source(tw_board: TwBoard) -> str:
@@ -1190,6 +1220,16 @@ class RankingsService:
                 item.stock.symbol,
             ),
         )
+
+
+def _fresh_cached_enrichment_quote(item: object) -> QuoteRecord | None:
+    """Return a cache-first quote only when it is present and not stale."""
+    quote = getattr(item, "quote", None)
+    if quote is None or getattr(item, "stale", False):
+        return None
+    if not isinstance(quote, QuoteRecord):
+        return None
+    return quote
 
 
 def _stock_schema(stock: StockRecord) -> StockResponse:

@@ -237,8 +237,81 @@ def test_get_quotes_does_not_serve_stale_fallback_for_rankings() -> None:
     cache.set_cached_quote("US:AAPL", provider._quotes["US:AAPL"])
     age_memory_cached_quote("US:AAPL")
 
-    with pytest.raises(RuntimeError, match="provider failed"):
-        service.get_quotes(["US:AAPL"])
+    envelopes = service.get_quotes(["US:AAPL"])
+
+    assert envelopes == []
+    assert provider.quote_calls == ["US:AAPL"]
+
+
+def test_get_quotes_lookups_are_not_strictly_serial() -> None:
+    provider = StubUSProvider()
+    barrier = threading.Barrier(2, timeout=2)
+    in_flight = 0
+    max_in_flight = 0
+    lock = threading.Lock()
+    original = provider.get_quote
+
+    def overlapping_get_quote(stock_id: str):
+        nonlocal in_flight, max_in_flight
+        with lock:
+            in_flight += 1
+            max_in_flight = max(max_in_flight, in_flight)
+        barrier.wait()
+        try:
+            return original(stock_id)
+        finally:
+            with lock:
+                in_flight -= 1
+
+    provider.get_quote = overlapping_get_quote  # type: ignore[method-assign]
+    service = _service_with_provider(provider)
+
+    envelopes = service.get_quotes(["US:AAPL", "US:MSFT"])
+
+    assert [stock.id for stock, _quote in envelopes] == ["US:AAPL", "US:MSFT"]
+    assert max_in_flight >= 2
+
+
+def test_get_quotes_isolates_per_symbol_provider_failures() -> None:
+    provider = StubUSProvider()
+    provider.fail_ids.add("US:AAPL")
+    service = _service_with_provider(provider)
+
+    envelopes = service.get_quotes(["US:AAPL", "US:MSFT"])
+
+    assert [stock.id for stock, _quote in envelopes] == ["US:MSFT"]
+    assert set(provider.quote_calls) == {"US:AAPL", "US:MSFT"}
+
+
+def test_get_quotes_preserves_request_order_when_later_symbol_finishes_first() -> None:
+    provider = StubUSProvider()
+    started = {stock_id: threading.Event() for stock_id in ("US:AAPL", "US:MSFT")}
+    release_aapl = threading.Event()
+    original = provider.get_quote
+
+    def delayed_first(stock_id: str):
+        started[stock_id].set()
+        if stock_id == "US:AAPL":
+            assert release_aapl.wait(timeout=2)
+        return original(stock_id)
+
+    provider.get_quote = delayed_first  # type: ignore[method-assign]
+    service = _service_with_provider(provider)
+
+    result_holder: list[str] = []
+
+    def runner() -> None:
+        envelopes = service.get_quotes(["US:AAPL", "US:MSFT"])
+        result_holder.extend(stock.id for stock, _quote in envelopes)
+
+    thread = threading.Thread(target=runner)
+    thread.start()
+    assert started["US:MSFT"].wait(timeout=2)
+    assert started["US:AAPL"].wait(timeout=2)
+    release_aapl.set()
+    thread.join(timeout=2)
+    assert not thread.is_alive()
+    assert result_holder == ["US:AAPL", "US:MSFT"]
 
 
 def test_get_quote_detail_reports_provider_source_on_uncached_fetch() -> None:
