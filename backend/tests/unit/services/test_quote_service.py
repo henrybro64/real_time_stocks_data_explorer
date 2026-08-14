@@ -8,7 +8,7 @@ import pytest
 from app.services import quote_redis_cache as cache
 from app.services.http_client import HttpFetchError
 from app.services.quote_service import QuoteService
-from tests.support import StubUSProvider, age_memory_cached_quote
+from tests.support import StubUSProvider, age_memory_cached_quote, overlapping_lookup
 
 
 @pytest.fixture(autouse=True)
@@ -245,31 +245,13 @@ def test_get_quotes_does_not_serve_stale_fallback_for_rankings() -> None:
 
 def test_get_quotes_lookups_are_not_strictly_serial() -> None:
     provider = StubUSProvider()
-    barrier = threading.Barrier(2, timeout=2)
-    in_flight = 0
-    max_in_flight = 0
-    lock = threading.Lock()
-    original = provider.get_quote
-
-    def overlapping_get_quote(stock_id: str):
-        nonlocal in_flight, max_in_flight
-        with lock:
-            in_flight += 1
-            max_in_flight = max(max_in_flight, in_flight)
-        barrier.wait()
-        try:
-            return original(stock_id)
-        finally:
-            with lock:
-                in_flight -= 1
-
-    provider.get_quote = overlapping_get_quote  # type: ignore[method-assign]
+    provider.get_quote, stats = overlapping_lookup(provider.get_quote)
     service = _service_with_provider(provider)
 
     envelopes = service.get_quotes(["US:AAPL", "US:MSFT"])
 
     assert [stock.id for stock, _quote in envelopes] == ["US:AAPL", "US:MSFT"]
-    assert max_in_flight >= 2
+    assert stats.max_in_flight >= 2
 
 
 def test_get_quotes_isolates_per_symbol_provider_failures() -> None:

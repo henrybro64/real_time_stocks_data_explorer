@@ -10,7 +10,7 @@ from app.services import rankings_service as rankings_service_module
 from app.services.quote_service import QuoteService
 from app.services.rankings_service import RankingsService
 from app.services.rankings_volume_baseline_cache import InMemoryVolumeBaselineStore
-from tests.support import quote_record, stock_record
+from tests.support import overlapping_lookup, quote_record, stock_record
 
 
 def _empty_sp500_quotes(_stocks):
@@ -143,6 +143,65 @@ def _quote(
         is_market_open=True,
         volume=volume,
     )
+
+
+_TW_QUOTE_NAMES = {
+    "TW:2330": ("2330", "台積電"),
+    "TW:2317": ("2317", "鴻海"),
+    "TW:2454": ("2454", "聯發科"),
+}
+_CACHE_ITEM_DEFAULT = object()
+
+
+def _tw_quote_source(last_prices: dict[str, float]) -> FakeQuoteSource:
+    stocks = {}
+    quotes = {}
+    for index, (stock_id, last_price) in enumerate(last_prices.items(), start=1):
+        symbol, name = _TW_QUOTE_NAMES[stock_id]
+        stocks[stock_id] = _tw_stock(stock_id, symbol, name)
+        quotes[stock_id] = _quote(
+            stock_id,
+            index * 1000,
+            "2026-05-12T10:00:00+08:00",
+            last_price=last_price,
+        )
+    return FakeQuoteSource(stocks=stocks, quotes=quotes)
+
+
+def _tw_net_buy_service(quote_source, rows: dict[str, int]) -> RankingsService:
+    service = RankingsService(quote_source)
+    service._fetch_tw_institutional_snapshot = (  # type: ignore[method-assign]
+        lambda now, tw_board="TWSE", bound_rows=rows: (date(2026, 5, 11), bound_rows)
+    )
+    return service
+
+
+def _track_get_quotes(quote_source) -> list[list[str]]:
+    calls: list[list[str]] = []
+    original = quote_source.get_quotes
+
+    def tracking(stock_ids: list[str]):
+        calls.append(list(stock_ids))
+        return original(stock_ids)
+
+    quote_source.get_quotes = tracking  # type: ignore[method-assign]
+    return calls
+
+
+def _install_cache_first(quote_source, builder) -> list[list[str]]:
+    calls: list[list[str]] = []
+
+    def cache_first(stock_ids: list[str]):
+        calls.append(list(stock_ids))
+        return builder(quote_source, stock_ids)
+
+    quote_source.get_quotes_cache_first = cache_first  # type: ignore[method-assign]
+    return calls
+
+
+def _cached_item(quote_source, stock_id: str, *, quote=_CACHE_ITEM_DEFAULT, stale: bool = False):
+    resolved = quote_source._quotes[stock_id] if quote is _CACHE_ITEM_DEFAULT else quote
+    return SimpleNamespace(stock=quote_source.get_stock(stock_id), quote=resolved, stale=stale)
 
 
 def _valuation_snapshot(
@@ -1159,200 +1218,79 @@ def test_tw_tpex_net_buy_returns_tpex_daily_warning_and_quote_fields() -> None:
 
 
 def test_tw_institutional_quote_enrichment_uses_one_batch_lookup_not_per_symbol() -> None:
-    quote_source = FakeQuoteSource(
-        stocks={
-            "TW:2330": _tw_stock("TW:2330", "2330", "台積電"),
-            "TW:2317": _tw_stock("TW:2317", "2317", "鴻海"),
-            "TW:2454": _tw_stock("TW:2454", "2454", "聯發科"),
-        },
-        quotes={
-            "TW:2330": _quote("TW:2330", 1000, "2026-05-12T10:00:00+08:00", last_price=100.0),
-            "TW:2317": _quote("TW:2317", 2000, "2026-05-12T10:00:00+08:00", last_price=200.0),
-            "TW:2454": _quote("TW:2454", 3000, "2026-05-12T10:00:00+08:00", last_price=300.0),
-        },
-    )
-    quote_source.get_quotes_calls: list[list[str]] = []
-    original_get_quotes = quote_source.get_quotes
-
-    def tracking_get_quotes(stock_ids: list[str]):
-        quote_source.get_quotes_calls.append(list(stock_ids))
-        return original_get_quotes(stock_ids)
-
-    quote_source.get_quotes = tracking_get_quotes  # type: ignore[method-assign]
-    service = RankingsService(quote_source)
-    service._fetch_tw_institutional_snapshot = lambda now, tw_board="TWSE": (  # type: ignore[method-assign]
-        date(2026, 5, 11),
+    quote_source = _tw_quote_source({"TW:2330": 100.0, "TW:2317": 200.0, "TW:2454": 300.0})
+    get_quotes_calls = _track_get_quotes(quote_source)
+    service = _tw_net_buy_service(
+        quote_source,
         {"TW:2330": 500000, "TW:2317": 400000, "TW:2454": 300000},
     )
 
     response = service.get_rankings("TW", RankingType.net_buy, limit=3)
 
-    assert quote_source.get_quotes_calls == [["TW:2330", "TW:2317", "TW:2454"]]
+    assert get_quotes_calls == [["TW:2330", "TW:2317", "TW:2454"]]
     assert [item.stock.symbol for item in response.items] == ["2330", "2317", "2454"]
     assert [item.lastPrice for item in response.items] == [100.0, 200.0, 300.0]
 
 
-def test_tw_institutional_quote_enrichment_prefers_cache_first_batch() -> None:
-    quote_source = FakeQuoteSource(
-        stocks={
-            "TW:2330": _tw_stock("TW:2330", "2330", "台積電"),
-            "TW:2317": _tw_stock("TW:2317", "2317", "鴻海"),
-        },
-        quotes={
-            "TW:2330": _quote("TW:2330", 1000, "2026-05-12T10:00:00+08:00", last_price=101.0),
-            "TW:2317": _quote("TW:2317", 2000, "2026-05-12T10:00:00+08:00", last_price=202.0),
-        },
-    )
-    cache_first_calls: list[list[str]] = []
-    get_quotes_calls: list[list[str]] = []
-    original_get_quotes = quote_source.get_quotes
-
-    def cache_first(stock_ids: list[str]):
-        cache_first_calls.append(list(stock_ids))
-        return [
-            SimpleNamespace(
-                stock=quote_source.get_stock(stock_id),
-                quote=quote_source._quotes[stock_id],
-                stale=False,
-            )
-            for stock_id in stock_ids
-        ]
-
-    def tracking_get_quotes(stock_ids: list[str]):
-        get_quotes_calls.append(list(stock_ids))
-        return original_get_quotes(stock_ids)
-
-    quote_source.get_quotes_cache_first = cache_first  # type: ignore[method-assign]
-    quote_source.get_quotes = tracking_get_quotes  # type: ignore[method-assign]
-    service = RankingsService(quote_source)
-    service._fetch_tw_institutional_snapshot = lambda now, tw_board="TWSE": (  # type: ignore[method-assign]
-        date(2026, 5, 11),
-        {"TW:2330": 900000, "TW:2317": 100000},
-    )
-
-    response = service.get_rankings("TW", RankingType.net_buy, limit=2)
-
-    assert cache_first_calls == [["TW:2330", "TW:2317"]]
-    assert get_quotes_calls == []
-    assert [item.lastPrice for item in response.items] == [101.0, 202.0]
-
-
-def test_tw_institutional_quote_enrichment_fills_cache_misses_in_one_batch() -> None:
-    quote_source = FakeQuoteSource(
-        stocks={
-            "TW:2330": _tw_stock("TW:2330", "2330", "台積電"),
-            "TW:2317": _tw_stock("TW:2317", "2317", "鴻海"),
-        },
-        quotes={
-            "TW:2330": _quote("TW:2330", 1000, "2026-05-12T10:00:00+08:00", last_price=101.0),
-            "TW:2317": _quote("TW:2317", 2000, "2026-05-12T10:00:00+08:00", last_price=202.0),
-        },
-    )
-    get_quotes_calls: list[list[str]] = []
-    original_get_quotes = quote_source.get_quotes
-
-    def cache_first(stock_ids: list[str]):  # noqa: ARG001
-        return [
-            SimpleNamespace(
-                stock=quote_source.get_stock("TW:2330"),
-                quote=quote_source._quotes["TW:2330"],
-                stale=False,
-            ),
-            SimpleNamespace(
-                stock=quote_source.get_stock("TW:2317"),
-                quote=None,
-                stale=False,
-            ),
-        ]
-
-    def tracking_get_quotes(stock_ids: list[str]):
-        get_quotes_calls.append(list(stock_ids))
-        return original_get_quotes(stock_ids)
-
-    quote_source.get_quotes_cache_first = cache_first  # type: ignore[method-assign]
-    quote_source.get_quotes = tracking_get_quotes  # type: ignore[method-assign]
-    service = RankingsService(quote_source)
-    service._fetch_tw_institutional_snapshot = lambda now, tw_board="TWSE": (  # type: ignore[method-assign]
-        date(2026, 5, 11),
-        {"TW:2330": 900000, "TW:2317": 100000},
-    )
+@pytest.mark.parametrize(
+    ("cache_builder", "expected_get_quotes", "expected_cache_calls"),
+    [
+        pytest.param(
+            lambda source, ids: [_cached_item(source, stock_id) for stock_id in ids],
+            [],
+            [["TW:2330", "TW:2317"]],
+            id="fresh-hits-skip-get-quotes",
+        ),
+        pytest.param(
+            lambda source, _ids: [
+                _cached_item(source, "TW:2330"),
+                _cached_item(source, "TW:2317", quote=None),
+            ],
+            [["TW:2317"]],
+            None,
+            id="fill-missing-in-one-batch",
+        ),
+        pytest.param(
+            lambda source, _ids: [
+                _cached_item(
+                    source,
+                    "TW:2330",
+                    quote=_quote("TW:2330", 1, "2026-05-11T10:00:00+08:00", last_price=1.0),
+                    stale=True,
+                ),
+                _cached_item(source, "TW:2317", quote=None),
+            ],
+            [["TW:2330", "TW:2317"]],
+            None,
+            id="refresh-stale-and-missing",
+        ),
+    ],
+)
+def test_tw_institutional_quote_enrichment_cache_first_then_fill(
+    cache_builder,
+    expected_get_quotes,
+    expected_cache_calls,
+) -> None:
+    quote_source = _tw_quote_source({"TW:2330": 101.0, "TW:2317": 202.0})
+    get_quotes_calls = _track_get_quotes(quote_source)
+    cache_first_calls = _install_cache_first(quote_source, cache_builder)
+    service = _tw_net_buy_service(quote_source, {"TW:2330": 900000, "TW:2317": 100000})
 
     response = service.get_rankings("TW", RankingType.net_buy, limit=2)
 
-    assert get_quotes_calls == [["TW:2317"]]
-    assert [item.lastPrice for item in response.items] == [101.0, 202.0]
-
-
-def test_tw_institutional_quote_enrichment_refreshes_stale_cache_hits() -> None:
-    quote_source = FakeQuoteSource(
-        stocks={
-            "TW:2330": _tw_stock("TW:2330", "2330", "台積電"),
-            "TW:2317": _tw_stock("TW:2317", "2317", "鴻海"),
-        },
-        quotes={
-            "TW:2330": _quote("TW:2330", 1000, "2026-05-12T10:00:00+08:00", last_price=101.0),
-            "TW:2317": _quote("TW:2317", 2000, "2026-05-12T10:00:00+08:00", last_price=202.0),
-        },
-    )
-    get_quotes_calls: list[list[str]] = []
-    original_get_quotes = quote_source.get_quotes
-
-    def cache_first(stock_ids: list[str]):  # noqa: ARG001
-        return [
-            SimpleNamespace(
-                stock=quote_source.get_stock("TW:2330"),
-                quote=_quote("TW:2330", 1, "2026-05-11T10:00:00+08:00", last_price=1.0),
-                stale=True,
-            ),
-            SimpleNamespace(
-                stock=quote_source.get_stock("TW:2317"),
-                quote=None,
-                stale=False,
-            ),
-        ]
-
-    def tracking_get_quotes(stock_ids: list[str]):
-        get_quotes_calls.append(list(stock_ids))
-        return original_get_quotes(stock_ids)
-
-    quote_source.get_quotes_cache_first = cache_first  # type: ignore[method-assign]
-    quote_source.get_quotes = tracking_get_quotes  # type: ignore[method-assign]
-    service = RankingsService(quote_source)
-    service._fetch_tw_institutional_snapshot = lambda now, tw_board="TWSE": (  # type: ignore[method-assign]
-        date(2026, 5, 11),
-        {"TW:2330": 900000, "TW:2317": 100000},
-    )
-
-    response = service.get_rankings("TW", RankingType.net_buy, limit=2)
-
-    assert get_quotes_calls == [["TW:2330", "TW:2317"]]
+    if expected_cache_calls is not None:
+        assert cache_first_calls == expected_cache_calls
+    assert get_quotes_calls == expected_get_quotes
     assert [item.lastPrice for item in response.items] == [101.0, 202.0]
 
 
 def test_tw_institutional_quote_enrichment_keeps_rank_order_if_quotes_return_reversed() -> None:
-    quote_source = FakeQuoteSource(
-        stocks={
-            "TW:2330": _tw_stock("TW:2330", "2330", "台積電"),
-            "TW:2317": _tw_stock("TW:2317", "2317", "鴻海"),
-        },
-        quotes={
-            "TW:2330": _quote("TW:2330", 1000, "2026-05-12T10:00:00+08:00", last_price=10.0),
-            "TW:2317": _quote("TW:2317", 2000, "2026-05-12T10:00:00+08:00", last_price=20.0),
-        },
-    )
-
-    def reversed_get_quotes(stock_ids: list[str]):
-        envelopes = []
-        for stock_id in reversed(stock_ids):
-            envelopes.append((quote_source._stocks[stock_id], quote_source._quotes[stock_id]))
-        return envelopes
-
-    quote_source.get_quotes = reversed_get_quotes  # type: ignore[method-assign]
-    service = RankingsService(quote_source)
-    service._fetch_tw_institutional_snapshot = lambda now, tw_board="TWSE": (  # type: ignore[method-assign]
-        date(2026, 5, 11),
-        {"TW:2330": 500000, "TW:2317": 100000},
-    )
+    quote_source = _tw_quote_source({"TW:2330": 10.0, "TW:2317": 20.0})
+    quote_source.get_quotes = lambda stock_ids: [  # type: ignore[method-assign]
+        (quote_source._stocks[stock_id], quote_source._quotes[stock_id])
+        for stock_id in reversed(stock_ids)
+    ]
+    service = _tw_net_buy_service(quote_source, {"TW:2330": 500000, "TW:2317": 100000})
 
     response = service.get_rankings("TW", RankingType.net_buy, limit=2)
 
@@ -1367,51 +1305,27 @@ def test_tw_institutional_quote_lookups_are_not_strictly_serial(monkeypatch) -> 
     monkeypatch.setattr(quote_cache.settings, "quote_refresher_enabled", False)
     monkeypatch.setattr(quote_cache.settings, "quote_refresher_owns_upstream", False)
 
-    stocks = {
-        "TW:2330": _tw_stock("TW:2330", "2330", "台積電"),
-        "TW:2317": _tw_stock("TW:2317", "2317", "鴻海"),
-    }
-    quotes = {
-        "TW:2330": _quote("TW:2330", 1000, "2026-05-12T10:00:00+08:00", last_price=10.0),
-        "TW:2317": _quote("TW:2317", 2000, "2026-05-12T10:00:00+08:00", last_price=20.0),
-    }
-    barrier = threading.Barrier(2, timeout=2)
-    in_flight = 0
-    max_in_flight = 0
-    lock = threading.Lock()
+    fixture = _tw_quote_source({"TW:2330": 10.0, "TW:2317": 20.0})
+    get_quote, stats = overlapping_lookup(fixture._quotes.__getitem__)
 
     class StubTWProvider:
         def get_stock(self, stock_id: str):
-            return stocks.get(stock_id)
+            return fixture.get_stock(stock_id)
 
         def get_quote(self, stock_id: str):
-            nonlocal in_flight, max_in_flight
-            with lock:
-                in_flight += 1
-                max_in_flight = max(max_in_flight, in_flight)
-            barrier.wait()
-            try:
-                return quotes[stock_id]
-            finally:
-                with lock:
-                    in_flight -= 1
+            return get_quote(stock_id)
 
     quote_source = QuoteService()
     quote_source.providers = {"TW": StubTWProvider()}
     monkeypatch.setattr(quote_source, "_enqueue_refresh", lambda stock_id: False)
-
-    service = RankingsService(quote_source)
-    service._fetch_tw_institutional_snapshot = lambda now, tw_board="TWSE": (  # type: ignore[method-assign]
-        date(2026, 5, 11),
-        {"TW:2330": 500000, "TW:2317": 400000},
-    )
+    service = _tw_net_buy_service(quote_source, {"TW:2330": 500000, "TW:2317": 400000})
 
     try:
         response = service.get_rankings("TW", RankingType.net_buy, limit=2)
     finally:
         quote_cache.clear_quote_cache_for_tests()
 
-    assert max_in_flight >= 2
+    assert stats.max_in_flight >= 2
     assert [item.stock.symbol for item in response.items] == ["2330", "2317"]
     assert [item.lastPrice for item in response.items] == [10.0, 20.0]
 
