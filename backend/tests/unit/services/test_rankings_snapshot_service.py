@@ -348,6 +348,15 @@ def _raise_snapshot_db_error(*_args, **_kwargs):
     raise RuntimeError("snapshot database failed")
 
 
+def _patch_snapshot_repo_errors(monkeypatch, *method_names: str) -> None:
+    for name in method_names:
+        monkeypatch.setattr(
+            snapshot_service_module.ranking_snapshot_repository,
+            name,
+            _raise_snapshot_db_error,
+        )
+
+
 def _us_volume_live_response() -> RankingResponse:
     return _response(
         market="US",
@@ -371,123 +380,127 @@ def _us_volume_live_response() -> RankingResponse:
     )
 
 
-def test_snapshot_read_error_falls_through_to_live_fetch(monkeypatch) -> None:
-    session_local = _install_in_memory_sessionlocal(monkeypatch)
-    monkeypatch.setattr(
-        snapshot_service_module.ranking_snapshot_repository,
-        "load_bucket_snapshot",
-        _raise_snapshot_db_error,
-    )
-    response = _us_volume_live_response()
+def _live_snapshot_case(kind: str, *, error: Exception | None = None):
+    if kind == "us_volume":
+        provider = FakeProvider(
+            bucket_start=datetime(2026, 7, 3, 13, 30, tzinfo=timezone.utc),
+            response=None if error else _us_volume_live_response(),
+            error=error,
+        )
+        return (
+            provider,
+            ("US", "volume", None),
+            {
+                "market": "US",
+                "ranking_type": RankingType.volume,
+                "limit": 5,
+                "now": datetime(2026, 7, 3, 13, 35, tzinfo=timezone.utc),
+            },
+            "AAPL",
+            RankingSourceType.free_unofficial,
+            False,
+        )
     provider = FakeProvider(
-        bucket_start=datetime(2026, 7, 3, 13, 30, tzinfo=timezone.utc),
-        response=response,
+        bucket_start=datetime(2026, 7, 2, 10, 0, tzinfo=timezone.utc),
+        response=None
+        if error
+        else _tw_net_buy_response(
+            timestamp="2026-07-03T10:00:00+08:00",
+            item_timestamp="2026-07-02T18:00:00+08:00",
+        ),
+        error=error,
     )
-    service = RankingsSnapshotService(
-        provider_registry=FakeRegistry({("US", "volume", None): provider})
+    return (
+        provider,
+        ("TW", "net_buy", "TWSE"),
+        {
+            "market": "TW",
+            "ranking_type": RankingType.net_buy,
+            "limit": 5,
+            "now": datetime(2026, 7, 3, 2, 0, tzinfo=timezone.utc),
+            "tw_board": "TWSE",
+        },
+        "2330",
+        RankingSourceType.free_public,
+        True,
     )
 
-    result = service.get_rankings(
-        "US",
-        RankingType.volume,
-        limit=5,
-        now=datetime(2026, 7, 3, 13, 35, tzinfo=timezone.utc),
-    )
+
+@pytest.mark.parametrize("kind", ["us_volume", "tw_net_buy"])
+@pytest.mark.parametrize(
+    ("failing_methods", "expect_persisted"),
+    [
+        (("load_bucket_snapshot",), True),
+        (("persist_snapshot",), False),
+    ],
+    ids=["read_error", "write_error"],
+)
+def test_snapshot_db_error_still_returns_live_rankings(
+    monkeypatch,
+    kind: str,
+    failing_methods: tuple[str, ...],
+    expect_persisted: bool,
+) -> None:
+    provider, key, get_kwargs, symbol, source_type, needs_holidays = _live_snapshot_case(kind)
+    if needs_holidays:
+        _disable_tw_holidays(monkeypatch)
+    session_local = _install_in_memory_sessionlocal(monkeypatch)
+    _patch_snapshot_repo_errors(monkeypatch, *failing_methods)
+    service = RankingsSnapshotService(provider_registry=FakeRegistry({key: provider}))
+
+    result = service.get_rankings(**get_kwargs)
 
     assert provider.fetch_calls == 1
-    assert result.sourceType == RankingSourceType.free_unofficial
-    assert result.items[0].stock.symbol == "AAPL"
+    assert result.sourceType == source_type
+    assert result.items[0].stock.symbol == symbol
     with session_local() as session:
         snapshots = list(session.execute(select(RankingSnapshot)).scalars())
-    assert len(snapshots) == 1
+    assert len(snapshots) == (1 if expect_persisted else 0)
 
 
-def test_snapshot_write_error_still_returns_live_rankings(monkeypatch) -> None:
-    _install_in_memory_sessionlocal(monkeypatch)
-    monkeypatch.setattr(
-        snapshot_service_module.ranking_snapshot_repository,
-        "persist_snapshot",
-        _raise_snapshot_db_error,
-    )
-    response = _us_volume_live_response()
-    provider = FakeProvider(
-        bucket_start=datetime(2026, 7, 3, 13, 30, tzinfo=timezone.utc),
-        response=response,
-    )
-    service = RankingsSnapshotService(
-        provider_registry=FakeRegistry({("US", "volume", None): provider})
-    )
-
-    result = service.get_rankings(
-        "US",
-        RankingType.volume,
-        limit=5,
-        now=datetime(2026, 7, 3, 13, 35, tzinfo=timezone.utc),
-    )
-
-    assert provider.fetch_calls == 1
-    assert result.sourceType == RankingSourceType.free_unofficial
-    assert result.items[0].stock.symbol == "AAPL"
-
-
-def test_snapshot_read_error_after_provider_failure_returns_unavailable(monkeypatch) -> None:
-    _install_in_memory_sessionlocal(monkeypatch)
-    monkeypatch.setattr(
-        snapshot_service_module.ranking_snapshot_repository,
-        "load_bucket_snapshot",
-        _raise_snapshot_db_error,
-    )
-    monkeypatch.setattr(
-        snapshot_service_module.ranking_snapshot_repository,
-        "load_latest_snapshot",
-        _raise_snapshot_db_error,
-    )
-    provider = FakeProvider(
-        bucket_start=datetime(2026, 7, 3, 14, 0, tzinfo=timezone.utc),
+@pytest.mark.parametrize("kind", ["us_volume", "tw_net_buy"])
+def test_snapshot_read_error_after_provider_failure_returns_unavailable(
+    monkeypatch,
+    kind: str,
+) -> None:
+    provider, key, get_kwargs, _symbol, source_type, needs_holidays = _live_snapshot_case(
+        kind,
         error=RuntimeError("free source down"),
     )
-    service = RankingsSnapshotService(
-        provider_registry=FakeRegistry({("US", "volume", None): provider})
-    )
+    if needs_holidays:
+        _disable_tw_holidays(monkeypatch)
+    _install_in_memory_sessionlocal(monkeypatch)
+    _patch_snapshot_repo_errors(monkeypatch, "load_bucket_snapshot", "load_latest_snapshot")
+    service = RankingsSnapshotService(provider_registry=FakeRegistry({key: provider}))
 
-    result = service.get_rankings(
-        "US",
-        RankingType.volume,
-        limit=5,
-        now=datetime(2026, 7, 3, 14, 5, tzinfo=timezone.utc),
-    )
+    result = service.get_rankings(**get_kwargs)
 
     assert result.items == []
-    assert result.sourceType == RankingSourceType.free_unofficial
-    assert (
-        result.dataFreshnessLabel
-        == "Free data source temporarily unavailable. No cached snapshot is available yet."
+    assert result.sourceType == source_type
+    assert result.dataFreshnessLabel == (
+        "Free data source temporarily unavailable. No cached snapshot is available yet."
     )
 
 
-def test_scheduler_write_error_does_not_raise_or_count_capture(monkeypatch) -> None:
+@pytest.mark.parametrize("kind", ["us_volume", "tw_net_buy"])
+def test_scheduler_write_error_does_not_raise_or_count_capture(
+    monkeypatch,
+    kind: str,
+) -> None:
+    provider, key, get_kwargs, _symbol, _source_type, needs_holidays = _live_snapshot_case(kind)
+    if needs_holidays:
+        _disable_tw_holidays(monkeypatch)
     _install_in_memory_sessionlocal(monkeypatch)
-    monkeypatch.setattr(
-        snapshot_service_module.ranking_snapshot_repository,
-        "persist_snapshot",
-        _raise_snapshot_db_error,
-    )
-    query = RankingQuery("US", RankingType.volume)
+    _patch_snapshot_repo_errors(monkeypatch, "persist_snapshot")
+    query = RankingQuery(key[0], RankingType(key[1]), key[2])
     monkeypatch.setattr(snapshot_service_module, "_scheduled_queries", lambda: [query])
-    provider = FakeProvider(
-        bucket_start=datetime(2026, 7, 3, 13, 30, tzinfo=timezone.utc),
-        response=_us_volume_live_response(),
-    )
-    registry = FakeRegistry({("US", "volume", None): provider})
+    registry = FakeRegistry({key: provider})
     service = RankingsSnapshotService(
         provider_registry=registry,
         scheduler_provider_registry=registry,
     )
 
-    captured = service.capture_scheduled_snapshots(
-        now=datetime(2026, 7, 3, 13, 35, tzinfo=timezone.utc),
-        trigger="test",
-    )
+    captured = service.capture_scheduled_snapshots(now=get_kwargs["now"], trigger="test")
 
     assert captured == 0
     assert provider.fetch_calls == 1

@@ -311,16 +311,11 @@ class RankingsSnapshotService:
                     is not None
                 ):
                     continue
-                if (
-                    self._persist_snapshot(
-                        query,
-                        bucket_start,
-                        response,
-                        capture_scope=_CAPTURE_SCOPE_SCHEDULER_BOUNDED,
-                    )
-                    is not None
-                ):
-                    captured += 1
+                captured += self._persist_scheduled_snapshot(
+                    query,
+                    bucket_start,
+                    response,
+                )
                 continue
 
             bucket_start = provider.current_bucket_start(query, current)
@@ -350,17 +345,26 @@ class RankingsSnapshotService:
                 continue
             if response.sourceType == RankingSourceType.unsupported or not response.items:
                 continue
-            if (
-                self._persist_snapshot(
-                    query,
-                    bucket_start,
-                    response,
-                    capture_scope=_CAPTURE_SCOPE_SCHEDULER_BOUNDED,
-                )
-                is not None
-            ):
-                captured += 1
+            captured += self._persist_scheduled_snapshot(
+                query,
+                bucket_start,
+                response,
+            )
         return captured
+
+    def _persist_scheduled_snapshot(
+        self,
+        query: RankingQuery,
+        bucket_start: datetime,
+        response: RankingResponse,
+    ) -> int:
+        envelope = self._persist_snapshot(
+            query,
+            bucket_start,
+            response,
+            capture_scope=_CAPTURE_SCOPE_SCHEDULER_BOUNDED,
+        )
+        return 0 if envelope is None else 1
 
     def _get_tw_daily_institutional_rankings(
         self,
