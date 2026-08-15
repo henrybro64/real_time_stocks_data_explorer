@@ -53,6 +53,21 @@ describe("RequestStateNotice", () => {
   it("keeps generic load-failure copy for unexpected errors", () => {
     renderWithLanguage(<RequestStateNotice kind="error" scopeLabel="門檻警示" />, "zh-TW");
     expect(screen.getByText("載入失敗")).toBeInTheDocument();
+    expect(screen.getByText("門檻警示發生載入問題，請稍後重試。")).toBeInTheDocument();
+  });
+
+  it("appends status and detail to generic load-failure copy", () => {
+    renderWithLanguage(
+      <RequestStateNotice
+        kind="error"
+        scopeLabel="市場排行"
+        detail="boom"
+        status={500}
+      />,
+      "zh-TW",
+    );
+    expect(screen.getByText("載入失敗")).toBeInTheDocument();
+    expect(screen.getByText("市場排行發生載入問題，請稍後重試。（500: boom）")).toBeInTheDocument();
   });
 
   it("surfaces official schema and rate-limit messaging from detail text", () => {
@@ -76,6 +91,30 @@ describe("RequestStateNotice", () => {
       "en",
     );
     expect(screen.getByText("Official source rate-limited")).toBeInTheDocument();
+  });
+
+  it("surfaces timeout messaging from detail text", () => {
+    renderWithLanguage(
+      <RequestStateNotice
+        kind="unavailable"
+        scopeLabel="市場排行"
+        detail="TW institutional official source timeout"
+      />,
+      "zh-TW",
+    );
+    expect(screen.getByText("官方資料來源逾時")).toBeInTheDocument();
+    expect(screen.getByText("市場排行連線官方資料來源逾時，請稍後再試。")).toBeInTheDocument();
+  });
+
+  it("treats HTTP 504 as an official-source timeout", () => {
+    renderWithLanguage(
+      <RequestStateNotice kind="unavailable" scopeLabel="Market rankings" status={504} />,
+      "en",
+    );
+    expect(screen.getByText("Official source timed out")).toBeInTheDocument();
+    expect(
+      screen.getByText("The official data source for market rankings timed out."),
+    ).toBeInTheDocument();
   });
 
   it("uses official access-denied wording instead of app permission copy", () => {

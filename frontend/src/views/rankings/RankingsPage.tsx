@@ -26,7 +26,7 @@ import { useRouter } from "next/navigation";
 import { getDisplayStockName, useLanguage } from "../../app/i18n";
 import { QuoteFreshnessTag } from "../../components/state/QuoteFreshnessTag";
 import { RequestStateNotice, errorToNoticeKind } from "../../components/state/RequestStateNotice";
-import { fetchMarkets, fetchRankings } from "../../services/api/client";
+import { fetchMarkets, fetchRankings, toApiError } from "../../services/api/client";
 import { formatCurrency, formatLastUpdated, formatPercent } from "../../services/format/quote";
 import { priceToneClassForMarket } from "../../services/market-data/priceTone";
 import {
@@ -318,7 +318,8 @@ export function RankingsPage() {
   });
 
   const data = rankingsQuery.data;
-  const showError = rankingsQuery.error != null && data == null;
+  const rankingsError = rankingsQuery.error != null ? toApiError(rankingsQuery.error) : null;
+  const showError = rankingsError != null && data == null;
   const showUnsupported = !!data?.unsupportedReason;
   const localizedSource = data ? getLocalizedRankingsSource(data, t) : "";
   const localizedSourceType = data ? t(rankingsSourceTypeLabelKey(data.sourceType)) : "";
@@ -427,7 +428,12 @@ export function RankingsPage() {
       <Column className="app-column-spacing" sm={4} md={8} lg={16}>
         <Tile className="app-section-tile">
           {showError ? (
-            <RequestStateNotice kind={errorToNoticeKind(rankingsQuery.error)} scopeLabel={t("rankings.title")} />
+            <RequestStateNotice
+              detail={rankingsError.detail}
+              kind={errorToNoticeKind(rankingsError)}
+              scopeLabel={t("rankings.title")}
+              status={rankingsError.status}
+            />
           ) : rankingsQuery.isLoading && data == null ? (
             <InlineLoading description={t("rankings.loading")} status="active" />
           ) : (
