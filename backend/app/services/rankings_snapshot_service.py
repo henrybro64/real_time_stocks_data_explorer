@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import logging
+from collections.abc import Callable
 from threading import Event, Lock, Thread
 from time import perf_counter
 from typing import Literal
@@ -310,13 +311,16 @@ class RankingsSnapshotService:
                     is not None
                 ):
                     continue
-                self._persist_snapshot(
-                    query,
-                    bucket_start,
-                    response,
-                    capture_scope=_CAPTURE_SCOPE_SCHEDULER_BOUNDED,
-                )
-                captured += 1
+                if (
+                    self._persist_snapshot(
+                        query,
+                        bucket_start,
+                        response,
+                        capture_scope=_CAPTURE_SCOPE_SCHEDULER_BOUNDED,
+                    )
+                    is not None
+                ):
+                    captured += 1
                 continue
 
             bucket_start = provider.current_bucket_start(query, current)
@@ -346,13 +350,16 @@ class RankingsSnapshotService:
                 continue
             if response.sourceType == RankingSourceType.unsupported or not response.items:
                 continue
-            self._persist_snapshot(
-                query,
-                bucket_start,
-                response,
-                capture_scope=_CAPTURE_SCOPE_SCHEDULER_BOUNDED,
-            )
-            captured += 1
+            if (
+                self._persist_snapshot(
+                    query,
+                    bucket_start,
+                    response,
+                    capture_scope=_CAPTURE_SCOPE_SCHEDULER_BOUNDED,
+                )
+                is not None
+            ):
+                captured += 1
         return captured
 
     def _get_tw_daily_institutional_rankings(
@@ -482,14 +489,27 @@ class RankingsSnapshotService:
         response: RankingResponse,
         *,
         capture_scope: str = _CAPTURE_SCOPE_ON_DEMAND,
-    ) -> _SnapshotEnvelope:
+    ) -> _SnapshotEnvelope | None:
         _sync_repository_sessionlocal()
-        return ranking_snapshot_repository.persist_snapshot(
-            query,
-            bucket_start,
-            response,
-            capture_scope=capture_scope,
-        )
+        try:
+            return ranking_snapshot_repository.persist_snapshot(
+                query,
+                bucket_start,
+                response,
+                capture_scope=capture_scope,
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "Rankings snapshot persist failed",
+                extra={
+                    "event": "rankings_snapshot.persist.failed",
+                    "market": query.market,
+                    "ranking_type": query.ranking_type.value,
+                    "tw_board": query.tw_board,
+                    "capture_scope": capture_scope,
+                },
+            )
+            return None
 
     def _load_bucket_snapshot(
         self,
@@ -498,23 +518,49 @@ class RankingsSnapshotService:
         *,
         capture_scope: str | None = None,
     ) -> _SnapshotEnvelope | None:
-        _sync_repository_sessionlocal()
-        if not ranking_snapshot_repository.is_available():
-            return None
-        return ranking_snapshot_repository.load_bucket_snapshot(
+        return self._read_snapshot(
             query,
-            bucket_start,
-            capture_scope=capture_scope,
+            "load_bucket",
+            lambda: ranking_snapshot_repository.load_bucket_snapshot(
+                query,
+                bucket_start,
+                capture_scope=capture_scope,
+            ),
         )
 
     def _load_latest_snapshot(
         self,
         query: RankingQuery,
     ) -> _SnapshotEnvelope | None:
+        return self._read_snapshot(
+            query,
+            "load_latest",
+            lambda: ranking_snapshot_repository.load_latest_snapshot(query),
+        )
+
+    def _read_snapshot(
+        self,
+        query: RankingQuery,
+        operation: str,
+        loader: Callable[[], _SnapshotEnvelope | None],
+    ) -> _SnapshotEnvelope | None:
         _sync_repository_sessionlocal()
         if not ranking_snapshot_repository.is_available():
             return None
-        return ranking_snapshot_repository.load_latest_snapshot(query)
+        try:
+            return loader()
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "Rankings snapshot read failed",
+                extra={
+                    "event": "rankings_snapshot.read.failed",
+                    "operation": operation,
+                    "market": query.market,
+                    "ranking_type": query.ranking_type.value,
+                    "tw_board": query.tw_board,
+                },
+            )
+            return None
 
     def _response_from_snapshot(
         self,
