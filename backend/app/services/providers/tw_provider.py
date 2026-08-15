@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import math
 import re
+import threading
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from time import perf_counter
@@ -241,6 +242,7 @@ class TWProvider:
     market = "TW"
     _catalog_cache: dict[str, StockRecord] | None = None
     _catalog_cached_at: datetime | None = None
+    _catalog_lock = threading.Lock()
     _quote_cache: dict[str, QuoteRecord] = {}
     _quote_cached_at: dict[str, datetime] = {}
 
@@ -623,15 +625,27 @@ class TWProvider:
         )
         return _extract_tpex_daily_rows(payload)
 
+    def _cached_catalog_if_fresh(self, now: datetime) -> dict[str, StockRecord] | None:
+        cached = self.__class__._catalog_cache
+        cached_at = self.__class__._catalog_cached_at
+        if cached is not None and cached_at is not None and now - cached_at < _CATALOG_TTL:
+            return cached
+        return None
+
     def _stock_catalog(self) -> dict[str, StockRecord]:
         now = datetime.now(ZoneInfo("Asia/Taipei"))
-        if (
-            self.__class__._catalog_cache is not None
-            and self.__class__._catalog_cached_at is not None
-            and now - self.__class__._catalog_cached_at < _CATALOG_TTL
-        ):
-            return self.__class__._catalog_cache
+        cached = self._cached_catalog_if_fresh(now)
+        if cached is not None:
+            return cached
 
+        with self.__class__._catalog_lock:
+            now = datetime.now(ZoneInfo("Asia/Taipei"))
+            cached = self._cached_catalog_if_fresh(now)
+            if cached is not None:
+                return cached
+            return self._load_stock_catalog(now)
+
+    def _load_stock_catalog(self, now: datetime) -> dict[str, StockRecord]:
         catalog = dict(TW_STOCKS)
         detailed_company_rows: dict[str, StockRecord] = {}
         try:

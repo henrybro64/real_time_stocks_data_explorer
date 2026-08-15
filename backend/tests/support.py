@@ -1,3 +1,6 @@
+import threading
+from types import SimpleNamespace
+
 from app.models.quote import CandleRecord, QuoteRecord
 from app.models.stock import StockRecord
 
@@ -73,6 +76,28 @@ def candle_record(
         close=close,
         volume=volume,
     )
+
+
+def overlapping_lookup(original, *, parties: int = 2):
+    """Wrap a per-symbol lookup so concurrent calls must overlap before returning."""
+    barrier = threading.Barrier(parties, timeout=2)
+    in_flight = 0
+    lock = threading.Lock()
+    stats = SimpleNamespace(max_in_flight=0)
+
+    def wrapped(stock_id: str):
+        nonlocal in_flight
+        with lock:
+            in_flight += 1
+            stats.max_in_flight = max(stats.max_in_flight, in_flight)
+        barrier.wait()
+        try:
+            return original(stock_id)
+        finally:
+            with lock:
+                in_flight -= 1
+
+    return wrapped, stats
 
 
 class StubUSProvider:
