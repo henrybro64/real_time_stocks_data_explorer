@@ -373,15 +373,106 @@ describe("RankingsPage", () => {
     expect(screen.getByText("載入排行中")).toBeInTheDocument();
   });
 
-  it("renders error state", async () => {
-    vi.mocked(fetchRankings).mockRejectedValue(
-      new ApiError("boom", { kind: "unknown", status: 500, detail: "boom" }),
-    );
+  it.each([
+    {
+      id: "generic-500",
+      language: "zh-TW" as const,
+      error: new ApiError("Request failed: 500 - boom", {
+        kind: "unknown",
+        status: 500,
+        detail: "boom",
+      }),
+      title: "載入失敗",
+      body: "市場排行發生載入問題，請稍後重試。（500: boom）",
+      hideRawDetail: false,
+      statusHint: true,
+    },
+    {
+      id: "unavailable-502",
+      language: "zh-TW" as const,
+      error: new ApiError(
+        "TW institutional daily data is temporarily unavailable from the free public source.",
+        {
+          kind: "unavailable",
+          status: 502,
+          detail:
+            "TW institutional daily data is temporarily unavailable from the free public source.",
+        },
+      ),
+      title: "資料來源暫時不可用",
+      body: "市場排行目前無法從資料提供方取得，請稍後再試。（502）",
+      hideRawDetail: true,
+      statusHint: true,
+    },
+    {
+      id: "unavailable-503",
+      language: "en" as const,
+      error: new ApiError("Request failed: 503 - Service temporarily unavailable", {
+        kind: "unavailable",
+        status: 503,
+        detail: "Service temporarily unavailable",
+      }),
+      title: "Provider unavailable",
+      body: "The data provider for market rankings is temporarily unavailable. (503)",
+      hideRawDetail: true,
+      statusHint: true,
+    },
+    {
+      id: "schema-502",
+      language: "zh-TW" as const,
+      error: new ApiError("TW institutional official response could not be interpreted.", {
+        kind: "unavailable",
+        status: 502,
+        detail: "TW institutional official response could not be interpreted.",
+      }),
+      title: "官方資料格式無法解析",
+      body: /回應格式無法判讀/,
+      hideRawDetail: true,
+      statusHint: false,
+    },
+    {
+      id: "rate-limit-503",
+      language: "en" as const,
+      error: new ApiError("TW institutional official source is rate-limited.", {
+        kind: "unavailable",
+        status: 503,
+        detail: "TW institutional official source is rate-limited.",
+      }),
+      title: "Official source rate-limited",
+      body: /rate-limited right now/,
+      hideRawDetail: true,
+      statusHint: false,
+    },
+    {
+      id: "timeout-504",
+      language: "en" as const,
+      error: new ApiError("TW institutional official source timeout", {
+        kind: "unavailable",
+        status: 504,
+        detail: "TW institutional official source timeout",
+      }),
+      title: "Official source timed out",
+      body: /official data source for market rankings timed out/,
+      hideRawDetail: true,
+      statusHint: false,
+    },
+  ])(
+    "surfaces $id rankings errors with localized notice copy",
+    async ({ language, error, title, body, hideRawDetail, statusHint }) => {
+      vi.mocked(fetchRankings).mockRejectedValue(error);
 
-    renderRankingsPage();
+      renderRankingsPage(language);
 
-    expect(await screen.findByText("載入失敗")).toBeInTheDocument();
-  });
+      expect(await screen.findByText(title)).toBeInTheDocument();
+      expect(screen.getByText(body)).toBeInTheDocument();
+      if (hideRawDetail && error.detail) {
+        expect(screen.queryByText(error.detail)).not.toBeInTheDocument();
+      }
+      if (!statusHint && error.status != null) {
+        expect(screen.queryByText(new RegExp(`[（(]${error.status}[）)]`))).not.toBeInTheDocument();
+      }
+    },
+  );
 
   it("renders TW daily-data warning for institutional rankings", async () => {
     const user = userEvent.setup();
