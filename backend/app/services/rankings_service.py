@@ -715,17 +715,20 @@ class RankingsService:
     ) -> dict[str, QuoteRecord]:
         """Attach display quotes after ranking, without a serial provider loop.
 
-        Prefer a cache-first batch read when the quote source supports it.
-        Only fresh (non-stale) cache hits skip ``get_quotes``; stale and missing
-        ids are filled with bounded-concurrent lookups. Ranking order is applied
-        by the caller, not by quote completion order.
+        Prefer a cache-only bulk read when the quote source supports it so
+        stale/missing ids are not also enqueued for SWR refresh. Only fresh
+        (non-stale) cache hits skip ``get_quotes``; stale and missing ids are
+        filled with one bounded-concurrent lookup batch. Ranking order is
+        applied by the caller, not by quote completion order.
         """
         if not stock_ids:
             return {}
         quotes_by_id: dict[str, QuoteRecord] = {}
-        cache_first = getattr(self.quote_source, "get_quotes_cache_first", None)
-        if callable(cache_first):
-            items = cache_first(stock_ids)
+        cache_reader = getattr(self.quote_source, "peek_cached_quotes", None)
+        if not callable(cache_reader):
+            cache_reader = getattr(self.quote_source, "get_quotes_cache_first", None)
+        if callable(cache_reader):
+            items = cache_reader(stock_ids)
             for item in items:
                 quote = _fresh_cached_enrichment_quote(item)
                 if quote is None:

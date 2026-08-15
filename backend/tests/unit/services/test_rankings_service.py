@@ -10,7 +10,12 @@ from app.services import rankings_service as rankings_service_module
 from app.services.quote_service import QuoteService
 from app.services.rankings_service import RankingsService
 from app.services.rankings_volume_baseline_cache import InMemoryVolumeBaselineStore
-from tests.support import overlapping_lookup, quote_record, stock_record
+from tests.support import (
+    age_memory_cached_quote,
+    overlapping_lookup,
+    quote_record,
+    stock_record,
+)
 
 
 def _empty_sp500_quotes(_stocks):
@@ -1296,6 +1301,75 @@ def test_tw_institutional_quote_enrichment_keeps_rank_order_if_quotes_return_rev
 
     assert [item.stock.symbol for item in response.items] == ["2330", "2317"]
     assert [item.netBuySellShares for item in response.items] == [500000, 100000]
+    assert [item.lastPrice for item in response.items] == [10.0, 20.0]
+
+
+def test_tw_institutional_quote_enrichment_prefers_peek_over_cache_first() -> None:
+    quote_source = _tw_quote_source({"TW:2330": 101.0, "TW:2317": 202.0})
+    get_quotes_calls = _track_get_quotes(quote_source)
+    cache_first_calls = _install_cache_first(
+        quote_source,
+        lambda source, ids: [_cached_item(source, stock_id) for stock_id in ids],
+    )
+    peek_calls: list[list[str]] = []
+
+    def peek(stock_ids: list[str]):
+        peek_calls.append(list(stock_ids))
+        return [
+            _cached_item(quote_source, "TW:2330"),
+            _cached_item(quote_source, "TW:2317", quote=None),
+        ]
+
+    quote_source.peek_cached_quotes = peek  # type: ignore[method-assign]
+    service = _tw_net_buy_service(quote_source, {"TW:2330": 900000, "TW:2317": 100000})
+
+    response = service.get_rankings("TW", RankingType.net_buy, limit=2)
+
+    assert peek_calls == [["TW:2330", "TW:2317"]]
+    assert cache_first_calls == []
+    assert get_quotes_calls == [["TW:2317"]]
+    assert [item.lastPrice for item in response.items] == [101.0, 202.0]
+
+
+def test_tw_institutional_quote_enrichment_does_not_enqueue_swr_refresh(
+    monkeypatch,
+) -> None:
+    quote_cache.clear_quote_cache_for_tests()
+    monkeypatch.setattr(quote_cache.settings, "redis_url", "")
+    monkeypatch.setattr(quote_cache.settings, "quote_refresher_enabled", False)
+    monkeypatch.setattr(quote_cache.settings, "quote_refresher_owns_upstream", False)
+
+    fixture = _tw_quote_source({"TW:2330": 10.0, "TW:2317": 20.0})
+    quote_cache.set_cached_quote("TW:2330", fixture._quotes["TW:2330"])
+    age_memory_cached_quote("TW:2330")
+    scheduled: list[str] = []
+
+    class StubTWProvider:
+        def __init__(self) -> None:
+            self.quote_calls: list[str] = []
+
+        def get_stock(self, stock_id: str):
+            return fixture.get_stock(stock_id)
+
+        def get_quote(self, stock_id: str):
+            self.quote_calls.append(stock_id)
+            return fixture._quotes[stock_id]
+
+    provider = StubTWProvider()
+    quote_source = QuoteService()
+    quote_source.providers = {"TW": provider}
+    quote_source._refresh_scheduler = (
+        lambda _svc, stock_id, _token: scheduled.append(stock_id)
+    )
+    service = _tw_net_buy_service(quote_source, {"TW:2330": 500000, "TW:2317": 400000})
+
+    try:
+        response = service.get_rankings("TW", RankingType.net_buy, limit=2)
+    finally:
+        quote_cache.clear_quote_cache_for_tests()
+
+    assert scheduled == []
+    assert set(provider.quote_calls) == {"TW:2330", "TW:2317"}
     assert [item.lastPrice for item in response.items] == [10.0, 20.0]
 
 

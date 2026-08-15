@@ -68,6 +68,40 @@ def test_cache_first_batch_returns_fresh_cache_without_provider_calls() -> None:
     assert provider.quote_calls == []
 
 
+def test_peek_cached_quotes_returns_stale_without_queuing_refresh() -> None:
+    provider = StubUSProvider()
+    service = _service_with_provider(provider)
+    scheduled: list[str] = []
+    service._refresh_scheduler = lambda _svc, stock_id, _token: scheduled.append(stock_id)
+    cache.set_cached_quote("US:AAPL", provider._quotes["US:AAPL"])
+    age_memory_cached_quote("US:AAPL")
+
+    items = service.peek_cached_quotes(["US:AAPL"])
+
+    assert len(items) == 1
+    assert items[0].quote is not None
+    assert items[0].stale is True
+    assert items[0].refresh_status == "idle"
+    assert scheduled == []
+    assert provider.quote_calls == []
+
+
+def test_peek_cached_quotes_miss_does_not_enqueue_refresh() -> None:
+    provider = StubUSProvider()
+    service = _service_with_provider(provider)
+    scheduled: list[str] = []
+    service._refresh_scheduler = lambda _svc, stock_id, _token: scheduled.append(stock_id)
+
+    items = service.peek_cached_quotes(["US:AAPL"])
+
+    assert len(items) == 1
+    assert items[0].quote is None
+    assert items[0].stale is True
+    assert items[0].refresh_status == "idle"
+    assert scheduled == []
+    assert provider.quote_calls == []
+
+
 def test_cache_first_batch_returns_stale_immediately_and_queues_refresh() -> None:
     provider = StubUSProvider()
     service = _service_with_provider(provider)
@@ -241,6 +275,36 @@ def test_get_quotes_does_not_serve_stale_fallback_for_rankings() -> None:
 
     assert envelopes == []
     assert provider.quote_calls == ["US:AAPL"]
+
+
+def test_get_quotes_resolves_stocks_before_concurrent_lookups() -> None:
+    provider = StubUSProvider()
+    stock_in_flight = 0
+    stock_max = 0
+    stock_lock = threading.Lock()
+    original_get_stock = provider.get_stock
+    provider.get_quote, quote_stats = overlapping_lookup(provider.get_quote)
+
+    def tracking_get_stock(stock_id: str):
+        nonlocal stock_in_flight, stock_max
+        with stock_lock:
+            stock_in_flight += 1
+            stock_max = max(stock_max, stock_in_flight)
+        try:
+            time.sleep(0.05)
+            return original_get_stock(stock_id)
+        finally:
+            with stock_lock:
+                stock_in_flight -= 1
+
+    provider.get_stock = tracking_get_stock  # type: ignore[method-assign]
+    service = _service_with_provider(provider)
+
+    envelopes = service.get_quotes(["US:AAPL", "US:MSFT"])
+
+    assert [stock.id for stock, _quote in envelopes] == ["US:AAPL", "US:MSFT"]
+    assert stock_max == 1
+    assert quote_stats.max_in_flight >= 2
 
 
 def test_get_quotes_lookups_are_not_strictly_serial() -> None:

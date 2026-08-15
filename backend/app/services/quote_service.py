@@ -356,6 +356,22 @@ class QuoteService:
 
     def get_quotes_cache_first(self, stock_ids: list[str]) -> list[QuoteBatchItem]:
         """Watchlist/stream path: return cache immediately and refresh asynchronously."""
+        return self._cached_quote_batch_items(stock_ids, enqueue_refresh=True)
+
+    def peek_cached_quotes(self, stock_ids: list[str]) -> list[QuoteBatchItem]:
+        """Read cached quotes without scheduling a refresh.
+
+        Rankings enrichment uses this so a later blocking ``get_quotes`` is the
+        only provider fetch for stale or missing ids.
+        """
+        return self._cached_quote_batch_items(stock_ids, enqueue_refresh=False)
+
+    def _cached_quote_batch_items(
+        self,
+        stock_ids: list[str],
+        *,
+        enqueue_refresh: bool,
+    ) -> list[QuoteBatchItem]:
         unique_ids = list(dict.fromkeys(stock_ids))
         cached_by_id = get_cached_quote_entries(unique_ids)
         items: list[QuoteBatchItem] = []
@@ -366,16 +382,16 @@ class QuoteService:
                 continue
             cached = cached_by_id.get(stock_id)
             if cached is None:
+                refresh_status: RefreshStatus = (
+                    self._miss_refresh_status(stock_id) if enqueue_refresh else "idle"
+                )
                 items.append(
-                    self._empty_batch_item(
-                        stock,
-                        refresh_status=self._miss_refresh_status(stock_id),
-                    )
+                    self._empty_batch_item(stock, refresh_status=refresh_status)
                 )
                 continue
 
-            refresh_status: RefreshStatus = "idle"
-            if cached.stale:
+            refresh_status = "idle"
+            if cached.stale and enqueue_refresh:
                 refresh_status = self._stale_refresh_status(stock_id)
             items.append(
                 self._batch_item_from_cache(
@@ -490,9 +506,25 @@ class QuoteService:
         if not unique_ids:
             return []
 
-        def _one(stock_id: str) -> tuple[StockRecord, QuoteRecord] | None:
+        stocks_by_id: dict[str, StockRecord | None] = {}
+        for stock_id in unique_ids:
             try:
-                stock = self.get_stock(stock_id)
+                stocks_by_id[stock_id] = self.get_stock(stock_id)
+            except Exception:
+                logger.exception(
+                    "Quote batch stock lookup failed for one symbol",
+                    extra={
+                        "event": "quote.batch.stock_failed",
+                        "stock_id": stock_id,
+                    },
+                )
+                stocks_by_id[stock_id] = None
+
+        def _one(stock_id: str) -> tuple[StockRecord, QuoteRecord] | None:
+            stock = stocks_by_id.get(stock_id)
+            if stock is None:
+                return None
+            try:
                 quote = fetcher(stock_id)
             except Exception:
                 logger.exception(
@@ -503,7 +535,7 @@ class QuoteService:
                     },
                 )
                 return None
-            if stock is None or quote is None:
+            if quote is None:
                 return None
             return (stock, quote)
 

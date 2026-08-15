@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+import threading
+import time
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -460,3 +462,39 @@ def test_get_history_passes_explicit_limit_for_sma_warmup(
     assert captured["limit"] == 125
     assert captured["range"] == "3M"
     assert len(candles) == 1
+
+
+def test_stock_catalog_refresh_is_serialized(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(tw_provider.TWProvider, "_catalog_cache", None)
+    monkeypatch.setattr(tw_provider.TWProvider, "_catalog_cached_at", None)
+    load_count = 0
+    count_lock = threading.Lock()
+
+    def slow_json(_url: str, _params: dict[str, str]) -> list[object]:
+        nonlocal load_count
+        with count_lock:
+            load_count += 1
+        time.sleep(0.1)
+        return []
+
+    monkeypatch.setattr(tw_provider, "_load_json", slow_json)
+    monkeypatch.setattr(tw_provider, "_load_text", lambda _url: "")
+
+    provider = tw_provider.TWProvider()
+    catalogs: list[dict] = []
+
+    def worker() -> None:
+        catalogs.append(provider._stock_catalog())
+
+    threads = [threading.Thread(target=worker) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=2)
+        assert not thread.is_alive()
+
+    assert load_count == 1
+    assert len(catalogs) == 2
+    assert catalogs[0] is catalogs[1]
+    monkeypatch.setattr(tw_provider.TWProvider, "_catalog_cache", None)
+    monkeypatch.setattr(tw_provider.TWProvider, "_catalog_cached_at", None)
