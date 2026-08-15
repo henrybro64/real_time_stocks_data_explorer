@@ -70,6 +70,53 @@ describe("RequestStateNotice", () => {
     expect(screen.getByText("市場排行發生載入問題，請稍後重試。（500: boom）")).toBeInTheDocument();
   });
 
+  it("appends status only when a generic load-failure has no detail", () => {
+    renderWithLanguage(
+      <RequestStateNotice kind="error" scopeLabel="Market rankings" status={500} />,
+      "en",
+    );
+    expect(screen.getByText("Load failed")).toBeInTheDocument();
+    expect(screen.getByText("There was a problem loading market rankings. (500)")).toBeInTheDocument();
+  });
+
+  it("appends HTTP status to generic unavailable copy without dumping English detail", () => {
+    renderWithLanguage(
+      <RequestStateNotice
+        kind="unavailable"
+        scopeLabel="市場排行"
+        detail="TW institutional daily data is temporarily unavailable from the free public source."
+        status={502}
+      />,
+      "zh-TW",
+    );
+    expect(screen.getByText("資料來源暫時不可用")).toBeInTheDocument();
+    expect(
+      screen.getByText("市場排行目前無法從資料提供方取得，請稍後再試。（502）"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(
+        "TW institutional daily data is temporarily unavailable from the free public source.",
+      ),
+    ).not.toBeInTheDocument();
+  });
+
+  it("distinguishes generic 503 unavailable from 502 by status hint", () => {
+    renderWithLanguage(
+      <RequestStateNotice
+        kind="unavailable"
+        scopeLabel="Market rankings"
+        detail="Service temporarily unavailable"
+        status={503}
+      />,
+      "en",
+    );
+    expect(screen.getByText("Provider unavailable")).toBeInTheDocument();
+    expect(
+      screen.getByText("The data provider for market rankings is temporarily unavailable. (503)"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Service temporarily unavailable")).not.toBeInTheDocument();
+  });
+
   it("surfaces official schema and rate-limit messaging from detail text", () => {
     renderWithLanguage(
       <RequestStateNotice
@@ -115,6 +162,22 @@ describe("RequestStateNotice", () => {
     expect(
       screen.getByText("The official data source for market rankings timed out."),
     ).toBeInTheDocument();
+    expect(screen.queryByText(/\(504\)/)).not.toBeInTheDocument();
+  });
+
+  it("does not append HTTP status to provider-specific unavailable copy", () => {
+    renderWithLanguage(
+      <RequestStateNotice
+        kind="unavailable"
+        scopeLabel="市場排行"
+        detail="TW institutional official response could not be interpreted."
+        status={502}
+      />,
+      "zh-TW",
+    );
+    expect(screen.getByText("官方資料格式無法解析")).toBeInTheDocument();
+    expect(screen.getByText(/回應格式無法判讀/)).toBeInTheDocument();
+    expect(screen.queryByText(/（502）/)).not.toBeInTheDocument();
   });
 
   it("uses official access-denied wording instead of app permission copy", () => {

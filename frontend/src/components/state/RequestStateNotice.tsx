@@ -71,6 +71,13 @@ function noticeDiagnostic(status: number | null, detailText: string | null): str
   return parts.length > 0 ? parts.join(": ") : null;
 }
 
+function statusHint(status: number | null, language: "en" | "zh-TW"): string {
+  if (status == null) {
+    return "";
+  }
+  return language === "zh-TW" ? `（${status}）` : ` (${status})`;
+}
+
 function errorNotice(
   scope: string,
   diagnostic: string | null,
@@ -98,6 +105,7 @@ function unavailableNotice(
   scope: string,
   flags: ProviderFlags,
   language: "en" | "zh-TW",
+  status: number | null,
 ): NoticeCopy {
   if (language === "zh-TW") {
     if (flags.schemaFailure) {
@@ -123,7 +131,7 @@ function unavailableNotice(
     }
     return {
       title: "資料來源暫時不可用",
-      body: `${scope}目前無法從資料提供方取得，請稍後再試。`,
+      body: `${scope}目前無法從資料提供方取得，請稍後再試。${statusHint(status, language)}`,
       action: null,
     };
   }
@@ -150,7 +158,7 @@ function unavailableNotice(
   }
   return {
     title: "Provider unavailable",
-    body: `The data provider for ${scope} is temporarily unavailable.`,
+    body: `The data provider for ${scope} is temporarily unavailable.${statusHint(status, language)}`,
     action: null,
   };
 }
@@ -205,7 +213,7 @@ function buildNoticeCopy(
         action: "前往登入",
       },
       permission: permissionNotice(scope, flags, locale),
-      unavailable: unavailableNotice(scope, flags, locale),
+      unavailable: unavailableNotice(scope, flags, locale, status),
       validation: {
         title: "無法儲存",
         body: detailText ?? `${scope}輸入有誤，請修正後再試。`,
@@ -226,7 +234,7 @@ function buildNoticeCopy(
       action: "Sign in",
     },
     permission: permissionNotice(scope, flags, locale),
-    unavailable: unavailableNotice(scope, flags, locale),
+    unavailable: unavailableNotice(scope, flags, locale, status),
     validation: {
       title: "Could not save",
       body: detailText ?? `Check the ${scope} form and try again.`,

@@ -385,6 +385,7 @@ describe("RankingsPage", () => {
       title: "載入失敗",
       body: "市場排行發生載入問題，請稍後重試。（500: boom）",
       hideRawDetail: false,
+      statusHint: true,
     },
     {
       id: "unavailable-502",
@@ -399,8 +400,22 @@ describe("RankingsPage", () => {
         },
       ),
       title: "資料來源暫時不可用",
-      body: /市場排行目前無法從資料提供方取得/,
+      body: "市場排行目前無法從資料提供方取得，請稍後再試。（502）",
       hideRawDetail: true,
+      statusHint: true,
+    },
+    {
+      id: "unavailable-503",
+      language: "en" as const,
+      error: new ApiError("Request failed: 503 - Service temporarily unavailable", {
+        kind: "unavailable",
+        status: 503,
+        detail: "Service temporarily unavailable",
+      }),
+      title: "Provider unavailable",
+      body: "The data provider for market rankings is temporarily unavailable. (503)",
+      hideRawDetail: true,
+      statusHint: true,
     },
     {
       id: "schema-502",
@@ -413,6 +428,7 @@ describe("RankingsPage", () => {
       title: "官方資料格式無法解析",
       body: /回應格式無法判讀/,
       hideRawDetail: true,
+      statusHint: false,
     },
     {
       id: "rate-limit-503",
@@ -425,6 +441,7 @@ describe("RankingsPage", () => {
       title: "Official source rate-limited",
       body: /rate-limited right now/,
       hideRawDetail: true,
+      statusHint: false,
     },
     {
       id: "timeout-504",
@@ -437,10 +454,11 @@ describe("RankingsPage", () => {
       title: "Official source timed out",
       body: /official data source for market rankings timed out/,
       hideRawDetail: true,
+      statusHint: false,
     },
   ])(
     "surfaces $id rankings errors with localized notice copy",
-    async ({ language, error, title, body, hideRawDetail }) => {
+    async ({ language, error, title, body, hideRawDetail, statusHint }) => {
       vi.mocked(fetchRankings).mockRejectedValue(error);
 
       renderRankingsPage(language);
@@ -449,6 +467,9 @@ describe("RankingsPage", () => {
       expect(screen.getByText(body)).toBeInTheDocument();
       if (hideRawDetail && error.detail) {
         expect(screen.queryByText(error.detail)).not.toBeInTheDocument();
+      }
+      if (!statusHint && error.status != null) {
+        expect(screen.queryByText(new RegExp(`[（(]${error.status}[）)]`))).not.toBeInTheDocument();
       }
     },
   );
