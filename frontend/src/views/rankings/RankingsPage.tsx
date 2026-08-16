@@ -345,12 +345,13 @@ export function RankingsPage() {
 
   const rankingsQuery = useQuery<RankingResponse>({
     queryKey: ["rankings", market, twBoard, rankingType, DEFAULT_LIMIT],
-    queryFn: () =>
+    queryFn: ({ signal }) =>
       fetchRankings(
         market,
         rankingType,
         DEFAULT_LIMIT,
         market === "TW" ? twBoard : undefined,
+        signal,
       ),
     retry: shouldRetryRankingsQuery,
     refetchInterval: (query) =>

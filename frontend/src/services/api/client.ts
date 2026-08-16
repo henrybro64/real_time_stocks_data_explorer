@@ -241,30 +241,59 @@ export function isRankingsRequestTimeoutError(error: unknown): boolean {
 }
 
 export function shouldRetryRankingsQuery(failureCount: number, error: unknown): boolean {
-  if (isRankingsRequestTimeoutError(error)) {
+  if (isRankingsRequestTimeoutError(error) || isAbortError(error)) {
     return false;
   }
   return failureCount < 3;
 }
 
-async function fetchJsonWithTimeout<T>(path: string, timeoutMs: number): Promise<T> {
+async function fetchJsonWithTimeout<T>(
+  path: string,
+  timeoutMs: number,
+  externalSignal?: AbortSignal,
+): Promise<T> {
   const controller = new AbortController();
+  let timedOut = false;
   const timeoutId = setTimeout(() => {
+    if (externalSignal?.aborted) {
+      return;
+    }
+    timedOut = true;
     controller.abort();
   }, timeoutMs);
+  const abortFromCaller = () => {
+    controller.abort();
+  };
+  if (externalSignal?.aborted) {
+    controller.abort();
+  } else {
+    externalSignal?.addEventListener("abort", abortFromCaller, { once: true });
+  }
   try {
     return await fetchJson<T>(path, { signal: controller.signal });
   } catch (error) {
-    if (controller.signal.aborted) {
+    if (externalSignal?.aborted) {
+      if (isAbortError(error)) {
+        throw error;
+      }
+      const cancelled = new Error("The user aborted a request.");
+      cancelled.name = "AbortError";
+      throw cancelled;
+    }
+    if (timedOut) {
       throw new ApiError(RANKINGS_REQUEST_TIMEOUT_DETAIL, {
         kind: "unavailable",
         detail: RANKINGS_REQUEST_TIMEOUT_DETAIL,
         status: null,
       });
     }
+    if (isAbortError(error)) {
+      throw error;
+    }
     throw toApiError(error);
   } finally {
     clearTimeout(timeoutId);
+    externalSignal?.removeEventListener("abort", abortFromCaller);
   }
 }
 
@@ -301,6 +330,7 @@ export function fetchRankings(
   rankingType: RankingType,
   limit = 50,
   twBoard?: "TWSE" | "TPEx",
+  signal?: AbortSignal,
 ) {
   const params = new URLSearchParams({
     market,
@@ -313,6 +343,7 @@ export function fetchRankings(
   return fetchJsonWithTimeout<RankingResponse>(
     `/rankings?${params.toString()}`,
     RANKINGS_REQUEST_TIMEOUT_MS,
+    signal,
   );
 }
 

@@ -197,5 +197,32 @@ describe("fetchRankings", () => {
     expect(shouldRetryRankingsQuery(0, upstream)).toBe(true);
     expect(shouldRetryRankingsQuery(2, upstream)).toBe(true);
     expect(shouldRetryRankingsQuery(3, upstream)).toBe(false);
+    const cancelled = new Error("The user aborted a request.");
+    cancelled.name = "AbortError";
+    expect(shouldRetryRankingsQuery(0, cancelled)).toBe(false);
+  });
+
+  it("does not map a caller abort to a rankings timeout", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn((_url: string, init?: RequestInit) => {
+      return new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => {
+          const error = new Error("The user aborted a request.");
+          error.name = "AbortError";
+          reject(error);
+        });
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const controller = new AbortController();
+    const pending = fetchRankings("TW", "volume", 50, "TWSE", controller.signal);
+    const assertion = expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    controller.abort();
+    await vi.advanceTimersByTimeAsync(RANKINGS_REQUEST_TIMEOUT_MS);
+    await assertion;
+    await expect(pending).rejects.not.toMatchObject({
+      detail: RANKINGS_REQUEST_TIMEOUT_DETAIL,
+    });
   });
 });
