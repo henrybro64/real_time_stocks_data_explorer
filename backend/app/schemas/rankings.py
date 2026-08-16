@@ -58,3 +58,5 @@ class RankingResponse(BaseModel):
     # US-only: which universe/method backs the *current* tab so the scope banner stays honest
     # (S&P 500 batch quotes vs Yahoo screeners vs the app's quote snapshot list).
     usRankingsScope: str | None = None
+    # TW-only: Yahoo pre-ranked board vs configured quote universe vs hard-coded fallback.
+    twRankingsScope: str | None = None

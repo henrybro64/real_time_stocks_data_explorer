@@ -49,6 +49,14 @@ type UsScopeNoticeKey =
   | "rankings.notice.usInstitutionalUnsupported"
   | "rankings.notice.usScopePending";
 
+type TwQuoteScopeNoticeKey =
+  | "rankings.notice.twQuoteScopeYahooTwse"
+  | "rankings.notice.twQuoteScopeYahooTpex"
+  | "rankings.notice.twQuoteScopeTwse"
+  | "rankings.notice.twQuoteScopeTpex"
+  | "rankings.notice.twQuoteScopeFallbackTwse"
+  | "rankings.notice.twQuoteScopeFallbackTpex";
+
 type RankingsTabLabelKey =
   | "rankings.tab.volume"
   | "rankings.tab.volumeUp"
@@ -126,6 +134,31 @@ function usScopeNoticeKeyFromState(
       return "rankings.notice.usScopeQuote";
     default:
       return "rankings.notice.usScopePending";
+  }
+}
+
+function twQuoteScopeNoticeKeyFromState(
+  rankingType: RankingType,
+  twBoard: TwBoardSegment,
+  data: RankingResponse | undefined,
+): TwQuoteScopeNoticeKey {
+  const isTpex = twBoard === "TPEx";
+  const aligned =
+    data != null && data.market === "TW" && data.rankingType === rankingType;
+  if (!aligned) {
+    return isTpex ? "rankings.notice.twQuoteScopeTpex" : "rankings.notice.twQuoteScopeTwse";
+  }
+  switch (data.twRankingsScope) {
+    case "yahoo":
+      return isTpex
+        ? "rankings.notice.twQuoteScopeYahooTpex"
+        : "rankings.notice.twQuoteScopeYahooTwse";
+    case "fallback":
+      return isTpex
+        ? "rankings.notice.twQuoteScopeFallbackTpex"
+        : "rankings.notice.twQuoteScopeFallbackTwse";
+    default:
+      return isTpex ? "rankings.notice.twQuoteScopeTpex" : "rankings.notice.twQuoteScopeTwse";
   }
 }
 
@@ -335,9 +368,7 @@ export function RankingsPage() {
             ? "rankings.notice.twInstScopeTpexUnavailable"
             : "rankings.notice.twInstScopeTpex"
           : "rankings.notice.twInstScopeTwse"
-        : twBoard === "TPEx"
-          ? "rankings.notice.twQuoteScopeTpex"
-          : "rankings.notice.twQuoteScopeTwse";
+        : twQuoteScopeNoticeKeyFromState(rankingType, twBoard, data);
 
   function handleMarketChange(nextMarket: RankingMarket) {
     setMarketOverride(nextMarket);

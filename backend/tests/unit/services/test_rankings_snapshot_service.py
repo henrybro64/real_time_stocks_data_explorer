@@ -100,6 +100,7 @@ def _response(
     items: list[RankingItem] | None = None,
     source: str = "Quote rankings from the app's free best-effort quote providers.",
     warning: str | None = "Free unofficial quote source; data may be delayed or unavailable.",
+    tw_rankings_scope: str | None = None,
 ) -> RankingResponse:
     return RankingResponse(
         market=market,
@@ -114,6 +115,7 @@ def _response(
         warningMessage=warning,
         unsupportedReason=None,
         usRankingsScope="quote" if market == "US" else None,
+        twRankingsScope=tw_rankings_scope,
     )
 
 
@@ -233,6 +235,136 @@ def test_same_bucket_reuses_cached_snapshot_without_duplicate_rows(monkeypatch) 
     with session_local() as session:
         snapshots = list(session.execute(select(RankingSnapshot)).scalars())
     assert len(snapshots) == 1
+
+
+def test_cached_tw_quote_fallback_snapshot_reconstructs_fallback_scope(monkeypatch) -> None:
+    session_local = _install_in_memory_sessionlocal(monkeypatch)
+    bucket_start = datetime(2026, 7, 3, 3, 0, tzinfo=timezone.utc)
+    fallback_source = "Limited hard-coded TWSE/TPEx quote fallback; not a full-board ranking."
+    response = _response(
+        market="TW",
+        ranking_type=RankingType.volume,
+        source_type=RankingSourceType.free_unofficial,
+        timestamp="2026-07-03T03:05:00+00:00",
+        tw_board="TWSE",
+        source=fallback_source,
+        warning=(
+            "Broader Taiwan quote rankings are temporarily unavailable. "
+            "This table uses a small hard-coded fallback universe, not a complete TWSE/TPEx ranking."
+        ),
+        tw_rankings_scope="fallback",
+        items=[
+            _item(
+                rank=1,
+                stock=_stock("TW:2330", "2330", exchange="TWSE", currency="TWD", timezone_name="Asia/Taipei"),
+                timestamp="2026-07-03T11:05:00+08:00",
+                volume=2_000_000,
+            )
+        ],
+    )
+    provider = FakeProvider(bucket_start=bucket_start, response=response)
+    service = RankingsSnapshotService(
+        provider_registry=FakeRegistry({("TW", "volume", "TWSE"): provider})
+    )
+
+    first = service.get_rankings(
+        "TW",
+        RankingType.volume,
+        limit=5,
+        now=datetime(2026, 7, 3, 3, 5, tzinfo=timezone.utc),
+        tw_board="TWSE",
+    )
+    second = service.get_rankings(
+        "TW",
+        RankingType.volume,
+        limit=5,
+        now=datetime(2026, 7, 3, 3, 10, tzinfo=timezone.utc),
+        tw_board="TWSE",
+    )
+
+    assert first.twRankingsScope == "fallback"
+    assert first.usRankingsScope is None
+    assert second.sourceType == RankingSourceType.cache
+    assert second.source == fallback_source
+    assert second.twRankingsScope == "fallback"
+    assert second.usRankingsScope is None
+    assert provider.fetch_calls == 1
+    with session_local() as session:
+        snapshots = list(session.execute(select(RankingSnapshot)).scalars())
+    assert len(snapshots) == 1
+
+
+def test_cached_tw_yahoo_snapshot_does_not_set_us_rankings_scope(monkeypatch) -> None:
+    _install_in_memory_sessionlocal(monkeypatch)
+    bucket_start = datetime(2026, 7, 3, 3, 0, tzinfo=timezone.utc)
+    yahoo_source = "Yahoo Finance pre-ranked quote rankings."
+    response = _response(
+        market="TW",
+        ranking_type=RankingType.volume,
+        source_type=RankingSourceType.free_unofficial,
+        timestamp="2026-07-03T03:05:00+00:00",
+        tw_board="TWSE",
+        source=yahoo_source,
+        tw_rankings_scope="yahoo",
+        items=[
+            _item(
+                rank=1,
+                stock=_stock("TW:9999", "9999", exchange="TWSE", currency="TWD", timezone_name="Asia/Taipei"),
+                timestamp="2026-07-03T11:05:00+08:00",
+                volume=9_000_000,
+            )
+        ],
+    )
+    provider = FakeProvider(bucket_start=bucket_start, response=response)
+    service = RankingsSnapshotService(
+        provider_registry=FakeRegistry({("TW", "volume", "TWSE"): provider})
+    )
+
+    service.get_rankings(
+        "TW",
+        RankingType.volume,
+        limit=5,
+        now=datetime(2026, 7, 3, 3, 5, tzinfo=timezone.utc),
+        tw_board="TWSE",
+    )
+    cached = service.get_rankings(
+        "TW",
+        RankingType.volume,
+        limit=5,
+        now=datetime(2026, 7, 3, 3, 10, tzinfo=timezone.utc),
+        tw_board="TWSE",
+    )
+
+    assert cached.sourceType == RankingSourceType.cache
+    assert cached.twRankingsScope == "yahoo"
+    assert cached.usRankingsScope is None
+
+
+def test_tw_rankings_scope_reconstructs_from_stored_source() -> None:
+    from app.services.rankings_snapshot_service import _tw_rankings_scope_from_source
+
+    assert (
+        _tw_rankings_scope_from_source(
+            "Limited hard-coded TWSE/TPEx quote fallback; not a full-board ranking."
+        )
+        == "fallback"
+    )
+    assert _tw_rankings_scope_from_source("Yahoo Finance pre-ranked quote rankings.") == "yahoo"
+    assert (
+        _tw_rankings_scope_from_source(
+            "Quote rankings from the app's free best-effort quote providers."
+        )
+        == "quote"
+    )
+    assert (
+        _tw_rankings_scope_from_source(
+            "Valuation rankings use the highest-volume current quote candidates, then sort by "
+            "P/E from the app's available valuation sources."
+        )
+        == "quote"
+    )
+    assert _tw_rankings_scope_from_source("TWSE T86 daily institutional data") is None
+    assert _tw_rankings_scope_from_source("TPEx institutional daily data") is None
 
 
 def test_market_closed_reads_latest_cached_snapshot(monkeypatch) -> None:
@@ -694,6 +826,11 @@ def test_on_demand_registry_uses_external_source_while_scheduler_registry_is_bou
 
     assert isinstance(on_demand_external, RankingsExternalSource)
     assert isinstance(scheduler_external, _DisabledExternalRankingsSource)
+    assert ranking_provider_registry._quote_provider._service._uses_hardcoded_tw_quote_universe is True
+    assert (
+        scheduler_ranking_provider_registry._quote_provider._service._uses_hardcoded_tw_quote_universe
+        is False
+    )
 
 
 def test_start_background_sampler_skips_when_database_unavailable(monkeypatch) -> None:

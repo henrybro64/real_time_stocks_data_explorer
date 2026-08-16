@@ -592,7 +592,16 @@ class RankingsSnapshotService:
             dataFreshnessLabel=freshness_label,
             warningMessage=envelope.snapshot.warning_message,
             unsupportedReason=envelope.snapshot.unsupported_reason,
-            usRankingsScope=_us_rankings_scope_from_source(envelope.snapshot.source),
+            usRankingsScope=(
+                _us_rankings_scope_from_source(envelope.snapshot.source)
+                if query.market == "US"
+                else None
+            ),
+            twRankingsScope=(
+                _tw_rankings_scope_from_source(envelope.snapshot.source)
+                if query.market == "TW"
+                else None
+            ),
         )
 
     def _run_sampler(self, poll_seconds: int) -> None:
@@ -762,6 +771,16 @@ def _us_rankings_scope_from_source(source: str) -> Literal["sp500", "yahoo", "qu
         return "yahoo"
     if "S&P 500 movers" in source:
         return "sp500"
+    if source in {_QUOTE_SOURCE, _VALUATION_SOURCE}:
+        return "quote"
+    return None
+
+
+def _tw_rankings_scope_from_source(source: str) -> Literal["yahoo", "quote", "fallback"] | None:
+    if "hard-coded" in source:
+        return "fallback"
+    if "Yahoo Finance pre-ranked" in source:
+        return "yahoo"
     if source in {_QUOTE_SOURCE, _VALUATION_SOURCE}:
         return "quote"
     return None
