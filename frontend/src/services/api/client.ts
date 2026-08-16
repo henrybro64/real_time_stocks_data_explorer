@@ -119,6 +119,7 @@ function classifyApiErrorKind(status: number | null, detail: string | null, mess
     text.includes("networkerror") ||
     text.includes("network request failed") ||
     text.includes("timeout") ||
+    text.includes("timed out") ||
     text.includes("temporarily unavailable") ||
     text.includes("provider unavailable") ||
     text.includes("rate-limited") ||
@@ -191,6 +192,10 @@ function mergeRequestInit(init?: RequestInit): RequestInit {
   };
 }
 
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError");
+}
+
 async function request(path: string, init?: RequestInit): Promise<Response> {
   try {
     const response = await fetch(apiUrl(path), mergeRequestInit(init));
@@ -199,6 +204,9 @@ async function request(path: string, init?: RequestInit): Promise<Response> {
     }
     return response;
   } catch (error) {
+    if (isAbortError(error)) {
+      throw error;
+    }
     throw toApiError(error);
   }
 }
@@ -212,12 +220,81 @@ export async function requestVoid(path: string, init?: RequestInit): Promise<voi
   await request(path, init);
 }
 
-async function fetchJson<T>(path: string): Promise<T> {
-  const response = await request(path);
+async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await request(path, init);
   if (!response.ok) {
     throw await failedRequestError(response);
   }
   return (await response.json()) as T;
+}
+
+export const RANKINGS_REQUEST_TIMEOUT_MS = 20_000;
+export const RANKINGS_REQUEST_TIMEOUT_DETAIL = "Rankings request timed out";
+
+export function isRankingsRequestTimeoutError(error: unknown): boolean {
+  return (
+    error instanceof ApiError &&
+    error.kind === "unavailable" &&
+    error.detail === RANKINGS_REQUEST_TIMEOUT_DETAIL &&
+    error.status == null
+  );
+}
+
+export function shouldRetryRankingsQuery(failureCount: number, error: unknown): boolean {
+  if (isRankingsRequestTimeoutError(error) || isAbortError(error)) {
+    return false;
+  }
+  return failureCount < 3;
+}
+
+async function fetchJsonWithTimeout<T>(
+  path: string,
+  timeoutMs: number,
+  externalSignal?: AbortSignal,
+): Promise<T> {
+  const controller = new AbortController();
+  let timedOut = false;
+  const timeoutId = setTimeout(() => {
+    if (externalSignal?.aborted) {
+      return;
+    }
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+  const abortFromCaller = () => {
+    controller.abort();
+  };
+  if (externalSignal?.aborted) {
+    controller.abort();
+  } else {
+    externalSignal?.addEventListener("abort", abortFromCaller, { once: true });
+  }
+  try {
+    return await fetchJson<T>(path, { signal: controller.signal });
+  } catch (error) {
+    if (externalSignal?.aborted) {
+      if (isAbortError(error)) {
+        throw error;
+      }
+      const cancelled = new Error("The user aborted a request.");
+      cancelled.name = "AbortError";
+      throw cancelled;
+    }
+    if (timedOut) {
+      throw new ApiError(RANKINGS_REQUEST_TIMEOUT_DETAIL, {
+        kind: "unavailable",
+        detail: RANKINGS_REQUEST_TIMEOUT_DETAIL,
+        status: null,
+      });
+    }
+    if (isAbortError(error)) {
+      throw error;
+    }
+    throw toApiError(error);
+  } finally {
+    clearTimeout(timeoutId);
+    externalSignal?.removeEventListener("abort", abortFromCaller);
+  }
 }
 
 export function fetchMarkets() {
@@ -253,6 +330,7 @@ export function fetchRankings(
   rankingType: RankingType,
   limit = 50,
   twBoard?: "TWSE" | "TPEx",
+  signal?: AbortSignal,
 ) {
   const params = new URLSearchParams({
     market,
@@ -262,7 +340,11 @@ export function fetchRankings(
   if (market === "TW" && twBoard != null) {
     params.set("twBoard", twBoard);
   }
-  return fetchJson<RankingResponse>(`/rankings?${params.toString()}`);
+  return fetchJsonWithTimeout<RankingResponse>(
+    `/rankings?${params.toString()}`,
+    RANKINGS_REQUEST_TIMEOUT_MS,
+    signal,
+  );
 }
 
 export function fetchHistory(stockId: string, range: TimeRange) {

@@ -6,8 +6,12 @@ import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { LanguageProvider } from "../../app/i18n";
-import { ApiError } from "../../services/api/client";
-import { fetchMarkets, fetchRankings } from "../../services/api/client";
+import {
+  ApiError,
+  RANKINGS_REQUEST_TIMEOUT_DETAIL,
+  fetchMarkets,
+  fetchRankings,
+} from "../../services/api/client";
 import { RankingsPage } from "./RankingsPage";
 
 vi.mock("../../services/api/client", async () => {
@@ -228,19 +232,24 @@ function buildTwValuationResponse(overrides: Partial<RankingResponse> = {}): Ran
   };
 }
 
-function renderRankingsPage(language: "en" | "zh-TW" = "zh-TW") {
+function renderRankingsPage(
+  language: "en" | "zh-TW" = "zh-TW",
+  queryClient?: QueryClient,
+) {
   window.localStorage.clear();
   window.localStorage.setItem("stock-ticker-language", language);
 
-  const queryClient = new QueryClient({
-    defaultOptions: {
-      queries: { retry: false },
-      mutations: { retry: false },
-    },
-  });
+  const client =
+    queryClient ??
+    new QueryClient({
+      defaultOptions: {
+        queries: { retry: false, retryDelay: 0 },
+        mutations: { retry: false },
+      },
+    });
 
   return render(
-    <QueryClientProvider client={queryClient}>
+    <QueryClientProvider client={client}>
       <LanguageProvider>
         <RankingsPage />
       </LanguageProvider>
@@ -269,7 +278,13 @@ async function openTwVolumeTab(
   await screen.findByTestId("rankings-row-TW:2330");
   await user.click(screen.getByTestId("rankings-tab-volume"));
   await waitFor(() => {
-    expect(fetchRankings).toHaveBeenLastCalledWith("TW", "volume", 50, "TWSE");
+    expect(fetchRankings).toHaveBeenLastCalledWith(
+      "TW",
+      "volume",
+      50,
+      "TWSE",
+      expect.any(AbortSignal),
+    );
   });
   return user;
 }
@@ -346,7 +361,13 @@ describe("RankingsPage", () => {
     renderRankingsPage();
 
     await waitFor(() => {
-      expect(fetchRankings).toHaveBeenCalledWith("US", "volume", 50, undefined);
+      expect(fetchRankings).toHaveBeenCalledWith(
+        "US",
+        "volume",
+        50,
+        undefined,
+        expect.any(AbortSignal),
+      );
     });
     expect(await screen.findByTestId("rankings-row-US:MSFT")).toBeInTheDocument();
     expect(screen.getByTestId("rankings-change-percent-US:MSFT")).toHaveClass(
@@ -375,7 +396,13 @@ describe("RankingsPage", () => {
     await user.selectOptions(screen.getByLabelText("市場"), "US");
 
     await waitFor(() => {
-      expect(fetchRankings).toHaveBeenLastCalledWith("US", "volume", 50, undefined);
+      expect(fetchRankings).toHaveBeenLastCalledWith(
+        "US",
+        "volume",
+        50,
+        undefined,
+        expect.any(AbortSignal),
+      );
     });
     expect(await screen.findByTestId("rankings-row-US:MSFT")).toBeInTheDocument();
     expect(screen.getByTestId("rankings-scope-note")).toHaveTextContent(
@@ -386,7 +413,13 @@ describe("RankingsPage", () => {
     await user.click(screen.getByTestId("rankings-tab-change_down"));
 
     await waitFor(() => {
-      expect(fetchRankings).toHaveBeenLastCalledWith("US", "change_down", 50, undefined);
+      expect(fetchRankings).toHaveBeenLastCalledWith(
+        "US",
+        "change_down",
+        50,
+        undefined,
+        expect.any(AbortSignal),
+      );
     });
     expectVolumeChangeColumnAbsent();
     expectNetBuySellColumnAbsent();
@@ -483,6 +516,19 @@ describe("RankingsPage", () => {
       hideRawDetail: true,
       statusHint: false,
     },
+    {
+      id: "client-timeout",
+      language: "zh-TW" as const,
+      error: new ApiError("Rankings request timed out", {
+        kind: "unavailable",
+        status: null,
+        detail: "Rankings request timed out",
+      }),
+      title: "官方資料來源逾時",
+      body: "市場排行連線官方資料來源逾時，請稍後再試。",
+      hideRawDetail: true,
+      statusHint: false,
+    },
   ])(
     "surfaces $id rankings errors with localized notice copy",
     async ({ language, error, title, body, hideRawDetail, statusHint }) => {
@@ -500,6 +546,61 @@ describe("RankingsPage", () => {
       }
     },
   );
+
+  it("does not retry a client-side rankings timeout under default QueryClient retries", async () => {
+    vi.mocked(fetchRankings).mockRejectedValue(
+      new ApiError(RANKINGS_REQUEST_TIMEOUT_DETAIL, {
+        kind: "unavailable",
+        status: null,
+        detail: RANKINGS_REQUEST_TIMEOUT_DETAIL,
+      }),
+    );
+
+    renderRankingsPage(
+      "zh-TW",
+      new QueryClient({
+        defaultOptions: {
+          queries: { retryDelay: 0 },
+        },
+      }),
+    );
+
+    expect(await screen.findByText("官方資料來源逾時")).toBeInTheDocument();
+    expect(fetchRankings).toHaveBeenCalledTimes(1);
+  });
+
+  it("aborts an in-flight rankings request when switching tabs", async () => {
+    const user = userEvent.setup();
+    vi.mocked(fetchRankings).mockImplementation(
+      (_market, rankingType, _limit, _twBoard, signal) => {
+        if (rankingType === "net_buy") {
+          return new Promise((_resolve, reject) => {
+            signal?.addEventListener("abort", () => {
+              const error = new Error("The user aborted a request.");
+              error.name = "AbortError";
+              reject(error);
+            });
+          });
+        }
+        return Promise.resolve(
+          buildTwQuoteResponse({ rankingType: rankingType as RankingResponse["rankingType"] }),
+        );
+      },
+    );
+
+    renderRankingsPage();
+    await screen.findByText("載入排行中");
+    const firstSignal = vi.mocked(fetchRankings).mock.calls[0]?.[4] as AbortSignal | undefined;
+    expect(firstSignal).toBeInstanceOf(AbortSignal);
+    expect(firstSignal?.aborted).toBe(false);
+
+    await user.click(screen.getByTestId("rankings-tab-volume"));
+    await waitFor(() => {
+      expect(firstSignal?.aborted).toBe(true);
+    });
+    expect(await screen.findByTestId("rankings-row-TW:2330")).toBeInTheDocument();
+    expect(screen.queryByText("官方資料來源逾時")).not.toBeInTheDocument();
+  });
 
   it("renders TW daily-data warning for institutional rankings", async () => {
     const user = userEvent.setup();
@@ -549,7 +650,13 @@ describe("RankingsPage", () => {
     await user.click(screen.getByTestId("rankings-tab-volume"));
 
     await waitFor(() => {
-      expect(fetchRankings).toHaveBeenLastCalledWith("TW", "volume", 50, "TWSE");
+      expect(fetchRankings).toHaveBeenLastCalledWith(
+        "TW",
+        "volume",
+        50,
+        "TWSE",
+        expect.any(AbortSignal),
+      );
     });
     expect(screen.getByTestId("rankings-scope-note")).toHaveTextContent(
       "此分頁的台股報價排行僅含上市（TWSE）且來自本應用程式設定的免費報價清單。",
@@ -564,7 +671,13 @@ describe("RankingsPage", () => {
     await user.click(screen.getByTestId("rankings-tab-change_up"));
 
     await waitFor(() => {
-      expect(fetchRankings).toHaveBeenLastCalledWith("TW", "change_up", 50, "TWSE");
+      expect(fetchRankings).toHaveBeenLastCalledWith(
+        "TW",
+        "change_up",
+        50,
+        "TWSE",
+        expect.any(AbortSignal),
+      );
     });
     await waitFor(() => {
       expect(screen.getByTestId("rankings-freshness-label")).toHaveTextContent(
@@ -643,7 +756,13 @@ describe("RankingsPage", () => {
     ]);
     await user.click(screen.getByTestId("rankings-tw-board-tpex"));
     await waitFor(() => {
-      expect(fetchRankings).toHaveBeenLastCalledWith("TW", "volume", 50, "TPEx");
+      expect(fetchRankings).toHaveBeenLastCalledWith(
+        "TW",
+        "volume",
+        50,
+        "TPEx",
+        expect.any(AbortSignal),
+      );
     });
     const scopeNote = screen.getByTestId("rankings-scope-note");
     expect(scopeNote).toHaveTextContent("不是完整的上櫃排行");
@@ -662,7 +781,13 @@ describe("RankingsPage", () => {
     await user.click(screen.getByTestId("rankings-tab-valuation_low_pe"));
 
     await waitFor(() => {
-      expect(fetchRankings).toHaveBeenLastCalledWith("TW", "valuation_low_pe", 50, "TWSE");
+      expect(fetchRankings).toHaveBeenLastCalledWith(
+        "TW",
+        "valuation_low_pe",
+        50,
+        "TWSE",
+        expect.any(AbortSignal),
+      );
     });
     expect(await screen.findByRole("columnheader", { name: "本益比" })).toBeInTheDocument();
     expect(screen.getByRole("columnheader", { name: "本益比來源" })).toBeInTheDocument();
@@ -706,7 +831,13 @@ describe("RankingsPage", () => {
     await user.click(screen.getByTestId("rankings-tab-valuation_low_pe"));
 
     await waitFor(() => {
-      expect(fetchRankings).toHaveBeenLastCalledWith("US", "valuation_low_pe", 50, undefined);
+      expect(fetchRankings).toHaveBeenLastCalledWith(
+        "US",
+        "valuation_low_pe",
+        50,
+        undefined,
+        expect.any(AbortSignal),
+      );
     });
     expect(await screen.findByRole("columnheader", { name: "本益比" })).toBeInTheDocument();
     expect(screen.getByText("22.40")).toBeInTheDocument();
@@ -765,7 +896,13 @@ describe("RankingsPage", () => {
     await user.click(screen.getByTestId("rankings-tab-valuation_low_pe"));
 
     await waitFor(() => {
-      expect(fetchRankings).toHaveBeenLastCalledWith("TW", "valuation_low_pe", 50, "TPEx");
+      expect(fetchRankings).toHaveBeenLastCalledWith(
+        "TW",
+        "valuation_low_pe",
+        50,
+        "TPEx",
+        expect.any(AbortSignal),
+      );
     });
     expect(await screen.findByTestId("rankings-row-TW:6488")).toBeInTheDocument();
     expect(screen.getByText("TPEx official daily P/E")).toBeInTheDocument();
@@ -797,13 +934,25 @@ describe("RankingsPage", () => {
     await user.selectOptions(screen.getByLabelText("市場"), "US");
 
     await waitFor(() => {
-      expect(fetchRankings).toHaveBeenLastCalledWith("US", "volume", 50, undefined);
+      expect(fetchRankings).toHaveBeenLastCalledWith(
+        "US",
+        "volume",
+        50,
+        undefined,
+        expect.any(AbortSignal),
+      );
     });
 
     await user.click(screen.getByTestId("rankings-tab-change_up"));
 
     await waitFor(() => {
-      expect(fetchRankings).toHaveBeenLastCalledWith("US", "change_up", 50, undefined);
+      expect(fetchRankings).toHaveBeenLastCalledWith(
+        "US",
+        "change_up",
+        50,
+        undefined,
+        expect.any(AbortSignal),
+      );
     });
     expect(screen.getByTestId("rankings-scope-note")).toHaveTextContent(
       "美股漲跌幅排行以標普五百成分股（內建名單快照）為範圍，使用 Yahoo Finance 批次報價欄位排序；美股成交量仍優先採用 Yahoo 全市場熱門成交選股（若可用）。",
@@ -851,7 +1000,13 @@ describe("RankingsPage", () => {
     await user.click(screen.getByTestId("rankings-tw-board-tpex"));
 
     await waitFor(() => {
-      expect(fetchRankings).toHaveBeenLastCalledWith("TW", "net_buy", 50, "TPEx");
+      expect(fetchRankings).toHaveBeenLastCalledWith(
+        "TW",
+        "net_buy",
+        50,
+        "TPEx",
+        expect.any(AbortSignal),
+      );
     });
     await waitFor(() => {
       expect(screen.getByTestId("rankings-scope-note")).toHaveTextContent(
@@ -887,7 +1042,13 @@ describe("RankingsPage", () => {
     await user.click(screen.getByRole("button", { name: "上櫃" }));
 
     await waitFor(() => {
-      expect(fetchRankings).toHaveBeenLastCalledWith("TW", "net_buy", 50, "TPEx");
+      expect(fetchRankings).toHaveBeenLastCalledWith(
+        "TW",
+        "net_buy",
+        50,
+        "TPEx",
+        expect.any(AbortSignal),
+      );
     });
     await waitFor(() => {
       expect(screen.getByTestId("rankings-scope-note")).toHaveTextContent(
@@ -927,7 +1088,13 @@ describe("RankingsPage", () => {
     await user.click(screen.getByTestId("rankings-tab-net_buy"));
 
     await waitFor(() => {
-      expect(fetchRankings).toHaveBeenLastCalledWith("US", "net_buy", 50, undefined);
+      expect(fetchRankings).toHaveBeenLastCalledWith(
+        "US",
+        "net_buy",
+        50,
+        undefined,
+        expect.any(AbortSignal),
+      );
     });
     expect(screen.getByTestId("rankings-scope-note")).toHaveTextContent(
       "此免費版本不提供美股法人買超／賣超。",
@@ -959,7 +1126,13 @@ describe("RankingsPage", () => {
     await user.selectOptions(screen.getByLabelText("Market"), "US");
 
     await waitFor(() => {
-      expect(fetchRankings).toHaveBeenLastCalledWith("US", "volume", 50, undefined);
+      expect(fetchRankings).toHaveBeenLastCalledWith(
+        "US",
+        "volume",
+        50,
+        undefined,
+        expect.any(AbortSignal),
+      );
     });
     await screen.findByTestId("rankings-row-US:MSFT");
     expectNetBuySellColumnAbsent("en");
