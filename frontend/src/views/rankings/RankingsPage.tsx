@@ -26,7 +26,12 @@ import { useRouter } from "next/navigation";
 import { getDisplayStockName, useLanguage } from "../../app/i18n";
 import { QuoteFreshnessTag } from "../../components/state/QuoteFreshnessTag";
 import { RequestStateNotice, errorToNoticeKind } from "../../components/state/RequestStateNotice";
-import { fetchMarkets, fetchRankings, toApiError } from "../../services/api/client";
+import {
+  fetchMarkets,
+  fetchRankings,
+  shouldRetryRankingsQuery,
+  toApiError,
+} from "../../services/api/client";
 import { formatCurrency, formatLastUpdated, formatPercent } from "../../services/format/quote";
 import { priceToneClassForMarket } from "../../services/market-data/priceTone";
 import {
@@ -347,6 +352,7 @@ export function RankingsPage() {
         DEFAULT_LIMIT,
         market === "TW" ? twBoard : undefined,
       ),
+    retry: shouldRetryRankingsQuery,
     refetchInterval: (query) =>
       getRankingsRefetchInterval(
         (query.state.data as RankingResponse | undefined)?.isMarketOpen ?? false,

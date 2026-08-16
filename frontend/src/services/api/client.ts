@@ -231,6 +231,22 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
 export const RANKINGS_REQUEST_TIMEOUT_MS = 20_000;
 export const RANKINGS_REQUEST_TIMEOUT_DETAIL = "Rankings request timed out";
 
+export function isRankingsRequestTimeoutError(error: unknown): boolean {
+  return (
+    error instanceof ApiError &&
+    error.kind === "unavailable" &&
+    error.detail === RANKINGS_REQUEST_TIMEOUT_DETAIL &&
+    error.status == null
+  );
+}
+
+export function shouldRetryRankingsQuery(failureCount: number, error: unknown): boolean {
+  if (isRankingsRequestTimeoutError(error)) {
+    return false;
+  }
+  return failureCount < 3;
+}
+
 async function fetchJsonWithTimeout<T>(path: string, timeoutMs: number): Promise<T> {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => {

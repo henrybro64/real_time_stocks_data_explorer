@@ -1,11 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  ApiError,
   RANKINGS_REQUEST_TIMEOUT_DETAIL,
   RANKINGS_REQUEST_TIMEOUT_MS,
   fetchRankings,
   fetchTaiwanInstitutionalInvestors,
   fetchTaiwanMarginShort,
+  shouldRetryRankingsQuery,
 } from "./client";
 
 describe("fetchTaiwanInstitutionalInvestors", () => {
@@ -174,5 +176,26 @@ describe("fetchRankings", () => {
       status: 502,
       detail,
     });
+  });
+
+  it("does not retry a client timeout, but still retries other unavailable errors", () => {
+    const timeout = new ApiError(RANKINGS_REQUEST_TIMEOUT_DETAIL, {
+      kind: "unavailable",
+      status: null,
+      detail: RANKINGS_REQUEST_TIMEOUT_DETAIL,
+    });
+    const upstream = new ApiError(
+      "TW institutional daily data is temporarily unavailable from the free public source.",
+      {
+        kind: "unavailable",
+        status: 502,
+        detail: "TW institutional daily data is temporarily unavailable from the free public source.",
+      },
+    );
+
+    expect(shouldRetryRankingsQuery(0, timeout)).toBe(false);
+    expect(shouldRetryRankingsQuery(0, upstream)).toBe(true);
+    expect(shouldRetryRankingsQuery(2, upstream)).toBe(true);
+    expect(shouldRetryRankingsQuery(3, upstream)).toBe(false);
   });
 });

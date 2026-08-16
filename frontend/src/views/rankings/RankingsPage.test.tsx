@@ -6,8 +6,12 @@ import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { LanguageProvider } from "../../app/i18n";
-import { ApiError } from "../../services/api/client";
-import { fetchMarkets, fetchRankings } from "../../services/api/client";
+import {
+  ApiError,
+  RANKINGS_REQUEST_TIMEOUT_DETAIL,
+  fetchMarkets,
+  fetchRankings,
+} from "../../services/api/client";
 import { RankingsPage } from "./RankingsPage";
 
 vi.mock("../../services/api/client", async () => {
@@ -228,19 +232,24 @@ function buildTwValuationResponse(overrides: Partial<RankingResponse> = {}): Ran
   };
 }
 
-function renderRankingsPage(language: "en" | "zh-TW" = "zh-TW") {
+function renderRankingsPage(
+  language: "en" | "zh-TW" = "zh-TW",
+  queryClient?: QueryClient,
+) {
   window.localStorage.clear();
   window.localStorage.setItem("stock-ticker-language", language);
 
-  const queryClient = new QueryClient({
-    defaultOptions: {
-      queries: { retry: false },
-      mutations: { retry: false },
-    },
-  });
+  const client =
+    queryClient ??
+    new QueryClient({
+      defaultOptions: {
+        queries: { retry: false, retryDelay: 0 },
+        mutations: { retry: false },
+      },
+    });
 
   return render(
-    <QueryClientProvider client={queryClient}>
+    <QueryClientProvider client={client}>
       <LanguageProvider>
         <RankingsPage />
       </LanguageProvider>
@@ -513,6 +522,28 @@ describe("RankingsPage", () => {
       }
     },
   );
+
+  it("does not retry a client-side rankings timeout under default QueryClient retries", async () => {
+    vi.mocked(fetchRankings).mockRejectedValue(
+      new ApiError(RANKINGS_REQUEST_TIMEOUT_DETAIL, {
+        kind: "unavailable",
+        status: null,
+        detail: RANKINGS_REQUEST_TIMEOUT_DETAIL,
+      }),
+    );
+
+    renderRankingsPage(
+      "zh-TW",
+      new QueryClient({
+        defaultOptions: {
+          queries: { retryDelay: 0 },
+        },
+      }),
+    );
+
+    expect(await screen.findByText("官方資料來源逾時")).toBeInTheDocument();
+    expect(fetchRankings).toHaveBeenCalledTimes(1);
+  });
 
   it("renders TW daily-data warning for institutional rankings", async () => {
     const user = userEvent.setup();
