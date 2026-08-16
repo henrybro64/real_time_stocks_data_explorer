@@ -1179,25 +1179,37 @@ def _hardcoded_tw_quote_source(stock_ids: list[str]) -> FakeQuoteSource:
     return FakeQuoteSource(stocks=stocks, quotes=quotes)
 
 
-def test_tw_volume_rankings_mark_hardcoded_universe_as_fallback_when_yahoo_missing() -> None:
+@pytest.mark.parametrize(
+    ("ranking_type", "tw_board", "stock_ids"),
+    [
+        (RankingType.volume, "TWSE", TW_TWSE_RANKING_STOCK_IDS),
+        (RankingType.change_up, "TWSE", TW_TWSE_RANKING_STOCK_IDS),
+        (RankingType.volume, "TPEx", TW_TPEX_RANKING_STOCK_IDS),
+    ],
+)
+def test_tw_quote_rankings_mark_hardcoded_universe_as_fallback_when_yahoo_missing(
+    ranking_type: RankingType,
+    tw_board: str,
+    stock_ids: list[str],
+) -> None:
     external = _StubExternalSource({})
-    quote_source = _hardcoded_tw_quote_source(TW_TWSE_RANKING_STOCK_IDS)
     service = RankingsService(
-        quote_source=quote_source,
+        quote_source=_hardcoded_tw_quote_source(stock_ids),
         volume_baseline_store=InMemoryVolumeBaselineStore(),
         external_source=external,
     )
 
     response = service.get_rankings(
         "TW",
-        RankingType.volume,
+        ranking_type,
         limit=10,
         now=datetime(2026, 5, 12, 3, 0, tzinfo=timezone.utc),
+        tw_board=tw_board,
     )
 
     item_ids = [item.stock.id for item in response.items]
     assert item_ids
-    assert set(item_ids) <= set(TW_TWSE_RANKING_STOCK_IDS)
+    assert set(item_ids) <= set(stock_ids)
     assert response.twRankingsScope == "fallback"
     assert response.source == rankings_service_module._TW_QUOTE_FALLBACK_SOURCE
     assert response.warningMessage == rankings_service_module._TW_QUOTE_FALLBACK_WARNING
@@ -1205,31 +1217,8 @@ def test_tw_volume_rankings_mark_hardcoded_universe_as_fallback_when_yahoo_missi
     assert response.source != "Yahoo Finance pre-ranked quote rankings."
     assert response.source != "Quote rankings from the app's free best-effort quote providers."
     assert "configured" not in response.source.lower()
-    assert external.calls == [("TW", RankingType.volume, 10, "TWSE")]
-
-
-def test_tw_tpex_volume_rankings_mark_hardcoded_universe_as_fallback_when_yahoo_missing() -> None:
-    external = _StubExternalSource({})
-    service = RankingsService(
-        quote_source=_hardcoded_tw_quote_source(TW_TPEX_RANKING_STOCK_IDS),
-        volume_baseline_store=InMemoryVolumeBaselineStore(),
-        external_source=external,
-    )
-
-    response = service.get_rankings(
-        "TW",
-        RankingType.volume,
-        limit=10,
-        now=datetime(2026, 5, 12, 3, 0, tzinfo=timezone.utc),
-        tw_board="TPEx",
-    )
-
-    item_ids = [item.stock.id for item in response.items]
-    assert item_ids
-    assert set(item_ids) <= set(TW_TPEX_RANKING_STOCK_IDS)
-    assert response.twRankingsScope == "fallback"
-    assert response.source == rankings_service_module._TW_QUOTE_FALLBACK_SOURCE
-    assert response.twBoard == "TPEx"
+    assert response.twBoard == tw_board
+    assert external.calls == [("TW", ranking_type, 10, tw_board)]
 
 
 def test_tw_volume_up_rankings_use_quote_scope_not_fallback() -> None:

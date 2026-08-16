@@ -95,6 +95,39 @@ _TW_QUOTE_FALLBACK_FRESHNESS_CLOSED = (
     "Market closed; showing a limited hard-coded quote fallback because the broader "
     "Taiwan ranking source is unavailable."
 )
+
+
+def _tw_hardcoded_fallback_copy(market_open: bool) -> tuple[str, str, str]:
+    freshness = (
+        _TW_QUOTE_FALLBACK_FRESHNESS_OPEN
+        if market_open
+        else _TW_QUOTE_FALLBACK_FRESHNESS_CLOSED
+    )
+    return _TW_QUOTE_FALLBACK_SOURCE, _TW_QUOTE_FALLBACK_WARNING, freshness
+
+
+def _quote_path_freshness(
+    ranking_type: RankingType,
+    market_open: bool,
+    baseline_missing: bool,
+) -> str:
+    if ranking_type == RankingType.volume:
+        if market_open:
+            return "Market open; rankings use the latest quote snapshot."
+        return "Market closed; rankings use the latest available quote snapshot."
+    if ranking_type in {RankingType.change_up, RankingType.change_down}:
+        if market_open:
+            return "Market open; price-move rankings use the latest quote snapshot."
+        return "Market closed; price-move rankings use the latest available quote snapshot."
+    if baseline_missing:
+        return (
+            "Baseline unavailable on the first snapshot; volume change percent stays empty until a later refresh."
+        )
+    if market_open:
+        return "Volume change uses the previous quote snapshot baseline."
+    return "Market closed; volume change uses the previous quote snapshot baseline."
+
+
 _VALUATION_SOURCE = (
     "Valuation rankings use the highest-volume current quote candidates, then sort by "
     "P/E from the app's available valuation sources."
@@ -335,47 +368,13 @@ class RankingsService:
             and self._uses_hardcoded_tw_quote_universe
         )
         if used_hardcoded_fallback:
-            freshness = (
-                _TW_QUOTE_FALLBACK_FRESHNESS_OPEN
-                if market_open
-                else _TW_QUOTE_FALLBACK_FRESHNESS_CLOSED
-            )
-            return RankingResponse(
-                market=market,
-                rankingType=ranking_type,
-                twBoard=tw_board if market == "TW" else None,
-                items=items,
-                timestamp=now.isoformat(),
-                source=_TW_QUOTE_FALLBACK_SOURCE,
-                sourceType=RankingSourceType.free_unofficial,
-                isMarketOpen=market_open,
-                dataFreshnessLabel=freshness,
-                warningMessage=_TW_QUOTE_FALLBACK_WARNING,
-                unsupportedReason=None,
-                usRankingsScope=None,
-                twRankingsScope="fallback",
-            )
-
-        if ranking_type == RankingType.volume:
-            if market_open:
-                freshness = "Market open; rankings use the latest quote snapshot."
-            else:
-                freshness = "Market closed; rankings use the latest available quote snapshot."
-        elif ranking_type in {RankingType.change_up, RankingType.change_down}:
-            if market_open:
-                freshness = "Market open; price-move rankings use the latest quote snapshot."
-            else:
-                freshness = (
-                    "Market closed; price-move rankings use the latest available quote snapshot."
-                )
-        elif baseline_missing:
-            freshness = (
-                "Baseline unavailable on the first snapshot; volume change percent stays empty until a later refresh."
-            )
-        elif market_open:
-            freshness = "Volume change uses the previous quote snapshot baseline."
+            source, warning, freshness = _tw_hardcoded_fallback_copy(market_open)
+            tw_scope = "fallback"
         else:
-            freshness = "Market closed; volume change uses the previous quote snapshot baseline."
+            source = _QUOTE_SOURCE
+            warning = _QUOTE_WARNING
+            freshness = _quote_path_freshness(ranking_type, market_open, baseline_missing)
+            tw_scope = "quote" if market == "TW" else None
 
         return RankingResponse(
             market=market,
@@ -383,14 +382,14 @@ class RankingsService:
             twBoard=tw_board if market == "TW" else None,
             items=items,
             timestamp=now.isoformat(),
-            source=_QUOTE_SOURCE,
+            source=source,
             sourceType=RankingSourceType.free_unofficial,
             isMarketOpen=market_open,
             dataFreshnessLabel=freshness,
-            warningMessage=_QUOTE_WARNING,
+            warningMessage=warning,
             unsupportedReason=None,
             usRankingsScope="quote" if market == "US" else None,
-            twRankingsScope="quote" if market == "TW" else None,
+            twRankingsScope=tw_scope,
         )
 
     def _build_valuation_ranking(
@@ -438,15 +437,8 @@ class RankingsService:
             _ranking_item(index, candidate)
             for index, candidate in enumerate(ranked_candidates, start=1)
         ]
-        used_hardcoded_fallback = tw_rankings_scope == "fallback"
-        if used_hardcoded_fallback:
-            freshness = (
-                _TW_QUOTE_FALLBACK_FRESHNESS_OPEN
-                if market_open
-                else _TW_QUOTE_FALLBACK_FRESHNESS_CLOSED
-            )
-            source = _TW_QUOTE_FALLBACK_SOURCE
-            warning = _TW_QUOTE_FALLBACK_WARNING
+        if tw_rankings_scope == "fallback":
+            source, warning, freshness = _tw_hardcoded_fallback_copy(market_open)
         else:
             freshness = _VALUATION_FRESHNESS_OPEN if market_open else _VALUATION_FRESHNESS_CLOSED
             source = _VALUATION_SOURCE
