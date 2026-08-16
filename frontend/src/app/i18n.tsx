@@ -408,6 +408,46 @@ export type TranslationKey =
   | "keyStats.infoHint"
   | "keyStats.fundamentalsUnavailable";
 
+type TwQuoteFallbackTranslationKey =
+  | "rankings.notice.twQuoteScopeYahooTwse"
+  | "rankings.notice.twQuoteScopeYahooTpex"
+  | "rankings.notice.twQuoteScopeFallbackTwse"
+  | "rankings.notice.twQuoteScopeFallbackTpex"
+  | "rankings.notice.twQuoteFallback"
+  | "rankings.freshness.twQuoteFallbackOpen"
+  | "rankings.freshness.twQuoteFallbackClosed"
+  | "rankings.source.twQuoteFallback";
+
+function twQuoteFallbackMessages(language: AppLanguage): Record<TwQuoteFallbackTranslationKey, string> {
+  const zh = language === "zh-TW";
+  return {
+    "rankings.notice.twQuoteScopeYahooTwse": zh
+      ? "此分頁的台股報價排行來自 Yahoo Finance 較廣的上市（TWSE）範圍，不是本應用程式的小型設定清單。"
+      : "Taiwan quote rankings for this tab come from Yahoo Finance's broader TWSE (listed) universe, not the app's small configured quote list.",
+    "rankings.notice.twQuoteScopeYahooTpex": zh
+      ? "此分頁的台股報價排行來自 Yahoo Finance 較廣的上櫃（TPEx）範圍，不是本應用程式的小型設定清單。"
+      : "Taiwan quote rankings for this tab come from Yahoo Finance's broader TPEx (OTC) universe, not the app's small configured quote list.",
+    "rankings.notice.twQuoteScopeFallbackTwse": zh
+      ? "目前無法取得較廣的台股報價排行。此上市（TWSE）表格使用小型內建備援清單，不是完整的上市排行。"
+      : "Broader Taiwan quote rankings are unavailable. This TWSE table uses a small hard-coded fallback universe, not a complete listed-board ranking.",
+    "rankings.notice.twQuoteScopeFallbackTpex": zh
+      ? "目前無法取得較廣的台股報價排行。此上櫃（TPEx）表格使用小型內建備援清單，不是完整的上櫃排行。"
+      : "Broader Taiwan quote rankings are unavailable. This TPEx table uses a small hard-coded fallback universe, not a complete OTC-board ranking.",
+    "rankings.notice.twQuoteFallback": zh
+      ? "目前無法取得較廣的台股報價排行。此表格使用小型內建備援清單，不是完整的上市／上櫃排行。"
+      : "Broader Taiwan quote rankings are temporarily unavailable. This table uses a small hard-coded fallback universe, not a complete TWSE/TPEx ranking.",
+    "rankings.freshness.twQuoteFallbackOpen": zh
+      ? "市場開盤中；因較廣的台股排行來源無法使用，改顯示小型內建報價備援清單。"
+      : "Market open; showing a limited hard-coded quote fallback because the broader Taiwan ranking source is unavailable.",
+    "rankings.freshness.twQuoteFallbackClosed": zh
+      ? "市場休市；因較廣的台股排行來源無法使用，改顯示小型內建報價備援清單。"
+      : "Market closed; showing a limited hard-coded quote fallback because the broader Taiwan ranking source is unavailable.",
+    "rankings.source.twQuoteFallback": zh
+      ? "有限的上市／上櫃內建報價備援清單；不是完整市場排行。"
+      : "Limited hard-coded TWSE/TPEx quote fallback; not a full-board ranking.",
+  };
+}
+
 const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
   en: {
     "nav.dashboard": "Dashboard",
@@ -604,14 +644,6 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
       "Taiwan quote rankings for this tab are filtered to TWSE-listed (上市) names from the app's configured free quote universe.",
     "rankings.notice.twQuoteScopeTpex":
       "Taiwan quote rankings for this tab are filtered to TPEx-listed (上櫃) names from the app's configured free quote universe.",
-    "rankings.notice.twQuoteScopeYahooTwse":
-      "Taiwan quote rankings for this tab come from Yahoo Finance's broader TWSE (listed) universe, not the app's small configured quote list.",
-    "rankings.notice.twQuoteScopeYahooTpex":
-      "Taiwan quote rankings for this tab come from Yahoo Finance's broader TPEx (OTC) universe, not the app's small configured quote list.",
-    "rankings.notice.twQuoteScopeFallbackTwse":
-      "Broader Taiwan quote rankings are unavailable. This TWSE table uses a small hard-coded fallback universe, not a complete listed-board ranking.",
-    "rankings.notice.twQuoteScopeFallbackTpex":
-      "Broader Taiwan quote rankings are unavailable. This TPEx table uses a small hard-coded fallback universe, not a complete OTC-board ranking.",
     "rankings.twBoard.groupLabel": "Board",
     "rankings.twBoard.twse": "Listed (TWSE)",
     "rankings.twBoard.tpex": "TPEx (OTC)",
@@ -625,8 +657,6 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
       "Taiwan institutional daily data is temporarily unavailable from the free public source.",
     "rankings.notice.twInstitutionalTpexUnavailable":
       "TPEx institutional daily data is temporarily unavailable from the free public source.",
-    "rankings.notice.twQuoteFallback":
-      "Broader Taiwan quote rankings are temporarily unavailable. This table uses a small hard-coded fallback universe, not a complete TWSE/TPEx ranking.",
     "rankings.freshness.closedLatestSnapshot":
       "Market is closed. Showing latest available free snapshot.",
     "rankings.freshness.cachedCurrentBucket":
@@ -684,18 +714,12 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
       "Market closed; TPEx daily institutional ranking sorted by highest institutional net buy/sell shares.",
     "rankings.freshness.tpexNetSellClosed":
       "Market closed; TPEx daily institutional ranking sorted by most negative institutional net buy/sell shares.",
-    "rankings.freshness.twQuoteFallbackOpen":
-      "Market open; showing a limited hard-coded quote fallback because the broader Taiwan ranking source is unavailable.",
-    "rankings.freshness.twQuoteFallbackClosed":
-      "Market closed; showing a limited hard-coded quote fallback because the broader Taiwan ranking source is unavailable.",
     "rankings.source.quoteProviders": "Quote rankings from the app's free best-effort quote providers.",
     "rankings.source.yahooPreRanked": "Yahoo Finance pre-ranked rankings.",
     "rankings.source.sp500Movers":
       "S&P 500 movers from a constituent snapshot plus batched Yahoo Finance quote fields (not Yahoo's predefined gainers/losers screeners).",
     "rankings.source.valuationUniverse":
       "Valuation rankings use the highest-volume current quote candidates, then sort by P/E from the app's available valuation sources.",
-    "rankings.source.twQuoteFallback":
-      "Limited hard-coded TWSE/TPEx quote fallback; not a full-board ranking.",
     "rankings.source.tpexInstitutional": "TPEx institutional daily data",
     "rankings.source.twse": "TWSE T86 daily institutional data",
     "rankings.source.unsupported": "Unsupported in this free-only app",
@@ -880,6 +904,7 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "keyStats.infoHint": "Definition may vary by data provider.",
     "keyStats.fundamentalsUnavailable":
       "Market cap, beta, P/E, EPS, and dividend/earnings dates are not included in our free price feeds. Yahoo’s detailed fundamentals API requires browser cookies, so those fields stay empty unless you configure an API key (e.g. set FINNHUB_API_KEY on the backend for Finnhub) or connect another fundamentals provider.",
+    ...twQuoteFallbackMessages("en"),
   },
   "zh-TW": {
     "nav.dashboard": "儀表板",
@@ -1070,14 +1095,6 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
       "此分頁的台股報價排行僅含上市（TWSE）且來自本應用程式設定的免費報價清單。",
     "rankings.notice.twQuoteScopeTpex":
       "此分頁的台股報價排行僅含上櫃（TPEx）且來自本應用程式設定的免費報價清單。",
-    "rankings.notice.twQuoteScopeYahooTwse":
-      "此分頁的台股報價排行來自 Yahoo Finance 較廣的上市（TWSE）範圍，不是本應用程式的小型設定清單。",
-    "rankings.notice.twQuoteScopeYahooTpex":
-      "此分頁的台股報價排行來自 Yahoo Finance 較廣的上櫃（TPEx）範圍，不是本應用程式的小型設定清單。",
-    "rankings.notice.twQuoteScopeFallbackTwse":
-      "目前無法取得較廣的台股報價排行。此上市（TWSE）表格使用小型內建備援清單，不是完整的上市排行。",
-    "rankings.notice.twQuoteScopeFallbackTpex":
-      "目前無法取得較廣的台股報價排行。此上櫃（TPEx）表格使用小型內建備援清單，不是完整的上櫃排行。",
     "rankings.twBoard.groupLabel": "交易別",
     "rankings.twBoard.twse": "上市",
     "rankings.twBoard.tpex": "上櫃",
@@ -1088,8 +1105,6 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "rankings.notice.twInstitutionalUnavailable": "目前無法從免費公開來源取得台股法人日資料。",
     "rankings.notice.twInstitutionalTpexUnavailable":
       "目前無法從免費公開來源取得上櫃（TPEx）法人日資料。",
-    "rankings.notice.twQuoteFallback":
-      "目前無法取得較廣的台股報價排行。此表格使用小型內建備援清單，不是完整的上市／上櫃排行。",
     "rankings.freshness.closedLatestSnapshot": "市場休市；顯示最新可得的免費快照。",
     "rankings.freshness.cachedCurrentBucket": "顯示此市場區間內最近儲存的 30 分鐘免費快照。",
     "rankings.freshness.cachedTwDaily": "顯示最近儲存的台股法人日快照。",
@@ -1129,18 +1144,12 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
       "市場休市；上櫃（TPEx）法人日排行依三大法人買賣超股數由高到低排序。",
     "rankings.freshness.tpexNetSellClosed":
       "市場休市；上櫃（TPEx）法人日排行依三大法人買賣超股數由低到高排序。",
-    "rankings.freshness.twQuoteFallbackOpen":
-      "市場開盤中；因較廣的台股排行來源無法使用，改顯示小型內建報價備援清單。",
-    "rankings.freshness.twQuoteFallbackClosed":
-      "市場休市；因較廣的台股排行來源無法使用，改顯示小型內建報價備援清單。",
     "rankings.source.quoteProviders": "排行使用本應用程式的免費最佳努力報價來源。",
     "rankings.source.yahooPreRanked": "Yahoo Finance 預先排序的排行資料。",
     "rankings.source.sp500Movers":
       "標普五百漲跌幅：成分股快照＋Yahoo Finance 批次報價欄位（非 Yahoo 預設漲跌榜選股）。",
     "rankings.source.valuationUniverse":
       "估值排行先取目前高成交量的報價候選，再依本應用程式可取得的本益比資料排序。",
-    "rankings.source.twQuoteFallback":
-      "有限的上市／上櫃內建報價備援清單；不是完整市場排行。",
     "rankings.source.tpexInstitutional": "TPEx 法人日資料",
     "rankings.source.twse": "TWSE T86 法人日資料",
     "rankings.source.unsupported": "此免費版本不支援",
@@ -1319,6 +1328,7 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "keyStats.infoHint": "定義可能因資料來源而異。",
     "keyStats.fundamentalsUnavailable":
       "市值、Beta、本益比、每股盈餘，以及除息／配息／財報日期等，免費即時報價來源通常不提供；Yahoo 詳細基本面 API 亦需要瀏覽器 Cookie，因此預設會顯示「—」。若要在後端補齊（例如設定 FINNHUB_API_KEY 使用 Finnhub），或改接其他基本面資料商，即可顯示這些欄位。",
+    ...twQuoteFallbackMessages("zh-TW"),
   },
 };
 

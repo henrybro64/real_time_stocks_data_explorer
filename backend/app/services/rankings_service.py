@@ -142,21 +142,22 @@ def _unofficial_ranking_response(
     tw_rankings_scope: str | None = None,
     source_type: RankingSourceType = RankingSourceType.free_unofficial,
 ) -> RankingResponse:
-    return RankingResponse(
-        market=market,
-        rankingType=ranking_type,
-        twBoard=tw_board if market == "TW" else None,
-        items=items,
-        timestamp=now.isoformat(),
-        source=source,
-        sourceType=source_type,
-        isMarketOpen=market_open,
-        dataFreshnessLabel=freshness,
-        warningMessage=warning,
-        unsupportedReason=None,
-        usRankingsScope=us_rankings_scope if market == "US" else None,
-        twRankingsScope=tw_rankings_scope if market == "TW" else None,
-    )
+    payload = {
+        "market": market,
+        "rankingType": ranking_type,
+        "twBoard": tw_board if market == "TW" else None,
+        "items": items,
+        "timestamp": now.isoformat(),
+        "source": source,
+        "sourceType": source_type,
+        "isMarketOpen": market_open,
+        "dataFreshnessLabel": freshness,
+        "warningMessage": warning,
+        "unsupportedReason": None,
+        "usRankingsScope": us_rankings_scope if market == "US" else None,
+        "twRankingsScope": tw_rankings_scope if market == "TW" else None,
+    }
+    return RankingResponse.model_validate(payload)
 
 
 _VALUATION_SOURCE = (

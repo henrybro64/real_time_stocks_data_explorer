@@ -158,6 +158,22 @@ def _tw_volume_quote_response(
     )
 
 
+def _cached_tw_volume_roundtrip(monkeypatch, response: RankingResponse):
+    session_local = _install_in_memory_sessionlocal(monkeypatch)
+    provider = FakeProvider(
+        bucket_start=datetime(2026, 7, 3, 3, 0, tzinfo=timezone.utc),
+        response=response,
+    )
+    service = RankingsSnapshotService(
+        provider_registry=FakeRegistry({("TW", "volume", "TWSE"): provider}),
+    )
+    open_at = datetime(2026, 7, 3, 3, 5, tzinfo=timezone.utc)
+    cached_at = datetime(2026, 7, 3, 3, 10, tzinfo=timezone.utc)
+    first = service.get_rankings("TW", RankingType.volume, 5, now=open_at, tw_board="TWSE")
+    cached = service.get_rankings("TW", RankingType.volume, 5, now=cached_at, tw_board="TWSE")
+    return first, cached, provider, session_local
+
+
 def _item(
     *,
     rank: int,
@@ -309,34 +325,16 @@ def test_cached_tw_quote_snapshot_reconstructs_scope(
     volume: int,
     warning: str,
 ) -> None:
-    session_local = _install_in_memory_sessionlocal(monkeypatch)
-    bucket_start = datetime(2026, 7, 3, 3, 0, tzinfo=timezone.utc)
-    response = _tw_volume_quote_response(
-        source=source,
-        tw_rankings_scope=scope,
-        warning=warning,
-        stock_id=stock_id,
-        symbol=symbol,
-        volume=volume,
-    )
-    provider = FakeProvider(bucket_start=bucket_start, response=response)
-    service = RankingsSnapshotService(
-        provider_registry=FakeRegistry({("TW", "volume", "TWSE"): provider})
-    )
-
-    first = service.get_rankings(
-        "TW",
-        RankingType.volume,
-        limit=5,
-        now=datetime(2026, 7, 3, 3, 5, tzinfo=timezone.utc),
-        tw_board="TWSE",
-    )
-    cached = service.get_rankings(
-        "TW",
-        RankingType.volume,
-        limit=5,
-        now=datetime(2026, 7, 3, 3, 10, tzinfo=timezone.utc),
-        tw_board="TWSE",
+    first, cached, provider, session_local = _cached_tw_volume_roundtrip(
+        monkeypatch,
+        _tw_volume_quote_response(
+            source=source,
+            tw_rankings_scope=scope,
+            warning=warning,
+            stock_id=stock_id,
+            symbol=symbol,
+            volume=volume,
+        ),
     )
 
     assert first.twRankingsScope == scope

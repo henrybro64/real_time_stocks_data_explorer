@@ -1179,6 +1179,24 @@ def _hardcoded_tw_quote_source(stock_ids: list[str]) -> FakeQuoteSource:
     return FakeQuoteSource(stocks=stocks, quotes=quotes)
 
 
+def _hardcoded_tw_rankings_service(
+    stock_ids: list[str],
+    *,
+    volume_baseline_store=None,
+    external_source=None,
+    sp500_quote_batch=None,
+) -> RankingsService:
+    return RankingsService(
+        quote_source=_hardcoded_tw_quote_source(stock_ids),
+        volume_baseline_store=volume_baseline_store or InMemoryVolumeBaselineStore(),
+        external_source=external_source if external_source is not None else _StubExternalSource({}),
+        sp500_quote_batch=sp500_quote_batch,
+    )
+
+
+_TW_OPEN_RANKINGS_NOW = datetime(2026, 5, 12, 3, 0, tzinfo=timezone.utc)
+
+
 @pytest.mark.parametrize(
     ("ranking_type", "tw_board", "stock_ids"),
     [
@@ -1205,9 +1223,8 @@ def test_tw_quote_rankings_mark_hardcoded_universe_as_fallback_when_yahoo_missin
             lambda envelopes: {stock.id: valuations[stock.id] for stock, _ in envelopes},  # noqa: ARG005
         )
     external = _StubExternalSource({})
-    service = RankingsService(
-        quote_source=_hardcoded_tw_quote_source(stock_ids),
-        volume_baseline_store=InMemoryVolumeBaselineStore(),
+    service = _hardcoded_tw_rankings_service(
+        stock_ids,
         external_source=external,
         sp500_quote_batch=_empty_sp500_quotes,
     )
@@ -1216,7 +1233,7 @@ def test_tw_quote_rankings_mark_hardcoded_universe_as_fallback_when_yahoo_missin
         "TW",
         ranking_type,
         limit=10,
-        now=datetime(2026, 5, 12, 3, 0, tzinfo=timezone.utc),
+        now=_TW_OPEN_RANKINGS_NOW,
         tw_board=tw_board,
     )
 
@@ -1240,17 +1257,16 @@ def test_tw_volume_up_rankings_use_quote_scope_not_fallback() -> None:
     volume_baselines = InMemoryVolumeBaselineStore()
     for stock_id in TW_TWSE_RANKING_STOCK_IDS:
         volume_baselines.set(stock_id, 100)
-    service = RankingsService(
-        quote_source=_hardcoded_tw_quote_source(TW_TWSE_RANKING_STOCK_IDS),
+    service = _hardcoded_tw_rankings_service(
+        TW_TWSE_RANKING_STOCK_IDS,
         volume_baseline_store=volume_baselines,
-        external_source=_StubExternalSource({}),
     )
 
     response = service.get_rankings(
         "TW",
         RankingType.volume_up,
         limit=10,
-        now=datetime(2026, 5, 12, 3, 0, tzinfo=timezone.utc),
+        now=_TW_OPEN_RANKINGS_NOW,
     )
 
     assert response.twRankingsScope == "quote"
@@ -1287,11 +1303,7 @@ def test_tw_bounded_quote_universe_is_quote_scope_not_hardcoded_fallback() -> No
 
 
 def test_tw_volume_fallback_uses_closed_freshness_when_market_closed() -> None:
-    service = RankingsService(
-        quote_source=_hardcoded_tw_quote_source(TW_TWSE_RANKING_STOCK_IDS),
-        volume_baseline_store=InMemoryVolumeBaselineStore(),
-        external_source=_StubExternalSource({}),
-    )
+    service = _hardcoded_tw_rankings_service(TW_TWSE_RANKING_STOCK_IDS)
 
     response = service.get_rankings(
         "TW",

@@ -1,53 +1,10 @@
 import type { RankingResponse } from "@shared/api";
+import type { TranslationKey } from "../../app/i18n";
 
-type RankingsCopyKey =
-  | "rankings.notice.quoteUnofficial"
-  | "rankings.notice.twDaily"
-  | "rankings.notice.twDailyTpex"
-  | "rankings.notice.usInstitutionalUnsupported"
-  | "rankings.notice.twInstitutionalUnavailable"
-  | "rankings.notice.twInstitutionalTpexUnavailable"
-  | "rankings.notice.twQuoteFallback"
-  | "rankings.freshness.closedLatestSnapshot"
-  | "rankings.freshness.cachedCurrentBucket"
-  | "rankings.freshness.cachedTwDaily"
-  | "rankings.freshness.freeSourceFallback"
-  | "rankings.freshness.noCachedSnapshot"
-  | "rankings.freshness.quoteSnapshotOpen"
-  | "rankings.freshness.quoteSnapshotClosed"
-  | "rankings.freshness.changeSnapshotOpen"
-  | "rankings.freshness.changeSnapshotClosed"
-  | "rankings.freshness.yahooVolumeOpen"
-  | "rankings.freshness.yahooVolumeClosed"
-  | "rankings.freshness.yahooChangeOpen"
-  | "rankings.freshness.yahooChangeClosed"
-  | "rankings.freshness.sp500MoversOpen"
-  | "rankings.freshness.sp500MoversClosed"
-  | "rankings.freshness.valuationLowPeOpen"
-  | "rankings.freshness.valuationLowPeClosed"
-  | "rankings.freshness.volumeBaselineMissing"
-  | "rankings.freshness.volumeBaselineOpen"
-  | "rankings.freshness.volumeBaselineClosed"
-  | "rankings.freshness.twInstitutionalUnavailable"
-  | "rankings.freshness.twInstitutionalTpexUnavailable"
-  | "rankings.freshness.twNetBuy"
-  | "rankings.freshness.twNetSell"
-  | "rankings.freshness.twNetBuyClosed"
-  | "rankings.freshness.twNetSellClosed"
-  | "rankings.freshness.tpexNetBuy"
-  | "rankings.freshness.tpexNetSell"
-  | "rankings.freshness.tpexNetBuyClosed"
-  | "rankings.freshness.tpexNetSellClosed"
-  | "rankings.freshness.twQuoteFallbackOpen"
-  | "rankings.freshness.twQuoteFallbackClosed"
-  | "rankings.source.quoteProviders"
-  | "rankings.source.yahooPreRanked"
-  | "rankings.source.sp500Movers"
-  | "rankings.source.valuationUniverse"
-  | "rankings.source.twQuoteFallback"
-  | "rankings.source.tpexInstitutional"
-  | "rankings.source.twse"
-  | "rankings.source.unsupported";
+type RankingsCopyKey = Extract<
+  TranslationKey,
+  `rankings.notice.${string}` | `rankings.freshness.${string}` | `rankings.source.${string}`
+>;
 
 const FRESHNESS_LABEL_KEYS: Record<string, RankingsCopyKey> = {
   "Market is closed. Showing latest available free snapshot.": "rankings.freshness.closedLatestSnapshot",
