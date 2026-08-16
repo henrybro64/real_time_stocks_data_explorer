@@ -49,6 +49,32 @@ type UsScopeNoticeKey =
   | "rankings.notice.usInstitutionalUnsupported"
   | "rankings.notice.usScopePending";
 
+type TwQuoteScopeNoticeKey =
+  | "rankings.notice.twQuoteScopeYahooTwse"
+  | "rankings.notice.twQuoteScopeYahooTpex"
+  | "rankings.notice.twQuoteScopeTwse"
+  | "rankings.notice.twQuoteScopeTpex"
+  | "rankings.notice.twQuoteScopeFallbackTwse"
+  | "rankings.notice.twQuoteScopeFallbackTpex";
+
+const TW_QUOTE_SCOPE_NOTICE: Record<
+  "yahoo" | "fallback" | "quote",
+  { TWSE: TwQuoteScopeNoticeKey; TPEx: TwQuoteScopeNoticeKey }
+> = {
+  yahoo: {
+    TWSE: "rankings.notice.twQuoteScopeYahooTwse",
+    TPEx: "rankings.notice.twQuoteScopeYahooTpex",
+  },
+  fallback: {
+    TWSE: "rankings.notice.twQuoteScopeFallbackTwse",
+    TPEx: "rankings.notice.twQuoteScopeFallbackTpex",
+  },
+  quote: {
+    TWSE: "rankings.notice.twQuoteScopeTwse",
+    TPEx: "rankings.notice.twQuoteScopeTpex",
+  },
+};
+
 type RankingsTabLabelKey =
   | "rankings.tab.volume"
   | "rankings.tab.volumeUp"
@@ -127,6 +153,17 @@ function usScopeNoticeKeyFromState(
     default:
       return "rankings.notice.usScopePending";
   }
+}
+
+function twQuoteScopeNoticeKeyFromState(
+  rankingType: RankingType,
+  twBoard: TwBoardSegment,
+  data: RankingResponse | undefined,
+): TwQuoteScopeNoticeKey {
+  const aligned = data?.market === "TW" && data.rankingType === rankingType;
+  const scope = aligned && data?.twRankingsScope ? data.twRankingsScope : "quote";
+  const keys = TW_QUOTE_SCOPE_NOTICE[scope] ?? TW_QUOTE_SCOPE_NOTICE.quote;
+  return keys[twBoard];
 }
 
 export function getRankingsRefetchInterval(isMarketOpen: boolean, rankingType: RankingType) {
@@ -335,9 +372,7 @@ export function RankingsPage() {
             ? "rankings.notice.twInstScopeTpexUnavailable"
             : "rankings.notice.twInstScopeTpex"
           : "rankings.notice.twInstScopeTwse"
-        : twBoard === "TPEx"
-          ? "rankings.notice.twQuoteScopeTpex"
-          : "rankings.notice.twQuoteScopeTwse";
+        : twQuoteScopeNoticeKeyFromState(rankingType, twBoard, data);
 
   function handleMarketChange(nextMarket: RankingMarket) {
     setMarketOverride(nextMarket);

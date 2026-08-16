@@ -23,6 +23,14 @@ from app.services.market_clock import tw_institutional_daily_snapshot_bucket
 from sqlalchemy import create_engine, event, select
 from sqlalchemy.orm import sessionmaker
 
+_QUOTE_SOURCE = "Quote rankings from the app's free best-effort quote providers."
+_VALUATION_SOURCE = (
+    "Valuation rankings use the highest-volume current quote candidates, then sort by "
+    "P/E from the app's available valuation sources."
+)
+_FALLBACK_SOURCE = "Limited hard-coded TWSE/TPEx quote fallback; not a full-board ranking."
+_YAHOO_SOURCE = "Yahoo Finance pre-ranked quote rankings."
+
 
 class FakeProvider:
     def __init__(
@@ -98,8 +106,9 @@ def _response(
     timestamp: str,
     tw_board: str | None = None,
     items: list[RankingItem] | None = None,
-    source: str = "Quote rankings from the app's free best-effort quote providers.",
+    source: str = _QUOTE_SOURCE,
     warning: str | None = "Free unofficial quote source; data may be delayed or unavailable.",
+    tw_rankings_scope: str | None = None,
 ) -> RankingResponse:
     return RankingResponse(
         market=market,
@@ -114,7 +123,55 @@ def _response(
         warningMessage=warning,
         unsupportedReason=None,
         usRankingsScope="quote" if market == "US" else None,
+        twRankingsScope=tw_rankings_scope,
     )
+
+
+def _tw_volume_quote_response(
+    *,
+    source: str,
+    tw_rankings_scope: str | None,
+    warning: str | None = "Free unofficial quote source; data may be delayed or unavailable.",
+    timestamp: str = "2026-07-03T03:05:00+00:00",
+    item_timestamp: str = "2026-07-03T11:05:00+08:00",
+    stock_id: str = "TW:2330",
+    symbol: str = "2330",
+    volume: int = 2_000_000,
+) -> RankingResponse:
+    return _response(
+        market="TW",
+        ranking_type=RankingType.volume,
+        source_type=RankingSourceType.free_unofficial,
+        timestamp=timestamp,
+        tw_board="TWSE",
+        source=source,
+        warning=warning,
+        tw_rankings_scope=tw_rankings_scope,
+        items=[
+            _item(
+                rank=1,
+                stock=_stock(stock_id, symbol, exchange="TWSE", currency="TWD", timezone_name="Asia/Taipei"),
+                timestamp=item_timestamp,
+                volume=volume,
+            )
+        ],
+    )
+
+
+def _cached_tw_volume_roundtrip(monkeypatch, response: RankingResponse):
+    session_local = _install_in_memory_sessionlocal(monkeypatch)
+    provider = FakeProvider(
+        bucket_start=datetime(2026, 7, 3, 3, 0, tzinfo=timezone.utc),
+        response=response,
+    )
+    service = RankingsSnapshotService(
+        provider_registry=FakeRegistry({("TW", "volume", "TWSE"): provider}),
+    )
+    open_at = datetime(2026, 7, 3, 3, 5, tzinfo=timezone.utc)
+    cached_at = datetime(2026, 7, 3, 3, 10, tzinfo=timezone.utc)
+    first = service.get_rankings("TW", RankingType.volume, 5, now=open_at, tw_board="TWSE")
+    cached = service.get_rankings("TW", RankingType.volume, 5, now=cached_at, tw_board="TWSE")
+    return first, cached, provider, session_local
 
 
 def _item(
@@ -233,6 +290,147 @@ def test_same_bucket_reuses_cached_snapshot_without_duplicate_rows(monkeypatch) 
     with session_local() as session:
         snapshots = list(session.execute(select(RankingSnapshot)).scalars())
     assert len(snapshots) == 1
+
+
+@pytest.mark.parametrize(
+    ("source", "scope", "stock_id", "symbol", "volume", "warning"),
+    [
+        (
+            _FALLBACK_SOURCE,
+            "fallback",
+            "TW:2330",
+            "2330",
+            2_000_000,
+            (
+                "Broader Taiwan quote rankings are temporarily unavailable. "
+                "This table uses a small hard-coded fallback universe, not a complete TWSE/TPEx ranking."
+            ),
+        ),
+        (
+            _YAHOO_SOURCE,
+            "yahoo",
+            "TW:9999",
+            "9999",
+            9_000_000,
+            "Free unofficial quote source; data may be delayed or unavailable.",
+        ),
+    ],
+)
+def test_cached_tw_quote_snapshot_reconstructs_scope(
+    monkeypatch,
+    source: str,
+    scope: str,
+    stock_id: str,
+    symbol: str,
+    volume: int,
+    warning: str,
+) -> None:
+    first, cached, provider, session_local = _cached_tw_volume_roundtrip(
+        monkeypatch,
+        _tw_volume_quote_response(
+            source=source,
+            tw_rankings_scope=scope,
+            warning=warning,
+            stock_id=stock_id,
+            symbol=symbol,
+            volume=volume,
+        ),
+    )
+
+    assert first.twRankingsScope == scope
+    assert first.usRankingsScope is None
+    assert cached.sourceType == RankingSourceType.cache
+    assert cached.source == source
+    assert cached.twRankingsScope == scope
+    assert cached.usRankingsScope is None
+    assert provider.fetch_calls == 1
+    with session_local() as session:
+        snapshots = list(session.execute(select(RankingSnapshot)).scalars())
+    assert len(snapshots) == 1
+
+
+@pytest.mark.parametrize(
+    ("source", "ranking_type", "capture_scope", "stock_ids", "expected"),
+    [
+        (_FALLBACK_SOURCE, None, None, None, "fallback"),
+        (_YAHOO_SOURCE, None, None, None, "yahoo"),
+        (_QUOTE_SOURCE, RankingType.volume, "scheduler_bounded", None, "quote"),
+        (_QUOTE_SOURCE, RankingType.volume, "on_demand", None, "fallback"),
+        (_QUOTE_SOURCE, RankingType.change_up, "on_demand", None, "fallback"),
+        (_QUOTE_SOURCE, RankingType.volume_up, "on_demand", None, "quote"),
+        (_VALUATION_SOURCE, RankingType.valuation_low_pe, "scheduler_bounded", None, "quote"),
+        (_VALUATION_SOURCE, RankingType.valuation_low_pe, "on_demand", ["TW:2330", "TW:2317"], "fallback"),
+        (_VALUATION_SOURCE, RankingType.valuation_low_pe, "on_demand", ["TW:9999"], "yahoo"),
+        ("TWSE T86 daily institutional data", None, None, None, None),
+        ("TPEx institutional daily data", None, None, None, None),
+    ],
+)
+def test_tw_rankings_scope_reconstructs_from_stored_source(
+    source: str,
+    ranking_type: RankingType | None,
+    capture_scope: str | None,
+    stock_ids: list[str] | None,
+    expected: str | None,
+) -> None:
+    from app.services.rankings_snapshot_service import _tw_rankings_scope_from_source
+
+    assert (
+        _tw_rankings_scope_from_source(
+            source,
+            ranking_type=ranking_type,
+            capture_scope=capture_scope,
+            stock_ids=stock_ids,
+            tw_board="TWSE" if stock_ids else None,
+        )
+        == expected
+    )
+
+
+@pytest.mark.parametrize(
+    ("capture_scope", "expected_scope"),
+    [
+        ("on_demand", "fallback"),
+        ("scheduler_bounded", "quote"),
+    ],
+)
+def test_closed_market_legacy_quote_snapshot_scope(
+    monkeypatch,
+    capture_scope: str,
+    expected_scope: str,
+) -> None:
+    _install_in_memory_sessionlocal(monkeypatch)
+    open_bucket = datetime(2026, 7, 3, 1, 30, tzinfo=timezone.utc)
+    stored = _tw_volume_quote_response(
+        source=_QUOTE_SOURCE,
+        tw_rankings_scope="quote",
+        timestamp="2026-07-03T01:35:00+00:00",
+        item_timestamp="2026-07-03T09:35:00+08:00",
+    )
+    query = RankingQuery("TW", RankingType.volume, "TWSE")
+    closed_provider = FakeProvider(bucket_start=None, response=stored)
+    service = RankingsSnapshotService(
+        provider_registry=FakeRegistry({("TW", "volume", "TWSE"): closed_provider})
+    )
+    persisted = service._persist_snapshot(
+        query,
+        open_bucket,
+        stored,
+        capture_scope=capture_scope,
+    )
+    assert persisted is not None
+
+    result = service.get_rankings(
+        "TW",
+        RankingType.volume,
+        limit=5,
+        now=datetime(2026, 7, 3, 12, 0, tzinfo=timezone.utc),
+        tw_board="TWSE",
+    )
+
+    assert result.sourceType == RankingSourceType.cache
+    assert result.twRankingsScope == expected_scope
+    assert result.usRankingsScope is None
+    assert closed_provider.fetch_calls == 0
 
 
 def test_market_closed_reads_latest_cached_snapshot(monkeypatch) -> None:
@@ -694,6 +892,11 @@ def test_on_demand_registry_uses_external_source_while_scheduler_registry_is_bou
 
     assert isinstance(on_demand_external, RankingsExternalSource)
     assert isinstance(scheduler_external, _DisabledExternalRankingsSource)
+    assert ranking_provider_registry._quote_provider._service._uses_hardcoded_tw_quote_universe is True
+    assert (
+        scheduler_ranking_provider_registry._quote_provider._service._uses_hardcoded_tw_quote_universe
+        is False
+    )
 
 
 def test_start_background_sampler_skips_when_database_unavailable(monkeypatch) -> None:

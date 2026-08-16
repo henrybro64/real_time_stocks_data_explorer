@@ -1,49 +1,10 @@
 import type { RankingResponse } from "@shared/api";
+import type { TranslationKey } from "../../app/i18n";
 
-type RankingsCopyKey =
-  | "rankings.notice.quoteUnofficial"
-  | "rankings.notice.twDaily"
-  | "rankings.notice.twDailyTpex"
-  | "rankings.notice.usInstitutionalUnsupported"
-  | "rankings.notice.twInstitutionalUnavailable"
-  | "rankings.notice.twInstitutionalTpexUnavailable"
-  | "rankings.freshness.closedLatestSnapshot"
-  | "rankings.freshness.cachedCurrentBucket"
-  | "rankings.freshness.cachedTwDaily"
-  | "rankings.freshness.freeSourceFallback"
-  | "rankings.freshness.noCachedSnapshot"
-  | "rankings.freshness.quoteSnapshotOpen"
-  | "rankings.freshness.quoteSnapshotClosed"
-  | "rankings.freshness.changeSnapshotOpen"
-  | "rankings.freshness.changeSnapshotClosed"
-  | "rankings.freshness.yahooVolumeOpen"
-  | "rankings.freshness.yahooVolumeClosed"
-  | "rankings.freshness.yahooChangeOpen"
-  | "rankings.freshness.yahooChangeClosed"
-  | "rankings.freshness.sp500MoversOpen"
-  | "rankings.freshness.sp500MoversClosed"
-  | "rankings.freshness.valuationLowPeOpen"
-  | "rankings.freshness.valuationLowPeClosed"
-  | "rankings.freshness.volumeBaselineMissing"
-  | "rankings.freshness.volumeBaselineOpen"
-  | "rankings.freshness.volumeBaselineClosed"
-  | "rankings.freshness.twInstitutionalUnavailable"
-  | "rankings.freshness.twInstitutionalTpexUnavailable"
-  | "rankings.freshness.twNetBuy"
-  | "rankings.freshness.twNetSell"
-  | "rankings.freshness.twNetBuyClosed"
-  | "rankings.freshness.twNetSellClosed"
-  | "rankings.freshness.tpexNetBuy"
-  | "rankings.freshness.tpexNetSell"
-  | "rankings.freshness.tpexNetBuyClosed"
-  | "rankings.freshness.tpexNetSellClosed"
-  | "rankings.source.quoteProviders"
-  | "rankings.source.yahooPreRanked"
-  | "rankings.source.sp500Movers"
-  | "rankings.source.valuationUniverse"
-  | "rankings.source.tpexInstitutional"
-  | "rankings.source.twse"
-  | "rankings.source.unsupported";
+type RankingsCopyKey = Extract<
+  TranslationKey,
+  `rankings.notice.${string}` | `rankings.freshness.${string}` | `rankings.source.${string}`
+>;
 
 const FRESHNESS_LABEL_KEYS: Record<string, RankingsCopyKey> = {
   "Market is closed. Showing latest available free snapshot.": "rankings.freshness.closedLatestSnapshot",
@@ -100,12 +61,18 @@ const FRESHNESS_LABEL_KEYS: Record<string, RankingsCopyKey> = {
     "rankings.freshness.tpexNetBuyClosed",
   "Market closed; TPEx daily institutional ranking sorted by most negative 三大法人買賣超股數.":
     "rankings.freshness.tpexNetSellClosed",
+  "Market open; showing a limited hard-coded quote fallback because the broader Taiwan ranking source is unavailable.":
+    "rankings.freshness.twQuoteFallbackOpen",
+  "Market closed; showing a limited hard-coded quote fallback because the broader Taiwan ranking source is unavailable.":
+    "rankings.freshness.twQuoteFallbackClosed",
 };
 
 const WARNING_MESSAGE_KEYS: Record<string, RankingsCopyKey> = {
   "Free unofficial quote source; data may be delayed or unavailable.": "rankings.notice.quoteUnofficial",
   "台股三大法人買賣超為日資料，非盤中即時資料。": "rankings.notice.twDaily",
   "上櫃（TPEx）三大法人買賣超為日資料，非盤中即時資料。": "rankings.notice.twDailyTpex",
+  "Broader Taiwan quote rankings are temporarily unavailable. This table uses a small hard-coded fallback universe, not a complete TWSE/TPEx ranking.":
+    "rankings.notice.twQuoteFallback",
 };
 
 const UNSUPPORTED_REASON_KEYS: Record<string, RankingsCopyKey> = {
@@ -124,6 +91,8 @@ const SOURCE_KEYS: Record<string, RankingsCopyKey> = {
     "rankings.source.sp500Movers",
   "Valuation rankings use the highest-volume current quote candidates, then sort by P/E from the app's available valuation sources.":
     "rankings.source.valuationUniverse",
+  "Limited hard-coded TWSE/TPEx quote fallback; not a full-board ranking.":
+    "rankings.source.twQuoteFallback",
   "TPEx institutional daily data": "rankings.source.tpexInstitutional",
   "TWSE T86 daily institutional data": "rankings.source.twse",
   "Unsupported in this free-only app": "rankings.source.unsupported",

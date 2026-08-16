@@ -100,6 +100,9 @@ export type RankingSourceType =
 /** Present when `market` is US; drives the rankings scope banner copy. */
 export type UsRankingsScope = "sp500" | "yahoo" | "quote";
 
+/** Present when `market` is TW quote rankings; drives the rankings scope banner copy. */
+export type TwRankingsScope = "yahoo" | "quote" | "fallback";
+
 export type RankingItem = {
   rank: number;
   stock: Stock;
@@ -129,6 +132,7 @@ export type RankingResponse = {
   warningMessage: string | null;
   unsupportedReason: string | null;
   usRankingsScope: UsRankingsScope | null;
+  twRankingsScope?: TwRankingsScope | null;
 };
 
 export type HistoryResponse = {

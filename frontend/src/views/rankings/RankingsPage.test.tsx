@@ -176,6 +176,7 @@ function buildTwQuoteResponse(overrides: Partial<RankingResponse> = {}): Ranking
     warningMessage: "Free unofficial quote source; data may be delayed or unavailable.",
     unsupportedReason: null,
     usRankingsScope: null,
+    twRankingsScope: "quote",
     twBoard: "TWSE",
     ...overrides,
   };
@@ -245,6 +246,32 @@ function renderRankingsPage(language: "en" | "zh-TW" = "zh-TW") {
       </LanguageProvider>
     </QueryClientProvider>,
   );
+}
+
+const TW_QUOTE_FALLBACK_SOURCE =
+  "Limited hard-coded TWSE/TPEx quote fallback; not a full-board ranking.";
+const TW_QUOTE_FALLBACK_WARNING =
+  "Broader Taiwan quote rankings are temporarily unavailable. This table uses a small hard-coded fallback universe, not a complete TWSE/TPEx ranking.";
+const TW_QUOTE_FALLBACK_FRESHNESS =
+  "Market open; showing a limited hard-coded quote fallback because the broader Taiwan ranking source is unavailable.";
+
+async function openTwVolumeTab(
+  quotes: RankingResponse[],
+  language: "en" | "zh-TW" = "zh-TW",
+) {
+  const user = userEvent.setup();
+  const mocked = vi.mocked(fetchRankings);
+  mocked.mockResolvedValueOnce(buildResponse());
+  for (const quote of quotes) {
+    mocked.mockResolvedValueOnce(quote);
+  }
+  renderRankingsPage(language);
+  await screen.findByTestId("rankings-row-TW:2330");
+  await user.click(screen.getByTestId("rankings-tab-volume"));
+  await waitFor(() => {
+    expect(fetchRankings).toHaveBeenLastCalledWith("TW", "volume", 50, "TWSE");
+  });
+  return user;
 }
 
 function volumeChangeColumnLabel(language: "en" | "zh-TW") {
@@ -545,6 +572,82 @@ describe("RankingsPage", () => {
       );
     });
     expectVolumeChangeColumnAbsent();
+  });
+
+  it.each([
+    {
+      language: "zh-TW" as const,
+      scope: "小型內建備援清單",
+      notConfigured: "本應用程式設定的免費報價清單",
+      source: "有限的上市／上櫃內建報價備援清單；不是完整市場排行。",
+      warning: "目前無法取得較廣的台股報價排行。此表格使用小型內建備援清單，不是完整的上市／上櫃排行。",
+      freshness: "市場開盤中；因較廣的台股排行來源無法使用，改顯示小型內建報價備援清單。",
+    },
+    {
+      language: "en" as const,
+      scope: "hard-coded fallback universe",
+      notConfigured: "configured free quote universe",
+      source: TW_QUOTE_FALLBACK_SOURCE,
+      warning: TW_QUOTE_FALLBACK_WARNING,
+      freshness: TW_QUOTE_FALLBACK_FRESHNESS,
+    },
+  ])(
+    "marks Taiwan quote fallback as a limited hard-coded universe ($language)",
+    async ({ language, scope, notConfigured, source, warning, freshness }) => {
+      await openTwVolumeTab(
+        [
+          buildTwQuoteResponse({
+            twRankingsScope: "fallback",
+            source: TW_QUOTE_FALLBACK_SOURCE,
+            warningMessage: TW_QUOTE_FALLBACK_WARNING,
+            dataFreshnessLabel: TW_QUOTE_FALLBACK_FRESHNESS,
+          }),
+        ],
+        language,
+      );
+      const scopeNote = screen.getByTestId("rankings-scope-note");
+      expect(scopeNote).toHaveTextContent(scope);
+      expect(scopeNote).not.toHaveTextContent(notConfigured);
+      expect(screen.getByTestId("rankings-source-label")).toHaveTextContent(source);
+      expect(screen.getByTestId("rankings-warning-message")).toHaveTextContent(warning);
+      expect(screen.getByTestId("rankings-freshness-label")).toHaveTextContent(freshness);
+    },
+  );
+
+  it("uses Yahoo Taiwan quote scope copy when the pre-ranked source succeeds", async () => {
+    await openTwVolumeTab([
+      buildTwQuoteResponse({
+        twRankingsScope: "yahoo",
+        source: "Yahoo Finance pre-ranked quote rankings.",
+        dataFreshnessLabel:
+          "Market open; volume rankings come from Yahoo Finance and refresh every few minutes.",
+      }),
+    ]);
+    const scopeNote = screen.getByTestId("rankings-scope-note");
+    expect(scopeNote).toHaveTextContent("Yahoo Finance 較廣的上市（TWSE）範圍");
+    expect(scopeNote).not.toHaveTextContent("本應用程式設定的免費報價清單");
+    expect(scopeNote).not.toHaveTextContent("小型內建備援清單");
+  });
+
+  it("marks TPEx quote fallback as a limited OTC universe", async () => {
+    const user = await openTwVolumeTab([
+      buildTwQuoteResponse({
+        twRankingsScope: "fallback",
+        source: TW_QUOTE_FALLBACK_SOURCE,
+      }),
+      buildTwQuoteResponse({
+        twBoard: "TPEx",
+        twRankingsScope: "fallback",
+        source: TW_QUOTE_FALLBACK_SOURCE,
+      }),
+    ]);
+    await user.click(screen.getByTestId("rankings-tw-board-tpex"));
+    await waitFor(() => {
+      expect(fetchRankings).toHaveBeenLastCalledWith("TW", "volume", 50, "TPEx");
+    });
+    const scopeNote = screen.getByTestId("rankings-scope-note");
+    expect(scopeNote).toHaveTextContent("不是完整的上櫃排行");
+    expect(scopeNote).not.toHaveTextContent("本應用程式設定的免費報價清單");
   });
 
   it("renders low P/E rankings with valuation columns", async () => {

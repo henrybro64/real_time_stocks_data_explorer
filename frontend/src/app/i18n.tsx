@@ -185,6 +185,10 @@ export type TranslationKey =
   | "rankings.notice.twInstScopeTpexUnavailable"
   | "rankings.notice.twQuoteScopeTwse"
   | "rankings.notice.twQuoteScopeTpex"
+  | "rankings.notice.twQuoteScopeYahooTwse"
+  | "rankings.notice.twQuoteScopeYahooTpex"
+  | "rankings.notice.twQuoteScopeFallbackTwse"
+  | "rankings.notice.twQuoteScopeFallbackTpex"
   | "rankings.twBoard.groupLabel"
   | "rankings.twBoard.twse"
   | "rankings.twBoard.tpex"
@@ -194,6 +198,7 @@ export type TranslationKey =
   | "rankings.notice.usInstitutionalUnsupported"
   | "rankings.notice.twInstitutionalUnavailable"
   | "rankings.notice.twInstitutionalTpexUnavailable"
+  | "rankings.notice.twQuoteFallback"
   | "rankings.freshness.closedLatestSnapshot"
   | "rankings.freshness.cachedCurrentBucket"
   | "rankings.freshness.cachedTwDaily"
@@ -224,10 +229,13 @@ export type TranslationKey =
   | "rankings.freshness.tpexNetSell"
   | "rankings.freshness.tpexNetBuyClosed"
   | "rankings.freshness.tpexNetSellClosed"
+  | "rankings.freshness.twQuoteFallbackOpen"
+  | "rankings.freshness.twQuoteFallbackClosed"
   | "rankings.source.quoteProviders"
   | "rankings.source.yahooPreRanked"
   | "rankings.source.sp500Movers"
   | "rankings.source.valuationUniverse"
+  | "rankings.source.twQuoteFallback"
   | "rankings.source.tpexInstitutional"
   | "rankings.source.twse"
   | "rankings.source.unsupported"
@@ -399,6 +407,46 @@ export type TranslationKey =
   | "keyStats.na"
   | "keyStats.infoHint"
   | "keyStats.fundamentalsUnavailable";
+
+type TwQuoteFallbackTranslationKey =
+  | "rankings.notice.twQuoteScopeYahooTwse"
+  | "rankings.notice.twQuoteScopeYahooTpex"
+  | "rankings.notice.twQuoteScopeFallbackTwse"
+  | "rankings.notice.twQuoteScopeFallbackTpex"
+  | "rankings.notice.twQuoteFallback"
+  | "rankings.freshness.twQuoteFallbackOpen"
+  | "rankings.freshness.twQuoteFallbackClosed"
+  | "rankings.source.twQuoteFallback";
+
+function twQuoteFallbackMessages(language: AppLanguage): Record<TwQuoteFallbackTranslationKey, string> {
+  const zh = language === "zh-TW";
+  return {
+    "rankings.notice.twQuoteScopeYahooTwse": zh
+      ? "此分頁的台股報價排行來自 Yahoo Finance 較廣的上市（TWSE）範圍，不是本應用程式的小型設定清單。"
+      : "Taiwan quote rankings for this tab come from Yahoo Finance's broader TWSE (listed) universe, not the app's small configured quote list.",
+    "rankings.notice.twQuoteScopeYahooTpex": zh
+      ? "此分頁的台股報價排行來自 Yahoo Finance 較廣的上櫃（TPEx）範圍，不是本應用程式的小型設定清單。"
+      : "Taiwan quote rankings for this tab come from Yahoo Finance's broader TPEx (OTC) universe, not the app's small configured quote list.",
+    "rankings.notice.twQuoteScopeFallbackTwse": zh
+      ? "目前無法取得較廣的台股報價排行。此上市（TWSE）表格使用小型內建備援清單，不是完整的上市排行。"
+      : "Broader Taiwan quote rankings are unavailable. This TWSE table uses a small hard-coded fallback universe, not a complete listed-board ranking.",
+    "rankings.notice.twQuoteScopeFallbackTpex": zh
+      ? "目前無法取得較廣的台股報價排行。此上櫃（TPEx）表格使用小型內建備援清單，不是完整的上櫃排行。"
+      : "Broader Taiwan quote rankings are unavailable. This TPEx table uses a small hard-coded fallback universe, not a complete OTC-board ranking.",
+    "rankings.notice.twQuoteFallback": zh
+      ? "目前無法取得較廣的台股報價排行。此表格使用小型內建備援清單，不是完整的上市／上櫃排行。"
+      : "Broader Taiwan quote rankings are temporarily unavailable. This table uses a small hard-coded fallback universe, not a complete TWSE/TPEx ranking.",
+    "rankings.freshness.twQuoteFallbackOpen": zh
+      ? "市場開盤中；因較廣的台股排行來源無法使用，改顯示小型內建報價備援清單。"
+      : "Market open; showing a limited hard-coded quote fallback because the broader Taiwan ranking source is unavailable.",
+    "rankings.freshness.twQuoteFallbackClosed": zh
+      ? "市場休市；因較廣的台股排行來源無法使用，改顯示小型內建報價備援清單。"
+      : "Market closed; showing a limited hard-coded quote fallback because the broader Taiwan ranking source is unavailable.",
+    "rankings.source.twQuoteFallback": zh
+      ? "有限的上市／上櫃內建報價備援清單；不是完整市場排行。"
+      : "Limited hard-coded TWSE/TPEx quote fallback; not a full-board ranking.",
+  };
+}
 
 const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
   en: {
@@ -856,6 +904,7 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "keyStats.infoHint": "Definition may vary by data provider.",
     "keyStats.fundamentalsUnavailable":
       "Market cap, beta, P/E, EPS, and dividend/earnings dates are not included in our free price feeds. Yahoo’s detailed fundamentals API requires browser cookies, so those fields stay empty unless you configure an API key (e.g. set FINNHUB_API_KEY on the backend for Finnhub) or connect another fundamentals provider.",
+    ...twQuoteFallbackMessages("en"),
   },
   "zh-TW": {
     "nav.dashboard": "儀表板",
@@ -1279,6 +1328,7 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "keyStats.infoHint": "定義可能因資料來源而異。",
     "keyStats.fundamentalsUnavailable":
       "市值、Beta、本益比、每股盈餘，以及除息／配息／財報日期等，免費即時報價來源通常不提供；Yahoo 詳細基本面 API 亦需要瀏覽器 Cookie，因此預設會顯示「—」。若要在後端補齊（例如設定 FINNHUB_API_KEY 使用 Finnhub），或改接其他基本面資料商，即可顯示這些欄位。",
+    ...twQuoteFallbackMessages("zh-TW"),
   },
 };
 

@@ -34,6 +34,10 @@ from app.services.ranking_data_providers import (
     ranking_provider_registry,
     scheduler_ranking_provider_registry,
 )
+from app.services.rankings_service import (
+    TW_TPEX_RANKING_STOCK_IDS,
+    TW_TWSE_RANKING_STOCK_IDS,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -592,7 +596,22 @@ class RankingsSnapshotService:
             dataFreshnessLabel=freshness_label,
             warningMessage=envelope.snapshot.warning_message,
             unsupportedReason=envelope.snapshot.unsupported_reason,
-            usRankingsScope=_us_rankings_scope_from_source(envelope.snapshot.source),
+            usRankingsScope=(
+                _us_rankings_scope_from_source(envelope.snapshot.source)
+                if query.market == "US"
+                else None
+            ),
+            twRankingsScope=(
+                _tw_rankings_scope_from_source(
+                    envelope.snapshot.source,
+                    ranking_type=query.ranking_type,
+                    capture_scope=envelope.snapshot.capture_scope,
+                    stock_ids=[row.stock_id for row in envelope.items],
+                    tw_board=query.tw_board,
+                )
+                if query.market == "TW"
+                else None
+            ),
         )
 
     def _run_sampler(self, poll_seconds: int) -> None:
@@ -765,6 +784,52 @@ def _us_rankings_scope_from_source(source: str) -> Literal["sp500", "yahoo", "qu
     if source in {_QUOTE_SOURCE, _VALUATION_SOURCE}:
         return "quote"
     return None
+
+
+_TW_PRE_RANKED_FALLBACK_TYPES = {
+    RankingType.volume,
+    RankingType.change_up,
+    RankingType.change_down,
+}
+
+
+def _hardcoded_tw_universe_ids(tw_board: str | None) -> set[str]:
+    if tw_board == "TPEx":
+        return set(TW_TPEX_RANKING_STOCK_IDS)
+    return set(TW_TWSE_RANKING_STOCK_IDS)
+
+
+def _tw_rankings_scope_from_source(
+    source: str,
+    *,
+    ranking_type: RankingType | None = None,
+    capture_scope: str | None = None,
+    stock_ids: list[str] | None = None,
+    tw_board: str | None = None,
+) -> Literal["yahoo", "quote", "fallback"] | None:
+    if "hard-coded" in source:
+        return "fallback"
+    if "Yahoo Finance pre-ranked" in source:
+        return "yahoo"
+    if source not in {_QUOTE_SOURCE, _VALUATION_SOURCE}:
+        return None
+    if capture_scope == _CAPTURE_SCOPE_SCHEDULER_BOUNDED:
+        return "quote"
+    if ranking_type in _TW_PRE_RANKED_FALLBACK_TYPES:
+        if capture_scope == _CAPTURE_SCOPE_ON_DEMAND:
+            return "fallback"
+        return "quote"
+    if ranking_type == RankingType.valuation_low_pe:
+        if capture_scope != _CAPTURE_SCOPE_ON_DEMAND:
+            return "quote"
+        # Legacy on-demand valuation stored the generic source for both Yahoo
+        # success and hardcoded fallback. New Yahoo-miss rows use the hard-coded
+        # source string above. Item membership distinguishes remaining legacy rows
+        # without relabeling a broader Yahoo valuation universe as fallback.
+        if stock_ids and set(stock_ids) <= _hardcoded_tw_universe_ids(tw_board):
+            return "fallback"
+        return "yahoo"
+    return "quote"
 
 
 def _tw_daily_bucket_start_from_response(response: RankingResponse) -> datetime | None:
