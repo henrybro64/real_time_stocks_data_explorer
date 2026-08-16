@@ -23,6 +23,14 @@ from app.services.market_clock import tw_institutional_daily_snapshot_bucket
 from sqlalchemy import create_engine, event, select
 from sqlalchemy.orm import sessionmaker
 
+_QUOTE_SOURCE = "Quote rankings from the app's free best-effort quote providers."
+_VALUATION_SOURCE = (
+    "Valuation rankings use the highest-volume current quote candidates, then sort by "
+    "P/E from the app's available valuation sources."
+)
+_FALLBACK_SOURCE = "Limited hard-coded TWSE/TPEx quote fallback; not a full-board ranking."
+_YAHOO_SOURCE = "Yahoo Finance pre-ranked quote rankings."
+
 
 class FakeProvider:
     def __init__(
@@ -98,7 +106,7 @@ def _response(
     timestamp: str,
     tw_board: str | None = None,
     items: list[RankingItem] | None = None,
-    source: str = "Quote rankings from the app's free best-effort quote providers.",
+    source: str = _QUOTE_SOURCE,
     warning: str | None = "Free unofficial quote source; data may be delayed or unavailable.",
     tw_rankings_scope: str | None = None,
 ) -> RankingResponse:
@@ -272,7 +280,7 @@ def test_same_bucket_reuses_cached_snapshot_without_duplicate_rows(monkeypatch) 
     ("source", "scope", "stock_id", "symbol", "volume", "warning"),
     [
         (
-            "Limited hard-coded TWSE/TPEx quote fallback; not a full-board ranking.",
+            _FALLBACK_SOURCE,
             "fallback",
             "TW:2330",
             "2330",
@@ -283,7 +291,7 @@ def test_same_bucket_reuses_cached_snapshot_without_duplicate_rows(monkeypatch) 
             ),
         ),
         (
-            "Yahoo Finance pre-ranked quote rankings.",
+            _YAHOO_SOURCE,
             "yahoo",
             "TW:9999",
             "9999",
@@ -344,66 +352,40 @@ def test_cached_tw_quote_snapshot_reconstructs_scope(
 
 
 @pytest.mark.parametrize(
-    ("source", "kwargs", "expected"),
+    ("source", "ranking_type", "capture_scope", "stock_ids", "expected"),
     [
-        ("Limited hard-coded TWSE/TPEx quote fallback; not a full-board ranking.", {}, "fallback"),
-        ("Yahoo Finance pre-ranked quote rankings.", {}, "yahoo"),
-        (
-            "Quote rankings from the app's free best-effort quote providers.",
-            {"ranking_type": RankingType.volume, "capture_scope": "scheduler_bounded"},
-            "quote",
-        ),
-        (
-            "Quote rankings from the app's free best-effort quote providers.",
-            {"ranking_type": RankingType.volume, "capture_scope": "on_demand"},
-            "fallback",
-        ),
-        (
-            "Quote rankings from the app's free best-effort quote providers.",
-            {"ranking_type": RankingType.change_up, "capture_scope": "on_demand"},
-            "fallback",
-        ),
-        (
-            "Quote rankings from the app's free best-effort quote providers.",
-            {"ranking_type": RankingType.volume_up, "capture_scope": "on_demand"},
-            "quote",
-        ),
-        (
-            "Valuation rankings use the highest-volume current quote candidates, then sort by "
-            "P/E from the app's available valuation sources.",
-            {"ranking_type": RankingType.valuation_low_pe, "capture_scope": "scheduler_bounded"},
-            "quote",
-        ),
-        (
-            "Valuation rankings use the highest-volume current quote candidates, then sort by "
-            "P/E from the app's available valuation sources.",
-            {
-                "ranking_type": RankingType.valuation_low_pe,
-                "capture_scope": "on_demand",
-                "stock_ids": ["TW:2330", "TW:2317"],
-                "tw_board": "TWSE",
-            },
-            "fallback",
-        ),
-        (
-            "Valuation rankings use the highest-volume current quote candidates, then sort by "
-            "P/E from the app's available valuation sources.",
-            {
-                "ranking_type": RankingType.valuation_low_pe,
-                "capture_scope": "on_demand",
-                "stock_ids": ["TW:9999"],
-                "tw_board": "TWSE",
-            },
-            "yahoo",
-        ),
-        ("TWSE T86 daily institutional data", {}, None),
-        ("TPEx institutional daily data", {}, None),
+        (_FALLBACK_SOURCE, None, None, None, "fallback"),
+        (_YAHOO_SOURCE, None, None, None, "yahoo"),
+        (_QUOTE_SOURCE, RankingType.volume, "scheduler_bounded", None, "quote"),
+        (_QUOTE_SOURCE, RankingType.volume, "on_demand", None, "fallback"),
+        (_QUOTE_SOURCE, RankingType.change_up, "on_demand", None, "fallback"),
+        (_QUOTE_SOURCE, RankingType.volume_up, "on_demand", None, "quote"),
+        (_VALUATION_SOURCE, RankingType.valuation_low_pe, "scheduler_bounded", None, "quote"),
+        (_VALUATION_SOURCE, RankingType.valuation_low_pe, "on_demand", ["TW:2330", "TW:2317"], "fallback"),
+        (_VALUATION_SOURCE, RankingType.valuation_low_pe, "on_demand", ["TW:9999"], "yahoo"),
+        ("TWSE T86 daily institutional data", None, None, None, None),
+        ("TPEx institutional daily data", None, None, None, None),
     ],
 )
-def test_tw_rankings_scope_reconstructs_from_stored_source(source, kwargs, expected) -> None:
+def test_tw_rankings_scope_reconstructs_from_stored_source(
+    source: str,
+    ranking_type: RankingType | None,
+    capture_scope: str | None,
+    stock_ids: list[str] | None,
+    expected: str | None,
+) -> None:
     from app.services.rankings_snapshot_service import _tw_rankings_scope_from_source
 
-    assert _tw_rankings_scope_from_source(source, **kwargs) == expected
+    assert (
+        _tw_rankings_scope_from_source(
+            source,
+            ranking_type=ranking_type,
+            capture_scope=capture_scope,
+            stock_ids=stock_ids,
+            tw_board="TWSE" if stock_ids else None,
+        )
+        == expected
+    )
 
 
 @pytest.mark.parametrize(
@@ -421,7 +403,7 @@ def test_closed_market_legacy_quote_snapshot_scope(
     _install_in_memory_sessionlocal(monkeypatch)
     open_bucket = datetime(2026, 7, 3, 1, 30, tzinfo=timezone.utc)
     stored = _tw_volume_quote_response(
-        source="Quote rankings from the app's free best-effort quote providers.",
+        source=_QUOTE_SOURCE,
         tw_rankings_scope="quote",
         timestamp="2026-07-03T01:35:00+00:00",
         item_timestamp="2026-07-03T09:35:00+08:00",

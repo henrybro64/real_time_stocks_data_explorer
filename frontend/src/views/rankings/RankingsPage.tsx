@@ -57,6 +57,24 @@ type TwQuoteScopeNoticeKey =
   | "rankings.notice.twQuoteScopeFallbackTwse"
   | "rankings.notice.twQuoteScopeFallbackTpex";
 
+const TW_QUOTE_SCOPE_NOTICE: Record<
+  "yahoo" | "fallback" | "quote",
+  { TWSE: TwQuoteScopeNoticeKey; TPEx: TwQuoteScopeNoticeKey }
+> = {
+  yahoo: {
+    TWSE: "rankings.notice.twQuoteScopeYahooTwse",
+    TPEx: "rankings.notice.twQuoteScopeYahooTpex",
+  },
+  fallback: {
+    TWSE: "rankings.notice.twQuoteScopeFallbackTwse",
+    TPEx: "rankings.notice.twQuoteScopeFallbackTpex",
+  },
+  quote: {
+    TWSE: "rankings.notice.twQuoteScopeTwse",
+    TPEx: "rankings.notice.twQuoteScopeTpex",
+  },
+};
+
 type RankingsTabLabelKey =
   | "rankings.tab.volume"
   | "rankings.tab.volumeUp"
@@ -142,24 +160,10 @@ function twQuoteScopeNoticeKeyFromState(
   twBoard: TwBoardSegment,
   data: RankingResponse | undefined,
 ): TwQuoteScopeNoticeKey {
-  const isTpex = twBoard === "TPEx";
-  const aligned =
-    data != null && data.market === "TW" && data.rankingType === rankingType;
-  if (!aligned) {
-    return isTpex ? "rankings.notice.twQuoteScopeTpex" : "rankings.notice.twQuoteScopeTwse";
-  }
-  switch (data.twRankingsScope) {
-    case "yahoo":
-      return isTpex
-        ? "rankings.notice.twQuoteScopeYahooTpex"
-        : "rankings.notice.twQuoteScopeYahooTwse";
-    case "fallback":
-      return isTpex
-        ? "rankings.notice.twQuoteScopeFallbackTpex"
-        : "rankings.notice.twQuoteScopeFallbackTwse";
-    default:
-      return isTpex ? "rankings.notice.twQuoteScopeTpex" : "rankings.notice.twQuoteScopeTwse";
-  }
+  const aligned = data?.market === "TW" && data.rankingType === rankingType;
+  const scope = aligned && data?.twRankingsScope ? data.twRankingsScope : "quote";
+  const keys = TW_QUOTE_SCOPE_NOTICE[scope] ?? TW_QUOTE_SCOPE_NOTICE.quote;
+  return keys[twBoard];
 }
 
 export function getRankingsRefetchInterval(isMarketOpen: boolean, rankingType: RankingType) {

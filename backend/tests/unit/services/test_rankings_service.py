@@ -1185,18 +1185,31 @@ def _hardcoded_tw_quote_source(stock_ids: list[str]) -> FakeQuoteSource:
         (RankingType.volume, "TWSE", TW_TWSE_RANKING_STOCK_IDS),
         (RankingType.change_up, "TWSE", TW_TWSE_RANKING_STOCK_IDS),
         (RankingType.volume, "TPEx", TW_TPEX_RANKING_STOCK_IDS),
+        (RankingType.valuation_low_pe, "TWSE", TW_TWSE_RANKING_STOCK_IDS),
     ],
 )
 def test_tw_quote_rankings_mark_hardcoded_universe_as_fallback_when_yahoo_missing(
     ranking_type: RankingType,
     tw_board: str,
     stock_ids: list[str],
+    monkeypatch,
 ) -> None:
+    if ranking_type == RankingType.valuation_low_pe:
+        valuations = {
+            stock_id: _valuation_snapshot(10.0 + index)
+            for index, stock_id in enumerate(stock_ids)
+        }
+        monkeypatch.setattr(
+            rankings_service_module,
+            "get_valuation_snapshots",
+            lambda envelopes: {stock.id: valuations[stock.id] for stock, _ in envelopes},  # noqa: ARG005
+        )
     external = _StubExternalSource({})
     service = RankingsService(
         quote_source=_hardcoded_tw_quote_source(stock_ids),
         volume_baseline_store=InMemoryVolumeBaselineStore(),
         external_source=external,
+        sp500_quote_batch=_empty_sp500_quotes,
     )
 
     response = service.get_rankings(
@@ -1214,11 +1227,13 @@ def test_tw_quote_rankings_mark_hardcoded_universe_as_fallback_when_yahoo_missin
     assert response.source == rankings_service_module._TW_QUOTE_FALLBACK_SOURCE
     assert response.warningMessage == rankings_service_module._TW_QUOTE_FALLBACK_WARNING
     assert response.dataFreshnessLabel == rankings_service_module._TW_QUOTE_FALLBACK_FRESHNESS_OPEN
-    assert response.source != "Yahoo Finance pre-ranked quote rankings."
-    assert response.source != "Quote rankings from the app's free best-effort quote providers."
-    assert "configured" not in response.source.lower()
     assert response.twBoard == tw_board
-    assert external.calls == [("TW", ranking_type, 10, tw_board)]
+    if ranking_type == RankingType.valuation_low_pe:
+        assert external.calls == [("TW", RankingType.volume, 100, tw_board)]
+    else:
+        assert response.source != "Yahoo Finance pre-ranked quote rankings."
+        assert "configured" not in response.source.lower()
+        assert external.calls == [("TW", ranking_type, 10, tw_board)]
 
 
 def test_tw_volume_up_rankings_use_quote_scope_not_fallback() -> None:
@@ -1269,39 +1284,6 @@ def test_tw_bounded_quote_universe_is_quote_scope_not_hardcoded_fallback() -> No
     assert response.twRankingsScope == "quote"
     assert response.source == "Quote rankings from the app's free best-effort quote providers."
     assert "hard-coded" not in response.source
-
-
-def test_tw_low_pe_rankings_mark_hardcoded_universe_as_fallback_when_yahoo_missing(
-    monkeypatch,
-) -> None:
-    valuations = {
-        stock_id: _valuation_snapshot(10.0 + index)
-        for index, stock_id in enumerate(TW_TWSE_RANKING_STOCK_IDS)
-    }
-    monkeypatch.setattr(
-        rankings_service_module,
-        "get_valuation_snapshots",
-        lambda envelopes: {stock.id: valuations[stock.id] for stock, _ in envelopes},  # noqa: ARG005
-    )
-    service = RankingsService(
-        quote_source=_hardcoded_tw_quote_source(TW_TWSE_RANKING_STOCK_IDS),
-        external_source=_StubExternalSource({}),
-        sp500_quote_batch=_empty_sp500_quotes,
-    )
-
-    response = service.get_rankings(
-        "TW",
-        RankingType.valuation_low_pe,
-        limit=5,
-        tw_board="TWSE",
-        now=datetime(2026, 5, 12, 3, 0, tzinfo=timezone.utc),
-    )
-
-    assert response.twRankingsScope == "fallback"
-    assert response.source == rankings_service_module._TW_QUOTE_FALLBACK_SOURCE
-    assert response.warningMessage == rankings_service_module._TW_QUOTE_FALLBACK_WARNING
-    assert response.dataFreshnessLabel == rankings_service_module._TW_QUOTE_FALLBACK_FRESHNESS_OPEN
-    assert set(item.stock.id for item in response.items) <= set(TW_TWSE_RANKING_STOCK_IDS)
 
 
 def test_tw_volume_fallback_uses_closed_freshness_when_market_closed() -> None:

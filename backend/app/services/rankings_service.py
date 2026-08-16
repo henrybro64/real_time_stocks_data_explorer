@@ -129,18 +129,18 @@ def _quote_path_freshness(
 
 
 def _unofficial_ranking_response(
-    *,
     market: RankingMarket,
     ranking_type: RankingType,
     tw_board: TwBoard | None,
     items: list,
     now: datetime,
-    source: str,
     market_open: bool,
+    source: str,
     freshness: str,
     warning: str | None,
     us_rankings_scope: str | None = None,
     tw_rankings_scope: str | None = None,
+    source_type: RankingSourceType = RankingSourceType.free_unofficial,
 ) -> RankingResponse:
     return RankingResponse(
         market=market,
@@ -149,7 +149,7 @@ def _unofficial_ranking_response(
         items=items,
         timestamp=now.isoformat(),
         source=source,
-        sourceType=RankingSourceType.free_unofficial,
+        sourceType=source_type,
         isMarketOpen=market_open,
         dataFreshnessLabel=freshness,
         warningMessage=warning,
@@ -408,17 +408,10 @@ class RankingsService:
             tw_scope = "quote" if market == "TW" else None
 
         return _unofficial_ranking_response(
-            market=market,
-            ranking_type=ranking_type,
-            tw_board=tw_board,
-            items=items,
-            now=now,
-            source=source,
-            market_open=market_open,
-            freshness=freshness,
-            warning=warning,
-            us_rankings_scope="quote" if market == "US" else None,
-            tw_rankings_scope=tw_scope,
+            market, ranking_type, tw_board, items, now, market_open,
+            source, freshness, warning,
+            "quote" if market == "US" else None,
+            tw_scope,
         )
 
     def _build_valuation_ranking(
@@ -474,17 +467,8 @@ class RankingsService:
             warning = _QUOTE_WARNING
 
         return _unofficial_ranking_response(
-            market=market,
-            ranking_type=ranking_type,
-            tw_board=tw_board,
-            items=items,
-            now=now,
-            source=source,
-            market_open=market_open,
-            freshness=freshness,
-            warning=warning,
-            us_rankings_scope=us_rankings_scope,
-            tw_rankings_scope=tw_rankings_scope,
+            market, ranking_type, tw_board, items, now, market_open,
+            source, freshness, warning, us_rankings_scope, tw_rankings_scope,
         )
 
     def _get_valuation_universe_snapshot(
@@ -700,20 +684,14 @@ class RankingsService:
                     else "Market closed; price-move rankings come from Yahoo Finance's latest snapshot."
                 )
 
-        return RankingResponse(
-            market=market,
-            rankingType=ranking_type,
-            twBoard=tw_board if market == "TW" else None,
-            items=items,
-            timestamp=now.isoformat(),
-            source=rankings_source_text or _PRE_RANKED_SOURCE,
-            sourceType=source_type,
-            isMarketOpen=market_open,
-            dataFreshnessLabel=freshness,
-            warningMessage=_QUOTE_WARNING,
-            unsupportedReason=None,
-            usRankingsScope=us_rankings_scope if market == "US" else None,
-            twRankingsScope="yahoo" if market == "TW" else None,
+        return _unofficial_ranking_response(
+            market, ranking_type, tw_board, items, now, market_open,
+            rankings_source_text or _PRE_RANKED_SOURCE,
+            freshness,
+            _QUOTE_WARNING,
+            us_rankings_scope,
+            "yahoo" if market == "TW" else None,
+            source_type,
         )
 
     def _build_tw_institutional_ranking(
