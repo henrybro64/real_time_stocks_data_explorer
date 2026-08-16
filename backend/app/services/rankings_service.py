@@ -128,6 +128,37 @@ def _quote_path_freshness(
     return "Market closed; volume change uses the previous quote snapshot baseline."
 
 
+def _unofficial_ranking_response(
+    *,
+    market: RankingMarket,
+    ranking_type: RankingType,
+    tw_board: TwBoard | None,
+    items: list,
+    now: datetime,
+    source: str,
+    market_open: bool,
+    freshness: str,
+    warning: str | None,
+    us_rankings_scope: str | None = None,
+    tw_rankings_scope: str | None = None,
+) -> RankingResponse:
+    return RankingResponse(
+        market=market,
+        rankingType=ranking_type,
+        twBoard=tw_board if market == "TW" else None,
+        items=items,
+        timestamp=now.isoformat(),
+        source=source,
+        sourceType=RankingSourceType.free_unofficial,
+        isMarketOpen=market_open,
+        dataFreshnessLabel=freshness,
+        warningMessage=warning,
+        unsupportedReason=None,
+        usRankingsScope=us_rankings_scope if market == "US" else None,
+        twRankingsScope=tw_rankings_scope if market == "TW" else None,
+    )
+
+
 _VALUATION_SOURCE = (
     "Valuation rankings use the highest-volume current quote candidates, then sort by "
     "P/E from the app's available valuation sources."
@@ -376,20 +407,18 @@ class RankingsService:
             freshness = _quote_path_freshness(ranking_type, market_open, baseline_missing)
             tw_scope = "quote" if market == "TW" else None
 
-        return RankingResponse(
+        return _unofficial_ranking_response(
             market=market,
-            rankingType=ranking_type,
-            twBoard=tw_board if market == "TW" else None,
+            ranking_type=ranking_type,
+            tw_board=tw_board,
             items=items,
-            timestamp=now.isoformat(),
+            now=now,
             source=source,
-            sourceType=RankingSourceType.free_unofficial,
-            isMarketOpen=market_open,
-            dataFreshnessLabel=freshness,
-            warningMessage=warning,
-            unsupportedReason=None,
-            usRankingsScope="quote" if market == "US" else None,
-            twRankingsScope=tw_scope,
+            market_open=market_open,
+            freshness=freshness,
+            warning=warning,
+            us_rankings_scope="quote" if market == "US" else None,
+            tw_rankings_scope=tw_scope,
         )
 
     def _build_valuation_ranking(
@@ -444,20 +473,18 @@ class RankingsService:
             source = _VALUATION_SOURCE
             warning = _QUOTE_WARNING
 
-        return RankingResponse(
+        return _unofficial_ranking_response(
             market=market,
-            rankingType=ranking_type,
-            twBoard=tw_board if market == "TW" else None,
+            ranking_type=ranking_type,
+            tw_board=tw_board,
             items=items,
-            timestamp=now.isoformat(),
+            now=now,
             source=source,
-            sourceType=RankingSourceType.free_unofficial,
-            isMarketOpen=market_open,
-            dataFreshnessLabel=freshness,
-            warningMessage=warning,
-            unsupportedReason=None,
-            usRankingsScope=us_rankings_scope if market == "US" else None,
-            twRankingsScope=tw_rankings_scope if market == "TW" else None,
+            market_open=market_open,
+            freshness=freshness,
+            warning=warning,
+            us_rankings_scope=us_rankings_scope,
+            tw_rankings_scope=tw_rankings_scope,
         )
 
     def _get_valuation_universe_snapshot(

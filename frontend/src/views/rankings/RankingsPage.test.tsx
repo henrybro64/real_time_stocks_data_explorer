@@ -248,6 +248,32 @@ function renderRankingsPage(language: "en" | "zh-TW" = "zh-TW") {
   );
 }
 
+const TW_QUOTE_FALLBACK_SOURCE =
+  "Limited hard-coded TWSE/TPEx quote fallback; not a full-board ranking.";
+const TW_QUOTE_FALLBACK_WARNING =
+  "Broader Taiwan quote rankings are temporarily unavailable. This table uses a small hard-coded fallback universe, not a complete TWSE/TPEx ranking.";
+const TW_QUOTE_FALLBACK_FRESHNESS =
+  "Market open; showing a limited hard-coded quote fallback because the broader Taiwan ranking source is unavailable.";
+
+async function openTwVolumeTab(
+  quotes: RankingResponse[],
+  language: "en" | "zh-TW" = "zh-TW",
+) {
+  const user = userEvent.setup();
+  const mocked = vi.mocked(fetchRankings);
+  mocked.mockResolvedValueOnce(buildResponse());
+  for (const quote of quotes) {
+    mocked.mockResolvedValueOnce(quote);
+  }
+  renderRankingsPage(language);
+  await screen.findByTestId("rankings-row-TW:2330");
+  await user.click(screen.getByTestId("rankings-tab-volume"));
+  await waitFor(() => {
+    expect(fetchRankings).toHaveBeenLastCalledWith("TW", "volume", 50, "TWSE");
+  });
+  return user;
+}
+
 function volumeChangeColumnLabel(language: "en" | "zh-TW") {
   return language === "en" ? "Volume change %" : "量變化 %";
 }
@@ -561,37 +587,24 @@ describe("RankingsPage", () => {
       language: "en" as const,
       scope: "hard-coded fallback universe",
       notConfigured: "configured free quote universe",
-      source: "Limited hard-coded TWSE/TPEx quote fallback; not a full-board ranking.",
-      warning:
-        "Broader Taiwan quote rankings are temporarily unavailable. This table uses a small hard-coded fallback universe, not a complete TWSE/TPEx ranking.",
-      freshness:
-        "Market open; showing a limited hard-coded quote fallback because the broader Taiwan ranking source is unavailable.",
+      source: TW_QUOTE_FALLBACK_SOURCE,
+      warning: TW_QUOTE_FALLBACK_WARNING,
+      freshness: TW_QUOTE_FALLBACK_FRESHNESS,
     },
   ])(
     "marks Taiwan quote fallback as a limited hard-coded universe ($language)",
     async ({ language, scope, notConfigured, source, warning, freshness }) => {
-      const user = userEvent.setup();
-      vi.mocked(fetchRankings)
-        .mockResolvedValueOnce(buildResponse())
-        .mockResolvedValueOnce(
+      await openTwVolumeTab(
+        [
           buildTwQuoteResponse({
             twRankingsScope: "fallback",
-            source: "Limited hard-coded TWSE/TPEx quote fallback; not a full-board ranking.",
-            warningMessage:
-              "Broader Taiwan quote rankings are temporarily unavailable. This table uses a small hard-coded fallback universe, not a complete TWSE/TPEx ranking.",
-            dataFreshnessLabel:
-              "Market open; showing a limited hard-coded quote fallback because the broader Taiwan ranking source is unavailable.",
+            source: TW_QUOTE_FALLBACK_SOURCE,
+            warningMessage: TW_QUOTE_FALLBACK_WARNING,
+            dataFreshnessLabel: TW_QUOTE_FALLBACK_FRESHNESS,
           }),
-        );
-
-      renderRankingsPage(language);
-
-      await screen.findByTestId("rankings-row-TW:2330");
-      await user.click(screen.getByTestId("rankings-tab-volume"));
-
-      await waitFor(() => {
-        expect(fetchRankings).toHaveBeenLastCalledWith("TW", "volume", 50, "TWSE");
-      });
+        ],
+        language,
+      );
       const scopeNote = screen.getByTestId("rankings-scope-note");
       expect(scopeNote).toHaveTextContent(scope);
       expect(scopeNote).not.toHaveTextContent(notConfigured);
@@ -602,26 +615,14 @@ describe("RankingsPage", () => {
   );
 
   it("uses Yahoo Taiwan quote scope copy when the pre-ranked source succeeds", async () => {
-    const user = userEvent.setup();
-    vi.mocked(fetchRankings)
-      .mockResolvedValueOnce(buildResponse())
-      .mockResolvedValueOnce(
-        buildTwQuoteResponse({
-          twRankingsScope: "yahoo",
-          source: "Yahoo Finance pre-ranked quote rankings.",
-          dataFreshnessLabel:
-            "Market open; volume rankings come from Yahoo Finance and refresh every few minutes.",
-        }),
-      );
-
-    renderRankingsPage();
-
-    await screen.findByTestId("rankings-row-TW:2330");
-    await user.click(screen.getByTestId("rankings-tab-volume"));
-
-    await waitFor(() => {
-      expect(fetchRankings).toHaveBeenLastCalledWith("TW", "volume", 50, "TWSE");
-    });
+    await openTwVolumeTab([
+      buildTwQuoteResponse({
+        twRankingsScope: "yahoo",
+        source: "Yahoo Finance pre-ranked quote rankings.",
+        dataFreshnessLabel:
+          "Market open; volume rankings come from Yahoo Finance and refresh every few minutes.",
+      }),
+    ]);
     const scopeNote = screen.getByTestId("rankings-scope-note");
     expect(scopeNote).toHaveTextContent("Yahoo Finance 較廣的上市（TWSE）範圍");
     expect(scopeNote).not.toHaveTextContent("本應用程式設定的免費報價清單");
@@ -629,29 +630,18 @@ describe("RankingsPage", () => {
   });
 
   it("marks TPEx quote fallback as a limited OTC universe", async () => {
-    const user = userEvent.setup();
-    vi.mocked(fetchRankings)
-      .mockResolvedValueOnce(buildResponse())
-      .mockResolvedValueOnce(
-        buildTwQuoteResponse({
-          twRankingsScope: "fallback",
-          source: "Limited hard-coded TWSE/TPEx quote fallback; not a full-board ranking.",
-        }),
-      )
-      .mockResolvedValueOnce(
-        buildTwQuoteResponse({
-          twBoard: "TPEx",
-          twRankingsScope: "fallback",
-          source: "Limited hard-coded TWSE/TPEx quote fallback; not a full-board ranking.",
-        }),
-      );
-
-    renderRankingsPage();
-
-    await screen.findByTestId("rankings-row-TW:2330");
-    await user.click(screen.getByTestId("rankings-tab-volume"));
+    const user = await openTwVolumeTab([
+      buildTwQuoteResponse({
+        twRankingsScope: "fallback",
+        source: TW_QUOTE_FALLBACK_SOURCE,
+      }),
+      buildTwQuoteResponse({
+        twBoard: "TPEx",
+        twRankingsScope: "fallback",
+        source: TW_QUOTE_FALLBACK_SOURCE,
+      }),
+    ]);
     await user.click(screen.getByTestId("rankings-tw-board-tpex"));
-
     await waitFor(() => {
       expect(fetchRankings).toHaveBeenLastCalledWith("TW", "volume", 50, "TPEx");
     });

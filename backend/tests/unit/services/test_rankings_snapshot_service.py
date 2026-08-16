@@ -119,6 +119,37 @@ def _response(
     )
 
 
+def _tw_volume_quote_response(
+    *,
+    source: str,
+    tw_rankings_scope: str | None,
+    warning: str | None = "Free unofficial quote source; data may be delayed or unavailable.",
+    timestamp: str = "2026-07-03T03:05:00+00:00",
+    item_timestamp: str = "2026-07-03T11:05:00+08:00",
+    stock_id: str = "TW:2330",
+    symbol: str = "2330",
+    volume: int = 2_000_000,
+) -> RankingResponse:
+    return _response(
+        market="TW",
+        ranking_type=RankingType.volume,
+        source_type=RankingSourceType.free_unofficial,
+        timestamp=timestamp,
+        tw_board="TWSE",
+        source=source,
+        warning=warning,
+        tw_rankings_scope=tw_rankings_scope,
+        items=[
+            _item(
+                rank=1,
+                stock=_stock(stock_id, symbol, exchange="TWSE", currency="TWD", timezone_name="Asia/Taipei"),
+                timestamp=item_timestamp,
+                volume=volume,
+            )
+        ],
+    )
+
+
 def _item(
     *,
     rank: int,
@@ -237,30 +268,48 @@ def test_same_bucket_reuses_cached_snapshot_without_duplicate_rows(monkeypatch) 
     assert len(snapshots) == 1
 
 
-def test_cached_tw_quote_fallback_snapshot_reconstructs_fallback_scope(monkeypatch) -> None:
+@pytest.mark.parametrize(
+    ("source", "scope", "stock_id", "symbol", "volume", "warning"),
+    [
+        (
+            "Limited hard-coded TWSE/TPEx quote fallback; not a full-board ranking.",
+            "fallback",
+            "TW:2330",
+            "2330",
+            2_000_000,
+            (
+                "Broader Taiwan quote rankings are temporarily unavailable. "
+                "This table uses a small hard-coded fallback universe, not a complete TWSE/TPEx ranking."
+            ),
+        ),
+        (
+            "Yahoo Finance pre-ranked quote rankings.",
+            "yahoo",
+            "TW:9999",
+            "9999",
+            9_000_000,
+            "Free unofficial quote source; data may be delayed or unavailable.",
+        ),
+    ],
+)
+def test_cached_tw_quote_snapshot_reconstructs_scope(
+    monkeypatch,
+    source: str,
+    scope: str,
+    stock_id: str,
+    symbol: str,
+    volume: int,
+    warning: str,
+) -> None:
     session_local = _install_in_memory_sessionlocal(monkeypatch)
     bucket_start = datetime(2026, 7, 3, 3, 0, tzinfo=timezone.utc)
-    fallback_source = "Limited hard-coded TWSE/TPEx quote fallback; not a full-board ranking."
-    response = _response(
-        market="TW",
-        ranking_type=RankingType.volume,
-        source_type=RankingSourceType.free_unofficial,
-        timestamp="2026-07-03T03:05:00+00:00",
-        tw_board="TWSE",
-        source=fallback_source,
-        warning=(
-            "Broader Taiwan quote rankings are temporarily unavailable. "
-            "This table uses a small hard-coded fallback universe, not a complete TWSE/TPEx ranking."
-        ),
-        tw_rankings_scope="fallback",
-        items=[
-            _item(
-                rank=1,
-                stock=_stock("TW:2330", "2330", exchange="TWSE", currency="TWD", timezone_name="Asia/Taipei"),
-                timestamp="2026-07-03T11:05:00+08:00",
-                volume=2_000_000,
-            )
-        ],
+    response = _tw_volume_quote_response(
+        source=source,
+        tw_rankings_scope=scope,
+        warning=warning,
+        stock_id=stock_id,
+        symbol=symbol,
+        volume=volume,
     )
     provider = FakeProvider(bucket_start=bucket_start, response=response)
     service = RankingsSnapshotService(
@@ -268,59 +317,6 @@ def test_cached_tw_quote_fallback_snapshot_reconstructs_fallback_scope(monkeypat
     )
 
     first = service.get_rankings(
-        "TW",
-        RankingType.volume,
-        limit=5,
-        now=datetime(2026, 7, 3, 3, 5, tzinfo=timezone.utc),
-        tw_board="TWSE",
-    )
-    second = service.get_rankings(
-        "TW",
-        RankingType.volume,
-        limit=5,
-        now=datetime(2026, 7, 3, 3, 10, tzinfo=timezone.utc),
-        tw_board="TWSE",
-    )
-
-    assert first.twRankingsScope == "fallback"
-    assert first.usRankingsScope is None
-    assert second.sourceType == RankingSourceType.cache
-    assert second.source == fallback_source
-    assert second.twRankingsScope == "fallback"
-    assert second.usRankingsScope is None
-    assert provider.fetch_calls == 1
-    with session_local() as session:
-        snapshots = list(session.execute(select(RankingSnapshot)).scalars())
-    assert len(snapshots) == 1
-
-
-def test_cached_tw_yahoo_snapshot_does_not_set_us_rankings_scope(monkeypatch) -> None:
-    _install_in_memory_sessionlocal(monkeypatch)
-    bucket_start = datetime(2026, 7, 3, 3, 0, tzinfo=timezone.utc)
-    yahoo_source = "Yahoo Finance pre-ranked quote rankings."
-    response = _response(
-        market="TW",
-        ranking_type=RankingType.volume,
-        source_type=RankingSourceType.free_unofficial,
-        timestamp="2026-07-03T03:05:00+00:00",
-        tw_board="TWSE",
-        source=yahoo_source,
-        tw_rankings_scope="yahoo",
-        items=[
-            _item(
-                rank=1,
-                stock=_stock("TW:9999", "9999", exchange="TWSE", currency="TWD", timezone_name="Asia/Taipei"),
-                timestamp="2026-07-03T11:05:00+08:00",
-                volume=9_000_000,
-            )
-        ],
-    )
-    provider = FakeProvider(bucket_start=bucket_start, response=response)
-    service = RankingsSnapshotService(
-        provider_registry=FakeRegistry({("TW", "volume", "TWSE"): provider})
-    )
-
-    service.get_rankings(
         "TW",
         RankingType.volume,
         limit=5,
@@ -335,86 +331,79 @@ def test_cached_tw_yahoo_snapshot_does_not_set_us_rankings_scope(monkeypatch) ->
         tw_board="TWSE",
     )
 
+    assert first.twRankingsScope == scope
+    assert first.usRankingsScope is None
     assert cached.sourceType == RankingSourceType.cache
-    assert cached.twRankingsScope == "yahoo"
+    assert cached.source == source
+    assert cached.twRankingsScope == scope
     assert cached.usRankingsScope is None
+    assert provider.fetch_calls == 1
+    with session_local() as session:
+        snapshots = list(session.execute(select(RankingSnapshot)).scalars())
+    assert len(snapshots) == 1
 
 
-def test_tw_rankings_scope_reconstructs_from_stored_source() -> None:
+@pytest.mark.parametrize(
+    ("source", "kwargs", "expected"),
+    [
+        ("Limited hard-coded TWSE/TPEx quote fallback; not a full-board ranking.", {}, "fallback"),
+        ("Yahoo Finance pre-ranked quote rankings.", {}, "yahoo"),
+        (
+            "Quote rankings from the app's free best-effort quote providers.",
+            {"ranking_type": RankingType.volume, "capture_scope": "scheduler_bounded"},
+            "quote",
+        ),
+        (
+            "Quote rankings from the app's free best-effort quote providers.",
+            {"ranking_type": RankingType.volume, "capture_scope": "on_demand"},
+            "fallback",
+        ),
+        (
+            "Quote rankings from the app's free best-effort quote providers.",
+            {"ranking_type": RankingType.change_up, "capture_scope": "on_demand"},
+            "fallback",
+        ),
+        (
+            "Quote rankings from the app's free best-effort quote providers.",
+            {"ranking_type": RankingType.volume_up, "capture_scope": "on_demand"},
+            "quote",
+        ),
+        (
+            "Valuation rankings use the highest-volume current quote candidates, then sort by "
+            "P/E from the app's available valuation sources.",
+            {"ranking_type": RankingType.valuation_low_pe, "capture_scope": "scheduler_bounded"},
+            "quote",
+        ),
+        (
+            "Valuation rankings use the highest-volume current quote candidates, then sort by "
+            "P/E from the app's available valuation sources.",
+            {
+                "ranking_type": RankingType.valuation_low_pe,
+                "capture_scope": "on_demand",
+                "stock_ids": ["TW:2330", "TW:2317"],
+                "tw_board": "TWSE",
+            },
+            "fallback",
+        ),
+        (
+            "Valuation rankings use the highest-volume current quote candidates, then sort by "
+            "P/E from the app's available valuation sources.",
+            {
+                "ranking_type": RankingType.valuation_low_pe,
+                "capture_scope": "on_demand",
+                "stock_ids": ["TW:9999"],
+                "tw_board": "TWSE",
+            },
+            "yahoo",
+        ),
+        ("TWSE T86 daily institutional data", {}, None),
+        ("TPEx institutional daily data", {}, None),
+    ],
+)
+def test_tw_rankings_scope_reconstructs_from_stored_source(source, kwargs, expected) -> None:
     from app.services.rankings_snapshot_service import _tw_rankings_scope_from_source
 
-    fallback_source = "Limited hard-coded TWSE/TPEx quote fallback; not a full-board ranking."
-    quote_source = "Quote rankings from the app's free best-effort quote providers."
-    valuation_source = (
-        "Valuation rankings use the highest-volume current quote candidates, then sort by "
-        "P/E from the app's available valuation sources."
-    )
-    yahoo_source = "Yahoo Finance pre-ranked quote rankings."
-
-    assert _tw_rankings_scope_from_source(fallback_source) == "fallback"
-    assert _tw_rankings_scope_from_source(yahoo_source) == "yahoo"
-    assert (
-        _tw_rankings_scope_from_source(
-            quote_source,
-            ranking_type=RankingType.volume,
-            capture_scope="scheduler_bounded",
-        )
-        == "quote"
-    )
-    assert (
-        _tw_rankings_scope_from_source(
-            quote_source,
-            ranking_type=RankingType.volume,
-            capture_scope="on_demand",
-        )
-        == "fallback"
-    )
-    assert (
-        _tw_rankings_scope_from_source(
-            quote_source,
-            ranking_type=RankingType.change_up,
-            capture_scope="on_demand",
-        )
-        == "fallback"
-    )
-    assert (
-        _tw_rankings_scope_from_source(
-            quote_source,
-            ranking_type=RankingType.volume_up,
-            capture_scope="on_demand",
-        )
-        == "quote"
-    )
-    assert (
-        _tw_rankings_scope_from_source(
-            valuation_source,
-            ranking_type=RankingType.valuation_low_pe,
-            capture_scope="scheduler_bounded",
-        )
-        == "quote"
-    )
-    assert (
-        _tw_rankings_scope_from_source(
-            valuation_source,
-            ranking_type=RankingType.valuation_low_pe,
-            capture_scope="on_demand",
-            stock_ids=["TW:2330", "TW:2317"],
-            tw_board="TWSE",
-        )
-        == "fallback"
-    )
-    assert (
-        _tw_rankings_scope_from_source(
-            valuation_source,
-            ranking_type=RankingType.valuation_low_pe,
-            capture_scope="on_demand",
-            stock_ids=["TW:9999"],
-            tw_board="TWSE",
-        )
-        == "yahoo"
-    )
-    assert _tw_rankings_scope_from_source("TWSE T86 daily institutional data") is None
-    assert _tw_rankings_scope_from_source("TPEx institutional daily data") is None
+    assert _tw_rankings_scope_from_source(source, **kwargs) == expected
 
 
 @pytest.mark.parametrize(
@@ -431,22 +420,11 @@ def test_closed_market_legacy_quote_snapshot_scope(
 ) -> None:
     _install_in_memory_sessionlocal(monkeypatch)
     open_bucket = datetime(2026, 7, 3, 1, 30, tzinfo=timezone.utc)
-    stored = _response(
-        market="TW",
-        ranking_type=RankingType.volume,
-        source_type=RankingSourceType.free_unofficial,
-        timestamp="2026-07-03T01:35:00+00:00",
-        tw_board="TWSE",
+    stored = _tw_volume_quote_response(
         source="Quote rankings from the app's free best-effort quote providers.",
         tw_rankings_scope="quote",
-        items=[
-            _item(
-                rank=1,
-                stock=_stock("TW:2330", "2330", exchange="TWSE", currency="TWD", timezone_name="Asia/Taipei"),
-                timestamp="2026-07-03T09:35:00+08:00",
-                volume=2_000_000,
-            )
-        ],
+        timestamp="2026-07-03T01:35:00+00:00",
+        item_timestamp="2026-07-03T09:35:00+08:00",
     )
     query = RankingQuery("TW", RankingType.volume, "TWSE")
     closed_provider = FakeProvider(bucket_start=None, response=stored)
