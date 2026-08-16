@@ -119,6 +119,7 @@ function classifyApiErrorKind(status: number | null, detail: string | null, mess
     text.includes("networkerror") ||
     text.includes("network request failed") ||
     text.includes("timeout") ||
+    text.includes("timed out") ||
     text.includes("temporarily unavailable") ||
     text.includes("provider unavailable") ||
     text.includes("rate-limited") ||
@@ -191,6 +192,10 @@ function mergeRequestInit(init?: RequestInit): RequestInit {
   };
 }
 
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError");
+}
+
 async function request(path: string, init?: RequestInit): Promise<Response> {
   try {
     const response = await fetch(apiUrl(path), mergeRequestInit(init));
@@ -199,6 +204,9 @@ async function request(path: string, init?: RequestInit): Promise<Response> {
     }
     return response;
   } catch (error) {
+    if (isAbortError(error)) {
+      throw error;
+    }
     throw toApiError(error);
   }
 }
@@ -212,12 +220,36 @@ export async function requestVoid(path: string, init?: RequestInit): Promise<voi
   await request(path, init);
 }
 
-async function fetchJson<T>(path: string): Promise<T> {
-  const response = await request(path);
+async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await request(path, init);
   if (!response.ok) {
     throw await failedRequestError(response);
   }
   return (await response.json()) as T;
+}
+
+export const RANKINGS_REQUEST_TIMEOUT_MS = 20_000;
+export const RANKINGS_REQUEST_TIMEOUT_DETAIL = "Rankings request timed out";
+
+async function fetchJsonWithTimeout<T>(path: string, timeoutMs: number): Promise<T> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => {
+    controller.abort();
+  }, timeoutMs);
+  try {
+    return await fetchJson<T>(path, { signal: controller.signal });
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new ApiError(RANKINGS_REQUEST_TIMEOUT_DETAIL, {
+        kind: "unavailable",
+        detail: RANKINGS_REQUEST_TIMEOUT_DETAIL,
+        status: null,
+      });
+    }
+    throw toApiError(error);
+  } finally {
+    clearTimeout(timeoutId);
+  }
 }
 
 export function fetchMarkets() {
@@ -262,7 +294,10 @@ export function fetchRankings(
   if (market === "TW" && twBoard != null) {
     params.set("twBoard", twBoard);
   }
-  return fetchJson<RankingResponse>(`/rankings?${params.toString()}`);
+  return fetchJsonWithTimeout<RankingResponse>(
+    `/rankings?${params.toString()}`,
+    RANKINGS_REQUEST_TIMEOUT_MS,
+  );
 }
 
 export function fetchHistory(stockId: string, range: TimeRange) {

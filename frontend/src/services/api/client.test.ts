@@ -1,6 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { fetchTaiwanInstitutionalInvestors, fetchTaiwanMarginShort } from "./client";
+import {
+  RANKINGS_REQUEST_TIMEOUT_DETAIL,
+  RANKINGS_REQUEST_TIMEOUT_MS,
+  fetchRankings,
+  fetchTaiwanInstitutionalInvestors,
+  fetchTaiwanMarginShort,
+} from "./client";
 
 describe("fetchTaiwanInstitutionalInvestors", () => {
   afterEach(() => {
@@ -87,6 +93,86 @@ describe("fetchTaiwanMarginShort", () => {
       status,
       detail,
       kind,
+    });
+  });
+});
+
+describe("fetchRankings", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it("aborts a stalled request and maps the timeout to unavailable", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn((_url: string, init?: RequestInit) => {
+      return new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => {
+          const error = new Error("The user aborted a request.");
+          error.name = "AbortError";
+          reject(error);
+        });
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const pending = expect(fetchRankings("TW", "volume", 50, "TWSE")).rejects.toMatchObject({
+      name: "ApiError",
+      kind: "unavailable",
+      detail: RANKINGS_REQUEST_TIMEOUT_DETAIL,
+      status: null,
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const init = fetchMock.mock.calls[0]?.[1] as RequestInit | undefined;
+    expect(init?.signal).toBeInstanceOf(AbortSignal);
+    expect(init?.signal?.aborted).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(RANKINGS_REQUEST_TIMEOUT_MS);
+    await pending;
+    expect(init?.signal?.aborted).toBe(true);
+  });
+
+  it("does not treat a timely rankings response as a timeout", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        market: "TW",
+        rankingType: "volume",
+        items: [],
+        timestamp: "2026-08-16T00:00:00Z",
+        source: "test",
+        sourceType: "free-unofficial",
+        isMarketOpen: true,
+        dataFreshnessLabel: "ok",
+        warningMessage: null,
+        unsupportedReason: null,
+        usRankingsScope: null,
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(fetchRankings("TW", "volume", 50, "TWSE")).resolves.toMatchObject({
+      market: "TW",
+      rankingType: "volume",
+    });
+    expect((fetchMock.mock.calls[0]?.[1] as RequestInit | undefined)?.signal).toBeInstanceOf(
+      AbortSignal,
+    );
+  });
+
+  it("keeps HTTP unavailable errors distinct from a client timeout", async () => {
+    const detail = "TW institutional daily data is temporarily unavailable from the free public source.";
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 502,
+      json: async () => ({ detail }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(fetchRankings("TW", "net_buy", 50, "TWSE")).rejects.toMatchObject({
+      kind: "unavailable",
+      status: 502,
+      detail,
     });
   });
 });

@@ -483,6 +483,19 @@ describe("RankingsPage", () => {
       hideRawDetail: true,
       statusHint: false,
     },
+    {
+      id: "client-timeout",
+      language: "zh-TW" as const,
+      error: new ApiError("Rankings request timed out", {
+        kind: "unavailable",
+        status: null,
+        detail: "Rankings request timed out",
+      }),
+      title: "官方資料來源逾時",
+      body: "市場排行連線官方資料來源逾時，請稍後再試。",
+      hideRawDetail: true,
+      statusHint: false,
+    },
   ])(
     "surfaces $id rankings errors with localized notice copy",
     async ({ language, error, title, body, hideRawDetail, statusHint }) => {
