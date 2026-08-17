@@ -5,6 +5,7 @@ import {
   RANKINGS_REQUEST_TIMEOUT_DETAIL,
   RANKINGS_REQUEST_TIMEOUT_MS,
   fetchRankings,
+  refreshRankings,
   fetchTaiwanInstitutionalInvestors,
   fetchTaiwanMarginShort,
   shouldRetryRankingsQuery,
@@ -223,6 +224,74 @@ describe("fetchRankings", () => {
     await assertion;
     await expect(pending).rejects.not.toMatchObject({
       detail: RANKINGS_REQUEST_TIMEOUT_DETAIL,
+    });
+  });
+
+  it("sends the selected U.S. universe on GET rankings", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        market: "US",
+        rankingType: "volume",
+        items: [],
+        timestamp: "2026-08-16T00:00:00Z",
+        source: "test",
+        sourceType: "free-unofficial",
+        isMarketOpen: false,
+        dataFreshnessLabel: "ok",
+        warningMessage: null,
+        unsupportedReason: null,
+        usRankingsScope: "nasdaq100",
+        universe: "NASDAQ100",
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await fetchRankings("US", "volume", 50, "NASDAQ100");
+    const url = String(fetchMock.mock.calls[0]?.[0]);
+    expect(url).toContain("universe=NASDAQ100");
+    expect(url).not.toContain("twBoard=");
+  });
+});
+
+describe("refreshRankings", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it("posts the selected universe without overloading GET", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        market: "US",
+        rankingType: "volume",
+        items: [],
+        timestamp: "2026-07-03T16:00:00-04:00",
+        source: "DJIA constituent quote rankings from the app's free best-effort quote providers.",
+        sourceType: "free-unofficial",
+        isMarketOpen: false,
+        dataFreshnessLabel: "Market closed; rankings use the latest available quote snapshot.",
+        warningMessage: null,
+        unsupportedReason: null,
+        usRankingsScope: "djia",
+        universe: "DJIA",
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(refreshRankings("US", "volume", 50, "DJIA")).resolves.toMatchObject({
+      universe: "DJIA",
+      usRankingsScope: "djia",
+    });
+    expect(String(fetchMock.mock.calls[0]?.[0])).toContain("/rankings/refresh");
+    const init = fetchMock.mock.calls[0]?.[1] as RequestInit | undefined;
+    expect(init?.method).toBe("POST");
+    expect(JSON.parse(String(init?.body))).toEqual({
+      market: "US",
+      rankingType: "volume",
+      universe: "DJIA",
+      limit: 50,
     });
   });
 });

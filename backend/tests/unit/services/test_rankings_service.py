@@ -2286,3 +2286,92 @@ def test_tw_tpex_net_buy_degrades_when_public_source_is_unavailable() -> None:
         response.unsupportedReason
         == "TPEx institutional daily data is temporarily unavailable from the free public source."
     )
+
+
+def test_djia_universe_ranks_constituents_and_skips_yahoo() -> None:
+    external = StaticExternalSource(
+        [
+            (
+                _us_stock("US:ORCL", "ORCL", "Oracle"),
+                _quote("US:ORCL", 9_000_000, "2026-05-12T10:00:00-04:00"),
+            )
+        ]
+    )
+    service = RankingsService(
+        FakeQuoteSource(
+            stocks={
+                "US:AAPL": _us_stock("US:AAPL", "AAPL", "Apple Inc."),
+                "US:MSFT": _us_stock("US:MSFT", "MSFT", "Microsoft Corporation"),
+                "US:ORCL": _us_stock("US:ORCL", "ORCL", "Oracle"),
+            },
+            quotes={
+                "US:AAPL": _quote("US:AAPL", 100, "2026-05-12T10:00:00-04:00"),
+                "US:MSFT": _quote("US:MSFT", 300, "2026-05-12T10:00:00-04:00"),
+                "US:ORCL": _quote("US:ORCL", 9_000_000, "2026-05-12T10:00:00-04:00"),
+            },
+        ),
+        external_source=external,
+        sp500_quote_batch=_empty_sp500_quotes,
+    )
+
+    response = service.get_rankings(
+        "US",
+        RankingType.volume,
+        limit=50,
+        us_universe="DJIA",
+    )
+
+    symbols = [item.stock.symbol for item in response.items]
+    assert symbols == ["MSFT", "AAPL"]
+    assert "ORCL" not in symbols
+    assert len(response.items) <= 30
+    assert response.usRankingsScope == "djia"
+    assert response.universe == "DJIA"
+    assert external.calls == []
+
+
+def test_nasdaq100_universe_is_isolated_from_djia() -> None:
+    service = RankingsService(
+        FakeQuoteSource(
+            stocks={
+                "US:AAPL": _us_stock("US:AAPL", "AAPL", "Apple Inc."),
+                "US:META": _us_stock("US:META", "META", "Meta Platforms"),
+                "US:JPM": _us_stock("US:JPM", "JPM", "JPMorgan"),
+            },
+            quotes={
+                "US:AAPL": _quote("US:AAPL", 100, "2026-05-12T10:00:00-04:00"),
+                "US:META": _quote("US:META", 400, "2026-05-12T10:00:00-04:00"),
+                "US:JPM": _quote("US:JPM", 500, "2026-05-12T10:00:00-04:00"),
+            },
+        ),
+        sp500_quote_batch=_empty_sp500_quotes,
+    )
+
+    djia = service.get_rankings("US", RankingType.volume, limit=50, us_universe="DJIA")
+    nasdaq = service.get_rankings("US", RankingType.volume, limit=50, us_universe="NASDAQ100")
+
+    assert [item.stock.symbol for item in djia.items] == ["JPM", "AAPL"]
+    assert [item.stock.symbol for item in nasdaq.items] == ["META", "AAPL"]
+    assert nasdaq.usRankingsScope == "nasdaq100"
+    assert nasdaq.universe == "NASDAQ100"
+
+
+def test_refresh_does_not_use_hardcoded_tw_fallback_universe() -> None:
+    service = _hardcoded_tw_rankings_service(
+        TW_TWSE_RANKING_STOCK_IDS,
+        external_source=_StubExternalSource({}),
+        sp500_quote_batch=_empty_sp500_quotes,
+    )
+
+    response = service.get_rankings(
+        "TW",
+        RankingType.volume,
+        limit=10,
+        now=_TW_OPEN_RANKINGS_NOW,
+        tw_board="TWSE",
+        allow_hardcoded_fallback=False,
+    )
+
+    assert response.items == []
+    assert response.twRankingsScope is None
+    assert response.source != rankings_service_module._TW_QUOTE_FALLBACK_SOURCE

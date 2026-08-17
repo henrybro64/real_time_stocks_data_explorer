@@ -179,6 +179,8 @@ export type TranslationKey =
   | "rankings.notice.usScopeYahoo"
   | "rankings.notice.usScopeSp500"
   | "rankings.notice.usScopeQuote"
+  | "rankings.notice.usScopeDjia"
+  | "rankings.notice.usScopeNasdaq100"
   | "rankings.notice.usScopePending"
   | "rankings.notice.twInstScopeTwse"
   | "rankings.notice.twInstScopeTpex"
@@ -192,6 +194,12 @@ export type TranslationKey =
   | "rankings.twBoard.groupLabel"
   | "rankings.twBoard.twse"
   | "rankings.twBoard.tpex"
+  | "rankings.usUniverse.groupLabel"
+  | "rankings.usUniverse.djia"
+  | "rankings.usUniverse.nasdaq100"
+  | "rankings.refresh.action"
+  | "rankings.refresh.loading"
+  | "rankings.refresh.failed"
   | "rankings.notice.quoteUnofficial"
   | "rankings.notice.twDaily"
   | "rankings.notice.twDailyTpex"
@@ -232,6 +240,8 @@ export type TranslationKey =
   | "rankings.freshness.twQuoteFallbackOpen"
   | "rankings.freshness.twQuoteFallbackClosed"
   | "rankings.source.quoteProviders"
+  | "rankings.source.djiaQuote"
+  | "rankings.source.nasdaq100Quote"
   | "rankings.source.yahooPreRanked"
   | "rankings.source.sp500Movers"
   | "rankings.source.valuationUniverse"
@@ -632,6 +642,10 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
       "U.S. gainers and losers are the largest regular-session % moves among S&P 500 constituents (committed index snapshot) using batched Yahoo Finance quote fields. U.S. volume still prefers Yahoo's broader most-actives screener when available.",
     "rankings.notice.usScopeQuote":
       "U.S. rankings for this tab use the app's configured free quote universe and live quotes; symbols without a usable quote are omitted.",
+    "rankings.notice.usScopeDjia":
+      "U.S. rankings for this tab sort the Dow Jones Industrial Average (DJIA) constituent universe using the app's free quote sources. The index has 30 names, so this table never pads extra symbols.",
+    "rankings.notice.usScopeNasdaq100":
+      "U.S. rankings for this tab sort the Nasdaq-100 constituent universe using the app's free quote sources.",
     "rankings.notice.usScopePending":
       "U.S. scope for this tab appears after its data finishes loading.",
     "rankings.notice.twInstScopeTwse":
@@ -647,6 +661,13 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "rankings.twBoard.groupLabel": "Board",
     "rankings.twBoard.twse": "Listed (TWSE)",
     "rankings.twBoard.tpex": "TPEx (OTC)",
+    "rankings.usUniverse.groupLabel": "Index universe",
+    "rankings.usUniverse.djia": "Dow Jones",
+    "rankings.usUniverse.nasdaq100": "Nasdaq-100",
+    "rankings.refresh.action": "Refresh from source",
+    "rankings.refresh.loading": "Refreshing from source",
+    "rankings.refresh.failed":
+      "Could not refresh rankings from the upstream source. The current table was left unchanged.",
     "rankings.notice.quoteUnofficial": "Free unofficial quote source; data may be delayed or unavailable.",
     "rankings.notice.twDaily": "Taiwan institutional net buy/sell rankings use daily data, not intraday real-time data.",
     "rankings.notice.twDailyTpex":
@@ -715,6 +736,10 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "rankings.freshness.tpexNetSellClosed":
       "Market closed; TPEx daily institutional ranking sorted by most negative institutional net buy/sell shares.",
     "rankings.source.quoteProviders": "Quote rankings from the app's free best-effort quote providers.",
+    "rankings.source.djiaQuote":
+      "DJIA constituent quote rankings from the app's free best-effort quote providers.",
+    "rankings.source.nasdaq100Quote":
+      "Nasdaq-100 constituent quote rankings from the app's free best-effort quote providers.",
     "rankings.source.yahooPreRanked": "Yahoo Finance pre-ranked rankings.",
     "rankings.source.sp500Movers":
       "S&P 500 movers from a constituent snapshot plus batched Yahoo Finance quote fields (not Yahoo's predefined gainers/losers screeners).",
@@ -1085,6 +1110,10 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
       "美股漲跌幅排行以標普五百成分股（內建名單快照）為範圍，使用 Yahoo Finance 批次報價欄位排序；美股成交量仍優先採用 Yahoo 全市場熱門成交選股（若可用）。",
     "rankings.notice.usScopeQuote":
       "美股此分頁使用本應用程式設定的免費報價清單與即時報價排序；無法取得有效報價的代碼會略過。",
+    "rankings.notice.usScopeDjia":
+      "美股此分頁以道瓊工業平均指數（DJIA）成分股為範圍，使用本應用程式的免費報價來源排序。指數僅有 30 檔，不會為湊滿列數而補上其他代碼。",
+    "rankings.notice.usScopeNasdaq100":
+      "美股此分頁以 Nasdaq-100 成分股為範圍，使用本應用程式的免費報價來源排序。",
     "rankings.notice.usScopePending": "美股此分頁的資料範圍說明會在資料載入完成後顯示。",
     "rankings.notice.twInstScopeTwse": "此處的台股法人排行僅含上市（TWSE）股票，資料來自 TWSE 法人日報表。",
     "rankings.notice.twInstScopeTpex":
@@ -1098,6 +1127,12 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "rankings.twBoard.groupLabel": "交易別",
     "rankings.twBoard.twse": "上市",
     "rankings.twBoard.tpex": "上櫃",
+    "rankings.usUniverse.groupLabel": "指數範圍",
+    "rankings.usUniverse.djia": "道瓊",
+    "rankings.usUniverse.nasdaq100": "Nasdaq-100",
+    "rankings.refresh.action": "重新抓取最新資料",
+    "rankings.refresh.loading": "正在重新抓取最新資料",
+    "rankings.refresh.failed": "無法從上游來源重新抓取排行；目前表格資料維持不變。",
     "rankings.notice.quoteUnofficial": "免費非官方報價來源可能延遲，或暫時無法提供資料。",
     "rankings.notice.twDaily": "台股三大法人買賣超為日資料，非盤中即時資料。",
     "rankings.notice.twDailyTpex": "上櫃（TPEx）三大法人買賣超為日資料，非盤中即時資料。",
@@ -1145,6 +1180,8 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "rankings.freshness.tpexNetSellClosed":
       "市場休市；上櫃（TPEx）法人日排行依三大法人買賣超股數由低到高排序。",
     "rankings.source.quoteProviders": "排行使用本應用程式的免費最佳努力報價來源。",
+    "rankings.source.djiaQuote": "道瓊工業平均指數成分股排行，使用本應用程式的免費最佳努力報價來源。",
+    "rankings.source.nasdaq100Quote": "Nasdaq-100 成分股排行，使用本應用程式的免費最佳努力報價來源。",
     "rankings.source.yahooPreRanked": "Yahoo Finance 預先排序的排行資料。",
     "rankings.source.sp500Movers":
       "標普五百漲跌幅：成分股快照＋Yahoo Finance 批次報價欄位（非 Yahoo 預設漲跌榜選股）。",

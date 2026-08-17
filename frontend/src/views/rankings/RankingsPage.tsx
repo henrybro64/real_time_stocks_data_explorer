@@ -17,8 +17,8 @@ import {
   TableRow,
   Tile,
 } from "@carbon/react";
-import { useQuery } from "@tanstack/react-query";
-import type { MarketStatus, RankingResponse, RankingType } from "@shared/api";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import type { MarketStatus, RankingResponse, RankingType, RankingUniverse } from "@shared/api";
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -29,6 +29,7 @@ import { RequestStateNotice, errorToNoticeKind } from "../../components/state/Re
 import {
   fetchMarkets,
   fetchRankings,
+  refreshRankings,
   shouldRetryRankingsQuery,
   toApiError,
 } from "../../services/api/client";
@@ -44,13 +45,17 @@ import { defaultRankingsMarketFromStatuses } from "./defaultRankingsMarket";
 
 const DEFAULT_LIMIT = 50;
 const DEFAULT_MARKET = "TW" as const;
+const RANKINGS_REFRESH_COOLDOWN_MS = 15_000;
 type RankingMarket = RankingResponse["market"];
 type TwBoardSegment = "TWSE" | "TPEx";
+type UsUniverseSegment = "DJIA" | "NASDAQ100";
 
 type UsScopeNoticeKey =
   | "rankings.notice.usScopeYahoo"
   | "rankings.notice.usScopeSp500"
   | "rankings.notice.usScopeQuote"
+  | "rankings.notice.usScopeDjia"
+  | "rankings.notice.usScopeNasdaq100"
   | "rankings.notice.usInstitutionalUnsupported"
   | "rankings.notice.usScopePending";
 
@@ -149,6 +154,10 @@ function usScopeNoticeKeyFromState(
     return "rankings.notice.usInstitutionalUnsupported";
   }
   switch (data.usRankingsScope) {
+    case "djia":
+      return "rankings.notice.usScopeDjia";
+    case "nasdaq100":
+      return "rankings.notice.usScopeNasdaq100";
     case "sp500":
       return "rankings.notice.usScopeSp500";
     case "yahoo":
@@ -315,6 +324,7 @@ function RankingRealtimeTag({ response }: { response: RankingResponse }) {
 
 export function RankingsPage() {
   const router = useRouter();
+  const queryClient = useQueryClient();
   const { language, t, formatNumber } = useLanguage();
   const [marketOverride, setMarketOverride] = useState<RankingMarket | null>(null);
   const marketsQuery = useQuery<MarketStatus[]>({
@@ -329,8 +339,13 @@ export function RankingsPage() {
   }, [marketsQuery.data]);
   const market = marketOverride ?? implicitMarket;
   const [twBoard, setTwBoard] = useState<TwBoardSegment>("TWSE");
+  const [usUniverse, setUsUniverse] = useState<UsUniverseSegment>("DJIA");
   const [rankingType, setRankingType] = useState<RankingType>(defaultRankingTypeForMarket(DEFAULT_MARKET));
+  const [refreshError, setRefreshError] = useState<string | null>(null);
+  const [refreshCooldownUntil, setRefreshCooldownUntil] = useState(0);
   const rankingTabs = tabsForMarket(market);
+  const selectedScope: RankingUniverse = market === "TW" ? twBoard : usUniverse;
+  const rankingsQueryKey = ["rankings", market, selectedScope, rankingType, DEFAULT_LIMIT] as const;
 
   useEffect(() => {
     setRankingType((prev) => {
@@ -344,13 +359,13 @@ export function RankingsPage() {
   }, [market]);
 
   const rankingsQuery = useQuery<RankingResponse>({
-    queryKey: ["rankings", market, twBoard, rankingType, DEFAULT_LIMIT],
+    queryKey: rankingsQueryKey,
     queryFn: ({ signal }) =>
       fetchRankings(
         market,
         rankingType,
         DEFAULT_LIMIT,
-        market === "TW" ? twBoard : undefined,
+        selectedScope,
         signal,
       ),
     retry: shouldRetryRankingsQuery,
@@ -359,6 +374,25 @@ export function RankingsPage() {
         (query.state.data as RankingResponse | undefined)?.isMarketOpen ?? false,
         rankingType,
       ),
+  });
+
+  const refreshMutation = useMutation({
+    mutationFn: () => refreshRankings(market, rankingType, DEFAULT_LIMIT, selectedScope),
+    onSuccess: (next) => {
+      setRefreshError(null);
+      queryClient.setQueryData(rankingsQueryKey, next);
+    },
+    onError: (error) => {
+      const apiError = toApiError(error);
+      setRefreshError(apiError.detail ?? t("rankings.refresh.failed"));
+    },
+    onSettled: () => {
+      const until = Date.now() + RANKINGS_REFRESH_COOLDOWN_MS;
+      setRefreshCooldownUntil(until);
+      window.setTimeout(() => {
+        setRefreshCooldownUntil((current) => (current === until ? 0 : current));
+      }, RANKINGS_REFRESH_COOLDOWN_MS);
+    },
   });
 
   const data = rankingsQuery.data;
@@ -370,6 +404,7 @@ export function RankingsPage() {
   const localizedSnapshotState = data ? t(rankingsSnapshotStateLabelKey(data)) : "";
   const showNetBuySellColumn = isInstitutionalRanking(rankingType);
   const showValuationColumns = isValuationRanking(rankingType);
+  const refreshDisabled = refreshMutation.isPending || Date.now() < refreshCooldownUntil;
   const scopeNoteKey =
     market === "US"
       ? usScopeNoticeKeyFromState(rankingType, data)
@@ -384,8 +419,11 @@ export function RankingsPage() {
   function handleMarketChange(nextMarket: RankingMarket) {
     setMarketOverride(nextMarket);
     setRankingType(defaultRankingTypeForMarket(nextMarket));
+    setRefreshError(null);
     if (nextMarket === "TW") {
       setTwBoard("TWSE");
+    } else {
+      setUsUniverse("DJIA");
     }
   }
 
@@ -434,7 +472,10 @@ export function RankingsPage() {
                   data-testid="rankings-tw-board-twse"
                   kind={twBoard === "TWSE" ? "primary" : "ghost"}
                   size="sm"
-                  onClick={() => setTwBoard("TWSE")}
+                  onClick={() => {
+                    setRefreshError(null);
+                    setTwBoard("TWSE");
+                  }}
                 >
                   {t("rankings.twBoard.twse")}
                 </Button>
@@ -442,13 +483,46 @@ export function RankingsPage() {
                   data-testid="rankings-tw-board-tpex"
                   kind={twBoard === "TPEx" ? "primary" : "ghost"}
                   size="sm"
-                  onClick={() => setTwBoard("TPEx")}
+                  onClick={() => {
+                    setRefreshError(null);
+                    setTwBoard("TPEx");
+                  }}
                 >
                   {t("rankings.twBoard.tpex")}
                 </Button>
               </div>
             </div>
-          ) : null}
+          ) : (
+            <div className="app-shell-brand" style={{ marginTop: "0.75rem" }}>
+              <p className="app-eyebrow" style={{ marginBottom: "0.35rem" }}>
+                {t("rankings.usUniverse.groupLabel")}
+              </p>
+              <div className="app-auth-actions" style={{ display: "flex", flexWrap: "wrap", gap: "0.75rem" }}>
+                <Button
+                  data-testid="rankings-us-universe-djia"
+                  kind={usUniverse === "DJIA" ? "primary" : "ghost"}
+                  size="sm"
+                  onClick={() => {
+                    setRefreshError(null);
+                    setUsUniverse("DJIA");
+                  }}
+                >
+                  {t("rankings.usUniverse.djia")}
+                </Button>
+                <Button
+                  data-testid="rankings-us-universe-nasdaq100"
+                  kind={usUniverse === "NASDAQ100" ? "primary" : "ghost"}
+                  size="sm"
+                  onClick={() => {
+                    setRefreshError(null);
+                    setUsUniverse("NASDAQ100");
+                  }}
+                >
+                  {t("rankings.usUniverse.nasdaq100")}
+                </Button>
+              </div>
+            </div>
+          )}
           <div className="app-shell-brand app-rankings-tabs" style={{ marginTop: "1rem" }}>
             <div className="app-auth-actions" style={{ display: "flex", flexWrap: "wrap", gap: "0.75rem" }}>
               {rankingTabs.map((tab) => (
@@ -495,6 +569,15 @@ export function RankingsPage() {
                     <p className="app-section-meta" data-testid="rankings-source-label">
                       {t("rankings.meta.source")}: {localizedSource}
                     </p>
+                    <Button
+                      data-testid="rankings-refresh-source"
+                      kind="tertiary"
+                      size="sm"
+                      disabled={refreshDisabled}
+                      onClick={() => refreshMutation.mutate()}
+                    >
+                      {refreshMutation.isPending ? t("rankings.refresh.loading") : t("rankings.refresh.action")}
+                    </Button>
                     <Tag
                       data-testid="rankings-source-type-tag"
                       size="sm"
@@ -514,6 +597,11 @@ export function RankingsPage() {
                   {showUnsupported ? (
                     <p className="app-supporting-copy" data-testid="rankings-unsupported-message">
                       {getLocalizedRankingsUnsupportedReason(data, t)}
+                    </p>
+                  ) : null}
+                  {refreshError ? (
+                    <p className="app-supporting-copy" data-testid="rankings-refresh-error">
+                      {refreshError}
                     </p>
                   ) : null}
                 </>

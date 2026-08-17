@@ -180,3 +180,30 @@ def test_ranking_snapshot_items_store_raw_payload_json(tmp_path, monkeypatch) ->
     with session_local() as session:
         item = session.execute(select(RankingSnapshotItem)).scalar_one()
         assert item.raw_payload_json == {"stock": {"id": "TW:2330"}, "peRatio": 18.5}
+
+
+def test_ranking_snapshots_accept_nasdaq100_universe_key(tmp_path, monkeypatch) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'ranking_snapshots_nasdaq.db'}"
+    monkeypatch.setattr("app.core.config.settings.database_url", database_url)
+    command.upgrade(_alembic_config(database_url), "head")
+
+    engine = create_engine(database_url)
+    session_local = sessionmaker(bind=engine)
+    snapshot = RankingSnapshot(
+        market="US",
+        tw_board="NASDAQ100",
+        ranking_type="volume",
+        bucket_start=datetime(2026, 7, 3, 13, 30, tzinfo=timezone.utc),
+        source="Nasdaq-100 constituent quote rankings from the app's free best-effort quote providers.",
+        source_type="free-unofficial",
+        source_freshness="Market open; rankings use the latest quote snapshot.",
+        is_market_open=True,
+        warning_message=None,
+        unsupported_reason=None,
+    )
+    with session_local() as session:
+        session.add(snapshot)
+        session.commit()
+        loaded = session.execute(select(RankingSnapshot)).scalar_one()
+        assert loaded.tw_board == "NASDAQ100"
+

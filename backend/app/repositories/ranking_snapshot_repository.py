@@ -148,6 +148,8 @@ class RankingSnapshotRepository:
 
     @staticmethod
     def _db_tw_board(query: RankingQuery) -> str:
+        if query.market == "US":
+            return query.universe or ""
         return query.tw_board or ""
 
     @staticmethod

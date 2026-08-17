@@ -97,8 +97,10 @@ export type RankingSourceType =
   | "cache"
   | "unsupported";
 
+export type RankingUniverse = "TWSE" | "TPEx" | "DJIA" | "NASDAQ100";
+
 /** Present when `market` is US; drives the rankings scope banner copy. */
-export type UsRankingsScope = "sp500" | "yahoo" | "quote";
+export type UsRankingsScope = "sp500" | "yahoo" | "quote" | "djia" | "nasdaq100";
 
 /** Present when `market` is TW quote rankings; drives the rankings scope banner copy. */
 export type TwRankingsScope = "yahoo" | "quote" | "fallback";
@@ -123,6 +125,7 @@ export type RankingResponse = {
   market: MarketCode;
   rankingType: RankingType;
   twBoard?: "TWSE" | "TPEx" | null;
+  universe?: RankingUniverse | null;
   items: RankingItem[];
   timestamp: string;
   source: string;

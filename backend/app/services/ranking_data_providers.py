@@ -9,7 +9,9 @@ from app.schemas.rankings import (
     RankingResponse,
     RankingSourceType,
     RankingType,
+    RankingUniverse,
     TwBoard,
+    UsUniverse,
 )
 from app.services.market_clock import (
     current_rankings_snapshot_bucket,
@@ -34,6 +36,7 @@ class RankingQuery:
     market: RankingMarket
     ranking_type: RankingType
     tw_board: TwBoard | None = None
+    universe: RankingUniverse | None = None
 
 
 class RankingDataProvider(Protocol):
@@ -49,6 +52,7 @@ class RankingDataProvider(Protocol):
         *,
         limit: int,
         now: datetime,
+        allow_hardcoded_fallback: bool = True,
     ) -> RankingResponse: ...
 
 
@@ -134,13 +138,19 @@ class FreeQuoteRankingProvider:
         *,
         limit: int,
         now: datetime,
+        allow_hardcoded_fallback: bool = True,
     ) -> RankingResponse:
+        us_universe: UsUniverse | None = None
+        if query.market == "US" and query.universe in {"DJIA", "NASDAQ100"}:
+            us_universe = query.universe
         return self._service.get_rankings(
             query.market,
             query.ranking_type,
             limit=limit,
             now=now,
             tw_board=query.tw_board,
+            us_universe=us_universe,
+            allow_hardcoded_fallback=allow_hardcoded_fallback,
         )
 
 
@@ -165,7 +175,9 @@ class FreeTWInstitutionalDailyProvider:
         *,
         limit: int,
         now: datetime,
+        allow_hardcoded_fallback: bool = True,
     ) -> RankingResponse:
+        del allow_hardcoded_fallback
         return self._service.get_rankings(
             "TW",
             query.ranking_type,
@@ -190,12 +202,14 @@ class UnsupportedUSInstitutionalProvider:
         *,
         limit: int,
         now: datetime,
+        allow_hardcoded_fallback: bool = True,
     ) -> RankingResponse:
-        del limit
+        del limit, allow_hardcoded_fallback
         return RankingResponse(
             market="US",
             rankingType=query.ranking_type,
             twBoard=None,
+            universe=query.universe if query.universe in {"DJIA", "NASDAQ100"} else "DJIA",
             items=[],
             timestamp=now.astimezone(timezone.utc).isoformat(),
             source="Unsupported in this free-only app",

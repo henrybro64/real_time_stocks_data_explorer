@@ -151,6 +151,7 @@ function buildRankingsResponse(url: URL) {
   const market = (url.searchParams.get("market") ?? "TW") as "TW" | "US";
   const rankingType = url.searchParams.get("type") ?? "volume";
   const twBoard = url.searchParams.get("twBoard") ?? "TWSE";
+  const universe = url.searchParams.get("universe");
 
   if (market === "US" && (rankingType === "net_buy" || rankingType === "net_sell")) {
     return {
@@ -200,7 +201,8 @@ function buildRankingsResponse(url: URL) {
       dataFreshnessLabel: "Market is closed. Showing latest available free snapshot.",
       warningMessage: "Free unofficial quote source; data may be delayed or unavailable.",
       unsupportedReason: null,
-      usRankingsScope: "quote",
+      usRankingsScope: universe === "NASDAQ100" ? "nasdaq100" : "djia",
+      universe: universe === "NASDAQ100" ? "NASDAQ100" : "DJIA",
     };
   }
 
@@ -941,6 +943,28 @@ export async function installE2eApiMocks(page: Page): Promise<void> {
 
     if (path === "/api/markets/indices" && request.method() === "GET") {
       await fulfillJson(route, E2E_MARKET_INDICES);
+      return;
+    }
+
+    if (path === "/api/rankings/refresh" && request.method() === "POST") {
+      const payload = (request.postDataJSON() ?? {}) as {
+        market?: string;
+        rankingType?: string;
+        universe?: string;
+      };
+      const refreshUrl = new URL("https://e2e.test/api/rankings");
+      refreshUrl.searchParams.set("market", payload.market ?? "TW");
+      refreshUrl.searchParams.set("type", payload.rankingType ?? "volume");
+      if (payload.universe === "TWSE" || payload.universe === "TPEx") {
+        refreshUrl.searchParams.set("twBoard", payload.universe);
+      }
+      if (payload.universe) {
+        refreshUrl.searchParams.set("universe", payload.universe);
+      }
+      await fulfillJson(route, {
+        ...buildRankingsResponse(refreshUrl),
+        sourceType: "free-unofficial",
+      });
       return;
     }
 
