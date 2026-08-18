@@ -7,6 +7,7 @@ from threading import Event, Lock, Thread
 from time import perf_counter
 from typing import Literal
 
+from app.core.config import settings
 from app.core.diagnostics import elapsed_ms
 from app.db.models import RankingSnapshotItem
 from app.db.session import SessionLocal as DefaultSessionLocal
@@ -35,6 +36,7 @@ from app.services.ranking_data_providers import (
     ranking_provider_registry,
     scheduler_ranking_provider_registry,
 )
+from app.services.rankings_refresh_gate import RankingsRefreshCooldownError, RankingsRefreshGate
 from app.services.rankings_service import (
     TW_TPEX_RANKING_STOCK_IDS,
     TW_TWSE_RANKING_STOCK_IDS,
@@ -79,9 +81,17 @@ _REFRESH_FALLBACK_DETAIL = (
 
 
 class RankingsRefreshError(Exception):
-    def __init__(self, detail: str) -> None:
+    def __init__(
+        self,
+        detail: str,
+        *,
+        status_code: int = 502,
+        retry_after_seconds: int | None = None,
+    ) -> None:
         super().__init__(detail)
         self.detail = detail
+        self.status_code = status_code
+        self.retry_after_seconds = retry_after_seconds
 
 
 def _sync_repository_sessionlocal() -> None:
@@ -101,6 +111,9 @@ class RankingsSnapshotService:
         self._lock = Lock()
         self._stop_event = Event()
         self._thread: Thread | None = None
+        self._refresh_gate = RankingsRefreshGate(
+            lambda: settings.rankings_manual_refresh_cooldown_seconds,
+        )
 
     def start_background_sampler(self, poll_seconds: int) -> None:
         _sync_repository_sessionlocal()
@@ -288,10 +301,48 @@ class RankingsSnapshotService:
         universe: RankingUniverse | None = None,
     ) -> RankingResponse:
         _sync_repository_sessionlocal()
-        started_at = perf_counter()
         current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
         query = _normalize_query(market, RankingType(ranking_type), tw_board, universe)
         limit = _effective_limit(query, limit)
+        key = (query.market, query.universe, query.ranking_type.value)
+        try:
+            leader, holder = self._refresh_gate.acquire(key)
+        except RankingsRefreshCooldownError as exc:
+            raise RankingsRefreshError(
+                exc.detail,
+                status_code=429,
+                retry_after_seconds=exc.retry_after_seconds,
+            ) from exc
+        if not leader:
+            try:
+                result = self._refresh_gate.join(holder)
+            except RankingsRefreshError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                raise RankingsRefreshError(_REFRESH_FAILURE_DETAIL) from exc
+            if not isinstance(result, RankingResponse):
+                raise RankingsRefreshError(_REFRESH_FAILURE_DETAIL)
+            return result
+
+        started_at = perf_counter()
+        error: BaseException | None = None
+        result: RankingResponse | None = None
+        try:
+            result = self._execute_refresh_rankings(query, limit, current, started_at)
+            return result
+        except BaseException as exc:
+            error = exc
+            raise
+        finally:
+            self._refresh_gate.release(key, holder, result=result, error=error)
+
+    def _execute_refresh_rankings(
+        self,
+        query: RankingQuery,
+        limit: int,
+        current: datetime,
+        started_at: float,
+    ) -> RankingResponse:
         provider = self._provider_registry.get_provider(query)
 
         try:
@@ -336,6 +387,7 @@ class RankingsSnapshotService:
                     bucket_start,
                     live,
                     capture_scope=_CAPTURE_SCOPE_ON_DEMAND,
+                    replace_existing=True,
                 )
         response = _truncate_response(live, limit)
         if response.universe is None:
@@ -577,6 +629,7 @@ class RankingsSnapshotService:
         response: RankingResponse,
         *,
         capture_scope: str = _CAPTURE_SCOPE_ON_DEMAND,
+        replace_existing: bool = False,
     ) -> _SnapshotEnvelope | None:
         _sync_repository_sessionlocal()
         try:
@@ -585,6 +638,7 @@ class RankingsSnapshotService:
                 bucket_start,
                 response,
                 capture_scope=capture_scope,
+                replace_existing=replace_existing,
             )
         except Exception:  # noqa: BLE001
             logger.exception(

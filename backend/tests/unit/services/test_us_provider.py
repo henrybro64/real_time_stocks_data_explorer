@@ -464,3 +464,16 @@ def test_yahoo_history_window_escalates_for_sma_warmup(
     expected: tuple[str, str],
 ) -> None:
     assert us_provider._yahoo_history_window(range_name, min_candles=min_candles) == expected
+
+
+def test_get_catalog_stock_does_not_fetch_yahoo_chart(monkeypatch) -> None:
+    monkeypatch.setattr(us_provider, "_load_catalog_payload", _empty_catalog_payload)
+
+    def fail_yahoo(_stock_id: str):
+        raise AssertionError("yahoo chart metadata should not run")
+
+    monkeypatch.setattr(us_provider, "_fetch_yahoo_chart_stock", fail_yahoo)
+    provider = us_provider.USProvider()
+
+    assert provider.get_catalog_stock("US:AAPL") is not None
+    assert provider.get_catalog_stock("US:JPM") is None

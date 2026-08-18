@@ -1234,6 +1234,7 @@ describe("RankingsPage", () => {
     });
     expect(await screen.findByTestId("rankings-row-TW:2317")).toBeInTheDocument();
     expect(screen.queryByTestId("rankings-row-TW:2330")).not.toBeInTheDocument();
+    expect(screen.getByTestId("rankings-refresh-source")).toBeDisabled();
   });
 
   it("keeps the current table when refresh fails", async () => {
@@ -1312,5 +1313,69 @@ describe("RankingsPage", () => {
     });
     expect(await screen.findByTestId("rankings-row-US:META")).toBeInTheDocument();
     expect(screen.getByTestId("rankings-scope-note")).toHaveTextContent("Nasdaq-100");
+  });
+
+  it("does not write a late refresh response into a different universe cache", async () => {
+    const user = userEvent.setup();
+    let finishRefresh: ((value: RankingResponse) => void) | undefined;
+    vi.mocked(refreshRankings).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finishRefresh = resolve;
+        }),
+    );
+    vi.mocked(fetchRankings)
+      .mockResolvedValueOnce(buildResponse())
+      .mockResolvedValueOnce(buildUsResponse())
+      .mockResolvedValueOnce(
+        buildUsResponse({
+          universe: "NASDAQ100",
+          usRankingsScope: "nasdaq100",
+          items: [
+            {
+              ...buildUsResponse().items[0],
+              stock: {
+                ...buildUsResponse().items[0].stock,
+                id: "US:META",
+                symbol: "META",
+                name: "Meta Platforms",
+                nameEn: "Meta Platforms",
+              },
+            },
+          ],
+        }),
+      );
+
+    renderRankingsPage();
+    await screen.findByTestId("rankings-row-TW:2330");
+    await user.selectOptions(screen.getByLabelText("市場"), "US");
+    expect(await screen.findByTestId("rankings-row-US:MSFT")).toBeInTheDocument();
+
+    await user.click(screen.getByTestId("rankings-refresh-source"));
+    await user.click(screen.getByTestId("rankings-us-universe-nasdaq100"));
+    expect(await screen.findByTestId("rankings-row-US:META")).toBeInTheDocument();
+
+    finishRefresh?.(
+      buildUsResponse({
+        items: [
+          {
+            ...buildUsResponse().items[0],
+            stock: {
+              ...buildUsResponse().items[0].stock,
+              id: "US:AAPL",
+              symbol: "AAPL",
+              name: "Apple Inc.",
+              nameEn: "Apple Inc.",
+            },
+          },
+        ],
+      }),
+    );
+
+    await waitFor(() => {
+      expect(finishRefresh).toBeDefined();
+    });
+    expect(await screen.findByTestId("rankings-row-US:META")).toBeInTheDocument();
+    expect(screen.queryByTestId("rankings-row-US:AAPL")).not.toBeInTheDocument();
   });
 });

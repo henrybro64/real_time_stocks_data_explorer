@@ -248,6 +248,7 @@ Scheduler settings:
 
 - `RANKINGS_SNAPSHOT_ENABLED`
 - `RANKINGS_REFRESH_SECONDS`
+- `RANKINGS_MANUAL_REFRESH_COOLDOWN_SECONDS` (server cooldown for `POST /rankings/refresh`)
 - `RANKINGS_UNIVERSE_US`
 - `RANKINGS_UNIVERSE_TW`
 - optional internal capture endpoint token: `RANKINGS_CAPTURE_TOKEN`

@@ -202,6 +202,13 @@ class USProvider:
         self.__class__._catalog_cache = catalog
         return dynamic_stock
 
+    def get_catalog_stock(self, stock_id: str) -> StockRecord | None:
+        """Return a catalog/built-in name only; never fetch Yahoo chart metadata."""
+        normalized_stock_id = _normalize_us_stock_id(stock_id)
+        if normalized_stock_id is None:
+            return None
+        return self._stock_catalog().get(normalized_stock_id)
+
     def get_quote(self, stock_id: str) -> QuoteRecord | None:
         return self.get_live_quote(stock_id)
 

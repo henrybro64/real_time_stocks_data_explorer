@@ -38,6 +38,13 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     bind = op.get_bind()
+    op.execute(
+        sa.text(
+            "DELETE FROM ranking_snapshot_items WHERE snapshot_id IN ("
+            "SELECT id FROM ranking_snapshots WHERE length(tw_board) > 8)"
+        )
+    )
+    op.execute(sa.text("DELETE FROM ranking_snapshots WHERE length(tw_board) > 8"))
     if bind.dialect.name == "sqlite":
         with op.batch_alter_table("ranking_snapshots", recreate="always") as batch_op:
             batch_op.alter_column(

@@ -164,6 +164,36 @@ def test_refresh_rankings_route_maps_failure_to_502(monkeypatch) -> None:
         raise AssertionError("Expected refresh route to raise HTTPException")
 
 
+def test_refresh_rankings_route_maps_cooldown_to_429(monkeypatch) -> None:
+    monkeypatch.setattr(
+        rankings_route.rankings_snapshot_service,
+        "refresh_rankings",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            RankingsRefreshError(
+                "Rankings refresh is cooling down. Retry after a few seconds.",
+                status_code=429,
+                retry_after_seconds=12,
+            )
+        ),
+    )
+
+    try:
+        rankings_route.refresh_rankings(
+            RankingsRefreshRequest(
+                market="US",
+                rankingType=RankingType.volume,
+                universe="DJIA",
+                limit=50,
+            )
+        )
+    except HTTPException as exc:
+        assert exc.status_code == 429
+        assert "cooling down" in str(exc.detail)
+        assert exc.headers["Retry-After"] == "12"
+    else:
+        raise AssertionError("Expected refresh route to raise HTTPException")
+
+
 def test_get_rankings_rejects_universe_that_does_not_match_market() -> None:
     try:
         rankings_route.get_rankings(

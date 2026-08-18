@@ -207,3 +207,49 @@ def test_ranking_snapshots_accept_nasdaq100_universe_key(tmp_path, monkeypatch) 
         loaded = session.execute(select(RankingSnapshot)).scalar_one()
         assert loaded.tw_board == "NASDAQ100"
 
+
+def test_ranking_snapshots_downgrade_removes_long_universe_keys(tmp_path, monkeypatch) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'ranking_snapshots_downgrade.db'}"
+    monkeypatch.setattr("app.core.config.settings.database_url", database_url)
+    config = _alembic_config(database_url)
+    command.upgrade(config, "head")
+
+    engine = create_engine(database_url)
+    session_local = sessionmaker(bind=engine)
+    bucket_start = datetime(2026, 7, 3, 13, 30, tzinfo=timezone.utc)
+    with session_local() as session:
+        session.add(
+            RankingSnapshot(
+                market="US",
+                tw_board="DJIA",
+                ranking_type="volume",
+                bucket_start=bucket_start,
+                source="djia",
+                source_type="free-unofficial",
+                source_freshness="test",
+                is_market_open=True,
+                warning_message=None,
+                unsupported_reason=None,
+            )
+        )
+        session.add(
+            RankingSnapshot(
+                market="US",
+                tw_board="NASDAQ100",
+                ranking_type="volume",
+                bucket_start=bucket_start,
+                source="nasdaq",
+                source_type="free-unofficial",
+                source_freshness="test",
+                is_market_open=True,
+                warning_message=None,
+                unsupported_reason=None,
+            )
+        )
+        session.commit()
+
+    command.downgrade(config, "20260803_0012")
+    with session_local() as session:
+        boards = {row.tw_board for row in session.execute(select(RankingSnapshot)).scalars()}
+    assert boards == {"DJIA"}
+

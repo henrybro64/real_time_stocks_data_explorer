@@ -156,6 +156,19 @@ def _us_universe_scope(us_universe: UsUniverse | None) -> str | None:
     return None
 
 
+def _synthetic_us_stock(symbol: str) -> StockRecord:
+    return StockRecord(
+        id=f"US:{symbol}",
+        market="US",
+        symbol=symbol,
+        name=symbol,
+        name_en=symbol,
+        exchange="NASDAQ",
+        currency="USD",
+        timezone="America/New_York",
+    )
+
+
 def _effective_ranking_limit(limit: int, us_universe: UsUniverse | None) -> int:
     if us_universe == "DJIA":
         return min(limit, 30)
@@ -635,6 +648,20 @@ class RankingsService:
             return load_nasdaq100_symbols()
         return self._sp500_symbol_loader()
 
+    def _catalog_us_stock(self, stock_id: str) -> StockRecord | None:
+        lookup = getattr(self.quote_source, "get_catalog_stock", None)
+        if callable(lookup):
+            return lookup(stock_id)
+        return None
+
+    def _us_stock_records_for_symbols(self, symbols: tuple[str, ...]) -> list[StockRecord]:
+        stocks: list[StockRecord] = []
+        for symbol in symbols:
+            stock_id = f"US:{symbol}"
+            known = self._catalog_us_stock(stock_id)
+            stocks.append(known if known is not None else _synthetic_us_stock(symbol))
+        return stocks
+
     def _us_quote_snapshot_envelopes(
         self,
         us_universe: UsUniverse | None = None,
@@ -643,14 +670,7 @@ class RankingsService:
         symbols = self._us_symbols_for_universe(us_universe)
         if not symbols:
             return []
-        stocks: list[StockRecord] = []
-        for sym in symbols:
-            sid = f"US:{sym}"
-            stock = self.quote_source.get_stock(sid)
-            if stock is None:
-                continue
-            stocks.append(stock)
-
+        stocks = self._us_stock_records_for_symbols(symbols)
         quotes_by_id = self._sp500_quote_batch(stocks)
         if quotes_by_id:
             return [(s, quotes_by_id[s.id]) for s in stocks if s.id in quotes_by_id]
@@ -668,14 +688,7 @@ class RankingsService:
         symbols = self._sp500_symbol_loader()
         if not symbols:
             return None
-        stocks: list[StockRecord] = []
-        for sym in symbols:
-            sid = f"US:{sym}"
-            stock = self.quote_source.get_stock(sid)
-            if stock is None:
-                continue
-            stocks.append(stock)
-
+        stocks = self._us_stock_records_for_symbols(symbols)
         quotes_by_id = self._sp500_quote_batch(stocks)
         if not quotes_by_id:
             return None

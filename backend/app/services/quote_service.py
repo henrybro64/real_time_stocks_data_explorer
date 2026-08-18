@@ -96,6 +96,17 @@ class QuoteService:
         provider = self.providers.get(market)
         return provider.get_stock(stock_id) if provider else None
 
+    def get_catalog_stock(self, stock_id: str) -> StockRecord | None:
+        """Resolve a stock without per-symbol Yahoo chart fallback."""
+        market = self._market_from_id(stock_id)
+        provider = self.providers.get(market)
+        if provider is None:
+            return None
+        catalog_lookup = getattr(provider, "get_catalog_stock", None)
+        if callable(catalog_lookup):
+            return catalog_lookup(stock_id)
+        return provider.get_stock(stock_id)
+
     def resolve_stock_id(self, raw: str) -> str:
         """Resolve a user-facing ticker or canonical ID to ``MARKET:SYMBOL``.
 

@@ -91,6 +91,9 @@ class FakeQuoteSource:
     def get_stock(self, stock_id: str):
         return self._stocks.get(stock_id)
 
+    def get_catalog_stock(self, stock_id: str):
+        return self.get_stock(stock_id)
+
 
 class StaticExternalSource:
     def __init__(self, envelopes):
@@ -2354,6 +2357,36 @@ def test_nasdaq100_universe_is_isolated_from_djia() -> None:
     assert [item.stock.symbol for item in nasdaq.items] == ["META", "AAPL"]
     assert nasdaq.usRankingsScope == "nasdaq100"
     assert nasdaq.universe == "NASDAQ100"
+
+
+def test_us_index_universe_does_not_call_get_stock() -> None:
+    class GuardedQuoteSource(FakeQuoteSource):
+        def get_stock(self, stock_id: str):
+            raise AssertionError(f"index rankings must not call get_stock ({stock_id})")
+
+        def get_catalog_stock(self, stock_id: str):
+            return None
+
+        def get_live_quotes(self, stock_ids):
+            raise AssertionError("index rankings should use the batched quote path")
+
+    def batch(stocks):
+        quotes = {}
+        for stock in stocks:
+            if stock.symbol == "MSFT":
+                quotes[stock.id] = _quote(stock.id, 2_000_000, "2026-05-12T10:00:00-04:00")
+            elif stock.symbol == "AAPL":
+                quotes[stock.id] = _quote(stock.id, 1_000_000, "2026-05-12T10:00:00-04:00")
+        return quotes
+
+    service = RankingsService(
+        GuardedQuoteSource(stocks={}, quotes={}),
+        sp500_quote_batch=batch,
+    )
+    response = service.get_rankings("US", RankingType.volume, limit=50, us_universe="DJIA")
+
+    assert [item.stock.symbol for item in response.items] == ["MSFT", "AAPL"]
+    assert response.items[0].stock.name == "MSFT"
 
 
 def test_refresh_does_not_use_hardcoded_tw_fallback_universe() -> None:

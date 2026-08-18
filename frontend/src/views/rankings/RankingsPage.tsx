@@ -45,10 +45,24 @@ import { defaultRankingsMarketFromStatuses } from "./defaultRankingsMarket";
 
 const DEFAULT_LIMIT = 50;
 const DEFAULT_MARKET = "TW" as const;
-const RANKINGS_REFRESH_COOLDOWN_MS = 15_000;
+export const RANKINGS_REFRESH_COOLDOWN_MS = 15_000;
 type RankingMarket = RankingResponse["market"];
 type TwBoardSegment = "TWSE" | "TPEx";
 type UsUniverseSegment = "DJIA" | "NASDAQ100";
+
+type RankingsRefreshVars = {
+  market: RankingMarket;
+  rankingType: RankingType;
+  universe: RankingUniverse;
+};
+
+function rankingsQueryKey(
+  market: RankingMarket,
+  universe: RankingUniverse,
+  rankingType: RankingType,
+) {
+  return ["rankings", market, universe, rankingType, DEFAULT_LIMIT] as const;
+}
 
 type UsScopeNoticeKey =
   | "rankings.notice.usScopeYahoo"
@@ -345,7 +359,7 @@ export function RankingsPage() {
   const [refreshCooldownUntil, setRefreshCooldownUntil] = useState(0);
   const rankingTabs = tabsForMarket(market);
   const selectedScope: RankingUniverse = market === "TW" ? twBoard : usUniverse;
-  const rankingsQueryKey = ["rankings", market, selectedScope, rankingType, DEFAULT_LIMIT] as const;
+  const rankingsQueryKeyValue = rankingsQueryKey(market, selectedScope, rankingType);
 
   useEffect(() => {
     setRankingType((prev) => {
@@ -359,7 +373,7 @@ export function RankingsPage() {
   }, [market]);
 
   const rankingsQuery = useQuery<RankingResponse>({
-    queryKey: rankingsQueryKey,
+    queryKey: rankingsQueryKeyValue,
     queryFn: ({ signal }) =>
       fetchRankings(
         market,
@@ -377,10 +391,14 @@ export function RankingsPage() {
   });
 
   const refreshMutation = useMutation({
-    mutationFn: () => refreshRankings(market, rankingType, DEFAULT_LIMIT, selectedScope),
-    onSuccess: (next) => {
+    mutationFn: (vars: RankingsRefreshVars) =>
+      refreshRankings(vars.market, vars.rankingType, DEFAULT_LIMIT, vars.universe),
+    onSuccess: (next, vars) => {
       setRefreshError(null);
-      queryClient.setQueryData(rankingsQueryKey, next);
+      queryClient.setQueryData(
+        rankingsQueryKey(vars.market, vars.universe, vars.rankingType),
+        next,
+      );
     },
     onError: (error) => {
       const apiError = toApiError(error);
@@ -574,7 +592,13 @@ export function RankingsPage() {
                       kind="tertiary"
                       size="sm"
                       disabled={refreshDisabled}
-                      onClick={() => refreshMutation.mutate()}
+                      onClick={() =>
+                        refreshMutation.mutate({
+                          market,
+                          rankingType,
+                          universe: selectedScope,
+                        })
+                      }
                     >
                       {refreshMutation.isPending ? t("rankings.refresh.loading") : t("rankings.refresh.action")}
                     </Button>

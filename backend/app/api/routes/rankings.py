@@ -60,7 +60,15 @@ def refresh_rankings(payload: RankingsRefreshRequest) -> RankingResponse:
             universe=payload.universe,
         )
     except RankingsRefreshError as exc:
-        raise HTTPException(status_code=502, detail=exc.detail) from exc
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail=exc.detail,
+            headers=(
+                {"Retry-After": str(exc.retry_after_seconds)}
+                if exc.retry_after_seconds is not None
+                else None
+            ),
+        ) from exc
 
 
 @router.post("/snapshots/capture")

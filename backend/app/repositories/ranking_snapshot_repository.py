@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 
 from app.db.models import RankingSnapshot, RankingSnapshotItem
@@ -47,7 +47,17 @@ class RankingSnapshotRepository:
         response: RankingResponse,
         *,
         capture_scope: str,
+        replace_existing: bool = False,
     ) -> SnapshotEnvelope:
+        if replace_existing:
+            replaced = self._replace_bucket_snapshot(
+                query,
+                bucket_start,
+                response,
+                capture_scope=capture_scope,
+            )
+            if replaced is not None:
+                return replaced
         session_factory = self._session_factory()
         with session_factory() as session:
             snapshot = RankingSnapshot(
@@ -55,14 +65,9 @@ class RankingSnapshotRepository:
                 tw_board=self._db_tw_board(query),
                 ranking_type=query.ranking_type.value,
                 bucket_start=bucket_start,
-                source=response.source,
-                source_type=response.sourceType.value,
-                source_freshness=response.dataFreshnessLabel,
-                is_market_open=response.isMarketOpen,
-                warning_message=response.warningMessage,
-                unsupported_reason=response.unsupportedReason,
                 capture_scope=capture_scope,
             )
+            self._apply_response_fields(snapshot, response)
             try:
                 with session.begin_nested():
                     session.add(snapshot)
@@ -72,6 +77,15 @@ class RankingSnapshotRepository:
                     )
             except IntegrityError:
                 session.rollback()
+                if replace_existing:
+                    replaced = self._replace_bucket_snapshot(
+                        query,
+                        bucket_start,
+                        response,
+                        capture_scope=capture_scope,
+                    )
+                    if replaced is not None:
+                        return replaced
                 existing = self.load_bucket_snapshot(
                     query,
                     bucket_start,
@@ -89,6 +103,46 @@ class RankingSnapshotRepository:
         if created is None:
             raise RuntimeError("Persisted rankings snapshot could not be reloaded")
         return created
+
+    def _replace_bucket_snapshot(
+        self,
+        query: RankingQuery,
+        bucket_start: datetime,
+        response: RankingResponse,
+        *,
+        capture_scope: str,
+    ) -> SnapshotEnvelope | None:
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            statement = select(RankingSnapshot).where(
+                RankingSnapshot.market == query.market,
+                RankingSnapshot.tw_board == self._db_tw_board(query),
+                RankingSnapshot.ranking_type == query.ranking_type.value,
+                RankingSnapshot.bucket_start == bucket_start,
+                RankingSnapshot.capture_scope == capture_scope,
+            )
+            snapshot = session.execute(statement).scalar_one_or_none()
+            if snapshot is None:
+                return None
+            self._apply_response_fields(snapshot, response)
+            snapshot.created_at = datetime.now(timezone.utc)
+            session.execute(
+                delete(RankingSnapshotItem).where(
+                    RankingSnapshotItem.snapshot_id == snapshot.id,
+                )
+            )
+            session.add_all(
+                self._snapshot_items_from_response(snapshot.id, query, response),
+            )
+            session.commit()
+        loaded = self.load_bucket_snapshot(
+            query,
+            bucket_start,
+            capture_scope=capture_scope,
+        )
+        if loaded is None:
+            raise RuntimeError("Replaced rankings snapshot could not be reloaded")
+        return loaded
 
     def load_bucket_snapshot(
         self,
@@ -151,6 +205,15 @@ class RankingSnapshotRepository:
         if query.market == "US":
             return query.universe or ""
         return query.tw_board or ""
+
+    @staticmethod
+    def _apply_response_fields(snapshot: RankingSnapshot, response: RankingResponse) -> None:
+        snapshot.source = response.source
+        snapshot.source_type = response.sourceType.value
+        snapshot.source_freshness = response.dataFreshnessLabel
+        snapshot.is_market_open = response.isMarketOpen
+        snapshot.warning_message = response.warningMessage
+        snapshot.unsupported_reason = response.unsupportedReason
 
     @staticmethod
     def _snapshot_items_from_response(
