@@ -7,6 +7,7 @@ from threading import Event, Lock, Thread
 from time import perf_counter
 from typing import Literal
 
+from app.core.config import settings
 from app.core.diagnostics import elapsed_ms
 from app.db.models import RankingSnapshotItem
 from app.db.session import SessionLocal as DefaultSessionLocal
@@ -19,6 +20,7 @@ from app.schemas.rankings import (
     RankingResponse,
     RankingSourceType,
     RankingType,
+    RankingUniverse,
     TwBoard,
 )
 from app.schemas.stock import StockResponse
@@ -34,6 +36,7 @@ from app.services.ranking_data_providers import (
     ranking_provider_registry,
     scheduler_ranking_provider_registry,
 )
+from app.services.rankings_refresh_gate import RankingsRefreshCooldownError, RankingsRefreshGate
 from app.services.rankings_service import (
     TW_TPEX_RANKING_STOCK_IDS,
     TW_TWSE_RANKING_STOCK_IDS,
@@ -69,6 +72,26 @@ _UNSUPPORTED_SOURCE = "Unsupported in this free-only app"
 _QUOTE_WARNING = "Free unofficial quote source; data may be delayed or unavailable."
 _TWSE_WARNING = "台股三大法人買賣超為日資料，非盤中即時資料。"
 _TPEX_WARNING = "上櫃（TPEx）三大法人買賣超為日資料，非盤中即時資料。"
+_REFRESH_FAILURE_DETAIL = (
+    "Unable to refresh rankings from the upstream source. Existing data was left unchanged."
+)
+_REFRESH_FALLBACK_DETAIL = (
+    "Upstream rankings are unavailable. Refresh did not replace the table with a limited fallback universe."
+)
+
+
+class RankingsRefreshError(Exception):
+    def __init__(
+        self,
+        detail: str,
+        *,
+        status_code: int = 502,
+        retry_after_seconds: int | None = None,
+    ) -> None:
+        super().__init__(detail)
+        self.detail = detail
+        self.status_code = status_code
+        self.retry_after_seconds = retry_after_seconds
 
 
 def _sync_repository_sessionlocal() -> None:
@@ -88,6 +111,9 @@ class RankingsSnapshotService:
         self._lock = Lock()
         self._stop_event = Event()
         self._thread: Thread | None = None
+        self._refresh_gate = RankingsRefreshGate(
+            lambda: settings.rankings_manual_refresh_cooldown_seconds,
+        )
 
     def start_background_sampler(self, poll_seconds: int) -> None:
         _sync_repository_sessionlocal()
@@ -140,11 +166,13 @@ class RankingsSnapshotService:
         limit: int,
         now: datetime | None = None,
         tw_board: TwBoard | None = None,
+        universe: RankingUniverse | None = None,
     ) -> RankingResponse:
         _sync_repository_sessionlocal()
         started_at = perf_counter()
         current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
-        query = _normalize_query(market, RankingType(ranking_type), tw_board)
+        query = _normalize_query(market, RankingType(ranking_type), tw_board, universe)
+        limit = _effective_limit(query, limit)
         provider = self._provider_registry.get_provider(query)
 
         if _is_explicitly_unsupported(query) or not ranking_snapshot_repository.is_available():
@@ -260,6 +288,110 @@ class RankingsSnapshotService:
             return response
 
         response = _unavailable_response(query, current)
+        _log_rankings_response(query, response, started_at)
+        return response
+
+    def refresh_rankings(
+        self,
+        market: RankingMarket,
+        ranking_type: RankingType | str,
+        limit: int,
+        now: datetime | None = None,
+        tw_board: TwBoard | None = None,
+        universe: RankingUniverse | None = None,
+    ) -> RankingResponse:
+        _sync_repository_sessionlocal()
+        current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        query = _normalize_query(market, RankingType(ranking_type), tw_board, universe)
+        limit = _effective_limit(query, limit)
+        key = (query.market, query.universe, query.ranking_type.value)
+        try:
+            leader, holder = self._refresh_gate.acquire(key)
+        except RankingsRefreshCooldownError as exc:
+            raise RankingsRefreshError(
+                exc.detail,
+                status_code=429,
+                retry_after_seconds=exc.retry_after_seconds,
+            ) from exc
+        if not leader:
+            try:
+                result = self._refresh_gate.join(holder)
+            except RankingsRefreshError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                raise RankingsRefreshError(_REFRESH_FAILURE_DETAIL) from exc
+            if not isinstance(result, RankingResponse):
+                raise RankingsRefreshError(_REFRESH_FAILURE_DETAIL)
+            return result
+
+        started_at = perf_counter()
+        error: BaseException | None = None
+        result: RankingResponse | None = None
+        try:
+            result = self._execute_refresh_rankings(query, limit, current, started_at)
+            return result
+        except BaseException as exc:
+            error = exc
+            raise
+        finally:
+            self._refresh_gate.release(key, holder, result=result, error=error)
+
+    def _execute_refresh_rankings(
+        self,
+        query: RankingQuery,
+        limit: int,
+        current: datetime,
+        started_at: float,
+    ) -> RankingResponse:
+        provider = self._provider_registry.get_provider(query)
+
+        try:
+            live = provider.fetch(
+                query,
+                limit=max(limit, _MAX_CAPTURE_LIMIT),
+                now=current,
+                allow_hardcoded_fallback=False,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception(
+                "Rankings refresh failed",
+                extra={
+                    "event": "rankings_snapshot.refresh.failed",
+                    "market": query.market,
+                    "ranking_type": query.ranking_type.value,
+                    "tw_board": query.tw_board,
+                    "universe": query.universe,
+                },
+            )
+            raise RankingsRefreshError(_REFRESH_FAILURE_DETAIL) from exc
+
+        if live.twRankingsScope == "fallback":
+            raise RankingsRefreshError(_REFRESH_FALLBACK_DETAIL)
+        if live.sourceType == RankingSourceType.unsupported:
+            if _is_explicitly_unsupported(query):
+                response = _truncate_response(live, limit)
+                _log_rankings_response(query, response, started_at)
+                return response
+            raise RankingsRefreshError(
+                live.unsupportedReason or _REFRESH_FAILURE_DETAIL,
+            )
+        if not live.items:
+            raise RankingsRefreshError(_REFRESH_FAILURE_DETAIL)
+
+        live = _stamp_closed_market_refresh_timestamp(query, live, current)
+        if ranking_snapshot_repository.is_available():
+            bucket_start = _refresh_persist_bucket(provider, query, live, current)
+            if bucket_start is not None:
+                self._persist_snapshot(
+                    query,
+                    bucket_start,
+                    live,
+                    capture_scope=_CAPTURE_SCOPE_ON_DEMAND,
+                    replace_existing=True,
+                )
+        response = _truncate_response(live, limit)
+        if response.universe is None:
+            response = response.model_copy(update={"universe": query.universe})
         _log_rankings_response(query, response, started_at)
         return response
 
@@ -497,6 +629,7 @@ class RankingsSnapshotService:
         response: RankingResponse,
         *,
         capture_scope: str = _CAPTURE_SCOPE_ON_DEMAND,
+        replace_existing: bool = False,
     ) -> _SnapshotEnvelope | None:
         _sync_repository_sessionlocal()
         try:
@@ -505,6 +638,7 @@ class RankingsSnapshotService:
                 bucket_start,
                 response,
                 capture_scope=capture_scope,
+                replace_existing=replace_existing,
             )
         except Exception:  # noqa: BLE001
             logger.exception(
@@ -588,6 +722,7 @@ class RankingsSnapshotService:
             market=query.market,
             rankingType=query.ranking_type,
             twBoard=query.tw_board if query.market == "TW" else None,
+            universe=query.universe,
             items=items,
             timestamp=envelope.snapshot.created_at.astimezone(timezone.utc).isoformat(),
             source=envelope.snapshot.source,
@@ -597,7 +732,7 @@ class RankingsSnapshotService:
             warningMessage=envelope.snapshot.warning_message,
             unsupportedReason=envelope.snapshot.unsupported_reason,
             usRankingsScope=(
-                _us_rankings_scope_from_source(envelope.snapshot.source)
+                _us_rankings_scope_for_query(query, envelope.snapshot.source)
                 if query.market == "US"
                 else None
             ),
@@ -634,15 +769,69 @@ def _normalize_query(
     market: RankingMarket,
     ranking_type: RankingType,
     tw_board: TwBoard | None,
+    universe: RankingUniverse | str | None = None,
 ) -> RankingQuery:
-    effective_tw_board = tw_board if market == "TW" else None
-    if market == "TW" and effective_tw_board is None:
-        effective_tw_board = "TWSE"
+    if market == "TW":
+        board: TwBoard
+        if universe in {"TWSE", "TPEx"}:
+            board = universe
+        elif tw_board in {"TWSE", "TPEx"}:
+            board = tw_board
+        else:
+            board = "TWSE"
+        return RankingQuery(
+            market=market,
+            ranking_type=ranking_type,
+            tw_board=board,
+            universe=board,
+        )
+    us_universe: RankingUniverse = (
+        universe if universe in {"DJIA", "NASDAQ100"} else "DJIA"
+    )
     return RankingQuery(
         market=market,
         ranking_type=ranking_type,
-        tw_board=effective_tw_board,
+        tw_board=None,
+        universe=us_universe,
     )
+
+
+def _effective_limit(query: RankingQuery, limit: int) -> int:
+    if query.universe == "DJIA":
+        return min(limit, 30)
+    return limit
+
+
+def _closed_market_persist_bucket(now: datetime) -> datetime:
+    current = now.astimezone(timezone.utc)
+    minute = 0 if current.minute < 30 else 30
+    return current.replace(minute=minute, second=0, microsecond=0)
+
+
+def _refresh_persist_bucket(
+    provider,
+    query: RankingQuery,
+    live: RankingResponse,
+    now: datetime,
+) -> datetime | None:
+    if _is_tw_daily_query(query):
+        return _tw_daily_bucket_start_from_response(live)
+    bucket_start = provider.current_bucket_start(query, now)
+    if bucket_start is not None:
+        return bucket_start
+    return _closed_market_persist_bucket(now)
+
+
+def _stamp_closed_market_refresh_timestamp(
+    query: RankingQuery,
+    live: RankingResponse,
+    now: datetime,
+) -> RankingResponse:
+    if is_market_open(query.market, now) or not live.items:
+        return live
+    return live.model_copy(update={"timestamp": live.items[0].timestamp})
+
+
 def _truncate_response(response: RankingResponse, limit: int) -> RankingResponse:
     if len(response.items) <= limit:
         return response
@@ -708,6 +897,7 @@ def _unavailable_response(
         market=query.market,
         rankingType=query.ranking_type,
         twBoard=query.tw_board if query.market == "TW" else None,
+        universe=query.universe,
         items=[],
         timestamp=now.astimezone(timezone.utc).isoformat(),
         source=_default_source_for_query(query),
@@ -720,8 +910,14 @@ def _unavailable_response(
             if _is_explicitly_unsupported(query)
             else None
         ),
-        usRankingsScope="quote" if query.market == "US" else None,
+        usRankingsScope=(
+            _us_rankings_scope_for_query(query, _QUOTE_SOURCE)
+            if query.market == "US"
+            else None
+        ),
     )
+
+
 def _ranking_item_from_snapshot(row: RankingSnapshotItem) -> RankingItem:
     raw_payload = row.raw_payload_json if isinstance(row.raw_payload_json, dict) else {}
     raw_stock = raw_payload.get("stock") if isinstance(raw_payload, dict) else None
@@ -774,6 +970,14 @@ def _ranking_item_from_snapshot(row: RankingSnapshotItem) -> RankingItem:
         ),
         timestamp=row.data_time,
     )
+
+
+def _us_rankings_scope_for_query(query: RankingQuery, source: str) -> str | None:
+    if query.universe == "DJIA":
+        return "djia"
+    if query.universe == "NASDAQ100":
+        return "nasdaq100"
+    return _us_rankings_scope_from_source(source)
 
 
 def _us_rankings_scope_from_source(source: str) -> Literal["sp500", "yahoo", "quote"] | None:
@@ -839,25 +1043,29 @@ def _tw_daily_bucket_start_from_response(response: RankingResponse) -> datetime 
 
 
 def _scheduled_queries() -> list[RankingQuery]:
-    queries: list[RankingQuery] = [
-        RankingQuery("US", RankingType.volume_up),
-        RankingQuery("US", RankingType.volume_down),
-        RankingQuery("US", RankingType.volume),
-        RankingQuery("US", RankingType.change_up),
-        RankingQuery("US", RankingType.change_down),
-        RankingQuery("US", RankingType.valuation_low_pe),
-    ]
+    queries: list[RankingQuery] = []
+    for universe in ("DJIA", "NASDAQ100"):
+        queries.extend(
+            [
+                RankingQuery("US", RankingType.volume_up, universe=universe),
+                RankingQuery("US", RankingType.volume_down, universe=universe),
+                RankingQuery("US", RankingType.volume, universe=universe),
+                RankingQuery("US", RankingType.change_up, universe=universe),
+                RankingQuery("US", RankingType.change_down, universe=universe),
+                RankingQuery("US", RankingType.valuation_low_pe, universe=universe),
+            ]
+        )
     for board in ("TWSE", "TPEx"):
         queries.extend(
             [
-                RankingQuery("TW", RankingType.volume_up, board),
-                RankingQuery("TW", RankingType.volume_down, board),
-                RankingQuery("TW", RankingType.volume, board),
-                RankingQuery("TW", RankingType.change_up, board),
-                RankingQuery("TW", RankingType.change_down, board),
-                RankingQuery("TW", RankingType.valuation_low_pe, board),
-                RankingQuery("TW", RankingType.net_buy, board),
-                RankingQuery("TW", RankingType.net_sell, board),
+                RankingQuery("TW", RankingType.volume_up, board, universe=board),
+                RankingQuery("TW", RankingType.volume_down, board, universe=board),
+                RankingQuery("TW", RankingType.volume, board, universe=board),
+                RankingQuery("TW", RankingType.change_up, board, universe=board),
+                RankingQuery("TW", RankingType.change_down, board, universe=board),
+                RankingQuery("TW", RankingType.valuation_low_pe, board, universe=board),
+                RankingQuery("TW", RankingType.net_buy, board, universe=board),
+                RankingQuery("TW", RankingType.net_sell, board, universe=board),
             ]
         )
     return queries
@@ -875,6 +1083,7 @@ def _log_rankings_response(
             "market": query.market,
             "ranking_type": query.ranking_type.value,
             "tw_board": query.tw_board,
+            "universe": query.universe,
             "duration_ms": elapsed_ms(started_at),
             "item_count": len(response.items),
             "source_type": response.sourceType.value,

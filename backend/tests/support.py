@@ -1,8 +1,11 @@
 import threading
+from datetime import datetime
 from types import SimpleNamespace
 
 from app.models.quote import CandleRecord, QuoteRecord
 from app.models.stock import StockRecord
+from app.schemas.rankings import RankingResponse
+from app.services.ranking_data_providers import RankingProviderRegistry, RankingQuery
 
 
 def stock_record(
@@ -239,6 +242,57 @@ def install_in_memory_sessionlocal(monkeypatch):
     Base.metadata.create_all(bind=engine)
     monkeypatch.setattr("app.repositories.session.SessionLocal", session_local)
     return session_local
+
+
+class FakeRankingProvider:
+    """Shared rankings provider stub for snapshot unit and API integration tests."""
+
+    def __init__(
+        self,
+        *,
+        bucket_start: datetime | None,
+        response: RankingResponse | None = None,
+        error: Exception | None = None,
+    ) -> None:
+        self._bucket_start = bucket_start
+        self._response = response
+        self._error = error
+        self.fetch_calls = 0
+
+    def current_bucket_start(self, query: RankingQuery, now: datetime) -> datetime | None:  # noqa: ARG002
+        return self._bucket_start
+
+    def fetch(
+        self,
+        query: RankingQuery,
+        *,
+        limit: int,
+        now: datetime,
+        allow_hardcoded_fallback: bool = True,
+    ) -> RankingResponse:  # noqa: ARG002
+        self.fetch_calls += 1
+        if self._error is not None:
+            raise self._error
+        if self._response is None:
+            raise AssertionError("FakeRankingProvider.fetch was called without a response")
+        return self._response.model_copy(update={"items": self._response.items[:limit]})
+
+
+class FakeRankingRegistry(RankingProviderRegistry):
+    def __init__(self, providers: dict[tuple[str, str, str | None], FakeRankingProvider]) -> None:
+        self._providers = providers
+
+    def get_provider(self, query: RankingQuery) -> FakeRankingProvider:
+        if query.market == "TW":
+            key = (query.market, query.ranking_type.value, query.tw_board)
+        else:
+            key = (query.market, query.ranking_type.value, query.universe)
+        provider = self._providers.get(key)
+        if provider is None and query.market == "US":
+            provider = self._providers.get((query.market, query.ranking_type.value, None))
+        if provider is None:
+            raise AssertionError(f"Missing fake provider for {key}")
+        return provider
 
 
 class FakeQuoteSource:

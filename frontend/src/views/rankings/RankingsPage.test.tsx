@@ -11,6 +11,7 @@ import {
   RANKINGS_REQUEST_TIMEOUT_DETAIL,
   fetchMarkets,
   fetchRankings,
+  refreshRankings,
 } from "../../services/api/client";
 import { RankingsPage } from "./RankingsPage";
 
@@ -20,6 +21,7 @@ vi.mock("../../services/api/client", async () => {
     ...actual,
     fetchRankings: vi.fn(),
     fetchMarkets: vi.fn(),
+    refreshRankings: vi.fn(),
   };
 });
 
@@ -139,9 +141,44 @@ function buildUsResponse(overrides: Partial<RankingResponse> = {}): RankingRespo
     dataFreshnessLabel: "Market open; rankings use the latest quote snapshot.",
     warningMessage: "Free unofficial quote source; data may be delayed or unavailable.",
     unsupportedReason: null,
-    usRankingsScope: "yahoo",
+    usRankingsScope: "djia",
+    universe: "DJIA",
     ...overrides,
   };
+}
+
+function withUsSymbol(
+  response: RankingResponse,
+  symbol: string,
+  name: string,
+): RankingResponse {
+  const item = response.items[0];
+  return {
+    ...response,
+    items: [
+      {
+        ...item,
+        stock: {
+          ...item.stock,
+          id: `US:${symbol}`,
+          symbol,
+          name,
+          nameEn: name,
+        },
+      },
+    ],
+  };
+}
+
+function buildNasdaq100Response(): RankingResponse {
+  return withUsSymbol(
+    buildUsResponse({
+      universe: "NASDAQ100",
+      usRankingsScope: "nasdaq100",
+    }),
+    "META",
+    "Meta Platforms",
+  );
 }
 
 function buildTwQuoteResponse(overrides: Partial<RankingResponse> = {}): RankingResponse {
@@ -319,6 +356,7 @@ describe("RankingsPage", () => {
     pushMock.mockReset();
     vi.mocked(fetchMarkets).mockResolvedValue(defaultMarketsPayload());
     vi.mocked(fetchRankings).mockResolvedValue(buildResponse());
+    vi.mocked(refreshRankings).mockResolvedValue(buildResponse());
   });
 
   it("renders ranking rows", async () => {
@@ -365,7 +403,7 @@ describe("RankingsPage", () => {
         "US",
         "volume",
         50,
-        undefined,
+        "DJIA",
         expect.any(AbortSignal),
       );
     });
@@ -400,13 +438,13 @@ describe("RankingsPage", () => {
         "US",
         "volume",
         50,
-        undefined,
+        "DJIA",
         expect.any(AbortSignal),
       );
     });
     expect(await screen.findByTestId("rankings-row-US:MSFT")).toBeInTheDocument();
     expect(screen.getByTestId("rankings-scope-note")).toHaveTextContent(
-      "美股此分頁採用 Yahoo Finance 預先排序的選股結果，涵蓋更廣的美股市場。",
+      "美股此分頁以道瓊工業平均指數（DJIA）成分股為範圍",
     );
     expect(screen.getByTestId("rankings-realtime-tag")).toHaveTextContent("即時");
 
@@ -417,7 +455,7 @@ describe("RankingsPage", () => {
         "US",
         "change_down",
         50,
-        undefined,
+        "DJIA",
         expect.any(AbortSignal),
       );
     });
@@ -835,7 +873,7 @@ describe("RankingsPage", () => {
         "US",
         "valuation_low_pe",
         50,
-        undefined,
+        "DJIA",
         expect.any(AbortSignal),
       );
     });
@@ -938,7 +976,7 @@ describe("RankingsPage", () => {
         "US",
         "volume",
         50,
-        undefined,
+        "DJIA",
         expect.any(AbortSignal),
       );
     });
@@ -950,7 +988,7 @@ describe("RankingsPage", () => {
         "US",
         "change_up",
         50,
-        undefined,
+        "DJIA",
         expect.any(AbortSignal),
       );
     });
@@ -1092,7 +1130,7 @@ describe("RankingsPage", () => {
         "US",
         "net_buy",
         50,
-        undefined,
+        "DJIA",
         expect.any(AbortSignal),
       );
     });
@@ -1130,7 +1168,7 @@ describe("RankingsPage", () => {
         "US",
         "volume",
         50,
-        undefined,
+        "DJIA",
         expect.any(AbortSignal),
       );
     });
@@ -1198,5 +1236,131 @@ describe("RankingsPage", () => {
 
     const link = await screen.findByRole("link", { name: "2330" });
     expect(link).toHaveAttribute("href", "/stock/TW%3A2330");
+  });
+
+  it("refreshes from source and updates the table on success", async () => {
+    const user = userEvent.setup();
+    vi.mocked(refreshRankings).mockResolvedValue(
+      buildResponse({
+        timestamp: "2026-08-16T12:00:00.000Z",
+        items: [
+          {
+            ...buildResponse().items[0],
+            stock: {
+              ...buildResponse().items[0].stock,
+              id: "TW:2317",
+              symbol: "2317",
+              name: "鴻海",
+              nameEn: "Hon Hai",
+              nameZhTw: "鴻海",
+            },
+          },
+        ],
+      }),
+    );
+    renderRankingsPage();
+    await screen.findByTestId("rankings-row-TW:2330");
+
+    await user.click(screen.getByTestId("rankings-refresh-source"));
+
+    await waitFor(() => {
+      expect(refreshRankings).toHaveBeenCalledWith("TW", "net_buy", "TWSE", 50);
+    });
+    expect(await screen.findByTestId("rankings-row-TW:2317")).toBeInTheDocument();
+    expect(screen.queryByTestId("rankings-row-TW:2330")).not.toBeInTheDocument();
+    expect(screen.getByTestId("rankings-refresh-source")).toBeDisabled();
+  });
+
+  it("keeps the current table when refresh fails", async () => {
+    const user = userEvent.setup();
+    vi.mocked(refreshRankings).mockRejectedValue(
+      new ApiError("Unable to refresh rankings from the upstream source. Existing data was left unchanged.", {
+        kind: "unavailable",
+        status: 502,
+        detail: "Unable to refresh rankings from the upstream source. Existing data was left unchanged.",
+      }),
+    );
+    renderRankingsPage();
+    await screen.findByTestId("rankings-row-TW:2330");
+
+    await user.click(screen.getByTestId("rankings-refresh-source"));
+
+    expect(await screen.findByTestId("rankings-refresh-error")).toHaveTextContent(
+      "Unable to refresh rankings from the upstream source",
+    );
+    expect(screen.getByTestId("rankings-row-TW:2330")).toBeInTheDocument();
+  });
+
+  it("disables the refresh button while a refresh is in flight", async () => {
+    const user = userEvent.setup();
+    vi.mocked(refreshRankings).mockImplementation(() => new Promise(() => {}));
+    renderRankingsPage();
+    await screen.findByTestId("rankings-row-TW:2330");
+
+    await user.click(screen.getByTestId("rankings-refresh-source"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("rankings-refresh-source")).toBeDisabled();
+    });
+    expect(screen.getByTestId("rankings-row-TW:2330")).toBeInTheDocument();
+    expect(screen.getByTestId("rankings-refresh-source")).toHaveTextContent("正在重新抓取最新資料");
+  });
+
+  it("isolates U.S. DJIA and Nasdaq-100 query keys", async () => {
+    const user = userEvent.setup();
+    vi.mocked(fetchRankings)
+      .mockResolvedValueOnce(buildResponse())
+      .mockResolvedValueOnce(buildUsResponse())
+      .mockResolvedValueOnce(buildNasdaq100Response());
+    renderRankingsPage();
+    await screen.findByTestId("rankings-row-TW:2330");
+    await user.selectOptions(screen.getByLabelText("市場"), "US");
+    expect(await screen.findByTestId("rankings-row-US:MSFT")).toBeInTheDocument();
+
+    await user.click(screen.getByTestId("rankings-us-universe-nasdaq100"));
+
+    await waitFor(() => {
+      expect(fetchRankings).toHaveBeenLastCalledWith(
+        "US",
+        "volume",
+        50,
+        "NASDAQ100",
+        expect.any(AbortSignal),
+      );
+    });
+    expect(await screen.findByTestId("rankings-row-US:META")).toBeInTheDocument();
+    expect(screen.getByTestId("rankings-scope-note")).toHaveTextContent("Nasdaq-100");
+  });
+
+  it("does not write a late refresh response into a different universe cache", async () => {
+    const user = userEvent.setup();
+    let finishRefresh: ((value: RankingResponse) => void) | undefined;
+    vi.mocked(refreshRankings).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finishRefresh = resolve;
+        }),
+    );
+    vi.mocked(fetchRankings)
+      .mockResolvedValueOnce(buildResponse())
+      .mockResolvedValueOnce(buildUsResponse())
+      .mockResolvedValueOnce(buildNasdaq100Response());
+
+    renderRankingsPage();
+    await screen.findByTestId("rankings-row-TW:2330");
+    await user.selectOptions(screen.getByLabelText("市場"), "US");
+    expect(await screen.findByTestId("rankings-row-US:MSFT")).toBeInTheDocument();
+
+    await user.click(screen.getByTestId("rankings-refresh-source"));
+    await user.click(screen.getByTestId("rankings-us-universe-nasdaq100"));
+    expect(await screen.findByTestId("rankings-row-US:META")).toBeInTheDocument();
+
+    finishRefresh?.(withUsSymbol(buildUsResponse(), "AAPL", "Apple Inc."));
+
+    await waitFor(() => {
+      expect(finishRefresh).toBeDefined();
+    });
+    expect(await screen.findByTestId("rankings-row-US:META")).toBeInTheDocument();
+    expect(screen.queryByTestId("rankings-row-US:AAPL")).not.toBeInTheDocument();
   });
 });

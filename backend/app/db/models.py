@@ -339,7 +339,7 @@ class RankingSnapshot(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     market: Mapped[str] = mapped_column(String(8), nullable=False)
-    tw_board: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    tw_board: Mapped[str | None] = mapped_column(String(16), nullable=True)
     ranking_type: Mapped[str] = mapped_column(String(32), nullable=False)
     bucket_start: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

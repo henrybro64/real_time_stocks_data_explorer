@@ -69,6 +69,8 @@ class Settings(BaseSettings):
     # Background snapshot capture for free-only rankings persistence.
     rankings_snapshot_enabled: bool = Field(default=True)
     rankings_refresh_seconds: int = Field(default=1800, ge=60)
+    # Manual POST /rankings/refresh cooldown per market+universe+type.
+    rankings_manual_refresh_cooldown_seconds: int = Field(default=15, ge=1, le=120)
     rankings_universe_us: str = Field(
         default="AAPL,MSFT,NVDA,MU,TSLA,AMD,META,AMZN,GOOGL",
     )

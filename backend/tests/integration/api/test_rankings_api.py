@@ -20,46 +20,13 @@ from app.services import rankings_snapshot_service as snapshot_service_module
 from app.services import ranking_data_providers as ranking_data_providers_module
 from app.services.quote_service import quote_service
 from app.services import rankings_external_source as rankings_external_source_module
-from app.services.ranking_data_providers import RankingProviderRegistry, RankingQuery
 from app.services.rankings_snapshot_service import rankings_snapshot_service
+from tests.support import FakeRankingProvider as FakeProvider
+from tests.support import FakeRankingRegistry as FakeRegistry
 from tests.support import quote_record, stock_record
 
 
 pytestmark = pytest.mark.integration
-
-
-class FakeProvider:
-    def __init__(
-        self,
-        *,
-        bucket_start: datetime | None,
-        response: RankingResponse | None = None,
-    ) -> None:
-        self._bucket_start = bucket_start
-        self._response = response
-        self.fetch_calls = 0
-
-    def current_bucket_start(self, query: RankingQuery, now: datetime) -> datetime | None:  # noqa: ARG002
-        return self._bucket_start
-
-    def fetch(self, query: RankingQuery, *, limit: int, now: datetime) -> RankingResponse:  # noqa: ARG002
-        self.fetch_calls += 1
-        if self._response is None:
-            raise AssertionError("FakeProvider.fetch was called without a response")
-        return self._response.model_copy(update={"items": self._response.items[:limit]})
-
-
-class FakeRegistry(RankingProviderRegistry):
-    def __init__(self, providers: dict[tuple[str, str, str | None], FakeProvider]) -> None:
-        self._providers = providers
-
-    def get_provider(self, query: RankingQuery) -> FakeProvider:
-        provider = self._providers.get((query.market, query.ranking_type.value, query.tw_board))
-        if provider is None:
-            raise AssertionError(
-                f"Missing fake provider for {(query.market, query.ranking_type.value, query.tw_board)}"
-            )
-        return provider
 
 
 def _sample_stock() -> StockResponse:
@@ -175,7 +142,7 @@ def test_rankings_endpoint_returns_latest_cached_snapshot_when_market_is_closed(
     monkeypatch.setattr("app.core.config.settings.rankings_snapshot_enabled", False)
     snapshot = RankingSnapshot(
         market="US",
-        tw_board="",
+        tw_board="DJIA",
         ranking_type="volume",
         bucket_start=datetime(2026, 7, 3, 13, 30, tzinfo=timezone.utc),
         source="Quote rankings from the app's free best-effort quote providers.",
@@ -328,7 +295,7 @@ def test_rankings_endpoint_returns_response_shape(monkeypatch) -> None:
     monkeypatch.setattr(
         rankings_snapshot_service,
         "get_rankings",
-        lambda market, ranking_type, limit, now=None, tw_board=None: _tw_sample_response(),  # noqa: ARG005
+        lambda market, ranking_type, limit, now=None, tw_board=None, universe=None: _tw_sample_response(),  # noqa: ARG005
     )
 
     with TestClient(app) as client:
@@ -344,11 +311,12 @@ def test_rankings_endpoint_passes_limit(monkeypatch) -> None:
     monkeypatch.setattr("app.core.config.settings.rankings_snapshot_enabled", False)
     captured: dict[str, object] = {}
 
-    def fake_get_rankings(market, ranking_type, limit, now=None, tw_board=None):  # noqa: ARG001
+    def fake_get_rankings(market, ranking_type, limit, now=None, tw_board=None, universe=None):  # noqa: ARG001
         captured["market"] = market
         captured["ranking_type"] = ranking_type
         captured["limit"] = limit
         captured["tw_board"] = tw_board
+        captured["universe"] = universe
         return _tw_sample_response()
 
     monkeypatch.setattr(rankings_snapshot_service, "get_rankings", fake_get_rankings)
@@ -362,6 +330,7 @@ def test_rankings_endpoint_passes_limit(monkeypatch) -> None:
         "ranking_type": RankingType.volume,
         "limit": 7,
         "tw_board": None,
+        "universe": "TWSE",
     }
 
 
@@ -684,3 +653,94 @@ def test_tw_institutional_rankings_use_applicable_snapshot_before_live_fetch(
     assert payload["sourceType"] == "cache"
     assert payload["items"][0]["stock"]["symbol"] == "2330"
     assert provider.fetch_calls == 0
+
+
+def test_refresh_endpoint_bypasses_closed_market_cache(monkeypatch, db_session) -> None:
+    monkeypatch.setattr("app.core.config.settings.rankings_snapshot_enabled", False)
+    snapshot = RankingSnapshot(
+        market="US",
+        tw_board="DJIA",
+        ranking_type="volume",
+        bucket_start=datetime(2026, 7, 3, 13, 30, tzinfo=timezone.utc),
+        source="Quote rankings from the app's free best-effort quote providers.",
+        source_type="free-unofficial",
+        source_freshness="Market open; rankings use the latest quote snapshot.",
+        is_market_open=True,
+        warning_message="Free unofficial quote source; data may be delayed or unavailable.",
+        unsupported_reason=None,
+    )
+    db_session.add(snapshot)
+    db_session.flush()
+    db_session.add(
+        RankingSnapshotItem(
+            snapshot_id=snapshot.id,
+            rank=1,
+            stock_id="US:AAPL",
+            symbol="AAPL",
+            name="Apple Inc.",
+            last_price=210.5,
+            change_percent=1.2,
+            volume=1_000_000,
+            volume_delta=None,
+            volume_delta_percent=None,
+            net_buy=None,
+            net_sell=None,
+            data_time="2026-07-03T09:35:00-04:00",
+            raw_payload_json=_sample_response().items[0].model_dump(mode="json"),
+        )
+    )
+    db_session.commit()
+    refreshed = _sample_response()
+    provider = FakeProvider(bucket_start=None, response=refreshed)
+    monkeypatch.setattr(
+        rankings_snapshot_service,
+        "_provider_registry",
+        FakeRegistry({("US", "volume", None): provider}),
+    )
+
+    with TestClient(app) as client:
+        get_response = client.get(
+            "/api/rankings",
+            params={"market": "US", "type": "volume", "limit": 5, "universe": "DJIA"},
+        )
+        refresh_response = client.post(
+            "/api/rankings/refresh",
+            json={
+                "market": "US",
+                "rankingType": "volume",
+                "universe": "DJIA",
+                "limit": 5,
+            },
+        )
+
+    assert get_response.status_code == 200
+    assert get_response.json()["sourceType"] == "cache"
+    assert refresh_response.status_code == 200
+    assert provider.fetch_calls == 1
+    assert refresh_response.json()["items"][0]["stock"]["symbol"] == "AAPL"
+    assert refresh_response.json()["universe"] == "DJIA"
+
+
+def test_refresh_endpoint_returns_502_when_provider_fails(monkeypatch, db_session) -> None:
+    monkeypatch.setattr("app.core.config.settings.rankings_snapshot_enabled", False)
+    provider = FakeProvider(bucket_start=None, response=_sample_response())
+    provider.fetch = lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("down"))  # noqa: ARG005
+    monkeypatch.setattr(
+        rankings_snapshot_service,
+        "_provider_registry",
+        FakeRegistry({("US", "volume", None): provider}),
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/rankings/refresh",
+            json={
+                "market": "US",
+                "rankingType": "volume",
+                "universe": "NASDAQ100",
+                "limit": 10,
+            },
+        )
+
+    assert response.status_code == 502
+    assert "Existing data was left unchanged" in response.json()["detail"]

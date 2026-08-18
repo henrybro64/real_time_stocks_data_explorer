@@ -86,6 +86,10 @@ const UNSUPPORTED_REASON_KEYS: Record<string, RankingsCopyKey> = {
 
 const SOURCE_KEYS: Record<string, RankingsCopyKey> = {
   "Quote rankings from the app's free best-effort quote providers.": "rankings.source.quoteProviders",
+  "DJIA constituent quote rankings from the app's free best-effort quote providers.":
+    "rankings.source.djiaQuote",
+  "Nasdaq-100 constituent quote rankings from the app's free best-effort quote providers.":
+    "rankings.source.nasdaq100Quote",
   "Yahoo Finance pre-ranked quote rankings.": "rankings.source.yahooPreRanked",
   "S&P 500 movers: constituent snapshot plus batched Yahoo Finance v7 quote fields (free best-effort; not the same universe as Yahoo's predefined gainers/losers screeners).":
     "rankings.source.sp500Movers",

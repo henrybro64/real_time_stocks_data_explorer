@@ -23,6 +23,27 @@ def _alembic_config(database_url: str) -> Config:
     return config
 
 
+def _us_snapshot(
+    *,
+    tw_board: str,
+    source: str,
+    bucket_start: datetime,
+    source_freshness: str = "test",
+) -> RankingSnapshot:
+    return RankingSnapshot(
+        market="US",
+        tw_board=tw_board,
+        ranking_type="volume",
+        bucket_start=bucket_start,
+        source=source,
+        source_type="free-unofficial",
+        source_freshness=source_freshness,
+        is_market_open=True,
+        warning_message=None,
+        unsupported_reason=None,
+    )
+
+
 def test_ranking_snapshots_migration_creates_tables_with_constraints(tmp_path, monkeypatch) -> None:
     database_url = f"sqlite+pysqlite:///{tmp_path / 'ranking_snapshots.db'}"
     monkeypatch.setattr("app.core.config.settings.database_url", database_url)
@@ -180,3 +201,46 @@ def test_ranking_snapshot_items_store_raw_payload_json(tmp_path, monkeypatch) ->
     with session_local() as session:
         item = session.execute(select(RankingSnapshotItem)).scalar_one()
         assert item.raw_payload_json == {"stock": {"id": "TW:2330"}, "peRatio": 18.5}
+
+
+def test_ranking_snapshots_accept_nasdaq100_universe_key(tmp_path, monkeypatch) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'ranking_snapshots_nasdaq.db'}"
+    monkeypatch.setattr("app.core.config.settings.database_url", database_url)
+    command.upgrade(_alembic_config(database_url), "head")
+
+    engine = create_engine(database_url)
+    session_local = sessionmaker(bind=engine)
+    snapshot = _us_snapshot(
+        tw_board="NASDAQ100",
+        source="Nasdaq-100 constituent quote rankings from the app's free best-effort quote providers.",
+        bucket_start=datetime(2026, 7, 3, 13, 30, tzinfo=timezone.utc),
+        source_freshness="Market open; rankings use the latest quote snapshot.",
+    )
+    with session_local() as session:
+        session.add(snapshot)
+        session.commit()
+        loaded = session.execute(select(RankingSnapshot)).scalar_one()
+        assert loaded.tw_board == "NASDAQ100"
+
+
+def test_ranking_snapshots_downgrade_removes_long_universe_keys(tmp_path, monkeypatch) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'ranking_snapshots_downgrade.db'}"
+    monkeypatch.setattr("app.core.config.settings.database_url", database_url)
+    config = _alembic_config(database_url)
+    command.upgrade(config, "head")
+
+    engine = create_engine(database_url)
+    session_local = sessionmaker(bind=engine)
+    bucket_start = datetime(2026, 7, 3, 13, 30, tzinfo=timezone.utc)
+    with session_local() as session:
+        session.add(_us_snapshot(tw_board="DJIA", source="djia", bucket_start=bucket_start))
+        session.add(
+            _us_snapshot(tw_board="NASDAQ100", source="nasdaq", bucket_start=bucket_start)
+        )
+        session.commit()
+
+    command.downgrade(config, "20260803_0012")
+    with session_local() as session:
+        boards = {row.tw_board for row in session.execute(select(RankingSnapshot)).scalars()}
+    assert boards == {"DJIA"}
+

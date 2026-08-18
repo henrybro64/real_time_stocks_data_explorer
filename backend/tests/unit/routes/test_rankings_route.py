@@ -8,8 +8,10 @@ from app.schemas.rankings import (
     RankingResponse,
     RankingSourceType,
     RankingType,
+    RankingsRefreshRequest,
 )
 from app.schemas.stock import StockResponse
+from app.services.rankings_snapshot_service import RankingsRefreshError
 
 
 def _sample_response() -> RankingResponse:
@@ -58,11 +60,12 @@ def _sample_response() -> RankingResponse:
 def test_get_rankings_route_delegates_to_snapshot_service(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
-    def fake_get_rankings(market, ranking_type, limit, tw_board=None):
+    def fake_get_rankings(market, ranking_type, limit, tw_board=None, universe=None):
         captured["market"] = market
         captured["ranking_type"] = ranking_type
         captured["limit"] = limit
         captured["tw_board"] = tw_board
+        captured["universe"] = universe
         return _sample_response()
 
     monkeypatch.setattr(
@@ -76,6 +79,7 @@ def test_get_rankings_route_delegates_to_snapshot_service(monkeypatch) -> None:
         ranking_type=RankingType.volume,
         limit=7,
         tw_board="TWSE",
+        universe=None,
     )
 
     assert captured == {
@@ -83,6 +87,7 @@ def test_get_rankings_route_delegates_to_snapshot_service(monkeypatch) -> None:
         "ranking_type": RankingType.volume,
         "limit": 7,
         "tw_board": "TWSE",
+        "universe": "TWSE",
     }
     assert response.rankingType == RankingType.volume
     assert response.items[0].stock.symbol == "2330"
@@ -98,3 +103,109 @@ def test_capture_rankings_snapshots_route_requires_configured_token(monkeypatch)
         assert exc.detail == "Rankings snapshot capture endpoint is not configured"
     else:
         raise AssertionError("Expected rankings capture route to raise HTTPException")
+
+
+def test_refresh_rankings_route_delegates_to_snapshot_service(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_refresh_rankings(market, ranking_type, limit, tw_board=None, universe=None):
+        captured["market"] = market
+        captured["ranking_type"] = ranking_type
+        captured["limit"] = limit
+        captured["tw_board"] = tw_board
+        captured["universe"] = universe
+        return _sample_response()
+
+    monkeypatch.setattr(
+        rankings_route.rankings_snapshot_service,
+        "refresh_rankings",
+        fake_refresh_rankings,
+    )
+
+    response = rankings_route.refresh_rankings(
+        RankingsRefreshRequest(
+            market="US",
+            rankingType=RankingType.volume,
+            universe="NASDAQ100",
+            limit=20,
+        )
+    )
+
+    assert captured == {
+        "market": "US",
+        "ranking_type": RankingType.volume,
+        "limit": 20,
+        "tw_board": None,
+        "universe": "NASDAQ100",
+    }
+    assert response.items[0].stock.symbol == "2330"
+
+
+def test_refresh_rankings_route_maps_failure_to_502(monkeypatch) -> None:
+    monkeypatch.setattr(
+        rankings_route.rankings_snapshot_service,
+        "refresh_rankings",
+        lambda **_kwargs: (_ for _ in ()).throw(RankingsRefreshError("upstream down")),
+    )
+
+    try:
+        rankings_route.refresh_rankings(
+            RankingsRefreshRequest(
+                market="TW",
+                rankingType=RankingType.volume,
+                universe="TWSE",
+                limit=50,
+            )
+        )
+    except HTTPException as exc:
+        assert exc.status_code == 502
+        assert exc.detail == "upstream down"
+    else:
+        raise AssertionError("Expected refresh route to raise HTTPException")
+
+
+def test_refresh_rankings_route_maps_cooldown_to_429(monkeypatch) -> None:
+    monkeypatch.setattr(
+        rankings_route.rankings_snapshot_service,
+        "refresh_rankings",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            RankingsRefreshError(
+                "Rankings refresh is cooling down. Retry after a few seconds.",
+                status_code=429,
+                retry_after_seconds=12,
+            )
+        ),
+    )
+
+    try:
+        rankings_route.refresh_rankings(
+            RankingsRefreshRequest(
+                market="US",
+                rankingType=RankingType.volume,
+                universe="DJIA",
+                limit=50,
+            )
+        )
+    except HTTPException as exc:
+        assert exc.status_code == 429
+        assert "cooling down" in str(exc.detail)
+        assert exc.headers["Retry-After"] == "12"
+    else:
+        raise AssertionError("Expected refresh route to raise HTTPException")
+
+
+def test_get_rankings_rejects_universe_that_does_not_match_market() -> None:
+    try:
+        rankings_route.get_rankings(
+            market="TW",
+            ranking_type=RankingType.volume,
+            limit=5,
+            tw_board="TWSE",
+            universe="DJIA",
+        )
+    except HTTPException as exc:
+        assert exc.status_code == 422
+        assert "TWSE or TPEx" in str(exc.detail)
+    else:
+        raise AssertionError("Expected mismatched universe to raise HTTPException")
+

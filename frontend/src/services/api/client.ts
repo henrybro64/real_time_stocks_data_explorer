@@ -6,6 +6,7 @@ import type {
   HistoryResponse,
   RankingResponse,
   RankingType,
+  RankingUniverse,
   KeyStatistics,
   MarketIndex,
   MarketStatus,
@@ -251,6 +252,7 @@ async function fetchJsonWithTimeout<T>(
   path: string,
   timeoutMs: number,
   externalSignal?: AbortSignal,
+  init?: RequestInit,
 ): Promise<T> {
   const controller = new AbortController();
   let timedOut = false;
@@ -270,7 +272,7 @@ async function fetchJsonWithTimeout<T>(
     externalSignal?.addEventListener("abort", abortFromCaller, { once: true });
   }
   try {
-    return await fetchJson<T>(path, { signal: controller.signal });
+    return await fetchJson<T>(path, { ...init, signal: controller.signal });
   } catch (error) {
     if (externalSignal?.aborted) {
       if (isAbortError(error)) {
@@ -329,7 +331,7 @@ export function fetchRankings(
   market: "US" | "TW",
   rankingType: RankingType,
   limit = 50,
-  twBoard?: "TWSE" | "TPEx",
+  scope?: RankingUniverse,
   signal?: AbortSignal,
 ) {
   const params = new URLSearchParams({
@@ -337,13 +339,42 @@ export function fetchRankings(
     type: rankingType,
     limit: String(limit),
   });
-  if (market === "TW" && twBoard != null) {
-    params.set("twBoard", twBoard);
+  if (scope === "TWSE" || scope === "TPEx") {
+    params.set("twBoard", scope);
+    params.set("universe", scope);
+  } else if (scope === "DJIA" || scope === "NASDAQ100") {
+    params.set("universe", scope);
   }
   return fetchJsonWithTimeout<RankingResponse>(
     `/rankings?${params.toString()}`,
     RANKINGS_REQUEST_TIMEOUT_MS,
     signal,
+  );
+}
+
+export function refreshRankings(
+  market: "US" | "TW",
+  rankingType: RankingType,
+  scope: RankingUniverse,
+  limit = 50,
+  signal?: AbortSignal,
+) {
+  return fetchJsonWithTimeout<RankingResponse>(
+    "/rankings/refresh",
+    RANKINGS_REQUEST_TIMEOUT_MS,
+    signal,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        market,
+        rankingType,
+        universe: scope,
+        limit,
+      }),
+    },
   );
 }
 
