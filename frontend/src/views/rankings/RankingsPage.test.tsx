@@ -147,6 +147,40 @@ function buildUsResponse(overrides: Partial<RankingResponse> = {}): RankingRespo
   };
 }
 
+function withUsSymbol(
+  response: RankingResponse,
+  symbol: string,
+  name: string,
+): RankingResponse {
+  const item = response.items[0];
+  return {
+    ...response,
+    items: [
+      {
+        ...item,
+        stock: {
+          ...item.stock,
+          id: `US:${symbol}`,
+          symbol,
+          name,
+          nameEn: name,
+        },
+      },
+    ],
+  };
+}
+
+function buildNasdaq100Response(): RankingResponse {
+  return withUsSymbol(
+    buildUsResponse({
+      universe: "NASDAQ100",
+      usRankingsScope: "nasdaq100",
+    }),
+    "META",
+    "Meta Platforms",
+  );
+}
+
 function buildTwQuoteResponse(overrides: Partial<RankingResponse> = {}): RankingResponse {
   const nowIso = new Date().toISOString();
 
@@ -1230,7 +1264,7 @@ describe("RankingsPage", () => {
     await user.click(screen.getByTestId("rankings-refresh-source"));
 
     await waitFor(() => {
-      expect(refreshRankings).toHaveBeenCalledWith("TW", "net_buy", 50, "TWSE");
+      expect(refreshRankings).toHaveBeenCalledWith("TW", "net_buy", "TWSE", 50);
     });
     expect(await screen.findByTestId("rankings-row-TW:2317")).toBeInTheDocument();
     expect(screen.queryByTestId("rankings-row-TW:2330")).not.toBeInTheDocument();
@@ -1277,24 +1311,7 @@ describe("RankingsPage", () => {
     vi.mocked(fetchRankings)
       .mockResolvedValueOnce(buildResponse())
       .mockResolvedValueOnce(buildUsResponse())
-      .mockResolvedValueOnce(
-        buildUsResponse({
-          universe: "NASDAQ100",
-          usRankingsScope: "nasdaq100",
-          items: [
-            {
-              ...buildUsResponse().items[0],
-              stock: {
-                ...buildUsResponse().items[0].stock,
-                id: "US:META",
-                symbol: "META",
-                name: "Meta Platforms",
-                nameEn: "Meta Platforms",
-              },
-            },
-          ],
-        }),
-      );
+      .mockResolvedValueOnce(buildNasdaq100Response());
     renderRankingsPage();
     await screen.findByTestId("rankings-row-TW:2330");
     await user.selectOptions(screen.getByLabelText("市場"), "US");
@@ -1327,24 +1344,7 @@ describe("RankingsPage", () => {
     vi.mocked(fetchRankings)
       .mockResolvedValueOnce(buildResponse())
       .mockResolvedValueOnce(buildUsResponse())
-      .mockResolvedValueOnce(
-        buildUsResponse({
-          universe: "NASDAQ100",
-          usRankingsScope: "nasdaq100",
-          items: [
-            {
-              ...buildUsResponse().items[0],
-              stock: {
-                ...buildUsResponse().items[0].stock,
-                id: "US:META",
-                symbol: "META",
-                name: "Meta Platforms",
-                nameEn: "Meta Platforms",
-              },
-            },
-          ],
-        }),
-      );
+      .mockResolvedValueOnce(buildNasdaq100Response());
 
     renderRankingsPage();
     await screen.findByTestId("rankings-row-TW:2330");
@@ -1355,22 +1355,7 @@ describe("RankingsPage", () => {
     await user.click(screen.getByTestId("rankings-us-universe-nasdaq100"));
     expect(await screen.findByTestId("rankings-row-US:META")).toBeInTheDocument();
 
-    finishRefresh?.(
-      buildUsResponse({
-        items: [
-          {
-            ...buildUsResponse().items[0],
-            stock: {
-              ...buildUsResponse().items[0].stock,
-              id: "US:AAPL",
-              symbol: "AAPL",
-              name: "Apple Inc.",
-              nameEn: "Apple Inc.",
-            },
-          },
-        ],
-      }),
-    );
+    finishRefresh?.(withUsSymbol(buildUsResponse(), "AAPL", "Apple Inc."));
 
     await waitFor(() => {
       expect(finishRefresh).toBeDefined();

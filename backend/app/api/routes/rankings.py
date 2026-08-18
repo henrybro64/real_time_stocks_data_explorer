@@ -31,7 +31,11 @@ def _validated_universe(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
-@router.get("", response_model=RankingResponse)
+@router.get(
+    "",
+    response_model=RankingResponse,
+    responses={422: {"description": "Invalid universe or twBoard for the selected market"}},
+)
 def get_rankings(
     market: Literal["US", "TW"] = Query(...),
     ranking_type: RankingType = Query(..., alias="type"),
@@ -49,7 +53,7 @@ def get_rankings(
     )
 
 
-@router.post("/refresh", response_model=RankingResponse)
+@router.post("/refresh")
 def refresh_rankings(payload: RankingsRefreshRequest) -> RankingResponse:
     try:
         return rankings_snapshot_service.refresh_rankings(

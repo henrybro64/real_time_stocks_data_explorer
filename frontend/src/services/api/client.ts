@@ -355,8 +355,8 @@ export function fetchRankings(
 export function refreshRankings(
   market: "US" | "TW",
   rankingType: RankingType,
-  limit = 50,
   scope: RankingUniverse,
+  limit = 50,
   signal?: AbortSignal,
 ) {
   return fetchJsonWithTimeout<RankingResponse>(

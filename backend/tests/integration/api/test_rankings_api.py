@@ -20,53 +20,13 @@ from app.services import rankings_snapshot_service as snapshot_service_module
 from app.services import ranking_data_providers as ranking_data_providers_module
 from app.services.quote_service import quote_service
 from app.services import rankings_external_source as rankings_external_source_module
-from app.services.ranking_data_providers import RankingProviderRegistry, RankingQuery
 from app.services.rankings_snapshot_service import rankings_snapshot_service
+from tests.support import FakeRankingProvider as FakeProvider
+from tests.support import FakeRankingRegistry as FakeRegistry
 from tests.support import quote_record, stock_record
 
 
 pytestmark = pytest.mark.integration
-
-
-class FakeProvider:
-    def __init__(
-        self,
-        *,
-        bucket_start: datetime | None,
-        response: RankingResponse | None = None,
-    ) -> None:
-        self._bucket_start = bucket_start
-        self._response = response
-        self.fetch_calls = 0
-
-    def current_bucket_start(self, query: RankingQuery, now: datetime) -> datetime | None:  # noqa: ARG002
-        return self._bucket_start
-
-    def fetch(self, query: RankingQuery, *, limit: int, now: datetime, allow_hardcoded_fallback: bool = True) -> RankingResponse:  # noqa: ARG002
-        self.fetch_calls += 1
-        if self._response is None:
-            raise AssertionError("FakeProvider.fetch was called without a response")
-        return self._response.model_copy(update={"items": self._response.items[:limit]})
-
-
-class FakeRegistry(RankingProviderRegistry):
-    def __init__(self, providers: dict[tuple[str, str, str | None], FakeProvider]) -> None:
-        self._providers = providers
-
-    def get_provider(self, query: RankingQuery) -> FakeProvider:
-        if query.market == "TW":
-            key = (query.market, query.ranking_type.value, query.tw_board)
-            provider = self._providers.get(key)
-        else:
-            key = (query.market, query.ranking_type.value, query.universe)
-            provider = self._providers.get(key)
-            if provider is None:
-                provider = self._providers.get((query.market, query.ranking_type.value, None))
-        if provider is None:
-            raise AssertionError(
-                f"Missing fake provider for {(query.market, query.ranking_type.value, query.tw_board)}"
-            )
-        return provider
 
 
 def _sample_stock() -> StockResponse:

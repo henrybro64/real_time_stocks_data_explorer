@@ -578,6 +578,32 @@ class RankingsService:
             us_universe=us_universe,
         )
 
+    def _yahoo_volume_universe_snapshot(
+        self,
+        market: RankingMarket,
+        now: datetime,
+        tw_board: TwBoard | None,
+        *,
+        universe_limit: int,
+        us_universe: UsUniverse | None,
+    ) -> tuple[list[tuple[StockRecord, QuoteRecord]], str | None, str | None] | None:
+        if us_universe is not None:
+            return None
+        envelopes = self._external_source.fetch(
+            market=market,
+            ranking_type=RankingType.volume,
+            limit=universe_limit,
+            now=now,
+            tw_board=tw_board if market == "TW" else None,
+        )
+        if not envelopes:
+            return None
+        return (
+            envelopes,
+            "yahoo" if market == "US" else None,
+            "yahoo" if market == "TW" else None,
+        )
+
     def _get_valuation_universe_snapshot(
         self,
         market: RankingMarket,
@@ -587,20 +613,15 @@ class RankingsService:
         universe_limit: int,
         us_universe: UsUniverse | None = None,
     ) -> tuple[list[tuple[StockRecord, QuoteRecord]], str | None, str | None]:
-        if us_universe is None:
-            external_envelopes = self._external_source.fetch(
-                market=market,
-                ranking_type=RankingType.volume,
-                limit=universe_limit,
-                now=now,
-                tw_board=tw_board if market == "TW" else None,
-            )
-            if external_envelopes:
-                return (
-                    external_envelopes,
-                    "yahoo" if market == "US" else None,
-                    "yahoo" if market == "TW" else None,
-                )
+        yahoo_snapshot = self._yahoo_volume_universe_snapshot(
+            market,
+            now,
+            tw_board,
+            universe_limit=universe_limit,
+            us_universe=us_universe,
+        )
+        if yahoo_snapshot is not None:
+            return yahoo_snapshot
 
         fallback = self._sort_envelopes_by_volume(
             self._get_quote_rankings_snapshot(market, tw_board, us_universe)

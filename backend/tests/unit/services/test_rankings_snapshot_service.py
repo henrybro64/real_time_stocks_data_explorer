@@ -15,7 +15,6 @@ from app.schemas.rankings import (
 from app.schemas.stock import StockResponse
 from app.services.ranking_data_providers import (
     FreeTWInstitutionalDailyProvider,
-    RankingProviderRegistry,
     RankingQuery,
 )
 from app.services.rankings_refresh_gate import RankingsRefreshGate
@@ -27,6 +26,8 @@ from app.services.rankings_snapshot_service import (
 from app.services.market_clock import tw_institutional_daily_snapshot_bucket
 from sqlalchemy import create_engine, event, select
 from sqlalchemy.orm import sessionmaker
+from tests.support import FakeRankingProvider as FakeProvider
+from tests.support import FakeRankingRegistry as FakeRegistry
 
 _QUOTE_SOURCE = "Quote rankings from the app's free best-effort quote providers."
 _VALUATION_SOURCE = (
@@ -35,49 +36,6 @@ _VALUATION_SOURCE = (
 )
 _FALLBACK_SOURCE = "Limited hard-coded TWSE/TPEx quote fallback; not a full-board ranking."
 _YAHOO_SOURCE = "Yahoo Finance pre-ranked quote rankings."
-
-
-class FakeProvider:
-    def __init__(
-        self,
-        *,
-        bucket_start: datetime | None,
-        response: RankingResponse | None = None,
-        error: Exception | None = None,
-    ) -> None:
-        self._bucket_start = bucket_start
-        self._response = response
-        self._error = error
-        self.fetch_calls = 0
-
-    def current_bucket_start(self, query: RankingQuery, now: datetime) -> datetime | None:  # noqa: ARG002
-        return self._bucket_start
-
-    def fetch(self, query: RankingQuery, *, limit: int, now: datetime, allow_hardcoded_fallback: bool = True) -> RankingResponse:  # noqa: ARG002
-        self.fetch_calls += 1
-        if self._error is not None:
-            raise self._error
-        if self._response is None:
-            raise AssertionError("FakeProvider.fetch was called without a response")
-        return self._response.model_copy(update={"items": self._response.items[:limit]})
-
-
-class FakeRegistry(RankingProviderRegistry):
-    def __init__(self, providers: dict[tuple[str, str, str | None], FakeProvider]) -> None:
-        self._providers = providers
-
-    def get_provider(self, query: RankingQuery) -> FakeProvider:
-        if query.market == "TW":
-            key = (query.market, query.ranking_type.value, query.tw_board)
-            provider = self._providers.get(key)
-        else:
-            key = (query.market, query.ranking_type.value, query.universe)
-            provider = self._providers.get(key)
-            if provider is None:
-                provider = self._providers.get((query.market, query.ranking_type.value, None))
-        if provider is None:
-            raise AssertionError(f"Missing fake provider for {key}")
-        return provider
 
 
 def _install_in_memory_sessionlocal(monkeypatch):
@@ -1896,28 +1854,9 @@ def test_refresh_failure_does_not_persist_hardcoded_fallback(monkeypatch) -> Non
 
 def test_djia_and_nasdaq100_snapshots_stay_isolated(monkeypatch) -> None:
     session_local = _install_in_memory_sessionlocal(monkeypatch)
-    bucket_start = datetime(2026, 7, 3, 13, 30, tzinfo=timezone.utc)
     now = datetime(2026, 7, 3, 13, 35, tzinfo=timezone.utc)
-    djia_provider = FakeProvider(
-        bucket_start=bucket_start,
-        response=_response(
-            market="US",
-            ranking_type=RankingType.volume,
-            source_type=RankingSourceType.free_unofficial,
-            timestamp="2026-07-03T13:35:00+00:00",
-            items=_us_volume_items(["AAPL"], timestamp="2026-07-03T09:35:00-04:00"),
-        ),
-    )
-    nasdaq_provider = FakeProvider(
-        bucket_start=bucket_start,
-        response=_response(
-            market="US",
-            ranking_type=RankingType.volume,
-            source_type=RankingSourceType.free_unofficial,
-            timestamp="2026-07-03T13:35:00+00:00",
-            items=_us_volume_items(["META"], timestamp="2026-07-03T09:35:00-04:00"),
-        ),
-    )
+    djia_provider = _djia_volume_provider(["AAPL"])
+    nasdaq_provider = _djia_volume_provider(["META"])
     service = RankingsSnapshotService(
         provider_registry=FakeRegistry(
             {
@@ -1944,16 +1883,7 @@ def test_djia_and_nasdaq100_snapshots_stay_isolated(monkeypatch) -> None:
 def test_djia_refresh_returns_at_most_30_rows(monkeypatch) -> None:
     _install_in_memory_sessionlocal(monkeypatch)
     symbols = [f"T{index:02d}" for index in range(40)]
-    provider = FakeProvider(
-        bucket_start=datetime(2026, 7, 3, 13, 30, tzinfo=timezone.utc),
-        response=_response(
-            market="US",
-            ranking_type=RankingType.volume,
-            source_type=RankingSourceType.free_unofficial,
-            timestamp="2026-07-03T13:35:00+00:00",
-            items=_us_volume_items(symbols, timestamp="2026-07-03T09:35:00-04:00"),
-        ),
-    )
+    provider = _djia_volume_provider(symbols)
     service = RankingsSnapshotService(
         provider_registry=FakeRegistry({("US", "volume", "DJIA"): provider})
     )

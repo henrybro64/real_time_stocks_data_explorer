@@ -23,6 +23,27 @@ def _alembic_config(database_url: str) -> Config:
     return config
 
 
+def _us_snapshot(
+    *,
+    tw_board: str,
+    source: str,
+    bucket_start: datetime,
+    source_freshness: str = "test",
+) -> RankingSnapshot:
+    return RankingSnapshot(
+        market="US",
+        tw_board=tw_board,
+        ranking_type="volume",
+        bucket_start=bucket_start,
+        source=source,
+        source_type="free-unofficial",
+        source_freshness=source_freshness,
+        is_market_open=True,
+        warning_message=None,
+        unsupported_reason=None,
+    )
+
+
 def test_ranking_snapshots_migration_creates_tables_with_constraints(tmp_path, monkeypatch) -> None:
     database_url = f"sqlite+pysqlite:///{tmp_path / 'ranking_snapshots.db'}"
     monkeypatch.setattr("app.core.config.settings.database_url", database_url)
@@ -189,17 +210,11 @@ def test_ranking_snapshots_accept_nasdaq100_universe_key(tmp_path, monkeypatch) 
 
     engine = create_engine(database_url)
     session_local = sessionmaker(bind=engine)
-    snapshot = RankingSnapshot(
-        market="US",
+    snapshot = _us_snapshot(
         tw_board="NASDAQ100",
-        ranking_type="volume",
-        bucket_start=datetime(2026, 7, 3, 13, 30, tzinfo=timezone.utc),
         source="Nasdaq-100 constituent quote rankings from the app's free best-effort quote providers.",
-        source_type="free-unofficial",
+        bucket_start=datetime(2026, 7, 3, 13, 30, tzinfo=timezone.utc),
         source_freshness="Market open; rankings use the latest quote snapshot.",
-        is_market_open=True,
-        warning_message=None,
-        unsupported_reason=None,
     )
     with session_local() as session:
         session.add(snapshot)
@@ -218,33 +233,9 @@ def test_ranking_snapshots_downgrade_removes_long_universe_keys(tmp_path, monkey
     session_local = sessionmaker(bind=engine)
     bucket_start = datetime(2026, 7, 3, 13, 30, tzinfo=timezone.utc)
     with session_local() as session:
+        session.add(_us_snapshot(tw_board="DJIA", source="djia", bucket_start=bucket_start))
         session.add(
-            RankingSnapshot(
-                market="US",
-                tw_board="DJIA",
-                ranking_type="volume",
-                bucket_start=bucket_start,
-                source="djia",
-                source_type="free-unofficial",
-                source_freshness="test",
-                is_market_open=True,
-                warning_message=None,
-                unsupported_reason=None,
-            )
-        )
-        session.add(
-            RankingSnapshot(
-                market="US",
-                tw_board="NASDAQ100",
-                ranking_type="volume",
-                bucket_start=bucket_start,
-                source="nasdaq",
-                source_type="free-unofficial",
-                source_freshness="test",
-                is_market_open=True,
-                warning_message=None,
-                unsupported_reason=None,
-            )
+            _us_snapshot(tw_board="NASDAQ100", source="nasdaq", bucket_start=bucket_start)
         )
         session.commit()
 

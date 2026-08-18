@@ -11,6 +11,22 @@ import {
   shouldRetryRankingsQuery,
 } from "./client";
 
+function emptyUsRankingJson(overrides: Record<string, unknown> = {}) {
+  return {
+    market: "US",
+    rankingType: "volume",
+    items: [],
+    timestamp: "2026-08-16T00:00:00Z",
+    source: "test",
+    sourceType: "free-unofficial",
+    isMarketOpen: false,
+    dataFreshnessLabel: "ok",
+    warningMessage: null,
+    unsupportedReason: null,
+    ...overrides,
+  };
+}
+
 describe("fetchTaiwanInstitutionalInvestors", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
@@ -230,17 +246,7 @@ describe("fetchRankings", () => {
   it("sends the selected U.S. universe on GET rankings", async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
-      json: async () => ({
-        market: "US",
-        rankingType: "volume",
-        items: [],
-        timestamp: "2026-08-16T00:00:00Z",
-        source: "test",
-        sourceType: "free-unofficial",
-        isMarketOpen: false,
-        dataFreshnessLabel: "ok",
-        warningMessage: null,
-        unsupportedReason: null,
+      json: async () => emptyUsRankingJson({
         usRankingsScope: "nasdaq100",
         universe: "NASDAQ100",
       }),
@@ -263,24 +269,18 @@ describe("refreshRankings", () => {
   it("posts the selected universe without overloading GET", async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
-      json: async () => ({
-        market: "US",
-        rankingType: "volume",
-        items: [],
-        timestamp: "2026-07-03T16:00:00-04:00",
-        source: "DJIA constituent quote rankings from the app's free best-effort quote providers.",
-        sourceType: "free-unofficial",
-        isMarketOpen: false,
-        dataFreshnessLabel: "Market closed; rankings use the latest available quote snapshot.",
-        warningMessage: null,
-        unsupportedReason: null,
-        usRankingsScope: "djia",
-        universe: "DJIA",
-      }),
+      json: async () =>
+        emptyUsRankingJson({
+          timestamp: "2026-07-03T16:00:00-04:00",
+          source: "DJIA constituent quote rankings from the app's free best-effort quote providers.",
+          dataFreshnessLabel: "Market closed; rankings use the latest available quote snapshot.",
+          usRankingsScope: "djia",
+          universe: "DJIA",
+        }),
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    await expect(refreshRankings("US", "volume", 50, "DJIA")).resolves.toMatchObject({
+    await expect(refreshRankings("US", "volume", "DJIA")).resolves.toMatchObject({
       universe: "DJIA",
       usRankingsScope: "djia",
     });
