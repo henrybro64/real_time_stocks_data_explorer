@@ -1,6 +1,8 @@
+from datetime import date
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Header, HTTPException, Query
+from pydantic import BaseModel, Field
 
 from app.core.config import settings
 from app.schemas.rankings import (
@@ -11,6 +13,7 @@ from app.schemas.rankings import (
     TwBoard,
     coerce_ranking_universe,
 )
+from app.services.rankings_archive_service import rankings_archive_service
 from app.services.rankings_snapshot_service import (
     RankingsRefreshError,
     rankings_snapshot_service,
@@ -91,3 +94,35 @@ def capture_rankings_snapshots(
         trigger="capture_endpoint",
     )
     return {"captured": captured}
+
+
+class RankingsArchiveCaptureRequest(BaseModel):
+    market: Literal["US", "TW"] | None = None
+    tradingDate: date | None = None
+    force: bool = Field(
+        default=False,
+        description="When true, skip settle-time gate (still skips non-trading dates).",
+    )
+
+
+@router.post("/archive/capture")
+def capture_rankings_archive(
+    payload: RankingsArchiveCaptureRequest | None = None,
+    x_rankings_archive_capture_token: str | None = Header(default=None),
+) -> dict[str, int]:
+    """Token-gated manual EOD archive capture into Azure SQL (#167)."""
+    expected = settings.rankings_archive_capture_token.strip()
+    if not expected:
+        raise HTTPException(
+            status_code=503,
+            detail="Rankings archive capture endpoint is not configured",
+        )
+    if x_rankings_archive_capture_token != expected:
+        raise HTTPException(status_code=403, detail="Forbidden")
+    request = payload or RankingsArchiveCaptureRequest()
+    return rankings_archive_service.capture_eod_archives(
+        trigger="archive_capture_endpoint",
+        market=request.market,
+        trading_date=request.tradingDate,
+        force=request.force,
+    )

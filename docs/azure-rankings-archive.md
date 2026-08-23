@@ -1,0 +1,85 @@
+# Azure SQL rankings archive (issues #165–#167)
+
+This document covers the optional **public market ranking archive** path. It is
+additive to the existing PostgreSQL-backed Stock Ticker app.
+
+## Separation of concerns
+
+| Store | Env var | Contents |
+| --- | --- | --- |
+| Local / cluster Postgres | `DATABASE_URL` | Operational app data + current rankings snapshots |
+| Azure SQL Free offer | `RANKINGS_ARCHIVE_DATABASE_URL` | Public EOD ranking archives only |
+
+Azure must never receive personal data (users, OAuth, watchlists, portfolios,
+alerts, API keys, AI preferences).
+
+Unset `RANKINGS_ARCHIVE_DATABASE_URL` and the app behaves exactly as before.
+Azure outages must not block FastAPI startup or `GET /api/rankings`.
+
+## Provisioning (#165)
+
+See [`infra/azure-rankings-archive/README.md`](../infra/azure-rankings-archive/README.md)
+for Terraform apply/destroy, Free-offer portal checks, and cost-safety review.
+
+## Schema + repository (#166)
+
+Tables (created lazily via SQLAlchemy `create_all` on first archive use):
+
+- `ranking_snapshots_archive`
+- `ranking_snapshot_items_archive`
+
+Uniqueness: `(market, universe, ranking_type, trading_date)` — one EOD row per
+combination. Duplicate writes keep the existing snapshot.
+
+Code:
+
+- `backend/app/db/archive_models.py`
+- `backend/app/db/archive_session.py`
+- `backend/app/repositories/rankings_archive_repository.py`
+
+## EOD capture (#167)
+
+Supported combinations match the Rankings UI:
+
+- US: DJIA, NASDAQ100 × volume, valuation_low_pe, change_up, change_down
+- TW: TWSE, TPEx × those four plus net_buy / net_sell
+
+Scheduling uses market-local timezones (`America/New_York`, `Asia/Taipei`),
+skips non-trading days, and waits for settle delay (US quotes +45m after close;
+TW quotes +30m; TW institutional after 18:00 Taipei).
+
+### Manual control
+
+```bash
+curl -X POST "$API/api/rankings/archive/capture" \
+  -H "X-Rankings-Archive-Capture-Token: $RANKINGS_ARCHIVE_CAPTURE_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"market":"TW","force":true}'
+```
+
+### Automatic sampler
+
+```bash
+RANKINGS_ARCHIVE_EOD_ENABLED=true
+RANKINGS_ARCHIVE_EOD_POLL_SECONDS=900
+```
+
+Failures are logged and never raised into ranking request paths.
+
+## Connectivity smoke test
+
+```bash
+export RANKINGS_ARCHIVE_DATABASE_URL='mssql+pyodbc://...'
+python3 scripts/azure_rankings_archive_smoke.py
+```
+
+## Unit tests
+
+```bash
+cd backend
+.venv313/bin/pytest \
+  tests/unit/repositories/test_rankings_archive_repository.py \
+  tests/unit/services/test_rankings_archive_service.py \
+  tests/unit/routes/test_rankings_archive_route.py \
+  tests/unit/jobs/test_jobs_runtime.py -q
+```

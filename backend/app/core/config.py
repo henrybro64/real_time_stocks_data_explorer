@@ -78,6 +78,12 @@ class Settings(BaseSettings):
         default="0050,2330,2317,2454,2303,2881,2882,6488,8299,8271,6215,6643,6562,6451,6462",
     )
     rankings_capture_token: str = Field(default="")
+    # Optional Azure SQL (or other) archive DB for public EOD ranking history (#165–#167).
+    # Never reuse DATABASE_URL. Empty/unreachable archive must not affect FastAPI or GET rankings.
+    rankings_archive_database_url: str = Field(default="")
+    rankings_archive_eod_enabled: bool = Field(default=False)
+    rankings_archive_eod_poll_seconds: int = Field(default=900, ge=60, le=7200)
+    rankings_archive_capture_token: str = Field(default="")
     # Taiwan detail-page market data refresh (institutional + margin-short write path).
     taiwan_market_data_refresh_enabled: bool = Field(default=True)
     taiwan_market_data_refresh_days: int = Field(default=120, ge=1, le=360)

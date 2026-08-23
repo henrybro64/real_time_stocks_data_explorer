@@ -5,6 +5,9 @@ pydantic-settings==2.10.1
 sqlalchemy
 alembic
 psycopg[binary]
+# Optional for Azure SQL rankings archive (#165–#167): install pyodbc + ODBC Driver 18
+# when using RANKINGS_ARCHIVE_DATABASE_URL=mssql+pyodbc://...
+# pyodbc
 httpx
 itsdangerous>=2.0.0
 redis>=5.0.0
