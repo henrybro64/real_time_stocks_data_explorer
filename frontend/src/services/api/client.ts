@@ -356,12 +356,14 @@ export function fetchRankings(
 export function fetchRankingsHistoryDates(
   market: "US" | "TW",
   universe: RankingUniverse,
+  rankingType: RankingType,
   limit = 5,
   signal?: AbortSignal,
 ) {
   const params = new URLSearchParams({
     market,
     universe,
+    type: rankingType,
     limit: String(limit),
   });
   return fetchJsonWithTimeout<RankingsHistoryDatesResponse>(

@@ -19,7 +19,10 @@ from app.schemas.rankings import (
     RankingType,
 )
 from app.schemas.stock import StockResponse
-from app.services.rankings_archive_service import RankingsArchiveService
+from app.services.rankings_archive_service import (
+    RankingsArchiveService,
+    RankingsArchiveUnavailableError,
+)
 
 
 def _session_factory():
@@ -130,7 +133,12 @@ def test_list_available_trading_dates_newest_first_and_limited() -> None:
     repo.set_session_factory_override(_session_factory())
     _seed_archive(repo)
 
-    dates = repo.list_available_trading_dates(market="US", universe="DJIA", limit=5)
+    dates = repo.list_available_trading_dates(
+        market="US",
+        universe="DJIA",
+        ranking_type=RankingType.volume,
+        limit=5,
+    )
     assert dates == [
         date(2026, 8, 20),
         date(2026, 8, 19),
@@ -142,6 +150,36 @@ def test_list_available_trading_dates_newest_first_and_limited() -> None:
     assert date(2026, 8, 16) not in dates
     assert date(2026, 8, 15) not in dates
 
+
+def test_list_available_trading_dates_filters_by_ranking_type() -> None:
+    repo = RankingsArchiveRepository()
+    repo.set_session_factory_override(_session_factory())
+    _seed_archive(repo)
+    # Seed an extra type on a different date so unfiltered lists diverge.
+    repo.upsert_eod_snapshot(
+        market="US",
+        universe="DJIA",
+        ranking_type=RankingType.change_up,
+        trading_date=date(2026, 8, 12),
+        response=_response(ranking_type=RankingType.change_up, symbol="BA"),
+        captured_at=datetime(2026, 8, 20, 21, 0, tzinfo=timezone.utc),
+    )
+
+    volume_dates = repo.list_available_trading_dates(
+        market="US",
+        universe="DJIA",
+        ranking_type=RankingType.volume,
+        limit=10,
+    )
+    change_dates = repo.list_available_trading_dates(
+        market="US",
+        universe="DJIA",
+        ranking_type=RankingType.change_up,
+        limit=10,
+    )
+    assert date(2026, 8, 20) in volume_dates
+    assert date(2026, 8, 12) not in volume_dates
+    assert change_dates == [date(2026, 8, 12)]
 
 def test_history_service_reconstructs_all_supported_scopes() -> None:
     repo = RankingsArchiveRepository()
@@ -188,6 +226,8 @@ def test_history_service_reconstructs_all_supported_scopes() -> None:
     )
     assert tpex is not None
     assert tpex.items[0].peRatio == 12.0
+    assert tpex.twRankingsScope == "quote"
+    assert twse.twRankingsScope is None
 
 
 def test_history_missing_date_and_unavailable_archive() -> None:
@@ -207,7 +247,14 @@ def test_history_missing_date_and_unavailable_archive() -> None:
     )
 
     repo.set_session_factory_override(None)
-    assert service.list_history_dates(market="US", universe="DJIA") == []
+    assert (
+        service.list_history_dates(
+            market="US",
+            universe="DJIA",
+            ranking_type=RankingType.volume,
+        )
+        == []
+    )
     assert (
         service.get_history_rankings(
             market="US",
@@ -219,14 +266,42 @@ def test_history_missing_date_and_unavailable_archive() -> None:
     )
 
 
+def test_history_mid_query_failure_raises_unavailable() -> None:
+    class _BoomRepo:
+        def is_available(self) -> bool:
+            return True
+
+        def list_available_trading_dates(self, **_kwargs):
+            raise RuntimeError("azure down")
+
+        def load_eod_snapshot(self, **_kwargs):
+            raise RuntimeError("azure down")
+
+    service = RankingsArchiveService(repository=_BoomRepo())  # type: ignore[arg-type]
+    with pytest.raises(RankingsArchiveUnavailableError):
+        service.list_history_dates(
+            market="US",
+            universe="DJIA",
+            ranking_type=RankingType.volume,
+        )
+    with pytest.raises(RankingsArchiveUnavailableError):
+        service.get_history_rankings(
+            market="US",
+            universe="DJIA",
+            ranking_type=RankingType.volume,
+            trading_date=date(2026, 8, 20),
+        )
+
+
 def test_history_dates_route_and_history_route(monkeypatch) -> None:
     class _Svc:
         def is_available(self) -> bool:
             return True
 
-        def list_history_dates(self, *, market, universe, limit=5):
+        def list_history_dates(self, *, market, universe, ranking_type, limit=5):
             assert market == "US"
             assert universe == "DJIA"
+            assert ranking_type == RankingType.volume
             assert limit == 5
             return [date(2026, 8, 20), date(2026, 8, 19)]
 
@@ -236,7 +311,12 @@ def test_history_dates_route_and_history_route(monkeypatch) -> None:
 
     monkeypatch.setattr(rankings_route, "rankings_archive_service", _Svc())
 
-    dates = rankings_route.get_rankings_history_dates(market="US", universe="DJIA", limit=5)
+    dates = rankings_route.get_rankings_history_dates(
+        market="US",
+        universe="DJIA",
+        ranking_type=RankingType.volume,
+        limit=5,
+    )
     assert dates.dates == ["2026-08-20", "2026-08-19"]
 
     history = rankings_route.get_rankings_history(
@@ -263,7 +343,11 @@ def test_history_routes_unavailable_and_not_found(monkeypatch) -> None:
 
     monkeypatch.setattr(rankings_route, "rankings_archive_service", _Unavailable())
     with pytest.raises(HTTPException) as exc_dates:
-        rankings_route.get_rankings_history_dates(market="TW", universe="TWSE")
+        rankings_route.get_rankings_history_dates(
+            market="TW",
+            universe="TWSE",
+            ranking_type=RankingType.net_buy,
+        )
     assert exc_dates.value.status_code == 503
 
     class _Missing:
@@ -284,7 +368,41 @@ def test_history_routes_unavailable_and_not_found(monkeypatch) -> None:
     assert exc_hist.value.status_code == 404
 
 
+def test_history_routes_mid_query_failure_returns_503(monkeypatch) -> None:
+    class _Failing:
+        def is_available(self) -> bool:
+            return True
+
+        def list_history_dates(self, **_kwargs):
+            raise RankingsArchiveUnavailableError("dates down")
+
+        def get_history_rankings(self, **_kwargs):
+            raise RankingsArchiveUnavailableError("load down")
+
+    monkeypatch.setattr(rankings_route, "rankings_archive_service", _Failing())
+    with pytest.raises(HTTPException) as exc_dates:
+        rankings_route.get_rankings_history_dates(
+            market="US",
+            universe="DJIA",
+            ranking_type=RankingType.volume,
+        )
+    assert exc_dates.value.status_code == 503
+
+    with pytest.raises(HTTPException) as exc_hist:
+        rankings_route.get_rankings_history(
+            market="US",
+            ranking_type=RankingType.volume,
+            trading_date=date(2026, 8, 20),
+            universe="DJIA",
+        )
+    assert exc_hist.value.status_code == 503
+
+
 def test_history_dates_rejects_mismatched_universe() -> None:
     with pytest.raises(HTTPException) as exc:
-        rankings_route.get_rankings_history_dates(market="US", universe="TWSE")
+        rankings_route.get_rankings_history_dates(
+            market="US",
+            universe="TWSE",
+            ranking_type=RankingType.volume,
+        )
     assert exc.value.status_code == 422

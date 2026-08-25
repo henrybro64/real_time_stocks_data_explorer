@@ -230,8 +230,20 @@ def ranking_response_from_archive(envelope: ArchiveSnapshotEnvelope) -> RankingR
     us_scope: str | None = None
     if market == "TW" and universe in {"TWSE", "TPEx"}:
         tw_board = universe  # type: ignore[assignment]
+        # Institutional tabs use dedicated UI notices; quote/valuation/change tabs
+        # get an explicit quote scope so reconstruct never falls through as "pending".
+        if RankingType(snapshot.ranking_type) in {
+            RankingType.net_buy,
+            RankingType.net_sell,
+        }:
+            tw_scope = None
+        else:
+            tw_scope = "quote"
     elif market == "US" and universe in {"DJIA", "NASDAQ100"}:
         us_scope = "djia" if universe == "DJIA" else "nasdaq100"
+        tw_scope = None
+    else:
+        tw_scope = None
 
     items = [
         RankingItem(
@@ -265,7 +277,7 @@ def ranking_response_from_archive(envelope: ArchiveSnapshotEnvelope) -> RankingR
         warningMessage=snapshot.warning_message,
         unsupportedReason=snapshot.unsupported_reason,
         usRankingsScope=us_scope,
-        twRankingsScope=None,
+        twRankingsScope=tw_scope,
         tradingDate=snapshot.trading_date.isoformat(),
         captureScope=snapshot.capture_scope,
     )

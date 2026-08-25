@@ -14,7 +14,10 @@ from app.schemas.rankings import (
     TwBoard,
     coerce_ranking_universe,
 )
-from app.services.rankings_archive_service import rankings_archive_service
+from app.services.rankings_archive_service import (
+    RankingsArchiveUnavailableError,
+    rankings_archive_service,
+)
 from app.services.rankings_snapshot_service import (
     RankingsRefreshError,
     rankings_snapshot_service,
@@ -68,20 +71,28 @@ def get_rankings(
 def get_rankings_history_dates(
     market: Literal["US", "TW"] = Query(...),
     universe: RankingUniverse = Query(...),
+    ranking_type: RankingType = Query(..., alias="type"),
     limit: int = Query(default=5, ge=1, le=30),
 ) -> RankingsHistoryDatesResponse:
-    """List archived trading dates for a market/universe, newest first (#168)."""
+    """List archived trading dates for a market/universe/type, newest first (#168)."""
     resolved_universe = _validated_universe(market, None, universe)
     if not rankings_archive_service.is_available():
         raise HTTPException(
             status_code=503,
             detail="Rankings archive is unavailable",
         )
-    dates = rankings_archive_service.list_history_dates(
-        market=market,
-        universe=resolved_universe,
-        limit=limit,
-    )
+    try:
+        dates = rankings_archive_service.list_history_dates(
+            market=market,
+            universe=resolved_universe,
+            ranking_type=ranking_type,
+            limit=limit,
+        )
+    except RankingsArchiveUnavailableError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Rankings archive is unavailable",
+        ) from exc
     return RankingsHistoryDatesResponse(
         market=market,
         universe=resolved_universe,
@@ -113,13 +124,19 @@ def get_rankings_history(
             status_code=503,
             detail="Rankings archive is unavailable",
         )
-    response = rankings_archive_service.get_history_rankings(
-        market=market,
-        universe=resolved_universe,
-        ranking_type=ranking_type,
-        trading_date=trading_date,
-        limit=limit,
-    )
+    try:
+        response = rankings_archive_service.get_history_rankings(
+            market=market,
+            universe=resolved_universe,
+            ranking_type=ranking_type,
+            trading_date=trading_date,
+            limit=limit,
+        )
+    except RankingsArchiveUnavailableError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Rankings archive is unavailable",
+        ) from exc
     if response is None:
         raise HTTPException(
             status_code=404,

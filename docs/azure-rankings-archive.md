@@ -86,14 +86,15 @@ Failures are logged and never raised into ranking request paths.
 ## Historical read APIs (#168)
 
 These endpoints read Azure SQL only. They never fall back to current rankings.
+They require the archive path from issues #165–#167 (PR landing those changes).
 
 | Endpoint | Behavior |
 | --- | --- |
-| `GET /api/rankings/history/dates?market=&universe=&limit=5` | Archived trading dates, newest first (real dates only) |
+| `GET /api/rankings/history/dates?market=&universe=&type=&limit=5` | Archived trading dates for that ranking type, newest first |
 | `GET /api/rankings/history?market=&universe=&type=&date=YYYY-MM-DD` | One EOD ranking list for that date |
 
 Responses include `tradingDate` and `captureScope` so the UI can label historical
-data. Missing archives → `404`; archive DB unavailable → `503`.
+data. Missing archives → `404`; archive DB unavailable or mid-query failure → `503`.
 `GET /api/rankings` is unchanged and independent of Azure.
 
 ## Connectivity + archive write/read smoke test

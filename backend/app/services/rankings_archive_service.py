@@ -38,6 +38,10 @@ _US_SETTLE_MINUTES = 45
 _TW_QUOTE_SETTLE_MINUTES = 30
 
 
+class RankingsArchiveUnavailableError(RuntimeError):
+    """Archive DB is configured but a history query failed (operational outage)."""
+
+
 @dataclass(frozen=True)
 class ArchiveCaptureTarget:
     market: Literal["US", "TW"]
@@ -341,27 +345,32 @@ class RankingsArchiveService:
         *,
         market: Literal["US", "TW"],
         universe: str,
+        ranking_type: RankingType,
         limit: int = 5,
     ) -> list[date]:
-        """Return newest archived trading dates for market/universe (UI discovery)."""
+        """Return newest archived trading dates for market/universe/type (UI discovery)."""
         if not self.is_available():
             return []
         try:
             return self._repository.list_available_trading_dates(
                 market=market,
                 universe=universe,
+                ranking_type=ranking_type,
                 limit=limit,
             )
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
             logger.exception(
                 "Rankings archive history dates lookup failed",
                 extra={
                     "event": "rankings_archive.history.dates_failed",
                     "market": market,
                     "universe": universe,
+                    "ranking_type": ranking_type.value,
                 },
             )
-            return []
+            raise RankingsArchiveUnavailableError(
+                "Rankings archive history dates lookup failed",
+            ) from exc
 
     def get_history_rankings(
         self,
@@ -372,7 +381,7 @@ class RankingsArchiveService:
         trading_date: date,
         limit: int = 50,
     ) -> RankingResponse | None:
-        """Load one EOD archive snapshot. Returns None when missing/unavailable."""
+        """Load one EOD archive snapshot. Returns None when missing; raises on outage."""
         if not self.is_available():
             return None
         try:
@@ -382,7 +391,7 @@ class RankingsArchiveService:
                 ranking_type=ranking_type,
                 trading_date=trading_date,
             )
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
             logger.exception(
                 "Rankings archive history load failed",
                 extra={
@@ -393,7 +402,9 @@ class RankingsArchiveService:
                     "trading_date": trading_date.isoformat(),
                 },
             )
-            return None
+            raise RankingsArchiveUnavailableError(
+                "Rankings archive history load failed",
+            ) from exc
         if envelope is None:
             return None
         response = self._repository.to_ranking_response(envelope)

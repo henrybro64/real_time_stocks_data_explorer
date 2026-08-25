@@ -1406,6 +1406,7 @@ describe("RankingsPage", () => {
       expect(fetchRankingsHistoryDates).toHaveBeenCalledWith(
         "US",
         "DJIA",
+        "volume",
         5,
         expect.any(AbortSignal),
       );
@@ -1415,6 +1416,8 @@ describe("RankingsPage", () => {
     expect(await screen.findByTestId("rankings-row-US:IBM")).toBeInTheDocument();
     expect(screen.getByTestId("rankings-historical-banner")).toHaveTextContent("2026-08-20");
     expect(screen.queryByTestId("rankings-refresh-source")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("rankings-realtime-tag")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("rankings-scope-note")).not.toBeInTheDocument();
     expect(fetchRankingsHistory).toHaveBeenCalledWith(
       "US",
       "volume",
@@ -1426,6 +1429,13 @@ describe("RankingsPage", () => {
 
     await user.click(screen.getByTestId("rankings-tab-change_up"));
     await waitFor(() => {
+      expect(fetchRankingsHistoryDates).toHaveBeenCalledWith(
+        "US",
+        "DJIA",
+        "change_up",
+        5,
+        expect.any(AbortSignal),
+      );
       expect(fetchRankingsHistory).toHaveBeenLastCalledWith(
         "US",
         "change_up",
@@ -1515,7 +1525,7 @@ describe("RankingsPage", () => {
 
   it("loads NASDAQ100 archived rankings after universe switch resets to Current", async () => {
     const user = userEvent.setup();
-    vi.mocked(fetchRankingsHistoryDates).mockImplementation(async (market, universe) => ({
+    vi.mocked(fetchRankingsHistoryDates).mockImplementation(async (market, universe, _rankingType) => ({
       market,
       universe,
       dates: ["2026-08-20", "2026-08-19"],
@@ -1570,7 +1580,7 @@ describe("RankingsPage", () => {
 
   it("loads TPEx archived rankings for the selected trading date", async () => {
     const user = userEvent.setup();
-    vi.mocked(fetchRankingsHistoryDates).mockImplementation(async (market, universe) => ({
+    vi.mocked(fetchRankingsHistoryDates).mockImplementation(async (market, universe, _rankingType) => ({
       market,
       universe,
       dates: ["2026-08-20"],

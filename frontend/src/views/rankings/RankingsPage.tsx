@@ -70,8 +70,12 @@ function rankingsQueryKey(
   return ["rankings", market, universe, rankingType, DEFAULT_LIMIT, tradingDate ?? RANKINGS_DATE_CURRENT] as const;
 }
 
-function rankingsHistoryDatesQueryKey(market: RankingMarket, universe: RankingUniverse) {
-  return ["rankings-history-dates", market, universe, HISTORY_DATES_LIMIT] as const;
+function rankingsHistoryDatesQueryKey(
+  market: RankingMarket,
+  universe: RankingUniverse,
+  rankingType: RankingType,
+) {
+  return ["rankings-history-dates", market, universe, rankingType, HISTORY_DATES_LIMIT] as const;
 }
 
 function RankingsScopeToggle<T extends string>({
@@ -429,9 +433,15 @@ export function RankingsPage() {
   }, [market]);
 
   const historyDatesQuery = useQuery({
-    queryKey: rankingsHistoryDatesQueryKey(market, selectedScope),
+    queryKey: rankingsHistoryDatesQueryKey(market, selectedScope, rankingType),
     queryFn: ({ signal }) =>
-      fetchRankingsHistoryDates(market, selectedScope, HISTORY_DATES_LIMIT, signal),
+      fetchRankingsHistoryDates(
+        market,
+        selectedScope,
+        rankingType,
+        HISTORY_DATES_LIMIT,
+        signal,
+      ),
     staleTime: 5 * 60_000,
     retry: false,
   });
@@ -513,8 +523,10 @@ export function RankingsPage() {
   const showValuationColumns = isValuationRanking(rankingType);
   const refreshDisabled =
     isHistorical || refreshMutation.isPending || Date.now() < refreshCooldownUntil;
-  const scopeNoteKey =
-    market === "US"
+  // Historical views use the EOD banner; live scope notices describe current providers only.
+  const scopeNoteKey = isHistorical
+    ? null
+    : market === "US"
       ? usScopeNoticeKeyFromState(rankingType, data)
       : isInstitutionalRanking(rankingType)
         ? twBoard === "TPEx"
@@ -559,7 +571,7 @@ export function RankingsPage() {
               <p className="app-eyebrow">{t("rankings.market")}</p>
               <h2>{t("rankings.title")}</h2>
             </div>
-            {data ? <RankingRealtimeTag response={data} /> : null}
+            {data && !isHistorical ? <RankingRealtimeTag response={data} /> : null}
           </div>
           <div className="app-portfolio-asset-form">
             <Select
@@ -572,9 +584,11 @@ export function RankingsPage() {
               <SelectItem value="TW" text={t("rankings.market.tw")} />
               <SelectItem value="US" text={t("rankings.market.us")} />
             </Select>
-            <p className="app-supporting-copy" data-testid="rankings-scope-note">
-              {t(scopeNoteKey)}
-            </p>
+            {scopeNoteKey ? (
+              <p className="app-supporting-copy" data-testid="rankings-scope-note">
+                {t(scopeNoteKey)}
+              </p>
+            ) : null}
           </div>
           {market === "TW" ? (
             <RankingsScopeToggle

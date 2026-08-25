@@ -278,13 +278,14 @@ describe("fetchRankingsHistoryDates", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    await expect(fetchRankingsHistoryDates("US", "DJIA", 5)).resolves.toMatchObject({
+    await expect(fetchRankingsHistoryDates("US", "DJIA", "volume", 5)).resolves.toMatchObject({
       dates: ["2026-08-20", "2026-08-19"],
     });
     const url = String(fetchMock.mock.calls[0]?.[0]);
     expect(url).toContain("/rankings/history/dates?");
     expect(url).toContain("market=US");
     expect(url).toContain("universe=DJIA");
+    expect(url).toContain("type=volume");
     expect(url).toContain("limit=5");
   });
 });
