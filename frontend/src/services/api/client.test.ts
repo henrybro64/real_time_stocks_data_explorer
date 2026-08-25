@@ -5,6 +5,8 @@ import {
   RANKINGS_REQUEST_TIMEOUT_DETAIL,
   RANKINGS_REQUEST_TIMEOUT_MS,
   fetchRankings,
+  fetchRankingsHistory,
+  fetchRankingsHistoryDates,
   refreshRankings,
   fetchTaiwanInstitutionalInvestors,
   fetchTaiwanMarginShort,
@@ -256,6 +258,65 @@ describe("fetchRankings", () => {
     await fetchRankings("US", "volume", 50, "NASDAQ100");
     const url = String(fetchMock.mock.calls[0]?.[0]);
     expect(url).toContain("universe=NASDAQ100");
+    expect(url).not.toContain("twBoard=");
+  });
+});
+
+describe("fetchRankingsHistoryDates", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("requests newest archived trading dates for a universe", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        market: "US",
+        universe: "DJIA",
+        dates: ["2026-08-20", "2026-08-19"],
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(fetchRankingsHistoryDates("US", "DJIA", 5)).resolves.toMatchObject({
+      dates: ["2026-08-20", "2026-08-19"],
+    });
+    const url = String(fetchMock.mock.calls[0]?.[0]);
+    expect(url).toContain("/rankings/history/dates?");
+    expect(url).toContain("market=US");
+    expect(url).toContain("universe=DJIA");
+    expect(url).toContain("limit=5");
+  });
+});
+
+describe("fetchRankingsHistory", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("requests one archived EOD ranking list by trading date", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () =>
+        emptyUsRankingJson({
+          tradingDate: "2026-08-20",
+          captureScope: "end_of_day",
+          universe: "DJIA",
+          usRankingsScope: "djia",
+        }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      fetchRankingsHistory("US", "volume", "2026-08-20", 50, "DJIA"),
+    ).resolves.toMatchObject({
+      tradingDate: "2026-08-20",
+      captureScope: "end_of_day",
+    });
+    const url = String(fetchMock.mock.calls[0]?.[0]);
+    expect(url).toContain("/rankings/history?");
+    expect(url).toContain("date=2026-08-20");
+    expect(url).toContain("universe=DJIA");
     expect(url).not.toContain("twBoard=");
   });
 });

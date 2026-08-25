@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timezone
 import logging
 
-from sqlalchemy import select
+from sqlalchemy import distinct, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -73,6 +73,39 @@ class RankingsArchiveRepository:
                 ArchiveBase.metadata.create_all(bind=bind)
             return True
         return ensure_rankings_archive_schema()
+
+    def list_available_trading_dates(
+        self,
+        *,
+        market: str,
+        universe: str,
+        ranking_type: RankingType | str | None = None,
+        limit: int = 5,
+    ) -> list[date]:
+        """Return archived trading dates for market/universe, newest first.
+
+        When ``ranking_type`` is omitted, dates are distinct across all archived
+        ranking types for that market/universe (UI date discovery use case).
+        """
+        if not self.is_available() or limit <= 0:
+            return []
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            stmt = select(distinct(RankingSnapshotArchive.trading_date)).where(
+                RankingSnapshotArchive.market == market,
+                RankingSnapshotArchive.universe == universe,
+            )
+            if ranking_type is not None:
+                ranking_type_value = (
+                    ranking_type.value
+                    if isinstance(ranking_type, RankingType)
+                    else str(ranking_type)
+                )
+                stmt = stmt.where(
+                    RankingSnapshotArchive.ranking_type == ranking_type_value,
+                )
+            stmt = stmt.order_by(RankingSnapshotArchive.trading_date.desc()).limit(limit)
+            return list(session.execute(stmt).scalars())
 
     def load_eod_snapshot(
         self,
@@ -227,12 +260,14 @@ def ranking_response_from_archive(envelope: ArchiveSnapshotEnvelope) -> RankingR
         timestamp=_as_utc_isoformat(snapshot.captured_at),
         source=snapshot.source,
         sourceType=RankingSourceType(snapshot.source_type),
-        isMarketOpen=snapshot.is_market_open,
+        isMarketOpen=False,
         dataFreshnessLabel=snapshot.source_freshness,
         warningMessage=snapshot.warning_message,
         unsupportedReason=snapshot.unsupported_reason,
         usRankingsScope=us_scope,
         twRankingsScope=None,
+        tradingDate=snapshot.trading_date.isoformat(),
+        captureScope=snapshot.capture_scope,
     )
 
 

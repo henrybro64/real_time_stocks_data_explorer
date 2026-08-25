@@ -9,6 +9,7 @@ from app.schemas.rankings import (
     RankingResponse,
     RankingType,
     RankingUniverse,
+    RankingsHistoryDatesResponse,
     RankingsRefreshRequest,
     TwBoard,
     coerce_ranking_universe,
@@ -54,6 +55,80 @@ def get_rankings(
         tw_board=tw_board if market == "TW" else None,
         universe=resolved_universe,
     )
+
+
+@router.get(
+    "/history/dates",
+    response_model=RankingsHistoryDatesResponse,
+    responses={
+        422: {"description": "Invalid universe for the selected market"},
+        503: {"description": "Rankings archive database unavailable"},
+    },
+)
+def get_rankings_history_dates(
+    market: Literal["US", "TW"] = Query(...),
+    universe: RankingUniverse = Query(...),
+    limit: int = Query(default=5, ge=1, le=30),
+) -> RankingsHistoryDatesResponse:
+    """List archived trading dates for a market/universe, newest first (#168)."""
+    resolved_universe = _validated_universe(market, None, universe)
+    if not rankings_archive_service.is_available():
+        raise HTTPException(
+            status_code=503,
+            detail="Rankings archive is unavailable",
+        )
+    dates = rankings_archive_service.list_history_dates(
+        market=market,
+        universe=resolved_universe,
+        limit=limit,
+    )
+    return RankingsHistoryDatesResponse(
+        market=market,
+        universe=resolved_universe,
+        dates=[d.isoformat() for d in dates],
+    )
+
+
+@router.get(
+    "/history",
+    response_model=RankingResponse,
+    responses={
+        404: {"description": "No archive for the requested trading date"},
+        422: {"description": "Invalid universe or date for the selected market"},
+        503: {"description": "Rankings archive database unavailable"},
+    },
+)
+def get_rankings_history(
+    market: Literal["US", "TW"] = Query(...),
+    ranking_type: RankingType = Query(..., alias="type"),
+    trading_date: date = Query(..., alias="date"),
+    limit: int = Query(default=50, ge=1, le=50),
+    tw_board: Annotated[TwBoard | None, Query(alias="twBoard")] = None,
+    universe: Annotated[RankingUniverse | None, Query()] = None,
+) -> RankingResponse:
+    """Return one archived EOD ranking list. Never falls back to current rankings (#168)."""
+    resolved_universe = _validated_universe(market, tw_board, universe)
+    if not rankings_archive_service.is_available():
+        raise HTTPException(
+            status_code=503,
+            detail="Rankings archive is unavailable",
+        )
+    response = rankings_archive_service.get_history_rankings(
+        market=market,
+        universe=resolved_universe,
+        ranking_type=ranking_type,
+        trading_date=trading_date,
+        limit=limit,
+    )
+    if response is None:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"No archived rankings for {market}/{resolved_universe}/"
+                f"{ranking_type.value} on {trading_date.isoformat()}"
+            ),
+        )
+    return response
 
 
 @router.post("/refresh")

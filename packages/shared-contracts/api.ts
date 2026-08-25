@@ -136,6 +136,16 @@ export type RankingResponse = {
   unsupportedReason: string | null;
   usRankingsScope: UsRankingsScope | null;
   twRankingsScope?: TwRankingsScope | null;
+  /** Present when loaded from Azure SQL EOD archive (YYYY-MM-DD). */
+  tradingDate?: string | null;
+  captureScope?: string | null;
+};
+
+export type RankingsHistoryDatesResponse = {
+  market: MarketCode;
+  universe: RankingUniverse;
+  /** Archived trading dates newest-first (YYYY-MM-DD). */
+  dates: string[];
 };
 
 export type HistoryResponse = {

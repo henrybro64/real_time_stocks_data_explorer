@@ -5,6 +5,7 @@ import type {
   AlertRuleUpdate,
   HistoryResponse,
   RankingResponse,
+  RankingsHistoryDatesResponse,
   RankingType,
   RankingUniverse,
   KeyStatistics,
@@ -347,6 +348,51 @@ export function fetchRankings(
   }
   return fetchJsonWithTimeout<RankingResponse>(
     `/rankings?${params.toString()}`,
+    RANKINGS_REQUEST_TIMEOUT_MS,
+    signal,
+  );
+}
+
+export function fetchRankingsHistoryDates(
+  market: "US" | "TW",
+  universe: RankingUniverse,
+  limit = 5,
+  signal?: AbortSignal,
+) {
+  const params = new URLSearchParams({
+    market,
+    universe,
+    limit: String(limit),
+  });
+  return fetchJsonWithTimeout<RankingsHistoryDatesResponse>(
+    `/rankings/history/dates?${params.toString()}`,
+    RANKINGS_REQUEST_TIMEOUT_MS,
+    signal,
+  );
+}
+
+export function fetchRankingsHistory(
+  market: "US" | "TW",
+  rankingType: RankingType,
+  tradingDate: string,
+  limit = 50,
+  scope?: RankingUniverse,
+  signal?: AbortSignal,
+) {
+  const params = new URLSearchParams({
+    market,
+    type: rankingType,
+    date: tradingDate,
+    limit: String(limit),
+  });
+  if (scope === "TWSE" || scope === "TPEx") {
+    params.set("twBoard", scope);
+    params.set("universe", scope);
+  } else if (scope === "DJIA" || scope === "NASDAQ100") {
+    params.set("universe", scope);
+  }
+  return fetchJsonWithTimeout<RankingResponse>(
+    `/rankings/history?${params.toString()}`,
     RANKINGS_REQUEST_TIMEOUT_MS,
     signal,
   );

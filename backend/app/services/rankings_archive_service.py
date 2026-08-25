@@ -16,7 +16,7 @@ from app.repositories.rankings_archive_repository import (
     CAPTURE_SCOPE_END_OF_DAY,
     rankings_archive_repository,
 )
-from app.schemas.rankings import RankingSourceType, RankingType
+from app.schemas.rankings import RankingResponse, RankingSourceType, RankingType
 from app.services.market_clock import (
     MARKET_TIMEZONES,
     TW_DAILY_PUBLISH_TIME,
@@ -335,6 +335,71 @@ class RankingsArchiveService:
             },
         )
         return {"captured": captured, "skipped": skipped, "failed": failed}
+
+    def list_history_dates(
+        self,
+        *,
+        market: Literal["US", "TW"],
+        universe: str,
+        limit: int = 5,
+    ) -> list[date]:
+        """Return newest archived trading dates for market/universe (UI discovery)."""
+        if not self.is_available():
+            return []
+        try:
+            return self._repository.list_available_trading_dates(
+                market=market,
+                universe=universe,
+                limit=limit,
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "Rankings archive history dates lookup failed",
+                extra={
+                    "event": "rankings_archive.history.dates_failed",
+                    "market": market,
+                    "universe": universe,
+                },
+            )
+            return []
+
+    def get_history_rankings(
+        self,
+        *,
+        market: Literal["US", "TW"],
+        universe: str,
+        ranking_type: RankingType,
+        trading_date: date,
+        limit: int = 50,
+    ) -> RankingResponse | None:
+        """Load one EOD archive snapshot. Returns None when missing/unavailable."""
+        if not self.is_available():
+            return None
+        try:
+            envelope = self._repository.load_eod_snapshot(
+                market=market,
+                universe=universe,
+                ranking_type=ranking_type,
+                trading_date=trading_date,
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "Rankings archive history load failed",
+                extra={
+                    "event": "rankings_archive.history.load_failed",
+                    "market": market,
+                    "universe": universe,
+                    "ranking_type": ranking_type.value,
+                    "trading_date": trading_date.isoformat(),
+                },
+            )
+            return None
+        if envelope is None:
+            return None
+        response = self._repository.to_ranking_response(envelope)
+        if limit < len(response.items):
+            return response.model_copy(update={"items": response.items[:limit]})
+        return response
 
     def start_background_sampler(self, poll_seconds: int) -> None:
         with self._lock:
