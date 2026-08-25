@@ -134,3 +134,81 @@ def test_unavailable_archive_fails_gracefully() -> None:
         )
         is None
     )
+
+
+def test_to_ranking_response_preserves_rank_order() -> None:
+    repo = RankingsArchiveRepository()
+    repo.set_session_factory_override(_session_factory())
+
+    response = RankingResponse(
+        market="US",
+        rankingType=RankingType.volume,
+        twBoard=None,
+        universe="DJIA",
+        items=[
+            RankingItem(
+                rank=1,
+                stock=_stock(),
+                lastPrice=190.0,
+                changePercent=1.25,
+                volume=1_000_000,
+                volumeDeltaPercent=3.0,
+                netBuySellShares=None,
+                peRatio=28.5,
+                peRatioType="trailing",
+                peRatioSource="yahoo",
+                valuationAsOf="2026-08-18",
+                valuationWarning=None,
+                timestamp="2026-08-18T16:00:00-04:00",
+            ),
+            RankingItem(
+                rank=2,
+                stock=StockResponse(
+                    id="US:MSFT",
+                    market="US",
+                    symbol="MSFT",
+                    name="Microsoft",
+                    exchange="NASDAQ",
+                    currency="USD",
+                    timezone="America/New_York",
+                ),
+                lastPrice=400.0,
+                changePercent=0.5,
+                volume=800_000,
+                volumeDeltaPercent=None,
+                netBuySellShares=None,
+                peRatio=None,
+                peRatioType=None,
+                peRatioSource=None,
+                valuationAsOf=None,
+                valuationWarning=None,
+                timestamp="2026-08-18T16:00:00-04:00",
+            ),
+        ],
+        timestamp="2026-08-18T20:00:00+00:00",
+        source="unit-test",
+        sourceType=RankingSourceType.free_unofficial,
+        isMarketOpen=False,
+        dataFreshnessLabel="market closed",
+        warningMessage=None,
+        unsupportedReason=None,
+        usRankingsScope="djia",
+        twRankingsScope=None,
+    )
+    envelope = repo.upsert_eod_snapshot(
+        market="US",
+        universe="DJIA",
+        ranking_type=RankingType.volume,
+        trading_date=date(2026, 8, 18),
+        response=response,
+        captured_at=datetime(2026, 8, 18, 20, 45, tzinfo=timezone.utc),
+    )
+    assert envelope is not None
+    reconstructed = repo.to_ranking_response(envelope)
+    assert [item.stock.symbol for item in reconstructed.items] == ["AAPL", "MSFT"]
+    assert reconstructed.universe == "DJIA"
+    assert reconstructed.usRankingsScope == "djia"
+    assert reconstructed.items[0].peRatio == 28.5
+    assert reconstructed.items[0].stock.exchange == "NASDAQ"
+    # SQLite returns naive captured_at; reconstruct must treat it as UTC (not local TZ).
+    assert reconstructed.timestamp.startswith("2026-08-18T20:45:00")

@@ -231,6 +231,7 @@ class RankingsArchiveService:
                     query,
                     limit=_MAX_ARCHIVE_LIMIT,
                     now=current,
+                    allow_hardcoded_fallback=False,
                 )
             except Exception:  # noqa: BLE001
                 failed += 1
@@ -247,6 +248,21 @@ class RankingsArchiveService:
                 )
                 continue
 
+            if response.twRankingsScope == "fallback":
+                skipped += 1
+                logger.warning(
+                    "Rankings archive skipped hardcoded TW fallback",
+                    extra={
+                        "event": "rankings_archive.capture.fallback_skipped",
+                        "trigger": trigger,
+                        "market": query.market,
+                        "universe": universe,
+                        "ranking_type": query.ranking_type.value,
+                        "trading_date": resolved_date.isoformat(),
+                        "source": response.source,
+                    },
+                )
+                continue
             if response.sourceType == RankingSourceType.unsupported:
                 skipped += 1
                 continue

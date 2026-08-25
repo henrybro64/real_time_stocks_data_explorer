@@ -16,7 +16,14 @@ from app.db.archive_session import (
     get_rankings_archive_session_factory,
     rankings_archive_is_configured,
 )
-from app.schemas.rankings import RankingItem, RankingResponse, RankingType
+from app.schemas.rankings import (
+    RankingItem,
+    RankingResponse,
+    RankingSourceType,
+    RankingType,
+    TwBoard,
+)
+from app.schemas.stock import StockResponse
 
 logger = logging.getLogger(__name__)
 
@@ -175,6 +182,95 @@ class RankingsArchiveRepository:
             ranking_type=ranking_type_value,
             trading_date=trading_date,
         )
+
+    def to_ranking_response(self, envelope: ArchiveSnapshotEnvelope) -> RankingResponse:
+        """Rebuild a RankingResponse from an archived EOD snapshot (rank order preserved)."""
+        return ranking_response_from_archive(envelope)
+
+
+def ranking_response_from_archive(envelope: ArchiveSnapshotEnvelope) -> RankingResponse:
+    """Map archive ORM rows back to the API RankingResponse shape."""
+    snapshot = envelope.snapshot
+    market = snapshot.market
+    universe = snapshot.universe
+    tw_board: TwBoard | None = None
+    us_scope: str | None = None
+    if market == "TW" and universe in {"TWSE", "TPEx"}:
+        tw_board = universe  # type: ignore[assignment]
+    elif market == "US" and universe in {"DJIA", "NASDAQ100"}:
+        us_scope = "djia" if universe == "DJIA" else "nasdaq100"
+
+    items = [
+        RankingItem(
+            rank=row.rank,
+            stock=_stock_from_archive_item(row, market=market, universe=universe),
+            lastPrice=row.last_price,
+            changePercent=row.change_percent,
+            volume=row.volume,
+            volumeDeltaPercent=row.volume_delta_percent,
+            netBuySellShares=row.net_buy_sell_shares,
+            peRatio=row.pe_ratio,
+            peRatioType=row.pe_ratio_type,
+            peRatioSource=row.pe_ratio_source,
+            valuationAsOf=row.valuation_as_of,
+            valuationWarning=None,
+            timestamp=row.data_time,
+        )
+        for row in envelope.items
+    ]
+    return RankingResponse(
+        market=market,
+        rankingType=RankingType(snapshot.ranking_type),
+        twBoard=tw_board,
+        universe=universe if universe in {"TWSE", "TPEx", "DJIA", "NASDAQ100"} else None,  # type: ignore[arg-type]
+        items=items,
+        timestamp=_as_utc_isoformat(snapshot.captured_at),
+        source=snapshot.source,
+        sourceType=RankingSourceType(snapshot.source_type),
+        isMarketOpen=snapshot.is_market_open,
+        dataFreshnessLabel=snapshot.source_freshness,
+        warningMessage=snapshot.warning_message,
+        unsupportedReason=snapshot.unsupported_reason,
+        usRankingsScope=us_scope,
+        twRankingsScope=None,
+    )
+
+
+def _as_utc_isoformat(value: datetime) -> str:
+    """Serialize captured_at as UTC ISO-8601.
+
+    SQLite often returns naive datetimes for ``DateTime(timezone=True)`` columns.
+    Treat naive values as UTC (how we write them) instead of interpreting them in
+    the process local timezone.
+    """
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc).isoformat()
+    return value.astimezone(timezone.utc).isoformat()
+
+
+def _stock_from_archive_item(
+    item: RankingSnapshotItemArchive,
+    *,
+    market: str,
+    universe: str,
+) -> StockResponse:
+    if market == "TW":
+        exchange = universe if universe in {"TWSE", "TPEx"} else "TWSE"
+        currency = "TWD"
+        timezone_name = "Asia/Taipei"
+    else:
+        exchange = "NASDAQ"
+        currency = "USD"
+        timezone_name = "America/New_York"
+    return StockResponse(
+        id=item.stock_id,
+        market=market,
+        symbol=item.symbol,
+        name=item.name,
+        exchange=exchange,
+        currency=currency,
+        timezone=timezone_name,
+    )
 
 
 def _items_from_response(

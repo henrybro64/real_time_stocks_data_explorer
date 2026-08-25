@@ -99,7 +99,9 @@ The script:
 2. Creates a disposable `_poc_smoke` table
 3. Inserts / reads / deletes one non-personal row
 4. Drops the table
-5. Exits non-zero on failure without touching Postgres
+5. Upserts a disposable EOD row into `ranking_snapshots_archive`, loads it back,
+   reconstructs rank order, then deletes the smoke archive rows
+6. Exits non-zero on failure without touching Postgres
 
 ## Destroy / recreate
 

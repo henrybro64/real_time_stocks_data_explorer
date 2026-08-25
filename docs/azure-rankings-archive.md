@@ -31,6 +31,15 @@ Tables (created lazily via SQLAlchemy `create_all` on first archive use):
 Uniqueness: `(market, universe, ranking_type, trading_date)` — one EOD row per
 combination. Duplicate writes keep the existing snapshot.
 
+`RankingsArchiveRepository.to_ranking_response` / `ranking_response_from_archive`
+rebuilds a `RankingResponse` in archived rank order (stock exchange/currency/
+timezone are reconstructed from market + universe; personal fields are never
+stored).
+
+Archive DB connects lazily. A failed connect (including Free-offer AutoPause
+cold start) is retried after a short cooldown instead of sticking unavailable
+until process restart.
+
 Code:
 
 - `backend/app/db/archive_models.py`
@@ -57,6 +66,14 @@ curl -X POST "$API/api/rankings/archive/capture" \
   -d '{"market":"TW","force":true}'
 ```
 
+`force: true` skips the post-close settle-time gate so operators can exercise
+the capture path in tests. It still skips non-trading dates. Do **not** use
+`force` with an explicit `tradingDate` in production unless you accept that the
+archived snapshot may be incomplete relative to a true end-of-day settle.
+
+Hardcoded Taiwan quote fallback responses are never archived
+(`allow_hardcoded_fallback=false` + `twRankingsScope=fallback` skip).
+
 ### Automatic sampler
 
 ```bash
@@ -66,12 +83,15 @@ RANKINGS_ARCHIVE_EOD_POLL_SECONDS=900
 
 Failures are logged and never raised into ranking request paths.
 
-## Connectivity smoke test
+## Connectivity + archive write/read smoke test
 
 ```bash
 export RANKINGS_ARCHIVE_DATABASE_URL='mssql+pyodbc://...'
 python3 scripts/azure_rankings_archive_smoke.py
 ```
+
+The script connects, exercises a disposable `_poc_smoke` table, then upserts /
+loads / reconstructs a disposable EOD archive snapshot (cleaned up afterward).
 
 ## Unit tests
 
@@ -81,5 +101,6 @@ cd backend
   tests/unit/repositories/test_rankings_archive_repository.py \
   tests/unit/services/test_rankings_archive_service.py \
   tests/unit/routes/test_rankings_archive_route.py \
-  tests/unit/jobs/test_jobs_runtime.py -q
+  tests/unit/jobs/test_jobs_runtime.py \
+  tests/unit/db/test_archive_session.py -q
 ```
