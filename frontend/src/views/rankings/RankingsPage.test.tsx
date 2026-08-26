@@ -1633,4 +1633,60 @@ describe("RankingsPage", () => {
       expect.any(AbortSignal),
     );
   });
+
+  it("keeps selected historical date option visible when date discovery later fails", async () => {
+    const user = userEvent.setup();
+    vi.mocked(fetchRankings)
+      .mockResolvedValueOnce(buildResponse())
+      .mockResolvedValue(buildUsResponse());
+    vi.mocked(fetchRankingsHistory).mockResolvedValue(
+      withUsSymbol(
+        {
+          ...buildUsResponse(),
+          tradingDate: "2026-08-20",
+          captureScope: "end_of_day",
+          isMarketOpen: false,
+        },
+        "IBM",
+        "IBM",
+      ),
+    );
+    vi.mocked(fetchRankingsHistoryDates).mockImplementation(
+      async (_market, _universe, rankingType) => {
+        if (rankingType === "change_up") {
+          throw new ApiError("history dates unavailable", { status: 503 });
+        }
+        return {
+          market: "US",
+          universe: "DJIA",
+          dates: ["2026-08-20"],
+        };
+      },
+    );
+
+    renderRankingsPage();
+    await screen.findByTestId("rankings-row-TW:2330");
+    await user.selectOptions(screen.getByLabelText("市場"), "US");
+    await screen.findByTestId("rankings-row-US:MSFT");
+
+    await user.selectOptions(screen.getByTestId("rankings-date-select"), "2026-08-20");
+    await screen.findByTestId("rankings-row-US:IBM");
+    await user.click(screen.getByTestId("rankings-tab-change_up"));
+
+    expect(
+      await screen.findByTestId("rankings-history-dates-unavailable"),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "2026-08-20" })).toBeInTheDocument();
+
+    await user.selectOptions(screen.getByTestId("rankings-date-select"), "current");
+    await waitFor(() => {
+      expect(fetchRankings).toHaveBeenLastCalledWith(
+        "US",
+        "change_up",
+        50,
+        "DJIA",
+        expect.any(AbortSignal),
+      );
+    });
+  });
 });

@@ -77,6 +77,12 @@ def get_rankings_history_dates(
     """List archived trading dates for a market/universe/type, newest first (#168)."""
     resolved_universe = _validated_universe(market, None, universe)
     if not rankings_archive_service.is_available():
+        if not rankings_archive_service.is_configured():
+            return RankingsHistoryDatesResponse(
+                market=market,
+                universe=resolved_universe,
+                dates=[],
+            )
         raise HTTPException(
             status_code=503,
             detail="Rankings archive is unavailable",

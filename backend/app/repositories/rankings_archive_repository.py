@@ -52,6 +52,11 @@ class RankingsArchiveRepository:
             and get_rankings_archive_session_factory() is not None
         )
 
+    def is_configured(self) -> bool:
+        if self._session_factory_override is not _UNSET:
+            return self._session_factory_override is not None
+        return rankings_archive_is_configured()
+
     def _session_factory(self) -> sessionmaker[Session]:
         if self._session_factory_override is not _UNSET:
             if self._session_factory_override is None:

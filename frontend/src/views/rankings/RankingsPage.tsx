@@ -450,6 +450,15 @@ export function RankingsPage() {
     retry: false,
   });
   const availableHistoryDates = historyDatesQuery.data?.dates ?? [];
+  const dateOptions = useMemo(() => {
+    if (
+      selectedTradingDate != null
+      && !availableHistoryDates.includes(selectedTradingDate)
+    ) {
+      return [selectedTradingDate, ...availableHistoryDates];
+    }
+    return availableHistoryDates;
+  }, [availableHistoryDates, selectedTradingDate]);
 
   useEffect(() => {
     if (selectedTradingDate == null) {
@@ -653,7 +662,7 @@ export function RankingsPage() {
             style={{ marginTop: "1rem", maxWidth: "22rem" }}
           >
             <SelectItem value={RANKINGS_DATE_CURRENT} text={t("rankings.date.current")} />
-            {availableHistoryDates.map((tradingDate) => (
+            {dateOptions.map((tradingDate) => (
               <SelectItem key={tradingDate} value={tradingDate} text={tradingDate} />
             ))}
           </Select>

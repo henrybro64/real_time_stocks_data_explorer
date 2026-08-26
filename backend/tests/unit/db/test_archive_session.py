@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from sqlalchemy import text
+from sqlalchemy import inspect, text
 
 import app.db.archive_session as archive_session
 
@@ -63,4 +63,51 @@ def test_successful_engine_is_cached(monkeypatch, tmp_path) -> None:
     second = archive_session.get_rankings_archive_engine()
     assert first is not None
     assert first is second
+    archive_session.reset_rankings_archive_session_state()
+
+
+def test_ensure_schema_adds_tw_rankings_scope_for_legacy_tables(monkeypatch, tmp_path) -> None:
+    archive_session.reset_rankings_archive_session_state()
+    monkeypatch.setattr(
+        "app.core.config.settings.rankings_archive_database_url",
+        _sqlite_url(tmp_path),
+    )
+    factory = archive_session.get_rankings_archive_session_factory()
+    assert factory is not None
+
+    with factory() as session:
+        session.execute(text("DROP TABLE IF EXISTS ranking_snapshot_items_archive"))
+        session.execute(text("DROP TABLE IF EXISTS ranking_snapshots_archive"))
+        session.execute(
+            text(
+                """
+                CREATE TABLE ranking_snapshots_archive (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  market VARCHAR(8) NOT NULL,
+                  universe VARCHAR(16) NOT NULL,
+                  ranking_type VARCHAR(32) NOT NULL,
+                  trading_date DATE NOT NULL,
+                  captured_at DATETIME NOT NULL,
+                  source TEXT NOT NULL,
+                  source_type VARCHAR(32) NOT NULL,
+                  source_freshness TEXT NOT NULL,
+                  is_market_open BOOLEAN NOT NULL,
+                  warning_message TEXT NULL,
+                  unsupported_reason TEXT NULL,
+                  capture_scope VARCHAR(32) NOT NULL DEFAULT 'end_of_day',
+                  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+        )
+        session.commit()
+
+    assert archive_session.ensure_rankings_archive_schema() is True
+    engine = archive_session.get_rankings_archive_engine()
+    assert engine is not None
+    columns = {
+        column["name"]
+        for column in inspect(engine).get_columns("ranking_snapshots_archive")
+    }
+    assert "tw_rankings_scope" in columns
     archive_session.reset_rankings_archive_session_state()

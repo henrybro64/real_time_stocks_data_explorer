@@ -331,8 +331,11 @@ def test_history_dates_route_and_history_route(monkeypatch) -> None:
 
 
 def test_history_routes_unavailable_and_not_found(monkeypatch) -> None:
-    class _Unavailable:
+    class _Disabled:
         def is_available(self) -> bool:
+            return False
+
+        def is_configured(self) -> bool:
             return False
 
         def list_history_dates(self, **_kwargs):
@@ -341,14 +344,35 @@ def test_history_routes_unavailable_and_not_found(monkeypatch) -> None:
         def get_history_rankings(self, **_kwargs):
             return None
 
+    monkeypatch.setattr(rankings_route, "rankings_archive_service", _Disabled())
+    disabled_dates = rankings_route.get_rankings_history_dates(
+        market="TW",
+        universe="TWSE",
+        ranking_type=RankingType.net_buy,
+    )
+    assert disabled_dates.dates == []
+
+    class _Unavailable:
+        def is_available(self) -> bool:
+            return False
+
+        def is_configured(self) -> bool:
+            return True
+
+        def list_history_dates(self, **_kwargs):
+            return []
+
+        def get_history_rankings(self, **_kwargs):
+            return None
+
     monkeypatch.setattr(rankings_route, "rankings_archive_service", _Unavailable())
-    with pytest.raises(HTTPException) as exc_dates:
+    with pytest.raises(HTTPException) as exc_unavailable_dates:
         rankings_route.get_rankings_history_dates(
             market="TW",
             universe="TWSE",
             ranking_type=RankingType.net_buy,
         )
-    assert exc_dates.value.status_code == 503
+    assert exc_unavailable_dates.value.status_code == 503
 
     class _Missing:
         def is_available(self) -> bool:

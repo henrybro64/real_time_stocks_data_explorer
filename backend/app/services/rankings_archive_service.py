@@ -66,6 +66,12 @@ class RankingsArchiveService:
     def is_available(self) -> bool:
         return self._repository.is_available()
 
+    def is_configured(self) -> bool:
+        probe = getattr(self._repository, "is_configured", None)
+        if callable(probe):
+            return bool(probe())
+        return self.is_available()
+
     def eod_archive_queries(self) -> list[RankingQuery]:
         """UI-aligned ranking combinations for EOD archive (#167)."""
         queries: list[RankingQuery] = []

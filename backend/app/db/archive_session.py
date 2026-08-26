@@ -14,7 +14,7 @@ import logging
 from threading import Lock
 from time import monotonic
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -154,12 +154,14 @@ def ensure_rankings_archive_schema() -> bool:
             with factory() as session:
                 bind = session.get_bind()
                 ArchiveBase.metadata.create_all(bind=bind)
+                _ensure_archive_compat_columns(bind)
             _schema_ready = True
             return True
         if engine is None:
             return False
         try:
             ArchiveBase.metadata.create_all(bind=engine)
+            _ensure_archive_compat_columns(engine)
             _schema_ready = True
             return True
         except Exception:  # noqa: BLE001
@@ -168,3 +170,39 @@ def ensure_rankings_archive_schema() -> bool:
                 extra={"event": "rankings_archive.schema.failed"},
             )
             return False
+
+
+def _ensure_archive_compat_columns(bind: Engine) -> None:
+    """Backfill columns for already-provisioned archive tables.
+
+    ``create_all`` does not ALTER existing tables, so we apply additive
+    compatibility updates explicitly.
+    """
+    inspector = inspect(bind)
+    try:
+        columns = {column["name"] for column in inspector.get_columns("ranking_snapshots_archive")}
+    except Exception:  # noqa: BLE001
+        # Table missing/metadata inaccessible: leave to create_all/normal errors.
+        return
+    if "tw_rankings_scope" in columns:
+        return
+
+    dialect = bind.dialect.name.lower()
+    if dialect.startswith("mssql"):
+        alter_sql = (
+            "ALTER TABLE ranking_snapshots_archive "
+            "ADD tw_rankings_scope NVARCHAR(32) NULL"
+        )
+    elif dialect.startswith("sqlite"):
+        alter_sql = (
+            "ALTER TABLE ranking_snapshots_archive "
+            "ADD COLUMN tw_rankings_scope VARCHAR(32)"
+        )
+    else:
+        alter_sql = (
+            "ALTER TABLE ranking_snapshots_archive "
+            "ADD COLUMN tw_rankings_scope VARCHAR(32) NULL"
+        )
+
+    with bind.begin() as connection:
+        connection.execute(text(alter_sql))
