@@ -105,10 +105,16 @@ class RankingsArchiveCaptureRequest(BaseModel):
     )
 
 
-@router.post("/archive/capture")
+@router.post(
+    "/archive/capture",
+    responses={
+        403: {"description": "Capture token missing or invalid"},
+        503: {"description": "Capture endpoint not configured"},
+    },
+)
 def capture_rankings_archive(
     payload: RankingsArchiveCaptureRequest | None = None,
-    x_rankings_archive_capture_token: str | None = Header(default=None),
+    x_rankings_archive_capture_token: Annotated[str | None, Header()] = None,
 ) -> dict[str, int]:
     """Token-gated manual EOD archive capture into Azure SQL (#167)."""
     expected = settings.rankings_archive_capture_token.strip()

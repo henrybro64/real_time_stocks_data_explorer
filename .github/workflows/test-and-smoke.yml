@@ -170,10 +170,17 @@ jobs:
       - name: Install smoke test dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pytest allure-pytest
+          # Pin versions (same pins as backend/requirements-dev.txt) for reproducible CI.
+          pip install --only-binary=:all: "pytest==9.0.3" "allure-pytest==2.15.3"
       - name: Install k3s
         run: |
-          curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="--write-kubeconfig-mode 644 --disable traefik" sh -
+          # Download then execute (no curl|sh pipe). Official installer over HTTPS only.
+          install_script="${RUNNER_TEMP}/k3s-install.sh"
+          curl -fsSL --proto '=https' --tlsv1.2 -o "${install_script}" https://get.k3s.io
+          test -s "${install_script}"
+          grep -q 'INSTALL_K3S' "${install_script}"
+          chmod 0700 "${install_script}"
+          INSTALL_K3S_EXEC="--write-kubeconfig-mode 644 --disable traefik" sh "${install_script}"
           sudo k3s kubectl get nodes
       - name: Run k3s deployment smoke
         run: |
