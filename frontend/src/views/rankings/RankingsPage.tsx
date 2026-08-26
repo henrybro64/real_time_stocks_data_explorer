@@ -29,6 +29,8 @@ import { RequestStateNotice, errorToNoticeKind } from "../../components/state/Re
 import {
   fetchMarkets,
   fetchRankings,
+  fetchRankingsHistory,
+  fetchRankingsHistoryDates,
   refreshRankings,
   shouldRetryRankingsQuery,
   toApiError,
@@ -45,6 +47,9 @@ import { defaultRankingsMarketFromStatuses } from "./defaultRankingsMarket";
 
 const DEFAULT_LIMIT = 50;
 const DEFAULT_MARKET = "TW" as const;
+const HISTORY_DATES_LIMIT = 5;
+/** Sentinel value for the date selector: live/current rankings. */
+export const RANKINGS_DATE_CURRENT = "current";
 export const RANKINGS_REFRESH_COOLDOWN_MS = 15_000;
 type RankingMarket = RankingResponse["market"];
 type TwBoardSegment = "TWSE" | "TPEx";
@@ -60,8 +65,17 @@ function rankingsQueryKey(
   market: RankingMarket,
   universe: RankingUniverse,
   rankingType: RankingType,
+  tradingDate: string | null = null,
 ) {
-  return ["rankings", market, universe, rankingType, DEFAULT_LIMIT] as const;
+  return ["rankings", market, universe, rankingType, DEFAULT_LIMIT, tradingDate ?? RANKINGS_DATE_CURRENT] as const;
+}
+
+function rankingsHistoryDatesQueryKey(
+  market: RankingMarket,
+  universe: RankingUniverse,
+  rankingType: RankingType,
+) {
+  return ["rankings-history-dates", market, universe, rankingType, HISTORY_DATES_LIMIT] as const;
 }
 
 function RankingsScopeToggle<T extends string>({
@@ -157,6 +171,7 @@ type RankingsSourceTypeLabelKey =
 type RankingsSnapshotStateLabelKey =
   | "rankings.snapshotState.intraday"
   | "rankings.snapshotState.daily"
+  | "rankings.snapshotState.eodArchive"
   | "rankings.snapshotState.cache"
   | "rankings.snapshotState.unsupported";
 
@@ -310,6 +325,9 @@ function rankingsSnapshotStateLabelKey(
   if (response.unsupportedReason) {
     return "rankings.snapshotState.unsupported";
   }
+  if (response.tradingDate != null || response.captureScope === "end_of_day") {
+    return "rankings.snapshotState.eodArchive";
+  }
   if (response.sourceType === "cache") {
     return "rankings.snapshotState.cache";
   }
@@ -394,11 +412,18 @@ export function RankingsPage() {
   const [twBoard, setTwBoard] = useState<TwBoardSegment>("TWSE");
   const [usUniverse, setUsUniverse] = useState<UsUniverseSegment>("DJIA");
   const [rankingType, setRankingType] = useState<RankingType>(defaultRankingTypeForMarket(DEFAULT_MARKET));
+  const [selectedTradingDate, setSelectedTradingDate] = useState<string | null>(null);
   const [refreshError, setRefreshError] = useState<string | null>(null);
   const [refreshCooldownUntil, setRefreshCooldownUntil] = useState(0);
   const rankingTabs = tabsForMarket(market);
   const selectedScope: RankingUniverse = market === "TW" ? twBoard : usUniverse;
-  const rankingsQueryKeyValue = rankingsQueryKey(market, selectedScope, rankingType);
+  const isHistorical = selectedTradingDate != null;
+  const rankingsQueryKeyValue = rankingsQueryKey(
+    market,
+    selectedScope,
+    rankingType,
+    selectedTradingDate,
+  );
 
   useEffect(() => {
     setRankingType((prev) => {
@@ -411,22 +436,75 @@ export function RankingsPage() {
     });
   }, [market]);
 
+  const historyDatesQuery = useQuery({
+    queryKey: rankingsHistoryDatesQueryKey(market, selectedScope, rankingType),
+    queryFn: ({ signal }) =>
+      fetchRankingsHistoryDates(
+        market,
+        selectedScope,
+        rankingType,
+        HISTORY_DATES_LIMIT,
+        signal,
+      ),
+    staleTime: 5 * 60_000,
+    retry: false,
+  });
+  const availableHistoryDates = historyDatesQuery.data?.dates ?? [];
+  const dateOptions = useMemo(() => {
+    if (
+      selectedTradingDate != null
+      && !availableHistoryDates.includes(selectedTradingDate)
+    ) {
+      return [selectedTradingDate, ...availableHistoryDates];
+    }
+    return availableHistoryDates;
+  }, [availableHistoryDates, selectedTradingDate]);
+
+  useEffect(() => {
+    if (selectedTradingDate == null) {
+      return;
+    }
+    // Query key changes with ranking type; wait for the new dates list before
+    // deciding the selection is invalid (avoid flashing back to Current).
+    if (!historyDatesQuery.isSuccess) {
+      return;
+    }
+    if (!availableHistoryDates.includes(selectedTradingDate)) {
+      setSelectedTradingDate(null);
+    }
+  }, [availableHistoryDates, historyDatesQuery.isSuccess, selectedTradingDate]);
+
   const rankingsQuery = useQuery<RankingResponse>({
     queryKey: rankingsQueryKeyValue,
-    queryFn: ({ signal }) =>
-      fetchRankings(
+    queryFn: ({ signal }) => {
+      if (selectedTradingDate != null) {
+        return fetchRankingsHistory(
+          market,
+          rankingType,
+          selectedTradingDate,
+          DEFAULT_LIMIT,
+          selectedScope,
+          signal,
+        );
+      }
+      return fetchRankings(
         market,
         rankingType,
         DEFAULT_LIMIT,
         selectedScope,
         signal,
-      ),
+      );
+    },
     retry: shouldRetryRankingsQuery,
-    refetchInterval: (query) =>
-      getRankingsRefetchInterval(
+    refetchInterval: (query) => {
+      if (selectedTradingDate != null) {
+        return false;
+      }
+      return getRankingsRefetchInterval(
         (query.state.data as RankingResponse | undefined)?.isMarketOpen ?? false,
         rankingType,
-      ),
+      );
+    },
   });
 
   const refreshMutation = useMutation({
@@ -435,7 +513,7 @@ export function RankingsPage() {
     onSuccess: (next, vars) => {
       setRefreshError(null);
       queryClient.setQueryData(
-        rankingsQueryKey(vars.market, vars.universe, vars.rankingType),
+        rankingsQueryKey(vars.market, vars.universe, vars.rankingType, null),
         next,
       );
     },
@@ -461,9 +539,12 @@ export function RankingsPage() {
   const localizedSnapshotState = data ? t(rankingsSnapshotStateLabelKey(data)) : "";
   const showNetBuySellColumn = isInstitutionalRanking(rankingType);
   const showValuationColumns = isValuationRanking(rankingType);
-  const refreshDisabled = refreshMutation.isPending || Date.now() < refreshCooldownUntil;
-  const scopeNoteKey =
-    market === "US"
+  const refreshDisabled =
+    isHistorical || refreshMutation.isPending || Date.now() < refreshCooldownUntil;
+  // Historical views use the EOD banner; live scope notices describe current providers only.
+  const scopeNoteKey = isHistorical
+    ? null
+    : market === "US"
       ? usScopeNoticeKeyFromState(rankingType, data)
       : isInstitutionalRanking(rankingType)
         ? twBoard === "TPEx"
@@ -476,12 +557,18 @@ export function RankingsPage() {
   function handleMarketChange(nextMarket: RankingMarket) {
     setMarketOverride(nextMarket);
     setRankingType(defaultRankingTypeForMarket(nextMarket));
+    setSelectedTradingDate(null);
     setRefreshError(null);
     if (nextMarket === "TW") {
       setTwBoard("TWSE");
     } else {
       setUsUniverse("DJIA");
     }
+  }
+
+  function handleDateChange(next: string) {
+    setRefreshError(null);
+    setSelectedTradingDate(next === RANKINGS_DATE_CURRENT ? null : next);
   }
 
   return (
@@ -502,7 +589,7 @@ export function RankingsPage() {
               <p className="app-eyebrow">{t("rankings.market")}</p>
               <h2>{t("rankings.title")}</h2>
             </div>
-            {data ? <RankingRealtimeTag response={data} /> : null}
+            {data && !isHistorical ? <RankingRealtimeTag response={data} /> : null}
           </div>
           <div className="app-portfolio-asset-form">
             <Select
@@ -515,9 +602,11 @@ export function RankingsPage() {
               <SelectItem value="TW" text={t("rankings.market.tw")} />
               <SelectItem value="US" text={t("rankings.market.us")} />
             </Select>
-            <p className="app-supporting-copy" data-testid="rankings-scope-note">
-              {t(scopeNoteKey)}
-            </p>
+            {scopeNoteKey ? (
+              <p className="app-supporting-copy" data-testid="rankings-scope-note">
+                {t(scopeNoteKey)}
+              </p>
+            ) : null}
           </div>
           {market === "TW" ? (
             <RankingsScopeToggle
@@ -537,6 +626,7 @@ export function RankingsPage() {
               ]}
               onChange={(next) => {
                 setRefreshError(null);
+                setSelectedTradingDate(null);
                 setTwBoard(next);
               }}
             />
@@ -558,10 +648,29 @@ export function RankingsPage() {
               ]}
               onChange={(next) => {
                 setRefreshError(null);
+                setSelectedTradingDate(null);
                 setUsUniverse(next);
               }}
             />
           )}
+          <Select
+            id="rankings-date-select"
+            data-testid="rankings-date-select"
+            labelText={t("rankings.date.label")}
+            value={selectedTradingDate ?? RANKINGS_DATE_CURRENT}
+            onChange={(event) => handleDateChange(event.currentTarget.value)}
+            style={{ marginTop: "1rem", maxWidth: "22rem" }}
+          >
+            <SelectItem value={RANKINGS_DATE_CURRENT} text={t("rankings.date.current")} />
+            {dateOptions.map((tradingDate) => (
+              <SelectItem key={tradingDate} value={tradingDate} text={tradingDate} />
+            ))}
+          </Select>
+          {historyDatesQuery.isError ? (
+            <p className="app-supporting-copy" data-testid="rankings-history-dates-unavailable">
+              {t("rankings.date.historyUnavailable")}
+            </p>
+          ) : null}
           <RankingsScopeToggle
             className="app-shell-brand app-rankings-tabs"
             style={{ marginTop: "1rem" }}
@@ -591,6 +700,14 @@ export function RankingsPage() {
             <>
               {data ? (
                 <>
+                  {isHistorical ? (
+                    <p className="app-section-meta" data-testid="rankings-historical-banner">
+                      {t("rankings.date.historicalBanner").replace(
+                        "{date}",
+                        data.tradingDate ?? selectedTradingDate ?? "",
+                      )}
+                    </p>
+                  ) : null}
                   <p className="app-section-meta" data-testid="rankings-freshness-label">
                     {getLocalizedRankingsFreshnessLabel(data, t)}
                   </p>
@@ -604,21 +721,23 @@ export function RankingsPage() {
                     <p className="app-section-meta" data-testid="rankings-source-label">
                       {t("rankings.meta.source")}: {localizedSource}
                     </p>
-                    <Button
-                      data-testid="rankings-refresh-source"
-                      kind="tertiary"
-                      size="sm"
-                      disabled={refreshDisabled}
-                      onClick={() =>
-                        refreshMutation.mutate({
-                          market,
-                          rankingType,
-                          universe: selectedScope,
-                        })
-                      }
-                    >
-                      {refreshMutation.isPending ? t("rankings.refresh.loading") : t("rankings.refresh.action")}
-                    </Button>
+                    {!isHistorical ? (
+                      <Button
+                        data-testid="rankings-refresh-source"
+                        kind="tertiary"
+                        size="sm"
+                        disabled={refreshDisabled}
+                        onClick={() =>
+                          refreshMutation.mutate({
+                            market,
+                            rankingType,
+                            universe: selectedScope,
+                          })
+                        }
+                      >
+                        {refreshMutation.isPending ? t("rankings.refresh.loading") : t("rankings.refresh.action")}
+                      </Button>
+                    ) : null}
                     <Tag
                       data-testid="rankings-source-type-tag"
                       size="sm"

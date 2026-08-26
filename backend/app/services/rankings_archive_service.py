@@ -16,7 +16,7 @@ from app.repositories.rankings_archive_repository import (
     CAPTURE_SCOPE_END_OF_DAY,
     rankings_archive_repository,
 )
-from app.schemas.rankings import RankingSourceType, RankingType
+from app.schemas.rankings import RankingResponse, RankingSourceType, RankingType
 from app.services.market_clock import (
     MARKET_TIMEZONES,
     TW_DAILY_PUBLISH_TIME,
@@ -36,6 +36,10 @@ logger = logging.getLogger(__name__)
 _MAX_ARCHIVE_LIMIT = 50
 _US_SETTLE_MINUTES = 45
 _TW_QUOTE_SETTLE_MINUTES = 30
+
+
+class RankingsArchiveUnavailableError(RuntimeError):
+    """Archive DB is configured but a history query failed (operational outage)."""
 
 
 @dataclass(frozen=True)
@@ -61,6 +65,12 @@ class RankingsArchiveService:
 
     def is_available(self) -> bool:
         return self._repository.is_available()
+
+    def is_configured(self) -> bool:
+        probe = getattr(self._repository, "is_configured", None)
+        if callable(probe):
+            return bool(probe())
+        return self.is_available()
 
     def eod_archive_queries(self) -> list[RankingQuery]:
         """UI-aligned ranking combinations for EOD archive (#167)."""
@@ -377,6 +387,78 @@ class RankingsArchiveService:
             },
         )
         return {"captured": captured, "skipped": skipped, "failed": failed}
+
+    def list_history_dates(
+        self,
+        *,
+        market: Literal["US", "TW"],
+        universe: str,
+        ranking_type: RankingType,
+        limit: int = 5,
+    ) -> list[date]:
+        """Return newest archived trading dates for market/universe/type (UI discovery)."""
+        if not self.is_available():
+            return []
+        try:
+            return self._repository.list_available_trading_dates(
+                market=market,
+                universe=universe,
+                ranking_type=ranking_type,
+                limit=limit,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception(
+                "Rankings archive history dates lookup failed",
+                extra={
+                    "event": "rankings_archive.history.dates_failed",
+                    "market": market,
+                    "universe": universe,
+                    "ranking_type": ranking_type.value,
+                },
+            )
+            raise RankingsArchiveUnavailableError(
+                "Rankings archive history dates lookup failed",
+            ) from exc
+
+    def get_history_rankings(
+        self,
+        *,
+        market: Literal["US", "TW"],
+        universe: str,
+        ranking_type: RankingType,
+        trading_date: date,
+        limit: int = 50,
+    ) -> RankingResponse | None:
+        """Load one EOD archive snapshot. Returns None when missing; raises on outage."""
+        if not self.is_available():
+            return None
+        try:
+            envelope = self._repository.load_eod_snapshot(
+                market=market,
+                universe=universe,
+                ranking_type=ranking_type,
+                trading_date=trading_date,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception(
+                "Rankings archive history load failed",
+                extra={
+                    "event": "rankings_archive.history.load_failed",
+                    "market": market,
+                    "universe": universe,
+                    "ranking_type": ranking_type.value,
+                    "trading_date": trading_date.isoformat(),
+                },
+            )
+            raise RankingsArchiveUnavailableError(
+                "Rankings archive history load failed",
+            ) from exc
+        if envelope is None:
+            return None
+        response = self._repository.to_ranking_response(envelope)
+        if limit < len(response.items):
+            return response.model_copy(update={"items": response.items[:limit]})
+        return response
 
     def start_background_sampler(self, poll_seconds: int) -> None:
         with self._lock:

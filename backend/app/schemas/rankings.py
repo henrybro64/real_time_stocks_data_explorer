@@ -82,6 +82,17 @@ class RankingResponse(BaseModel):
     usRankingsScope: str | None = None
     # TW-only: Yahoo pre-ranked board vs configured quote universe vs hard-coded fallback.
     twRankingsScope: str | None = None
+    # Present when the payload was loaded from the Azure SQL EOD archive (#168).
+    tradingDate: str | None = None
+    captureScope: str | None = None
+
+
+class RankingsHistoryDatesResponse(BaseModel):
+    market: Literal["US", "TW"]
+    universe: RankingUniverse
+    dates: list[str] = Field(
+        description="Available archived trading dates (YYYY-MM-DD), newest first.",
+    )
 
 
 class RankingsRefreshRequest(BaseModel):

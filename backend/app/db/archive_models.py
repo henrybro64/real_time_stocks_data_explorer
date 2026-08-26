@@ -65,6 +65,8 @@ class RankingSnapshotArchive(ArchiveBase):
         nullable=False,
         server_default="end_of_day",
     )
+    # Original live TW scope at capture time (quote/yahoo/fallback); null for US/inst.
+    tw_rankings_scope: Mapped[str | None] = mapped_column(Unicode(32), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),

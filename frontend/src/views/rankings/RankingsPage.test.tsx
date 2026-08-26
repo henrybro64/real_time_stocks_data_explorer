@@ -11,6 +11,8 @@ import {
   RANKINGS_REQUEST_TIMEOUT_DETAIL,
   fetchMarkets,
   fetchRankings,
+  fetchRankingsHistory,
+  fetchRankingsHistoryDates,
   refreshRankings,
 } from "../../services/api/client";
 import { RankingsPage } from "./RankingsPage";
@@ -20,6 +22,8 @@ vi.mock("../../services/api/client", async () => {
   return {
     ...actual,
     fetchRankings: vi.fn(),
+    fetchRankingsHistory: vi.fn(),
+    fetchRankingsHistoryDates: vi.fn(),
     fetchMarkets: vi.fn(),
     refreshRankings: vi.fn(),
   };
@@ -356,6 +360,12 @@ describe("RankingsPage", () => {
     pushMock.mockReset();
     vi.mocked(fetchMarkets).mockResolvedValue(defaultMarketsPayload());
     vi.mocked(fetchRankings).mockResolvedValue(buildResponse());
+    vi.mocked(fetchRankingsHistoryDates).mockResolvedValue({
+      market: "TW",
+      universe: "TWSE",
+      dates: [],
+    });
+    vi.mocked(fetchRankingsHistory).mockResolvedValue(buildResponse());
     vi.mocked(refreshRankings).mockResolvedValue(buildResponse());
   });
 
@@ -1362,5 +1372,321 @@ describe("RankingsPage", () => {
     });
     expect(await screen.findByTestId("rankings-row-US:META")).toBeInTheDocument();
     expect(screen.queryByTestId("rankings-row-US:AAPL")).not.toBeInTheDocument();
+  });
+
+  it("loads archived rankings when a historical trading date is selected", async () => {
+    const user = userEvent.setup();
+    vi.mocked(fetchRankingsHistoryDates).mockResolvedValue({
+      market: "US",
+      universe: "DJIA",
+      dates: ["2026-08-20", "2026-08-19", "2026-08-18", "2026-08-17", "2026-08-14"],
+    });
+    vi.mocked(fetchRankings)
+      .mockResolvedValueOnce(buildResponse())
+      .mockResolvedValue(buildUsResponse());
+    vi.mocked(fetchRankingsHistory).mockResolvedValue(
+      withUsSymbol(
+        {
+          ...buildUsResponse(),
+          tradingDate: "2026-08-20",
+          captureScope: "end_of_day",
+          isMarketOpen: false,
+        },
+        "IBM",
+        "IBM",
+      ),
+    );
+
+    renderRankingsPage();
+    await screen.findByTestId("rankings-row-TW:2330");
+    await user.selectOptions(screen.getByLabelText("市場"), "US");
+    expect(await screen.findByTestId("rankings-row-US:MSFT")).toBeInTheDocument();
+
+    await waitFor(() => {
+      expect(fetchRankingsHistoryDates).toHaveBeenCalledWith(
+        "US",
+        "DJIA",
+        "volume",
+        5,
+        expect.any(AbortSignal),
+      );
+    });
+
+    await user.selectOptions(screen.getByTestId("rankings-date-select"), "2026-08-20");
+    expect(await screen.findByTestId("rankings-row-US:IBM")).toBeInTheDocument();
+    expect(screen.getByTestId("rankings-historical-banner")).toHaveTextContent("2026-08-20");
+    expect(screen.getByTestId("rankings-snapshot-state-tag")).toHaveTextContent(
+      "已封存收盤快照",
+    );
+    expect(screen.queryByTestId("rankings-refresh-source")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("rankings-realtime-tag")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("rankings-scope-note")).not.toBeInTheDocument();
+    expect(fetchRankingsHistory).toHaveBeenCalledWith(
+      "US",
+      "volume",
+      "2026-08-20",
+      50,
+      "DJIA",
+      expect.any(AbortSignal),
+    );
+
+    await user.click(screen.getByTestId("rankings-tab-change_up"));
+    await waitFor(() => {
+      expect(fetchRankingsHistoryDates).toHaveBeenCalledWith(
+        "US",
+        "DJIA",
+        "change_up",
+        5,
+        expect.any(AbortSignal),
+      );
+      expect(fetchRankingsHistory).toHaveBeenLastCalledWith(
+        "US",
+        "change_up",
+        "2026-08-20",
+        50,
+        "DJIA",
+        expect.any(AbortSignal),
+      );
+    });
+
+    await user.selectOptions(screen.getByTestId("rankings-date-select"), "current");
+    await waitFor(() => {
+      expect(fetchRankings).toHaveBeenLastCalledWith(
+        "US",
+        "change_up",
+        50,
+        "DJIA",
+        expect.any(AbortSignal),
+      );
+    });
+    expect(screen.queryByTestId("rankings-historical-banner")).not.toBeInTheDocument();
+  });
+
+  it("keeps historical selection across TWSE and TPEx ranking types", async () => {
+    const user = userEvent.setup();
+    vi.mocked(fetchRankingsHistoryDates).mockResolvedValue({
+      market: "TW",
+      universe: "TWSE",
+      dates: ["2026-08-20", "2026-08-19"],
+    });
+    vi.mocked(fetchRankingsHistory).mockResolvedValue({
+      ...buildResponse(),
+      tradingDate: "2026-08-20",
+      captureScope: "end_of_day",
+    });
+
+    renderRankingsPage();
+    await screen.findByTestId("rankings-row-TW:2330");
+    await user.selectOptions(screen.getByTestId("rankings-date-select"), "2026-08-20");
+    await waitFor(() => {
+      expect(fetchRankingsHistory).toHaveBeenCalledWith(
+        "TW",
+        "net_buy",
+        "2026-08-20",
+        50,
+        "TWSE",
+        expect.any(AbortSignal),
+      );
+    });
+
+    await user.click(screen.getByTestId("rankings-tab-volume"));
+    await waitFor(() => {
+      expect(fetchRankingsHistory).toHaveBeenLastCalledWith(
+        "TW",
+        "volume",
+        "2026-08-20",
+        50,
+        "TWSE",
+        expect.any(AbortSignal),
+      );
+    });
+  });
+
+  it("shows an error for missing archive dates without falling back to current data", async () => {
+    const user = userEvent.setup();
+    vi.mocked(fetchRankingsHistoryDates).mockResolvedValue({
+      market: "US",
+      universe: "DJIA",
+      dates: ["2026-08-20"],
+    });
+    vi.mocked(fetchRankings)
+      .mockResolvedValueOnce(buildResponse())
+      .mockResolvedValue(buildUsResponse());
+    vi.mocked(fetchRankingsHistory).mockRejectedValue(
+      new ApiError("No archived rankings", { status: 404, detail: "No archived rankings" }),
+    );
+
+    renderRankingsPage();
+    await screen.findByTestId("rankings-row-TW:2330");
+    await user.selectOptions(screen.getByLabelText("市場"), "US");
+    expect(await screen.findByTestId("rankings-row-US:MSFT")).toBeInTheDocument();
+    await user.selectOptions(screen.getByTestId("rankings-date-select"), "2026-08-20");
+
+    expect(await screen.findByText(/No archived rankings/i)).toBeInTheDocument();
+    expect(screen.queryByTestId("rankings-row-US:MSFT")).not.toBeInTheDocument();
+  });
+
+  it("loads NASDAQ100 archived rankings after universe switch resets to Current", async () => {
+    const user = userEvent.setup();
+    vi.mocked(fetchRankingsHistoryDates).mockImplementation(async (market, universe, _rankingType) => ({
+      market,
+      universe,
+      dates: ["2026-08-20", "2026-08-19"],
+    }));
+    vi.mocked(fetchRankings)
+      .mockResolvedValueOnce(buildResponse())
+      .mockResolvedValue(buildUsResponse());
+    vi.mocked(fetchRankingsHistory).mockResolvedValue(
+      withUsSymbol(
+        {
+          ...buildNasdaq100Response(),
+          tradingDate: "2026-08-20",
+          captureScope: "end_of_day",
+          isMarketOpen: false,
+        },
+        "NVDA",
+        "NVIDIA",
+      ),
+    );
+
+    renderRankingsPage();
+    await screen.findByTestId("rankings-row-TW:2330");
+    await user.selectOptions(screen.getByLabelText("市場"), "US");
+    expect(await screen.findByTestId("rankings-row-US:MSFT")).toBeInTheDocument();
+
+    await user.selectOptions(screen.getByTestId("rankings-date-select"), "2026-08-20");
+    expect(await screen.findByTestId("rankings-historical-banner")).toBeInTheDocument();
+
+    await user.click(screen.getByTestId("rankings-us-universe-nasdaq100"));
+    await waitFor(() => {
+      expect(screen.queryByTestId("rankings-historical-banner")).not.toBeInTheDocument();
+    });
+    expect(fetchRankings).toHaveBeenCalledWith(
+      "US",
+      "volume",
+      50,
+      "NASDAQ100",
+      expect.any(AbortSignal),
+    );
+
+    await user.selectOptions(screen.getByTestId("rankings-date-select"), "2026-08-20");
+    expect(await screen.findByTestId("rankings-row-US:NVDA")).toBeInTheDocument();
+    expect(fetchRankingsHistory).toHaveBeenLastCalledWith(
+      "US",
+      "volume",
+      "2026-08-20",
+      50,
+      "NASDAQ100",
+      expect.any(AbortSignal),
+    );
+  });
+
+  it("loads TPEx archived rankings for the selected trading date", async () => {
+    const user = userEvent.setup();
+    vi.mocked(fetchRankingsHistoryDates).mockImplementation(async (market, universe, _rankingType) => ({
+      market,
+      universe,
+      dates: ["2026-08-20"],
+    }));
+    vi.mocked(fetchRankingsHistory).mockResolvedValue({
+      ...buildTwQuoteResponse({
+        universe: "TPEx",
+        twBoard: "TPEx",
+        rankingType: "volume",
+        tradingDate: "2026-08-20",
+        captureScope: "end_of_day",
+      }),
+      items: [
+        {
+          rank: 1,
+          stock: {
+            id: "TW:6488",
+            market: "TW",
+            symbol: "6488",
+            name: "環球晶",
+            exchange: "TPEx",
+            currency: "TWD",
+            timezone: "Asia/Taipei",
+          },
+          lastPrice: 500,
+          changePercent: 1.2,
+          volume: 1000,
+          volumeDeltaPercent: null,
+          netBuySellShares: null,
+          timestamp: new Date().toISOString(),
+        },
+      ],
+    });
+
+    renderRankingsPage();
+    await screen.findByTestId("rankings-row-TW:2330");
+    await user.click(screen.getByTestId("rankings-tw-board-tpex"));
+    await user.selectOptions(screen.getByTestId("rankings-date-select"), "2026-08-20");
+
+    expect(await screen.findByTestId("rankings-row-TW:6488")).toBeInTheDocument();
+    expect(fetchRankingsHistory).toHaveBeenCalledWith(
+      "TW",
+      expect.any(String),
+      "2026-08-20",
+      50,
+      "TPEx",
+      expect.any(AbortSignal),
+    );
+  });
+
+  it("keeps selected historical date option visible when date discovery later fails", async () => {
+    const user = userEvent.setup();
+    vi.mocked(fetchRankings)
+      .mockResolvedValueOnce(buildResponse())
+      .mockResolvedValue(buildUsResponse());
+    vi.mocked(fetchRankingsHistory).mockResolvedValue(
+      withUsSymbol(
+        {
+          ...buildUsResponse(),
+          tradingDate: "2026-08-20",
+          captureScope: "end_of_day",
+          isMarketOpen: false,
+        },
+        "IBM",
+        "IBM",
+      ),
+    );
+    vi.mocked(fetchRankingsHistoryDates).mockImplementation(
+      async (_market, _universe, rankingType) => {
+        if (rankingType === "change_up") {
+          throw new ApiError("history dates unavailable", { status: 503 });
+        }
+        return {
+          market: "US",
+          universe: "DJIA",
+          dates: ["2026-08-20"],
+        };
+      },
+    );
+
+    renderRankingsPage();
+    await screen.findByTestId("rankings-row-TW:2330");
+    await user.selectOptions(screen.getByLabelText("市場"), "US");
+    await screen.findByTestId("rankings-row-US:MSFT");
+
+    await user.selectOptions(screen.getByTestId("rankings-date-select"), "2026-08-20");
+    await screen.findByTestId("rankings-row-US:IBM");
+    await user.click(screen.getByTestId("rankings-tab-change_up"));
+
+    expect(
+      await screen.findByTestId("rankings-history-dates-unavailable"),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "2026-08-20" })).toBeInTheDocument();
+
+    await user.selectOptions(screen.getByTestId("rankings-date-select"), "current");
+    await waitFor(() => {
+      expect(fetchRankings).toHaveBeenLastCalledWith(
+        "US",
+        "change_up",
+        50,
+        "DJIA",
+        expect.any(AbortSignal),
+      );
+    });
   });
 });

@@ -968,6 +968,30 @@ export async function installE2eApiMocks(page: Page): Promise<void> {
       return;
     }
 
+    if (path === "/api/rankings/history/dates" && request.method() === "GET") {
+      const market = (url.searchParams.get("market") ?? "TW") as "TW" | "US";
+      const universe = (url.searchParams.get("universe") ??
+        (market === "US" ? "DJIA" : "TWSE")) as "TWSE" | "TPEx" | "DJIA" | "NASDAQ100";
+      await fulfillJson(route, {
+        market,
+        universe,
+        dates: ["2026-08-20", "2026-08-19", "2026-08-18", "2026-08-17", "2026-08-14"],
+      });
+      return;
+    }
+
+    if (path === "/api/rankings/history" && request.method() === "GET") {
+      const tradingDate = url.searchParams.get("date") ?? "2026-08-20";
+      await fulfillJson(route, {
+        ...buildRankingsResponse(url),
+        tradingDate,
+        captureScope: "end_of_day",
+        isMarketOpen: false,
+        dataFreshnessLabel: `Archived end-of-day rankings for ${tradingDate}.`,
+      });
+      return;
+    }
+
     if (path.startsWith("/api/rankings") && request.method() === "GET") {
       await fulfillJson(route, buildRankingsResponse(url));
       return;

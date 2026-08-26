@@ -15,18 +15,18 @@ test("rankings page shows snapshot metadata and TW daily warning", async ({ page
 });
 
 
-test("user can switch to U.S. rankings and see explicit unsupported institutional state", async ({
-  page,
-}) => {
+test("user can switch Current -> historical date -> Current on rankings", async ({ page }) => {
   await page.goto("/rankings");
 
   await expect(page.locator("#main-content")).toBeVisible();
-  await page.getByLabel("市場").selectOption("US");
-  await page.getByTestId("rankings-tab-net_buy").click();
+  await expect(page.getByTestId("rankings-row-TW:2330")).toBeVisible();
+  await expect(page.getByTestId("rankings-date-select")).toBeVisible();
 
-  await expect(page.getByTestId("rankings-unsupported-message")).toContainText(
-    "美股法人買超／賣超",
-  );
-  await expect(page.getByTestId("rankings-source-type-tag")).toContainText("不支援");
-  await expect(page.getByTestId("rankings-snapshot-state-tag")).toContainText("不支援");
+  await page.getByTestId("rankings-date-select").selectOption("2026-08-20");
+  await expect(page.getByTestId("rankings-historical-banner")).toContainText("2026-08-20");
+  await expect(page.getByTestId("rankings-refresh-source")).toHaveCount(0);
+
+  await page.getByTestId("rankings-date-select").selectOption("current");
+  await expect(page.getByTestId("rankings-historical-banner")).toHaveCount(0);
+  await expect(page.getByTestId("rankings-refresh-source")).toBeVisible();
 });

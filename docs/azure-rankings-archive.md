@@ -87,6 +87,19 @@ RANKINGS_ARCHIVE_EOD_POLL_SECONDS=900
 
 Failures are logged and never raised into ranking request paths.
 
+## Historical read APIs (#168)
+
+These endpoints read Azure SQL only. They never fall back to current rankings.
+They require the archive path from issues #165–#167 (PR landing those changes).
+
+| Endpoint | Behavior |
+| --- | --- |
+| `GET /api/rankings/history/dates?market=&universe=&type=&limit=5` | Archived trading dates for that ranking type, newest first |
+| `GET /api/rankings/history?market=&universe=&type=&date=YYYY-MM-DD` | One EOD ranking list for that date |
+
+Responses include `tradingDate` and `captureScope` so the UI can label historical
+data. Missing archives → `404`; archive DB unavailable or mid-query failure → `503`.
+`GET /api/rankings` is unchanged and independent of Azure.
 
 ## Backend container / k3s hookup
 
@@ -144,6 +157,7 @@ cd backend
   tests/unit/repositories/test_rankings_archive_repository.py \
   tests/unit/services/test_rankings_archive_service.py \
   tests/unit/routes/test_rankings_archive_route.py \
+  tests/unit/routes/test_rankings_history_route.py \
   tests/unit/jobs/test_jobs_runtime.py \
   tests/unit/db/test_archive_session.py -q
 ```

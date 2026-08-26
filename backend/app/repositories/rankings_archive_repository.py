@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timezone
 import logging
 
-from sqlalchemy import select
+from sqlalchemy import distinct, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -52,6 +52,11 @@ class RankingsArchiveRepository:
             and get_rankings_archive_session_factory() is not None
         )
 
+    def is_configured(self) -> bool:
+        if self._session_factory_override is not _UNSET:
+            return self._session_factory_override is not None
+        return rankings_archive_is_configured()
+
     def _session_factory(self) -> sessionmaker[Session]:
         if self._session_factory_override is not _UNSET:
             if self._session_factory_override is None:
@@ -73,6 +78,39 @@ class RankingsArchiveRepository:
                 ArchiveBase.metadata.create_all(bind=bind)
             return True
         return ensure_rankings_archive_schema()
+
+    def list_available_trading_dates(
+        self,
+        *,
+        market: str,
+        universe: str,
+        ranking_type: RankingType | str | None = None,
+        limit: int = 5,
+    ) -> list[date]:
+        """Return archived trading dates for market/universe, newest first.
+
+        When ``ranking_type`` is omitted, dates are distinct across all archived
+        ranking types for that market/universe (UI date discovery use case).
+        """
+        if not self.is_available() or limit <= 0:
+            return []
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            stmt = select(distinct(RankingSnapshotArchive.trading_date)).where(
+                RankingSnapshotArchive.market == market,
+                RankingSnapshotArchive.universe == universe,
+            )
+            if ranking_type is not None:
+                ranking_type_value = (
+                    ranking_type.value
+                    if isinstance(ranking_type, RankingType)
+                    else str(ranking_type)
+                )
+                stmt = stmt.where(
+                    RankingSnapshotArchive.ranking_type == ranking_type_value,
+                )
+            stmt = stmt.order_by(RankingSnapshotArchive.trading_date.desc()).limit(limit)
+            return list(session.execute(stmt).scalars())
 
     def load_eod_snapshot(
         self,
@@ -161,6 +199,7 @@ class RankingsArchiveRepository:
                 warning_message=response.warningMessage,
                 unsupported_reason=response.unsupportedReason,
                 capture_scope=capture_scope,
+                tw_rankings_scope=response.twRankingsScope,
             )
             session.add(snapshot)
             try:
@@ -195,10 +234,18 @@ def ranking_response_from_archive(envelope: ArchiveSnapshotEnvelope) -> RankingR
     universe = snapshot.universe
     tw_board: TwBoard | None = None
     us_scope: str | None = None
+    tw_scope: str | None = snapshot.tw_rankings_scope
     if market == "TW" and universe in {"TWSE", "TPEx"}:
         tw_board = universe  # type: ignore[assignment]
+        if tw_scope is None and RankingType(snapshot.ranking_type) not in {
+            RankingType.net_buy,
+            RankingType.net_sell,
+        }:
+            # Legacy rows captured before tw_rankings_scope was persisted.
+            tw_scope = "quote"
     elif market == "US" and universe in {"DJIA", "NASDAQ100"}:
         us_scope = "djia" if universe == "DJIA" else "nasdaq100"
+        tw_scope = None
 
     items = [
         RankingItem(
@@ -227,12 +274,14 @@ def ranking_response_from_archive(envelope: ArchiveSnapshotEnvelope) -> RankingR
         timestamp=_as_utc_isoformat(snapshot.captured_at),
         source=snapshot.source,
         sourceType=RankingSourceType(snapshot.source_type),
-        isMarketOpen=snapshot.is_market_open,
+        isMarketOpen=False,
         dataFreshnessLabel=snapshot.source_freshness,
         warningMessage=snapshot.warning_message,
         unsupportedReason=snapshot.unsupported_reason,
         usRankingsScope=us_scope,
-        twRankingsScope=None,
+        twRankingsScope=tw_scope,
+        tradingDate=snapshot.trading_date.isoformat(),
+        captureScope=snapshot.capture_scope,
     )
 
 
@@ -262,7 +311,8 @@ def _stock_from_archive_item(
         currency = "USD"
         timezone_name = "America/New_York"
         fallback_exchange = "NASDAQ"
-    exchange = (item.exchange or "").strip() or fallback_exchange
+    # getattr: tolerate older archive rows reconstructed without an exchange column.
+    exchange = (getattr(item, "exchange", None) or "").strip() or fallback_exchange
     return StockResponse(
         id=item.stock_id,
         market=market,

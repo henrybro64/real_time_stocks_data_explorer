@@ -174,6 +174,7 @@ export type TranslationKey =
   | "rankings.sourceType.unsupported"
   | "rankings.snapshotState.intraday"
   | "rankings.snapshotState.daily"
+  | "rankings.snapshotState.eodArchive"
   | "rankings.snapshotState.cache"
   | "rankings.snapshotState.unsupported"
   | "rankings.notice.usScopeYahoo"
@@ -200,6 +201,10 @@ export type TranslationKey =
   | "rankings.refresh.action"
   | "rankings.refresh.loading"
   | "rankings.refresh.failed"
+  | "rankings.date.label"
+  | "rankings.date.current"
+  | "rankings.date.historicalBanner"
+  | "rankings.date.historyUnavailable"
   | "rankings.notice.quoteUnofficial"
   | "rankings.notice.twDaily"
   | "rankings.notice.twDailyTpex"
@@ -634,6 +639,7 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "rankings.sourceType.unsupported": "Unsupported",
     "rankings.snapshotState.intraday": "30-minute intraday snapshot",
     "rankings.snapshotState.daily": "Daily TW institutional data",
+    "rankings.snapshotState.eodArchive": "Archived end-of-day snapshot",
     "rankings.snapshotState.cache": "Latest cached snapshot",
     "rankings.snapshotState.unsupported": "Unsupported",
     "rankings.notice.usScopeYahoo":
@@ -668,6 +674,12 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "rankings.refresh.loading": "Refreshing from source",
     "rankings.refresh.failed":
       "Could not refresh rankings from the upstream source. The current table was left unchanged.",
+    "rankings.date.label": "Trading date",
+    "rankings.date.current": "Today / Current",
+    "rankings.date.historicalBanner":
+      "Showing archived end-of-day rankings for {date}. This is historical data, not a live market view.",
+    "rankings.date.historyUnavailable":
+      "Historical trading dates are temporarily unavailable. Current rankings still work.",
     "rankings.notice.quoteUnofficial": "Free unofficial quote source; data may be delayed or unavailable.",
     "rankings.notice.twDaily": "Taiwan institutional net buy/sell rankings use daily data, not intraday real-time data.",
     "rankings.notice.twDailyTpex":
@@ -1103,6 +1115,7 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "rankings.sourceType.unsupported": "不支援",
     "rankings.snapshotState.intraday": "30 分鐘盤中快照",
     "rankings.snapshotState.daily": "台股法人日資料",
+    "rankings.snapshotState.eodArchive": "已封存收盤快照",
     "rankings.snapshotState.cache": "最新快取快照",
     "rankings.snapshotState.unsupported": "不支援",
     "rankings.notice.usScopeYahoo": "美股此分頁採用 Yahoo Finance 預先排序的選股結果，涵蓋更廣的美股市場。",
@@ -1133,6 +1146,12 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "rankings.refresh.action": "重新抓取最新資料",
     "rankings.refresh.loading": "正在重新抓取最新資料",
     "rankings.refresh.failed": "無法從上游來源重新抓取排行；目前表格資料維持不變。",
+    "rankings.date.label": "交易日",
+    "rankings.date.current": "今日／即時",
+    "rankings.date.historicalBanner":
+      "目前顯示 {date} 的收盤歷史排行（非即時盤中資料）。",
+    "rankings.date.historyUnavailable":
+      "暫時無法載入歷史交易日；今日／即時排行仍可正常使用。",
     "rankings.notice.quoteUnofficial": "免費非官方報價來源可能延遲，或暫時無法提供資料。",
     "rankings.notice.twDaily": "台股三大法人買賣超為日資料，非盤中即時資料。",
     "rankings.notice.twDailyTpex": "上櫃（TPEx）三大法人買賣超為日資料，非盤中即時資料。",
