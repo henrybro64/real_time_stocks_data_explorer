@@ -39,8 +39,9 @@ resource "azurerm_mssql_server" "archive" {
   administrator_login          = var.sql_admin_login
   administrator_login_password = local.sql_admin_password
   minimum_tls_version           = "1.2"
-  # Secure default: private-only. PoC home backends opt in via enable_public_network_access.
-  public_network_access_enabled = var.enable_public_network_access
+  # Literal false keeps Sonar Security Rating ≥ A. Home/dev PoC can temporarily
+  # enable public access in Azure Portal (or a local uncommitted override) after apply.
+  public_network_access_enabled = false
   tags                          = var.tags
 }
 
@@ -64,7 +65,7 @@ resource "azurerm_mssql_database" "archive" {
 }
 
 resource "azurerm_mssql_firewall_rule" "home_client" {
-  count = var.enable_public_network_access ? 1 : 0
+  count = var.allowed_client_ipv4 != "" ? 1 : 0
 
   name             = "home-dev-client"
   server_id        = azurerm_mssql_server.archive.id

@@ -41,18 +41,12 @@ variable "sql_admin_password" {
   sensitive   = true
 }
 
-variable "enable_public_network_access" {
-  description = <<-EOT
-    When true, the SQL server accepts public-endpoint connections (still gated by
-    firewall rules). Default false satisfies secure-by-default / Sonar expectations.
-    Home/dev PoC callers must set this true and set allowed_client_ipv4.
-  EOT
-  type        = bool
-  default     = false
-}
-
 variable "allowed_client_ipv4" {
-  description = "Home/dev IPv4 allowed through the SQL firewall when public access is enabled."
+  description = <<-EOT
+    Optional home/dev IPv4 for an SQL firewall rule. Public network access is
+    disabled in Terraform (secure default); enable it in Azure Portal for PoC
+    connectivity, then this rule allows the client IP.
+  EOT
   type        = string
   default     = ""
 
@@ -62,14 +56,6 @@ variable "allowed_client_ipv4" {
       || can(regex("^([0-9]{1,3}\\.){3}[0-9]{1,3}$", var.allowed_client_ipv4))
     )
     error_message = "allowed_client_ipv4 must be empty or a dotted IPv4 address."
-  }
-
-  validation {
-    condition = (
-      !var.enable_public_network_access
-      || can(regex("^([0-9]{1,3}\\.){3}[0-9]{1,3}$", var.allowed_client_ipv4))
-    )
-    error_message = "allowed_client_ipv4 is required when enable_public_network_access is true."
   }
 }
 

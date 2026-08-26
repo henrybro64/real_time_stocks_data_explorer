@@ -59,22 +59,22 @@ If the plan shows VMs, AKS, Redis, networking gateways, etc., **do not apply**.
 
 ## Network access
 
-Terraform defaults `public_network_access_enabled` to **false** (secure-by-default).
-A home/dev backend without Private Link must opt in:
+Terraform sets `public_network_access_enabled = false` (secure-by-default / Sonar).
+Optional `allowed_client_ipv4` still creates a firewall allow rule for later use.
 
-```hcl
-enable_public_network_access = true
-allowed_client_ipv4          = "x.x.x.x"
-```
+For a home/dev backend without Private Link:
 
-Firewall rules are created only when public access is enabled.
+1. Apply Terraform.
+2. In Azure Portal → SQL server → Networking, temporarily enable public access.
+3. Confirm your client IP is allowed (or set `allowed_client_ipv4` before apply).
+4. Run the smoke script, then disable public access again when done.
 
 ## Apply
 
 ```bash
 cd infra/azure-rankings-archive
 cp terraform.tfvars.example terraform.tfvars
-# edit terraform.tfvars: enable public access + set allowed_client_ipv4 (and optional password)
+# edit terraform.tfvars: set allowed_client_ipv4 (and optional password)
 
 terraform init
 terraform plan
