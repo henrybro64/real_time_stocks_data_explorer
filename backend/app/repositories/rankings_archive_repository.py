@@ -194,6 +194,7 @@ class RankingsArchiveRepository:
                 warning_message=response.warningMessage,
                 unsupported_reason=response.unsupportedReason,
                 capture_scope=capture_scope,
+                tw_rankings_scope=response.twRankingsScope,
             )
             session.add(snapshot)
             try:
@@ -228,21 +229,17 @@ def ranking_response_from_archive(envelope: ArchiveSnapshotEnvelope) -> RankingR
     universe = snapshot.universe
     tw_board: TwBoard | None = None
     us_scope: str | None = None
+    tw_scope: str | None = snapshot.tw_rankings_scope
     if market == "TW" and universe in {"TWSE", "TPEx"}:
         tw_board = universe  # type: ignore[assignment]
-        # Institutional tabs use dedicated UI notices; quote/valuation/change tabs
-        # get an explicit quote scope so reconstruct never falls through as "pending".
-        if RankingType(snapshot.ranking_type) in {
+        if tw_scope is None and RankingType(snapshot.ranking_type) not in {
             RankingType.net_buy,
             RankingType.net_sell,
         }:
-            tw_scope = None
-        else:
+            # Legacy rows captured before tw_rankings_scope was persisted.
             tw_scope = "quote"
     elif market == "US" and universe in {"DJIA", "NASDAQ100"}:
         us_scope = "djia" if universe == "DJIA" else "nasdaq100"
-        tw_scope = None
-    else:
         tw_scope = None
 
     items = [
@@ -258,7 +255,7 @@ def ranking_response_from_archive(envelope: ArchiveSnapshotEnvelope) -> RankingR
             peRatioType=row.pe_ratio_type,
             peRatioSource=row.pe_ratio_source,
             valuationAsOf=row.valuation_as_of,
-            valuationWarning=None,
+            valuationWarning=row.valuation_warning,
             timestamp=row.data_time,
         )
         for row in envelope.items
@@ -302,13 +299,14 @@ def _stock_from_archive_item(
     universe: str,
 ) -> StockResponse:
     if market == "TW":
-        exchange = universe if universe in {"TWSE", "TPEx"} else "TWSE"
         currency = "TWD"
         timezone_name = "Asia/Taipei"
+        fallback_exchange = universe if universe in {"TWSE", "TPEx"} else "TWSE"
     else:
-        exchange = "NASDAQ"
         currency = "USD"
         timezone_name = "America/New_York"
+        fallback_exchange = "NASDAQ"
+    exchange = (getattr(item, "exchange", None) or "").strip() or fallback_exchange
     return StockResponse(
         id=item.stock_id,
         market=market,
@@ -333,6 +331,7 @@ def _items_from_response(
                 stock_id=item.stock.id,
                 symbol=item.stock.symbol,
                 name=item.stock.name,
+                exchange=item.stock.exchange,
                 last_price=item.lastPrice,
                 change_percent=item.changePercent,
                 volume=item.volume,
@@ -341,6 +340,7 @@ def _items_from_response(
                 pe_ratio_type=item.peRatioType,
                 pe_ratio_source=item.peRatioSource,
                 valuation_as_of=item.valuationAsOf,
+                valuation_warning=item.valuationWarning,
                 net_buy_sell_shares=item.netBuySellShares,
                 data_time=item.timestamp,
             )

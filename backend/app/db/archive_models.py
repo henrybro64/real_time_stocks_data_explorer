@@ -64,6 +64,8 @@ class RankingSnapshotArchive(ArchiveBase):
         nullable=False,
         server_default="end_of_day",
     )
+    # Original live TW scope at capture time (quote/yahoo/fallback); null for US/inst.
+    tw_rankings_scope: Mapped[str | None] = mapped_column(String(32), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
@@ -97,6 +99,7 @@ class RankingSnapshotItemArchive(ArchiveBase):
     stock_id: Mapped[str] = mapped_column(String(32), nullable=False)
     symbol: Mapped[str] = mapped_column(String(32), nullable=False)
     name: Mapped[str] = mapped_column(String(128), nullable=False)
+    exchange: Mapped[str] = mapped_column(String(32), nullable=False)
     last_price: Mapped[float | None] = mapped_column(Float, nullable=True)
     change_percent: Mapped[float | None] = mapped_column(Float, nullable=True)
     volume: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -105,6 +108,7 @@ class RankingSnapshotItemArchive(ArchiveBase):
     pe_ratio_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
     pe_ratio_source: Mapped[str | None] = mapped_column(String(128), nullable=True)
     valuation_as_of: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    valuation_warning: Mapped[str | None] = mapped_column(Text, nullable=True)
     net_buy_sell_shares: Mapped[int | None] = mapped_column(Integer, nullable=True)
     data_time: Mapped[str] = mapped_column(String(64), nullable=False)
 

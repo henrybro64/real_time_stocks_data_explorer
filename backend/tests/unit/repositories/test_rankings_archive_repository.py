@@ -212,3 +212,108 @@ def test_to_ranking_response_preserves_rank_order() -> None:
     assert reconstructed.items[0].stock.exchange == "NASDAQ"
     # SQLite returns naive captured_at; reconstruct must treat it as UTC (not local TZ).
     assert reconstructed.timestamp.startswith("2026-08-18T20:45:00")
+
+
+def test_to_ranking_response_preserves_exchange_and_tw_yahoo_scope() -> None:
+    repo = RankingsArchiveRepository()
+    repo.set_session_factory_override(_session_factory())
+
+    us = RankingResponse(
+        market="US",
+        rankingType=RankingType.volume,
+        twBoard=None,
+        universe="DJIA",
+        items=[
+            RankingItem(
+                rank=1,
+                stock=StockResponse(
+                    id="US:IBM",
+                    market="US",
+                    symbol="IBM",
+                    name="IBM",
+                    exchange="NYSE",
+                    currency="USD",
+                    timezone="America/New_York",
+                ),
+                lastPrice=180.0,
+                changePercent=0.2,
+                volume=1000,
+                volumeDeltaPercent=None,
+                netBuySellShares=None,
+                peRatio=None,
+                peRatioType=None,
+                peRatioSource=None,
+                valuationAsOf=None,
+                valuationWarning=None,
+                timestamp="2026-08-18T16:00:00-04:00",
+            )
+        ],
+        timestamp="2026-08-18T20:00:00+00:00",
+        source="unit-test",
+        sourceType=RankingSourceType.free_unofficial,
+        isMarketOpen=False,
+        dataFreshnessLabel="closed",
+        warningMessage=None,
+        unsupportedReason=None,
+        usRankingsScope="djia",
+        twRankingsScope=None,
+    )
+    us_env = repo.upsert_eod_snapshot(
+        market="US",
+        universe="DJIA",
+        ranking_type=RankingType.volume,
+        trading_date=date(2026, 8, 18),
+        response=us,
+    )
+    assert us_env is not None
+    assert repo.to_ranking_response(us_env).items[0].stock.exchange == "NYSE"
+
+    tw = RankingResponse(
+        market="TW",
+        rankingType=RankingType.volume,
+        twBoard="TWSE",
+        universe="TWSE",
+        items=[
+            RankingItem(
+                rank=1,
+                stock=StockResponse(
+                    id="TW:2330",
+                    market="TW",
+                    symbol="2330",
+                    name="TSMC",
+                    exchange="TWSE",
+                    currency="TWD",
+                    timezone="Asia/Taipei",
+                ),
+                lastPrice=1000.0,
+                changePercent=1.0,
+                volume=100,
+                volumeDeltaPercent=None,
+                netBuySellShares=None,
+                peRatio=None,
+                peRatioType=None,
+                peRatioSource=None,
+                valuationAsOf=None,
+                valuationWarning=None,
+                timestamp="2026-08-18T13:30:00+08:00",
+            )
+        ],
+        timestamp="2026-08-18T06:00:00+00:00",
+        source="yahoo-pre-ranked",
+        sourceType=RankingSourceType.free_unofficial,
+        isMarketOpen=False,
+        dataFreshnessLabel="closed",
+        warningMessage=None,
+        unsupportedReason=None,
+        usRankingsScope=None,
+        twRankingsScope="yahoo",
+    )
+    tw_env = repo.upsert_eod_snapshot(
+        market="TW",
+        universe="TWSE",
+        ranking_type=RankingType.volume,
+        trading_date=date(2026, 8, 18),
+        response=tw,
+    )
+    assert tw_env is not None
+    assert repo.to_ranking_response(tw_env).twRankingsScope == "yahoo"

@@ -174,6 +174,7 @@ export type TranslationKey =
   | "rankings.sourceType.unsupported"
   | "rankings.snapshotState.intraday"
   | "rankings.snapshotState.daily"
+  | "rankings.snapshotState.eodArchive"
   | "rankings.snapshotState.cache"
   | "rankings.snapshotState.unsupported"
   | "rankings.notice.usScopeYahoo"
@@ -638,6 +639,7 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "rankings.sourceType.unsupported": "Unsupported",
     "rankings.snapshotState.intraday": "30-minute intraday snapshot",
     "rankings.snapshotState.daily": "Daily TW institutional data",
+    "rankings.snapshotState.eodArchive": "Archived end-of-day snapshot",
     "rankings.snapshotState.cache": "Latest cached snapshot",
     "rankings.snapshotState.unsupported": "Unsupported",
     "rankings.notice.usScopeYahoo":
@@ -1113,6 +1115,7 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "rankings.sourceType.unsupported": "不支援",
     "rankings.snapshotState.intraday": "30 分鐘盤中快照",
     "rankings.snapshotState.daily": "台股法人日資料",
+    "rankings.snapshotState.eodArchive": "已封存收盤快照",
     "rankings.snapshotState.cache": "最新快取快照",
     "rankings.snapshotState.unsupported": "不支援",
     "rankings.notice.usScopeYahoo": "美股此分頁採用 Yahoo Finance 預先排序的選股結果，涵蓋更廣的美股市場。",

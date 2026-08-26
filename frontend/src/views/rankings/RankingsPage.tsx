@@ -171,6 +171,7 @@ type RankingsSourceTypeLabelKey =
 type RankingsSnapshotStateLabelKey =
   | "rankings.snapshotState.intraday"
   | "rankings.snapshotState.daily"
+  | "rankings.snapshotState.eodArchive"
   | "rankings.snapshotState.cache"
   | "rankings.snapshotState.unsupported";
 
@@ -324,6 +325,9 @@ function rankingsSnapshotStateLabelKey(
   if (response.unsupportedReason) {
     return "rankings.snapshotState.unsupported";
   }
+  if (response.tradingDate != null || response.captureScope === "end_of_day") {
+    return "rankings.snapshotState.eodArchive";
+  }
   if (response.sourceType === "cache") {
     return "rankings.snapshotState.cache";
   }
@@ -451,10 +455,15 @@ export function RankingsPage() {
     if (selectedTradingDate == null) {
       return;
     }
+    // Query key changes with ranking type; wait for the new dates list before
+    // deciding the selection is invalid (avoid flashing back to Current).
+    if (!historyDatesQuery.isSuccess) {
+      return;
+    }
     if (!availableHistoryDates.includes(selectedTradingDate)) {
       setSelectedTradingDate(null);
     }
-  }, [availableHistoryDates, selectedTradingDate]);
+  }, [availableHistoryDates, historyDatesQuery.isSuccess, selectedTradingDate]);
 
   const rankingsQuery = useQuery<RankingResponse>({
     queryKey: rankingsQueryKeyValue,

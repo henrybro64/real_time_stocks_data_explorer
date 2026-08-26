@@ -216,6 +216,26 @@ describe("fetchRankings", () => {
     expect(shouldRetryRankingsQuery(0, upstream)).toBe(true);
     expect(shouldRetryRankingsQuery(2, upstream)).toBe(true);
     expect(shouldRetryRankingsQuery(3, upstream)).toBe(false);
+    expect(
+      shouldRetryRankingsQuery(
+        0,
+        new ApiError("No archived rankings", {
+          status: 404,
+          detail: "No archived rankings",
+          kind: "not_found",
+        }),
+      ),
+    ).toBe(false);
+    expect(
+      shouldRetryRankingsQuery(
+        0,
+        new ApiError("Invalid universe", {
+          status: 422,
+          detail: "Invalid universe",
+          kind: "validation",
+        }),
+      ),
+    ).toBe(false);
     const cancelled = new Error("The user aborted a request.");
     cancelled.name = "AbortError";
     expect(shouldRetryRankingsQuery(0, cancelled)).toBe(false);

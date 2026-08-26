@@ -1415,6 +1415,9 @@ describe("RankingsPage", () => {
     await user.selectOptions(screen.getByTestId("rankings-date-select"), "2026-08-20");
     expect(await screen.findByTestId("rankings-row-US:IBM")).toBeInTheDocument();
     expect(screen.getByTestId("rankings-historical-banner")).toHaveTextContent("2026-08-20");
+    expect(screen.getByTestId("rankings-snapshot-state-tag")).toHaveTextContent(
+      "已封存收盤快照",
+    );
     expect(screen.queryByTestId("rankings-refresh-source")).not.toBeInTheDocument();
     expect(screen.queryByTestId("rankings-realtime-tag")).not.toBeInTheDocument();
     expect(screen.queryByTestId("rankings-scope-note")).not.toBeInTheDocument();

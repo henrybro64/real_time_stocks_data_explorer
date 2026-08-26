@@ -246,6 +246,17 @@ export function shouldRetryRankingsQuery(failureCount: number, error: unknown): 
   if (isRankingsRequestTimeoutError(error) || isAbortError(error)) {
     return false;
   }
+  if (error instanceof ApiError) {
+    // Definitive client/archive outcomes should not be re-polled.
+    if (
+      error.kind === "not_found" ||
+      error.kind === "validation" ||
+      error.status === 404 ||
+      error.status === 422
+    ) {
+      return false;
+    }
+  }
   return failureCount < 3;
 }
 
