@@ -46,6 +46,7 @@ jobs:
         run: pytest backend/tests/unit backend/tests/integration --alluredir allure-results/backend
       - name: Upload backend Allure results
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
           name: backend-allure-results
@@ -110,6 +111,7 @@ jobs:
         run: npm run test:e2e --prefix frontend
       - name: Upload frontend unit Allure results
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
           name: frontend-unit-allure-results
@@ -117,6 +119,7 @@ jobs:
           if-no-files-found: warn
       - name: Upload frontend e2e Allure results
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
           name: frontend-e2e-allure-results
@@ -124,6 +127,7 @@ jobs:
           if-no-files-found: warn
       - name: Upload Playwright HTML report
         if: always() && steps.frontend_e2e_tests.outcome == 'failure'
+        continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
           name: playwright-report
@@ -189,6 +193,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload k3s smoke Allure results
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
           name: k3s-smoke-allure-results
@@ -196,6 +201,7 @@ jobs:
           if-no-files-found: warn
       - name: Upload k3s smoke evidence artifacts
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
           name: k3s-smoke-artifacts
@@ -219,16 +225,19 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci --prefix frontend
       - name: Download backend Allure results
+        continue-on-error: true
         uses: actions/download-artifact@v8
         with:
           name: backend-allure-results
           path: allure-results/backend
       - name: Download frontend unit Allure results
+        continue-on-error: true
         uses: actions/download-artifact@v8
         with:
           name: frontend-unit-allure-results
           path: allure-results/frontend-unit
       - name: Download frontend e2e Allure results
+        continue-on-error: true
         uses: actions/download-artifact@v8
         with:
           name: frontend-e2e-allure-results
@@ -240,28 +249,43 @@ jobs:
           name: k3s-smoke-allure-results
           path: allure-results/k3s-smoke
       - name: Merge Allure results
+        id: merge_allure
+        continue-on-error: true
         run: python3 scripts/merge_allure_results.py allure-results/merged allure-results/backend allure-results/frontend-unit allure-results/frontend-e2e allure-results/k3s-smoke
       - name: Generate Allure report
+        id: generate_allure
+        continue-on-error: true
+        if: steps.merge_allure.outcome == 'success'
         run: |
           rm -rf allure-report
           npx --prefix frontend allure generate allure-results/merged -o allure-report
       - name: Upload merged Allure results
+        if: steps.merge_allure.outcome == 'success'
+        continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
           name: merged-allure-results
           path: allure-results/merged
-          if-no-files-found: error
+          if-no-files-found: warn
       - name: Upload Allure HTML report
+        if: steps.generate_allure.outcome == 'success'
+        continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
           name: allure-report
           path: allure-report
-          if-no-files-found: error
+          if-no-files-found: warn
       - name: Upload GitHub Pages artifact
-        if: ${{ vars.ENABLE_ALLURE_PAGES == 'true' && github.event_name == 'push' && github.ref_name == github.event.repository.default_branch }}
+        if: ${{ vars.ENABLE_ALLURE_PAGES == 'true' && github.event_name == 'push' && github.ref_name == github.event.repository.default_branch && steps.generate_allure.outcome == 'success' }}
+        continue-on-error: true
         uses: actions/upload-pages-artifact@v4
         with:
           path: allure-report
+      - name: Note when Allure packaging was skipped
+        if: always() && (steps.merge_allure.outcome != 'success' || steps.generate_allure.outcome != 'success')
+        run: |
+          echo "Allure report packaging skipped or incomplete (often artifact storage quota)." >> "$GITHUB_STEP_SUMMARY"
+          echo "Test job results are authoritative; this job is best-effort reporting." >> "$GITHUB_STEP_SUMMARY"
 
   deploy-allure-pages:
     runs-on: ubuntu-latest
