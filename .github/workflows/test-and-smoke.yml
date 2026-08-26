@@ -40,8 +40,8 @@ jobs:
           touch allure-results/backend/.keep
       - name: Install backend dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install -r backend/requirements-dev.txt
+          python -m pip install "pip==25.2"
+          python -m pip install --only-binary=:all: -r backend/requirements-dev.txt
       - name: Run backend tests
         run: pytest backend/tests/unit backend/tests/integration --alluredir allure-results/backend
       - name: Upload backend Allure results
@@ -88,15 +88,16 @@ jobs:
           touch allure-results/frontend-unit/.keep allure-results/frontend-e2e/.keep
       - name: Install backend dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install -r backend/requirements-dev.txt
+          python -m pip install "pip==25.2"
+          python -m pip install --only-binary=:all: -r backend/requirements-dev.txt
       - name: Install frontend dependencies
-        run: npm ci --prefix frontend
+        # --ignore-scripts: avoid arbitrary package lifecycle scripts; browsers installed next.
+        run: npm ci --prefix frontend --ignore-scripts
       - name: Install Playwright browser
         # GitHub-hosted Ubuntu runners already provide the system libraries
         # Chromium needs for this project. Skipping `--with-deps` avoids
         # lengthy apt mirror stalls during CI setup.
-        run: npx --prefix frontend playwright install chromium
+        run: ./frontend/node_modules/.bin/playwright install chromium
       - name: Run frontend unit tests
         id: frontend_unit_tests
         continue-on-error: true
@@ -169,9 +170,8 @@ jobs:
           mkdir -p artifacts/k3s-smoke
       - name: Install smoke test dependencies
         run: |
-          python -m pip install --upgrade pip
-          # Pin versions (same pins as backend/requirements-dev.txt) for reproducible CI.
-          pip install --only-binary=:all: "pytest==9.0.3" "allure-pytest==2.15.3"
+          python -m pip install "pip==25.2"
+          python -m pip install --only-binary=:all: "pytest==9.0.3" "allure-pytest==2.15.3"
       - name: Install k3s
         run: |
           # Download then execute (no curl|sh pipe). Official installer over HTTPS only.
@@ -230,7 +230,7 @@ jobs:
           cache: npm
           cache-dependency-path: frontend/package-lock.json
       - name: Install frontend dependencies
-        run: npm ci --prefix frontend
+        run: npm ci --prefix frontend --ignore-scripts
       - name: Download backend Allure results
         continue-on-error: true
         uses: actions/download-artifact@v8
@@ -265,7 +265,7 @@ jobs:
         if: steps.merge_allure.outcome == 'success'
         run: |
           rm -rf allure-report
-          npx --prefix frontend allure generate allure-results/merged -o allure-report
+          ./frontend/node_modules/.bin/allure generate allure-results/merged -o allure-report
       - name: Upload merged Allure results
         if: steps.merge_allure.outcome == 'success'
         continue-on-error: true
