@@ -38,11 +38,16 @@ resource "azurerm_mssql_server" "archive" {
   version                      = "12.0"
   administrator_login          = var.sql_admin_login
   administrator_login_password = local.sql_admin_password
-  minimum_tls_version           = "1.2"
+  minimum_tls_version          = "1.2"
   # Literal false keeps Sonar Security Rating ≥ A. Home/dev PoC can temporarily
   # enable public access in Azure Portal (or a local uncommitted override) after apply.
   public_network_access_enabled = false
-  tags                          = var.tags
+
+  identity {
+    type = "SystemAssigned"
+  }
+
+  tags = var.tags
 }
 
 # Serverless GP_S Gen5 + free-offer flags: exhaustion must AutoPause (no paid overage).
