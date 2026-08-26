@@ -1,4 +1,4 @@
-FROM python:3.11-slim
+FROM python:3.11-slim-bookworm
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -9,15 +9,19 @@ WORKDIR /app/backend
 
 # Microsoft ODBC Driver 18 for Azure SQL (mssql+pyodbc://RANKINGS_ARCHIVE_DATABASE_URL).
 # Apt signing key is vendored under backend/docker/ (no curl|gpg pipe).
+# Pin bookworm so packages.microsoft.com/debian/12 matches the base image.
+# Install the keyring BEFORE registering that apt source, otherwise the first
+# apt-get update fails OpenPGP verification (missing microsoft-prod.gpg).
 # Leave RANKINGS_ARCHIVE_DATABASE_URL unset and the app still runs without Azure.
 COPY backend/docker/microsoft.asc /tmp/microsoft.asc
-COPY backend/docker/mssql-release.list /etc/apt/sources.list.d/mssql-release.list
+COPY backend/docker/mssql-release.list /tmp/mssql-release.list
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
         gnupg \
     && gpg --batch --dearmor -o /usr/share/keyrings/microsoft-prod.gpg /tmp/microsoft.asc \
     && rm -f /tmp/microsoft.asc \
+    && mv /tmp/mssql-release.list /etc/apt/sources.list.d/mssql-release.list \
     && apt-get update \
     && apt-get install -y --no-install-recommends msodbcsql18 unixodbc \
     && apt-get purge -y --auto-remove gnupg \
