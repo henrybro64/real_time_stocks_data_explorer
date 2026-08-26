@@ -12,6 +12,7 @@ def test_start_enabled_background_jobs_skips_disabled_samplers(monkeypatch) -> N
     monkeypatch.setattr(settings, "rankings_snapshot_enabled", False)
     monkeypatch.setattr(settings, "taiwan_market_data_refresh_enabled", False)
     monkeypatch.setattr(settings, "quote_refresher_enabled", False)
+    monkeypatch.setattr(settings, "rankings_archive_eod_enabled", False)
 
     started = {
         "portfolio": [],
@@ -19,6 +20,7 @@ def test_start_enabled_background_jobs_skips_disabled_samplers(monkeypatch) -> N
         "rankings": [],
         "taiwan": [],
         "quotes": [],
+        "archive": [],
     }
     monkeypatch.setattr(
         jobs_runtime_module.portfolio_history_service,
@@ -45,6 +47,11 @@ def test_start_enabled_background_jobs_skips_disabled_samplers(monkeypatch) -> N
         "start_background_sampler",
         lambda: started["quotes"].append(True),
     )
+    monkeypatch.setattr(
+        jobs_runtime_module.rankings_archive_service,
+        "start_background_sampler",
+        lambda poll_seconds: started["archive"].append(poll_seconds),
+    )
 
     start_enabled_background_jobs()
 
@@ -54,6 +61,7 @@ def test_start_enabled_background_jobs_skips_disabled_samplers(monkeypatch) -> N
         "rankings": [],
         "taiwan": [],
         "quotes": [],
+        "archive": [],
     }
 
 
@@ -71,6 +79,8 @@ def test_start_enabled_background_jobs_starts_enabled_samplers(monkeypatch) -> N
     monkeypatch.setattr(settings, "taiwan_market_data_refresh_hour", 18)
     monkeypatch.setattr(settings, "taiwan_market_data_refresh_recent_days", 7)
     monkeypatch.setattr(settings, "quote_refresher_enabled", True)
+    monkeypatch.setattr(settings, "rankings_archive_eod_enabled", True)
+    monkeypatch.setattr(settings, "rankings_archive_eod_poll_seconds", 555)
 
     started = {
         "portfolio": [],
@@ -78,6 +88,7 @@ def test_start_enabled_background_jobs_starts_enabled_samplers(monkeypatch) -> N
         "rankings": [],
         "taiwan": [],
         "quotes": [],
+        "archive": [],
     }
     monkeypatch.setattr(
         jobs_runtime_module.portfolio_history_service,
@@ -104,6 +115,11 @@ def test_start_enabled_background_jobs_starts_enabled_samplers(monkeypatch) -> N
         "start_background_sampler",
         lambda: started["quotes"].append(True),
     )
+    monkeypatch.setattr(
+        jobs_runtime_module.rankings_archive_service,
+        "start_background_sampler",
+        lambda poll_seconds: started["archive"].append(poll_seconds),
+    )
 
     start_enabled_background_jobs()
 
@@ -113,6 +129,7 @@ def test_start_enabled_background_jobs_starts_enabled_samplers(monkeypatch) -> N
         "rankings": [333],
         "taiwan": [(444, {"refresh_hour": 18, "recent_days": 7})],
         "quotes": [True],
+        "archive": [555],
     }
 
 
@@ -123,6 +140,7 @@ def test_stop_background_jobs_stops_all_samplers(monkeypatch) -> None:
         "rankings": 0,
         "taiwan": 0,
         "quotes": 0,
+        "archive": 0,
     }
     monkeypatch.setattr(
         jobs_runtime_module.portfolio_history_service,
@@ -149,6 +167,11 @@ def test_stop_background_jobs_stops_all_samplers(monkeypatch) -> None:
         "stop_background_sampler",
         lambda: stopped.__setitem__("quotes", stopped["quotes"] + 1),
     )
+    monkeypatch.setattr(
+        jobs_runtime_module.rankings_archive_service,
+        "stop_background_sampler",
+        lambda: stopped.__setitem__("archive", stopped["archive"] + 1),
+    )
 
     stop_background_jobs()
 
@@ -158,4 +181,5 @@ def test_stop_background_jobs_stops_all_samplers(monkeypatch) -> None:
         "rankings": 1,
         "taiwan": 1,
         "quotes": 1,
+        "archive": 1,
     }

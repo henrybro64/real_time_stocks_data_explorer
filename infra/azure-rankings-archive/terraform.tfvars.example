@@ -1,0 +1,16 @@
+# Copy to terraform.tfvars (gitignored) and fill in values.
+# Never commit real passwords or home IP addresses.
+
+project_name = "starchive"
+location     = "eastus"
+
+# Optional: pre-create a firewall allow for your home/dev IP. Public network
+# access stays disabled in Terraform; enable it in Azure Portal for PoC smoke tests.
+allowed_client_ipv4 = "203.0.113.10"
+
+# Optional overrides:
+# resource_group_name = "starchive-rg"
+# sql_server_name     = "starchivexxxxxx"
+# sql_database_name   = "rankings_archive"
+# sql_admin_login     = "starchive_admin"
+# sql_admin_password  = "replace-with-strong-password"

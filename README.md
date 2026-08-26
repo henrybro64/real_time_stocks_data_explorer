@@ -208,6 +208,10 @@ GET /api/rankings?market=TW|US&type=volume|volume_up|volume_down|change_up|chang
 
 Optional query parameter `twBoard` (`TWSE` or `TPEx`, default `TWSE`) applies to Taiwan only.
 
+Optional Azure SQL **EOD ranking archive** (issues #165–#167) is separate from Postgres and is
+documented in [`docs/azure-rankings-archive.md`](docs/azure-rankings-archive.md). Leave
+`RANKINGS_ARCHIVE_DATABASE_URL` unset unless you are running that PoC.
+
 Normal read behavior:
 
 - when the current bucket snapshot already exists, the API returns the saved snapshot with `sourceType=cache`
