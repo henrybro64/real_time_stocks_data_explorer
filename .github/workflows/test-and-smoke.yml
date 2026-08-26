@@ -182,13 +182,8 @@ jobs:
           # Official install script + matching sha256 from the same pinned tag (no curl|sh).
           tag="${INSTALL_K3S_VERSION}"
           install_script="${RUNNER_TEMP}/k3s-install.sh"
-          checksum_file="${RUNNER_TEMP}/k3s-install.sha256sum"
-          base="https://github.com/k3s-io/k3s/releases/download/${tag}"
-          curl -fsSL --proto '=https' --tlsv1.2 -o "${install_script}" "${base}/install.sh"
-          # install.sh is published alongside release assets; fall back to get.k3s.io channel file when absent.
-          if ! test -s "${install_script}"; then
-            curl -fsSL --proto '=https' --tlsv1.2 -o "${install_script}" "https://raw.githubusercontent.com/k3s-io/k3s/${tag}/install.sh"
-          fi
+          # Prefer the install script from the pinned tag in the k3s repo (immutable raw content).
+          curl -fsSL --proto '=https' --tlsv1.2 -o "${install_script}"             "https://raw.githubusercontent.com/k3s-io/k3s/${tag}/install.sh"
           test -s "${install_script}"
           grep -q 'INSTALL_K3S' "${install_script}"
           chmod 0700 "${install_script}"
