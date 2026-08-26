@@ -16,8 +16,8 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
-    String,
-    Text,
+    Unicode,
+    UnicodeText,
     UniqueConstraint,
     func,
 )
@@ -48,24 +48,25 @@ class RankingSnapshotArchive(ArchiveBase):
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    market: Mapped[str] = mapped_column(String(8), nullable=False)
-    universe: Mapped[str] = mapped_column(String(16), nullable=False)
-    ranking_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    market: Mapped[str] = mapped_column(Unicode(8), nullable=False)
+    universe: Mapped[str] = mapped_column(Unicode(16), nullable=False)
+    ranking_type: Mapped[str] = mapped_column(Unicode(32), nullable=False)
     trading_date: Mapped[date] = mapped_column(Date, nullable=False)
     captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    source: Mapped[str] = mapped_column(Text, nullable=False)
-    source_type: Mapped[str] = mapped_column(String(32), nullable=False)
-    source_freshness: Mapped[str] = mapped_column(Text, nullable=False)
+    # UnicodeText → NVARCHAR on SQL Server so TW source labels stay intact.
+    source: Mapped[str] = mapped_column(UnicodeText, nullable=False)
+    source_type: Mapped[str] = mapped_column(Unicode(32), nullable=False)
+    source_freshness: Mapped[str] = mapped_column(UnicodeText, nullable=False)
     is_market_open: Mapped[bool] = mapped_column(Boolean, nullable=False)
-    warning_message: Mapped[str | None] = mapped_column(Text, nullable=True)
-    unsupported_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    warning_message: Mapped[str | None] = mapped_column(UnicodeText, nullable=True)
+    unsupported_reason: Mapped[str | None] = mapped_column(UnicodeText, nullable=True)
     capture_scope: Mapped[str] = mapped_column(
-        String(32),
+        Unicode(32),
         nullable=False,
         server_default="end_of_day",
     )
     # Original live TW scope at capture time (quote/yahoo/fallback); null for US/inst.
-    tw_rankings_scope: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    tw_rankings_scope: Mapped[str | None] = mapped_column(Unicode(32), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
@@ -96,20 +97,21 @@ class RankingSnapshotItemArchive(ArchiveBase):
         index=True,
     )
     rank: Mapped[int] = mapped_column(Integer, nullable=False)
-    stock_id: Mapped[str] = mapped_column(String(32), nullable=False)
-    symbol: Mapped[str] = mapped_column(String(32), nullable=False)
-    name: Mapped[str] = mapped_column(String(128), nullable=False)
-    exchange: Mapped[str] = mapped_column(String(32), nullable=False)
+    stock_id: Mapped[str] = mapped_column(Unicode(32), nullable=False)
+    symbol: Mapped[str] = mapped_column(Unicode(32), nullable=False)
+    # Unicode → NVARCHAR so Taiwan Chinese names survive Latin1 DB collation.
+    name: Mapped[str] = mapped_column(Unicode(128), nullable=False)
+    exchange: Mapped[str] = mapped_column(Unicode(32), nullable=False)
     last_price: Mapped[float | None] = mapped_column(Float, nullable=True)
     change_percent: Mapped[float | None] = mapped_column(Float, nullable=True)
     volume: Mapped[int | None] = mapped_column(Integer, nullable=True)
     volume_delta_percent: Mapped[float | None] = mapped_column(Float, nullable=True)
     pe_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
-    pe_ratio_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    pe_ratio_source: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    valuation_as_of: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    valuation_warning: Mapped[str | None] = mapped_column(Text, nullable=True)
+    pe_ratio_type: Mapped[str | None] = mapped_column(Unicode(64), nullable=True)
+    pe_ratio_source: Mapped[str | None] = mapped_column(Unicode(128), nullable=True)
+    valuation_as_of: Mapped[str | None] = mapped_column(Unicode(64), nullable=True)
+    valuation_warning: Mapped[str | None] = mapped_column(UnicodeText, nullable=True)
     net_buy_sell_shares: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    data_time: Mapped[str] = mapped_column(String(64), nullable=False)
+    data_time: Mapped[str] = mapped_column(Unicode(64), nullable=False)
 
     snapshot: Mapped[RankingSnapshotArchive] = relationship(back_populates="items")

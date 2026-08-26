@@ -32,13 +32,17 @@ Uniqueness: `(market, universe, ranking_type, trading_date)` — one EOD row per
 combination. Duplicate writes keep the existing snapshot.
 
 `RankingsArchiveRepository.to_ranking_response` / `ranking_response_from_archive`
-rebuilds a `RankingResponse` in archived rank order (stock exchange/currency/
-timezone are reconstructed from market + universe; personal fields are never
-stored).
+rebuilds a `RankingResponse` in archived rank order (persists each item's
+`exchange` and `valuationWarning`; stock currency/timezone still follow market).
+Text columns use SQLAlchemy `Unicode` / `UnicodeText` so Taiwanese names survive
+SQL Server Latin1 collations.
 
 Archive DB connects lazily. A failed connect (including Free-offer AutoPause
 cold start) is retried after a short cooldown instead of sticking unavailable
-until process restart.
+until process restart. Capture bootstraps schema (`ensure_schema`) before the
+first existence lookup. Live providers only archive the **market-local current
+trading date** after settle — prior dates are skipped (no stamping today's
+quotes under yesterday's key).
 
 Code:
 

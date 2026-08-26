@@ -42,12 +42,20 @@ variable "sql_admin_password" {
 }
 
 variable "allowed_client_ipv4" {
-  description = "Home/dev IPv4 address allowed through the SQL firewall (single host)."
+  description = <<-EOT
+    Optional home/dev IPv4 for an SQL firewall rule. Public network access is
+    disabled in Terraform (secure default); enable it in Azure Portal for PoC
+    connectivity, then this rule allows the client IP.
+  EOT
   type        = string
+  default     = ""
 
   validation {
-    condition     = can(regex("^([0-9]{1,3}\\.){3}[0-9]{1,3}$", var.allowed_client_ipv4))
-    error_message = "allowed_client_ipv4 must be a dotted IPv4 address."
+    condition = (
+      var.allowed_client_ipv4 == ""
+      || can(regex("^([0-9]{1,3}\\.){3}[0-9]{1,3}$", var.allowed_client_ipv4))
+    )
+    error_message = "allowed_client_ipv4 must be empty or a dotted IPv4 address."
   }
 }
 

@@ -306,6 +306,7 @@ def _stock_from_archive_item(
         currency = "USD"
         timezone_name = "America/New_York"
         fallback_exchange = "NASDAQ"
+    # getattr: tolerate older archive rows reconstructed without an exchange column.
     exchange = (getattr(item, "exchange", None) or "").strip() or fallback_exchange
     return StockResponse(
         id=item.stock_id,

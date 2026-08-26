@@ -214,13 +214,13 @@ def test_to_ranking_response_preserves_rank_order() -> None:
     assert reconstructed.timestamp.startswith("2026-08-18T20:45:00")
 
 
-def test_to_ranking_response_preserves_exchange_and_tw_yahoo_scope() -> None:
+def test_to_ranking_response_preserves_exchange_and_valuation_warning() -> None:
     repo = RankingsArchiveRepository()
     repo.set_session_factory_override(_session_factory())
 
-    us = RankingResponse(
+    response = RankingResponse(
         market="US",
-        rankingType=RankingType.volume,
+        rankingType=RankingType.valuation_low_pe,
         twBoard=None,
         universe="DJIA",
         items=[
@@ -240,11 +240,11 @@ def test_to_ranking_response_preserves_exchange_and_tw_yahoo_scope() -> None:
                 volume=1000,
                 volumeDeltaPercent=None,
                 netBuySellShares=None,
-                peRatio=None,
-                peRatioType=None,
-                peRatioSource=None,
-                valuationAsOf=None,
-                valuationWarning=None,
+                peRatio=12.0,
+                peRatioType="trailing",
+                peRatioSource="yahoo",
+                valuationAsOf="2026-08-18",
+                valuationWarning="stale fundamentals",
                 timestamp="2026-08-18T16:00:00-04:00",
             )
         ],
@@ -252,23 +252,87 @@ def test_to_ranking_response_preserves_exchange_and_tw_yahoo_scope() -> None:
         source="unit-test",
         sourceType=RankingSourceType.free_unofficial,
         isMarketOpen=False,
-        dataFreshnessLabel="closed",
+        dataFreshnessLabel="market closed",
         warningMessage=None,
         unsupportedReason=None,
         usRankingsScope="djia",
         twRankingsScope=None,
     )
-    us_env = repo.upsert_eod_snapshot(
+    envelope = repo.upsert_eod_snapshot(
         market="US",
         universe="DJIA",
+        ranking_type=RankingType.valuation_low_pe,
+        trading_date=date(2026, 8, 18),
+        response=response,
+    )
+    assert envelope is not None
+    reconstructed = repo.to_ranking_response(envelope)
+    assert reconstructed.items[0].stock.exchange == "NYSE"
+    assert reconstructed.items[0].valuationWarning == "stale fundamentals"
+
+
+def test_to_ranking_response_preserves_taiwan_unicode_name() -> None:
+    repo = RankingsArchiveRepository()
+    repo.set_session_factory_override(_session_factory())
+
+    response = RankingResponse(
+        market="TW",
+        rankingType=RankingType.volume,
+        twBoard="TWSE",
+        universe="TWSE",
+        items=[
+            RankingItem(
+                rank=1,
+                stock=StockResponse(
+                    id="TW:2330",
+                    market="TW",
+                    symbol="2330",
+                    name="台積電",
+                    exchange="TWSE",
+                    currency="TWD",
+                    timezone="Asia/Taipei",
+                ),
+                lastPrice=1000.0,
+                changePercent=1.0,
+                volume=100,
+                volumeDeltaPercent=None,
+                netBuySellShares=None,
+                peRatio=None,
+                peRatioType=None,
+                peRatioSource=None,
+                valuationAsOf=None,
+                valuationWarning=None,
+                timestamp="2026-08-18T13:30:00+08:00",
+            )
+        ],
+        timestamp="2026-08-18T06:00:00+00:00",
+        source="unit-test",
+        sourceType=RankingSourceType.free_unofficial,
+        isMarketOpen=False,
+        dataFreshnessLabel="closed",
+        warningMessage=None,
+        unsupportedReason=None,
+        usRankingsScope=None,
+        twRankingsScope="quote",
+    )
+    envelope = repo.upsert_eod_snapshot(
+        market="TW",
+        universe="TWSE",
         ranking_type=RankingType.volume,
         trading_date=date(2026, 8, 18),
-        response=us,
+        response=response,
     )
-    assert us_env is not None
-    assert repo.to_ranking_response(us_env).items[0].stock.exchange == "NYSE"
+    assert envelope is not None
+    reconstructed = repo.to_ranking_response(envelope)
+    assert reconstructed.items[0].stock.name == "台積電"
+    assert reconstructed.items[0].stock.exchange == "TWSE"
 
-    tw = RankingResponse(
+
+def test_to_ranking_response_preserves_tw_yahoo_scope() -> None:
+    repo = RankingsArchiveRepository()
+    repo.set_session_factory_override(_session_factory())
+
+    response = RankingResponse(
         market="TW",
         rankingType=RankingType.volume,
         twBoard="TWSE",
@@ -308,12 +372,12 @@ def test_to_ranking_response_preserves_exchange_and_tw_yahoo_scope() -> None:
         usRankingsScope=None,
         twRankingsScope="yahoo",
     )
-    tw_env = repo.upsert_eod_snapshot(
+    envelope = repo.upsert_eod_snapshot(
         market="TW",
         universe="TWSE",
         ranking_type=RankingType.volume,
         trading_date=date(2026, 8, 18),
-        response=tw,
+        response=response,
     )
-    assert tw_env is not None
-    assert repo.to_ranking_response(tw_env).twRankingsScope == "yahoo"
+    assert envelope is not None
+    assert repo.to_ranking_response(envelope).twRankingsScope == "yahoo"

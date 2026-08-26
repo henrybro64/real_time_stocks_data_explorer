@@ -54,8 +54,20 @@ If the plan shows VMs, AKS, Redis, networking gateways, etc., **do not apply**.
 - Terraform `>= 1.5`
 - Azure CLI logged in (`az login`) with rights to create RG + SQL in the target subscription
 - azurerm provider `>= 4.30` (Free-offer attributes)
-- Home/dev public IPv4 for the SQL firewall
+- Home/dev public IPv4 for the SQL firewall (when enabling public network access)
 - For app connectivity: [ODBC Driver 18 for SQL Server](https://learn.microsoft.com/sql/connect/odbc/download-odbc-driver-for-sql-server) + Python `pyodbc`
+
+## Network access
+
+Terraform sets `public_network_access_enabled = false` (secure-by-default / Sonar).
+Optional `allowed_client_ipv4` still creates a firewall allow rule for later use.
+
+For a home/dev backend without Private Link:
+
+1. Apply Terraform.
+2. In Azure Portal → SQL server → Networking, temporarily enable public access.
+3. Confirm your client IP is allowed (or set `allowed_client_ipv4` before apply).
+4. Run the smoke script, then disable public access again when done.
 
 ## Apply
 
