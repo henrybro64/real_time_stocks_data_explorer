@@ -101,6 +101,44 @@ Responses include `tradingDate` and `captureScope` so the UI can label historica
 data. Missing archives → `404`; archive DB unavailable or mid-query failure → `503`.
 `GET /api/rankings` is unchanged and independent of Azure.
 
+## Backend container / k3s hookup
+
+The backend image (`backend/Dockerfile`) installs **Microsoft ODBC Driver 18** and
+`pyodbc` so pods can open `mssql+pyodbc://` URLs.
+
+1. Provision Azure SQL via `infra/azure-rankings-archive` and note the URL from
+   `terraform output rankings_archive_database_url_example` (URL-encode the password).
+2. Allow the machine/cluster egress IP on the Azure SQL firewall (or use the
+   Terraform `allowed_client_ipv4` input while testing from a single host).
+3. Copy the k8s example secret and fill in values:
+
+```bash
+cp k8s/backend-rankings-archive-secret.yaml.example k8s/backend-rankings-archive-secret.yaml
+# edit RANKINGS_ARCHIVE_* values, then:
+kubectl apply -f k8s/backend-rankings-archive-secret.yaml -n stock-ticker
+```
+
+`k8s/backend.yaml` mounts `stock-ticker-backend-rankings-archive` with
+`optional: true`, so the cluster still starts when the secret is absent.
+
+4. Rebuild and restart the backend so the image includes ODBC + pyodbc:
+
+```bash
+docker build -t stock-ticker-backend:local -f backend/Dockerfile .
+kubectl rollout restart deployment/stock-ticker-backend -n stock-ticker
+```
+
+5. Smoke from inside the cluster (or from a host with the same firewall IP):
+
+```bash
+kubectl exec -n stock-ticker deploy/stock-ticker-backend -- \
+  python -c "import pyodbc; print(pyodbc.drivers())"
+# Expect a driver name containing "ODBC Driver 18 for SQL Server"
+```
+
+Then use `POST /api/rankings/archive/capture` or enable
+`RANKINGS_ARCHIVE_EOD_ENABLED=true` in the secret.
+
 ## Connectivity + archive write/read smoke test
 
 ```bash
