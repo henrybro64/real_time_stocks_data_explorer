@@ -170,9 +170,18 @@ class RankingsArchiveService:
             return {"captured": 0, "skipped": 0, "failed": 0}
 
         current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        if not self._repository.ensure_schema():
+            logger.error(
+                "Rankings archive capture aborted; schema ensure failed",
+                extra={
+                    "event": "rankings_archive.capture.schema_failed",
+                    "trigger": trigger,
+                },
+            )
+            return {"captured": 0, "skipped": 0, "failed": 0}
+
         for query in self.eod_archive_queries():
             if market is not None and query.market != market:
-                skipped += 1
                 continue
             universe = query.universe or query.tw_board or (
                 "DJIA" if query.market == "US" else "TWSE"
@@ -193,6 +202,24 @@ class RankingsArchiveService:
                     )
             if resolved_date is None:
                 skipped += 1
+                continue
+            local_today = market_local_time(query.market, current).date()
+            # Live quote providers reflect the current session only. Never stamp
+            # today's intraday/EOD quotes under a prior trading-date archive key.
+            if resolved_date != local_today:
+                skipped += 1
+                logger.warning(
+                    "Rankings archive skipped prior trading date without historical provider",
+                    extra={
+                        "event": "rankings_archive.capture.prior_date_skipped",
+                        "trigger": trigger,
+                        "market": query.market,
+                        "universe": universe,
+                        "ranking_type": query.ranking_type.value,
+                        "trading_date": resolved_date.isoformat(),
+                        "local_today": local_today.isoformat(),
+                    },
+                )
                 continue
             probe = datetime.combine(
                 resolved_date,
@@ -282,15 +309,30 @@ class RankingsArchiveService:
                 )
                 continue
 
-            envelope = self._repository.upsert_eod_snapshot(
-                market=query.market,
-                universe=universe,
-                ranking_type=query.ranking_type,
-                trading_date=resolved_date,
-                response=response,
-                captured_at=current,
-                capture_scope=CAPTURE_SCOPE_END_OF_DAY,
-            )
+            try:
+                envelope = self._repository.upsert_eod_snapshot(
+                    market=query.market,
+                    universe=universe,
+                    ranking_type=query.ranking_type,
+                    trading_date=resolved_date,
+                    response=response,
+                    captured_at=current,
+                    capture_scope=CAPTURE_SCOPE_END_OF_DAY,
+                )
+            except Exception:  # noqa: BLE001
+                failed += 1
+                logger.exception(
+                    "Rankings archive persist raised",
+                    extra={
+                        "event": "rankings_archive.capture.persist_raised",
+                        "trigger": trigger,
+                        "market": query.market,
+                        "universe": universe,
+                        "ranking_type": query.ranking_type.value,
+                        "trading_date": resolved_date.isoformat(),
+                    },
+                )
+                continue
             if envelope is None:
                 failed += 1
                 logger.error(

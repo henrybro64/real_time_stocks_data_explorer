@@ -54,15 +54,27 @@ If the plan shows VMs, AKS, Redis, networking gateways, etc., **do not apply**.
 - Terraform `>= 1.5`
 - Azure CLI logged in (`az login`) with rights to create RG + SQL in the target subscription
 - azurerm provider `>= 4.30` (Free-offer attributes)
-- Home/dev public IPv4 for the SQL firewall
+- Home/dev public IPv4 for the SQL firewall (when enabling public network access)
 - For app connectivity: [ODBC Driver 18 for SQL Server](https://learn.microsoft.com/sql/connect/odbc/download-odbc-driver-for-sql-server) + Python `pyodbc`
+
+## Network access
+
+Terraform defaults `public_network_access_enabled` to **false** (secure-by-default).
+A home/dev backend without Private Link must opt in:
+
+```hcl
+enable_public_network_access = true
+allowed_client_ipv4          = "x.x.x.x"
+```
+
+Firewall rules are created only when public access is enabled.
 
 ## Apply
 
 ```bash
 cd infra/azure-rankings-archive
 cp terraform.tfvars.example terraform.tfvars
-# edit terraform.tfvars: set allowed_client_ipv4 (and optional password)
+# edit terraform.tfvars: enable public access + set allowed_client_ipv4 (and optional password)
 
 terraform init
 terraform plan

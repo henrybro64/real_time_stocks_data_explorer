@@ -24,11 +24,16 @@ class _FakeEnvelope:
 class _FakeRepo:
     def __init__(self) -> None:
         self.available = True
+        self.schema_ok = True
         self.existing: set[tuple[str, str, str, date]] = set()
         self.upserts: list[tuple[str, str, str, date]] = []
+        self.upsert_error: Exception | None = None
 
     def is_available(self) -> bool:
         return self.available
+
+    def ensure_schema(self) -> bool:
+        return self.schema_ok
 
     def load_eod_snapshot(self, *, market, universe, ranking_type, trading_date):
         key = (market, universe, ranking_type.value, trading_date)
@@ -47,6 +52,8 @@ class _FakeRepo:
         captured_at=None,
         capture_scope="end_of_day",
     ):
+        if self.upsert_error is not None:
+            raise self.upsert_error
         key = (market, universe, ranking_type.value, trading_date)
         if key in self.existing:
             return _FakeEnvelope()
@@ -269,3 +276,58 @@ def test_ready_trading_date_skips_us_new_years_holiday() -> None:
     ready = service.ready_trading_date("US", after_holiday_close)
     assert ready != date(2026, 1, 1)
     assert ready == date(2025, 12, 31)
+
+
+def test_capture_skips_prior_trading_date_with_live_providers() -> None:
+    """Live quotes must not be stamped under yesterday's archive key."""
+    repo = _FakeRepo()
+    service = RankingsArchiveService(
+        repository=repo,
+        provider_registry=_FakeRegistry(_response()),
+    )
+    # Tuesday morning ET: ready date is Monday, but live data is Tuesday.
+    result = service.capture_eod_archives(
+        now=datetime(2026, 8, 18, 14, 0, tzinfo=timezone.utc),  # 10:00 ET Tue
+        market="US",
+        trading_date=date(2026, 8, 17),
+        force=True,
+    )
+    assert result["captured"] == 0
+    assert result["skipped"] >= 8
+    assert repo.upserts == []
+
+
+def test_capture_market_filter_does_not_count_other_market_as_skipped() -> None:
+    repo = _FakeRepo()
+    service = RankingsArchiveService(
+        repository=repo,
+        provider_registry=_FakeRegistry(_response()),
+    )
+    result = service.capture_eod_archives(
+        now=datetime(2026, 8, 18, 20, 50, tzinfo=timezone.utc),
+        market="US",
+        trading_date=date(2026, 8, 18),
+        force=True,
+    )
+    assert result["captured"] == 8
+    # Only US targets can be skipped/failed; TW queries must not inflate skipped.
+    assert result["skipped"] == 0
+    assert result["failed"] == 0
+
+
+def test_capture_contains_persist_exceptions_per_target() -> None:
+    repo = _FakeRepo()
+    repo.upsert_error = RuntimeError("sql blip")
+    service = RankingsArchiveService(
+        repository=repo,
+        provider_registry=_FakeRegistry(_response()),
+    )
+    result = service.capture_eod_archives(
+        now=datetime(2026, 8, 18, 20, 50, tzinfo=timezone.utc),
+        market="US",
+        trading_date=date(2026, 8, 18),
+        force=True,
+    )
+    assert result["captured"] == 0
+    assert result["failed"] == 8
+    assert result["skipped"] == 0

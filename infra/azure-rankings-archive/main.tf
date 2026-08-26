@@ -38,9 +38,10 @@ resource "azurerm_mssql_server" "archive" {
   version                      = "12.0"
   administrator_login          = var.sql_admin_login
   administrator_login_password = local.sql_admin_password
-  minimum_tls_version          = "1.2"
-  public_network_access_enabled = true
-  tags                         = var.tags
+  minimum_tls_version           = "1.2"
+  # Secure default: private-only. PoC home backends opt in via enable_public_network_access.
+  public_network_access_enabled = var.enable_public_network_access
+  tags                          = var.tags
 }
 
 # Serverless GP_S Gen5 + free-offer flags: exhaustion must AutoPause (no paid overage).
@@ -63,6 +64,8 @@ resource "azurerm_mssql_database" "archive" {
 }
 
 resource "azurerm_mssql_firewall_rule" "home_client" {
+  count = var.enable_public_network_access ? 1 : 0
+
   name             = "home-dev-client"
   server_id        = azurerm_mssql_server.archive.id
   start_ip_address = var.allowed_client_ipv4
