@@ -55,6 +55,9 @@ spec:
                 name: stock-ticker-backend-database
             - secretRef:
                 name: stock-ticker-backend-auth
+            - secretRef:
+                name: stock-ticker-backend-rankings-archive
+                optional: true
       containers:
         - name: backend
           image: stock-ticker-backend:local
@@ -69,6 +72,9 @@ spec:
                 name: stock-ticker-backend-database
             - secretRef:
                 name: stock-ticker-backend-auth
+            - secretRef:
+                name: stock-ticker-backend-rankings-archive
+                optional: true
           readinessProbe:
             httpGet:
               path: /health

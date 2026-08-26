@@ -135,3 +135,11 @@ Local state lives under this directory and is gitignored (`*.tfstate`, `.terrafo
 ## Related app settings
 
 See root `backend/.env.example` and `docs/azure-rankings-archive.md`.
+
+## Backend container
+
+The app image installs ODBC Driver 18 + `pyodbc`. Wire the URL into the cluster
+with `k8s/backend-rankings-archive-secret.yaml.example` (see
+`docs/azure-rankings-archive.md` → Backend container / k3s hookup). Ensure the
+Azure SQL firewall allows the cluster egress IP (or your laptop IP when using
+Lima/`host.docker.internal` testing).
