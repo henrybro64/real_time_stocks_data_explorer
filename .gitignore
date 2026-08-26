@@ -91,6 +91,8 @@ lcov.info
 !.env.example
 !.env.sample
 *.local
+# Home-node Azure rankings archive secret (copy from .example, fill locally)
+k8s/backend-rankings-archive-secret.yaml
 
 # -----------------------------------------------------------------------------
 # IDE & local editor state
