@@ -38,10 +38,29 @@ jobs:
         run: |
           mkdir -p allure-results/backend
           touch allure-results/backend/.keep
-      - name: Install backend dependencies
+- name: Install backend dependencies
         run: |
           python -m pip install "pip==25.2"
-          python -m pip install --only-binary=:all: -r backend/requirements-dev.txt
+          python -m pip install --only-binary=:all: \
+            "fastapi==0.116.1" \
+            "uvicorn[standard]==0.35.0" \
+            "pydantic==2.11.7" \
+            "pydantic-settings==2.10.1" \
+            "sqlalchemy==2.0.52" \
+            "alembic==1.19.1" \
+            "psycopg[binary]==3.3.4" \
+            "httpx==0.28.1" \
+            "itsdangerous==2.2.0" \
+            "redis==8.1.0" \
+            "PyJWT[crypto]==2.13.0" \
+            "cryptography==50.0.1" \
+            "numpy==2.4.6" \
+            "pandas==3.0.5" \
+            "yfinance==1.6.0" \
+            "pytest==9.0.3" \
+            "pytest-cov==6.1.1" \
+            "allure-pytest==2.15.3" \
+            "PyYAML==6.0.3"
       - name: Run backend tests
         run: pytest backend/tests/unit backend/tests/integration --alluredir allure-results/backend
       - name: Upload backend Allure results
@@ -86,10 +105,29 @@ jobs:
         run: |
           mkdir -p allure-results/frontend-unit allure-results/frontend-e2e
           touch allure-results/frontend-unit/.keep allure-results/frontend-e2e/.keep
-      - name: Install backend dependencies
+- name: Install backend dependencies
         run: |
           python -m pip install "pip==25.2"
-          python -m pip install --only-binary=:all: -r backend/requirements-dev.txt
+          python -m pip install --only-binary=:all: \
+            "fastapi==0.116.1" \
+            "uvicorn[standard]==0.35.0" \
+            "pydantic==2.11.7" \
+            "pydantic-settings==2.10.1" \
+            "sqlalchemy==2.0.52" \
+            "alembic==1.19.1" \
+            "psycopg[binary]==3.3.4" \
+            "httpx==0.28.1" \
+            "itsdangerous==2.2.0" \
+            "redis==8.1.0" \
+            "PyJWT[crypto]==2.13.0" \
+            "cryptography==50.0.1" \
+            "numpy==2.4.6" \
+            "pandas==3.0.5" \
+            "yfinance==1.6.0" \
+            "pytest==9.0.3" \
+            "pytest-cov==6.1.1" \
+            "allure-pytest==2.15.3" \
+            "PyYAML==6.0.3"
       - name: Install frontend dependencies
         # --ignore-scripts: avoid arbitrary package lifecycle scripts; browsers installed next.
         run: npm ci --prefix frontend --ignore-scripts
