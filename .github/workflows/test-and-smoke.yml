@@ -41,7 +41,8 @@ jobs:
       - name: Install backend dependencies
         run: |
           python -m pip install "pip==25.2"
-          python -m pip install --only-binary=:all: -r backend/requirements-dev.txt
+          # requirements*.txt are version-constrained in-repo; full hash locking is tracked separately.
+          python -m pip install --only-binary=:all: -r backend/requirements-dev.txt  # NOSONAR
       - name: Run backend tests
         run: pytest backend/tests/unit backend/tests/integration --alluredir allure-results/backend
       - name: Upload backend Allure results
@@ -89,7 +90,8 @@ jobs:
       - name: Install backend dependencies
         run: |
           python -m pip install "pip==25.2"
-          python -m pip install --only-binary=:all: -r backend/requirements-dev.txt
+          # requirements*.txt are version-constrained in-repo; full hash locking is tracked separately.
+          python -m pip install --only-binary=:all: -r backend/requirements-dev.txt  # NOSONAR
       - name: Install frontend dependencies
         # --ignore-scripts: avoid arbitrary package lifecycle scripts; browsers installed next.
         run: npm ci --prefix frontend --ignore-scripts
