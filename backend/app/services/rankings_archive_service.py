@@ -68,6 +68,10 @@ def _is_archive_connectivity_failure(exc: BaseException) -> bool:
     ):
         return True
     if isinstance(exc, DBAPIError):
+        # SQLAlchemy may mark a dropped socket even when the driver message
+        # does not match our curated connectivity tokens (#181 / Codex).
+        if getattr(exc, "connection_invalidated", False):
+            return True
         message = str(getattr(exc, "orig", None) or exc).lower()
         # Prefer specific connectivity phrases over a bare "connection" substring
         # (that can appear in unrelated ODBC/SQL text).

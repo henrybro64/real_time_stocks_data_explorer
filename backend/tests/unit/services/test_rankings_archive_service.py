@@ -610,9 +610,16 @@ def test_archive_connectivity_failure_classification() -> None:
         Exception("TCP Provider: connection refused"),
         connection_invalidated=False,
     )
+    invalidated = DBAPIError(
+        "SELECT 1",
+        {},
+        Exception("unrecognized transport failure"),
+        connection_invalidated=True,
+    )
     assert _is_archive_connectivity_failure(programming) is False
     assert _is_archive_connectivity_failure(operational) is True
     assert _is_archive_connectivity_failure(RuntimeError("azure down")) is False
     assert _is_archive_connectivity_failure(ConnectionError("reset")) is True
     assert _is_archive_connectivity_failure(vague) is False
     assert _is_archive_connectivity_failure(specific) is True
+    assert _is_archive_connectivity_failure(invalidated) is True
