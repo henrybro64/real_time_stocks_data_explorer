@@ -119,6 +119,39 @@ def test_load_eod_snapshot_returns_none_when_missing() -> None:
     assert loaded is None
 
 
+def test_has_eod_snapshot_is_true_without_loading_items() -> None:
+    repo = RankingsArchiveRepository()
+    repo.set_session_factory_override(_session_factory())
+    assert (
+        repo.has_eod_snapshot(
+            market="US",
+            universe="DJIA",
+            ranking_type=RankingType.volume,
+            trading_date=date(2026, 8, 18),
+        )
+        is False
+    )
+    assert (
+        repo.upsert_eod_snapshot(
+            market="US",
+            universe="DJIA",
+            ranking_type=RankingType.volume,
+            trading_date=date(2026, 8, 18),
+            response=_response(),
+        )
+        is not None
+    )
+    assert (
+        repo.has_eod_snapshot(
+            market="US",
+            universe="DJIA",
+            ranking_type=RankingType.volume,
+            trading_date=date(2026, 8, 18),
+        )
+        is True
+    )
+
+
 def test_unavailable_archive_fails_gracefully() -> None:
     repo = RankingsArchiveRepository()
     repo.set_session_factory_override(None)

@@ -159,19 +159,21 @@ python3 scripts/azure_rankings_archive_smoke.py --ci-summary
 The script connects through SQLAlchemy + pyodbc, checks ODBC Driver 18, exercises
 a disposable `_poc_smoke` table, verifies archive schema + history-dates query,
 optionally reads one real archive when present, then upserts / loads /
-reconstructs a disposable EOD archive snapshot (cleaned up afterward).
+reconstructs a disposable EOD archive snapshot. Cleanup is verified; the smoke
+**fails** if the disposable row cannot be removed.
 
 ## Live Azure SQL CI smoke (#179)
 
 Job `azure-rankings-archive-smoke` in `.github/workflows/test-and-smoke.yml`
 runs on:
 
-- `workflow_dispatch` (manual)
+- `workflow_dispatch` on `main` / `master` only (manual)
 - push to `main` / `master`
 - weekly schedule (Monday 06:00 UTC)
 
-It does **not** run on pull requests (including forks). Required GitHub Actions
-secrets (values never logged):
+It does **not** run on pull requests (including forks), and manual dispatch from
+feature branches is rejected so branch-modified scripts cannot consume repository
+Azure secrets. Required GitHub Actions secrets (values never logged):
 
 | Secret | Purpose |
 | --- | --- |
@@ -183,7 +185,8 @@ secrets (values never logged):
 | `AZURE_SQL_SERVER_NAME` | SQL server name (not FQDN) |
 | `RANKINGS_ARCHIVE_DATABASE_URL` | `mssql+pyodbc://…` archive URL |
 
-The job authenticates with the service principal, opens a **temporary single-IP**
+The job authenticates with the service principal via `azure/login` `creds` JSON
+(secret-based SP), opens a **temporary single-IP**
 firewall rule for the runner, builds the backend Docker image (ODBC Driver 18 +
 `pyodbc` parity), runs `scripts/azure_rankings_archive_smoke.py --ci-summary`,
 and always deletes the firewall rule. It will not enable broad public access if

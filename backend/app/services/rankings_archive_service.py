@@ -216,7 +216,12 @@ class RankingsArchiveService:
         market: Literal["US", "TW"],
         ranking_type: RankingType,
     ) -> date | None:
-        """Derive the trading session date proved by the provider payload."""
+        """Derive the trading session date proved by the provider payload.
+
+        Prefer explicit ``tradingDate``, then a strict majority of item quote
+        timestamps (so one stale constituent does not void an otherwise current
+        ranking), then the envelope timestamp.
+        """
         if response.tradingDate:
             try:
                 return date.fromisoformat(response.tradingDate[:10])
@@ -231,7 +236,7 @@ class RankingsArchiveService:
                     },
                 )
 
-        item_dates = {
+        item_dates = [
             inferred
             for item in response.items
             if (
@@ -241,20 +246,21 @@ class RankingsArchiveService:
                 )
             )
             is not None
-        }
-        if len(item_dates) == 1:
-            return next(iter(item_dates))
-        if len(item_dates) > 1:
-            return None
+        ]
+        if item_dates:
+            counts: dict[date, int] = {}
+            for item_date in item_dates:
+                counts[item_date] = counts.get(item_date, 0) + 1
+            mode_date, mode_count = max(counts.items(), key=lambda pair: pair[1])
+            # Strict majority: tolerate a minority of stale constituent quotes.
+            if mode_count * 2 > len(item_dates):
+                return mode_date
 
-        # Institutional responses stamp every item (and often the envelope) with
-        # the report day's 18:00 Taipei bucket even when enrichment quotes differ.
-        if ranking_type in {RankingType.net_buy, RankingType.net_sell}:
-            return self._parse_timestamp_market_date(
-                response.timestamp,
-                market=market,
-            )
-        return None
+        # Envelope / institutional report bucket as last resort.
+        return self._parse_timestamp_market_date(
+            response.timestamp,
+            market=market,
+        )
 
     def _provider_date_matches_target(
         self,
@@ -271,6 +277,34 @@ class RankingsArchiveService:
         )
         return inferred == target_date, inferred
 
+    def _archive_exists(
+        self,
+        *,
+        market: str,
+        universe: str,
+        ranking_type: RankingType,
+        trading_date: date,
+    ) -> bool:
+        probe = getattr(self._repository, "has_eod_snapshot", None)
+        if callable(probe):
+            return bool(
+                probe(
+                    market=market,
+                    universe=universe,
+                    ranking_type=ranking_type,
+                    trading_date=trading_date,
+                )
+            )
+        return (
+            self._repository.load_eod_snapshot(
+                market=market,
+                universe=universe,
+                ranking_type=ranking_type,
+                trading_date=trading_date,
+            )
+            is not None
+        )
+
     def _persist_provider_archive(
         self,
         *,
@@ -280,8 +314,15 @@ class RankingsArchiveService:
         resolved_date: date,
         current: datetime,
         trigger: str,
+        allowed_dates: set[date] | None = None,
     ) -> Literal["captured", "skipped", "failed"]:
-        """Fetch provider data for one target date and persist when dates match."""
+        """Fetch provider data once and persist under the matching archive date.
+
+        When ``allowed_dates`` is set (auto backfill), the inferred provider date
+        may remapped onto any missing candidate in that set so a newer missing
+        day that still returns an older session does not burn the fetch budget.
+        When ``allowed_dates`` is None, the payload must match ``resolved_date``.
+        """
         target_started = perf_counter()
         try:
             provider = self._provider_registry.get_provider(query)
@@ -347,13 +388,17 @@ class RankingsArchiveService:
             )
             return "skipped"
 
-        matches, inferred_date = self._provider_date_matches_target(
+        inferred = self._infer_provider_trading_date(
             response,
             market=query_market,
             ranking_type=query.ranking_type,
-            target_date=resolved_date,
         )
-        if not matches:
+        if allowed_dates is None:
+            persist_date = resolved_date if inferred == resolved_date else None
+        else:
+            persist_date = inferred if inferred in allowed_dates else None
+
+        if persist_date is None:
             logger.warning(
                 "Rankings archive skipped provider date mismatch",
                 extra={
@@ -364,8 +409,9 @@ class RankingsArchiveService:
                     "ranking_type": query.ranking_type.value,
                     "trading_date": resolved_date.isoformat(),
                     "provider_trading_date": (
-                        inferred_date.isoformat() if inferred_date else None
+                        inferred.isoformat() if inferred else None
                     ),
+                    "allowed_dates": sorted(d.isoformat() for d in (allowed_dates or set())),
                     "source": response.source,
                 },
             )
@@ -376,7 +422,7 @@ class RankingsArchiveService:
                 market=query.market,
                 universe=universe,
                 ranking_type=query.ranking_type,
-                trading_date=resolved_date,
+                trading_date=persist_date,
                 response=response,
                 captured_at=current,
                 capture_scope=CAPTURE_SCOPE_END_OF_DAY,
@@ -390,7 +436,7 @@ class RankingsArchiveService:
                     "market": query.market,
                     "universe": universe,
                     "ranking_type": query.ranking_type.value,
-                    "trading_date": resolved_date.isoformat(),
+                    "trading_date": persist_date.isoformat(),
                 },
             )
             return "failed"
@@ -403,7 +449,7 @@ class RankingsArchiveService:
                     "market": query.market,
                     "universe": universe,
                     "ranking_type": query.ranking_type.value,
-                    "trading_date": resolved_date.isoformat(),
+                    "trading_date": persist_date.isoformat(),
                 },
             )
             return "failed"
@@ -416,12 +462,13 @@ class RankingsArchiveService:
                 "market": query.market,
                 "universe": universe,
                 "ranking_type": query.ranking_type.value,
-                "trading_date": resolved_date.isoformat(),
+                "trading_date": persist_date.isoformat(),
+                "requested_trading_date": resolved_date.isoformat(),
                 "archive_snapshot_id": envelope.snapshot.id,
                 "item_count": len(envelope.items),
                 "source": response.source,
                 "duration_ms": elapsed_ms(target_started),
-                "backfill": resolved_date
+                "backfill": persist_date
                 != market_local_time(query_market, current).date(),
             },
         )
@@ -440,7 +487,9 @@ class RankingsArchiveService:
 
         Missed prior trading days may be backfilled only when the provider payload
         proves it belongs to that target date (#178). ``force`` skips settle-time
-        gating but never bypasses date validation.
+        gating but never bypasses date validation. Auto cycles fetch once per
+        query and remap the inferred provider date onto any missing candidate
+        in the settled window.
         """
         started_at = perf_counter()
         captured = 0
@@ -488,16 +537,8 @@ class RankingsArchiveService:
                     fallback = market_local_time(query_market, current).date()
                     candidate_dates = [fallback]
 
-            fetches_remaining = (
-                len(candidate_dates)
-                if trading_date is not None
-                else _BACKFILL_FETCHES_PER_QUERY
-            )
-
+            missing_dates: list[date] = []
             for resolved_date in candidate_dates:
-                if fetches_remaining <= 0:
-                    break
-
                 probe = datetime.combine(
                     resolved_date,
                     time(12, 0),
@@ -517,32 +558,72 @@ class RankingsArchiveService:
                 ):
                     skipped += 1
                     continue
-
-                existing = self._repository.load_eod_snapshot(
+                if self._archive_exists(
                     market=query.market,
                     universe=universe,
                     ranking_type=query.ranking_type,
                     trading_date=resolved_date,
-                )
-                if existing is not None:
+                ):
                     skipped += 1
                     continue
+                missing_dates.append(resolved_date)
 
-                fetches_remaining -= 1
+            if not missing_dates:
+                continue
+
+            if trading_date is not None:
+                # Explicit date: require an exact match; do not remap.
+                for resolved_date in missing_dates:
+                    outcome = self._persist_provider_archive(
+                        query=query,
+                        query_market=query_market,
+                        universe=universe,
+                        resolved_date=resolved_date,
+                        current=current,
+                        trigger=trigger,
+                        allowed_dates=None,
+                    )
+                    if outcome == "captured":
+                        captured += 1
+                    elif outcome == "failed":
+                        failed += 1
+                    else:
+                        skipped += 1
+                continue
+
+            # Auto path: one provider fetch, remap onto any missing candidate.
+            for _ in range(_BACKFILL_FETCHES_PER_QUERY):
+                if not missing_dates:
+                    break
+                newest_missing = missing_dates[0]
                 outcome = self._persist_provider_archive(
                     query=query,
                     query_market=query_market,
                     universe=universe,
-                    resolved_date=resolved_date,
+                    resolved_date=newest_missing,
                     current=current,
                     trigger=trigger,
+                    allowed_dates=set(missing_dates),
                 )
                 if outcome == "captured":
                     captured += 1
+                    # Drop whatever date was filled; re-probe remaining holes next cycle.
+                    missing_dates = [
+                        d
+                        for d in missing_dates
+                        if not self._archive_exists(
+                            market=query.market,
+                            universe=universe,
+                            ranking_type=query.ranking_type,
+                            trading_date=d,
+                        )
+                    ]
                 elif outcome == "failed":
                     failed += 1
+                    break
                 else:
                     skipped += 1
+                    break
 
         logger.info(
             "Rankings archive capture cycle completed",

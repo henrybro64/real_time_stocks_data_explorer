@@ -193,33 +193,52 @@ def _smoke_ranking_response():
     )
 
 
-def _cleanup_smoke_snapshot(factory, *, market: str, universe: str, ranking_type_value: str, trading_date: date) -> None:
+def _cleanup_smoke_snapshot(
+    factory,
+    *,
+    market: str,
+    universe: str,
+    ranking_type_value: str,
+    trading_date: date,
+) -> None:
+    """Delete the disposable smoke snapshot and verify it is gone.
+
+    Raises on cleanup / verification failure so the live job cannot report success
+    while leaving the far-future row in production history.
+    """
     from sqlalchemy import delete, select
 
     from app.db.archive_models import RankingSnapshotArchive, RankingSnapshotItemArchive
 
-    try:
-        with factory() as session:
-            snap = session.execute(
-                select(RankingSnapshotArchive).where(
-                    RankingSnapshotArchive.market == market,
-                    RankingSnapshotArchive.universe == universe,
-                    RankingSnapshotArchive.ranking_type == ranking_type_value,
-                    RankingSnapshotArchive.trading_date == trading_date,
+    with factory() as session:
+        snap = session.execute(
+            select(RankingSnapshotArchive).where(
+                RankingSnapshotArchive.market == market,
+                RankingSnapshotArchive.universe == universe,
+                RankingSnapshotArchive.ranking_type == ranking_type_value,
+                RankingSnapshotArchive.trading_date == trading_date,
+            )
+        ).scalar_one_or_none()
+        if snap is not None:
+            session.execute(
+                delete(RankingSnapshotItemArchive).where(
+                    RankingSnapshotItemArchive.snapshot_id == snap.id
                 )
-            ).scalar_one_or_none()
-            if snap is not None:
-                session.execute(
-                    delete(RankingSnapshotItemArchive).where(
-                        RankingSnapshotItemArchive.snapshot_id == snap.id
-                    )
-                )
-                session.execute(
-                    delete(RankingSnapshotArchive).where(RankingSnapshotArchive.id == snap.id)
-                )
-                session.commit()
-    except Exception as exc:  # noqa: BLE001
-        print(f"archive smoke cleanup warning: {type(exc).__name__}", file=sys.stderr)
+            )
+            session.execute(
+                delete(RankingSnapshotArchive).where(RankingSnapshotArchive.id == snap.id)
+            )
+            session.commit()
+        remaining = session.execute(
+            select(RankingSnapshotArchive.id).where(
+                RankingSnapshotArchive.market == market,
+                RankingSnapshotArchive.universe == universe,
+                RankingSnapshotArchive.ranking_type == ranking_type_value,
+                RankingSnapshotArchive.trading_date == trading_date,
+            ).limit(1)
+        ).scalar_one_or_none()
+        if remaining is not None:
+            raise RuntimeError("disposable smoke snapshot still present after cleanup")
 
 
 def _archive_path_smoke(reporter: StageReporter) -> int:
@@ -295,6 +314,8 @@ def _archive_path_smoke(reporter: StageReporter) -> int:
     ranking_type = RankingType.volume
     response = _smoke_ranking_response()
 
+    write_rc = 1
+    cleanup_error: Exception | None = None
     try:
         written = repo.upsert_eod_snapshot(
             market=market,
@@ -305,30 +326,41 @@ def _archive_path_smoke(reporter: StageReporter) -> int:
             captured_at=datetime(2099, 1, 1, 21, 0, tzinfo=timezone.utc),
         )
         if written is None:
-            return _fail(reporter, STAGE_WRITE, "upsert None")
-        loaded = repo.load_eod_snapshot(
-            market=market,
-            universe=universe,
-            ranking_type=ranking_type,
-            trading_date=trading_date,
-        )
-        if loaded is None:
-            return _fail(reporter, STAGE_WRITE, "load None")
-        reconstructed = repo.to_ranking_response(loaded)
-        symbols = [item.stock.symbol for item in reconstructed.items]
-        if symbols != ["AAPL", "MSFT"]:
-            return _fail(reporter, STAGE_WRITE, f"order {symbols}")
-        reporter.record(STAGE_WRITE, "PASS")
-        return 0
+            write_rc = _fail(reporter, STAGE_WRITE, "upsert None")
+        else:
+            loaded = repo.load_eod_snapshot(
+                market=market,
+                universe=universe,
+                ranking_type=ranking_type,
+                trading_date=trading_date,
+            )
+            if loaded is None:
+                write_rc = _fail(reporter, STAGE_WRITE, "load None")
+            else:
+                reconstructed = repo.to_ranking_response(loaded)
+                symbols = [item.stock.symbol for item in reconstructed.items]
+                if symbols != ["AAPL", "MSFT"]:
+                    write_rc = _fail(reporter, STAGE_WRITE, f"order {symbols}")
+                else:
+                    reporter.record(STAGE_WRITE, "PASS")
+                    write_rc = 0
     finally:
-        _cleanup_smoke_snapshot(
-            factory,
-            market=market,
-            universe=universe,
-            ranking_type_value=ranking_type.value,
-            trading_date=trading_date,
-        )
+        try:
+            _cleanup_smoke_snapshot(
+                factory,
+                market=market,
+                universe=universe,
+                ranking_type_value=ranking_type.value,
+                trading_date=trading_date,
+            )
+        except Exception as exc:  # noqa: BLE001
+            cleanup_error = exc
+            print(f"archive smoke cleanup failed: {type(exc).__name__}", file=sys.stderr)
         reset_rankings_archive_session_state()
+
+    if cleanup_error is not None:
+        return _fail(reporter, STAGE_WRITE, f"cleanup {type(cleanup_error).__name__}")
+    return write_rc
 
 
 def _maybe_write_summary(reporter: StageReporter, enabled: bool) -> None:
