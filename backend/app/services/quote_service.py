@@ -503,8 +503,18 @@ class QuoteService:
         )
         return quote
 
-    def get_live_quotes(self, stock_ids: list[str]) -> list[tuple[StockRecord, QuoteRecord]]:
-        return self._collect_quotes(stock_ids, self.get_live_quote)
+    def get_live_quotes(
+        self,
+        stock_ids: list[str],
+        *,
+        concurrent: bool = True,
+    ) -> list[tuple[StockRecord, QuoteRecord]]:
+        """Batch live quotes. Concurrent by default for ranking fallback (#182)."""
+        return self._collect_quotes(
+            stock_ids,
+            self.get_live_quote,
+            concurrent=concurrent,
+        )
 
     def _collect_quotes(
         self,

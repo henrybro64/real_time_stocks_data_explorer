@@ -42,8 +42,12 @@ class HttpFetchError(RuntimeError):
 _DEFAULT_TIMEOUT_SECONDS = 10.0
 _DEFAULT_RETRIES = 2
 _RETRYABLE_STATUS_CODES = {408, 425, 429, 500, 502, 503, 504}
+# Deterministic client auth denials must not burn the retry budget (#182).
+_NON_RETRYABLE_STATUS_CODES = {401, 403}
 # Cap Retry-After sleeps so a hostile/large header cannot stall worker threads.
 _MAX_RETRY_AFTER_SLEEP_SECONDS = 30.0
+# Abrupt upstream disconnects: at most one retry (2 attempts total) (#183).
+_MAX_REMOTE_PROTOCOL_ATTEMPTS = 2
 _PROVIDER_NAMES_BY_HOST = {
     "api.openai.com": "openai",
     "api.perplexity.ai": "perplexity",
@@ -156,6 +160,55 @@ def capped_retry_sleep_seconds(retry_after: float | None, *, attempt: int) -> fl
     return min(max(base, float(retry_after)), _MAX_RETRY_AFTER_SLEEP_SECONDS)
 
 
+def _failure_status_code(exc: Exception, *, last_status_code: int | None) -> int | None:
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code
+    if isinstance(exc, HttpFetchError):
+        return exc.status_code
+    return last_status_code
+
+
+def _should_retry_http_failure(
+    exc: Exception,
+    *,
+    status_code: int | None,
+    attempt: int,
+    attempts: int,
+    remote_protocol_failures: int,
+) -> bool:
+    """Decide whether another attempt is useful before falling back/raising."""
+    if attempt >= attempts - 1:
+        return False
+    if status_code in _NON_RETRYABLE_STATUS_CODES:
+        return False
+    if isinstance(exc, HttpFetchError) and exc.classification == "auth_denied":
+        return False
+    if isinstance(exc, httpx.RemoteProtocolError):
+        # Server disconnected without a response: one quick retry, then fallback.
+        return remote_protocol_failures < _MAX_REMOTE_PROTOCOL_ATTEMPTS
+    return True
+
+
+def _should_attempt_insecure_tls_fallback(exc: Exception | None) -> bool:
+    """Insecure TLS only helps certificate/TLS problems, not auth or disconnects."""
+    if exc is None:
+        return True
+    if isinstance(exc, httpx.RemoteProtocolError):
+        return False
+    if isinstance(exc, HttpFetchError) and exc.classification in {
+        "auth_denied",
+        "rate_limited",
+    }:
+        return False
+    if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code in {
+        401,
+        403,
+        429,
+    }:
+        return False
+    return True
+
+
 def fetch_json(
     url: str,
     *,
@@ -252,6 +305,8 @@ def _request_with_retries(
     last_error: Exception | None = None
     last_status_code: int | None = None
     last_content_type: str | None = None
+    remote_protocol_failures = 0
+    attempts_executed = 0
     parsed = urlparse(url)
     host = parsed.hostname or ""
     effective_provider = provider_name or _PROVIDER_NAMES_BY_HOST.get(host, host or "unknown")
@@ -261,6 +316,7 @@ def _request_with_retries(
     # several fallback requests and needs the first rate-limit/auth failure kept.
 
     for attempt in range(attempts):
+        attempts_executed = attempt + 1
         # Clear prior-attempt response metadata so a later network timeout cannot
         # inherit an earlier 401/429 and misclassify the final failure.
         last_status_code = None
@@ -316,6 +372,8 @@ def _request_with_retries(
             return response
         except (httpx.HTTPError, HttpFetchError) as exc:
             last_error = exc
+            if isinstance(exc, httpx.RemoteProtocolError):
+                remote_protocol_failures += 1
             if isinstance(exc, httpx.HTTPStatusError):
                 last_status_code = exc.response.status_code
                 last_content_type = exc.response.headers.get("content-type")
@@ -323,37 +381,57 @@ def _request_with_retries(
                 last_status_code = exc.status_code
                 last_content_type = exc.content_type
                 _remember_http_fetch_error(exc)
-            if attempt < attempts - 1:
-                retry_after = None
-                if isinstance(exc, HttpFetchError):
-                    retry_after = exc.retry_after_seconds
-                sleep_seconds = capped_retry_sleep_seconds(retry_after, attempt=attempt)
-                logger.warning(
-                    "External HTTP request attempt failed",
-                    extra={
-                        "event": "external_http.request.retry",
-                        "provider": effective_provider,
-                        "operation": operation,
-                        "resource_id": resource_id,
-                        "upstream_host": host,
-                        "upstream_path": upstream_path,
-                        "status_code": last_status_code,
-                        "content_type": last_content_type,
-                        "attempt": attempt + 1,
-                        "max_attempts": attempts,
-                        "duration_ms": elapsed_ms(started_at),
-                        "error_type": type(exc).__name__,
-                        "error": str(exc),
-                        "retry_after_seconds": retry_after,
-                        "sleep_seconds": sleep_seconds,
-                    },
-                )
-                time.sleep(sleep_seconds)
-                continue
+            status_for_retry = _failure_status_code(
+                exc,
+                last_status_code=last_status_code,
+            )
+            if not _should_retry_http_failure(
+                exc,
+                status_code=status_for_retry,
+                attempt=attempt,
+                attempts=attempts,
+                remote_protocol_failures=remote_protocol_failures,
+            ):
+                break
+            retry_after = None
+            if isinstance(exc, HttpFetchError):
+                retry_after = exc.retry_after_seconds
+            sleep_seconds = capped_retry_sleep_seconds(retry_after, attempt=attempt)
+            logger.warning(
+                "External HTTP request attempt failed",
+                extra={
+                    "event": "external_http.request.retry",
+                    "provider": effective_provider,
+                    "operation": operation,
+                    "resource_id": resource_id,
+                    "upstream_host": host,
+                    "upstream_path": upstream_path,
+                    "status_code": last_status_code,
+                    "content_type": last_content_type,
+                    "attempt": attempt + 1,
+                    "max_attempts": attempts,
+                    "duration_ms": elapsed_ms(started_at),
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                    "retry_after_seconds": retry_after,
+                    "sleep_seconds": sleep_seconds,
+                    "response_classification": (
+                        exc.classification
+                        if isinstance(exc, HttpFetchError)
+                        else classify_http_failure(
+                            status_for_retry,
+                            content_type=last_content_type,
+                        )
+                    ),
+                },
+            )
+            time.sleep(sleep_seconds)
+            continue
 
     if (
         allow_insecure_fallback_hosts
         and host in allow_insecure_fallback_hosts
+        and _should_attempt_insecure_tls_fallback(last_error)
     ):
         try:
             response = httpx.request(
@@ -377,7 +455,7 @@ def _request_with_retries(
                     "upstream_path": upstream_path,
                     "status_code": response.status_code,
                     "content_type": response.headers.get("content-type"),
-                    "attempts": attempts,
+                    "attempts": attempts_executed,
                     "duration_ms": elapsed_ms(started_at),
                     "tls_verification_disabled": True,
                 },
@@ -403,7 +481,7 @@ def _request_with_retries(
                     "status_code": status_code,
                     "content_type": content_type,
                     "response_classification": classification,
-                    "attempts": attempts,
+                    "attempts": attempts_executed,
                     "duration_ms": elapsed_ms(started_at),
                     "error_type": type(exc).__name__,
                     "error": str(exc),
@@ -446,7 +524,7 @@ def _request_with_retries(
                 "status_code": status_code,
                 "content_type": content_type,
                 "response_classification": classification,
-                "attempts": attempts,
+                "attempts": attempts_executed,
                 "duration_ms": elapsed_ms(started_at),
                 "error_type": type(last_error).__name__,
                 "error": str(last_error),
@@ -472,7 +550,7 @@ def _request_with_retries(
             "resource_id": resource_id,
             "upstream_host": host,
             "upstream_path": upstream_path,
-            "attempts": attempts,
+            "attempts": attempts_executed,
             "duration_ms": elapsed_ms(started_at),
             "response_classification": "network_failure",
         },

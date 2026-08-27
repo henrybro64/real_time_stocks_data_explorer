@@ -65,10 +65,20 @@ class FakeQuoteSource:
         stocks: dict[str, object],
         quotes: dict[str, object],
         live_quotes: dict[str, object] | None = None,
+        *,
+        cached_quotes: dict[str, object] | None = None,
+        cached_stale: set[str] | None = None,
     ) -> None:
         self._stocks = stocks
         self._quotes = quotes
         self._live_quotes = live_quotes if live_quotes is not None else quotes
+        self._cached_quotes = cached_quotes or {}
+        self._cached_stale = cached_stale or set()
+        self.live_quote_calls: list[list[str]] = []
+        # Only expose peek when tests opt into cache-first US fallback coverage,
+        # so institutional tests that install get_quotes_cache_first still work.
+        if cached_quotes is not None:
+            self.peek_cached_quotes = self._peek_cached_quotes  # type: ignore[method-assign]
 
     def get_quotes(self, stock_ids: list[str]):
         envelopes = []
@@ -80,6 +90,7 @@ class FakeQuoteSource:
         return envelopes
 
     def get_live_quotes(self, stock_ids: list[str]):
+        self.live_quote_calls.append(list(stock_ids))
         envelopes = []
         for stock_id in stock_ids:
             stock = self._stocks.get(stock_id)
@@ -87,6 +98,22 @@ class FakeQuoteSource:
             if stock is not None and quote is not None:
                 envelopes.append((stock, quote))
         return envelopes
+
+    def _peek_cached_quotes(self, stock_ids: list[str]):
+        items = []
+        for stock_id in stock_ids:
+            stock = self._stocks.get(stock_id)
+            quote = self._cached_quotes.get(stock_id)
+            if stock is None:
+                continue
+            items.append(
+                SimpleNamespace(
+                    stock=stock,
+                    quote=quote,
+                    stale=stock_id in self._cached_stale,
+                )
+            )
+        return items
 
     def get_stock(self, stock_id: str):
         return self._stocks.get(stock_id)
@@ -1401,6 +1428,24 @@ def test_tw_institutional_quote_enrichment_uses_one_batch_lookup_not_per_symbol(
     assert [item.lastPrice for item in response.items] == [100.0, 200.0, 300.0]
 
 
+def test_tw_institutional_ranking_survives_when_all_quote_enrichment_fails() -> None:
+    """Official net_buy rows remain ranked even if MIS/Yahoo quotes are unavailable (#183)."""
+    quote_source = _tw_quote_source({"TW:2330": 100.0, "TW:2317": 200.0})
+    quote_source._quotes = {}
+    quote_source.get_quotes = lambda _ids: []  # type: ignore[method-assign]
+    service = _tw_net_buy_service(
+        quote_source,
+        {"TW:2330": 500000, "TW:2317": 100000},
+    )
+
+    response = service.get_rankings("TW", RankingType.net_buy, limit=2)
+
+    assert [item.stock.symbol for item in response.items] == ["2330", "2317"]
+    assert [item.netBuySellShares for item in response.items] == [500000, 100000]
+    assert all(item.lastPrice is None for item in response.items)
+    assert response.sourceType == RankingSourceType.free_public
+
+
 @pytest.mark.parametrize(
     ("cache_builder", "expected_get_quotes", "expected_cache_calls"),
     [
@@ -2408,3 +2453,90 @@ def test_refresh_does_not_use_hardcoded_tw_fallback_universe() -> None:
     assert response.items == []
     assert response.twRankingsScope is None
     assert response.source != rankings_service_module._TW_QUOTE_FALLBACK_SOURCE
+
+
+def test_djia_falls_back_to_live_quotes_when_yahoo_v7_batch_empty() -> None:
+    """Yahoo auth denial empties the v7 batch; chart/live path must preserve DJIA (#182)."""
+    fake = FakeQuoteSource(
+        stocks={
+            "US:AAPL": _us_stock("US:AAPL", "AAPL", "Apple Inc."),
+            "US:MSFT": _us_stock("US:MSFT", "MSFT", "Microsoft Corporation"),
+            "US:ORCL": _us_stock("US:ORCL", "ORCL", "Oracle"),
+        },
+        quotes={},
+        live_quotes={
+            "US:AAPL": _quote("US:AAPL", 100, "2026-05-12T10:00:00-04:00"),
+            "US:MSFT": _quote("US:MSFT", 300, "2026-05-12T10:00:00-04:00"),
+            "US:ORCL": _quote("US:ORCL", 9_000_000, "2026-05-12T10:00:00-04:00"),
+        },
+        cached_quotes={
+            "US:AAPL": _quote("US:AAPL", 50, "2026-05-12T09:00:00-04:00"),
+        },
+    )
+
+    service = RankingsService(
+        fake,
+        sp500_quote_batch=_empty_sp500_quotes,
+    )
+    response = service.get_rankings(
+        "US",
+        RankingType.volume,
+        limit=50,
+        us_universe="DJIA",
+    )
+
+    symbols = [item.stock.symbol for item in response.items]
+    assert symbols == ["MSFT", "AAPL"]
+    assert "ORCL" not in symbols
+    assert response.universe == "DJIA"
+    assert response.usRankingsScope == "djia"
+    # Cache hit for AAPL; live path only asked for the remaining DJIA ids.
+    assert fake.live_quote_calls
+    assert "US:AAPL" not in fake.live_quote_calls[0]
+    assert "US:MSFT" in fake.live_quote_calls[0]
+
+
+def test_nasdaq100_falls_back_to_live_quotes_when_yahoo_v7_batch_empty() -> None:
+    fake = FakeQuoteSource(
+        stocks={
+            "US:AAPL": _us_stock("US:AAPL", "AAPL", "Apple Inc."),
+            "US:META": _us_stock("US:META", "META", "Meta Platforms"),
+            "US:JPM": _us_stock("US:JPM", "JPM", "JPMorgan"),
+        },
+        quotes={},
+        live_quotes={
+            "US:AAPL": _quote("US:AAPL", 100, "2026-05-12T10:00:00-04:00"),
+            "US:META": _quote("US:META", 400, "2026-05-12T10:00:00-04:00"),
+            "US:JPM": _quote("US:JPM", 500, "2026-05-12T10:00:00-04:00"),
+        },
+    )
+    service = RankingsService(fake, sp500_quote_batch=_empty_sp500_quotes)
+    response = service.get_rankings(
+        "US",
+        RankingType.volume,
+        limit=50,
+        us_universe="NASDAQ100",
+    )
+    assert [item.stock.symbol for item in response.items] == ["META", "AAPL"]
+    assert response.universe == "NASDAQ100"
+    assert response.usRankingsScope == "nasdaq100"
+
+
+def test_us_quote_fallback_keeps_resolved_live_stock_metadata() -> None:
+    synthetic = _us_stock("US:AAPL", "AAPL", "AAPL")
+    resolved = _us_stock("US:AAPL", "AAPL", "Apple Inc.")
+
+    class _Source(FakeQuoteSource):
+        def get_live_quotes(self, stock_ids: list[str]):
+            self.live_quote_calls.append(list(stock_ids))
+            return [(resolved, _quote("US:AAPL", 100, "2026-05-12T10:00:00-04:00"))]
+
+    service = RankingsService(
+        _Source(stocks={"US:AAPL": synthetic}, quotes={}),
+        sp500_quote_batch=_empty_sp500_quotes,
+        sp500_symbol_loader=lambda: ("AAPL",),
+    )
+    envelopes = service._us_quote_fallback_envelopes([synthetic])
+    assert len(envelopes) == 1
+    assert envelopes[0][0].name == "Apple Inc."
+    assert envelopes[0][0] is resolved

@@ -455,6 +455,33 @@ def test_capture_skips_unsupported_historical_provider() -> None:
     assert repo.upserts == []
 
 
+def test_capture_skips_empty_us_response_when_yahoo_auth_denies_all_paths() -> None:
+    """Empty DJIA/NASDAQ100 payload after Yahoo 401 must not write archive rows (#182)."""
+    repo = _FakeRepo()
+    service = RankingsArchiveService(
+        repository=repo,
+        provider_registry=_FakeRegistry(
+            _response(
+                items=[],
+                sourceType=RankingSourceType.free_unofficial,
+                source="DJIA constituent quote rankings",
+                usRankingsScope="DJIA",
+                universe="DJIA",
+            )
+        ),
+    )
+    result = service.capture_eod_archives(
+        now=datetime(2026, 8, 18, 20, 50, tzinfo=timezone.utc),
+        market="US",
+        trading_date=date(2026, 8, 18),
+        force=True,
+    )
+    assert result["captured"] == 0
+    assert result["skipped"] >= 8
+    assert result["failed"] == 0
+    assert repo.upserts == []
+
+
 def test_capture_auto_backfill_picks_newest_missing_settled_day() -> None:
     """Sampler path (no explicit date) recovers the newest missing settled day."""
     repo = _FakeRepo()

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 from datetime import datetime, timedelta
 from urllib.parse import quote
@@ -9,6 +10,8 @@ from app.models.quote import CandleRecord, QuoteRecord
 from app.models.stock import StockRecord
 from app.services.http_client import HttpFetchError, fetch_json, fetch_text
 from app.services.market_clock import is_market_open
+
+logger = logging.getLogger(__name__)
 
 
 US_STOCKS: dict[str, StockRecord] = {
@@ -290,13 +293,19 @@ def _load_catalog_payload() -> dict:
     )
 
 
-def _load_json_with_headers(url: str, params: dict[str, str], headers: dict[str, str]) -> dict:
+def _load_json_with_headers(
+    url: str,
+    params: dict[str, str],
+    headers: dict[str, str],
+    *,
+    retries: int = 2,
+) -> dict:
     return fetch_json(
         url,
         params=params,
         headers=headers,
         timeout_seconds=_REQUEST_TIMEOUT_SECONDS,
-        retries=2,
+        retries=retries,
     )
 
 
@@ -654,6 +663,8 @@ def yahoo_v7_quotes_batch(stocks: list[StockRecord]) -> dict[str, QuoteRecord]:
     """Fetch Yahoo v7 quotes for many tickers using a few batched HTTP calls.
 
     Keys are ``stock.id`` (``US:SYMBOL``). Missing or invalid rows are omitted.
+    Auth denials abort remaining chunks so callers can fall back to chart/live
+    paths without burning latency on every chunk (#182).
     """
     if not stocks:
         return {}
@@ -667,12 +678,29 @@ def yahoo_v7_quotes_batch(stocks: list[StockRecord]) -> dict[str, QuoteRecord]:
         chunk = stocks[start : start + chunk_size]
         symbols_param = ",".join(_yahoo_v7_request_symbol(s.symbol) for s in chunk)
         try:
+            # Keep normal retries for transient 429/5xx/timeouts. Auth denials are
+            # already non-retryable in http_client (#182 Codex).
             payload = _load_json_with_headers(
                 _YAHOO_QUOTE_URL,
                 {"symbols": symbols_param},
                 headers,
             )
-        except (HttpFetchError, TimeoutError, ValueError):
+        except HttpFetchError as exc:
+            if exc.classification == "auth_denied":
+                logger.warning(
+                    "Yahoo v7 quote batch auth denied; aborting remaining chunks",
+                    extra={
+                        "event": "yahoo_v7_quotes_batch.auth_denied",
+                        "provider": "yahoo_finance",
+                        "chunk_start": start,
+                        "chunk_size": len(chunk),
+                        "status_code": exc.status_code,
+                        "response_classification": exc.classification,
+                    },
+                )
+                break
+            continue
+        except (TimeoutError, ValueError):
             continue
         quote_response = payload.get("quoteResponse")
         if not isinstance(quote_response, dict) or quote_response.get("error"):
