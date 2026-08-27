@@ -477,3 +477,34 @@ def test_get_catalog_stock_does_not_fetch_yahoo_chart(monkeypatch) -> None:
 
     assert provider.get_catalog_stock("US:AAPL") is not None
     assert provider.get_catalog_stock("US:JPM") is None
+
+
+def test_yahoo_v7_quotes_batch_aborts_remaining_chunks_on_auth_denied(monkeypatch) -> None:
+    from app.models.stock import StockRecord
+    from app.services.http_client import HttpFetchError
+
+    stocks = [
+        StockRecord(
+            id=f"US:S{i:02d}",
+            market="US",
+            symbol=f"S{i:02d}",
+            name=f"Stock {i}",
+            exchange="NYSE",
+            currency="USD",
+            timezone="America/New_York",
+        )
+        for i in range(45)  # two chunks with chunk_size=40
+    ]
+    calls = {"count": 0}
+
+    def fake_load(_url, _params, _headers, *, retries=2):
+        calls["count"] += 1
+        raise HttpFetchError(
+            "denied",
+            status_code=401,
+            classification="auth_denied",
+        )
+
+    monkeypatch.setattr(us_provider, "_load_json_with_headers", fake_load)
+    assert us_provider.yahoo_v7_quotes_batch(stocks) == {}
+    assert calls["count"] == 1

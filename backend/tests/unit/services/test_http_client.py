@@ -175,8 +175,8 @@ def test_fetch_json_raises_network_failure_for_timeout(monkeypatch) -> None:
     assert exc_info.value.status_code is None
 
 
-def test_fetch_json_does_not_reuse_prior_attempt_status_after_timeout(monkeypatch) -> None:
-    """A later timeout must not inherit an earlier 401/429 classification."""
+def test_fetch_json_does_not_retry_http_401(monkeypatch) -> None:
+    """Auth denials are deterministic; do not burn the retry budget (#182)."""
     denied = MagicMock()
     denied.status_code = 401
     denied.headers = {"content-type": "application/json"}
@@ -189,16 +189,38 @@ def test_fetch_json_does_not_reuse_prior_attempt_status_after_timeout(monkeypatc
 
     def fake_request(*_args, **_kwargs):
         calls["count"] += 1
-        if calls["count"] == 1:
-            return denied
-        raise httpx.ConnectTimeout("timed out on retry")
+        return denied
 
     monkeypatch.setattr("app.services.http_client.httpx.request", fake_request)
     monkeypatch.setattr("app.services.http_client.time.sleep", lambda _seconds: None)
 
     with pytest.raises(HttpFetchError) as exc_info:
-        fetch_json("https://www.twse.com.tw/rwd/zh/marginTrading/MI_MARGN", retries=1)
+        fetch_json("https://query1.finance.yahoo.com/v7/finance/quote", retries=2)
 
+    assert calls["count"] == 1
+    assert exc_info.value.classification == "auth_denied"
+    assert exc_info.value.status_code == 401
+
+
+def test_fetch_json_limits_remote_protocol_error_retries(monkeypatch) -> None:
+    """Abrupt disconnects get at most one retry before fallback (#183)."""
+    calls = {"count": 0}
+
+    def fake_request(*_args, **_kwargs):
+        calls["count"] += 1
+        raise httpx.RemoteProtocolError("Server disconnected without sending a response.")
+
+    monkeypatch.setattr("app.services.http_client.httpx.request", fake_request)
+    monkeypatch.setattr("app.services.http_client.time.sleep", lambda _seconds: None)
+
+    with pytest.raises(HttpFetchError) as exc_info:
+        fetch_json(
+            "https://mis.twse.com.tw/stock/api/getStockInfo.jsp",
+            retries=2,
+            allow_insecure_fallback_hosts={"mis.twse.com.tw"},
+        )
+
+    # 2 protocol attempts, no insecure TLS fallback for disconnects.
     assert calls["count"] == 2
     assert exc_info.value.classification == "network_failure"
     assert exc_info.value.status_code is None

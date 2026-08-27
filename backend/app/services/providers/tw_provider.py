@@ -705,7 +705,9 @@ def _load_json(url: str, params: dict[str, str], referer: str | None = None) -> 
         params=params,
         headers=headers,
         timeout_seconds=_REQUEST_TIMEOUT_SECONDS,
-        retries=2,
+        # One disconnect retry is enforced in http_client; keep budget low so
+        # ranking refresh can move to Yahoo-TW / cache quickly (#183).
+        retries=1,
         allow_insecure_fallback_hosts={"mis.twse.com.tw", "www.twse.com.tw"},
     )
 
