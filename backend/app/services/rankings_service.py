@@ -707,7 +707,7 @@ class RankingsService:
         if not stocks:
             return []
         ids = [stock.id for stock in stocks]
-        stocks_by_id = {stock.id: stock for stock in stocks}
+        resolved_stocks = {stock.id: stock for stock in stocks}
         quotes_by_id: dict[str, QuoteRecord] = {}
 
         peek = getattr(self.quote_source, "peek_cached_quotes", None)
@@ -718,6 +718,7 @@ class RankingsService:
                     if quote is None:
                         continue
                     quotes_by_id[item.stock.id] = quote
+                    resolved_stocks[item.stock.id] = item.stock
             except Exception:  # noqa: BLE001 - rankings must still try live path
                 logger.exception(
                     "US quote fallback cache peek failed",
@@ -730,11 +731,12 @@ class RankingsService:
             if callable(live_fetcher):
                 for stock, quote in live_fetcher(missing):
                     quotes_by_id[stock.id] = quote
+                    resolved_stocks[stock.id] = stock
 
         return [
-            (stocks_by_id[stock_id], quotes_by_id[stock_id])
+            (resolved_stocks[stock_id], quotes_by_id[stock_id])
             for stock_id in ids
-            if stock_id in quotes_by_id and stock_id in stocks_by_id
+            if stock_id in quotes_by_id and stock_id in resolved_stocks
         ]
 
     def _try_build_us_sp500_price_movers(

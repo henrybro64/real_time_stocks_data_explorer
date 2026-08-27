@@ -26,10 +26,12 @@ _MIS_FAILURE_THRESHOLD = 3
 _MIS_CIRCUIT_OPEN_SECONDS = 45.0
 _MIS_SESSION_TTL_SECONDS = 300.0
 _mis_circuit_lock = threading.Lock()
+_mis_warmup_lock = threading.Lock()
 _mis_consecutive_failures = 0
 _mis_circuit_open_until = 0.0
 _mis_session_cookie_header: str | None = None
-_mis_session_cached_at = 0.0
+# 0.0 means warm-up has never been attempted; None cookie can still be cached.
+_mis_session_warmed_at = 0.0
 
 
 @dataclass(frozen=True)
@@ -746,51 +748,56 @@ def _note_mis_failure(*, classification: str) -> None:
 def reset_mis_circuit_for_tests() -> None:
     """Test helper: clear MIS circuit and warmed session state."""
     global _mis_consecutive_failures, _mis_circuit_open_until
-    global _mis_session_cookie_header, _mis_session_cached_at
+    global _mis_session_cookie_header, _mis_session_warmed_at
     with _mis_circuit_lock:
         _mis_consecutive_failures = 0
         _mis_circuit_open_until = 0.0
         _mis_session_cookie_header = None
-        _mis_session_cached_at = 0.0
+        _mis_session_warmed_at = 0.0
 
 
 def _mis_cookie_header() -> str | None:
-    """Best-effort session warm-up against the MIS index page (no secrets)."""
-    global _mis_session_cookie_header, _mis_session_cached_at
-    with _mis_circuit_lock:
-        if (
-            _mis_session_cookie_header
-            and monotonic() - _mis_session_cached_at < _MIS_SESSION_TTL_SECONDS
-        ):
-            return _mis_session_cookie_header
+    """Best-effort session warm-up against the MIS index page (no secrets).
 
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-        ),
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7",
-    }
-    cookie_header: str | None = None
-    try:
-        response = httpx.get(
-            "https://mis.twse.com.tw/stock/index.jsp",
-            headers=headers,
-            timeout=5.0,
-            follow_redirects=True,
-        )
-        if response.cookies:
-            cookie_header = "; ".join(
-                f"{key}={value}" for key, value in response.cookies.items()
+    Caches successful cookies and failed/cookie-less outcomes for the TTL so
+    concurrent quote enrichment cannot stampede the index page (#183 Codex).
+    """
+    global _mis_session_cookie_header, _mis_session_warmed_at
+    with _mis_warmup_lock:
+        with _mis_circuit_lock:
+            if (
+                _mis_session_warmed_at > 0.0
+                and monotonic() - _mis_session_warmed_at < _MIS_SESSION_TTL_SECONDS
+            ):
+                return _mis_session_cookie_header
+
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+            ),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7",
+        }
+        cookie_header: str | None = None
+        try:
+            response = httpx.get(
+                "https://mis.twse.com.tw/stock/index.jsp",
+                headers=headers,
+                timeout=5.0,
+                follow_redirects=True,
             )
-    except Exception:  # noqa: BLE001 - warm-up is best-effort only
-        cookie_header = None
+            if response.cookies:
+                cookie_header = "; ".join(
+                    f"{key}={value}" for key, value in response.cookies.items()
+                )
+        except Exception:  # noqa: BLE001 - warm-up is best-effort only
+            cookie_header = None
 
-    with _mis_circuit_lock:
-        _mis_session_cookie_header = cookie_header
-        _mis_session_cached_at = monotonic()
-    return cookie_header
+        with _mis_circuit_lock:
+            _mis_session_cookie_header = cookie_header
+            _mis_session_warmed_at = monotonic()
+        return cookie_header
 
 
 def _load_json(url: str, params: dict[str, str], referer: str | None = None) -> object:
@@ -804,7 +811,8 @@ def _load_json(url: str, params: dict[str, str], referer: str | None = None) -> 
     }
     if referer:
         headers["Referer"] = referer
-    if "mis.twse.com.tw" in url:
+    is_mis = "mis.twse.com.tw" in url
+    if is_mis:
         headers["Origin"] = "https://mis.twse.com.tw"
         cookie_header = _mis_cookie_header()
         if cookie_header:
@@ -815,11 +823,10 @@ def _load_json(url: str, params: dict[str, str], referer: str | None = None) -> 
         params=params,
         headers=headers,
         timeout_seconds=_REQUEST_TIMEOUT_SECONDS,
-        # One disconnect retry is enforced in http_client; keep budget low so
-        # ranking refresh can move to Yahoo-TW / cache quickly (#183).
-        retries=1,
+        # Bound only MIS quote disconnect retries; keep catalog/history resilient.
+        retries=1 if is_mis else 2,
         allow_insecure_fallback_hosts={"mis.twse.com.tw", "www.twse.com.tw"},
-        provider_name="twse" if "mis.twse.com.tw" in url else None,
+        provider_name="twse" if is_mis else None,
     )
 
 

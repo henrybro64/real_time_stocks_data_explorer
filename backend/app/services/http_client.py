@@ -306,6 +306,7 @@ def _request_with_retries(
     last_status_code: int | None = None
     last_content_type: str | None = None
     remote_protocol_failures = 0
+    attempts_executed = 0
     parsed = urlparse(url)
     host = parsed.hostname or ""
     effective_provider = provider_name or _PROVIDER_NAMES_BY_HOST.get(host, host or "unknown")
@@ -315,6 +316,7 @@ def _request_with_retries(
     # several fallback requests and needs the first rate-limit/auth failure kept.
 
     for attempt in range(attempts):
+        attempts_executed = attempt + 1
         # Clear prior-attempt response metadata so a later network timeout cannot
         # inherit an earlier 401/429 and misclassify the final failure.
         last_status_code = None
@@ -453,7 +455,7 @@ def _request_with_retries(
                     "upstream_path": upstream_path,
                     "status_code": response.status_code,
                     "content_type": response.headers.get("content-type"),
-                    "attempts": attempts,
+                    "attempts": attempts_executed,
                     "duration_ms": elapsed_ms(started_at),
                     "tls_verification_disabled": True,
                 },
@@ -479,7 +481,7 @@ def _request_with_retries(
                     "status_code": status_code,
                     "content_type": content_type,
                     "response_classification": classification,
-                    "attempts": attempts,
+                    "attempts": attempts_executed,
                     "duration_ms": elapsed_ms(started_at),
                     "error_type": type(exc).__name__,
                     "error": str(exc),
@@ -522,7 +524,7 @@ def _request_with_retries(
                 "status_code": status_code,
                 "content_type": content_type,
                 "response_classification": classification,
-                "attempts": attempts,
+                "attempts": attempts_executed,
                 "duration_ms": elapsed_ms(started_at),
                 "error_type": type(last_error).__name__,
                 "error": str(last_error),
@@ -548,7 +550,7 @@ def _request_with_retries(
             "resource_id": resource_id,
             "upstream_host": host,
             "upstream_path": upstream_path,
-            "attempts": attempts,
+            "attempts": attempts_executed,
             "duration_ms": elapsed_ms(started_at),
             "response_classification": "network_failure",
         },

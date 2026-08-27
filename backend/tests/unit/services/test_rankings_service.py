@@ -2520,3 +2520,23 @@ def test_nasdaq100_falls_back_to_live_quotes_when_yahoo_v7_batch_empty() -> None
     assert [item.stock.symbol for item in response.items] == ["META", "AAPL"]
     assert response.universe == "NASDAQ100"
     assert response.usRankingsScope == "nasdaq100"
+
+
+def test_us_quote_fallback_keeps_resolved_live_stock_metadata() -> None:
+    synthetic = _us_stock("US:AAPL", "AAPL", "AAPL")
+    resolved = _us_stock("US:AAPL", "AAPL", "Apple Inc.")
+
+    class _Source(FakeQuoteSource):
+        def get_live_quotes(self, stock_ids: list[str]):
+            self.live_quote_calls.append(list(stock_ids))
+            return [(resolved, _quote("US:AAPL", 100, "2026-05-12T10:00:00-04:00"))]
+
+    service = RankingsService(
+        _Source(stocks={"US:AAPL": synthetic}, quotes={}),
+        sp500_quote_batch=_empty_sp500_quotes,
+        sp500_symbol_loader=lambda: ("AAPL",),
+    )
+    envelopes = service._us_quote_fallback_envelopes([synthetic])
+    assert len(envelopes) == 1
+    assert envelopes[0][0].name == "Apple Inc."
+    assert envelopes[0][0] is resolved

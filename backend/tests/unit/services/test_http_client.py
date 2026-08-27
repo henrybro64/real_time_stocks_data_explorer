@@ -185,14 +185,22 @@ def test_fetch_json_does_not_retry_http_401(monkeypatch) -> None:
         request=MagicMock(),
         response=denied,
     )
+
     calls = {"count": 0}
+    logged: list[dict] = []
 
     def fake_request(*_args, **_kwargs):
         calls["count"] += 1
         return denied
 
+    def capture_warning(_msg, *args, **kwargs):
+        extra = kwargs.get("extra") or {}
+        if extra.get("event") == "external_http.request.failed":
+            logged.append(extra)
+
     monkeypatch.setattr("app.services.http_client.httpx.request", fake_request)
     monkeypatch.setattr("app.services.http_client.time.sleep", lambda _seconds: None)
+    monkeypatch.setattr("app.services.http_client.logger.warning", capture_warning)
 
     with pytest.raises(HttpFetchError) as exc_info:
         fetch_json("https://query1.finance.yahoo.com/v7/finance/quote", retries=2)
@@ -200,6 +208,9 @@ def test_fetch_json_does_not_retry_http_401(monkeypatch) -> None:
     assert calls["count"] == 1
     assert exc_info.value.classification == "auth_denied"
     assert exc_info.value.status_code == 401
+    assert logged
+    assert logged[0]["attempts"] == 1
+
 
 
 def test_fetch_json_limits_remote_protocol_error_retries(monkeypatch) -> None:

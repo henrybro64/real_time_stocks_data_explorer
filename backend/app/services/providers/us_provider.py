@@ -678,13 +678,12 @@ def yahoo_v7_quotes_batch(stocks: list[StockRecord]) -> dict[str, QuoteRecord]:
         chunk = stocks[start : start + chunk_size]
         symbols_param = ",".join(_yahoo_v7_request_symbol(s.symbol) for s in chunk)
         try:
-            # retries=0: 401/403 are non-retryable in http_client; avoid extra
-            # latency on already-denied Yahoo batch endpoints.
+            # Keep normal retries for transient 429/5xx/timeouts. Auth denials are
+            # already non-retryable in http_client (#182 Codex).
             payload = _load_json_with_headers(
                 _YAHOO_QUOTE_URL,
                 {"symbols": symbols_param},
                 headers,
-                retries=0,
             )
         except HttpFetchError as exc:
             if exc.classification == "auth_denied":

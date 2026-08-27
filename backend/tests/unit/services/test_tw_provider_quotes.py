@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+import httpx
+
 from app.models.quote import QuoteRecord
 from app.models.stock import StockRecord
 from app.services.http_client import HttpFetchError
@@ -145,4 +147,19 @@ def test_mis_circuit_skips_mis_after_repeated_disconnects(monkeypatch) -> None:
 
     assert provider.get_quote(stock.id) == yahoo_quote
     assert mis_calls["count"] == before  # circuit skipped further MIS calls
+    tw_provider.reset_mis_circuit_for_tests()
+
+
+def test_mis_cookie_warmup_caches_cookie_less_failure(monkeypatch) -> None:
+    tw_provider.reset_mis_circuit_for_tests()
+    calls = {"count": 0}
+
+    def fail_warmup(*_args, **_kwargs):
+        calls["count"] += 1
+        raise httpx.ConnectTimeout("warmup timed out")
+
+    monkeypatch.setattr(tw_provider.httpx, "get", fail_warmup)
+    assert tw_provider._mis_cookie_header() is None
+    assert tw_provider._mis_cookie_header() is None
+    assert calls["count"] == 1
     tw_provider.reset_mis_circuit_for_tests()
