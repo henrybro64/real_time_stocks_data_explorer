@@ -8,6 +8,7 @@ import {
   fetchRankingsHistory,
   fetchRankingsHistoryDates,
   historyDatesRetryDelayMs,
+  parseRetryAfterSeconds,
   refreshRankings,
   fetchTaiwanInstitutionalInvestors,
   fetchTaiwanMarginShort,
@@ -266,6 +267,34 @@ describe("fetchRankings", () => {
     ).toBe(false);
     expect(historyDatesRetryDelayMs(1)).toBe(8_000);
     expect(historyDatesRetryDelayMs(2)).toBe(16_000);
+    expect(
+      historyDatesRetryDelayMs(
+        1,
+        new ApiError("archive waking", {
+          kind: "unavailable",
+          status: 503,
+          retryAfterSeconds: 10,
+        }),
+      ),
+    ).toBe(10_000);
+    expect(parseRetryAfterSeconds("10")).toBe(10);
+    expect(parseRetryAfterSeconds("")).toBeNull();
+  });
+
+  it("preserves Retry-After from archive 503 responses", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 503,
+      headers: new Headers({ "Retry-After": "10" }),
+      json: async () => ({ detail: "Rankings archive is unavailable" }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(fetchRankingsHistoryDates("US", "DJIA", "volume")).rejects.toMatchObject({
+      status: 503,
+      retryAfterSeconds: 10,
+      kind: "unavailable",
+    });
   });
 
   it("does not map a caller abort to a rankings timeout", async () => {

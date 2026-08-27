@@ -38,10 +38,12 @@ Text columns use SQLAlchemy `Unicode` / `UnicodeText` so Taiwanese names survive
 SQL Server Latin1 collations.
 
 Archive DB connects lazily. A failed connect (including Free-offer AutoPause
-cold start) uses **bounded in-request retries with backoff**, then a short
-process cooldown before the next initialization wave (#177). History routes
-return `503` with `Retry-After: 10` so the Rankings UI can wake the archive
-without blocking live `GET /api/rankings`.
+cold start) uses **bounded in-request retries with backoff** (2s / 5s / 8s
+between attempts; sleeps outside the process lock), then a short process
+cooldown before the next initialization wave (#177). Mid-query connection
+failures invalidate the cached engine so the next request re-enters cold-start.
+History routes return `503` with `Retry-After: 10` so the Rankings UI can wake
+the archive without blocking live `GET /api/rankings`.
 
 EOD capture inspects a bounded window of recent settled trading days and may
 **backfill a missed prior day only when the provider payload proves that date**

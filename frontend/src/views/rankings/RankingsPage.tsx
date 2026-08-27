@@ -450,7 +450,7 @@ export function RankingsPage() {
       ),
     staleTime: 5 * 60_000,
     retry: shouldRetryHistoryDatesQuery,
-    retryDelay: (failureCount) => historyDatesRetryDelayMs(failureCount),
+    retryDelay: (failureCount, error) => historyDatesRetryDelayMs(failureCount, error),
   });
   const availableHistoryDates = historyDatesQuery.data?.dates ?? [];
   const historyDatesRetrying =
@@ -506,7 +506,18 @@ export function RankingsPage() {
         signal,
       );
     },
-    retry: shouldRetryRankingsQuery,
+    // Historical reads hit Azure SQL; reuse the AutoPause retry budget (#177).
+    // Live rankings keep QueryClient default retryDelay (0 in tests).
+    retry: (failureCount, error) =>
+      selectedTradingDate != null
+        ? shouldRetryHistoryDatesQuery(failureCount, error)
+        : shouldRetryRankingsQuery(failureCount, error),
+    ...(selectedTradingDate != null
+      ? {
+          retryDelay: (failureCount: number, error: unknown) =>
+            historyDatesRetryDelayMs(failureCount, error),
+        }
+      : {}),
     refetchInterval: (query) => {
       if (selectedTradingDate != null) {
         return false;

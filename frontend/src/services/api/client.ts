@@ -50,13 +50,23 @@ export class ApiError extends Error {
   readonly detail: string | null;
   readonly kind: ApiErrorKind;
   readonly status: number | null;
+  readonly retryAfterSeconds: number | null;
 
-  constructor(message: string, options: { status?: number | null; detail?: string | null; kind: ApiErrorKind }) {
+  constructor(
+    message: string,
+    options: {
+      status?: number | null;
+      detail?: string | null;
+      kind: ApiErrorKind;
+      retryAfterSeconds?: number | null;
+    },
+  ) {
     super(message);
     this.name = "ApiError";
     this.status = options.status ?? null;
     this.detail = options.detail ?? null;
     this.kind = options.kind;
+    this.retryAfterSeconds = options.retryAfterSeconds ?? null;
   }
 }
 
@@ -155,13 +165,38 @@ async function failedRequestDetail(response: Response): Promise<string | null> {
   return null;
 }
 
+/** Parse HTTP Retry-After (delay-seconds or HTTP-date) into whole seconds. */
+export function parseRetryAfterSeconds(header: string | null): number | null {
+  if (header == null) {
+    return null;
+  }
+  const trimmed = header.trim();
+  if (trimmed === "") {
+    return null;
+  }
+  const asSeconds = Number.parseInt(trimmed, 10);
+  if (Number.isFinite(asSeconds) && String(asSeconds) === trimmed && asSeconds >= 0) {
+    return asSeconds;
+  }
+  const asDateMs = Date.parse(trimmed);
+  if (Number.isFinite(asDateMs)) {
+    return Math.max(0, Math.ceil((asDateMs - Date.now()) / 1000));
+  }
+  return null;
+}
+
 async function failedRequestError(response: Response): Promise<ApiError> {
   const detail = await failedRequestDetail(response);
   const message = detail ? `Request failed: ${response.status} - ${detail}` : `Request failed: ${response.status}`;
+  const retryAfterHeader =
+    typeof response.headers?.get === "function"
+      ? response.headers.get("Retry-After")
+      : null;
   return new ApiError(message, {
     status: response.status,
     detail,
     kind: classifyApiErrorKind(response.status, detail, message),
+    retryAfterSeconds: parseRetryAfterSeconds(retryAfterHeader),
   });
 }
 
@@ -284,7 +319,15 @@ export function shouldRetryHistoryDatesQuery(
   return failureCount < HISTORY_DATES_MAX_RETRIES;
 }
 
-export function historyDatesRetryDelayMs(failureCount: number): number {
+export function historyDatesRetryDelayMs(failureCount: number, error?: unknown): number {
+  // Prefer server Retry-After (archive cooldown / wake hint) when present (#177).
+  if (
+    error instanceof ApiError
+    && error.retryAfterSeconds != null
+    && error.retryAfterSeconds > 0
+  ) {
+    return Math.max(error.retryAfterSeconds * 1000, HISTORY_DATES_RETRY_DELAY_MS);
+  }
   // Align with backend cold-start cooldown / wake window.
   return HISTORY_DATES_RETRY_DELAY_MS * Math.max(1, failureCount);
 }

@@ -203,7 +203,10 @@ class RankingsArchiveCaptureRequest(BaseModel):
     tradingDate: date | None = None
     force: bool = Field(
         default=False,
-        description="When true, skip settle-time gate (still skips non-trading dates).",
+        description=(
+            "When true, skip settle-time gate. Still skips non-trading dates and "
+            "never bypasses provider trading-date validation."
+        ),
     )
 
 

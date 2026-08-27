@@ -5,6 +5,8 @@ Connection failures are contained so FastAPI can start without Azure SQL.
 
 Failed connects are retried with short in-request backoff (Azure SQL Free AutoPause
 cold starts), then a brief process cooldown before the next initialization wave.
+Sleeps happen outside the process lock so other requests are not blocked.
+Mid-query outages invalidate the cached engine so the next call re-enters cold-start.
 """
 
 from __future__ import annotations
@@ -24,9 +26,10 @@ logger = logging.getLogger(__name__)
 
 # After exhausting in-request retries, wait before another init wave.
 _INIT_RETRY_COOLDOWN_SECONDS = 10.0
-# Bounded wake-up attempts for serverless AutoPause (#177).
-_INIT_IN_REQUEST_ATTEMPTS = 3
+# Backoff before attempts 2..N (Azure Free AutoPause wake budget) (#177).
 _INIT_IN_REQUEST_BACKOFF_SECONDS = (2.0, 5.0, 8.0)
+# One initial try + one retry per backoff entry.
+_INIT_IN_REQUEST_ATTEMPTS = len(_INIT_IN_REQUEST_BACKOFF_SECONDS) + 1
 
 _lock = Lock()
 _engine: Engine | None = None
@@ -65,6 +68,32 @@ def reset_rankings_archive_session_state() -> None:
         _last_init_failure_at = None
 
 
+def invalidate_rankings_archive_engine(*, reason: str = "outage") -> None:
+    """Drop a cached engine so the next call re-enters cold-start (#177).
+
+    Used after mid-life AutoPause / connection failures when a previously healthy
+    engine is no longer usable. Does not arm the init cooldown — the next request
+    should attempt a full wake budget immediately.
+    """
+    global _engine, _session_factory, _schema_ready, _last_init_failure_at
+    with _lock:
+        if _engine is None and _session_factory is None and not _schema_ready:
+            return
+        if _engine is not None:
+            _engine.dispose()
+        _engine = None
+        _session_factory = None
+        _schema_ready = False
+        _last_init_failure_at = None
+        logger.warning(
+            "Rankings archive engine invalidated",
+            extra={
+                "event": "rankings_archive.engine.invalidated",
+                "reason": reason,
+            },
+        )
+
+
 def rankings_archive_is_configured() -> bool:
     if _session_factory_override is not _UNSET:
         return _session_factory_override is not None
@@ -86,10 +115,11 @@ def _try_create_engine(url: str) -> Engine:
     return engine
 
 
-def _initialize_engine_locked() -> Engine | None:
-    global _engine, _session_factory, _last_init_failure_at
+def _begin_initialize() -> str | None:
+    """Under lock: return URL to connect, or None if already ready / cooling down."""
+    global _engine, _session_factory
     if _engine is not None:
-        return _engine
+        return None
     if _last_init_failure_at is not None:
         elapsed = monotonic() - _last_init_failure_at
         if elapsed < _INIT_RETRY_COOLDOWN_SECONDS:
@@ -109,10 +139,69 @@ def _initialize_engine_locked() -> Engine | None:
         _engine = None
         _session_factory = None
         return None
+    return url
+
+
+def _publish_engine(engine: Engine, *, attempt: int) -> Engine:
+    """Install a freshly created engine, or keep a concurrent winner."""
+    global _engine, _session_factory, _last_init_failure_at
+    with _lock:
+        if _engine is not None:
+            engine.dispose()
+            return _engine
+        _engine = engine
+        _session_factory = sessionmaker(
+            bind=engine,
+            autoflush=False,
+            autocommit=False,
+            expire_on_commit=False,
+        )
+        _last_init_failure_at = None
+        logger.info(
+            "Rankings archive engine ready",
+            extra={
+                "event": "rankings_archive.engine.recovered"
+                if attempt > 1
+                else "rankings_archive.engine.ready",
+                "attempt": attempt,
+            },
+        )
+        return _engine
+
+
+def _mark_init_exhausted(last_error: Exception | None) -> None:
+    global _engine, _session_factory, _last_init_failure_at
+    with _lock:
+        if _engine is not None:
+            # Another thread recovered while we were failing.
+            return
+        logger.error(
+            "Rankings archive database unavailable after cold-start retries",
+            extra={
+                "event": "rankings_archive.engine.unavailable_persistent",
+                "attempts": _INIT_IN_REQUEST_ATTEMPTS,
+                "error_type": type(last_error).__name__ if last_error else None,
+            },
+        )
+        _engine = None
+        _session_factory = None
+        _last_init_failure_at = monotonic()
+
+
+def _initialize_engine() -> Engine | None:
+    """Create the archive engine with in-request backoff; sleeps outside the lock."""
+    with _lock:
+        if _engine is not None:
+            return _engine
+        url = _begin_initialize()
+        if url is None:
+            return _engine
 
     last_error: Exception | None = None
     for attempt in range(1, _INIT_IN_REQUEST_ATTEMPTS + 1):
-        engine: Engine | None = None
+        with _lock:
+            if _engine is not None:
+                return _engine
         try:
             if attempt > 1:
                 backoff = _INIT_IN_REQUEST_BACKOFF_SECONDS[
@@ -127,29 +216,13 @@ def _initialize_engine_locked() -> Engine | None:
                     },
                 )
                 sleep(backoff)
+                with _lock:
+                    if _engine is not None:
+                        return _engine
             engine = _try_create_engine(url)
-            _engine = engine
-            _session_factory = sessionmaker(
-                bind=engine,
-                autoflush=False,
-                autocommit=False,
-                expire_on_commit=False,
-            )
-            _last_init_failure_at = None
-            logger.info(
-                "Rankings archive engine ready",
-                extra={
-                    "event": "rankings_archive.engine.recovered"
-                    if attempt > 1
-                    else "rankings_archive.engine.ready",
-                    "attempt": attempt,
-                },
-            )
-            return _engine
+            return _publish_engine(engine, attempt=attempt)
         except Exception as exc:  # noqa: BLE001
             last_error = exc
-            if engine is not None:
-                engine.dispose()
             logger.warning(
                 "Rankings archive connect attempt failed",
                 extra={
@@ -160,20 +233,9 @@ def _initialize_engine_locked() -> Engine | None:
                 },
             )
 
-    logger.error(
-        "Rankings archive database unavailable after cold-start retries",
-        extra={
-            "event": "rankings_archive.engine.unavailable_persistent",
-            "attempts": _INIT_IN_REQUEST_ATTEMPTS,
-            "error_type": type(last_error).__name__ if last_error else None,
-        },
-    )
-    if _engine is not None:
-        _engine.dispose()
-    _engine = None
-    _session_factory = None
-    _last_init_failure_at = monotonic()
-    return None
+    _mark_init_exhausted(last_error)
+    with _lock:
+        return _engine
 
 
 def get_rankings_archive_engine() -> Engine | None:
@@ -182,7 +244,7 @@ def get_rankings_archive_engine() -> Engine | None:
     with _lock:
         if _engine is not None:
             return _engine
-        return _initialize_engine_locked()
+    return _initialize_engine()
 
 
 def get_rankings_archive_session_factory() -> sessionmaker[Session] | None:
@@ -191,7 +253,8 @@ def get_rankings_archive_session_factory() -> sessionmaker[Session] | None:
     with _lock:
         if _session_factory is not None:
             return _session_factory
-        _initialize_engine_locked()
+    _initialize_engine()
+    with _lock:
         return _session_factory
 
 

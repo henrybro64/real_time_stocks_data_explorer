@@ -11,7 +11,10 @@ from typing import Literal
 
 from app.core.config import settings
 from app.core.diagnostics import elapsed_ms
-from app.db.archive_session import reset_rankings_archive_session_state
+from app.db.archive_session import (
+    invalidate_rankings_archive_engine,
+    reset_rankings_archive_session_state,
+)
 from app.repositories.rankings_archive_repository import (
     CAPTURE_SCOPE_END_OF_DAY,
     rankings_archive_repository,
@@ -563,6 +566,9 @@ class RankingsArchiveService:
                     "ranking_type": ranking_type.value,
                 },
             )
+            # Mid-life AutoPause leaves a dead cached engine; drop it so the next
+            # request re-enters the cold-start wake budget (#177).
+            invalidate_rankings_archive_engine(reason="history_dates_failed")
             raise RankingsArchiveUnavailableError(
                 "Rankings archive history dates lookup failed",
             ) from exc
@@ -597,6 +603,7 @@ class RankingsArchiveService:
                     "trading_date": trading_date.isoformat(),
                 },
             )
+            invalidate_rankings_archive_engine(reason="history_load_failed")
             raise RankingsArchiveUnavailableError(
                 "Rankings archive history load failed",
             ) from exc

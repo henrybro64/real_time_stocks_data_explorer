@@ -266,7 +266,17 @@ def test_history_missing_date_and_unavailable_archive() -> None:
     )
 
 
-def test_history_mid_query_failure_raises_unavailable() -> None:
+def test_history_mid_query_failure_raises_unavailable(monkeypatch) -> None:
+    invalidated: list[str] = []
+
+    def _capture_invalidate(*, reason: str = "outage") -> None:
+        invalidated.append(reason)
+
+    monkeypatch.setattr(
+        "app.services.rankings_archive_service.invalidate_rankings_archive_engine",
+        _capture_invalidate,
+    )
+
     class _BoomRepo:
         def is_available(self) -> bool:
             return True
@@ -291,6 +301,7 @@ def test_history_mid_query_failure_raises_unavailable() -> None:
             ranking_type=RankingType.volume,
             trading_date=date(2026, 8, 20),
         )
+    assert invalidated == ["history_dates_failed", "history_load_failed"]
 
 
 def test_history_dates_route_and_history_route(monkeypatch) -> None:

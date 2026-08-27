@@ -1735,4 +1735,23 @@ describe("RankingsPage", () => {
     expect(fetchRankingsHistoryDates.mock.calls.length).toBeGreaterThanOrEqual(2);
     expect(await screen.findByTestId("rankings-row-TW:2330")).toBeInTheDocument();
   });
+
+  it("shows history unavailable after exhausting 503 retries", async () => {
+    vi.mocked(fetchRankingsHistoryDates).mockRejectedValue(
+      new ApiError("history dates unavailable", {
+        status: 503,
+        kind: "unavailable",
+        retryAfterSeconds: 10,
+      }),
+    );
+
+    renderRankingsPage();
+    expect(
+      await screen.findByTestId("rankings-history-dates-unavailable"),
+    ).toBeInTheDocument();
+    expect(screen.queryByTestId("rankings-history-dates-waking")).not.toBeInTheDocument();
+    // Initial attempt + HISTORY_DATES_MAX_RETRIES (4).
+    expect(fetchRankingsHistoryDates.mock.calls.length).toBeGreaterThanOrEqual(5);
+    expect(await screen.findByTestId("rankings-row-TW:2330")).toBeInTheDocument();
+  });
 });
