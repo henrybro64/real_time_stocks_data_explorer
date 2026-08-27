@@ -96,37 +96,39 @@ class _FakeRegistry:
         return self._provider
 
 
+def _us_item(*, item_timestamp: str, symbol: str = "AAPL", name: str = "Apple") -> RankingItem:
+    return RankingItem(
+        rank=1,
+        stock=StockResponse(
+            id=f"US:{symbol}",
+            market="US",
+            symbol=symbol,
+            name=name,
+            exchange="NASDAQ",
+            currency="USD",
+            timezone="America/New_York",
+        ),
+        lastPrice=190.0,
+        changePercent=1.0,
+        volume=100,
+        volumeDeltaPercent=None,
+        netBuySellShares=None,
+        peRatio=None,
+        peRatioType=None,
+        peRatioSource=None,
+        valuationAsOf=None,
+        valuationWarning=None,
+        timestamp=item_timestamp,
+    )
+
+
 def _response(**overrides) -> RankingResponse:
     payload = dict(
         market="US",
         rankingType=RankingType.volume,
         twBoard=None,
         universe="DJIA",
-        items=[
-            RankingItem(
-                rank=1,
-                stock=StockResponse(
-                    id="US:AAPL",
-                    market="US",
-                    symbol="AAPL",
-                    name="Apple",
-                    exchange="NASDAQ",
-                    currency="USD",
-                    timezone="America/New_York",
-                ),
-                lastPrice=190.0,
-                changePercent=1.0,
-                volume=100,
-                volumeDeltaPercent=None,
-                netBuySellShares=None,
-                peRatio=None,
-                peRatioType=None,
-                peRatioSource=None,
-                valuationAsOf=None,
-                valuationWarning=None,
-                timestamp="2026-08-18T16:00:00-04:00",
-            )
-        ],
+        items=[_us_item(item_timestamp="2026-08-18T16:00:00-04:00")],
         timestamp="2026-08-18T20:00:00+00:00",
         source="unit-test",
         sourceType=RankingSourceType.free_unofficial,
@@ -139,6 +141,51 @@ def _response(**overrides) -> RankingResponse:
     )
     payload.update(overrides)
     return RankingResponse(**payload)
+
+
+def _us_session_response(session_day: date) -> RankingResponse:
+    """US quote payload whose item stamps prove ``session_day`` in America/New_York."""
+    item_ts = f"{session_day.isoformat()}T16:00:00-04:00"
+    envelope_ts = f"{session_day.isoformat()}T20:00:00+00:00"
+    return _response(timestamp=envelope_ts, items=[_us_item(item_timestamp=item_ts)])
+
+
+def _tw_institutional_response(*, stamp: str) -> RankingResponse:
+    return _response(
+        market="TW",
+        rankingType=RankingType.net_buy,
+        twBoard="TWSE",
+        universe="TWSE",
+        usRankingsScope=None,
+        twRankingsScope="institutional",
+        sourceType=RankingSourceType.free_public,
+        timestamp=stamp,
+        items=[
+            RankingItem(
+                rank=1,
+                stock=StockResponse(
+                    id="TW:2330",
+                    market="TW",
+                    symbol="2330",
+                    name="TSMC",
+                    exchange="TWSE",
+                    currency="TWD",
+                    timezone="Asia/Taipei",
+                ),
+                lastPrice=100.0,
+                changePercent=1.0,
+                volume=None,
+                volumeDeltaPercent=None,
+                netBuySellShares=1000,
+                peRatio=None,
+                peRatioType=None,
+                peRatioSource=None,
+                valuationAsOf=None,
+                valuationWarning=None,
+                timestamp=stamp,
+            )
+        ],
+    )
 
 
 def test_eod_archive_queries_cover_ui_universes() -> None:
@@ -310,36 +357,7 @@ def test_capture_backfills_prior_day_when_provider_date_matches() -> None:
     monday = date(2026, 8, 17)
     service = RankingsArchiveService(
         repository=repo,
-        provider_registry=_FakeRegistry(
-            _response(
-                timestamp="2026-08-17T20:00:00+00:00",
-                items=[
-                    RankingItem(
-                        rank=1,
-                        stock=StockResponse(
-                            id="US:AAPL",
-                            market="US",
-                            symbol="AAPL",
-                            name="Apple",
-                            exchange="NASDAQ",
-                            currency="USD",
-                            timezone="America/New_York",
-                        ),
-                        lastPrice=190.0,
-                        changePercent=1.0,
-                        volume=100,
-                        volumeDeltaPercent=None,
-                        netBuySellShares=None,
-                        peRatio=None,
-                        peRatioType=None,
-                        peRatioSource=None,
-                        valuationAsOf=None,
-                        valuationWarning=None,
-                        timestamp="2026-08-17T16:00:00-04:00",
-                    )
-                ],
-            )
-        ),
+        provider_registry=_FakeRegistry(_us_session_response(monday)),
     )
     result = service.capture_eod_archives(
         now=datetime(2026, 8, 18, 20, 50, tzinfo=timezone.utc),
@@ -356,36 +374,7 @@ def test_capture_weekend_backfill_uses_friday_provider_session() -> None:
     friday = date(2026, 8, 21)
     service = RankingsArchiveService(
         repository=repo,
-        provider_registry=_FakeRegistry(
-            _response(
-                timestamp="2026-08-21T20:00:00+00:00",
-                items=[
-                    RankingItem(
-                        rank=1,
-                        stock=StockResponse(
-                            id="US:AAPL",
-                            market="US",
-                            symbol="AAPL",
-                            name="Apple",
-                            exchange="NASDAQ",
-                            currency="USD",
-                            timezone="America/New_York",
-                        ),
-                        lastPrice=190.0,
-                        changePercent=1.0,
-                        volume=100,
-                        volumeDeltaPercent=None,
-                        netBuySellShares=None,
-                        peRatio=None,
-                        peRatioType=None,
-                        peRatioSource=None,
-                        valuationAsOf=None,
-                        valuationWarning=None,
-                        timestamp="2026-08-21T16:00:00-04:00",
-                    )
-                ],
-            )
-        ),
+        provider_registry=_FakeRegistry(_us_session_response(friday)),
     )
     # Saturday morning ET — Friday is settled; provider still exposes Friday stamps.
     result = service.capture_eod_archives(
@@ -410,43 +399,7 @@ def test_capture_tw_institutional_validates_report_date() -> None:
     )
     matching = RankingsArchiveService(
         repository=repo,
-        provider_registry=_FakeRegistry(
-            _response(
-                market="TW",
-                rankingType=RankingType.net_buy,
-                twBoard="TWSE",
-                universe="TWSE",
-                usRankingsScope=None,
-                twRankingsScope="institutional",
-                sourceType=RankingSourceType.free_public,
-                timestamp=stamp,
-                items=[
-                    RankingItem(
-                        rank=1,
-                        stock=StockResponse(
-                            id="TW:2330",
-                            market="TW",
-                            symbol="2330",
-                            name="TSMC",
-                            exchange="TWSE",
-                            currency="TWD",
-                            timezone="Asia/Taipei",
-                        ),
-                        lastPrice=100.0,
-                        changePercent=1.0,
-                        volume=None,
-                        volumeDeltaPercent=None,
-                        netBuySellShares=1000,
-                        peRatio=None,
-                        peRatioType=None,
-                        peRatioSource=None,
-                        valuationAsOf=None,
-                        valuationWarning=None,
-                        timestamp=stamp,
-                    )
-                ],
-            )
-        ),
+        provider_registry=_FakeRegistry(_tw_institutional_response(stamp=stamp)),
     )
     ok = matching.capture_eod_archives(
         now=datetime(2026, 8, 18, 12, 0, tzinfo=timezone.utc),
@@ -468,43 +421,7 @@ def test_capture_tw_institutional_validates_report_date() -> None:
 
     mismatched = RankingsArchiveService(
         repository=_FakeRepo(),
-        provider_registry=_FakeRegistry(
-            _response(
-                market="TW",
-                rankingType=RankingType.net_buy,
-                twBoard="TWSE",
-                universe="TWSE",
-                usRankingsScope=None,
-                twRankingsScope="institutional",
-                sourceType=RankingSourceType.free_public,
-                timestamp=stamp,
-                items=[
-                    RankingItem(
-                        rank=1,
-                        stock=StockResponse(
-                            id="TW:2330",
-                            market="TW",
-                            symbol="2330",
-                            name="TSMC",
-                            exchange="TWSE",
-                            currency="TWD",
-                            timezone="Asia/Taipei",
-                        ),
-                        lastPrice=100.0,
-                        changePercent=1.0,
-                        volume=None,
-                        volumeDeltaPercent=None,
-                        netBuySellShares=1000,
-                        peRatio=None,
-                        peRatioType=None,
-                        peRatioSource=None,
-                        valuationAsOf=None,
-                        valuationWarning=None,
-                        timestamp=stamp,
-                    )
-                ],
-            )
-        ),
+        provider_registry=_FakeRegistry(_tw_institutional_response(stamp=stamp)),
     )
     bad = mismatched.capture_eod_archives(
         now=datetime(2026, 8, 18, 12, 0, tzinfo=timezone.utc),
@@ -553,36 +470,7 @@ def test_capture_auto_backfill_picks_newest_missing_settled_day() -> None:
 
     service = RankingsArchiveService(
         repository=repo,
-        provider_registry=_FakeRegistry(
-            _response(
-                timestamp="2026-08-17T20:00:00+00:00",
-                items=[
-                    RankingItem(
-                        rank=1,
-                        stock=StockResponse(
-                            id="US:AAPL",
-                            market="US",
-                            symbol="AAPL",
-                            name="Apple",
-                            exchange="NASDAQ",
-                            currency="USD",
-                            timezone="America/New_York",
-                        ),
-                        lastPrice=190.0,
-                        changePercent=1.0,
-                        volume=100,
-                        volumeDeltaPercent=None,
-                        netBuySellShares=None,
-                        peRatio=None,
-                        peRatioType=None,
-                        peRatioSource=None,
-                        valuationAsOf=None,
-                        valuationWarning=None,
-                        timestamp="2026-08-17T16:00:00-04:00",
-                    )
-                ],
-            )
-        ),
+        provider_registry=_FakeRegistry(_us_session_response(date(2026, 8, 17))),
     )
     result = service.capture_eod_archives(
         now=datetime(2026, 8, 18, 20, 50, tzinfo=timezone.utc),
@@ -596,37 +484,9 @@ def test_capture_auto_backfill_picks_newest_missing_settled_day() -> None:
 def test_capture_auto_backfill_remaps_older_provider_date_onto_missing_candidate() -> None:
     """One fetch whose payload proves Monday still fills Monday when Tuesday is also missing."""
     repo = _FakeRepo()
-    monday_item = RankingItem(
-        rank=1,
-        stock=StockResponse(
-            id="US:AAPL",
-            market="US",
-            symbol="AAPL",
-            name="Apple",
-            exchange="NASDAQ",
-            currency="USD",
-            timezone="America/New_York",
-        ),
-        lastPrice=190.0,
-        changePercent=1.0,
-        volume=100,
-        volumeDeltaPercent=None,
-        netBuySellShares=None,
-        peRatio=None,
-        peRatioType=None,
-        peRatioSource=None,
-        valuationAsOf=None,
-        valuationWarning=None,
-        timestamp="2026-08-17T16:00:00-04:00",
-    )
     service = RankingsArchiveService(
         repository=repo,
-        provider_registry=_FakeRegistry(
-            _response(
-                timestamp="2026-08-17T20:00:00+00:00",
-                items=[monday_item],
-            )
-        ),
+        provider_registry=_FakeRegistry(_us_session_response(date(2026, 8, 17))),
     )
     # Wednesday ET after settle: Tue+Mon missing; provider still exposes Monday.
     result = service.capture_eod_archives(
@@ -642,56 +502,17 @@ def test_infer_provider_date_tolerates_stale_constituent_quote() -> None:
     service = RankingsArchiveService(repository=_FakeRepo())
     response = _response(
         items=[
-            RankingItem(
-                rank=1,
-                stock=StockResponse(
-                    id="US:AAPL",
-                    market="US",
-                    symbol="AAPL",
-                    name="Apple",
-                    exchange="NASDAQ",
-                    currency="USD",
-                    timezone="America/New_York",
-                ),
-                lastPrice=190.0,
-                changePercent=1.0,
-                volume=100,
-                volumeDeltaPercent=None,
-                netBuySellShares=None,
-                peRatio=None,
-                peRatioType=None,
-                peRatioSource=None,
-                valuationAsOf=None,
-                valuationWarning=None,
-                timestamp="2026-08-18T16:00:00-04:00",
-            ),
-            RankingItem(
-                rank=2,
-                stock=StockResponse(
-                    id="US:HALT",
-                    market="US",
-                    symbol="HALT",
-                    name="Halted Co",
-                    exchange="NYSE",
-                    currency="USD",
-                    timezone="America/New_York",
-                ),
-                lastPrice=10.0,
-                changePercent=0.0,
-                volume=0,
-                volumeDeltaPercent=None,
-                netBuySellShares=None,
-                peRatio=None,
-                peRatioType=None,
-                peRatioSource=None,
-                valuationAsOf=None,
-                valuationWarning=None,
-                # Prior session stamp on one constituent must not void the ranking.
-                timestamp="2026-08-17T16:00:00-04:00",
+            _us_item(item_timestamp="2026-08-18T16:00:00-04:00"),
+            _us_item(
+                item_timestamp="2026-08-17T16:00:00-04:00",
+                symbol="HALT",
+                name="Halted Co",
             ),
         ],
         timestamp="2026-08-18T20:00:00+00:00",
     )
+    # Adjust rank on second item for clarity; inference only cares about stamps.
+    response.items[1] = response.items[1].model_copy(update={"rank": 2, "lastPrice": 10.0, "volume": 0})
     inferred = service._infer_provider_trading_date(
         response,
         market="US",

@@ -241,13 +241,112 @@ def _cleanup_smoke_snapshot(
             raise RuntimeError("disposable smoke snapshot still present after cleanup")
 
 
+def _history_presence_smoke(
+    reporter: StageReporter,
+    service,
+) -> int:
+    from app.schemas.rankings import RankingType
+
+    try:
+        dates = service.list_history_dates(
+            market="TW",
+            universe="TWSE",
+            ranking_type=RankingType.net_buy,
+            limit=5,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return _fail(reporter, STAGE_DATES, type(exc).__name__)
+    reporter.record(STAGE_DATES, "PASS")
+
+    if not dates:
+        reporter.record(
+            STAGE_DATA,
+            "WARN (reachable + schema ok, zero archived dates yet)",
+        )
+        reporter.record(STAGE_READBACK, "SKIP")
+        return 0
+
+    reporter.record(STAGE_DATA, f"PASS ({len(dates)} date(s))")
+    loaded = service.get_history_rankings(
+        market="TW",
+        universe="TWSE",
+        ranking_type=RankingType.net_buy,
+        trading_date=dates[0],
+        limit=50,
+    )
+    if loaded is None or not loaded.items:
+        return _fail(reporter, STAGE_READBACK, "empty snapshot")
+    reporter.record(
+        STAGE_READBACK,
+        f"PASS ({len(loaded.items)} item(s) on {dates[0].isoformat()})",
+    )
+    return 0
+
+
+def _disposable_write_read_smoke(reporter: StageReporter, repo, factory) -> int:
+    from app.schemas.rankings import RankingType
+
+    trading_date = date(2099, 1, 1)  # far-future disposable smoke key
+    market = "US"
+    universe = "DJIA"
+    ranking_type = RankingType.volume
+    response = _smoke_ranking_response()
+    write_rc = 1
+    cleanup_error: Exception | None = None
+    try:
+        written = repo.upsert_eod_snapshot(
+            market=market,
+            universe=universe,
+            ranking_type=ranking_type,
+            trading_date=trading_date,
+            response=response,
+            captured_at=datetime(2099, 1, 1, 21, 0, tzinfo=timezone.utc),
+        )
+        if written is None:
+            write_rc = _fail(reporter, STAGE_WRITE, "upsert None")
+        else:
+            loaded = repo.load_eod_snapshot(
+                market=market,
+                universe=universe,
+                ranking_type=ranking_type,
+                trading_date=trading_date,
+            )
+            if loaded is None:
+                write_rc = _fail(reporter, STAGE_WRITE, "load None")
+            else:
+                symbols = [
+                    item.stock.symbol
+                    for item in repo.to_ranking_response(loaded).items
+                ]
+                if symbols != ["AAPL", "MSFT"]:
+                    write_rc = _fail(reporter, STAGE_WRITE, f"order {symbols}")
+                else:
+                    reporter.record(STAGE_WRITE, "PASS")
+                    write_rc = 0
+    finally:
+        try:
+            _cleanup_smoke_snapshot(
+                factory,
+                market=market,
+                universe=universe,
+                ranking_type_value=ranking_type.value,
+                trading_date=trading_date,
+            )
+        except Exception as exc:  # noqa: BLE001
+            cleanup_error = exc
+            print(f"archive smoke cleanup failed: {type(exc).__name__}", file=sys.stderr)
+
+    if cleanup_error is not None:
+        return _fail(reporter, STAGE_WRITE, f"cleanup {type(cleanup_error).__name__}")
+    return write_rc
+
+
 def _archive_path_smoke(reporter: StageReporter) -> int:
     _ensure_backend_on_path()
     from sqlalchemy import inspect, text
 
     from app.db.archive_session import reset_rankings_archive_session_state
     from app.repositories.rankings_archive_repository import RankingsArchiveRepository
-    from app.schemas.rankings import RankingType
     from app.services.rankings_archive_service import RankingsArchiveService
 
     reset_rankings_archive_session_state()
@@ -275,92 +374,15 @@ def _archive_path_smoke(reporter: StageReporter) -> int:
     reporter.record(STAGE_SCHEMA, "PASS")
 
     service = RankingsArchiveService(repository=repo)
-    try:
-        dates = service.list_history_dates(
-            market="TW",
-            universe="TWSE",
-            ranking_type=RankingType.net_buy,
-            limit=5,
-        )
-    except Exception as exc:  # noqa: BLE001
-        return _fail(reporter, STAGE_DATES, type(exc).__name__)
-    reporter.record(STAGE_DATES, "PASS")
-
-    if dates:
-        reporter.record(STAGE_DATA, f"PASS ({len(dates)} date(s))")
-        loaded = service.get_history_rankings(
-            market="TW",
-            universe="TWSE",
-            ranking_type=RankingType.net_buy,
-            trading_date=dates[0],
-            limit=50,
-        )
-        if loaded is None or not loaded.items:
-            return _fail(reporter, STAGE_READBACK, "empty snapshot")
-        reporter.record(
-            STAGE_READBACK,
-            f"PASS ({len(loaded.items)} item(s) on {dates[0].isoformat()})",
-        )
-    else:
-        reporter.record(
-            STAGE_DATA,
-            "WARN (reachable + schema ok, zero archived dates yet)",
-        )
-        reporter.record(STAGE_READBACK, "SKIP")
-
-    trading_date = date(2099, 1, 1)  # far-future disposable smoke key
-    market = "US"
-    universe = "DJIA"
-    ranking_type = RankingType.volume
-    response = _smoke_ranking_response()
-
-    write_rc = 1
-    cleanup_error: Exception | None = None
-    try:
-        written = repo.upsert_eod_snapshot(
-            market=market,
-            universe=universe,
-            ranking_type=ranking_type,
-            trading_date=trading_date,
-            response=response,
-            captured_at=datetime(2099, 1, 1, 21, 0, tzinfo=timezone.utc),
-        )
-        if written is None:
-            write_rc = _fail(reporter, STAGE_WRITE, "upsert None")
-        else:
-            loaded = repo.load_eod_snapshot(
-                market=market,
-                universe=universe,
-                ranking_type=ranking_type,
-                trading_date=trading_date,
-            )
-            if loaded is None:
-                write_rc = _fail(reporter, STAGE_WRITE, "load None")
-            else:
-                reconstructed = repo.to_ranking_response(loaded)
-                symbols = [item.stock.symbol for item in reconstructed.items]
-                if symbols != ["AAPL", "MSFT"]:
-                    write_rc = _fail(reporter, STAGE_WRITE, f"order {symbols}")
-                else:
-                    reporter.record(STAGE_WRITE, "PASS")
-                    write_rc = 0
-    finally:
-        try:
-            _cleanup_smoke_snapshot(
-                factory,
-                market=market,
-                universe=universe,
-                ranking_type_value=ranking_type.value,
-                trading_date=trading_date,
-            )
-        except Exception as exc:  # noqa: BLE001
-            cleanup_error = exc
-            print(f"archive smoke cleanup failed: {type(exc).__name__}", file=sys.stderr)
+    history_rc = _history_presence_smoke(reporter, service)
+    if history_rc != 0:
         reset_rankings_archive_session_state()
+        return history_rc
 
-    if cleanup_error is not None:
-        return _fail(reporter, STAGE_WRITE, f"cleanup {type(cleanup_error).__name__}")
-    return write_rc
+    try:
+        return _disposable_write_read_smoke(reporter, repo, factory)
+    finally:
+        reset_rankings_archive_session_state()
 
 
 def _maybe_write_summary(reporter: StageReporter, enabled: bool) -> None:
