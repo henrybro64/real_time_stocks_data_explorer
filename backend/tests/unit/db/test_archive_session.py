@@ -159,8 +159,8 @@ def test_invalidate_clears_cached_engine_for_mid_life_autopause(monkeypatch, tmp
     )
     first = archive_session.get_rankings_archive_engine()
     assert first is not None
-    archive_session._schema_ready = True
-    archive_session._last_init_failure_at = 123.0
+    monkeypatch.setattr(archive_session, "_schema_ready", True)
+    monkeypatch.setattr(archive_session, "_last_init_failure_at", 123.0)
 
     archive_session.invalidate_rankings_archive_engine(reason="history_dates_failed")
     assert archive_session._engine is None

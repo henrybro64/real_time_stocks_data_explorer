@@ -22,6 +22,15 @@ import sys
 from datetime import date, datetime, timezone
 from pathlib import Path
 
+STAGE_ODBC = "ODBC Driver 18"
+STAGE_SQL = "SQL connectivity"
+STAGE_SCHEMA = "Archive schema"
+STAGE_DATES = "History dates query"
+STAGE_DATA = "Historical data present"
+STAGE_READBACK = "Historical readback"
+STAGE_WRITE = "Disposable archive write/read"
+STAGE_ARCHIVE_PATH = "Archive path"
+
 
 def _ensure_backend_on_path() -> None:
     candidates = (
@@ -58,19 +67,22 @@ class StageReporter:
             handle.write("\n".join(lines))
 
 
+def _fail(reporter: StageReporter, stage: str, detail: str) -> int:
+    reporter.record(stage, f"FAIL ({detail})" if detail else "FAIL")
+    return 1
+
+
 def _check_odbc_driver(reporter: StageReporter) -> int:
     try:
         import pyodbc
     except ImportError:
-        reporter.record("ODBC Driver 18", "FAIL (pyodbc not installed)")
-        return 1
+        return _fail(reporter, STAGE_ODBC, "pyodbc not installed")
     drivers = [str(item) for item in pyodbc.drivers()]
-    if any("ODBC Driver 18" in driver for driver in drivers):
-        reporter.record("ODBC Driver 18", "PASS")
+    if any(STAGE_ODBC in driver for driver in drivers):
+        reporter.record(STAGE_ODBC, "PASS")
         return 0
-    reporter.record("ODBC Driver 18", "FAIL (driver not listed)")
     print("available ODBC drivers:", drivers, file=sys.stderr)
-    return 1
+    return _fail(reporter, STAGE_ODBC, "driver not listed")
 
 
 def _connectivity_smoke(url: str, reporter: StageReporter) -> int:
@@ -100,21 +112,14 @@ def _connectivity_smoke(url: str, reporter: StageReporter) -> int:
             {"note": "rankings-archive-poc"},
         ).first()
         if row is None:
-            reporter.record("SQL connectivity", "FAIL (insert/select)")
-            return 1
+            return _fail(reporter, STAGE_SQL, "insert/select")
         conn.execute(text("DELETE FROM _poc_smoke WHERE note = :note"), {"note": "rankings-archive-poc"})
         conn.execute(text("DROP TABLE _poc_smoke"))
-    reporter.record("SQL connectivity", "PASS")
+    reporter.record(STAGE_SQL, "PASS")
     return 0
 
 
-def _archive_path_smoke(reporter: StageReporter) -> int:
-    _ensure_backend_on_path()
-    from sqlalchemy import delete, inspect, select, text
-
-    from app.db.archive_models import RankingSnapshotArchive, RankingSnapshotItemArchive
-    from app.db.archive_session import reset_rankings_archive_session_state
-    from app.repositories.rankings_archive_repository import RankingsArchiveRepository
+def _smoke_ranking_response():
     from app.schemas.rankings import (
         RankingItem,
         RankingResponse,
@@ -122,79 +127,12 @@ def _archive_path_smoke(reporter: StageReporter) -> int:
         RankingType,
     )
     from app.schemas.stock import StockResponse
-    from app.services.rankings_archive_service import RankingsArchiveService
 
-    reset_rankings_archive_session_state()
-    repo = RankingsArchiveRepository()
-    if not repo.is_available():
-        reporter.record("Archive schema", "FAIL (repository unavailable)")
-        reporter.record("History dates query", "FAIL")
-        reporter.record("Historical data present", "FAIL")
-        return 1
-
-    if not repo.ensure_schema():
-        reporter.record("Archive schema", "FAIL (ensure_schema)")
-        return 1
-
-    factory = repo._session_factory()
-    assert factory is not None
-    with factory() as session:
-        bind = session.get_bind()
-        inspector = inspect(bind)
-        tables = set(inspector.get_table_names())
-        required = {"ranking_snapshots_archive", "ranking_snapshot_items_archive"}
-        if not required.issubset(tables):
-            reporter.record("Archive schema", f"FAIL (missing {sorted(required - tables)})")
-            return 1
-        session.execute(text("SELECT TOP 1 id FROM ranking_snapshots_archive"))
-        session.execute(text("SELECT TOP 1 id FROM ranking_snapshot_items_archive"))
-    reporter.record("Archive schema", "PASS")
-
-    service = RankingsArchiveService(repository=repo)
-    try:
-        dates = service.list_history_dates(
-            market="TW",
-            universe="TWSE",
-            ranking_type=RankingType.net_buy,
-            limit=5,
-        )
-    except Exception as exc:  # noqa: BLE001
-        reporter.record("History dates query", f"FAIL ({type(exc).__name__})")
-        return 1
-    reporter.record("History dates query", "PASS")
-
-    if dates:
-        reporter.record("Historical data present", f"PASS ({len(dates)} date(s))")
-        loaded = service.get_history_rankings(
-            market="TW",
-            universe="TWSE",
-            ranking_type=RankingType.net_buy,
-            trading_date=dates[0],
-            limit=50,
-        )
-        if loaded is None or not loaded.items:
-            reporter.record("Historical readback", "FAIL (empty snapshot)")
-            return 1
-        reporter.record(
-            "Historical readback",
-            f"PASS ({len(loaded.items)} item(s) on {dates[0].isoformat()})",
-        )
-    else:
-        reporter.record(
-            "Historical data present",
-            "WARN (reachable + schema ok, zero archived dates yet)",
-        )
-        reporter.record("Historical readback", "SKIP")
-
-    trading_date = date(2099, 1, 1)  # far-future disposable smoke key
-    market = "US"
-    universe = "DJIA"
-    ranking_type = RankingType.volume
-    response = RankingResponse(
-        market=market,
-        rankingType=ranking_type,
+    return RankingResponse(
+        market="US",
+        rankingType=RankingType.volume,
         twBoard=None,
-        universe=universe,
+        universe="DJIA",
         items=[
             RankingItem(
                 rank=1,
@@ -254,6 +192,109 @@ def _archive_path_smoke(reporter: StageReporter) -> int:
         twRankingsScope=None,
     )
 
+
+def _cleanup_smoke_snapshot(factory, *, market: str, universe: str, ranking_type_value: str, trading_date: date) -> None:
+    from sqlalchemy import delete, select
+
+    from app.db.archive_models import RankingSnapshotArchive, RankingSnapshotItemArchive
+
+    try:
+        with factory() as session:
+            snap = session.execute(
+                select(RankingSnapshotArchive).where(
+                    RankingSnapshotArchive.market == market,
+                    RankingSnapshotArchive.universe == universe,
+                    RankingSnapshotArchive.ranking_type == ranking_type_value,
+                    RankingSnapshotArchive.trading_date == trading_date,
+                )
+            ).scalar_one_or_none()
+            if snap is not None:
+                session.execute(
+                    delete(RankingSnapshotItemArchive).where(
+                        RankingSnapshotItemArchive.snapshot_id == snap.id
+                    )
+                )
+                session.execute(
+                    delete(RankingSnapshotArchive).where(RankingSnapshotArchive.id == snap.id)
+                )
+                session.commit()
+    except Exception as exc:  # noqa: BLE001
+        print(f"archive smoke cleanup warning: {type(exc).__name__}", file=sys.stderr)
+
+
+def _archive_path_smoke(reporter: StageReporter) -> int:
+    _ensure_backend_on_path()
+    from sqlalchemy import inspect, text
+
+    from app.db.archive_session import reset_rankings_archive_session_state
+    from app.repositories.rankings_archive_repository import RankingsArchiveRepository
+    from app.schemas.rankings import RankingType
+    from app.services.rankings_archive_service import RankingsArchiveService
+
+    reset_rankings_archive_session_state()
+    repo = RankingsArchiveRepository()
+    if not repo.is_available():
+        reporter.record(STAGE_SCHEMA, "FAIL (repository unavailable)")
+        reporter.record(STAGE_DATES, "FAIL")
+        reporter.record(STAGE_DATA, "FAIL")
+        return 1
+
+    if not repo.ensure_schema():
+        return _fail(reporter, STAGE_SCHEMA, "ensure_schema")
+
+    factory = repo._session_factory()
+    assert factory is not None
+    with factory() as session:
+        bind = session.get_bind()
+        inspector = inspect(bind)
+        tables = set(inspector.get_table_names())
+        required = {"ranking_snapshots_archive", "ranking_snapshot_items_archive"}
+        if not required.issubset(tables):
+            return _fail(reporter, STAGE_SCHEMA, f"missing {sorted(required - tables)}")
+        session.execute(text("SELECT TOP 1 id FROM ranking_snapshots_archive"))
+        session.execute(text("SELECT TOP 1 id FROM ranking_snapshot_items_archive"))
+    reporter.record(STAGE_SCHEMA, "PASS")
+
+    service = RankingsArchiveService(repository=repo)
+    try:
+        dates = service.list_history_dates(
+            market="TW",
+            universe="TWSE",
+            ranking_type=RankingType.net_buy,
+            limit=5,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return _fail(reporter, STAGE_DATES, type(exc).__name__)
+    reporter.record(STAGE_DATES, "PASS")
+
+    if dates:
+        reporter.record(STAGE_DATA, f"PASS ({len(dates)} date(s))")
+        loaded = service.get_history_rankings(
+            market="TW",
+            universe="TWSE",
+            ranking_type=RankingType.net_buy,
+            trading_date=dates[0],
+            limit=50,
+        )
+        if loaded is None or not loaded.items:
+            return _fail(reporter, STAGE_READBACK, "empty snapshot")
+        reporter.record(
+            STAGE_READBACK,
+            f"PASS ({len(loaded.items)} item(s) on {dates[0].isoformat()})",
+        )
+    else:
+        reporter.record(
+            STAGE_DATA,
+            "WARN (reachable + schema ok, zero archived dates yet)",
+        )
+        reporter.record(STAGE_READBACK, "SKIP")
+
+    trading_date = date(2099, 1, 1)  # far-future disposable smoke key
+    market = "US"
+    universe = "DJIA"
+    ranking_type = RankingType.volume
+    response = _smoke_ranking_response()
+
     try:
         written = repo.upsert_eod_snapshot(
             market=market,
@@ -264,8 +305,7 @@ def _archive_path_smoke(reporter: StageReporter) -> int:
             captured_at=datetime(2099, 1, 1, 21, 0, tzinfo=timezone.utc),
         )
         if written is None:
-            reporter.record("Disposable archive write/read", "FAIL (upsert None)")
-            return 1
+            return _fail(reporter, STAGE_WRITE, "upsert None")
         loaded = repo.load_eod_snapshot(
             market=market,
             universe=universe,
@@ -273,42 +313,27 @@ def _archive_path_smoke(reporter: StageReporter) -> int:
             trading_date=trading_date,
         )
         if loaded is None:
-            reporter.record("Disposable archive write/read", "FAIL (load None)")
-            return 1
+            return _fail(reporter, STAGE_WRITE, "load None")
         reconstructed = repo.to_ranking_response(loaded)
         symbols = [item.stock.symbol for item in reconstructed.items]
         if symbols != ["AAPL", "MSFT"]:
-            reporter.record(
-                "Disposable archive write/read",
-                f"FAIL (order {symbols})",
-            )
-            return 1
-        reporter.record("Disposable archive write/read", "PASS")
+            return _fail(reporter, STAGE_WRITE, f"order {symbols}")
+        reporter.record(STAGE_WRITE, "PASS")
         return 0
     finally:
-        try:
-            with factory() as session:
-                snap = session.execute(
-                    select(RankingSnapshotArchive).where(
-                        RankingSnapshotArchive.market == market,
-                        RankingSnapshotArchive.universe == universe,
-                        RankingSnapshotArchive.ranking_type == ranking_type.value,
-                        RankingSnapshotArchive.trading_date == trading_date,
-                    )
-                ).scalar_one_or_none()
-                if snap is not None:
-                    session.execute(
-                        delete(RankingSnapshotItemArchive).where(
-                            RankingSnapshotItemArchive.snapshot_id == snap.id
-                        )
-                    )
-                    session.execute(
-                        delete(RankingSnapshotArchive).where(RankingSnapshotArchive.id == snap.id)
-                    )
-                    session.commit()
-        except Exception as exc:  # noqa: BLE001
-            print(f"archive smoke cleanup warning: {type(exc).__name__}", file=sys.stderr)
+        _cleanup_smoke_snapshot(
+            factory,
+            market=market,
+            universe=universe,
+            ranking_type_value=ranking_type.value,
+            trading_date=trading_date,
+        )
         reset_rankings_archive_session_state()
+
+
+def _maybe_write_summary(reporter: StageReporter, enabled: bool) -> None:
+    if enabled:
+        reporter.write_github_summary()
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -320,54 +345,48 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
     reporter = StageReporter()
+    write_summary = args.ci_summary
 
     url = os.environ.get("RANKINGS_ARCHIVE_DATABASE_URL", "").strip()
     if not url:
         print("RANKINGS_ARCHIVE_DATABASE_URL is not set", file=sys.stderr)
-        reporter.record("SQL connectivity", "FAIL (env unset)")
-        if args.ci_summary:
-            reporter.write_github_summary()
+        reporter.record(STAGE_SQL, "FAIL (env unset)")
+        _maybe_write_summary(reporter, write_summary)
         return 2
 
     try:
         from sqlalchemy import create_engine  # noqa: F401
     except ImportError:
         print("sqlalchemy is required", file=sys.stderr)
-        reporter.record("SQL connectivity", "FAIL (sqlalchemy missing)")
-        if args.ci_summary:
-            reporter.write_github_summary()
+        reporter.record(STAGE_SQL, "FAIL (sqlalchemy missing)")
+        _maybe_write_summary(reporter, write_summary)
         return 2
 
     odbc_rc = _check_odbc_driver(reporter)
     if odbc_rc != 0:
-        if args.ci_summary:
-            reporter.write_github_summary()
+        _maybe_write_summary(reporter, write_summary)
         return odbc_rc
 
     try:
         connectivity_rc = _connectivity_smoke(url, reporter)
     except Exception as exc:  # noqa: BLE001
-        reporter.record("SQL connectivity", f"FAIL ({type(exc).__name__})")
+        reporter.record(STAGE_SQL, f"FAIL ({type(exc).__name__})")
         print(f"connectivity smoke failed: {type(exc).__name__}", file=sys.stderr)
-        if args.ci_summary:
-            reporter.write_github_summary()
+        _maybe_write_summary(reporter, write_summary)
         return 1
     if connectivity_rc != 0:
-        if args.ci_summary:
-            reporter.write_github_summary()
+        _maybe_write_summary(reporter, write_summary)
         return connectivity_rc
 
     try:
         archive_rc = _archive_path_smoke(reporter)
     except Exception as exc:  # noqa: BLE001
-        reporter.record("Archive path", f"FAIL ({type(exc).__name__})")
+        reporter.record(STAGE_ARCHIVE_PATH, f"FAIL ({type(exc).__name__})")
         print(f"archive path smoke failed: {type(exc).__name__}", file=sys.stderr)
-        if args.ci_summary:
-            reporter.write_github_summary()
+        _maybe_write_summary(reporter, write_summary)
         return 1
 
-    if args.ci_summary:
-        reporter.write_github_summary()
+    _maybe_write_summary(reporter, write_summary)
     return archive_rc
 
 

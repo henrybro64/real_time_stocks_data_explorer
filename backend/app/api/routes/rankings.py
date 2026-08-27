@@ -26,6 +26,18 @@ from app.services.rankings_snapshot_service import (
 
 router = APIRouter(prefix="/rankings", tags=["rankings"])
 
+_ARCHIVE_UNAVAILABLE_DETAIL = "Rankings archive is unavailable"
+_ARCHIVE_RETRY_AFTER_SECONDS = "10"
+
+
+def _archive_unavailable_http() -> HTTPException:
+    """503 for configured-but-unreachable Azure SQL archive (#177)."""
+    return HTTPException(
+        status_code=503,
+        detail=_ARCHIVE_UNAVAILABLE_DETAIL,
+        headers={"Retry-After": _ARCHIVE_RETRY_AFTER_SECONDS},
+    )
+
 
 def _validated_universe(
     market: Literal["US", "TW"],
@@ -83,11 +95,7 @@ def get_rankings_history_dates(
                 universe=resolved_universe,
                 dates=[],
             )
-        raise HTTPException(
-            status_code=503,
-            detail="Rankings archive is unavailable",
-            headers={"Retry-After": "10"},
-        )
+        raise _archive_unavailable_http()
     try:
         dates = rankings_archive_service.list_history_dates(
             market=market,
@@ -96,11 +104,7 @@ def get_rankings_history_dates(
             limit=limit,
         )
     except RankingsArchiveUnavailableError as exc:
-        raise HTTPException(
-            status_code=503,
-            detail="Rankings archive is unavailable",
-            headers={"Retry-After": "10"},
-        ) from exc
+        raise _archive_unavailable_http() from exc
     return RankingsHistoryDatesResponse(
         market=market,
         universe=resolved_universe,
@@ -128,11 +132,7 @@ def get_rankings_history(
     """Return one archived EOD ranking list. Never falls back to current rankings (#168)."""
     resolved_universe = _validated_universe(market, tw_board, universe)
     if not rankings_archive_service.is_available():
-        raise HTTPException(
-            status_code=503,
-            detail="Rankings archive is unavailable",
-            headers={"Retry-After": "10"},
-        )
+        raise _archive_unavailable_http()
     try:
         response = rankings_archive_service.get_history_rankings(
             market=market,
@@ -142,11 +142,7 @@ def get_rankings_history(
             limit=limit,
         )
     except RankingsArchiveUnavailableError as exc:
-        raise HTTPException(
-            status_code=503,
-            detail="Rankings archive is unavailable",
-            headers={"Retry-After": "10"},
-        ) from exc
+        raise _archive_unavailable_http() from exc
     if response is None:
         raise HTTPException(
             status_code=404,
