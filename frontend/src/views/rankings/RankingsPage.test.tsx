@@ -13,7 +13,9 @@ import {
   fetchRankings,
   fetchRankingsHistory,
   fetchRankingsHistoryDates,
+  historyDatesRetryDelayMs,
   refreshRankings,
+  shouldRetryHistoryDatesQuery,
 } from "../../services/api/client";
 import { RankingsPage } from "./RankingsPage";
 
@@ -26,6 +28,8 @@ vi.mock("../../services/api/client", async () => {
     fetchRankingsHistoryDates: vi.fn(),
     fetchMarkets: vi.fn(),
     refreshRankings: vi.fn(),
+    shouldRetryHistoryDatesQuery: vi.fn(actual.shouldRetryHistoryDatesQuery),
+    historyDatesRetryDelayMs: vi.fn(actual.historyDatesRetryDelayMs),
   };
 });
 
@@ -367,6 +371,22 @@ describe("RankingsPage", () => {
     });
     vi.mocked(fetchRankingsHistory).mockResolvedValue(buildResponse());
     vi.mocked(refreshRankings).mockResolvedValue(buildResponse());
+    vi.mocked(shouldRetryHistoryDatesQuery).mockImplementation(
+      (failureCount, error) => {
+        if (error instanceof ApiError) {
+          if (
+            error.kind === "not_found"
+            || error.kind === "validation"
+            || error.status === 404
+            || error.status === 422
+          ) {
+            return false;
+          }
+        }
+        return failureCount < 4;
+      },
+    );
+    vi.mocked(historyDatesRetryDelayMs).mockReturnValue(0);
   });
 
   it("renders ranking rows", async () => {
@@ -1654,7 +1674,10 @@ describe("RankingsPage", () => {
     vi.mocked(fetchRankingsHistoryDates).mockImplementation(
       async (_market, _universe, rankingType) => {
         if (rankingType === "change_up") {
-          throw new ApiError("history dates unavailable", { status: 503 });
+          throw new ApiError("history dates unavailable", {
+            status: 503,
+            kind: "unavailable",
+          });
         }
         return {
           market: "US",
@@ -1688,5 +1711,47 @@ describe("RankingsPage", () => {
         expect.any(AbortSignal),
       );
     });
+  });
+
+  it("retries history dates after a transient 503 and recovers archived dates", async () => {
+    vi.mocked(fetchRankingsHistoryDates)
+      .mockRejectedValueOnce(
+        new ApiError("history dates unavailable", {
+          status: 503,
+          kind: "unavailable",
+        }),
+      )
+      .mockResolvedValue({
+        market: "TW",
+        universe: "TWSE",
+        dates: ["2026-08-20"],
+      });
+
+    renderRankingsPage();
+    await waitFor(() => {
+      expect(screen.getByRole("option", { name: "2026-08-20" })).toBeInTheDocument();
+    });
+    expect(screen.queryByTestId("rankings-history-dates-unavailable")).not.toBeInTheDocument();
+    expect(fetchRankingsHistoryDates.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(await screen.findByTestId("rankings-row-TW:2330")).toBeInTheDocument();
+  });
+
+  it("shows history unavailable after exhausting 503 retries", async () => {
+    vi.mocked(fetchRankingsHistoryDates).mockRejectedValue(
+      new ApiError("history dates unavailable", {
+        status: 503,
+        kind: "unavailable",
+        retryAfterSeconds: 10,
+      }),
+    );
+
+    renderRankingsPage();
+    expect(
+      await screen.findByTestId("rankings-history-dates-unavailable"),
+    ).toBeInTheDocument();
+    expect(screen.queryByTestId("rankings-history-dates-waking")).not.toBeInTheDocument();
+    // Initial attempt + HISTORY_DATES_MAX_RETRIES (4).
+    expect(fetchRankingsHistoryDates.mock.calls.length).toBeGreaterThanOrEqual(5);
+    expect(await screen.findByTestId("rankings-row-TW:2330")).toBeInTheDocument();
   });
 });

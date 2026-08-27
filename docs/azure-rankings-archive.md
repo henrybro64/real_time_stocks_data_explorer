@@ -38,11 +38,17 @@ Text columns use SQLAlchemy `Unicode` / `UnicodeText` so Taiwanese names survive
 SQL Server Latin1 collations.
 
 Archive DB connects lazily. A failed connect (including Free-offer AutoPause
-cold start) is retried after a short cooldown instead of sticking unavailable
-until process restart. Capture bootstraps schema (`ensure_schema`) before the
-first existence lookup. Live providers only archive the **market-local current
-trading date** after settle — prior dates are skipped (no stamping today's
-quotes under yesterday's key).
+cold start) uses **bounded in-request retries with backoff** (2s / 5s / 8s
+between attempts; sleeps outside the process lock), then a short process
+cooldown before the next initialization wave (#177). Mid-query connection
+failures invalidate the cached engine so the next request re-enters cold-start.
+History routes return `503` with `Retry-After: 10` so the Rankings UI can wake
+the archive without blocking live `GET /api/rankings`.
+
+EOD capture inspects a bounded window of recent settled trading days and may
+**backfill a missed prior day only when the provider payload proves that date**
+(item/`tradingDate` timestamps). It never stamps today's quotes under
+yesterday's archive key (#178).
 
 Code:
 
@@ -71,9 +77,9 @@ curl -X POST "$API/api/rankings/archive/capture" \
 ```
 
 `force: true` skips the post-close settle-time gate so operators can exercise
-the capture path in tests. It still skips non-trading dates. Do **not** use
-`force` with an explicit `tradingDate` in production unless you accept that the
-archived snapshot may be incomplete relative to a true end-of-day settle.
+the capture path in tests. It still skips non-trading dates and **never**
+bypasses provider trading-date validation. Explicit `tradingDate` performs a
+safe backfill when the provider response matches that date.
 
 Hardcoded Taiwan quote fallback responses are never archived
 (`allow_hardcoded_fallback=false` + `twRankingsScope=fallback` skip).
@@ -85,7 +91,9 @@ RANKINGS_ARCHIVE_EOD_ENABLED=true
 RANKINGS_ARCHIVE_EOD_POLL_SECONDS=900
 ```
 
-Failures are logged and never raised into ranking request paths.
+Each sampler cycle looks at the newest settled trading days (bounded window)
+and fills the newest missing archive per ranking query when provider dates
+match. Failures are logged and never raised into ranking request paths.
 
 ## Historical read APIs (#168)
 
@@ -144,10 +152,52 @@ Then use `POST /api/rankings/archive/capture` or enable
 ```bash
 export RANKINGS_ARCHIVE_DATABASE_URL='mssql+pyodbc://...'
 python3 scripts/azure_rankings_archive_smoke.py
+# or with GitHub Actions summary append:
+python3 scripts/azure_rankings_archive_smoke.py --ci-summary
 ```
 
-The script connects, exercises a disposable `_poc_smoke` table, then upserts /
-loads / reconstructs a disposable EOD archive snapshot (cleaned up afterward).
+The script connects through SQLAlchemy + pyodbc, checks ODBC Driver 18, exercises
+a disposable `_poc_smoke` table, verifies archive schema + history-dates query,
+optionally reads one real archive when present, then upserts / loads /
+reconstructs a disposable EOD archive snapshot. Cleanup is verified; the smoke
+**fails** if the disposable row cannot be removed.
+
+## Live Azure SQL CI smoke (#179)
+
+Job `azure-rankings-archive-smoke` in `.github/workflows/test-and-smoke.yml`
+runs on:
+
+- `workflow_dispatch` on `main` / `master` only (manual)
+- push to `main` / `master`
+- weekly schedule (Monday 06:00 UTC)
+
+It does **not** run on pull requests (including forks), and manual dispatch from
+feature branches is rejected so branch-modified scripts cannot consume repository
+Azure secrets. Required GitHub Actions secrets (values never logged):
+
+| Secret | Purpose |
+| --- | --- |
+| `AZURE_CLIENT_ID` | Service principal app id |
+| `AZURE_CLIENT_SECRET` | Service principal secret |
+| `AZURE_TENANT_ID` | Entra tenant |
+| `AZURE_SUBSCRIPTION_ID` | Azure subscription |
+| `AZURE_RESOURCE_GROUP` | Resource group of the SQL server |
+| `AZURE_SQL_SERVER_NAME` | SQL server name (not FQDN) |
+| `RANKINGS_ARCHIVE_DATABASE_URL` | `mssql+pyodbc://…` archive URL |
+
+The job authenticates with the service principal via `azure/login` `creds` JSON
+(secret-based SP), opens a **temporary single-IP**
+firewall rule for the runner, builds the backend Docker image (ODBC Driver 18 +
+`pyodbc` parity), runs `scripts/azure_rankings_archive_smoke.py --ci-summary`,
+and always deletes the firewall rule. It will not enable broad public access if
+the server has public networking disabled.
+
+Manual run:
+
+```bash
+gh workflow run test-and-smoke.yml
+# or from the Actions UI: Test And Smoke → Run workflow
+```
 
 ## Unit tests
 

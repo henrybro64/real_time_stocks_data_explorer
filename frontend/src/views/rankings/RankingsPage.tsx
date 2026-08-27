@@ -31,7 +31,9 @@ import {
   fetchRankings,
   fetchRankingsHistory,
   fetchRankingsHistoryDates,
+  historyDatesRetryDelayMs,
   refreshRankings,
+  shouldRetryHistoryDatesQuery,
   shouldRetryRankingsQuery,
   toApiError,
 } from "../../services/api/client";
@@ -447,9 +449,18 @@ export function RankingsPage() {
         signal,
       ),
     staleTime: 5 * 60_000,
-    retry: false,
+    retry: shouldRetryHistoryDatesQuery,
+    retryDelay: (failureCount, error) => historyDatesRetryDelayMs(failureCount, error),
   });
   const availableHistoryDates = historyDatesQuery.data?.dates ?? [];
+  const historyDatesRetrying =
+    historyDatesQuery.isFetching
+    && historyDatesQuery.failureCount > 0
+    && historyDatesQuery.data === undefined;
+  const historyDatesUnavailable =
+    historyDatesQuery.isError
+    && !historyDatesQuery.isFetching
+    && historyDatesQuery.data === undefined;
   const dateOptions = useMemo(() => {
     if (
       selectedTradingDate != null
@@ -495,7 +506,18 @@ export function RankingsPage() {
         signal,
       );
     },
-    retry: shouldRetryRankingsQuery,
+    // Historical reads hit Azure SQL; reuse the AutoPause retry budget (#177).
+    // Live rankings keep QueryClient default retryDelay (0 in tests).
+    retry: (failureCount, error) =>
+      selectedTradingDate != null
+        ? shouldRetryHistoryDatesQuery(failureCount, error)
+        : shouldRetryRankingsQuery(failureCount, error),
+    ...(selectedTradingDate != null
+      ? {
+          retryDelay: (failureCount: number, error: unknown) =>
+            historyDatesRetryDelayMs(failureCount, error),
+        }
+      : {}),
     refetchInterval: (query) => {
       if (selectedTradingDate != null) {
         return false;
@@ -666,7 +688,12 @@ export function RankingsPage() {
               <SelectItem key={tradingDate} value={tradingDate} text={tradingDate} />
             ))}
           </Select>
-          {historyDatesQuery.isError ? (
+          {historyDatesRetrying ? (
+            <p className="app-supporting-copy" data-testid="rankings-history-dates-waking">
+              {t("rankings.date.historyWaking")}
+            </p>
+          ) : null}
+          {historyDatesUnavailable ? (
             <p className="app-supporting-copy" data-testid="rankings-history-dates-unavailable">
               {t("rankings.date.historyUnavailable")}
             </p>

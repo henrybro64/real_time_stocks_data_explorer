@@ -205,6 +205,7 @@ export type TranslationKey =
   | "rankings.date.current"
   | "rankings.date.historicalBanner"
   | "rankings.date.historyUnavailable"
+  | "rankings.date.historyWaking"
   | "rankings.notice.quoteUnofficial"
   | "rankings.notice.twDaily"
   | "rankings.notice.twDailyTpex"
@@ -680,6 +681,8 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
       "Showing archived end-of-day rankings for {date}. This is historical data, not a live market view.",
     "rankings.date.historyUnavailable":
       "Historical trading dates are temporarily unavailable. Current rankings still work.",
+    "rankings.date.historyWaking":
+      "Waking the historical archive… this can take a few seconds after idle.",
     "rankings.notice.quoteUnofficial": "Free unofficial quote source; data may be delayed or unavailable.",
     "rankings.notice.twDaily": "Taiwan institutional net buy/sell rankings use daily data, not intraday real-time data.",
     "rankings.notice.twDailyTpex":
@@ -1152,6 +1155,8 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
       "目前顯示 {date} 的收盤歷史排行（非即時盤中資料）。",
     "rankings.date.historyUnavailable":
       "暫時無法載入歷史交易日；今日／即時排行仍可正常使用。",
+    "rankings.date.historyWaking":
+      "正在喚醒歷史封存資料庫，閒置後可能需要數秒…",
     "rankings.notice.quoteUnofficial": "免費非官方報價來源可能延遲，或暫時無法提供資料。",
     "rankings.notice.twDaily": "台股三大法人買賣超為日資料，非盤中即時資料。",
     "rankings.notice.twDailyTpex": "上櫃（TPEx）三大法人買賣超為日資料，非盤中即時資料。",

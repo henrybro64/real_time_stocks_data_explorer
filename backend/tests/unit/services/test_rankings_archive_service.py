@@ -28,6 +28,8 @@ class _FakeRepo:
         self.existing: set[tuple[str, str, str, date]] = set()
         self.upserts: list[tuple[str, str, str, date]] = []
         self.upsert_error: Exception | None = None
+        self.load_calls = 0
+        self.exists_calls = 0
 
     def is_available(self) -> bool:
         return self.available
@@ -35,7 +37,13 @@ class _FakeRepo:
     def ensure_schema(self) -> bool:
         return self.schema_ok
 
+    def has_eod_snapshot(self, *, market, universe, ranking_type, trading_date):
+        self.exists_calls += 1
+        key = (market, universe, ranking_type.value, trading_date)
+        return key in self.existing
+
     def load_eod_snapshot(self, *, market, universe, ranking_type, trading_date):
+        self.load_calls += 1
         key = (market, universe, ranking_type.value, trading_date)
         if key in self.existing:
             return _FakeEnvelope()
@@ -88,37 +96,39 @@ class _FakeRegistry:
         return self._provider
 
 
+def _us_item(*, item_timestamp: str, symbol: str = "AAPL", name: str = "Apple") -> RankingItem:
+    return RankingItem(
+        rank=1,
+        stock=StockResponse(
+            id=f"US:{symbol}",
+            market="US",
+            symbol=symbol,
+            name=name,
+            exchange="NASDAQ",
+            currency="USD",
+            timezone="America/New_York",
+        ),
+        lastPrice=190.0,
+        changePercent=1.0,
+        volume=100,
+        volumeDeltaPercent=None,
+        netBuySellShares=None,
+        peRatio=None,
+        peRatioType=None,
+        peRatioSource=None,
+        valuationAsOf=None,
+        valuationWarning=None,
+        timestamp=item_timestamp,
+    )
+
+
 def _response(**overrides) -> RankingResponse:
     payload = dict(
         market="US",
         rankingType=RankingType.volume,
         twBoard=None,
         universe="DJIA",
-        items=[
-            RankingItem(
-                rank=1,
-                stock=StockResponse(
-                    id="US:AAPL",
-                    market="US",
-                    symbol="AAPL",
-                    name="Apple",
-                    exchange="NASDAQ",
-                    currency="USD",
-                    timezone="America/New_York",
-                ),
-                lastPrice=190.0,
-                changePercent=1.0,
-                volume=100,
-                volumeDeltaPercent=None,
-                netBuySellShares=None,
-                peRatio=None,
-                peRatioType=None,
-                peRatioSource=None,
-                valuationAsOf=None,
-                valuationWarning=None,
-                timestamp="2026-08-18T16:00:00-04:00",
-            )
-        ],
+        items=[_us_item(item_timestamp="2026-08-18T16:00:00-04:00")],
         timestamp="2026-08-18T20:00:00+00:00",
         source="unit-test",
         sourceType=RankingSourceType.free_unofficial,
@@ -131,6 +141,51 @@ def _response(**overrides) -> RankingResponse:
     )
     payload.update(overrides)
     return RankingResponse(**payload)
+
+
+def _us_session_response(session_day: date) -> RankingResponse:
+    """US quote payload whose item stamps prove ``session_day`` in America/New_York."""
+    item_ts = f"{session_day.isoformat()}T16:00:00-04:00"
+    envelope_ts = f"{session_day.isoformat()}T20:00:00+00:00"
+    return _response(timestamp=envelope_ts, items=[_us_item(item_timestamp=item_ts)])
+
+
+def _tw_institutional_response(*, stamp: str) -> RankingResponse:
+    return _response(
+        market="TW",
+        rankingType=RankingType.net_buy,
+        twBoard="TWSE",
+        universe="TWSE",
+        usRankingsScope=None,
+        twRankingsScope="institutional",
+        sourceType=RankingSourceType.free_public,
+        timestamp=stamp,
+        items=[
+            RankingItem(
+                rank=1,
+                stock=StockResponse(
+                    id="TW:2330",
+                    market="TW",
+                    symbol="2330",
+                    name="TSMC",
+                    exchange="TWSE",
+                    currency="TWD",
+                    timezone="Asia/Taipei",
+                ),
+                lastPrice=100.0,
+                changePercent=1.0,
+                volume=None,
+                volumeDeltaPercent=None,
+                netBuySellShares=1000,
+                peRatio=None,
+                peRatioType=None,
+                peRatioSource=None,
+                valuationAsOf=None,
+                valuationWarning=None,
+                timestamp=stamp,
+            )
+        ],
+    )
 
 
 def test_eod_archive_queries_cover_ui_universes() -> None:
@@ -278,14 +333,14 @@ def test_ready_trading_date_skips_us_new_years_holiday() -> None:
     assert ready == date(2025, 12, 31)
 
 
-def test_capture_skips_prior_trading_date_with_live_providers() -> None:
-    """Live quotes must not be stamped under yesterday's archive key."""
+def test_capture_rejects_prior_date_when_provider_timestamps_mismatch() -> None:
+    """Never stamp today's live quotes under yesterday's archive key (#178)."""
     repo = _FakeRepo()
     service = RankingsArchiveService(
         repository=repo,
         provider_registry=_FakeRegistry(_response()),
     )
-    # Tuesday morning ET: ready date is Monday, but live data is Tuesday.
+    # Tuesday morning ET: target Monday, but live item stamps are Tuesday.
     result = service.capture_eod_archives(
         now=datetime(2026, 8, 18, 14, 0, tzinfo=timezone.utc),  # 10:00 ET Tue
         market="US",
@@ -295,6 +350,200 @@ def test_capture_skips_prior_trading_date_with_live_providers() -> None:
     assert result["captured"] == 0
     assert result["skipped"] >= 8
     assert repo.upserts == []
+
+
+def test_capture_backfills_prior_day_when_provider_date_matches() -> None:
+    repo = _FakeRepo()
+    monday = date(2026, 8, 17)
+    service = RankingsArchiveService(
+        repository=repo,
+        provider_registry=_FakeRegistry(_us_session_response(monday)),
+    )
+    result = service.capture_eod_archives(
+        now=datetime(2026, 8, 18, 20, 50, tzinfo=timezone.utc),
+        market="US",
+        trading_date=monday,
+        force=True,
+    )
+    assert result["captured"] == 8
+    assert all(key[3] == monday for key in repo.upserts)
+
+
+def test_capture_weekend_backfill_uses_friday_provider_session() -> None:
+    repo = _FakeRepo()
+    friday = date(2026, 8, 21)
+    service = RankingsArchiveService(
+        repository=repo,
+        provider_registry=_FakeRegistry(_us_session_response(friday)),
+    )
+    # Saturday morning ET — Friday is settled; provider still exposes Friday stamps.
+    result = service.capture_eod_archives(
+        now=datetime(2026, 8, 22, 14, 0, tzinfo=timezone.utc),
+        market="US",
+        trading_date=friday,
+        force=True,
+    )
+    assert result["captured"] == 8
+    assert all(key[3] == friday for key in repo.upserts)
+
+
+def test_capture_tw_institutional_validates_report_date() -> None:
+    from app.services.market_clock import tw_institutional_daily_bucket_for_date
+
+    repo = _FakeRepo()
+    report_date = date(2026, 8, 17)
+    stamp = (
+        tw_institutional_daily_bucket_for_date(report_date)
+        .astimezone(ZoneInfo("Asia/Taipei"))
+        .isoformat()
+    )
+    matching = RankingsArchiveService(
+        repository=repo,
+        provider_registry=_FakeRegistry(_tw_institutional_response(stamp=stamp)),
+    )
+    ok = matching.capture_eod_archives(
+        now=datetime(2026, 8, 18, 12, 0, tzinfo=timezone.utc),
+        market="TW",
+        trading_date=report_date,
+        force=True,
+    )
+    # Only net_buy/net_sell queries for TWSE+TPEx can match this response type;
+    # quote ranking types will date-mismatch or still attempt — registry returns
+    # the same payload for every query. Count net_* upserts only.
+    institutional_upserts = [
+        key
+        for key in repo.upserts
+        if key[2] in {RankingType.net_buy.value, RankingType.net_sell.value}
+    ]
+    assert ok["captured"] >= 1
+    assert institutional_upserts
+    assert all(key[3] == report_date for key in institutional_upserts)
+
+    mismatched = RankingsArchiveService(
+        repository=_FakeRepo(),
+        provider_registry=_FakeRegistry(_tw_institutional_response(stamp=stamp)),
+    )
+    bad = mismatched.capture_eod_archives(
+        now=datetime(2026, 8, 18, 12, 0, tzinfo=timezone.utc),
+        market="TW",
+        trading_date=date(2026, 8, 18),
+        force=True,
+    )
+    assert bad["captured"] == 0
+
+
+def test_capture_skips_unsupported_historical_provider() -> None:
+    repo = _FakeRepo()
+    service = RankingsArchiveService(
+        repository=repo,
+        provider_registry=_FakeRegistry(
+            _response(
+                items=[],
+                sourceType=RankingSourceType.unsupported,
+                unsupportedReason="not available",
+            )
+        ),
+    )
+    result = service.capture_eod_archives(
+        now=datetime(2026, 8, 18, 20, 50, tzinfo=timezone.utc),
+        market="US",
+        trading_date=date(2026, 8, 18),
+        force=True,
+    )
+    assert result["captured"] == 0
+    assert result["skipped"] >= 8
+    assert repo.upserts == []
+
+
+def test_capture_auto_backfill_picks_newest_missing_settled_day() -> None:
+    """Sampler path (no explicit date) recovers the newest missing settled day."""
+    repo = _FakeRepo()
+    # Tuesday already archived; Monday missing — provider still returns Monday.
+    for universe in ("DJIA", "NASDAQ100"):
+        for ranking_type in (
+            RankingType.volume,
+            RankingType.valuation_low_pe,
+            RankingType.change_up,
+            RankingType.change_down,
+        ):
+            repo.existing.add(("US", universe, ranking_type.value, date(2026, 8, 18)))
+
+    service = RankingsArchiveService(
+        repository=repo,
+        provider_registry=_FakeRegistry(_us_session_response(date(2026, 8, 17))),
+    )
+    result = service.capture_eod_archives(
+        now=datetime(2026, 8, 18, 20, 50, tzinfo=timezone.utc),
+        market="US",
+        force=False,
+    )
+    assert result["captured"] == 8
+    assert all(key[3] == date(2026, 8, 17) for key in repo.upserts)
+
+
+def test_capture_auto_backfill_remaps_older_provider_date_onto_missing_candidate() -> None:
+    """One fetch whose payload proves Monday still fills Monday when Tuesday is also missing."""
+    repo = _FakeRepo()
+    service = RankingsArchiveService(
+        repository=repo,
+        provider_registry=_FakeRegistry(_us_session_response(date(2026, 8, 17))),
+    )
+    # Wednesday ET after settle: Tue+Mon missing; provider still exposes Monday.
+    result = service.capture_eod_archives(
+        now=datetime(2026, 8, 19, 20, 50, tzinfo=timezone.utc),
+        market="US",
+        force=False,
+    )
+    assert result["captured"] == 8
+    assert all(key[3] == date(2026, 8, 17) for key in repo.upserts)
+
+
+def test_infer_provider_date_tolerates_stale_constituent_quote() -> None:
+    service = RankingsArchiveService(repository=_FakeRepo())
+    response = _response(
+        items=[
+            _us_item(item_timestamp="2026-08-18T16:00:00-04:00"),
+            _us_item(
+                item_timestamp="2026-08-17T16:00:00-04:00",
+                symbol="HALT",
+                name="Halted Co",
+            ),
+        ],
+        timestamp="2026-08-18T20:00:00+00:00",
+    )
+    # Adjust rank on second item for clarity; inference only cares about stamps.
+    response.items[1] = response.items[1].model_copy(update={"rank": 2, "lastPrice": 10.0, "volume": 0})
+    inferred = service._infer_provider_trading_date(
+        response,
+        market="US",
+        ranking_type=RankingType.volume,
+    )
+    assert inferred == date(2026, 8, 18)
+
+
+def test_capture_uses_lightweight_existence_checks_not_full_loads() -> None:
+    repo = _FakeRepo()
+    for universe in ("DJIA", "NASDAQ100"):
+        for ranking_type in (
+            RankingType.volume,
+            RankingType.valuation_low_pe,
+            RankingType.change_up,
+            RankingType.change_down,
+        ):
+            for trading in (date(2026, 8, 18), date(2026, 8, 17), date(2026, 8, 14)):
+                repo.existing.add(("US", universe, ranking_type.value, trading))
+
+    service = RankingsArchiveService(
+        repository=repo,
+        provider_registry=_FakeRegistry(_response()),
+    )
+    service.capture_eod_archives(
+        now=datetime(2026, 8, 18, 20, 50, tzinfo=timezone.utc),
+        market="US",
+        force=False,
+    )
+    assert repo.exists_calls > 0
+    assert repo.load_calls == 0
 
 
 def test_capture_market_filter_does_not_count_other_market_as_skipped() -> None:

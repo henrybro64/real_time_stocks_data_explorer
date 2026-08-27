@@ -112,6 +112,32 @@ class RankingsArchiveRepository:
             stmt = stmt.order_by(RankingSnapshotArchive.trading_date.desc()).limit(limit)
             return list(session.execute(stmt).scalars())
 
+    def has_eod_snapshot(
+        self,
+        *,
+        market: str,
+        universe: str,
+        ranking_type: RankingType | str,
+        trading_date: date,
+    ) -> bool:
+        """True when an EOD archive row exists (no item materialization)."""
+        if not self.is_available():
+            return False
+        ranking_type_value = (
+            ranking_type.value if isinstance(ranking_type, RankingType) else str(ranking_type)
+        )
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            snapshot_id = session.execute(
+                select(RankingSnapshotArchive.id).where(
+                    RankingSnapshotArchive.market == market,
+                    RankingSnapshotArchive.universe == universe,
+                    RankingSnapshotArchive.ranking_type == ranking_type_value,
+                    RankingSnapshotArchive.trading_date == trading_date,
+                ).limit(1)
+            ).scalar_one_or_none()
+            return snapshot_id is not None
+
     def load_eod_snapshot(
         self,
         *,

@@ -7,9 +7,12 @@ import {
   fetchRankings,
   fetchRankingsHistory,
   fetchRankingsHistoryDates,
+  historyDatesRetryDelayMs,
+  parseRetryAfterSeconds,
   refreshRankings,
   fetchTaiwanInstitutionalInvestors,
   fetchTaiwanMarginShort,
+  shouldRetryHistoryDatesQuery,
   shouldRetryRankingsQuery,
 } from "./client";
 
@@ -239,6 +242,59 @@ describe("fetchRankings", () => {
     const cancelled = new Error("The user aborted a request.");
     cancelled.name = "AbortError";
     expect(shouldRetryRankingsQuery(0, cancelled)).toBe(false);
+  });
+
+  it("retries history-date 503s in a bounded way and skips client errors", () => {
+    const unavailable = new ApiError("archive waking", {
+      kind: "unavailable",
+      status: 503,
+      detail: "Rankings archive is unavailable",
+    });
+    expect(shouldRetryHistoryDatesQuery(0, unavailable)).toBe(true);
+    expect(shouldRetryHistoryDatesQuery(3, unavailable)).toBe(true);
+    expect(shouldRetryHistoryDatesQuery(4, unavailable)).toBe(false);
+    expect(
+      shouldRetryHistoryDatesQuery(
+        0,
+        new ApiError("missing", { status: 404, kind: "not_found" }),
+      ),
+    ).toBe(false);
+    expect(
+      shouldRetryHistoryDatesQuery(
+        0,
+        new ApiError("bad", { status: 422, kind: "validation" }),
+      ),
+    ).toBe(false);
+    expect(historyDatesRetryDelayMs(1)).toBe(8_000);
+    expect(historyDatesRetryDelayMs(2)).toBe(16_000);
+    expect(
+      historyDatesRetryDelayMs(
+        1,
+        new ApiError("archive waking", {
+          kind: "unavailable",
+          status: 503,
+          retryAfterSeconds: 10,
+        }),
+      ),
+    ).toBe(10_000);
+    expect(parseRetryAfterSeconds("10")).toBe(10);
+    expect(parseRetryAfterSeconds("")).toBeNull();
+  });
+
+  it("preserves Retry-After from archive 503 responses", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 503,
+      headers: new Headers({ "Retry-After": "10" }),
+      json: async () => ({ detail: "Rankings archive is unavailable" }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(fetchRankingsHistoryDates("US", "DJIA", "volume")).rejects.toMatchObject({
+      status: 503,
+      retryAfterSeconds: 10,
+      kind: "unavailable",
+    });
   });
 
   it("does not map a caller abort to a rankings timeout", async () => {

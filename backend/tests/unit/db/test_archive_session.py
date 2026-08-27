@@ -14,6 +14,8 @@ def _sqlite_url(tmp_path) -> str:
 def test_engine_retries_after_init_failure_cooldown(monkeypatch, tmp_path) -> None:
     archive_session.reset_rankings_archive_session_state()
     monkeypatch.setattr(archive_session, "_INIT_RETRY_COOLDOWN_SECONDS", 0.0)
+    monkeypatch.setattr(archive_session, "_INIT_IN_REQUEST_ATTEMPTS", 1)
+    monkeypatch.setattr(archive_session, "_INIT_IN_REQUEST_BACKOFF_SECONDS", ())
     monkeypatch.setattr(
         "app.core.config.settings.rankings_archive_database_url",
         "sqlite+pysqlite:////nonexistent/path/should_fail.db",
@@ -38,6 +40,8 @@ def test_engine_retries_after_init_failure_cooldown(monkeypatch, tmp_path) -> No
 def test_engine_respects_retry_cooldown(monkeypatch, tmp_path) -> None:
     archive_session.reset_rankings_archive_session_state()
     monkeypatch.setattr(archive_session, "_INIT_RETRY_COOLDOWN_SECONDS", 60.0)
+    monkeypatch.setattr(archive_session, "_INIT_IN_REQUEST_ATTEMPTS", 1)
+    monkeypatch.setattr(archive_session, "_INIT_IN_REQUEST_BACKOFF_SECONDS", ())
     monkeypatch.setattr(
         "app.core.config.settings.rankings_archive_database_url",
         "sqlite+pysqlite:////nonexistent/path/should_fail.db",
@@ -53,6 +57,86 @@ def test_engine_respects_retry_cooldown(monkeypatch, tmp_path) -> None:
     archive_session.reset_rankings_archive_session_state()
 
 
+def test_engine_cold_start_retries_within_request(monkeypatch, tmp_path) -> None:
+    """First connect failures wake AutoPause via bounded in-request retries (#177)."""
+    archive_session.reset_rankings_archive_session_state()
+    monkeypatch.setattr(archive_session, "_INIT_RETRY_COOLDOWN_SECONDS", 60.0)
+    monkeypatch.setattr(archive_session, "_INIT_IN_REQUEST_ATTEMPTS", 3)
+    monkeypatch.setattr(archive_session, "_INIT_IN_REQUEST_BACKOFF_SECONDS", (0.0, 0.0, 0.0))
+    monkeypatch.setattr(
+        "app.core.config.settings.rankings_archive_database_url",
+        _sqlite_url(tmp_path),
+    )
+
+    attempts = {"count": 0}
+    real_try = archive_session._try_create_engine
+
+    def flaky_try(url: str):
+        attempts["count"] += 1
+        if attempts["count"] < 3:
+            raise ConnectionError("Azure SQL cold start")
+        return real_try(url)
+
+    monkeypatch.setattr(archive_session, "_try_create_engine", flaky_try)
+    monkeypatch.setattr(archive_session, "sleep", lambda _seconds: None)
+
+    factory = archive_session.get_rankings_archive_session_factory()
+    assert factory is not None
+    assert attempts["count"] == 3
+    assert archive_session._last_init_failure_at is None
+    archive_session.reset_rankings_archive_session_state()
+
+
+def test_engine_cold_start_uses_full_backoff_budget(monkeypatch) -> None:
+    """Attempts = len(backoff)+1 so the final 8s wake delay is actually used (#177)."""
+    archive_session.reset_rankings_archive_session_state()
+    monkeypatch.setattr(archive_session, "_INIT_RETRY_COOLDOWN_SECONDS", 60.0)
+    monkeypatch.setattr(
+        archive_session,
+        "_INIT_IN_REQUEST_BACKOFF_SECONDS",
+        (2.0, 5.0, 8.0),
+    )
+    monkeypatch.setattr(
+        archive_session,
+        "_INIT_IN_REQUEST_ATTEMPTS",
+        len(archive_session._INIT_IN_REQUEST_BACKOFF_SECONDS) + 1,
+    )
+    monkeypatch.setattr(
+        "app.core.config.settings.rankings_archive_database_url",
+        "sqlite+pysqlite:////nonexistent/path/should_fail.db",
+    )
+    slept: list[float] = []
+    monkeypatch.setattr(archive_session, "sleep", slept.append)
+    monkeypatch.setattr(
+        archive_session,
+        "_try_create_engine",
+        lambda _url: (_ for _ in ()).throw(ConnectionError("paused")),
+    )
+
+    assert archive_session.get_rankings_archive_session_factory() is None
+    assert slept == [2.0, 5.0, 8.0]
+    assert archive_session._last_init_failure_at is not None
+    archive_session.reset_rankings_archive_session_state()
+
+
+def test_engine_cold_start_exhaustion_sets_cooldown(monkeypatch) -> None:
+    archive_session.reset_rankings_archive_session_state()
+    monkeypatch.setattr(archive_session, "_INIT_RETRY_COOLDOWN_SECONDS", 60.0)
+    monkeypatch.setattr(archive_session, "_INIT_IN_REQUEST_ATTEMPTS", 2)
+    monkeypatch.setattr(archive_session, "_INIT_IN_REQUEST_BACKOFF_SECONDS", (0.0, 0.0))
+    monkeypatch.setattr(
+        "app.core.config.settings.rankings_archive_database_url",
+        "sqlite+pysqlite:////nonexistent/path/should_fail.db",
+    )
+    monkeypatch.setattr(archive_session, "sleep", lambda _seconds: None)
+
+    assert archive_session.get_rankings_archive_session_factory() is None
+    assert archive_session._last_init_failure_at is not None
+    # Second call during cooldown must not re-attempt connect.
+    assert archive_session.get_rankings_archive_session_factory() is None
+    archive_session.reset_rankings_archive_session_state()
+
+
 def test_successful_engine_is_cached(monkeypatch, tmp_path) -> None:
     archive_session.reset_rankings_archive_session_state()
     monkeypatch.setattr(
@@ -63,6 +147,61 @@ def test_successful_engine_is_cached(monkeypatch, tmp_path) -> None:
     second = archive_session.get_rankings_archive_engine()
     assert first is not None
     assert first is second
+    archive_session.reset_rankings_archive_session_state()
+
+
+def test_invalidate_clears_cached_engine_for_mid_life_autopause(monkeypatch, tmp_path) -> None:
+    """After AutoPause, invalidate drops the dead pool so cold-start can run again."""
+    archive_session.reset_rankings_archive_session_state()
+    monkeypatch.setattr(
+        "app.core.config.settings.rankings_archive_database_url",
+        _sqlite_url(tmp_path),
+    )
+    first = archive_session.get_rankings_archive_engine()
+    assert first is not None
+    monkeypatch.setattr(archive_session, "_schema_ready", True)
+    monkeypatch.setattr(archive_session, "_last_init_failure_at", 123.0)
+
+    archive_session.invalidate_rankings_archive_engine(reason="history_dates_failed")
+    assert archive_session._engine is None
+    assert archive_session._session_factory is None
+    assert archive_session._schema_ready is False
+    assert archive_session._last_init_failure_at is None
+
+    second = archive_session.get_rankings_archive_engine()
+    assert second is not None
+    assert second is not first
+    archive_session.reset_rankings_archive_session_state()
+
+
+def test_cold_start_sleeps_outside_lock(monkeypatch, tmp_path) -> None:
+    """Backoff must not hold the process lock (other requests can proceed)."""
+    archive_session.reset_rankings_archive_session_state()
+    monkeypatch.setattr(archive_session, "_INIT_RETRY_COOLDOWN_SECONDS", 60.0)
+    monkeypatch.setattr(archive_session, "_INIT_IN_REQUEST_ATTEMPTS", 2)
+    monkeypatch.setattr(archive_session, "_INIT_IN_REQUEST_BACKOFF_SECONDS", (0.01,))
+    monkeypatch.setattr(
+        "app.core.config.settings.rankings_archive_database_url",
+        _sqlite_url(tmp_path),
+    )
+    attempts = {"count": 0}
+    real_try = archive_session._try_create_engine
+    lock_held_during_sleep = {"value": False}
+
+    def flaky_try(url: str):
+        attempts["count"] += 1
+        if attempts["count"] < 2:
+            raise ConnectionError("cold start")
+        return real_try(url)
+
+    def sleep_checking(_seconds: float) -> None:
+        lock_held_during_sleep["value"] = archive_session._lock.locked()
+
+    monkeypatch.setattr(archive_session, "_try_create_engine", flaky_try)
+    monkeypatch.setattr(archive_session, "sleep", sleep_checking)
+
+    assert archive_session.get_rankings_archive_session_factory() is not None
+    assert lock_held_during_sleep["value"] is False
     archive_session.reset_rankings_archive_session_state()
 
 
