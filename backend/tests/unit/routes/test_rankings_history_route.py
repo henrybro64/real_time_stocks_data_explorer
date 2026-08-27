@@ -373,6 +373,7 @@ def test_history_routes_unavailable_and_not_found(monkeypatch) -> None:
             ranking_type=RankingType.net_buy,
         )
     assert exc_unavailable_dates.value.status_code == 503
+    assert exc_unavailable_dates.value.headers.get("Retry-After") == "10"
 
     class _Missing:
         def is_available(self) -> bool:
@@ -411,6 +412,7 @@ def test_history_routes_mid_query_failure_returns_503(monkeypatch) -> None:
             ranking_type=RankingType.volume,
         )
     assert exc_dates.value.status_code == 503
+    assert exc_dates.value.headers.get("Retry-After") == "10"
 
     with pytest.raises(HTTPException) as exc_hist:
         rankings_route.get_rankings_history(
@@ -420,6 +422,7 @@ def test_history_routes_mid_query_failure_returns_503(monkeypatch) -> None:
             universe="DJIA",
         )
     assert exc_hist.value.status_code == 503
+    assert exc_hist.value.headers.get("Retry-After") == "10"
 
 
 def test_history_dates_rejects_mismatched_universe() -> None:

@@ -86,6 +86,7 @@ def get_rankings_history_dates(
         raise HTTPException(
             status_code=503,
             detail="Rankings archive is unavailable",
+            headers={"Retry-After": "10"},
         )
     try:
         dates = rankings_archive_service.list_history_dates(
@@ -98,6 +99,7 @@ def get_rankings_history_dates(
         raise HTTPException(
             status_code=503,
             detail="Rankings archive is unavailable",
+            headers={"Retry-After": "10"},
         ) from exc
     return RankingsHistoryDatesResponse(
         market=market,
@@ -129,6 +131,7 @@ def get_rankings_history(
         raise HTTPException(
             status_code=503,
             detail="Rankings archive is unavailable",
+            headers={"Retry-After": "10"},
         )
     try:
         response = rankings_archive_service.get_history_rankings(
@@ -142,6 +145,7 @@ def get_rankings_history(
         raise HTTPException(
             status_code=503,
             detail="Rankings archive is unavailable",
+            headers={"Retry-After": "10"},
         ) from exc
     if response is None:
         raise HTTPException(

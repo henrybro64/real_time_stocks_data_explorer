@@ -6,6 +6,10 @@ on:
       - main
       - master
   pull_request:
+  workflow_dispatch:
+  schedule:
+    # Low-frequency live Azure SQL signal (Monday 06:00 UTC).
+    - cron: "0 6 * * 1"
 
 permissions:
   contents: read
@@ -38,7 +42,7 @@ jobs:
         run: |
           mkdir -p allure-results/backend
           touch allure-results/backend/.keep
-- name: Install backend dependencies
+      - name: Install backend dependencies
         run: |
           python -m pip install "pip==25.2"
           python -m pip install --only-binary=:all: \
@@ -105,7 +109,7 @@ jobs:
         run: |
           mkdir -p allure-results/frontend-unit allure-results/frontend-e2e
           touch allure-results/frontend-unit/.keep allure-results/frontend-e2e/.keep
-- name: Install backend dependencies
+      - name: Install backend dependencies
         run: |
           python -m pip install "pip==25.2"
           python -m pip install --only-binary=:all: \
@@ -256,6 +260,123 @@ jobs:
           name: k3s-smoke-artifacts
           path: artifacts/k3s-smoke
           if-no-files-found: error
+
+  # Live Azure SQL archive smoke (#179). Secrets-bearing; not for fork PRs.
+  azure-rankings-archive-smoke:
+    runs-on: ubuntu-latest
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'schedule' ||
+      (github.event_name == 'push' &&
+       (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'))
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      AZURE_RESOURCE_GROUP: ${{ secrets.AZURE_RESOURCE_GROUP }}
+      AZURE_SQL_SERVER_NAME: ${{ secrets.AZURE_SQL_SERVER_NAME }}
+      RANKINGS_ARCHIVE_DATABASE_URL: ${{ secrets.RANKINGS_ARCHIVE_DATABASE_URL }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Validate required secrets are present
+        id: secrets_check
+        run: |
+          missing=0
+          for name in AZURE_CLIENT_ID AZURE_CLIENT_SECRET AZURE_TENANT_ID AZURE_SUBSCRIPTION_ID \
+            AZURE_RESOURCE_GROUP AZURE_SQL_SERVER_NAME RANKINGS_ARCHIVE_DATABASE_URL; do
+            eval "value=\${$name}"
+            if [ -z "${value}" ]; then
+              echo "Missing required secret/env: $name" >> "$GITHUB_STEP_SUMMARY"
+              missing=1
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            echo "Azure login: FAIL" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+      - name: Azure login (service principal)
+        id: azure_login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Note Azure login success
+        run: |
+          echo "Azure login: PASS" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Create temporary SQL firewall rule for runner IP
+        id: firewall
+        run: |
+          set -euo pipefail
+          RUNNER_IP="$(curl -fsS https://api.ipify.org)"
+          if ! [[ "$RUNNER_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Temporary firewall: FAIL (could not determine runner IPv4)" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          RULE_NAME="gha-archive-smoke-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          echo "RULE_NAME=$RULE_NAME" >> "$GITHUB_ENV"
+          echo "RUNNER_IP=$RUNNER_IP" >> "$GITHUB_ENV"
+
+          PUBLIC_ACCESS="$(az sql server show \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --name "$AZURE_SQL_SERVER_NAME" \
+            --query publicNetworkAccess -o tsv)"
+          if [ "$PUBLIC_ACCESS" != "Enabled" ]; then
+            echo "Temporary firewall: FAIL (publicNetworkAccess=$PUBLIC_ACCESS; enable public access or use private connectivity — workflow will not widen server security)" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          az sql server firewall-rule create \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --server "$AZURE_SQL_SERVER_NAME" \
+            --name "$RULE_NAME" \
+            --start-ip-address "$RUNNER_IP" \
+            --end-ip-address "$RUNNER_IP" >/dev/null
+          echo "Temporary firewall: PASS (single-IP rule)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Build backend image (ODBC Driver 18 + pyodbc parity)
+        run: docker build -t stock-ticker-backend:azure-smoke -f backend/Dockerfile .
+
+      - name: Run live Azure SQL archive smoke in backend image
+        id: smoke
+        run: |
+          set -euo pipefail
+          SUMMARY_FILE="$RUNNER_TEMP/azure-smoke-summary.md"
+          : > "$SUMMARY_FILE"
+          docker run --rm \
+            -e RANKINGS_ARCHIVE_DATABASE_URL \
+            -e PYTHONPATH=/app/backend \
+            -e GITHUB_STEP_SUMMARY=/tmp/smoke-summary.md \
+            -v "$PWD/scripts:/scripts:ro" \
+            -v "$SUMMARY_FILE:/tmp/smoke-summary.md" \
+            -w /app/backend \
+            stock-ticker-backend:azure-smoke \
+            python /scripts/azure_rankings_archive_smoke.py --ci-summary
+          cat "$SUMMARY_FILE" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Delete temporary SQL firewall rule
+        if: always() && env.RULE_NAME != ''
+        run: |
+          set -euo pipefail
+          if az sql server firewall-rule delete \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --server "$AZURE_SQL_SERVER_NAME" \
+            --name "$RULE_NAME" \
+            --yes >/dev/null; then
+            echo "Firewall cleanup: PASS" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Firewall cleanup: FAIL" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
 
   allure-report:
     runs-on: ubuntu-latest

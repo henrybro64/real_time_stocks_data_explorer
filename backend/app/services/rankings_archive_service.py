@@ -36,6 +36,10 @@ logger = logging.getLogger(__name__)
 _MAX_ARCHIVE_LIMIT = 50
 _US_SETTLE_MINUTES = 45
 _TW_QUOTE_SETTLE_MINUTES = 30
+# Bounded recent settled trading days to inspect for missed archives (#178).
+_BACKFILL_TRADING_DAY_WINDOW = 7
+# Cap provider fetches per query/cycle while filling holes.
+_BACKFILL_FETCHES_PER_QUERY = 1
 
 
 class RankingsArchiveUnavailableError(RuntimeError):
@@ -154,6 +158,116 @@ class RankingsArchiveService:
                 return candidate
         return None
 
+    def _settled_trading_dates(
+        self,
+        market: Literal["US", "TW"],
+        current: datetime,
+        *,
+        ranking_type: RankingType | None,
+        limit: int = _BACKFILL_TRADING_DAY_WINDOW,
+    ) -> list[date]:
+        """Newest-first settled trading dates within a bounded calendar walk."""
+        local_now = current.astimezone(MARKET_TIMEZONES[market])
+        dates: list[date] = []
+        for day_offset in range(0, 21):
+            candidate = local_now.date() - timedelta(days=day_offset)
+            probe = datetime.combine(
+                candidate,
+                time(12, 0),
+                tzinfo=MARKET_TIMEZONES[market],
+            )
+            if not is_trading_day(market, probe):
+                continue
+            ready_at = self._settle_ready_at(
+                market,
+                candidate,
+                ranking_type=ranking_type,
+            )
+            if local_now < ready_at:
+                continue
+            dates.append(candidate)
+            if len(dates) >= limit:
+                break
+        return dates
+
+    @staticmethod
+    def _parse_timestamp_market_date(
+        raw: str | None,
+        *,
+        market: Literal["US", "TW"],
+    ) -> date | None:
+        if not raw:
+            return None
+        try:
+            parsed = datetime.fromisoformat(raw)
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(MARKET_TIMEZONES[market]).date()
+
+    def _infer_provider_trading_date(
+        self,
+        response: RankingResponse,
+        *,
+        market: Literal["US", "TW"],
+        ranking_type: RankingType,
+    ) -> date | None:
+        """Derive the trading session date proved by the provider payload."""
+        if response.tradingDate:
+            try:
+                return date.fromisoformat(response.tradingDate[:10])
+            except ValueError:
+                logger.warning(
+                    "Rankings archive ignored invalid tradingDate on response",
+                    extra={
+                        "event": "rankings_archive.capture.invalid_trading_date",
+                        "trading_date": response.tradingDate,
+                        "market": market,
+                        "ranking_type": ranking_type.value,
+                    },
+                )
+
+        item_dates = {
+            inferred
+            for item in response.items
+            if (
+                inferred := self._parse_timestamp_market_date(
+                    item.timestamp,
+                    market=market,
+                )
+            )
+            is not None
+        }
+        if len(item_dates) == 1:
+            return next(iter(item_dates))
+        if len(item_dates) > 1:
+            return None
+
+        # Institutional responses stamp every item (and often the envelope) with
+        # the report day's 18:00 Taipei bucket even when enrichment quotes differ.
+        if ranking_type in {RankingType.net_buy, RankingType.net_sell}:
+            return self._parse_timestamp_market_date(
+                response.timestamp,
+                market=market,
+            )
+        return None
+
+    def _provider_date_matches_target(
+        self,
+        response: RankingResponse,
+        *,
+        market: Literal["US", "TW"],
+        ranking_type: RankingType,
+        target_date: date,
+    ) -> tuple[bool, date | None]:
+        inferred = self._infer_provider_trading_date(
+            response,
+            market=market,
+            ranking_type=ranking_type,
+        )
+        return inferred == target_date, inferred
+
     def capture_eod_archives(
         self,
         now: datetime | None = None,
@@ -163,7 +277,12 @@ class RankingsArchiveService:
         trading_date: date | None = None,
         force: bool = False,
     ) -> dict[str, int]:
-        """Capture EOD archives. Failures are logged and never raised to callers."""
+        """Capture EOD archives. Failures are logged and never raised to callers.
+
+        Missed prior trading days may be backfilled only when the provider payload
+        proves it belongs to that target date (#178). ``force`` skips settle-time
+        gating but never bypasses date validation.
+        """
         started_at = perf_counter()
         captured = 0
         skipped = 0
@@ -196,184 +315,212 @@ class RankingsArchiveService:
             universe = query.universe or query.tw_board or (
                 "DJIA" if query.market == "US" else "TWSE"
             )
-            resolved_date = trading_date
-            if resolved_date is None:
-                if force:
-                    resolved_date = self.ready_trading_date(
-                        query.market,  # type: ignore[arg-type]
-                        current,
-                        ranking_type=query.ranking_type,
-                    ) or market_local_time(query.market, current).date()
-                else:
-                    resolved_date = self.ready_trading_date(
-                        query.market,  # type: ignore[arg-type]
-                        current,
-                        ranking_type=query.ranking_type,
-                    )
-            if resolved_date is None:
-                skipped += 1
-                continue
-            local_today = market_local_time(query.market, current).date()
-            # Live quote providers reflect the current session only. Never stamp
-            # today's intraday/EOD quotes under a prior trading-date archive key.
-            if resolved_date != local_today:
-                skipped += 1
-                logger.warning(
-                    "Rankings archive skipped prior trading date without historical provider",
-                    extra={
-                        "event": "rankings_archive.capture.prior_date_skipped",
-                        "trigger": trigger,
-                        "market": query.market,
-                        "universe": universe,
-                        "ranking_type": query.ranking_type.value,
-                        "trading_date": resolved_date.isoformat(),
-                        "local_today": local_today.isoformat(),
-                    },
-                )
-                continue
-            probe = datetime.combine(
-                resolved_date,
-                time(12, 0),
-                tzinfo=MARKET_TIMEZONES[query.market],
-            )
-            if not is_trading_day(query.market, probe):
-                skipped += 1
-                continue
-            if (
-                not force
-                and current.astimezone(MARKET_TIMEZONES[query.market])
-                < self._settle_ready_at(
-                    query.market,  # type: ignore[arg-type]
-                    resolved_date,
+            query_market: Literal["US", "TW"] = query.market  # type: ignore[assignment]
+
+            if trading_date is not None:
+                candidate_dates = [trading_date]
+            else:
+                candidate_dates = self._settled_trading_dates(
+                    query_market,
+                    current,
                     ranking_type=query.ranking_type,
                 )
-            ):
-                skipped += 1
-                continue
+                if not candidate_dates and force:
+                    fallback = market_local_time(query_market, current).date()
+                    candidate_dates = [fallback]
 
-            existing = self._repository.load_eod_snapshot(
-                market=query.market,
-                universe=universe,
-                ranking_type=query.ranking_type,
-                trading_date=resolved_date,
+            fetches_remaining = (
+                len(candidate_dates)
+                if trading_date is not None
+                else _BACKFILL_FETCHES_PER_QUERY
             )
-            if existing is not None:
-                skipped += 1
-                continue
 
-            target_started = perf_counter()
-            try:
-                provider = self._provider_registry.get_provider(query)
-                response = provider.fetch(
-                    query,
-                    limit=_MAX_ARCHIVE_LIMIT,
-                    now=current,
-                    allow_hardcoded_fallback=False,
-                )
-            except Exception:  # noqa: BLE001
-                failed += 1
-                logger.exception(
-                    "Rankings archive fetch failed",
-                    extra={
-                        "event": "rankings_archive.capture.fetch_failed",
-                        "trigger": trigger,
-                        "market": query.market,
-                        "universe": universe,
-                        "ranking_type": query.ranking_type.value,
-                        "trading_date": resolved_date.isoformat(),
-                    },
-                )
-                continue
+            for resolved_date in candidate_dates:
+                if fetches_remaining <= 0:
+                    break
 
-            if response.twRankingsScope == "fallback":
-                skipped += 1
-                logger.warning(
-                    "Rankings archive skipped hardcoded TW fallback",
-                    extra={
-                        "event": "rankings_archive.capture.fallback_skipped",
-                        "trigger": trigger,
-                        "market": query.market,
-                        "universe": universe,
-                        "ranking_type": query.ranking_type.value,
-                        "trading_date": resolved_date.isoformat(),
-                        "source": response.source,
-                    },
+                probe = datetime.combine(
+                    resolved_date,
+                    time(12, 0),
+                    tzinfo=MARKET_TIMEZONES[query_market],
                 )
-                continue
-            if response.sourceType == RankingSourceType.unsupported:
-                skipped += 1
-                continue
-            if not response.items:
-                skipped += 1
-                logger.warning(
-                    "Rankings archive skipped empty response",
-                    extra={
-                        "event": "rankings_archive.capture.empty",
-                        "trigger": trigger,
-                        "market": query.market,
-                        "universe": universe,
-                        "ranking_type": query.ranking_type.value,
-                        "trading_date": resolved_date.isoformat(),
-                        "source": response.source,
-                    },
-                )
-                continue
+                if not is_trading_day(query_market, probe):
+                    skipped += 1
+                    continue
+                if (
+                    not force
+                    and current.astimezone(MARKET_TIMEZONES[query_market])
+                    < self._settle_ready_at(
+                        query_market,
+                        resolved_date,
+                        ranking_type=query.ranking_type,
+                    )
+                ):
+                    skipped += 1
+                    continue
 
-            try:
-                envelope = self._repository.upsert_eod_snapshot(
+                existing = self._repository.load_eod_snapshot(
                     market=query.market,
                     universe=universe,
                     ranking_type=query.ranking_type,
                     trading_date=resolved_date,
-                    response=response,
-                    captured_at=current,
-                    capture_scope=CAPTURE_SCOPE_END_OF_DAY,
                 )
-            except Exception:  # noqa: BLE001
-                failed += 1
-                logger.exception(
-                    "Rankings archive persist raised",
-                    extra={
-                        "event": "rankings_archive.capture.persist_raised",
-                        "trigger": trigger,
-                        "market": query.market,
-                        "universe": universe,
-                        "ranking_type": query.ranking_type.value,
-                        "trading_date": resolved_date.isoformat(),
-                    },
-                )
-                continue
-            if envelope is None:
-                failed += 1
-                logger.error(
-                    "Rankings archive persist failed",
-                    extra={
-                        "event": "rankings_archive.capture.persist_failed",
-                        "trigger": trigger,
-                        "market": query.market,
-                        "universe": universe,
-                        "ranking_type": query.ranking_type.value,
-                        "trading_date": resolved_date.isoformat(),
-                    },
-                )
-                continue
+                if existing is not None:
+                    skipped += 1
+                    continue
 
-            captured += 1
-            logger.info(
-                "Rankings archive capture succeeded",
-                extra={
-                    "event": "rankings_archive.capture.succeeded",
-                    "trigger": trigger,
-                    "market": query.market,
-                    "universe": universe,
-                    "ranking_type": query.ranking_type.value,
-                    "trading_date": resolved_date.isoformat(),
-                    "archive_snapshot_id": envelope.snapshot.id,
-                    "item_count": len(envelope.items),
-                    "source": response.source,
-                    "duration_ms": elapsed_ms(target_started),
-                },
-            )
+                fetches_remaining -= 1
+                target_started = perf_counter()
+                try:
+                    provider = self._provider_registry.get_provider(query)
+                    response = provider.fetch(
+                        query,
+                        limit=_MAX_ARCHIVE_LIMIT,
+                        now=current,
+                        allow_hardcoded_fallback=False,
+                    )
+                except Exception:  # noqa: BLE001
+                    failed += 1
+                    logger.exception(
+                        "Rankings archive fetch failed",
+                        extra={
+                            "event": "rankings_archive.capture.fetch_failed",
+                            "trigger": trigger,
+                            "market": query.market,
+                            "universe": universe,
+                            "ranking_type": query.ranking_type.value,
+                            "trading_date": resolved_date.isoformat(),
+                        },
+                    )
+                    continue
+
+                if response.twRankingsScope == "fallback":
+                    skipped += 1
+                    logger.warning(
+                        "Rankings archive skipped hardcoded TW fallback",
+                        extra={
+                            "event": "rankings_archive.capture.fallback_skipped",
+                            "trigger": trigger,
+                            "market": query.market,
+                            "universe": universe,
+                            "ranking_type": query.ranking_type.value,
+                            "trading_date": resolved_date.isoformat(),
+                            "source": response.source,
+                        },
+                    )
+                    continue
+                if response.sourceType == RankingSourceType.unsupported:
+                    skipped += 1
+                    logger.info(
+                        "Rankings archive skipped unsupported provider",
+                        extra={
+                            "event": "rankings_archive.capture.unsupported_skipped",
+                            "trigger": trigger,
+                            "market": query.market,
+                            "universe": universe,
+                            "ranking_type": query.ranking_type.value,
+                            "trading_date": resolved_date.isoformat(),
+                        },
+                    )
+                    continue
+                if not response.items:
+                    skipped += 1
+                    logger.warning(
+                        "Rankings archive skipped empty response",
+                        extra={
+                            "event": "rankings_archive.capture.empty",
+                            "trigger": trigger,
+                            "market": query.market,
+                            "universe": universe,
+                            "ranking_type": query.ranking_type.value,
+                            "trading_date": resolved_date.isoformat(),
+                            "source": response.source,
+                        },
+                    )
+                    continue
+
+                matches, inferred_date = self._provider_date_matches_target(
+                    response,
+                    market=query_market,
+                    ranking_type=query.ranking_type,
+                    target_date=resolved_date,
+                )
+                if not matches:
+                    skipped += 1
+                    logger.warning(
+                        "Rankings archive skipped provider date mismatch",
+                        extra={
+                            "event": "rankings_archive.capture.date_mismatch",
+                            "trigger": trigger,
+                            "market": query.market,
+                            "universe": universe,
+                            "ranking_type": query.ranking_type.value,
+                            "trading_date": resolved_date.isoformat(),
+                            "provider_trading_date": (
+                                inferred_date.isoformat() if inferred_date else None
+                            ),
+                            "source": response.source,
+                        },
+                    )
+                    continue
+
+                try:
+                    envelope = self._repository.upsert_eod_snapshot(
+                        market=query.market,
+                        universe=universe,
+                        ranking_type=query.ranking_type,
+                        trading_date=resolved_date,
+                        response=response,
+                        captured_at=current,
+                        capture_scope=CAPTURE_SCOPE_END_OF_DAY,
+                    )
+                except Exception:  # noqa: BLE001
+                    failed += 1
+                    logger.exception(
+                        "Rankings archive persist raised",
+                        extra={
+                            "event": "rankings_archive.capture.persist_raised",
+                            "trigger": trigger,
+                            "market": query.market,
+                            "universe": universe,
+                            "ranking_type": query.ranking_type.value,
+                            "trading_date": resolved_date.isoformat(),
+                        },
+                    )
+                    continue
+                if envelope is None:
+                    failed += 1
+                    logger.error(
+                        "Rankings archive persist failed",
+                        extra={
+                            "event": "rankings_archive.capture.persist_failed",
+                            "trigger": trigger,
+                            "market": query.market,
+                            "universe": universe,
+                            "ranking_type": query.ranking_type.value,
+                            "trading_date": resolved_date.isoformat(),
+                        },
+                    )
+                    continue
+
+                captured += 1
+                logger.info(
+                    "Rankings archive capture succeeded",
+                    extra={
+                        "event": "rankings_archive.capture.succeeded",
+                        "trigger": trigger,
+                        "market": query.market,
+                        "universe": universe,
+                        "ranking_type": query.ranking_type.value,
+                        "trading_date": resolved_date.isoformat(),
+                        "archive_snapshot_id": envelope.snapshot.id,
+                        "item_count": len(envelope.items),
+                        "source": response.source,
+                        "duration_ms": elapsed_ms(target_started),
+                        "backfill": resolved_date
+                        != market_local_time(query_market, current).date(),
+                    },
+                )
 
         logger.info(
             "Rankings archive capture cycle completed",

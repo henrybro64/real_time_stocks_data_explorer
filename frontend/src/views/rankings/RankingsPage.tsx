@@ -31,7 +31,9 @@ import {
   fetchRankings,
   fetchRankingsHistory,
   fetchRankingsHistoryDates,
+  historyDatesRetryDelayMs,
   refreshRankings,
+  shouldRetryHistoryDatesQuery,
   shouldRetryRankingsQuery,
   toApiError,
 } from "../../services/api/client";
@@ -447,9 +449,18 @@ export function RankingsPage() {
         signal,
       ),
     staleTime: 5 * 60_000,
-    retry: false,
+    retry: shouldRetryHistoryDatesQuery,
+    retryDelay: (failureCount) => historyDatesRetryDelayMs(failureCount),
   });
   const availableHistoryDates = historyDatesQuery.data?.dates ?? [];
+  const historyDatesRetrying =
+    historyDatesQuery.isFetching
+    && historyDatesQuery.failureCount > 0
+    && historyDatesQuery.data === undefined;
+  const historyDatesUnavailable =
+    historyDatesQuery.isError
+    && !historyDatesQuery.isFetching
+    && historyDatesQuery.data === undefined;
   const dateOptions = useMemo(() => {
     if (
       selectedTradingDate != null
@@ -666,7 +677,12 @@ export function RankingsPage() {
               <SelectItem key={tradingDate} value={tradingDate} text={tradingDate} />
             ))}
           </Select>
-          {historyDatesQuery.isError ? (
+          {historyDatesRetrying ? (
+            <p className="app-supporting-copy" data-testid="rankings-history-dates-waking">
+              {t("rankings.date.historyWaking")}
+            </p>
+          ) : null}
+          {historyDatesUnavailable ? (
             <p className="app-supporting-copy" data-testid="rankings-history-dates-unavailable">
               {t("rankings.date.historyUnavailable")}
             </p>

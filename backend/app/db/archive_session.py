@@ -3,16 +3,15 @@
 Uses ``RANKINGS_ARCHIVE_DATABASE_URL`` only. Never reuses primary ``DATABASE_URL``.
 Connection failures are contained so FastAPI can start without Azure SQL.
 
-Failed connects are retried after a short cooldown so Azure SQL Free-offer
-AutoPause / cold starts do not stick the process in a permanent unavailable
-state until restart.
+Failed connects are retried with short in-request backoff (Azure SQL Free AutoPause
+cold starts), then a brief process cooldown before the next initialization wave.
 """
 
 from __future__ import annotations
 
 import logging
 from threading import Lock
-from time import monotonic
+from time import monotonic, sleep
 
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import Engine
@@ -23,8 +22,11 @@ from app.db.archive_models import ArchiveBase
 
 logger = logging.getLogger(__name__)
 
-# After a failed connect (including AutoPause wake timeouts), wait before retrying.
-_INIT_RETRY_COOLDOWN_SECONDS = 30.0
+# After exhausting in-request retries, wait before another init wave.
+_INIT_RETRY_COOLDOWN_SECONDS = 10.0
+# Bounded wake-up attempts for serverless AutoPause (#177).
+_INIT_IN_REQUEST_ATTEMPTS = 3
+_INIT_IN_REQUEST_BACKOFF_SECONDS = (2.0, 5.0, 8.0)
 
 _lock = Lock()
 _engine: Engine | None = None
@@ -69,6 +71,21 @@ def rankings_archive_is_configured() -> bool:
     return bool(rankings_archive_database_url())
 
 
+def _try_create_engine(url: str) -> Engine:
+    connect_args: dict[str, object] = {}
+    if url.startswith("sqlite"):
+        connect_args["check_same_thread"] = False
+    engine = create_engine(
+        url,
+        pool_pre_ping=True,
+        pool_recycle=1800,
+        connect_args=connect_args,
+    )
+    with engine.connect() as connection:
+        connection.execute(text("SELECT 1"))
+    return engine
+
+
 def _initialize_engine_locked() -> Engine | None:
     global _engine, _session_factory, _last_init_failure_at
     if _engine is not None:
@@ -76,48 +93,87 @@ def _initialize_engine_locked() -> Engine | None:
     if _last_init_failure_at is not None:
         elapsed = monotonic() - _last_init_failure_at
         if elapsed < _INIT_RETRY_COOLDOWN_SECONDS:
+            logger.info(
+                "Rankings archive init skipped during cooldown",
+                extra={
+                    "event": "rankings_archive.engine.cooldown_skip",
+                    "cooldown_remaining_seconds": round(
+                        _INIT_RETRY_COOLDOWN_SECONDS - elapsed,
+                        1,
+                    ),
+                },
+            )
             return None
     url = rankings_archive_database_url()
     if not url:
         _engine = None
         _session_factory = None
         return None
-    engine: Engine | None = None
-    try:
-        connect_args: dict[str, object] = {}
-        if url.startswith("sqlite"):
-            connect_args["check_same_thread"] = False
-        engine = create_engine(
-            url,
-            pool_pre_ping=True,
-            pool_recycle=1800,
-            connect_args=connect_args,
-        )
-        with engine.connect() as connection:
-            connection.execute(text("SELECT 1"))
-        _engine = engine
-        _session_factory = sessionmaker(
-            bind=engine,
-            autoflush=False,
-            autocommit=False,
-            expire_on_commit=False,
-        )
-        _last_init_failure_at = None
-        return _engine
-    except Exception:  # noqa: BLE001
-        logger.exception(
-            "Rankings archive database unavailable",
-            extra={"event": "rankings_archive.engine.unavailable"},
-        )
-        # Dispose any partially constructed engine (create_engine succeeded, connect failed).
-        if engine is not None:
-            engine.dispose()
-        if _engine is not None and _engine is not engine:
-            _engine.dispose()
-        _engine = None
-        _session_factory = None
-        _last_init_failure_at = monotonic()
-        return None
+
+    last_error: Exception | None = None
+    for attempt in range(1, _INIT_IN_REQUEST_ATTEMPTS + 1):
+        engine: Engine | None = None
+        try:
+            if attempt > 1:
+                backoff = _INIT_IN_REQUEST_BACKOFF_SECONDS[
+                    min(attempt - 2, len(_INIT_IN_REQUEST_BACKOFF_SECONDS) - 1)
+                ]
+                logger.info(
+                    "Rankings archive cold-start retry",
+                    extra={
+                        "event": "rankings_archive.engine.cold_start_retry",
+                        "attempt": attempt,
+                        "backoff_seconds": backoff,
+                    },
+                )
+                sleep(backoff)
+            engine = _try_create_engine(url)
+            _engine = engine
+            _session_factory = sessionmaker(
+                bind=engine,
+                autoflush=False,
+                autocommit=False,
+                expire_on_commit=False,
+            )
+            _last_init_failure_at = None
+            logger.info(
+                "Rankings archive engine ready",
+                extra={
+                    "event": "rankings_archive.engine.recovered"
+                    if attempt > 1
+                    else "rankings_archive.engine.ready",
+                    "attempt": attempt,
+                },
+            )
+            return _engine
+        except Exception as exc:  # noqa: BLE001
+            last_error = exc
+            if engine is not None:
+                engine.dispose()
+            logger.warning(
+                "Rankings archive connect attempt failed",
+                extra={
+                    "event": "rankings_archive.engine.connect_failed",
+                    "attempt": attempt,
+                    "max_attempts": _INIT_IN_REQUEST_ATTEMPTS,
+                    "error_type": type(exc).__name__,
+                },
+            )
+
+    logger.error(
+        "Rankings archive database unavailable after cold-start retries",
+        extra={
+            "event": "rankings_archive.engine.unavailable_persistent",
+            "attempts": _INIT_IN_REQUEST_ATTEMPTS,
+            "error_type": type(last_error).__name__ if last_error else None,
+        },
+    )
+    if _engine is not None:
+        _engine.dispose()
+    _engine = None
+    _session_factory = None
+    _last_init_failure_at = monotonic()
+    return None
 
 
 def get_rankings_archive_engine() -> Engine | None:
@@ -180,7 +236,10 @@ def _ensure_archive_compat_columns(bind: Engine) -> None:
     """
     inspector = inspect(bind)
     try:
-        columns = {column["name"] for column in inspector.get_columns("ranking_snapshots_archive")}
+        columns = {
+            column["name"]
+            for column in inspector.get_columns("ranking_snapshots_archive")
+        }
     except Exception:  # noqa: BLE001
         # Table missing/metadata inaccessible: leave to create_all/normal errors.
         return

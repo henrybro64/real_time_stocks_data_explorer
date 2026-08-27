@@ -260,6 +260,35 @@ export function shouldRetryRankingsQuery(failureCount: number, error: unknown): 
   return failureCount < 3;
 }
 
+/** Bounded retries for Azure SQL AutoPause / cold-start on history dates (#177). */
+export const HISTORY_DATES_MAX_RETRIES = 4;
+export const HISTORY_DATES_RETRY_DELAY_MS = 8_000;
+
+export function shouldRetryHistoryDatesQuery(
+  failureCount: number,
+  error: unknown,
+): boolean {
+  if (isAbortError(error)) {
+    return false;
+  }
+  if (error instanceof ApiError) {
+    if (
+      error.kind === "not_found" ||
+      error.kind === "validation" ||
+      error.status === 404 ||
+      error.status === 422
+    ) {
+      return false;
+    }
+  }
+  return failureCount < HISTORY_DATES_MAX_RETRIES;
+}
+
+export function historyDatesRetryDelayMs(failureCount: number): number {
+  // Align with backend cold-start cooldown / wake window.
+  return HISTORY_DATES_RETRY_DELAY_MS * Math.max(1, failureCount);
+}
+
 async function fetchJsonWithTimeout<T>(
   path: string,
   timeoutMs: number,
