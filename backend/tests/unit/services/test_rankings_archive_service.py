@@ -580,3 +580,24 @@ def test_capture_contains_persist_exceptions_per_target() -> None:
     assert result["captured"] == 0
     assert result["failed"] == 8
     assert result["skipped"] == 0
+
+
+def test_archive_connectivity_failure_classification() -> None:
+    from sqlalchemy.exc import OperationalError, ProgrammingError
+
+    from app.services.rankings_archive_service import _is_archive_connectivity_failure
+
+    programming = ProgrammingError(
+        "SELECT TOP 5 DISTINCT ...",
+        {},
+        Exception("Incorrect syntax near the keyword 'DISTINCT'."),
+    )
+    operational = OperationalError(
+        "SELECT 1",
+        {},
+        Exception("login timeout expired"),
+    )
+    assert _is_archive_connectivity_failure(programming) is False
+    assert _is_archive_connectivity_failure(operational) is True
+    assert _is_archive_connectivity_failure(RuntimeError("azure down")) is False
+    assert _is_archive_connectivity_failure(ConnectionError("reset")) is True

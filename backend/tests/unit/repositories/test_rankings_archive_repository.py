@@ -414,3 +414,29 @@ def test_to_ranking_response_preserves_tw_yahoo_scope() -> None:
     )
     assert envelope is not None
     assert repo.to_ranking_response(envelope).twRankingsScope == "yahoo"
+
+
+def test_list_available_trading_dates_mssql_avoids_top_distinct() -> None:
+    """SQL Server rejects ``SELECT TOP n DISTINCT``; statement .distinct() is safe."""
+    import re
+
+    from sqlalchemy.dialects import mssql
+
+    from app.repositories.rankings_archive_repository import RankingsArchiveRepository
+    from app.schemas.rankings import RankingType
+
+    stmt = RankingsArchiveRepository._available_trading_dates_stmt(
+        market="TW",
+        universe="TWSE",
+        ranking_type=RankingType.net_buy,
+        limit=5,
+    )
+    compiled = str(
+        stmt.compile(dialect=mssql.dialect(), compile_kwargs={"literal_binds": True})
+    )
+    upper = compiled.upper()
+    assert not re.search(r"TOP\s+\d+\s+DISTINCT", upper)
+    assert "DISTINCT" in upper
+    assert "TOP" in upper
+    # Prefer DISTINCT before TOP (valid T-SQL).
+    assert upper.index("DISTINCT") < upper.index("TOP")

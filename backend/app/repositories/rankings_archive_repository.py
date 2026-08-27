@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timezone
 import logging
 
-from sqlalchemy import distinct, select
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -91,26 +91,49 @@ class RankingsArchiveRepository:
 
         When ``ranking_type`` is omitted, dates are distinct across all archived
         ranking types for that market/universe (UI date discovery use case).
+
+        Uses statement-level ``.distinct()`` so MSSQL compiles to
+        ``SELECT DISTINCT TOP n ...`` rather than invalid ``SELECT TOP n DISTINCT``.
         """
         if not self.is_available() or limit <= 0:
             return []
         session_factory = self._session_factory()
         with session_factory() as session:
-            stmt = select(distinct(RankingSnapshotArchive.trading_date)).where(
+            stmt = self._available_trading_dates_stmt(
+                market=market,
+                universe=universe,
+                ranking_type=ranking_type,
+                limit=limit,
+            )
+            return list(session.execute(stmt).scalars())
+
+    @staticmethod
+    def _available_trading_dates_stmt(
+        *,
+        market: str,
+        universe: str,
+        ranking_type: RankingType | str | None = None,
+        limit: int = 5,
+    ):
+        """Build the history-dates discovery statement (MSSQL-safe DISTINCT TOP)."""
+        stmt = (
+            select(RankingSnapshotArchive.trading_date)
+            .where(
                 RankingSnapshotArchive.market == market,
                 RankingSnapshotArchive.universe == universe,
             )
-            if ranking_type is not None:
-                ranking_type_value = (
-                    ranking_type.value
-                    if isinstance(ranking_type, RankingType)
-                    else str(ranking_type)
-                )
-                stmt = stmt.where(
-                    RankingSnapshotArchive.ranking_type == ranking_type_value,
-                )
-            stmt = stmt.order_by(RankingSnapshotArchive.trading_date.desc()).limit(limit)
-            return list(session.execute(stmt).scalars())
+            .distinct()
+        )
+        if ranking_type is not None:
+            ranking_type_value = (
+                ranking_type.value
+                if isinstance(ranking_type, RankingType)
+                else str(ranking_type)
+            )
+            stmt = stmt.where(
+                RankingSnapshotArchive.ranking_type == ranking_type_value,
+            )
+        return stmt.order_by(RankingSnapshotArchive.trading_date.desc()).limit(limit)
 
     def has_eod_snapshot(
         self,

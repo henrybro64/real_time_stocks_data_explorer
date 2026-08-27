@@ -9,6 +9,14 @@ from threading import Event, Lock, Thread
 from time import perf_counter
 from typing import Literal
 
+from sqlalchemy.exc import (
+    DBAPIError,
+    InterfaceError,
+    OperationalError,
+    ProgrammingError,
+)
+from sqlalchemy.exc import TimeoutError as SATimeoutError
+
 from app.core.config import settings
 from app.core.diagnostics import elapsed_ms
 from app.db.archive_session import (
@@ -43,6 +51,38 @@ _TW_QUOTE_SETTLE_MINUTES = 30
 _BACKFILL_TRADING_DAY_WINDOW = 7
 # Cap provider fetches per query/cycle while filling holes.
 _BACKFILL_FETCHES_PER_QUERY = 1
+
+
+def _is_archive_connectivity_failure(exc: BaseException) -> bool:
+    """True for connection/transport failures; false for SQL syntax/logic errors.
+
+    Mid-life AutoPause / dead sockets should invalidate the cached engine (#177).
+    ``ProgrammingError`` and similar app/SQL bugs must not (#181).
+    """
+    # Syntax / constraint / logic bugs must not drop a healthy engine.
+    if isinstance(exc, ProgrammingError):
+        return False
+    if isinstance(
+        exc,
+        (OperationalError, InterfaceError, SATimeoutError, ConnectionError, TimeoutError),
+    ):
+        return True
+    if isinstance(exc, DBAPIError):
+        message = str(getattr(exc, "orig", None) or exc).lower()
+        tokens = (
+            "login timeout",
+            "communication link failure",
+            "connection",
+            "timeout",
+            "could not open a connection",
+            "server is not found",
+            "08001",
+            "08s01",
+            "hyt00",
+            "08s02",
+        )
+        return any(token in message for token in tokens)
+    return False
 
 
 class RankingsArchiveUnavailableError(RuntimeError):
@@ -787,8 +827,10 @@ class RankingsArchiveService:
                 },
             )
             # Mid-life AutoPause leaves a dead cached engine; drop it so the next
-            # request re-enters the cold-start wake budget (#177).
-            invalidate_rankings_archive_engine(reason="history_dates_failed")
+            # request re-enters the cold-start wake budget (#177). Do not invalidate
+            # on SQL syntax/logic errors (those are app bugs, not a paused server).
+            if _is_archive_connectivity_failure(exc):
+                invalidate_rankings_archive_engine(reason="history_dates_failed")
             raise RankingsArchiveUnavailableError(
                 "Rankings archive history dates lookup failed",
             ) from exc
@@ -823,7 +865,8 @@ class RankingsArchiveService:
                     "trading_date": trading_date.isoformat(),
                 },
             )
-            invalidate_rankings_archive_engine(reason="history_load_failed")
+            if _is_archive_connectivity_failure(exc):
+                invalidate_rankings_archive_engine(reason="history_load_failed")
             raise RankingsArchiveUnavailableError(
                 "Rankings archive history load failed",
             ) from exc
