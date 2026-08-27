@@ -6,9 +6,11 @@ import re
 import threading
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
-from time import perf_counter
+from time import monotonic, perf_counter
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
+
+import httpx
 
 from app.core.diagnostics import elapsed_ms
 from app.services.http_client import HttpFetchError, fetch_json, fetch_text
@@ -17,6 +19,17 @@ from app.models.stock import StockRecord
 from app.services.market_clock import is_market_open
 
 logger = logging.getLogger(__name__)
+
+# MIS disconnect circuit: after repeated RemoteProtocol/network failures, skip MIS
+# for a cooldown so concurrent ranking enrichment cannot re-storm the endpoint (#183).
+_MIS_FAILURE_THRESHOLD = 3
+_MIS_CIRCUIT_OPEN_SECONDS = 45.0
+_MIS_SESSION_TTL_SECONDS = 300.0
+_mis_circuit_lock = threading.Lock()
+_mis_consecutive_failures = 0
+_mis_circuit_open_until = 0.0
+_mis_session_cookie_header: str | None = None
+_mis_session_cached_at = 0.0
 
 
 @dataclass(frozen=True)
@@ -329,6 +342,8 @@ class TWProvider:
         return []
 
     def _fetch_quote(self, stock: StockRecord) -> QuoteRecord | None:
+        if _mis_circuit_is_open():
+            return None
         try:
             payload = _load_json(
                 _REALTIME_URL,
@@ -339,11 +354,18 @@ class TWProvider:
                 },
                 referer="https://mis.twse.com.tw/stock/index.jsp",
             )
-        except (HttpFetchError, TimeoutError, ValueError):
+        except HttpFetchError as exc:
+            if exc.classification == "network_failure":
+                _note_mis_failure(classification=exc.classification)
+            return None
+        except (TimeoutError, ValueError):
+            _note_mis_failure(classification="network_failure")
             return None
 
-        items = payload.get("msgArray")
+        items = payload.get("msgArray") if isinstance(payload, dict) else None
         if not items:
+            # Reachable but empty is not a disconnect storm signal.
+            _note_mis_success()
             return None
 
         item = items[0]
@@ -356,6 +378,7 @@ class TWProvider:
         volume = volume_lots * 1000 if volume_lots is not None else None
 
         if last_price is None or previous_close in (None, 0):
+            _note_mis_success()
             return None
 
         quote_timestamp = _parse_quote_timestamp(
@@ -365,6 +388,7 @@ class TWProvider:
         )
         change = round(last_price - previous_close, 2)
         change_percent = round((change / previous_close) * 100, 2)
+        _note_mis_success()
 
         return QuoteRecord(
             id=stock.id,
@@ -689,6 +713,86 @@ class TWProvider:
         return cached_quote
 
 
+def _mis_circuit_is_open() -> bool:
+    with _mis_circuit_lock:
+        return monotonic() < _mis_circuit_open_until
+
+
+def _note_mis_success() -> None:
+    global _mis_consecutive_failures
+    with _mis_circuit_lock:
+        _mis_consecutive_failures = 0
+
+
+def _note_mis_failure(*, classification: str) -> None:
+    global _mis_consecutive_failures, _mis_circuit_open_until
+    with _mis_circuit_lock:
+        _mis_consecutive_failures += 1
+        if _mis_consecutive_failures < _MIS_FAILURE_THRESHOLD:
+            return
+        _mis_circuit_open_until = monotonic() + _MIS_CIRCUIT_OPEN_SECONDS
+        _mis_consecutive_failures = 0
+        logger.warning(
+            "TWSE MIS circuit opened after repeated disconnects",
+            extra={
+                "event": "twse_mis.circuit.opened",
+                "provider": "twse",
+                "classification": classification,
+                "open_seconds": _MIS_CIRCUIT_OPEN_SECONDS,
+            },
+        )
+
+
+def reset_mis_circuit_for_tests() -> None:
+    """Test helper: clear MIS circuit and warmed session state."""
+    global _mis_consecutive_failures, _mis_circuit_open_until
+    global _mis_session_cookie_header, _mis_session_cached_at
+    with _mis_circuit_lock:
+        _mis_consecutive_failures = 0
+        _mis_circuit_open_until = 0.0
+        _mis_session_cookie_header = None
+        _mis_session_cached_at = 0.0
+
+
+def _mis_cookie_header() -> str | None:
+    """Best-effort session warm-up against the MIS index page (no secrets)."""
+    global _mis_session_cookie_header, _mis_session_cached_at
+    with _mis_circuit_lock:
+        if (
+            _mis_session_cookie_header
+            and monotonic() - _mis_session_cached_at < _MIS_SESSION_TTL_SECONDS
+        ):
+            return _mis_session_cookie_header
+
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7",
+    }
+    cookie_header: str | None = None
+    try:
+        response = httpx.get(
+            "https://mis.twse.com.tw/stock/index.jsp",
+            headers=headers,
+            timeout=5.0,
+            follow_redirects=True,
+        )
+        if response.cookies:
+            cookie_header = "; ".join(
+                f"{key}={value}" for key, value in response.cookies.items()
+            )
+    except Exception:  # noqa: BLE001 - warm-up is best-effort only
+        cookie_header = None
+
+    with _mis_circuit_lock:
+        _mis_session_cookie_header = cookie_header
+        _mis_session_cached_at = monotonic()
+    return cookie_header
+
+
 def _load_json(url: str, params: dict[str, str], referer: str | None = None) -> object:
     headers = {
         "User-Agent": (
@@ -696,9 +800,15 @@ def _load_json(url: str, params: dict[str, str], referer: str | None = None) -> 
             "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
         ),
         "Accept": "application/json,text/plain,*/*",
+        "Accept-Language": "zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7",
     }
     if referer:
         headers["Referer"] = referer
+    if "mis.twse.com.tw" in url:
+        headers["Origin"] = "https://mis.twse.com.tw"
+        cookie_header = _mis_cookie_header()
+        if cookie_header:
+            headers["Cookie"] = cookie_header
 
     return fetch_json(
         url,
@@ -709,6 +819,7 @@ def _load_json(url: str, params: dict[str, str], referer: str | None = None) -> 
         # ranking refresh can move to Yahoo-TW / cache quickly (#183).
         retries=1,
         allow_insecure_fallback_hosts={"mis.twse.com.tw", "www.twse.com.tw"},
+        provider_name="twse" if "mis.twse.com.tw" in url else None,
     )
 
 

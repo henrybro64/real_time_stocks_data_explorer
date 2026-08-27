@@ -566,7 +566,10 @@ class RankingsArchiveService:
             return (
                 "rankings_archive.capture.empty",
                 "warning",
-                "Rankings archive skipped empty response",
+                (
+                    "Rankings archive skipped empty response "
+                    "(quote/provider path returned no ranking items)"
+                ),
             )
         return None
 

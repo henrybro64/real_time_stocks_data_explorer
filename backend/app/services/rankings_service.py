@@ -695,9 +695,47 @@ class RankingsService:
         quotes_by_id = self._sp500_quote_batch(stocks)
         if quotes_by_id:
             return [(s, quotes_by_id[s.id]) for s in stocks if s.id in quotes_by_id]
-        # v7 batch empty: per-symbol live path (bypasses quote Redis cache).
-        ids = [s.id for s in stocks]
-        return self.quote_source.get_live_quotes(ids)
+        # v7 batch empty (often Yahoo auth denial): prefer non-stale cache, then
+        # concurrent live chart/Stooq path (#182).
+        return self._us_quote_fallback_envelopes(stocks)
+
+    def _us_quote_fallback_envelopes(
+        self,
+        stocks: list[StockRecord],
+    ) -> list[tuple[StockRecord, QuoteRecord]]:
+        """Cache-aware concurrent fallback when Yahoo v7 batch returns nothing."""
+        if not stocks:
+            return []
+        ids = [stock.id for stock in stocks]
+        stocks_by_id = {stock.id: stock for stock in stocks}
+        quotes_by_id: dict[str, QuoteRecord] = {}
+
+        peek = getattr(self.quote_source, "peek_cached_quotes", None)
+        if callable(peek):
+            try:
+                for item in peek(ids):
+                    quote = _fresh_cached_enrichment_quote(item)
+                    if quote is None:
+                        continue
+                    quotes_by_id[item.stock.id] = quote
+            except Exception:  # noqa: BLE001 - rankings must still try live path
+                logger.exception(
+                    "US quote fallback cache peek failed",
+                    extra={"event": "rankings.us_quote_fallback.cache_peek_failed"},
+                )
+
+        missing = [stock_id for stock_id in ids if stock_id not in quotes_by_id]
+        if missing:
+            live_fetcher = getattr(self.quote_source, "get_live_quotes", None)
+            if callable(live_fetcher):
+                for stock, quote in live_fetcher(missing):
+                    quotes_by_id[stock.id] = quote
+
+        return [
+            (stocks_by_id[stock_id], quotes_by_id[stock_id])
+            for stock_id in ids
+            if stock_id in quotes_by_id and stock_id in stocks_by_id
+        ]
 
     def _try_build_us_sp500_price_movers(
         self,
