@@ -307,14 +307,19 @@ export function shouldRetryHistoryDatesQuery(
     return false;
   }
   if (error instanceof ApiError) {
+    // Only transient outages warrant AutoPause wake retries. SQL/app bugs (5xx
+    // other than gateway/unavailable) must not burn the retry budget (#181).
     if (
-      error.kind === "not_found" ||
-      error.kind === "validation" ||
-      error.status === 404 ||
-      error.status === 422
+      error.status === 503 ||
+      error.status === 504 ||
+      error.status === 502
     ) {
-      return false;
+      return failureCount < HISTORY_DATES_MAX_RETRIES;
     }
+    if (error.status == null && error.kind === "unavailable") {
+      return failureCount < HISTORY_DATES_MAX_RETRIES;
+    }
+    return false;
   }
   return failureCount < HISTORY_DATES_MAX_RETRIES;
 }

@@ -92,8 +92,11 @@ class RankingsArchiveRepository:
         When ``ranking_type`` is omitted, dates are distinct across all archived
         ranking types for that market/universe (UI date discovery use case).
 
-        Uses statement-level ``.distinct()`` so MSSQL compiles to
-        ``SELECT DISTINCT TOP n ...`` rather than invalid ``SELECT TOP n DISTINCT``.
+        Uses statement-level ``.distinct()`` when ``ranking_type`` is omitted so
+        MSSQL compiles to ``SELECT DISTINCT TOP n ...`` rather than invalid
+        ``SELECT TOP n DISTINCT``. When ``ranking_type`` is set, the unique
+        archive key already guarantees one row per trading date, so DISTINCT
+        is omitted.
         """
         if not self.is_available() or limit <= 0:
             return []
@@ -115,14 +118,10 @@ class RankingsArchiveRepository:
         ranking_type: RankingType | str | None = None,
         limit: int = 5,
     ):
-        """Build the history-dates discovery statement (MSSQL-safe DISTINCT TOP)."""
-        stmt = (
-            select(RankingSnapshotArchive.trading_date)
-            .where(
-                RankingSnapshotArchive.market == market,
-                RankingSnapshotArchive.universe == universe,
-            )
-            .distinct()
+        """Build the history-dates discovery statement (MSSQL-safe)."""
+        stmt = select(RankingSnapshotArchive.trading_date).where(
+            RankingSnapshotArchive.market == market,
+            RankingSnapshotArchive.universe == universe,
         )
         if ranking_type is not None:
             ranking_type_value = (
@@ -133,6 +132,9 @@ class RankingsArchiveRepository:
             stmt = stmt.where(
                 RankingSnapshotArchive.ranking_type == ranking_type_value,
             )
+        else:
+            # Distinct across ranking types for market/universe discovery.
+            stmt = stmt.distinct()
         return stmt.order_by(RankingSnapshotArchive.trading_date.desc()).limit(limit)
 
     def has_eod_snapshot(

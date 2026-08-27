@@ -583,7 +583,7 @@ def test_capture_contains_persist_exceptions_per_target() -> None:
 
 
 def test_archive_connectivity_failure_classification() -> None:
-    from sqlalchemy.exc import OperationalError, ProgrammingError
+    from sqlalchemy.exc import DBAPIError, OperationalError, ProgrammingError
 
     from app.services.rankings_archive_service import _is_archive_connectivity_failure
 
@@ -597,7 +597,22 @@ def test_archive_connectivity_failure_classification() -> None:
         {},
         Exception("login timeout expired"),
     )
+    # Bare "connection" in unrelated text must not classify as outage.
+    vague = DBAPIError(
+        "SELECT 1",
+        {},
+        Exception("[ODBC Driver 18 for SQL Server] something else"),
+        connection_invalidated=False,
+    )
+    specific = DBAPIError(
+        "SELECT 1",
+        {},
+        Exception("TCP Provider: connection refused"),
+        connection_invalidated=False,
+    )
     assert _is_archive_connectivity_failure(programming) is False
     assert _is_archive_connectivity_failure(operational) is True
     assert _is_archive_connectivity_failure(RuntimeError("azure down")) is False
     assert _is_archive_connectivity_failure(ConnectionError("reset")) is True
+    assert _is_archive_connectivity_failure(vague) is False
+    assert _is_archive_connectivity_failure(specific) is True

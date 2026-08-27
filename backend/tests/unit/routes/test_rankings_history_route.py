@@ -309,6 +309,8 @@ def test_history_mid_query_failure_raises_unavailable(monkeypatch) -> None:
 def test_history_sql_syntax_failure_does_not_invalidate_engine(monkeypatch) -> None:
     from sqlalchemy.exc import ProgrammingError
 
+    from app.services.rankings_archive_service import RankingsArchiveQueryError
+
     invalidated: list[str] = []
 
     monkeypatch.setattr(
@@ -335,13 +337,13 @@ def test_history_sql_syntax_failure_does_not_invalidate_engine(monkeypatch) -> N
             )
 
     service = RankingsArchiveService(repository=_SyntaxRepo())  # type: ignore[arg-type]
-    with pytest.raises(RankingsArchiveUnavailableError):
+    with pytest.raises(RankingsArchiveQueryError):
         service.list_history_dates(
             market="US",
             universe="DJIA",
             ranking_type=RankingType.volume,
         )
-    with pytest.raises(RankingsArchiveUnavailableError):
+    with pytest.raises(RankingsArchiveQueryError):
         service.get_history_rankings(
             market="US",
             universe="DJIA",
@@ -481,6 +483,41 @@ def test_history_routes_mid_query_failure_returns_503(monkeypatch) -> None:
         )
     assert exc_hist.value.status_code == 503
     assert exc_hist.value.headers.get("Retry-After") == "10"
+
+
+def test_history_routes_query_logic_failure_returns_500(monkeypatch) -> None:
+    from app.services.rankings_archive_service import RankingsArchiveQueryError
+
+    class _Broken:
+        def is_available(self) -> bool:
+            return True
+
+        def list_history_dates(self, **_kwargs):
+            raise RankingsArchiveQueryError("bad sql")
+
+        def get_history_rankings(self, **_kwargs):
+            raise RankingsArchiveQueryError("bad sql")
+
+    monkeypatch.setattr(rankings_route, "rankings_archive_service", _Broken())
+    with pytest.raises(HTTPException) as exc_dates:
+        rankings_route.get_rankings_history_dates(
+            market="US",
+            universe="DJIA",
+            ranking_type=RankingType.volume,
+        )
+    assert exc_dates.value.status_code == 500
+    assert exc_dates.value.headers is None or "Retry-After" not in (
+        exc_dates.value.headers or {}
+    )
+
+    with pytest.raises(HTTPException) as exc_hist:
+        rankings_route.get_rankings_history(
+            market="US",
+            ranking_type=RankingType.volume,
+            trading_date=date(2026, 8, 20),
+            universe="DJIA",
+        )
+    assert exc_hist.value.status_code == 500
 
 
 def test_history_dates_rejects_mismatched_universe() -> None:

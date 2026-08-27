@@ -69,13 +69,19 @@ def _is_archive_connectivity_failure(exc: BaseException) -> bool:
         return True
     if isinstance(exc, DBAPIError):
         message = str(getattr(exc, "orig", None) or exc).lower()
+        # Prefer specific connectivity phrases over a bare "connection" substring
+        # (that can appear in unrelated ODBC/SQL text).
         tokens = (
             "login timeout",
             "communication link failure",
-            "connection",
-            "timeout",
+            "connection refused",
+            "connection reset",
+            "connection timed out",
+            "connection is busy",
+            "not connected",
             "could not open a connection",
             "server is not found",
+            "tcp provider",
             "08001",
             "08s01",
             "hyt00",
@@ -86,7 +92,11 @@ def _is_archive_connectivity_failure(exc: BaseException) -> bool:
 
 
 class RankingsArchiveUnavailableError(RuntimeError):
-    """Archive DB is configured but a history query failed (operational outage)."""
+    """Archive DB is configured but temporarily unreachable (AutoPause / network)."""
+
+
+class RankingsArchiveQueryError(RuntimeError):
+    """Archive query failed due to SQL/app logic (not a reconnectable outage)."""
 
 
 @dataclass(frozen=True)
@@ -831,7 +841,10 @@ class RankingsArchiveService:
             # on SQL syntax/logic errors (those are app bugs, not a paused server).
             if _is_archive_connectivity_failure(exc):
                 invalidate_rankings_archive_engine(reason="history_dates_failed")
-            raise RankingsArchiveUnavailableError(
+                raise RankingsArchiveUnavailableError(
+                    "Rankings archive history dates lookup failed",
+                ) from exc
+            raise RankingsArchiveQueryError(
                 "Rankings archive history dates lookup failed",
             ) from exc
 
@@ -867,7 +880,10 @@ class RankingsArchiveService:
             )
             if _is_archive_connectivity_failure(exc):
                 invalidate_rankings_archive_engine(reason="history_load_failed")
-            raise RankingsArchiveUnavailableError(
+                raise RankingsArchiveUnavailableError(
+                    "Rankings archive history load failed",
+                ) from exc
+            raise RankingsArchiveQueryError(
                 "Rankings archive history load failed",
             ) from exc
         if envelope is None:

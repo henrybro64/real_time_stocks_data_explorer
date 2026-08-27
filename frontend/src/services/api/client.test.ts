@@ -265,6 +265,16 @@ describe("fetchRankings", () => {
         new ApiError("bad", { status: 422, kind: "validation" }),
       ),
     ).toBe(false);
+    expect(
+      shouldRetryHistoryDatesQuery(
+        0,
+        new ApiError("sql bug", {
+          status: 500,
+          kind: "unknown",
+          detail: "Rankings archive query failed",
+        }),
+      ),
+    ).toBe(false);
     expect(historyDatesRetryDelayMs(1)).toBe(8_000);
     expect(historyDatesRetryDelayMs(2)).toBe(16_000);
     expect(
