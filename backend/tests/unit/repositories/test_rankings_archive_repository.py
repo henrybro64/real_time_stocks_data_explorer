@@ -414,3 +414,40 @@ def test_to_ranking_response_preserves_tw_yahoo_scope() -> None:
     )
     assert envelope is not None
     assert repo.to_ranking_response(envelope).twRankingsScope == "yahoo"
+
+
+def test_list_available_trading_dates_mssql_avoids_top_distinct() -> None:
+    """SQL Server rejects ``SELECT TOP n DISTINCT``; typed queries omit DISTINCT."""
+    import re
+
+    from sqlalchemy.dialects import mssql
+
+    from app.repositories.rankings_archive_repository import RankingsArchiveRepository
+    from app.schemas.rankings import RankingType
+
+    typed = RankingsArchiveRepository._available_trading_dates_stmt(
+        market="TW",
+        universe="TWSE",
+        ranking_type=RankingType.net_buy,
+        limit=5,
+    )
+    typed_sql = str(
+        typed.compile(dialect=mssql.dialect(), compile_kwargs={"literal_binds": True})
+    ).upper()
+    assert not re.search(r"TOP\s+\d+\s+DISTINCT", typed_sql)
+    assert "DISTINCT" not in typed_sql
+    assert "TOP" in typed_sql
+
+    # Omitting ranking_type needs DISTINCT across types; must be DISTINCT before TOP.
+    untyped = RankingsArchiveRepository._available_trading_dates_stmt(
+        market="TW",
+        universe="TWSE",
+        ranking_type=None,
+        limit=5,
+    )
+    untyped_sql = str(
+        untyped.compile(dialect=mssql.dialect(), compile_kwargs={"literal_binds": True})
+    ).upper()
+    assert not re.search(r"TOP\s+\d+\s+DISTINCT", untyped_sql)
+    assert "DISTINCT" in untyped_sql
+    assert untyped_sql.index("DISTINCT") < untyped_sql.index("TOP")

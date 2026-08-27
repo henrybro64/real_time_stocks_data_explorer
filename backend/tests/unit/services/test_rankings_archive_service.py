@@ -580,3 +580,46 @@ def test_capture_contains_persist_exceptions_per_target() -> None:
     assert result["captured"] == 0
     assert result["failed"] == 8
     assert result["skipped"] == 0
+
+
+def test_archive_connectivity_failure_classification() -> None:
+    from sqlalchemy.exc import DBAPIError, OperationalError, ProgrammingError
+
+    from app.services.rankings_archive_service import _is_archive_connectivity_failure
+
+    programming = ProgrammingError(
+        "SELECT TOP 5 DISTINCT ...",
+        {},
+        Exception("Incorrect syntax near the keyword 'DISTINCT'."),
+    )
+    operational = OperationalError(
+        "SELECT 1",
+        {},
+        Exception("login timeout expired"),
+    )
+    # Bare "connection" in unrelated text must not classify as outage.
+    vague = DBAPIError(
+        "SELECT 1",
+        {},
+        Exception("[ODBC Driver 18 for SQL Server] something else"),
+        connection_invalidated=False,
+    )
+    specific = DBAPIError(
+        "SELECT 1",
+        {},
+        Exception("TCP Provider: connection refused"),
+        connection_invalidated=False,
+    )
+    invalidated = DBAPIError(
+        "SELECT 1",
+        {},
+        Exception("unrecognized transport failure"),
+        connection_invalidated=True,
+    )
+    assert _is_archive_connectivity_failure(programming) is False
+    assert _is_archive_connectivity_failure(operational) is True
+    assert _is_archive_connectivity_failure(RuntimeError("azure down")) is False
+    assert _is_archive_connectivity_failure(ConnectionError("reset")) is True
+    assert _is_archive_connectivity_failure(vague) is False
+    assert _is_archive_connectivity_failure(specific) is True
+    assert _is_archive_connectivity_failure(invalidated) is True

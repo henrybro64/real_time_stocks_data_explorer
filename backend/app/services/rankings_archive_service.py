@@ -9,6 +9,14 @@ from threading import Event, Lock, Thread
 from time import perf_counter
 from typing import Literal
 
+from sqlalchemy.exc import (
+    DBAPIError,
+    InterfaceError,
+    OperationalError,
+    ProgrammingError,
+)
+from sqlalchemy.exc import TimeoutError as SATimeoutError
+
 from app.core.config import settings
 from app.core.diagnostics import elapsed_ms
 from app.db.archive_session import (
@@ -45,8 +53,54 @@ _BACKFILL_TRADING_DAY_WINDOW = 7
 _BACKFILL_FETCHES_PER_QUERY = 1
 
 
+def _is_archive_connectivity_failure(exc: BaseException) -> bool:
+    """True for connection/transport failures; false for SQL syntax/logic errors.
+
+    Mid-life AutoPause / dead sockets should invalidate the cached engine (#177).
+    ``ProgrammingError`` and similar app/SQL bugs must not (#181).
+    """
+    # Syntax / constraint / logic bugs must not drop a healthy engine.
+    if isinstance(exc, ProgrammingError):
+        return False
+    if isinstance(
+        exc,
+        (OperationalError, InterfaceError, SATimeoutError, ConnectionError, TimeoutError),
+    ):
+        return True
+    if isinstance(exc, DBAPIError):
+        # SQLAlchemy may mark a dropped socket even when the driver message
+        # does not match our curated connectivity tokens (#181 / Codex).
+        if getattr(exc, "connection_invalidated", False):
+            return True
+        message = str(getattr(exc, "orig", None) or exc).lower()
+        # Prefer specific connectivity phrases over a bare "connection" substring
+        # (that can appear in unrelated ODBC/SQL text).
+        tokens = (
+            "login timeout",
+            "communication link failure",
+            "connection refused",
+            "connection reset",
+            "connection timed out",
+            "connection is busy",
+            "not connected",
+            "could not open a connection",
+            "server is not found",
+            "tcp provider",
+            "08001",
+            "08s01",
+            "hyt00",
+            "08s02",
+        )
+        return any(token in message for token in tokens)
+    return False
+
+
 class RankingsArchiveUnavailableError(RuntimeError):
-    """Archive DB is configured but a history query failed (operational outage)."""
+    """Archive DB is configured but temporarily unreachable (AutoPause / network)."""
+
+
+class RankingsArchiveQueryError(RuntimeError):
+    """Archive query failed due to SQL/app logic (not a reconnectable outage)."""
 
 
 @dataclass(frozen=True)
@@ -787,9 +841,14 @@ class RankingsArchiveService:
                 },
             )
             # Mid-life AutoPause leaves a dead cached engine; drop it so the next
-            # request re-enters the cold-start wake budget (#177).
-            invalidate_rankings_archive_engine(reason="history_dates_failed")
-            raise RankingsArchiveUnavailableError(
+            # request re-enters the cold-start wake budget (#177). Do not invalidate
+            # on SQL syntax/logic errors (those are app bugs, not a paused server).
+            if _is_archive_connectivity_failure(exc):
+                invalidate_rankings_archive_engine(reason="history_dates_failed")
+                raise RankingsArchiveUnavailableError(
+                    "Rankings archive history dates lookup failed",
+                ) from exc
+            raise RankingsArchiveQueryError(
                 "Rankings archive history dates lookup failed",
             ) from exc
 
@@ -823,8 +882,12 @@ class RankingsArchiveService:
                     "trading_date": trading_date.isoformat(),
                 },
             )
-            invalidate_rankings_archive_engine(reason="history_load_failed")
-            raise RankingsArchiveUnavailableError(
+            if _is_archive_connectivity_failure(exc):
+                invalidate_rankings_archive_engine(reason="history_load_failed")
+                raise RankingsArchiveUnavailableError(
+                    "Rankings archive history load failed",
+                ) from exc
+            raise RankingsArchiveQueryError(
                 "Rankings archive history load failed",
             ) from exc
         if envelope is None:

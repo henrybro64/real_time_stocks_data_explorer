@@ -15,6 +15,7 @@ from app.schemas.rankings import (
     coerce_ranking_universe,
 )
 from app.services.rankings_archive_service import (
+    RankingsArchiveQueryError,
     RankingsArchiveUnavailableError,
     rankings_archive_service,
 )
@@ -27,6 +28,7 @@ from app.services.rankings_snapshot_service import (
 router = APIRouter(prefix="/rankings", tags=["rankings"])
 
 _ARCHIVE_UNAVAILABLE_DETAIL = "Rankings archive is unavailable"
+_ARCHIVE_QUERY_FAILED_DETAIL = "Rankings archive query failed"
 _ARCHIVE_RETRY_AFTER_SECONDS = "10"
 
 
@@ -36,6 +38,14 @@ def _archive_unavailable_http() -> HTTPException:
         status_code=503,
         detail=_ARCHIVE_UNAVAILABLE_DETAIL,
         headers={"Retry-After": _ARCHIVE_RETRY_AFTER_SECONDS},
+    )
+
+
+def _archive_query_failed_http() -> HTTPException:
+    """500 for SQL/app logic failures; do not invite AutoPause retries (#181)."""
+    return HTTPException(
+        status_code=500,
+        detail=_ARCHIVE_QUERY_FAILED_DETAIL,
     )
 
 
@@ -77,6 +87,7 @@ def get_rankings(
     response_model=RankingsHistoryDatesResponse,
     responses={
         422: {"description": "Invalid universe for the selected market"},
+        500: {"description": "Rankings archive query failed"},
         503: {"description": "Rankings archive database unavailable"},
     },
 )
@@ -105,6 +116,8 @@ def get_rankings_history_dates(
         )
     except RankingsArchiveUnavailableError as exc:
         raise _archive_unavailable_http() from exc
+    except RankingsArchiveQueryError as exc:
+        raise _archive_query_failed_http() from exc
     return RankingsHistoryDatesResponse(
         market=market,
         universe=resolved_universe,
@@ -118,6 +131,7 @@ def get_rankings_history_dates(
     responses={
         404: {"description": "No archive for the requested trading date"},
         422: {"description": "Invalid universe or date for the selected market"},
+        500: {"description": "Rankings archive query failed"},
         503: {"description": "Rankings archive database unavailable"},
     },
 )
@@ -143,6 +157,8 @@ def get_rankings_history(
         )
     except RankingsArchiveUnavailableError as exc:
         raise _archive_unavailable_http() from exc
+    except RankingsArchiveQueryError as exc:
+        raise _archive_query_failed_http() from exc
     if response is None:
         raise HTTPException(
             status_code=404,

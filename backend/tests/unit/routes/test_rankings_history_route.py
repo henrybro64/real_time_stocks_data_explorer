@@ -267,6 +267,8 @@ def test_history_missing_date_and_unavailable_archive() -> None:
 
 
 def test_history_mid_query_failure_raises_unavailable(monkeypatch) -> None:
+    from sqlalchemy.exc import OperationalError
+
     invalidated: list[str] = []
 
     def _capture_invalidate(*, reason: str = "outage") -> None:
@@ -282,10 +284,10 @@ def test_history_mid_query_failure_raises_unavailable(monkeypatch) -> None:
             return True
 
         def list_available_trading_dates(self, **_kwargs):
-            raise RuntimeError("azure down")
+            raise OperationalError("SELECT 1", {}, Exception("login timeout expired"))
 
         def load_eod_snapshot(self, **_kwargs):
-            raise RuntimeError("azure down")
+            raise OperationalError("SELECT 1", {}, Exception("login timeout expired"))
 
     service = RankingsArchiveService(repository=_BoomRepo())  # type: ignore[arg-type]
     with pytest.raises(RankingsArchiveUnavailableError):
@@ -302,6 +304,53 @@ def test_history_mid_query_failure_raises_unavailable(monkeypatch) -> None:
             trading_date=date(2026, 8, 20),
         )
     assert invalidated == ["history_dates_failed", "history_load_failed"]
+
+
+def test_history_sql_syntax_failure_does_not_invalidate_engine(monkeypatch) -> None:
+    from sqlalchemy.exc import ProgrammingError
+
+    from app.services.rankings_archive_service import RankingsArchiveQueryError
+
+    invalidated: list[str] = []
+
+    monkeypatch.setattr(
+        "app.services.rankings_archive_service.invalidate_rankings_archive_engine",
+        lambda *, reason="outage": invalidated.append(reason),
+    )
+
+    class _SyntaxRepo:
+        def is_available(self) -> bool:
+            return True
+
+        def list_available_trading_dates(self, **_kwargs):
+            raise ProgrammingError(
+                "SELECT TOP 5 DISTINCT ...",
+                {},
+                Exception("Incorrect syntax near the keyword 'DISTINCT'."),
+            )
+
+        def load_eod_snapshot(self, **_kwargs):
+            raise ProgrammingError(
+                "SELECT TOP 5 DISTINCT ...",
+                {},
+                Exception("Incorrect syntax near the keyword 'DISTINCT'."),
+            )
+
+    service = RankingsArchiveService(repository=_SyntaxRepo())  # type: ignore[arg-type]
+    with pytest.raises(RankingsArchiveQueryError):
+        service.list_history_dates(
+            market="US",
+            universe="DJIA",
+            ranking_type=RankingType.volume,
+        )
+    with pytest.raises(RankingsArchiveQueryError):
+        service.get_history_rankings(
+            market="US",
+            universe="DJIA",
+            ranking_type=RankingType.volume,
+            trading_date=date(2026, 8, 20),
+        )
+    assert invalidated == []
 
 
 def test_history_dates_route_and_history_route(monkeypatch) -> None:
@@ -434,6 +483,41 @@ def test_history_routes_mid_query_failure_returns_503(monkeypatch) -> None:
         )
     assert exc_hist.value.status_code == 503
     assert exc_hist.value.headers.get("Retry-After") == "10"
+
+
+def test_history_routes_query_logic_failure_returns_500(monkeypatch) -> None:
+    from app.services.rankings_archive_service import RankingsArchiveQueryError
+
+    class _Broken:
+        def is_available(self) -> bool:
+            return True
+
+        def list_history_dates(self, **_kwargs):
+            raise RankingsArchiveQueryError("bad sql")
+
+        def get_history_rankings(self, **_kwargs):
+            raise RankingsArchiveQueryError("bad sql")
+
+    monkeypatch.setattr(rankings_route, "rankings_archive_service", _Broken())
+    with pytest.raises(HTTPException) as exc_dates:
+        rankings_route.get_rankings_history_dates(
+            market="US",
+            universe="DJIA",
+            ranking_type=RankingType.volume,
+        )
+    assert exc_dates.value.status_code == 500
+    assert exc_dates.value.headers is None or "Retry-After" not in (
+        exc_dates.value.headers or {}
+    )
+
+    with pytest.raises(HTTPException) as exc_hist:
+        rankings_route.get_rankings_history(
+            market="US",
+            ranking_type=RankingType.volume,
+            trading_date=date(2026, 8, 20),
+            universe="DJIA",
+        )
+    assert exc_hist.value.status_code == 500
 
 
 def test_history_dates_rejects_mismatched_universe() -> None:
