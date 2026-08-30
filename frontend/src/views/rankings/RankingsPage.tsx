@@ -23,7 +23,7 @@ import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 
-import { getDisplayStockName, useLanguage } from "../../app/i18n";
+import { getDisplayStockName, useLanguage, type TranslationKey } from "../../app/i18n";
 import { QuoteFreshnessTag } from "../../components/state/QuoteFreshnessTag";
 import { RequestStateNotice, errorToNoticeKind } from "../../components/state/RequestStateNotice";
 import {
@@ -80,6 +80,15 @@ function rankingsHistoryDatesQueryKey(
   return ["rankings-history-dates", market, universe, rankingType, HISTORY_DATES_LIMIT] as const;
 }
 
+type RankingsScopeToggleProps<T extends string> = Readonly<{
+  groupLabel?: string;
+  value: T;
+  options: Array<{ value: T; testId: string; label: string }>;
+  onChange: (next: T) => void;
+  className?: string;
+  style?: CSSProperties;
+}>;
+
 function RankingsScopeToggle<T extends string>({
   groupLabel,
   value,
@@ -87,14 +96,7 @@ function RankingsScopeToggle<T extends string>({
   onChange,
   className = "app-shell-brand",
   style = { marginTop: "0.75rem" },
-}: {
-  groupLabel?: string;
-  value: T;
-  options: Array<{ value: T; testId: string; label: string }>;
-  onChange: (next: T) => void;
-  className?: string;
-  style?: CSSProperties;
-}) {
+}: RankingsScopeToggleProps<T>) {
   return (
     <div className={className} style={style}>
       {groupLabel ? (
@@ -576,17 +578,22 @@ export function RankingsPage() {
   const refreshDisabled =
     isHistorical || refreshMutation.isPending || Date.now() < refreshCooldownUntil;
   // Historical views use the EOD banner; live scope notices describe current providers only.
-  const scopeNoteKey = isHistorical
-    ? null
-    : market === "US"
-      ? usScopeNoticeKeyFromState(rankingType, data)
-      : isInstitutionalRanking(rankingType)
-        ? twBoard === "TPEx"
-          ? showUnsupported
-            ? "rankings.notice.twInstScopeTpexUnavailable"
-            : "rankings.notice.twInstScopeTpex"
-          : "rankings.notice.twInstScopeTwse"
-        : twQuoteScopeNoticeKeyFromState(rankingType, twBoard, data);
+  let scopeNoteKey: TranslationKey | null = null;
+  if (!isHistorical) {
+    if (market === "US") {
+      scopeNoteKey = usScopeNoticeKeyFromState(rankingType, data);
+    } else if (isInstitutionalRanking(rankingType)) {
+      if (twBoard === "TPEx") {
+        scopeNoteKey = showUnsupported
+          ? "rankings.notice.twInstScopeTpexUnavailable"
+          : "rankings.notice.twInstScopeTpex";
+      } else {
+        scopeNoteKey = "rankings.notice.twInstScopeTwse";
+      }
+    } else {
+      scopeNoteKey = twQuoteScopeNoticeKeyFromState(rankingType, twBoard, data);
+    }
+  }
 
   function handleMarketChange(nextMarket: RankingMarket) {
     setMarketOverride(nextMarket);

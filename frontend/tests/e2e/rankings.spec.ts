@@ -22,6 +22,10 @@ test("user can switch Current -> historical date -> Current on rankings", async 
   await expect(page.getByTestId("rankings-row-TW:2330")).toBeVisible();
   await expect(page.getByTestId("rankings-date-select")).toBeVisible();
 
+  // History dates are opt-in so Current view does not wake Azure (#187).
+  await page.getByTestId("rankings-history-dates-load").click();
+  await expect(page.getByTestId("rankings-date-select").locator('option[value="2026-08-20"]')).toHaveCount(1);
+
   await page.getByTestId("rankings-date-select").selectOption("2026-08-20");
   await expect(page.getByTestId("rankings-historical-banner")).toContainText("2026-08-20");
   await expect(page.getByTestId("rankings-refresh-source")).toHaveCount(0);

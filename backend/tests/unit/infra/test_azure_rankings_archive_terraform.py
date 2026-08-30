@@ -43,7 +43,8 @@ def test_terraform_keeps_azure_sql_free_offer_guardrails() -> None:
         line.startswith("max_size_gb") and "local.archive_max_size_gb" in line
         for line in active_lines
     )
-    assert "sku_name    = \"GP_S_Gen5_2\"" in joined or 'sku_name = "GP_S_Gen5_2"' in joined
+    normalized = " ".join(joined.split())
+    assert 'sku_name = "GP_S_Gen5_2"' in normalized
     # lifecycle preconditions must refuse plans that drop Free Offer guardrails (#186).
     assert "lifecycle" in joined
     assert "precondition" in joined

@@ -18,7 +18,8 @@ def _load_verify_module():
         "verify_azure_rankings_archive_free_offer",
         _SCRIPT,
     )
-    assert spec is not None and spec.loader is not None
+    assert spec is not None
+    assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -50,8 +51,10 @@ def test_verify_free_offer_payload_fails_when_free_limit_null() -> None:
         }
     )
     assert failures
-    assert any("useFreeLimit" in item for item in failures)
-    assert any("billable" in item.lower() or "NOT active" in item for item in failures)
+    joined = "\n".join(failures)
+    assert "useFreeLimit" in joined
+    assert "NOT active" in joined
+    assert "billable" in joined.lower()
 
 
 def test_verify_free_offer_payload_fails_when_auto_pause_disabled() -> None:
@@ -106,9 +109,10 @@ def test_require_azure_name_rejects_shell_metacharacters() -> None:
     verify = _load_verify_module()
     try:
         verify._require_azure_name("rg; rm -rf /", label="resource-group")
-        assert False, "expected ValueError"
     except ValueError as exc:
         assert "Invalid resource-group" in str(exc)
+    else:
+        raise AssertionError("expected ValueError")
     assert verify._require_azure_name("stock-ticker-rg", label="resource-group") == (
         "stock-ticker-rg"
     )
