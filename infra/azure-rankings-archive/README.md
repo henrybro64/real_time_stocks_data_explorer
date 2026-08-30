@@ -1,61 +1,106 @@
 # Azure SQL Free ranking archive (PoC)
 
-Test-only infrastructure for issues **#165–#167**. Provisions the minimum Azure
-resources needed to hold **public historical market ranking** archives.
+Test-only infrastructure for issues **#165–#167** / cost-safety **#186**.
+Provisions the **surrounding** Azure resources for **public historical market
+ranking** archives. The Free Offer database itself is **external**.
 
 This module does **not** change the Stock Ticker PostgreSQL path. Personal data
 (users, portfolios, watchlists, alerts, API keys) must never be written here.
 
-## What is provisioned
+## What Terraform manages
 
 | Resource | Purpose |
 | --- | --- |
 | Resource group | Container for the PoC |
 | Azure SQL logical server | Host for the archive database |
-| Azure SQL Database (`GP_S_Gen5_2` serverless) | Free-offer eligible DB |
-| Firewall rule | Single home/dev client IPv4 |
+| Firewall rule | Optional single home/dev client IPv4 |
 
-Explicitly **not** provisioned: VMs, AKS, Managed Redis, VPN Gateway, Functions,
-Container Apps, Front Door, Application Gateway, or other paid add-ons.
+The Free Offer database name defaults to `rankings_archive_free` (variable only —
+not a Terraform-managed database resource).
 
-## Free offer + cost guardrails
+Explicitly **not** provisioned by this module:
 
-Terraform sets:
+- `azurerm_mssql_database` (would create a **paid** GP serverless DB with the
+  released AzureRM provider, which cannot express Free Offer)
+- VMs, AKS, Managed Redis, VPN Gateway, Functions, Container Apps, etc.
 
-- `sku_name = "GP_S_Gen5_2"` (serverless General Purpose)
-- `use_free_limit = true`
-- `free_limit_exhaustion_behavior = "AutoPause"` (stop when the free allowance is exhausted; do **not** bill overage)
-- `max_size_gb = 32`
-- `auto_pause_delay_in_minutes = 60` / `min_capacity = 0.5`
+## Free Offer cost guardrails (#186)
 
-### Portal verification checklist
+### Why Free Offer is not in `azurerm_mssql_database`
 
-1. Open **Azure Portal → SQL databases →** `<sql_database_name>`.
-2. Open **Compute + storage** (or **Configure**).
-3. Confirm the **Free offer / Free limit** is enabled.
-4. Confirm exhaustion behavior is **Auto-pause** (not continue with paid usage).
-5. Confirm SKU is serverless **GP_S Gen5** (2 vCores max) and max size ≤ 32 GB.
-6. Review **Cost Management + Billing** for the resource group: only SQL + RG noise; no unexpected paid services.
+Released AzureRM (the pin in `versions.tf`) does **not** support Free Offer
+arguments on `azurerm_mssql_database`. Attributes such as `use_free_limit` /
+`free_limit_exhaustion_behavior` are **invalid** for that schema. Adding a
+normal `GP_S_Gen5_2` database resource would silently create a **billable**
+serverless database.
+
+The live intended database is:
+
+```text
+rankings_archive_free
+```
+
+Create / enroll Free Offer **outside** this module (Azure Portal, or a future
+supported AzAPI/AzureRM path). Then point `sql_database_name` at that database
+(default `rankings_archive_free`). Do **not** recreate the deleted paid
+`rankings_archive` database (variable validation blocks that name).
+
+### Mandatory live verification (management plane only)
+
+Terraform apply / tags / SKU labels are **not** proof of Free Offer.
+
+```bash
+# Needs az login + reader rights. Does NOT open SQL / ODBC.
+python3 scripts/verify_azure_rankings_archive_free_offer.py \
+  --resource-group <rg> \
+  --server <sql-server-name> \
+  --database rankings_archive_free
+```
+
+Expected live metadata:
+
+```json
+{
+  "useFreeLimit": true,
+  "freeLimitExhaustionBehavior": "AutoPause"
+}
+```
+
+Exit `1` means the database may be billable. Tags like
+`cost-tier=azure-sql-free-offer` and “General Purpose - Serverless” alone do
+**not** mean free. `useFreeLimit: null` means Free Offer is **not** active.
+
+### Portal checklist
+
+1. Azure Portal → SQL databases → `rankings_archive_free`
+2. Compute + storage: Free offer / Free limit **enabled**
+3. Exhaustion: **Auto-pause**
+4. Serverless GP_S Gen5, max size ≤ 32 GB
+5. Cost Management: no unexpected paid services
 
 ### `terraform plan` safety checklist
 
-`terraform plan` should only propose:
+Plan should only touch:
 
 - `azurerm_resource_group`
 - `azurerm_mssql_server`
-- `azurerm_mssql_database`
-- `azurerm_mssql_firewall_rule`
+- `azurerm_mssql_firewall_rule` (optional)
 - `random_string` / `random_password`
 
-If the plan shows VMs, AKS, Redis, networking gateways, etc., **do not apply**.
+If the plan proposes creating `azurerm_mssql_database` or any VM/AKS/Redis/etc.,
+**do not apply**.
+
+State migration: this module uses a Terraform `removed` block
+(`destroy = false`) so a previously managed `azurerm_mssql_database.archive` is
+dropped from state **without** destroying the Azure database.
 
 ## Prerequisites
 
-- Terraform `>= 1.5`
-- Azure CLI logged in (`az login`) with rights to create RG + SQL in the target subscription
-- azurerm provider `>= 4.30` (Free-offer attributes)
-- Home/dev public IPv4 for the SQL firewall (when enabling public network access)
-- For app connectivity: [ODBC Driver 18 for SQL Server](https://learn.microsoft.com/sql/connect/odbc/download-odbc-driver-for-sql-server) + Python `pyodbc`
+- Terraform `>= 1.7` (`removed` / `destroy = false`)
+- Azure CLI logged in (`az login`)
+- azurerm provider `>= 4.30, < 5` (server / firewall only — **not** Free Offer DB create)
+- An existing Free Offer database on the server (default name `rankings_archive_free`)
+- ODBC Driver 18 + Python `pyodbc` for app connectivity
 
 ## Network access
 
@@ -64,10 +109,11 @@ Optional `allowed_client_ipv4` still creates a firewall allow rule for later use
 
 For a home/dev backend without Private Link:
 
-1. Apply Terraform.
-2. In Azure Portal → SQL server → Networking, temporarily enable public access.
-3. Confirm your client IP is allowed (or set `allowed_client_ipv4` before apply).
-4. Run the smoke script, then disable public access again when done.
+1. Apply Terraform (server / RG / firewall).
+2. Ensure Free Offer DB exists; run the verify script.
+3. In Azure Portal → SQL server → Networking, temporarily enable public access.
+4. Confirm your client IP is allowed.
+5. Run smoke only when needed, then disable public access again.
 
 ## Apply
 
@@ -75,10 +121,17 @@ For a home/dev backend without Private Link:
 cd infra/azure-rankings-archive
 cp terraform.tfvars.example terraform.tfvars
 # edit terraform.tfvars: set allowed_client_ipv4 (and optional password)
+# sql_database_name defaults to rankings_archive_free
 
 terraform init
 terraform plan
 terraform apply
+
+# Mandatory — Terraform cannot prove Free Offer:
+python3 ../../scripts/verify_azure_rankings_archive_free_offer.py \
+  --resource-group <rg> \
+  --server <sql-server-name> \
+  --database rankings_archive_free
 ```
 
 Sensitive outputs:
@@ -88,58 +141,17 @@ terraform output -raw sql_admin_password
 terraform output rankings_archive_database_url_example
 ```
 
-Build the app env var (do **not** commit):
+App env (do **not** commit):
 
 ```bash
-export RANKINGS_ARCHIVE_DATABASE_URL='mssql+pyodbc://USER:URL_ENCODED_PASSWORD@SERVER.database.windows.net:1433/rankings_archive?driver=ODBC+Driver+18+for+SQL+Server&Encrypt=yes&TrustServerCertificate=no'
+export RANKINGS_ARCHIVE_DATABASE_URL='mssql+pyodbc://USER:URL_ENCODED_PASSWORD@SERVER.database.windows.net:1433/rankings_archive_free?driver=ODBC+Driver+18+for+SQL+Server&Encrypt=yes&TrustServerCertificate=no'
 ```
 
 `DATABASE_URL` (Postgres) stays unchanged.
 
-## Connectivity smoke test
+## CI note
 
-From the home/dev machine that matches `allowed_client_ipv4`:
-
-```bash
-# Optional disposable PoC table (also covered by scripts/azure_rankings_archive_smoke.py)
-python3 scripts/azure_rankings_archive_smoke.py
-```
-
-The script:
-
-1. Connects with `RANKINGS_ARCHIVE_DATABASE_URL`
-2. Creates a disposable `_poc_smoke` table
-3. Inserts / reads / deletes one non-personal row
-4. Drops the table
-5. Upserts a disposable EOD row into `ranking_snapshots_archive`, loads it back,
-   reconstructs rank order, then deletes the smoke archive rows
-6. Exits non-zero on failure without touching Postgres
-
-## Destroy / recreate
-
-```bash
-terraform destroy
-# then terraform apply again for a clean recreate
-```
-
-Local state lives under this directory and is gitignored (`*.tfstate`, `.terraform/`).
-
-## Cost-safety verification after apply
-
-- [ ] Portal Free offer enabled + Auto-pause on exhaustion
-- [ ] Only intended resources exist in the resource group
-- [ ] Firewall allows only the expected client IP
-- [ ] No portfolio/user tables were created in Azure (app creates only archive tables)
-- [ ] Unsetting `RANKINGS_ARCHIVE_DATABASE_URL` leaves the FastAPI app fully usable
-
-## Related app settings
-
-See root `backend/.env.example` and `docs/azure-rankings-archive.md`.
-
-## Backend container
-
-The app image installs ODBC Driver 18 + `pyodbc`. Wire the URL into the cluster
-with `k8s/backend-rankings-archive-secret.yaml.example` (see
-`docs/azure-rankings-archive.md` → Backend container / k3s hookup). Ensure the
-Azure SQL firewall allows the cluster egress IP (or your laptop IP when using
-Lima/`host.docker.internal` testing).
+Normal GitHub Actions (push / PR) does **not** connect to Azure SQL and does
+**not** run Free Offer verification. The live SQL smoke job is **manual
+`workflow_dispatch` only** and may wake the serverless database — see
+`docs/azure-rankings-archive.md`.

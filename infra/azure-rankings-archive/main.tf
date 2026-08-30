@@ -50,23 +50,30 @@ resource "azurerm_mssql_server" "archive" {
   tags = var.tags
 }
 
-# Serverless GP_S Gen5 + free-offer flags: exhaustion must AutoPause (no paid overage).
-resource "azurerm_mssql_database" "archive" {
-  name        = var.sql_database_name
-  server_id   = azurerm_mssql_server.archive.id
-  collation   = "SQL_Latin1_General_CP1_CI_AS"
-  max_size_gb = 32
-  sku_name    = "GP_S_Gen5_2"
+# ---------------------------------------------------------------------------
+# Free Offer database is EXTERNAL (#186).
+#
+# Released AzureRM does NOT accept Free Offer arguments on
+# azurerm_mssql_database (`use_free_limit` / `free_limit_exhaustion_behavior`
+# are invalid for the provider schema this module pins). Creating a GP_S
+# database through AzureRM without those properties provisions a *paid*
+# serverless DB — which this project must never do silently.
+#
+# Keep the live Free Offer database named in var.sql_database_name
+# (default rankings_archive_free), created/verified outside Terraform.
+# After apply / cutover, always run:
+#   scripts/verify_azure_rankings_archive_free_offer.py
+# ---------------------------------------------------------------------------
 
-  # Serverless idle pause (minutes). Free offer still gates monthly vCore-seconds.
-  auto_pause_delay_in_minutes = 60
-  min_capacity                = 0.5
+# Drop the old managed database from state without destroying Azure (#186).
+# Prior modules incorrectly managed azurerm_mssql_database.archive with
+# unsupported Free Offer attributes.
+removed {
+  from = azurerm_mssql_database.archive
 
-  # Azure SQL Database Free offer (one eligible DB / subscription quota rules apply).
-  use_free_limit                 = true
-  free_limit_exhaustion_behavior = "AutoPause"
-
-  tags = var.tags
+  lifecycle {
+    destroy = false
+  }
 }
 
 resource "azurerm_mssql_firewall_rule" "home_client" {

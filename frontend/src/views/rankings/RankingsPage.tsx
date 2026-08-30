@@ -23,7 +23,7 @@ import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 
-import { getDisplayStockName, useLanguage } from "../../app/i18n";
+import { getDisplayStockName, useLanguage, type TranslationKey } from "../../app/i18n";
 import { QuoteFreshnessTag } from "../../components/state/QuoteFreshnessTag";
 import { RequestStateNotice, errorToNoticeKind } from "../../components/state/RequestStateNotice";
 import {
@@ -80,6 +80,15 @@ function rankingsHistoryDatesQueryKey(
   return ["rankings-history-dates", market, universe, rankingType, HISTORY_DATES_LIMIT] as const;
 }
 
+type RankingsScopeToggleProps<T extends string> = Readonly<{
+  groupLabel?: string;
+  value: T;
+  options: Array<{ value: T; testId: string; label: string }>;
+  onChange: (next: T) => void;
+  className?: string;
+  style?: CSSProperties;
+}>;
+
 function RankingsScopeToggle<T extends string>({
   groupLabel,
   value,
@@ -87,14 +96,7 @@ function RankingsScopeToggle<T extends string>({
   onChange,
   className = "app-shell-brand",
   style = { marginTop: "0.75rem" },
-}: {
-  groupLabel?: string;
-  value: T;
-  options: Array<{ value: T; testId: string; label: string }>;
-  onChange: (next: T) => void;
-  className?: string;
-  style?: CSSProperties;
-}) {
+}: RankingsScopeToggleProps<T>) {
   return (
     <div className={className} style={style}>
       {groupLabel ? (
@@ -415,10 +417,14 @@ export function RankingsPage() {
   const [usUniverse, setUsUniverse] = useState<UsUniverseSegment>("DJIA");
   const [rankingType, setRankingType] = useState<RankingType>(defaultRankingTypeForMarket(DEFAULT_MARKET));
   const [selectedTradingDate, setSelectedTradingDate] = useState<string | null>(null);
+  /** Opt-in key `market:universe:type` — Current view must not wake Azure (#187). */
+  const [historyDatesOptInKey, setHistoryDatesOptInKey] = useState<string | null>(null);
   const [refreshError, setRefreshError] = useState<string | null>(null);
   const [refreshCooldownUntil, setRefreshCooldownUntil] = useState(0);
   const rankingTabs = tabsForMarket(market);
   const selectedScope: RankingUniverse = market === "TW" ? twBoard : usUniverse;
+  const historyContextKey = `${market}:${selectedScope}:${rankingType}`;
+  const historyDatesRequested = historyDatesOptInKey === historyContextKey;
   const isHistorical = selectedTradingDate != null;
   const rankingsQueryKeyValue = rankingsQueryKey(
     market,
@@ -438,6 +444,12 @@ export function RankingsPage() {
     });
   }, [market]);
 
+  // Clear opt-in whenever ranking context changes so returning to a prior
+  // market/universe/type does not auto-wake Azure from a stale key (#187).
+  useEffect(() => {
+    setHistoryDatesOptInKey(null);
+  }, [historyContextKey]);
+
   const historyDatesQuery = useQuery({
     queryKey: rankingsHistoryDatesQueryKey(market, selectedScope, rankingType),
     queryFn: ({ signal }) =>
@@ -448,6 +460,8 @@ export function RankingsPage() {
         HISTORY_DATES_LIMIT,
         signal,
       ),
+    // Lazy: only after explicit opt-in (or while viewing a historical date).
+    enabled: historyDatesRequested || selectedTradingDate != null,
     staleTime: 5 * 60_000,
     retry: shouldRetryHistoryDatesQuery,
     retryDelay: (failureCount, error) => historyDatesRetryDelayMs(failureCount, error),
@@ -564,17 +578,22 @@ export function RankingsPage() {
   const refreshDisabled =
     isHistorical || refreshMutation.isPending || Date.now() < refreshCooldownUntil;
   // Historical views use the EOD banner; live scope notices describe current providers only.
-  const scopeNoteKey = isHistorical
-    ? null
-    : market === "US"
-      ? usScopeNoticeKeyFromState(rankingType, data)
-      : isInstitutionalRanking(rankingType)
-        ? twBoard === "TPEx"
-          ? showUnsupported
-            ? "rankings.notice.twInstScopeTpexUnavailable"
-            : "rankings.notice.twInstScopeTpex"
-          : "rankings.notice.twInstScopeTwse"
-        : twQuoteScopeNoticeKeyFromState(rankingType, twBoard, data);
+  let scopeNoteKey: TranslationKey | null = null;
+  if (!isHistorical) {
+    if (market === "US") {
+      scopeNoteKey = usScopeNoticeKeyFromState(rankingType, data);
+    } else if (isInstitutionalRanking(rankingType)) {
+      if (twBoard === "TPEx") {
+        scopeNoteKey = showUnsupported
+          ? "rankings.notice.twInstScopeTpexUnavailable"
+          : "rankings.notice.twInstScopeTpex";
+      } else {
+        scopeNoteKey = "rankings.notice.twInstScopeTwse";
+      }
+    } else {
+      scopeNoteKey = twQuoteScopeNoticeKeyFromState(rankingType, twBoard, data);
+    }
+  }
 
   function handleMarketChange(nextMarket: RankingMarket) {
     setMarketOverride(nextMarket);
@@ -688,6 +707,17 @@ export function RankingsPage() {
               <SelectItem key={tradingDate} value={tradingDate} text={tradingDate} />
             ))}
           </Select>
+          {!historyDatesRequested && selectedTradingDate == null ? (
+            <Button
+              kind="ghost"
+              size="sm"
+              data-testid="rankings-history-dates-load"
+              style={{ marginTop: "0.5rem" }}
+              onClick={() => setHistoryDatesOptInKey(historyContextKey)}
+            >
+              {t("rankings.date.loadHistory")}
+            </Button>
+          ) : null}
           {historyDatesRetrying ? (
             <p className="app-supporting-copy" data-testid="rankings-history-dates-waking">
               {t("rankings.date.historyWaking")}

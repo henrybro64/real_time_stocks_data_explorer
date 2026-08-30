@@ -11,6 +11,6 @@ allowed_client_ipv4 = "203.0.113.10"
 # Optional overrides:
 # resource_group_name = "starchive-rg"
 # sql_server_name     = "starchivexxxxxx"
-# sql_database_name   = "rankings_archive"
+# sql_database_name   = "rankings_archive_free"  # Free Offer DB (external); never rankings_archive
 # sql_admin_login     = "starchive_admin"
 # sql_admin_password  = "replace-with-strong-password"

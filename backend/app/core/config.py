@@ -82,6 +82,8 @@ class Settings(BaseSettings):
     # Never reuse DATABASE_URL. Empty/unreachable archive must not affect FastAPI or GET rankings.
     rankings_archive_database_url: str = Field(default="")
     rankings_archive_eod_enabled: bool = Field(default=False)
+    # Interrupt granularity while the market-aware sampler is idle (#187).
+    # Not a fixed Azure SQL wake interval — the thread sleeps until the next settle.
     rankings_archive_eod_poll_seconds: int = Field(default=900, ge=60, le=7200)
     rankings_archive_capture_token: str = Field(default="")
     # Taiwan detail-page market data refresh (institutional + margin-short write path).
