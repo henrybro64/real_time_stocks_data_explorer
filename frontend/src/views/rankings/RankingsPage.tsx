@@ -415,10 +415,14 @@ export function RankingsPage() {
   const [usUniverse, setUsUniverse] = useState<UsUniverseSegment>("DJIA");
   const [rankingType, setRankingType] = useState<RankingType>(defaultRankingTypeForMarket(DEFAULT_MARKET));
   const [selectedTradingDate, setSelectedTradingDate] = useState<string | null>(null);
+  /** Opt-in key `market:universe:type` — Current view must not wake Azure (#187). */
+  const [historyDatesOptInKey, setHistoryDatesOptInKey] = useState<string | null>(null);
   const [refreshError, setRefreshError] = useState<string | null>(null);
   const [refreshCooldownUntil, setRefreshCooldownUntil] = useState(0);
   const rankingTabs = tabsForMarket(market);
   const selectedScope: RankingUniverse = market === "TW" ? twBoard : usUniverse;
+  const historyContextKey = `${market}:${selectedScope}:${rankingType}`;
+  const historyDatesRequested = historyDatesOptInKey === historyContextKey;
   const isHistorical = selectedTradingDate != null;
   const rankingsQueryKeyValue = rankingsQueryKey(
     market,
@@ -448,6 +452,8 @@ export function RankingsPage() {
         HISTORY_DATES_LIMIT,
         signal,
       ),
+    // Lazy: only after explicit opt-in (or while viewing a historical date).
+    enabled: historyDatesRequested || selectedTradingDate != null,
     staleTime: 5 * 60_000,
     retry: shouldRetryHistoryDatesQuery,
     retryDelay: (failureCount, error) => historyDatesRetryDelayMs(failureCount, error),
@@ -688,6 +694,17 @@ export function RankingsPage() {
               <SelectItem key={tradingDate} value={tradingDate} text={tradingDate} />
             ))}
           </Select>
+          {!historyDatesRequested && selectedTradingDate == null ? (
+            <Button
+              kind="ghost"
+              size="sm"
+              data-testid="rankings-history-dates-load"
+              style={{ marginTop: "0.5rem" }}
+              onClick={() => setHistoryDatesOptInKey(historyContextKey)}
+            >
+              {t("rankings.date.loadHistory")}
+            </Button>
+          ) : null}
           {historyDatesRetrying ? (
             <p className="app-supporting-copy" data-testid="rankings-history-dates-waking">
               {t("rankings.date.historyWaking")}

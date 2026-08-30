@@ -389,6 +389,10 @@ describe("RankingsPage", () => {
     vi.mocked(historyDatesRetryDelayMs).mockReturnValue(0);
   });
 
+  async function loadHistoryDates(user: ReturnType<typeof userEvent.setup>) {
+    await user.click(screen.getByTestId("rankings-history-dates-load"));
+  }
+
   it("renders ranking rows", async () => {
     renderRankingsPage();
 
@@ -477,6 +481,7 @@ describe("RankingsPage", () => {
       "美股此分頁以道瓊工業平均指數（DJIA）成分股為範圍",
     );
     expect(screen.getByTestId("rankings-realtime-tag")).toHaveTextContent("即時");
+    expect(fetchRankingsHistoryDates).not.toHaveBeenCalled();
 
     await user.click(screen.getByTestId("rankings-tab-change_down"));
 
@@ -491,6 +496,7 @@ describe("RankingsPage", () => {
     });
     expectVolumeChangeColumnAbsent();
     expectNetBuySellColumnAbsent();
+    expect(fetchRankingsHistoryDates).not.toHaveBeenCalled();
   });
 
   it("renders loading state", () => {
@@ -1394,6 +1400,53 @@ describe("RankingsPage", () => {
     expect(screen.queryByTestId("rankings-row-US:AAPL")).not.toBeInTheDocument();
   });
 
+  it("does not fetch history dates on Current view until explicitly requested", async () => {
+    const user = userEvent.setup();
+    renderRankingsPage();
+    await screen.findByTestId("rankings-row-TW:2330");
+    expect(fetchRankingsHistoryDates).not.toHaveBeenCalled();
+    expect(screen.getByTestId("rankings-history-dates-load")).toBeInTheDocument();
+
+    await loadHistoryDates(user);
+    await waitFor(() => {
+      expect(fetchRankingsHistoryDates).toHaveBeenCalledWith(
+        "TW",
+        "TWSE",
+        "net_buy",
+        5,
+        expect.any(AbortSignal),
+      );
+    });
+  });
+
+  it("requires a fresh history opt-in after switching ranking tabs", async () => {
+    const user = userEvent.setup();
+    renderRankingsPage();
+    await screen.findByTestId("rankings-row-TW:2330");
+    await loadHistoryDates(user);
+    await waitFor(() => {
+      expect(fetchRankingsHistoryDates).toHaveBeenCalledTimes(1);
+    });
+
+    await user.click(screen.getByTestId("rankings-tab-volume"));
+    await waitFor(() => {
+      expect(screen.getByTestId("rankings-history-dates-load")).toBeInTheDocument();
+    });
+    expect(fetchRankingsHistoryDates).toHaveBeenCalledTimes(1);
+
+    await loadHistoryDates(user);
+    await waitFor(() => {
+      expect(fetchRankingsHistoryDates).toHaveBeenCalledWith(
+        "TW",
+        "TWSE",
+        "volume",
+        5,
+        expect.any(AbortSignal),
+      );
+    });
+    expect(fetchRankingsHistoryDates).toHaveBeenCalledTimes(2);
+  });
+
   it("loads archived rankings when a historical trading date is selected", async () => {
     const user = userEvent.setup();
     vi.mocked(fetchRankingsHistoryDates).mockResolvedValue({
@@ -1421,7 +1474,9 @@ describe("RankingsPage", () => {
     await screen.findByTestId("rankings-row-TW:2330");
     await user.selectOptions(screen.getByLabelText("市場"), "US");
     expect(await screen.findByTestId("rankings-row-US:MSFT")).toBeInTheDocument();
+    expect(fetchRankingsHistoryDates).not.toHaveBeenCalled();
 
+    await loadHistoryDates(user);
     await waitFor(() => {
       expect(fetchRankingsHistoryDates).toHaveBeenCalledWith(
         "US",
@@ -1497,6 +1552,10 @@ describe("RankingsPage", () => {
 
     renderRankingsPage();
     await screen.findByTestId("rankings-row-TW:2330");
+    await loadHistoryDates(user);
+    await waitFor(() => {
+      expect(screen.getByRole("option", { name: "2026-08-20" })).toBeInTheDocument();
+    });
     await user.selectOptions(screen.getByTestId("rankings-date-select"), "2026-08-20");
     await waitFor(() => {
       expect(fetchRankingsHistory).toHaveBeenCalledWith(
@@ -1540,6 +1599,10 @@ describe("RankingsPage", () => {
     await screen.findByTestId("rankings-row-TW:2330");
     await user.selectOptions(screen.getByLabelText("市場"), "US");
     expect(await screen.findByTestId("rankings-row-US:MSFT")).toBeInTheDocument();
+    await loadHistoryDates(user);
+    await waitFor(() => {
+      expect(screen.getByRole("option", { name: "2026-08-20" })).toBeInTheDocument();
+    });
     await user.selectOptions(screen.getByTestId("rankings-date-select"), "2026-08-20");
 
     expect(await screen.findByText(/No archived rankings/i)).toBeInTheDocument();
@@ -1574,6 +1637,10 @@ describe("RankingsPage", () => {
     await user.selectOptions(screen.getByLabelText("市場"), "US");
     expect(await screen.findByTestId("rankings-row-US:MSFT")).toBeInTheDocument();
 
+    await loadHistoryDates(user);
+    await waitFor(() => {
+      expect(screen.getByRole("option", { name: "2026-08-20" })).toBeInTheDocument();
+    });
     await user.selectOptions(screen.getByTestId("rankings-date-select"), "2026-08-20");
     expect(await screen.findByTestId("rankings-historical-banner")).toBeInTheDocument();
 
@@ -1589,6 +1656,12 @@ describe("RankingsPage", () => {
       expect.any(AbortSignal),
     );
 
+    // Universe switch resets trading date to Current and clears history opt-in
+    // for the new universe (#187) — user must load dates again.
+    await loadHistoryDates(user);
+    await waitFor(() => {
+      expect(screen.getByRole("option", { name: "2026-08-20" })).toBeInTheDocument();
+    });
     await user.selectOptions(screen.getByTestId("rankings-date-select"), "2026-08-20");
     expect(await screen.findByTestId("rankings-row-US:NVDA")).toBeInTheDocument();
     expect(fetchRankingsHistory).toHaveBeenLastCalledWith(
@@ -1641,6 +1714,10 @@ describe("RankingsPage", () => {
     renderRankingsPage();
     await screen.findByTestId("rankings-row-TW:2330");
     await user.click(screen.getByTestId("rankings-tw-board-tpex"));
+    await loadHistoryDates(user);
+    await waitFor(() => {
+      expect(screen.getByRole("option", { name: "2026-08-20" })).toBeInTheDocument();
+    });
     await user.selectOptions(screen.getByTestId("rankings-date-select"), "2026-08-20");
 
     expect(await screen.findByTestId("rankings-row-TW:6488")).toBeInTheDocument();
@@ -1692,6 +1769,10 @@ describe("RankingsPage", () => {
     await user.selectOptions(screen.getByLabelText("市場"), "US");
     await screen.findByTestId("rankings-row-US:MSFT");
 
+    await loadHistoryDates(user);
+    await waitFor(() => {
+      expect(screen.getByRole("option", { name: "2026-08-20" })).toBeInTheDocument();
+    });
     await user.selectOptions(screen.getByTestId("rankings-date-select"), "2026-08-20");
     await screen.findByTestId("rankings-row-US:IBM");
     await user.click(screen.getByTestId("rankings-tab-change_up"));
@@ -1714,6 +1795,7 @@ describe("RankingsPage", () => {
   });
 
   it("retries history dates after a transient 503 and recovers archived dates", async () => {
+    const user = userEvent.setup();
     vi.mocked(fetchRankingsHistoryDates)
       .mockRejectedValueOnce(
         new ApiError("history dates unavailable", {
@@ -1728,15 +1810,17 @@ describe("RankingsPage", () => {
       });
 
     renderRankingsPage();
+    await screen.findByTestId("rankings-row-TW:2330");
+    await loadHistoryDates(user);
     await waitFor(() => {
       expect(screen.getByRole("option", { name: "2026-08-20" })).toBeInTheDocument();
     });
     expect(screen.queryByTestId("rankings-history-dates-unavailable")).not.toBeInTheDocument();
     expect(fetchRankingsHistoryDates.mock.calls.length).toBeGreaterThanOrEqual(2);
-    expect(await screen.findByTestId("rankings-row-TW:2330")).toBeInTheDocument();
   });
 
   it("shows history unavailable after exhausting 503 retries", async () => {
+    const user = userEvent.setup();
     vi.mocked(fetchRankingsHistoryDates).mockRejectedValue(
       new ApiError("history dates unavailable", {
         status: 503,
@@ -1746,12 +1830,13 @@ describe("RankingsPage", () => {
     );
 
     renderRankingsPage();
+    await screen.findByTestId("rankings-row-TW:2330");
+    await loadHistoryDates(user);
     expect(
       await screen.findByTestId("rankings-history-dates-unavailable"),
     ).toBeInTheDocument();
     expect(screen.queryByTestId("rankings-history-dates-waking")).not.toBeInTheDocument();
     // Initial attempt + HISTORY_DATES_MAX_RETRIES (4).
     expect(fetchRankingsHistoryDates.mock.calls.length).toBeGreaterThanOrEqual(5);
-    expect(await screen.findByTestId("rankings-row-TW:2330")).toBeInTheDocument();
   });
 });

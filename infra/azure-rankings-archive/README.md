@@ -28,6 +28,24 @@ Terraform sets:
 - `max_size_gb = 32`
 - `auto_pause_delay_in_minutes = 60` / `min_capacity = 0.5`
 
+Lifecycle `precondition` blocks apply if those Free Offer / size guardrails are removed from config.
+
+### Important: Free Offer is often create-time only
+
+Azure may leave `useFreeLimit: null` on an **existing** paid serverless database even when Terraform source says `use_free_limit = true`. Tags like `cost-tier=azure-sql-free-offer` do **not** enroll Free Offer. Do **not** silently destroy a live DB; create a new Free Offer database and cut over credentials only with an explicit operator decision (#186).
+
+### Live verification (required after apply / in CI)
+
+```bash
+# Needs az login + reader rights on the SQL server/database
+python3 scripts/verify_azure_rankings_archive_free_offer.py \
+  --resource-group <rg> \
+  --server <sql-server-name> \
+  --database rankings_archive
+```
+
+Exit `1` means the live resource is missing Free Offer / AutoPause — treat as billable until fixed. The `azure-rankings-archive-smoke` GitHub job runs this check after Azure login (before the SQL smoke).
+
 ### Portal verification checklist
 
 1. Open **Azure Portal → SQL databases →** `<sql_database_name>`.
@@ -79,6 +97,11 @@ cp terraform.tfvars.example terraform.tfvars
 terraform init
 terraform plan
 terraform apply
+# Mandatory live check (Terraform source is not proof of Free Offer):
+python3 ../../scripts/verify_azure_rankings_archive_free_offer.py \
+  --resource-group <rg> \
+  --server <sql-server-name> \
+  --database <sql_database_name>
 ```
 
 Sensitive outputs:

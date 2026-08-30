@@ -51,6 +51,9 @@ _TW_QUOTE_SETTLE_MINUTES = 30
 _BACKFILL_TRADING_DAY_WINDOW = 7
 # Cap provider fetches per query/cycle while filling holes.
 _BACKFILL_FETCHES_PER_QUERY = 1
+# After a settle becomes due, retry capture for this long before sleeping until
+# the next session (covers provider lag without 15-minute forever polling) (#187).
+_SAME_DAY_RETRY_BUDGET = timedelta(minutes=90)
 
 
 def _is_archive_connectivity_failure(exc: BaseException) -> bool:
@@ -123,6 +126,9 @@ class RankingsArchiveService:
         self._stop_event = Event()
         self._thread: Thread | None = None
         self._lock = Lock()
+        # Per-capture-cycle existence cache (batch SQL); cleared each cycle.
+        self._existence_cache: set[tuple[str, str, str, date]] | None = None
+        self._sql_round_trips = 0
 
     def is_available(self) -> bool:
         return self._repository.is_available()
@@ -172,6 +178,72 @@ class RankingsArchiveService:
             current,
             ranking_type=ranking_type,
         )
+
+    def any_settle_window_open(self, now: datetime | None = None) -> bool:
+        """Deprecated alias — prefer ``any_active_capture_window`` (#187)."""
+        return self.any_active_capture_window(now)
+
+    def any_active_capture_window(self, now: datetime | None = None) -> bool:
+        """True when a settle is within the same-day retry budget (no DB I/O).
+
+        Historical settled dates outside the retry budget do **not** keep the
+        sampler probing Azure — missed days are recovered on the next settle
+        via the bounded backfill window (#187).
+        """
+        current_utc = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        for query in self.eod_archive_queries():
+            query_market: Literal["US", "TW"] = query.market  # type: ignore[assignment]
+            local_now = current_utc.astimezone(MARKET_TIMEZONES[query_market])
+            settled = self._latest_settled_trading_date(
+                query_market,
+                local_now,
+                ranking_type=query.ranking_type,
+            )
+            if settled is None:
+                continue
+            ready_at = self._settle_ready_at(
+                query_market,
+                settled,
+                ranking_type=query.ranking_type,
+            ).astimezone(timezone.utc)
+            if ready_at <= current_utc <= ready_at + _SAME_DAY_RETRY_BUDGET:
+                return True
+        return False
+
+    def next_sampler_wake_at(self, now: datetime | None = None) -> datetime:
+        """Earliest future UTC settle time across EOD archive queries (no DB I/O).
+
+        Used after a sampler cycle (or when no window is open) so the thread can
+        sleep until the next useful market event instead of probing Azure every
+        ``RANKINGS_ARCHIVE_EOD_POLL_SECONDS`` (#187).
+        """
+        current_utc = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        soonest: datetime | None = None
+        for query in self.eod_archive_queries():
+            query_market: Literal["US", "TW"] = query.market  # type: ignore[assignment]
+            local_now = current_utc.astimezone(MARKET_TIMEZONES[query_market])
+            for day_offset in range(0, 14):
+                candidate = local_now.date() + timedelta(days=day_offset)
+                probe = datetime.combine(
+                    candidate,
+                    time(12, 0),
+                    tzinfo=MARKET_TIMEZONES[query_market],
+                )
+                if not is_trading_day(query_market, probe):
+                    continue
+                ready_at = self._settle_ready_at(
+                    query_market,
+                    candidate,
+                    ranking_type=query.ranking_type,
+                ).astimezone(timezone.utc)
+                if ready_at <= current_utc:
+                    continue
+                if soonest is None or ready_at < soonest:
+                    soonest = ready_at
+                break
+        if soonest is None:
+            return current_utc + timedelta(hours=12)
+        return soonest
 
     def _settle_ready_at(
         self,
@@ -339,8 +411,23 @@ class RankingsArchiveService:
         ranking_type: RankingType,
         trading_date: date,
     ) -> bool:
+        ranking_type_value = ranking_type.value
+        key = (market, universe, ranking_type_value, trading_date)
+        if self._existence_cache is not None:
+            return key in self._existence_cache
+        batch = getattr(self._repository, "list_existing_eod_trading_dates", None)
+        if callable(batch):
+            self._sql_round_trips += 1
+            existing = batch(
+                market=market,
+                universe=universe,
+                ranking_type=ranking_type,
+                trading_dates=[trading_date],
+            )
+            return trading_date in existing
         probe = getattr(self._repository, "has_eod_snapshot", None)
         if callable(probe):
+            self._sql_round_trips += 1
             return bool(
                 probe(
                     market=market,
@@ -349,6 +436,7 @@ class RankingsArchiveService:
                     trading_date=trading_date,
                 )
             )
+        self._sql_round_trips += 1
         return (
             self._repository.load_eod_snapshot(
                 market=market,
@@ -358,6 +446,69 @@ class RankingsArchiveService:
             )
             is not None
         )
+
+    def _prime_existence_cache(
+        self,
+        *,
+        candidate_dates_by_query: list[tuple[RankingQuery, str, list[date]]],
+    ) -> None:
+        """Load existence keys for this capture cycle in as few SQL calls as possible."""
+        all_dates = [
+            trading_date
+            for _query, _universe, dates in candidate_dates_by_query
+            for trading_date in dates
+        ]
+        if not all_dates:
+            self._existence_cache = set()
+            return
+        range_loader = getattr(self._repository, "list_eod_snapshot_keys_in_range", None)
+        if callable(range_loader):
+            self._sql_round_trips += 1
+            self._existence_cache = range_loader(
+                min_trading_date=min(all_dates),
+                max_trading_date=max(all_dates),
+            )
+            return
+        # Fallback: one batched IN query per ranking combination.
+        cache: set[tuple[str, str, str, date]] = set()
+        batch = getattr(self._repository, "list_existing_eod_trading_dates", None)
+        for query, universe, dates in candidate_dates_by_query:
+            if not dates:
+                continue
+            if callable(batch):
+                self._sql_round_trips += 1
+                for trading_date in batch(
+                    market=query.market,
+                    universe=universe,
+                    ranking_type=query.ranking_type,
+                    trading_dates=dates,
+                ):
+                    cache.add((query.market, universe, query.ranking_type.value, trading_date))
+            else:
+                for trading_date in dates:
+                    if self._archive_exists(
+                        market=query.market,
+                        universe=universe,
+                        ranking_type=query.ranking_type,
+                        trading_date=trading_date,
+                    ):
+                        cache.add(
+                            (query.market, universe, query.ranking_type.value, trading_date)
+                        )
+        self._existence_cache = cache
+
+    def _note_archive_persisted(
+        self,
+        *,
+        market: str,
+        universe: str,
+        ranking_type: RankingType,
+        trading_date: date,
+    ) -> None:
+        if self._existence_cache is not None:
+            self._existence_cache.add(
+                (market, universe, ranking_type.value, trading_date)
+            )
 
     @staticmethod
     def _capture_log_extra(
@@ -544,6 +695,13 @@ class RankingsArchiveService:
                 != market_local_time(query_market, current).date(),
             ),
         )
+        self._sql_round_trips += 1
+        self._note_archive_persisted(
+            market=query.market,
+            universe=universe,
+            ranking_type=query.ranking_type,
+            trading_date=persist_date,
+        )
         return "captured"
 
     @staticmethod
@@ -727,93 +885,153 @@ class RankingsArchiveService:
         gating but never bypasses date validation. Auto cycles fetch once per
         query and remap the inferred provider date onto any missing candidate
         in the settled window.
+
+        Return keys include ``had_missing`` (0/1) and ``sql_round_trips`` for
+        sampler scheduling / observability (#187).
         """
         started_at = perf_counter()
         captured = 0
         skipped = 0
         failed = 0
-        if not self.is_available():
+        had_missing = 0
+        self._sql_round_trips = 0
+        self._existence_cache = None
+        try:
+            self._sql_round_trips += 1
+            if not self.is_available():
+                logger.info(
+                    "Rankings archive capture skipped; archive DB unavailable",
+                    extra={
+                        "event": "rankings_archive.capture.skipped",
+                        "trigger": trigger,
+                        "reason": "archive_unavailable",
+                        "sql_round_trips": self._sql_round_trips,
+                    },
+                )
+                return {
+                    "captured": 0,
+                    "skipped": 0,
+                    "failed": 0,
+                    "had_missing": 0,
+                    "still_missing": 0,
+                    "sql_round_trips": self._sql_round_trips,
+                }
+
+            current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+            self._sql_round_trips += 1
+            if not self._repository.ensure_schema():
+                logger.error(
+                    "Rankings archive capture aborted; schema ensure failed",
+                    extra={
+                        "event": "rankings_archive.capture.schema_failed",
+                        "trigger": trigger,
+                        "sql_round_trips": self._sql_round_trips,
+                    },
+                )
+                return {
+                    "captured": 0,
+                    "skipped": 0,
+                    "failed": 0,
+                    "had_missing": 0,
+                    "still_missing": 0,
+                    "sql_round_trips": self._sql_round_trips,
+                }
+
+            planned: list[tuple[RankingQuery, str, list[date]]] = []
+            for query in self.eod_archive_queries():
+                if market is not None and query.market != market:
+                    continue
+                universe = query.universe or query.tw_board or (
+                    "DJIA" if query.market == "US" else "TWSE"
+                )
+                query_market: Literal["US", "TW"] = query.market  # type: ignore[assignment]
+                candidate_dates = self._candidate_trading_dates(
+                    query_market=query_market,
+                    ranking_type=query.ranking_type,
+                    current=current,
+                    trading_date=trading_date,
+                    force=force,
+                )
+                planned.append((query, universe, candidate_dates))
+
+            self._prime_existence_cache(candidate_dates_by_query=planned)
+
+            for query, universe, candidate_dates in planned:
+                query_market: Literal["US", "TW"] = query.market  # type: ignore[assignment]
+                missing_dates, skipped_here = self._missing_archive_dates(
+                    query=query,
+                    query_market=query_market,
+                    universe=universe,
+                    candidate_dates=candidate_dates,
+                    current=current,
+                    force=force,
+                )
+                skipped += skipped_here
+                if not missing_dates:
+                    continue
+                had_missing = 1
+
+                if trading_date is not None:
+                    c, s, f = self._capture_explicit_missing(
+                        query=query,
+                        query_market=query_market,
+                        universe=universe,
+                        missing_dates=missing_dates,
+                        current=current,
+                        trigger=trigger,
+                    )
+                else:
+                    c, s, f = self._capture_auto_backfill(
+                        query=query,
+                        query_market=query_market,
+                        universe=universe,
+                        missing_dates=missing_dates,
+                        current=current,
+                        trigger=trigger,
+                    )
+                captured += c
+                skipped += s
+                failed += f
+
+            still_missing = 0
+            for query, universe, candidate_dates in planned:
+                query_market: Literal["US", "TW"] = query.market  # type: ignore[assignment]
+                remaining, _ = self._missing_archive_dates(
+                    query=query,
+                    query_market=query_market,
+                    universe=universe,
+                    candidate_dates=candidate_dates,
+                    current=current,
+                    force=force,
+                )
+                if remaining:
+                    still_missing = 1
+                    break
+
             logger.info(
-                "Rankings archive capture skipped; archive DB unavailable",
+                "Rankings archive capture cycle completed",
                 extra={
-                    "event": "rankings_archive.capture.skipped",
+                    "event": "rankings_archive.capture.completed",
                     "trigger": trigger,
-                    "reason": "archive_unavailable",
+                    "captured": captured,
+                    "skipped": skipped,
+                    "failed": failed,
+                    "had_missing": bool(had_missing),
+                    "still_missing": bool(still_missing),
+                    "sql_round_trips": self._sql_round_trips,
+                    "duration_ms": elapsed_ms(started_at),
                 },
             )
-            return {"captured": 0, "skipped": 0, "failed": 0}
-
-        current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
-        if not self._repository.ensure_schema():
-            logger.error(
-                "Rankings archive capture aborted; schema ensure failed",
-                extra={
-                    "event": "rankings_archive.capture.schema_failed",
-                    "trigger": trigger,
-                },
-            )
-            return {"captured": 0, "skipped": 0, "failed": 0}
-
-        for query in self.eod_archive_queries():
-            if market is not None and query.market != market:
-                continue
-            universe = query.universe or query.tw_board or (
-                "DJIA" if query.market == "US" else "TWSE"
-            )
-            query_market: Literal["US", "TW"] = query.market  # type: ignore[assignment]
-            candidate_dates = self._candidate_trading_dates(
-                query_market=query_market,
-                ranking_type=query.ranking_type,
-                current=current,
-                trading_date=trading_date,
-                force=force,
-            )
-            missing_dates, skipped_here = self._missing_archive_dates(
-                query=query,
-                query_market=query_market,
-                universe=universe,
-                candidate_dates=candidate_dates,
-                current=current,
-                force=force,
-            )
-            skipped += skipped_here
-            if not missing_dates:
-                continue
-
-            if trading_date is not None:
-                c, s, f = self._capture_explicit_missing(
-                    query=query,
-                    query_market=query_market,
-                    universe=universe,
-                    missing_dates=missing_dates,
-                    current=current,
-                    trigger=trigger,
-                )
-            else:
-                c, s, f = self._capture_auto_backfill(
-                    query=query,
-                    query_market=query_market,
-                    universe=universe,
-                    missing_dates=missing_dates,
-                    current=current,
-                    trigger=trigger,
-                )
-            captured += c
-            skipped += s
-            failed += f
-
-        logger.info(
-            "Rankings archive capture cycle completed",
-            extra={
-                "event": "rankings_archive.capture.completed",
-                "trigger": trigger,
+            return {
                 "captured": captured,
                 "skipped": skipped,
                 "failed": failed,
-                "duration_ms": elapsed_ms(started_at),
-            },
-        )
-        return {"captured": captured, "skipped": skipped, "failed": failed}
+                "had_missing": had_missing,
+                "still_missing": still_missing,
+                "sql_round_trips": self._sql_round_trips,
+            }
+        finally:
+            self._existence_cache = None
 
     def list_history_dates(
         self,
@@ -932,16 +1150,84 @@ class RankingsArchiveService:
         )
 
     def _run_sampler(self, poll_seconds: int) -> None:
+        """Market-aware EOD sampler: sleep until settle; touch Azure only when due (#187).
+
+        ``poll_seconds`` is the interrupt granularity for stop/disable checks while
+        idle — and the same-day retry spacing inside ``_SAME_DAY_RETRY_BUDGET``.
+        It is not a fixed Azure wake interval outside an active capture window.
+        """
+        next_wake: datetime | None = None
         while not self._stop_event.is_set():
+            now = datetime.now(timezone.utc)
+            if next_wake is not None and now < next_wake:
+                remaining = (next_wake - now).total_seconds()
+                self._stop_event.wait(min(float(poll_seconds), max(1.0, remaining)))
+                continue
             try:
-                if settings.rankings_archive_eod_enabled and self.is_available():
-                    self.capture_eod_archives(trigger="sampler")
+                if not settings.rankings_archive_eod_enabled:
+                    next_wake = now + timedelta(seconds=poll_seconds)
+                    continue
+                if not self.is_configured():
+                    logger.info(
+                        "Rankings archive sampler idle; archive URL not configured",
+                        extra={
+                            "event": "rankings_archive.sampler.idle",
+                            "reason": "not_configured",
+                            "azure_sql_touched": False,
+                        },
+                    )
+                    next_wake = now + timedelta(seconds=poll_seconds)
+                    continue
+                if not self.any_active_capture_window(now):
+                    next_wake = self.next_sampler_wake_at(now)
+                    if next_wake <= now:
+                        next_wake = now + timedelta(seconds=poll_seconds)
+                    logger.info(
+                        "Rankings archive sampler idle until next settle",
+                        extra={
+                            "event": "rankings_archive.sampler.idle",
+                            "reason": "outside_capture_window",
+                            "next_wake_at": next_wake.isoformat(),
+                            "azure_sql_touched": False,
+                        },
+                    )
+                    continue
+                result = self.capture_eod_archives(trigger="sampler")
+                still_missing = bool(result.get("still_missing"))
+                failed = int(result.get("failed") or 0)
+                # Same-day retry while the settle budget is open and work remains
+                # or the last cycle had failures; otherwise sleep until next settle.
+                if (still_missing or failed > 0) and self.any_active_capture_window(
+                    datetime.now(timezone.utc)
+                ):
+                    next_wake = datetime.now(timezone.utc) + timedelta(seconds=poll_seconds)
+                    reason = "same_day_retry"
+                else:
+                    next_wake = self.next_sampler_wake_at(now)
+                    if next_wake <= now:
+                        next_wake = now + timedelta(seconds=poll_seconds)
+                    reason = "next_settle"
+                logger.info(
+                    "Rankings archive sampler sleeping after capture",
+                    extra={
+                        "event": "rankings_archive.sampler.next_wake",
+                        "reason": reason,
+                        "next_wake_at": next_wake.isoformat(),
+                        "azure_sql_touched": True,
+                        "captured": result.get("captured"),
+                        "skipped": result.get("skipped"),
+                        "failed": result.get("failed"),
+                        "had_missing": bool(result.get("had_missing")),
+                        "still_missing": still_missing,
+                        "sql_round_trips": result.get("sql_round_trips"),
+                    },
+                )
             except Exception:  # noqa: BLE001
                 logger.exception(
                     "Rankings archive sampler cycle failed",
                     extra={"event": "rankings_archive.sampler.failed"},
                 )
-            self._stop_event.wait(poll_seconds)
+                next_wake = now + timedelta(seconds=poll_seconds)
 
 
 rankings_archive_service = RankingsArchiveService()

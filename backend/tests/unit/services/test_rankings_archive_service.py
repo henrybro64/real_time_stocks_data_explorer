@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from app.schemas.rankings import (
@@ -34,6 +34,9 @@ class _FakeRepo:
     def is_available(self) -> bool:
         return self.available
 
+    def is_configured(self) -> bool:
+        return True
+
     def ensure_schema(self) -> bool:
         return self.schema_ok
 
@@ -41,6 +44,30 @@ class _FakeRepo:
         self.exists_calls += 1
         key = (market, universe, ranking_type.value, trading_date)
         return key in self.existing
+
+    def list_existing_eod_trading_dates(
+        self,
+        *,
+        market,
+        universe,
+        ranking_type,
+        trading_dates,
+    ):
+        self.exists_calls += 1
+        ranking_type_value = ranking_type.value
+        return {
+            trading_date
+            for trading_date in trading_dates
+            if (market, universe, ranking_type_value, trading_date) in self.existing
+        }
+
+    def list_eod_snapshot_keys_in_range(self, *, min_trading_date, max_trading_date):
+        self.exists_calls += 1
+        return {
+            key
+            for key in self.existing
+            if min_trading_date <= key[3] <= max_trading_date
+        }
 
     def load_eod_snapshot(self, *, market, universe, ranking_type, trading_date):
         self.load_calls += 1
@@ -234,7 +261,11 @@ def test_capture_skips_when_archive_unavailable() -> None:
         trading_date=date(2026, 8, 18),
         force=True,
     )
-    assert result == {"captured": 0, "skipped": 0, "failed": 0}
+    assert result["captured"] == 0
+    assert result["skipped"] == 0
+    assert result["failed"] == 0
+    assert result["had_missing"] == 0
+    assert result["still_missing"] == 0
     assert repo.upserts == []
 
 
@@ -650,3 +681,211 @@ def test_archive_connectivity_failure_classification() -> None:
     assert _is_archive_connectivity_failure(vague) is False
     assert _is_archive_connectivity_failure(specific) is True
     assert _is_archive_connectivity_failure(invalidated) is True
+
+
+def test_any_active_capture_window_only_within_retry_budget() -> None:
+    service = RankingsArchiveService(repository=_FakeRepo())
+    ny = ZoneInfo("America/New_York")
+    # Monday morning: prior Friday is settled but outside the 90-minute retry budget.
+    before_monday_open = datetime(2026, 8, 17, 9, 0, tzinfo=ny)
+    assert service.any_active_capture_window(before_monday_open) is False
+    wake = service.next_sampler_wake_at(before_monday_open)
+    assert wake > before_monday_open.astimezone(timezone.utc)
+
+
+def test_any_active_capture_window_true_just_after_settle() -> None:
+    service = RankingsArchiveService(repository=_FakeRepo())
+    ny = ZoneInfo("America/New_York")
+    after_settle = datetime(2026, 8, 18, 17, 0, tzinfo=ny)
+    assert service.any_active_capture_window(after_settle) is True
+    wake = service.next_sampler_wake_at(after_settle)
+    assert wake > after_settle.astimezone(timezone.utc)
+
+
+def test_weekend_next_wake_is_next_trading_session_not_fifteen_minutes() -> None:
+    service = RankingsArchiveService(repository=_FakeRepo())
+    ny = ZoneInfo("America/New_York")
+    saturday = datetime(2026, 8, 22, 10, 0, tzinfo=ny)
+    assert service.any_active_capture_window(saturday) is False
+    wake = service.next_sampler_wake_at(saturday)
+    assert (wake - saturday.astimezone(timezone.utc)) > timedelta(hours=24)
+
+
+def test_run_sampler_skips_db_before_next_settle(monkeypatch) -> None:
+    """Sampler must not call capture when sleeping until a future settle (#187)."""
+    service = RankingsArchiveService(repository=_FakeRepo())
+    calls: list[str] = []
+
+    def _capture(**_kwargs):
+        calls.append("capture")
+        return {"captured": 0, "skipped": 0, "failed": 0, "still_missing": 0}
+
+    monkeypatch.setattr(service, "capture_eod_archives", _capture)
+    monkeypatch.setattr(
+        "app.services.rankings_archive_service.settings.rankings_archive_eod_enabled",
+        True,
+    )
+    monkeypatch.setattr(service, "any_active_capture_window", lambda _now=None: False)
+    future = datetime.now(timezone.utc) + timedelta(hours=6)
+    monkeypatch.setattr(service, "next_sampler_wake_at", lambda _now=None: future)
+
+    def _wait(seconds: float) -> bool:
+        service._stop_event.set()
+        return True
+
+    monkeypatch.setattr(service._stop_event, "wait", _wait)
+    service._run_sampler(poll_seconds=60)
+    assert calls == []
+
+
+def test_run_sampler_skips_db_on_weekend_restart(monkeypatch) -> None:
+    """Weekend restart must not touch Azure; catch-up waits for next settle (#187)."""
+    service = RankingsArchiveService(repository=_FakeRepo())
+    calls: list[str] = []
+    ny = ZoneInfo("America/New_York")
+    saturday = datetime(2026, 8, 22, 10, 0, tzinfo=ny)
+    assert service.any_active_capture_window(saturday) is False
+
+    def _capture(**_kwargs):
+        calls.append("capture")
+        return {"captured": 0, "skipped": 0, "failed": 0, "still_missing": 0}
+
+    monkeypatch.setattr(service, "capture_eod_archives", _capture)
+    monkeypatch.setattr(
+        "app.services.rankings_archive_service.settings.rankings_archive_eod_enabled",
+        True,
+    )
+    monkeypatch.setattr(service, "any_active_capture_window", lambda _now=None: False)
+    future_wake = datetime.now(timezone.utc) + timedelta(hours=40)
+    monkeypatch.setattr(service, "next_sampler_wake_at", lambda _now=None: future_wake)
+
+    def _wait(seconds: float) -> bool:
+        # Idle sleep is chunked by poll_seconds; Azure must still not be touched.
+        assert seconds == 60
+        service._stop_event.set()
+        return True
+
+    monkeypatch.setattr(service._stop_event, "wait", _wait)
+    service._run_sampler(poll_seconds=60)
+    assert calls == []
+    assert (service.next_sampler_wake_at(saturday) - saturday.astimezone(timezone.utc)) > timedelta(
+        hours=24
+    )
+
+
+def test_run_sampler_captures_once_then_sleeps_until_next_wake(monkeypatch) -> None:
+    service = RankingsArchiveService(repository=_FakeRepo())
+    calls: list[str] = []
+
+    def _capture(**_kwargs):
+        calls.append("capture")
+        return {
+            "captured": 1,
+            "skipped": 0,
+            "failed": 0,
+            "had_missing": 1,
+            "still_missing": 0,
+            "sql_round_trips": 3,
+        }
+
+    monkeypatch.setattr(service, "capture_eod_archives", _capture)
+    monkeypatch.setattr(
+        "app.services.rankings_archive_service.settings.rankings_archive_eod_enabled",
+        True,
+    )
+    monkeypatch.setattr(service, "any_active_capture_window", lambda _now=None: True)
+    future = datetime.now(timezone.utc) + timedelta(hours=12)
+    monkeypatch.setattr(service, "next_sampler_wake_at", lambda _now=None: future)
+
+    def _wait(seconds: float) -> bool:
+        service._stop_event.set()
+        return True
+
+    monkeypatch.setattr(service._stop_event, "wait", _wait)
+    service._run_sampler(poll_seconds=900)
+    assert calls == ["capture"]
+
+
+def test_run_sampler_retries_within_budget_when_still_missing(monkeypatch) -> None:
+    service = RankingsArchiveService(repository=_FakeRepo())
+    calls: list[str] = []
+    wake_gaps: list[float] = []
+
+    def _capture(**_kwargs):
+        calls.append("capture")
+        return {
+            "captured": 0,
+            "skipped": 1,
+            "failed": 0,
+            "had_missing": 1,
+            "still_missing": 1,
+            "sql_round_trips": 2,
+        }
+
+    monkeypatch.setattr(service, "capture_eod_archives", _capture)
+    monkeypatch.setattr(
+        "app.services.rankings_archive_service.settings.rankings_archive_eod_enabled",
+        True,
+    )
+    monkeypatch.setattr(service, "any_active_capture_window", lambda _now=None: True)
+
+    def _wait(seconds: float) -> bool:
+        wake_gaps.append(seconds)
+        service._stop_event.set()
+        return True
+
+    monkeypatch.setattr(service._stop_event, "wait", _wait)
+    service._run_sampler(poll_seconds=120)
+    assert calls == ["capture"]
+    # After capture with still_missing, next_wake is now+poll; loop waits that gap.
+    assert wake_gaps and wake_gaps[0] <= 120
+
+
+def test_missed_friday_recovered_on_tuesday_settle_candidates() -> None:
+    """Backfill window still includes a missed prior session after the next settle."""
+    service = RankingsArchiveService(repository=_FakeRepo())
+    ny = ZoneInfo("America/New_York")
+    tuesday_after_settle = datetime(2026, 8, 18, 17, 0, tzinfo=ny)
+    dates = service._settled_trading_dates(
+        "US",
+        tuesday_after_settle,
+        ranking_type=RankingType.volume,
+        limit=7,
+    )
+    assert date(2026, 8, 14) in dates or date(2026, 8, 17) in dates
+    # Friday 2026-08-14 should be in the settled lookback from Tuesday.
+    assert date(2026, 8, 14) in dates
+
+
+def test_capture_batches_existence_checks() -> None:
+    repo = _FakeRepo()
+    service = RankingsArchiveService(
+        repository=repo,
+        provider_registry=_FakeRegistry(
+            _response(
+                tradingDate="2026-08-18",
+                timestamp="2026-08-18T20:45:00+00:00",
+            )
+        ),
+    )
+    ny = ZoneInfo("America/New_York")
+    after_settle = datetime(2026, 8, 18, 17, 0, tzinfo=ny)
+    # Cover every candidate date the capture cycle will inspect.
+    for query in service.eod_archive_queries():
+        universe = query.universe or query.tw_board or "DJIA"
+        query_market = query.market
+        for day in service._settled_trading_dates(
+            query_market,  # type: ignore[arg-type]
+            after_settle,
+            ranking_type=query.ranking_type,
+            limit=7,
+        ):
+            repo.existing.add((query.market, universe, query.ranking_type.value, day))
+
+    before = repo.exists_calls
+    result = service.capture_eod_archives(now=after_settle, trigger="test")
+    # One ranged existence query for the whole cycle (not per date × query).
+    assert repo.exists_calls == before + 1
+    assert result["had_missing"] == 0
+    assert result["still_missing"] == 0
+    assert result["sql_round_trips"] >= 3

@@ -152,6 +152,35 @@ def test_has_eod_snapshot_is_true_without_loading_items() -> None:
     )
 
 
+def test_list_existing_eod_trading_dates_batches_lookup() -> None:
+    repo = RankingsArchiveRepository()
+    repo.set_session_factory_override(_session_factory())
+    for day in (date(2026, 8, 18), date(2026, 8, 17)):
+        assert (
+            repo.upsert_eod_snapshot(
+                market="US",
+                universe="DJIA",
+                ranking_type=RankingType.volume,
+                trading_date=day,
+                response=_response(),
+            )
+            is not None
+        )
+    found = repo.list_existing_eod_trading_dates(
+        market="US",
+        universe="DJIA",
+        ranking_type=RankingType.volume,
+        trading_dates=[date(2026, 8, 18), date(2026, 8, 17), date(2026, 8, 14)],
+    )
+    assert found == {date(2026, 8, 18), date(2026, 8, 17)}
+    keys = repo.list_eod_snapshot_keys_in_range(
+        min_trading_date=date(2026, 8, 14),
+        max_trading_date=date(2026, 8, 18),
+    )
+    assert ("US", "DJIA", RankingType.volume.value, date(2026, 8, 18)) in keys
+    assert ("US", "DJIA", RankingType.volume.value, date(2026, 8, 14)) not in keys
+
+
 def test_unavailable_archive_fails_gracefully() -> None:
     repo = RankingsArchiveRepository()
     repo.set_session_factory_override(None)

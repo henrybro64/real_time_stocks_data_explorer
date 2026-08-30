@@ -91,9 +91,22 @@ RANKINGS_ARCHIVE_EOD_ENABLED=true
 RANKINGS_ARCHIVE_EOD_POLL_SECONDS=900
 ```
 
-Each sampler cycle looks at the newest settled trading days (bounded window)
-and fills the newest missing archive per ranking query when provider dates
-match. Failures are logged and never raised into ranking request paths.
+The sampler is **market-aware** (#187): it only opens Azure SQL inside a
+**same-day capture window** (settle time → settle + ~90 minutes). Outside that
+window — including weekends, mid-session idle time, and weekend process
+restarts — it sleeps until the next settle and makes **zero** Azure connections.
+Missed archives are recovered on the next settle via the bounded backfill
+window (not by continuous probing).
+
+`RANKINGS_ARCHIVE_EOD_POLL_SECONDS` is the interrupt granularity while idle and
+the spacing for same-day retries when provider data is still lagging. It is
+**not** a fixed “wake Azure every N seconds” interval.
+
+After a successful cycle with nothing left missing, the sampler sleeps until the
+next settle event so AutoPause can engage (idle longer than 60 minutes).
+
+Failures are logged and never raised into ranking request paths. AutoPause cold
+starts remain expected on the first probe after a long idle.
 
 ## Historical read APIs (#168)
 
@@ -108,6 +121,68 @@ They require the archive path from issues #165–#167 (PR landing those changes)
 Responses include `tradingDate` and `captureScope` so the UI can label historical
 data. Missing archives → `404`; archive DB unavailable or mid-query failure → `503`.
 `GET /api/rankings` is unchanged and independent of Azure.
+
+The Rankings UI loads `/history/dates` only after the user clicks **Load
+historical dates** for the current market/universe/ranking type (Current view
+must not wake Azure). Changing tab/market/universe clears the opt-in so Azure is
+not woken again until the user asks (#187).
+
+## Free Offer live verification (#186)
+
+**Mandatory after every `terraform apply` (and already wired into the live Azure
+smoke job).** Terraform source / tags are not proof of enrollment.
+
+Why the paid DB happened: Azure SQL Free Offer is typically enrolled only at
+**database creation**. Updating `use_free_limit = true` on an existing General
+Purpose Serverless database often leaves live `useFreeLimit: null` (billable)
+while Terraform still shows the intended flags. `azurerm` `>= 4.30` exposes the
+attributes; it cannot convert a paid DB in place. Do not treat
+`cost-tier=azure-sql-free-offer` or “GP serverless” as Free Offer.
+
+Do **not** auto-delete `rankings_archive` or `rankings_archive_free`. Cut over
+`RANKINGS_ARCHIVE_DATABASE_URL` only after live verification; deleting the old
+paid database is a manual last step.
+
+### Operator cutover checklist (paid → Free Offer)
+
+1. Create / confirm a Free Offer database (often a **new** DB such as
+   `rankings_archive_free`) — Free Offer is typically create-time only.
+2. Run `scripts/verify_azure_rankings_archive_free_offer.py` against the **new**
+   database and confirm `useFreeLimit: true` + `AutoPause`.
+3. Copy/verify historical archive rows into the Free Offer DB (row counts /
+   snapshot keys) before pointing the app at it. Do **not** overwrite or delete
+   the paid DB as part of this step.
+4. Update `RANKINGS_ARCHIVE_DATABASE_URL` (local `.env`, k8s secret, and GitHub
+   Actions secret) to the Free Offer connection string.
+5. Set optional `AZURE_SQL_DATABASE_NAME` to the Free Offer DB name so CI’s Free
+   Offer check targets the same resource.
+6. Redeploy / restart the backend and confirm history + sampler against the new
+   URL.
+7. Only after a quiet period, **manually** delete the old paid database if you
+   still want to reclaim it.
+
+```bash
+python3 scripts/verify_azure_rankings_archive_free_offer.py \
+  --resource-group "$AZURE_RESOURCE_GROUP" \
+  --server "$AZURE_SQL_SERVER_NAME" \
+  --database rankings_archive
+
+# equivalent live properties (must include these; null = NOT free):
+# az sql db show -g "$AZURE_RESOURCE_GROUP" -s "$AZURE_SQL_SERVER_NAME" -n rankings_archive \
+#   --query "{useFreeLimit:useFreeLimit,freeLimitExhaustionBehavior:freeLimitExhaustionBehavior,sku:currentSku,autoPauseDelay:autoPauseDelay,minCapacity:minCapacity,maxSizeBytes:maxSizeBytes}"
+```
+
+Expected live fields:
+
+```json
+{
+  "useFreeLimit": true,
+  "freeLimitExhaustionBehavior": "AutoPause"
+}
+```
+
+If `useFreeLimit` is `null` or `false`, the database may be billable. Create a
+new Free Offer database rather than assuming an in-place setting change.
 
 ## Backend container / k3s hookup
 
@@ -183,10 +258,12 @@ Azure secrets. Required GitHub Actions secrets (values never logged):
 | `AZURE_SUBSCRIPTION_ID` | Azure subscription |
 | `AZURE_RESOURCE_GROUP` | Resource group of the SQL server |
 | `AZURE_SQL_SERVER_NAME` | SQL server name (not FQDN) |
+| `AZURE_SQL_DATABASE_NAME` | Optional; defaults to `rankings_archive` for Free Offer check |
 | `RANKINGS_ARCHIVE_DATABASE_URL` | `mssql+pyodbc://…` archive URL |
 
-The job authenticates with the service principal via `azure/login` `creds` JSON
-(secret-based SP), opens a **temporary single-IP**
+After Azure login the job runs `scripts/verify_azure_rankings_archive_free_offer.py`
+(read-only `az sql db show`) and **fails** if live `useFreeLimit` is not true
+(#186). Then it opens a **temporary single-IP**
 firewall rule for the runner, builds the backend Docker image (ODBC Driver 18 +
 `pyodbc` parity), runs `scripts/azure_rankings_archive_smoke.py --ci-summary`,
 and always deletes the firewall rule. It will not enable broad public access if
@@ -204,6 +281,8 @@ gh workflow run test-and-smoke.yml
 ```bash
 cd backend
 .venv313/bin/pytest \
+  tests/unit/infra/test_azure_rankings_archive_terraform.py \
+  tests/unit/infra/test_verify_azure_free_offer.py \
   tests/unit/repositories/test_rankings_archive_repository.py \
   tests/unit/services/test_rankings_archive_service.py \
   tests/unit/routes/test_rankings_archive_route.py \

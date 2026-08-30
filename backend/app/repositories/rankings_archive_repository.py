@@ -146,22 +146,67 @@ class RankingsArchiveRepository:
         trading_date: date,
     ) -> bool:
         """True when an EOD archive row exists (no item materialization)."""
-        if not self.is_available():
-            return False
+        return trading_date in self.list_existing_eod_trading_dates(
+            market=market,
+            universe=universe,
+            ranking_type=ranking_type,
+            trading_dates=[trading_date],
+        )
+
+    def list_existing_eod_trading_dates(
+        self,
+        *,
+        market: str,
+        universe: str,
+        ranking_type: RankingType | str,
+        trading_dates: list[date],
+    ) -> set[date]:
+        """Return which of ``trading_dates`` already have an EOD archive row.
+
+        One SQL round-trip per call (``IN`` filter) to avoid N existence probes
+        during a capture cycle (#187).
+        """
+        if not self.is_available() or not trading_dates:
+            return set()
         ranking_type_value = (
             ranking_type.value if isinstance(ranking_type, RankingType) else str(ranking_type)
         )
+        unique_dates = sorted(set(trading_dates))
         session_factory = self._session_factory()
         with session_factory() as session:
-            snapshot_id = session.execute(
-                select(RankingSnapshotArchive.id).where(
+            rows = session.execute(
+                select(RankingSnapshotArchive.trading_date).where(
                     RankingSnapshotArchive.market == market,
                     RankingSnapshotArchive.universe == universe,
                     RankingSnapshotArchive.ranking_type == ranking_type_value,
-                    RankingSnapshotArchive.trading_date == trading_date,
-                ).limit(1)
-            ).scalar_one_or_none()
-            return snapshot_id is not None
+                    RankingSnapshotArchive.trading_date.in_(unique_dates),
+                )
+            ).scalars()
+            return set(rows)
+
+    def list_eod_snapshot_keys_in_range(
+        self,
+        *,
+        min_trading_date: date,
+        max_trading_date: date,
+    ) -> set[tuple[str, str, str, date]]:
+        """All EOD archive keys in an inclusive trading-date range (one query)."""
+        if not self.is_available() or min_trading_date > max_trading_date:
+            return set()
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            rows = session.execute(
+                select(
+                    RankingSnapshotArchive.market,
+                    RankingSnapshotArchive.universe,
+                    RankingSnapshotArchive.ranking_type,
+                    RankingSnapshotArchive.trading_date,
+                ).where(
+                    RankingSnapshotArchive.trading_date >= min_trading_date,
+                    RankingSnapshotArchive.trading_date <= max_trading_date,
+                )
+            ).all()
+            return {(str(m), str(u), str(rt), d) for m, u, rt, d in rows}
 
     def load_eod_snapshot(
         self,

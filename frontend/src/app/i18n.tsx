@@ -204,6 +204,7 @@ export type TranslationKey =
   | "rankings.date.label"
   | "rankings.date.current"
   | "rankings.date.historicalBanner"
+  | "rankings.date.loadHistory"
   | "rankings.date.historyUnavailable"
   | "rankings.date.historyWaking"
   | "rankings.notice.quoteUnofficial"
@@ -679,6 +680,7 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "rankings.date.current": "Today / Current",
     "rankings.date.historicalBanner":
       "Showing archived end-of-day rankings for {date}. This is historical data, not a live market view.",
+    "rankings.date.loadHistory": "Load historical dates",
     "rankings.date.historyUnavailable":
       "Historical trading dates are temporarily unavailable. Current rankings still work.",
     "rankings.date.historyWaking":
@@ -1153,6 +1155,7 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "rankings.date.current": "今日／即時",
     "rankings.date.historicalBanner":
       "目前顯示 {date} 的收盤歷史排行（非即時盤中資料）。",
+    "rankings.date.loadHistory": "載入歷史交易日",
     "rankings.date.historyUnavailable":
       "暫時無法載入歷史交易日；今日／即時排行仍可正常使用。",
     "rankings.date.historyWaking":

@@ -320,6 +320,21 @@ jobs:
         run: |
           echo "Azure login: PASS" >> "$GITHUB_STEP_SUMMARY"
 
+      # Read-only Free Offer check (#186). Does not open SQL / does not need firewall.
+      # Fails the job loudly when live useFreeLimit is not true (paid risk).
+      - name: Verify Azure SQL Free Offer enrollment
+        id: free_offer
+        env:
+          AZURE_SQL_DATABASE_NAME: ${{ secrets.AZURE_SQL_DATABASE_NAME }}
+        run: |
+          set -euo pipefail
+          DB_NAME="${AZURE_SQL_DATABASE_NAME:-rankings_archive}"
+          python3 scripts/verify_azure_rankings_archive_free_offer.py \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --server "$AZURE_SQL_SERVER_NAME" \
+            --database "$DB_NAME" \
+            --ci-summary
+
       - name: Create temporary SQL firewall rule for runner IP
         id: firewall
         run: |
