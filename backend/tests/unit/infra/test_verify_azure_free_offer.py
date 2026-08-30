@@ -116,3 +116,15 @@ def test_require_azure_name_rejects_shell_metacharacters() -> None:
     assert verify._require_azure_name("stock-ticker-rg", label="resource-group") == (
         "stock-ticker-rg"
     )
+
+
+def test_verify_script_defaults_to_rankings_archive_free() -> None:
+    text = _SCRIPT.read_text(encoding="utf-8")
+    assert (
+        'default=os.environ.get("AZURE_SQL_DATABASE_NAME", "rankings_archive_free")'
+        in text
+    )
+    assert (
+        'default=os.environ.get("AZURE_SQL_DATABASE_NAME", "rankings_archive")'
+        not in text
+    )

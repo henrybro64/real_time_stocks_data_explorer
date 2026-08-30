@@ -232,8 +232,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--database",
-        default=os.environ.get("AZURE_SQL_DATABASE_NAME", "rankings_archive").strip(),
-        help="Database name (default rankings_archive or env AZURE_SQL_DATABASE_NAME)",
+        default=os.environ.get("AZURE_SQL_DATABASE_NAME", "rankings_archive_free").strip(),
+        help="Database name (default rankings_archive_free or env AZURE_SQL_DATABASE_NAME)",
     )
     parser.add_argument(
         "--ci-summary",

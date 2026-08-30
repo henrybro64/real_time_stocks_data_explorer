@@ -7,9 +7,7 @@ on:
       - master
   pull_request:
   workflow_dispatch:
-  schedule:
-    # Low-frequency live Azure SQL signal (Monday 06:00 UTC).
-    - cron: "0 6 * * 1"
+  # No schedule: routine CI must not wake Azure SQL Free Offer (#186 / #187).
 
 permissions:
   contents: read
@@ -264,15 +262,18 @@ jobs:
           path: artifacts/k3s-smoke
           if-no-files-found: error
 
-  # Live Azure SQL archive smoke (#179). Secrets-bearing; not for fork PRs.
-  # Manual dispatch is restricted to main/master so collaborators cannot run a
-  # branch-modified script with repository Azure secrets.
+  # MANUAL-ONLY live Azure SQL smoke (#186 / #187).
+  # Cost warning: this job logs into Azure, may open a temporary firewall rule,
+  # connects over ODBC/SQLAlchemy, and can WAKE a paused serverless Free Offer
+  # database (consumes vCore quota). Do not run unless you intentionally need
+  # live connectivity verification.
+  # Never runs on push, pull_request, or schedule — only workflow_dispatch on
+  # main/master so branch-modified scripts cannot consume repository secrets.
   azure-rankings-archive-smoke:
     runs-on: ubuntu-latest
     if: >-
-      github.event_name == 'schedule' ||
-      ((github.event_name == 'workflow_dispatch' || github.event_name == 'push') &&
-       (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'))
+      github.event_name == 'workflow_dispatch' &&
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
     permissions:
       contents: read
     env:
@@ -285,6 +286,17 @@ jobs:
       RANKINGS_ARCHIVE_DATABASE_URL: ${{ secrets.RANKINGS_ARCHIVE_DATABASE_URL }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Cost warning (manual live Azure SQL)
+        run: |
+          {
+            echo "## Manual live Azure SQL smoke — cost warning"
+            echo ""
+            echo "This job **wakes** the live archive database if it is AutoPaused."
+            echo "It consumes Azure SQL Free Offer compute quota and is **not** part of routine CI."
+            echo "Use only for deliberate connectivity / integration verification (#186 / #187)."
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Validate required secrets are present
         id: secrets_check

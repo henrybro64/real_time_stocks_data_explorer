@@ -129,46 +129,36 @@ not woken again until the user asks (#187).
 
 ## Free Offer live verification (#186)
 
-**Mandatory after every `terraform apply` (and already wired into the live Azure
-smoke job).** Terraform source / tags are not proof of enrollment.
+**Mandatory after provisioning or intentional Azure SQL changes.** Terraform
+source / tags / SKU labels are **not** proof of Free Offer enrollment.
 
-Why the paid DB happened: Azure SQL Free Offer is typically enrolled only at
-**database creation**. Updating `use_free_limit = true` on an existing General
-Purpose Serverless database often leaves live `useFreeLimit: null` (billable)
-while Terraform still shows the intended flags. `azurerm` `>= 4.30` exposes the
-attributes; it cannot convert a paid DB in place. Do not treat
-`cost-tier=azure-sql-free-offer` or “GP serverless” as Free Offer.
+### Provider mismatch (fail-closed)
 
-Do **not** auto-delete `rankings_archive` or `rankings_archive_free`. Cut over
-`RANKINGS_ARCHIVE_DATABASE_URL` only after live verification; deleting the old
-paid database is a manual last step.
+Released AzureRM used by `infra/azure-rankings-archive` **cannot** express Free
+Offer on `azurerm_mssql_database`. This module therefore:
 
-### Operator cutover checklist (paid → Free Offer)
+- does **not** create `azurerm_mssql_database` (that would provision paid GP serverless),
+- references the external Free Offer database `rankings_archive_free` (name via
+  variable; not an `azurerm_mssql_database` resource),
+- refuses the deleted paid name `rankings_archive` via variable validation.
 
-1. Create / confirm a Free Offer database (often a **new** DB such as
-   `rankings_archive_free`) — Free Offer is typically create-time only.
-2. Run `scripts/verify_azure_rankings_archive_free_offer.py` against the **new**
-   database and confirm `useFreeLimit: true` + `AutoPause`.
-3. Copy/verify historical archive rows into the Free Offer DB (row counts /
-   snapshot keys) before pointing the app at it. Do **not** overwrite or delete
-   the paid DB as part of this step.
-4. Update `RANKINGS_ARCHIVE_DATABASE_URL` (local `.env`, k8s secret, and GitHub
-   Actions secret) to the Free Offer connection string.
-5. Set optional `AZURE_SQL_DATABASE_NAME` to the Free Offer DB name so CI’s Free
-   Offer check targets the same resource.
-6. Redeploy / restart the backend and confirm history + sampler against the new
-   URL.
-7. Only after a quiet period, **manually** delete the old paid database if you
-   still want to reclaim it.
+Create Free Offer enrollment outside Terraform (Portal, or a future supported
+AzAPI/AzureRM path). Do not treat `cost-tier=azure-sql-free-offer` or
+“GP serverless” as Free Offer. `useFreeLimit: null` means Free Offer is **not**
+active.
+
+The paid `rankings_archive` database was intentionally destroyed; keep
+`rankings_archive_free` and do not recreate the paid name.
+
+### Management-plane verification (does not wake SQL data plane)
 
 ```bash
 python3 scripts/verify_azure_rankings_archive_free_offer.py \
   --resource-group "$AZURE_RESOURCE_GROUP" \
   --server "$AZURE_SQL_SERVER_NAME" \
-  --database rankings_archive
+  --database rankings_archive_free
 
-# equivalent live properties (must include these; null = NOT free):
-# az sql db show -g "$AZURE_RESOURCE_GROUP" -s "$AZURE_SQL_SERVER_NAME" -n rankings_archive \
+# az sql db show -g "$AZURE_RESOURCE_GROUP" -s "$AZURE_SQL_SERVER_NAME" -n rankings_archive_free \
 #   --query "{useFreeLimit:useFreeLimit,freeLimitExhaustionBehavior:freeLimitExhaustionBehavior,sku:currentSku,autoPauseDelay:autoPauseDelay,minCapacity:minCapacity,maxSizeBytes:maxSizeBytes}"
 ```
 
@@ -181,8 +171,16 @@ Expected live fields:
 }
 ```
 
-If `useFreeLimit` is `null` or `false`, the database may be billable. Create a
-new Free Offer database rather than assuming an in-place setting change.
+This check is for **explicit** operator verification. Normal PR/push CI does
+**not** run it and does **not** connect to Azure SQL.
+
+### Operator cutover notes
+
+1. Confirm `rankings_archive_free` with the verify script (`useFreeLimit: true`,
+   `AutoPause`).
+2. Point `RANKINGS_ARCHIVE_DATABASE_URL` (local / k8s / GitHub secret) at that DB.
+3. Redeploy the backend; confirm history + sampler.
+4. Do not recreate `rankings_archive`.
 
 ## Backend container / k3s hookup
 
@@ -237,18 +235,29 @@ optionally reads one real archive when present, then upserts / loads /
 reconstructs a disposable EOD archive snapshot. Cleanup is verified; the smoke
 **fails** if the disposable row cannot be removed.
 
-## Live Azure SQL CI smoke (#179)
+## Live Azure SQL smoke — manual only (#186 / #187)
 
-Job `azure-rankings-archive-smoke` in `.github/workflows/test-and-smoke.yml`
-runs on:
+Job `azure-rankings-archive-smoke` in `.github/workflows/test-and-smoke.yml` is
+**manual `workflow_dispatch` only** on `main` / `master`.
 
-- `workflow_dispatch` on `main` / `master` only (manual)
-- push to `main` / `master`
-- weekly schedule (Monday 06:00 UTC)
+It does **not** run on:
 
-It does **not** run on pull requests (including forks), and manual dispatch from
-feature branches is rejected so branch-modified scripts cannot consume repository
-Azure secrets. Required GitHub Actions secrets (values never logged):
+- pull requests
+- pushes to `main` / `master`
+- any schedule / cron
+
+Routine PR/push CI uses local Postgres, unit/integration tests, Playwright, and
+k3s smoke only — **zero** live Azure SQL data-plane connections and **no**
+temporary Azure SQL firewall rules.
+
+The manual job clearly warns that it:
+
+- connects to the live archive over ODBC/SQLAlchemy,
+- may wake a paused serverless Free Offer database,
+- consumes Free Offer compute quota,
+- should be used only for deliberate connectivity verification.
+
+Required GitHub Actions secrets (values never logged):
 
 | Secret | Purpose |
 | --- | --- |
@@ -258,22 +267,19 @@ Azure secrets. Required GitHub Actions secrets (values never logged):
 | `AZURE_SUBSCRIPTION_ID` | Azure subscription |
 | `AZURE_RESOURCE_GROUP` | Resource group of the SQL server |
 | `AZURE_SQL_SERVER_NAME` | SQL server name (not FQDN) |
-| `AZURE_SQL_DATABASE_NAME` | Optional; defaults to `rankings_archive` for Free Offer check |
-| `RANKINGS_ARCHIVE_DATABASE_URL` | `mssql+pyodbc://…` archive URL |
+| `AZURE_SQL_DATABASE_NAME` | Optional; must match URL DB name if set |
+| `RANKINGS_ARCHIVE_DATABASE_URL` | `mssql+pyodbc://…` archive URL (`rankings_archive_free`) |
 
-After Azure login the job runs `scripts/verify_azure_rankings_archive_free_offer.py`
-(read-only `az sql db show`) and **fails** if live `useFreeLimit` is not true
-(#186). Then it opens a **temporary single-IP**
-firewall rule for the runner, builds the backend Docker image (ODBC Driver 18 +
-`pyodbc` parity), runs `scripts/azure_rankings_archive_smoke.py --ci-summary`,
-and always deletes the firewall rule. It will not enable broad public access if
-the server has public networking disabled.
+After Azure login the manual job runs management-plane Free Offer verification
+(`az sql db show`, no SQL), then may open a **temporary single-IP** firewall
+rule, build the backend image, run `scripts/azure_rankings_archive_smoke.py`,
+and always deletes the firewall rule.
 
 Manual run:
 
 ```bash
 gh workflow run test-and-smoke.yml
-# or from the Actions UI: Test And Smoke → Run workflow
+# Actions UI: Test And Smoke → Run workflow (main/master only for the Azure job)
 ```
 
 ## Unit tests

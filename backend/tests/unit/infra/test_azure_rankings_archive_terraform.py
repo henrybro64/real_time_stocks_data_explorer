@@ -1,4 +1,4 @@
-"""Static cost-safety checks for Azure rankings archive Terraform (#186)."""
+"""Static cost-safety checks for Azure rankings archive Terraform + CI (#186/#187)."""
 
 from __future__ import annotations
 
@@ -7,47 +7,64 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[4]
 MAIN_TF = ROOT / "infra" / "azure-rankings-archive" / "main.tf"
+VERSIONS_TF = ROOT / "infra" / "azure-rankings-archive" / "versions.tf"
+VARIABLES_TF = ROOT / "infra" / "azure-rankings-archive" / "variables.tf"
+WORKFLOW = ROOT / ".github" / "workflows" / "test-and-smoke.yml"
 
 
-def test_terraform_keeps_azure_sql_free_offer_guardrails() -> None:
-    text = MAIN_TF.read_text(encoding="utf-8")
-    active_lines = [
+def _active_hcl_lines(text: str) -> list[str]:
+    return [
         line.strip()
         for line in text.splitlines()
         if line.strip() and not line.strip().startswith("#")
     ]
-    joined = "\n".join(active_lines)
-    assert "archive_use_free_limit" in joined
-    assert "archive_free_limit_exhaustion_behavior" in joined
-    assert "archive_max_size_gb" in joined
-    assert any(
-        "archive_use_free_limit" in line and "= true" in line for line in active_lines
+
+
+def test_terraform_does_not_use_unsupported_azurerm_free_offer_args() -> None:
+    """Released AzureRM schema rejects Free Offer args — must not appear on resources."""
+    text = MAIN_TF.read_text(encoding="utf-8")
+    active = "\n".join(_active_hcl_lines(text))
+    # Unsupported on released azurerm_mssql_database for this module's pin.
+    assert "use_free_limit" not in active
+    assert "free_limit_exhaustion_behavior" not in active
+    # Fail-closed: do not manage/create the DB via azurerm_mssql_database.
+    assert "resource \"azurerm_mssql_database\"" not in active
+    assert "data \"azurerm_mssql_database\"" not in active
+    assert "removed" in active
+    assert "destroy = false" in active
+    assert "rankings_archive_free" in text
+
+
+def test_terraform_defaults_to_rankings_archive_free_not_paid_name() -> None:
+    variables = VARIABLES_TF.read_text(encoding="utf-8")
+    assert 'default     = "rankings_archive_free"' in variables
+    assert 'var.sql_database_name != "rankings_archive"' in variables
+
+
+def test_versions_tf_does_not_claim_azurerm_free_offer_support() -> None:
+    versions = VERSIONS_TF.read_text(encoding="utf-8")
+    assert "does NOT support Free Offer" in versions
+    assert "required_version = \">= 1.7.0\"" in versions
+    assert "use_free_limit" not in "\n".join(
+        line for line in versions.splitlines() if not line.strip().startswith("#")
     )
-    assert any(
-        "archive_free_limit_exhaustion_behavior" in line and "AutoPause" in line
-        for line in active_lines
-    )
-    assert any(
-        "archive_max_size_gb" in line and "32" in line for line in active_lines
-    )
-    assert any(
-        line.startswith("use_free_limit") and "local.archive_use_free_limit" in line
-        for line in active_lines
-    )
-    assert any(
-        line.startswith("free_limit_exhaustion_behavior")
-        and "local.archive_free_limit_exhaustion_behavior" in line
-        for line in active_lines
-    )
-    assert any(
-        line.startswith("max_size_gb") and "local.archive_max_size_gb" in line
-        for line in active_lines
-    )
-    normalized = " ".join(joined.split())
-    assert 'sku_name = "GP_S_Gen5_2"' in normalized
-    # lifecycle preconditions must refuse plans that drop Free Offer guardrails (#186).
-    assert "lifecycle" in joined
-    assert "precondition" in joined
-    assert "local.archive_use_free_limit == true" in joined
-    assert 'local.archive_free_limit_exhaustion_behavior == "AutoPause"' in joined
-    assert "local.archive_max_size_gb <= 32" in joined
+
+
+def test_workflow_live_azure_sql_smoke_is_manual_only() -> None:
+    """Push/PR/schedule must not wake live Azure SQL (#186 / #187)."""
+    text = WORKFLOW.read_text(encoding="utf-8")
+    # No workflow-level schedule trigger.
+    assert "\nschedule:" not in text and not text.strip().startswith("schedule:")
+    assert "cron:" not in text
+
+    # Extract the azure-rankings-archive-smoke job `if:` block (first multiline if).
+    marker = "azure-rankings-archive-smoke:"
+    assert marker in text
+    after = text.split(marker, 1)[1]
+    # Job if condition must require workflow_dispatch only.
+    assert "github.event_name == 'workflow_dispatch'" in after
+    # Must not re-enable push or schedule for this job.
+    job_header = after.split("steps:", 1)[0]
+    assert "github.event_name == 'push'" not in job_header
+    assert "github.event_name == 'schedule'" not in job_header
+    assert "Cost warning" in after or "cost warning" in after.lower()

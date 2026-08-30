@@ -14,8 +14,8 @@ output "sql_server_name" {
 }
 
 output "sql_database_name" {
-  description = "Azure SQL database name."
-  value       = azurerm_mssql_database.archive.name
+  description = "External Free Offer Azure SQL database name (not managed by Terraform)."
+  value       = var.sql_database_name
 }
 
 output "sql_admin_login" {
@@ -31,17 +31,19 @@ output "sql_admin_password" {
 
 output "rankings_archive_database_url_example" {
   description = "Example SQLAlchemy URL template. Replace PASSWORD; do not commit secrets."
-  value       = "mssql+pyodbc://${var.sql_admin_login}:PASSWORD@${azurerm_mssql_server.archive.fully_qualified_domain_name}:1433/${azurerm_mssql_database.archive.name}?driver=ODBC+Driver+18+for+SQL+Server&Encrypt=yes&TrustServerCertificate=no"
+  value       = "mssql+pyodbc://${var.sql_admin_login}:PASSWORD@${azurerm_mssql_server.archive.fully_qualified_domain_name}:1433/${var.sql_database_name}?driver=ODBC+Driver+18+for+SQL+Server&Encrypt=yes&TrustServerCertificate=no"
 }
 
 output "free_offer_verification" {
-  description = "Settings that prove the Free offer + no-overage guardrail."
+  description = "Operator checklist — Terraform cannot prove Free Offer; run the verify script."
   value = {
-    sku_name                       = azurerm_mssql_database.archive.sku_name
-    use_free_limit                 = true
+    database_name                  = var.sql_database_name
+    managed_by_terraform           = false
+    use_free_limit_expected        = true
     free_limit_exhaustion_behavior = "AutoPause"
-    max_size_gb                    = 32
-    portal_hint                    = "Azure Portal → SQL database → Compute + storage → Free offer / Free limit should show enabled with Auto-pause on exhaustion."
+    max_size_gb_expected           = 32
+    verify_command                 = "python3 scripts/verify_azure_rankings_archive_free_offer.py --resource-group <rg> --server <server> --database rankings_archive_free"
+    portal_hint                    = "Azure Portal → SQL database → Compute + storage → Free offer must be enabled with Auto-pause on exhaustion."
   }
 }
 
@@ -50,9 +52,9 @@ output "intended_resources" {
   value = [
     "azurerm_resource_group",
     "azurerm_mssql_server",
-    "azurerm_mssql_database",
     "azurerm_mssql_firewall_rule",
     "random_string",
     "random_password",
+    # Database is external (Free Offer) — never azurerm_mssql_database.
   ]
 }

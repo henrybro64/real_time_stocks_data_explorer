@@ -23,9 +23,18 @@ variable "sql_server_name" {
 }
 
 variable "sql_database_name" {
-  description = "Azure SQL database name for the ranking archive PoC."
+  description = <<-EOT
+    Existing Azure SQL Free Offer database name (external to Terraform).
+    Default is rankings_archive_free. Do not use the deleted paid name
+    rankings_archive (#186).
+  EOT
   type        = string
-  default     = "rankings_archive"
+  default     = "rankings_archive_free"
+
+  validation {
+    condition     = var.sql_database_name != "rankings_archive"
+    error_message = "Do not recreate the deleted paid rankings_archive database; use rankings_archive_free (or another verified Free Offer DB)."
+  }
 }
 
 variable "sql_admin_login" {
