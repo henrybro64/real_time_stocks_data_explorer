@@ -263,7 +263,7 @@ def test_capture_skips_when_archive_unavailable() -> None:
     )
     assert result["captured"] == 0
     assert result["skipped"] == 0
-    assert result["failed"] == 0
+    assert result["failed"] == 1
     assert result["had_missing"] == 0
     assert result["still_missing"] == 0
     assert repo.upserts == []

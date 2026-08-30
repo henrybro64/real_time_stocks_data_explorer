@@ -442,6 +442,12 @@ export function RankingsPage() {
     });
   }, [market]);
 
+  // Clear opt-in whenever ranking context changes so returning to a prior
+  // market/universe/type does not auto-wake Azure from a stale key (#187).
+  useEffect(() => {
+    setHistoryDatesOptInKey(null);
+  }, [historyContextKey]);
+
   const historyDatesQuery = useQuery({
     queryKey: rankingsHistoryDatesQueryKey(market, selectedScope, rankingType),
     queryFn: ({ signal }) =>

@@ -100,3 +100,15 @@ def test_verify_free_offer_payload_fails_when_auto_pause_not_sixty() -> None:
     )
     assert failures
     assert any("autoPauseDelay" in item for item in failures)
+
+
+def test_require_azure_name_rejects_shell_metacharacters() -> None:
+    verify = _load_verify_module()
+    try:
+        verify._require_azure_name("rg; rm -rf /", label="resource-group")
+        assert False, "expected ValueError"
+    except ValueError as exc:
+        assert "Invalid resource-group" in str(exc)
+    assert verify._require_azure_name("stock-ticker-rg", label="resource-group") == (
+        "stock-ticker-rg"
+    )

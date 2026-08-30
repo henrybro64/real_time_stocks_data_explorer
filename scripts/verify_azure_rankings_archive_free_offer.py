@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 from typing import Any
@@ -26,29 +27,47 @@ MAX_SIZE_GB = 32.0
 # Expected Free Offer serverless shape for this project (#186).
 REQUIRED_AUTO_PAUSE_DELAY_MINUTES = 60
 REQUIRED_MIN_CAPACITY = 0.5
+# Azure resource names: letters, digits, underscore, period, hyphen only.
+_AZURE_NAME_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
+_CI_SUMMARY_HEADING = "## Azure SQL Free Offer verification"
+
+
+def _require_azure_name(value: str, *, label: str) -> str:
+    """Reject shell metacharacters before any OS command invocation."""
+    cleaned = value.strip()
+    if not cleaned or not _AZURE_NAME_RE.fullmatch(cleaned):
+        raise ValueError(
+            f"Invalid {label} {value!r}: expected Azure name matching "
+            f"{_AZURE_NAME_RE.pattern}"
+        )
+    return cleaned
 
 
 def _az_sql_db_show(*, resource_group: str, server: str, database: str) -> dict[str, Any]:
+    safe_rg = _require_azure_name(resource_group, label="resource-group")
+    safe_server = _require_azure_name(server, label="server")
+    safe_database = _require_azure_name(database, label="database")
     cmd = [
         "az",
         "sql",
         "db",
         "show",
         "--resource-group",
-        resource_group,
+        safe_rg,
         "--server",
-        server,
+        safe_server,
         "--name",
-        database,
+        safe_database,
         "-o",
         "json",
     ]
     try:
-        completed = subprocess.run(
+        completed = subprocess.run(  # noqa: S603 - args are allowlist-validated above
             cmd,
             check=False,
             capture_output=True,
             text=True,
+            shell=False,
         )
     except FileNotFoundError as exc:
         raise RuntimeError("Azure CLI (`az`) is not installed or not on PATH") from exc
@@ -77,80 +96,114 @@ def _gb_from_bytes(value: object) -> float | None:
     return raw
 
 
-def verify_free_offer_payload(payload: dict[str, Any]) -> list[str]:
-    """Return human-readable failure reasons (empty means PASS)."""
-    failures: list[str] = []
-    use_free = payload.get("useFreeLimit")
-    exhaustion = payload.get("freeLimitExhaustionBehavior")
+def _sku_name(payload: dict[str, Any]) -> str:
     sku_payload = payload.get("currentSku")
     if not isinstance(sku_payload, dict):
         sku_payload = payload.get("sku") if isinstance(payload.get("sku"), dict) else {}
-    sku_name = str(sku_payload.get("name") or "")
-    capacity = sku_payload.get("capacity")
-    auto_pause = payload.get("autoPauseDelay")
-    min_capacity = payload.get("minCapacity")
-    max_size_gb = _gb_from_bytes(payload.get("maxSizeBytes"))
-    if max_size_gb is None and payload.get("maxSizeGb") is not None:
-        try:
-            max_size_gb = float(payload["maxSizeGb"])
-        except (TypeError, ValueError):
-            max_size_gb = None
+    return str(sku_payload.get("name") or "")
 
-    if use_free is not True:
-        failures.append(
-            f"useFreeLimit must be true (live value={use_free!r}). "
-            "null/false means the Free Offer is NOT active — the DB may be billable. "
-            "Tags like cost-tier=azure-sql-free-offer do not enroll Free Offer. "
-            "Existing paid DBs often cannot be converted in place; create a new Free Offer database."
-        )
-    if exhaustion != REQUIRED_EXHAUSTION:
-        failures.append(
-            f"freeLimitExhaustionBehavior must be {REQUIRED_EXHAUSTION!r} "
-            f"(live value={exhaustion!r})"
-        )
-    # Serverless SKUs are GP_S_* (General Purpose Serverless).
-    if "GP_S" not in sku_name.upper() and "SERVERLESS" not in sku_name.upper():
-        # Some payloads nest differently; also accept computeModel when present.
-        compute_model = str(payload.get("currentServiceObjectiveName") or "")
-        if "GP_S" not in compute_model.upper():
-            failures.append(
-                f"Expected serverless compute (GP_S_*), live sku/objective={sku_name or compute_model!r}"
-            )
-    if max_size_gb is not None and max_size_gb > MAX_SIZE_GB + 0.01:
-        failures.append(f"max size {max_size_gb:.2f} GiB exceeds Free Offer limit {MAX_SIZE_GB}")
+
+def _max_size_gb(payload: dict[str, Any]) -> float | None:
+    max_size_gb = _gb_from_bytes(payload.get("maxSizeBytes"))
+    if max_size_gb is not None:
+        return max_size_gb
+    if payload.get("maxSizeGb") is None:
+        return None
     try:
-        if auto_pause is None:
-            failures.append(
-                "autoPauseDelay is missing; expected "
-                f"{REQUIRED_AUTO_PAUSE_DELAY_MINUTES} for serverless AutoPause"
-            )
-        else:
-            pause_minutes = int(auto_pause)
-            if pause_minutes < 0:
-                failures.append(
-                    f"autoPauseDelay={auto_pause!r} disables pause; "
-                    "serverless will stay billed/awake"
-                )
-            elif pause_minutes != REQUIRED_AUTO_PAUSE_DELAY_MINUTES:
-                failures.append(
-                    f"autoPauseDelay must be {REQUIRED_AUTO_PAUSE_DELAY_MINUTES} "
-                    f"(live value={auto_pause!r})"
-                )
+        return float(payload["maxSizeGb"])
     except (TypeError, ValueError):
-        failures.append(f"autoPauseDelay is not an int (live value={auto_pause!r})")
+        return None
+
+
+def _check_free_limit(use_free: object) -> str | None:
+    if use_free is True:
+        return None
+    return (
+        f"useFreeLimit must be true (live value={use_free!r}). "
+        "null/false means the Free Offer is NOT active — the DB may be billable. "
+        "Tags like cost-tier=azure-sql-free-offer do not enroll Free Offer. "
+        "Existing paid DBs often cannot be converted in place; create a new Free Offer database."
+    )
+
+
+def _check_exhaustion(exhaustion: object) -> str | None:
+    if exhaustion == REQUIRED_EXHAUSTION:
+        return None
+    return (
+        f"freeLimitExhaustionBehavior must be {REQUIRED_EXHAUSTION!r} "
+        f"(live value={exhaustion!r})"
+    )
+
+
+def _check_serverless(sku_name: str, payload: dict[str, Any]) -> str | None:
+    if "GP_S" in sku_name.upper() or "SERVERLESS" in sku_name.upper():
+        return None
+    compute_model = str(payload.get("currentServiceObjectiveName") or "")
+    if "GP_S" in compute_model.upper():
+        return None
+    return (
+        f"Expected serverless compute (GP_S_*), "
+        f"live sku/objective={sku_name or compute_model!r}"
+    )
+
+
+def _check_max_size(max_size_gb: float | None) -> str | None:
+    if max_size_gb is None or max_size_gb <= MAX_SIZE_GB + 0.01:
+        return None
+    return f"max size {max_size_gb:.2f} GiB exceeds Free Offer limit {MAX_SIZE_GB}"
+
+
+def _check_auto_pause(auto_pause: object) -> str | None:
+    if auto_pause is None:
+        return (
+            "autoPauseDelay is missing; expected "
+            f"{REQUIRED_AUTO_PAUSE_DELAY_MINUTES} for serverless AutoPause"
+        )
     try:
-        if min_capacity is None:
-            failures.append(
-                f"minCapacity is missing; expected {REQUIRED_MIN_CAPACITY} for Free Offer serverless"
-            )
-        elif abs(float(min_capacity) - REQUIRED_MIN_CAPACITY) > 0.001:
-            failures.append(
-                f"minCapacity must be {REQUIRED_MIN_CAPACITY} (live value={min_capacity!r})"
+        pause_minutes = int(auto_pause)
+    except (TypeError, ValueError):
+        return f"autoPauseDelay is not an int (live value={auto_pause!r})"
+    if pause_minutes < 0:
+        return (
+            f"autoPauseDelay={auto_pause!r} disables pause; "
+            "serverless will stay billed/awake"
+        )
+    if pause_minutes != REQUIRED_AUTO_PAUSE_DELAY_MINUTES:
+        return (
+            f"autoPauseDelay must be {REQUIRED_AUTO_PAUSE_DELAY_MINUTES} "
+            f"(live value={auto_pause!r})"
+        )
+    return None
+
+
+def _check_min_capacity(min_capacity: object) -> str | None:
+    if min_capacity is None:
+        return (
+            f"minCapacity is missing; expected {REQUIRED_MIN_CAPACITY} "
+            "for Free Offer serverless"
+        )
+    try:
+        if abs(float(min_capacity) - REQUIRED_MIN_CAPACITY) > 0.001:
+            return (
+                f"minCapacity must be {REQUIRED_MIN_CAPACITY} "
+                f"(live value={min_capacity!r})"
             )
     except (TypeError, ValueError):
-        failures.append(f"minCapacity is not numeric (live value={min_capacity!r})")
-    _ = capacity
-    return failures
+        return f"minCapacity is not numeric (live value={min_capacity!r})"
+    return None
+
+
+def verify_free_offer_payload(payload: dict[str, Any]) -> list[str]:
+    """Return human-readable failure reasons (empty means PASS)."""
+    checks = [
+        _check_free_limit(payload.get("useFreeLimit")),
+        _check_exhaustion(payload.get("freeLimitExhaustionBehavior")),
+        _check_serverless(_sku_name(payload), payload),
+        _check_max_size(_max_size_gb(payload)),
+        _check_auto_pause(payload.get("autoPauseDelay")),
+        _check_min_capacity(payload.get("minCapacity")),
+    ]
+    return [reason for reason in checks if reason is not None]
 
 
 def _append_summary(lines: list[str]) -> None:
@@ -159,6 +212,10 @@ def _append_summary(lines: list[str]) -> None:
         return
     with open(path, "a", encoding="utf-8") as handle:
         handle.write("\n".join(lines) + "\n")
+
+
+def _ci_fail_summary(*extra_lines: str) -> list[str]:
+    return [_CI_SUMMARY_HEADING, "", *extra_lines, ""]
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -194,21 +251,24 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     try:
+        resource_group = _require_azure_name(args.resource_group, label="resource-group")
+        server = _require_azure_name(args.server, label="server")
+        database = _require_azure_name(args.database, label="database")
         payload = _az_sql_db_show(
-            resource_group=args.resource_group,
-            server=args.server,
-            database=args.database,
+            resource_group=resource_group,
+            server=server,
+            database=database,
         )
+    except ValueError as exc:
+        print(f"Free Offer verification argument error: {exc}", file=sys.stderr)
+        if args.ci_summary:
+            _append_summary(_ci_fail_summary("Free Offer verification: FAIL (bad arguments)"))
+        return 2
     except RuntimeError as exc:
         print(f"Free Offer verification failed to query Azure: {exc}", file=sys.stderr)
         if args.ci_summary:
             _append_summary(
-                [
-                    "## Azure SQL Free Offer verification",
-                    "",
-                    "Free Offer verification: FAIL (Azure query error)",
-                    "",
-                ]
+                _ci_fail_summary("Free Offer verification: FAIL (Azure query error)")
             )
         return 2
 
@@ -233,14 +293,11 @@ def main(argv: list[str] | None = None) -> int:
             print(f"- {reason}", file=sys.stderr)
         if args.ci_summary:
             _append_summary(
-                [
-                    "## Azure SQL Free Offer verification",
-                    "",
+                _ci_fail_summary(
                     "Free Offer verification: FAIL",
                     "",
                     *[f"- {reason}" for reason in failures],
-                    "",
-                ]
+                )
             )
         return 1
 
@@ -248,7 +305,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.ci_summary:
         _append_summary(
             [
-                "## Azure SQL Free Offer verification",
+                _CI_SUMMARY_HEADING,
                 "",
                 "Free Offer verification: PASS",
                 "",

@@ -17,20 +17,36 @@ def test_terraform_keeps_azure_sql_free_offer_guardrails() -> None:
         if line.strip() and not line.strip().startswith("#")
     ]
     joined = "\n".join(active_lines)
-    assert "use_free_limit" in joined
+    assert "archive_use_free_limit" in joined
+    assert "archive_free_limit_exhaustion_behavior" in joined
+    assert "archive_max_size_gb" in joined
     assert any(
-        line.startswith("use_free_limit") and "= true" in line
+        "archive_use_free_limit" in line and "= true" in line for line in active_lines
+    )
+    assert any(
+        "archive_free_limit_exhaustion_behavior" in line and "AutoPause" in line
         for line in active_lines
     )
     assert any(
-        line.startswith("free_limit_exhaustion_behavior") and "AutoPause" in line
+        "archive_max_size_gb" in line and "32" in line for line in active_lines
+    )
+    assert any(
+        line.startswith("use_free_limit") and "local.archive_use_free_limit" in line
         for line in active_lines
     )
-    assert any(line.startswith("max_size_gb") and "32" in line for line in active_lines)
+    assert any(
+        line.startswith("free_limit_exhaustion_behavior")
+        and "local.archive_free_limit_exhaustion_behavior" in line
+        for line in active_lines
+    )
+    assert any(
+        line.startswith("max_size_gb") and "local.archive_max_size_gb" in line
+        for line in active_lines
+    )
     assert "sku_name    = \"GP_S_Gen5_2\"" in joined or 'sku_name = "GP_S_Gen5_2"' in joined
     # lifecycle preconditions must refuse plans that drop Free Offer guardrails (#186).
     assert "lifecycle" in joined
     assert "precondition" in joined
-    assert "self.use_free_limit == true" in joined
-    assert 'self.free_limit_exhaustion_behavior == "AutoPause"' in joined
-    assert "self.max_size_gb <= 32" in joined
+    assert "local.archive_use_free_limit == true" in joined
+    assert 'local.archive_free_limit_exhaustion_behavior == "AutoPause"' in joined
+    assert "local.archive_max_size_gb <= 32" in joined
