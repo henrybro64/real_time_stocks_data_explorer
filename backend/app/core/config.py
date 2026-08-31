@@ -86,6 +86,10 @@ class Settings(BaseSettings):
     # Not a fixed Azure SQL wake interval — the thread sleeps until the next settle.
     rankings_archive_eod_poll_seconds: int = Field(default=900, ge=60, le=7200)
     rankings_archive_capture_token: str = Field(default="")
+    # Archive snapshot retention (#188). Purge runs opportunistically after an
+    # already-awake capture cycle — never as a standalone Azure wake-up.
+    # 730 ≈ 2 years. 0 disables retention purge explicitly.
+    rankings_archive_retention_days: int = Field(default=730, ge=0, le=3650)
     # Taiwan detail-page market data refresh (institutional + margin-short write path).
     taiwan_market_data_refresh_enabled: bool = Field(default=True)
     taiwan_market_data_refresh_days: int = Field(default=120, ge=1, le=360)

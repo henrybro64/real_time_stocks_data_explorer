@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timezone
 import logging
 
-from sqlalchemy import select
+from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -29,6 +29,8 @@ logger = logging.getLogger(__name__)
 
 CAPTURE_SCOPE_END_OF_DAY = "end_of_day"
 _UNSET = object()
+# Bound each purge transaction so a huge backlog cannot lock the DB forever (#188).
+_DEFAULT_PURGE_BATCH_SIZE = 200
 
 
 @dataclass(frozen=True)
@@ -317,6 +319,110 @@ class RankingsArchiveRepository:
             ranking_type=ranking_type_value,
             trading_date=trading_date,
         )
+
+    def count_snapshots_older_than(
+        self,
+        *,
+        cutoff_trading_date: date,
+    ) -> dict[str, int | str]:
+        """Read-only retention preview: counts rows with ``trading_date < cutoff`` (#188)."""
+        if not self.is_available():
+            return {
+                "cutoff_date": cutoff_trading_date.isoformat(),
+                "snapshots_deleted": 0,
+                "items_deleted": 0,
+                "dry_run": 1,
+            }
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            snapshot_count = int(
+                session.execute(
+                    select(func.count())
+                    .select_from(RankingSnapshotArchive)
+                    .where(RankingSnapshotArchive.trading_date < cutoff_trading_date)
+                ).scalar_one()
+            )
+            item_count = int(
+                session.execute(
+                    select(func.count())
+                    .select_from(RankingSnapshotItemArchive)
+                    .where(
+                        RankingSnapshotItemArchive.snapshot_id.in_(
+                            select(RankingSnapshotArchive.id).where(
+                                RankingSnapshotArchive.trading_date < cutoff_trading_date
+                            )
+                        )
+                    )
+                ).scalar_one()
+            )
+        return {
+            "cutoff_date": cutoff_trading_date.isoformat(),
+            "snapshots_deleted": snapshot_count,
+            "items_deleted": item_count,
+            "dry_run": 1,
+        }
+
+    def purge_snapshots_older_than(
+        self,
+        *,
+        cutoff_trading_date: date,
+        batch_size: int = _DEFAULT_PURGE_BATCH_SIZE,
+    ) -> dict[str, int | str]:
+        """Delete archive snapshots with ``trading_date < cutoff`` (and their items).
+
+        Uses ``trading_date`` (not ``captured_at``). Child item rows are deleted
+        explicitly before parents so orphaned items cannot remain if CASCADE is
+        missing on an older physical schema. Each batch is one transaction (#188).
+        """
+        if batch_size < 1:
+            raise ValueError("batch_size must be >= 1")
+        if not self.is_available():
+            return {
+                "cutoff_date": cutoff_trading_date.isoformat(),
+                "snapshots_deleted": 0,
+                "items_deleted": 0,
+                "dry_run": 0,
+            }
+        snapshots_deleted = 0
+        items_deleted = 0
+        session_factory = self._session_factory()
+        while True:
+            with session_factory() as session:
+                try:
+                    id_rows = session.execute(
+                        select(RankingSnapshotArchive.id)
+                        .where(RankingSnapshotArchive.trading_date < cutoff_trading_date)
+                        .order_by(RankingSnapshotArchive.trading_date.asc())
+                        .limit(batch_size)
+                    ).scalars().all()
+                    if not id_rows:
+                        session.commit()
+                        break
+                    snapshot_ids = list(id_rows)
+                    item_result = session.execute(
+                        delete(RankingSnapshotItemArchive).where(
+                            RankingSnapshotItemArchive.snapshot_id.in_(snapshot_ids)
+                        )
+                    )
+                    snap_result = session.execute(
+                        delete(RankingSnapshotArchive).where(
+                            RankingSnapshotArchive.id.in_(snapshot_ids)
+                        )
+                    )
+                    session.commit()
+                except Exception:  # noqa: BLE001
+                    session.rollback()
+                    raise
+                items_deleted += int(item_result.rowcount or 0)
+                snapshots_deleted += int(snap_result.rowcount or 0)
+                if len(snapshot_ids) < batch_size:
+                    break
+        return {
+            "cutoff_date": cutoff_trading_date.isoformat(),
+            "snapshots_deleted": snapshots_deleted,
+            "items_deleted": items_deleted,
+            "dry_run": 0,
+        }
 
     def to_ranking_response(self, envelope: ArchiveSnapshotEnvelope) -> RankingResponse:
         """Rebuild a RankingResponse from an archived EOD snapshot (rank order preserved)."""

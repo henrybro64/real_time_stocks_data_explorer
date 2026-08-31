@@ -3,8 +3,17 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
+from unittest.mock import MagicMock
 from zoneinfo import ZoneInfo
 
+import pytest
+from pydantic import ValidationError
+from sqlalchemy import create_engine, event
+from sqlalchemy.orm import sessionmaker
+
+from app.core.config import Settings
+from app.db.archive_models import ArchiveBase
+from app.repositories.rankings_archive_repository import RankingsArchiveRepository
 from app.schemas.rankings import (
     RankingItem,
     RankingResponse,
@@ -30,6 +39,8 @@ class _FakeRepo:
         self.upsert_error: Exception | None = None
         self.load_calls = 0
         self.exists_calls = 0
+        self.purge_calls: list[date] = []
+        self.item_counts: dict[tuple[str, str, str, date], int] = {}
 
     def is_available(self) -> bool:
         return self.available
@@ -94,7 +105,31 @@ class _FakeRepo:
             return _FakeEnvelope()
         self.existing.add(key)
         self.upserts.append(key)
+        self.item_counts[key] = len(response.items)
         return _FakeEnvelope(item_count=len(response.items))
+
+    def purge_snapshots_older_than(self, *, cutoff_trading_date, batch_size=200):
+        self.purge_calls.append(cutoff_trading_date)
+        removed = [key for key in list(self.existing) if key[3] < cutoff_trading_date]
+        items_deleted = 0
+        for key in removed:
+            self.existing.discard(key)
+            items_deleted += self.item_counts.pop(key, 1)
+        return {
+            "cutoff_date": cutoff_trading_date.isoformat(),
+            "snapshots_deleted": len(removed),
+            "items_deleted": items_deleted,
+            "dry_run": 0,
+        }
+
+    def count_snapshots_older_than(self, *, cutoff_trading_date):
+        matched = [key for key in self.existing if key[3] < cutoff_trading_date]
+        return {
+            "cutoff_date": cutoff_trading_date.isoformat(),
+            "snapshots_deleted": len(matched),
+            "items_deleted": sum(self.item_counts.get(key, 1) for key in matched),
+            "dry_run": 1,
+        }
 
 
 class _FakeProvider:
@@ -889,3 +924,221 @@ def test_capture_batches_existence_checks() -> None:
     assert result["had_missing"] == 0
     assert result["still_missing"] == 0
     assert result["sql_round_trips"] >= 3
+
+
+def test_retention_cutoff_preserves_boundary_day() -> None:
+    cutoff = RankingsArchiveService.retention_cutoff_date(
+        retention_days=730,
+        as_of=date(2026, 8, 31),
+    )
+    assert cutoff == date(2024, 8, 31)
+    assert RankingsArchiveService.retention_cutoff_date(retention_days=0) is None
+
+
+def test_maybe_purge_refuses_standalone_wake(monkeypatch) -> None:
+    repo = _FakeRepo()
+    service = RankingsArchiveService(repository=repo)
+    monkeypatch.setattr(
+        "app.services.rankings_archive_service.settings.rankings_archive_retention_days",
+        730,
+    )
+    assert service.maybe_purge_expired_archives(already_awake=False) is None
+    assert repo.purge_calls == []
+
+
+def test_maybe_purge_runs_after_awake_capture_then_skips_within_interval(
+    monkeypatch,
+) -> None:
+    repo = _FakeRepo()
+    old = date(2020, 1, 2)
+    recent = date(2026, 8, 18)
+    repo.existing.add(("US", "DJIA", RankingType.volume.value, old))
+    repo.existing.add(("US", "DJIA", RankingType.volume.value, recent))
+    repo.item_counts[("US", "DJIA", RankingType.volume.value, old)] = 3
+    repo.item_counts[("US", "DJIA", RankingType.volume.value, recent)] = 1
+
+    service = RankingsArchiveService(repository=repo)
+    monkeypatch.setattr(
+        "app.services.rankings_archive_service.settings.rankings_archive_retention_days",
+        730,
+    )
+    now = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
+    first = service.maybe_purge_expired_archives(now=now, already_awake=True)
+    assert first is not None
+    assert first["snapshots_deleted"] == 1
+    assert first["items_deleted"] == 3
+    assert len(repo.purge_calls) == 1
+    assert ("US", "DJIA", RankingType.volume.value, old) not in repo.existing
+    assert ("US", "DJIA", RankingType.volume.value, recent) in repo.existing
+
+    # Second call within 7 days must not purge again.
+    second = service.maybe_purge_expired_archives(
+        now=now + timedelta(days=1),
+        already_awake=True,
+    )
+    assert second is None
+    assert len(repo.purge_calls) == 1
+
+    # force skips interval but still requires already_awake.
+    forced = service.maybe_purge_expired_archives(
+        now=now + timedelta(days=1),
+        already_awake=True,
+        force=True,
+    )
+    assert forced is not None
+    assert len(repo.purge_calls) == 2
+
+
+def test_maybe_purge_disabled_when_retention_days_zero(monkeypatch) -> None:
+    repo = _FakeRepo()
+    service = RankingsArchiveService(repository=repo)
+    monkeypatch.setattr(
+        "app.services.rankings_archive_service.settings.rankings_archive_retention_days",
+        0,
+    )
+    assert (
+        service.maybe_purge_expired_archives(
+            now=datetime(2026, 8, 31, tzinfo=timezone.utc),
+            already_awake=True,
+            force=True,
+        )
+        is None
+    )
+    assert repo.purge_calls == []
+
+
+def test_capture_triggers_opportunistic_purge(monkeypatch) -> None:
+    repo = _FakeRepo()
+    service = RankingsArchiveService(
+        repository=repo,
+        provider_registry=_FakeRegistry(_response()),
+    )
+    monkeypatch.setattr(
+        "app.services.rankings_archive_service.settings.rankings_archive_retention_days",
+        730,
+    )
+    # Mark all candidates present so capture skips provider fetches but still
+    # completes an awake cycle and may purge.
+    ny = ZoneInfo("America/New_York")
+    after_settle = datetime(2026, 8, 18, 17, 0, tzinfo=ny)
+    for query in service.eod_archive_queries():
+        universe = query.universe or query.tw_board or "DJIA"
+        for day in service._settled_trading_dates(
+            query.market,  # type: ignore[arg-type]
+            after_settle,
+            ranking_type=query.ranking_type,
+            limit=7,
+        ):
+            repo.existing.add((query.market, universe, query.ranking_type.value, day))
+
+    repo.existing.add(("US", "DJIA", RankingType.volume.value, date(2020, 1, 1)))
+    result = service.capture_eod_archives(now=after_settle)
+    assert result["failed"] == 0
+    assert repo.purge_calls
+    assert ("US", "DJIA", RankingType.volume.value, date(2020, 1, 1)) not in repo.existing
+
+
+def _archive_session_factory():
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+
+    @event.listens_for(engine, "connect")
+    def _fk(dbapi_connection, _connection_record) -> None:  # noqa: ANN001
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
+
+    ArchiveBase.metadata.create_all(bind=engine)
+    return sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
+
+
+def _archive_response(symbol: str = "AAPL") -> RankingResponse:
+    return RankingResponse(
+        market="US",
+        rankingType=RankingType.volume,
+        twBoard=None,
+        universe="DJIA",
+        items=[
+            RankingItem(
+                rank=1,
+                stock=StockResponse(
+                    id=f"US:{symbol}",
+                    market="US",
+                    symbol=symbol,
+                    name=symbol,
+                    exchange="NASDAQ",
+                    currency="USD",
+                    timezone="America/New_York",
+                ),
+                lastPrice=100.0,
+                changePercent=1.0,
+                volume=1000,
+                volumeDeltaPercent=None,
+                netBuySellShares=None,
+                peRatio=None,
+                peRatioType=None,
+                peRatioSource=None,
+                valuationAsOf=None,
+                valuationWarning=None,
+                timestamp="2026-08-20T16:00:00-04:00",
+            )
+        ],
+        timestamp="2026-08-20T20:00:00+00:00",
+        source="unit-test",
+        sourceType=RankingSourceType.free_unofficial,
+        isMarketOpen=False,
+        dataFreshnessLabel="EOD archive",
+        warningMessage=None,
+        unsupportedReason=None,
+        usRankingsScope="djia",
+        twRankingsScope=None,
+    )
+
+
+def test_retention_days_config_rejects_negative() -> None:
+    with pytest.raises(ValidationError):
+        Settings(rankings_archive_retention_days=-1)
+
+
+def test_history_reads_never_trigger_retention_purge(monkeypatch) -> None:
+    """#188 / #187: history APIs must not purge; only capture cycles may."""
+    repo = RankingsArchiveRepository()
+    repo.set_session_factory_override(_archive_session_factory())
+    purge_spy = MagicMock(wraps=repo.purge_snapshots_older_than)
+    repo.purge_snapshots_older_than = purge_spy  # type: ignore[method-assign]
+
+    service = RankingsArchiveService(repository=repo)
+    monkeypatch.setattr(
+        "app.services.rankings_archive_service.settings.rankings_archive_retention_days",
+        730,
+    )
+
+    trading_date = date(2026, 8, 20)
+    assert (
+        repo.upsert_eod_snapshot(
+            market="US",
+            universe="DJIA",
+            ranking_type=RankingType.volume,
+            trading_date=trading_date,
+            response=_archive_response(),
+        )
+        is not None
+    )
+
+    dates = service.list_history_dates(
+        market="US",
+        universe="DJIA",
+        ranking_type=RankingType.volume,
+        limit=5,
+    )
+    assert dates == [trading_date]
+
+    loaded = service.get_history_rankings(
+        market="US",
+        universe="DJIA",
+        ranking_type=RankingType.volume,
+        trading_date=trading_date,
+    )
+    assert loaded is not None
+
+    assert service.maybe_purge_expired_archives(already_awake=False) is None
+    purge_spy.assert_not_called()
