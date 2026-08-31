@@ -82,15 +82,23 @@ Expected pods: `stock-ticker-backend`, `stock-ticker-frontend`, `stock-ticker-po
 
 ## Postgres backup and restore
 
-Before teardown, back up if you need the data:
+Before teardown, back up if you need the data. Backup/restore scripts auto-detect `kubectl` vs `sudo k3s kubectl`, or set `KUBECTL_CMD` explicitly (same as `k8s-teardown.sh` / `k8s-diagnose.sh`).
 
 ```bash
 ./scripts/k8s-backup-postgres.sh
-# restore after fresh deploy:
-./scripts/k8s-restore-postgres.sh stocks-backup.sql
+# k3s when plain kubectl cannot reach the cluster:
+KUBECTL_CMD="sudo k3s kubectl" ./scripts/k8s-backup-postgres.sh
 ```
 
-Deleting the namespace or PVC **without** backup removes database files.
+**Restore after a fresh deploy:** the backend init container runs `alembic upgrade head`, so a **full** dump (schema + data) fails on duplicate objects. For repeated dev cycles, back up **data only** once schema is stable, deploy, wait for migrations, then restore:
+
+```bash
+./scripts/k8s-backup-postgres.sh stock-ticker stocks-data.sql --data-only
+# after deploy + backend init (migrations) finished:
+./scripts/k8s-restore-postgres.sh stocks-data.sql
+```
+
+A **full** dump is for disaster recovery into an **empty** database (wipe the PVC or first boot before restore). Deleting the namespace or PVC **without** backup removes database files.
 
 ## Multi-user auth in k8s
 

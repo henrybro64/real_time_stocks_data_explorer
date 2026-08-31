@@ -39,10 +39,13 @@ Each response includes `X-Request-ID` when possible. See [backend-logging.md](ba
 Stock detail exposes `GET /api/stocks/{stock_id}/analysis` using yfinance history + backend metrics, then an optional AI provider on the summary JSON.
 
 ```text
-AI_PROVIDER=openai        # openai | perplexity | anthropic | gemini | ollama
+AI_PROVIDER=openai        # implemented: openai | perplexity
 AI_MODEL=gpt-4o-mini
 OPENAI_API_KEY=...
+# PERPLEXITY_API_KEY=...  when AI_PROVIDER=perplexity
 ```
+
+`anthropic`, `gemini`, and `ollama` are reserved names but not implemented yet (`AIProviderConfigurationError`).
 
 Without a provider key, metrics still return with warnings. Output is informational only.
 
