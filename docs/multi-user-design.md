@@ -1,103 +1,40 @@
-# Multi-User Design
+# Multi-user design
 
-## Goal
+The backend enforces ownership in the data model and on every user-owned route, in both single-user and session auth modes.
 
-The backend should enforce ownership in the data model and in every user-owned access path, regardless of whether the application is running in:
+## Identity
 
-- single-user mode (`AUTH_ENABLED=false`)
-- session-based multi-user mode (`AUTH_ENABLED=true`)
+| Mode | Setting | Resolved user |
+| --- | --- | --- |
+| Single-user | `AUTH_ENABLED=false` | Seeded `default-user` (`backend/app/db/init_ids.py`; startup `seed_default_user()`) |
+| Multi-user | `AUTH_ENABLED=true` | Session cookie → `users.id` via `get_effective_user_id()` in `backend/app/api/deps.py` |
 
-This document describes the current ownership model, how request identity is resolved, and what the feature flag changes.
+Compatibility mode still uses the same `user_id` columns and scoped queries — auth off does **not** bypass ownership checks.
 
-## Identity Model
+Stale sessions: if `request.session["user_id"]` is missing or the user row was deleted, the session is cleared and the request gets `401`.
 
-### `AUTH_ENABLED=false`
+## User-owned entities
 
-Single-user mode does not use login sessions. Protected routes resolve to one explicit system principal:
+| Entity | Owner column | Enforcement |
+| --- | --- | --- |
+| Watchlist items | `watchlist_items.user_id` | FK + unique `(user_id, stock_id)` |
+| Portfolio positions/assets | `portfolio_positions.user_id`, `portfolio_assets.user_id` | scoped CRUD |
+| Portfolio history | `portfolio_history_snapshots.user_id` | scoped queries |
+| Alerts / events | `alert_rules.user_id`, `alert_events.user_id` | scoped CRUD + evaluation |
+| AI prefs / API keys | `user_ai_preferences.user_id`, `user_api_keys.user_id` | scoped get/upsert |
+| OAuth link | `oauth_identities.user_id` | unique `(provider, subject)` |
 
-- user id: `default-user`
-- source of truth: `backend/app/db/init_ids.py`
-- bootstrap path: backend startup calls `seed_default_user()` when a database session is available
+Saved layouts/dashboard settings are not persisted today. New features must follow the same explicit `user_id` pattern.
 
-This is an intentional compatibility mode for local development and demos. The important design choice is that the backend still goes through the same ownership columns and user-scoped queries used in multi-user mode. The app does not bypass ownership checks just because auth is off.
+## Enforcement layers
 
-### `AUTH_ENABLED=true`
+1. **Routes** — watchlist, portfolio, alerts, AI depend on `get_effective_user_id()`.
+2. **Services** — all queries/mutations filter by `user_id` (updates match resource id **and** user).
+3. **Schema** — FKs to `users.id`, `ON DELETE CASCADE`, user-scoped uniqueness.
 
-Multi-user mode uses the session cookie stored by the `/api/auth/login/local` and `/api/auth/register/local` endpoints.
+## Feature flags
 
-Request identity is resolved in `backend/app/api/deps.py`:
-
-1. Read `request.session["user_id"]`
-2. Re-check that the referenced `users.id` row still exists
-3. Clear the session and reject the request with `401` if the session is missing or stale
-
-This prevents a deleted or invalid user id from continuing to access user-owned routes through an old cookie.
-
-## Ownership Model
-
-The application currently stores the following user-owned entities.
-
-| Entity | Storage model | Explicit owner | Enforcement |
-| --- | --- | --- | --- |
-| User | `users` | primary key `users.id` | root identity record |
-| Watchlist | conceptual collection | `watchlist_items.user_id` on every row | route dependency + user-scoped queries |
-| Watchlist item | `watchlist_items` | `user_id -> users.id` FK | unique `(user_id, stock_id)`, user-scoped insert/delete/list |
-| Portfolio | conceptual collection | `portfolio_positions.user_id` and `portfolio_assets.user_id` | route dependency + user-scoped queries |
-| Holding / position | `portfolio_positions` | `user_id -> users.id` FK | unique `(user_id, stock_id)`, user-scoped CRUD |
-| Portfolio asset | `portfolio_assets` | `user_id -> users.id` FK | user-scoped CRUD |
-| Portfolio history snapshot | `portfolio_history_snapshots` | `user_id -> users.id` FK | unique `(user_id, snapshot_hour, source_window)`, user-scoped history queries |
-| Alert rule | `alert_rules` | `user_id -> users.id` FK | user-scoped CRUD and evaluation |
-| Alert event | `alert_events` | `user_id -> users.id` FK | user-scoped history queries |
-| AI provider preference | `user_ai_preferences` | primary key `user_ai_preferences.user_id` | user-scoped get/upsert |
-| AI provider API key | `user_api_keys` | `user_id -> users.id` FK | unique `(user_id, provider)`, user-scoped get/upsert |
-| OAuth identity mapping | `oauth_identities` | `user_id -> users.id` FK | unique `(provider, subject)` |
-
-The backend does not currently persist saved layouts or dashboard settings. There is therefore no hidden shared row for those concepts today. If those features are added later, they must follow the same explicit `user_id` ownership pattern.
-
-## Access Control Enforcement
-
-Ownership is enforced at three layers.
-
-### 1. Route dependency
-
-All user-owned routes depend on `get_effective_user_id()`:
-
-- `backend/app/api/routes/watchlist.py`
-- `backend/app/api/routes/portfolio.py`
-- `backend/app/api/routes/alerts.py`
-- `backend/app/api/routes/ai.py`
-
-That keeps the request identity decision in one place instead of repeating auth logic per route.
-
-### 2. User-scoped queries and mutations
-
-All service methods that operate on user-owned data filter by `user_id`:
-
-- `WatchlistService`
-- `PortfolioService`
-- `AlertService`
-- `UserAiPreferenceService`
-- `ApiKeyService`
-
-Updates and deletes use both the resource id and `user_id`, so one user cannot mutate another user's record by guessing an integer id.
-
-### 3. Database constraints
-
-The schema also enforces ownership structurally:
-
-- foreign keys from child rows to `users.id`
-- `ON DELETE CASCADE` so user-owned rows are removed with the owning user
-- uniqueness constraints scoped by `user_id` where needed
-
-This means the application is not relying only on frontend behavior or API conventions.
-
-## Feature Flag Behavior
-
-| Setting | Identity source | Login required | User-owned routes run as | Notes |
-| --- | --- | --- | --- | --- |
-| `AUTH_ENABLED=false` | seeded system principal | no | `default-user` | single-user compatibility mode |
-| `AUTH_ENABLED=true` and `LOCAL_AUTH_ENABLED=true` | session cookie -> `users.id` | yes | authenticated session user | stale sessions are rejected |
-
-## Summary
-
-The current backend is multi-user by data model and by access path for the user-owned entities that exist today. Single-user mode is still supported, but it now uses an explicit and documented system principal instead of a hidden setup assumption.
+| Setting | Login | Acts as |
+| --- | --- | --- |
+| `AUTH_ENABLED=false` | No | `default-user` |
+| `AUTH_ENABLED=true` + `LOCAL_AUTH_ENABLED=true` | Yes (`/api/auth/login/local`, register) | Session user |

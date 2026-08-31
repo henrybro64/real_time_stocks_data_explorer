@@ -6,6 +6,7 @@ node_modules/
 
 # Python environments
 .venv/
+.venv-ci/
 venv/
 ENV/
 env/

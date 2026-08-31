@@ -1,22 +1,19 @@
 # Stock Ticker observability (Prometheus + Grafana + kube-state-metrics)
 
-This stack adds Kubernetes **workload health** visibility for the local k3s/k3d
-deployment. It is intentionally small and optional: the core app deploy under
-`k8s/` does not require it, and the existing k3s smoke path stays unchanged.
+Optional Kubernetes **workload health** visibility for local k3s/k3d. The core app
+deploy does not require it; k3s smoke is unchanged.
 
-## Relationship to GitHub issues #28 and #136
+## Scope
 
-| Issue | Owns |
-|-------|------|
-| **#136** (this document / `k8s/observability`) | Shared Prometheus + Grafana + `kube-state-metrics` install, scrape config for Kubernetes state/cAdvisor, and the **Kubernetes Workload Health** dashboard |
-| **#28** | Application `/metrics` instrumentation (HTTP, providers, refresh jobs) and **app-level** Grafana dashboards that scrape the backend |
+| Layer | This overlay (`k8s/observability`) | Future app metrics |
+| --- | --- | --- |
+| Install | Prometheus, Grafana, kube-state-metrics | Reuse this stack |
+| Dashboards | **Kubernetes Workload Health** | Backend `/metrics` dashboards |
 
-Do **not** stand up a second Prometheus or Grafana for #28. When #28 lands, add a
-Prometheus scrape job for the backend Service and new dashboard JSON under the
-same Grafana provisioning path used here.
-
-Application `/metrics` is therefore deferred to #28; this overlay is the shared
-monitoring foundation.
+Do **not** stand up a second Prometheus or Grafana for application metrics — add scrape
+jobs and dashboard JSON under the same provisioning path. This overlay covers **#136**
+(Kubernetes workload health); backend `/metrics` dashboards belong in **#28** and should
+reuse this stack.
 
 ## What is collected
 
@@ -127,7 +124,7 @@ show usage vs limits without starving a laptop cluster:
 
 These are starting points for personal k3s/k3d, not production sizing.
 
-Background quote refresher (#130) runs inside the backend Deployment, so it is
+Background quote refresher runs inside the backend Deployment, so it is
 covered by backend pod panels. The history-capture CronJob is covered by the
 CronJob/Job panels.
 

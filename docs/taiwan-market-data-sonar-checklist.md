@@ -111,25 +111,9 @@ Prefer the failure-mode table above over hunting for these hashes on every PR.
 
 ---
 
-## PR #104 Sonar status (acceptance note for #108)
+## PR #104 acceptance trail (historical)
 
-[PR #104](https://github.com/henrybro64/real_time_stocks_data_explorer/pull/104) initially failed Sonar while functional jobs were green.
-
-Follow-ups on that PR cleared the gate (linked commits below are the #104 acceptance trail, not a living required set):
-
-| Commit | Role |
-| --- | --- |
-| [`f953f40`](https://github.com/henrybro64/real_time_stocks_data_explorer/commit/f953f40) | Address Codex + Sonar feedback (reliability, dedupe, lot conversion) |
-| [`976501b`](https://github.com/henrybro64/real_time_stocks_data_explorer/commit/976501b) | Fix Sonar float-equality findings in ETF lot unit tests |
-
-Final merge checks for PR #104:
-
-- SonarCloud Code Analysis: **pass** — [dashboard](https://sonarcloud.io/dashboard?id=henrybro64_real_time_stocks_data_explorer&pullRequest=104)
-- `backend-pytest` / Playwright / k3s: **pass**
-
-No deferred Sonar debt was left open for that PR.
-
-Later Taiwan PRs (#95 / #97 / #105 style) reused the same approach: clear duplication via shared helpers and keep unit tests covering new branches before merge.
+[PR #104](https://github.com/henrybro64/real_time_stocks_data_explorer/pull/104) initially failed Sonar while functional jobs were green. Follow-ups cleared the gate — illustrative commits (not a living required set): [`f953f40`](https://github.com/henrybro64/real_time_stocks_data_explorer/commit/f953f40), [`976501b`](https://github.com/henrybro64/real_time_stocks_data_explorer/commit/976501b). Final merge: SonarCloud **pass**, pytest/Playwright/k3s **pass**. **No deferred Sonar debt** was left open for that PR.
 
 ---
 
