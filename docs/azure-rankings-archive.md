@@ -108,6 +108,51 @@ next settle event so AutoPause can engage (idle longer than 60 minutes).
 Failures are logged and never raised into ranking request paths. AutoPause cold
 starts remain expected on the first probe after a long idle.
 
+## Snapshot retention (#188)
+
+Azure SQL Free Offer storage is finite. Default retention keeps about **two
+years** of EOD archives:
+
+```bash
+RANKINGS_ARCHIVE_RETENTION_DAYS=730
+```
+
+- `730` (default): delete rows with `trading_date` older than UTC today − 730 days
+- `0`: disable purge explicitly (unlimited growth — not recommended)
+- Valid range: `0`–`3650`
+
+Purge runs **opportunistically** at the end of a capture cycle that already
+touched Azure SQL (sampler or manual capture). It does **not** add a separate
+poller or wake Azure solely because the purge interval elapsed. In-process, purge
+runs at most about once every 7 days **per backend process**.
+
+With multiple replicas (e.g. k3s), each pod that completes a capture cycle may
+purge independently — still only while Azure is already awake, but fleet-wide
+purge SQL can occur more often than weekly. That is acceptable for this PoC; use
+a single archive capture leader or external coordination only if you need a
+strict global weekly cap.
+
+History read APIs (`/api/rankings/history`, `/history/dates`) never run
+retention purge — only capture cycles do (#187 / #188).
+
+Structured logs use `event=rankings_archive.retention.completed` with
+`retention_days`, `cutoff_date`, `snapshots_deleted`, `items_deleted`, and
+`purge_duration_ms` (no secrets / row contents).
+
+Read-only preview (**operator shell only** — opens the archive DB and may wake
+a paused serverless database; never call from HTTP handlers or CI). Returns
+``None`` when retention is disabled or the archive is unavailable (do not treat
+``None`` as “zero rows to purge”):
+
+```python
+from app.services.rankings_archive_service import rankings_archive_service
+print(rankings_archive_service.preview_retention_purge())
+```
+
+After purge, `/api/rankings/history/dates` omits deleted dates and
+`/api/rankings/history` for a purged date returns the normal missing-archive
+`404`. Current rankings / Postgres are unchanged.
+
 ## Historical read APIs (#168)
 
 These endpoints read Azure SQL only. They never fall back to current rankings.

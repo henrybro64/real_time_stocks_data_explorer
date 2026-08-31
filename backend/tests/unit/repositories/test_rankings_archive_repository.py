@@ -119,6 +119,41 @@ def test_load_eod_snapshot_returns_none_when_missing() -> None:
     assert loaded is None
 
 
+def test_load_eod_snapshot_returns_none_when_items_orphaned() -> None:
+    """#188: parent without children (concurrent purge) must not return an empty 200."""
+    from sqlalchemy import delete
+
+    from app.db.archive_models import RankingSnapshotItemArchive
+
+    repo = RankingsArchiveRepository()
+    factory = _session_factory()
+    repo.set_session_factory_override(factory)
+    trading_date = date(2026, 8, 18)
+    assert (
+        repo.upsert_eod_snapshot(
+            market="US",
+            universe="DJIA",
+            ranking_type=RankingType.volume,
+            trading_date=trading_date,
+            response=_response(),
+        )
+        is not None
+    )
+    with factory() as session:
+        session.execute(delete(RankingSnapshotItemArchive))
+        session.commit()
+
+    assert (
+        repo.load_eod_snapshot(
+            market="US",
+            universe="DJIA",
+            ranking_type=RankingType.volume,
+            trading_date=trading_date,
+        )
+        is None
+    )
+
+
 def test_has_eod_snapshot_is_true_without_loading_items() -> None:
     repo = RankingsArchiveRepository()
     repo.set_session_factory_override(_session_factory())
@@ -480,3 +515,142 @@ def test_list_available_trading_dates_mssql_avoids_top_distinct() -> None:
     assert not re.search(r"TOP\s+\d+\s+DISTINCT", untyped_sql)
     assert "DISTINCT" in untyped_sql
     assert untyped_sql.index("DISTINCT") < untyped_sql.index("TOP")
+
+
+def test_purge_snapshots_older_than_removes_items_and_keeps_boundary() -> None:
+    """#188: trading_date < cutoff deleted; boundary + newer kept; items go too."""
+    from app.db.archive_models import RankingSnapshotArchive, RankingSnapshotItemArchive
+    from sqlalchemy import func, select
+
+    repo = RankingsArchiveRepository()
+    factory = _session_factory()
+    repo.set_session_factory_override(factory)
+
+    as_of = date(2026, 8, 31)
+    retention_days = 730
+    cutoff = as_of - __import__("datetime").timedelta(days=retention_days)
+    assert cutoff == date(2024, 8, 31)
+
+    old = date(2024, 8, 30)  # older than cutoff → purge
+    boundary = cutoff  # exactly at boundary → keep
+    recent = date(2026, 8, 18)
+
+    for trading_date in (old, boundary, recent):
+        assert (
+            repo.upsert_eod_snapshot(
+                market="US",
+                universe="DJIA",
+                ranking_type=RankingType.volume,
+                trading_date=trading_date,
+                response=_response(),
+                captured_at=datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc),
+            )
+            is not None
+        )
+
+    preview = repo.count_snapshots_older_than(cutoff_trading_date=cutoff)
+    assert preview["dry_run"] == 1
+    assert preview["snapshots_deleted"] == 1
+    assert preview["items_deleted"] == 1
+
+    result = repo.purge_snapshots_older_than(cutoff_trading_date=cutoff)
+    assert result["dry_run"] == 0
+    assert result["snapshots_deleted"] == 1
+    assert result["items_deleted"] == 1
+    assert result["cutoff_date"] == cutoff.isoformat()
+
+    assert (
+        repo.has_eod_snapshot(
+            market="US",
+            universe="DJIA",
+            ranking_type=RankingType.volume,
+            trading_date=old,
+        )
+        is False
+    )
+    assert (
+        repo.has_eod_snapshot(
+            market="US",
+            universe="DJIA",
+            ranking_type=RankingType.volume,
+            trading_date=boundary,
+        )
+        is True
+    )
+    assert (
+        repo.has_eod_snapshot(
+            market="US",
+            universe="DJIA",
+            ranking_type=RankingType.volume,
+            trading_date=recent,
+        )
+        is True
+    )
+
+    with factory() as session:
+        assert session.execute(select(func.count()).select_from(RankingSnapshotArchive)).scalar_one() == 2
+        assert (
+            session.execute(select(func.count()).select_from(RankingSnapshotItemArchive)).scalar_one()
+            == 2
+        )
+
+
+def test_purge_snapshots_is_transactional_on_failure(monkeypatch) -> None:
+    """Partial batch failure must not leave orphaned items (#188)."""
+    from sqlalchemy.orm import Session
+
+    repo = RankingsArchiveRepository()
+    factory = _session_factory()
+    repo.set_session_factory_override(factory)
+
+    for day in (date(2020, 1, 1), date(2020, 1, 2)):
+        assert (
+            repo.upsert_eod_snapshot(
+                market="US",
+                universe="DJIA",
+                ranking_type=RankingType.volume,
+                trading_date=day,
+                response=_response(),
+            )
+            is not None
+        )
+
+    original_commit = Session.commit
+    calls = {"n": 0}
+
+    def flaky_commit(self):  # noqa: ANN001
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("simulated commit failure")
+        return original_commit(self)
+
+    monkeypatch.setattr(Session, "commit", flaky_commit)
+    try:
+        try:
+            repo.purge_snapshots_older_than(cutoff_trading_date=date(2021, 1, 1))
+            raised = False
+        except RuntimeError:
+            raised = True
+    finally:
+        monkeypatch.setattr(Session, "commit", original_commit)
+
+    assert raised
+    # After rollback, both old snapshots (and items) remain.
+    assert (
+        repo.has_eod_snapshot(
+            market="US",
+            universe="DJIA",
+            ranking_type=RankingType.volume,
+            trading_date=date(2020, 1, 1),
+        )
+        is True
+    )
+    assert (
+        repo.has_eod_snapshot(
+            market="US",
+            universe="DJIA",
+            ranking_type=RankingType.volume,
+            trading_date=date(2020, 1, 2),
+        )
+        is True
+    )

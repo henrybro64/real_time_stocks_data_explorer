@@ -528,3 +528,71 @@ def test_history_dates_rejects_mismatched_universe() -> None:
             ranking_type=RankingType.volume,
         )
     assert exc.value.status_code == 422
+
+
+def test_history_apis_hide_purged_dates_after_retention(monkeypatch) -> None:
+    """#188: purged dates omitted from dates API; history route returns HTTP 404."""
+    from datetime import timedelta
+
+    repo = RankingsArchiveRepository()
+    repo.set_session_factory_override(_session_factory())
+    service = RankingsArchiveService(repository=repo)
+    monkeypatch.setattr(rankings_route, "rankings_archive_service", service)
+
+    as_of = date(2026, 8, 31)
+    cutoff = as_of - timedelta(days=730)
+    old = cutoff - timedelta(days=1)
+    kept = cutoff
+
+    for trading_date, symbol in ((old, "OLD"), (kept, "KEEP")):
+        assert (
+            repo.upsert_eod_snapshot(
+                market="US",
+                universe="DJIA",
+                ranking_type=RankingType.volume,
+                trading_date=trading_date,
+                response=_response(symbol=symbol),
+            )
+            is not None
+        )
+
+    before = rankings_route.get_rankings_history_dates(
+        market="US",
+        universe="DJIA",
+        ranking_type=RankingType.volume,
+        limit=10,
+    )
+    assert old.isoformat() in before.dates and kept.isoformat() in before.dates
+
+    purged = repo.purge_snapshots_older_than(cutoff_trading_date=cutoff)
+    assert purged["snapshots_deleted"] == 1
+
+    after = rankings_route.get_rankings_history_dates(
+        market="US",
+        universe="DJIA",
+        ranking_type=RankingType.volume,
+        limit=10,
+    )
+    assert after.dates == [kept.isoformat()]
+
+    with pytest.raises(HTTPException) as exc_hist:
+        rankings_route.get_rankings_history(
+            market="US",
+            ranking_type=RankingType.volume,
+            trading_date=old,
+            limit=50,
+            tw_board=None,
+            universe="DJIA",
+        )
+    assert exc_hist.value.status_code == 404
+    assert old.isoformat() in exc_hist.value.detail
+
+    history = rankings_route.get_rankings_history(
+        market="US",
+        ranking_type=RankingType.volume,
+        trading_date=kept,
+        limit=50,
+        tw_board=None,
+        universe="DJIA",
+    )
+    assert history.items[0].stock.symbol == "KEEP"

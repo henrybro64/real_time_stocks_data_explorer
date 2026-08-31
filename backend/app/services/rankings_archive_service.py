@@ -54,6 +54,8 @@ _BACKFILL_FETCHES_PER_QUERY = 1
 # After a settle becomes due, retry capture for this long before sleeping until
 # the next session (covers provider lag without 15-minute forever polling) (#187).
 _SAME_DAY_RETRY_BUDGET = timedelta(minutes=90)
+# Opportunistic retention: at most about weekly per process, never a standalone wake (#188).
+_RETENTION_PURGE_MIN_INTERVAL = timedelta(days=7)
 _HISTORY_DATES_FAILED = "Rankings archive history dates lookup failed"
 _HISTORY_LOAD_FAILED = "Rankings archive history load failed"
 
@@ -147,6 +149,8 @@ class RankingsArchiveService:
         self._stop_event = Event()
         self._thread: Thread | None = None
         self._lock = Lock()
+        # Per-process only: each backend replica tracks its own weekly purge cadence (#188).
+        self._last_retention_purge_at: datetime | None = None
 
     def is_available(self) -> bool:
         return self._repository.is_available()
@@ -1078,6 +1082,8 @@ class RankingsArchiveService:
                 "duration_ms": elapsed_ms(started_at),
             },
         )
+        # DB is already awake from this capture cycle — opportunistic retention (#188).
+        self.maybe_purge_expired_archives(now=current, already_awake=True)
         return {
             "captured": captured,
             "skipped": skipped,
@@ -1086,6 +1092,159 @@ class RankingsArchiveService:
             "still_missing": still_missing,
             "sql_round_trips": state.sql_round_trips,
         }
+
+    @staticmethod
+    def retention_cutoff_date(
+        *,
+        retention_days: int,
+        as_of: date | None = None,
+    ) -> date | None:
+        """UTC calendar cutoff: keep ``trading_date >= as_of - retention_days``.
+
+        Returns ``None`` when retention is disabled (``retention_days == 0``).
+        """
+        if retention_days <= 0:
+            return None
+        day = as_of or datetime.now(timezone.utc).date()
+        return day - timedelta(days=retention_days)
+
+    def preview_retention_purge(
+        self,
+        now: datetime | None = None,
+    ) -> dict[str, int | str] | None:
+        """Read-only count of rows that would be purged (does not delete) (#188).
+
+        Opens the archive DB like a normal read — use from an operator shell only,
+        not from request handlers or scheduled jobs.
+        """
+        retention_days = int(settings.rankings_archive_retention_days)
+        current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        cutoff = self.retention_cutoff_date(
+            retention_days=retention_days,
+            as_of=current.date(),
+        )
+        if cutoff is None:
+            return None
+        if not self.is_available():
+            logger.debug(
+                "Rankings archive retention preview skipped; archive unavailable",
+                extra={"event": "rankings_archive.retention.preview_unavailable"},
+            )
+            return None
+        preview = self._repository.count_snapshots_older_than(
+            cutoff_trading_date=cutoff,
+        )
+        preview["retention_days"] = retention_days
+        return preview
+
+    def maybe_purge_expired_archives(
+        self,
+        now: datetime | None = None,
+        *,
+        already_awake: bool = False,
+        force: bool = False,
+    ) -> dict[str, int | str] | None:
+        """Purge expired archives only when Azure SQL is already legitimately awake.
+
+        ``already_awake=True`` means the caller just touched the archive DB
+        (e.g. end of ``capture_eod_archives``). Without that flag this method
+        refuses to open a connection — retention must not defeat AutoPause (#187/#188).
+        """
+        if not already_awake:
+            logger.debug(
+                "Rankings archive retention skipped; refusing standalone wake",
+                extra={
+                    "event": "rankings_archive.retention.skipped",
+                    "reason": "not_already_awake",
+                },
+            )
+            return None
+
+        retention_days = int(settings.rankings_archive_retention_days)
+        if retention_days <= 0:
+            logger.debug(
+                "Rankings archive retention disabled",
+                extra={
+                    "event": "rankings_archive.retention.skipped",
+                    "reason": "disabled",
+                    "retention_days": retention_days,
+                },
+            )
+            return None
+
+        current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        previous_last: datetime | None
+        with self._lock:
+            last = self._last_retention_purge_at
+            if (
+                not force
+                and last is not None
+                and current - last < _RETENTION_PURGE_MIN_INTERVAL
+            ):
+                logger.debug(
+                    "Rankings archive retention skipped; within min interval",
+                    extra={
+                        "event": "rankings_archive.retention.skipped",
+                        "reason": "min_interval",
+                        "last_purge_at": last.isoformat(),
+                        "retention_days": retention_days,
+                    },
+                )
+                return None
+            # Claim the weekly slot before purge so concurrent capture threads cannot
+            # all pass the interval check and run overlapping delete batches (#188).
+            previous_last = self._last_retention_purge_at
+            self._last_retention_purge_at = current
+
+        cutoff = self.retention_cutoff_date(
+            retention_days=retention_days,
+            as_of=current.date(),
+        )
+        assert cutoff is not None
+        if not self.is_available():
+            with self._lock:
+                self._last_retention_purge_at = previous_last
+            return None
+
+        purge_fn = getattr(self._repository, "purge_snapshots_older_than", None)
+        if not callable(purge_fn):
+            with self._lock:
+                self._last_retention_purge_at = previous_last
+            return None
+
+        started_at = perf_counter()
+        try:
+            result = purge_fn(cutoff_trading_date=cutoff)
+        except Exception:  # noqa: BLE001
+            with self._lock:
+                self._last_retention_purge_at = previous_last
+            logger.exception(
+                "Rankings archive retention purge failed",
+                extra={
+                    "event": "rankings_archive.retention.failed",
+                    "retention_days": retention_days,
+                    "cutoff_date": cutoff.isoformat(),
+                },
+            )
+            return None
+
+        result = {
+            **result,
+            "retention_days": retention_days,
+        }
+        logger.info(
+            "Rankings archive retention purge completed",
+            extra={
+                "event": "rankings_archive.retention.completed",
+                "retention_days": retention_days,
+                "cutoff_date": result.get("cutoff_date"),
+                "snapshots_deleted": result.get("snapshots_deleted"),
+                "items_deleted": result.get("items_deleted"),
+                "purge_duration_ms": elapsed_ms(started_at),
+                "dry_run": bool(result.get("dry_run")),
+            },
+        )
+        return result
 
     def list_history_dates(
         self,
@@ -1318,3 +1477,7 @@ rankings_archive_service = RankingsArchiveService()
 
 def reset_rankings_archive_for_tests() -> None:
     reset_rankings_archive_session_state()
+    with rankings_archive_service._lock:
+        rankings_archive_service._last_retention_purge_at = None
+        rankings_archive_service._stop_event.clear()
+        rankings_archive_service._thread = None
