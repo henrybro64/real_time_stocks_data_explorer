@@ -1,359 +1,47 @@
 # Stock Ticker MVP
 
-Starter monorepo for a stock ticker MVP with:
+Monorepo for a stock ticker app with a **Next.js** frontend and **FastAPI** backend. U.S. symbols display in English; Taiwan symbols in Traditional Chinese.
 
-- `Next.js + TypeScript` frontend (Node **20+**; see `frontend/package.json` / `frontend/.nvmrc`)
-- `FastAPI` backend
-- mixed-language display rules
-  - U.S. stocks in English
-  - Taiwan stocks in Traditional Chinese
+## Stack
 
-## Structure
+| Layer | Technology |
+| --- | --- |
+| Frontend | Next.js, TypeScript (Node **20+** — see `frontend/package.json`) |
+| Backend | FastAPI, SQLAlchemy, Alembic |
+| Cache | Redis (optional locally; in-cluster in k8s) |
+| Database | PostgreSQL |
+| Deploy | `k8s/` manifests for local k3d/k3s |
+
+## Repository layout
 
 ```text
-backend/   FastAPI backend
-  redis/   Redis config (local dev)
-frontend/  React frontend
-k8s/       Kubernetes manifests for local k3s/k3d deployment
-packages/
-  shared-contracts/  shared TypeScript contracts
-scripts/   local deployment helpers
+backend/              FastAPI app, tests, migrations
+frontend/             Next.js UI
+k8s/                  Kubernetes manifests
+packages/shared-contracts/  Shared TypeScript API types
+scripts/              Deploy, backup, and dev helpers
+docs/                 Architecture, ops, and feature guides
+infra/                Optional Azure rankings archive (Terraform)
 ```
 
-Layering and backend reviewer navigation notes live in [docs/backend-architecture.md](docs/backend-architecture.md).
+Backend layering is summarized in [docs/backend-architecture.md](docs/backend-architecture.md).
 
-## Run
+## Quick start (local)
 
-Backend:
+**Backend**
 
 ```bash
 cd backend
-python3 -m venv .venv
-source .venv/bin/activate
+python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
+export DATABASE_URL="postgresql+psycopg://postgres:postgres@127.0.0.1:5432/stocks"
+alembic upgrade head
 uvicorn app.main:app --reload
 ```
 
-### Database bootstrap (Postgres)
+With `AUTH_ENABLED=false`, startup seeds the single-user principal (`default-user`) for watchlist, portfolio, and AI routes.
 
-```bash
-cd backend
-export DATABASE_URL="postgresql+psycopg://postgres:postgres@127.0.0.1:5432/stocks"
-
-# 1) migrate schema
-alembic upgrade head
-
-# 2) start app
-python -m uvicorn app.main:app --reload
-```
-
-When `AUTH_ENABLED=false`, backend startup automatically seeds the single-user principal (`default-user`) used by watchlist, portfolio, and AI-key routes. The manual `python -m scripts.seed_default_user` helper is only needed for repair or ad-hoc local resets.
-
-### Redis (local cache process)
-
-Run Redis as a separate process managed from the backend folder:
-
-```bash
-cd backend
-docker compose -f docker-compose.redis.yml up -d
-```
-
-Stop it:
-
-```bash
-cd backend
-docker compose -f docker-compose.redis.yml down
-```
-
-Configure backend to use it (in `backend/.env`):
-
-```bash
-REDIS_URL=redis://127.0.0.1:6379/0
-```
-
-### Backend Logging And Request IDs
-
-The backend now emits structured logs for:
-
-- API request lifecycle
-- quote/news/analysis/ranking provider flows
-- portfolio-history background capture jobs
-
-Key environment variables in `backend/.env`:
-
-```bash
-LOG_LEVEL=INFO
-LOG_FORMAT=console   # or json
-REQUEST_ID_HEADER=X-Request-ID
-```
-
-Each API request gets a request ID. If the client sends `X-Request-ID`, the backend reuses it; otherwise it generates one and returns it in the response header when possible. Use that value to trace the request across backend logs.
-
-Detailed field definitions and tracing guidance live in [docs/backend-logging.md](docs/backend-logging.md).
-
-### AI Stock Analysis
-
-The stock detail page now includes an **AI stock analysis** section backed by:
-
-- `yfinance` 1-year daily price history
-- `pandas` / `numpy` metric calculation on the backend
-- an env-configured AI provider that receives only the computed summary JSON
-
-Configure it in `backend/.env`:
-
-```bash
-AI_PROVIDER=openai        # openai | perplexity | anthropic | gemini | ollama
-AI_MODEL=gpt-4o-mini
-OPENAI_API_KEY=...
-# or
-PERPLEXITY_API_KEY=...
-```
-
-The API route is:
-
-```text
-GET /api/stocks/{stock_id}/analysis
-```
-
-Notes:
-
-- if no AI provider is configured, the endpoint still returns computed metrics with warnings
-- current provider implementations in this repo are `openai` and `perplexity`; the abstraction is designed to add others later
-- `yfinance` data can be delayed, incomplete, or unavailable for some symbols
-- AI output is informational only and is not financial advice
-
-### Data Freshness And Availability
-
-The app distinguishes between quote freshness, stale cached UI state, and provider-unavailable
-states instead of treating all data as equally current.
-
-Quote-backed stock views (`/stock/[stockId]`, search result cards, watchlist cards):
-
-- backend quote responses expose:
-  - `quote.timestamp`: the provider timestamp / last updated time for the quote
-  - `quote.isMarketOpen`: whether that market was open when the quote was fetched
-- the frontend derives the quote freshness badge from those fields:
-  - `live`
-  - `delayed`
-  - `stale`
-  - `closed`
-- the UI also shows a human-readable "updated at" timestamp next to the quote
-
-How stale vs unavailable is handled in the UI:
-
-- if a refresh fails but previously loaded data is still available, the UI shows a stale notice
-  instead of pretending the cached values are newly refreshed
-- if no usable data is available, the UI shows an unavailable / error state
-- stock detail, search cards, and watchlist cards pass `refreshFailed` into the quote freshness badge
-  so a failed refresh cannot keep showing a "live" tag over cached values
-
-Cross-view request notices (`RequestStateNotice`):
-
-- shared UI notice kinds used across portfolio, assets, markets, watchlist, rankings, and stock detail:
-  - `stale`: latest refresh failed, but previously loaded data is still shown
-  - `unavailable`: provider/data source is temporarily unavailable and no usable cached data exists
-  - `error`: generic request failure
-  - `auth` / `permission`: user/session access problems
-- this is separate from quote badge freshness (`live` / `delayed` / `stale` / `closed`), which is
-  derived from quote timestamps and market-open state
-
-Rankings freshness metadata:
-
-- rankings responses expose:
-  - `timestamp`
-  - `sourceType`
-  - `dataFreshnessLabel`
-  - `warningMessage`
-  - `unsupportedReason`
-- the rankings page renders:
-  - a freshness label
-  - a snapshot timestamp
-  - a source/source-type badge
-  - warning or unsupported copy when relevant
-
-Current implementation notes:
-
-- quote freshness is currently derived on the frontend from `timestamp` + `isMarketOpen`; there
-  is not a separate backend `freshnessStatus` field for quote endpoints
-- rankings freshness is more explicit because snapshot/cache/public-source states are already part
-  of that backend contract
-- non-institutional rankings also reuse the quote freshness badge for the latest item timestamp
-- free/public and unofficial sources can be delayed, incomplete, rate-limited, or temporarily
-  unavailable, so the UI favors clear stale/unavailable messaging over pretending every value is
-  live
-
-### Market Snapshot (USD/TWD + WTI)
-
-The home dashboard Market Snapshot section uses:
-
-```text
-GET /api/markets/fx/usd-twd
-GET /api/markets/commodities/wti-crude-oil
-```
-
-- USD/TWD reuses the existing FX snapshot (Yahoo `TWD=X`), with optional change fields when prior close is available
-- WTI uses Yahoo front-month futures `CL=F` (informational only; contracts may roll; not a physical spot feed)
-- Both endpoints soft-cache for about 60 seconds and may serve a retained quote as `status: "stale"` for up to ~15 minutes after a provider failure
-- If FX has no retained quote, the API may still return a synthetic `status: "fallback"` rate for portfolio math; the Market Snapshot UI treats fallback as unavailable
-- Free Yahoo sources can be delayed or rate-limited; the UI keeps prior values as stale when a refresh fails
-
-### Market Rankings (free-only)
-
-The `/rankings` page supports both Taiwan and U.S. markets using only free data sources and
-persisted Postgres snapshots:
-
-```text
-GET /api/rankings?market=TW|US&type=volume|volume_up|volume_down|change_up|change_down|net_buy|net_sell&limit=50
-```
-
-Optional query parameter `twBoard` (`TWSE` or `TPEx`, default `TWSE`) applies to Taiwan only.
-
-Optional Azure SQL **EOD ranking archive** (issues #165–#167) is separate from Postgres and is
-documented in [`docs/azure-rankings-archive.md`](docs/azure-rankings-archive.md). Leave
-`RANKINGS_ARCHIVE_DATABASE_URL` unset unless you are running that PoC.
-
-Normal read behavior:
-
-- when the current bucket snapshot already exists, the API returns the saved snapshot with `sourceType=cache`
-- when the current bucket is missing and fresh free data is available, the API captures and persists a new snapshot
-- when the market is closed, the API returns the latest saved snapshot
-- when a free source fails, the API falls back to the latest saved snapshot when one exists
-
-Available ranking types per market:
-
-- Taiwan UI tabs: `volume`, `valuation_low_pe`, `change_up`, `change_down`, `net_buy`, `net_sell`
-- U.S. UI tabs: `volume`, `valuation_low_pe`, `change_up`, `change_down`, plus explicit unsupported `net_buy`, `net_sell`
-- backend also accepts `volume_up` / `volume_down` for both markets as the app's custom "vs previous snapshot" metric
-
-Data sources:
-
-- on-demand `GET /api/rankings` requests use the broader Phase 1 free sources when available:
-  - U.S. `volume` / `change_up` / `change_down` can use Yahoo Finance pre-ranked lists
-  - U.S. `change_*` can also use the built-in S&P 500 constituent snapshot plus batched Yahoo quote fields
-  - `valuation_low_pe` builds from the highest-volume quote candidate set, then sorts by available free P/E data
-- the background snapshot scheduler only polls the configured free universes to avoid unbounded all-market polling:
-  - `RANKINGS_UNIVERSE_US`
-  - `RANKINGS_UNIVERSE_TW`
-- TWSE `net_buy` / `net_sell` use TWSE T86 daily institutional data
-- TPEx `net_buy` / `net_sell` use TPEx institutional daily data
-- both are daily, not intraday real-time; TPEx institutional rankings can be temporarily unavailable when the free public source is down
-- U.S. institutional `net_buy` / `net_sell` are unsupported because this app does not add fake data or paid-provider integrations
-- free unofficial quote sources can be delayed, rate-limited, or temporarily unavailable
-
-Snapshot persistence:
-
-- `ranking_snapshots`
-- `ranking_snapshot_items`
-- quote-based rankings use 30-minute buckets during regular market hours
-- Taiwan institutional rankings use daily buckets keyed to the latest available trading day
-- duplicate snapshots for the same market / board / type / bucket are prevented
-
-Scheduler settings:
-
-- `RANKINGS_SNAPSHOT_ENABLED`
-- `RANKINGS_REFRESH_SECONDS`
-- `RANKINGS_MANUAL_REFRESH_COOLDOWN_SECONDS` (server cooldown for `POST /rankings/refresh`)
-- `RANKINGS_UNIVERSE_US`
-- `RANKINGS_UNIVERSE_TW`
-- optional internal capture endpoint token: `RANKINGS_CAPTURE_TOKEN`
-
-Local notes:
-
-- disable the background sampler with `RANKINGS_SNAPSHOT_ENABLED=false`
-- expand or shrink the tracked free ranking universes by editing `RANKINGS_UNIVERSE_US` and `RANKINGS_UNIVERSE_TW`
-- no paid provider keys or paid market-data integrations are required for rankings
-
-### Taiwan detail-page market data (write + institutional read)
-
-Scheduled backend job that persists TWSE/TPEx **三大法人買賣超** and **資券變化** daily rows. The institutional detail API reads from that store on normal requests.
-
-**Lot size (張):** detail APIs expose values in 張 via the shared `shares_to_lots` / `taiwan_shares_per_lot` helpers, and include response field `sharesPerLot` so clients can verify the divisor without re-converting.
-
-- Default equities / most instruments: **1000** shares per 張
-- Foreign-currency (加掛) ETF symbols whose **sixth** character is **`K`** or **`C`**: **100**
-- This is a **symbol heuristic**, not a full ETF product registry — issuers may choose another multiple of 100 for some 加掛 products; leverage/inverse suffixes such as `M`/`S` keep the default **1000** until product-specific rules are added
-- Callers must not hardcode `/1000`; treat `*Lots` fields as already-normalized 張
-- Ranking pages do not use this helper (out of scope for #106)
-
-**SonarCloud:** Taiwan market-data backend PRs must clear the quality gate in addition to pytest/Playwright/k3s. Functional CI alone is not enough when the Sonar check is required — follow the [Taiwan market-data SonarCloud checklist](docs/taiwan-market-data-sonar-checklist.md).
-
-**Write-side** (#97): schema, idempotent upsert, scheduled refresh, and manual backfill for both institutional and 資券 tables.
-
-**Read-side** (#105, institutional only — 資券 read cutover remains a follow-up): `GET /api/stocks/{stock_id}/institutional-investors` serves from `taiwan_institutional_daily`.
-
-Read policy:
-
-- Fresh store (latest row within `TAIWAN_MARKET_DATA_REFRESH_RECENT_DAYS` of the Taiwan candidate start) → return stored history only; no live probes. Response `source` is prefixed with `Persisted`.
-- Empty / unavailable / stale store → probe only that same recent **weekday** window live (calendar span expanded like the #97 scheduler), merge with stored rows (live wins on date collisions), and best-effort upsert any successful live rows back into the store so later clicks heal without waiting for the scheduler. Response `source` uses the official feed label when live rows contributed.
-- It does **not** walk months of full-market payloads per click.
-
-**Deploy prerequisite (cold start):** before relying on detail-page institutional history in an environment, run the #97 capture/backfill (`POST /api/taiwan-market-data/capture?days=120` or an equivalent seeded `taiwan_institutional_daily` load) and keep the refresh scheduler enabled. An empty store only returns the small recent live window (not ~90 trading days), so charts look short until backfill has populated the table.
-
-Persisted tables:
-
-- `taiwan_institutional_daily` — unique on `(market, symbol, date)`
-- `taiwan_margin_short_daily` — unique on `(market, symbol, date)`
-
-Scheduler settings:
-
-- `TAIWAN_MARKET_DATA_REFRESH_ENABLED` (default `true`)
-- `TAIWAN_MARKET_DATA_REFRESH_DAYS` — full backfill window for capture (default `120`)
-- `TAIWAN_MARKET_DATA_REFRESH_RECENT_DAYS` — scheduler recent **weekday** count **and** institutional read-path freshness / live-fallback weekday probe limit (default `7`; calendar span is expanded to cover weekends)
-- `TAIWAN_MARKET_DATA_REFRESH_POLL_SECONDS` (default `3600`)
-- `TAIWAN_MARKET_DATA_REFRESH_HOUR` — local Asia/Taipei hour gate (default `18`)
-- `TAIWAN_MARKET_DATA_TIMEZONE` (default `Asia/Taipei`)
-- optional internal capture token: `TAIWAN_MARKET_DATA_CAPTURE_TOKEN`
-
-Manual backfill (token-gated):
-
-```text
-POST /api/taiwan-market-data/capture?days=120
-Header: X-Taiwan-Market-Data-Token: <token>
-```
-
-Behavior notes:
-
-- probes weekdays only; skips official no-data days; continues after per-source fetch/upsert errors
-- scheduler refreshes recent days once per local day after the configured Taipei hour; use the capture endpoint for ~90–120 day backfill
-- **cold start:** empty `taiwan_institutional_daily` only yields the recent live window on detail reads — run capture before expecting full history charts
-- institutional live fallback best-effort upserts successful rows so a stale/empty store can heal without waiting for the next scheduler tick
-- disable locally with `TAIWAN_MARKET_DATA_REFRESH_ENABLED=false`
-- institutional API history dates are unique; holiday / no-data days are simply absent
-- #105 covers institutional reads only; 資券 (`taiwan_margin_short_daily`) read cutover is a follow-up
-
-### Threshold Alerts
-
-The app now supports user-scoped threshold alerts with persistent rules and durable event history:
-
-- supported rule types: `price_above`, `price_below`
-- backend APIs:
-  - `GET /api/alerts/rules`
-  - `POST /api/alerts/rules`
-  - `PATCH /api/alerts/rules/{rule_id}`
-  - `DELETE /api/alerts/rules/{rule_id}`
-  - `GET /api/alerts/events?limit=20`
-- frontend UI: `/alerts`, plus a prefilled create flow from the stock detail page
-
-How evaluation currently works:
-
-- the FastAPI process starts an in-process background evaluator (`ALERT_EVALUATOR_ENABLED`, `ALERT_EVALUATOR_POLL_SECONDS`)
-- alert reads and writes also trigger an immediate per-user evaluation pass so new rules and state changes appear without waiting for the next sampler tick
-- rules are evaluated against the backend quote service’s latest known quote data path instead of a separate alert-specific market data stack
-
-How duplicate events are prevented:
-
-- V1 uses state-transition de-duplication, not a user-configurable cooldown
-- when a rule becomes true, one durable `alert_events` row is written
-- no additional event is written while that same condition stays continuously true
-- a new event is only written after the condition first resets to false and then becomes true again
-
-Current limitations:
-
-- no email, SMS, push, webhook, or brokerage delivery integrations
-- evaluation runs inside the backend process, so this is a pragmatic single-service V1 rather than a separate scheduler/worker system
-- alert event messages are informational only and are not financial advice
-
-Frontend:
+**Frontend**
 
 ```bash
 cd frontend
@@ -361,549 +49,60 @@ npm install
 npm run dev
 ```
 
-## Tests And Allure
+Open `http://127.0.0.1:3000`. The UI proxies `/api` to the backend (see [docs/local-development.md](docs/local-development.md#api-url-shape)).
 
-Install backend test dependencies from `backend/requirements-dev.txt` and frontend dependencies from `frontend/package.json` first.
-
-Generate Allure results locally:
+**Redis (optional cache)**
 
 ```bash
-# backend
-npm run test:backend:allure
-
-# frontend unit tests
-npm run test:frontend:allure
-
-# frontend Playwright E2E
-npm run test:e2e:allure
+cd backend && docker compose -f docker-compose.redis.yml up -d
+# backend/.env: REDIS_URL=redis://127.0.0.1:6379/0
 ```
 
-Merge the generated `allure-results/*` folders and build one HTML report:
+Copy `backend/.env.example` and `frontend/.env.example` for other settings.
+
+## Tests
+
+Install `backend/requirements-dev.txt` and `frontend/package.json` dependencies first.
 
 ```bash
-npm run allure:report
+pytest backend/tests/unit backend/tests/integration
+npm test --prefix frontend
+npm run build --prefix frontend
 ```
 
-The merged raw results land in `allure-results/merged`, and the generated HTML report lands in `allure-report/`.
+**Allure** (optional merged report): `npm run test:backend:allure`, `npm run test:frontend:allure`, `npm run test:e2e:allure`, then `npm run allure:report`.
 
-In GitHub Actions, every run uploads the merged HTML report as an artifact. On pushes to the default branch, the workflow can also deploy the Allure HTML report to GitHub Pages so it can be opened directly in the browser.
+**E2E / k3s smoke** need a browser cluster respectively — CI runs these in `.github/workflows/test-and-smoke.yml`.
 
-To enable the browser-viewable report:
+## Kubernetes
 
-1. Set the repository Pages source to `GitHub Actions` in the GitHub Pages settings.
-2. Add a repository variable named `ENABLE_ALLURE_PAGES` with value `true`.
-
-### Access from other machines on the LAN (e.g. `192.168.120.102`)
-
-Other PCs on the same network should open the UI at **`http://<ubuntu-host-ip>:3000`** (example: `http://192.168.120.102:3000`). The backend is not exposed directly if you use the default **same-origin** setup (browser → Next on port 3000 → Next proxies `/api` to the backend on localhost).
-
-1. **Listen on all interfaces** (not only `127.0.0.1`):
-   - **Frontend:** `cd frontend && npm run dev:lan`, **or** from repo root `npm run dev:lan`. **Or** run `./scripts/dev-lan.sh` from the repo root. Same as `next dev -H 0.0.0.0 -p 3000`. If you use plain `npm run dev`, Next may bind only **127.0.0.1**.
-   - **Backend:** e.g. `uvicorn app.main:app --reload --host 0.0.0.0 --port 8000` (or keep `--host 127.0.0.1` if only Next on the same machine talks to the API; default is fine when the browser only hits Next).
-
-2. **Firewall on Ubuntu** (if `ufw` is enabled): allow the UI port, e.g. `sudo ufw allow 3000/tcp` and `sudo ufw reload`.
-
-3. **Local auth (`AUTH_ENABLED=true`)**: set `LOCAL_AUTH_ENABLED=true`. Users can create their own account from `/login` (username + password). Optional: define `LOCAL_AUTH_USERNAME` / `LOCAL_AUTH_PASSWORD` as a bootstrap admin account. No cloud provider setup is needed.
-
-**Kubernetes (k3s / k3d):** The default frontend Service is **ClusterIP** — it is **not** reachable at `http://192.168.x.x:3000` on the node. After `kubectl apply -k k8s`, open the UI from another PC at **`http://<node-ip>:30080`** (Service **`stock-ticker-frontend-nodeport`**). Example: `http://192.168.120.102:30080`. If `ufw` is on: `sudo ufw allow 30080/tcp`. From the Ubuntu host only, you can still use **`kubectl port-forward`** to `http://127.0.0.1:3000`, or open `http://127.0.0.1:30080` / `http://192.168.120.102:30080` when NodePort is applied.
-
-**Cannot connect from another PC using the IP — check in order:**
-
-1. **Correct IP** — On Ubuntu: `ip -br a` or `hostname -I`. DHCP may have changed the address; use the current IPv4 on your LAN (e.g. `192.168.120.x`).
-2. **Next is listening on all interfaces** — Use **`cd frontend && npm run dev:lan`** or **`./scripts/dev-lan.sh`** (runs `next dev -H 0.0.0.0 -p 3000`). Confirm: `ss -tlnp | grep 3000` should show **`0.0.0.0:3000`** (or `*:3000`), not only `127.0.0.1:3000`. If it still shows **127.0.0.1**, stop whatever is using the port (`sudo lsof -i :3000` or `sudo ss -tlnp | grep 3000`), then start **`dev:lan` again** — an old **`npm run dev`** session may still be bound to localhost.
-3. **Test on the server first** — `curl -sI -o /dev/null -w "%{http_code}\n" http://127.0.0.1:3000` and the same with `http://192.168.120.102:3000` (replace IP). Both should return **200** (or 304).
-4. **Firewall** — `sudo ufw status`; if active, `sudo ufw allow 3000/tcp` and reload. Check **cloud / hypervisor** security groups if Ubuntu is a VM.
-5. **Same network** — Client must reach the host (try `ping 192.168.120.102`). Guest isolation in VMware/VirtualBox, or **client VPN**, can block access.
-6. **Use `http://` not `https://`** unless you terminated TLS elsewhere.
-7. **k3s / k3d — use port 30080** — With the bundled **NodePort** Service, use **`http://<node-ip>:30080`** from other machines (not `:3000` on the IP unless you use `port-forward --address 0.0.0.0`).
-
-## Run In Local Kubernetes (`k3d` on macOS, `k3s` on Ubuntu)
-
-This repo supports a no-registry local Kubernetes flow:
-
-1. build the backend and frontend images locally
-2. import those images into the cluster runtime
-3. apply the manifests in `k8s/`
-4. expose the frontend locally with `port-forward`
-
-To **remove the app**, use `./scripts/k8s-teardown.sh k3d|k3s` or `kubectl delete -k k8s` (this also removes the Postgres PVC and its data). To **tear down and redeploy** in one command: `./scripts/k8s-redeploy.sh k3d|k3s`. To **remove the cluster itself**, delete the k3d cluster or uninstall k3s — see **macOS (k3d)** and **Ubuntu Linux (k3s)** below.
-
-The helper script for this flow is `scripts/deploy-k3s.sh`.
-
-Optional Kubernetes workload health monitoring (Prometheus, Grafana, kube-state-metrics)
-is documented in [`docs/observability.md`](docs/observability.md). Apply it with
-`kubectl apply -k k8s/observability` or `OBSERVABILITY=1 ./scripts/deploy-k3s.sh k3d|k3s`.
-It is **not** part of the default deploy or k3s smoke path. This overlay owns the
-shared Prometheus/Grafana install for issue #136; application `/metrics` dashboards
-belong in issue #28 and should reuse this stack rather than deploying a second one.
-
-Important:
-
-- macOS should use `k3d`, not native `k3s`
-- Ubuntu Linux can use native `k3s`
-- the deploy script does **not** create the cluster for you — create the cluster first, then run it
-- Docker Desktop is **not** required on macOS; `colima + docker + k3d` is enough
-
-### Clone the repo
+Local no-registry flow: build images → import into k3d/k3s → `kubectl apply -k k8s`.
 
 ```bash
-git clone https://github.com/henrybro64/Real_Time_Stocks_Data_Explorer.git
-cd Real_Time_Stocks_Data_Explorer
+./scripts/deploy-k3s.sh k3d   # macOS
+./scripts/deploy-k3s.sh k3s   # Ubuntu
 ```
 
-### macOS (k3d): create cluster → deploy → remove app → delete cluster
+Full steps, backup/restore, troubleshooting, and LAN NodePort (`:30080`): [docs/kubernetes.md](docs/kubernetes.md).
 
-**1. Install tooling and start Colima (one-time per machine)**
+Optional Prometheus/Grafana overlay: [docs/observability.md](docs/observability.md).
 
-```bash
-brew install colima docker docker-buildx kubectl k3d
-colima start --cpu 4 --memory 8 --disk 30
-docker context use colima
-docker buildx use colima
-```
+## LAN access
 
-**2. Create the k3d cluster** (once; repeat only if you removed the cluster)
+Other machines on your network should use `http://<host-ip>:3000` when Next binds `0.0.0.0` (`npm run dev:lan` or `./scripts/dev-lan.sh`). For k8s, use NodePort **`http://<node-ip>:30080`**. Details: [docs/local-development.md](docs/local-development.md#lan-access).
 
-```bash
-k3d cluster create stock-ticker
-kubectl config use-context k3d-stock-ticker
-kubectl get nodes
-```
+## Documentation
 
-**3. Deploy the app** (builds `stock-ticker-*:local`, imports into k3d, `kubectl apply -k k8s`)
+| Topic | Document |
+| --- | --- |
+| Local setup, features, env vars | [docs/local-development.md](docs/local-development.md) |
+| Kubernetes deploy & troubleshooting | [docs/kubernetes.md](docs/kubernetes.md) |
+| Backend architecture | [docs/backend-architecture.md](docs/backend-architecture.md) |
+| Structured logging | [docs/backend-logging.md](docs/backend-logging.md) |
+| Multi-user / auth model | [docs/multi-user-design.md](docs/multi-user-design.md) |
+| Azure EOD rankings archive (optional) | [docs/azure-rankings-archive.md](docs/azure-rankings-archive.md) |
+| k8s workload monitoring | [docs/observability.md](docs/observability.md) |
+| Taiwan 資券 upstream endpoints | [docs/taiwan-margin-short-endpoints.md](docs/taiwan-margin-short-endpoints.md) |
+| Taiwan market-data SonarCloud | [docs/taiwan-market-data-sonar-checklist.md](docs/taiwan-market-data-sonar-checklist.md) |
 
-```bash
-./scripts/deploy-k3s.sh k3d
-kubectl -n stock-ticker get pods
-kubectl -n stock-ticker port-forward svc/stock-ticker-frontend 3000:3000
-```
-
-Open the UI at `http://127.0.0.1:3000`.
-
-#### Backup Postgres before you delete the namespace (recommended)
-
-**Common practice** is a **logical backup** with PostgreSQL’s **`pg_dump`** (SQL file or custom format). That works across teardown/redeploy and does not depend on copying the raw PVC disk. For large production DBs, storage-level **volume snapshots** (CSI / your cloud) are also used; for local k3d/k3s, `pg_dump` is usually enough.
-
-From the repo root, while `stock-ticker-postgres` is running:
-
-```bash
-./scripts/k8s-backup-postgres.sh
-# writes stocks-YYYYMMDD-HHMMSS.sql in the current directory
-```
-
-Manual equivalent:
-
-```bash
-kubectl exec -n stock-ticker deploy/stock-ticker-postgres -- \
-  sh -c 'PGPASSWORD=postgres pg_dump -h 127.0.0.1 -U postgres -d stocks --no-owner --no-acl' \
-  > stocks-backup.sql
-```
-
-**Restore** after a fresh deploy (Postgres pod up; run **after** migrations if you rely on Alembic for schema — a **full** dump includes schema and can conflict with migrations; for repeated dev cycles, prefer backing up **data-only** once schema is stable: `pg_dump --data-only ...`, then restore with `./scripts/k8s-restore-postgres.sh` after the backend init has migrated):
-
-```bash
-./scripts/k8s-restore-postgres.sh stocks-backup.sql
-```
-
-**4. Remove the app from Kubernetes** (deletes everything defined in `k8s/`, including the **Postgres PVC** — **database data is removed** unless you backed it up above)
-
-```bash
-./scripts/k8s-teardown.sh k3d
-# or: kubectl delete -k k8s
-```
-
-**5. Delete the k3d cluster** (optional; destroys the cluster and cluster-local volumes)
-
-```bash
-k3d cluster delete stock-ticker
-```
-
-**6. Stop Colima** (optional; frees the Docker VM)
-
-```bash
-colima stop
-```
-
-Expected pods after a healthy deploy:
-
-```text
-stock-ticker-backend    1/1 Running
-stock-ticker-frontend   1/1 Running
-stock-ticker-postgres   1/1 Running
-stock-ticker-redis      1/1 Running
-```
-
-### Ubuntu Linux (k3s): install Docker → install k3s → deploy → remove → uninstall
-
-**Install Git and Docker Engine**
-
-```bash
-sudo apt update
-sudo apt install -y ca-certificates curl git
-
-sudo install -m 0755 -d /etc/apt/keyrings
-sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
-sudo chmod a+r /etc/apt/keyrings/docker.asc
-
-sudo tee /etc/apt/sources.list.d/docker.sources > /dev/null <<EOF
-Types: deb
-URIs: https://download.docker.com/linux/ubuntu
-Suites: $(. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}")
-Components: stable
-Signed-By: /etc/apt/keyrings/docker.asc
-EOF
-
-sudo apt update
-sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-sudo usermod -aG docker "$USER"
-```
-
-Add your user to the `docker` group (above), then **apply that group in this terminal** — **one** of:
-
-- log out and log back in (or reboot), **or**
-- run `newgrp docker` once in the shell you use for `docker` / `kubectl`, **or**
-- open a **new** terminal session after `usermod`
-
-Then verify:
-
-```bash
-docker version
-docker ps
-```
-
-If you see `permission denied while trying to connect to the docker API at unix:///var/run/docker.sock`, the group change is not active yet: run `newgrp docker` or sign out/in. Do **not** rely on `sudo docker` for normal use (it can confuse file permissions on images/volumes).
-
-**Install k3s** (once per machine, or follow [k3s install](https://docs.k3s.io/installation))
-
-```bash
-curl -sfL https://get.k3s.io | sh -
-sudo k3s kubectl get nodes
-```
-
-**Clone the repo** (if you have not already — see **Clone the repo** above), then **deploy**:
-
-`./scripts/deploy-k3s.sh k3s` uses **`sudo k3s kubectl`** by default so it works when `/etc/rancher/k3s/k3s.yaml` is root-only. To use plain `kubectl` (no sudo), copy the kubeconfig to your user (see below) and run `KUBECTL_CMD=kubectl ./scripts/deploy-k3s.sh k3s`.
-
-```bash
-cd Real_Time_Stocks_Data_Explorer   # or your clone path
-
-./scripts/deploy-k3s.sh k3s
-sudo k3s kubectl -n stock-ticker get pods
-sudo k3s kubectl -n stock-ticker port-forward svc/stock-ticker-frontend 3000:3000
-```
-
-Open the UI at `http://127.0.0.1:3000`.
-
-Before **Remove the app**, back up Postgres the same way as in **Backup Postgres before you delete the namespace** (macOS section above) if you need the data. Use `./scripts/k8s-backup-postgres.sh` when plain `kubectl` works, or adapt the `kubectl exec` example to `sudo k3s kubectl exec`.
-
-**Remove the app** (same as macOS: deletes manifests and **Postgres PVC** — data is removed)
-
-```bash
-./scripts/k8s-teardown.sh k3s
-# same effect:
-sudo k3s kubectl delete -k k8s
-```
-
-That drops **deployments, services, secrets, ConfigMaps, and the Postgres PVC** so you can redeploy from a clean slate. It does **not** remove Docker images you built (`stock-ticker-backend:local`, etc.) or uninstall k3s.
-
-**Teardown and deploy again in one step** (wipes app + Postgres PVC data, then rebuilds and applies):
-
-```bash
-./scripts/k8s-redeploy.sh k3s
-# macOS k3d:
-./scripts/k8s-redeploy.sh k3d
-```
-
-**How to tell it finished:** `kubectl delete -k` waits for the **namespace** to disappear. After the `deleted` lines, the command may sit with **no output** for a little while — that is normal. When it is done, your **shell prompt returns**. Confirm:
-
-```bash
-sudo k3s kubectl get ns | grep stock-ticker || echo "gone — teardown complete"
-```
-
-If there is **no line** for `stock-ticker`, you are clean. If the namespace stays **`Terminating`** for a long time, open another terminal and run `sudo k3s kubectl get pods -n stock-ticker`, `sudo k3s kubectl describe namespace stock-ticker`, and see **Stuck pods after delete** below.
-
-**Uninstall k3s** (optional; removes the cluster and node)
-
-```bash
-sudo /usr/local/bin/k3s-uninstall.sh
-```
-
-**Use `kubectl` as your user** (optional; avoids prefixing every command with `sudo k3s kubectl`):
-
-```bash
-mkdir -p ~/.kube
-sudo cp /etc/rancher/k3s/k3s.yaml ~/.kube/config
-sudo chown "$(id -u)":"$(id -g)" ~/.kube/config
-kubectl config get-contexts
-kubectl config use-context default   # name may differ; pick the k3s context from the list above
-kubectl get nodes
-```
-
-### What the script actually does
-
-`./scripts/deploy-k3s.sh k3d`
-
-- builds `stock-ticker-backend:local`
-- builds `stock-ticker-frontend:local`
-- `docker pull` + imports **`postgres:16-alpine`** and **`redis:7-alpine`** into the cluster (faster rollouts than pulling inside the node on first boot)
-- imports the app images into the existing `k3d` cluster
-- runs `kubectl apply -k k8s`
-- waits for Redis, Postgres, backend, and frontend to become ready
-
-`./scripts/deploy-k3s.sh k3s`
-
-- builds the same two images locally
-- saves them as tar archives
-- imports them into native `k3s` containerd with `k3s ctr`
-- **pre-pulls** `postgres:16-alpine` and `redis:7-alpine` into containerd (so the Postgres pod does not spend minutes pulling on first boot)
-- applies the same manifests from `k8s/`
-- waits for Redis, Postgres, backend, and frontend to become ready (same as `k3d` mode). **Postgres** can still sit at “0 of 1 …” for **several minutes** while `initdb` runs on the volume; that is normal on first deploy.
-
-### K3s smoke validation evidence
-
-Issue #5 requires proof that the deployment works in a real K3s environment, not just that manifests exist. The repo includes a smoke path for that validation.
-
-Run it locally on Ubuntu / native `k3s`:
-
-```bash
-ARTIFACT_DIR=artifacts/k3s-smoke \
-KUBECTL_CMD="sudo k3s kubectl" \
-pytest backend/tests/smoke/test_k3s_smoke.py
-```
-
-Or run the shell entrypoint directly:
-
-```bash
-ARTIFACT_DIR=artifacts/k3s-smoke ./scripts/ci-k3s-smoke.sh
-```
-
-What it records:
-
-- `./scripts/deploy-k3s.sh k3s`
-- `kubectl get deploy`
-- `kubectl get pods -o wide`
-- `kubectl get svc`
-- `kubectl get pvc`
-- backend migration init-container completion
-- backend `/health`
-- frontend `/api/markets` through the frontend service rewrite
-- backend-container connectivity to Postgres (`SELECT 1`)
-- backend-container connectivity to Redis (`PING`)
-
-Reviewer-facing artifacts are written to `artifacts/k3s-smoke/`:
-
-- `summary.txt`
-- `ci-k3s-smoke.log`
-- `backend-health.json`
-- `frontend-backend-proxy.json`
-- `postgres-probe.txt`
-- `redis-probe.txt`
-
-In GitHub Actions, the `k3s-smoke` job in `.github/workflows/test-and-smoke.yml` runs the same flow on `ubuntu-latest`, uploads `artifacts/k3s-smoke` as `k3s-smoke-artifacts`, and copies `summary.txt` into the job summary.
-
-### What gets deployed
-
-- `postgres:16-alpine` with a **PersistentVolumeClaim** (default **2Gi**) so database files survive pod restarts and host reboots; data lives on the cluster’s storage provisioner (e.g. k3d local-path).
-- `redis:7-alpine` for quote/news cache
-- `stock-ticker-backend:local`
-- `stock-ticker-frontend:local`
-- A **NodePort** Service (`stock-ticker-frontend-nodeport`, port **30080**) so you can open **`http://<node-ip>:30080`** from other machines on the LAN without `kubectl port-forward`.
-
-The backend connects to the in-cluster Service **`stock-ticker-postgres`** (`DATABASE_URL` in `k8s/backend-database-secret.yaml`). Removing the **PVC** or the whole cluster **without** a backup can still delete data—treat the PVC as your durable store while the cluster exists.
-
-The backend deployment runs `alembic upgrade head` in an init container before the API starts. The API then seeds the default user (`default-user`) automatically when it can reach the database.
-
-### Kubernetes: multi-user local auth (no Google/Microsoft)
-
-The cluster manifests include **`k8s/backend-auth-secret.yaml`** (session + local credentials) and `AUTH_ENABLED` / `LOCAL_AUTH_ENABLED` in `k8s/backend.yaml` (ConfigMap `stock-ticker-backend-env`).
-
-1. Edit **`k8s/backend-auth-secret.yaml`**: set **`SESSION_SECRET`** (long random string). `LOCAL_AUTH_USERNAME` / `LOCAL_AUTH_PASSWORD` are optional bootstrap credentials (if set, backend ensures that account exists).
-2. Ensure the ConfigMap keeps **`AUTH_ENABLED: "true"`** and **`LOCAL_AUTH_ENABLED: "true"`**.
-3. **`kubectl apply -k k8s`** and restart backend/frontend if needed:
-   `kubectl -n stock-ticker rollout restart deployment/stock-ticker-backend deployment/stock-ticker-frontend`
-
-With **`AUTH_ENABLED=true`**, unauthenticated users are redirected to **`/login`** and can sign in (or create a new account). Each account gets its own `user_id`, so watchlist/portfolio/API-key data is isolated per user in Postgres. Do not commit real secrets; adjust **`k8s/backend-auth-secret.yaml`** locally or use a private overlay.
-
-### Kubernetes: use Postgres on your Mac instead (optional)
-
-To point the backend at **host Postgres** (e.g. reuse an existing DB on the machine): edit `k8s/backend-database-secret.yaml` so `DATABASE_URL` uses **`host.lima.internal`** or **`host.docker.internal`** (see `./scripts/k8s-test-host-postgres.sh`), then remove **`postgres.yaml`** from `k8s/kustomization.yaml` so you do not run two Postgres instances. Apply and restart the backend.
-
-### Manual commands instead of the helper script
-
-macOS with `k3d`:
-
-```bash
-docker build -t stock-ticker-backend:local -f backend/Dockerfile .
-docker build -t stock-ticker-frontend:local -f frontend/Dockerfile .
-k3d image import stock-ticker-backend:local stock-ticker-frontend:local -c stock-ticker
-kubectl apply -k k8s
-kubectl -n stock-ticker rollout status deployment/stock-ticker-redis
-kubectl -n stock-ticker rollout status deployment/stock-ticker-postgres
-kubectl -n stock-ticker rollout status deployment/stock-ticker-backend
-kubectl -n stock-ticker rollout status deployment/stock-ticker-frontend
-kubectl -n stock-ticker port-forward svc/stock-ticker-frontend 3000:3000
-```
-
-Ubuntu with native `k3s`:
-
-```bash
-docker build -t stock-ticker-backend:local -f backend/Dockerfile .
-docker build -t stock-ticker-frontend:local -f frontend/Dockerfile .
-docker save -o /tmp/stock-ticker-backend-local.tar stock-ticker-backend:local
-docker save -o /tmp/stock-ticker-frontend-local.tar stock-ticker-frontend:local
-sudo k3s ctr -n k8s.io images import /tmp/stock-ticker-backend-local.tar
-sudo k3s ctr -n k8s.io images import /tmp/stock-ticker-frontend-local.tar
-sudo k3s kubectl apply -k k8s
-sudo k3s kubectl -n stock-ticker rollout status deployment/stock-ticker-redis
-sudo k3s kubectl -n stock-ticker rollout status deployment/stock-ticker-postgres
-sudo k3s kubectl -n stock-ticker rollout status deployment/stock-ticker-backend
-sudo k3s kubectl -n stock-ticker rollout status deployment/stock-ticker-frontend
-sudo k3s kubectl -n stock-ticker port-forward svc/stock-ticker-frontend 3000:3000
-```
-
-### Troubleshooting
-
-**Deploy / `./scripts/k8s-redeploy.sh` fails** (Postgres Pending, rollout timeout, etc.):
-
-1. From the repo root: `./scripts/k8s-diagnose.sh k3s` (or `k3d` on macOS). Paste the full output when asking for help.
-2. If **`VolumeBinding: context deadline exceeded`** or PVC **Pending**: restart local-path (`sudo k3s kubectl -n kube-system rollout restart deployment/local-path-provisioner`), ensure the node has **disk space** (`df -h`), then delete the Postgres PVC and `kubectl apply -k k8s` again.
-3. If teardown says **namespace stuck Terminating**: `./scripts/k8s-unstick-namespace.sh stock-ticker` then `--force` with `jq` as documented in **Stuck namespace** below.
-
-k3s on Ubuntu — `kubectl` fails with **permission denied** on `/etc/rancher/k3s/k3s.yaml`:
-
-The server kubeconfig is often **root-readable only**. Use **`sudo k3s kubectl`** for all commands, **or** follow **Use `kubectl` as your user** under Ubuntu Linux (k3s) above.
-
-If `KUBECONFIG` points at `/etc/rancher/k3s/k3s.yaml` in your shell, unset it or rely on `~/.kube/config` after copying.
-
-Namespace does not exist:
-
-```text
-Error from server (NotFound): namespaces "stock-ticker" not found
-```
-
-This usually means you ran `port-forward` before running the deploy script, or `kubectl` is pointed at the wrong cluster. Check:
-
-```bash
-kubectl config current-context
-kubectl get namespaces
-```
-
-k3d on macOS (`No nodes found for given cluster`, or `connection refused` to `kubernetes.docker.internal`):
-
-- Create the cluster once if it does not exist: `k3d cluster create stock-ticker`
-- Use the k3d context (not Docker Desktop Kubernetes): `kubectl config use-context k3d-stock-ticker`
-- List clusters: `k3d cluster list`
-
-k3s on Ubuntu — Postgres rollout times out (`stock-ticker-postgres` never Ready):
-
-- **PVC `Pending`, pod `Node: <none>`, Event `VolumeBinding: ... context deadline exceeded`:** the **local-path provisioner** is not binding the volume in time (or disk/API is unhealthy). Postgres never starts; this is **not** slow `initdb`. Check **free disk** (`df -h`), then **provisioner logs**: `sudo k3s kubectl -n kube-system logs deployment/local-path-provisioner --tail=100`. Restart it: `sudo k3s kubectl -n kube-system rollout restart deployment/local-path-provisioner`. If it still fails, `sudo systemctl restart k3s`, then delete the **stuck PVC** and `kubectl apply -k k8s` again.
-- Check the PVC is **Bound**, not **Pending**: `sudo k3s kubectl get pvc -n stock-ticker`. The manifest uses StorageClass **`local-path`** (k3s default). If your cluster has no `local-path`, run `sudo k3s kubectl get storageclass` and set `storageClassName` in `k8s/postgres.yaml` to match, or install the [local-path-provisioner](https://github.com/rancher/local-path-provisioner).
-- **ext4 + `lost+found`**: many provisioned volumes are not empty at the mount root, so Postgres must use **`PGDATA` in a subdirectory** (`k8s/postgres.yaml` sets `/var/lib/postgresql/data/pgdata`). If you had a failed init from an older manifest, delete the Postgres deployment PVC and re-apply so data initializes on a clean volume.
-- **ReadWriteOnce + rolling updates**: a single-replica Deployment with default `RollingUpdate` can briefly run two pods; the second cannot attach the same volume, so rollout stalls with **old replicas pending termination**. The manifest uses **`strategy: Recreate`** for Postgres so the old pod releases the PVC before the new one starts.
-- First-time image pull for `postgres:16-alpine` needs outbound network from the node. `kubectl describe pod -n stock-ticker -l app=stock-ticker-postgres` shows `ImagePullBackOff` vs volume errors.
-- **`0 of 1 updated replicas are available`** / progress deadline: inspect the pod (`sudo k3s kubectl describe pod -n stock-ticker -l app=stock-ticker-postgres`). Probes use **TCP :5432** (not `exec`) so slow `initdb` and slow disks are less likely to flake; rollout can still take many minutes on first boot. If logs show repeated crashes or data errors, delete the Postgres deployment **and** PVC, then re-apply (wipes DB).
-
-Switching from in-cluster Postgres to host Postgres (or vice versa): adjust `k8s/kustomization.yaml` and `backend-database-secret.yaml`, then apply. To **remove** cluster Postgres and its data volume:
-
-```bash
-kubectl -n stock-ticker delete deployment,svc,secret stock-ticker-postgres
-kubectl -n stock-ticker delete pvc stock-ticker-postgres-data
-```
-
-Backend rollout times out or stuck in `Init:CrashLoopBackOff`:
-
-- The init container runs `alembic` against `DATABASE_URL`. If you use **host Postgres**, pods must reach your Mac (see `./scripts/k8s-test-host-postgres.sh`). If you use **in-cluster Postgres**, wait until `stock-ticker-postgres` is Ready. Check:
-
-```bash
-kubectl -n stock-ticker logs deployment/stock-ticker-backend -c migrate-db
-kubectl -n stock-ticker logs deployment/stock-ticker-backend -c backend
-```
-
-- **Host Postgres only — wrong hostname:** run `./scripts/k8s-test-host-postgres.sh`. Edit `k8s/backend-database-secret.yaml`, re-apply, then restart the backend.
-- **In-cluster Postgres:** ensure `stock-ticker-postgres` is Running and `DATABASE_URL` uses service `stock-ticker-postgres`.
-- Older stuck: `kubectl -n stock-ticker delete pod -l app=stock-ticker-backend` after fixing config.
-- If you rebuilt a local image and the pod did not refresh because the tag is still `:local`, restart the deployment:
-
-```bash
-kubectl -n stock-ticker rollout restart deployment/stock-ticker-backend
-kubectl -n stock-ticker rollout restart deployment/stock-ticker-frontend
-```
-
-Old `buildx` plugin on macOS:
-
-```text
-client version 1.42 is too old
-```
-
-Make sure Docker is using a current Homebrew `buildx` plugin:
-
-```bash
-brew install docker-buildx
-mkdir -p ~/.docker
-printf '%s\n' '{' '  "cliPluginsExtraDirs": ["/opt/homebrew/lib/docker/cli-plugins"]' '}' > ~/.docker/config.json
-docker buildx version
-docker buildx ls
-```
-
-### Stuck pods or namespace `Terminating`
-
-**Namespace stuck `Terminating` for a long time** (even when `get pods -n stock-ticker` is empty): something still has a **finalizer** or a hidden resource. List what is left, then only if needed clear the namespace finalizer:
-
-```bash
-./scripts/k8s-unstick-namespace.sh stock-ticker
-# k3s:
-KUBECTL_CMD="sudo k3s kubectl" ./scripts/k8s-unstick-namespace.sh stock-ticker
-```
-
-If the script shows **no leftover objects** and the namespace still will not finish, install **`jq`** and run the **last-resort** finalize (safe when the namespace is already empty):
-
-```bash
-sudo apt install -y jq   # if needed
-KUBECTL_CMD="sudo k3s kubectl" ./scripts/k8s-unstick-namespace.sh stock-ticker --force
-```
-
-Manual equivalent (same as `--force`): `kubectl get namespace stock-ticker -o json | jq '.spec.finalizers = []' | kubectl replace --raw /api/v1/namespaces/stock-ticker/finalize -f -`
-
-**Pods** hang while terminating:
-
-```bash
-kubectl -n stock-ticker delete pod --all --grace-period=0 --force
-```
-
-### Stop k3s without uninstalling (Ubuntu)
-
-```bash
-sudo systemctl stop k3s
-```
-
-### API URL shape (same-origin)
-
-**Preferred:** serve the UI at `/` and the API at `/api` on **one origin** (no cross-origin
-fetch). The frontend calls relative URLs like `/api/...`; in dev, Next.js rewrites proxy to
-FastAPI (`BACKEND_PROXY_URL`, default `http://127.0.0.1:8000`). Copy `frontend/.env.example`
-for overrides.
-
-To call the API **directly** (no proxy), set `NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8000`
-and add your UI origin to backend `CORS_ORIGINS` (see `backend/.env.example`).
-
-### Backend environment
-
-- `CORS_ORIGINS` — comma-separated browser origins when UI and API are on different hosts.
-- `API_PREFIX` — route prefix (default `/api`; must match `NEXT_PUBLIC_API_PREFIX` on the frontend).
-
-### Key statistics / fundamentals (optional)
-
-Price, volume, and ranges come from Yahoo chart (US) or local history (TW). **Market cap, beta, P/E, EPS, dividend dates,** etc. are **not** provided by those endpoints.
-
-To fill those fields in **Key statistics**, set a [Finnhub](https://finnhub.io/) API key on the backend:
-
-```bash
-export FINNHUB_API_KEY="your_token_here"
-```
-
-Then restart the API. The backend merges Finnhub `profile2`, `metric`, `calendar/earnings`, and `dividend` data when the key is present.
-
-### Where calculations run
-
-- **Backend:** Price/volume series math for charts (min/max, normalized SVG points, axis tick indices, sparkline trend), key-statistics range marker percentages (0–100 within day / 52-week bands), and all quote/history/key-stats aggregation.
-- **Frontend:** Renders API payloads, handles pointer hit-testing for the chart (which candle index is under the cursor), locale/date **display** formatting (`Intl`, currency labels), and i18n strings—not business formulas.
+Taiwan market-data backend PRs must pass **SonarCloud** in addition to pytest — use the Sonar checklist above.

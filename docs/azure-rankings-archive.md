@@ -1,7 +1,6 @@
-# Azure SQL rankings archive (issues #165–#167)
+# Azure SQL rankings archive
 
-This document covers the optional **public market ranking archive** path. It is
-additive to the existing PostgreSQL-backed Stock Ticker app.
+Optional **public market ranking archive** path, additive to PostgreSQL-backed app data.
 
 ## Separation of concerns
 
@@ -16,12 +15,12 @@ alerts, API keys, AI preferences).
 Unset `RANKINGS_ARCHIVE_DATABASE_URL` and the app behaves exactly as before.
 Azure outages must not block FastAPI startup or `GET /api/rankings`.
 
-## Provisioning (#165)
+## Provisioning
 
 See [`infra/azure-rankings-archive/README.md`](../infra/azure-rankings-archive/README.md)
 for Terraform apply/destroy, Free-offer portal checks, and cost-safety review.
 
-## Schema + repository (#166)
+## Schema + repository
 
 Tables (created lazily via SQLAlchemy `create_all` on first archive use):
 
@@ -56,7 +55,7 @@ Code:
 - `backend/app/db/archive_session.py`
 - `backend/app/repositories/rankings_archive_repository.py`
 
-## EOD capture (#167)
+## EOD capture
 
 Supported combinations match the Rankings UI:
 
@@ -91,7 +90,7 @@ RANKINGS_ARCHIVE_EOD_ENABLED=true
 RANKINGS_ARCHIVE_EOD_POLL_SECONDS=900
 ```
 
-The sampler is **market-aware** (#187): it only opens Azure SQL inside a
+The sampler is **market-aware**: it only opens Azure SQL inside a
 **same-day capture window** (settle time → settle + ~90 minutes). Outside that
 window — including weekends, mid-session idle time, and weekend process
 restarts — it sleeps until the next settle and makes **zero** Azure connections.
@@ -108,7 +107,7 @@ next settle event so AutoPause can engage (idle longer than 60 minutes).
 Failures are logged and never raised into ranking request paths. AutoPause cold
 starts remain expected on the first probe after a long idle.
 
-## Snapshot retention (#188)
+## Snapshot retention
 
 Azure SQL Free Offer storage is finite. Default retention keeps about **two
 years** of EOD archives:
@@ -132,8 +131,7 @@ purge SQL can occur more often than weekly. That is acceptable for this PoC; use
 a single archive capture leader or external coordination only if you need a
 strict global weekly cap.
 
-History read APIs (`/api/rankings/history`, `/history/dates`) never run
-retention purge — only capture cycles do (#187 / #188).
+History read APIs never run retention purge — only capture cycles do.
 
 Structured logs use `event=rankings_archive.retention.completed` with
 `retention_days`, `cutoff_date`, `snapshots_deleted`, `items_deleted`, and
@@ -153,10 +151,9 @@ After purge, `/api/rankings/history/dates` omits deleted dates and
 `/api/rankings/history` for a purged date returns the normal missing-archive
 `404`. Current rankings / Postgres are unchanged.
 
-## Historical read APIs (#168)
+## Historical read APIs
 
 These endpoints read Azure SQL only. They never fall back to current rankings.
-They require the archive path from issues #165–#167 (PR landing those changes).
 
 | Endpoint | Behavior |
 | --- | --- |
@@ -169,10 +166,10 @@ data. Missing archives → `404`; archive DB unavailable or mid-query failure �
 
 The Rankings UI loads `/history/dates` only after the user clicks **Load
 historical dates** for the current market/universe/ranking type (Current view
-must not wake Azure). Changing tab/market/universe clears the opt-in so Azure is
-not woken again until the user asks (#187).
+must not wake Azure). Changing tab, market, or universe clears the opt-in so
+Azure is not woken again until the user asks.
 
-## Free Offer live verification (#186)
+## Free Offer live verification
 
 **Mandatory after provisioning or intentional Azure SQL changes.** Terraform
 source / tags / SKU labels are **not** proof of Free Offer enrollment.
@@ -280,7 +277,7 @@ optionally reads one real archive when present, then upserts / loads /
 reconstructs a disposable EOD archive snapshot. Cleanup is verified; the smoke
 **fails** if the disposable row cannot be removed.
 
-## Live Azure SQL smoke — manual only (#186 / #187)
+## Live Azure SQL smoke — manual only
 
 Job `azure-rankings-archive-smoke` in `.github/workflows/test-and-smoke.yml` is
 **manual `workflow_dispatch` only** on `main` / `master`.

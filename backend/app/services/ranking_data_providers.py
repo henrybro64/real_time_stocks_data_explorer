@@ -22,7 +22,7 @@ from app.services.providers.us_provider import yahoo_v7_quotes_batch
 from app.services.quote_service import QuoteService, quote_service
 from app.services.rankings_external_source import rankings_external_source
 from app.services.rankings_service import RankingsService, _tw_quote_universe_ids
-from app.services.sp500_constituents import load_sp500_symbols
+from app.services.index_constituents import load_sp500_symbols
 
 
 RankingMarket = Literal["US", "TW"]
