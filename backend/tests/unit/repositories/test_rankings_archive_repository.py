@@ -119,6 +119,41 @@ def test_load_eod_snapshot_returns_none_when_missing() -> None:
     assert loaded is None
 
 
+def test_load_eod_snapshot_returns_none_when_items_orphaned() -> None:
+    """#188: parent without children (concurrent purge) must not return an empty 200."""
+    from sqlalchemy import delete
+
+    from app.db.archive_models import RankingSnapshotItemArchive
+
+    repo = RankingsArchiveRepository()
+    factory = _session_factory()
+    repo.set_session_factory_override(factory)
+    trading_date = date(2026, 8, 18)
+    assert (
+        repo.upsert_eod_snapshot(
+            market="US",
+            universe="DJIA",
+            ranking_type=RankingType.volume,
+            trading_date=trading_date,
+            response=_response(),
+        )
+        is not None
+    )
+    with factory() as session:
+        session.execute(delete(RankingSnapshotItemArchive))
+        session.commit()
+
+    assert (
+        repo.load_eod_snapshot(
+            market="US",
+            universe="DJIA",
+            ranking_type=RankingType.volume,
+            trading_date=trading_date,
+        )
+        is None
+    )
+
+
 def test_has_eod_snapshot_is_true_without_loading_items() -> None:
     repo = RankingsArchiveRepository()
     repo.set_session_factory_override(_session_factory())

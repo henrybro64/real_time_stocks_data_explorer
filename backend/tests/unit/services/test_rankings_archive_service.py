@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
+import threading
+import time
 from unittest.mock import MagicMock
 from zoneinfo import ZoneInfo
 
@@ -1142,3 +1144,80 @@ def test_history_reads_never_trigger_retention_purge(monkeypatch) -> None:
 
     assert service.maybe_purge_expired_archives(already_awake=False) is None
     purge_spy.assert_not_called()
+
+
+def test_preview_retention_purge_returns_none_when_unavailable(monkeypatch) -> None:
+    repo = _FakeRepo()
+    repo.available = False
+    service = RankingsArchiveService(repository=repo)
+    monkeypatch.setattr(
+        "app.services.rankings_archive_service.settings.rankings_archive_retention_days",
+        730,
+    )
+    assert service.preview_retention_purge() is None
+
+
+def test_maybe_purge_concurrent_threads_only_one_purges(monkeypatch) -> None:
+    """Claim weekly slot inside the lock so overlapping capture threads do not purge twice."""
+    repo = _FakeRepo()
+    repo.existing.add(("US", "DJIA", RankingType.volume.value, date(2020, 1, 1)))
+    service = RankingsArchiveService(repository=repo)
+    monkeypatch.setattr(
+        "app.services.rankings_archive_service.settings.rankings_archive_retention_days",
+        730,
+    )
+    purge_calls: list[date] = []
+
+    def slow_purge(*, cutoff_trading_date, batch_size=200):
+        purge_calls.append(cutoff_trading_date)
+        time.sleep(0.2)
+        return _FakeRepo.purge_snapshots_older_than(
+            repo,
+            cutoff_trading_date=cutoff_trading_date,
+            batch_size=batch_size,
+        )
+
+    repo.purge_snapshots_older_than = slow_purge  # type: ignore[method-assign]
+
+    now = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
+    results: list[dict[str, int | str] | None] = []
+
+    def run() -> None:
+        results.append(service.maybe_purge_expired_archives(now=now, already_awake=True))
+
+    t1 = threading.Thread(target=run)
+    t2 = threading.Thread(target=run)
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
+
+    assert len(purge_calls) == 1
+    assert sum(1 for result in results if result is not None) == 1
+
+
+def test_maybe_purge_reverts_claim_when_purge_fails(monkeypatch) -> None:
+    repo = _FakeRepo()
+    repo.existing.add(("US", "DJIA", RankingType.volume.value, date(2020, 1, 1)))
+    service = RankingsArchiveService(repository=repo)
+    monkeypatch.setattr(
+        "app.services.rankings_archive_service.settings.rankings_archive_retention_days",
+        730,
+    )
+    calls = {"n": 0}
+    original_purge = repo.purge_snapshots_older_than
+
+    def flaky_purge(*, cutoff_trading_date, batch_size=200):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("simulated purge failure")
+        return original_purge(cutoff_trading_date=cutoff_trading_date, batch_size=batch_size)
+
+    repo.purge_snapshots_older_than = flaky_purge  # type: ignore[method-assign]
+    now = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
+    assert service.maybe_purge_expired_archives(now=now, already_awake=True) is None
+
+    second = service.maybe_purge_expired_archives(now=now, already_awake=True)
+    assert second is not None
+    assert second["snapshots_deleted"] == 1
+    assert calls["n"] == 2

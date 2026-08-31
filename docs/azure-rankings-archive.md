@@ -140,7 +140,9 @@ Structured logs use `event=rankings_archive.retention.completed` with
 `purge_duration_ms` (no secrets / row contents).
 
 Read-only preview (**operator shell only** — opens the archive DB and may wake
-a paused serverless database; never call from HTTP handlers or CI):
+a paused serverless database; never call from HTTP handlers or CI). Returns
+``None`` when retention is disabled or the archive is unavailable (do not treat
+``None`` as “zero rows to purge”):
 
 ```python
 from app.services.rankings_archive_service import rankings_archive_service

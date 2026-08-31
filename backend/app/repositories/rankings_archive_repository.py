@@ -8,7 +8,7 @@ import logging
 
 from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm import Session, joinedload, sessionmaker
 
 from app.db.archive_models import RankingSnapshotArchive, RankingSnapshotItemArchive
 from app.db.archive_session import (
@@ -225,23 +225,26 @@ class RankingsArchiveRepository:
         )
         session_factory = self._session_factory()
         with session_factory() as session:
-            snapshot = session.execute(
-                select(RankingSnapshotArchive).where(
-                    RankingSnapshotArchive.market == market,
-                    RankingSnapshotArchive.universe == universe,
-                    RankingSnapshotArchive.ranking_type == ranking_type_value,
-                    RankingSnapshotArchive.trading_date == trading_date,
+            snapshot = (
+                session.execute(
+                    select(RankingSnapshotArchive)
+                    .options(joinedload(RankingSnapshotArchive.items))
+                    .where(
+                        RankingSnapshotArchive.market == market,
+                        RankingSnapshotArchive.universe == universe,
+                        RankingSnapshotArchive.ranking_type == ranking_type_value,
+                        RankingSnapshotArchive.trading_date == trading_date,
+                    )
                 )
-            ).scalar_one_or_none()
+                .unique()
+                .scalar_one_or_none()
+            )
             if snapshot is None:
                 return None
-            items = list(
-                session.execute(
-                    select(RankingSnapshotItemArchive)
-                    .where(RankingSnapshotItemArchive.snapshot_id == snapshot.id)
-                    .order_by(RankingSnapshotItemArchive.rank.asc())
-                ).scalars()
-            )
+            items = sorted(snapshot.items, key=lambda row: row.rank)
+            # Parent without items can occur if a concurrent purge deleted children first (#188).
+            if not items:
+                return None
             return ArchiveSnapshotEnvelope(snapshot=snapshot, items=items)
 
     def upsert_eod_snapshot(

@@ -1126,13 +1126,11 @@ class RankingsArchiveService:
         if cutoff is None:
             return None
         if not self.is_available():
-            return {
-                "cutoff_date": cutoff.isoformat(),
-                "snapshots_deleted": 0,
-                "items_deleted": 0,
-                "dry_run": 1,
-                "retention_days": retention_days,
-            }
+            logger.debug(
+                "Rankings archive retention preview skipped; archive unavailable",
+                extra={"event": "rankings_archive.retention.preview_unavailable"},
+            )
+            return None
         preview = self._repository.count_snapshots_older_than(
             cutoff_trading_date=cutoff,
         )
@@ -1175,6 +1173,7 @@ class RankingsArchiveService:
             return None
 
         current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        previous_last: datetime | None
         with self._lock:
             last = self._last_retention_purge_at
             if (
@@ -1192,6 +1191,10 @@ class RankingsArchiveService:
                     },
                 )
                 return None
+            # Claim the weekly slot before purge so concurrent capture threads cannot
+            # all pass the interval check and run overlapping delete batches (#188).
+            previous_last = self._last_retention_purge_at
+            self._last_retention_purge_at = current
 
         cutoff = self.retention_cutoff_date(
             retention_days=retention_days,
@@ -1199,16 +1202,22 @@ class RankingsArchiveService:
         )
         assert cutoff is not None
         if not self.is_available():
+            with self._lock:
+                self._last_retention_purge_at = previous_last
             return None
 
         purge_fn = getattr(self._repository, "purge_snapshots_older_than", None)
         if not callable(purge_fn):
+            with self._lock:
+                self._last_retention_purge_at = previous_last
             return None
 
         started_at = perf_counter()
         try:
             result = purge_fn(cutoff_trading_date=cutoff)
         except Exception:  # noqa: BLE001
+            with self._lock:
+                self._last_retention_purge_at = previous_last
             logger.exception(
                 "Rankings archive retention purge failed",
                 extra={
@@ -1218,9 +1227,6 @@ class RankingsArchiveService:
                 },
             )
             return None
-
-        with self._lock:
-            self._last_retention_purge_at = current
 
         result = {
             **result,
