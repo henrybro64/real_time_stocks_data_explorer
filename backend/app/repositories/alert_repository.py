@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from app.db.models import AlertEvent, AlertRule
 
@@ -125,6 +125,15 @@ class AlertRepository:
                 .limit(limit),
             ).scalars()
             return list(rows)
+
+    def delete_events(self, user_id: str) -> int:
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            result = session.execute(
+                delete(AlertEvent).where(AlertEvent.user_id == user_id),
+            )
+            session.commit()
+            return result.rowcount or 0
 
     def evaluate_enabled_rules_for_user(
         self,

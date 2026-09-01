@@ -865,6 +865,12 @@ function evaluateEnabledAlertRule(
   return evaluated;
 }
 
+function evaluateEnabledAlertRules(state: E2eMockState): void {
+  state.alertRules = state.alertRules.map((rule) =>
+    rule.enabled ? evaluateEnabledAlertRule(state, rule) : rule,
+  );
+}
+
 function applyAlertRulePatch(
   state: E2eMockState,
   current: AlertRuleRow,
@@ -1003,13 +1009,21 @@ export async function installE2eApiMocks(page: Page): Promise<void> {
     }
 
     if (path === "/api/alerts/rules" && request.method() === "GET") {
+      evaluateEnabledAlertRules(state);
       await fulfillJson(route, [...state.alertRules]);
       return;
     }
 
     if (path === "/api/alerts/events" && request.method() === "GET") {
+      evaluateEnabledAlertRules(state);
       const limit = Number(url.searchParams.get("limit") ?? state.alertEvents.length);
       await fulfillJson(route, state.alertEvents.slice(0, Number.isFinite(limit) ? limit : state.alertEvents.length));
+      return;
+    }
+
+    if (path === "/api/alerts/events" && request.method() === "DELETE") {
+      state.alertEvents = [];
+      await route.fulfill({ status: 204, body: "" });
       return;
     }
 

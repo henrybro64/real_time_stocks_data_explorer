@@ -259,3 +259,137 @@ def test_alert_rules_and_events_are_isolated_per_authenticated_user(
     assert alice_events.status_code == 200
     assert len(alice_events.json()) == 1
     assert alice_events.json()[0]["stockId"] == "US:AAPL"
+
+
+def test_delete_alert_events_purges_history_preserves_rules_and_state(
+    monkeypatch: pytest.MonkeyPatch,
+    client,
+) -> None:
+    price_state = {"last_price": 205.0}
+    _install_stock_quote_mocks(monkeypatch, price_state=price_state)
+
+    create = client.post(
+        "/api/alerts/rules",
+        json={
+            "stockId": "US:AAPL",
+            "ruleType": "price_above",
+            "thresholdValue": 200,
+            "enabled": True,
+        },
+    )
+    assert create.status_code == 200
+    rule_id = create.json()["id"]
+    assert create.json()["lastConditionMet"] is True
+
+    events_before = client.get("/api/alerts/events")
+    assert events_before.status_code == 200
+    assert len(events_before.json()) == 1
+
+    delete_events = client.delete("/api/alerts/events")
+    assert delete_events.status_code == 204
+
+    events_after = client.get("/api/alerts/events")
+    assert events_after.status_code == 200
+    assert events_after.json() == []
+
+    rules_after = client.get("/api/alerts/rules")
+    assert rules_after.status_code == 200
+    assert len(rules_after.json()) == 1
+    preserved = rules_after.json()[0]
+    assert preserved["id"] == rule_id
+    assert preserved["lastConditionMet"] is True
+    assert preserved["lastTriggeredAt"] is not None
+    assert preserved["lastObservedPrice"] == 205.0
+
+    events_after_refetch = client.get("/api/alerts/events")
+    assert events_after_refetch.status_code == 200
+    assert events_after_refetch.json() == []
+
+    rules_after_evaluate = client.get("/api/alerts/rules")
+    assert rules_after_evaluate.status_code == 200
+    assert rules_after_evaluate.json()[0]["lastConditionMet"] is True
+
+    events_after_rules_evaluate = client.get("/api/alerts/events")
+    assert events_after_rules_evaluate.status_code == 200
+    assert events_after_rules_evaluate.json() == []
+
+
+def test_delete_alert_events_succeeds_when_history_is_empty(
+    monkeypatch: pytest.MonkeyPatch,
+    client,
+) -> None:
+    price_state = {"last_price": 199.0}
+    _install_stock_quote_mocks(monkeypatch, price_state=price_state)
+
+    create = client.post(
+        "/api/alerts/rules",
+        json={
+            "stockId": "US:AAPL",
+            "ruleType": "price_above",
+            "thresholdValue": 200,
+            "enabled": True,
+        },
+    )
+    assert create.status_code == 200
+    assert create.json()["lastConditionMet"] is False
+
+    events_before = client.get("/api/alerts/events")
+    assert events_before.status_code == 200
+    assert events_before.json() == []
+
+    delete_events = client.delete("/api/alerts/events")
+    assert delete_events.status_code == 204
+
+    events_after = client.get("/api/alerts/events")
+    assert events_after.status_code == 200
+    assert events_after.json() == []
+
+
+def test_delete_alert_events_isolated_per_authenticated_user(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _enable_local_auth(monkeypatch)
+    price_state = {"last_price": 205.0}
+    _install_stock_quote_mocks(monkeypatch, price_state=price_state)
+
+    with TestClient(app) as alice_client, TestClient(app) as bob_client:
+        _register_user(alice_client, "alice")
+        _register_user(bob_client, "bob")
+
+        alice_create = alice_client.post(
+            "/api/alerts/rules",
+            json={
+                "stockId": "US:AAPL",
+                "ruleType": "price_above",
+                "thresholdValue": 200,
+                "enabled": True,
+            },
+        )
+        bob_create = bob_client.post(
+            "/api/alerts/rules",
+            json={
+                "stockId": "US:AAPL",
+                "ruleType": "price_above",
+                "thresholdValue": 200,
+                "enabled": True,
+            },
+        )
+        assert alice_create.status_code == 200
+        assert bob_create.status_code == 200
+
+        alice_delete = alice_client.delete("/api/alerts/events")
+        assert alice_delete.status_code == 204
+
+        alice_events = alice_client.get("/api/alerts/events")
+        bob_events = bob_client.get("/api/alerts/events")
+        alice_rules = alice_client.get("/api/alerts/rules")
+        bob_rules = bob_client.get("/api/alerts/rules")
+
+    assert alice_events.status_code == 200
+    assert alice_events.json() == []
+    assert bob_events.status_code == 200
+    assert len(bob_events.json()) == 1
+    assert alice_rules.status_code == 200
+    assert len(alice_rules.json()) == 1
+    assert bob_rules.status_code == 200
+    assert len(bob_rules.json()) == 1
