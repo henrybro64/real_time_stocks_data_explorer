@@ -108,7 +108,7 @@ def test_realized_trade_repository_update_applies_only_provided_fields(
     realized_trade_repository: tuple[RealizedTradeRepository, sessionmaker],
 ) -> None:
     repository, _session_local = realized_trade_repository
-    trade = _create_trade(repository)
+    trade = _create_trade(repository, shares=Decimal("2"))
 
     updated = repository.update_trade(
         "user-1",
