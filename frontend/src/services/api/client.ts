@@ -257,22 +257,6 @@ export async function requestVoid(path: string, init?: RequestInit): Promise<voi
   await request(path, init);
 }
 
-export const JSON_REQUEST_HEADERS = {
-  "Content-Type": "application/json",
-} as const;
-
-export async function requestJsonWithBody<T>(
-  path: string,
-  method: "POST" | "PATCH" | "PUT",
-  payload: unknown,
-): Promise<T> {
-  return requestJson<T>(path, {
-    method,
-    headers: JSON_REQUEST_HEADERS,
-    body: JSON.stringify(payload),
-  });
-}
-
 async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await request(path, init);
   if (!response.ok) {
@@ -587,11 +571,23 @@ export function fetchAlertEvents(limit = 20) {
 }
 
 export async function createAlertRule(payload: AlertRuleCreate) {
-  return requestJsonWithBody<AlertRule>("/alerts/rules", "POST", payload);
+  return requestJson<AlertRule>("/alerts/rules", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
 }
 
 export async function updateAlertRule(ruleId: number, payload: AlertRuleUpdate) {
-  return requestJsonWithBody<AlertRule>(`/alerts/rules/${ruleId}`, "PATCH", payload);
+  return requestJson<AlertRule>(`/alerts/rules/${ruleId}`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
 }
 
 export async function deleteAlertRule(ruleId: number) {
@@ -607,7 +603,13 @@ export async function deleteAlertEvents() {
 }
 
 export async function addToWatchlist(stockId: string) {
-  return requestJsonWithBody<WatchlistResponse>("/watchlist/items", "POST", { id: stockId });
+  return requestJson<WatchlistResponse>("/watchlist/items", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ id: stockId }),
+  });
 }
 
 export async function removeFromWatchlist(stockId: string) {
@@ -637,15 +639,23 @@ export function fetchPortfolioCombinedAssetsHistory(range: TimeRange) {
 }
 
 export async function addPortfolioPosition(payload: PortfolioPositionCreate) {
-  return requestJsonWithBody<PortfolioPosition>("/portfolio/positions", "POST", payload);
+  return requestJson<PortfolioPosition>("/portfolio/positions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
 }
 
 export async function updatePortfolioPosition(positionId: number, payload: PortfolioPositionUpdate) {
-  return requestJsonWithBody<PortfolioPosition>(
-    `/portfolio/positions/${positionId}`,
-    "PATCH",
-    payload,
-  );
+  return requestJson<PortfolioPosition>(`/portfolio/positions/${positionId}`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
 }
 
 export async function deletePortfolioPosition(positionId: number) {
@@ -669,11 +679,23 @@ export function fetchPortfolioAssetSummary() {
 }
 
 export async function addPortfolioAsset(payload: PortfolioAssetCreate) {
-  return requestJsonWithBody<PortfolioAsset>("/portfolio/assets", "POST", payload);
+  return requestJson<PortfolioAsset>("/portfolio/assets", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
 }
 
 export async function updatePortfolioAsset(assetId: number, payload: PortfolioAssetUpdate) {
-  return requestJsonWithBody<PortfolioAsset>(`/portfolio/assets/${assetId}`, "PATCH", payload);
+  return requestJson<PortfolioAsset>(`/portfolio/assets/${assetId}`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
 }
 
 export async function deletePortfolioAsset(assetId: number) {
@@ -687,8 +709,12 @@ export function fetchAiProviderPreference() {
 }
 
 export async function saveAiProviderPreference(provider: "openai" | "perplexity") {
-  return requestJsonWithBody<AiProviderPreference>("/ai/preferences", "PUT", {
-    preferredProvider: provider,
+  return requestJson<AiProviderPreference>("/ai/preferences", {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ preferredProvider: provider }),
   });
 }
 
@@ -697,7 +723,13 @@ export function fetchApiKeyStatus(provider: "openai" | "perplexity") {
 }
 
 export async function saveApiKey(provider: "openai" | "perplexity", apiKey: string) {
-  return requestJsonWithBody<ApiKeyStatus>(`/ai/keys/${provider}`, "PUT", { apiKey });
+  return requestJson<ApiKeyStatus>(`/ai/keys/${provider}`, {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ apiKey }),
+  });
 }
 
 export function fetchAiInsight(stockId: string, provider: "openai" | "perplexity") {

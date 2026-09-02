@@ -3,7 +3,21 @@ import type {
   RealizedTradeCreate,
   RealizedTradeUpdate,
 } from "@shared/api";
-import { fetchJson, requestJsonWithBody, requestVoid } from "../../services/api/client";
+import { fetchJson, requestJson, requestVoid } from "../../services/api/client";
+
+async function requestJsonWithBody<T>(
+  path: string,
+  method: "POST" | "PATCH",
+  payload: unknown,
+): Promise<T> {
+  return requestJson<T>(path, {
+    method,
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+}
 
 export function fetchRealizedTrades(currency: "TWD" | "USD") {
   return fetchJson<RealizedTrade[]>(`/realized-trades?currency=${currency}`);
