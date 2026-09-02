@@ -23,7 +23,7 @@ import type { RealizedTrade, RealizedTradeCurrency } from "@shared/api";
 import { useMemo, useRef, useState } from "react";
 import { useLanguage } from "../../app/i18n";
 import { useRealizedTrades } from "../../hooks/useRealizedTrades";
-import { RequestStateNotice, ScopedRequestStateNotice, errorToNoticeKind } from "../../components/state/RequestStateNotice";
+import { ScopedRequestStateNotice, errorToNoticeKind } from "../../components/state/RequestStateNotice";
 import { toApiError } from "../../services/api/client";
 import {
   buildMonthlyRealizedGainSeries,

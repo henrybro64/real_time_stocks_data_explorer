@@ -2,11 +2,11 @@ import type { RealizedTradeCurrency } from "@shared/api";
 import type { MonthlyRealizedGainPoint } from "./realizedGainCalculations";
 import { formatSignedRealizedCurrency } from "./realizedGainFormat";
 
-type Props = {
+type Props = Readonly<{
   point: MonthlyRealizedGainPoint;
   currency: RealizedTradeCurrency;
   maxAbsMonthlyGain: number;
-};
+}>;
 
 export function RealizedGainChartMonth({ point, currency, maxAbsMonthlyGain }: Props) {
   const heightPercent =

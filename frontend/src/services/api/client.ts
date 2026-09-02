@@ -260,6 +260,22 @@ export async function requestVoid(path: string, init?: RequestInit): Promise<voi
   await request(path, init);
 }
 
+const JSON_REQUEST_HEADERS = {
+  "Content-Type": "application/json",
+} as const;
+
+async function requestJsonWithBody<T>(
+  path: string,
+  method: "POST" | "PATCH",
+  payload: unknown,
+): Promise<T> {
+  return requestJson<T>(path, {
+    method,
+    headers: JSON_REQUEST_HEADERS,
+    body: JSON.stringify(payload),
+  });
+}
+
 async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await request(path, init);
   if (!response.ok) {
@@ -610,23 +626,11 @@ export function fetchRealizedTrades(currency: "TWD" | "USD") {
 }
 
 export async function createRealizedTrade(payload: RealizedTradeCreate) {
-  return requestJson<RealizedTrade>("/realized-trades", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(payload),
-  });
+  return requestJsonWithBody<RealizedTrade>("/realized-trades", "POST", payload);
 }
 
 export async function updateRealizedTrade(tradeId: number, payload: RealizedTradeUpdate) {
-  return requestJson<RealizedTrade>(`/realized-trades/${tradeId}`, {
-    method: "PATCH",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(payload),
-  });
+  return requestJsonWithBody<RealizedTrade>(`/realized-trades/${tradeId}`, "PATCH", payload);
 }
 
 export async function deleteRealizedTrade(tradeId: number) {

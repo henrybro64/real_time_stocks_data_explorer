@@ -9,7 +9,7 @@ export type MonthlyRealizedGainPoint = {
 };
 
 export function parseDateOnly(value: string): Date {
-  const [year, month, day] = value.split("-").map((part) => Number(part));
+  const [year, month, day] = value.split("-").map(Number);
   return new Date(year, month - 1, day);
 }
 
@@ -29,7 +29,7 @@ export function isSellDateOnOrBeforeToday(sellDate: string, today: Date): boolea
 }
 
 export function subtractCalendarMonths(date: Date, months: number): Date {
-  const result = new Date(date.getTime());
+  const result = new Date(date);
   const originalDay = result.getDate();
   result.setDate(1);
   result.setMonth(result.getMonth() - months);
