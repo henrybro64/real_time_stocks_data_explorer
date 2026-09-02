@@ -2,7 +2,7 @@ import type { RealizedTrade, RealizedTradeCurrency } from "@shared/api";
 import { useMemo, useRef, useState } from "react";
 import { errorToNoticeKind } from "../../components/state/RequestStateNotice";
 import { toApiError } from "../../services/api/client";
-import { useRealizedTrades } from "../../hooks/useRealizedTrades";
+import { useRealizedTrades } from "./useRealizedTrades";
 import {
   buildMonthlyRealizedGainSeries,
   previewRealizedGain,

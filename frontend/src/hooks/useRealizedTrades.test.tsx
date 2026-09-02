@@ -9,7 +9,7 @@ import {
   updateRealizedTrade,
 } from "../views/realized-gains/realizedTradesClient";
 import { buildSampleRealizedTrade } from "../views/realized-gains/realizedTradeTestFixtures";
-import { useRealizedTrades } from "./useRealizedTrades";
+import { useRealizedTrades } from "../views/realized-gains/useRealizedTrades";
 
 const useQueryOptions: unknown[] = [];
 
