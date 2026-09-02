@@ -25,6 +25,25 @@ type Props = {
   children: ReactNode;
 };
 
+function LeftNavLink({
+  href,
+  label,
+  pathname,
+}: Readonly<{
+  href: string;
+  label: string;
+  pathname: string;
+}>) {
+  return (
+    <Link
+      className={pathname === href ? "app-left-nav-link active" : "app-left-nav-link"}
+      href={href}
+    >
+      {label}
+    </Link>
+  );
+}
+
 export function Shell({ children }: Props) {
   const pathname = usePathname();
   const router = useRouter();
@@ -157,53 +176,23 @@ export function Shell({ children }: Props) {
                           <p className="app-shell-brand-subtitle">Market command center</p>
                         </div>
                         <nav className="app-left-nav">
-                          <Link className={pathname === "/" ? "app-left-nav-link active" : "app-left-nav-link"} href="/">
-                            {t("nav.dashboard")}
-                          </Link>
+                          <LeftNavLink href="/" label={t("nav.dashboard")} pathname={pathname} />
                           <a className="app-left-nav-link" href="/#markets">
                             {t("nav.markets")}
                           </a>
-                          <Link
-                            className={pathname === "/alerts" ? "app-left-nav-link active" : "app-left-nav-link"}
-                            href="/alerts"
-                          >
-                            {t("nav.alerts")}
-                          </Link>
-                          <Link
-                            className={pathname === "/rankings" ? "app-left-nav-link active" : "app-left-nav-link"}
-                            href="/rankings"
-                          >
-                            {t("nav.rankings")}
-                          </Link>
+                          <LeftNavLink href="/alerts" label={t("nav.alerts")} pathname={pathname} />
+                          <LeftNavLink href="/rankings" label={t("nav.rankings")} pathname={pathname} />
                           <a className="app-left-nav-link" href="/#watchlist">
                             {t("nav.watchlist")}
                           </a>
-                          <Link
-                            className={pathname === "/portfolio" ? "app-left-nav-link active" : "app-left-nav-link"}
-                            href="/portfolio"
-                          >
-                            {t("nav.portfolio")}
-                          </Link>
-                          <Link
-                            className={
-                              pathname === "/realized-gains" ? "app-left-nav-link active" : "app-left-nav-link"
-                            }
+                          <LeftNavLink href="/portfolio" label={t("nav.portfolio")} pathname={pathname} />
+                          <LeftNavLink
                             href="/realized-gains"
-                          >
-                            {t("nav.realizedGains")}
-                          </Link>
-                          <Link
-                            className={pathname === "/assets" ? "app-left-nav-link active" : "app-left-nav-link"}
-                            href="/assets"
-                          >
-                            {t("nav.assets")}
-                          </Link>
-                          <Link
-                            className={pathname === "/ai-settings" ? "app-left-nav-link active" : "app-left-nav-link"}
-                            href="/ai-settings"
-                          >
-                            {t("nav.aiSettings")}
-                          </Link>
+                            label={t("nav.realizedGains")}
+                            pathname={pathname}
+                          />
+                          <LeftNavLink href="/assets" label={t("nav.assets")} pathname={pathname} />
+                          <LeftNavLink href="/ai-settings" label={t("nav.aiSettings")} pathname={pathname} />
                         </nav>
                       </aside>
                     </div>

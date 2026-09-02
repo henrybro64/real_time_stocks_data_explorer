@@ -72,23 +72,25 @@ def test_calculate_realized_metrics(
     assert return_percent == expected_return
 
 
+@pytest.mark.parametrize(
+    ("value", "match"),
+    [
+        ("   ", "Symbol is required"),
+        ("A" * 33, "at most 32 characters"),
+    ],
+)
+def test_normalize_symbol_rejects_invalid_values(value: str, match: str) -> None:
+    with pytest.raises(RealizedTradeValidationError, match=match):
+        normalize_symbol(value)
+
+
 def test_normalize_symbol_trims_and_uppercases() -> None:
     assert normalize_symbol("  aapl  ") == "AAPL"
 
 
-def test_normalize_symbol_rejects_empty() -> None:
-    with pytest.raises(RealizedTradeValidationError, match="Symbol is required"):
-        normalize_symbol("   ")
-
-
-def test_normalize_symbol_rejects_overlong_values() -> None:
-    with pytest.raises(RealizedTradeValidationError, match="at most 32 characters"):
-        normalize_symbol("A" * 33)
-
-
-def test_normalize_currency_accepts_supported_values() -> None:
-    assert normalize_currency("usd") == "USD"
-    assert normalize_currency("TWD") == "TWD"
+@pytest.mark.parametrize("currency", ["usd", "TWD"])
+def test_normalize_currency_accepts_supported_values(currency: str) -> None:
+    assert normalize_currency(currency) == currency.upper()
 
 
 def test_normalize_currency_rejects_unsupported_values() -> None:
@@ -96,36 +98,43 @@ def test_normalize_currency_rejects_unsupported_values() -> None:
         normalize_currency("EUR")
 
 
-def test_service_create_rejects_buy_date_after_sell_date(monkeypatch) -> None:
+@pytest.mark.parametrize(
+    ("payload_kwargs", "match"),
+    [
+        (
+            {
+                "buyPrice": 200,
+                "sellPrice": 180,
+                "buyDate": date(2026, 9, 2),
+                "sellDate": date(2026, 9, 1),
+            },
+            "buyDate must be on or before sellDate",
+        ),
+        (
+            {"buyPrice": 0.0000001},
+            "buyPrice must be greater than 0",
+        ),
+    ],
+)
+def test_service_create_rejects_invalid_payload(
+    monkeypatch: pytest.MonkeyPatch,
+    payload_kwargs: dict[str, object],
+    match: str,
+) -> None:
     service = RealizedTradeService()
-    payload = RealizedTradeCreate(
-        symbol="AAPL",
-        currency="USD",
-        buyPrice=200,
-        sellPrice=180,
-        shares=1,
-        buyDate=date(2026, 9, 2),
-        sellDate=date(2026, 9, 1),
+    payload = RealizedTradeCreate.model_validate(
+        {
+            "symbol": "AAPL",
+            "currency": "USD",
+            "buyPrice": 100,
+            "sellPrice": 120,
+            "shares": 1,
+            "sellDate": date(2026, 8, 1),
+            **payload_kwargs,
+        },
     )
-
     monkeypatch.setattr(realized_trade_module.realized_trade_repository, "create_trade", lambda **_: None)
-    with pytest.raises(RealizedTradeValidationError, match="buyDate must be on or before sellDate"):
-        service.create_trade("user-1", payload)
-
-
-def test_service_create_rejects_subscale_price(monkeypatch) -> None:
-    service = RealizedTradeService()
-    payload = RealizedTradeCreate(
-        symbol="AAPL",
-        currency="USD",
-        buyPrice=0.0000001,
-        sellPrice=120,
-        shares=1,
-        sellDate=date(2026, 8, 1),
-    )
-
-    monkeypatch.setattr(realized_trade_module.realized_trade_repository, "create_trade", lambda **_: None)
-    with pytest.raises(RealizedTradeValidationError, match="buyPrice must be greater than 0"):
+    with pytest.raises(RealizedTradeValidationError, match=match):
         service.create_trade("user-1", payload)
 
 

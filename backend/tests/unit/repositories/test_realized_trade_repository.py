@@ -12,6 +12,30 @@ from app.repositories.realized_trade_repository import RealizedTradeRepository
 from tests.support import install_in_memory_sessionlocal, seed_test_users
 
 
+def _create_trade(
+    repository: RealizedTradeRepository,
+    *,
+    user_id: str = "user-1",
+    symbol: str = "AAPL",
+    currency: str = "USD",
+    buy_price: Decimal = Decimal("100"),
+    sell_price: Decimal = Decimal("120"),
+    shares: Decimal = Decimal("1"),
+    buy_date: date | None = date(2026, 7, 1),
+    sell_date: date = date(2026, 8, 1),
+) -> RealizedTrade:
+    return repository.create_trade(
+        user_id=user_id,
+        symbol=symbol,
+        currency=currency,
+        buy_price=buy_price,
+        sell_price=sell_price,
+        shares=shares,
+        buy_date=buy_date,
+        sell_date=sell_date,
+    )
+
+
 @pytest.fixture
 def realized_trade_repository(
     monkeypatch: pytest.MonkeyPatch,
@@ -26,18 +50,16 @@ def test_realized_trade_repository_lists_filters_and_deletes_user_scoped_rows(
 ) -> None:
     repository, _session_local = realized_trade_repository
 
-    usd_trade = repository.create_trade(
-        user_id="user-1",
-        symbol="AAPL",
-        currency="USD",
+    usd_trade = _create_trade(
+        repository,
         buy_price=Decimal("180.25"),
         sell_price=Decimal("195.50"),
         shares=Decimal("10"),
         buy_date=date(2026, 7, 10),
         sell_date=date(2026, 8, 20),
     )
-    twd_trade = repository.create_trade(
-        user_id="user-1",
+    twd_trade = _create_trade(
+        repository,
         symbol="2330",
         currency="TWD",
         buy_price=Decimal("900"),
@@ -46,23 +68,21 @@ def test_realized_trade_repository_lists_filters_and_deletes_user_scoped_rows(
         buy_date=None,
         sell_date=date(2026, 8, 1),
     )
-    repository.create_trade(
+    _create_trade(
+        repository,
         user_id="user-2",
         symbol="MSFT",
-        currency="USD",
         buy_price=Decimal("300"),
         sell_price=Decimal("320"),
         shares=Decimal("5"),
         buy_date=None,
         sell_date=date(2026, 8, 15),
     )
-    repository.create_trade(
-        user_id="user-1",
-        symbol="AAPL",
-        currency="USD",
-        buy_price=Decimal("150"),
+    _create_trade(
+        repository,
         sell_price=Decimal("160"),
         shares=Decimal("2"),
+        buy_price=Decimal("150"),
         buy_date=None,
         sell_date=date(2026, 9, 1),
     )
@@ -88,16 +108,7 @@ def test_realized_trade_repository_update_applies_only_provided_fields(
     realized_trade_repository: tuple[RealizedTradeRepository, sessionmaker],
 ) -> None:
     repository, _session_local = realized_trade_repository
-    trade = repository.create_trade(
-        user_id="user-1",
-        symbol="AAPL",
-        currency="USD",
-        buy_price=Decimal("100"),
-        sell_price=Decimal("120"),
-        shares=Decimal("2"),
-        buy_date=date(2026, 7, 1),
-        sell_date=date(2026, 8, 1),
-    )
+    trade = _create_trade(repository)
 
     updated = repository.update_trade(
         "user-1",
@@ -117,15 +128,11 @@ def test_realized_trade_repository_update_returns_none_for_other_user(
     realized_trade_repository: tuple[RealizedTradeRepository, sessionmaker],
 ) -> None:
     repository, session_local = realized_trade_repository
-    trade = repository.create_trade(
-        user_id="user-1",
-        symbol="AAPL",
-        currency="USD",
+    trade = _create_trade(
+        repository,
         buy_price=Decimal("10"),
         sell_price=Decimal("12"),
-        shares=Decimal("1"),
         buy_date=None,
-        sell_date=date(2026, 8, 1),
     )
 
     assert (

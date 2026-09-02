@@ -24,6 +24,14 @@ REALIZED_TRADE_ERROR_RESPONSES = {
 }
 
 
+def _raise_realized_trade_http_error(exc: Exception) -> None:
+    if isinstance(exc, RealizedTradeNotFoundError):
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if isinstance(exc, RealizedTradeValidationError):
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    raise exc
+
+
 @router.get("")
 def list_realized_trades(
     currency: RealizedTradeCurrency | None = Query(default=None),
@@ -40,8 +48,8 @@ def create_realized_trade(
 ) -> RealizedTradeResponse:
     try:
         trade = realized_trade_service.create_trade(user_id, payload)
-    except RealizedTradeValidationError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except (RealizedTradeNotFoundError, RealizedTradeValidationError) as exc:
+        _raise_realized_trade_http_error(exc)
     return _to_response(trade)
 
 
@@ -53,10 +61,8 @@ def update_realized_trade(
 ) -> RealizedTradeResponse:
     try:
         trade = realized_trade_service.update_trade(user_id, trade_id, payload)
-    except RealizedTradeNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except RealizedTradeValidationError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except (RealizedTradeNotFoundError, RealizedTradeValidationError) as exc:
+        _raise_realized_trade_http_error(exc)
     return _to_response(trade)
 
 
@@ -68,7 +74,7 @@ def delete_realized_trade(
     try:
         realized_trade_service.delete_trade(user_id, trade_id)
     except RealizedTradeNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        _raise_realized_trade_http_error(exc)
 
 
 def _to_response(trade: RealizedTrade) -> RealizedTradeResponse:

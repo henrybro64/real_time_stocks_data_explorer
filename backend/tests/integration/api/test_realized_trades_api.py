@@ -58,33 +58,18 @@ def test_realized_trade_crud_and_currency_filter(client) -> None:
 
 
 def test_realized_trade_validation_errors(client) -> None:
-    invalid_currency = client.post(
-        "/api/realized-trades",
-        json={**MINIMAL_USD_TRADE, "currency": "EUR"},
-    )
-    assert invalid_currency.status_code == 422
-
-    invalid_dates = client.post(
-        "/api/realized-trades",
-        json={
-            **MINIMAL_USD_TRADE,
-            "buyDate": "2026-09-02",
-            "sellDate": "2026-09-01",
-        },
-    )
-    assert invalid_dates.status_code == 400
-
-    long_symbol = client.post(
-        "/api/realized-trades",
-        json={**MINIMAL_USD_TRADE, "symbol": "A" * 33},
-    )
-    assert long_symbol.status_code == 422
-
-    subscale_price = client.post(
-        "/api/realized-trades",
-        json={**MINIMAL_USD_TRADE, "buyPrice": 0.0000001},
-    )
-    assert subscale_price.status_code == 400
+    cases = [
+        ({"currency": "EUR"}, 422),
+        ({"buyDate": "2026-09-02", "sellDate": "2026-09-01"}, 400),
+        ({"symbol": "A" * 33}, 422),
+        ({"buyPrice": 0.0000001}, 400),
+    ]
+    for payload_override, expected_status in cases:
+        response = client.post(
+            "/api/realized-trades",
+            json={**MINIMAL_USD_TRADE, **payload_override},
+        )
+        assert response.status_code == expected_status
 
 
 def test_realized_trades_are_isolated_per_authenticated_user(
