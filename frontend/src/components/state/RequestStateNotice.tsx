@@ -285,26 +285,3 @@ export function RequestStateNotice({
     </div>
   );
 }
-
-export function ScopedRequestStateNotice({
-  kind,
-  scopeLabel,
-  detail,
-}: Readonly<{
-  kind: RequestNoticeKind | null;
-  scopeLabel: string;
-  detail?: string | null;
-}>) {
-  if (kind == null) {
-    return null;
-  }
-  return (
-    <div className="app-state-notice-wrap">
-      <RequestStateNotice
-        kind={kind}
-        scopeLabel={scopeLabel}
-        detail={kind === "validation" ? detail : null}
-      />
-    </div>
-  );
-}

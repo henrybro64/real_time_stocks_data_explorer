@@ -1461,13 +1461,6 @@ input {
   font-weight: 600;
 }
 
-.app-realized-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.75rem;
-  align-items: center;
-}
-
 .app-realized-preview {
   display: grid;
   gap: 0.25rem;

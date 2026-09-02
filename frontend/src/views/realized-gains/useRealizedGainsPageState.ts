@@ -17,6 +17,16 @@ export type RealizedGainsFormState = {
   sellDate: string;
 };
 
+function resolveTradesNoticeKind(error: unknown, tradeCount: number) {
+  if (error == null) {
+    return null;
+  }
+  if (tradeCount > 0) {
+    return "stale" as const;
+  }
+  return errorToNoticeKind(error);
+}
+
 export const EMPTY_REALIZED_GAINS_FORM: RealizedGainsFormState = {
   symbol: "",
   buyPrice: "",
@@ -49,12 +59,10 @@ export function useRealizedGainsPageState(initialCurrency: RealizedTradeCurrency
     ...monthlySeries.map((point) => Math.abs(point.totalGain)),
   );
 
-  const noticeKind =
-    realized.tradesQuery.error != null
-      ? realized.trades.length > 0
-        ? "stale"
-        : errorToNoticeKind(realized.tradesQuery.error)
-      : null;
+  const noticeKind = resolveTradesNoticeKind(
+    realized.tradesQuery.error,
+    realized.trades.length,
+  );
   const formMutationError =
     realized.createMutation.error ?? realized.updateMutation.error;
   const formMutationApiError =

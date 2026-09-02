@@ -1,5 +1,9 @@
 import { Column, Tile } from "@carbon/react";
 import type { ReactNode } from "react";
+import {
+  RequestStateNotice,
+  type RequestNoticeKind,
+} from "../../components/state/RequestStateNotice";
 
 type PageSectionProps = Readonly<{
   children: ReactNode;
@@ -28,6 +32,31 @@ export function RealizedGainsSectionHeader({ eyebrow, title, actions }: SectionH
         <h2>{title}</h2>
       </div>
       {actions}
+    </div>
+  );
+}
+
+type ScopedRequestStateNoticeProps = Readonly<{
+  kind: RequestNoticeKind | null;
+  scopeLabel: string;
+  detail?: string | null;
+}>;
+
+export function ScopedRequestStateNotice({
+  kind,
+  scopeLabel,
+  detail,
+}: ScopedRequestStateNoticeProps) {
+  if (kind == null) {
+    return null;
+  }
+  return (
+    <div className="app-state-notice-wrap">
+      <RequestStateNotice
+        kind={kind}
+        scopeLabel={scopeLabel}
+        detail={kind === "validation" ? detail : null}
+      />
     </div>
   );
 }

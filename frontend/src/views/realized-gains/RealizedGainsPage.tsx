@@ -21,7 +21,7 @@ import {
 } from "@carbon/react";
 import type { RealizedTrade, RealizedTradeCurrency } from "@shared/api";
 import { useLanguage, type TranslationKey } from "../../app/i18n";
-import { ScopedRequestStateNotice } from "../../components/state/RequestStateNotice";
+import { RealizedGainsPageSection, RealizedGainsSectionHeader, ScopedRequestStateNotice } from "./RealizedGainsSection";
 import {
   sumRealizedGainForPeriod,
   type RealizedGainPeriod,
@@ -32,7 +32,6 @@ import {
   formatSignedRealizedCurrency,
   formatSignedRealizedPercent,
 } from "./realizedGainFormat";
-import { RealizedGainsPageSection, RealizedGainsSectionHeader } from "./RealizedGainsSection";
 import {
   type RealizedGainsFormState,
   useRealizedGainsPageState,
@@ -145,7 +144,7 @@ function RealizedGainsHistory({
               <TableCell>{formatSignedRealizedPercent(trade.realizedReturnPercent)}</TableCell>
               <TableCell>{formatSignedRealizedCurrency(trade.realizedGain, currency)}</TableCell>
               <TableCell>
-                <div className="app-realized-actions">
+                <div className="app-alerts-actions">
                   <Button kind="ghost" size="sm" onClick={() => onEdit(trade)}>
                     {t("realizedGains.actions.edit")}
                   </Button>

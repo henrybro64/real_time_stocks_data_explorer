@@ -266,7 +266,7 @@ const JSON_REQUEST_HEADERS = {
 
 async function requestJsonWithBody<T>(
   path: string,
-  method: "POST" | "PATCH",
+  method: "POST" | "PATCH" | "PUT",
   payload: unknown,
 ): Promise<T> {
   return requestJson<T>(path, {
@@ -590,23 +590,11 @@ export function fetchAlertEvents(limit = 20) {
 }
 
 export async function createAlertRule(payload: AlertRuleCreate) {
-  return requestJson<AlertRule>("/alerts/rules", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(payload),
-  });
+  return requestJsonWithBody<AlertRule>("/alerts/rules", "POST", payload);
 }
 
 export async function updateAlertRule(ruleId: number, payload: AlertRuleUpdate) {
-  return requestJson<AlertRule>(`/alerts/rules/${ruleId}`, {
-    method: "PATCH",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(payload),
-  });
+  return requestJsonWithBody<AlertRule>(`/alerts/rules/${ruleId}`, "PATCH", payload);
 }
 
 export async function deleteAlertRule(ruleId: number) {
@@ -676,23 +664,15 @@ export function fetchPortfolioCombinedAssetsHistory(range: TimeRange) {
 }
 
 export async function addPortfolioPosition(payload: PortfolioPositionCreate) {
-  return requestJson<PortfolioPosition>("/portfolio/positions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(payload),
-  });
+  return requestJsonWithBody<PortfolioPosition>("/portfolio/positions", "POST", payload);
 }
 
 export async function updatePortfolioPosition(positionId: number, payload: PortfolioPositionUpdate) {
-  return requestJson<PortfolioPosition>(`/portfolio/positions/${positionId}`, {
-    method: "PATCH",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(payload),
-  });
+  return requestJsonWithBody<PortfolioPosition>(
+    `/portfolio/positions/${positionId}`,
+    "PATCH",
+    payload,
+  );
 }
 
 export async function deletePortfolioPosition(positionId: number) {
@@ -716,23 +696,11 @@ export function fetchPortfolioAssetSummary() {
 }
 
 export async function addPortfolioAsset(payload: PortfolioAssetCreate) {
-  return requestJson<PortfolioAsset>("/portfolio/assets", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(payload),
-  });
+  return requestJsonWithBody<PortfolioAsset>("/portfolio/assets", "POST", payload);
 }
 
 export async function updatePortfolioAsset(assetId: number, payload: PortfolioAssetUpdate) {
-  return requestJson<PortfolioAsset>(`/portfolio/assets/${assetId}`, {
-    method: "PATCH",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(payload),
-  });
+  return requestJsonWithBody<PortfolioAsset>(`/portfolio/assets/${assetId}`, "PATCH", payload);
 }
 
 export async function deletePortfolioAsset(assetId: number) {
@@ -746,12 +714,8 @@ export function fetchAiProviderPreference() {
 }
 
 export async function saveAiProviderPreference(provider: "openai" | "perplexity") {
-  return requestJson<AiProviderPreference>("/ai/preferences", {
-    method: "PUT",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ preferredProvider: provider }),
+  return requestJsonWithBody<AiProviderPreference>("/ai/preferences", "PUT", {
+    preferredProvider: provider,
   });
 }
 
