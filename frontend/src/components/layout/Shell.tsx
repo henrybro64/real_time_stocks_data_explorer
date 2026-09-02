@@ -17,6 +17,7 @@ import { Menu, Notification } from "@carbon/icons-react";
 import { type ReactNode, useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
+import { LeftNavLink } from "./LeftNavLink";
 import { useLanguage } from "../../app/i18n";
 import { fetchAuthStatus, logout } from "../../services/api/auth";
 import type { AuthStatus } from "../../services/api/auth";
@@ -24,25 +25,6 @@ import type { AuthStatus } from "../../services/api/auth";
 type Props = {
   children: ReactNode;
 };
-
-function LeftNavLink({
-  href,
-  label,
-  pathname,
-}: Readonly<{
-  href: string;
-  label: string;
-  pathname: string;
-}>) {
-  return (
-    <Link
-      className={pathname === href ? "app-left-nav-link active" : "app-left-nav-link"}
-      href={href}
-    >
-      {label}
-    </Link>
-  );
-}
 
 export function Shell({ children }: Props) {
   const pathname = usePathname();
