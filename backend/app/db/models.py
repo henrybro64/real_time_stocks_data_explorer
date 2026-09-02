@@ -50,6 +50,14 @@ class TimestampedRowMixin:
     )
 
 
+class CreatedAtMixin:
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+
+
 class User(Base):
     __tablename__ = "users"
 
@@ -67,7 +75,7 @@ class User(Base):
     )
 
 
-class WatchlistItem(Base):
+class WatchlistItem(Base, UserOwnedRowMixin, CreatedAtMixin):
     __tablename__ = "watchlist_items"
     __table_args__ = (
         UniqueConstraint(
@@ -77,35 +85,16 @@ class WatchlistItem(Base):
         ),
     )
 
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    user_id: Mapped[str] = mapped_column(
-        String(64),
-        ForeignKey("users.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
     stock_id: Mapped[str] = mapped_column(String(32), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        server_default=func.now(),
-        nullable=False,
-    )
 
 
-class AlertRule(Base):
+class AlertRule(Base, UserOwnedRowMixin, TimestampedRowMixin):
     __tablename__ = "alert_rules"
     __table_args__ = (
         Index("ix_alert_rules_user_enabled", "user_id", "enabled"),
         Index("ix_alert_rules_enabled_stock", "enabled", "stock_id"),
     )
 
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    user_id: Mapped[str] = mapped_column(
-        String(64),
-        ForeignKey("users.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
     stock_id: Mapped[str] = mapped_column(String(32), nullable=False)
     rule_type: Mapped[str] = mapped_column(String(32), nullable=False)
     threshold_value: Mapped[float] = mapped_column(Float, nullable=False)
@@ -131,17 +120,6 @@ class AlertRule(Base):
     last_triggered_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
         nullable=True,
-    )
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        server_default=func.now(),
-        nullable=False,
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        server_default=func.now(),
-        onupdate=func.now(),
-        nullable=False,
     )
 
 
