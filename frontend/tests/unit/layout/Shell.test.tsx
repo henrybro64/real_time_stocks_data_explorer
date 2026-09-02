@@ -1,14 +1,14 @@
 import { render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { LanguageProvider } from "../../app/i18n";
-import { Shell } from "./Shell";
+import { LanguageProvider } from "../../../src/app/i18n";
+import { Shell } from "../../../src/components/layout/Shell";
 
 vi.mock("next/navigation", () => ({
   usePathname: () => "/portfolio",
   useRouter: () => ({ push: vi.fn() }),
 }));
 
-vi.mock("../../services/api/auth", () => ({
+vi.mock("../../../src/services/api/auth", () => ({
   fetchAuthStatus: vi.fn().mockResolvedValue({
     authenticated: false,
     authEnabled: false,

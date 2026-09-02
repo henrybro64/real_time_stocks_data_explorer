@@ -7,9 +7,9 @@ import {
   deleteRealizedTrade,
   fetchRealizedTrades,
   updateRealizedTrade,
-} from "../views/realized-gains/realizedTradesClient";
-import { buildSampleRealizedTrade } from "../views/realized-gains/realizedTradeTestFixtures";
-import { useRealizedTrades } from "../views/realized-gains/useRealizedTrades";
+} from "../../../src/views/realized-gains/realizedTradesClient";
+import { buildSampleRealizedTrade } from "../../../src/views/realized-gains/realizedTradeTestFixtures";
+import { useRealizedTrades } from "../../../src/views/realized-gains/useRealizedTrades";
 
 const useQueryOptions: unknown[] = [];
 
@@ -26,7 +26,7 @@ vi.mock("@tanstack/react-query", async () => {
   };
 });
 
-vi.mock("../views/realized-gains/realizedTradesClient", () => ({
+vi.mock("../../../src/views/realized-gains/realizedTradesClient", () => ({
   fetchRealizedTrades: vi.fn(),
   createRealizedTrade: vi.fn(),
   updateRealizedTrade: vi.fn(),

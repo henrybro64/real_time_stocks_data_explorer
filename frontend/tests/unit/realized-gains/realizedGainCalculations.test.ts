@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildSampleRealizedTrade } from "./realizedTradeTestFixtures";
+import { buildSampleRealizedTrade } from "../../../src/views/realized-gains/realizedTradeTestFixtures";
 import {
   buildMonthlyRealizedGainSeries,
   isSellDateInPeriod,
@@ -9,7 +9,7 @@ import {
   subtractCalendarMonths,
   sumRealizedGainForPeriod,
   tradesMatchCurrency,
-} from "./realizedGainCalculations";
+} from "../../../src/views/realized-gains/realizedGainCalculations";
 
 function sampleTrade(overrides = {}) {
   return buildSampleRealizedTrade({

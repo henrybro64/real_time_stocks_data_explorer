@@ -3,19 +3,19 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import type { ReactNode } from "react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { LanguageProvider } from "../../app/i18n";
+import { LanguageProvider } from "../../../src/app/i18n";
 import {
   createRealizedTrade,
   deleteRealizedTrade,
   fetchRealizedTrades,
   updateRealizedTrade,
-} from "./realizedTradesClient";
-import { RealizedGainsPage } from "./RealizedGainsPage";
-import { buildSampleRealizedTrade } from "./realizedTradeTestFixtures";
+} from "../../../src/views/realized-gains/realizedTradesClient";
+import { RealizedGainsPage } from "../../../src/views/realized-gains/RealizedGainsPage";
+import { buildSampleRealizedTrade } from "../../../src/views/realized-gains/realizedTradeTestFixtures";
 
-vi.mock("./realizedTradesClient", async () => {
-  const actual = await vi.importActual<typeof import("./realizedTradesClient")>(
-    "./realizedTradesClient",
+vi.mock("../../../src/views/realized-gains/realizedTradesClient", async () => {
+  const actual = await vi.importActual<typeof import("../../../src/views/realized-gains/realizedTradesClient")>(
+    "../../../src/views/realized-gains/realizedTradesClient",
   );
   return {
     ...actual,
