@@ -30,6 +30,21 @@ def require_session_factory() -> sessionmaker[Session]:
     return SessionLocal
 
 
+def persist_new(session: Session, entity: ModelT) -> ModelT:
+    session.add(entity)
+    session.commit()
+    session.refresh(entity)
+    return entity
+
+
+def apply_field_updates(session: Session, entity: ModelT, updates: dict[str, object]) -> ModelT:
+    for field, value in updates.items():
+        setattr(entity, field, value)
+    session.commit()
+    session.refresh(entity)
+    return entity
+
+
 class SessionBoundRepository:
     """Shared session-factory override helpers used by persisted repositories."""
 
