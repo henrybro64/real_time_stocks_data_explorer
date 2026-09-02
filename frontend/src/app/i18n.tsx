@@ -2,7 +2,10 @@
 
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import type { Stock } from "@shared/stock";
-import { realizedGainsMessages } from "../views/realized-gains/realizedGainsI18n";
+import {
+  realizedGainsMessages,
+  type RealizedGainsTranslationKey,
+} from "../views/realized-gains/realizedGainsI18n";
 
 export type AppLanguage = "en" | "zh-TW";
 
@@ -13,7 +16,6 @@ export type TranslationKey =
   | "nav.rankings"
   | "nav.watchlist"
   | "nav.portfolio"
-  | "nav.realizedGains"
   | "nav.assets"
   | "nav.aiSettings"
   | "nav.menu.open"
@@ -103,48 +105,7 @@ export type TranslationKey =
   | "alerts.column.observedPrice"
   | "alerts.column.triggeredAt"
   | "alerts.column.message"
-  | "realizedGains.title"
-  | "realizedGains.description"
-  | "realizedGains.currency.label"
-  | "realizedGains.currency.twd"
-  | "realizedGains.currency.usd"
-  | "realizedGains.period.1M"
-  | "realizedGains.period.3M"
-  | "realizedGains.period.6M"
-  | "realizedGains.period.1Y"
-  | "realizedGains.chart.title"
-  | "realizedGains.form.title"
-  | "realizedGains.form.createTitle"
-  | "realizedGains.form.editTitle"
-  | "realizedGains.form.symbol"
-  | "realizedGains.form.buyPrice"
-  | "realizedGains.form.sellPrice"
-  | "realizedGains.form.shares"
-  | "realizedGains.form.buyDate"
-  | "realizedGains.form.sellDate"
-  | "realizedGains.form.submitCreate"
-  | "realizedGains.form.submitUpdate"
-  | "realizedGains.form.cancel"
-  | "realizedGains.preview.gain"
-  | "realizedGains.preview.return"
-  | "realizedGains.history.title"
-  | "realizedGains.loading"
-  | "realizedGains.empty.twd"
-  | "realizedGains.empty.usd"
-  | "realizedGains.column.sellDate"
-  | "realizedGains.column.symbol"
-  | "realizedGains.column.buyPrice"
-  | "realizedGains.column.sellPrice"
-  | "realizedGains.column.shares"
-  | "realizedGains.column.returnPercent"
-  | "realizedGains.column.realizedGain"
-  | "realizedGains.column.actions"
-  | "realizedGains.actions.edit"
-  | "realizedGains.actions.delete"
-  | "realizedGains.deleteConfirmTitle"
-  | "realizedGains.deleteConfirmMessage"
-  | "realizedGains.deleteConfirmCancel"
-  | "realizedGains.deleteConfirmAction"
+  | RealizedGainsTranslationKey
   | "stock.market"
   | "stock.updatedAt"
   | "stock.prevClose"

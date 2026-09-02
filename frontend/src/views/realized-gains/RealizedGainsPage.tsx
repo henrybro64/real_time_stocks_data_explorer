@@ -20,14 +20,9 @@ import {
   Tile,
 } from "@carbon/react";
 import type { RealizedTrade, RealizedTradeCurrency } from "@shared/api";
-import { useMemo, useRef, useState } from "react";
 import { useLanguage, type TranslationKey } from "../../app/i18n";
-import { useRealizedTrades } from "../../hooks/useRealizedTrades";
-import { ScopedRequestStateNotice, errorToNoticeKind } from "../../components/state/RequestStateNotice";
-import { toApiError } from "../../services/api/client";
+import { ScopedRequestStateNotice } from "../../components/state/RequestStateNotice";
 import {
-  buildMonthlyRealizedGainSeries,
-  previewRealizedGain,
   sumRealizedGainForPeriod,
   type RealizedGainPeriod,
 } from "./realizedGainCalculations";
@@ -37,32 +32,19 @@ import {
   formatSignedRealizedCurrency,
   formatSignedRealizedPercent,
 } from "./realizedGainFormat";
+import { RealizedGainsPageSection, RealizedGainsSectionHeader } from "./RealizedGainsSection";
+import {
+  type RealizedGainsFormState,
+  useRealizedGainsPageState,
+} from "./useRealizedGainsPageState";
 
 const PERIODS: RealizedGainPeriod[] = ["1M", "3M", "6M", "1Y"];
 
 const CURRENCIES: RealizedTradeCurrency[] = ["TWD", "USD"];
 
-type FormState = {
-  symbol: string;
-  buyPrice: string;
-  sellPrice: string;
-  shares: string;
-  buyDate: string;
-  sellDate: string;
-};
-
-const EMPTY_FORM: FormState = {
-  symbol: "",
-  buyPrice: "",
-  sellPrice: "",
-  shares: "",
-  buyDate: "",
-  sellDate: "",
-};
-
 const FORM_FIELDS: ReadonlyArray<{
   id: string;
-  field: keyof FormState;
+  field: keyof RealizedGainsFormState;
   labelKey: TranslationKey;
   type?: string;
   min?: number;
@@ -112,113 +94,111 @@ function readInputValue(event: { currentTarget: HTMLInputElement | null; target:
   return target instanceof HTMLInputElement ? target.value : "";
 }
 
+type RealizedGainsHistoryProps = Readonly<{
+  currency: RealizedTradeCurrency;
+  trades: RealizedTrade[];
+  isLoading: boolean;
+  onEdit: (trade: RealizedTrade) => void;
+  onDelete: (tradeId: number) => void;
+}>;
+
+function RealizedGainsHistory({
+  currency,
+  trades,
+  isLoading,
+  onEdit,
+  onDelete,
+}: RealizedGainsHistoryProps) {
+  const { t } = useLanguage();
+
+  if (isLoading && trades.length === 0) {
+    return <InlineLoading description={t("realizedGains.loading")} status="active" />;
+  }
+  if (trades.length === 0) {
+    const emptyKey = currency === "TWD" ? "realizedGains.empty.twd" : "realizedGains.empty.usd";
+    return <p className="app-supporting-copy">{t(emptyKey)}</p>;
+  }
+
+  return (
+    <TableContainer className="app-realized-table-wrap">
+      <Table size="lg" useZebraStyles>
+        <TableHead>
+          <TableRow>
+            <TableHeader>{t("realizedGains.column.sellDate")}</TableHeader>
+            <TableHeader>{t("realizedGains.column.symbol")}</TableHeader>
+            <TableHeader>{t("realizedGains.column.buyPrice")}</TableHeader>
+            <TableHeader>{t("realizedGains.column.sellPrice")}</TableHeader>
+            <TableHeader>{t("realizedGains.column.shares")}</TableHeader>
+            <TableHeader>{t("realizedGains.column.returnPercent")}</TableHeader>
+            <TableHeader>{t("realizedGains.column.realizedGain")}</TableHeader>
+            <TableHeader>{t("realizedGains.column.actions")}</TableHeader>
+          </TableRow>
+        </TableHead>
+        <TableBody>
+          {trades.map((trade) => (
+            <TableRow key={trade.id} data-testid={`realized-trade-row-${trade.id}`}>
+              <TableCell>{trade.sellDate}</TableCell>
+              <TableCell>{trade.symbol}</TableCell>
+              <TableCell>{formatRealizedCurrency(trade.buyPrice, currency)}</TableCell>
+              <TableCell>{formatRealizedCurrency(trade.sellPrice, currency)}</TableCell>
+              <TableCell>{trade.shares}</TableCell>
+              <TableCell>{formatSignedRealizedPercent(trade.realizedReturnPercent)}</TableCell>
+              <TableCell>{formatSignedRealizedCurrency(trade.realizedGain, currency)}</TableCell>
+              <TableCell>
+                <div className="app-realized-actions">
+                  <Button kind="ghost" size="sm" onClick={() => onEdit(trade)}>
+                    {t("realizedGains.actions.edit")}
+                  </Button>
+                  <Button
+                    kind="ghost"
+                    size="sm"
+                    data-testid={`realized-delete-button-${trade.id}`}
+                    onClick={() => onDelete(trade.id)}
+                  >
+                    {t("realizedGains.actions.delete")}
+                  </Button>
+                </div>
+              </TableCell>
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
+    </TableContainer>
+  );
+}
+
 export function RealizedGainsPage() {
   const { t } = useLanguage();
-  const [currency, setCurrency] = useState<RealizedTradeCurrency>("TWD");
-  const realized = useRealizedTrades(currency);
-  const [form, setForm] = useState<FormState>(EMPTY_FORM);
-  const [editingTradeId, setEditingTradeId] = useState<number | null>(null);
-  const [pendingDeleteId, setPendingDeleteId] = useState<number | null>(null);
-  const pendingDeleteIdRef = useRef<number | null>(null);
+  const {
+    currency,
+    realized,
+    form,
+    setForm,
+    editingTradeId,
+    pendingDeleteId,
+    today,
+    preview,
+    monthlySeries,
+    maxAbsMonthlyGain,
+    noticeKind,
+    formMutationApiError,
+    formMutationNoticeKind,
+    deleteMutationApiError,
+    deleteMutationNoticeKind,
+    isFormValid,
+    resetForm,
+    beginEdit,
+    submitForm,
+    switchCurrency,
+    closeDeleteModal,
+    confirmDelete,
+    openDeleteModal,
+  } = useRealizedGainsPageState();
 
-  const today = useMemo(() => new Date(), []);
-  const preview = previewRealizedGain(
-    Number(form.buyPrice),
-    Number(form.sellPrice),
-    Number(form.shares),
-  );
-  const monthlySeries = useMemo(
-    () => buildMonthlyRealizedGainSeries(realized.trades, today),
-    [realized.trades, today],
-  );
-  const maxAbsMonthlyGain = Math.max(
-    1,
-    ...monthlySeries.map((point) => Math.abs(point.totalGain)),
-  );
-
-  const noticeKind =
-    realized.tradesQuery.error != null
-      ? realized.trades.length > 0
-        ? "stale"
-        : errorToNoticeKind(realized.tradesQuery.error)
-      : null;
-  const formMutationError =
-    realized.createMutation.error ?? realized.updateMutation.error;
-  const formMutationApiError =
-    formMutationError != null ? toApiError(formMutationError) : null;
-  const formMutationNoticeKind =
-    formMutationApiError != null ? errorToNoticeKind(formMutationApiError) : null;
-  const deleteMutationApiError =
-    realized.deleteMutation.error != null ? toApiError(realized.deleteMutation.error) : null;
-  const deleteMutationNoticeKind =
-    deleteMutationApiError != null ? errorToNoticeKind(deleteMutationApiError) : null;
-
-  const isFormValid =
-    form.symbol.trim().length > 0 &&
-    Number.isFinite(Number(form.buyPrice)) &&
-    Number(form.buyPrice) > 0 &&
-    Number.isFinite(Number(form.sellPrice)) &&
-    Number(form.sellPrice) > 0 &&
-    Number.isFinite(Number(form.shares)) &&
-    Number(form.shares) > 0 &&
-    form.sellDate.length > 0;
-
-  const resetForm = () => {
-    setForm(EMPTY_FORM);
-    setEditingTradeId(null);
-  };
-
-  const beginEdit = (trade: RealizedTrade) => {
-    setEditingTradeId(trade.id);
-    setForm({
-      symbol: trade.symbol,
-      buyPrice: String(trade.buyPrice),
-      sellPrice: String(trade.sellPrice),
-      shares: String(trade.shares),
-      buyDate: trade.buyDate ?? "",
-      sellDate: trade.sellDate,
-    });
-  };
-
-  const submitForm = () => {
-    realized.createMutation.reset();
-    realized.updateMutation.reset();
-    const payload = {
-      symbol: form.symbol.trim(),
-      currency,
-      buyPrice: Number(form.buyPrice),
-      sellPrice: Number(form.sellPrice),
-      shares: Number(form.shares),
-      buyDate: form.buyDate || null,
-      sellDate: form.sellDate,
-    };
-    if (editingTradeId == null) {
-      realized.createMutation.mutate(payload, { onSuccess: resetForm });
-      return;
-    }
-    realized.updateMutation.mutate(
-      { tradeId: editingTradeId, payload },
-      { onSuccess: resetForm },
-    );
-  };
-
-  const switchCurrency = (nextCurrency: RealizedTradeCurrency) => {
-    if (nextCurrency === currency) {
-      return;
-    }
-    setCurrency(nextCurrency);
-    resetForm();
-    realized.createMutation.reset();
-    realized.updateMutation.reset();
-    realized.deleteMutation.reset();
-    setPendingDeleteId(null);
-  };
-
-  const closeDeleteModal = () => {
-    if (!realized.deleteMutation.isPending) {
-      setPendingDeleteId(null);
-    }
-  };
+  const formTitleKey =
+    editingTradeId == null ? "realizedGains.form.createTitle" : "realizedGains.form.editTitle";
+  const submitLabelKey =
+    editingTradeId == null ? "realizedGains.form.submitCreate" : "realizedGains.form.submitUpdate";
 
   return (
     <Grid className="app-page-grid" fullWidth>
@@ -231,18 +211,13 @@ export function RealizedGainsPage() {
         </Tile>
       </Column>
 
-      <Column className="app-column-spacing" sm={4} md={8} lg={16}>
-        <Tile className="app-section-tile">
-          <div className="app-section-header">
-            <div>
-              <p className="app-eyebrow">{t("realizedGains.currency.label")}</p>
-              <h2>{t("realizedGains.currency.label")}</h2>
-            </div>
-            <div
-              className="app-realized-currency-switch"
-              role="group"
-              aria-label={t("realizedGains.currency.label")}
-            >
+      <RealizedGainsPageSection className="app-section-tile">
+        <RealizedGainsSectionHeader
+          eyebrow={t("realizedGains.currency.label")}
+          title={t("realizedGains.currency.label")}
+          actions={
+            <fieldset className="app-realized-currency-switch">
+              <legend className="cds--visually-hidden">{t("realizedGains.currency.label")}</legend>
               {CURRENCIES.map((value) => (
                 <Button
                   key={value}
@@ -254,12 +229,12 @@ export function RealizedGainsPage() {
                   {value === "TWD" ? t("realizedGains.currency.twd") : t("realizedGains.currency.usd")}
                 </Button>
               ))}
-            </div>
-          </div>
-        </Tile>
-      </Column>
+            </fieldset>
+          }
+        />
+      </RealizedGainsPageSection>
 
-      <Column className="app-column-spacing" sm={4} md={8} lg={16}>
+      <RealizedGainsPageSection>
         <div className="app-realized-summary-grid">
           {PERIODS.map((period) => (
             <Tile key={period} className="app-realized-summary-card">
@@ -273,169 +248,98 @@ export function RealizedGainsPage() {
             </Tile>
           ))}
         </div>
-      </Column>
+      </RealizedGainsPageSection>
 
-      <Column className="app-column-spacing" sm={4} md={8} lg={16}>
-        <Tile className="app-section-tile">
-          <div className="app-section-header">
-            <div>
-              <p className="app-eyebrow">{t("realizedGains.chart.title")}</p>
-              <h2>{t("realizedGains.chart.title")}</h2>
-            </div>
-          </div>
-          <div className="app-realized-chart" role="img" aria-label={t("realizedGains.chart.title")}>
-            {monthlySeries.map((point) => (
-              <RealizedGainChartMonth
-                key={point.monthKey}
-                point={point}
-                currency={currency}
-                maxAbsMonthlyGain={maxAbsMonthlyGain}
-              />
-            ))}
-          </div>
-        </Tile>
-      </Column>
-
-      <Column className="app-column-spacing" sm={4} md={8} lg={16}>
-        <Tile className="app-section-tile">
-          <div className="app-section-header">
-            <div>
-              <p className="app-eyebrow">{t("realizedGains.form.title")}</p>
-              <h2>{editingTradeId == null ? t("realizedGains.form.createTitle") : t("realizedGains.form.editTitle")}</h2>
-            </div>
-          </div>
-          <ScopedRequestStateNotice
-            kind={formMutationNoticeKind}
-            scopeLabel={t("realizedGains.form.title")}
-            detail={formMutationApiError?.detail}
-          />
-          <div className="app-realized-form">
-            {FORM_FIELDS.map(({ id, field, labelKey, type, min, step }) => (
-              <TextInput
-                key={id}
-                id={id}
-                labelText={t(labelKey)}
-                type={type}
-                min={min}
-                step={step}
-                value={form[field]}
-                onChange={(event) =>
-                  setForm((current) => ({ ...current, [field]: readInputValue(event) }))
-                }
-              />
-            ))}
-            {preview ? (
-              <div className="app-realized-preview">
-                <p>{t("realizedGains.preview.gain")}</p>
-                <p>{formatSignedRealizedCurrency(preview.realizedGain, currency)}</p>
-                <p>{t("realizedGains.preview.return")}</p>
-                <p>{formatSignedRealizedPercent(preview.realizedReturnPercent)}</p>
-              </div>
-            ) : null}
-            <div className="app-realized-form-actions">
-              <Button
-                data-testid="realized-submit-button"
-                disabled={!isFormValid || realized.isMutating}
-                onClick={submitForm}
-              >
-                {editingTradeId == null ? t("realizedGains.form.submitCreate") : t("realizedGains.form.submitUpdate")}
-              </Button>
-              {editingTradeId != null ? (
-                <Button kind="ghost" onClick={resetForm}>
-                  {t("realizedGains.form.cancel")}
-                </Button>
-              ) : null}
-            </div>
-          </div>
-        </Tile>
-      </Column>
-
-      <Column className="app-column-spacing" sm={4} md={8} lg={16}>
-        <Tile className="app-section-tile">
-          <div className="app-section-header">
-            <div>
-              <p className="app-eyebrow">{t("realizedGains.history.title")}</p>
-              <h2>{t("realizedGains.history.title")}</h2>
-            </div>
-          </div>
-          {noticeKind ? (
-            <ScopedRequestStateNotice
-              kind={noticeKind}
-              scopeLabel={t("realizedGains.history.title")}
+      <RealizedGainsPageSection className="app-section-tile">
+        <RealizedGainsSectionHeader
+          eyebrow={t("realizedGains.chart.title")}
+          title={t("realizedGains.chart.title")}
+        />
+        <div className="app-realized-chart" role="img" aria-label={t("realizedGains.chart.title")}>
+          {monthlySeries.map((point) => (
+            <RealizedGainChartMonth
+              key={point.monthKey}
+              point={point}
+              currency={currency}
+              maxAbsMonthlyGain={maxAbsMonthlyGain}
             />
+          ))}
+        </div>
+      </RealizedGainsPageSection>
+
+      <RealizedGainsPageSection className="app-section-tile">
+        <RealizedGainsSectionHeader
+          eyebrow={t("realizedGains.form.title")}
+          title={t(formTitleKey)}
+        />
+        <ScopedRequestStateNotice
+          kind={formMutationNoticeKind}
+          scopeLabel={t("realizedGains.form.title")}
+          detail={formMutationApiError?.detail}
+        />
+        <div className="app-alerts-form">
+          {FORM_FIELDS.map(({ id, field, labelKey, type, min, step }) => (
+            <TextInput
+              key={id}
+              id={id}
+              labelText={t(labelKey)}
+              type={type}
+              min={min}
+              step={step}
+              value={form[field]}
+              onChange={(event) =>
+                setForm((current) => ({ ...current, [field]: readInputValue(event) }))
+              }
+            />
+          ))}
+          {preview ? (
+            <div className="app-realized-preview">
+              <p>{t("realizedGains.preview.gain")}</p>
+              <p>{formatSignedRealizedCurrency(preview.realizedGain, currency)}</p>
+              <p>{t("realizedGains.preview.return")}</p>
+              <p>{formatSignedRealizedPercent(preview.realizedReturnPercent)}</p>
+            </div>
           ) : null}
-          {realized.tradesQuery.isLoading && realized.trades.length === 0 ? (
-            <InlineLoading description={t("realizedGains.loading")} status="active" />
-          ) : realized.trades.length === 0 ? (
-            <p className="app-supporting-copy">
-              {currency === "TWD"
-                ? t("realizedGains.empty.twd")
-                : t("realizedGains.empty.usd")}
-            </p>
-          ) : (
-            <TableContainer className="app-realized-table-wrap">
-              <Table size="lg" useZebraStyles>
-                <TableHead>
-                  <TableRow>
-                    <TableHeader>{t("realizedGains.column.sellDate")}</TableHeader>
-                    <TableHeader>{t("realizedGains.column.symbol")}</TableHeader>
-                    <TableHeader>{t("realizedGains.column.buyPrice")}</TableHeader>
-                    <TableHeader>{t("realizedGains.column.sellPrice")}</TableHeader>
-                    <TableHeader>{t("realizedGains.column.shares")}</TableHeader>
-                    <TableHeader>{t("realizedGains.column.returnPercent")}</TableHeader>
-                    <TableHeader>{t("realizedGains.column.realizedGain")}</TableHeader>
-                    <TableHeader>{t("realizedGains.column.actions")}</TableHeader>
-                  </TableRow>
-                </TableHead>
-                <TableBody>
-                  {realized.trades.map((trade) => (
-                    <TableRow key={trade.id} data-testid={`realized-trade-row-${trade.id}`}>
-                      <TableCell>{trade.sellDate}</TableCell>
-                      <TableCell>{trade.symbol}</TableCell>
-                      <TableCell>{formatRealizedCurrency(trade.buyPrice, currency)}</TableCell>
-                      <TableCell>{formatRealizedCurrency(trade.sellPrice, currency)}</TableCell>
-                      <TableCell>{trade.shares}</TableCell>
-                      <TableCell>{formatSignedRealizedPercent(trade.realizedReturnPercent)}</TableCell>
-                      <TableCell>{formatSignedRealizedCurrency(trade.realizedGain, currency)}</TableCell>
-                      <TableCell>
-                        <div className="app-realized-actions">
-                          <Button kind="ghost" size="sm" onClick={() => beginEdit(trade)}>
-                            {t("realizedGains.actions.edit")}
-                          </Button>
-                          <Button
-                            kind="ghost"
-                            size="sm"
-                            data-testid={`realized-delete-button-${trade.id}`}
-                            onClick={() => {
-                              realized.deleteMutation.reset();
-                              pendingDeleteIdRef.current = trade.id;
-                              setPendingDeleteId(trade.id);
-                            }}
-                          >
-                            {t("realizedGains.actions.delete")}
-                          </Button>
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </TableContainer>
-          )}
-        </Tile>
-      </Column>
+          <div className="app-alerts-form-actions">
+            <Button
+              data-testid="realized-submit-button"
+              disabled={!isFormValid || realized.isMutating}
+              onClick={submitForm}
+            >
+              {t(submitLabelKey)}
+            </Button>
+            {editingTradeId != null ? (
+              <Button kind="ghost" onClick={resetForm}>
+                {t("realizedGains.form.cancel")}
+              </Button>
+            ) : null}
+          </div>
+        </div>
+      </RealizedGainsPageSection>
+
+      <RealizedGainsPageSection className="app-section-tile">
+        <RealizedGainsSectionHeader
+          eyebrow={t("realizedGains.history.title")}
+          title={t("realizedGains.history.title")}
+        />
+        {noticeKind ? (
+          <ScopedRequestStateNotice
+            kind={noticeKind}
+            scopeLabel={t("realizedGains.history.title")}
+          />
+        ) : null}
+        <RealizedGainsHistory
+          currency={currency}
+          trades={realized.trades}
+          isLoading={realized.tradesQuery.isLoading}
+          onEdit={beginEdit}
+          onDelete={openDeleteModal}
+        />
+      </RealizedGainsPageSection>
 
       {pendingDeleteId != null ? (
-        <ComposedModal
-          open
-          onClose={closeDeleteModal}
-          size="sm"
-          danger
-        >
-          <ModalHeader
-            title={t("realizedGains.deleteConfirmTitle")}
-            closeModal={closeDeleteModal}
-          />
+        <ComposedModal open onClose={closeDeleteModal} size="sm" danger>
+          <ModalHeader title={t("realizedGains.deleteConfirmTitle")} closeModal={closeDeleteModal} />
           <ModalBody>
             <p className="app-supporting-copy">{t("realizedGains.deleteConfirmMessage")}</p>
             <ScopedRequestStateNotice
@@ -448,7 +352,7 @@ export function RealizedGainsPage() {
             <Button
               kind="secondary"
               disabled={realized.deleteMutation.isPending}
-              onClick={() => setPendingDeleteId(null)}
+              onClick={closeDeleteModal}
             >
               {t("realizedGains.deleteConfirmCancel")}
             </Button>
@@ -456,21 +360,7 @@ export function RealizedGainsPage() {
               kind="danger"
               data-testid="realized-delete-confirm"
               disabled={realized.deleteMutation.isPending}
-              onClick={() => {
-                const tradeId = pendingDeleteIdRef.current;
-                if (tradeId == null) {
-                  return;
-                }
-                realized.deleteMutation.mutate(tradeId, {
-                  onSuccess: () => {
-                    pendingDeleteIdRef.current = null;
-                    setPendingDeleteId(null);
-                    if (editingTradeId === tradeId) {
-                      resetForm();
-                    }
-                  },
-                });
-              }}
+              onClick={confirmDelete}
             >
               {t("realizedGains.deleteConfirmAction")}
             </Button>
