@@ -46,7 +46,7 @@ Implementations live in service modules; only orchestration is centralized.
 
 ## Persistence boundaries
 
-User-owned data flows through repositories (`watchlist`, `portfolio`, `alert`, `ranking_snapshot`, `user`, `api_key`, etc.) so routes stay thin.
+User-owned data flows through repositories (`watchlist`, `portfolio`, `alert`, `realized_trade`, `ranking_snapshot`, `user`, `api_key`, etc.) so routes stay thin.
 
 Taiwan market-data shares `taiwan_market_data.py` and `taiwan_history_scan.py`. 資券 upstream contracts: [taiwan-margin-short-endpoints.md](taiwan-margin-short-endpoints.md). Backend PRs in this area must also pass **SonarCloud** — see [taiwan-market-data-sonar-checklist.md](taiwan-market-data-sonar-checklist.md).
 

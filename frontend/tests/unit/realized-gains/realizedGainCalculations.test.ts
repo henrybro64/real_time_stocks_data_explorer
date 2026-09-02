@@ -2,13 +2,13 @@ import { describe, expect, it } from "vitest";
 import { buildSampleRealizedTrade } from "../../../src/views/realized-gains/realizedTradeTestFixtures";
 import {
   buildMonthlyRealizedGainSeries,
+  isBuyDateOnOrBeforeSellDate,
   isSellDateInPeriod,
   isSellDateOnOrBeforeToday,
   parseDateOnly,
   previewRealizedGain,
   subtractCalendarMonths,
   sumRealizedGainForPeriod,
-  tradesMatchCurrency,
 } from "../../../src/views/realized-gains/realizedGainCalculations";
 
 function sampleTrade(overrides = {}) {
@@ -114,13 +114,10 @@ describe("realizedGainCalculations", () => {
     });
   });
 
-  it("detects mixed-currency datasets", () => {
-    expect(tradesMatchCurrency([sampleTrade({ currency: "USD" })], "USD")).toBe(true);
-    expect(
-      tradesMatchCurrency(
-        [sampleTrade({ currency: "USD" }), sampleTrade({ id: 2, currency: "TWD" })],
-        "USD",
-      ),
-    ).toBe(false);
+  it("validates buy date is on or before sell date", () => {
+    expect(isBuyDateOnOrBeforeSellDate("", "2026-08-20")).toBe(true);
+    expect(isBuyDateOnOrBeforeSellDate("2026-08-01", "2026-08-20")).toBe(true);
+    expect(isBuyDateOnOrBeforeSellDate("2026-08-20", "2026-08-20")).toBe(true);
+    expect(isBuyDateOnOrBeforeSellDate("2026-09-01", "2026-08-20")).toBe(false);
   });
 });

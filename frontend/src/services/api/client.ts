@@ -257,7 +257,7 @@ export async function requestVoid(path: string, init?: RequestInit): Promise<voi
   await request(path, init);
 }
 
-async function requestJsonWithBody<T>(
+export async function requestJsonWithBody<T>(
   path: string,
   method: "POST" | "PATCH" | "PUT",
   payload: unknown,

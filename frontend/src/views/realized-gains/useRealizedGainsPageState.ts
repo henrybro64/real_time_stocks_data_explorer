@@ -11,6 +11,7 @@ import {
 import { toApiError } from "../../services/api/client";
 import {
   buildMonthlyRealizedGainSeries,
+  isBuyDateOnOrBeforeSellDate,
   previewRealizedGain,
 } from "./realizedGainCalculations";
 
@@ -118,7 +119,8 @@ export function useRealizedGainsPageState(initialCurrency: RealizedTradeCurrency
     Number(form.sellPrice) > 0 &&
     Number.isFinite(Number(form.shares)) &&
     Number(form.shares) > 0 &&
-    form.sellDate.length > 0;
+    form.sellDate.length > 0 &&
+    isBuyDateOnOrBeforeSellDate(form.buyDate, form.sellDate);
 
   const resetForm = () => {
     setForm(EMPTY_REALIZED_GAINS_FORM);

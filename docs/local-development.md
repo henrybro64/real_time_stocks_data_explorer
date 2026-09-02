@@ -90,6 +90,10 @@ Settings: `TAIWAN_MARKET_DATA_REFRESH_*`, `TAIWAN_MARKET_DATA_CAPTURE_TOKEN`. En
 
 User-scoped rules (`price_above`, `price_below`) with durable events. Routes under `/api/alerts/*`; UI at `/alerts`. In-process evaluator (`ALERT_EVALUATOR_ENABLED`); transition-based de-duplication (no email/push in V1). Clear recent event history with `DELETE /api/alerts/events` (rules and `lastConditionMet` state are preserved).
 
+## Realized P/L (#194 / #195)
+
+User-scoped manual trade records in `realized_trades` (TWD or USD only, no FX conversion). Routes under `/api/realized-trades`; UI at `/realized-gains`. `realizedGain` and `realizedReturnPercent` are derived on read from buy/sell price and shares. Period summaries and the 12-month chart aggregate client-side by `sellDate`.
+
 ## LAN access
 
 1. Bind Next to all interfaces: `npm run dev:lan` or `./scripts/dev-lan.sh` (`0.0.0.0:3000`).

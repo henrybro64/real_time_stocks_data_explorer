@@ -28,7 +28,7 @@ Saved layouts/dashboard settings are not persisted today. New features must foll
 
 ## Enforcement layers
 
-1. **Routes** — watchlist, portfolio, alerts, AI depend on `get_effective_user_id()`.
+1. **Routes** — watchlist, portfolio, alerts, realized trades, AI depend on `get_effective_user_id()`.
 2. **Services** — all queries/mutations filter by `user_id` (updates match resource id **and** user).
 3. **Schema** — FKs to `users.id`, `ON DELETE CASCADE`, user-scoped uniqueness.
 

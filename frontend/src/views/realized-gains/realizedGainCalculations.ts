@@ -1,4 +1,4 @@
-import type { RealizedTrade, RealizedTradeCurrency } from "@shared/api";
+import type { RealizedTrade } from "@shared/api";
 
 export type RealizedGainPeriod = "1M" | "3M" | "6M" | "1Y";
 
@@ -77,6 +77,7 @@ export function sumRealizedGainForPeriod(
   }, 0);
 }
 
+/** Live form preview; mirrors backend `calculate_realized_metrics` rounding. */
 export function previewRealizedGain(
   buyPrice: number,
   sellPrice: number,
@@ -127,9 +128,9 @@ export function buildMonthlyRealizedGainSeries(
   return buckets;
 }
 
-export function tradesMatchCurrency(
-  trades: RealizedTrade[],
-  currency: RealizedTradeCurrency,
-): boolean {
-  return trades.every((trade) => trade.currency === currency);
+export function isBuyDateOnOrBeforeSellDate(buyDate: string, sellDate: string): boolean {
+  if (!buyDate) {
+    return true;
+  }
+  return parseDateOnly(buyDate) <= parseDateOnly(sellDate);
 }
