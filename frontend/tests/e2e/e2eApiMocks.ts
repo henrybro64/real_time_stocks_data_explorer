@@ -602,6 +602,13 @@ const E2E_TW_MARGIN_SHORT = {
   source: "TWSE official margin and borrowed-short daily data",
 };
 
+function movingAverageDirection(index: number, positiveStart: boolean) {
+  if (index === 0) {
+    return positiveStart ? "up" : "down";
+  }
+  return index % 2 === 0 ? (positiveStart ? "up" : "down") : (positiveStart ? "down" : "up");
+}
+
 function buildMovingAveragesForCandles(
   candles: Array<{ time: string; close: number }>,
   range: string,
@@ -613,12 +620,12 @@ function buildMovingAveragesForCandles(
     sma10: candles.map((candle, index) => ({
       time: candle.time,
       value: Number((candle.close - 1.1).toFixed(2)),
-      direction: index === 0 ? "up" : index % 2 === 0 ? "up" : "down",
+      direction: movingAverageDirection(index, true),
     })),
     sma20: candles.map((candle, index) => ({
       time: candle.time,
       value: Number((candle.close - 2.2).toFixed(2)),
-      direction: index === 0 ? "down" : index % 2 === 0 ? "down" : "up",
+      direction: movingAverageDirection(index, false),
     })),
     sma60: candles.map((candle, index) => ({
       time: candle.time,

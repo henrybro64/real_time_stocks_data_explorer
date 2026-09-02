@@ -11,7 +11,7 @@ import {
   deleteRealizedTrade,
   fetchRealizedTrades,
   updateRealizedTrade,
-} from "../services/api/client";
+} from "../views/realized-gains/realizedTradesClient";
 
 export function useRealizedTrades(currency: RealizedTradeCurrency) {
   const queryClient = useQueryClient();

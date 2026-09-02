@@ -7,7 +7,7 @@ import {
   deleteRealizedTrade,
   fetchRealizedTrades,
   updateRealizedTrade,
-} from "../services/api/client";
+} from "../views/realized-gains/realizedTradesClient";
 import { buildSampleRealizedTrade } from "../views/realized-gains/realizedTradeTestFixtures";
 import { useRealizedTrades } from "./useRealizedTrades";
 
@@ -26,7 +26,7 @@ vi.mock("@tanstack/react-query", async () => {
   };
 });
 
-vi.mock("../services/api/client", () => ({
+vi.mock("../views/realized-gains/realizedTradesClient", () => ({
   fetchRealizedTrades: vi.fn(),
   createRealizedTrade: vi.fn(),
   updateRealizedTrade: vi.fn(),

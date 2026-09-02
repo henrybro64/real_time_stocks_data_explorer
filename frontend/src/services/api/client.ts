@@ -28,9 +28,6 @@ import type {
   PortfolioPositionUpdate,
   PortfolioSummary,
   QuoteResponse,
-  RealizedTrade,
-  RealizedTradeCreate,
-  RealizedTradeUpdate,
   StockAnalysisResponse,
   TaiwanInstitutionalInvestorsResponse,
   TaiwanMarginShortResponse,
@@ -260,11 +257,11 @@ export async function requestVoid(path: string, init?: RequestInit): Promise<voi
   await request(path, init);
 }
 
-const JSON_REQUEST_HEADERS = {
+export const JSON_REQUEST_HEADERS = {
   "Content-Type": "application/json",
 } as const;
 
-async function requestJsonWithBody<T>(
+export async function requestJsonWithBody<T>(
   path: string,
   method: "POST" | "PATCH" | "PUT",
   payload: unknown,
@@ -609,32 +606,8 @@ export async function deleteAlertEvents() {
   });
 }
 
-export function fetchRealizedTrades(currency: "TWD" | "USD") {
-  return fetchJson<RealizedTrade[]>(`/realized-trades?currency=${currency}`);
-}
-
-export async function createRealizedTrade(payload: RealizedTradeCreate) {
-  return requestJsonWithBody<RealizedTrade>("/realized-trades", "POST", payload);
-}
-
-export async function updateRealizedTrade(tradeId: number, payload: RealizedTradeUpdate) {
-  return requestJsonWithBody<RealizedTrade>(`/realized-trades/${tradeId}`, "PATCH", payload);
-}
-
-export async function deleteRealizedTrade(tradeId: number) {
-  await requestVoid(`/realized-trades/${tradeId}`, {
-    method: "DELETE",
-  });
-}
-
 export async function addToWatchlist(stockId: string) {
-  return requestJson<WatchlistResponse>("/watchlist/items", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ id: stockId }),
-  });
+  return requestJsonWithBody<WatchlistResponse>("/watchlist/items", "POST", { id: stockId });
 }
 
 export async function removeFromWatchlist(stockId: string) {
@@ -724,13 +697,7 @@ export function fetchApiKeyStatus(provider: "openai" | "perplexity") {
 }
 
 export async function saveApiKey(provider: "openai" | "perplexity", apiKey: string) {
-  return requestJson<ApiKeyStatus>(`/ai/keys/${provider}`, {
-    method: "PUT",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ apiKey }),
-  });
+  return requestJsonWithBody<ApiKeyStatus>(`/ai/keys/${provider}`, "PUT", { apiKey });
 }
 
 export function fetchAiInsight(stockId: string, provider: "openai" | "perplexity") {

@@ -1,5 +1,6 @@
 "use client";
 
+import "./realizedGains.css";
 import {
   Button,
   Column,
