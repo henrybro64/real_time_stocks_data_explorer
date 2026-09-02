@@ -185,6 +185,14 @@ export function Shell({ children }: Props) {
                             {t("nav.portfolio")}
                           </Link>
                           <Link
+                            className={
+                              pathname === "/realized-gains" ? "app-left-nav-link active" : "app-left-nav-link"
+                            }
+                            href="/realized-gains"
+                          >
+                            {t("nav.realizedGains")}
+                          </Link>
+                          <Link
                             className={pathname === "/assets" ? "app-left-nav-link active" : "app-left-nav-link"}
                             href="/assets"
                           >

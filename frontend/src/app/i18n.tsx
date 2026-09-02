@@ -12,6 +12,7 @@ export type TranslationKey =
   | "nav.rankings"
   | "nav.watchlist"
   | "nav.portfolio"
+  | "nav.realizedGains"
   | "nav.assets"
   | "nav.aiSettings"
   | "nav.menu.open"
@@ -101,6 +102,48 @@ export type TranslationKey =
   | "alerts.column.observedPrice"
   | "alerts.column.triggeredAt"
   | "alerts.column.message"
+  | "realizedGains.title"
+  | "realizedGains.description"
+  | "realizedGains.currency.label"
+  | "realizedGains.currency.twd"
+  | "realizedGains.currency.usd"
+  | "realizedGains.period.1M"
+  | "realizedGains.period.3M"
+  | "realizedGains.period.6M"
+  | "realizedGains.period.1Y"
+  | "realizedGains.chart.title"
+  | "realizedGains.form.title"
+  | "realizedGains.form.createTitle"
+  | "realizedGains.form.editTitle"
+  | "realizedGains.form.symbol"
+  | "realizedGains.form.buyPrice"
+  | "realizedGains.form.sellPrice"
+  | "realizedGains.form.shares"
+  | "realizedGains.form.buyDate"
+  | "realizedGains.form.sellDate"
+  | "realizedGains.form.submitCreate"
+  | "realizedGains.form.submitUpdate"
+  | "realizedGains.form.cancel"
+  | "realizedGains.preview.gain"
+  | "realizedGains.preview.return"
+  | "realizedGains.history.title"
+  | "realizedGains.loading"
+  | "realizedGains.empty.twd"
+  | "realizedGains.empty.usd"
+  | "realizedGains.column.sellDate"
+  | "realizedGains.column.symbol"
+  | "realizedGains.column.buyPrice"
+  | "realizedGains.column.sellPrice"
+  | "realizedGains.column.shares"
+  | "realizedGains.column.returnPercent"
+  | "realizedGains.column.realizedGain"
+  | "realizedGains.column.actions"
+  | "realizedGains.actions.edit"
+  | "realizedGains.actions.delete"
+  | "realizedGains.deleteConfirmTitle"
+  | "realizedGains.deleteConfirmMessage"
+  | "realizedGains.deleteConfirmCancel"
+  | "realizedGains.deleteConfirmAction"
   | "stock.market"
   | "stock.updatedAt"
   | "stock.prevClose"
@@ -478,6 +521,7 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "nav.rankings": "Rankings",
     "nav.watchlist": "Watchlist",
     "nav.portfolio": "Portfolio",
+    "nav.realizedGains": "Realized P/L",
     "nav.assets": "Assets",
     "nav.aiSettings": "AI settings",
     "nav.menu.open": "Open navigation menu",
@@ -572,6 +616,49 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "alerts.column.observedPrice": "Observed price",
     "alerts.column.triggeredAt": "Triggered",
     "alerts.column.message": "Message",
+    "realizedGains.title": "Realized P/L",
+    "realizedGains.description":
+      "Record completed trades manually and review realized gains by currency without mixing TWD and USD.",
+    "realizedGains.currency.label": "Currency",
+    "realizedGains.currency.twd": "TWD (NT$)",
+    "realizedGains.currency.usd": "USD (US$)",
+    "realizedGains.period.1M": "Past 1 month",
+    "realizedGains.period.3M": "Past 3 months",
+    "realizedGains.period.6M": "Past 6 months",
+    "realizedGains.period.1Y": "Past 1 year",
+    "realizedGains.chart.title": "Monthly realized P/L (last 12 months)",
+    "realizedGains.form.title": "Trade entry",
+    "realizedGains.form.createTitle": "Add realized trade",
+    "realizedGains.form.editTitle": "Edit realized trade",
+    "realizedGains.form.symbol": "Symbol",
+    "realizedGains.form.buyPrice": "Buy price",
+    "realizedGains.form.sellPrice": "Sell price",
+    "realizedGains.form.shares": "Shares",
+    "realizedGains.form.buyDate": "Buy date (optional)",
+    "realizedGains.form.sellDate": "Sell date",
+    "realizedGains.form.submitCreate": "Save trade",
+    "realizedGains.form.submitUpdate": "Save changes",
+    "realizedGains.form.cancel": "Cancel",
+    "realizedGains.preview.gain": "Estimated realized P/L",
+    "realizedGains.preview.return": "Estimated return",
+    "realizedGains.history.title": "Trade history",
+    "realizedGains.loading": "Loading realized trades",
+    "realizedGains.empty.twd": "No TWD realized trades yet.",
+    "realizedGains.empty.usd": "No USD realized trades yet.",
+    "realizedGains.column.sellDate": "Sell date",
+    "realizedGains.column.symbol": "Symbol",
+    "realizedGains.column.buyPrice": "Buy price",
+    "realizedGains.column.sellPrice": "Sell price",
+    "realizedGains.column.shares": "Shares",
+    "realizedGains.column.returnPercent": "Return %",
+    "realizedGains.column.realizedGain": "Realized P/L",
+    "realizedGains.column.actions": "Actions",
+    "realizedGains.actions.edit": "Edit",
+    "realizedGains.actions.delete": "Delete",
+    "realizedGains.deleteConfirmTitle": "Delete realized trade",
+    "realizedGains.deleteConfirmMessage": "Delete this realized trade record?",
+    "realizedGains.deleteConfirmCancel": "Cancel",
+    "realizedGains.deleteConfirmAction": "Delete",
     "stock.market": "Market",
     "stock.updatedAt": "Updated",
     "stock.prevClose": "Prev close",
@@ -966,6 +1053,7 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "nav.rankings": "排行",
     "nav.watchlist": "自選",
     "nav.portfolio": "投資組合",
+    "nav.realizedGains": "已實現損益",
     "nav.assets": "資產總覽",
     "nav.aiSettings": "AI 設定",
     "nav.menu.open": "開啟導覽選單",
@@ -1057,6 +1145,48 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "alerts.column.observedPrice": "觀測價格",
     "alerts.column.triggeredAt": "觸發時間",
     "alerts.column.message": "訊息",
+    "realizedGains.title": "已實現損益",
+    "realizedGains.description": "手動記錄已完成的交易，並依幣別分開檢視已實現損益，不混合 TWD 與 USD。",
+    "realizedGains.currency.label": "幣別",
+    "realizedGains.currency.twd": "TWD (NT$)",
+    "realizedGains.currency.usd": "USD (US$)",
+    "realizedGains.period.1M": "近 1 個月",
+    "realizedGains.period.3M": "近 3 個月",
+    "realizedGains.period.6M": "近 6 個月",
+    "realizedGains.period.1Y": "近 1 年",
+    "realizedGains.chart.title": "近 12 個月每月已實現損益",
+    "realizedGains.form.title": "交易輸入",
+    "realizedGains.form.createTitle": "新增已實現交易",
+    "realizedGains.form.editTitle": "編輯已實現交易",
+    "realizedGains.form.symbol": "代號",
+    "realizedGains.form.buyPrice": "買入價",
+    "realizedGains.form.sellPrice": "賣出價",
+    "realizedGains.form.shares": "股數",
+    "realizedGains.form.buyDate": "買入日期（選填）",
+    "realizedGains.form.sellDate": "賣出日期",
+    "realizedGains.form.submitCreate": "儲存交易",
+    "realizedGains.form.submitUpdate": "儲存變更",
+    "realizedGains.form.cancel": "取消",
+    "realizedGains.preview.gain": "預估已實現損益",
+    "realizedGains.preview.return": "預估報酬率",
+    "realizedGains.history.title": "交易紀錄",
+    "realizedGains.loading": "載入已實現交易中",
+    "realizedGains.empty.twd": "尚無 TWD 已實現交易紀錄",
+    "realizedGains.empty.usd": "尚無 USD 已實現交易紀錄",
+    "realizedGains.column.sellDate": "賣出日期",
+    "realizedGains.column.symbol": "代號",
+    "realizedGains.column.buyPrice": "買入價",
+    "realizedGains.column.sellPrice": "賣出價",
+    "realizedGains.column.shares": "股數",
+    "realizedGains.column.returnPercent": "報酬率",
+    "realizedGains.column.realizedGain": "已實現損益",
+    "realizedGains.column.actions": "操作",
+    "realizedGains.actions.edit": "編輯",
+    "realizedGains.actions.delete": "刪除",
+    "realizedGains.deleteConfirmTitle": "刪除已實現交易",
+    "realizedGains.deleteConfirmMessage": "確定要刪除這筆已實現交易紀錄嗎？",
+    "realizedGains.deleteConfirmCancel": "取消",
+    "realizedGains.deleteConfirmAction": "刪除",
     "stock.market": "市場",
     "stock.updatedAt": "更新時間",
     "stock.prevClose": "前收",

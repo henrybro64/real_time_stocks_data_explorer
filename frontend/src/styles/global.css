@@ -1444,6 +1444,132 @@ input {
   align-items: center;
 }
 
+.app-realized-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
+  gap: 0.75rem;
+}
+
+.app-realized-summary-card {
+  min-height: 6rem;
+}
+
+.app-realized-summary-value {
+  font-size: 1.25rem;
+  font-weight: 600;
+}
+
+.app-realized-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+  gap: 0.75rem;
+  align-items: end;
+}
+
+.app-realized-form-actions,
+.app-realized-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: center;
+}
+
+.app-realized-preview {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.app-realized-table-wrap .cds--data-table {
+  min-width: 64rem;
+}
+
+.app-realized-chart {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: 0.5rem;
+  align-items: end;
+  min-height: 12rem;
+  padding-top: 1rem;
+}
+
+.app-realized-currency-switch {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.app-realized-chart-column {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.app-realized-chart-axis {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 10rem;
+}
+
+.app-realized-chart-half {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+.app-realized-chart-half-positive {
+  align-items: stretch;
+  justify-content: flex-end;
+}
+
+.app-realized-chart-half-negative {
+  align-items: stretch;
+  justify-content: flex-start;
+}
+
+.app-realized-chart-zero-line {
+  flex-shrink: 0;
+  height: 1px;
+  background: var(--cds-border-subtle);
+}
+
+.app-realized-chart-bar-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: end;
+  height: 10rem;
+  gap: 0.35rem;
+}
+
+.app-realized-chart-bar {
+  width: 100%;
+  min-height: 2px;
+  border-radius: 0.15rem;
+}
+
+.app-realized-chart-half-positive .app-realized-chart-bar {
+  border-radius: 0.15rem 0.15rem 0 0;
+}
+
+.app-realized-chart-half-negative .app-realized-chart-bar {
+  border-radius: 0 0 0.15rem 0.15rem;
+}
+
+.app-realized-chart-bar-positive {
+  background: var(--cds-support-success);
+}
+
+.app-realized-chart-bar-negative {
+  background: var(--cds-support-error);
+}
+
+.app-realized-chart-label {
+  font-size: 0.75rem;
+  color: var(--cds-text-secondary);
+}
+
 .app-alerts-table-wrap .cds--data-table {
   min-width: 72rem;
 }

@@ -320,6 +320,21 @@ type AlertEventRow = {
   message: string;
 };
 
+type RealizedTradeRow = {
+  id: number;
+  symbol: string;
+  currency: "TWD" | "USD";
+  buyPrice: number;
+  sellPrice: number;
+  shares: number;
+  buyDate: string | null;
+  sellDate: string;
+  realizedGain: number;
+  realizedReturnPercent: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
 type E2eAuthUser = {
   id: string;
   username: string;
@@ -345,6 +360,8 @@ type E2eMockState = {
   nextAlertEventId: number;
   portfolioPositions: PortfolioPositionRow[];
   nextPositionId: number;
+  realizedTrades: RealizedTradeRow[];
+  nextRealizedTradeId: number;
 };
 
 const pagesWithApiMocks = new WeakSet<Page>();
@@ -371,6 +388,8 @@ function getState(page: Page): E2eMockState {
       nextAlertEventId: 1,
       portfolioPositions: [],
       nextPositionId: 1,
+      realizedTrades: [],
+      nextRealizedTradeId: 1,
     };
     pageStates.set(page, state);
   }
@@ -401,6 +420,15 @@ function decodeStockIdFromPath(path: string, prefix: string): string | null {
 function stockIdFromStocksPath(path: string): string | null {
   const match = path.match(/^\/api\/stocks\/([^/]+)/);
   return match ? decodeURIComponent(match[1]) : null;
+}
+
+function calculateRealizedTradeMetrics(buyPrice: number, sellPrice: number, shares: number) {
+  const realizedGain = (sellPrice - buyPrice) * shares;
+  const realizedReturnPercent = ((sellPrice - buyPrice) / buyPrice) * 100;
+  return {
+    realizedGain: Number(realizedGain.toFixed(2)),
+    realizedReturnPercent: Number(realizedReturnPercent.toFixed(4)),
+  };
 }
 
 function buildPortfolioPosition(
@@ -1025,6 +1053,98 @@ export async function installE2eApiMocks(page: Page): Promise<void> {
       state.alertEvents = [];
       await route.fulfill({ status: 204, body: "" });
       return;
+    }
+
+    if (path === "/api/realized-trades" && request.method() === "GET") {
+      const currency = url.searchParams.get("currency");
+      const rows = state.realizedTrades
+        .filter((row) => row.currency === currency)
+        .sort((left, right) => right.sellDate.localeCompare(left.sellDate) || right.id - left.id);
+      await fulfillJson(route, rows);
+      return;
+    }
+
+    if (path === "/api/realized-trades" && request.method() === "POST") {
+      const payload = request.postDataJSON() as {
+        symbol?: string;
+        currency?: "TWD" | "USD";
+        buyPrice?: number;
+        sellPrice?: number;
+        shares?: number;
+        buyDate?: string | null;
+        sellDate?: string;
+      };
+      const timestamp = new Date().toISOString();
+      const metrics = calculateRealizedTradeMetrics(
+        payload.buyPrice ?? 0,
+        payload.sellPrice ?? 0,
+        payload.shares ?? 0,
+      );
+      const created: RealizedTradeRow = {
+        id: state.nextRealizedTradeId++,
+        symbol: (payload.symbol ?? "").trim().toUpperCase(),
+        currency: payload.currency ?? "TWD",
+        buyPrice: payload.buyPrice ?? 0,
+        sellPrice: payload.sellPrice ?? 0,
+        shares: payload.shares ?? 0,
+        buyDate: payload.buyDate ?? null,
+        sellDate: payload.sellDate ?? timestamp.slice(0, 10),
+        realizedGain: metrics.realizedGain,
+        realizedReturnPercent: metrics.realizedReturnPercent,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      };
+      state.realizedTrades.push(created);
+      await fulfillJson(route, created);
+      return;
+    }
+
+    const realizedTradeId = path.match(/^\/api\/realized-trades\/(\d+)$/);
+    if (realizedTradeId) {
+      const tradeId = Number(realizedTradeId[1]);
+      const index = state.realizedTrades.findIndex((row) => row.id === tradeId);
+      if (index < 0) {
+        await fulfillJson(route, { detail: `Realized trade not found: ${tradeId}` }, 404);
+        return;
+      }
+
+      if (request.method() === "PATCH") {
+        const payload = request.postDataJSON() as {
+          symbol?: string;
+          currency?: "TWD" | "USD";
+          buyPrice?: number;
+          sellPrice?: number;
+          shares?: number;
+          buyDate?: string | null;
+          sellDate?: string;
+        };
+        const current = state.realizedTrades[index];
+        const next = {
+          ...current,
+          symbol: payload.symbol != null ? payload.symbol.trim().toUpperCase() : current.symbol,
+          currency: payload.currency ?? current.currency,
+          buyPrice: payload.buyPrice ?? current.buyPrice,
+          sellPrice: payload.sellPrice ?? current.sellPrice,
+          shares: payload.shares ?? current.shares,
+          buyDate: payload.buyDate === undefined ? current.buyDate : payload.buyDate,
+          sellDate: payload.sellDate ?? current.sellDate,
+          updatedAt: new Date().toISOString(),
+        };
+        const metrics = calculateRealizedTradeMetrics(next.buyPrice, next.sellPrice, next.shares);
+        state.realizedTrades[index] = {
+          ...next,
+          realizedGain: metrics.realizedGain,
+          realizedReturnPercent: metrics.realizedReturnPercent,
+        };
+        await fulfillJson(route, state.realizedTrades[index]);
+        return;
+      }
+
+      if (request.method() === "DELETE") {
+        state.realizedTrades.splice(index, 1);
+        await route.fulfill({ status: 204, body: "" });
+        return;
+      }
     }
 
     if (path === "/api/alerts/rules" && request.method() === "POST") {
