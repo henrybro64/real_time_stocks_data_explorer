@@ -1,6 +1,9 @@
 import type { Page, Route } from "@playwright/test";
 
-import { previewRealizedGain } from "../../src/views/realized-gains/realizedGainCalculations";
+import {
+  handleRealizedTradeRoute,
+  type RealizedTradeRow,
+} from "./realizedTradeRouteMocks";
 import {
   E2E_TW_STOCK_SEARCH_RESULT,
   E2E_US_STOCK_SEARCH_RESULT,
@@ -321,21 +324,6 @@ type AlertEventRow = {
   message: string;
 };
 
-type RealizedTradeRow = {
-  id: number;
-  symbol: string;
-  currency: "TWD" | "USD";
-  buyPrice: number;
-  sellPrice: number;
-  shares: number;
-  buyDate: string | null;
-  sellDate: string;
-  realizedGain: number;
-  realizedReturnPercent: number;
-  createdAt: string;
-  updatedAt: string;
-};
-
 type E2eAuthUser = {
   id: string;
   username: string;
@@ -421,45 +409,6 @@ function decodeStockIdFromPath(path: string, prefix: string): string | null {
 function stockIdFromStocksPath(path: string): string | null {
   const match = path.match(/^\/api\/stocks\/([^/]+)/);
   return match ? decodeURIComponent(match[1]) : null;
-}
-
-type RealizedTradePayload = {
-  symbol?: string;
-  currency?: "TWD" | "USD";
-  buyPrice?: number;
-  sellPrice?: number;
-  shares?: number;
-  buyDate?: string | null;
-  sellDate?: string;
-};
-
-function buildRealizedTradeRow(
-  state: E2eMockState,
-  payload: RealizedTradePayload,
-  current?: RealizedTradeRow,
-): RealizedTradeRow {
-  const timestamp = new Date().toISOString();
-  const buyPrice = payload.buyPrice ?? current?.buyPrice ?? 0;
-  const sellPrice = payload.sellPrice ?? current?.sellPrice ?? 0;
-  const shares = payload.shares ?? current?.shares ?? 0;
-  const metrics = previewRealizedGain(buyPrice, sellPrice, shares) ?? {
-    realizedGain: 0,
-    realizedReturnPercent: 0,
-  };
-  return {
-    id: current?.id ?? state.nextRealizedTradeId++,
-    symbol: (payload.symbol ?? current?.symbol ?? "").trim().toUpperCase(),
-    currency: payload.currency ?? current?.currency ?? "TWD",
-    buyPrice,
-    sellPrice,
-    shares,
-    buyDate: payload.buyDate === undefined ? current?.buyDate ?? null : payload.buyDate,
-    sellDate: payload.sellDate ?? current?.sellDate ?? timestamp.slice(0, 10),
-    realizedGain: metrics.realizedGain,
-    realizedReturnPercent: metrics.realizedReturnPercent,
-    createdAt: current?.createdAt ?? timestamp,
-    updatedAt: timestamp,
-  };
 }
 
 function buildPortfolioPosition(
@@ -1086,48 +1035,8 @@ export async function installE2eApiMocks(page: Page): Promise<void> {
       return;
     }
 
-    if (path === "/api/realized-trades" && request.method() === "GET") {
-      const currency = url.searchParams.get("currency");
-      const rows = state.realizedTrades
-        .filter((row) => row.currency === currency)
-        .sort((left, right) => right.sellDate.localeCompare(left.sellDate) || right.id - left.id);
-      await fulfillJson(route, rows);
+    if (await handleRealizedTradeRoute(route, path, url, state, fulfillJson)) {
       return;
-    }
-
-    if (path === "/api/realized-trades" && request.method() === "POST") {
-      const payload = request.postDataJSON() as RealizedTradePayload;
-      const created = buildRealizedTradeRow(state, payload);
-      state.realizedTrades.push(created);
-      await fulfillJson(route, created);
-      return;
-    }
-
-    const realizedTradeId = path.match(/^\/api\/realized-trades\/(\d+)$/);
-    if (realizedTradeId) {
-      const tradeId = Number(realizedTradeId[1]);
-      const index = state.realizedTrades.findIndex((row) => row.id === tradeId);
-      if (index < 0) {
-        await fulfillJson(route, { detail: `Realized trade not found: ${tradeId}` }, 404);
-        return;
-      }
-
-      if (request.method() === "PATCH") {
-        const payload = request.postDataJSON() as RealizedTradePayload;
-        state.realizedTrades[index] = buildRealizedTradeRow(
-          state,
-          payload,
-          state.realizedTrades[index],
-        );
-        await fulfillJson(route, state.realizedTrades[index]);
-        return;
-      }
-
-      if (request.method() === "DELETE") {
-        state.realizedTrades.splice(index, 1);
-        await route.fulfill({ status: 204, body: "" });
-        return;
-      }
     }
 
     if (path === "/api/alerts/rules" && request.method() === "POST") {

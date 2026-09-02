@@ -18,8 +18,13 @@ from app.services.realized_trade_service import (
 
 router = APIRouter(prefix="/realized-trades", tags=["realized-trades"])
 
+REALIZED_TRADE_ERROR_RESPONSES = {
+    400: {"description": "Invalid realized trade payload"},
+    404: {"description": "Realized trade not found"},
+}
 
-@router.get("", response_model=list[RealizedTradeResponse])
+
+@router.get("")
 def list_realized_trades(
     currency: RealizedTradeCurrency | None = Query(default=None),
     user_id: str = Depends(get_effective_user_id),
@@ -28,7 +33,7 @@ def list_realized_trades(
     return [_to_response(trade) for trade in trades]
 
 
-@router.post("", response_model=RealizedTradeResponse)
+@router.post("", responses=REALIZED_TRADE_ERROR_RESPONSES)
 def create_realized_trade(
     payload: RealizedTradeCreate,
     user_id: str = Depends(get_effective_user_id),
@@ -40,7 +45,7 @@ def create_realized_trade(
     return _to_response(trade)
 
 
-@router.patch("/{trade_id}", response_model=RealizedTradeResponse)
+@router.patch("/{trade_id}", responses=REALIZED_TRADE_ERROR_RESPONSES)
 def update_realized_trade(
     trade_id: int,
     payload: RealizedTradeUpdate,
@@ -55,7 +60,7 @@ def update_realized_trade(
     return _to_response(trade)
 
 
-@router.delete("/{trade_id}", status_code=204)
+@router.delete("/{trade_id}", status_code=204, responses=REALIZED_TRADE_ERROR_RESPONSES)
 def delete_realized_trade(
     trade_id: int,
     user_id: str = Depends(get_effective_user_id),
