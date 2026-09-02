@@ -1,4 +1,5 @@
 import type { RealizedTrade, RealizedTradeCurrency } from "@shared/api";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useRef, useState } from "react";
 import { errorToNoticeKind } from "../../components/state/RequestStateNotice";
 import {
@@ -8,7 +9,6 @@ import {
   toApiError,
   updateRealizedTrade,
 } from "../../services/api/client";
-import { useCrudResource } from "../../hooks/useCrudResource";
 import {
   buildMonthlyRealizedGainSeries,
   previewRealizedGain,
@@ -44,21 +44,36 @@ export const EMPTY_REALIZED_GAINS_FORM: RealizedGainsFormState = {
 
 export function useRealizedGainsPageState(initialCurrency: RealizedTradeCurrency = "TWD") {
   const [currency, setCurrency] = useState<RealizedTradeCurrency>(initialCurrency);
-  const resource = useCrudResource({
+  const queryClient = useQueryClient();
+  const tradesQuery = useQuery({
     queryKey: ["realized-trades", currency],
     queryFn: () => fetchRealizedTrades(currency),
-    createItem: createRealizedTrade,
-    updateItem: updateRealizedTrade,
-    deleteItem: deleteRealizedTrade,
+  });
+  const invalidateTrades = () => {
+    queryClient.invalidateQueries({ queryKey: ["realized-trades", currency] });
+  };
+  const createMutation = useMutation({
+    mutationFn: createRealizedTrade,
+    onSuccess: invalidateTrades,
+  });
+  const updateMutation = useMutation({
+    mutationFn: ({ itemId, payload }: { itemId: number; payload: Parameters<typeof updateRealizedTrade>[1] }) =>
+      updateRealizedTrade(itemId, payload),
+    onSuccess: invalidateTrades,
+  });
+  const deleteMutation = useMutation({
+    mutationFn: deleteRealizedTrade,
+    onSuccess: invalidateTrades,
   });
   const realized = {
-    trades: resource.items,
-    tradesQuery: resource.listQuery,
-    createMutation: resource.createMutation,
-    updateMutation: resource.updateMutation,
-    deleteMutation: resource.deleteMutation,
-    mutationError: resource.mutationError,
-    isMutating: resource.isMutating,
+    trades: tradesQuery.data ?? [],
+    tradesQuery,
+    createMutation,
+    updateMutation,
+    deleteMutation,
+    mutationError: createMutation.error ?? updateMutation.error ?? deleteMutation.error,
+    isMutating:
+      createMutation.isPending || updateMutation.isPending || deleteMutation.isPending,
   };
   const [form, setForm] = useState<RealizedGainsFormState>(EMPTY_REALIZED_GAINS_FORM);
   const [editingTradeId, setEditingTradeId] = useState<number | null>(null);

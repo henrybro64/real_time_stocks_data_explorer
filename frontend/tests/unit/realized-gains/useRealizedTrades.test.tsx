@@ -2,7 +2,6 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { useCrudResource } from "../../../src/hooks/useCrudResource";
 import {
   createRealizedTrade,
   deleteRealizedTrade,
@@ -10,6 +9,7 @@ import {
   updateRealizedTrade,
 } from "../../../src/services/api/client";
 import { buildSampleRealizedTrade } from "../../../src/views/realized-gains/realizedTradeTestFixtures";
+import { useRealizedGainsPageState } from "../../../src/views/realized-gains/useRealizedGainsPageState";
 
 const useQueryOptions: unknown[] = [];
 
@@ -49,17 +49,7 @@ function wrapper({ children }: { children: ReactNode }) {
   return <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
 }
 
-function useRealizedTradesResource(currency: "TWD" | "USD") {
-  return useCrudResource({
-    queryKey: ["realized-trades", currency],
-    queryFn: () => fetchRealizedTrades(currency),
-    createItem: createRealizedTrade,
-    updateItem: updateRealizedTrade,
-    deleteItem: deleteRealizedTrade,
-  });
-}
-
-describe("realized trades resource hook", () => {
+describe("useRealizedGainsPageState trades query", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     useQueryOptions.length = 0;
@@ -67,14 +57,14 @@ describe("realized trades resource hook", () => {
   });
 
   it("queries trades for the selected currency", async () => {
-    renderHook(() => useRealizedTradesResource("USD"), { wrapper });
+    renderHook(() => useRealizedGainsPageState("USD"), { wrapper });
     await waitFor(() => {
       expect(fetchRealizedTrades).toHaveBeenCalledWith("USD");
     });
   });
 
   it("does not configure periodic polling", async () => {
-    renderHook(() => useRealizedTradesResource("TWD"), { wrapper });
+    renderHook(() => useRealizedGainsPageState("TWD"), { wrapper });
     await waitFor(() => {
       expect(useQueryOptions.length).toBeGreaterThan(0);
     });
@@ -96,10 +86,10 @@ describe("realized trades resource hook", () => {
     );
     vi.mocked(deleteRealizedTrade).mockResolvedValue(undefined);
 
-    const { result } = renderHook(() => useRealizedTradesResource("TWD"), { wrapper });
+    const { result } = renderHook(() => useRealizedGainsPageState("TWD"), { wrapper });
     await waitFor(() => expect(fetchRealizedTrades).toHaveBeenCalledTimes(1));
 
-    await result.current.createMutation.mutateAsync({
+    await result.current.realized.createMutation.mutateAsync({
       symbol: "2330",
       currency: "TWD",
       buyPrice: 900,
@@ -110,14 +100,14 @@ describe("realized trades resource hook", () => {
     expect(createRealizedTrade).toHaveBeenCalled();
     await waitFor(() => expect(vi.mocked(fetchRealizedTrades).mock.calls.length).toBeGreaterThanOrEqual(2));
 
-    await result.current.updateMutation.mutateAsync({
+    await result.current.realized.updateMutation.mutateAsync({
       itemId: 1,
       payload: { sellPrice: 1010 },
     });
     expect(updateRealizedTrade).toHaveBeenCalled();
     await waitFor(() => expect(vi.mocked(fetchRealizedTrades).mock.calls.length).toBeGreaterThanOrEqual(3));
 
-    await result.current.deleteMutation.mutateAsync(1);
+    await result.current.realized.deleteMutation.mutateAsync(1);
     expect(deleteRealizedTrade).toHaveBeenCalled();
     await waitFor(() => expect(vi.mocked(fetchRealizedTrades).mock.calls.length).toBeGreaterThanOrEqual(4));
   });
