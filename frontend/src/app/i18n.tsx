@@ -76,6 +76,11 @@ export type TranslationKey =
   | "alerts.rules.empty"
   | "alerts.events.title"
   | "alerts.events.empty"
+  | "alerts.events.clearHistory"
+  | "alerts.events.clearConfirmTitle"
+  | "alerts.events.clearConfirmMessage"
+  | "alerts.events.clearConfirmCancel"
+  | "alerts.events.clearConfirmAction"
   | "alerts.ruleType.priceAbove"
   | "alerts.ruleType.priceBelow"
   | "alerts.status.enabled"
@@ -541,6 +546,12 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "alerts.rules.empty": "No alert rules yet. Create one above to start tracking threshold events.",
     "alerts.events.title": "Recent events",
     "alerts.events.empty": "No alert events yet. Events appear here when a rule crosses its threshold.",
+    "alerts.events.clearHistory": "Clear history",
+    "alerts.events.clearConfirmTitle": "Clear alert event history",
+    "alerts.events.clearConfirmMessage":
+      "Clear all alert event history? This will not delete your alert rules.",
+    "alerts.events.clearConfirmCancel": "Cancel",
+    "alerts.events.clearConfirmAction": "Clear history",
     "alerts.ruleType.priceAbove": "Price above",
     "alerts.ruleType.priceBelow": "Price below",
     "alerts.status.enabled": "Enabled",
@@ -1021,6 +1032,11 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "alerts.rules.empty": "目前沒有警示規則。請先在上方建立一筆。",
     "alerts.events.title": "最近事件",
     "alerts.events.empty": "目前沒有警示事件。當規則跨越門檻時，紀錄會出現在這裡。",
+    "alerts.events.clearHistory": "清除紀錄",
+    "alerts.events.clearConfirmTitle": "清除警示事件紀錄",
+    "alerts.events.clearConfirmMessage": "確定要清除所有警示事件紀錄嗎？這不會刪除警示規則。",
+    "alerts.events.clearConfirmCancel": "取消",
+    "alerts.events.clearConfirmAction": "清除紀錄",
     "alerts.ruleType.priceAbove": "價格高於",
     "alerts.ruleType.priceBelow": "價格低於",
     "alerts.status.enabled": "啟用中",

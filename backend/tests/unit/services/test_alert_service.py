@@ -143,6 +143,65 @@ def test_evaluate_rules_deduplicates_continuous_matches_and_preserves_history_on
     assert len(rows) == 2
 
 
+def test_delete_events_preserves_rule_state_and_suppresses_duplicate_events(
+    monkeypatch,
+) -> None:
+    service, _session_local, price_state = _build_test_alert_service(
+        monkeypatch,
+        initial_price=205.0,
+    )
+
+    service.create_rule(
+        "user-1",
+        stock_id="US:AAPL",
+        rule_type="price_above",
+        threshold_value=200.0,
+        enabled=True,
+    )
+
+    triggered = service.evaluate_rules_for_user(
+        "user-1",
+        now=datetime(2026, 5, 26, 13, 30, tzinfo=timezone.utc),
+    )
+    assert triggered == 1
+    assert len(service.list_recent_events("user-1")) == 1
+    rule_before = service.list_rules("user-1")[0]
+    assert rule_before.last_condition_met is True
+
+    service.delete_events("user-1")
+
+    assert service.list_recent_events("user-1") == []
+    rule_after = service.list_rules("user-1")[0]
+    assert rule_after.last_condition_met is True
+    assert rule_after.last_triggered_at == rule_before.last_triggered_at
+
+    price_state["last_price"] = 206.0
+    recreated = service.evaluate_rules_for_user(
+        "user-1",
+        now=datetime(2026, 5, 26, 13, 40, tzinfo=timezone.utc),
+    )
+    assert recreated == 0
+    assert service.list_recent_events("user-1") == []
+
+
+def test_delete_events_runs_under_evaluation_lock(monkeypatch) -> None:
+    service, _session_local, _price_state = _build_test_alert_service(monkeypatch)
+    lock_held: list[bool] = []
+
+    def spy_delete(user_id: str) -> int:
+        lock_held.append(service._evaluation_lock.locked())
+        return 0
+
+    monkeypatch.setattr(
+        "app.services.alert_service.alert_repository.delete_events",
+        spy_delete,
+    )
+
+    service.delete_events("user-1")
+
+    assert lock_held == [True]
+
+
 def test_create_rule_resolves_bare_and_lowercase_tickers(monkeypatch) -> None:
     service, _session_local, _price_state = _build_test_alert_service(monkeypatch)
 

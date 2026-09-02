@@ -138,6 +138,13 @@ class AlertService:
         _sync_repository_sessionlocal()
         return alert_repository.list_recent_events(user_id, limit=limit)
 
+    def delete_events(self, user_id: str) -> None:
+        _sync_repository_sessionlocal()
+        if not alert_repository.is_available():
+            return
+        with self._evaluation_lock:
+            alert_repository.delete_events(user_id)
+
     def evaluate_rules_for_user(
         self,
         user_id: str,

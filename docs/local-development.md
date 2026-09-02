@@ -88,7 +88,7 @@ Settings: `TAIWAN_MARKET_DATA_REFRESH_*`, `TAIWAN_MARKET_DATA_CAPTURE_TOKEN`. En
 
 ## Threshold alerts
 
-User-scoped rules (`price_above`, `price_below`) with durable events. Routes under `/api/alerts/*`; UI at `/alerts`. In-process evaluator (`ALERT_EVALUATOR_ENABLED`); transition-based de-duplication (no email/push in V1).
+User-scoped rules (`price_above`, `price_below`) with durable events. Routes under `/api/alerts/*`; UI at `/alerts`. In-process evaluator (`ALERT_EVALUATOR_ENABLED`); transition-based de-duplication (no email/push in V1). Clear recent event history with `DELETE /api/alerts/events` (rules and `lastConditionMet` state are preserved).
 
 ## LAN access
 

@@ -1,9 +1,15 @@
 "use client";
 
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  type MutateOptions,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
 import type { AlertRuleCreate, AlertRuleUpdate } from "@shared/api";
 import {
   createAlertRule,
+  deleteAlertEvents,
   deleteAlertRule,
   fetchAlertEvents,
   fetchAlertRules,
@@ -53,10 +59,18 @@ export function useAlerts() {
     },
   });
 
+  const clearEventsMutation = useMutation({
+    mutationFn: deleteAlertEvents,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["alert-events"] });
+    },
+  });
+
   const resetMutations = () => {
     createMutation.reset();
     updateMutation.reset();
     deleteMutation.reset();
+    clearEventsMutation.reset();
   };
 
   return {
@@ -67,11 +81,18 @@ export function useAlerts() {
     createMutation,
     updateMutation,
     deleteMutation,
-    mutationError: createMutation.error ?? updateMutation.error ?? deleteMutation.error,
+    clearEventsMutation,
+    mutationError:
+      createMutation.error ??
+      updateMutation.error ??
+      deleteMutation.error ??
+      clearEventsMutation.error,
     isMutating:
       createMutation.isPending ||
       updateMutation.isPending ||
-      deleteMutation.isPending,
+      deleteMutation.isPending ||
+      clearEventsMutation.isPending,
+    isClearingEvents: clearEventsMutation.isPending,
     create: (payload: AlertRuleCreate) => {
       resetMutations();
       createMutation.mutate(payload);
@@ -83,6 +104,10 @@ export function useAlerts() {
     remove: (ruleId: number) => {
       resetMutations();
       deleteMutation.mutate(ruleId);
+    },
+    clearEvents: (options?: MutateOptions<void, Error, void, unknown>) => {
+      resetMutations();
+      clearEventsMutation.mutate(undefined, options);
     },
   };
 }

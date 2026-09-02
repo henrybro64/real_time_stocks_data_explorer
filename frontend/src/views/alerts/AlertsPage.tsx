@@ -3,8 +3,12 @@
 import {
   Button,
   Column,
+  ComposedModal,
   Grid,
   InlineLoading,
+  ModalBody,
+  ModalFooter,
+  ModalHeader,
   Select,
   SelectItem,
   Table,
@@ -50,6 +54,7 @@ export function AlertsPage({ initialStockId = "" }: Props) {
   const [draftEnabled, setDraftEnabled] = useState(true);
   const [stockFieldError, setStockFieldError] = useState<string | null>(null);
   const [isResolvingStock, setIsResolvingStock] = useState(false);
+  const [clearHistoryOpen, setClearHistoryOpen] = useState(false);
 
   const rulesLoading = alerts.rulesQuery.isLoading && alerts.rules.length === 0;
   const eventsLoading = alerts.eventsQuery.isLoading && alerts.events.length === 0;
@@ -61,14 +66,25 @@ export function AlertsPage({ initialStockId = "" }: Props) {
     alerts.eventsQuery.error != null
       ? (alerts.events.length > 0 ? "stale" : errorToNoticeKind(alerts.eventsQuery.error))
       : null;
-  const mutationApiError = alerts.mutationError != null ? toApiError(alerts.mutationError) : null;
+  const mutationApiError =
+    alerts.createMutation.error ??
+    alerts.updateMutation.error ??
+    alerts.deleteMutation.error;
+  const mutationNoticeApiError =
+    mutationApiError != null ? toApiError(mutationApiError) : null;
+  const clearEventsApiError =
+    alerts.clearEventsMutation.error != null
+      ? toApiError(alerts.clearEventsMutation.error)
+      : null;
   // Suppress the save banner only when a form submit already attached a field error.
   // Row actions (pause/resume/delete) keep the banner even for stock validation details.
   const mutationNoticeKind =
-    mutationApiError != null &&
-    !(stockFieldError != null && isAlertStockValidationDetail(mutationApiError.detail))
-      ? errorToNoticeKind(mutationApiError)
+    mutationNoticeApiError != null &&
+    !(stockFieldError != null && isAlertStockValidationDetail(mutationNoticeApiError.detail))
+      ? errorToNoticeKind(mutationNoticeApiError)
       : null;
+  const clearEventsNoticeKind =
+    clearEventsApiError != null ? errorToNoticeKind(clearEventsApiError) : null;
   const isSubmitDisabled =
     alerts.isMutating ||
     isResolvingStock ||
@@ -182,7 +198,7 @@ export function AlertsPage({ initialStockId = "" }: Props) {
                 kind={mutationNoticeKind}
                 scopeLabel={t("alerts.form.createTitle")}
                 detail={
-                  mutationNoticeKind === "validation" ? mutationApiError?.detail : null
+                  mutationNoticeKind === "validation" ? mutationNoticeApiError?.detail : null
                 }
               />
             </div>
@@ -360,6 +376,18 @@ export function AlertsPage({ initialStockId = "" }: Props) {
               <p className="app-eyebrow">{t("alerts.events.title")}</p>
               <h2>{t("alerts.events.title")}</h2>
             </div>
+            <Button
+              kind="danger--ghost"
+              size="sm"
+              data-testid="alerts-clear-history-button"
+              disabled={alerts.isClearingEvents}
+              onClick={() => {
+                alerts.clearEventsMutation.reset();
+                setClearHistoryOpen(true);
+              }}
+            >
+              {t("alerts.events.clearHistory")}
+            </Button>
           </div>
           {eventsNoticeKind ? (
             <div className="app-state-notice-wrap">
@@ -407,6 +435,67 @@ export function AlertsPage({ initialStockId = "" }: Props) {
           )}
         </Tile>
       </Column>
+
+      {clearHistoryOpen ? (
+        <ComposedModal
+          open
+          onClose={() => {
+            if (!alerts.isClearingEvents) {
+              setClearHistoryOpen(false);
+            }
+          }}
+          size="sm"
+          danger
+        >
+          <ModalHeader
+            title={t("alerts.events.clearConfirmTitle")}
+            closeModal={() => {
+              if (!alerts.isClearingEvents) {
+                setClearHistoryOpen(false);
+              }
+            }}
+          />
+          <ModalBody>
+            <p className="app-supporting-copy">{t("alerts.events.clearConfirmMessage")}</p>
+            {clearEventsNoticeKind ? (
+              <div className="app-state-notice-wrap">
+                <RequestStateNotice
+                  kind={clearEventsNoticeKind}
+                  scopeLabel={t("alerts.events.clearConfirmTitle")}
+                  detail={
+                    clearEventsNoticeKind === "validation"
+                      ? clearEventsApiError?.detail
+                      : null
+                  }
+                />
+              </div>
+            ) : null}
+          </ModalBody>
+          <ModalFooter>
+            <Button
+              kind="secondary"
+              disabled={alerts.isClearingEvents}
+              onClick={() => setClearHistoryOpen(false)}
+            >
+              {t("alerts.events.clearConfirmCancel")}
+            </Button>
+            <Button
+              kind="danger"
+              data-testid="alerts-clear-history-confirm"
+              disabled={alerts.isClearingEvents}
+              onClick={() => {
+                alerts.clearEvents({
+                  onSuccess: () => {
+                    setClearHistoryOpen(false);
+                  },
+                });
+              }}
+            >
+              {t("alerts.events.clearConfirmAction")}
+            </Button>
+          </ModalFooter>
+        </ComposedModal>
+      ) : null}
     </Grid>
   );
 }

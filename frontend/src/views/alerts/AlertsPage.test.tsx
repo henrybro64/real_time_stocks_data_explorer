@@ -8,6 +8,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { LanguageProvider } from "../../app/i18n";
 import {
   createAlertRule,
+  deleteAlertEvents,
   deleteAlertRule,
   fetchAlertEvents,
   fetchAlertRules,
@@ -30,6 +31,7 @@ vi.mock("../../services/api/client", async () => {
     createAlertRule: vi.fn(),
     updateAlertRule: vi.fn(),
     deleteAlertRule: vi.fn(),
+    deleteAlertEvents: vi.fn(),
     searchStocks: vi.fn(),
   };
 });
@@ -107,6 +109,7 @@ describe("AlertsPage", () => {
     vi.mocked(createAlertRule).mockResolvedValue(buildRule());
     vi.mocked(updateAlertRule).mockResolvedValue(buildRule());
     vi.mocked(deleteAlertRule).mockResolvedValue(undefined);
+    vi.mocked(deleteAlertEvents).mockResolvedValue(undefined);
     vi.mocked(searchStocks).mockResolvedValue([buildRule().stock!]);
   });
 
@@ -373,5 +376,58 @@ describe("AlertsPage", () => {
       expect(deleteAlertRule).toHaveBeenCalled();
     });
     expect(vi.mocked(deleteAlertRule).mock.calls[0][0]).toBe(1);
+  });
+
+  it("clears recent events after confirmation and keeps alert rules", async () => {
+    const user = userEvent.setup();
+    vi.mocked(fetchAlertEvents)
+      .mockResolvedValueOnce([buildEvent()])
+      .mockResolvedValue([]);
+    vi.mocked(deleteAlertEvents).mockImplementation(
+      () => new Promise((resolve) => setTimeout(resolve, 25)),
+    );
+
+    renderAlertsPage();
+
+    expect(await screen.findByTestId("alerts-event-row-11")).toBeInTheDocument();
+    expect(await screen.findByTestId("alerts-rule-row-1")).toBeInTheDocument();
+
+    await user.click(screen.getByTestId("alerts-clear-history-button"));
+    expect(screen.getByText("Clear all alert event history? This will not delete your alert rules.")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(deleteAlertEvents).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("alerts-event-row-11")).toBeInTheDocument();
+
+    await user.click(screen.getByTestId("alerts-clear-history-button"));
+    await user.click(screen.getByTestId("alerts-clear-history-confirm"));
+
+    expect(screen.getByTestId("alerts-clear-history-confirm")).toBeDisabled();
+    await waitFor(() => {
+      expect(deleteAlertEvents).toHaveBeenCalledTimes(1);
+    });
+    await waitFor(() => {
+      expect(screen.queryByTestId("alerts-event-row-11")).not.toBeInTheDocument();
+    });
+    expect(screen.getByTestId("alerts-rule-row-1")).toBeInTheDocument();
+    expect(screen.getByText("No alert events yet. Events appear here when a rule crosses its threshold.")).toBeInTheDocument();
+  });
+
+  it("shows purge failure inside the confirmation dialog", async () => {
+    const user = userEvent.setup();
+    vi.mocked(fetchAlertEvents).mockResolvedValue([buildEvent()]);
+    vi.mocked(deleteAlertEvents).mockRejectedValue(new Error("Network error"));
+
+    renderAlertsPage();
+
+    await user.click(screen.getByTestId("alerts-clear-history-button"));
+    await user.click(screen.getByTestId("alerts-clear-history-confirm"));
+
+    await waitFor(() => {
+      expect(deleteAlertEvents).toHaveBeenCalledTimes(1);
+    });
+    expect(screen.getByText("Clear all alert event history? This will not delete your alert rules.")).toBeInTheDocument();
+    expect(screen.getByTestId("alerts-clear-history-confirm")).not.toBeDisabled();
+    expect(screen.getByTestId("alerts-event-row-11")).toBeInTheDocument();
   });
 });

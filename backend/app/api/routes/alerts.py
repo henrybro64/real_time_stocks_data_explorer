@@ -91,6 +91,13 @@ def list_alert_events(
     return [_event_response(event) for event in rows]
 
 
+@router.delete("/events", status_code=204)
+def delete_alert_events(
+    user_id: str = Depends(get_effective_user_id),
+) -> None:
+    alert_service.delete_events(user_id)
+
+
 def _rule_response(rule) -> AlertRuleResponse:
     stock = quote_service.get_stock(rule.stock_id)
     return AlertRuleResponse(

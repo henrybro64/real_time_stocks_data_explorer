@@ -596,6 +596,12 @@ export async function deleteAlertRule(ruleId: number) {
   });
 }
 
+export async function deleteAlertEvents() {
+  await requestVoid("/alerts/events", {
+    method: "DELETE",
+  });
+}
+
 export async function addToWatchlist(stockId: string) {
   return requestJson<WatchlistResponse>("/watchlist/items", {
     method: "POST",
