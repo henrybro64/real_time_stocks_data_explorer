@@ -4,41 +4,27 @@ from datetime import date
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import create_engine, event
+
 from sqlalchemy.orm import sessionmaker
 
-from app.db.models import Base, RealizedTrade, User
+from app.db.models import RealizedTrade
 from app.repositories.realized_trade_repository import RealizedTradeRepository
+from tests.support import install_in_memory_sessionlocal, seed_test_users
 
 
-def _build_session_local():
-    engine = create_engine("sqlite+pysqlite:///:memory:")
-
-    @event.listens_for(engine, "connect")
-    def _enable_sqlite_foreign_keys(dbapi_connection, _connection_record) -> None:
-        cursor = dbapi_connection.cursor()
-        cursor.execute("PRAGMA foreign_keys=ON")
-        cursor.close()
-
-    session_local = sessionmaker(bind=engine, autoflush=False, autocommit=False)
-    Base.metadata.create_all(bind=engine)
-    return session_local
+@pytest.fixture
+def realized_trade_repository(
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[RealizedTradeRepository, sessionmaker]:
+    session_local = install_in_memory_sessionlocal(monkeypatch)
+    seed_test_users(session_local, "user-1", "user-2")
+    return RealizedTradeRepository(), session_local
 
 
 def test_realized_trade_repository_lists_filters_and_deletes_user_scoped_rows(
-    monkeypatch: pytest.MonkeyPatch,
+    realized_trade_repository: tuple[RealizedTradeRepository, sessionmaker],
 ) -> None:
-    session_local = _build_session_local()
-    monkeypatch.setattr(
-        "app.repositories.realized_trade_repository.require_session_factory",
-        lambda: session_local,
-    )
-    with session_local() as session:
-        session.add(User(id="user-1", username="user-1", password_hash=None))
-        session.add(User(id="user-2", username="user-2", password_hash=None))
-        session.commit()
-
-    repository = RealizedTradeRepository()
+    repository, _session_local = realized_trade_repository
 
     usd_trade = repository.create_trade(
         user_id="user-1",
@@ -99,19 +85,9 @@ def test_realized_trade_repository_lists_filters_and_deletes_user_scoped_rows(
 
 
 def test_realized_trade_repository_update_returns_none_for_other_user(
-    monkeypatch: pytest.MonkeyPatch,
+    realized_trade_repository: tuple[RealizedTradeRepository, sessionmaker],
 ) -> None:
-    session_local = _build_session_local()
-    monkeypatch.setattr(
-        "app.repositories.realized_trade_repository.require_session_factory",
-        lambda: session_local,
-    )
-    with session_local() as session:
-        session.add(User(id="user-1", username="user-1", password_hash=None))
-        session.add(User(id="user-2", username="user-2", password_hash=None))
-        session.commit()
-
-    repository = RealizedTradeRepository()
+    repository, session_local = realized_trade_repository
     trade = repository.create_trade(
         user_id="user-1",
         symbol="AAPL",

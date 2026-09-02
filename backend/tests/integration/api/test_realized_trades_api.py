@@ -85,7 +85,7 @@ def test_realized_trade_validation_errors(client) -> None:
             "sellDate": "2026-08-01",
         },
     )
-    assert invalid_currency.status_code == 400
+    assert invalid_currency.status_code == 422
 
     invalid_dates = client.post(
         "/api/realized-trades",

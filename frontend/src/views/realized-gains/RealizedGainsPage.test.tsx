@@ -1,5 +1,4 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { RealizedTrade } from "@shared/api";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { ReactNode } from "react";
 import userEvent from "@testing-library/user-event";
@@ -27,10 +26,6 @@ vi.mock("../../services/api/client", async () => {
   };
 });
 
-function buildTrade(overrides: Partial<RealizedTrade> = {}): RealizedTrade {
-  return buildSampleRealizedTrade(overrides);
-}
-
 function renderPage(language: "en" | "zh-TW" = "en") {
   window.localStorage.clear();
   window.localStorage.setItem("stock-ticker-language", language);
@@ -53,10 +48,10 @@ describe("RealizedGainsPage", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(fetchRealizedTrades).mockImplementation(async (currency) =>
-      currency === "TWD" ? [buildTrade()] : [],
+      currency === "TWD" ? [buildSampleRealizedTrade()] : [],
     );
-    vi.mocked(createRealizedTrade).mockResolvedValue(buildTrade({ id: 2, symbol: "AAPL", currency: "USD" }));
-    vi.mocked(updateRealizedTrade).mockResolvedValue(buildTrade({ sellPrice: 1030, realizedGain: 110000 }));
+    vi.mocked(createRealizedTrade).mockResolvedValue(buildSampleRealizedTrade({ id: 2, symbol: "AAPL", currency: "USD" }));
+    vi.mocked(updateRealizedTrade).mockResolvedValue(buildSampleRealizedTrade({ sellPrice: 1030, realizedGain: 110000 }));
     vi.mocked(deleteRealizedTrade).mockResolvedValue(undefined);
   });
 
@@ -81,7 +76,7 @@ describe("RealizedGainsPage", () => {
     const user = userEvent.setup();
     vi.mocked(fetchRealizedTrades).mockImplementation(async (currency) =>
       currency === "USD"
-        ? [buildTrade({ id: 9, symbol: "AAPL", currency: "USD", buyPrice: 180.25, sellPrice: 195.5, shares: 10, realizedGain: 152.5 })]
+        ? [buildSampleRealizedTrade({ id: 9, symbol: "AAPL", currency: "USD", buyPrice: 180.25, sellPrice: 195.5, shares: 10, realizedGain: 152.5 })]
         : [],
     );
     renderPage();
@@ -106,7 +101,7 @@ describe("RealizedGainsPage", () => {
 
   it("creates a trade with fractional shares and uses backend gain in the table", async () => {
     const user = userEvent.setup();
-    const created = buildTrade({
+    const created = buildSampleRealizedTrade({
       id: 2,
       symbol: "AAPL",
       currency: "USD",

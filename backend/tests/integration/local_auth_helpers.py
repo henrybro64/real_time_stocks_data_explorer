@@ -23,3 +23,4 @@ def register_local_user(
         json={"username": username, "password": password},
     )
     assert response.status_code == 200
+    assert response.json() == {"status": "ok"}

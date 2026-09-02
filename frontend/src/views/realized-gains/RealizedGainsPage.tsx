@@ -65,6 +65,31 @@ function readInputValue(event: { currentTarget: HTMLInputElement | null; target:
   return target instanceof HTMLInputElement ? target.value : "";
 }
 
+type MutationNoticeKind = ReturnType<typeof errorToNoticeKind>;
+
+function MutationNotice({
+  kind,
+  scopeLabel,
+  detail,
+}: {
+  kind: MutationNoticeKind | null;
+  scopeLabel: string;
+  detail?: string | null;
+}) {
+  if (kind == null) {
+    return null;
+  }
+  return (
+    <div className="app-state-notice-wrap">
+      <RequestStateNotice
+        kind={kind}
+        scopeLabel={scopeLabel}
+        detail={kind === "validation" ? detail : null}
+      />
+    </div>
+  );
+}
+
 export function RealizedGainsPage() {
   const { t } = useLanguage();
   const [currency, setCurrency] = useState<RealizedTradeCurrency>("TWD");
@@ -257,19 +282,11 @@ export function RealizedGainsPage() {
               <h2>{editingTradeId == null ? t("realizedGains.form.createTitle") : t("realizedGains.form.editTitle")}</h2>
             </div>
           </div>
-          {formMutationNoticeKind ? (
-            <div className="app-state-notice-wrap">
-              <RequestStateNotice
-                kind={formMutationNoticeKind}
-                scopeLabel={t("realizedGains.form.title")}
-                detail={
-                  formMutationNoticeKind === "validation"
-                    ? formMutationApiError?.detail
-                    : null
-                }
-              />
-            </div>
-          ) : null}
+          <MutationNotice
+            kind={formMutationNoticeKind}
+            scopeLabel={t("realizedGains.form.title")}
+            detail={formMutationApiError?.detail}
+          />
           <div className="app-realized-form">
             <TextInput
               id="realized-symbol"
@@ -443,19 +460,11 @@ export function RealizedGainsPage() {
           />
           <ModalBody>
             <p className="app-supporting-copy">{t("realizedGains.deleteConfirmMessage")}</p>
-            {deleteMutationNoticeKind ? (
-              <div className="app-state-notice-wrap">
-                <RequestStateNotice
-                  kind={deleteMutationNoticeKind}
-                  scopeLabel={t("realizedGains.deleteConfirmTitle")}
-                  detail={
-                    deleteMutationNoticeKind === "validation"
-                      ? deleteMutationApiError?.detail
-                      : null
-                  }
-                />
-              </div>
-            ) : null}
+            <MutationNotice
+              kind={deleteMutationNoticeKind}
+              scopeLabel={t("realizedGains.deleteConfirmTitle")}
+              detail={deleteMutationApiError?.detail}
+            />
           </ModalBody>
           <ModalFooter>
             <Button

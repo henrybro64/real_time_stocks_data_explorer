@@ -1,5 +1,6 @@
 import type { Page, Route } from "@playwright/test";
 
+import { previewRealizedGain } from "../../src/views/realized-gains/realizedGainCalculations";
 import {
   E2E_TW_STOCK_SEARCH_RESULT,
   E2E_US_STOCK_SEARCH_RESULT,
@@ -422,15 +423,6 @@ function stockIdFromStocksPath(path: string): string | null {
   return match ? decodeURIComponent(match[1]) : null;
 }
 
-function calculateRealizedTradeMetrics(buyPrice: number, sellPrice: number, shares: number) {
-  const realizedGain = (sellPrice - buyPrice) * shares;
-  const realizedReturnPercent = ((sellPrice - buyPrice) / buyPrice) * 100;
-  return {
-    realizedGain: Number(realizedGain.toFixed(2)),
-    realizedReturnPercent: Number(realizedReturnPercent.toFixed(4)),
-  };
-}
-
 type RealizedTradePayload = {
   symbol?: string;
   currency?: "TWD" | "USD";
@@ -450,7 +442,10 @@ function buildRealizedTradeRow(
   const buyPrice = payload.buyPrice ?? current?.buyPrice ?? 0;
   const sellPrice = payload.sellPrice ?? current?.sellPrice ?? 0;
   const shares = payload.shares ?? current?.shares ?? 0;
-  const metrics = calculateRealizedTradeMetrics(buyPrice, sellPrice, shares);
+  const metrics = previewRealizedGain(buyPrice, sellPrice, shares) ?? {
+    realizedGain: 0,
+    realizedReturnPercent: 0,
+  };
   return {
     id: current?.id ?? state.nextRealizedTradeId++,
     symbol: (payload.symbol ?? current?.symbol ?? "").trim().toUpperCase(),

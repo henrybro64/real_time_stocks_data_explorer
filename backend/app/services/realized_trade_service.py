@@ -68,6 +68,18 @@ def _validate_dates(buy_date: date | None, sell_date: date) -> None:
         raise RealizedTradeValidationError("buyDate must be on or before sellDate")
 
 
+def _validate_positive_trade_values(
+    buy_price: Decimal,
+    sell_price: Decimal,
+    shares: Decimal,
+    buy_date: date | None,
+    sell_date: date,
+) -> None:
+    if buy_price <= 0 or sell_price <= 0 or shares <= 0:
+        raise RealizedTradeValidationError("Prices and shares must be greater than 0")
+    _validate_dates(buy_date, sell_date)
+
+
 class RealizedTradeService:
     def list_trades(
         self,
@@ -85,9 +97,13 @@ class RealizedTradeService:
         buy_price = _to_decimal(payload.buyPrice, field_name="buyPrice")
         sell_price = _to_decimal(payload.sellPrice, field_name="sellPrice")
         shares = _to_decimal(payload.shares, field_name="shares")
-        if buy_price <= 0 or sell_price <= 0 or shares <= 0:
-            raise RealizedTradeValidationError("Prices and shares must be greater than 0")
-        _validate_dates(payload.buyDate, payload.sellDate)
+        _validate_positive_trade_values(
+            buy_price,
+            sell_price,
+            shares,
+            payload.buyDate,
+            payload.sellDate,
+        )
         return realized_trade_repository.create_trade(
             user_id=user_id,
             symbol=symbol,
@@ -137,9 +153,7 @@ class RealizedTradeService:
         )
         sell_date = existing.sell_date if payload.sellDate is None else payload.sellDate
 
-        if buy_price <= 0 or sell_price <= 0 or shares <= 0:
-            raise RealizedTradeValidationError("Prices and shares must be greater than 0")
-        _validate_dates(buy_date, sell_date)
+        _validate_positive_trade_values(buy_price, sell_price, shares, buy_date, sell_date)
 
         updated = realized_trade_repository.update_trade(
             user_id,

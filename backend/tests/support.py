@@ -244,6 +244,15 @@ def install_in_memory_sessionlocal(monkeypatch):
     return session_local
 
 
+def seed_test_users(session_local, *user_ids: str) -> None:
+    from app.db.models import User
+
+    with session_local() as session:
+        for user_id in user_ids:
+            session.add(User(id=user_id, username=user_id, password_hash=None))
+        session.commit()
+
+
 class FakeRankingProvider:
     """Shared rankings provider stub for snapshot unit and API integration tests."""
 

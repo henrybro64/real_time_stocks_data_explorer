@@ -10,6 +10,13 @@ from app.db.models import RealizedTrade
 from .session import require_session_factory
 
 
+def _owned_trade_query(user_id: str, trade_id: int):
+    return select(RealizedTrade).where(
+        RealizedTrade.id == trade_id,
+        RealizedTrade.user_id == user_id,
+    )
+
+
 class RealizedTradeRepository:
     def list_trades(
         self,
@@ -31,12 +38,7 @@ class RealizedTradeRepository:
     def get_trade(self, user_id: str, trade_id: int) -> RealizedTrade | None:
         session_factory = require_session_factory()
         with session_factory() as session:
-            return session.execute(
-                select(RealizedTrade).where(
-                    RealizedTrade.id == trade_id,
-                    RealizedTrade.user_id == user_id,
-                ),
-            ).scalar_one_or_none()
+            return session.execute(_owned_trade_query(user_id, trade_id)).scalar_one_or_none()
 
     def create_trade(
         self,
@@ -82,12 +84,7 @@ class RealizedTradeRepository:
     ) -> RealizedTrade | None:
         session_factory = require_session_factory()
         with session_factory() as session:
-            trade = session.execute(
-                select(RealizedTrade).where(
-                    RealizedTrade.id == trade_id,
-                    RealizedTrade.user_id == user_id,
-                ),
-            ).scalar_one_or_none()
+            trade = session.execute(_owned_trade_query(user_id, trade_id)).scalar_one_or_none()
             if trade is None:
                 return None
             trade.symbol = symbol
