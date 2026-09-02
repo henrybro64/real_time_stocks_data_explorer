@@ -24,6 +24,9 @@ Modes:
 Optional env:
   OBSERVABILITY=1  Also apply k8s/observability (Prometheus, Grafana, kube-state-metrics).
                    See docs/observability.md. Default smoke path leaves this off.
+  BACKEND_BASE_IMAGE   Docker base for backend (default: python:3.11-slim-bookworm)
+  FRONTEND_BASE_IMAGE  Docker base for frontend (default: node:20-bookworm-slim)
+  DOCKER_PULL_RETRIES / DOCKER_PULL_RETRY_DELAY_SEC  Pre-pull retry tuning (default: 5 / 15)
 
 k3d one-time setup (before first deploy):
   k3d cluster create stock-ticker
@@ -42,11 +45,67 @@ require_cmd() {
 }
 
 build_images() {
+  local backend_base="${BACKEND_BASE_IMAGE:-python:3.11-slim-bookworm}"
+  local frontend_base="${FRONTEND_BASE_IMAGE:-node:20-bookworm-slim}"
+
+  pull_docker_image_with_retry "${backend_base}"
+  pull_docker_image_with_retry "${frontend_base}"
+
   echo "Building backend image: ${BACKEND_IMAGE}"
-  docker build -t "${BACKEND_IMAGE}" -f "${ROOT_DIR}/backend/Dockerfile" "${ROOT_DIR}"
+  docker build \
+    --build-arg "PYTHON_BASE_IMAGE=${backend_base}" \
+    -t "${BACKEND_IMAGE}" \
+    -f "${ROOT_DIR}/backend/Dockerfile" \
+    "${ROOT_DIR}"
 
   echo "Building frontend image: ${FRONTEND_IMAGE}"
-  docker build -t "${FRONTEND_IMAGE}" -f "${ROOT_DIR}/frontend/Dockerfile" "${ROOT_DIR}"
+  docker build \
+    --build-arg "NODE_BASE_IMAGE=${frontend_base}" \
+    -t "${FRONTEND_IMAGE}" \
+    -f "${ROOT_DIR}/frontend/Dockerfile" \
+    "${ROOT_DIR}"
+}
+
+print_docker_hub_pull_help() {
+  cat <<'EOF' >&2
+
+Could not pull a base image from Docker Hub (often TLS handshake timeout or rate limits).
+
+Try:
+  1. Retry: ./scripts/deploy-k3s.sh k3s
+  2. Pre-pull manually: docker pull python:3.11-slim-bookworm && docker pull node:20-bookworm-slim
+  3. Configure a registry mirror in /etc/docker/daemon.json, then: sudo systemctl restart docker
+     Example (pick a mirror reachable from your network):
+       { "registry-mirrors": ["https://mirror.gcr.io"] }
+  4. Use a mirror prefix via env (if your mirror hosts library images):
+       BACKEND_BASE_IMAGE=your-mirror/library/python:3.11-slim-bookworm \
+       FRONTEND_BASE_IMAGE=your-mirror/library/node:20-bookworm-slim \
+       ./scripts/deploy-k3s.sh k3s
+
+See docs/kubernetes.md — "Docker Hub pull timeouts".
+EOF
+}
+
+pull_docker_image_with_retry() {
+  local image="$1"
+  local max_attempts="${DOCKER_PULL_RETRIES:-5}"
+  local delay_sec="${DOCKER_PULL_RETRY_DELAY_SEC:-15}"
+  local attempt=1
+
+  while (( attempt <= max_attempts )); do
+    echo "Pulling base image: ${image} (attempt ${attempt}/${max_attempts})"
+    if docker pull "${image}"; then
+      return 0
+    fi
+    if (( attempt == max_attempts )); then
+      echo "Failed to pull ${image} after ${max_attempts} attempts." >&2
+      print_docker_hub_pull_help
+      return 1
+    fi
+    echo "Pull failed; retrying in ${delay_sec}s..."
+    sleep "${delay_sec}"
+    attempt=$((attempt + 1))
+  done
 }
 
 ensure_k3d_cluster_exists() {

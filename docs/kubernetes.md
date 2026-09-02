@@ -42,6 +42,16 @@ Delete app: `./scripts/k8s-teardown.sh k3d`. Delete cluster: `k3d cluster delete
 
 Install Docker Engine and k3s ([k3s install docs](https://docs.k3s.io/installation)). Add your user to the `docker` group and verify `docker ps`.
 
+### Docker Hub pull timeouts
+
+`deploy-k3s.sh` pre-pulls `python:3.11-slim-bookworm` and `node:20-bookworm-slim` with retries before building. If you still see `TLS handshake timeout` reaching `registry-1.docker.io`:
+
+1. Retry, or pull manually: `docker pull python:3.11-slim-bookworm && docker pull node:20-bookworm-slim`
+2. Add a registry mirror in `/etc/docker/daemon.json`, then `sudo systemctl restart docker` (use a mirror reachable from your network).
+3. Override base images if your mirror hosts them:
+   `BACKEND_BASE_IMAGE=… FRONTEND_BASE_IMAGE=… ./scripts/deploy-k3s.sh k3s`
+4. Tune retries: `DOCKER_PULL_RETRIES=8 DOCKER_PULL_RETRY_DELAY_SEC=20 ./scripts/deploy-k3s.sh k3s`
+
 ```bash
 curl -sfL https://get.k3s.io | sh -
 sudo k3s kubectl get nodes
