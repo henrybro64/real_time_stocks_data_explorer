@@ -9,12 +9,15 @@ from pydantic import BaseModel, Field
 RealizedTradeCurrency = Literal["TWD", "USD"]
 
 
-class RealizedTradeCreate(BaseModel):
-    symbol: str = Field(min_length=1, max_length=32)
-    currency: RealizedTradeCurrency
+class RealizedTradeValueFields(BaseModel):
     buyPrice: float = Field(gt=0)
     sellPrice: float = Field(gt=0)
     shares: float = Field(gt=0)
+
+
+class RealizedTradeCreate(RealizedTradeValueFields):
+    symbol: str = Field(min_length=1, max_length=32)
+    currency: RealizedTradeCurrency
     buyDate: date | None = None
     sellDate: date
 
@@ -29,13 +32,10 @@ class RealizedTradeUpdate(BaseModel):
     sellDate: date | None = None
 
 
-class RealizedTradeResponse(BaseModel):
+class RealizedTradeResponse(RealizedTradeValueFields):
     id: int
     symbol: str
     currency: RealizedTradeCurrency
-    buyPrice: float
-    sellPrice: float
-    shares: float
     buyDate: str | None
     sellDate: str
     realizedGain: float

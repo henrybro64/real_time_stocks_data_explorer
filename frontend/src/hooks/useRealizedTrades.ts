@@ -2,7 +2,6 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
-  RealizedTradeCreate,
   RealizedTradeCurrency,
   RealizedTradeUpdate,
 } from "@shared/api";
@@ -25,27 +24,22 @@ export function useRealizedTrades(currency: RealizedTradeCurrency) {
   const invalidateTrades = () => {
     queryClient.invalidateQueries({ queryKey });
   };
+  const mutationOptions = { onSuccess: invalidateTrades };
 
   const createMutation = useMutation({
-    mutationFn: (payload: RealizedTradeCreate) => createRealizedTrade(payload),
-    onSuccess: () => {
-      invalidateTrades();
-    },
+    mutationFn: createRealizedTrade,
+    ...mutationOptions,
   });
 
   const updateMutation = useMutation({
     mutationFn: ({ tradeId, payload }: { tradeId: number; payload: RealizedTradeUpdate }) =>
       updateRealizedTrade(tradeId, payload),
-    onSuccess: () => {
-      invalidateTrades();
-    },
+    ...mutationOptions,
   });
 
   const deleteMutation = useMutation({
     mutationFn: deleteRealizedTrade,
-    onSuccess: () => {
-      invalidateTrades();
-    },
+    ...mutationOptions,
   });
 
   return {
