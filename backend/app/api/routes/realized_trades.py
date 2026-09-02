@@ -1,6 +1,7 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Query
 
 from app.api.deps import get_effective_user_id
+from app.api.http_errors import run_domain_action
 from app.db.models import RealizedTrade
 from app.schemas.realized_trade import (
     RealizedTradeCreate,
@@ -24,14 +25,6 @@ REALIZED_TRADE_ERROR_RESPONSES = {
 }
 
 
-def _raise_realized_trade_http_error(exc: Exception) -> None:
-    if isinstance(exc, RealizedTradeNotFoundError):
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    if isinstance(exc, RealizedTradeValidationError):
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    raise exc
-
-
 @router.get("")
 def list_realized_trades(
     currency: RealizedTradeCurrency | None = Query(default=None),
@@ -46,10 +39,11 @@ def create_realized_trade(
     payload: RealizedTradeCreate,
     user_id: str = Depends(get_effective_user_id),
 ) -> RealizedTradeResponse:
-    try:
-        trade = realized_trade_service.create_trade(user_id, payload)
-    except (RealizedTradeNotFoundError, RealizedTradeValidationError) as exc:
-        _raise_realized_trade_http_error(exc)
+    trade = run_domain_action(
+        lambda: realized_trade_service.create_trade(user_id, payload),
+        not_found=RealizedTradeNotFoundError,
+        validation=RealizedTradeValidationError,
+    )
     return _to_response(trade)
 
 
@@ -59,10 +53,11 @@ def update_realized_trade(
     payload: RealizedTradeUpdate,
     user_id: str = Depends(get_effective_user_id),
 ) -> RealizedTradeResponse:
-    try:
-        trade = realized_trade_service.update_trade(user_id, trade_id, payload)
-    except (RealizedTradeNotFoundError, RealizedTradeValidationError) as exc:
-        _raise_realized_trade_http_error(exc)
+    trade = run_domain_action(
+        lambda: realized_trade_service.update_trade(user_id, trade_id, payload),
+        not_found=RealizedTradeNotFoundError,
+        validation=RealizedTradeValidationError,
+    )
     return _to_response(trade)
 
 
@@ -71,10 +66,10 @@ def delete_realized_trade(
     trade_id: int,
     user_id: str = Depends(get_effective_user_id),
 ) -> None:
-    try:
-        realized_trade_service.delete_trade(user_id, trade_id)
-    except RealizedTradeNotFoundError as exc:
-        _raise_realized_trade_http_error(exc)
+    run_domain_action(
+        lambda: realized_trade_service.delete_trade(user_id, trade_id),
+        not_found=RealizedTradeNotFoundError,
+    )
 
 
 def _to_response(trade: RealizedTrade) -> RealizedTradeResponse:

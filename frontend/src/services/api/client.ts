@@ -28,6 +28,9 @@ import type {
   PortfolioPositionUpdate,
   PortfolioSummary,
   QuoteResponse,
+  RealizedTrade,
+  RealizedTradeCreate,
+  RealizedTradeUpdate,
   StockAnalysisResponse,
   TaiwanInstitutionalInvestorsResponse,
   TaiwanMarginShortResponse,
@@ -255,6 +258,20 @@ export async function requestJson<T>(path: string, init?: RequestInit): Promise<
 
 export async function requestVoid(path: string, init?: RequestInit): Promise<void> {
   await request(path, init);
+}
+
+async function requestJsonWithBody<T>(
+  path: string,
+  method: "POST" | "PATCH" | "PUT",
+  payload: unknown,
+): Promise<T> {
+  return requestJson<T>(path, {
+    method,
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
 }
 
 async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
@@ -571,23 +588,11 @@ export function fetchAlertEvents(limit = 20) {
 }
 
 export async function createAlertRule(payload: AlertRuleCreate) {
-  return requestJson<AlertRule>("/alerts/rules", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(payload),
-  });
+  return requestJsonWithBody<AlertRule>("/alerts/rules", "POST", payload);
 }
 
 export async function updateAlertRule(ruleId: number, payload: AlertRuleUpdate) {
-  return requestJson<AlertRule>(`/alerts/rules/${ruleId}`, {
-    method: "PATCH",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(payload),
-  });
+  return requestJsonWithBody<AlertRule>(`/alerts/rules/${ruleId}`, "PATCH", payload);
 }
 
 export async function deleteAlertRule(ruleId: number) {
@@ -603,13 +608,7 @@ export async function deleteAlertEvents() {
 }
 
 export async function addToWatchlist(stockId: string) {
-  return requestJson<WatchlistResponse>("/watchlist/items", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ id: stockId }),
-  });
+  return requestJsonWithBody<WatchlistResponse>("/watchlist/items", "POST", { id: stockId });
 }
 
 export async function removeFromWatchlist(stockId: string) {
@@ -639,23 +638,15 @@ export function fetchPortfolioCombinedAssetsHistory(range: TimeRange) {
 }
 
 export async function addPortfolioPosition(payload: PortfolioPositionCreate) {
-  return requestJson<PortfolioPosition>("/portfolio/positions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(payload),
-  });
+  return requestJsonWithBody<PortfolioPosition>("/portfolio/positions", "POST", payload);
 }
 
 export async function updatePortfolioPosition(positionId: number, payload: PortfolioPositionUpdate) {
-  return requestJson<PortfolioPosition>(`/portfolio/positions/${positionId}`, {
-    method: "PATCH",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(payload),
-  });
+  return requestJsonWithBody<PortfolioPosition>(
+    `/portfolio/positions/${positionId}`,
+    "PATCH",
+    payload,
+  );
 }
 
 export async function deletePortfolioPosition(positionId: number) {
@@ -679,23 +670,11 @@ export function fetchPortfolioAssetSummary() {
 }
 
 export async function addPortfolioAsset(payload: PortfolioAssetCreate) {
-  return requestJson<PortfolioAsset>("/portfolio/assets", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(payload),
-  });
+  return requestJsonWithBody<PortfolioAsset>("/portfolio/assets", "POST", payload);
 }
 
 export async function updatePortfolioAsset(assetId: number, payload: PortfolioAssetUpdate) {
-  return requestJson<PortfolioAsset>(`/portfolio/assets/${assetId}`, {
-    method: "PATCH",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(payload),
-  });
+  return requestJsonWithBody<PortfolioAsset>(`/portfolio/assets/${assetId}`, "PATCH", payload);
 }
 
 export async function deletePortfolioAsset(assetId: number) {
@@ -709,12 +688,26 @@ export function fetchAiProviderPreference() {
 }
 
 export async function saveAiProviderPreference(provider: "openai" | "perplexity") {
-  return requestJson<AiProviderPreference>("/ai/preferences", {
-    method: "PUT",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ preferredProvider: provider }),
+  return requestJsonWithBody<AiProviderPreference>("/ai/preferences", "PUT", {
+    preferredProvider: provider,
+  });
+}
+
+export function fetchRealizedTrades(currency: "TWD" | "USD") {
+  return fetchJson<RealizedTrade[]>(`/realized-trades?currency=${currency}`);
+}
+
+export async function createRealizedTrade(payload: RealizedTradeCreate) {
+  return requestJsonWithBody<RealizedTrade>("/realized-trades", "POST", payload);
+}
+
+export async function updateRealizedTrade(tradeId: number, payload: RealizedTradeUpdate) {
+  return requestJsonWithBody<RealizedTrade>(`/realized-trades/${tradeId}`, "PATCH", payload);
+}
+
+export async function deleteRealizedTrade(tradeId: number) {
+  await requestVoid(`/realized-trades/${tradeId}`, {
+    method: "DELETE",
   });
 }
 

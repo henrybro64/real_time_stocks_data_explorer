@@ -1,8 +1,14 @@
 import type { RealizedTrade, RealizedTradeCurrency } from "@shared/api";
 import { useMemo, useRef, useState } from "react";
 import { errorToNoticeKind } from "../../components/state/RequestStateNotice";
-import { toApiError } from "../../services/api/client";
-import { useRealizedTrades } from "./useRealizedTrades";
+import {
+  createRealizedTrade,
+  deleteRealizedTrade,
+  fetchRealizedTrades,
+  toApiError,
+  updateRealizedTrade,
+} from "../../services/api/client";
+import { useCrudResource } from "../../hooks/useCrudResource";
 import {
   buildMonthlyRealizedGainSeries,
   previewRealizedGain,
@@ -38,7 +44,22 @@ export const EMPTY_REALIZED_GAINS_FORM: RealizedGainsFormState = {
 
 export function useRealizedGainsPageState(initialCurrency: RealizedTradeCurrency = "TWD") {
   const [currency, setCurrency] = useState<RealizedTradeCurrency>(initialCurrency);
-  const realized = useRealizedTrades(currency);
+  const resource = useCrudResource({
+    queryKey: ["realized-trades", currency],
+    queryFn: () => fetchRealizedTrades(currency),
+    createItem: createRealizedTrade,
+    updateItem: updateRealizedTrade,
+    deleteItem: deleteRealizedTrade,
+  });
+  const realized = {
+    trades: resource.items,
+    tradesQuery: resource.listQuery,
+    createMutation: resource.createMutation,
+    updateMutation: resource.updateMutation,
+    deleteMutation: resource.deleteMutation,
+    mutationError: resource.mutationError,
+    isMutating: resource.isMutating,
+  };
   const [form, setForm] = useState<RealizedGainsFormState>(EMPTY_REALIZED_GAINS_FORM);
   const [editingTradeId, setEditingTradeId] = useState<number | null>(null);
   const [pendingDeleteId, setPendingDeleteId] = useState<number | null>(null);

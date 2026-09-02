@@ -9,13 +9,13 @@ import {
   deleteRealizedTrade,
   fetchRealizedTrades,
   updateRealizedTrade,
-} from "../../../src/views/realized-gains/realizedTradesClient";
+} from "../../../src/services/api/client";
 import { RealizedGainsPage } from "../../../src/views/realized-gains/RealizedGainsPage";
 import { buildSampleRealizedTrade } from "../../../src/views/realized-gains/realizedTradeTestFixtures";
 
-vi.mock("../../../src/views/realized-gains/realizedTradesClient", async () => {
-  const actual = await vi.importActual<typeof import("../../../src/views/realized-gains/realizedTradesClient")>(
-    "../../../src/views/realized-gains/realizedTradesClient",
+vi.mock("../../../src/services/api/client", async () => {
+  const actual = await vi.importActual<typeof import("../../../src/services/api/client")>(
+    "../../../src/services/api/client",
   );
   return {
     ...actual,
