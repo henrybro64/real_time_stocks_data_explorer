@@ -412,4 +412,22 @@ describe("AlertsPage", () => {
     expect(screen.getByTestId("alerts-rule-row-1")).toBeInTheDocument();
     expect(screen.getByText("No alert events yet. Events appear here when a rule crosses its threshold.")).toBeInTheDocument();
   });
+
+  it("shows purge failure inside the confirmation dialog", async () => {
+    const user = userEvent.setup();
+    vi.mocked(fetchAlertEvents).mockResolvedValue([buildEvent()]);
+    vi.mocked(deleteAlertEvents).mockRejectedValue(new Error("Network error"));
+
+    renderAlertsPage();
+
+    await user.click(screen.getByTestId("alerts-clear-history-button"));
+    await user.click(screen.getByTestId("alerts-clear-history-confirm"));
+
+    await waitFor(() => {
+      expect(deleteAlertEvents).toHaveBeenCalledTimes(1);
+    });
+    expect(screen.getByText("Clear all alert event history? This will not delete your alert rules.")).toBeInTheDocument();
+    expect(screen.getByTestId("alerts-clear-history-confirm")).not.toBeDisabled();
+    expect(screen.getByTestId("alerts-event-row-11")).toBeInTheDocument();
+  });
 });

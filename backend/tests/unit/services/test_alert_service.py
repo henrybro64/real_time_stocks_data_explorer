@@ -184,6 +184,24 @@ def test_delete_events_preserves_rule_state_and_suppresses_duplicate_events(
     assert service.list_recent_events("user-1") == []
 
 
+def test_delete_events_runs_under_evaluation_lock(monkeypatch) -> None:
+    service, _session_local, _price_state = _build_test_alert_service(monkeypatch)
+    lock_held: list[bool] = []
+
+    def spy_delete(user_id: str) -> int:
+        lock_held.append(service._evaluation_lock.locked())
+        return 0
+
+    monkeypatch.setattr(
+        "app.services.alert_service.alert_repository.delete_events",
+        spy_delete,
+    )
+
+    service.delete_events("user-1")
+
+    assert lock_held == [True]
+
+
 def test_create_rule_resolves_bare_and_lowercase_tickers(monkeypatch) -> None:
     service, _session_local, _price_state = _build_test_alert_service(monkeypatch)
 
