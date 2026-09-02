@@ -606,7 +606,10 @@ function movingAverageDirection(index: number, positiveStart: boolean) {
   if (index === 0) {
     return positiveStart ? "up" : "down";
   }
-  return index % 2 === 0 ? (positiveStart ? "up" : "down") : (positiveStart ? "down" : "up");
+  if (index % 2 === 0) {
+    return positiveStart ? "up" : "down";
+  }
+  return positiveStart ? "down" : "up";
 }
 
 function buildMovingAveragesForCandles(

@@ -9,14 +9,14 @@ T = TypeVar("T")
 def run_domain_action(
     action: Callable[[], T],
     *,
-    not_found: type[Exception] | tuple[type[Exception], ...],
-    validation: type[Exception] | tuple[type[Exception], ...] = (),
+    not_found: type[Exception] | None = None,
+    validation: type[Exception] | None = None,
 ) -> T:
-    not_found_types = not_found if isinstance(not_found, tuple) else (not_found,)
-    validation_types = validation if isinstance(validation, tuple) else (validation,)
     try:
         return action()
-    except not_found_types as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except validation_types as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        if not_found is not None and isinstance(exc, not_found):
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        if validation is not None and isinstance(exc, validation):
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise
