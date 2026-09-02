@@ -21,7 +21,7 @@ import {
 } from "@carbon/react";
 import type { RealizedTrade, RealizedTradeCurrency } from "@shared/api";
 import { useMemo, useRef, useState } from "react";
-import { useLanguage } from "../../app/i18n";
+import { useLanguage, type TranslationKey } from "../../app/i18n";
 import { useRealizedTrades } from "../../hooks/useRealizedTrades";
 import { ScopedRequestStateNotice, errorToNoticeKind } from "../../components/state/RequestStateNotice";
 import { toApiError } from "../../services/api/client";
@@ -59,6 +59,53 @@ const EMPTY_FORM: FormState = {
   buyDate: "",
   sellDate: "",
 };
+
+const FORM_FIELDS: ReadonlyArray<{
+  id: string;
+  field: keyof FormState;
+  labelKey: TranslationKey;
+  type?: string;
+  min?: number;
+  step?: string;
+}> = [
+  { id: "realized-symbol", field: "symbol", labelKey: "realizedGains.form.symbol" },
+  {
+    id: "realized-buy-price",
+    field: "buyPrice",
+    labelKey: "realizedGains.form.buyPrice",
+    type: "number",
+    min: 0,
+    step: "any",
+  },
+  {
+    id: "realized-sell-price",
+    field: "sellPrice",
+    labelKey: "realizedGains.form.sellPrice",
+    type: "number",
+    min: 0,
+    step: "any",
+  },
+  {
+    id: "realized-shares",
+    field: "shares",
+    labelKey: "realizedGains.form.shares",
+    type: "number",
+    min: 0,
+    step: "any",
+  },
+  {
+    id: "realized-buy-date",
+    field: "buyDate",
+    labelKey: "realizedGains.form.buyDate",
+    type: "date",
+  },
+  {
+    id: "realized-sell-date",
+    field: "sellDate",
+    labelKey: "realizedGains.form.sellDate",
+    type: "date",
+  },
+];
 
 function readInputValue(event: { currentTarget: HTMLInputElement | null; target: EventTarget | null }) {
   const target = event.currentTarget ?? event.target;
@@ -263,65 +310,20 @@ export function RealizedGainsPage() {
             detail={formMutationApiError?.detail}
           />
           <div className="app-realized-form">
-            <TextInput
-              id="realized-symbol"
-              labelText={t("realizedGains.form.symbol")}
-              value={form.symbol}
-              onChange={(event) =>
-                setForm((current) => ({ ...current, symbol: readInputValue(event) }))
-              }
-            />
-            <TextInput
-              id="realized-buy-price"
-              labelText={t("realizedGains.form.buyPrice")}
-              type="number"
-              min={0}
-              step="any"
-              value={form.buyPrice}
-              onChange={(event) =>
-                setForm((current) => ({ ...current, buyPrice: readInputValue(event) }))
-              }
-            />
-            <TextInput
-              id="realized-sell-price"
-              labelText={t("realizedGains.form.sellPrice")}
-              type="number"
-              min={0}
-              step="any"
-              value={form.sellPrice}
-              onChange={(event) =>
-                setForm((current) => ({ ...current, sellPrice: readInputValue(event) }))
-              }
-            />
-            <TextInput
-              id="realized-shares"
-              labelText={t("realizedGains.form.shares")}
-              type="number"
-              min={0}
-              step="any"
-              value={form.shares}
-              onChange={(event) =>
-                setForm((current) => ({ ...current, shares: readInputValue(event) }))
-              }
-            />
-            <TextInput
-              id="realized-buy-date"
-              labelText={t("realizedGains.form.buyDate")}
-              type="date"
-              value={form.buyDate}
-              onChange={(event) =>
-                setForm((current) => ({ ...current, buyDate: readInputValue(event) }))
-              }
-            />
-            <TextInput
-              id="realized-sell-date"
-              labelText={t("realizedGains.form.sellDate")}
-              type="date"
-              value={form.sellDate}
-              onChange={(event) =>
-                setForm((current) => ({ ...current, sellDate: readInputValue(event) }))
-              }
-            />
+            {FORM_FIELDS.map(({ id, field, labelKey, type, min, step }) => (
+              <TextInput
+                key={id}
+                id={id}
+                labelText={t(labelKey)}
+                type={type}
+                min={min}
+                step={step}
+                value={form[field]}
+                onChange={(event) =>
+                  setForm((current) => ({ ...current, [field]: readInputValue(event) }))
+                }
+              />
+            ))}
             {preview ? (
               <div className="app-realized-preview">
                 <p>{t("realizedGains.preview.gain")}</p>

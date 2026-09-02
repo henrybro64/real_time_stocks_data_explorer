@@ -1,188 +1,71 @@
 type RealizedGainsLanguage = "en" | "zh-TW";
 
-type BilingualCopy = Record<RealizedGainsLanguage, string>;
+// Tuple rows: [translationKey, English, Traditional Chinese]
+const REALIZED_GAINS_ROWS = [
+  ["nav.realizedGains", "Realized P/L", "已實現損益"],
+  ["realizedGains.title", "Realized P/L", "已實現損益"],
+  [
+    "realizedGains.description",
+    "Record completed trades manually and review realized gains by currency without mixing TWD and USD.",
+    "手動記錄已完成的交易，並依幣別分開檢視已實現損益，不混合 TWD 與 USD。",
+  ],
+  ["realizedGains.currency.label", "Currency", "幣別"],
+  ["realizedGains.currency.twd", "TWD (NT$)", "TWD (NT$)"],
+  ["realizedGains.currency.usd", "USD (US$)", "USD (US$)"],
+  ["realizedGains.period.1M", "Past 1 month", "近 1 個月"],
+  ["realizedGains.period.3M", "Past 3 months", "近 3 個月"],
+  ["realizedGains.period.6M", "Past 6 months", "近 6 個月"],
+  ["realizedGains.period.1Y", "Past 1 year", "近 1 年"],
+  [
+    "realizedGains.chart.title",
+    "Monthly realized P/L (last 12 months)",
+    "近 12 個月每月已實現損益",
+  ],
+  ["realizedGains.form.title", "Trade entry", "交易輸入"],
+  ["realizedGains.form.createTitle", "Add realized trade", "新增已實現交易"],
+  ["realizedGains.form.editTitle", "Edit realized trade", "編輯已實現交易"],
+  ["realizedGains.form.symbol", "Symbol", "代號"],
+  ["realizedGains.form.buyPrice", "Buy price", "買入價"],
+  ["realizedGains.form.sellPrice", "Sell price", "賣出價"],
+  ["realizedGains.form.shares", "Shares", "股數"],
+  ["realizedGains.form.buyDate", "Buy date (optional)", "買入日期（選填）"],
+  ["realizedGains.form.sellDate", "Sell date", "賣出日期"],
+  ["realizedGains.form.submitCreate", "Save trade", "儲存交易"],
+  ["realizedGains.form.submitUpdate", "Save changes", "儲存變更"],
+  ["realizedGains.form.cancel", "Cancel", "取消"],
+  ["realizedGains.preview.gain", "Estimated realized P/L", "預估已實現損益"],
+  ["realizedGains.preview.return", "Estimated return", "預估報酬率"],
+  ["realizedGains.history.title", "Trade history", "交易紀錄"],
+  ["realizedGains.loading", "Loading realized trades", "載入已實現交易中"],
+  ["realizedGains.empty.twd", "No TWD realized trades yet.", "尚無 TWD 已實現交易紀錄"],
+  ["realizedGains.empty.usd", "No USD realized trades yet.", "尚無 USD 已實現交易紀錄"],
+  ["realizedGains.column.sellDate", "Sell date", "賣出日期"],
+  ["realizedGains.column.symbol", "Symbol", "代號"],
+  ["realizedGains.column.buyPrice", "Buy price", "買入價"],
+  ["realizedGains.column.sellPrice", "Sell price", "賣出價"],
+  ["realizedGains.column.shares", "Shares", "股數"],
+  ["realizedGains.column.returnPercent", "Return %", "報酬率"],
+  ["realizedGains.column.realizedGain", "Realized P/L", "已實現損益"],
+  ["realizedGains.column.actions", "Actions", "操作"],
+  ["realizedGains.actions.edit", "Edit", "編輯"],
+  ["realizedGains.actions.delete", "Delete", "刪除"],
+  ["realizedGains.deleteConfirmTitle", "Delete realized trade", "刪除已實現交易"],
+  [
+    "realizedGains.deleteConfirmMessage",
+    "Delete this realized trade record?",
+    "確定要刪除這筆已實現交易紀錄嗎？",
+  ],
+  ["realizedGains.deleteConfirmCancel", "Cancel", "取消"],
+  ["realizedGains.deleteConfirmAction", "Delete", "刪除"],
+] as const satisfies ReadonlyArray<readonly [string, string, string]>;
 
-const REALIZED_GAINS_COPY = {
-  "nav.realizedGains": {
-    en: "Realized P/L",
-    "zh-TW": "已實現損益",
-  },
-  "realizedGains.title": {
-    en: "Realized P/L",
-    "zh-TW": "已實現損益",
-  },
-  "realizedGains.description": {
-    en: "Record completed trades manually and review realized gains by currency without mixing TWD and USD.",
-    "zh-TW": "手動記錄已完成的交易，並依幣別分開檢視已實現損益，不混合 TWD 與 USD。",
-  },
-  "realizedGains.currency.label": {
-    en: "Currency",
-    "zh-TW": "幣別",
-  },
-  "realizedGains.currency.twd": {
-    en: "TWD (NT$)",
-    "zh-TW": "TWD (NT$)",
-  },
-  "realizedGains.currency.usd": {
-    en: "USD (US$)",
-    "zh-TW": "USD (US$)",
-  },
-  "realizedGains.period.1M": {
-    en: "Past 1 month",
-    "zh-TW": "近 1 個月",
-  },
-  "realizedGains.period.3M": {
-    en: "Past 3 months",
-    "zh-TW": "近 3 個月",
-  },
-  "realizedGains.period.6M": {
-    en: "Past 6 months",
-    "zh-TW": "近 6 個月",
-  },
-  "realizedGains.period.1Y": {
-    en: "Past 1 year",
-    "zh-TW": "近 1 年",
-  },
-  "realizedGains.chart.title": {
-    en: "Monthly realized P/L (last 12 months)",
-    "zh-TW": "近 12 個月每月已實現損益",
-  },
-  "realizedGains.form.title": {
-    en: "Trade entry",
-    "zh-TW": "交易輸入",
-  },
-  "realizedGains.form.createTitle": {
-    en: "Add realized trade",
-    "zh-TW": "新增已實現交易",
-  },
-  "realizedGains.form.editTitle": {
-    en: "Edit realized trade",
-    "zh-TW": "編輯已實現交易",
-  },
-  "realizedGains.form.symbol": {
-    en: "Symbol",
-    "zh-TW": "代號",
-  },
-  "realizedGains.form.buyPrice": {
-    en: "Buy price",
-    "zh-TW": "買入價",
-  },
-  "realizedGains.form.sellPrice": {
-    en: "Sell price",
-    "zh-TW": "賣出價",
-  },
-  "realizedGains.form.shares": {
-    en: "Shares",
-    "zh-TW": "股數",
-  },
-  "realizedGains.form.buyDate": {
-    en: "Buy date (optional)",
-    "zh-TW": "買入日期（選填）",
-  },
-  "realizedGains.form.sellDate": {
-    en: "Sell date",
-    "zh-TW": "賣出日期",
-  },
-  "realizedGains.form.submitCreate": {
-    en: "Save trade",
-    "zh-TW": "儲存交易",
-  },
-  "realizedGains.form.submitUpdate": {
-    en: "Save changes",
-    "zh-TW": "儲存變更",
-  },
-  "realizedGains.form.cancel": {
-    en: "Cancel",
-    "zh-TW": "取消",
-  },
-  "realizedGains.preview.gain": {
-    en: "Estimated realized P/L",
-    "zh-TW": "預估已實現損益",
-  },
-  "realizedGains.preview.return": {
-    en: "Estimated return",
-    "zh-TW": "預估報酬率",
-  },
-  "realizedGains.history.title": {
-    en: "Trade history",
-    "zh-TW": "交易紀錄",
-  },
-  "realizedGains.loading": {
-    en: "Loading realized trades",
-    "zh-TW": "載入已實現交易中",
-  },
-  "realizedGains.empty.twd": {
-    en: "No TWD realized trades yet.",
-    "zh-TW": "尚無 TWD 已實現交易紀錄",
-  },
-  "realizedGains.empty.usd": {
-    en: "No USD realized trades yet.",
-    "zh-TW": "尚無 USD 已實現交易紀錄",
-  },
-  "realizedGains.column.sellDate": {
-    en: "Sell date",
-    "zh-TW": "賣出日期",
-  },
-  "realizedGains.column.symbol": {
-    en: "Symbol",
-    "zh-TW": "代號",
-  },
-  "realizedGains.column.buyPrice": {
-    en: "Buy price",
-    "zh-TW": "買入價",
-  },
-  "realizedGains.column.sellPrice": {
-    en: "Sell price",
-    "zh-TW": "賣出價",
-  },
-  "realizedGains.column.shares": {
-    en: "Shares",
-    "zh-TW": "股數",
-  },
-  "realizedGains.column.returnPercent": {
-    en: "Return %",
-    "zh-TW": "報酬率",
-  },
-  "realizedGains.column.realizedGain": {
-    en: "Realized P/L",
-    "zh-TW": "已實現損益",
-  },
-  "realizedGains.column.actions": {
-    en: "Actions",
-    "zh-TW": "操作",
-  },
-  "realizedGains.actions.edit": {
-    en: "Edit",
-    "zh-TW": "編輯",
-  },
-  "realizedGains.actions.delete": {
-    en: "Delete",
-    "zh-TW": "刪除",
-  },
-  "realizedGains.deleteConfirmTitle": {
-    en: "Delete realized trade",
-    "zh-TW": "刪除已實現交易",
-  },
-  "realizedGains.deleteConfirmMessage": {
-    en: "Delete this realized trade record?",
-    "zh-TW": "確定要刪除這筆已實現交易紀錄嗎？",
-  },
-  "realizedGains.deleteConfirmCancel": {
-    en: "Cancel",
-    "zh-TW": "取消",
-  },
-  "realizedGains.deleteConfirmAction": {
-    en: "Delete",
-    "zh-TW": "刪除",
-  },
-} satisfies Record<string, BilingualCopy>;
-
-export type RealizedGainsTranslationKey = keyof typeof REALIZED_GAINS_COPY;
+export type RealizedGainsTranslationKey = (typeof REALIZED_GAINS_ROWS)[number][0];
 
 export function realizedGainsMessages(
   language: RealizedGainsLanguage,
 ): Record<RealizedGainsTranslationKey, string> {
+  const valueIndex = language === "en" ? 1 : 2;
   return Object.fromEntries(
-    Object.entries(REALIZED_GAINS_COPY).map(([key, copy]) => [key, copy[language]]),
+    REALIZED_GAINS_ROWS.map((row) => [row[0], row[valueIndex]]),
   ) as Record<RealizedGainsTranslationKey, string>;
 }
