@@ -133,8 +133,17 @@ export KUBECTL_CMD
 
 run_cmd "${ROOT_DIR}/scripts/deploy-k3s.sh" k3s
 
-echo "Waiting for all pods to report Ready"
-run_kubectl -n "${NAMESPACE}" wait --for=condition=Ready pod --all --timeout=600s
+# deploy-k3s.sh already waits for redis/postgres/backend/frontend rollouts.
+# Avoid a second 600s wait on every pod, which flakes when infra pods are slow.
+echo "Confirming core workload pods are Ready"
+if ! run_kubectl -n "${NAMESPACE}" wait --for=condition=Ready pod \
+  -l 'app in (stock-ticker-postgres, stock-ticker-redis, stock-ticker-backend, stock-ticker-frontend)' \
+  --timeout=120s; then
+  snapshot_kubectl "Pods (not Ready)" -n "${NAMESPACE}" get pods -o wide
+  run_kubectl -n "${NAMESPACE}" describe pod -l 'app in (stock-ticker-postgres, stock-ticker-redis)' \
+    >>"${SUMMARY_FILE}" 2>&1 || true
+  exit 1
+fi
 
 snapshot_kubectl "Deployments" -n "${NAMESPACE}" get deploy
 snapshot_kubectl "Pods" -n "${NAMESPACE}" get pods -o wide
