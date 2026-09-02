@@ -44,13 +44,20 @@ Install Docker Engine and k3s ([k3s install docs](https://docs.k3s.io/installati
 
 ### Docker Hub pull timeouts
 
-`deploy-k3s.sh` pre-pulls `python:3.11-slim-bookworm` and `node:20-bookworm-slim` with retries before building. If you still see `TLS handshake timeout` reaching `registry-1.docker.io`:
+`deploy-k3s.sh` pre-pulls `python:3.11-slim-bookworm` and `node:20-bookworm-slim` with retries, then falls back to `mirror.gcr.io` and `docker.m.daocloud.io` when Docker Hub times out. If pulls still fail:
 
-1. Retry, or pull manually: `docker pull python:3.11-slim-bookworm && docker pull node:20-bookworm-slim`
-2. Add a registry mirror in `/etc/docker/daemon.json`, then `sudo systemctl restart docker` (use a mirror reachable from your network).
-3. Override base images if your mirror hosts them:
-   `BACKEND_BASE_IMAGE=… FRONTEND_BASE_IMAGE=… ./scripts/deploy-k3s.sh k3s`
-4. Tune retries: `DOCKER_PULL_RETRIES=8 DOCKER_PULL_RETRY_DELAY_SEC=20 ./scripts/deploy-k3s.sh k3s`
+1. Pull and tag manually (Google mirror):
+   ```bash
+   docker pull mirror.gcr.io/library/python:3.11-slim-bookworm
+   docker tag mirror.gcr.io/library/python:3.11-slim-bookworm python:3.11-slim-bookworm
+   docker pull mirror.gcr.io/library/node:20-bookworm-slim
+   docker tag mirror.gcr.io/library/node:20-bookworm-slim node:20-bookworm-slim
+   ./scripts/deploy-k3s.sh k3s
+   ```
+2. Add a registry mirror in `/etc/docker/daemon.json`, then `sudo systemctl restart docker`.
+3. Point at a mirror directly:
+   `BACKEND_BASE_IMAGE=mirror.gcr.io/library/python:3.11-slim-bookworm FRONTEND_BASE_IMAGE=mirror.gcr.io/library/node:20-bookworm-slim ./scripts/deploy-k3s.sh k3s`
+4. Tune mirrors/retries: `DOCKER_PULL_MIRRORS=mirror.gcr.io DOCKER_PULL_RETRIES=2 ./scripts/deploy-k3s.sh k3s`
 
 ```bash
 curl -sfL https://get.k3s.io | sh -

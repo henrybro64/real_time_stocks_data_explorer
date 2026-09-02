@@ -26,7 +26,9 @@ Optional env:
                    See docs/observability.md. Default smoke path leaves this off.
   BACKEND_BASE_IMAGE   Docker base for backend (default: python:3.11-slim-bookworm)
   FRONTEND_BASE_IMAGE  Docker base for frontend (default: node:20-bookworm-slim)
-  DOCKER_PULL_RETRIES / DOCKER_PULL_RETRY_DELAY_SEC  Pre-pull retry tuning (default: 5 / 15)
+  DOCKER_PULL_RETRIES / DOCKER_PULL_RETRY_DELAY_SEC  Pre-pull retry tuning (default: 3 / 15)
+  DOCKER_PULL_MIRRORS  Comma-separated mirror hosts (default: mirror.gcr.io,docker.m.daocloud.io)
+  DOCKER_PULL_SKIP_MIRRORS=1  Skip mirror fallbacks when Docker Hub works but mirrors do not
 
 k3d one-time setup (before first deploy):
   k3d cluster create stock-ticker
@@ -72,24 +74,66 @@ print_docker_hub_pull_help() {
 Could not pull a base image from Docker Hub (often TLS handshake timeout or rate limits).
 
 Try:
-  1. Retry: ./scripts/deploy-k3s.sh k3s
-  2. Pre-pull manually: docker pull python:3.11-slim-bookworm && docker pull node:20-bookworm-slim
-  3. Configure a registry mirror in /etc/docker/daemon.json, then: sudo systemctl restart docker
-     Example (pick a mirror reachable from your network):
-       { "registry-mirrors": ["https://mirror.gcr.io"] }
-  4. Use a mirror prefix via env (if your mirror hosts library images):
-       BACKEND_BASE_IMAGE=your-mirror/library/python:3.11-slim-bookworm \
-       FRONTEND_BASE_IMAGE=your-mirror/library/node:20-bookworm-slim \
+  1. Pull via Google mirror, tag locally, then deploy:
+       docker pull mirror.gcr.io/library/python:3.11-slim-bookworm
+       docker tag mirror.gcr.io/library/python:3.11-slim-bookworm python:3.11-slim-bookworm
+       docker pull mirror.gcr.io/library/node:20-bookworm-slim
+       docker tag mirror.gcr.io/library/node:20-bookworm-slim node:20-bookworm-slim
        ./scripts/deploy-k3s.sh k3s
+  2. Configure a registry mirror in /etc/docker/daemon.json, then: sudo systemctl restart docker
+     Example: { "registry-mirrors": ["https://mirror.gcr.io"] }
+  3. Override base images:
+       BACKEND_BASE_IMAGE=mirror.gcr.io/library/python:3.11-slim-bookworm \
+       FRONTEND_BASE_IMAGE=mirror.gcr.io/library/node:20-bookworm-slim \
+       ./scripts/deploy-k3s.sh k3s
+  4. Add a reachable mirror: DOCKER_PULL_MIRRORS=mirror.gcr.io,your.mirror.host ./scripts/deploy-k3s.sh k3s
 
 See docs/kubernetes.md — "Docker Hub pull timeouts".
 EOF
 }
 
-pull_docker_image_with_retry() {
+normalize_docker_library_image() {
   local image="$1"
-  local max_attempts="${DOCKER_PULL_RETRIES:-5}"
-  local delay_sec="${DOCKER_PULL_RETRY_DELAY_SEC:-15}"
+  case "${image}" in
+    docker.io/library/*)
+      echo "${image#docker.io/library/}"
+      ;;
+    library/*)
+      echo "${image#library/}"
+      ;;
+    *)
+      echo "${image}"
+      ;;
+  esac
+}
+
+is_simple_docker_hub_library_image() {
+  local image="$1"
+  [[ "${image}" != */* ]]
+}
+
+docker_hub_library_mirror_ref() {
+  local mirror_host="$1"
+  local image="$2"
+  local normalized name tag
+
+  normalized="$(normalize_docker_library_image "${image}")"
+  if ! is_simple_docker_hub_library_image "${normalized}"; then
+    return 1
+  fi
+
+  name="${normalized%%:*}"
+  tag="${normalized#*:}"
+  if [[ "${name}" == "${tag}" ]]; then
+    tag="latest"
+  fi
+  echo "${mirror_host%/}/library/${name}:${tag}"
+}
+
+try_docker_pull() {
+  local image="$1"
+  local max_attempts="$2"
+  local delay_sec="$3"
   local attempt=1
 
   while (( attempt <= max_attempts )); do
@@ -98,14 +142,53 @@ pull_docker_image_with_retry() {
       return 0
     fi
     if (( attempt == max_attempts )); then
-      echo "Failed to pull ${image} after ${max_attempts} attempts." >&2
-      print_docker_hub_pull_help
       return 1
     fi
     echo "Pull failed; retrying in ${delay_sec}s..."
     sleep "${delay_sec}"
     attempt=$((attempt + 1))
   done
+}
+
+pull_docker_image_with_retry() {
+  local canonical_image="$1"
+  local normalized_image
+  local max_attempts="${DOCKER_PULL_RETRIES:-3}"
+  local delay_sec="${DOCKER_PULL_RETRY_DELAY_SEC:-15}"
+  local mirror_hosts="${DOCKER_PULL_MIRRORS:-mirror.gcr.io,docker.m.daocloud.io}"
+  local mirror_host mirror_ref
+
+  normalized_image="$(normalize_docker_library_image "${canonical_image}")"
+
+  if try_docker_pull "${canonical_image}" "${max_attempts}" "${delay_sec}"; then
+    return 0
+  fi
+
+  if [[ "${DOCKER_PULL_SKIP_MIRRORS:-0}" == "1" ]] || ! is_simple_docker_hub_library_image "${normalized_image}"; then
+    echo "Failed to pull ${canonical_image}." >&2
+    print_docker_hub_pull_help
+    return 1
+  fi
+
+  echo "Docker Hub unreachable for ${canonical_image}; trying registry mirrors..."
+  IFS=',' read -r -a mirror_list <<< "${mirror_hosts}"
+  for mirror_host in "${mirror_list[@]}"; do
+    mirror_host="${mirror_host#"${mirror_host%%[![:space:]]*}"}"
+    mirror_host="${mirror_host%"${mirror_host##*[![:space:]]}"}"
+    [[ -n "${mirror_host}" ]] || continue
+    if ! mirror_ref="$(docker_hub_library_mirror_ref "${mirror_host}" "${normalized_image}")"; then
+      continue
+    fi
+    if try_docker_pull "${mirror_ref}" 2 "${delay_sec}"; then
+      echo "Tagging ${mirror_ref} as ${canonical_image}"
+      docker tag "${mirror_ref}" "${canonical_image}"
+      return 0
+    fi
+  done
+
+  echo "Failed to pull ${canonical_image} from Docker Hub and all configured mirrors." >&2
+  print_docker_hub_pull_help
+  return 1
 }
 
 ensure_k3d_cluster_exists() {
