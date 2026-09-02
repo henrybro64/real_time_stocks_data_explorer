@@ -2,15 +2,53 @@ from __future__ import annotations
 
 from datetime import date
 from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
 
+from app.services import realized_trade_service as realized_trade_module
 from app.services.realized_trade_service import (
+    RealizedTradeService,
     RealizedTradeValidationError,
     calculate_realized_metrics,
     normalize_currency,
     normalize_symbol,
 )
+from app.schemas.realized_trade import RealizedTradeCreate, RealizedTradeUpdate
+
+
+def _existing_trade(**overrides: object) -> SimpleNamespace:
+    base = {
+        "symbol": "AAPL",
+        "currency": "USD",
+        "buy_price": Decimal("100"),
+        "sell_price": Decimal("120"),
+        "shares": Decimal("1"),
+        "buy_date": date(2026, 7, 1),
+        "sell_date": date(2026, 8, 1),
+    }
+    base.update(overrides)
+    return SimpleNamespace(**base)
+
+
+def _install_update_capture(
+    monkeypatch: pytest.MonkeyPatch,
+    existing: SimpleNamespace,
+) -> dict[str, object]:
+    captured: dict[str, object] = {}
+
+    def fake_update_trade(user_id: str, trade_id: int, updates: dict[str, object]):
+        captured.update(updates)
+        for field, value in updates.items():
+            setattr(existing, field, value)
+        return existing
+
+    monkeypatch.setattr(
+        realized_trade_module.realized_trade_repository,
+        "update_trade",
+        fake_update_trade,
+    )
+    return captured
 
 
 @pytest.mark.parametrize(
@@ -43,6 +81,11 @@ def test_normalize_symbol_rejects_empty() -> None:
         normalize_symbol("   ")
 
 
+def test_normalize_symbol_rejects_overlong_values() -> None:
+    with pytest.raises(RealizedTradeValidationError, match="at most 32 characters"):
+        normalize_symbol("A" * 33)
+
+
 def test_normalize_currency_accepts_supported_values() -> None:
     assert normalize_currency("usd") == "USD"
     assert normalize_currency("TWD") == "TWD"
@@ -54,10 +97,6 @@ def test_normalize_currency_rejects_unsupported_values() -> None:
 
 
 def test_service_create_rejects_buy_date_after_sell_date(monkeypatch) -> None:
-    from app.services import realized_trade_service as module
-    from app.services.realized_trade_service import RealizedTradeService
-    from app.schemas.realized_trade import RealizedTradeCreate
-
     service = RealizedTradeService()
     payload = RealizedTradeCreate(
         symbol="AAPL",
@@ -69,42 +108,38 @@ def test_service_create_rejects_buy_date_after_sell_date(monkeypatch) -> None:
         sellDate=date(2026, 9, 1),
     )
 
-    monkeypatch.setattr(module.realized_trade_repository, "create_trade", lambda **_: None)
+    monkeypatch.setattr(realized_trade_module.realized_trade_repository, "create_trade", lambda **_: None)
     with pytest.raises(RealizedTradeValidationError, match="buyDate must be on or before sellDate"):
         service.create_trade("user-1", payload)
 
 
-def test_service_update_clears_buy_date_when_explicitly_null(monkeypatch) -> None:
-    from datetime import date
-    from types import SimpleNamespace
-
-    from app.services import realized_trade_service as module
-    from app.services.realized_trade_service import RealizedTradeService
-    from app.schemas.realized_trade import RealizedTradeUpdate
-
-    existing = SimpleNamespace(
+def test_service_create_rejects_subscale_price(monkeypatch) -> None:
+    service = RealizedTradeService()
+    payload = RealizedTradeCreate(
         symbol="AAPL",
         currency="USD",
-        buy_price=Decimal("100"),
-        sell_price=Decimal("120"),
-        shares=Decimal("1"),
-        buy_date=date(2026, 7, 1),
-        sell_date=date(2026, 8, 1),
+        buyPrice=0.0000001,
+        sellPrice=120,
+        shares=1,
+        sellDate=date(2026, 8, 1),
     )
-    captured: dict[str, object] = {}
 
-    def fake_get_trade(user_id: str, trade_id: int):
-        return existing
+    monkeypatch.setattr(realized_trade_module.realized_trade_repository, "create_trade", lambda **_: None)
+    with pytest.raises(RealizedTradeValidationError, match="buyPrice must be greater than 0"):
+        service.create_trade("user-1", payload)
 
-    def fake_update_trade(user_id: str, trade_id: int, **kwargs):
-        captured.update(kwargs)
-        return existing
 
-    monkeypatch.setattr(module.realized_trade_repository, "get_trade", fake_get_trade)
-    monkeypatch.setattr(module.realized_trade_repository, "update_trade", fake_update_trade)
-
+def test_service_update_clears_buy_date_when_explicitly_null(monkeypatch) -> None:
+    existing = _existing_trade()
+    captured = _install_update_capture(monkeypatch, existing)
     service = RealizedTradeService()
-    payload = RealizedTradeUpdate.model_validate({"buyDate": None})
-    service.update_trade("user-1", 1, payload)
+    service.update_trade("user-1", 1, RealizedTradeUpdate.model_validate({"buyDate": None}))
+    assert captured == {"buy_date": None}
 
-    assert captured["buy_date"] is None
+
+def test_service_update_passes_only_changed_fields(monkeypatch) -> None:
+    existing = _existing_trade(buy_date=None)
+    captured = _install_update_capture(monkeypatch, existing)
+    service = RealizedTradeService()
+    service.update_trade("user-1", 1, RealizedTradeUpdate(sellPrice=150))
+    assert captured == {"sell_price": Decimal("150")}

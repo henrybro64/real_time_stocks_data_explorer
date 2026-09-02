@@ -73,27 +73,15 @@ class RealizedTradeRepository:
         self,
         user_id: str,
         trade_id: int,
-        *,
-        symbol: str,
-        currency: str,
-        buy_price: Decimal,
-        sell_price: Decimal,
-        shares: Decimal,
-        buy_date: date | None,
-        sell_date: date,
+        updates: dict[str, object],
     ) -> RealizedTrade | None:
         session_factory = require_session_factory()
         with session_factory() as session:
             trade = session.execute(_owned_trade_query(user_id, trade_id)).scalar_one_or_none()
             if trade is None:
                 return None
-            trade.symbol = symbol
-            trade.currency = currency
-            trade.buy_price = buy_price
-            trade.sell_price = sell_price
-            trade.shares = shares
-            trade.buy_date = buy_date
-            trade.sell_date = sell_date
+            for field, value in updates.items():
+                setattr(trade, field, value)
             session.commit()
             session.refresh(trade)
             return trade

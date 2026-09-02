@@ -59,7 +59,7 @@ export function isSellDateInPeriod(
   today: Date,
 ): boolean {
   const sell = parseDateOnly(sellDate);
-  const start = periodStartDate(period, today);
+  const start = startOfDay(periodStartDate(period, today));
   const todayOnly = startOfDay(today);
   return sell >= start && sell <= todayOnly;
 }

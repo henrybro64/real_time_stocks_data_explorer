@@ -5,24 +5,18 @@ from fastapi.testclient import TestClient
 
 from app.main import app
 from tests.integration.local_auth_helpers import enable_local_auth, register_local_user
+from tests.integration.realized_trade_payloads import (
+    MINIMAL_USD_TRADE,
+    SAMPLE_TWD_TRADE,
+    SAMPLE_USD_TRADE,
+)
 
 
 pytestmark = pytest.mark.integration
 
 
 def test_realized_trade_crud_and_currency_filter(client) -> None:
-    create = client.post(
-        "/api/realized-trades",
-        json={
-            "symbol": " aapl ",
-            "currency": "USD",
-            "buyPrice": 180.25,
-            "sellPrice": 195.5,
-            "shares": 10.5,
-            "buyDate": "2026-07-10",
-            "sellDate": "2026-08-20",
-        },
-    )
+    create = client.post("/api/realized-trades", json=SAMPLE_USD_TRADE)
     assert create.status_code == 200
     created = create.json()
     assert created["symbol"] == "AAPL"
@@ -30,17 +24,7 @@ def test_realized_trade_crud_and_currency_filter(client) -> None:
     assert created["realizedGain"] == 160.13
     assert created["realizedReturnPercent"] == 8.4605
 
-    twd_create = client.post(
-        "/api/realized-trades",
-        json={
-            "symbol": "2330",
-            "currency": "TWD",
-            "buyPrice": 920,
-            "sellPrice": 1020,
-            "shares": 1000,
-            "sellDate": "2026-08-01",
-        },
-    )
+    twd_create = client.post("/api/realized-trades", json=SAMPLE_TWD_TRADE)
     assert twd_create.status_code == 200
 
     all_trades = client.get("/api/realized-trades")
@@ -76,30 +60,31 @@ def test_realized_trade_crud_and_currency_filter(client) -> None:
 def test_realized_trade_validation_errors(client) -> None:
     invalid_currency = client.post(
         "/api/realized-trades",
-        json={
-            "symbol": "AAPL",
-            "currency": "EUR",
-            "buyPrice": 100,
-            "sellPrice": 110,
-            "shares": 1,
-            "sellDate": "2026-08-01",
-        },
+        json={**MINIMAL_USD_TRADE, "currency": "EUR"},
     )
     assert invalid_currency.status_code == 422
 
     invalid_dates = client.post(
         "/api/realized-trades",
         json={
-            "symbol": "AAPL",
-            "currency": "USD",
-            "buyPrice": 100,
-            "sellPrice": 110,
-            "shares": 1,
+            **MINIMAL_USD_TRADE,
             "buyDate": "2026-09-02",
             "sellDate": "2026-09-01",
         },
     )
     assert invalid_dates.status_code == 400
+
+    long_symbol = client.post(
+        "/api/realized-trades",
+        json={**MINIMAL_USD_TRADE, "symbol": "A" * 33},
+    )
+    assert long_symbol.status_code == 422
+
+    subscale_price = client.post(
+        "/api/realized-trades",
+        json={**MINIMAL_USD_TRADE, "buyPrice": 0.0000001},
+    )
+    assert subscale_price.status_code == 400
 
 
 def test_realized_trades_are_isolated_per_authenticated_user(
@@ -111,17 +96,7 @@ def test_realized_trades_are_isolated_per_authenticated_user(
         register_local_user(alice_client, "alice")
         register_local_user(bob_client, "bob")
 
-        alice_create = alice_client.post(
-            "/api/realized-trades",
-            json={
-                "symbol": "AAPL",
-                "currency": "USD",
-                "buyPrice": 100,
-                "sellPrice": 120,
-                "shares": 1,
-                "sellDate": "2026-08-01",
-            },
-        )
+        alice_create = alice_client.post("/api/realized-trades", json=MINIMAL_USD_TRADE)
         trade_id = alice_create.json()["id"]
 
         bob_list = bob_client.get("/api/realized-trades")

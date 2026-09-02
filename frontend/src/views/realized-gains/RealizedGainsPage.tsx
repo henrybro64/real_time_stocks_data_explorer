@@ -23,7 +23,7 @@ import type { RealizedTrade, RealizedTradeCurrency } from "@shared/api";
 import { useMemo, useRef, useState } from "react";
 import { useLanguage } from "../../app/i18n";
 import { useRealizedTrades } from "../../hooks/useRealizedTrades";
-import { RequestStateNotice, errorToNoticeKind } from "../../components/state/RequestStateNotice";
+import { RequestStateNotice, ScopedRequestStateNotice, errorToNoticeKind } from "../../components/state/RequestStateNotice";
 import { toApiError } from "../../services/api/client";
 import {
   buildMonthlyRealizedGainSeries,
@@ -63,31 +63,6 @@ const EMPTY_FORM: FormState = {
 function readInputValue(event: { currentTarget: HTMLInputElement | null; target: EventTarget | null }) {
   const target = event.currentTarget ?? event.target;
   return target instanceof HTMLInputElement ? target.value : "";
-}
-
-type MutationNoticeKind = ReturnType<typeof errorToNoticeKind>;
-
-function MutationNotice({
-  kind,
-  scopeLabel,
-  detail,
-}: {
-  kind: MutationNoticeKind | null;
-  scopeLabel: string;
-  detail?: string | null;
-}) {
-  if (kind == null) {
-    return null;
-  }
-  return (
-    <div className="app-state-notice-wrap">
-      <RequestStateNotice
-        kind={kind}
-        scopeLabel={scopeLabel}
-        detail={kind === "validation" ? detail : null}
-      />
-    </div>
-  );
 }
 
 export function RealizedGainsPage() {
@@ -282,7 +257,7 @@ export function RealizedGainsPage() {
               <h2>{editingTradeId == null ? t("realizedGains.form.createTitle") : t("realizedGains.form.editTitle")}</h2>
             </div>
           </div>
-          <MutationNotice
+          <ScopedRequestStateNotice
             kind={formMutationNoticeKind}
             scopeLabel={t("realizedGains.form.title")}
             detail={formMutationApiError?.detail}
@@ -382,9 +357,10 @@ export function RealizedGainsPage() {
             </div>
           </div>
           {noticeKind ? (
-            <div className="app-state-notice-wrap">
-              <RequestStateNotice kind={noticeKind} scopeLabel={t("realizedGains.history.title")} />
-            </div>
+            <ScopedRequestStateNotice
+              kind={noticeKind}
+              scopeLabel={t("realizedGains.history.title")}
+            />
           ) : null}
           {realized.tradesQuery.isLoading && realized.trades.length === 0 ? (
             <InlineLoading description={t("realizedGains.loading")} status="active" />
@@ -460,7 +436,7 @@ export function RealizedGainsPage() {
           />
           <ModalBody>
             <p className="app-supporting-copy">{t("realizedGains.deleteConfirmMessage")}</p>
-            <MutationNotice
+            <ScopedRequestStateNotice
               kind={deleteMutationNoticeKind}
               scopeLabel={t("realizedGains.deleteConfirmTitle")}
               detail={deleteMutationApiError?.detail}

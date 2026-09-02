@@ -84,6 +84,35 @@ def test_realized_trade_repository_lists_filters_and_deletes_user_scoped_rows(
     assert repository.list_trades("user-1", currency="TWD") == []
 
 
+def test_realized_trade_repository_update_applies_only_provided_fields(
+    realized_trade_repository: tuple[RealizedTradeRepository, sessionmaker],
+) -> None:
+    repository, _session_local = realized_trade_repository
+    trade = repository.create_trade(
+        user_id="user-1",
+        symbol="AAPL",
+        currency="USD",
+        buy_price=Decimal("100"),
+        sell_price=Decimal("120"),
+        shares=Decimal("2"),
+        buy_date=date(2026, 7, 1),
+        sell_date=date(2026, 8, 1),
+    )
+
+    updated = repository.update_trade(
+        "user-1",
+        trade.id,
+        {"sell_price": Decimal("150")},
+    )
+
+    assert updated is not None
+    assert updated.sell_price == Decimal("150")
+    assert updated.symbol == "AAPL"
+    assert updated.buy_price == Decimal("100")
+    assert updated.shares == Decimal("2")
+    assert updated.buy_date == date(2026, 7, 1)
+
+
 def test_realized_trade_repository_update_returns_none_for_other_user(
     realized_trade_repository: tuple[RealizedTradeRepository, sessionmaker],
 ) -> None:
@@ -103,13 +132,15 @@ def test_realized_trade_repository_update_returns_none_for_other_user(
         repository.update_trade(
             "user-2",
             trade.id,
-            symbol="AAPL",
-            currency="USD",
-            buy_price=Decimal("10"),
-            sell_price=Decimal("12"),
-            shares=Decimal("1"),
-            buy_date=None,
-            sell_date=date(2026, 8, 1),
+            {
+                "symbol": "AAPL",
+                "currency": "USD",
+                "buy_price": Decimal("10"),
+                "sell_price": Decimal("12"),
+                "shares": Decimal("1"),
+                "buy_date": None,
+                "sell_date": date(2026, 8, 1),
+            },
         )
         is None
     )

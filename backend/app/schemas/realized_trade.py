@@ -10,7 +10,7 @@ RealizedTradeCurrency = Literal["TWD", "USD"]
 
 
 class RealizedTradeCreate(BaseModel):
-    symbol: str
+    symbol: str = Field(min_length=1, max_length=32)
     currency: RealizedTradeCurrency
     buyPrice: float = Field(gt=0)
     sellPrice: float = Field(gt=0)
@@ -20,7 +20,7 @@ class RealizedTradeCreate(BaseModel):
 
 
 class RealizedTradeUpdate(BaseModel):
-    symbol: str | None = None
+    symbol: str | None = Field(default=None, min_length=1, max_length=32)
     currency: RealizedTradeCurrency | None = None
     buyPrice: float | None = Field(default=None, gt=0)
     sellPrice: float | None = Field(default=None, gt=0)

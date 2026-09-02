@@ -8,6 +8,7 @@ import {
   fetchRealizedTrades,
   updateRealizedTrade,
 } from "../services/api/client";
+import { buildSampleRealizedTrade } from "../views/realized-gains/realizedTradeTestFixtures";
 import { useRealizedTrades } from "./useRealizedTrades";
 
 const useQueryOptions: unknown[] = [];
@@ -72,34 +73,11 @@ describe("useRealizedTrades", () => {
   });
 
   it("invalidates trades after create, update, and delete", async () => {
-    vi.mocked(createRealizedTrade).mockResolvedValue({
-      id: 1,
-      symbol: "2330",
-      currency: "TWD",
-      buyPrice: 900,
-      sellPrice: 1000,
-      shares: 1000,
-      buyDate: null,
-      sellDate: "2026-08-01",
-      realizedGain: 100000,
-      realizedReturnPercent: 11.1111,
-      createdAt: "2026-08-01T00:00:00Z",
-      updatedAt: "2026-08-01T00:00:00Z",
-    });
-    vi.mocked(updateRealizedTrade).mockResolvedValue({
-      id: 1,
-      symbol: "2330",
-      currency: "TWD",
-      buyPrice: 900,
-      sellPrice: 1010,
-      shares: 1000,
-      buyDate: null,
-      sellDate: "2026-08-01",
-      realizedGain: 110000,
-      realizedReturnPercent: 12.2222,
-      createdAt: "2026-08-01T00:00:00Z",
-      updatedAt: "2026-08-02T00:00:00Z",
-    });
+    const baseTrade = buildSampleRealizedTrade();
+    vi.mocked(createRealizedTrade).mockResolvedValue(baseTrade);
+    vi.mocked(updateRealizedTrade).mockResolvedValue(
+      buildSampleRealizedTrade({ sellPrice: 1010, realizedGain: 110000, realizedReturnPercent: 12.2222 }),
+    );
     vi.mocked(deleteRealizedTrade).mockResolvedValue(undefined);
 
     const { result } = renderHook(() => useRealizedTrades("TWD"), { wrapper });

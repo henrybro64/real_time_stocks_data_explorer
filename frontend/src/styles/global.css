@@ -1519,13 +1519,15 @@ input {
 }
 
 .app-realized-chart-half-positive {
-  align-items: stretch;
+  flex-direction: column;
   justify-content: flex-end;
+  align-items: stretch;
 }
 
 .app-realized-chart-half-negative {
-  align-items: stretch;
+  flex-direction: column;
   justify-content: flex-start;
+  align-items: stretch;
 }
 
 .app-realized-chart-zero-line {
