@@ -6,8 +6,10 @@ type CrudResourceConfig<TItem, TCreate, TUpdate> = Readonly<{
   queryKey: readonly unknown[];
   queryFn: () => Promise<TItem[]>;
   createItem: (payload: TCreate) => Promise<unknown>;
-  updateItem: (tradeId: number, payload: TUpdate) => Promise<unknown>;
-  deleteItem: (tradeId: number) => Promise<unknown>;
+  updateItem: (itemId: number, payload: TUpdate) => Promise<unknown>;
+  deleteItem: (itemId: number) => Promise<unknown>;
+  refetchInterval?: number;
+  onMutationSuccess?: () => void;
 }>;
 
 export function useCrudResource<TItem, TCreate, TUpdate>({
@@ -16,12 +18,18 @@ export function useCrudResource<TItem, TCreate, TUpdate>({
   createItem,
   updateItem,
   deleteItem,
+  refetchInterval,
+  onMutationSuccess,
 }: CrudResourceConfig<TItem, TCreate, TUpdate>) {
   const queryClient = useQueryClient();
-  const listQuery = useQuery({ queryKey, queryFn });
-  const invalidateList = () => {
+  const listQuery = useQuery({
+    queryKey,
+    queryFn,
+    refetchInterval,
+  });
+  const invalidateList = onMutationSuccess ?? (() => {
     queryClient.invalidateQueries({ queryKey });
-  };
+  });
   const mutationOptions = { onSuccess: invalidateList };
 
   const createMutation = useMutation({
@@ -29,8 +37,8 @@ export function useCrudResource<TItem, TCreate, TUpdate>({
     ...mutationOptions,
   });
   const updateMutation = useMutation({
-    mutationFn: ({ tradeId, payload }: { tradeId: number; payload: TUpdate }) =>
-      updateItem(tradeId, payload),
+    mutationFn: ({ itemId, payload }: { itemId: number; payload: TUpdate }) =>
+      updateItem(itemId, payload),
     ...mutationOptions,
   });
   const deleteMutation = useMutation({

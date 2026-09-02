@@ -118,7 +118,7 @@ export function useRealizedGainsPageState(initialCurrency: RealizedTradeCurrency
       return;
     }
     realized.updateMutation.mutate(
-      { tradeId: editingTradeId, payload },
+      { itemId: editingTradeId, payload },
       { onSuccess: resetForm },
     );
   };

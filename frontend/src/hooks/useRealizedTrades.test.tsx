@@ -95,7 +95,7 @@ describe("useRealizedTrades", () => {
     await waitFor(() => expect(vi.mocked(fetchRealizedTrades).mock.calls.length).toBeGreaterThanOrEqual(2));
 
     await result.current.updateMutation.mutateAsync({
-      tradeId: 1,
+      itemId: 1,
       payload: { sellPrice: 1010 },
     });
     expect(updateRealizedTrade).toHaveBeenCalled();
