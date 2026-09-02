@@ -7,7 +7,7 @@ import {
   deleteRealizedTrade,
   fetchRealizedTrades,
   updateRealizedTrade,
-} from "../../../src/services/api/client";
+} from "../../../src/services/api/realizedTradesApi";
 import { buildSampleRealizedTrade } from "../../../src/views/realized-gains/realizedTradeTestFixtures";
 import { useRealizedGainsPageState } from "../../../src/views/realized-gains/useRealizedGainsPageState";
 
@@ -26,18 +26,12 @@ vi.mock("@tanstack/react-query", async () => {
   };
 });
 
-vi.mock("../../../src/services/api/client", async () => {
-  const actual = await vi.importActual<typeof import("../../../src/services/api/client")>(
-    "../../../src/services/api/client",
-  );
-  return {
-    ...actual,
-    fetchRealizedTrades: vi.fn(),
-    createRealizedTrade: vi.fn(),
-    updateRealizedTrade: vi.fn(),
-    deleteRealizedTrade: vi.fn(),
-  };
-});
+vi.mock("../../../src/services/api/realizedTradesApi", () => ({
+  fetchRealizedTrades: vi.fn(),
+  createRealizedTrade: vi.fn(),
+  updateRealizedTrade: vi.fn(),
+  deleteRealizedTrade: vi.fn(),
+}));
 
 function wrapper({ children }: { children: ReactNode }) {
   const queryClient = new QueryClient({

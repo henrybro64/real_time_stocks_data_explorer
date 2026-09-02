@@ -6,9 +6,9 @@ import {
   createRealizedTrade,
   deleteRealizedTrade,
   fetchRealizedTrades,
-  toApiError,
   updateRealizedTrade,
-} from "../../services/api/client";
+} from "../../services/api/realizedTradesApi";
+import { toApiError } from "../../services/api/client";
 import {
   buildMonthlyRealizedGainSeries,
   previewRealizedGain,

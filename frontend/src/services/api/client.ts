@@ -28,9 +28,6 @@ import type {
   PortfolioPositionUpdate,
   PortfolioSummary,
   QuoteResponse,
-  RealizedTrade,
-  RealizedTradeCreate,
-  RealizedTradeUpdate,
   StockAnalysisResponse,
   TaiwanInstitutionalInvestorsResponse,
   TaiwanMarginShortResponse,
@@ -690,24 +687,6 @@ export function fetchAiProviderPreference() {
 export async function saveAiProviderPreference(provider: "openai" | "perplexity") {
   return requestJsonWithBody<AiProviderPreference>("/ai/preferences", "PUT", {
     preferredProvider: provider,
-  });
-}
-
-export function fetchRealizedTrades(currency: "TWD" | "USD") {
-  return fetchJson<RealizedTrade[]>(`/realized-trades?currency=${currency}`);
-}
-
-export async function createRealizedTrade(payload: RealizedTradeCreate) {
-  return requestJsonWithBody<RealizedTrade>("/realized-trades", "POST", payload);
-}
-
-export async function updateRealizedTrade(tradeId: number, payload: RealizedTradeUpdate) {
-  return requestJsonWithBody<RealizedTrade>(`/realized-trades/${tradeId}`, "PATCH", payload);
-}
-
-export async function deleteRealizedTrade(tradeId: number) {
-  await requestVoid(`/realized-trades/${tradeId}`, {
-    method: "DELETE",
   });
 }
 
