@@ -5,7 +5,7 @@ from decimal import Decimal
 
 from sqlalchemy import delete, select
 
-from app.db.models import RealizedTrade
+from app.db.realized_trade_model import RealizedTrade
 
 from .session import SessionBoundRepository, apply_field_updates, persist_new
 

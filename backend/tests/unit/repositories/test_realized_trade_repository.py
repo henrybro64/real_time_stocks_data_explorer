@@ -7,7 +7,7 @@ import pytest
 
 from sqlalchemy.orm import sessionmaker
 
-from app.db.models import RealizedTrade
+from app.db.realized_trade_model import RealizedTrade
 from app.repositories.realized_trade_repository import RealizedTradeRepository
 from tests.support import install_in_memory_sessionlocal, seed_test_users
 

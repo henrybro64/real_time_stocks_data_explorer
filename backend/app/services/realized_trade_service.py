@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
 
-from app.db.models import RealizedTrade
+from app.db.realized_trade_model import RealizedTrade
 from app.repositories.realized_trade_repository import realized_trade_repository
 from app.schemas.realized_trade import (
     RealizedTradeCreate,

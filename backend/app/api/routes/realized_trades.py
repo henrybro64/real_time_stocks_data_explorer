@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, Query
 
 from app.api.deps import get_effective_user_id
 from app.api.http_errors import run_domain_action
-from app.db.models import RealizedTrade
+from app.db.realized_trade_model import RealizedTrade
 from app.schemas.realized_trade import (
     RealizedTradeCreate,
     RealizedTradeCurrency,
