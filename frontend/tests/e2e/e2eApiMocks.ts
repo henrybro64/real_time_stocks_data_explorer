@@ -431,6 +431,42 @@ function calculateRealizedTradeMetrics(buyPrice: number, sellPrice: number, shar
   };
 }
 
+type RealizedTradePayload = {
+  symbol?: string;
+  currency?: "TWD" | "USD";
+  buyPrice?: number;
+  sellPrice?: number;
+  shares?: number;
+  buyDate?: string | null;
+  sellDate?: string;
+};
+
+function buildRealizedTradeRow(
+  state: E2eMockState,
+  payload: RealizedTradePayload,
+  current?: RealizedTradeRow,
+): RealizedTradeRow {
+  const timestamp = new Date().toISOString();
+  const buyPrice = payload.buyPrice ?? current?.buyPrice ?? 0;
+  const sellPrice = payload.sellPrice ?? current?.sellPrice ?? 0;
+  const shares = payload.shares ?? current?.shares ?? 0;
+  const metrics = calculateRealizedTradeMetrics(buyPrice, sellPrice, shares);
+  return {
+    id: current?.id ?? state.nextRealizedTradeId++,
+    symbol: (payload.symbol ?? current?.symbol ?? "").trim().toUpperCase(),
+    currency: payload.currency ?? current?.currency ?? "TWD",
+    buyPrice,
+    sellPrice,
+    shares,
+    buyDate: payload.buyDate === undefined ? current?.buyDate ?? null : payload.buyDate,
+    sellDate: payload.sellDate ?? current?.sellDate ?? timestamp.slice(0, 10),
+    realizedGain: metrics.realizedGain,
+    realizedReturnPercent: metrics.realizedReturnPercent,
+    createdAt: current?.createdAt ?? timestamp,
+    updatedAt: timestamp,
+  };
+}
+
 function buildPortfolioPosition(
   state: E2eMockState,
   payload: {
@@ -1065,35 +1101,8 @@ export async function installE2eApiMocks(page: Page): Promise<void> {
     }
 
     if (path === "/api/realized-trades" && request.method() === "POST") {
-      const payload = request.postDataJSON() as {
-        symbol?: string;
-        currency?: "TWD" | "USD";
-        buyPrice?: number;
-        sellPrice?: number;
-        shares?: number;
-        buyDate?: string | null;
-        sellDate?: string;
-      };
-      const timestamp = new Date().toISOString();
-      const metrics = calculateRealizedTradeMetrics(
-        payload.buyPrice ?? 0,
-        payload.sellPrice ?? 0,
-        payload.shares ?? 0,
-      );
-      const created: RealizedTradeRow = {
-        id: state.nextRealizedTradeId++,
-        symbol: (payload.symbol ?? "").trim().toUpperCase(),
-        currency: payload.currency ?? "TWD",
-        buyPrice: payload.buyPrice ?? 0,
-        sellPrice: payload.sellPrice ?? 0,
-        shares: payload.shares ?? 0,
-        buyDate: payload.buyDate ?? null,
-        sellDate: payload.sellDate ?? timestamp.slice(0, 10),
-        realizedGain: metrics.realizedGain,
-        realizedReturnPercent: metrics.realizedReturnPercent,
-        createdAt: timestamp,
-        updatedAt: timestamp,
-      };
+      const payload = request.postDataJSON() as RealizedTradePayload;
+      const created = buildRealizedTradeRow(state, payload);
       state.realizedTrades.push(created);
       await fulfillJson(route, created);
       return;
@@ -1109,33 +1118,12 @@ export async function installE2eApiMocks(page: Page): Promise<void> {
       }
 
       if (request.method() === "PATCH") {
-        const payload = request.postDataJSON() as {
-          symbol?: string;
-          currency?: "TWD" | "USD";
-          buyPrice?: number;
-          sellPrice?: number;
-          shares?: number;
-          buyDate?: string | null;
-          sellDate?: string;
-        };
-        const current = state.realizedTrades[index];
-        const next = {
-          ...current,
-          symbol: payload.symbol != null ? payload.symbol.trim().toUpperCase() : current.symbol,
-          currency: payload.currency ?? current.currency,
-          buyPrice: payload.buyPrice ?? current.buyPrice,
-          sellPrice: payload.sellPrice ?? current.sellPrice,
-          shares: payload.shares ?? current.shares,
-          buyDate: payload.buyDate === undefined ? current.buyDate : payload.buyDate,
-          sellDate: payload.sellDate ?? current.sellDate,
-          updatedAt: new Date().toISOString(),
-        };
-        const metrics = calculateRealizedTradeMetrics(next.buyPrice, next.sellPrice, next.shares);
-        state.realizedTrades[index] = {
-          ...next,
-          realizedGain: metrics.realizedGain,
-          realizedReturnPercent: metrics.realizedReturnPercent,
-        };
+        const payload = request.postDataJSON() as RealizedTradePayload;
+        state.realizedTrades[index] = buildRealizedTradeRow(
+          state,
+          payload,
+          state.realizedTrades[index],
+        );
         await fulfillJson(route, state.realizedTrades[index]);
         return;
       }

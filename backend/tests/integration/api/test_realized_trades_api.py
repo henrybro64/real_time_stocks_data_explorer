@@ -3,26 +3,11 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
-from app.core.config import settings
 from app.main import app
+from tests.integration.local_auth_helpers import enable_local_auth, register_local_user
 
 
 pytestmark = pytest.mark.integration
-
-
-def _enable_local_auth(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(settings, "auth_enabled", True)
-    monkeypatch.setattr(settings, "local_auth_enabled", True)
-    monkeypatch.setattr(settings, "local_auth_username", "")
-    monkeypatch.setattr(settings, "local_auth_password", "")
-
-
-def _register_user(client: TestClient, username: str, password: str = "password-123") -> None:
-    response = client.post(
-        "/api/auth/register/local",
-        json={"username": username, "password": password},
-    )
-    assert response.status_code == 200
 
 
 def test_realized_trade_crud_and_currency_filter(client) -> None:
@@ -120,11 +105,11 @@ def test_realized_trade_validation_errors(client) -> None:
 def test_realized_trades_are_isolated_per_authenticated_user(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _enable_local_auth(monkeypatch)
+    enable_local_auth(monkeypatch)
 
     with TestClient(app) as alice_client, TestClient(app) as bob_client:
-        _register_user(alice_client, "alice")
-        _register_user(bob_client, "bob")
+        register_local_user(alice_client, "alice")
+        register_local_user(bob_client, "bob")
 
         alice_create = alice_client.post(
             "/api/realized-trades",

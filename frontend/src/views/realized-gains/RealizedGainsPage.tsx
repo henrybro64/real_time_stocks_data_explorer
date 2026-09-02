@@ -31,6 +31,12 @@ import {
   sumRealizedGainForPeriod,
   type RealizedGainPeriod,
 } from "./realizedGainCalculations";
+import { RealizedGainChartMonth } from "./RealizedGainChartMonth";
+import {
+  formatRealizedCurrency,
+  formatSignedRealizedCurrency,
+  formatSignedRealizedPercent,
+} from "./realizedGainFormat";
 
 const PERIODS: RealizedGainPeriod[] = ["1M", "3M", "6M", "1Y"];
 
@@ -161,6 +167,12 @@ export function RealizedGainsPage() {
     setPendingDeleteId(null);
   };
 
+  const closeDeleteModal = () => {
+    if (!realized.deleteMutation.isPending) {
+      setPendingDeleteId(null);
+    }
+  };
+
   return (
     <Grid className="app-page-grid" fullWidth>
       <Column className="app-column-spacing" sm={4} md={8} lg={16}>
@@ -206,7 +218,7 @@ export function RealizedGainsPage() {
             <Tile key={period} className="app-realized-summary-card">
               <p className="app-eyebrow">{t(`realizedGains.period.${period}`)}</p>
               <p className="app-realized-summary-value">
-                {formatSignedCurrency(
+                {formatSignedRealizedCurrency(
                   sumRealizedGainForPeriod(realized.trades, period, today),
                   currency,
                 )}
@@ -225,39 +237,14 @@ export function RealizedGainsPage() {
             </div>
           </div>
           <div className="app-realized-chart" role="img" aria-label={t("realizedGains.chart.title")}>
-            {monthlySeries.map((point) => {
-              const heightPercent =
-                point.totalGain === 0
-                  ? 0
-                  : (Math.abs(point.totalGain) / maxAbsMonthlyGain) * 50;
-              const isNegative = point.totalGain < 0;
-              return (
-                <div key={point.monthKey} className="app-realized-chart-column">
-                  <div className="app-realized-chart-axis">
-                    <div className="app-realized-chart-half app-realized-chart-half-positive">
-                      {!isNegative && point.totalGain !== 0 ? (
-                        <div
-                          className="app-realized-chart-bar app-realized-chart-bar-positive"
-                          style={{ height: `${heightPercent}%` }}
-                          title={`${point.label}: ${formatSignedCurrency(point.totalGain, currency)}`}
-                        />
-                      ) : null}
-                    </div>
-                    <div className="app-realized-chart-zero-line" aria-hidden="true" />
-                    <div className="app-realized-chart-half app-realized-chart-half-negative">
-                      {isNegative ? (
-                        <div
-                          className="app-realized-chart-bar app-realized-chart-bar-negative"
-                          style={{ height: `${heightPercent}%` }}
-                          title={`${point.label}: ${formatSignedCurrency(point.totalGain, currency)}`}
-                        />
-                      ) : null}
-                    </div>
-                  </div>
-                  <span className="app-realized-chart-label">{point.label.slice(5)}</span>
-                </div>
-              );
-            })}
+            {monthlySeries.map((point) => (
+              <RealizedGainChartMonth
+                key={point.monthKey}
+                point={point}
+                currency={currency}
+                maxAbsMonthlyGain={maxAbsMonthlyGain}
+              />
+            ))}
           </div>
         </Tile>
       </Column>
@@ -346,9 +333,9 @@ export function RealizedGainsPage() {
             {preview ? (
               <div className="app-realized-preview">
                 <p>{t("realizedGains.preview.gain")}</p>
-                <p>{formatSignedCurrency(preview.realizedGain, currency)}</p>
+                <p>{formatSignedRealizedCurrency(preview.realizedGain, currency)}</p>
                 <p>{t("realizedGains.preview.return")}</p>
-                <p>{formatSignedPercent(preview.realizedReturnPercent)}</p>
+                <p>{formatSignedRealizedPercent(preview.realizedReturnPercent)}</p>
               </div>
             ) : null}
             <div className="app-realized-form-actions">
@@ -410,11 +397,11 @@ export function RealizedGainsPage() {
                     <TableRow key={trade.id} data-testid={`realized-trade-row-${trade.id}`}>
                       <TableCell>{trade.sellDate}</TableCell>
                       <TableCell>{trade.symbol}</TableCell>
-                      <TableCell>{formatCurrency(trade.buyPrice, currency)}</TableCell>
-                      <TableCell>{formatCurrency(trade.sellPrice, currency)}</TableCell>
+                      <TableCell>{formatRealizedCurrency(trade.buyPrice, currency)}</TableCell>
+                      <TableCell>{formatRealizedCurrency(trade.sellPrice, currency)}</TableCell>
                       <TableCell>{trade.shares}</TableCell>
-                      <TableCell>{formatSignedPercent(trade.realizedReturnPercent)}</TableCell>
-                      <TableCell>{formatSignedCurrency(trade.realizedGain, currency)}</TableCell>
+                      <TableCell>{formatSignedRealizedPercent(trade.realizedReturnPercent)}</TableCell>
+                      <TableCell>{formatSignedRealizedCurrency(trade.realizedGain, currency)}</TableCell>
                       <TableCell>
                         <div className="app-realized-actions">
                           <Button kind="ghost" size="sm" onClick={() => beginEdit(trade)}>
@@ -446,21 +433,13 @@ export function RealizedGainsPage() {
       {pendingDeleteId != null ? (
         <ComposedModal
           open
-          onClose={() => {
-            if (!realized.deleteMutation.isPending) {
-              setPendingDeleteId(null);
-            }
-          }}
+          onClose={closeDeleteModal}
           size="sm"
           danger
         >
           <ModalHeader
             title={t("realizedGains.deleteConfirmTitle")}
-            closeModal={() => {
-              if (!realized.deleteMutation.isPending) {
-                setPendingDeleteId(null);
-              }
-            }}
+            closeModal={closeDeleteModal}
           />
           <ModalBody>
             <p className="app-supporting-copy">{t("realizedGains.deleteConfirmMessage")}</p>
@@ -513,19 +492,4 @@ export function RealizedGainsPage() {
       ) : null}
     </Grid>
   );
-}
-
-function formatCurrency(value: number, currency: RealizedTradeCurrency) {
-  const prefix = currency === "TWD" ? "NT$" : "US$";
-  return `${prefix}${value.toLocaleString(undefined, { maximumFractionDigits: 6 })}`;
-}
-
-function formatSignedCurrency(value: number, currency: RealizedTradeCurrency) {
-  const sign = value > 0 ? "+" : value < 0 ? "-" : "";
-  return `${sign}${formatCurrency(Math.abs(value), currency)}`;
-}
-
-function formatSignedPercent(value: number) {
-  const sign = value > 0 ? "+" : value < 0 ? "-" : "";
-  return `${sign}${Math.abs(value).toFixed(2)}%`;
 }

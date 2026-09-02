@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { RealizedTrade } from "@shared/api";
+import { buildSampleRealizedTrade } from "./realizedTradeTestFixtures";
 import {
   buildMonthlyRealizedGainSeries,
   isSellDateInPeriod,
@@ -12,21 +13,17 @@ import {
 } from "./realizedGainCalculations";
 
 function trade(overrides: Partial<RealizedTrade> = {}): RealizedTrade {
-  return {
-    id: 1,
+  return buildSampleRealizedTrade({
     symbol: "AAPL",
     currency: "USD",
     buyPrice: 100,
     sellPrice: 120,
     shares: 1,
-    buyDate: null,
     sellDate: "2026-08-15",
     realizedGain: 20,
     realizedReturnPercent: 20,
-    createdAt: "2026-08-15T00:00:00Z",
-    updatedAt: "2026-08-15T00:00:00Z",
     ...overrides,
-  };
+  });
 }
 
 describe("realizedGainCalculations", () => {
