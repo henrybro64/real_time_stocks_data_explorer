@@ -6,7 +6,13 @@ from sqlalchemy import delete, select
 
 from app.db.models import AlertEvent, AlertRule
 
-from .session import database_is_configured, require_session_factory
+from .session import (
+    SessionBoundRepository,
+    apply_field_updates,
+    database_is_configured,
+    persist_new,
+    require_session_factory,
+)
 
 _UNSET = object()
 
@@ -61,18 +67,17 @@ class AlertRepository:
     ) -> AlertRule:
         session_factory = self._session_factory()
         with session_factory() as session:
-            rule = AlertRule(
-                user_id=user_id,
-                stock_id=stock_id,
-                rule_type=rule_type,
-                threshold_value=threshold_value,
-                enabled=enabled,
-                last_condition_met=False,
+            return persist_new(
+                session,
+                AlertRule(
+                    user_id=user_id,
+                    stock_id=stock_id,
+                    rule_type=rule_type,
+                    threshold_value=threshold_value,
+                    enabled=enabled,
+                    last_condition_met=False,
+                ),
             )
-            session.add(rule)
-            session.commit()
-            session.refresh(rule)
-            return rule
 
     def update_rule(
         self,

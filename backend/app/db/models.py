@@ -18,6 +18,8 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
+from app.db.row_mixins import CreatedAtMixin, TimestampedRowMixin, UserOwnedRowMixin
+
 
 class Base(DeclarativeBase):
     pass
@@ -40,7 +42,7 @@ class User(Base):
     )
 
 
-class WatchlistItem(Base):
+class WatchlistItem(Base, UserOwnedRowMixin, CreatedAtMixin):
     __tablename__ = "watchlist_items"
     __table_args__ = (
         UniqueConstraint(
@@ -50,35 +52,16 @@ class WatchlistItem(Base):
         ),
     )
 
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    user_id: Mapped[str] = mapped_column(
-        String(64),
-        ForeignKey("users.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
     stock_id: Mapped[str] = mapped_column(String(32), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        server_default=func.now(),
-        nullable=False,
-    )
 
 
-class AlertRule(Base):
+class AlertRule(Base, UserOwnedRowMixin, TimestampedRowMixin):
     __tablename__ = "alert_rules"
     __table_args__ = (
         Index("ix_alert_rules_user_enabled", "user_id", "enabled"),
         Index("ix_alert_rules_enabled_stock", "enabled", "stock_id"),
     )
 
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    user_id: Mapped[str] = mapped_column(
-        String(64),
-        ForeignKey("users.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
     stock_id: Mapped[str] = mapped_column(String(32), nullable=False)
     rule_type: Mapped[str] = mapped_column(String(32), nullable=False)
     threshold_value: Mapped[float] = mapped_column(Float, nullable=False)
@@ -104,17 +87,6 @@ class AlertRule(Base):
     last_triggered_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
         nullable=True,
-    )
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        server_default=func.now(),
-        nullable=False,
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        server_default=func.now(),
-        onupdate=func.now(),
-        nullable=False,
     )
 
 
@@ -149,7 +121,7 @@ class AlertEvent(Base):
     message: Mapped[str] = mapped_column(Text, nullable=False)
 
 
-class PortfolioPosition(Base):
+class PortfolioPosition(Base, UserOwnedRowMixin, CreatedAtMixin):
     __tablename__ = "portfolio_positions"
     __table_args__ = (
         UniqueConstraint(
@@ -159,51 +131,21 @@ class PortfolioPosition(Base):
         ),
     )
 
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    user_id: Mapped[str] = mapped_column(
-        String(64),
-        ForeignKey("users.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
     stock_id: Mapped[str] = mapped_column(String(32), nullable=False)
     quantity: Mapped[float] = mapped_column(nullable=False)
     average_cost: Mapped[float] = mapped_column(nullable=False)
     currency: Mapped[str] = mapped_column(String(8), nullable=False)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        server_default=func.now(),
-        nullable=False,
-    )
 
 
-class PortfolioAsset(Base):
+class PortfolioAsset(Base, UserOwnedRowMixin, TimestampedRowMixin):
     __tablename__ = "portfolio_assets"
 
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    user_id: Mapped[str] = mapped_column(
-        String(64),
-        ForeignKey("users.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
     asset_type: Mapped[str] = mapped_column(String(32), nullable=False)
     name: Mapped[str] = mapped_column(String(128), nullable=False)
     currency: Mapped[str] = mapped_column(String(8), nullable=False)
     value: Mapped[float] = mapped_column(nullable=False)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        server_default=func.now(),
-        nullable=False,
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        server_default=func.now(),
-        onupdate=func.now(),
-        nullable=False,
-    )
 
 
 class PortfolioHistorySnapshot(Base):
@@ -242,7 +184,7 @@ class PortfolioHistorySnapshot(Base):
     combined_assets_twd: Mapped[float] = mapped_column(nullable=False)
 
 
-class TaiwanMarketDailyColumns:
+class TaiwanMarketDailyColumns(TimestampedRowMixin):
     """Shared identity/audit columns for Taiwan daily market-data tables."""
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
@@ -251,17 +193,6 @@ class TaiwanMarketDailyColumns:
     date: Mapped[date] = mapped_column(Date(), nullable=False)
     name: Mapped[str | None] = mapped_column(String(128), nullable=True)
     source: Mapped[str] = mapped_column(Text, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        server_default=func.now(),
-        nullable=False,
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        server_default=func.now(),
-        onupdate=func.now(),
-        nullable=False,
-    )
 
 
 def _taiwan_daily_table_args(unique_name: str, index_name: str) -> tuple:
@@ -433,7 +364,7 @@ class UserAiPreference(Base):
     )
 
 
-class UserApiKey(Base):
+class UserApiKey(Base, UserOwnedRowMixin, TimestampedRowMixin):
     __tablename__ = "user_api_keys"
     __table_args__ = (
         UniqueConstraint(
@@ -443,23 +374,5 @@ class UserApiKey(Base):
         ),
     )
 
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    user_id: Mapped[str] = mapped_column(
-        String(64),
-        ForeignKey("users.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
     provider: Mapped[str] = mapped_column(String(32), nullable=False)
     api_key: Mapped[str] = mapped_column(Text, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        server_default=func.now(),
-        nullable=False,
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        server_default=func.now(),
-        onupdate=func.now(),
-        nullable=False,
-    )

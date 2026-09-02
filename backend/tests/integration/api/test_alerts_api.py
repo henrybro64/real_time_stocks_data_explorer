@@ -3,10 +3,10 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
-from app.core.config import settings
 from app.main import app
 from app.services.alert_service import alert_service
 from app.services.quote_service import quote_service
+from tests.integration.local_auth_helpers import enable_local_auth, register_local_user
 from tests.support import quote_record, stock_record
 
 
@@ -66,21 +66,6 @@ def _install_stock_quote_mocks(
     monkeypatch.setattr(alert_service, "_stock_loader", get_stock)
     monkeypatch.setattr(alert_service, "_quote_loader", get_quote)
     monkeypatch.setattr(alert_service, "_stock_resolver", resolve_stock_id)
-
-
-def _enable_local_auth(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(settings, "auth_enabled", True)
-    monkeypatch.setattr(settings, "local_auth_enabled", True)
-    monkeypatch.setattr(settings, "local_auth_username", "")
-    monkeypatch.setattr(settings, "local_auth_password", "")
-
-
-def _register_user(client: TestClient, username: str, password: str = "password-123") -> None:
-    response = client.post(
-        "/api/auth/register/local",
-        json={"username": username, "password": password},
-    )
-    assert response.status_code == 200
 
 
 def test_alert_rule_crud_event_history_and_duplicate_suppression(
@@ -215,13 +200,13 @@ def test_alert_rule_resolves_bare_and_lowercase_tickers(
 def test_alert_rules_and_events_are_isolated_per_authenticated_user(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _enable_local_auth(monkeypatch)
+    enable_local_auth(monkeypatch)
     price_state = {"last_price": 205.0}
     _install_stock_quote_mocks(monkeypatch, price_state=price_state)
 
     with TestClient(app) as alice_client, TestClient(app) as bob_client:
-        _register_user(alice_client, "alice")
-        _register_user(bob_client, "bob")
+        register_local_user(alice_client, "alice")
+        register_local_user(bob_client, "bob")
 
         alice_create = alice_client.post(
             "/api/alerts/rules",
@@ -348,13 +333,13 @@ def test_delete_alert_events_succeeds_when_history_is_empty(
 def test_delete_alert_events_isolated_per_authenticated_user(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _enable_local_auth(monkeypatch)
+    enable_local_auth(monkeypatch)
     price_state = {"last_price": 205.0}
     _install_stock_quote_mocks(monkeypatch, price_state=price_state)
 
     with TestClient(app) as alice_client, TestClient(app) as bob_client:
-        _register_user(alice_client, "alice")
-        _register_user(bob_client, "bob")
+        register_local_user(alice_client, "alice")
+        register_local_user(bob_client, "bob")
 
         alice_create = alice_client.post(
             "/api/alerts/rules",

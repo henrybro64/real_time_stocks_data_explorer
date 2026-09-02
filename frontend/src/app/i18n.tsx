@@ -2,6 +2,10 @@
 
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import type { Stock } from "@shared/stock";
+import {
+  realizedGainsMessages,
+  type RealizedGainsTranslationKey,
+} from "../views/realized-gains/realizedGainsI18n";
 
 export type AppLanguage = "en" | "zh-TW";
 
@@ -101,6 +105,7 @@ export type TranslationKey =
   | "alerts.column.observedPrice"
   | "alerts.column.triggeredAt"
   | "alerts.column.message"
+  | RealizedGainsTranslationKey
   | "stock.market"
   | "stock.updatedAt"
   | "stock.prevClose"
@@ -572,6 +577,7 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "alerts.column.observedPrice": "Observed price",
     "alerts.column.triggeredAt": "Triggered",
     "alerts.column.message": "Message",
+    ...realizedGainsMessages("en"),
     "stock.market": "Market",
     "stock.updatedAt": "Updated",
     "stock.prevClose": "Prev close",
@@ -1057,6 +1063,7 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "alerts.column.observedPrice": "觀測價格",
     "alerts.column.triggeredAt": "觸發時間",
     "alerts.column.message": "訊息",
+    ...realizedGainsMessages("zh-TW"),
     "stock.market": "市場",
     "stock.updatedAt": "更新時間",
     "stock.prevClose": "前收",

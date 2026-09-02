@@ -271,6 +271,13 @@ export type AlertRuleUpdate = {
   enabled?: boolean;
 };
 
+export type {
+  RealizedTrade,
+  RealizedTradeCreate,
+  RealizedTradeCurrency,
+  RealizedTradeUpdate,
+} from "./realizedTrade";
+
 export type PortfolioPosition = {
   id: number;
   stockId: string;

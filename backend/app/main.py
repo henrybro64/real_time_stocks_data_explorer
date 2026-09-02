@@ -12,6 +12,7 @@ from app.api.routes.markets import router as markets_router
 from app.api.routes.portfolio import router as portfolio_router
 from app.api.routes.quotes import router as quotes_router
 from app.api.routes.rankings import router as rankings_router
+from app.api.routes.realized_trades import router as realized_trades_router
 from app.api.routes.search import router as search_router
 from app.api.routes.stream import router as stream_router
 from app.api.routes.themes import router as themes_router
@@ -60,6 +61,7 @@ app.include_router(tw_margin_short_router, prefix=settings.api_prefix)
 app.include_router(taiwan_market_data_router, prefix=settings.api_prefix)
 app.include_router(watchlist_router, prefix=settings.api_prefix)
 app.include_router(portfolio_router, prefix=settings.api_prefix)
+app.include_router(realized_trades_router, prefix=settings.api_prefix)
 app.include_router(ai_router, prefix=settings.api_prefix)
 app.include_router(stream_router, prefix=settings.api_prefix)
 

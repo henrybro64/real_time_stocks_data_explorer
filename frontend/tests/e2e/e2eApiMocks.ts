@@ -1,6 +1,10 @@
 import type { Page, Route } from "@playwright/test";
 
 import {
+  handleRealizedTradeRoute,
+  type RealizedTradeRow,
+} from "./realizedTradeRouteMocks";
+import {
   E2E_TW_STOCK_SEARCH_RESULT,
   E2E_US_STOCK_SEARCH_RESULT,
   TPEX_STOCK_ID,
@@ -345,6 +349,8 @@ type E2eMockState = {
   nextAlertEventId: number;
   portfolioPositions: PortfolioPositionRow[];
   nextPositionId: number;
+  realizedTrades: RealizedTradeRow[];
+  nextRealizedTradeId: number;
 };
 
 const pagesWithApiMocks = new WeakSet<Page>();
@@ -371,6 +377,8 @@ function getState(page: Page): E2eMockState {
       nextAlertEventId: 1,
       portfolioPositions: [],
       nextPositionId: 1,
+      realizedTrades: [],
+      nextRealizedTradeId: 1,
     };
     pageStates.set(page, state);
   }
@@ -594,6 +602,16 @@ const E2E_TW_MARGIN_SHORT = {
   source: "TWSE official margin and borrowed-short daily data",
 };
 
+function movingAverageDirection(index: number, positiveStart: boolean) {
+  if (index === 0) {
+    return positiveStart ? "up" : "down";
+  }
+  if (index % 2 === 0) {
+    return positiveStart ? "up" : "down";
+  }
+  return positiveStart ? "down" : "up";
+}
+
 function buildMovingAveragesForCandles(
   candles: Array<{ time: string; close: number }>,
   range: string,
@@ -605,12 +623,12 @@ function buildMovingAveragesForCandles(
     sma10: candles.map((candle, index) => ({
       time: candle.time,
       value: Number((candle.close - 1.1).toFixed(2)),
-      direction: index === 0 ? "up" : index % 2 === 0 ? "up" : "down",
+      direction: movingAverageDirection(index, true),
     })),
     sma20: candles.map((candle, index) => ({
       time: candle.time,
       value: Number((candle.close - 2.2).toFixed(2)),
-      direction: index === 0 ? "down" : index % 2 === 0 ? "down" : "up",
+      direction: movingAverageDirection(index, false),
     })),
     sma60: candles.map((candle, index) => ({
       time: candle.time,
@@ -1024,6 +1042,10 @@ export async function installE2eApiMocks(page: Page): Promise<void> {
     if (path === "/api/alerts/events" && request.method() === "DELETE") {
       state.alertEvents = [];
       await route.fulfill({ status: 204, body: "" });
+      return;
+    }
+
+    if (await handleRealizedTradeRoute(route, path, url, state, fulfillJson)) {
       return;
     }
 

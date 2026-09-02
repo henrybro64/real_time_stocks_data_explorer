@@ -1,0 +1,97 @@
+from __future__ import annotations
+
+from datetime import date
+from decimal import Decimal
+
+from sqlalchemy import delete, select
+
+from app.db.realized_trade_model import RealizedTrade
+
+from .session import SessionBoundRepository, apply_field_updates, persist_new
+
+
+def _owned_trade_query(user_id: str, trade_id: int):
+    return select(RealizedTrade).where(
+        RealizedTrade.id == trade_id,
+        RealizedTrade.user_id == user_id,
+    )
+
+
+class RealizedTradeRepository(SessionBoundRepository):
+    def list_trades(
+        self,
+        user_id: str,
+        *,
+        currency: str | None = None,
+    ) -> list[RealizedTrade]:
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            query = (
+                select(RealizedTrade)
+                .where(RealizedTrade.user_id == user_id)
+                .order_by(RealizedTrade.sell_date.desc(), RealizedTrade.id.desc())
+            )
+            if currency is not None:
+                query = query.where(RealizedTrade.currency == currency)
+            return list(session.execute(query).scalars())
+
+    def get_trade(self, user_id: str, trade_id: int) -> RealizedTrade | None:
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            return session.execute(_owned_trade_query(user_id, trade_id)).scalar_one_or_none()
+
+    def create_trade(
+        self,
+        *,
+        user_id: str,
+        symbol: str,
+        currency: str,
+        buy_price: Decimal,
+        sell_price: Decimal,
+        shares: Decimal,
+        buy_date: date | None,
+        sell_date: date,
+    ) -> RealizedTrade:
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            return persist_new(
+                session,
+                RealizedTrade(
+                    user_id=user_id,
+                    symbol=symbol,
+                    currency=currency,
+                    buy_price=buy_price,
+                    sell_price=sell_price,
+                    shares=shares,
+                    buy_date=buy_date,
+                    sell_date=sell_date,
+                ),
+            )
+
+    def update_trade(
+        self,
+        user_id: str,
+        trade_id: int,
+        updates: dict[str, object],
+    ) -> RealizedTrade | None:
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            trade = session.execute(_owned_trade_query(user_id, trade_id)).scalar_one_or_none()
+            if trade is None:
+                return None
+            return apply_field_updates(session, trade, updates)
+
+    def delete_trade(self, user_id: str, trade_id: int) -> bool:
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            result = session.execute(
+                delete(RealizedTrade).where(
+                    RealizedTrade.id == trade_id,
+                    RealizedTrade.user_id == user_id,
+                ),
+            )
+            session.commit()
+            return (result.rowcount or 0) > 0
+
+
+realized_trade_repository = RealizedTradeRepository()

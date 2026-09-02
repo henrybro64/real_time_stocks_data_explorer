@@ -7,6 +7,7 @@ from sqlalchemy import engine_from_config, pool
 
 from app.core.config import settings
 from app.db.models import Base
+import app.db.realized_trade_model  # noqa: F401 — register RealizedTrade on Base.metadata
 
 config = context.config
 

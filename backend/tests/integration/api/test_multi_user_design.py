@@ -4,32 +4,16 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import delete, select
 
-from app.core.config import settings
 from app.db.init_ids import DEFAULT_USER_ID
 from app.db.models import User
 from app.db.session import SessionLocal
 from app.main import app
 from app.services.quote_service import quote_service
+from tests.integration.local_auth_helpers import enable_local_auth, register_local_user
 from tests.support import quote_record, stock_record
 
 
 pytestmark = pytest.mark.integration
-
-
-def _enable_local_auth(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(settings, "auth_enabled", True)
-    monkeypatch.setattr(settings, "local_auth_enabled", True)
-    monkeypatch.setattr(settings, "local_auth_username", "")
-    monkeypatch.setattr(settings, "local_auth_password", "")
-
-
-def _register_user(client: TestClient, username: str, password: str = "password-123") -> None:
-    response = client.post(
-        "/api/auth/register/local",
-        json={"username": username, "password": password},
-    )
-    assert response.status_code == 200
-    assert response.json() == {"status": "ok"}
 
 
 def test_single_user_mode_bootstraps_default_principal() -> None:
@@ -53,7 +37,7 @@ def test_single_user_mode_bootstraps_default_principal() -> None:
 
 
 def test_auth_enabled_rejects_anonymous_access(monkeypatch: pytest.MonkeyPatch) -> None:
-    _enable_local_auth(monkeypatch)
+    enable_local_auth(monkeypatch)
 
     with TestClient(app) as client:
         status = client.get("/api/auth/status")
@@ -74,10 +58,10 @@ def test_auth_enabled_rejects_stale_session_user(monkeypatch: pytest.MonkeyPatch
     if SessionLocal is None:
         raise RuntimeError("SessionLocal is not configured")
 
-    _enable_local_auth(monkeypatch)
+    enable_local_auth(monkeypatch)
 
     with TestClient(app) as client:
-        _register_user(client, "alice")
+        register_local_user(client, "alice")
 
         with SessionLocal() as session:
             session.execute(delete(User).where(User.username == "alice"))
@@ -98,7 +82,7 @@ def test_auth_enabled_rejects_stale_session_user(monkeypatch: pytest.MonkeyPatch
 
 
 def test_user_owned_resources_are_isolated_per_session(monkeypatch: pytest.MonkeyPatch) -> None:
-    _enable_local_auth(monkeypatch)
+    enable_local_auth(monkeypatch)
 
     stock = stock_record(
         "US:AAPL",
@@ -131,8 +115,8 @@ def test_user_owned_resources_are_isolated_per_session(monkeypatch: pytest.Monke
     )
 
     with TestClient(app) as alice_client, TestClient(app) as bob_client:
-        _register_user(alice_client, "alice")
-        _register_user(bob_client, "bob")
+        register_local_user(alice_client, "alice")
+        register_local_user(bob_client, "bob")
 
         alice_watchlist = alice_client.post("/api/watchlist/items", json={"id": "US:AAPL"})
         alice_position = alice_client.post(
@@ -234,7 +218,7 @@ def test_user_owned_resources_are_isolated_per_session(monkeypatch: pytest.Monke
 def test_cross_user_watchlist_delete_does_not_remove_other_users_items(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _enable_local_auth(monkeypatch)
+    enable_local_auth(monkeypatch)
 
     stock = stock_record(
         "US:AAPL",
@@ -253,8 +237,8 @@ def test_cross_user_watchlist_delete_does_not_remove_other_users_items(
     )
 
     with TestClient(app) as alice_client, TestClient(app) as bob_client:
-        _register_user(alice_client, "alice")
-        _register_user(bob_client, "bob")
+        register_local_user(alice_client, "alice")
+        register_local_user(bob_client, "bob")
 
         alice_add = alice_client.post("/api/watchlist/items", json={"id": "US:AAPL"})
         bob_delete = bob_client.delete("/api/watchlist/items/US%3AAAPL")
@@ -274,7 +258,7 @@ def test_cross_user_watchlist_delete_does_not_remove_other_users_items(
 def test_forged_user_id_in_request_body_is_ignored(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _enable_local_auth(monkeypatch)
+    enable_local_auth(monkeypatch)
 
     stock = stock_record(
         "US:AAPL",
@@ -307,8 +291,8 @@ def test_forged_user_id_in_request_body_is_ignored(
     )
 
     with TestClient(app) as alice_client, TestClient(app) as bob_client:
-        _register_user(alice_client, "alice")
-        _register_user(bob_client, "bob")
+        register_local_user(alice_client, "alice")
+        register_local_user(bob_client, "bob")
 
         alice_watchlist = alice_client.post(
             "/api/watchlist/items",
@@ -340,11 +324,11 @@ def test_forged_user_id_in_request_body_is_ignored(
 def test_ai_preferences_are_isolated_per_session(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _enable_local_auth(monkeypatch)
+    enable_local_auth(monkeypatch)
 
     with TestClient(app) as alice_client, TestClient(app) as bob_client:
-        _register_user(alice_client, "alice")
-        _register_user(bob_client, "bob")
+        register_local_user(alice_client, "alice")
+        register_local_user(bob_client, "bob")
 
         alice_set = alice_client.put(
             "/api/ai/preferences",
