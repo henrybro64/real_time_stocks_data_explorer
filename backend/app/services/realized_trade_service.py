@@ -61,7 +61,16 @@ def _to_decimal(value: float, *, field_name: str) -> Decimal:
 
 
 def _quantize_trade_decimal(value: Decimal, *, field_name: str) -> Decimal:
-    quantized = value.quantize(DECIMAL_SCALE, rounding=ROUND_HALF_UP)
+    # Check magnitude before quantize: values ~1e22+ raise InvalidOperation under
+    # the default Decimal context and would otherwise become an API 500.
+    if value.copy_abs() > MAX_TRADE_DECIMAL:
+        raise RealizedTradeValidationError(f"{field_name} exceeds allowed precision")
+    try:
+        quantized = value.quantize(DECIMAL_SCALE, rounding=ROUND_HALF_UP)
+    except InvalidOperation as exc:
+        raise RealizedTradeValidationError(
+            f"{field_name} exceeds allowed precision",
+        ) from exc
     if quantized.copy_abs() > MAX_TRADE_DECIMAL:
         raise RealizedTradeValidationError(f"{field_name} exceeds allowed precision")
     return quantized

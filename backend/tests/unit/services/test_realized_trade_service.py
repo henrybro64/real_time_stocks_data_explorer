@@ -217,6 +217,30 @@ def test_service_create_rejects_invalid_payload(
         service.create_trade("user-1", payload)
 
 
+def test_service_rejects_oversized_cumulative_dividends_as_validation_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Huge finite dividends must raise RealizedTradeValidationError (API 400), not 500."""
+    service = RealizedTradeService()
+    payload = RealizedTradeCreate.model_validate(
+        {
+            "symbol": "AAPL",
+            "currency": "USD",
+            "buyPrice": 100,
+            "sellPrice": 120,
+            "shares": 1,
+            "sellDate": date(2026, 8, 1),
+            "cumulativeDividends": 1e22,
+        },
+    )
+    monkeypatch.setattr(
+        realized_trade_module.realized_trade_repository,
+        "create_trade",
+        lambda **_: None,
+    )
+    with pytest.raises(RealizedTradeValidationError, match="exceeds allowed precision"):
+        service.create_trade("user-1", payload)
+
 def test_service_create_defaults_cumulative_dividends_to_zero(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
