@@ -82,20 +82,31 @@ export function previewRealizedGain(
   buyPrice: number,
   sellPrice: number,
   shares: number,
-): { realizedGain: number; realizedReturnPercent: number } | null {
+  cumulativeDividends = 0,
+): {
+  priceGain: number;
+  cumulativeDividends: number;
+  realizedGain: number;
+  realizedReturnPercent: number;
+} | null {
   if (
     !Number.isFinite(buyPrice) ||
     !Number.isFinite(sellPrice) ||
     !Number.isFinite(shares) ||
+    !Number.isFinite(cumulativeDividends) ||
     buyPrice <= 0 ||
     sellPrice <= 0 ||
-    shares <= 0
+    shares <= 0 ||
+    cumulativeDividends < 0
   ) {
     return null;
   }
-  const realizedGain = (sellPrice - buyPrice) * shares;
-  const realizedReturnPercent = ((sellPrice - buyPrice) / buyPrice) * 100;
+  const priceGain = (sellPrice - buyPrice) * shares;
+  const realizedGain = priceGain + cumulativeDividends;
+  const realizedReturnPercent = (realizedGain / (buyPrice * shares)) * 100;
   return {
+    priceGain: Number(priceGain.toFixed(2)),
+    cumulativeDividends: Number(cumulativeDividends.toFixed(2)),
     realizedGain: Number(realizedGain.toFixed(2)),
     realizedReturnPercent: Number(realizedReturnPercent.toFixed(4)),
   };

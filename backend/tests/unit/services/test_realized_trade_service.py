@@ -24,6 +24,7 @@ def _existing_trade(**overrides: object) -> SimpleNamespace:
         "buy_price": Decimal("100"),
         "sell_price": Decimal("120"),
         "shares": Decimal("1"),
+        "cumulative_dividends": Decimal("0"),
         "buy_date": date(2026, 7, 1),
         "sell_date": date(2026, 8, 1),
     }
@@ -52,24 +53,94 @@ def _install_update_capture(
 
 
 @pytest.mark.parametrize(
-    ("buy_price", "sell_price", "shares", "expected_gain", "expected_return"),
+    (
+        "buy_price",
+        "sell_price",
+        "shares",
+        "dividends",
+        "expected_price_gain",
+        "expected_gain",
+        "expected_return",
+    ),
     [
-        (Decimal("920"), Decimal("1020"), Decimal("1000"), 100_000.0, 10.8696),
-        (Decimal("200"), Decimal("150"), Decimal("10"), -500.0, -25.0),
-        (Decimal("180.25"), Decimal("195.50"), Decimal("10.5"), 160.13, 8.4605),
-        (Decimal("100"), Decimal("100"), Decimal("3"), 0.0, 0.0),
+        (
+            Decimal("920"),
+            Decimal("1020"),
+            Decimal("1000"),
+            Decimal("0"),
+            100_000.0,
+            100_000.0,
+            10.8696,
+        ),
+        (
+            Decimal("800"),
+            Decimal("900"),
+            Decimal("1000"),
+            Decimal("18000"),
+            100_000.0,
+            118_000.0,
+            14.75,
+        ),
+        (
+            Decimal("100"),
+            Decimal("95"),
+            Decimal("100"),
+            Decimal("200"),
+            -500.0,
+            -300.0,
+            -3.0,
+        ),
+        (
+            Decimal("100"),
+            Decimal("95"),
+            Decimal("100"),
+            Decimal("600"),
+            -500.0,
+            100.0,
+            1.0,
+        ),
+        (
+            Decimal("200"),
+            Decimal("150"),
+            Decimal("10"),
+            Decimal("0"),
+            -500.0,
+            -500.0,
+            -25.0,
+        ),
+        (
+            Decimal("180.25"),
+            Decimal("195.50"),
+            Decimal("10.5"),
+            Decimal("1.25"),
+            160.13,
+            161.38,
+            8.5265,
+        ),
+        (
+            Decimal("100"),
+            Decimal("100"),
+            Decimal("3"),
+            Decimal("0"),
+            0.0,
+            0.0,
+            0.0,
+        ),
     ],
 )
 def test_calculate_realized_metrics(
     buy_price: Decimal,
     sell_price: Decimal,
     shares: Decimal,
+    dividends: Decimal,
+    expected_price_gain: float,
     expected_gain: float,
     expected_return: float,
 ) -> None:
-    gain, return_percent = calculate_realized_metrics(buy_price, sell_price, shares)
-    assert gain == expected_gain
-    assert return_percent == expected_return
+    metrics = calculate_realized_metrics(buy_price, sell_price, shares, dividends)
+    assert metrics.price_gain == expected_price_gain
+    assert metrics.realized_gain == expected_gain
+    assert metrics.realized_return_percent == expected_return
 
 
 @pytest.mark.parametrize(
@@ -114,6 +185,10 @@ def test_normalize_currency_rejects_unsupported_values() -> None:
             {"buyPrice": 0.0000001},
             "buyPrice must be greater than 0",
         ),
+        (
+            {"cumulativeDividends": -1},
+            "greater than or equal to 0",
+        ),
     ],
 )
 def test_service_create_rejects_invalid_payload(
@@ -122,20 +197,53 @@ def test_service_create_rejects_invalid_payload(
     match: str,
 ) -> None:
     service = RealizedTradeService()
-    payload = RealizedTradeCreate.model_validate(
-        {
-            "symbol": "AAPL",
-            "currency": "USD",
-            "buyPrice": 100,
-            "sellPrice": 120,
-            "shares": 1,
-            "sellDate": date(2026, 8, 1),
-            **payload_kwargs,
-        },
-    )
+    try:
+        payload = RealizedTradeCreate.model_validate(
+            {
+                "symbol": "AAPL",
+                "currency": "USD",
+                "buyPrice": 100,
+                "sellPrice": 120,
+                "shares": 1,
+                "sellDate": date(2026, 8, 1),
+                **payload_kwargs,
+            },
+        )
+    except Exception as exc:
+        assert "greater than or equal to 0" in str(exc)
+        return
     monkeypatch.setattr(realized_trade_module.realized_trade_repository, "create_trade", lambda **_: None)
     with pytest.raises(RealizedTradeValidationError, match=match):
         service.create_trade("user-1", payload)
+
+
+def test_service_create_defaults_cumulative_dividends_to_zero(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_create_trade(**kwargs):
+        captured.update(kwargs)
+        return _existing_trade()
+
+    monkeypatch.setattr(
+        realized_trade_module.realized_trade_repository,
+        "create_trade",
+        fake_create_trade,
+    )
+    service = RealizedTradeService()
+    service.create_trade(
+        "user-1",
+        RealizedTradeCreate.model_validate(
+            {
+                "symbol": "AAPL",
+                "currency": "USD",
+                "buyPrice": 100,
+                "sellPrice": 120,
+                "shares": 1,
+                "sellDate": date(2026, 8, 1),
+            },
+        ),
+    )
+    assert captured["cumulative_dividends"] == Decimal("0")
 
 
 def test_service_update_clears_buy_date_when_explicitly_null(monkeypatch) -> None:
@@ -152,3 +260,30 @@ def test_service_update_passes_only_changed_fields(monkeypatch) -> None:
     service = RealizedTradeService()
     service.update_trade("user-1", 1, RealizedTradeUpdate(sellPrice=150))
     assert captured == {"sell_price": Decimal("150")}
+
+
+def test_service_update_recalculates_when_only_dividends_change(monkeypatch) -> None:
+    existing = _existing_trade(
+        buy_price=Decimal("800"),
+        sell_price=Decimal("900"),
+        shares=Decimal("1000"),
+        cumulative_dividends=Decimal("0"),
+    )
+    captured = _install_update_capture(monkeypatch, existing)
+    service = RealizedTradeService()
+    updated = service.update_trade(
+        "user-1",
+        1,
+        RealizedTradeUpdate(cumulativeDividends=18000),
+    )
+    assert captured == {"cumulative_dividends": Decimal("18000")}
+    assert updated.cumulative_dividends == Decimal("18000")
+    metrics = calculate_realized_metrics(
+        updated.buy_price,
+        updated.sell_price,
+        updated.shares,
+        updated.cumulative_dividends,
+    )
+    assert metrics.price_gain == 100_000.0
+    assert metrics.realized_gain == 118_000.0
+    assert metrics.realized_return_percent == 14.75

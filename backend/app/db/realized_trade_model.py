@@ -21,6 +21,10 @@ class RealizedTrade(Base, UserOwnedRowMixin, TimestampedRowMixin):
             "currency IN ('TWD', 'USD')",
             name="ck_realized_trades_currency",
         ),
+        CheckConstraint(
+            "cumulative_dividends >= 0",
+            name="ck_realized_trades_cumulative_dividends_non_negative",
+        ),
     )
 
     symbol: Mapped[str] = mapped_column(String(32), nullable=False)
@@ -28,5 +32,11 @@ class RealizedTrade(Base, UserOwnedRowMixin, TimestampedRowMixin):
     buy_price: Mapped[Decimal] = mapped_column(Numeric(20, 6), nullable=False)
     sell_price: Mapped[Decimal] = mapped_column(Numeric(20, 6), nullable=False)
     shares: Mapped[Decimal] = mapped_column(Numeric(20, 6), nullable=False)
+    cumulative_dividends: Mapped[Decimal] = mapped_column(
+        Numeric(20, 6),
+        nullable=False,
+        server_default="0",
+        default=Decimal("0"),
+    )
     buy_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     sell_date: Mapped[date] = mapped_column(Date, nullable=False)

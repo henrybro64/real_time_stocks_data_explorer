@@ -103,6 +103,8 @@ describe("RealizedGainsPage", () => {
       sellPrice: 195.5,
       shares: 10.5,
       sellDate: "2026-08-20",
+      cumulativeDividends: 0,
+      priceGain: 160.13,
       realizedGain: 160.13,
     });
     vi.mocked(fetchRealizedTrades).mockImplementation(async (currency) =>
@@ -119,6 +121,9 @@ describe("RealizedGainsPage", () => {
     fireEvent.change(screen.getByLabelText("Buy price"), { target: { value: "180.25" } });
     fireEvent.change(screen.getByLabelText("Sell price"), { target: { value: "195.5" } });
     fireEvent.change(screen.getByLabelText("Shares"), { target: { value: "10.5" } });
+    fireEvent.change(screen.getByLabelText("Cumulative dividends (US$)"), {
+      target: { value: "0" },
+    });
     fireEvent.change(screen.getByLabelText("Sell date"), { target: { value: "2026-08-20" } });
     await user.click(screen.getByTestId("realized-submit-button"));
 
@@ -131,7 +136,86 @@ describe("RealizedGainsPage", () => {
       buyPrice: 180.25,
       sellPrice: 195.5,
       shares: 10.5,
+      cumulativeDividends: 0,
       sellDate: "2026-08-20",
+    });
+  });
+
+  it("shows dividends in the form preview and history with currency-aware labels", async () => {
+    const user = userEvent.setup();
+    const trade = buildSampleRealizedTrade({
+      buyPrice: 800,
+      sellPrice: 900,
+      shares: 1000,
+      cumulativeDividends: 18000,
+      priceGain: 100000,
+      realizedGain: 118000,
+      realizedReturnPercent: 14.75,
+    });
+    vi.mocked(fetchRealizedTrades).mockResolvedValue([trade]);
+    renderPage();
+
+    expect(await screen.findByLabelText("Cumulative dividends (NT$)")).toHaveValue(0);
+    const row = await screen.findByTestId("realized-trade-row-1");
+    expect(screen.getByText("Dividends")).toBeInTheDocument();
+    expect(within(row).getByText("NT$18,000")).toBeInTheDocument();
+    expect(within(row).getByText("+NT$118,000")).toBeInTheDocument();
+    // Period cards must use realizedGain (already includes dividends) exactly once.
+    expect(screen.getAllByText("+NT$118,000").length).toBeGreaterThanOrEqual(2);
+    expect(screen.queryByText("+NT$136,000")).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("Symbol"), { target: { value: "2330" } });
+    fireEvent.change(screen.getByLabelText("Buy price"), { target: { value: "800" } });
+    fireEvent.change(screen.getByLabelText("Sell price"), { target: { value: "900" } });
+    fireEvent.change(screen.getByLabelText("Shares"), { target: { value: "1000" } });
+    fireEvent.change(screen.getByLabelText("Cumulative dividends (NT$)"), {
+      target: { value: "18000" },
+    });
+    fireEvent.change(screen.getByLabelText("Sell date"), { target: { value: "2026-08-20" } });
+
+    expect(screen.getByText("Estimated price gain")).toBeInTheDocument();
+    expect(screen.getByText("+NT$100,000")).toBeInTheDocument();
+    expect(screen.getByText("Estimated dividends")).toBeInTheDocument();
+    expect(screen.getAllByText("+NT$18,000").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText("Estimated realized P/L")).toBeInTheDocument();
+    expect(screen.getAllByText("+NT$118,000").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText("Estimated total return")).toBeInTheDocument();
+    expect(screen.getAllByText("+14.75%").length).toBeGreaterThanOrEqual(1);
+
+    await user.click(screen.getByTestId("realized-currency-usd"));
+    expect(await screen.findByLabelText("Cumulative dividends (US$)")).toBeInTheDocument();
+  });
+
+  it("loads dividends into the edit form and saves them", async () => {
+    const user = userEvent.setup();
+    const trade = buildSampleRealizedTrade({
+      cumulativeDividends: 18000,
+      priceGain: 100000,
+      realizedGain: 118000,
+      realizedReturnPercent: 14.75,
+    });
+    vi.mocked(fetchRealizedTrades).mockResolvedValue([trade]);
+    vi.mocked(updateRealizedTrade).mockResolvedValue(
+      buildSampleRealizedTrade({
+        cumulativeDividends: 20000,
+        priceGain: 100000,
+        realizedGain: 120000,
+        realizedReturnPercent: 13.0435,
+      }),
+    );
+    renderPage();
+    const row = await screen.findByTestId("realized-trade-row-1");
+    await user.click(within(row).getByRole("button", { name: "Edit" }));
+    expect(screen.getByLabelText("Cumulative dividends (NT$)")).toHaveValue(18000);
+    fireEvent.change(screen.getByLabelText("Cumulative dividends (NT$)"), {
+      target: { value: "20000" },
+    });
+    await user.click(screen.getByTestId("realized-submit-button"));
+    await waitFor(() => {
+      expect(updateRealizedTrade).toHaveBeenCalledWith(
+        1,
+        expect.objectContaining({ cumulativeDividends: 20000 }),
+      );
     });
   });
 

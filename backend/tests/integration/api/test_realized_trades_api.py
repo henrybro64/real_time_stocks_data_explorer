@@ -21,11 +21,27 @@ def test_realized_trade_crud_and_currency_filter(client) -> None:
     created = create.json()
     assert created["symbol"] == "AAPL"
     assert created["currency"] == "USD"
+    assert created["cumulativeDividends"] == 0.0
+    assert created["priceGain"] == 160.13
     assert created["realizedGain"] == 160.13
     assert created["realizedReturnPercent"] == 8.4605
 
-    twd_create = client.post("/api/realized-trades", json=SAMPLE_TWD_TRADE)
+    # Issue #204 example: 800→900 × 1000 + 18000 dividends => 14.75% total return.
+    twd_create = client.post(
+        "/api/realized-trades",
+        json={
+            **SAMPLE_TWD_TRADE,
+            "buyPrice": 800,
+            "sellPrice": 900,
+            "cumulativeDividends": 18000,
+        },
+    )
     assert twd_create.status_code == 200
+    twd_created = twd_create.json()
+    assert twd_created["cumulativeDividends"] == 18000.0
+    assert twd_created["priceGain"] == 100000.0
+    assert twd_created["realizedGain"] == 118000.0
+    assert twd_created["realizedReturnPercent"] == 14.75
 
     all_trades = client.get("/api/realized-trades")
     assert all_trades.status_code == 200
@@ -35,6 +51,7 @@ def test_realized_trade_crud_and_currency_filter(client) -> None:
     assert usd_only.status_code == 200
     assert len(usd_only.json()) == 1
     assert usd_only.json()[0]["currency"] == "USD"
+    assert usd_only.json()[0]["cumulativeDividends"] == 0.0
 
     updated = client.patch(
         f"/api/realized-trades/{created['id']}",
@@ -42,7 +59,17 @@ def test_realized_trade_crud_and_currency_filter(client) -> None:
     )
     assert updated.status_code == 200
     assert updated.json()["sellPrice"] == 200.0
+    assert updated.json()["priceGain"] == 207.38
     assert updated.json()["realizedGain"] == 207.38
+
+    dividends_only = client.patch(
+        f"/api/realized-trades/{created['id']}",
+        json={"cumulativeDividends": 12.5},
+    )
+    assert dividends_only.status_code == 200
+    assert dividends_only.json()["cumulativeDividends"] == 12.5
+    assert dividends_only.json()["priceGain"] == 207.38
+    assert dividends_only.json()["realizedGain"] == 219.88
 
     cleared_buy_date = client.patch(
         f"/api/realized-trades/{created['id']}",
@@ -63,6 +90,7 @@ def test_realized_trade_validation_errors(client) -> None:
         ({"buyDate": "2026-09-02", "sellDate": "2026-09-01"}, 400),
         ({"symbol": "A" * 33}, 422),
         ({"buyPrice": 0.0000001}, 400),
+        ({"cumulativeDividends": -5}, 422),
     ]
     for payload_override, expected_status in cases:
         response = client.post(

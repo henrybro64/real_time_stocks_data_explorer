@@ -10,8 +10,12 @@ function formatSign(value: number) {
   return "";
 }
 
+export function realizedCurrencyPrefix(currency: RealizedTradeCurrency) {
+  return currency === "TWD" ? "NT$" : "US$";
+}
+
 export function formatRealizedCurrency(value: number, currency: RealizedTradeCurrency) {
-  const prefix = currency === "TWD" ? "NT$" : "US$";
+  const prefix = realizedCurrencyPrefix(currency);
   return `${prefix}${value.toLocaleString(undefined, { maximumFractionDigits: 6 })}`;
 }
 

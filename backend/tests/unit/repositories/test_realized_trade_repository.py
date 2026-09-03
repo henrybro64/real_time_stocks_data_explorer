@@ -4,7 +4,7 @@ from datetime import date
 from decimal import Decimal
 
 import pytest
-
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 
 from app.db.realized_trade_model import RealizedTrade
@@ -21,6 +21,7 @@ def _create_trade(
     buy_price: Decimal = Decimal("100"),
     sell_price: Decimal = Decimal("120"),
     shares: Decimal = Decimal("1"),
+    cumulative_dividends: Decimal = Decimal("0"),
     buy_date: date | None = date(2026, 7, 1),
     sell_date: date = date(2026, 8, 1),
 ) -> RealizedTrade:
@@ -31,6 +32,7 @@ def _create_trade(
         buy_price=buy_price,
         sell_price=sell_price,
         shares=shares,
+        cumulative_dividends=cumulative_dividends,
         buy_date=buy_date,
         sell_date=sell_date,
     )
@@ -122,6 +124,39 @@ def test_realized_trade_repository_update_applies_only_provided_fields(
     assert updated.buy_price == Decimal("100")
     assert updated.shares == Decimal("2")
     assert updated.buy_date == date(2026, 7, 1)
+    assert updated.cumulative_dividends == Decimal("0")
+
+
+def test_realized_trade_repository_persists_and_updates_cumulative_dividends(
+    realized_trade_repository: tuple[RealizedTradeRepository, sessionmaker],
+) -> None:
+    repository, _session_local = realized_trade_repository
+    trade = _create_trade(
+        repository,
+        cumulative_dividends=Decimal("18000"),
+        buy_price=Decimal("800"),
+        sell_price=Decimal("900"),
+        shares=Decimal("1000"),
+        currency="TWD",
+        symbol="2330",
+    )
+    assert trade.cumulative_dividends == Decimal("18000")
+
+    updated = repository.update_trade(
+        "user-1",
+        trade.id,
+        {"cumulative_dividends": Decimal("20000")},
+    )
+    assert updated is not None
+    assert updated.cumulative_dividends == Decimal("20000")
+
+
+def test_realized_trade_repository_rejects_negative_cumulative_dividends(
+    realized_trade_repository: tuple[RealizedTradeRepository, sessionmaker],
+) -> None:
+    repository, _session_local = realized_trade_repository
+    with pytest.raises(IntegrityError):
+        _create_trade(repository, cumulative_dividends=Decimal("-1"))
 
 
 def test_realized_trade_repository_update_returns_none_for_other_user(
