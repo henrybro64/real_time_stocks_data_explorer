@@ -11,6 +11,8 @@ export type RealizedTradeRow = {
   shares: number;
   buyDate: string | null;
   sellDate: string;
+  cumulativeDividends: number;
+  priceGain: number;
   realizedGain: number;
   realizedReturnPercent: number;
   createdAt: string;
@@ -25,6 +27,7 @@ type RealizedTradePayload = {
   shares?: number;
   buyDate?: string | null;
   sellDate?: string;
+  cumulativeDividends?: number;
 };
 
 export type RealizedTradeMockSlice = {
@@ -41,7 +44,11 @@ function buildRealizedTradeRow(
   const buyPrice = payload.buyPrice ?? current?.buyPrice ?? 0;
   const sellPrice = payload.sellPrice ?? current?.sellPrice ?? 0;
   const shares = payload.shares ?? current?.shares ?? 0;
-  const metrics = previewRealizedGain(buyPrice, sellPrice, shares) ?? {
+  const cumulativeDividends =
+    payload.cumulativeDividends ?? current?.cumulativeDividends ?? 0;
+  const metrics = previewRealizedGain(buyPrice, sellPrice, shares, cumulativeDividends) ?? {
+    priceGain: 0,
+    cumulativeDividends: 0,
     realizedGain: 0,
     realizedReturnPercent: 0,
   };
@@ -54,6 +61,8 @@ function buildRealizedTradeRow(
     shares,
     buyDate: payload.buyDate === undefined ? current?.buyDate ?? null : payload.buyDate,
     sellDate: payload.sellDate ?? current?.sellDate ?? timestamp.slice(0, 10),
+    cumulativeDividends: metrics.cumulativeDividends,
+    priceGain: metrics.priceGain,
     realizedGain: metrics.realizedGain,
     realizedReturnPercent: metrics.realizedReturnPercent,
     createdAt: current?.createdAt ?? timestamp,

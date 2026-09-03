@@ -20,6 +20,7 @@ export type RealizedGainsFormState = {
   buyPrice: string;
   sellPrice: string;
   shares: string;
+  cumulativeDividends: string;
   buyDate: string;
   sellDate: string;
 };
@@ -39,6 +40,7 @@ export const EMPTY_REALIZED_GAINS_FORM: RealizedGainsFormState = {
   buyPrice: "",
   sellPrice: "",
   shares: "",
+  cumulativeDividends: "0",
   buyDate: "",
   sellDate: "",
 };
@@ -86,6 +88,7 @@ export function useRealizedGainsPageState(initialCurrency: RealizedTradeCurrency
     Number(form.buyPrice),
     Number(form.sellPrice),
     Number(form.shares),
+    Number(form.cumulativeDividends || 0),
   );
   const monthlySeries = useMemo(
     () => buildMonthlyRealizedGainSeries(realized.trades, today),
@@ -119,6 +122,8 @@ export function useRealizedGainsPageState(initialCurrency: RealizedTradeCurrency
     Number(form.sellPrice) > 0 &&
     Number.isFinite(Number(form.shares)) &&
     Number(form.shares) > 0 &&
+    Number.isFinite(Number(form.cumulativeDividends || 0)) &&
+    Number(form.cumulativeDividends || 0) >= 0 &&
     form.sellDate.length > 0 &&
     isBuyDateOnOrBeforeSellDate(form.buyDate, form.sellDate);
 
@@ -134,6 +139,7 @@ export function useRealizedGainsPageState(initialCurrency: RealizedTradeCurrency
       buyPrice: String(trade.buyPrice),
       sellPrice: String(trade.sellPrice),
       shares: String(trade.shares),
+      cumulativeDividends: String(trade.cumulativeDividends),
       buyDate: trade.buyDate ?? "",
       sellDate: trade.sellDate,
     });
@@ -148,6 +154,7 @@ export function useRealizedGainsPageState(initialCurrency: RealizedTradeCurrency
       buyPrice: Number(form.buyPrice),
       sellPrice: Number(form.sellPrice),
       shares: Number(form.shares),
+      cumulativeDividends: Number(form.cumulativeDividends || 0),
       buyDate: form.buyDate || null,
       sellDate: form.sellDate,
     };

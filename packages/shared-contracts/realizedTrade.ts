@@ -9,6 +9,8 @@ export type RealizedTrade = {
   shares: number;
   buyDate: string | null;
   sellDate: string;
+  cumulativeDividends: number;
+  priceGain: number;
   realizedGain: number;
   realizedReturnPercent: number;
   createdAt: string;
@@ -23,6 +25,7 @@ export type RealizedTradeCreate = {
   shares: number;
   buyDate?: string | null;
   sellDate: string;
+  cumulativeDividends?: number;
 };
 
 export type RealizedTradeUpdate = {
@@ -33,4 +36,5 @@ export type RealizedTradeUpdate = {
   shares?: number;
   buyDate?: string | null;
   sellDate?: string;
+  cumulativeDividends?: number;
 };

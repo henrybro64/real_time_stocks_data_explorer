@@ -73,10 +73,11 @@ def delete_realized_trade(
 
 
 def _to_response(trade: RealizedTrade) -> RealizedTradeResponse:
-    realized_gain, realized_return_percent = calculate_realized_metrics(
+    metrics = calculate_realized_metrics(
         trade.buy_price,
         trade.sell_price,
         trade.shares,
+        trade.cumulative_dividends,
     )
     return RealizedTradeResponse(
         id=trade.id,
@@ -87,8 +88,10 @@ def _to_response(trade: RealizedTrade) -> RealizedTradeResponse:
         shares=float(trade.shares),
         buyDate=None if trade.buy_date is None else trade.buy_date.isoformat(),
         sellDate=trade.sell_date.isoformat(),
-        realizedGain=realized_gain,
-        realizedReturnPercent=realized_return_percent,
+        cumulativeDividends=float(trade.cumulative_dividends),
+        priceGain=metrics.price_gain,
+        realizedGain=metrics.realized_gain,
+        realizedReturnPercent=metrics.realized_return_percent,
         createdAt=trade.created_at.isoformat(),
         updatedAt=trade.updated_at.isoformat(),
     )

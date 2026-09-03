@@ -32,6 +32,7 @@ import {
   formatRealizedCurrency,
   formatSignedRealizedCurrency,
   formatSignedRealizedPercent,
+  realizedCurrencyPrefix,
 } from "./realizedGainFormat";
 import {
   type RealizedGainsFormState,
@@ -71,6 +72,14 @@ const FORM_FIELDS: ReadonlyArray<{
     id: "realized-shares",
     field: "shares",
     labelKey: "realizedGains.form.shares",
+    type: "number",
+    min: 0,
+    step: "any",
+  },
+  {
+    id: "realized-cumulative-dividends",
+    field: "cumulativeDividends",
+    labelKey: "realizedGains.form.cumulativeDividends",
     type: "number",
     min: 0,
     step: "any",
@@ -129,6 +138,7 @@ function RealizedGainsHistory({
             <TableHeader>{t("realizedGains.column.buyPrice")}</TableHeader>
             <TableHeader>{t("realizedGains.column.sellPrice")}</TableHeader>
             <TableHeader>{t("realizedGains.column.shares")}</TableHeader>
+            <TableHeader>{t("realizedGains.column.dividends")}</TableHeader>
             <TableHeader>{t("realizedGains.column.returnPercent")}</TableHeader>
             <TableHeader>{t("realizedGains.column.realizedGain")}</TableHeader>
             <TableHeader>{t("realizedGains.column.actions")}</TableHeader>
@@ -142,6 +152,7 @@ function RealizedGainsHistory({
               <TableCell>{formatRealizedCurrency(trade.buyPrice, currency)}</TableCell>
               <TableCell>{formatRealizedCurrency(trade.sellPrice, currency)}</TableCell>
               <TableCell>{trade.shares}</TableCell>
+              <TableCell>{formatRealizedCurrency(trade.cumulativeDividends, currency)}</TableCell>
               <TableCell>{formatSignedRealizedPercent(trade.realizedReturnPercent)}</TableCell>
               <TableCell>{formatSignedRealizedCurrency(trade.realizedGain, currency)}</TableCell>
               <TableCell>
@@ -282,7 +293,16 @@ export function RealizedGainsPage() {
             <TextInput
               key={id}
               id={id}
-              labelText={t(labelKey)}
+              labelText={
+                field === "cumulativeDividends"
+                  ? `${t(labelKey)} (${realizedCurrencyPrefix(currency)})`
+                  : t(labelKey)
+              }
+              helperText={
+                field === "cumulativeDividends"
+                  ? t("realizedGains.form.cumulativeDividendsHelper")
+                  : undefined
+              }
               type={type}
               min={min}
               step={step}
@@ -294,6 +314,10 @@ export function RealizedGainsPage() {
           ))}
           {preview ? (
             <div className="app-realized-preview">
+              <p>{t("realizedGains.preview.priceGain")}</p>
+              <p>{formatSignedRealizedCurrency(preview.priceGain, currency)}</p>
+              <p>{t("realizedGains.preview.dividends")}</p>
+              <p>{formatSignedRealizedCurrency(preview.cumulativeDividends, currency)}</p>
               <p>{t("realizedGains.preview.gain")}</p>
               <p>{formatSignedRealizedCurrency(preview.realizedGain, currency)}</p>
               <p>{t("realizedGains.preview.return")}</p>

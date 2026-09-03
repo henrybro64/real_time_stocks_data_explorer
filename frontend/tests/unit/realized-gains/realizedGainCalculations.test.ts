@@ -107,11 +107,63 @@ describe("realizedGainCalculations", () => {
     expect(parsed.getDate()).toBe(20);
   });
 
-  it("calculates preview gain and return", () => {
+  it("calculates preview gain and return with zero dividends", () => {
     expect(previewRealizedGain(180.25, 195.5, 10)).toEqual({
+      priceGain: 152.5,
+      cumulativeDividends: 0,
       realizedGain: 152.5,
       realizedReturnPercent: 8.4605,
     });
+  });
+
+  it("adds cumulative dividends once in the live preview", () => {
+    expect(previewRealizedGain(800, 900, 1000, 18000)).toEqual({
+      priceGain: 100000,
+      cumulativeDividends: 18000,
+      realizedGain: 118000,
+      realizedReturnPercent: 14.75,
+    });
+  });
+
+  it("offsets a price loss with dividends without multiplying by shares", () => {
+    expect(previewRealizedGain(100, 95, 100, 200)).toEqual({
+      priceGain: -500,
+      cumulativeDividends: 200,
+      realizedGain: -300,
+      realizedReturnPercent: -3,
+    });
+  });
+
+  it("rejects negative cumulative dividends in the live preview", () => {
+    expect(previewRealizedGain(100, 110, 1, -1)).toBeNull();
+  });
+
+  it("sums period totals from realizedGain only so dividends are not double-counted", () => {
+    const trades = [
+      sampleTrade({
+        sellDate: "2026-08-15",
+        priceGain: 100000,
+        cumulativeDividends: 18000,
+        realizedGain: 118000,
+      }),
+    ];
+    expect(sumRealizedGainForPeriod(trades, "1M", today)).toBe(118000);
+    expect(sumRealizedGainForPeriod(trades, "1M", today)).not.toBe(136000);
+  });
+
+  it("builds monthly series from realizedGain only so dividends are not double-counted", () => {
+    const series = buildMonthlyRealizedGainSeries(
+      [
+        sampleTrade({
+          sellDate: "2026-08-15",
+          priceGain: 100000,
+          cumulativeDividends: 18000,
+          realizedGain: 118000,
+        }),
+      ],
+      today,
+    );
+    expect(series.find((point) => point.monthKey === "2026-08")?.totalGain).toBe(118000);
   });
 
   it("validates buy date is on or before sell date", () => {

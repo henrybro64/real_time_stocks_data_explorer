@@ -20,6 +20,7 @@ class RealizedTradeCreate(RealizedTradeValueFields):
     currency: RealizedTradeCurrency
     buyDate: date | None = None
     sellDate: date
+    cumulativeDividends: float = Field(default=0, ge=0)
 
 
 class RealizedTradeUpdate(BaseModel):
@@ -30,6 +31,7 @@ class RealizedTradeUpdate(BaseModel):
     shares: float | None = Field(default=None, gt=0)
     buyDate: date | None = None
     sellDate: date | None = None
+    cumulativeDividends: float | None = Field(default=None, ge=0)
 
 
 class RealizedTradeResponse(RealizedTradeValueFields):
@@ -38,6 +40,8 @@ class RealizedTradeResponse(RealizedTradeValueFields):
     currency: RealizedTradeCurrency
     buyDate: str | None
     sellDate: str
+    cumulativeDividends: float
+    priceGain: float
     realizedGain: float
     realizedReturnPercent: float
     createdAt: str

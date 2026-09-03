@@ -49,6 +49,7 @@ class RealizedTradeRepository(SessionBoundRepository):
         buy_price: Decimal,
         sell_price: Decimal,
         shares: Decimal,
+        cumulative_dividends: Decimal,
         buy_date: date | None,
         sell_date: date,
     ) -> RealizedTrade:
@@ -63,6 +64,7 @@ class RealizedTradeRepository(SessionBoundRepository):
                     buy_price=buy_price,
                     sell_price=sell_price,
                     shares=shares,
+                    cumulative_dividends=cumulative_dividends,
                     buy_date=buy_date,
                     sell_date=sell_date,
                 ),

@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { renderHook, waitFor } from "@testing-library/react";
+import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -9,7 +9,10 @@ import {
   updateRealizedTrade,
 } from "../../../src/services/api/realizedTradesApi";
 import { buildSampleRealizedTrade } from "../../../src/views/realized-gains/realizedTradeTestFixtures";
-import { useRealizedGainsPageState } from "../../../src/views/realized-gains/useRealizedGainsPageState";
+import {
+  EMPTY_REALIZED_GAINS_FORM,
+  useRealizedGainsPageState,
+} from "../../../src/views/realized-gains/useRealizedGainsPageState";
 
 const useQueryOptions: unknown[] = [];
 
@@ -54,6 +57,61 @@ describe("useRealizedGainsPageState trades query", () => {
     renderHook(() => useRealizedGainsPageState("USD"), { wrapper });
     await waitFor(() => {
       expect(fetchRealizedTrades).toHaveBeenCalledWith("USD");
+    });
+  });
+
+  it("defaults cumulative dividends to zero and includes them in create payloads", async () => {
+    const created = buildSampleRealizedTrade({ id: 2 });
+    vi.mocked(createRealizedTrade).mockResolvedValue(created);
+    const { result } = renderHook(() => useRealizedGainsPageState("TWD"), { wrapper });
+    await waitFor(() => expect(fetchRealizedTrades).toHaveBeenCalledTimes(1));
+
+    expect(result.current.form.cumulativeDividends).toBe(EMPTY_REALIZED_GAINS_FORM.cumulativeDividends);
+    expect(result.current.form.cumulativeDividends).toBe("0");
+
+    act(() => {
+      result.current.setForm({
+        symbol: "2330",
+        buyPrice: "800",
+        sellPrice: "900",
+        shares: "1000",
+        cumulativeDividends: "18000",
+        buyDate: "",
+        sellDate: "2026-08-01",
+      });
+    });
+    act(() => {
+      result.current.submitForm();
+    });
+
+    await waitFor(() => {
+      expect(createRealizedTrade).toHaveBeenCalled();
+    });
+    expect(vi.mocked(createRealizedTrade).mock.calls[0][0]).toMatchObject({
+      symbol: "2330",
+      currency: "TWD",
+      cumulativeDividends: 18000,
+    });
+  });
+
+  it("loads cumulative dividends when beginning an edit", async () => {
+    const trade = buildSampleRealizedTrade({
+      cumulativeDividends: 18000,
+      priceGain: 100000,
+      realizedGain: 118000,
+    });
+    const { result } = renderHook(() => useRealizedGainsPageState("TWD"), { wrapper });
+    await waitFor(() => expect(fetchRealizedTrades).toHaveBeenCalledTimes(1));
+
+    act(() => {
+      result.current.beginEdit(trade);
+    });
+    expect(result.current.form.cumulativeDividends).toBe("18000");
+    expect(result.current.preview).toEqual({
+      priceGain: 100000,
+      cumulativeDividends: 18000,
+      realizedGain: 118000,
+      realizedReturnPercent: 12.8261,
     });
   });
 

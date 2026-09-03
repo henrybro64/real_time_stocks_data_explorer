@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
+from typing import NamedTuple
 
 from app.db.realized_trade_model import RealizedTrade
 from app.repositories.realized_trade_repository import realized_trade_repository
@@ -23,6 +24,12 @@ class RealizedTradeValidationError(ValueError):
 
 class RealizedTradeNotFoundError(ValueError):
     pass
+
+
+class RealizedMetrics(NamedTuple):
+    price_gain: float
+    realized_gain: float
+    realized_return_percent: float
 
 
 def normalize_symbol(symbol: str) -> str:
@@ -53,13 +60,35 @@ def _to_decimal(value: float, *, field_name: str) -> Decimal:
     return decimal_value
 
 
-def _to_trade_decimal(value: float, *, field_name: str) -> Decimal:
-    decimal_value = _to_decimal(value, field_name=field_name)
-    quantized = decimal_value.quantize(DECIMAL_SCALE, rounding=ROUND_HALF_UP)
-    if quantized <= 0:
-        raise RealizedTradeValidationError(f"{field_name} must be greater than 0")
+def _quantize_trade_decimal(value: Decimal, *, field_name: str) -> Decimal:
+    # Check magnitude before quantize: values ~1e22+ raise InvalidOperation under
+    # the default Decimal context and would otherwise become an API 500.
+    if value.copy_abs() > MAX_TRADE_DECIMAL:
+        raise RealizedTradeValidationError(f"{field_name} exceeds allowed precision")
+    try:
+        quantized = value.quantize(DECIMAL_SCALE, rounding=ROUND_HALF_UP)
+    except InvalidOperation as exc:
+        raise RealizedTradeValidationError(
+            f"{field_name} exceeds allowed precision",
+        ) from exc
     if quantized.copy_abs() > MAX_TRADE_DECIMAL:
         raise RealizedTradeValidationError(f"{field_name} exceeds allowed precision")
+    return quantized
+
+
+def _to_trade_decimal(value: float, *, field_name: str) -> Decimal:
+    decimal_value = _to_decimal(value, field_name=field_name)
+    quantized = _quantize_trade_decimal(decimal_value, field_name=field_name)
+    if quantized <= 0:
+        raise RealizedTradeValidationError(f"{field_name} must be greater than 0")
+    return quantized
+
+
+def _to_non_negative_trade_decimal(value: float, *, field_name: str) -> Decimal:
+    decimal_value = _to_decimal(value, field_name=field_name)
+    quantized = _quantize_trade_decimal(decimal_value, field_name=field_name)
+    if quantized < 0:
+        raise RealizedTradeValidationError(f"{field_name} must be greater than or equal to 0")
     return quantized
 
 
@@ -67,14 +96,18 @@ def calculate_realized_metrics(
     buy_price: Decimal,
     sell_price: Decimal,
     shares: Decimal,
-) -> tuple[float, float]:
-    cost = buy_price * shares
-    proceeds = sell_price * shares
-    realized_gain = proceeds - cost
-    realized_return_percent = ((sell_price - buy_price) / buy_price) * Decimal(100)
-    return (
-        float(realized_gain.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)),
-        float(
+    cumulative_dividends: Decimal = Decimal("0"),
+) -> RealizedMetrics:
+    cost_basis = buy_price * shares
+    price_gain = (sell_price - buy_price) * shares
+    realized_gain = price_gain + cumulative_dividends
+    realized_return_percent = (realized_gain / cost_basis) * Decimal(100)
+    return RealizedMetrics(
+        price_gain=float(price_gain.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)),
+        realized_gain=float(
+            realized_gain.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP),
+        ),
+        realized_return_percent=float(
             realized_return_percent.quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP),
         ),
     )
@@ -109,6 +142,11 @@ def _build_trade_updates(payload: RealizedTradeUpdate) -> dict[str, object]:
         updates["sell_price"] = _to_trade_decimal(payload.sellPrice, field_name="sellPrice")
     if payload.shares is not None:
         updates["shares"] = _to_trade_decimal(payload.shares, field_name="shares")
+    if payload.cumulativeDividends is not None:
+        updates["cumulative_dividends"] = _to_non_negative_trade_decimal(
+            payload.cumulativeDividends,
+            field_name="cumulativeDividends",
+        )
     if "buyDate" in payload.model_fields_set:
         updates["buy_date"] = payload.buyDate
     if payload.sellDate is not None:
@@ -133,6 +171,10 @@ class RealizedTradeService:
         buy_price = _to_trade_decimal(payload.buyPrice, field_name="buyPrice")
         sell_price = _to_trade_decimal(payload.sellPrice, field_name="sellPrice")
         shares = _to_trade_decimal(payload.shares, field_name="shares")
+        cumulative_dividends = _to_non_negative_trade_decimal(
+            payload.cumulativeDividends,
+            field_name="cumulativeDividends",
+        )
         _validate_positive_trade_values(
             buy_price,
             sell_price,
@@ -147,6 +189,7 @@ class RealizedTradeService:
             buy_price=buy_price,
             sell_price=sell_price,
             shares=shares,
+            cumulative_dividends=cumulative_dividends,
             buy_date=payload.buyDate,
             sell_date=payload.sellDate,
         )
@@ -174,6 +217,10 @@ class RealizedTradeService:
             updated.buy_date,
             updated.sell_date,
         )
+        if updated.cumulative_dividends < 0:
+            raise RealizedTradeValidationError(
+                "cumulativeDividends must be greater than or equal to 0",
+            )
         return updated
 
     def delete_trade(self, user_id: str, trade_id: int) -> None:

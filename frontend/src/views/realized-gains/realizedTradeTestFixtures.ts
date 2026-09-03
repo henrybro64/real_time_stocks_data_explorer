@@ -12,6 +12,8 @@ export function buildSampleRealizedTrade(
     shares: 1000,
     buyDate: null,
     sellDate: "2026-08-01",
+    cumulativeDividends: 0,
+    priceGain: 100000,
     realizedGain: 100000,
     realizedReturnPercent: 10.8696,
     createdAt: "2026-08-01T00:00:00Z",
