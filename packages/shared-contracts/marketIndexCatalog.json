@@ -1,0 +1,46 @@
+{
+  "indices": [
+    {
+      "id": "TWSE:TAIEX",
+      "market": "TW",
+      "label": "Taiwan Stock Exchange",
+      "labelZhTw": "台灣證券交易所"
+    },
+    {
+      "id": "^DJI",
+      "market": "US",
+      "label": "DOW Jones",
+      "labelZhTw": "道瓊工業"
+    },
+    {
+      "id": "^NDQ",
+      "market": "US",
+      "label": "Nasdaq",
+      "labelZhTw": "那斯達克"
+    },
+    {
+      "id": "^SPX",
+      "market": "US",
+      "label": "S&P 500",
+      "labelZhTw": "標普 500"
+    },
+    {
+      "id": "^SOX",
+      "market": "US",
+      "label": "PHLX Semiconductor",
+      "labelZhTw": "費城半導體指數"
+    }
+  ],
+  "usYahooSymbols": {
+    "^DJI": "^DJI",
+    "^NDQ": "^IXIC",
+    "^SPX": "^GSPC",
+    "^SOX": "^SOX"
+  },
+  "usStooqSymbols": {
+    "^DJI": "^DJI",
+    "^NDQ": "^NDQ",
+    "^SPX": "^SPX",
+    "^SOX": null
+  }
+}

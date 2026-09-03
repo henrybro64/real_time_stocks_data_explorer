@@ -1,6 +1,7 @@
 import { InlineLoading, Tag, Tile } from "@carbon/react";
 import type { MarketIndex } from "@shared/api";
-import { useLanguage } from "../../app/i18n";
+import { MARKET_INDEX_CATALOG } from "@shared/marketIndexCatalog";
+import { useLanguage, type AppLanguage } from "../../app/i18n";
 import { RequestStateNotice, errorToNoticeKind, type RequestNoticeKind } from "../state/RequestStateNotice";
 import { formatLastUpdated, formatPercent } from "../../services/format/quote";
 import { priceToneClassForMarket } from "../../services/market-data/priceTone";
@@ -11,15 +12,14 @@ type Props = {
   items: MarketIndex[];
 };
 
-const EXPECTED_INDEX_SLOTS: ReadonlyArray<Pick<MarketIndex, "id" | "market" | "label">> = [
-  { id: "TWSE:TAIEX", market: "TW", label: "Taiwan Stock Exchange" },
-  { id: "^DJI", market: "US", label: "DOW Jones" },
-  { id: "^NDQ", market: "US", label: "Nasdaq" },
-  { id: "^SPX", market: "US", label: "S&P 500" },
-];
-
 function isUnavailable(item: MarketIndex): boolean {
   return item.status === "unavailable" || item.value == null;
+}
+
+function catalogSubtitle(language: AppLanguage): string {
+  return MARKET_INDEX_CATALOG.map((entry) =>
+    language === "zh-TW" ? entry.labelZhTw : entry.label,
+  ).join(" / ");
 }
 
 function sessionTagType(item: MarketIndex, unavailable: boolean): "green" | "gray" {
@@ -55,10 +55,10 @@ function sectionNoticeKind(
   return null;
 }
 
-/** Keep a stable four-card layout even if the API omits a slot. */
+/** Keep a stable catalog layout even if the API omits a slot. */
 export function resolveMarketIndexSlots(items: MarketIndex[]): MarketIndex[] {
   const byId = new Map(items.map((item) => [item.id, item]));
-  return EXPECTED_INDEX_SLOTS.map((slot) => {
+  return MARKET_INDEX_CATALOG.map((slot) => {
     const existing = byId.get(slot.id);
     if (existing) {
       return existing;
@@ -85,7 +85,7 @@ export function MarketIndicesStrip({ error, isLoading = false, items }: Props) {
       ? {
           eyebrow: "最新指數",
           title: "最新市場指數",
-          subtitle: "台灣證券交易所 / 道瓊工業 / 那斯達克 / 標普 500",
+          subtitle: catalogSubtitle(language),
           loading: "載入市場指數中",
           live: "開盤中",
           closed: "已收盤",
@@ -96,7 +96,7 @@ export function MarketIndicesStrip({ error, isLoading = false, items }: Props) {
       : {
           eyebrow: "Latest market prices",
           title: "Latest Market Prices",
-          subtitle: "Taiwan Stock Exchange / DOW Jones / Nasdaq / S&P 500",
+          subtitle: catalogSubtitle(language),
           loading: "Loading market indices",
           live: "Live",
           closed: "Closed",

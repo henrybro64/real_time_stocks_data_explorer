@@ -1,7 +1,9 @@
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const projectRoot = dirname(fileURLToPath(import.meta.url));
+const monorepoRoot = join(projectRoot, "..");
+const sharedContractsRoot = join(monorepoRoot, "packages", "shared-contracts");
 
 /** FastAPI origin for dev/proxy; same-origin UI uses `/api` in the browser. */
 const backendProxyUrl = (
@@ -13,7 +15,22 @@ const backendProxyUrl = (
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
-  outputFileTracingRoot: projectRoot,
+  // Shared contracts live next to frontend/ in the monorepo (and Docker image).
+  outputFileTracingRoot: monorepoRoot,
+  turbopack: {
+    // Allow resolving ../packages/shared-contracts during `next dev`.
+    root: monorepoRoot,
+    resolveAlias: {
+      "@shared": sharedContractsRoot,
+    },
+  },
+  webpack: (config) => {
+    config.resolve.alias = {
+      ...config.resolve.alias,
+      "@shared": sharedContractsRoot,
+    };
+    return config;
+  },
   async rewrites() {
     return [
       {
