@@ -60,11 +60,12 @@ Rankings expose `timestamp`, `sourceType`, `dataFreshnessLabel`, and related fie
 Home dashboard calls:
 
 ```text
+GET /api/markets/indices
 GET /api/markets/fx/usd-twd
 GET /api/markets/commodities/wti-crude-oil
 ```
 
-Both soft-cache ~60s and may serve retained quotes as stale after provider failure.
+Indices use the fixed catalog in `packages/shared-contracts/marketIndexCatalog.json`. FX/commodity quotes soft-cache ~60s and may serve retained values as stale after provider failure.
 
 ## Market rankings
 

@@ -3,10 +3,26 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from app.api.routes import markets as markets_route
-from app.services.market_index_service import MarketIndexRecord, MarketIndexService
+from app.services.market_index_service import (
+    MarketIndexRecord,
+    MarketIndexService,
+    _INDEX_CATALOG,
+)
 
 
 def test_markets_indices_route_serializes_unavailable_placeholder(monkeypatch) -> None:
+    def yahoo_us(_yahoo_symbol: str, record_id: str, label: str) -> MarketIndexRecord:
+        return MarketIndexRecord(
+            id=record_id,
+            market="US",
+            label=label,
+            value=100.0,
+            change=1.0,
+            change_percent=1.0,
+            timestamp=datetime(2026, 7, 13, tzinfo=timezone.utc).isoformat(),
+            is_market_open=False,
+        )
+
     service = MarketIndexService(
         twse_fetcher=lambda: None,
         yahoo_taiwan_fetcher=lambda: None,
@@ -20,14 +36,20 @@ def test_markets_indices_route_serializes_unavailable_placeholder(monkeypatch) -
             timestamp=datetime(2026, 7, 13, tzinfo=timezone.utc).isoformat(),
             is_market_open=False,
         ),
+        yahoo_us_fetcher=yahoo_us,
     )
     monkeypatch.setattr(markets_route, "market_index_service", service)
 
     response = markets_route.get_market_indices()
+    catalog_ids = [slot.id for slot in _INDEX_CATALOG]
+    sox = next(slot for slot in _INDEX_CATALOG if slot.id == "^SOX")
 
-    assert len(response) == 4
-    assert response[0]["id"] == "TWSE:TAIEX"
+    assert [item["id"] for item in response] == catalog_ids
+    assert response[0]["id"] == catalog_ids[0]
     assert response[0]["status"] == "unavailable"
     assert response[0]["value"] is None
     assert response[0]["unavailableReason"] == "taiwan_provider_unavailable"
     assert response[1]["status"] == "ok"
+    assert response[-1]["id"] == sox.id
+    assert response[-1]["label"] == sox.label
+    assert response[-1]["status"] == "ok"

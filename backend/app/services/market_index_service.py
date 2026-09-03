@@ -3,9 +3,10 @@ from __future__ import annotations
 import json
 import logging
 import ssl
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from http.client import RemoteDisconnected
+from pathlib import Path
 from typing import Callable, Literal
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode
@@ -35,8 +36,6 @@ _BROWSER_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
 )
-_TW_INDEX_ID = "TWSE:TAIEX"
-_TW_INDEX_LABEL = "Taiwan Stock Exchange"
 _TW_YAHOO_SYMBOL = "^TWII"
 _TZ_TAIPEI = "Asia/Taipei"
 _TZ_NEW_YORK = "America/New_York"
@@ -66,18 +65,46 @@ class _IndexSlot:
     label: str
 
 
-_INDEX_CATALOG: tuple[_IndexSlot, ...] = (
-    _IndexSlot(id=_TW_INDEX_ID, market="TW", label=_TW_INDEX_LABEL),
-    _IndexSlot(id="^DJI", market="US", label="DOW Jones"),
-    _IndexSlot(id="^NDQ", market="US", label="Nasdaq"),
-    _IndexSlot(id="^SPX", market="US", label="S&P 500"),
-)
+def _resolve_catalog_path() -> Path:
+    """Prefer the Docker-bundled copy, then the shared-contracts source in a repo checkout."""
+    bundled = Path(__file__).resolve().parents[1] / "data" / "market_index_catalog.json"
+    if bundled.is_file():
+        return bundled
+    shared = (
+        Path(__file__).resolve().parents[3]
+        / "packages"
+        / "shared-contracts"
+        / "marketIndexCatalog.json"
+    )
+    if shared.is_file():
+        return shared
+    raise FileNotFoundError(
+        "market index catalog not found (expected app/data or packages/shared-contracts)",
+    )
 
-_US_YAHOO_SYMBOLS = {
-    "^DJI": "^DJI",
-    "^NDQ": "^IXIC",
-    "^SPX": "^GSPC",
-}
+
+def _load_market_index_catalog() -> tuple[
+    tuple[_IndexSlot, ...],
+    dict[str, str],
+    dict[str, str | None],
+]:
+    payload = json.loads(_resolve_catalog_path().read_text(encoding="utf-8"))
+    slots = tuple(
+        _IndexSlot(id=entry["id"], market=entry["market"], label=entry["label"])
+        for entry in payload["indices"]
+    )
+    yahoo_symbols = {str(key): str(value) for key, value in payload["usYahooSymbols"].items()}
+    stooq_symbols = {
+        str(key): (None if value is None else str(value))
+        for key, value in payload["usStooqSymbols"].items()
+    }
+    return slots, yahoo_symbols, stooq_symbols
+
+
+_INDEX_CATALOG, _US_YAHOO_SYMBOLS, _US_STOOQ_SYMBOLS = _load_market_index_catalog()
+_TW_SLOT = next(slot for slot in _INDEX_CATALOG if slot.market == "TW")
+_TW_INDEX_ID = _TW_SLOT.id
+_TW_INDEX_LABEL = _TW_SLOT.label
 
 
 class MarketIndexService:
@@ -179,22 +206,28 @@ class MarketIndexService:
         )
 
     def _resolve_us(self, slot: _IndexSlot) -> MarketIndexRecord:
-        try:
-            record = self._stooq_fetcher(slot.id, slot.label)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "US Stooq index fetch raised; trying Yahoo fallback",
-                extra={
-                    "event": "market_index.stooq.error",
-                    "provider": "stooq",
-                    "index_id": slot.id,
-                    "error_type": type(exc).__name__,
-                    "error": str(exc),
-                },
-            )
-            record = None
-        if record is not None:
-            return record
+        stooq_symbol = _US_STOOQ_SYMBOLS.get(slot.id)
+        record = None
+        if stooq_symbol is not None:
+            try:
+                record = self._stooq_fetcher(stooq_symbol, slot.label)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "US Stooq index fetch raised; trying Yahoo fallback",
+                    extra={
+                        "event": "market_index.stooq.error",
+                        "provider": "stooq",
+                        "index_id": slot.id,
+                        "error_type": type(exc).__name__,
+                        "error": str(exc),
+                    },
+                )
+                record = None
+            if record is not None:
+                # Always expose the catalog id (Stooq symbol may differ in future).
+                if record.id != slot.id:
+                    return replace(record, id=slot.id, label=slot.label)
+                return record
 
         yahoo_symbol = _US_YAHOO_SYMBOLS[slot.id]
         try:
@@ -213,25 +246,26 @@ class MarketIndexService:
             )
             fallback = None
         if fallback is not None:
-            logger.warning(
-                "US index using Yahoo fallback after Stooq failure",
-                extra={
-                    "event": "market_index.stooq.fallback_used",
-                    "provider": "yahoo_finance",
-                    "index_id": slot.id,
-                    "yahoo_symbol": yahoo_symbol,
-                },
-            )
+            if stooq_symbol is not None:
+                logger.warning(
+                    "US index using Yahoo fallback after Stooq failure",
+                    extra={
+                        "event": "market_index.stooq.fallback_used",
+                        "provider": "yahoo_finance",
+                        "index_id": slot.id,
+                        "yahoo_symbol": yahoo_symbol,
+                    },
+                )
             return fallback
 
         logger.warning(
-            "US index unavailable after Stooq and Yahoo providers failed",
+            "US index unavailable after providers failed",
             extra={
                 "event": "market_index.us.unavailable",
-                "provider": "stooq",
-                "fallback_provider": "yahoo_finance",
+                "provider": "stooq" if stooq_symbol is not None else "yahoo_finance",
+                "fallback_provider": "yahoo_finance" if stooq_symbol is not None else None,
                 "index_id": slot.id,
-                "request_url": _STOOQ_QUOTE_URL,
+                "request_url": _STOOQ_QUOTE_URL if stooq_symbol is not None else _YAHOO_CHART_URL,
             },
         )
         return _unavailable_index(slot, reason="us_provider_unavailable")

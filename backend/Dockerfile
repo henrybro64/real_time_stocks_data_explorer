@@ -51,6 +51,7 @@ RUN python -m pip install "pip==25.2" \
         "yfinance==1.6.0"
 
 COPY backend/. .
+COPY packages/shared-contracts/marketIndexCatalog.json ./app/data/market_index_catalog.json
 
 EXPOSE 8000
 

@@ -1,5 +1,6 @@
 import type { Page, Route } from "@playwright/test";
 
+import { MARKET_INDEX_CATALOG } from "../../../packages/shared-contracts/marketIndexCatalog";
 import {
   handleRealizedTradeRoute,
   type RealizedTradeRow,
@@ -100,56 +101,67 @@ const E2E_MARKETS = [
   },
 ] as const;
 
-const E2E_MARKET_INDICES = [
+const E2E_MARKET_INDEX_QUOTES: Record<
+  string,
   {
-    id: "TWSE:TAIEX",
-    market: "TW",
-    label: "Taiwan Stock Exchange",
+    value: number;
+    change: number;
+    changePercent: number;
+    timestamp: string;
+    isMarketOpen: boolean;
+  }
+> = {
+  "TWSE:TAIEX": {
     value: 21950.32,
     change: 85.44,
     changePercent: 0.39,
     timestamp: "2026-05-11T09:00:00+08:00",
     isMarketOpen: true,
-    status: "ok",
-    unavailableReason: null,
   },
-  {
-    id: "^DJI",
-    market: "US",
-    label: "DOW Jones",
+  "^DJI": {
     value: 39210.17,
     change: -102.12,
     changePercent: -0.26,
     timestamp: "2026-05-10T16:00:00-04:00",
     isMarketOpen: false,
-    status: "ok",
-    unavailableReason: null,
   },
-  {
-    id: "^NDQ",
-    market: "US",
-    label: "Nasdaq",
+  "^NDQ": {
     value: 16980.4,
     change: 44.11,
     changePercent: 0.26,
     timestamp: "2026-05-10T16:00:00-04:00",
     isMarketOpen: false,
-    status: "ok",
-    unavailableReason: null,
   },
-  {
-    id: "^SPX",
-    market: "US",
-    label: "S&P 500",
+  "^SPX": {
     value: 5322.55,
     change: 9.87,
     changePercent: 0.19,
     timestamp: "2026-05-10T16:00:00-04:00",
     isMarketOpen: false,
-    status: "ok",
-    unavailableReason: null,
   },
-] as const;
+  "^SOX": {
+    value: 5488.12,
+    change: 21.4,
+    changePercent: 0.39,
+    timestamp: "2026-05-10T16:00:00-04:00",
+    isMarketOpen: false,
+  },
+};
+
+const E2E_MARKET_INDICES = MARKET_INDEX_CATALOG.map((entry) => {
+  const quote = E2E_MARKET_INDEX_QUOTES[entry.id];
+  if (!quote) {
+    throw new Error(`Missing E2E quote fixture for market index ${entry.id}`);
+  }
+  return {
+    id: entry.id,
+    market: entry.market,
+    label: entry.label,
+    ...quote,
+    status: "ok" as const,
+    unavailableReason: null,
+  };
+});
 
 function buildRankingsResponse(url: URL) {
   const market = (url.searchParams.get("market") ?? "TW") as "TW" | "US";
