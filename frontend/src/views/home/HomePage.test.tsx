@@ -6,6 +6,7 @@ import {
 } from "@tanstack/react-query";
 import type { MarketStatus, QuoteResponse } from "@shared/api";
 import { act, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { LanguageProvider } from "../../app/i18n";
@@ -47,13 +48,23 @@ vi.mock("../../components/market-snapshot/MarketSnapshot", () => ({
 vi.mock("../../components/watchlist/WatchlistTable", () => ({
   WatchlistTable: ({
     isRefreshing,
+    isRetryingQuote,
     items,
+    onRetryQuote,
   }: {
     isRefreshing?: boolean;
+    isRetryingQuote?: boolean;
     items: Array<{ stock: { id: string } }>;
+    onRetryQuote?: () => void;
   }) => (
     <div data-testid="watchlist-section">
       {isRefreshing ? <span data-testid="watchlist-refreshing">refreshing</span> : null}
+      {isRetryingQuote ? <span data-testid="watchlist-retrying-quote">retrying</span> : null}
+      {onRetryQuote ? (
+        <button data-testid="watchlist-retry-quote" type="button" onClick={onRetryQuote}>
+          retry
+        </button>
+      ) : null}
       {items.map((item) => (
         <div key={item.stock.id} data-testid={`stock-card-${item.stock.id}`} />
       ))}
@@ -517,5 +528,38 @@ describe("HomePage watchlist quote query", () => {
           : options?.refetchInterval;
       expect(interval).toBe(30_000);
     });
+  });
+
+  it("retries watchlist quotes through the batch refetch without background-fetch flagging", async () => {
+    const user = userEvent.setup();
+    let fetchCount = 0;
+    vi.mocked(fetchQuotes).mockImplementation(async () => {
+      fetchCount += 1;
+      return [
+        {
+          ...quoteResponse,
+          quote: null,
+          freshness: {
+            cachedAt: null,
+            ageSeconds: null,
+            stale: true,
+            source: "none",
+            refreshStatus: "unavailable",
+          },
+        },
+      ];
+    });
+    const queryClient = createQueryClient();
+    renderHome(queryClient);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("watchlist-retry-quote")).toBeInTheDocument();
+    });
+    const callsBeforeRetry = fetchCount;
+    await user.click(screen.getByTestId("watchlist-retry-quote"));
+    await waitFor(() => {
+      expect(fetchCount).toBeGreaterThan(callsBeforeRetry);
+    });
+    expect(screen.queryByTestId("watchlist-retrying-quote")).not.toBeInTheDocument();
   });
 });

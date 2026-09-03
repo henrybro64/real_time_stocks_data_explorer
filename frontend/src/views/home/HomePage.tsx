@@ -2,7 +2,7 @@
 
 import { Column, Grid, InlineLoading, Tile } from "@carbon/react";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
-import { useDeferredValue, useMemo, useState } from "react";
+import { useDeferredValue, useMemo, useRef, useState } from "react";
 import type { MarketIndex, MarketStatus, QuoteResponse } from "@shared/api";
 import type { Stock } from "@shared/stock";
 import { useLanguage } from "../../app/i18n";
@@ -13,14 +13,29 @@ import { StockSearch } from "../../components/search/StockSearch";
 import { WatchlistTable } from "../../components/watchlist/WatchlistTable";
 import { useWatchlist } from "../../hooks/useWatchlist";
 import { fetchMarketIndices, fetchMarkets, fetchQuotes, searchStocks } from "../../services/api/client";
+import {
+  isNullQuoteWarming,
+  isQuoteWarmingTimedOut,
+  QUOTE_WARMING_TIMEOUT_MS,
+} from "../../services/market-data/quoteWarming";
 import { resolveWatchlistQuoteQueryTiming } from "./watchlistQuoteQuery";
 import { deriveWatchlistNoticeKind } from "./watchlistState";
+
+const PENDING_BATCH_FRESHNESS = {
+  cachedAt: null,
+  ageSeconds: null,
+  stale: true,
+  source: "none" as const,
+  refreshStatus: "queued" as const,
+};
 
 export function HomePage() {
   const { t } = useLanguage();
   const [query, setQuery] = useState("");
   const deferredQuery = useDeferredValue(query);
   const watchlist = useWatchlist();
+  const warmingStartedAtByIdRef = useRef<Map<string, number>>(new Map());
+  const [isRetryingQuotes, setIsRetryingQuotes] = useState(false);
 
   const marketsQuery = useQuery<MarketStatus[]>({
     queryKey: ["markets"],
@@ -54,12 +69,14 @@ export function HomePage() {
         stockIds: watchlist.ids,
         markets: marketsQuery.data,
         quotes: query.state.data,
+        warmingTimedOut: allWarmingRowsTimedOut(query.state.data, warmingStartedAtByIdRef.current),
       }).staleTime,
     refetchInterval: (query) =>
       resolveWatchlistQuoteQueryTiming({
         stockIds: watchlist.ids,
         markets: marketsQuery.data,
         quotes: query.state.data,
+        warmingTimedOut: allWarmingRowsTimedOut(query.state.data, warmingStartedAtByIdRef.current),
       }).refetchInterval,
     refetchIntervalInBackground: false,
     refetchOnMount: true,
@@ -72,6 +89,35 @@ export function HomePage() {
     queryFn: () => searchStocks(deferredQuery),
     enabled: deferredQuery.trim().length > 0,
   });
+
+  const warmingTimedOutById = useMemo(() => {
+    const startedById = warmingStartedAtByIdRef.current;
+    const now = Date.now();
+    const next = new Map<string, boolean>();
+    const activeIds = new Set<string>();
+
+    for (const item of watchlistQuery.data ?? []) {
+      if (!isNullQuoteWarming(item)) {
+        startedById.delete(item.stock.id);
+        next.set(item.stock.id, false);
+        continue;
+      }
+      activeIds.add(item.stock.id);
+      const startedAt = startedById.get(item.stock.id) ?? now;
+      if (!startedById.has(item.stock.id)) {
+        startedById.set(item.stock.id, startedAt);
+      }
+      next.set(item.stock.id, isQuoteWarmingTimedOut(startedAt, now, QUOTE_WARMING_TIMEOUT_MS));
+    }
+
+    for (const stockId of [...startedById.keys()]) {
+      if (!activeIds.has(stockId)) {
+        startedById.delete(stockId);
+      }
+    }
+    return Object.fromEntries(next);
+    // dataUpdatedAt ensures wall-clock timeout flips even when payload is unchanged.
+  }, [watchlistQuery.data, watchlistQuery.dataUpdatedAt]);
 
   const watchlistItems = useMemo(() => {
     const quoteItemsById = new Map(
@@ -88,7 +134,8 @@ export function HomePage() {
       }
       const stock = knownStocksById.get(stockId);
       if (stock) {
-        return [{ stock }];
+        // Keep single-quote fetch disabled: treat as batch warming placeholder.
+        return [{ stock, quote: null, freshness: PENDING_BATCH_FRESHNESS }];
       }
       return [];
     });
@@ -115,6 +162,16 @@ export function HomePage() {
     watchlistQuery.data,
   ]);
 
+  const handleRetryQuotes = async () => {
+    warmingStartedAtByIdRef.current.clear();
+    setIsRetryingQuotes(true);
+    try {
+      await watchlistQuery.refetch();
+    } finally {
+      setIsRetryingQuotes(false);
+    }
+  };
+
   return (
     <Grid className="app-page-grid app-home-page-grid" fullWidth>
       <Column className="app-column-spacing app-home-hero-column" sm={4} md={8} lg={12}>
@@ -130,26 +187,9 @@ export function HomePage() {
             <span>
               {t("home.summary.tracked")}: {watchlist.ids.length}
             </span>
-          </div>
-        </Tile>
-      </Column>
-      <Column className="app-column-spacing app-home-summary-column" sm={4} md={8} lg={4}>
-        <Tile className="app-summary-tile">
-          <p className="app-eyebrow">{t("home.summary.title")}</p>
-          <dl className="app-kpi-list">
-            <div>
-              <dt>{t("home.summary.markets")}</dt>
-              <dd>{marketsQuery.data?.length ?? 0}</dd>
-            </div>
-            <div>
-              <dt>{t("home.summary.tracked")}</dt>
-              <dd>{watchlist.ids.length}</dd>
-            </div>
-          </dl>
-          <div className="app-summary-loading-slot">
-            {marketsQuery.isLoading || (!watchlistQuery.data && watchlistQuery.isLoading) ? (
+            {(marketsQuery.isFetching || watchlistQuery.isFetching) && (
               <InlineLoading description={t("home.summary.loading")} status="active" />
-            ) : null}
+            )}
           </div>
         </Tile>
       </Column>
@@ -190,13 +230,38 @@ export function HomePage() {
             (watchlistQuery.isLoading || watchlist.isLoading)
           }
           isRefreshing={!!watchlistQuery.data && (watchlistQuery.isFetching || watchlist.isMutating)}
+          isRetryingQuote={isRetryingQuotes}
           items={watchlistItems}
           noticeKind={watchlistNoticeKind}
           pendingIds={pendingWatchlistIds}
           trackedCount={watchlist.ids.length}
+          warmingTimedOutById={warmingTimedOutById}
           onRemove={watchlist.remove}
+          onRetryQuote={handleRetryQuotes}
         />
       </Column>
     </Grid>
   );
+}
+
+function allWarmingRowsTimedOut(
+  quotes: QuoteResponse[] | undefined,
+  startedById: Map<string, number>,
+): boolean {
+  const now = Date.now();
+  let anyWarming = false;
+  for (const item of quotes ?? []) {
+    if (!isNullQuoteWarming(item)) {
+      continue;
+    }
+    anyWarming = true;
+    const startedAt = startedById.get(item.stock.id) ?? now;
+    if (!startedById.has(item.stock.id)) {
+      startedById.set(item.stock.id, startedAt);
+    }
+    if (!isQuoteWarmingTimedOut(startedAt, now, QUOTE_WARMING_TIMEOUT_MS)) {
+      return false;
+    }
+  }
+  return anyWarming;
 }

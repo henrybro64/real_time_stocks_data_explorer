@@ -116,6 +116,9 @@ export type TranslationKey =
   | "stock.quoteLoadError"
   | "stock.quoteLoading"
   | "stock.quoteRefreshing"
+  | "stock.quoteUnavailableTitle"
+  | "stock.quoteUnavailableBody"
+  | "stock.quoteRetry"
   | "stock.weekRange"
   | "stock.weekRangeNoData"
   | "detail.invalidStockId"
@@ -588,6 +591,9 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "stock.quoteLoadError": "Unable to load quote right now.",
     "stock.quoteLoading": "Loading quote",
     "stock.quoteRefreshing": "Refreshing quote",
+    "stock.quoteUnavailableTitle": "Unable to load quote",
+    "stock.quoteUnavailableBody": "The external data source is temporarily unavailable. Please try again later.",
+    "stock.quoteRetry": "Refresh",
     "stock.weekRange": "1W",
     "stock.weekRangeNoData": "No 1-week trend data yet",
     "detail.invalidStockId": "Stock ID not found.",
@@ -1074,6 +1080,9 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "stock.quoteLoadError": "目前無法載入報價。",
     "stock.quoteLoading": "載入報價中",
     "stock.quoteRefreshing": "更新報價中",
+    "stock.quoteUnavailableTitle": "目前無法載入報價",
+    "stock.quoteUnavailableBody": "外部資料來源暫時無法使用，請稍後再試。",
+    "stock.quoteRetry": "重新整理",
     "stock.weekRange": "近一週",
     "stock.weekRangeNoData": "近一週走勢暫時無資料",
     "detail.invalidStockId": "找不到股票代碼。",

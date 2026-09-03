@@ -576,16 +576,25 @@ def release_refresh_lock(stock_id: str, token: str | None = None) -> None:
             _memory_refresh_locks.pop(stock_id, None)
 
 
-def record_refresh_failure(stock_id: str) -> None:
-    """Backoff re-queueing after a failed background refresh."""
-    until = time.monotonic() + refresh_failure_backoff_seconds()
+def record_refresh_failure(
+    stock_id: str,
+    *,
+    backoff_seconds: float | None = None,
+) -> None:
+    """Backoff re-queueing after a failed background refresh.
+
+    ``backoff_seconds`` may extend past the default lock TTL so Retry-After /
+    soft circuit windows are honored before the next cache-miss re-queue.
+    """
+    seconds = int(max(float(backoff_seconds or refresh_failure_backoff_seconds()), 1))
+    until = time.monotonic() + seconds
     with _memory_lock:
         _memory_refresh_failures[stock_id] = until
     _run_redis(
         f"refresh failure marker {stock_id}",
         lambda client: client.setex(
             f"{_LOCK_PREFIX}fail:{stock_id}",
-            refresh_failure_backoff_seconds(),
+            seconds,
             "1",
         ),
         kind="write",

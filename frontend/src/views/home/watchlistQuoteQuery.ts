@@ -1,5 +1,15 @@
 import type { MarketStatus, QuoteResponse } from "@shared/api";
 import type { MarketCode } from "@shared/stock";
+import {
+  quotesAreWarming,
+} from "../../services/market-data/quoteWarming";
+
+export {
+  isNullQuoteWarming,
+  isQuoteWarmingTimedOut,
+  quotesAreWarming,
+  QUOTE_WARMING_TIMEOUT_MS,
+} from "../../services/market-data/quoteWarming";
 
 /**
  * Matches backend `QUOTE_REFRESHER_OPEN_POLL_SECONDS` (default 45).
@@ -41,6 +51,8 @@ type ResolveWatchlistQuoteQueryTimingOptions = {
   markets?: MarketStatus[] | null;
   /** Latest batch response; used to accelerate cadence when Redis marks quotes stale/warming. */
   quotes?: QuoteResponse[] | null;
+  /** When true, stop the short warming poll even if some rows still report queued. */
+  warmingTimedOut?: boolean;
 };
 
 const KNOWN_MARKETS = new Set<MarketCode>(["TW", "US"]);
@@ -97,23 +109,6 @@ export function isAnyTrackedMarketOpen(
 }
 
 /**
- * True when at least one batch item is still warming (null quote + refresh in flight).
- * These need a short retry so cards do not wait a full open-interval for the first fill.
- */
-export function quotesAreWarming(quotes?: QuoteResponse[] | null): boolean {
-  if (!quotes || quotes.length === 0) {
-    return false;
-  }
-  return quotes.some((item) => {
-    if (item.quote != null) {
-      return false;
-    }
-    const status = item.freshness?.refreshStatus;
-    return status === "queued" || status === "refreshing";
-  });
-}
-
-/**
  * Prefer open cadence when freshness metadata says Redis is already soft-stale.
  * Warming (null + queued/refreshing) is handled separately via a short retry interval.
  */
@@ -128,8 +123,9 @@ export function resolveWatchlistQuoteQueryTiming({
   stockIds,
   markets,
   quotes,
+  warmingTimedOut = false,
 }: ResolveWatchlistQuoteQueryTimingOptions): WatchlistQuoteQueryTiming {
-  if (quotesAreWarming(quotes)) {
+  if (quotesAreWarming(quotes) && !warmingTimedOut) {
     return {
       staleTime: WATCHLIST_QUOTE_STALE_TIME_WARMING_MS,
       refetchInterval: WATCHLIST_QUOTE_REFETCH_INTERVAL_WARMING_MS,

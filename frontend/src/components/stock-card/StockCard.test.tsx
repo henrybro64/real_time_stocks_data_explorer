@@ -1,9 +1,10 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { LanguageProvider } from "../../app/i18n";
+import { fetchQuote } from "../../services/api/client";
 import { PRICE_STROKE_COLORS } from "../../services/market-data/priceTone";
 import { StockCard } from "./StockCard";
 
@@ -94,14 +95,20 @@ function renderCard(onToggle = vi.fn()) {
 
 describe("StockCard", () => {
   beforeEach(() => {
+    window.localStorage.clear();
     pushMock.mockReset();
     fetchHistoryMock.mockReset();
+    vi.mocked(fetchQuote).mockReset();
     fetchHistoryMock.mockResolvedValue({
       stock,
       range: "1W",
       candles: [],
       chartLayout: null,
     });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it("uses calm history polling and disables background refetch", async () => {
@@ -313,6 +320,267 @@ describe("StockCard", () => {
     await waitFor(() => {
       expect(fetchHistoryMock).toHaveBeenCalledWith("US:AAPL", "1W");
     });
+  });
+
+  it("shows warming state for a null quote that is still queued", () => {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <LanguageProvider>
+          <StockCard
+            freshness={{
+              cachedAt: null,
+              ageSeconds: null,
+              stale: true,
+              source: "none",
+              refreshStatus: "queued",
+            }}
+            isTracked
+            onToggle={vi.fn()}
+            quote={null}
+            stock={stock}
+          />
+        </LanguageProvider>
+      </QueryClientProvider>,
+    );
+
+    expect(screen.getByTestId("stock-card-quote-refreshing-2330")).toBeInTheDocument();
+    expect(screen.getByText("更新報價中")).toBeInTheDocument();
+  });
+
+  it("shows unavailable UI immediately when refreshStatus is unavailable", () => {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <LanguageProvider>
+          <StockCard
+            freshness={{
+              cachedAt: null,
+              ageSeconds: null,
+              stale: true,
+              source: "none",
+              refreshStatus: "unavailable",
+            }}
+            isTracked
+            onRetryQuote={vi.fn()}
+            onToggle={vi.fn()}
+            quote={null}
+            stock={stock}
+          />
+        </LanguageProvider>
+      </QueryClientProvider>,
+    );
+
+    expect(screen.getByTestId("stock-card-quote-unavailable-2330")).toBeInTheDocument();
+    expect(screen.getByText("目前無法載入報價")).toBeInTheDocument();
+    expect(screen.getByText("外部資料來源暫時無法使用，請稍後再試。")).toBeInTheDocument();
+    expect(screen.queryByText("更新報價中")).not.toBeInTheDocument();
+  });
+
+  it("shows unavailable UI when the parent marks warming as timed out", () => {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    const freshness = {
+      cachedAt: null,
+      ageSeconds: null,
+      stale: true,
+      source: "none" as const,
+      refreshStatus: "queued" as const,
+    };
+    const { rerender } = render(
+      <QueryClientProvider client={queryClient}>
+        <LanguageProvider>
+          <StockCard
+            freshness={freshness}
+            isTracked
+            onRetryQuote={vi.fn()}
+            onToggle={vi.fn()}
+            quote={null}
+            stock={stock}
+            warmingTimedOut={false}
+          />
+        </LanguageProvider>
+      </QueryClientProvider>,
+    );
+
+    expect(screen.getByTestId("stock-card-quote-refreshing-2330")).toBeInTheDocument();
+    rerender(
+      <QueryClientProvider client={queryClient}>
+        <LanguageProvider>
+          <StockCard
+            freshness={freshness}
+            isTracked
+            onRetryQuote={vi.fn()}
+            onToggle={vi.fn()}
+            quote={null}
+            stock={stock}
+            warmingTimedOut
+          />
+        </LanguageProvider>
+      </QueryClientProvider>,
+    );
+    expect(screen.getByTestId("stock-card-quote-unavailable-2330")).toBeInTheDocument();
+    expect(screen.queryByTestId("stock-card-quote-refreshing-2330")).not.toBeInTheDocument();
+  });
+
+  it("does not call fetchQuote when batch supplies quote null", async () => {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <LanguageProvider>
+          <StockCard
+            freshness={{
+              cachedAt: null,
+              ageSeconds: null,
+              stale: true,
+              source: "none",
+              refreshStatus: "queued",
+            }}
+            isTracked
+            onToggle={vi.fn()}
+            quote={null}
+            stock={stock}
+          />
+        </LanguageProvider>
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => {
+      expect(fetchHistoryMock).toHaveBeenCalled();
+    });
+    expect(fetchQuote).not.toHaveBeenCalled();
+  });
+
+  it("retries through the parent callback without navigating", async () => {
+    const user = userEvent.setup();
+    const onRetryQuote = vi.fn();
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <LanguageProvider>
+          <StockCard
+            freshness={{
+              cachedAt: null,
+              ageSeconds: null,
+              stale: true,
+              source: "none",
+              refreshStatus: "unavailable",
+            }}
+            isTracked
+            onRetryQuote={onRetryQuote}
+            onToggle={vi.fn()}
+            quote={null}
+            stock={stock}
+          />
+        </LanguageProvider>
+      </QueryClientProvider>,
+    );
+
+    await user.click(screen.getByTestId("stock-card-quote-retry-2330"));
+    expect(onRetryQuote).toHaveBeenCalledTimes(1);
+    expect(pushMock).not.toHaveBeenCalled();
+  });
+
+  it("disables retry and shows progress while isRetryingQuote is true", () => {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <LanguageProvider>
+          <StockCard
+            freshness={{
+              cachedAt: null,
+              ageSeconds: null,
+              stale: true,
+              source: "none",
+              refreshStatus: "unavailable",
+            }}
+            isRetryingQuote
+            isTracked
+            onRetryQuote={vi.fn()}
+            onToggle={vi.fn()}
+            quote={null}
+            stock={stock}
+          />
+        </LanguageProvider>
+      </QueryClientProvider>,
+    );
+
+    expect(screen.getByTestId("stock-card-quote-retry-2330")).toBeDisabled();
+    expect(screen.getByText("重新整理")).toBeInTheDocument();
+  });
+
+  it("keeps a stale quote visible when refreshStatus is unavailable", () => {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <LanguageProvider>
+          <StockCard
+            freshness={{
+              cachedAt: "2026-05-11T08:00:00+08:00",
+              ageSeconds: 120,
+              stale: true,
+              source: "redis",
+              refreshStatus: "unavailable",
+            }}
+            isTracked
+            onRetryQuote={vi.fn()}
+            onToggle={vi.fn()}
+            quote={quote}
+            stock={stock}
+          />
+        </LanguageProvider>
+      </QueryClientProvider>,
+    );
+
+    expect(screen.getByText("$950.00")).toBeInTheDocument();
+    expect(screen.queryByTestId("stock-card-quote-unavailable-2330")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("stock-card-quote-retry-2330")).not.toBeInTheDocument();
+  });
+
+  it("renders English unavailable copy", () => {
+    window.localStorage.setItem("stock-ticker-language", "en");
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <LanguageProvider>
+          <StockCard
+            freshness={{
+              cachedAt: null,
+              ageSeconds: null,
+              stale: true,
+              source: "none",
+              refreshStatus: "unavailable",
+            }}
+            isTracked
+            onRetryQuote={vi.fn()}
+            onToggle={vi.fn()}
+            quote={null}
+            stock={stock}
+          />
+        </LanguageProvider>
+      </QueryClientProvider>,
+    );
+
+    expect(screen.getByText("Unable to load quote")).toBeInTheDocument();
+    expect(
+      screen.getByText("The external data source is temporarily unavailable. Please try again later."),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Refresh" })).toBeInTheDocument();
   });
 });
 

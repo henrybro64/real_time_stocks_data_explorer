@@ -27,8 +27,11 @@ from app.services.http_client import (
 )
 from app.services.market_clock import is_market_open, is_within_hour_before_market_open
 from app.services.quote_redis_cache import (
+    clear_refresh_failure,
     get_cached_quote_entries,
+    record_refresh_failure,
     redis_enabled,
+    refresh_failure_backoff_seconds,
     refresh_lock_seconds,
     release_refresh_lock,
     renew_refresh_lock,
@@ -194,23 +197,75 @@ class QuoteRefresherService:
         self._pool.submit(self._safe_immediate_refresh, normalized)
 
     def _safe_immediate_refresh(self, stock_id: str) -> None:
+        outcome = "failed"
         try:
-            outcome = self._refresh_one(stock_id)
+            outcome = self._refresh_one(stock_id, respect_soft_backoff=True)
             self._apply_refresh_outcome(stock_id, outcome)
-            if outcome == "refreshed":
-                with self._immediate_lock:
-                    self._immediate.discard(stock_id)
+            self._finalize_immediate_attempt(stock_id, outcome)
         except Exception as exc:  # noqa: BLE001 - never kill caller paths
             self._apply_refresh_exception(stock_id, exc)
-            logger.warning(
-                "Immediate quote refresh failed",
+            self._finalize_immediate_attempt(stock_id, "failed", error=exc)
+        finally:
+            # Always leave a terminal state so later polls can re-queue after backoff.
+            with self._immediate_lock:
+                self._immediate.discard(stock_id)
+
+    def _finalize_immediate_attempt(
+        self,
+        stock_id: str,
+        outcome: str,
+        *,
+        error: Exception | None = None,
+    ) -> None:
+        """Record success/failure markers for cache-miss refreshStatus accuracy."""
+        if outcome == "refreshed":
+            clear_refresh_failure(stock_id)
+            logger.info(
+                "Immediate quote refresh completed",
                 extra={
-                    "event": "quote_refresher.immediate.failed",
+                    "event": "quote_refresher.immediate.completed",
                     "stock_id": stock_id,
-                    "error_type": type(exc).__name__,
-                    "error": str(exc),
+                    "outcome": "refreshed",
                 },
             )
+            return
+
+        if outcome == "locked":
+            # Another worker owns the refresh; do not start failure backoff.
+            logger.info(
+                "Immediate quote refresh deferred; lock held elsewhere",
+                extra={
+                    "event": "quote_refresher.immediate.locked",
+                    "stock_id": stock_id,
+                    "outcome": "locked",
+                },
+            )
+            return
+
+        classification = (
+            _classification_from_exc(error)
+            if error is not None
+            else ("empty" if outcome == "empty" else outcome)
+        )
+        retry_after = _retry_after_from_exc(error) if error is not None else None
+        market = stock_id.split(":", 1)[0]
+        backoff_seconds = max(
+            float(refresh_failure_backoff_seconds()),
+            float(retry_after or 0.0),
+            self._soft_backoff_remaining_seconds(market),
+        )
+        record_refresh_failure(stock_id, backoff_seconds=backoff_seconds)
+        logger.warning(
+            "Immediate quote refresh ended without a usable quote",
+            extra={
+                "event": "quote_refresher.immediate.terminal",
+                "stock_id": stock_id,
+                "outcome": outcome,
+                "classification": classification,
+                "backoff_seconds": backoff_seconds,
+                "error_type": type(error).__name__ if error is not None else None,
+            },
+        )
 
     def collect_tracked_stock_ids(self) -> tuple[list[str], int]:
         """Return unique IDs and how many duplicate rows were collapsed."""
@@ -218,7 +273,7 @@ class QuoteRefresherService:
         portfolio_ids = self._portfolio_repo.list_distinct_position_stock_ids()
         with self._immediate_lock:
             immediate = sorted(self._immediate)
-            # Keep immediate IDs until a successful refresh removes them.
+            # Immediate IDs stay listed only while an attempt is in flight.
         raw_count = len(watchlist_ids) + len(portfolio_ids) + len(immediate)
         unique = list(dict.fromkeys([*watchlist_ids, *portfolio_ids, *immediate]))
         return unique, max(0, raw_count - len(unique))
@@ -421,11 +476,14 @@ class QuoteRefresherService:
             if self._stop_event.wait(poll_seconds):
                 return
 
-    def _refresh_one(self, stock_id: str) -> str:
+    def _refresh_one(self, stock_id: str, *, respect_soft_backoff: bool = False) -> str:
         market = stock_id.split(":", 1)[0]
-        # Soft backoff is evaluated at cycle planning time only so one failure
-        # cannot abort sibling symbols already submitted in this cycle.
+        # Soft backoff is evaluated at cycle planning time for batch cycles so one
+        # failure cannot abort sibling symbols already submitted. Immediate
+        # refreshes honor soft backoff so Retry-After windows are respected.
         if self._hard_circuit_is_open(market):
+            return "circuit"
+        if respect_soft_backoff and self._circuit_is_open(market):
             return "circuit"
         delay = self.jitter_seconds()
         if delay > 0:
@@ -456,8 +514,6 @@ class QuoteRefresherService:
             attempt = self._quote_source.fetch_quote_for_refresh(stock_id)
             if attempt.quote is not None:
                 set_cached_quote(stock_id, attempt.quote)
-                with self._immediate_lock:
-                    self._immediate.discard(stock_id)
                 return "refreshed"
             if attempt.error is not None:
                 raise attempt.error
@@ -560,6 +616,12 @@ class QuoteRefresherService:
             state = self._circuits.setdefault(market, ProviderCircuitState())
             return time.monotonic() < state.open_until_monotonic
 
+    def _soft_backoff_remaining_seconds(self, market: str) -> float:
+        with self._circuit_lock:
+            state = self._circuits.setdefault(market, ProviderCircuitState())
+            remaining = state.backoff_until_monotonic - time.monotonic()
+            return max(0.0, remaining)
+
     def _note_provider_success(self, market: str) -> None:
         with self._circuit_lock:
             state = self._circuits.setdefault(market, ProviderCircuitState())
@@ -655,6 +717,9 @@ class QuoteRefresherService:
                     stats.success_by_provider.get(market, 0) + 1
                 )
             self._note_provider_success(market)
+            # Cycle path may refresh an immediate ID; clear so collect_tracked drops it.
+            with self._immediate_lock:
+                self._immediate.discard(stock_id)
             return
         if outcome == "locked":
             if stats is not None:

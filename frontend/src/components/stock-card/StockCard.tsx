@@ -33,6 +33,11 @@ type Props = {
   /** Override Add / Remove button labels (e.g. portfolio vs watchlist). */
   addLabel?: string;
   removeLabel?: string;
+  /** Batch-owned retry for dashboard unavailable cards. */
+  onRetryQuote?: () => void;
+  isRetryingQuote?: boolean;
+  /** Parent-owned warming timeout (single clock for poll cadence + card UI). */
+  warmingTimedOut?: boolean;
 };
 
 export function StockCard({
@@ -43,6 +48,9 @@ export function StockCard({
   onToggle,
   addLabel,
   removeLabel,
+  onRetryQuote,
+  isRetryingQuote = false,
+  warmingTimedOut = false,
 }: Props) {
   const router = useRouter();
   const { language, t, formatNumber } = useLanguage();
@@ -72,7 +80,12 @@ export function StockCard({
   const chartLayout = historyQuery.data?.chartLayout ?? null;
   const quoteRefreshFailed = initialQuote === undefined && quoteQuery.isError && quote != null;
   const detailHref = `/stock/${encodeURIComponent(stock.id)}`;
-  const pendingUnavailable = quote == null && freshness?.refreshStatus === "unavailable";
+
+  const refreshStatus = freshness?.refreshStatus;
+  const isWarming =
+    quote == null && (refreshStatus === "queued" || refreshStatus === "refreshing");
+  const pendingUnavailable =
+    quote == null && (refreshStatus === "unavailable" || (isWarming && warmingTimedOut));
 
   const handleCardClick = (event: MouseEvent<HTMLDivElement>) => {
     if (shouldIgnoreNavigation(event.target, event.currentTarget)) {
@@ -90,6 +103,12 @@ export function StockCard({
     }
     event.preventDefault();
     router.push(detailHref);
+  };
+
+  const handleRetryQuote = (event: MouseEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    onRetryQuote?.();
   };
 
   return (
@@ -178,10 +197,25 @@ export function StockCard({
       ) : (
         <StockCardPendingBody
           error={quoteQuery.isError ? quoteQuery.error : null}
-          freshness={freshness}
+          freshness={
+            pendingUnavailable && freshness?.refreshStatus !== "unavailable"
+              ? {
+                  cachedAt: null,
+                  ageSeconds: null,
+                  stale: true,
+                  source: "none",
+                  refreshStatus: "unavailable",
+                }
+              : freshness
+          }
+          isRetryingQuote={isRetryingQuote}
           pendingUnavailable={pendingUnavailable}
-          stockSymbol={stock.symbol}
           refreshingLabel={t("stock.quoteRefreshing")}
+          retryLabel={t("stock.quoteRetry")}
+          stockSymbol={stock.symbol}
+          unavailableBody={t("stock.quoteUnavailableBody")}
+          unavailableTitle={t("stock.quoteUnavailableTitle")}
+          onRetryQuote={onRetryQuote ? handleRetryQuote : undefined}
         />
       )}
 
@@ -229,31 +263,64 @@ function StockCardPendingBody({
   pendingUnavailable,
   stockSymbol,
   refreshingLabel,
+  unavailableTitle,
+  unavailableBody,
+  retryLabel,
+  onRetryQuote,
+  isRetryingQuote,
 }: Readonly<{
   error: unknown | null;
   freshness: QuoteFreshnessMeta | null;
   pendingUnavailable: boolean;
   stockSymbol: string;
   refreshingLabel: string;
+  unavailableTitle: string;
+  unavailableBody: string;
+  retryLabel: string;
+  onRetryQuote?: (event: MouseEvent<HTMLButtonElement>) => void;
+  isRetryingQuote: boolean;
 }>) {
   if (error != null) {
     return <RequestStateNotice compact kind={errorToNoticeKind(error)} scopeLabel={stockSymbol} />;
   }
   if (pendingUnavailable) {
     return (
-      <div className="app-stock-card-status-row">
-        <QuoteFreshnessTag
-          freshnessMeta={freshness}
-          hasQuote={false}
-          isMarketOpen={false}
-          timestamp=""
-        />
-        <RequestStateNotice compact kind="unavailable" scopeLabel={stockSymbol} />
+      <div className="app-stock-card-pending-unavailable" data-testid={`stock-card-quote-unavailable-${stockSymbol}`}>
+        <div className="app-stock-card-status-row">
+          <QuoteFreshnessTag
+            freshnessMeta={freshness}
+            hasQuote={false}
+            isMarketOpen={false}
+            timestamp=""
+          />
+        </div>
+        <p className="app-result-name">{unavailableTitle}</p>
+        <p className="app-supporting-copy">{unavailableBody}</p>
+        {onRetryQuote ? (
+          <Button
+            data-testid={`stock-card-quote-retry-${stockSymbol}`}
+            disabled={isRetryingQuote}
+            kind="ghost"
+            size="sm"
+            onClick={onRetryQuote}
+          >
+            {isRetryingQuote ? (
+              <InlineLoading description={retryLabel} status="active" />
+            ) : (
+              retryLabel
+            )}
+          </Button>
+        ) : (
+          <RequestStateNotice compact kind="unavailable" scopeLabel={stockSymbol} />
+        )}
       </div>
     );
   }
   return (
-    <div className="app-stock-card-status-row">
+    <div
+      className="app-stock-card-status-row"
+      data-testid={`stock-card-quote-refreshing-${stockSymbol}`}
+    >
       <QuoteFreshnessTag
         freshnessMeta={
           freshness ?? {

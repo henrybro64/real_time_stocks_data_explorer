@@ -256,12 +256,17 @@ class QuoteService:
             )
 
         if self._background_refresher_owns_upstream():
-            self._request_background_refresh(stock_id)
             if cached is not None:
                 return self._batch_item_from_cache(
-                    stock, cached, stale=True, refresh_status="queued"
+                    stock,
+                    cached,
+                    stale=True,
+                    refresh_status=self._stale_refresh_status(stock_id),
                 )
-            return self._empty_batch_item(stock, refresh_status="queued")
+            return self._empty_batch_item(
+                stock,
+                refresh_status=self._miss_refresh_status(stock_id),
+            )
 
         return self._detail_from_provider(stock, cached)
 
