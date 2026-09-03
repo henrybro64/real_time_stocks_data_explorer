@@ -5,9 +5,11 @@ import type { MarketStatus, QuoteResponse } from "@shared/api";
 import {
   BACKEND_QUOTE_REFRESHER_OPEN_POLL_MS,
   isAnyTrackedMarketOpen,
+  isQuoteWarmingTimedOut,
   LEGACY_WATCHLIST_REFETCH_INTERVAL_OTHER_MS,
   LEGACY_WATCHLIST_REFETCH_INTERVAL_TW_MS,
   marketCodesFromStockIds,
+  QUOTE_WARMING_TIMEOUT_MS,
   quotesAreWarming,
   quotesNeedFasterRefresh,
   resolveWatchlistQuoteQueryTiming,
@@ -268,5 +270,25 @@ describe("resolveWatchlistQuoteQueryTiming", () => {
     expect(timing.refetchInterval).toBe(WATCHLIST_QUOTE_REFETCH_INTERVAL_WARMING_MS);
     expect(timing.refetchInterval).toBeLessThan(WATCHLIST_QUOTE_REFETCH_INTERVAL_OPEN_MS);
     expect(timing.refetchIntervalInBackground).toBe(false);
+  });
+
+  it("stops warming cadence after the bounded timeout flag is set", () => {
+    const timing = resolveWatchlistQuoteQueryTiming({
+      stockIds: ["TW:2330"],
+      markets: [TW_OPEN, US_CLOSED],
+      quotes: [warmingQuote],
+      warmingTimedOut: true,
+    });
+
+    expect(timing.refetchInterval).toBe(WATCHLIST_QUOTE_REFETCH_INTERVAL_OPEN_MS);
+    expect(timing.staleTime).toBe(WATCHLIST_QUOTE_STALE_TIME_OPEN_MS);
+  });
+});
+
+describe("isQuoteWarmingTimedOut", () => {
+  it("returns false until the warming timeout elapses", () => {
+    expect(isQuoteWarmingTimedOut(1_000, 1_000 + QUOTE_WARMING_TIMEOUT_MS - 1)).toBe(false);
+    expect(isQuoteWarmingTimedOut(1_000, 1_000 + QUOTE_WARMING_TIMEOUT_MS)).toBe(true);
+    expect(isQuoteWarmingTimedOut(null, 5_000)).toBe(false);
   });
 });

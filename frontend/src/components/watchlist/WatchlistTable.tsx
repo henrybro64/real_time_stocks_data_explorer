@@ -21,6 +21,9 @@ type Props = {
   pendingIds?: string[];
   trackedCount?: number;
   onRemove: (stockId: string) => void;
+  onRetryQuote?: () => void;
+  isRetryingQuote?: boolean;
+  warmingTimedOutById?: Record<string, boolean>;
 };
 
 export function WatchlistTable({
@@ -31,6 +34,9 @@ export function WatchlistTable({
   pendingIds = [],
   trackedCount,
   onRemove,
+  onRetryQuote,
+  isRetryingQuote = false,
+  warmingTimedOutById = {},
 }: Props) {
   const { t } = useLanguage();
   const count = trackedCount ?? items.length;
@@ -73,10 +79,13 @@ export function WatchlistTable({
               <StockCard
                 key={stock.id}
                 freshness={freshness}
+                isRetryingQuote={isRetryingQuote}
                 isTracked
+                onRetryQuote={onRetryQuote}
                 onToggle={onRemove}
                 quote={quote}
                 stock={stock}
+                warmingTimedOut={Boolean(warmingTimedOutById[stock.id])}
               />
             ))}
             {pendingIds.map((stockId) => (

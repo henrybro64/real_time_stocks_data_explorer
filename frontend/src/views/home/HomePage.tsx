@@ -2,8 +2,9 @@
 
 import { Column, Grid, InlineLoading, Tile } from "@carbon/react";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
-import { useDeferredValue, useMemo, useState } from "react";
+import { useDeferredValue, useMemo, useRef, useState } from "react";
 import type { MarketIndex, MarketStatus, QuoteResponse } from "@shared/api";
+import type { QuoteFreshnessMeta } from "@shared/quote";
 import type { Stock } from "@shared/stock";
 import { useLanguage } from "../../app/i18n";
 import { MarketIndicesStrip } from "../../components/market-status/MarketIndicesStrip";
@@ -13,14 +14,30 @@ import { StockSearch } from "../../components/search/StockSearch";
 import { WatchlistTable } from "../../components/watchlist/WatchlistTable";
 import { useWatchlist } from "../../hooks/useWatchlist";
 import { fetchMarketIndices, fetchMarkets, fetchQuotes, searchStocks } from "../../services/api/client";
+import { resolveWarmingTimeoutState } from "../../services/market-data/quoteWarming";
 import { resolveWatchlistQuoteQueryTiming } from "./watchlistQuoteQuery";
 import { deriveWatchlistNoticeKind } from "./watchlistState";
+
+const PENDING_BATCH_QUEUED: QuoteFreshnessMeta = {
+  cachedAt: null,
+  ageSeconds: null,
+  stale: true,
+  source: "none",
+  refreshStatus: "queued",
+};
+
+const PENDING_BATCH_UNAVAILABLE: QuoteFreshnessMeta = {
+  ...PENDING_BATCH_QUEUED,
+  refreshStatus: "unavailable",
+};
 
 export function HomePage() {
   const { t } = useLanguage();
   const [query, setQuery] = useState("");
   const deferredQuery = useDeferredValue(query);
   const watchlist = useWatchlist();
+  const warmingStartedAtByIdRef = useRef<Map<string, number>>(new Map());
+  const [isRetryingQuotes, setIsRetryingQuotes] = useState(false);
 
   const marketsQuery = useQuery<MarketStatus[]>({
     queryKey: ["markets"],
@@ -54,12 +71,22 @@ export function HomePage() {
         stockIds: watchlist.ids,
         markets: marketsQuery.data,
         quotes: query.state.data,
+        warmingTimedOut: resolveWarmingTimeoutState(
+          query.state.data ?? [],
+          warmingStartedAtByIdRef.current,
+          Date.now(),
+        ).allWarmingTimedOut,
       }).staleTime,
     refetchInterval: (query) =>
       resolveWatchlistQuoteQueryTiming({
         stockIds: watchlist.ids,
         markets: marketsQuery.data,
         quotes: query.state.data,
+        warmingTimedOut: resolveWarmingTimeoutState(
+          query.state.data ?? [],
+          warmingStartedAtByIdRef.current,
+          Date.now(),
+        ).allWarmingTimedOut,
       }).refetchInterval,
     refetchIntervalInBackground: false,
     refetchOnMount: true,
@@ -80,6 +107,9 @@ export function HomePage() {
     const knownStocksById = new Map(
       (searchQuery.data ?? []).map((stock) => [stock.id, stock]),
     );
+    const placeholderFreshness = watchlistQuery.isError
+      ? PENDING_BATCH_UNAVAILABLE
+      : PENDING_BATCH_QUEUED;
 
     return watchlist.ids.flatMap((stockId) => {
       const item = quoteItemsById.get(stockId);
@@ -88,11 +118,21 @@ export function HomePage() {
       }
       const stock = knownStocksById.get(stockId);
       if (stock) {
-        return [{ stock }];
+        // Keep single-quote fetch disabled: treat as batch warming/unavailable placeholder.
+        return [{ stock, quote: null, freshness: placeholderFreshness }];
       }
       return [];
     });
-  }, [searchQuery.data, watchlist.ids, watchlistQuery.data]);
+  }, [searchQuery.data, watchlist.ids, watchlistQuery.data, watchlistQuery.isError]);
+
+  const warmingTimedOutById = useMemo(() => {
+    return resolveWarmingTimeoutState(
+      watchlistItems,
+      warmingStartedAtByIdRef.current,
+      Date.now(),
+    ).timedOutById;
+    // dataUpdatedAt / isFetching ensure wall-clock timeout flips on poll ticks.
+  }, [watchlistItems, watchlistQuery.dataUpdatedAt, watchlistQuery.isFetching]);
 
   const pendingWatchlistIds = useMemo(() => {
     const hydratedIds = new Set(watchlistItems.map((item) => item.stock.id));
@@ -115,6 +155,16 @@ export function HomePage() {
     watchlistQuery.data,
   ]);
 
+  const handleRetryQuotes = async () => {
+    warmingStartedAtByIdRef.current.clear();
+    setIsRetryingQuotes(true);
+    try {
+      await watchlistQuery.refetch();
+    } finally {
+      setIsRetryingQuotes(false);
+    }
+  };
+
   return (
     <Grid className="app-page-grid app-home-page-grid" fullWidth>
       <Column className="app-column-spacing app-home-hero-column" sm={4} md={8} lg={12}>
@@ -130,26 +180,9 @@ export function HomePage() {
             <span>
               {t("home.summary.tracked")}: {watchlist.ids.length}
             </span>
-          </div>
-        </Tile>
-      </Column>
-      <Column className="app-column-spacing app-home-summary-column" sm={4} md={8} lg={4}>
-        <Tile className="app-summary-tile">
-          <p className="app-eyebrow">{t("home.summary.title")}</p>
-          <dl className="app-kpi-list">
-            <div>
-              <dt>{t("home.summary.markets")}</dt>
-              <dd>{marketsQuery.data?.length ?? 0}</dd>
-            </div>
-            <div>
-              <dt>{t("home.summary.tracked")}</dt>
-              <dd>{watchlist.ids.length}</dd>
-            </div>
-          </dl>
-          <div className="app-summary-loading-slot">
-            {marketsQuery.isLoading || (!watchlistQuery.data && watchlistQuery.isLoading) ? (
+            {(marketsQuery.isFetching || watchlistQuery.isFetching) && (
               <InlineLoading description={t("home.summary.loading")} status="active" />
-            ) : null}
+            )}
           </div>
         </Tile>
       </Column>
@@ -190,11 +223,14 @@ export function HomePage() {
             (watchlistQuery.isLoading || watchlist.isLoading)
           }
           isRefreshing={!!watchlistQuery.data && (watchlistQuery.isFetching || watchlist.isMutating)}
+          isRetryingQuote={isRetryingQuotes}
           items={watchlistItems}
           noticeKind={watchlistNoticeKind}
           pendingIds={pendingWatchlistIds}
           trackedCount={watchlist.ids.length}
+          warmingTimedOutById={warmingTimedOutById}
           onRemove={watchlist.remove}
+          onRetryQuote={handleRetryQuotes}
         />
       </Column>
     </Grid>

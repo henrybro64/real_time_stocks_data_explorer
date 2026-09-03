@@ -518,6 +518,99 @@ def test_get_quote_detail_serves_stale_without_provider_when_refresher_owns(
     assert requested == ["US:AAPL"]
 
 
+def test_get_quote_detail_miss_returns_unavailable_while_refresh_failure_active(
+    monkeypatch,
+) -> None:
+    _enable_refresher_owns_upstream(monkeypatch)
+    provider = StubUSProvider()
+    service = _service_with_provider(provider)
+    requested: list[str] = []
+    monkeypatch.setattr(
+        service,
+        "_request_background_refresh",
+        lambda stock_id: requested.append(stock_id),
+    )
+    cache.record_refresh_failure("US:AAPL")
+
+    item = service.get_quote_detail("US:AAPL")
+
+    assert item is not None
+    assert item.quote is None
+    assert item.refresh_status == "unavailable"
+    assert requested == []
+    assert provider.quote_calls == []
+
+
+def test_get_quote_detail_stale_skips_requeue_while_refresh_failure_active(
+    monkeypatch,
+) -> None:
+    _enable_refresher_owns_upstream(monkeypatch)
+    provider = StubUSProvider()
+    service = _service_with_provider(provider)
+    cache.set_cached_quote("US:AAPL", provider._quotes["US:AAPL"])
+    age_memory_cached_quote("US:AAPL")
+    requested: list[str] = []
+    monkeypatch.setattr(
+        service,
+        "_request_background_refresh",
+        lambda stock_id: requested.append(stock_id),
+    )
+    cache.record_refresh_failure("US:AAPL")
+
+    item = service.get_quote_detail("US:AAPL")
+
+    assert item is not None
+    assert item.quote is not None
+    assert item.stale is True
+    assert item.refresh_status == "idle"
+    assert requested == []
+
+
+def test_cache_first_miss_returns_unavailable_while_refresh_failure_active(
+    monkeypatch,
+) -> None:
+    _enable_refresher_owns_upstream(monkeypatch)
+    provider = StubUSProvider()
+    service = _service_with_provider(provider)
+    requested: list[str] = []
+    monkeypatch.setattr(
+        service,
+        "_request_background_refresh",
+        lambda stock_id: requested.append(stock_id),
+    )
+    cache.record_refresh_failure("US:AAPL")
+
+    items = service.get_quotes_cache_first(["US:AAPL"])
+
+    assert items[0].quote is None
+    assert items[0].refresh_status == "unavailable"
+    assert requested == []
+    assert provider.quote_calls == []
+
+
+def test_cache_first_miss_requeues_after_refresh_failure_backoff_expires(
+    monkeypatch,
+) -> None:
+    _enable_refresher_owns_upstream(monkeypatch)
+    provider = StubUSProvider()
+    service = _service_with_provider(provider)
+    requested: list[str] = []
+    monkeypatch.setattr(
+        service,
+        "_request_background_refresh",
+        lambda stock_id: requested.append(stock_id),
+    )
+    cache.record_refresh_failure("US:AAPL")
+    with cache._memory_lock:
+        cache._memory_refresh_failures["US:AAPL"] = time.monotonic() - 1
+
+    items = service.get_quotes_cache_first(["US:AAPL"])
+
+    assert items[0].quote is None
+    assert items[0].refresh_status == "queued"
+    assert requested == ["US:AAPL"]
+
+
 def test_fetch_quote_for_refresh_recovers_swallowed_http_error(monkeypatch) -> None:
     provider = StubUSProvider()
     service = _service_with_provider(provider)

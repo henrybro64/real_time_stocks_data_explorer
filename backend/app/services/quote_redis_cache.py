@@ -103,10 +103,14 @@ def refresh_failure_backoff_seconds() -> int:
     return refresh_lock_seconds()
 
 
+_UTC_Z_SUFFIX = "Z"
+_UTC_OFFSET_SUFFIX = "+00:00"
+
+
 def _iso_utc(value: datetime | None) -> str | None:
     if value is None:
         return None
-    return value.isoformat().replace("+00:00", "Z")
+    return value.isoformat().replace(_UTC_OFFSET_SUFFIX, _UTC_Z_SUFFIX)
 
 
 def get_quote_cache_health() -> dict[str, Any]:
@@ -349,7 +353,7 @@ def run_redis(
 def _serialize(quote: QuoteRecord, *, cached_at: datetime) -> dict[str, Any]:
     cached_at_utc = cached_at.astimezone(UTC)
     return {
-        "cached_at": cached_at_utc.isoformat().replace("+00:00", "Z"),
+        "cached_at": cached_at_utc.isoformat().replace(_UTC_OFFSET_SUFFIX, _UTC_Z_SUFFIX),
         "quote": {
             "id": quote.id,
             "last_price": quote.last_price,
@@ -390,7 +394,7 @@ def _deserialize_quote(data: dict[str, Any]) -> QuoteRecord:
 def _parse_cached_at(raw: object, *, fallback: datetime) -> datetime:
     if isinstance(raw, str) and raw.strip():
         try:
-            normalized = raw.replace("Z", "+00:00")
+            normalized = raw.replace(_UTC_Z_SUFFIX, _UTC_OFFSET_SUFFIX)
             parsed = datetime.fromisoformat(normalized)
             if parsed.tzinfo is None:
                 return parsed.replace(tzinfo=UTC)
@@ -576,16 +580,25 @@ def release_refresh_lock(stock_id: str, token: str | None = None) -> None:
             _memory_refresh_locks.pop(stock_id, None)
 
 
-def record_refresh_failure(stock_id: str) -> None:
-    """Backoff re-queueing after a failed background refresh."""
-    until = time.monotonic() + refresh_failure_backoff_seconds()
+def record_refresh_failure(
+    stock_id: str,
+    *,
+    backoff_seconds: float | None = None,
+) -> None:
+    """Backoff re-queueing after a failed background refresh.
+
+    ``backoff_seconds`` may extend past the default lock TTL so Retry-After /
+    soft circuit windows are honored before the next cache-miss re-queue.
+    """
+    seconds = int(max(float(backoff_seconds or refresh_failure_backoff_seconds()), 1))
+    until = time.monotonic() + seconds
     with _memory_lock:
         _memory_refresh_failures[stock_id] = until
     _run_redis(
         f"refresh failure marker {stock_id}",
         lambda client: client.setex(
             f"{_LOCK_PREFIX}fail:{stock_id}",
-            refresh_failure_backoff_seconds(),
+            seconds,
             "1",
         ),
         kind="write",

@@ -8,7 +8,10 @@ import pytest
 
 from app.services import quote_redis_cache as cache
 from app.services.http_client import HttpFetchError
-from app.services.quote_refresher_service import QuoteRefresherService
+from app.services.quote_refresher_service import (
+    ProviderCircuitState,
+    QuoteRefresherService,
+)
 from app.services.quote_service import QuoteService
 from tests.support import (
     FakeTrackedIdsRepo,
@@ -494,5 +497,118 @@ def test_priority_rotation_puts_timed_out_symbols_first() -> None:
 def test_immediate_refresh_empty_outcome_notes_circuit_failure() -> None:
     refresher, stub = _service(watchlist=[])
     stub.get_quote = lambda _stock_id: None  # type: ignore[method-assign]
+    refresher._immediate.add("US:AAPL")
     refresher._safe_immediate_refresh("US:AAPL")
     assert refresher._circuits["US"].consecutive_failures >= 1
+    assert "US:AAPL" not in refresher._immediate
+    assert cache.refresh_failure_active("US:AAPL")
+
+
+def test_immediate_refresh_failure_clears_queue_and_allows_retry() -> None:
+    refresher, stub = _service(watchlist=[])
+    stub.get_quote = lambda _stock_id: None  # type: ignore[method-assign]
+    submitted: list[str] = []
+    refresher._pool.submit = (  # type: ignore[method-assign]
+        lambda fn, stock_id: submitted.append(stock_id)
+    )
+
+    refresher.request_immediate_refresh("US:AAPL")
+    assert submitted == ["US:AAPL"]
+    refresher._safe_immediate_refresh("US:AAPL")
+    assert "US:AAPL" not in refresher._immediate
+    assert cache.refresh_failure_active("US:AAPL")
+
+    submitted.clear()
+    refresher.request_immediate_refresh("US:AAPL")
+    assert submitted == ["US:AAPL"]
+
+
+def test_immediate_refresh_success_clears_failure_marker() -> None:
+    refresher, stub = _service(watchlist=[])
+    cache.record_refresh_failure("US:AAPL")
+    refresher._immediate.add("US:AAPL")
+    refresher._safe_immediate_refresh("US:AAPL")
+    assert cache.get_cached_quote("US:AAPL") is not None
+    assert "US:AAPL" not in refresher._immediate
+    assert not cache.refresh_failure_active("US:AAPL")
+
+
+def test_immediate_refresh_exception_clears_queue_and_records_failure() -> None:
+    refresher, _stub = _service(watchlist=[])
+
+    def boom(_stock_id: str, *, respect_soft_backoff: bool = False) -> str:
+        raise HttpFetchError(
+            "rate limited",
+            classification="rate_limited",
+            status_code=429,
+            retry_after_seconds=12,
+        )
+
+    refresher._refresh_one = boom  # type: ignore[method-assign]
+    refresher._immediate.add("US:AAPL")
+    refresher._safe_immediate_refresh("US:AAPL")
+    assert "US:AAPL" not in refresher._immediate
+    assert cache.refresh_failure_active("US:AAPL")
+    assert refresher._circuits["US"].consecutive_failures >= 1
+
+
+def test_immediate_refresh_locked_clears_queue_without_failure_marker(
+    monkeypatch,
+) -> None:
+    refresher, _stub = _service(watchlist=[])
+    monkeypatch.setattr(
+        "app.services.quote_refresher_service.try_acquire_refresh_lock",
+        lambda _stock_id: None,
+    )
+    refresher._immediate.add("US:AAPL")
+    refresher._safe_immediate_refresh("US:AAPL")
+    assert "US:AAPL" not in refresher._immediate
+    assert not cache.refresh_failure_active("US:AAPL")
+
+
+def test_immediate_refresh_respects_soft_circuit_backoff() -> None:
+    refresher, stub = _service(watchlist=[])
+    refresher._circuits["US"] = ProviderCircuitState(
+        consecutive_failures=1,
+        backoff_until_monotonic=time.monotonic() + 30,
+    )
+    refresher._immediate.add("US:AAPL")
+    refresher._safe_immediate_refresh("US:AAPL")
+    assert stub.quote_calls == []
+    assert "US:AAPL" not in refresher._immediate
+    assert cache.refresh_failure_active("US:AAPL")
+
+
+def test_immediate_refresh_failure_marker_honors_retry_after() -> None:
+    refresher, _stub = _service(watchlist=[])
+
+    def boom(_stock_id: str, *, respect_soft_backoff: bool = False) -> str:
+        raise HttpFetchError(
+            "rate limited",
+            classification="rate_limited",
+            status_code=429,
+            retry_after_seconds=45,
+        )
+
+    refresher._refresh_one = boom  # type: ignore[method-assign]
+    refresher._immediate.add("US:AAPL")
+    refresher._safe_immediate_refresh("US:AAPL")
+
+    assert cache.refresh_failure_active("US:AAPL")
+    with cache._memory_lock:
+        until = cache._memory_refresh_failures["US:AAPL"]
+    remaining = until - time.monotonic()
+    assert remaining == pytest.approx(45, abs=1.5)
+
+
+def test_immediate_refresh_circuit_outcome_clears_queue_and_records_failure() -> None:
+    refresher, stub = _service(watchlist=[])
+    refresher._circuits["US"] = ProviderCircuitState(
+        consecutive_failures=5,
+        open_until_monotonic=time.monotonic() + 60,
+    )
+    refresher._immediate.add("US:AAPL")
+    refresher._safe_immediate_refresh("US:AAPL")
+    assert stub.quote_calls == []
+    assert "US:AAPL" not in refresher._immediate
+    assert cache.refresh_failure_active("US:AAPL")
