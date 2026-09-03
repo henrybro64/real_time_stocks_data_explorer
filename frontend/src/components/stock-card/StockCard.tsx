@@ -269,7 +269,7 @@ function StockCardPendingBody({
   onRetryQuote,
   isRetryingQuote,
 }: Readonly<{
-  error: unknown | null;
+  error: unknown;
   freshness: QuoteFreshnessMeta | null;
   pendingUnavailable: boolean;
   stockSymbol: string;
@@ -280,7 +280,7 @@ function StockCardPendingBody({
   onRetryQuote?: (event: MouseEvent<HTMLButtonElement>) => void;
   isRetryingQuote: boolean;
 }>) {
-  if (error != null) {
+  if (error) {
     return <RequestStateNotice compact kind={errorToNoticeKind(error)} scopeLabel={stockSymbol} />;
   }
   if (pendingUnavailable) {

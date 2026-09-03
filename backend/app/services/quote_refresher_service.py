@@ -242,11 +242,12 @@ class QuoteRefresherService:
             )
             return
 
-        classification = (
-            _classification_from_exc(error)
-            if error is not None
-            else ("empty" if outcome == "empty" else outcome)
-        )
+        if error is not None:
+            classification = _classification_from_exc(error)
+        elif outcome == "empty":
+            classification = "empty"
+        else:
+            classification = outcome
         retry_after = _retry_after_from_exc(error) if error is not None else None
         market = stock_id.split(":", 1)[0]
         backoff_seconds = max(

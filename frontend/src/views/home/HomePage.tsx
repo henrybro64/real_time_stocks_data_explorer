@@ -4,6 +4,7 @@ import { Column, Grid, InlineLoading, Tile } from "@carbon/react";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { useDeferredValue, useMemo, useRef, useState } from "react";
 import type { MarketIndex, MarketStatus, QuoteResponse } from "@shared/api";
+import type { QuoteFreshnessMeta } from "@shared/quote";
 import type { Stock } from "@shared/stock";
 import { useLanguage } from "../../app/i18n";
 import { MarketIndicesStrip } from "../../components/market-status/MarketIndicesStrip";
@@ -13,20 +14,21 @@ import { StockSearch } from "../../components/search/StockSearch";
 import { WatchlistTable } from "../../components/watchlist/WatchlistTable";
 import { useWatchlist } from "../../hooks/useWatchlist";
 import { fetchMarketIndices, fetchMarkets, fetchQuotes, searchStocks } from "../../services/api/client";
-import {
-  isNullQuoteWarming,
-  isQuoteWarmingTimedOut,
-  QUOTE_WARMING_TIMEOUT_MS,
-} from "../../services/market-data/quoteWarming";
+import { resolveWarmingTimeoutState } from "../../services/market-data/quoteWarming";
 import { resolveWatchlistQuoteQueryTiming } from "./watchlistQuoteQuery";
 import { deriveWatchlistNoticeKind } from "./watchlistState";
 
-const PENDING_BATCH_FRESHNESS = {
+const PENDING_BATCH_QUEUED: QuoteFreshnessMeta = {
   cachedAt: null,
   ageSeconds: null,
   stale: true,
-  source: "none" as const,
-  refreshStatus: "queued" as const,
+  source: "none",
+  refreshStatus: "queued",
+};
+
+const PENDING_BATCH_UNAVAILABLE: QuoteFreshnessMeta = {
+  ...PENDING_BATCH_QUEUED,
+  refreshStatus: "unavailable",
 };
 
 export function HomePage() {
@@ -69,14 +71,22 @@ export function HomePage() {
         stockIds: watchlist.ids,
         markets: marketsQuery.data,
         quotes: query.state.data,
-        warmingTimedOut: allWarmingRowsTimedOut(query.state.data, warmingStartedAtByIdRef.current),
+        warmingTimedOut: resolveWarmingTimeoutState(
+          query.state.data ?? [],
+          warmingStartedAtByIdRef.current,
+          Date.now(),
+        ).allWarmingTimedOut,
       }).staleTime,
     refetchInterval: (query) =>
       resolveWatchlistQuoteQueryTiming({
         stockIds: watchlist.ids,
         markets: marketsQuery.data,
         quotes: query.state.data,
-        warmingTimedOut: allWarmingRowsTimedOut(query.state.data, warmingStartedAtByIdRef.current),
+        warmingTimedOut: resolveWarmingTimeoutState(
+          query.state.data ?? [],
+          warmingStartedAtByIdRef.current,
+          Date.now(),
+        ).allWarmingTimedOut,
       }).refetchInterval,
     refetchIntervalInBackground: false,
     refetchOnMount: true,
@@ -90,35 +100,6 @@ export function HomePage() {
     enabled: deferredQuery.trim().length > 0,
   });
 
-  const warmingTimedOutById = useMemo(() => {
-    const startedById = warmingStartedAtByIdRef.current;
-    const now = Date.now();
-    const next = new Map<string, boolean>();
-    const activeIds = new Set<string>();
-
-    for (const item of watchlistQuery.data ?? []) {
-      if (!isNullQuoteWarming(item)) {
-        startedById.delete(item.stock.id);
-        next.set(item.stock.id, false);
-        continue;
-      }
-      activeIds.add(item.stock.id);
-      const startedAt = startedById.get(item.stock.id) ?? now;
-      if (!startedById.has(item.stock.id)) {
-        startedById.set(item.stock.id, startedAt);
-      }
-      next.set(item.stock.id, isQuoteWarmingTimedOut(startedAt, now, QUOTE_WARMING_TIMEOUT_MS));
-    }
-
-    for (const stockId of [...startedById.keys()]) {
-      if (!activeIds.has(stockId)) {
-        startedById.delete(stockId);
-      }
-    }
-    return Object.fromEntries(next);
-    // dataUpdatedAt ensures wall-clock timeout flips even when payload is unchanged.
-  }, [watchlistQuery.data, watchlistQuery.dataUpdatedAt]);
-
   const watchlistItems = useMemo(() => {
     const quoteItemsById = new Map(
       (watchlistQuery.data ?? []).map((item) => [item.stock.id, item]),
@@ -126,6 +107,9 @@ export function HomePage() {
     const knownStocksById = new Map(
       (searchQuery.data ?? []).map((stock) => [stock.id, stock]),
     );
+    const placeholderFreshness = watchlistQuery.isError
+      ? PENDING_BATCH_UNAVAILABLE
+      : PENDING_BATCH_QUEUED;
 
     return watchlist.ids.flatMap((stockId) => {
       const item = quoteItemsById.get(stockId);
@@ -134,12 +118,21 @@ export function HomePage() {
       }
       const stock = knownStocksById.get(stockId);
       if (stock) {
-        // Keep single-quote fetch disabled: treat as batch warming placeholder.
-        return [{ stock, quote: null, freshness: PENDING_BATCH_FRESHNESS }];
+        // Keep single-quote fetch disabled: treat as batch warming/unavailable placeholder.
+        return [{ stock, quote: null, freshness: placeholderFreshness }];
       }
       return [];
     });
-  }, [searchQuery.data, watchlist.ids, watchlistQuery.data]);
+  }, [searchQuery.data, watchlist.ids, watchlistQuery.data, watchlistQuery.isError]);
+
+  const warmingTimedOutById = useMemo(() => {
+    return resolveWarmingTimeoutState(
+      watchlistItems,
+      warmingStartedAtByIdRef.current,
+      Date.now(),
+    ).timedOutById;
+    // dataUpdatedAt / isFetching ensure wall-clock timeout flips on poll ticks.
+  }, [watchlistItems, watchlistQuery.dataUpdatedAt, watchlistQuery.isFetching]);
 
   const pendingWatchlistIds = useMemo(() => {
     const hydratedIds = new Set(watchlistItems.map((item) => item.stock.id));
@@ -242,26 +235,4 @@ export function HomePage() {
       </Column>
     </Grid>
   );
-}
-
-function allWarmingRowsTimedOut(
-  quotes: QuoteResponse[] | undefined,
-  startedById: Map<string, number>,
-): boolean {
-  const now = Date.now();
-  let anyWarming = false;
-  for (const item of quotes ?? []) {
-    if (!isNullQuoteWarming(item)) {
-      continue;
-    }
-    anyWarming = true;
-    const startedAt = startedById.get(item.stock.id) ?? now;
-    if (!startedById.has(item.stock.id)) {
-      startedById.set(item.stock.id, startedAt);
-    }
-    if (!isQuoteWarmingTimedOut(startedAt, now, QUOTE_WARMING_TIMEOUT_MS)) {
-      return false;
-    }
-  }
-  return anyWarming;
 }

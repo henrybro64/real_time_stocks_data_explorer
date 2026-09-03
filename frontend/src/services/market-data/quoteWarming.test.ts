@@ -5,6 +5,7 @@ import {
   isNullQuoteWarming,
   isQuoteWarmingTimedOut,
   quotesAreWarming,
+  resolveWarmingTimeoutState,
   QUOTE_WARMING_TIMEOUT_MS,
 } from "./quoteWarming";
 
@@ -52,5 +53,21 @@ describe("quoteWarming", () => {
     expect(isQuoteWarmingTimedOut(1_000, 1_000 + QUOTE_WARMING_TIMEOUT_MS - 1)).toBe(false);
     expect(isQuoteWarmingTimedOut(1_000, 1_000 + QUOTE_WARMING_TIMEOUT_MS)).toBe(true);
     expect(isQuoteWarmingTimedOut(null, 5_000)).toBe(false);
+  });
+
+  it("tracks synthesized placeholders in the shared timeout map", () => {
+    const startedById = new Map<string, number>();
+    const first = resolveWarmingTimeoutState([warmingItem], startedById, 1_000);
+    expect(first.timedOutById["TW:6562"]).toBe(false);
+    expect(first.allWarmingTimedOut).toBe(false);
+    expect(startedById.get("TW:6562")).toBe(1_000);
+
+    const later = resolveWarmingTimeoutState(
+      [warmingItem],
+      startedById,
+      1_000 + QUOTE_WARMING_TIMEOUT_MS,
+    );
+    expect(later.timedOutById["TW:6562"]).toBe(true);
+    expect(later.allWarmingTimedOut).toBe(true);
   });
 });
