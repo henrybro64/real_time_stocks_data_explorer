@@ -3,8 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from datetime import datetime
 import logging
+import re
 from time import perf_counter
-from typing import Callable
+from typing import Callable, cast
 
 import pandas as pd
 
@@ -71,6 +72,10 @@ SKIP_AI_MISSING_HISTORY_WARNING = (
     "Skipping AI analysis because required yfinance historical price data is unavailable."
 )
 NEWS_CONTEXT_WARNING = "Recent news context could not be loaded for this analysis."
+
+# Citation dedupe compares URLs ignoring scheme and a leading "www." host label.
+_URL_SCHEME_RE = re.compile(r"^[a-z][a-z0-9+.\-]*://")
+_URL_HOST_PREFIX_RE = re.compile(r"^www\.")
 
 logger = logging.getLogger(__name__)
 
@@ -440,13 +445,8 @@ def merge_news_citations(
 
 def _citation_dedupe_key(url: str) -> str:
     """Ignore scheme, ``www.``, trailing slash, and case when comparing URLs."""
-    cleaned = url.strip().lower()
-    for prefix in ("https://", "http://"):
-        if cleaned.startswith(prefix):
-            cleaned = cleaned[len(prefix) :]
-            break
-    if cleaned.startswith("www."):
-        cleaned = cleaned[4:]
+    cleaned = _URL_SCHEME_RE.sub("", url.strip().lower())
+    cleaned = _URL_HOST_PREFIX_RE.sub("", cleaned)
     return cleaned.rstrip("/")
 
 
@@ -523,17 +523,7 @@ def _build_computed_data(
 ) -> ComputedStockAnalysisData:
     # All metrics below share one latest session so the nested technical block
     # and the top-level legacy fields cannot describe different candles.
-    try:
-        history = completed_session_history(history, market=stock.market)
-    except Exception as exc:  # noqa: BLE001 — fall back to the raw frame
-        logger.warning(
-            "Completed-session filter failed; using unfiltered history",
-            extra={
-                "event": "stock_analysis.completed_sessions.failed",
-                "stock_id": stock.id,
-                "error_type": type(exc).__name__,
-            },
-        )
+    history = _completed_sessions_or_raw(stock, history)
 
     price_series = select_price_series(history)
     close_series = clean_numeric_series(history["Close"]) if "Close" in history else pd.Series(dtype="float64")
@@ -556,72 +546,10 @@ def _build_computed_data(
     return_6m = calculate_return_percent(price_series, RETURN_WINDOWS["return6mPercent"])
     return_1y = calculate_return_percent(price_series, RETURN_WINDOWS["return1yPercent"])
 
-    try:
-        technical = build_technical_analysis(history, market=stock.market)
-    except Exception as exc:  # noqa: BLE001 — never block the rest of analysis
-        logger.warning(
-            "Technical analysis build failed",
-            extra={
-                "event": "stock_analysis.technical.failed",
-                "stock_id": stock.id,
-                "error_type": type(exc).__name__,
-                "error": str(exc),
-            },
-        )
-        technical = {
-            "period": "1Y",
-            "availability": "unavailable",
-            "failureReason": f"build_failed:{type(exc).__name__}",
-        }
-
-    try:
-        institutional = build_institutional_analysis(stock.id, stock)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "Institutional analysis build failed",
-            extra={
-                "event": "stock_analysis.institutional.failed",
-                "stock_id": stock.id,
-                "error_type": type(exc).__name__,
-                "error": str(exc),
-            },
-        )
-        institutional = (
-            {
-                "available": False,
-                "reason": "build_failed",
-                "reasonDetail": type(exc).__name__,
-                "market": "TW",
-            }
-            if stock.market == "TW"
-            else None
-        )
-
-    try:
-        fundamental = build_fundamental_outlook(stock, info)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "Fundamental outlook build failed",
-            extra={
-                "event": "stock_analysis.fundamental.failed",
-                "stock_id": stock.id,
-                "error_type": type(exc).__name__,
-                "error": str(exc),
-            },
-        )
-        fundamental = {
-            "available": False,
-            "availability": "unavailable",
-            "confidence": "low",
-            "missingInputs": ["fundamentalOutlook"],
-            "failureReason": f"build_failed:{type(exc).__name__}",
-        }
-
-    news_payload = None
-    if news_context is not None:
-        news_payload = news_context.to_prompt_payload()["recentNewsContext"]
-        if isinstance(news_payload, dict):
-            news_payload = dict(news_payload)
+    technical = _safe_technical_analysis(stock, history)
+    institutional = _safe_institutional_analysis(stock)
+    fundamental = _safe_fundamental_outlook(stock, info)
+    news_payload = _news_prompt_payload(news_context)
 
     return ComputedStockAnalysisData(
         ticker=ticker,
@@ -650,8 +578,81 @@ def _build_computed_data(
         technical_analysis=technical,
         institutional_analysis=institutional,
         fundamental_outlook=fundamental,
-        recent_news_context=news_payload if isinstance(news_payload, dict) else None,
+        recent_news_context=news_payload,
     )
+
+
+def _log_build_failure(event: str, stock: StockRecord, exc: Exception) -> None:
+    logger.warning(
+        "Stock analysis context build failed",
+        extra={
+            "event": event,
+            "stock_id": stock.id,
+            "error_type": type(exc).__name__,
+            "error": str(exc),
+        },
+    )
+
+
+def _completed_sessions_or_raw(stock: StockRecord, history: pd.DataFrame) -> pd.DataFrame:
+    try:
+        return completed_session_history(history, market=stock.market)
+    except Exception as exc:  # noqa: BLE001 — fall back to the raw frame
+        _log_build_failure("stock_analysis.completed_sessions.failed", stock, exc)
+        return history
+
+
+def _safe_technical_analysis(stock: StockRecord, history: pd.DataFrame) -> dict[str, object]:
+    try:
+        return build_technical_analysis(history, market=stock.market)
+    except Exception as exc:  # noqa: BLE001 — never block the rest of analysis
+        _log_build_failure("stock_analysis.technical.failed", stock, exc)
+        return {
+            "period": "1Y",
+            "availability": "unavailable",
+            "failureReason": f"build_failed:{type(exc).__name__}",
+        }
+
+
+def _safe_institutional_analysis(stock: StockRecord) -> dict[str, object] | None:
+    try:
+        return build_institutional_analysis(stock.id, stock)
+    except Exception as exc:  # noqa: BLE001
+        _log_build_failure("stock_analysis.institutional.failed", stock, exc)
+        if stock.market != "TW":
+            return None
+        return {
+            "available": False,
+            "reason": "build_failed",
+            "reasonDetail": type(exc).__name__,
+            "market": "TW",
+        }
+
+
+def _safe_fundamental_outlook(
+    stock: StockRecord,
+    info: dict[str, object],
+) -> dict[str, object]:
+    try:
+        return build_fundamental_outlook(stock, info)
+    except Exception as exc:  # noqa: BLE001
+        _log_build_failure("stock_analysis.fundamental.failed", stock, exc)
+        return {
+            "available": False,
+            "availability": "unavailable",
+            "confidence": "low",
+            "missingInputs": ["fundamentalOutlook"],
+            "failureReason": f"build_failed:{type(exc).__name__}",
+        }
+
+
+def _news_prompt_payload(
+    news_context: AnalysisNewsContext | None,
+) -> dict[str, object] | None:
+    if news_context is None:
+        return None
+    payload = news_context.to_prompt_payload()["recentNewsContext"]
+    return dict(payload) if isinstance(payload, dict) else None
 
 
 def apply_cached_news_context(
@@ -659,9 +660,11 @@ def apply_cached_news_context(
     news_context: dict[str, object] | None,
 ) -> ComputedStockAnalysisData:
     """Replace live news with the snapshot tied to a cached AI narrative."""
-    if news_context is None:
-        return replace(computed, recent_news_context=None)
-    return replace(computed, recent_news_context=dict(news_context))
+    snapshot = dict(news_context) if news_context is not None else None
+    return cast(
+        ComputedStockAnalysisData,
+        replace(computed, recent_news_context=snapshot),
+    )
 
 
 def _coerce_float(value: object) -> float | None:

@@ -80,8 +80,10 @@ def test_languages_do_not_overwrite_each_other(fake_redis: dict[str, str]) -> No
     cached_en = get_cached_stock_analysis("user-1", "US:AAPL", BUCKET, "en")
     cached_zh = get_cached_stock_analysis("user-1", "US:AAPL", BUCKET, "zh-TW")
 
-    assert cached_en is not None and cached_en.ai_analysis == "English narrative"
-    assert cached_zh is not None and cached_zh.ai_analysis == "繁體中文分析"
+    assert cached_en is not None
+    assert cached_zh is not None
+    assert cached_en.ai_analysis == "English narrative"
+    assert cached_zh.ai_analysis == "繁體中文分析"
 
 
 def test_news_snapshot_and_citations_survive_the_round_trip(

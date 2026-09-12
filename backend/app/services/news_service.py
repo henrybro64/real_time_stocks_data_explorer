@@ -27,7 +27,9 @@ _ZHTW_CHAR_RANGE = ("\u4e00", "\u9fff")
 _TITLE_PUNCTUATION_RE = re.compile(r"[^\w\s]", re.UNICODE)
 _WHITESPACE_RE = re.compile(r"\s+")
 # Google News appends " - Publisher" / " — Publisher" to syndicated headlines.
-_PUBLISHER_SUFFIX_RE = re.compile(r"\s+[-–—]\s+[^-–—]{2,40}$")
+# Single separator spaces only: the source format is fixed, and unbounded \s+
+# on both sides of the dash makes the match super-linear.
+_PUBLISHER_SUFFIX_RE = re.compile(r" [-–—] [^-–—]{2,40}$")
 _SYNDICATION_SIMILARITY = 0.8
 _SYNDICATION_MIN_TOKENS = 4
 # Short/common tickers that often appear as ordinary words; require a name match.
@@ -288,37 +290,55 @@ def _select_relevant_items(
     window_start: datetime,
     window_end: datetime,
 ) -> list[AnalysisNewsItem]:
-    scored: list[tuple[int, datetime, NewsItem]] = []
-    for item in items:
-        title = (item.title or "").strip()
-        url = (item.url or "").strip()
-        source = (item.source or "").strip() or "Google News"
-        if not title or not _is_valid_http_url(url):
-            continue
-
-        published = _parse_iso_datetime(item.published_at)
-        if published is None or published < window_start or published > window_end:
-            continue
-
-        score = _relevance_score(stock, title)
-        if score <= 0:
-            continue
-
-        scored.append(
-            (
-                score,
-                published,
-                NewsItem(
-                    title=title,
-                    url=url,
-                    source=source,
-                    published_at=_to_iso_z(published),
-                ),
-            )
+    scored = [
+        row
+        for row in (
+            _score_news_item(stock, item, window_start=window_start, window_end=window_end)
+            for item in items
         )
-
+        if row is not None
+    ]
     scored.sort(key=lambda row: (-row[0], -row[1].timestamp()))
+    return _dedupe_scored_items(scored)
 
+
+def _score_news_item(
+    stock: StockRecord,
+    item: NewsItem,
+    *,
+    window_start: datetime,
+    window_end: datetime,
+) -> tuple[int, datetime, NewsItem] | None:
+    """Normalized, in-window, on-topic item with its relevance score, or ``None``."""
+    title = (item.title or "").strip()
+    url = (item.url or "").strip()
+    if not title or not _is_valid_http_url(url):
+        return None
+
+    published = _parse_iso_datetime(item.published_at)
+    if published is None or published < window_start or published > window_end:
+        return None
+
+    score = _relevance_score(stock, title)
+    if score <= 0:
+        return None
+
+    return (
+        score,
+        published,
+        NewsItem(
+            title=title,
+            url=url,
+            source=(item.source or "").strip() or "Google News",
+            published_at=_to_iso_z(published),
+        ),
+    )
+
+
+def _dedupe_scored_items(
+    scored: list[tuple[int, datetime, NewsItem]],
+) -> list[AnalysisNewsItem]:
+    """Keep the highest-scoring copy of each distinct story, up to the cap."""
     selected: list[AnalysisNewsItem] = []
     seen_titles: set[str] = set()
     seen_tokens: list[frozenset[str]] = []
@@ -433,7 +453,7 @@ def _is_syndicated_duplicate(
 
 
 def _is_valid_http_url(url: str) -> bool:
-    return url.startswith("http://") or url.startswith("https://")
+    return url.startswith(("http://", "https://"))
 
 
 def _ensure_utc(value: datetime) -> datetime:

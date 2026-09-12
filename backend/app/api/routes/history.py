@@ -1,5 +1,6 @@
 from dataclasses import replace
 from datetime import datetime, timezone
+from typing import cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
@@ -85,7 +86,14 @@ def get_stock_key_statistics(stock_id: str) -> dict[str, object]:
     return data
 
 
-@router.get("/{stock_id}/analysis", response_model=StockAnalysisResponse)
+@router.get(
+    "/{stock_id}/analysis",
+    response_model=StockAnalysisResponse,
+    responses={
+        400: {"description": "Unsupported analysis language or AI provider"},
+        404: {"description": "Stock not found"},
+    },
+)
 def get_stock_analysis(
     stock_id: str,
     provider: str | None = Query(default=None),
@@ -266,18 +274,21 @@ def _merge_cached_ai_into_result(
     base: StockAnalysisResult,
     cached: CachedStockAnalysisPayload,
 ) -> StockAnalysisResult:
-    return replace(
-        base,
-        computed_data=apply_cached_news_context(
-            base.computed_data,
-            cached.recent_news_context,
+    return cast(
+        StockAnalysisResult,
+        replace(
+            base,
+            computed_data=apply_cached_news_context(
+                base.computed_data,
+                cached.recent_news_context,
+            ),
+            ai_provider=cached.ai_provider,
+            ai_model=cached.ai_model,
+            ai_analysis=cached.ai_analysis,
+            citations=cached.citations,
+            search_results=cached.search_results,
+            analyzed_at=cached.analyzed_at,
         ),
-        ai_provider=cached.ai_provider,
-        ai_model=cached.ai_model,
-        ai_analysis=cached.ai_analysis,
-        citations=cached.citations,
-        search_results=cached.search_results,
-        analyzed_at=cached.analyzed_at,
     )
 
 

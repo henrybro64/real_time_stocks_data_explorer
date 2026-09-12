@@ -270,10 +270,12 @@ def test_prompt_requires_mixed_signals_and_period_disclosure() -> None:
 
     assert "call the picture mixed" in en
     assert "technicalAnalysis.dataAsOf" in en
-    assert "volatility" in en and "drawdown" in en
+    assert "volatility" in en
+    assert "drawdown" in en
     assert "訊號分歧" in zh
     assert "technicalAnalysis.dataAsOf" in zh
-    assert "波動度" in zh and "最大回落" in zh
+    assert "波動度" in zh
+    assert "最大回落" in zh
 
 
 def test_prompt_requires_reconciling_evidence_layers() -> None:

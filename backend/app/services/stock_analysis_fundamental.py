@@ -3,11 +3,23 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Callable
+import math
+from typing import Callable, NamedTuple
 
 from app.models.stock import StockRecord
 
 TwInsightsLoader = Callable[[StockRecord], dict[str, object]]
+
+
+class _TwContext(NamedTuple):
+    revenue_trend: dict[str, object] | None
+    dividend_summary: dict[str, object] | None
+    peer_context: dict[str, object] | None
+    positive: list[str]
+    missing: list[str]
+    negative: list[str]
+    sources: list[str]
+    failure_reason: str | None
 
 
 def build_fundamental_outlook(
@@ -37,93 +49,38 @@ def build_fundamental_outlook(
     recommendation_key = _coerce_str(info.get("recommendationKey"))
     next_earnings = _format_earnings_date(info)
 
-    positive: list[str] = []
-    negative: list[str] = []
-    missing: list[str] = []
+    missing = _missing_core_inputs(
+        {
+            "trailingPe": trailing_pe,
+            "forwardPe": forward_pe,
+            "trailingEps": trailing_eps,
+            "forwardEps": forward_eps,
+            "revenueGrowthEstimate": revenue_growth,
+            "earningsGrowthEstimate": earnings_growth,
+            "nextEarningsDate": next_earnings,
+        }
+    )
+    positive, negative = _classify_info_factors(
+        trailing_pe=trailing_pe,
+        forward_pe=forward_pe,
+        trailing_eps=trailing_eps,
+        revenue_growth=revenue_growth,
+        earnings_growth=earnings_growth,
+    )
 
-    if trailing_pe is None:
-        missing.append("trailingPe")
-    if forward_pe is None:
-        missing.append("forwardPe")
-    if trailing_eps is None:
-        missing.append("trailingEps")
-    if forward_eps is None:
-        missing.append("forwardEps")
-    if revenue_growth is None:
-        missing.append("revenueGrowthEstimate")
-    if earnings_growth is None:
-        missing.append("earningsGrowthEstimate")
-    if next_earnings is None:
-        missing.append("nextEarningsDate")
-
-    if trailing_eps is not None and trailing_eps > 0:
-        positive.append("trailingEpsPositive")
-    elif trailing_eps is not None and trailing_eps < 0:
-        negative.append("trailingEpsNegative")
-
-    if (
-        trailing_pe is not None
-        and forward_pe is not None
-        and forward_pe > 0
-        and trailing_pe > 0
-        and forward_pe < trailing_pe
-    ):
-        positive.append("forwardPeBelowTrailingPe")
-    if earnings_growth is not None and earnings_growth > 0:
-        positive.append("positiveEarningsGrowthEstimate")
-    elif earnings_growth is not None and earnings_growth < 0:
-        negative.append("negativeEarningsGrowthEstimate")
-    if revenue_growth is not None and revenue_growth > 0:
-        positive.append("positiveRevenueGrowthEstimate")
-    elif revenue_growth is not None and revenue_growth < 0:
-        negative.append("negativeRevenueGrowthEstimate")
-
-    revenue_trend: dict[str, object] | None = None
-    dividend_summary: dict[str, object] | None = None
-    peer_context: dict[str, object] | None = None
-    sources = ["yfinance.info"]
-    tw_failure: str | None = None
-
-    if stock.market == "TW":
-        if tw_insights_loader is None and not _tw_insights_are_real():
-            # The TW insights service still returns seeded placeholder series.
-            # Never let that reach the model as reported company results.
-            missing.extend(["monthlyRevenueTrend", "dividendTrend", "peerContext"])
-            tw_failure = "tw_insights_source_is_placeholder_data"
-        else:
-            try:
-                loader = tw_insights_loader or _load_tw_insights
-                insights = loader(stock)
-                revenue_trend = _summarize_tw_revenue(insights)
-                dividend_summary = _summarize_tw_dividends(insights)
-                peer_context = _summarize_tw_peer(insights)
-                sources.append("tw_insights")
-                if revenue_trend is not None:
-                    direction = revenue_trend.get("yoyDirection")
-                    if direction == "improving":
-                        positive.append("monthlyRevenueYoyImproving")
-                    elif direction == "weakening":
-                        negative.append("monthlyRevenueYoyWeakening")
-                else:
-                    missing.append("monthlyRevenueTrend")
-            except Exception as exc:  # noqa: BLE001 — soft degradation
-                tw_failure = f"tw_insights_failed:{type(exc).__name__}"
-                missing.append("twInsights")
+    tw = _build_tw_context(stock, tw_insights_loader)
+    positive.extend(tw.positive)
+    negative.extend(tw.negative)
+    missing.extend(tw.missing)
+    revenue_trend = tw.revenue_trend
+    sources = ["yfinance.info", *tw.sources]
 
     present_core = sum(
         1
         for value in (trailing_pe, forward_pe, trailing_eps, forward_eps)
         if value is not None
     )
-    if present_core >= 3 or (revenue_trend is not None and present_core >= 1):
-        availability = "ok"
-        confidence = "moderate" if present_core >= 3 else "low"
-    elif present_core >= 1 or revenue_trend is not None:
-        availability = "partial"
-        confidence = "low"
-    else:
-        availability = "insufficient"
-        confidence = "low"
+    availability, confidence = _grade_availability(present_core, revenue_trend is not None)
 
     payload: dict[str, object] = {
         "available": availability != "insufficient",
@@ -154,15 +111,132 @@ def build_fundamental_outlook(
             ),
         },
         "revenueTrend": revenue_trend,
-        "dividendSummary": dividend_summary,
-        "peerContext": peer_context,
+        "dividendSummary": tw.dividend_summary,
+        "peerContext": tw.peer_context,
         "positiveFactors": positive,
         "negativeFactors": negative,
         "missingInputs": missing,
     }
-    if tw_failure is not None:
-        payload["twInsightsUnavailableReason"] = tw_failure
+    if tw.failure_reason is not None:
+        payload["twInsightsUnavailableReason"] = tw.failure_reason
     return payload
+
+
+def _missing_core_inputs(values: dict[str, object | None]) -> list[str]:
+    return [name for name, value in values.items() if value is None]
+
+
+def _classify_info_factors(
+    *,
+    trailing_pe: float | None,
+    forward_pe: float | None,
+    trailing_eps: float | None,
+    revenue_growth: float | None,
+    earnings_growth: float | None,
+) -> tuple[list[str], list[str]]:
+    """Split yfinance info fields into named positive and negative signals."""
+    positive: list[str] = []
+    negative: list[str] = []
+
+    _append_sign_factor(trailing_eps, "trailingEpsPositive", "trailingEpsNegative", positive, negative)
+    if _forward_pe_below_trailing(trailing_pe, forward_pe):
+        positive.append("forwardPeBelowTrailingPe")
+    _append_sign_factor(
+        earnings_growth,
+        "positiveEarningsGrowthEstimate",
+        "negativeEarningsGrowthEstimate",
+        positive,
+        negative,
+    )
+    _append_sign_factor(
+        revenue_growth,
+        "positiveRevenueGrowthEstimate",
+        "negativeRevenueGrowthEstimate",
+        positive,
+        negative,
+    )
+    return positive, negative
+
+
+def _append_sign_factor(
+    value: float | None,
+    positive_name: str,
+    negative_name: str,
+    positive: list[str],
+    negative: list[str],
+) -> None:
+    if value is None or value == 0:
+        return
+    if value > 0:
+        positive.append(positive_name)
+    else:
+        negative.append(negative_name)
+
+
+def _forward_pe_below_trailing(trailing_pe: float | None, forward_pe: float | None) -> bool:
+    if trailing_pe is None or forward_pe is None:
+        return False
+    return 0 < forward_pe < trailing_pe
+
+
+def _grade_availability(present_core: int, has_revenue_trend: bool) -> tuple[str, str]:
+    """Map how many core inputs are present onto availability and confidence."""
+    if present_core >= 3:
+        return "ok", "moderate"
+    if has_revenue_trend and present_core >= 1:
+        return "ok", "low"
+    if present_core >= 1 or has_revenue_trend:
+        return "partial", "low"
+    return "insufficient", "low"
+
+
+def _build_tw_context(
+    stock: StockRecord,
+    tw_insights_loader: TwInsightsLoader | None,
+) -> _TwContext:
+    """Taiwan revenue/dividend/peer context, or a labeled reason it is absent."""
+    empty = _TwContext(None, None, None, [], [], [], [], None)
+    if stock.market != "TW":
+        return empty
+
+    if tw_insights_loader is None and not _tw_insights_are_real():
+        # The TW insights service still returns seeded placeholder series.
+        # Never let that reach the model as reported company results.
+        return empty._replace(
+            missing=["monthlyRevenueTrend", "dividendTrend", "peerContext"],
+            failure_reason="tw_insights_source_is_placeholder_data",
+        )
+
+    try:
+        loader = tw_insights_loader or _load_tw_insights
+        insights = loader(stock)
+    except Exception as exc:  # noqa: BLE001 — soft degradation
+        return empty._replace(
+            missing=["twInsights"],
+            failure_reason=f"tw_insights_failed:{type(exc).__name__}",
+        )
+
+    revenue_trend = _summarize_tw_revenue(insights)
+    positive: list[str] = []
+    negative: list[str] = []
+    missing: list[str] = []
+    if revenue_trend is None:
+        missing.append("monthlyRevenueTrend")
+    elif revenue_trend.get("yoyDirection") == "improving":
+        positive.append("monthlyRevenueYoyImproving")
+    elif revenue_trend.get("yoyDirection") == "weakening":
+        negative.append("monthlyRevenueYoyWeakening")
+
+    return _TwContext(
+        revenue_trend=revenue_trend,
+        dividend_summary=_summarize_tw_dividends(insights),
+        peer_context=_summarize_tw_peer(insights),
+        positive=positive,
+        missing=missing,
+        negative=negative,
+        sources=["tw_insights"],
+        failure_reason=None,
+    )
 
 
 def _tw_insights_are_real() -> bool:
@@ -262,26 +336,29 @@ def _summarize_tw_peer(insights: dict[str, object]) -> dict[str, object] | None:
 
 def _format_earnings_date(info: dict[str, object]) -> str | None:
     for key in ("earningsTimestamp", "earningsTimestampStart", "earningsDate"):
-        value = info.get(key)
-        if isinstance(value, (int, float)) and value > 0:
-            try:
-                return datetime.fromtimestamp(float(value), tz=timezone.utc).date().isoformat()
-            except (OverflowError, OSError, ValueError):
-                continue
-        if isinstance(value, list) and value:
-            first = value[0]
-            if isinstance(first, (int, float)) and first > 0:
-                try:
-                    return datetime.fromtimestamp(float(first), tz=timezone.utc).date().isoformat()
-                except (OverflowError, OSError, ValueError):
-                    continue
-            text = _coerce_str(first)
-            if text:
-                return text
-        text = _coerce_str(value)
-        if text:
-            return text
+        formatted = _earnings_date_from_value(info.get(key))
+        if formatted is not None:
+            return formatted
     return None
+
+
+def _earnings_date_from_value(value: object) -> str | None:
+    """Accept an epoch number, a list of them, or an already-formatted string."""
+    if isinstance(value, list):
+        return _earnings_date_from_value(value[0]) if value else None
+    epoch_date = _epoch_to_iso_date(value)
+    if epoch_date is not None:
+        return epoch_date
+    return _coerce_str(value)
+
+
+def _epoch_to_iso_date(value: object) -> str | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+        return None
+    try:
+        return datetime.fromtimestamp(float(value), tz=timezone.utc).date().isoformat()
+    except (OverflowError, OSError, ValueError):
+        return None
 
 
 def _coerce_float(value: object) -> float | None:
@@ -291,7 +368,7 @@ def _coerce_float(value: object) -> float | None:
         number = float(value)
     except (TypeError, ValueError):
         return None
-    if number != number:  # NaN
+    if math.isnan(number) or math.isinf(number):
         return None
     return round(number, 4)
 

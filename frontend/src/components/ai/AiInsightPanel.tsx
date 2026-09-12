@@ -75,26 +75,45 @@ function translateNotice(message: string, t: (key: TranslationKey) => string): s
   return key ? t(key) : message;
 }
 
+// Markers are matched with negated character classes rather than lazy
+// wildcards so each pass stays linear in the length of the narrative.
+const STRONG_ASTERISK_RE = /\*\*([^*]+)\*\*/g;
+const STRONG_UNDERSCORE_RE = /__([^_]+)__/g;
+const EMPHASIS_RE = /(^|[\s(])[*_]([^*_\n]+)[*_](?=[\s).,;:!?]|$)/g;
+const CODE_SPAN_RE = /`([^`]+)`/g;
+// A single separator character; the captured remainder is trimmed by the caller.
+const HEADING_RE = /^#{1,6}\s(.*)$/;
+const BULLET_RE = /^(?:[-*+]|\d+[.)])\s(.*)$/;
+
 /** Strip the inline emphasis markers the model may still emit around words. */
 function stripInlineMarkers(text: string): string {
   return text
-    .replace(/\*\*(.+?)\*\*/g, "$1")
-    .replace(/__(.+?)__/g, "$1")
-    .replace(/(^|[\s(])[*_](\S(?:.*?\S)?)[*_](?=[\s).,;:!?]|$)/g, "$1$2")
-    .replace(/`([^`]+)`/g, "$1");
+    .replace(STRONG_ASTERISK_RE, "$1")
+    .replace(STRONG_UNDERSCORE_RE, "$1")
+    .replace(EMPHASIS_RE, "$1$2")
+    .replace(CODE_SPAN_RE, "$1");
 }
+
+type NarrativeBlock =
+  | { id: string; type: "h3"; text: string }
+  | { id: string; type: "p"; text: string }
+  | { id: string; type: "ul"; items: Array<{ id: string; text: string }> };
 
 function renderNarrativeBlocks(text: string) {
   const lines = text.replace(/\r\n/g, "\n").split("\n");
-  const blocks: Array<{ type: "h3" | "p" | "ul"; content: string | string[] }> = [];
+  const blocks: NarrativeBlock[] = [];
   let paragraph: string[] = [];
   let bullets: string[] = [];
+  // Sequence counter for stable React keys: block order never changes after
+  // parsing, and identical text may legitimately repeat.
+  let sequence = 0;
+  const nextId = (kind: string) => `${kind}-${(sequence += 1)}`;
 
   const flushParagraph = () => {
     if (!paragraph.length) {
       return;
     }
-    blocks.push({ type: "p", content: paragraph.join(" ").trim() });
+    blocks.push({ id: nextId("p"), type: "p", text: paragraph.join(" ").trim() });
     paragraph = [];
   };
 
@@ -102,7 +121,11 @@ function renderNarrativeBlocks(text: string) {
     if (!bullets.length) {
       return;
     }
-    blocks.push({ type: "ul", content: [...bullets] });
+    blocks.push({
+      id: nextId("ul"),
+      type: "ul",
+      items: bullets.map((bulletText) => ({ id: nextId("li"), text: bulletText })),
+    });
     bullets = [];
   };
 
@@ -113,14 +136,14 @@ function renderNarrativeBlocks(text: string) {
       flushParagraph();
       continue;
     }
-    const heading = /^#{1,6}\s+(.*)$/.exec(line);
+    const heading = HEADING_RE.exec(line);
     if (heading) {
       flushBullets();
       flushParagraph();
-      blocks.push({ type: "h3", content: stripInlineMarkers(heading[1].trim()) });
+      blocks.push({ id: nextId("h"), type: "h3", text: stripInlineMarkers(heading[1].trim()) });
       continue;
     }
-    const bullet = /^(?:[-*+]|\d+[.)])\s+(.*)$/.exec(line);
+    const bullet = BULLET_RE.exec(line);
     if (bullet) {
       flushParagraph();
       bullets.push(stripInlineMarkers(bullet[1].trim()));
@@ -132,22 +155,22 @@ function renderNarrativeBlocks(text: string) {
   flushBullets();
   flushParagraph();
 
-  return blocks.map((block, index) => {
-    if (block.type === "h3" && typeof block.content === "string") {
-      return <h3 key={`h-${index}`}>{block.content}</h3>;
+  return blocks.map((block) => {
+    if (block.type === "h3") {
+      return <h3 key={block.id}>{block.text}</h3>;
     }
-    if (block.type === "ul" && Array.isArray(block.content)) {
+    if (block.type === "ul") {
       return (
-        <ul key={`ul-${index}`} className="app-stock-analysis-links">
-          {block.content.map((item, itemIndex) => (
-            <li key={`${index}-${itemIndex}`}>{item}</li>
+        <ul key={block.id} className="app-stock-analysis-links">
+          {block.items.map((item) => (
+            <li key={item.id}>{item.text}</li>
           ))}
         </ul>
       );
     }
     return (
-      <p key={`p-${index}`} className="app-supporting-copy app-stock-analysis-text">
-        {block.content as string}
+      <p key={block.id} className="app-supporting-copy app-stock-analysis-text">
+        {block.text}
       </p>
     );
   });
