@@ -42,7 +42,13 @@ def test_build_fundamental_outlook_us_preserves_estimates_and_labels() -> None:
     assert payload["analystConsensus"]["label"] == "market_consensus_context_not_intrinsic_value"
     assert payload["analystConsensus"]["companyGuidance"] is None
     assert payload["analystConsensus"]["targetMeanPrice"] == 200.0
+    assert payload["growthKind"] == "historical_reported_yoy"
+    assert payload["revenueGrowthYoy"] == 0.08
+    assert payload["earningsGrowthYoy"] == 0.12
+    assert "revenueGrowthEstimate" not in payload
+    assert "earningsGrowthEstimate" not in payload
     assert "forwardPeBelowTrailingPe" in payload["positiveFactors"]
+    assert "positiveRevenueGrowthYoy" in payload["positiveFactors"]
     assert payload["revenueTrend"] is None
 
 

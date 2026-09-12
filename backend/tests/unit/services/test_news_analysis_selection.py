@@ -472,3 +472,34 @@ def test_taiwan_name_zh_tw_match() -> None:
 
     assert result.available is True
     assert result.items[0].title == item.title
+
+
+def test_later_company_query_is_used_when_first_query_is_irrelevant(monkeypatch) -> None:
+    stock = _apple()
+    queries: list[str] = []
+
+    def fake_fetch(query, **_kwargs):
+        queries.append(query)
+        if query == "AAPL stock":
+            return [
+                _item(
+                    title="Unrelated market wrap with no company mention",
+                    url="https://example.com/unrelated",
+                    published_at=NOW - timedelta(days=1),
+                )
+            ]
+        return [
+            _item(
+                title="Apple Inc. launches a new product line",
+                url="https://example.com/apple-launch",
+                published_at=NOW - timedelta(days=1),
+            )
+        ]
+
+    monkeypatch.setattr("app.services.news_service._fetch_google_news", fake_fetch)
+
+    result = select_news_for_analysis(stock, now=NOW)
+
+    assert len(queries) >= 2
+    assert result.available is True
+    assert result.items[0].title == "Apple Inc. launches a new product line"

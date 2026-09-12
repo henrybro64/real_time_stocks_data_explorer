@@ -14,11 +14,13 @@ class AiInsightService:
         user_id: str,
         stock_id: str,
         provider: str,
+        language: str | None = None,
     ) -> str:
         provider_override = resolve_user_ai_provider(user_id, provider)
         result = stock_analysis_service.analyze_stock(
             stock_id,
             provider_override=provider_override,
+            language=language,
         )
         if result.ai_analysis:
             return result.ai_analysis

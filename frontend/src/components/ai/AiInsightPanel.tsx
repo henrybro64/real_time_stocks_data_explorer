@@ -177,13 +177,15 @@ function renderNarrativeBlocks(text: string) {
 }
 
 export function AiInsightPanel({ stockId }: Props) {
-  const { t, language, formatNumber } = useLanguage();
+  const { t, language, languageReady, formatNumber } = useLanguage();
   const queryClient = useQueryClient();
   const analysisLanguage = language as AppLanguage;
   const analysisQuery = useQuery<StockAnalysisResponse>({
     queryKey: ["stock-analysis", stockId, analysisLanguage],
     queryFn: () => fetchStockAnalysis(stockId, { language: analysisLanguage }),
-    enabled: stockId.length > 0,
+    // Wait until the stored language is applied so an English user does not
+    // fire a zh-TW request (and a full history load) on the first paint.
+    enabled: stockId.length > 0 && languageReady,
     retry: false,
     staleTime: 300_000,
   });

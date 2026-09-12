@@ -71,14 +71,14 @@ def build_institutional_analysis(
     dealers = [net_shares_to_lots(record.dealer_net_shares, symbol=symbol) for record in history]
     totals = [net_shares_to_lots(record.total_net_shares, symbol=symbol) for record in history]
 
-    foreign_5d = _sum_tail(foreign, _NET_WINDOW_SHORT)
-    foreign_20d = _sum_tail(foreign, _NET_WINDOW_LONG)
-    trust_5d = _sum_tail(trusts, _NET_WINDOW_SHORT)
-    trust_20d = _sum_tail(trusts, _NET_WINDOW_LONG)
-    dealer_5d = _sum_tail(dealers, _NET_WINDOW_SHORT)
-    dealer_20d = _sum_tail(dealers, _NET_WINDOW_LONG)
-    total_5d = _sum_tail(totals, _NET_WINDOW_SHORT)
-    total_20d = _sum_tail(totals, _NET_WINDOW_LONG)
+    foreign_5d = _sum_named_window(foreign, _NET_WINDOW_SHORT)
+    foreign_20d = _sum_named_window(foreign, _NET_WINDOW_LONG)
+    trust_5d = _sum_named_window(trusts, _NET_WINDOW_SHORT)
+    trust_20d = _sum_named_window(trusts, _NET_WINDOW_LONG)
+    dealer_5d = _sum_named_window(dealers, _NET_WINDOW_SHORT)
+    dealer_20d = _sum_named_window(dealers, _NET_WINDOW_LONG)
+    total_5d = _sum_named_window(totals, _NET_WINDOW_SHORT)
+    total_20d = _sum_named_window(totals, _NET_WINDOW_LONG)
 
     buy_days, sell_days = _consecutive_net_streak(totals)
     missing_days = sum(1 for lots in totals if lots is None)
@@ -89,6 +89,8 @@ def build_institutional_analysis(
         "unit": "lots_張",
         "periodDays": days,
         "sessionCount": len(history),
+        "coveredSessions5d": _covered_sessions(totals, _NET_WINDOW_SHORT),
+        "coveredSessions20d": _covered_sessions(totals, _NET_WINDOW_LONG),
         "missingSessionCount": missing_days,
         "dataAsOf": result.latest_date or history[-1].date,
         "foreignNetLots5d": foreign_5d,
@@ -106,10 +108,18 @@ def build_institutional_analysis(
     }
 
 
-def _sum_tail(values: list[float | None], window: int) -> float | None:
-    """Sum the newest ``window`` sessions, ignoring sessions with no data."""
-    usable = [value for value in values[-window:] if value is not None]
-    if not usable:
+def _covered_sessions(values: list[float | None], window: int) -> int:
+    return sum(1 for value in values[-window:] if value is not None)
+
+
+def _sum_named_window(values: list[float | None], window: int) -> float | None:
+    """Sum the newest ``window`` sessions only when that many values exist.
+
+    A 1-session fallback must not be labeled as a 5-day or 20-day total.
+    """
+    tail = values[-window:]
+    usable = [value for value in tail if value is not None]
+    if len(usable) < window:
         return None
     return round(sum(usable), 3)
 

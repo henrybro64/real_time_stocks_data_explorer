@@ -206,6 +206,24 @@ def test_falls_back_to_adj_close_when_close_is_absent() -> None:
     assert payload["latestClose"] == round(100.0 + 69 * 0.5, 2)
 
 
+def test_does_not_mix_unadjusted_highs_with_adj_close() -> None:
+    tz = ZoneInfo("America/New_York")
+    closes = [50.0] * 70
+    history = _daily_history(closes, end=datetime(2026, 8, 3, 16, 0, tzinfo=tz), tz=tz)
+    history["Adj Close"] = history["Close"]
+    history["High"] = 400.0
+    history["Low"] = 1.0
+    history = history.drop(columns=["Close"])
+    now = history.index[-1].to_pydatetime() + timedelta(hours=1)
+
+    payload = build_technical_analysis(history, market="US", now=now)
+
+    # No unadjusted Close to form a split ratio, so extrema stay on Adj Close.
+    assert payload["priceBasis"] == "Adj Close"
+    assert payload["recentHigh20d"] == 50.0
+    assert payload["recentLow20d"] == 50.0
+
+
 def test_sma_values_and_directions_match_the_chart_helper() -> None:
     tz = ZoneInfo("America/New_York")
     closes = [100.0 + index * 0.8 for index in range(90)]

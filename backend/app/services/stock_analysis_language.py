@@ -5,6 +5,17 @@ from __future__ import annotations
 SUPPORTED_ANALYSIS_LANGUAGES = frozenset({"en", "zh-TW"})
 DEFAULT_ANALYSIS_LANGUAGE = "zh-TW"
 
+
+def default_analysis_language_for_market(market: str | None) -> str:
+    """Language used when a caller cannot specify one (legacy insight route).
+
+    Taiwan stocks default to Traditional Chinese; every other market defaults
+    to English, matching the pre-language-parameter insight behavior.
+    """
+    if isinstance(market, str) and market.strip().upper() == "TW":
+        return "zh-TW"
+    return "en"
+
 _LANGUAGE_ALIASES = {
     "en": "en",
     "zh-tw": "zh-TW",

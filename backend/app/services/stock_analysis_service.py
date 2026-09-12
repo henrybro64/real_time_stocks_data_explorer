@@ -10,6 +10,7 @@ from typing import Callable, cast
 import pandas as pd
 
 from app.core.diagnostics import elapsed_ms
+from app.models.quote import CandleRecord
 from app.models.stock import StockRecord
 from app.services.ai_providers import (
     AIProvider,
@@ -19,12 +20,14 @@ from app.services.ai_providers import (
     AnalysisSearchResult,
     create_ai_provider,
 )
+from app.services.moving_average import history_fetch_limit
 from app.services.news_service import AnalysisNewsContext, select_news_for_analysis
 from app.services.quote_service import quote_service
 from app.services.stock_analysis_fundamental import build_fundamental_outlook
 from app.services.stock_analysis_institutional import build_institutional_analysis
 from app.services.stock_analysis_language import (
     DEFAULT_ANALYSIS_LANGUAGE,
+    default_analysis_language_for_market,
     normalize_analysis_language,
 )
 from app.services.stock_analysis_metrics import (
@@ -178,6 +181,8 @@ class StockAnalysisService:
         provider_factory: ProviderFactory = create_ai_provider,
         news_selector: NewsSelector | None = None,
     ) -> None:
+        # Injected loaders (tests) skip the chart provider so fixtures stay in control.
+        self._prefer_chart_history = history_loader is None
         self._history_loader = history_loader or _load_history_from_yfinance
         self._info_loader = info_loader or _load_info_from_yfinance
         self._provider_factory = provider_factory
@@ -193,16 +198,27 @@ class StockAnalysisService:
         include_news: bool = True,
     ) -> StockAnalysisResult:
         started_at = perf_counter()
-        normalized_language = normalize_analysis_language(language)
         stock = quote_service.get_stock(stock_id)
         if stock is None:
             raise ValueError("Stock not found")
+        # The analysis route always passes a language. Callers that cannot
+        # (legacy /insights) keep the previous market-derived default.
+        if language is None:
+            normalized_language = default_analysis_language_for_market(stock.market)
+        else:
+            normalized_language = normalize_analysis_language(language)
 
         ticker = normalize_stock_id_to_yfinance(stock)
         warnings: list[str] = []
         errors: list[str] = []
-        history = self._load_history(ticker, errors)
+        history = self._load_price_history(stock.id, ticker, errors)
         history = _coerce_history_frame(history)
+        # Filter before the usable-history flag so a lone still-forming bar
+        # cannot look like enough data to send to the model.
+        filtered_history = _completed_sessions_or_raw(stock, history)
+        if not history.empty and filtered_history.empty:
+            errors.append(UNUSABLE_PRICE_HISTORY_ERROR)
+        history = filtered_history
         info = self._load_info(ticker, warnings)
         has_price_history = _has_usable_price_history(history)
         if not has_price_history and not history.empty:
@@ -217,46 +233,15 @@ class StockAnalysisService:
         ):
             errors.append(INVALID_YFINANCE_TICKER_ERROR)
 
-        news_context: AnalysisNewsContext | None = None
-        if include_news:
-            try:
-                news_context = self._news_selector(stock)
-            except Exception as exc:  # noqa: BLE001 — news is optional
-                logger.warning(
-                    "News selection for analysis failed",
-                    extra={
-                        "event": "stock_analysis.news.failed",
-                        "stock_id": stock_id,
-                        "error_type": type(exc).__name__,
-                        "error": str(exc),
-                    },
-                )
-                warnings.append(NEWS_CONTEXT_WARNING)
-                news_context = AnalysisNewsContext(
-                    available=False,
-                    window_start=None,
-                    window_end=None,
-                    data_as_of=None,
-                    items=(),
-                    failure_reason=f"selector_failed:{type(exc).__name__}",
-                )
-
-        computed_data = _build_computed_data(
-            stock,
-            ticker,
-            history,
-            info,
-            news_context=news_context,
-        )
-
         ai_provider: str | None = None
         ai_model: str | None = None
         ai_analysis: str | None = None
         citations: tuple[AnalysisCitation, ...] = ()
         search_results: tuple[AnalysisSearchResult, ...] = ()
 
+        provider: AIProvider | None = None
+        provider_config_error: str | None = None
         if run_ai:
-            provider_config_error: str | None = None
             if provider_override is not None:
                 provider = provider_override
             else:
@@ -266,6 +251,21 @@ class StockAnalysisService:
                     provider_config_error = str(exc)
                     provider = None
 
+        # News is only useful when a model will actually read it. Skip the
+        # Google News round-trip when refresh cannot generate a narrative.
+        news_context: AnalysisNewsContext | None = None
+        if include_news and provider is not None and has_price_history:
+            news_context = self._select_news(stock, warnings)
+
+        computed_data = _build_computed_data(
+            stock,
+            ticker,
+            history,
+            info,
+            news_context=news_context,
+        )
+
+        if run_ai:
             if provider is None:
                 if provider_config_error is not None:
                     warnings.append(provider_config_error)
@@ -361,6 +361,46 @@ class StockAnalysisService:
         )
         return result
 
+    def _select_news(
+        self,
+        stock: StockRecord,
+        warnings: list[str],
+    ) -> AnalysisNewsContext:
+        try:
+            return self._news_selector(stock)
+        except Exception as exc:  # noqa: BLE001 — news is optional
+            logger.warning(
+                "News selection for analysis failed",
+                extra={
+                    "event": "stock_analysis.news.failed",
+                    "stock_id": stock.id,
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                },
+            )
+            warnings.append(NEWS_CONTEXT_WARNING)
+            return AnalysisNewsContext(
+                available=False,
+                window_start=None,
+                window_end=None,
+                data_as_of=None,
+                items=(),
+                failure_reason=f"selector_failed:{type(exc).__name__}",
+            )
+
+    def _load_price_history(
+        self,
+        stock_id: str,
+        ticker: str,
+        errors: list[str],
+    ) -> pd.DataFrame:
+        """Prefer the same candles the chart plots; fall back to yfinance."""
+        if self._prefer_chart_history:
+            chart_history = _history_from_chart_provider(stock_id)
+            if chart_history is not None:
+                return chart_history
+        return self._load_history(ticker, errors)
+
     def _load_history(self, ticker: str, errors: list[str]) -> pd.DataFrame:
         try:
             history = self._history_loader(ticker)
@@ -448,6 +488,47 @@ def _citation_dedupe_key(url: str) -> str:
     cleaned = _URL_SCHEME_RE.sub("", url.strip().lower())
     cleaned = _URL_HOST_PREFIX_RE.sub("", cleaned)
     return cleaned.rstrip("/")
+
+
+def _history_from_chart_provider(stock_id: str) -> pd.DataFrame | None:
+    """Load the 1Y daily series ``get_history_chart`` uses, including SMA warm-up."""
+    try:
+        data = quote_service.get_history(
+            stock_id,
+            "1Y",
+            limit=history_fetch_limit("1Y"),
+        )
+    except Exception as exc:  # noqa: BLE001 — fall back to yfinance
+        logger.warning(
+            "Chart history load for analysis failed",
+            extra={
+                "event": "stock_analysis.chart_history.failed",
+                "stock_id": stock_id,
+                "error_type": type(exc).__name__,
+            },
+        )
+        return None
+    if data is None:
+        return None
+    _stock, candles = data
+    if not candles:
+        return None
+    return _candles_to_history_frame(candles)
+
+
+def _candles_to_history_frame(candles: list[CandleRecord]) -> pd.DataFrame:
+    """Turn chart candles into the OHLC frame the metric helpers already consume."""
+    index = pd.DatetimeIndex([pd.Timestamp(candle.time) for candle in candles])
+    return pd.DataFrame(
+        {
+            "Open": [float(candle.open) for candle in candles],
+            "High": [float(candle.high) for candle in candles],
+            "Low": [float(candle.low) for candle in candles],
+            "Close": [float(candle.close) for candle in candles],
+            "Volume": [int(candle.volume) for candle in candles],
+        },
+        index=index,
+    )
 
 
 def _load_history_from_yfinance(ticker: str) -> pd.DataFrame:

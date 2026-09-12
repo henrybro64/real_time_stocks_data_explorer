@@ -88,6 +88,10 @@ def upsert_api_key(
 def get_ai_insight(
     stock_id: str,
     provider: str = Query(default="openai"),
+    language: str | None = Query(
+        default=None,
+        description="Optional narrative language (en or zh-TW). Defaults by market.",
+    ),
     user_id: str = Depends(get_effective_user_id),
 ) -> AiInsightResponse:
     try:
@@ -95,6 +99,7 @@ def get_ai_insight(
             user_id,
             stock_id,
             provider,
+            language=language,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

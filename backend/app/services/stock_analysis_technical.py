@@ -205,9 +205,7 @@ def _history_to_candles(history: pd.DataFrame) -> tuple[list[CandleRecord], str 
         return [], None
     price_series, price_basis = selected
 
-    highs = clean_numeric_series(history["High"]) if "High" in history else None
-    lows = clean_numeric_series(history["Low"]) if "Low" in history else None
-    opens = clean_numeric_series(history["Open"]) if "Open" in history else None
+    highs, lows, opens = _ohlc_on_price_basis(history, price_series, price_basis)
     volumes = clean_numeric_series(history["Volume"]) if "Volume" in history else None
 
     candles: list[CandleRecord] = []
@@ -227,6 +225,46 @@ def _history_to_candles(history: pd.DataFrame) -> tuple[list[CandleRecord], str 
             )
         )
     return candles, price_basis
+
+
+def _ohlc_on_price_basis(
+    history: pd.DataFrame,
+    price_series: pd.Series,
+    price_basis: str,
+) -> tuple[pd.Series | None, pd.Series | None, pd.Series | None]:
+    """Keep High/Low/Open on the same scale as the selected close series.
+
+    Unadjusted High/Low around a split cannot be mixed with Adj Close.
+    """
+    highs = clean_numeric_series(history["High"]) if "High" in history else None
+    lows = clean_numeric_series(history["Low"]) if "Low" in history else None
+    opens = clean_numeric_series(history["Open"]) if "Open" in history else None
+    if price_basis != "Adj Close":
+        return highs, lows, opens
+
+    raw_close = clean_numeric_series(history["Close"]) if "Close" in history else None
+    if raw_close is None or raw_close.empty:
+        # No unadjusted close to form a ratio; do not mix raw High/Low with Adj Close.
+        return None, None, None
+
+    def _scale(series: pd.Series | None) -> pd.Series | None:
+        if series is None or series.empty:
+            return None
+        aligned = pd.concat(
+            [series.rename("value"), raw_close.rename("raw"), price_series.rename("adj")],
+            axis=1,
+        ).dropna()
+        if aligned.empty:
+            return None
+        ratio = aligned["adj"] / aligned["raw"]
+        ratio = ratio.replace([float("inf"), float("-inf")], pd.NA).dropna()
+        ratio = ratio[ratio != 0]
+        if ratio.empty:
+            return None
+        scaled = aligned["value"] * ratio
+        return clean_numeric_series(scaled)
+
+    return _scale(highs), _scale(lows), _scale(opens)
 
 
 def _value_at(series: pd.Series | None, index_value: object, fallback: float) -> float:

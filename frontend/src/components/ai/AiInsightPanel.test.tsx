@@ -92,6 +92,8 @@ describe("AiInsightPanel", () => {
     await waitFor(() => {
       expect(fetchStockAnalysis).toHaveBeenCalledWith("US:AAPL", { language: "en" });
     });
+    expect(fetchStockAnalysis).toHaveBeenCalledTimes(1);
+    expect(fetchStockAnalysis).not.toHaveBeenCalledWith("US:AAPL", { language: "zh-TW" });
   });
 
   it("requests the analysis in Traditional Chinese when the UI is zh-TW", async () => {

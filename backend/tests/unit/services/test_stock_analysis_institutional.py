@@ -220,6 +220,7 @@ def test_agreement_broad_buy_and_consecutive_net_buy_days() -> None:
 
 def test_agreement_broad_sell_and_consecutive_net_sell_days() -> None:
     history = (
+        _record(date="2026-06-30", foreign=-1_000, trust=-500, dealer=-200),
         _record(date="2026-07-01", foreign=5_000, trust=1_000, dealer=1_000),
         _record(date="2026-07-02", foreign=-2_000, trust=-1_500, dealer=-800),
         _record(date="2026-07-03", foreign=-3_000, trust=-1_500, dealer=-900),
@@ -250,9 +251,9 @@ def test_agreement_broad_sell_and_consecutive_net_sell_days() -> None:
 
 
 def test_agreement_mixed_when_groups_disagree() -> None:
-    history = (
-        _record(date="2026-07-01", foreign=1_000, trust=-500, dealer=200),
-        _record(date="2026-07-02", foreign=2_000, trust=-1_000, dealer=100),
+    history = tuple(
+        _record(date=f"2026-07-{day:02d}", foreign=1_000, trust=-500, dealer=200)
+        for day in range(1, 6)
     )
     service = FakeInstitutionalService(
         result=TaiwanInstitutionalInvestorsResult(
@@ -276,15 +277,46 @@ def test_agreement_mixed_when_groups_disagree() -> None:
     assert payload["agreement"] == "mixed"
 
 
+def test_named_windows_stay_none_until_enough_sessions_exist() -> None:
+    history = (_record(date="2026-07-01", foreign=1_000, trust=0, dealer=0),)
+    service = FakeInstitutionalService(
+        result=TaiwanInstitutionalInvestorsResult(
+            stock_id="TW:2330",
+            symbol="2330",
+            market="TWSE",
+            latest_date="2026-07-01",
+            summary=history[0],
+            history=history,
+            source="TWSE T86",
+        )
+    )
+
+    payload = build_institutional_analysis(
+        "TW:2330",
+        _tw_stock(),
+        institutional_service=service,
+    )
+
+    assert payload is not None
+    assert payload["coveredSessions5d"] == 1
+    assert payload["coveredSessions20d"] == 1
+    assert payload["foreignNetLots5d"] is None
+    assert payload["foreignNetLots20d"] is None
+    assert payload["agreement"] == "unknown"
+
+
 def test_fx_etf_uses_100_unit_lot_size() -> None:
-    history = (_record(date="2026-07-01", symbol="00677K", foreign=1_000, trust=0, dealer=0),)
+    history = tuple(
+        _record(date=f"2026-07-{day:02d}", symbol="00677K", foreign=1_000, trust=0, dealer=0)
+        for day in range(1, 6)
+    )
     service = FakeInstitutionalService(
         result=TaiwanInstitutionalInvestorsResult(
             stock_id="TW:00677K",
             symbol="00677K",
             market="TWSE",
-            latest_date="2026-07-01",
-            summary=history[0],
+            latest_date="2026-07-05",
+            summary=history[-1],
             history=history,
             source="TWSE T86",
         )
@@ -297,6 +329,6 @@ def test_fx_etf_uses_100_unit_lot_size() -> None:
     )
 
     assert payload is not None
-    # 1000 shares / 100 shares-per-lot = 10 張
-    assert payload["foreignNetLots5d"] == pytest.approx(10.0)
-    assert payload["totalNetLots5d"] == pytest.approx(10.0)
+    # 5 sessions × (1000 shares / 100 shares-per-lot) = 50 張
+    assert payload["foreignNetLots5d"] == pytest.approx(50.0)
+    assert payload["totalNetLots5d"] == pytest.approx(50.0)

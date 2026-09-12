@@ -265,8 +265,13 @@ def _unavailable_news_context(
 
 
 def _fetch_news_for_window(stock: StockRecord, *, window_days: int) -> list[NewsItem]:
+    """Fetch every query and merge. A generic first hit must not hide a later
+    company-name query that actually mentions the stock.
+    """
     queries = _build_queries(stock)
     profile = _market_news_profile(stock)
+    merged: list[NewsItem] = []
+    seen_urls: set[str] = set()
     for query in queries:
         items = _fetch_google_news(
             query,
@@ -278,9 +283,13 @@ def _fetch_news_for_window(stock: StockRecord, *, window_days: int) -> list[News
             # name is in the other script is still usable evidence here.
             enforce_source_language=False,
         )
-        if items:
-            return items
-    return []
+        for item in items:
+            url = (item.url or "").strip()
+            if not url or url in seen_urls:
+                continue
+            seen_urls.add(url)
+            merged.append(item)
+    return merged
 
 
 def _select_relevant_items(

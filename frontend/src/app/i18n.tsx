@@ -1565,6 +1565,7 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
 
 type LanguageContextValue = {
   language: AppLanguage;
+  languageReady: boolean;
   setLanguage: (nextLanguage: AppLanguage) => void;
   t: (key: TranslationKey, params?: Record<string, string | number>) => string;
   formatNumber: (value: number) => string;
@@ -1591,16 +1592,19 @@ function readStoredLanguage(): AppLanguage {
 
 export function LanguageProvider({ children }: { children: ReactNode }) {
   const [language, setLanguageState] = useState<AppLanguage>("zh-TW");
+  const [languageReady, setLanguageReady] = useState(false);
 
   // Keep first client render aligned with SSR output, then apply saved preference.
   // This avoids hydration mismatch when localStorage language differs.
   useEffect(() => {
     setLanguageState(readStoredLanguage());
+    setLanguageReady(true);
   }, []);
 
   const value = useMemo<LanguageContextValue>(
     () => ({
       language,
+      languageReady,
       setLanguage: (nextLanguage: AppLanguage) => {
         setLanguageState(nextLanguage);
         window.localStorage.setItem(STORAGE_KEY, nextLanguage);
@@ -1612,7 +1616,7 @@ export function LanguageProvider({ children }: { children: ReactNode }) {
       formatNumber: (value: number) =>
         new Intl.NumberFormat(language === "zh-TW" ? "zh-TW" : "en-US").format(value),
     }),
-    [language],
+    [language, languageReady],
   );
 
   return <LanguageContext.Provider value={value}>{children}</LanguageContext.Provider>;

@@ -55,8 +55,8 @@ def build_fundamental_outlook(
             "forwardPe": forward_pe,
             "trailingEps": trailing_eps,
             "forwardEps": forward_eps,
-            "revenueGrowthEstimate": revenue_growth,
-            "earningsGrowthEstimate": earnings_growth,
+            "revenueGrowthYoy": revenue_growth,
+            "earningsGrowthYoy": earnings_growth,
             "nextEarningsDate": next_earnings,
         }
     )
@@ -93,9 +93,13 @@ def build_fundamental_outlook(
         "forwardPe": forward_pe,
         "trailingEps": trailing_eps,
         "forwardEps": forward_eps,
-        "revenueGrowthEstimate": revenue_growth,
-        "earningsGrowthEstimate": earnings_growth,
+        # yfinance revenueGrowth / earningsGrowth are reported YoY, not analyst
+        # forward estimates. Keep them labeled as historical so the prompt
+        # cannot treat last year's growth as a forecast.
+        "revenueGrowthYoy": revenue_growth,
+        "earningsGrowthYoy": earnings_growth,
         "earningsQuarterlyGrowth": earnings_quarterly_growth,
+        "growthKind": "historical_reported_yoy",
         "nextEarningsDate": next_earnings,
         "analystConsensus": {
             "label": "market_consensus_context_not_intrinsic_value",
@@ -143,15 +147,15 @@ def _classify_info_factors(
         positive.append("forwardPeBelowTrailingPe")
     _append_sign_factor(
         earnings_growth,
-        "positiveEarningsGrowthEstimate",
-        "negativeEarningsGrowthEstimate",
+        "positiveEarningsGrowthYoy",
+        "negativeEarningsGrowthYoy",
         positive,
         negative,
     )
     _append_sign_factor(
         revenue_growth,
-        "positiveRevenueGrowthEstimate",
-        "negativeRevenueGrowthEstimate",
+        "positiveRevenueGrowthYoy",
+        "negativeRevenueGrowthYoy",
         positive,
         negative,
     )

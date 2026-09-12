@@ -568,10 +568,18 @@ def test_fundamental_failure_does_not_block_technical_analysis(monkeypatch) -> N
 
 def test_news_selector_failure_is_soft_and_classified(monkeypatch) -> None:
     stock = _us_stock()
+
+    class _Provider:
+        provider_name = "openai"
+        model_name = "gpt-test"
+
+        def generate_stock_analysis(self, input_data: dict[str, object]) -> AIAnalysisResult:
+            return AIAnalysisResult(provider=self.provider_name, model=self.model_name, content="ok")
+
     service = _service(
         history_loader=lambda ticker: _history_frame(),
         info_loader=lambda ticker: {"longName": "Apple Inc.", "currency": "USD"},
-        provider_factory=lambda: None,
+        provider_factory=lambda: _Provider(),
         news_selector=lambda _stock: (_ for _ in ()).throw(TimeoutError("rss stalled")),
     )
     monkeypatch.setattr(
@@ -579,7 +587,7 @@ def test_news_selector_failure_is_soft_and_classified(monkeypatch) -> None:
         lambda stock_id: stock,
     )
 
-    result = service.analyze_stock("US:AAPL", run_ai=False, language="en", include_news=True)
+    result = service.analyze_stock("US:AAPL", run_ai=True, language="en", include_news=True)
 
     news = result.computed_data.recent_news_context
     assert news["available"] is False
@@ -655,3 +663,112 @@ def test_computed_metrics_ignore_a_still_forming_session(monkeypatch) -> None:
     technical = result.computed_data.technical_analysis
     assert technical["completedSessions"] == 119
     assert technical["dataAsOf"] == dates[-2].date().isoformat()
+
+
+def test_omitted_language_follows_the_stock_market(monkeypatch) -> None:
+    service = _service(
+        history_loader=lambda ticker: _history_frame(),
+        info_loader=lambda ticker: {"longName": "Apple Inc.", "currency": "USD"},
+        provider_factory=lambda: None,
+    )
+    monkeypatch.setattr(
+        "app.services.stock_analysis_service.quote_service.get_stock",
+        lambda stock_id: _us_stock(),
+    )
+
+    result = service.analyze_stock("US:AAPL", run_ai=False)
+
+    assert result.language == "en"
+
+
+def test_skips_news_when_no_provider_is_configured(monkeypatch) -> None:
+    news_calls: list[str] = []
+    service = _service(
+        history_loader=lambda ticker: _history_frame(),
+        info_loader=lambda ticker: {"longName": "Apple Inc.", "currency": "USD"},
+        provider_factory=lambda: None,
+        news_selector=lambda stock: news_calls.append(stock.id) or _empty_news(stock),
+    )
+    monkeypatch.setattr(
+        "app.services.stock_analysis_service.quote_service.get_stock",
+        lambda stock_id: _us_stock(),
+    )
+
+    result = service.analyze_stock("US:AAPL", run_ai=True, include_news=True, language="en")
+
+    assert news_calls == []
+    assert result.computed_data.recent_news_context is None
+    assert any("AI provider is not configured" in warning for warning in result.warnings)
+
+
+def test_lone_incomplete_session_skips_ai(monkeypatch) -> None:
+    stock = _us_stock()
+    frame = _history_frame(days=1)
+    generated: list[str] = []
+
+    class _Provider:
+        provider_name = "openai"
+        model_name = "gpt-test"
+
+        def generate_stock_analysis(self, input_data: dict[str, object]) -> AIAnalysisResult:
+            generated.append("called")
+            return AIAnalysisResult(provider=self.provider_name, model=self.model_name, content="should not run")
+
+    service = _service(
+        history_loader=lambda ticker: frame,
+        info_loader=lambda ticker: {"longName": "Apple Inc.", "currency": "USD"},
+        provider_factory=lambda: _Provider(),
+    )
+    monkeypatch.setattr(
+        "app.services.stock_analysis_service.quote_service.get_stock",
+        lambda stock_id: stock,
+    )
+    monkeypatch.setattr(
+        "app.services.stock_analysis_technical.is_daily_candle_complete",
+        lambda *_args, **_kwargs: False,
+    )
+
+    result = service.analyze_stock("US:AAPL", run_ai=True, language="en", include_news=True)
+
+    assert generated == []
+    assert SKIP_AI_MISSING_HISTORY_WARNING in result.warnings
+    assert result.ai_analysis is None
+
+
+def test_prefers_chart_provider_candles_for_technical_analysis(monkeypatch) -> None:
+    from app.models.quote import CandleRecord
+    from app.services.stock_analysis_service import StockAnalysisService
+
+    stock = _us_stock()
+    frame = _history_frame(days=90)
+    candles = [
+        CandleRecord(
+            time=timestamp.to_pydatetime().isoformat(),
+            open=float(row["Close"]) + 1,
+            high=float(row["Close"]) + 2,
+            low=float(row["Close"]) - 1,
+            close=float(row["Close"]) + 10,
+            volume=int(row["Volume"]),
+        )
+        for timestamp, row in frame.iterrows()
+    ]
+
+    service = StockAnalysisService(
+        info_loader=lambda ticker: {"longName": "Apple Inc.", "currency": "USD"},
+        provider_factory=lambda: None,
+        news_selector=_empty_news,
+    )
+    monkeypatch.setattr(
+        "app.services.stock_analysis_service.quote_service.get_stock",
+        lambda stock_id: stock,
+    )
+    monkeypatch.setattr(
+        "app.services.stock_analysis_service.quote_service.get_history",
+        lambda stock_id, range_name, limit=None: (stock, candles),
+    )
+
+    result = service.analyze_stock("US:AAPL", run_ai=False, language="en")
+
+    technical = result.computed_data.technical_analysis
+    assert technical["latestClose"] == round(float(frame["Close"].iloc[-1]) + 10, 2)
+    assert technical["priceBasis"] == "Close"
