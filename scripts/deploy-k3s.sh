@@ -4,9 +4,12 @@ set -euo pipefail
 
 MODE="${1:-}"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=lib/k8s_images.sh
+source "${ROOT_DIR}/scripts/lib/k8s_images.sh"
 NAMESPACE="${NAMESPACE:-stock-ticker}"
-BACKEND_IMAGE="${BACKEND_IMAGE:-stock-ticker-backend:local}"
-FRONTEND_IMAGE="${FRONTEND_IMAGE:-stock-ticker-frontend:local}"
+BACKEND_IMAGE="${BACKEND_IMAGE:-${DEFAULT_BACKEND_IMAGE}}"
+FRONTEND_IMAGE="${FRONTEND_IMAGE:-${DEFAULT_FRONTEND_IMAGE}}"
+IMAGE_PULL_SECRET="${IMAGE_PULL_SECRET:-}"
 K3D_CLUSTER_NAME="${K3D_CLUSTER_NAME:-stock-ticker}"
 # Optional override, e.g. KUBECTL_CMD=kubectl ./scripts/deploy-k3s.sh k3s after fixing ~/.kube/config
 KUBECTL_CMD="${KUBECTL_CMD:-}"
@@ -24,6 +27,15 @@ Modes:
 Optional env:
   OBSERVABILITY=1  Also apply k8s/observability (Prometheus, Grafana, kube-state-metrics).
                    See docs/observability.md. Default smoke path leaves this off.
+  BACKEND_IMAGE / FRONTEND_IMAGE
+                   Default local tags (stock-ticker-backend:local, stock-ticker-frontend:local).
+                   Set both to ghcr.io/...:<tag> to skip local builds and pull from GHCR.
+                   See docs/kubernetes.md#github-container-registry.
+  IMAGE_PULL_SECRET  Existing docker-registry secret name for private GHCR pulls.
+                   Creates namespace stock-ticker first; fails if the secret is missing.
+                   Do not commit the PAT.
+  SKIP_IMAGE_BUILD=1   Skip docker build (default when both images are registry references).
+  SKIP_IMAGE_IMPORT=1  Skip importing app images into k3d/k3s (default for registry images).
   BACKEND_BASE_IMAGE   Docker base for backend (default: python:3.11-slim-bookworm)
   FRONTEND_BASE_IMAGE  Docker base for frontend (default: node:20-bookworm-slim)
   DOCKER_PULL_RETRIES / DOCKER_PULL_RETRY_DELAY_SEC  Pre-pull retry tuning (default: 3 / 15)
@@ -46,26 +58,53 @@ require_cmd() {
   fi
 }
 
+should_skip_image_build() {
+  if [[ "${SKIP_IMAGE_BUILD:-}" == "1" ]]; then
+    return 0
+  fi
+  is_registry_image "${BACKEND_IMAGE}" && is_registry_image "${FRONTEND_IMAGE}"
+}
+
+should_skip_app_image_import() {
+  if [[ "${SKIP_IMAGE_IMPORT:-}" == "1" ]]; then
+    return 0
+  fi
+  is_registry_image "${BACKEND_IMAGE}" && is_registry_image "${FRONTEND_IMAGE}"
+}
+
 build_images() {
+  if should_skip_image_build; then
+    echo "Skipping local image builds (using ${BACKEND_IMAGE} and ${FRONTEND_IMAGE})"
+    return 0
+  fi
+
   local backend_base="${BACKEND_BASE_IMAGE:-python:3.11-slim-bookworm}"
   local frontend_base="${FRONTEND_BASE_IMAGE:-node:20-bookworm-slim}"
 
   pull_docker_image_with_retry "${backend_base}"
   pull_docker_image_with_retry "${frontend_base}"
 
-  echo "Building backend image: ${BACKEND_IMAGE}"
-  docker build \
-    --build-arg "PYTHON_BASE_IMAGE=${backend_base}" \
-    -t "${BACKEND_IMAGE}" \
-    -f "${ROOT_DIR}/backend/Dockerfile" \
-    "${ROOT_DIR}"
+  if ! is_registry_image "${BACKEND_IMAGE}"; then
+    echo "Building backend image: ${BACKEND_IMAGE}"
+    docker build \
+      --build-arg "PYTHON_BASE_IMAGE=${backend_base}" \
+      -t "${BACKEND_IMAGE}" \
+      -f "${ROOT_DIR}/backend/Dockerfile" \
+      "${ROOT_DIR}"
+  else
+    echo "Skipping backend build; will use registry image ${BACKEND_IMAGE}"
+  fi
 
-  echo "Building frontend image: ${FRONTEND_IMAGE}"
-  docker build \
-    --build-arg "NODE_BASE_IMAGE=${frontend_base}" \
-    -t "${FRONTEND_IMAGE}" \
-    -f "${ROOT_DIR}/frontend/Dockerfile" \
-    "${ROOT_DIR}"
+  if ! is_registry_image "${FRONTEND_IMAGE}"; then
+    echo "Building frontend image: ${FRONTEND_IMAGE}"
+    docker build \
+      --build-arg "NODE_BASE_IMAGE=${frontend_base}" \
+      -t "${FRONTEND_IMAGE}" \
+      -f "${ROOT_DIR}/frontend/Dockerfile" \
+      "${ROOT_DIR}"
+  else
+    echo "Skipping frontend build; will use registry image ${FRONTEND_IMAGE}"
+  fi
 }
 
 print_docker_hub_pull_help() {
@@ -239,7 +278,18 @@ import_into_k3d() {
   docker pull postgres:16-alpine
   docker pull redis:7-alpine
   echo "Importing images into k3d cluster: ${K3D_CLUSTER_NAME}"
-  k3d image import postgres:16-alpine redis:7-alpine "${BACKEND_IMAGE}" "${FRONTEND_IMAGE}" -c "${K3D_CLUSTER_NAME}"
+  local import_args=(postgres:16-alpine redis:7-alpine)
+  if should_skip_app_image_import; then
+    echo "Skipping app image import; cluster will pull ${BACKEND_IMAGE} and ${FRONTEND_IMAGE}"
+  else
+    if ! is_registry_image "${BACKEND_IMAGE}"; then
+      import_args+=("${BACKEND_IMAGE}")
+    fi
+    if ! is_registry_image "${FRONTEND_IMAGE}"; then
+      import_args+=("${FRONTEND_IMAGE}")
+    fi
+  fi
+  k3d image import "${import_args[@]}" -c "${K3D_CLUSTER_NAME}"
 }
 
 import_into_k3s() {
@@ -250,13 +300,21 @@ import_into_k3s() {
   # EXIT must not reference `tmp_dir` after this function returns (local goes out of scope with set -u).
   trap 'rm -rf "${tmp_dir}"' EXIT
 
-  echo "Saving local images as tar archives"
-  docker save -o "${tmp_dir}/backend.tar" "${BACKEND_IMAGE}"
-  docker save -o "${tmp_dir}/frontend.tar" "${FRONTEND_IMAGE}"
-
-  echo "Importing images into native k3s containerd"
-  sudo k3s ctr -n k8s.io images import "${tmp_dir}/backend.tar"
-  sudo k3s ctr -n k8s.io images import "${tmp_dir}/frontend.tar"
+  if should_skip_app_image_import; then
+    echo "Skipping app image import; k3s will pull ${BACKEND_IMAGE} and ${FRONTEND_IMAGE}"
+  else
+    echo "Saving local images as tar archives"
+    if ! is_registry_image "${BACKEND_IMAGE}"; then
+      docker save -o "${tmp_dir}/backend.tar" "${BACKEND_IMAGE}"
+      echo "Importing backend image into native k3s containerd"
+      sudo k3s ctr -n k8s.io images import "${tmp_dir}/backend.tar"
+    fi
+    if ! is_registry_image "${FRONTEND_IMAGE}"; then
+      docker save -o "${tmp_dir}/frontend.tar" "${FRONTEND_IMAGE}"
+      echo "Importing frontend image into native k3s containerd"
+      sudo k3s ctr -n k8s.io images import "${tmp_dir}/frontend.tar"
+    fi
+  fi
 
   echo "Pulling postgres and redis into k3s containerd (avoids slow image pull during Postgres rollout)"
   sudo k3s ctr -n k8s.io images pull docker.io/library/postgres:16-alpine
@@ -306,9 +364,61 @@ Debug (use the same kubectl command you use for apply, e.g. sudo k3s kubectl on 
 EOF
 }
 
+ensure_namespace() {
+  echo "Ensuring namespace ${NAMESPACE} exists"
+  ${KUBECTL_CMD} create namespace "${NAMESPACE}" --dry-run=client -o yaml | ${KUBECTL_CMD} apply -f -
+}
+
+ensure_image_pull_secret() {
+  if [[ -z "${IMAGE_PULL_SECRET}" ]]; then
+    if uses_custom_app_images "${BACKEND_IMAGE}" "${FRONTEND_IMAGE}"; then
+      echo "Warning: registry images without IMAGE_PULL_SECRET; private GHCR pulls will fail." >&2
+    fi
+    return 0
+  fi
+
+  ensure_namespace
+  if ${KUBECTL_CMD} -n "${NAMESPACE}" get secret "${IMAGE_PULL_SECRET}" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  cat <<EOF >&2
+Error: IMAGE_PULL_SECRET='${IMAGE_PULL_SECRET}' was not found in namespace ${NAMESPACE}.
+
+Create the secret once after the namespace exists. Do not commit the PAT:
+
+  ${KUBECTL_CMD} create namespace ${NAMESPACE}
+  ${KUBECTL_CMD} -n ${NAMESPACE} create secret docker-registry ${IMAGE_PULL_SECRET} \\
+    --docker-server=ghcr.io \\
+    --docker-username=<github-username> \\
+    --docker-password="\$CR_PAT"
+
+Then re-run with IMAGE_PULL_SECRET=${IMAGE_PULL_SECRET}.
+See docs/kubernetes.md#github-container-registry.
+EOF
+  exit 1
+}
+
 deploy_manifests() {
   echo "Applying Kubernetes manifests"
-  ${KUBECTL_CMD} apply -k "${ROOT_DIR}/k8s"
+  ensure_image_pull_secret
+  if uses_custom_app_images "${BACKEND_IMAGE}" "${FRONTEND_IMAGE}" || [[ -n "${IMAGE_PULL_SECRET}" ]]; then
+    local overlay_dir
+    overlay_dir="$(mktemp -d)"
+    # Expand the path now; RETURN must not read a function-local after it goes out of scope.
+    # shellcheck disable=SC2064
+    trap "rm -rf '${overlay_dir}'" RETURN
+    write_k8s_image_overlay \
+      "${overlay_dir}" \
+      "${BACKEND_IMAGE}" \
+      "${FRONTEND_IMAGE}" \
+      "${IMAGE_PULL_SECRET}" \
+      "${ROOT_DIR}/k8s"
+    echo "Using image overlay: backend=${BACKEND_IMAGE} frontend=${FRONTEND_IMAGE}"
+    ${KUBECTL_CMD} apply -k "${overlay_dir}"
+  else
+    ${KUBECTL_CMD} apply -k "${ROOT_DIR}/k8s"
+  fi
 
   echo "Waiting for Redis"
   ${KUBECTL_CMD} -n "${NAMESPACE}" rollout status deployment/stock-ticker-redis --timeout=180s

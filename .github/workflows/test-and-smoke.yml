@@ -5,6 +5,9 @@ on:
     branches:
       - main
       - master
+    tags:
+      # Same required jobs as main so GHCR publish can wait on them (#214).
+      - "v*.*.*"
   pull_request:
   workflow_dispatch:
   # No schedule: routine CI must not wake Azure SQL Free Offer (#186 / #187).
