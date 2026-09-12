@@ -27,7 +27,7 @@ type Props = {
 };
 
 export function Shell({ children }: Props) {
-  const pathname = usePathname();
+  const pathname = usePathname() ?? "";
   const router = useRouter();
   const { language, setLanguage, t } = useLanguage();
   const [isLeftPanelVisible, setIsLeftPanelVisible] = useState(true);

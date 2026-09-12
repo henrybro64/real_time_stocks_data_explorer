@@ -10,6 +10,7 @@ def test_stock_analysis_schema_uses_public_field_names() -> None:
         StockAnalysisResult(
             stock_id="US:AAPL",
             ticker="AAPL",
+            language="en",
             computed_data=ComputedStockAnalysisData(
                 ticker="AAPL",
                 company_name="Apple Inc.",
@@ -32,6 +33,10 @@ def test_stock_analysis_schema_uses_public_field_names() -> None:
                 volatility_30d_annualized=24.6,
                 max_drawdown_1y_percent=-14.8,
                 average_volume_30d=75_000_000,
+                technical_analysis={"period": "1Y", "availability": "ok"},
+                institutional_analysis=None,
+                fundamental_outlook={"availability": "partial"},
+                recent_news_context={"available": False},
             ),
             ai_provider="openai",
             ai_model="gpt-4o-mini",
@@ -41,9 +46,12 @@ def test_stock_analysis_schema_uses_public_field_names() -> None:
         )
     ).model_dump()
 
+    # Exact shape: guards against silently adding, renaming, or dropping a
+    # public field. Update deliberately when the contract really changes.
     assert payload == {
         "stockId": "US:AAPL",
         "ticker": "AAPL",
+        "language": "en",
         "computedData": {
             "ticker": "AAPL",
             "companyName": "Apple Inc.",
@@ -66,6 +74,10 @@ def test_stock_analysis_schema_uses_public_field_names() -> None:
             "volatility30dAnnualized": 24.6,
             "maxDrawdown1yPercent": -14.8,
             "averageVolume30d": 75_000_000,
+            "technicalAnalysis": {"period": "1Y", "availability": "ok"},
+            "institutionalAnalysis": None,
+            "fundamentalOutlook": {"availability": "partial"},
+            "recentNewsContext": {"available": False},
         },
         "aiProvider": "openai",
         "aiModel": "gpt-4o-mini",

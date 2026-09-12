@@ -41,7 +41,7 @@ from app.services.taiwan_market_data import (
     parse_taiwan_number,
     require_taiwan_stock,
     require_twse_or_tpex_symbol,
-    shares_to_lots,
+    net_shares_to_lots,
     taiwan_field_index,
     taiwan_field_indices,
     taiwan_row_value,
@@ -1662,10 +1662,7 @@ def _close_supplement_market(value: object) -> TWBoard | None:
 
 
 def _lots_from_shares(value: int, symbol: str) -> float | None:
-    lots = shares_to_lots(value, symbol=symbol)
-    if lots is None:
-        return None
-    return round(lots, 3)
+    return net_shares_to_lots(value, symbol=symbol)
 
 
 def _parse_lots_float(value: object) -> float | None:

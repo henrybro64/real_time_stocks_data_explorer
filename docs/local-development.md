@@ -38,6 +38,10 @@ Each response includes `X-Request-ID` when possible. See [backend-logging.md](ba
 
 Stock detail exposes `GET /api/stocks/{stock_id}/analysis` using yfinance history + backend metrics, then an optional AI provider on the summary JSON.
 
+`computedData` carries the context blocks the narrative must cite: `technicalAnalysis` (chart-aligned moving averages and momentum on completed sessions only), `institutionalAnalysis` (Taiwan 法人 net lots), `fundamentalOutlook`, and `recentNewsContext`. Anything unavailable is reported with a classified reason rather than being filled in by the model.
+
+`?language=en|zh-TW` selects the narrative language (default `zh-TW`) and is part of the Redis cache key, so the two languages never overwrite each other. `?refresh=true` regenerates the narrative and is the only path that fetches news; plain reads restore the news snapshot stored with the cached narrative.
+
 ```text
 AI_PROVIDER=openai        # implemented: openai | perplexity
 AI_MODEL=gpt-4o-mini

@@ -1,3 +1,5 @@
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 
@@ -5,6 +7,7 @@ class StockAnalysisCitationResponse(BaseModel):
     url: str
     title: str | None = None
     source: str | None = None
+    publishedAt: str | None = None
 
 
 class StockAnalysisSearchResultResponse(BaseModel):
@@ -35,11 +38,19 @@ class ComputedStockAnalysisResponse(BaseModel):
     volatility30dAnnualized: float | None = None
     maxDrawdown1yPercent: float | None = None
     averageVolume30d: int | None = None
+    technicalAnalysis: dict[str, Any] | None = None
+    institutionalAnalysis: dict[str, Any] | None = None
+    fundamentalOutlook: dict[str, Any] | None = None
+    recentNewsContext: dict[str, Any] | None = None
 
 
 class StockAnalysisResponse(BaseModel):
     stockId: str
     ticker: str
+    language: str = Field(
+        default="zh-TW",
+        description="Normalized analysis language used for the AI narrative cache and prompt (en or zh-TW).",
+    )
     computedData: ComputedStockAnalysisResponse
     aiProvider: str | None = None
     aiModel: str | None = None

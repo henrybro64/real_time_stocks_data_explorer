@@ -562,10 +562,16 @@ export function fetchUsStockInsights(stockId: string) {
   return fetchJson<USStockInsights>(`/stocks/${encodeURIComponent(stockId)}/us-insights`);
 }
 
-export function fetchStockAnalysis(stockId: string, options?: { refresh?: boolean }) {
+export function fetchStockAnalysis(
+  stockId: string,
+  options?: { refresh?: boolean; language?: "en" | "zh-TW" },
+) {
   const params = new URLSearchParams();
   if (options?.refresh) {
     params.set("refresh", "true");
+  }
+  if (options?.language) {
+    params.set("language", options.language);
   }
   const qs = params.toString();
   const suffix = qs ? `?${qs}` : "";

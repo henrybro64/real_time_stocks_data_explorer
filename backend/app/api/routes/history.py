@@ -29,6 +29,7 @@ from app.services.moving_average import MovingAverageSeriesRecord, SmaPointRecor
 from app.services.news_service import news_service
 from app.services.quote_service import quote_service
 from app.services.ai_providers import AIProvider
+from app.services.stock_analysis_language import normalize_analysis_language
 from app.services.stock_analysis_redis_cache import (
     CachedStockAnalysisPayload,
     get_cached_stock_analysis,
@@ -36,6 +37,7 @@ from app.services.stock_analysis_redis_cache import (
 )
 from app.services.stock_analysis_service import (
     StockAnalysisResult,
+    apply_cached_news_context,
     stock_analysis_service,
 )
 from app.services.tw_insights_service import get_tw_stock_insights
@@ -88,8 +90,20 @@ def get_stock_analysis(
     stock_id: str,
     provider: str | None = Query(default=None),
     refresh: bool = Query(default=False),
+    language: str | None = Query(
+        default=None,
+        description=(
+            "AI narrative language: en or zh-TW. "
+            "Defaults to zh-TW when omitted (matches the app default)."
+        ),
+    ),
     user_id: str = Depends(get_effective_user_id),
 ) -> StockAnalysisResponse:
+    try:
+        normalized_language = normalize_analysis_language(language)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     provider_override: AIProvider | None = None
     try:
         provider_override = resolve_user_ai_provider(user_id, provider)
@@ -100,38 +114,46 @@ def get_stock_analysis(
 
     try:
         if refresh:
-            if provider_override is None:
-                result = stock_analysis_service.analyze_stock(stock_id, run_ai=True)
-            else:
-                result = stock_analysis_service.analyze_stock(
-                    stock_id,
-                    provider_override=provider_override,
-                    run_ai=True,
-                )
+            result = stock_analysis_service.analyze_stock(
+                stock_id,
+                provider_override=provider_override,
+                run_ai=True,
+                language=normalized_language,
+                include_news=True,
+            )
             if result.ai_analysis:
                 now = datetime.now(timezone.utc)
                 set_cached_stock_analysis(
                     user_id,
                     stock_id,
                     bucket,
+                    normalized_language,
                     analyzed_at=now,
                     ai_provider=result.ai_provider,
                     ai_model=result.ai_model,
                     ai_analysis=result.ai_analysis,
                     citations=result.citations,
                     search_results=result.search_results,
+                    recent_news_context=result.computed_data.recent_news_context,
                 )
                 result = replace(result, analyzed_at=now)
         else:
-            if provider_override is None:
-                result = stock_analysis_service.analyze_stock(stock_id, run_ai=False)
-            else:
-                result = stock_analysis_service.analyze_stock(
-                    stock_id,
-                    provider_override=provider_override,
-                    run_ai=False,
-                )
-            cached = get_cached_stock_analysis(user_id, stock_id, bucket)
+            # Do not fetch live news on cache reads — that would mix a cached
+            # narrative with newer headlines. News is restored from the cache
+            # snapshot when a narrative exists.
+            result = stock_analysis_service.analyze_stock(
+                stock_id,
+                provider_override=provider_override,
+                run_ai=False,
+                language=normalized_language,
+                include_news=False,
+            )
+            cached = get_cached_stock_analysis(
+                user_id,
+                stock_id,
+                bucket,
+                normalized_language,
+            )
             if cached is not None:
                 result = _merge_cached_ai_into_result(result, cached)
     except ValueError as exc:
@@ -246,6 +268,10 @@ def _merge_cached_ai_into_result(
 ) -> StockAnalysisResult:
     return replace(
         base,
+        computed_data=apply_cached_news_context(
+            base.computed_data,
+            cached.recent_news_context,
+        ),
         ai_provider=cached.ai_provider,
         ai_model=cached.ai_model,
         ai_analysis=cached.ai_analysis,
@@ -267,6 +293,7 @@ def _stock_analysis_schema(result: StockAnalysisResult) -> StockAnalysisResponse
     return StockAnalysisResponse(
         stockId=result.stock_id,
         ticker=result.ticker,
+        language=result.language,
         computedData=ComputedStockAnalysisResponse(
             ticker=result.computed_data.ticker,
             companyName=result.computed_data.company_name,
@@ -289,6 +316,10 @@ def _stock_analysis_schema(result: StockAnalysisResult) -> StockAnalysisResponse
             volatility30dAnnualized=result.computed_data.volatility_30d_annualized,
             maxDrawdown1yPercent=result.computed_data.max_drawdown_1y_percent,
             averageVolume30d=result.computed_data.average_volume_30d,
+            technicalAnalysis=result.computed_data.technical_analysis,
+            institutionalAnalysis=result.computed_data.institutional_analysis,
+            fundamentalOutlook=result.computed_data.fundamental_outlook,
+            recentNewsContext=result.computed_data.recent_news_context,
         ),
         aiProvider=result.ai_provider,
         aiModel=result.ai_model,
@@ -299,6 +330,7 @@ def _stock_analysis_schema(result: StockAnalysisResult) -> StockAnalysisResponse
                 url=item.url,
                 title=item.title,
                 source=item.source,
+                publishedAt=item.published_at,
             )
             for item in result.citations
         ],

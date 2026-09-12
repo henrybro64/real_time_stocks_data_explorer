@@ -11,8 +11,19 @@ from app.models.stock import StockRecord
 from app.services.http_client import HttpFetchError, fetch_text
 
 
+# Monthly revenue and dividend history are placeholder series generated from a
+# symbol seed, not filed company data. Anything consuming this module for
+# reasoning (rather than UI placeholder rendering) must check this flag first.
+TW_INSIGHTS_REVENUE_IS_SYNTHETIC = True
+TW_INSIGHTS_DIVIDENDS_ARE_SYNTHETIC = True
+
+
 def get_tw_stock_insights(stock: StockRecord) -> dict[str, object]:
-    """Build Taiwan-only detail insights (revenue, peer snapshot, dividends)."""
+    """Build Taiwan-only detail insights (revenue, peer snapshot, dividends).
+
+    Revenue and dividend series are synthetic placeholders; see
+    :data:`TW_INSIGHTS_REVENUE_IS_SYNTHETIC`.
+    """
     seed = sum(ord(char) for char in stock.symbol)
     rng = random.Random(seed)
     now = datetime.now(ZoneInfo("Asia/Taipei"))
