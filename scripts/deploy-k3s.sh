@@ -30,6 +30,7 @@ Optional env:
   BACKEND_IMAGE / FRONTEND_IMAGE
                    Default local tags (stock-ticker-backend:local, stock-ticker-frontend:local).
                    Set both to ghcr.io/...:<tag> to skip local builds and pull from GHCR.
+                   Registry-only k3s deploys do not require Docker.
                    See docs/kubernetes.md#github-container-registry.
   IMAGE_PULL_SECRET  Existing docker-registry secret name for private GHCR pulls.
                    Creates namespace stock-ticker first; fails if the secret is missing.
@@ -81,10 +82,8 @@ build_images() {
   local backend_base="${BACKEND_BASE_IMAGE:-python:3.11-slim-bookworm}"
   local frontend_base="${FRONTEND_BASE_IMAGE:-node:20-bookworm-slim}"
 
-  pull_docker_image_with_retry "${backend_base}"
-  pull_docker_image_with_retry "${frontend_base}"
-
   if ! is_registry_image "${BACKEND_IMAGE}"; then
+    pull_docker_image_with_retry "${backend_base}"
     echo "Building backend image: ${BACKEND_IMAGE}"
     docker build \
       --build-arg "PYTHON_BASE_IMAGE=${backend_base}" \
@@ -96,6 +95,7 @@ build_images() {
   fi
 
   if ! is_registry_image "${FRONTEND_IMAGE}"; then
+    pull_docker_image_with_retry "${frontend_base}"
     echo "Building frontend image: ${FRONTEND_IMAGE}"
     docker build \
       --build-arg "NODE_BASE_IMAGE=${frontend_base}" \
@@ -449,12 +449,24 @@ deploy_manifests() {
   fi
 }
 
+needs_docker() {
+  if [[ "${MODE}" == "k3d" ]]; then
+    return 0
+  fi
+  if should_skip_image_build && should_skip_app_image_import; then
+    return 1
+  fi
+  return 0
+}
+
 if [[ -z "${MODE}" ]]; then
   usage
   exit 1
 fi
 
-require_cmd docker
+if needs_docker; then
+  require_cmd docker
+fi
 
 if [[ -n "${KUBECTL_CMD}" ]]; then
   :

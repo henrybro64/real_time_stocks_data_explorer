@@ -163,7 +163,7 @@ The first Actions publish links each package to this repo (`GITHUB_TOKEN` + `org
 
 Workflow: `.github/workflows/publish-ghcr.yml`.
 
-- **`main` / `master` push:** Test And Smoke runs first. Publish starts via `workflow_run` only if `backend-pytest`, `frontend-playwright`, and `k3s-smoke` are green. A failing Allure/report job does **not** block images. `latest` updates only from the default branch.
+- **`main` / `master` push:** Test And Smoke runs first. Publish starts via `workflow_run` only if `backend-pytest`, `frontend-playwright`, and `k3s-smoke` are green. A failing Allure/report job does **not** block images. Both images are built to a staging `build-<run_id>` tag first; SHA / `latest` / semver are applied only after both succeed. `latest` is written only if that SHA is still the default-branch tip (a slower older run cannot retag `latest`).
 - **`v*.*.*` git tag:** Test And Smoke runs on the tag, then publish adds `1.2.3` / `1.2` (from `v1.2.3`) plus the commit SHA. It does not wait on a separate untested tag push.
 - **`workflow_dispatch`:** allowed only on the default branch (manual republish; does not wait for CI).
 - Pull requests, feature-branch dispatch, and failed required test jobs do **not** push images. Publish is not started for PR Test And Smoke runs.
@@ -224,7 +224,7 @@ export IMAGE_PULL_SECRET=ghcr-pull
 
 Digest pins also work: `ghcr.io/.../real_time_stocks_data_explorer-backend@sha256:<digest>`.
 
-The script creates `stock-ticker` if needed, then fails with the same commands if `IMAGE_PULL_SECRET` is set but the secret is missing. It skips local app builds/imports, rewrites the Deployment images, and sets `imagePullPolicy` to `IfNotPresent` (or `Always` for `:latest`; digest refs stay `IfNotPresent`). Postgres and Redis still come from Docker Hub as today.
+The script creates `stock-ticker` if needed, then fails with the same commands if `IMAGE_PULL_SECRET` is set but the secret is missing. It skips local app builds/imports, rewrites the Deployment images, and sets `imagePullPolicy` to `IfNotPresent` (or `Always` for `:latest`; digest refs stay `IfNotPresent`). Postgres and Redis still come from Docker Hub as today. Registry-only k3s deploys do not require Docker; k3d still does. Mixed local+GHCR pulls only the base image for the side that is built locally.
 
 ### Verify the image in use
 

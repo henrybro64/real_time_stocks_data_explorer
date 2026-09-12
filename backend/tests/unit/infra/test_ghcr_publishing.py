@@ -227,6 +227,8 @@ def test_publish_workflow_is_ci_gated_and_uses_github_token() -> None:
     assert "default_branch" in decide_if
     assert workflow["jobs"]["publish"]["needs"] in ("decide", ["decide"])
     assert "needs.decide.outputs.publish" in workflow["jobs"]["publish"]["if"]
+    assert "promote" in workflow["jobs"]
+    assert workflow["jobs"]["promote"]["needs"] == ["decide", "publish"]
     text = _WORKFLOW.read_text(encoding="utf-8")
     assert "secrets.GITHUB_TOKEN" in text
     assert "CR_PAT" not in text
@@ -244,6 +246,9 @@ def test_publish_workflow_is_ci_gated_and_uses_github_token() -> None:
     assert "org.opencontainers.image.revision" in text
     assert "cache-to: type=registry" in text
     assert ":buildcache" in text
+    assert "build-${{ github.run_id }}" in text
+    assert "imagetools create" in text
+    assert "will not retag latest" in text
     assert "secrets.GHCR" not in text
 
 
@@ -268,7 +273,11 @@ def test_deploy_script_keeps_local_defaults_and_documents_ghcr() -> None:
     assert "should_skip_image_build" in script
     assert "ensure_namespace" in script
     assert "ensure_image_pull_secret" in script
+    assert "needs_docker" in script
     assert "docs/kubernetes.md#github-container-registry" in script
+    pull_idx = script.index("pull_docker_image_with_retry")
+    backend_check = script.index('if ! is_registry_image "${BACKEND_IMAGE}"; then')
+    assert backend_check < pull_idx
 
 
 def test_docs_cover_packages_tags_pull_and_k3s_switch() -> None:
@@ -288,3 +297,5 @@ def test_docs_cover_packages_tags_pull_and_k3s_switch() -> None:
     assert "Test And Smoke" in docs
     assert "backend-pytest" in docs
     assert "Manage Actions access" in docs
+    assert "default-branch tip" in docs
+    assert "do not require Docker" in docs

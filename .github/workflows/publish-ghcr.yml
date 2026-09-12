@@ -82,6 +82,14 @@ jobs:
               ;;
           esac
 
+          if [[ "${latest}" == "true" && "${publish}" == "true" ]]; then
+            tip="$(gh api "repos/${GH_REPO}/commits/${DEFAULT_BRANCH}" --jq .sha)"
+            if [[ "${sha}" != "${tip}" ]]; then
+              echo "SHA ${sha} is not ${DEFAULT_BRANCH} tip ${tip}; will not retag latest"
+              latest="false"
+            fi
+          fi
+
           printf 'publish=%s\n' "${publish}" >> "${GITHUB_OUTPUT}"
           printf 'sha=%s\n' "${sha}" >> "${GITHUB_OUTPUT}"
           printf 'latest=%s\n' "${latest}" >> "${GITHUB_OUTPUT}"
@@ -123,10 +131,7 @@ jobs:
             org.opencontainers.image.revision=${{ needs.decide.outputs.sha }}
             org.opencontainers.image.title=real_time_stocks_data_explorer-${{ matrix.name }}
           tags: |
-            type=raw,value=${{ needs.decide.outputs.sha }}
-            type=raw,value=latest,enable=${{ needs.decide.outputs.latest == 'true' }}
-            type=raw,value=${{ needs.decide.outputs.version }},enable=${{ needs.decide.outputs.version != '' }}
-            type=raw,value=${{ needs.decide.outputs.major_minor }},enable=${{ needs.decide.outputs.major_minor != '' }}
+            type=raw,value=build-${{ github.run_id }}
 
       - uses: docker/setup-buildx-action@v3
 
@@ -149,3 +154,58 @@ jobs:
           # :buildcache is a Buildx layer cache on the same package, not a runnable app tag.
           cache-from: type=registry,ref=${{ steps.image.outputs.name }}:buildcache
           cache-to: type=registry,ref=${{ steps.image.outputs.name }}:buildcache,mode=max
+
+  # Release tags are applied only after both matrix builds succeed so SHA/latest/semver stay paired.
+  promote:
+    needs:
+      - decide
+      - publish
+    if: success() && needs.decide.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Promote SHA and mutable tags from staging builds
+        env:
+          SHA: ${{ needs.decide.outputs.sha }}
+          LATEST: ${{ needs.decide.outputs.latest }}
+          VERSION: ${{ needs.decide.outputs.version }}
+          MAJOR_MINOR: ${{ needs.decide.outputs.major_minor }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          STAGING_TAG: build-${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          owner="$(printf '%s' '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
+          repo="$(printf '%s' '${{ github.event.repository.name }}' | tr '[:upper:]' '[:lower:]')"
+          latest="${LATEST}"
+          if [[ "${latest}" == "true" ]]; then
+            tip="$(gh api "repos/${GH_REPO}/commits/${DEFAULT_BRANCH}" --jq .sha)"
+            if [[ "${SHA}" != "${tip}" ]]; then
+              echo "SHA ${SHA} is not ${DEFAULT_BRANCH} tip ${tip}; will not retag latest"
+              latest="false"
+            fi
+          fi
+          for name in backend frontend; do
+            image="ghcr.io/${owner}/${repo}-${name}"
+            src="${image}:${STAGING_TAG}"
+            create_args=(-t "${image}:${SHA}")
+            if [[ "${latest}" == "true" ]]; then
+              create_args+=(-t "${image}:latest")
+            fi
+            if [[ -n "${VERSION}" ]]; then
+              create_args+=(-t "${image}:${VERSION}")
+            fi
+            if [[ -n "${MAJOR_MINOR}" ]]; then
+              create_args+=(-t "${image}:${MAJOR_MINOR}")
+            fi
+            echo "Promoting ${src} -> ${create_args[*]}"
+            docker buildx imagetools create "${create_args[@]}" "${src}"
+          done
