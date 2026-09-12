@@ -21,9 +21,10 @@ def test_generate_insight_delegates_to_stock_analysis_service(
         captured["provider"] = provider
         return object()
 
-    def fake_analyze_stock(stock_id: str, *, provider_override):
+    def fake_analyze_stock(stock_id: str, *, provider_override, language=None):
         captured["stock_id"] = stock_id
         captured["provider_override"] = provider_override
+        captured["language"] = language
         return StockAnalysisResult(
             stock_id=stock_id,
             ticker="AAPL",
@@ -54,6 +55,7 @@ def test_generate_insight_delegates_to_stock_analysis_service(
     assert captured["user_id"] == "test-user"
     assert captured["provider"] == "openai"
     assert captured["stock_id"] == "US:AAPL"
+    assert captured["language"] is None
 
 
 def test_generate_insight_raises_when_ai_analysis_is_unavailable(
@@ -67,7 +69,7 @@ def test_generate_insight_raises_when_ai_analysis_is_unavailable(
     monkeypatch.setattr(
         ai_module.stock_analysis_service,
         "analyze_stock",
-        lambda stock_id, *, provider_override: StockAnalysisResult(
+        lambda stock_id, *, provider_override, language=None: StockAnalysisResult(
             stock_id=stock_id,
             ticker="AAPL",
             computed_data=_ComputedDataStub(),
@@ -103,7 +105,7 @@ def test_generate_insight_raises_for_invalid_yfinance_ticker(
     monkeypatch.setattr(
         ai_module.stock_analysis_service,
         "analyze_stock",
-        lambda stock_id, *, provider_override: StockAnalysisResult(
+        lambda stock_id, *, provider_override, language=None: StockAnalysisResult(
             stock_id=stock_id,
             ticker="AAPL",
             computed_data=_ComputedDataStub(),
@@ -137,7 +139,7 @@ def test_generate_insight_raises_for_missing_yfinance_history(
     monkeypatch.setattr(
         ai_module.stock_analysis_service,
         "analyze_stock",
-        lambda stock_id, *, provider_override: StockAnalysisResult(
+        lambda stock_id, *, provider_override, language=None: StockAnalysisResult(
             stock_id=stock_id,
             ticker="AAPL",
             computed_data=_ComputedDataStub(),

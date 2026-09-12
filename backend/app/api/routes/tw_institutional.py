@@ -9,7 +9,7 @@ from app.schemas.tw_institutional import (
     TaiwanInstitutionalInvestorsResponse,
     TaiwanInstitutionalInvestorSummaryResponse,
 )
-from app.services.taiwan_market_data import shares_to_lots, taiwan_shares_per_lot
+from app.services.taiwan_market_data import net_shares_to_lots, taiwan_shares_per_lot
 from app.services.tw_institutional_service import (
     TaiwanInstitutionalInvestorRecord,
     TaiwanInstitutionalInvestorsResult,
@@ -99,7 +99,4 @@ def _tw_institutional_schema(
 
 
 def _lots_from_shares(shares: int | None, symbol: str) -> float | None:
-    lots = shares_to_lots(shares, symbol=symbol)
-    if lots is None:
-        return None
-    return round(lots, 3)
+    return net_shares_to_lots(shares, symbol=symbol)

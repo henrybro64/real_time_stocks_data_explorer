@@ -493,6 +493,7 @@ export type StockAnalysisCitation = {
   url: string;
   title: string | null;
   source: string | null;
+  publishedAt?: string | null;
 };
 
 export type StockAnalysisSearchResult = {
@@ -523,11 +524,17 @@ export type ComputedStockAnalysis = {
   volatility30dAnnualized: number | null;
   maxDrawdown1yPercent: number | null;
   averageVolume30d: number | null;
+  technicalAnalysis?: Record<string, unknown> | null;
+  institutionalAnalysis?: Record<string, unknown> | null;
+  fundamentalOutlook?: Record<string, unknown> | null;
+  recentNewsContext?: Record<string, unknown> | null;
 };
 
 export type StockAnalysisResponse = {
   stockId: string;
   ticker: string;
+  /** Normalized narrative language used for cache/prompt (`en` or `zh-TW`). */
+  language: string;
   computedData: ComputedStockAnalysis;
   aiProvider: string | null;
   aiModel: string | null;

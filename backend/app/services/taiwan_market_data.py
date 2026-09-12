@@ -559,6 +559,14 @@ def shares_to_lots(value: object, *, symbol: str | None = None) -> float | None:
     return shares / float(taiwan_shares_per_lot(symbol))
 
 
+def net_shares_to_lots(value: object, *, symbol: str | None = None) -> float | None:
+    """``shares_to_lots`` rounded for display/payload use. ``None`` stays ``None``."""
+    lots = shares_to_lots(value, symbol=symbol)
+    if lots is None:
+        return None
+    return round(lots, 3)
+
+
 def taiwan_shares_per_lot(symbol: str | None = None) -> int:
     """Return shares (受益權單位) per 張 for Taiwan instruments.
 

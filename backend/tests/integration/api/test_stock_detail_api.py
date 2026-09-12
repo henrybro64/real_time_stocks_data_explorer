@@ -323,11 +323,15 @@ def test_analysis_endpoint_returns_computed_metrics_when_ai_is_unavailable(
         *,
         provider_override=None,
         run_ai=True,
+        language=None,
+        include_news=True,
     ):
         assert run_ai is False
+        assert include_news is False
         return StockAnalysisResult(
             stock_id=stock_id,
             ticker="AAPL",
+            language="zh-TW",
             computed_data=ComputedStockAnalysisData(
                 ticker="AAPL",
                 company_name="Apple Inc.",

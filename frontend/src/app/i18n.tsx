@@ -334,6 +334,47 @@ export type TranslationKey =
   | "portfolio.ai.weight"
   | "portfolio.ai.marketValue"
   | "portfolio.ai.unrealizedPl"
+  | "stock.ai.eyebrow"
+  | "stock.ai.title"
+  | "stock.ai.description"
+  | "stock.ai.refresh"
+  | "stock.ai.loading"
+  | "stock.ai.refreshing"
+  | "stock.ai.refreshFailed"
+  | "stock.ai.loadFailed"
+  | "stock.ai.explanation"
+  | "stock.ai.noCache"
+  | "stock.ai.sources"
+  | "stock.ai.analyzedAt"
+  | "stock.ai.disclaimer"
+  | "stock.ai.notice.historyFetchFailed"
+  | "stock.ai.notice.noHistory"
+  | "stock.ai.notice.unusableHistory"
+  | "stock.ai.notice.metadataUnavailable"
+  | "stock.ai.notice.invalidTicker"
+  | "stock.ai.notice.aiSkippedNoHistory"
+  | "stock.ai.notice.newsUnavailable"
+  | "stock.ai.metric.ticker"
+  | "stock.ai.metric.company"
+  | "stock.ai.metric.currency"
+  | "stock.ai.metric.sector"
+  | "stock.ai.metric.industry"
+  | "stock.ai.metric.marketCap"
+  | "stock.ai.metric.trailingPe"
+  | "stock.ai.metric.forwardPe"
+  | "stock.ai.metric.currentPrice"
+  | "stock.ai.metric.return1m"
+  | "stock.ai.metric.return3m"
+  | "stock.ai.metric.return6m"
+  | "stock.ai.metric.return1y"
+  | "stock.ai.metric.sma50"
+  | "stock.ai.metric.sma200"
+  | "stock.ai.metric.priceVsSma50"
+  | "stock.ai.metric.priceVsSma200"
+  | "stock.ai.metric.rsi14"
+  | "stock.ai.metric.volatility30d"
+  | "stock.ai.metric.maxDrawdown1y"
+  | "stock.ai.metric.averageVolume30d"
   | "portfolio.assets.eyebrow"
   | "portfolio.assets.title"
   | "portfolio.assets.count"
@@ -849,6 +890,57 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "portfolio.ai.weight": "Weight %",
     "portfolio.ai.marketValue": "Market value",
     "portfolio.ai.unrealizedPl": "Unrealized P/L",
+    "stock.ai.eyebrow": "AI",
+    "stock.ai.title": "AI stock analysis",
+    "stock.ai.description":
+      "Computed metrics refresh when you open this page. The AI narrative is loaded from cache until you choose Refresh analysis.",
+    "stock.ai.refresh": "Refresh analysis",
+    "stock.ai.loading": "Loading stock analysis...",
+    "stock.ai.refreshing": "Refreshing AI analysis...",
+    "stock.ai.refreshFailed": "Could not refresh AI analysis. Try again.",
+    "stock.ai.loadFailed":
+      "Failed to load stock analysis. Check the backend analysis configuration and try again.",
+    "stock.ai.explanation": "AI explanation",
+    "stock.ai.noCache":
+      "No cached AI analysis is available yet. Click Refresh analysis to generate one with your configured AI provider. Computed metrics above are based on the latest market data loaded for this page.",
+    "stock.ai.sources": "Sources",
+    "stock.ai.analyzedAt": "AI narrative as of {datetime}",
+    "stock.ai.disclaimer":
+      "This analysis is for informational purposes only and is not financial advice.",
+    "stock.ai.notice.historyFetchFailed":
+      "Could not load one year of daily price history for this stock.",
+    "stock.ai.notice.noHistory": "No historical price data was returned for this stock.",
+    "stock.ai.notice.unusableHistory":
+      "The historical price data did not include usable closing prices.",
+    "stock.ai.notice.metadataUnavailable":
+      "Some company details could not be loaded, so parts of the analysis may be incomplete.",
+    "stock.ai.notice.invalidTicker":
+      "This ticker appears to be invalid or is currently unavailable.",
+    "stock.ai.notice.aiSkippedNoHistory":
+      "AI analysis was skipped because the required price history is unavailable.",
+    "stock.ai.notice.newsUnavailable":
+      "Recent news context could not be loaded, so this analysis uses market data only.",
+    "stock.ai.metric.ticker": "Ticker",
+    "stock.ai.metric.company": "Company",
+    "stock.ai.metric.currency": "Currency",
+    "stock.ai.metric.sector": "Sector",
+    "stock.ai.metric.industry": "Industry",
+    "stock.ai.metric.marketCap": "Market cap",
+    "stock.ai.metric.trailingPe": "Trailing P/E",
+    "stock.ai.metric.forwardPe": "Forward P/E",
+    "stock.ai.metric.currentPrice": "Current price",
+    "stock.ai.metric.return1m": "1M return",
+    "stock.ai.metric.return3m": "3M return",
+    "stock.ai.metric.return6m": "6M return",
+    "stock.ai.metric.return1y": "1Y return",
+    "stock.ai.metric.sma50": "50D SMA",
+    "stock.ai.metric.sma200": "200D SMA",
+    "stock.ai.metric.priceVsSma50": "Price vs 50D SMA",
+    "stock.ai.metric.priceVsSma200": "Price vs 200D SMA",
+    "stock.ai.metric.rsi14": "14D RSI",
+    "stock.ai.metric.volatility30d": "30D annualized volatility",
+    "stock.ai.metric.maxDrawdown1y": "1Y max drawdown",
+    "stock.ai.metric.averageVolume30d": "30D average volume",
     "portfolio.assets.eyebrow": "Other assets",
     "portfolio.assets.title": "Consolidated assets",
     "portfolio.assets.count": "{count} assets",
@@ -1307,6 +1399,49 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "portfolio.ai.weight": "權重 %",
     "portfolio.ai.marketValue": "市值",
     "portfolio.ai.unrealizedPl": "未實現損益",
+    "stock.ai.eyebrow": "AI",
+    "stock.ai.title": "AI 個股分析",
+    "stock.ai.description":
+      "開啟此頁時會更新計算指標。AI 文字分析會從快取載入，直到您選擇「重新分析」。",
+    "stock.ai.refresh": "重新分析",
+    "stock.ai.loading": "載入個股分析中...",
+    "stock.ai.refreshing": "正在重新產生 AI 分析...",
+    "stock.ai.refreshFailed": "無法重新產生 AI 分析，請再試一次。",
+    "stock.ai.loadFailed": "無法載入個股分析。請檢查後端分析設定後再試。",
+    "stock.ai.explanation": "AI 說明",
+    "stock.ai.noCache":
+      "目前尚無快取的 AI 分析。請點「重新分析」，以您設定的 AI 提供方產生說明。上方計算指標仍依本頁載入的最新市場資料。",
+    "stock.ai.sources": "來源",
+    "stock.ai.analyzedAt": "AI 文字分析時間：{datetime}",
+    "stock.ai.disclaimer": "本分析僅供參考，不構成投資建議。",
+    "stock.ai.notice.historyFetchFailed": "無法載入這檔股票近一年的日線價格資料。",
+    "stock.ai.notice.noHistory": "查無這檔股票的歷史價格資料。",
+    "stock.ai.notice.unusableHistory": "歷史價格資料中沒有可用的收盤價。",
+    "stock.ai.notice.metadataUnavailable": "部分公司資料無法載入，分析內容可能不完整。",
+    "stock.ai.notice.invalidTicker": "這個代碼可能無效，或目前無法取得資料。",
+    "stock.ai.notice.aiSkippedNoHistory": "因為缺少必要的價格歷史資料，已略過 AI 分析。",
+    "stock.ai.notice.newsUnavailable": "無法載入近期新聞背景，本次分析僅依據市場資料。",
+    "stock.ai.metric.ticker": "代碼",
+    "stock.ai.metric.company": "公司",
+    "stock.ai.metric.currency": "幣別",
+    "stock.ai.metric.sector": "產業",
+    "stock.ai.metric.industry": "細產業",
+    "stock.ai.metric.marketCap": "市值",
+    "stock.ai.metric.trailingPe": "本益比（過去）",
+    "stock.ai.metric.forwardPe": "本益比（預期）",
+    "stock.ai.metric.currentPrice": "目前價格",
+    "stock.ai.metric.return1m": "近 1 月報酬",
+    "stock.ai.metric.return3m": "近 3 月報酬",
+    "stock.ai.metric.return6m": "近 6 月報酬",
+    "stock.ai.metric.return1y": "近 1 年報酬",
+    "stock.ai.metric.sma50": "50 日均線",
+    "stock.ai.metric.sma200": "200 日均線",
+    "stock.ai.metric.priceVsSma50": "相對 50 日均線",
+    "stock.ai.metric.priceVsSma200": "相對 200 日均線",
+    "stock.ai.metric.rsi14": "14 日 RSI",
+    "stock.ai.metric.volatility30d": "30 日年化波動",
+    "stock.ai.metric.maxDrawdown1y": "近 1 年最大回撤",
+    "stock.ai.metric.averageVolume30d": "30 日平均成交量",
     "portfolio.assets.eyebrow": "其他資產",
     "portfolio.assets.title": "整體資產",
     "portfolio.assets.count": "{count} 筆資產",
@@ -1430,6 +1565,7 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
 
 type LanguageContextValue = {
   language: AppLanguage;
+  languageReady: boolean;
   setLanguage: (nextLanguage: AppLanguage) => void;
   t: (key: TranslationKey, params?: Record<string, string | number>) => string;
   formatNumber: (value: number) => string;
@@ -1456,16 +1592,19 @@ function readStoredLanguage(): AppLanguage {
 
 export function LanguageProvider({ children }: { children: ReactNode }) {
   const [language, setLanguageState] = useState<AppLanguage>("zh-TW");
+  const [languageReady, setLanguageReady] = useState(false);
 
   // Keep first client render aligned with SSR output, then apply saved preference.
   // This avoids hydration mismatch when localStorage language differs.
   useEffect(() => {
     setLanguageState(readStoredLanguage());
+    setLanguageReady(true);
   }, []);
 
   const value = useMemo<LanguageContextValue>(
     () => ({
       language,
+      languageReady,
       setLanguage: (nextLanguage: AppLanguage) => {
         setLanguageState(nextLanguage);
         window.localStorage.setItem(STORAGE_KEY, nextLanguage);
@@ -1477,7 +1616,7 @@ export function LanguageProvider({ children }: { children: ReactNode }) {
       formatNumber: (value: number) =>
         new Intl.NumberFormat(language === "zh-TW" ? "zh-TW" : "en-US").format(value),
     }),
-    [language],
+    [language, languageReady],
   );
 
   return <LanguageContext.Provider value={value}>{children}</LanguageContext.Provider>;

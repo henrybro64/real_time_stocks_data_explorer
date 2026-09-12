@@ -1,3 +1,5 @@
+from threading import Lock
+
 import pytest
 
 from app.services import key_stats_service
@@ -652,16 +654,19 @@ def test_preload_yfinance_info_warms_pending_us_symbols_in_parallel(
         for symbol in ("AAA", "BBB", "CCC")
     ]
     fetch_calls: list[str] = []
+    calls_lock = Lock()
 
     def fake_fetch(current_stock):
-        fetch_calls.append(current_stock.symbol)
+        with calls_lock:
+            fetch_calls.append(current_stock.symbol)
         return {"quoteType": "EQUITY", "trailingPE": 10.0}
 
     monkeypatch.setattr(key_stats_service, "_fetch_yfinance_info_uncached", fake_fetch)
 
     key_stats_service.preload_yfinance_info(stocks)
 
-    assert fetch_calls == ["AAA", "BBB", "CCC"]
+    # Warming runs in parallel, so completion order is not deterministic.
+    assert sorted(fetch_calls) == ["AAA", "BBB", "CCC"]
     assert key_stats_service._load_yfinance_info(stocks[0]) == {
         "quoteType": "EQUITY",
         "trailingPE": 10.0,
