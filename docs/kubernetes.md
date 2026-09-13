@@ -95,7 +95,7 @@ Expected pods: `stock-ticker-backend`, `stock-ticker-frontend`, `stock-ticker-po
 | `k8s-test-host-postgres.sh` | Test host Postgres reachability from cluster |
 | `ci-k3s-smoke.sh` | Local k3s smoke entrypoint |
 
-**Deploy script steps:** build backend/frontend `:local` images; import into k3d/k3s; pre-pull `postgres:16-alpine` and `redis:7-alpine`; apply manifests; wait for Redis, Postgres, backend, frontend.
+**Deploy script steps:** build backend/frontend `:local` images; import into k3d/k3s; pre-pull `postgres:16-alpine` and `redis:7-alpine`; apply manifests; wait for Redis, Postgres, backend, frontend. Registry images skip the local build/import and are pulled by the cluster instead — see [GitHub Container Registry](#github-container-registry).
 
 ## Postgres backup and restore
 
@@ -140,6 +140,102 @@ ARTIFACT_DIR=artifacts/k3s-smoke KUBECTL_CMD="sudo k3s kubectl" \
 ```
 
 Records deploy, pod/service/PVC state, migration init, `/health`, frontend `/api/markets` proxy, Postgres `SELECT 1`, Redis `PING`. Artifacts under `artifacts/k3s-smoke/`. CI runs the same in `.github/workflows/test-and-smoke.yml`.
+
+## GitHub Container Registry
+
+Publishing is additive. Local development still uses `stock-ticker-backend:local` and `stock-ticker-frontend:local` with `imagePullPolicy: Never`. You do not need GHCR to develop or run k3s.
+
+### Where the packages appear
+
+After a successful publish, the two packages show up under GitHub **Packages** (not at `ghcr.io` in a browser):
+
+- [github.com/henrybro64?tab=packages](https://github.com/henrybro64?tab=packages)
+- This repo’s right-hand **Packages** list
+- Direct package pages:
+  - `https://github.com/users/henrybro64/packages/container/real_time_stocks_data_explorer-backend`
+  - `https://github.com/users/henrybro64/packages/container/real_time_stocks_data_explorer-frontend`
+
+Because this repository is private, new packages inherit **private** visibility. Private GHCR storage counts against the GitHub Packages quota. After the first push you can change visibility on each package page if you want anonymous pulls.
+
+The first Actions publish links each package to this repo (`GITHUB_TOKEN` + `org.opencontainers.image.source`). If you previously pushed the same package name from a laptop, `GITHUB_TOKEN` cannot write until you **link the package to this repository** on the package’s **Package settings → Manage Actions access** page.
+
+### How tags are generated
+
+Workflow: `.github/workflows/publish-ghcr.yml`.
+
+- **`main` / `master` push:** Test And Smoke runs first. Publish starts via `workflow_run` only if `backend-pytest`, `frontend-playwright`, and `k3s-smoke` are green. A failing Allure/report job does **not** block images. Both images are built to a staging `build-<run_id>` tag first; SHA / `latest` / semver are applied only after both succeed. `latest` is written only if that SHA is still the default-branch tip (a slower older run cannot retag `latest`).
+- **`v*.*.*` git tag:** Test And Smoke runs on the tag, then publish adds `1.2.3` / `1.2` (from `v1.2.3`) plus the commit SHA. It does not wait on a separate untested tag push.
+- **`workflow_dispatch`:** allowed only on the default branch (manual republish; does not wait for CI).
+- Pull requests, feature-branch dispatch, and failed required test jobs do **not** push images. Publish is not started for PR Test And Smoke runs.
+
+| Tag | When |
+| --- | --- |
+| `<full-git-sha>` | Every publish. Prefer this for deployments (immutable). |
+| `latest` | Default branch only (`main`). Convenience, not a pin. |
+| `1.2.3` / `1.2` | When a `v1.2.3` git tag is pushed |
+| `buildcache` | Buildx layer cache on the same package. Not a runnable app image — do not deploy it. |
+
+Example references:
+
+```text
+ghcr.io/henrybro64/real_time_stocks_data_explorer-backend:<git-sha>
+ghcr.io/henrybro64/real_time_stocks_data_explorer-backend:latest
+ghcr.io/henrybro64/real_time_stocks_data_explorer-frontend:<git-sha>
+ghcr.io/henrybro64/real_time_stocks_data_explorer-frontend:latest
+```
+
+Images include OCI labels `org.opencontainers.image.source` and `org.opencontainers.image.revision`.
+
+Published images are **`linux/amd64` only**. That matches Ubuntu k3s. `k3d` on Apple Silicon will not run them without emulation — keep using locally built `:local` images on the Mac.
+
+### Pull an image
+
+Public package (or after you change visibility to public):
+
+```bash
+docker pull ghcr.io/henrybro64/real_time_stocks_data_explorer-backend:<git-sha>
+```
+
+Private package — use a classic PAT with `read:packages` (not your GitHub password):
+
+```bash
+echo "$CR_PAT" | docker login ghcr.io -u henrybro64 --password-stdin
+docker pull ghcr.io/henrybro64/real_time_stocks_data_explorer-backend:<git-sha>
+```
+
+GitHub Actions publish uses `GITHUB_TOKEN` with `packages: write`. That token cannot be reused on your home cluster.
+
+### Optional k3s/k3d pull from GHCR
+
+Default deploy is unchanged (`:local` + import). To run published images instead:
+
+```bash
+export BACKEND_IMAGE=ghcr.io/henrybro64/real_time_stocks_data_explorer-backend:<git-sha>
+export FRONTEND_IMAGE=ghcr.io/henrybro64/real_time_stocks_data_explorer-frontend:<git-sha>
+# Private packages only — create the namespace, then the secret once (do not commit the PAT):
+kubectl create namespace stock-ticker
+kubectl -n stock-ticker create secret docker-registry ghcr-pull \
+  --docker-server=ghcr.io \
+  --docker-username=henrybro64 \
+  --docker-password="$CR_PAT"
+export IMAGE_PULL_SECRET=ghcr-pull
+./scripts/deploy-k3s.sh k3s   # Ubuntu amd64. On Mac k3d keep :local images.
+```
+
+Digest pins also work: `ghcr.io/.../real_time_stocks_data_explorer-backend@sha256:<digest>`.
+
+The script creates `stock-ticker` if needed, then fails with the same commands if `IMAGE_PULL_SECRET` is set but the secret is missing. It skips local app builds/imports, rewrites the Deployment images, and sets `imagePullPolicy` to `IfNotPresent` (or `Always` for `:latest`; digest refs stay `IfNotPresent`). Postgres and Redis still come from Docker Hub as today. Registry-only k3s deploys do not require Docker; k3d still does. Mixed local+GHCR pulls only the base image for the side that is built locally.
+
+### Verify the image in use
+
+```bash
+kubectl -n stock-ticker get deploy stock-ticker-backend stock-ticker-frontend \
+  -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.spec.template.spec.containers[0].image}{"\n"}{end}'
+kubectl -n stock-ticker get pod -l 'app in (stock-ticker-backend,stock-ticker-frontend)' \
+  -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.status.containerStatuses[0].imageID}{"\n"}{end}'
+```
+
+`imageID` is the registry digest. Compare it to the digest on the GitHub package version page.
 
 ## Manual deploy (without helper script)
 

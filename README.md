@@ -83,7 +83,7 @@ Local no-registry flow: build images → import into k3d/k3s → `kubectl apply 
 ./scripts/deploy-k3s.sh k3s   # Ubuntu
 ```
 
-Full steps, backup/restore, troubleshooting, and LAN NodePort (`:30080`): [docs/kubernetes.md](docs/kubernetes.md).
+Full steps, backup/restore, troubleshooting, LAN NodePort (`:30080`), and optional GHCR image pulls: [docs/kubernetes.md](docs/kubernetes.md).
 
 Optional Prometheus/Grafana overlay: [docs/observability.md](docs/observability.md).
 
@@ -96,7 +96,7 @@ Other machines on your network should use `http://<host-ip>:3000` when Next bind
 | Topic | Document |
 | --- | --- |
 | Local setup, features, env vars | [docs/local-development.md](docs/local-development.md) |
-| Kubernetes deploy & troubleshooting | [docs/kubernetes.md](docs/kubernetes.md) |
+| Kubernetes deploy, GHCR images, troubleshooting | [docs/kubernetes.md](docs/kubernetes.md) |
 | Backend architecture | [docs/backend-architecture.md](docs/backend-architecture.md) |
 | Structured logging | [docs/backend-logging.md](docs/backend-logging.md) |
 | Multi-user / auth model | [docs/multi-user-design.md](docs/multi-user-design.md) |
