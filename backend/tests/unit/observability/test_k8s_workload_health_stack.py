@@ -10,16 +10,10 @@ from pathlib import Path
 import pytest
 import yaml
 
-
-def _repo_root() -> Path:
-    here = Path(__file__).resolve()
-    for candidate in (here, *here.parents):
-        if (candidate / "docs").is_dir() and (candidate / "k8s").is_dir():
-            return candidate
-    raise AssertionError(f"could not locate repo root from {here}")
+from tests.repo_root import repo_root
 
 
-_REPO = _repo_root()
+_REPO = repo_root()
 _OBS = _REPO / "k8s" / "observability"
 _OPS_PROM = _REPO / "ops" / "prometheus" / "prometheus.yml"
 _OPS_DASH = _REPO / "ops" / "grafana" / "dashboards" / "kubernetes-workload-health.json"

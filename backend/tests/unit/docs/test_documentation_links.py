@@ -3,16 +3,10 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-
-def _repo_root() -> Path:
-    here = Path(__file__).resolve()
-    for candidate in (here, *here.parents):
-        if (candidate / "docs").is_dir() and (candidate / "backend").is_dir():
-            return candidate
-    raise AssertionError(f"could not locate repo root from {here}")
+from tests.repo_root import repo_root
 
 
-_REPO_ROOT = _repo_root()
+_REPO_ROOT = repo_root()
 _DOCS_DIR = _REPO_ROOT / "docs"
 
 

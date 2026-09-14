@@ -1,6 +1,8 @@
-# Stock Ticker MVP
+# Stock Ticker
 
-Monorepo for a stock ticker app with a **Next.js** frontend and **FastAPI** backend. U.S. symbols display in English; Taiwan symbols in Traditional Chinese.
+Self-hosted bilingual dashboard for researching **U.S. and Taiwan** stocks and keeping a personal portfolio. The UI language is user-selectable (**English** or **Traditional Chinese**); stock names follow that choice when bilingual metadata exists. Next.js frontend, FastAPI backend.
+
+Product intent, workflows, and boundaries: [docs/product-scope.md](docs/product-scope.md).
 
 ## Stack
 
@@ -95,6 +97,7 @@ Other machines on your network should use `http://<host-ip>:3000` when Next bind
 
 | Topic | Document |
 | --- | --- |
+| Product scope (retail investor) | [docs/product-scope.md](docs/product-scope.md) |
 | Local setup, features, env vars | [docs/local-development.md](docs/local-development.md) |
 | Kubernetes deploy, GHCR images, troubleshooting | [docs/kubernetes.md](docs/kubernetes.md) |
 | Backend architecture | [docs/backend-architecture.md](docs/backend-architecture.md) |

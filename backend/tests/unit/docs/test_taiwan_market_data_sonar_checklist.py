@@ -1,18 +1,11 @@
 from __future__ import annotations
 
 import re
-from pathlib import Path
+
+from tests.repo_root import repo_root
 
 
-def _repo_root() -> Path:
-    here = Path(__file__).resolve()
-    for candidate in (here, *here.parents):
-        if (candidate / "docs").is_dir() and (candidate / "backend").is_dir():
-            return candidate
-    raise AssertionError(f"could not locate repo root from {here}")
-
-
-_REPO_ROOT = _repo_root()
+_REPO_ROOT = repo_root()
 _CHECKLIST = _REPO_ROOT / "docs" / "taiwan-market-data-sonar-checklist.md"
 _PR_TEMPLATE = _REPO_ROOT / ".github" / "PULL_REQUEST_TEMPLATE.md"
 _README = _REPO_ROOT / "README.md"

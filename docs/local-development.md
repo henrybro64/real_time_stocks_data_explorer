@@ -1,6 +1,6 @@
 # Local development
 
-Setup and feature notes for running the backend and frontend on your machine (outside Kubernetes).
+Setup, env vars, and endpoint notes for running the backend and frontend on your machine (outside Kubernetes). Product intent, workflows, and boundaries: [product-scope.md](product-scope.md).
 
 ## Database (Postgres)
 
@@ -36,7 +36,7 @@ Each response includes `X-Request-ID` when possible. See [backend-logging.md](ba
 
 ## AI stock analysis
 
-Stock detail exposes `GET /api/stocks/{stock_id}/analysis` using yfinance history + backend metrics, then an optional AI provider on the summary JSON.
+Stock detail: `GET /api/stocks/{stock_id}/analysis`. Technicals prefer the same candles the chart plots; yfinance is the fallback and still supplies company info. An optional AI provider then writes a narrative from that backend JSON.
 
 `computedData` carries the context blocks the narrative must cite: `technicalAnalysis` (chart-aligned moving averages and momentum on completed sessions only), `institutionalAnalysis` (Taiwan 法人 net lots), `fundamentalOutlook`, and `recentNewsContext`. Anything unavailable is reported with a classified reason rather than being filled in by the model.
 
@@ -51,7 +51,7 @@ OPENAI_API_KEY=...
 
 `anthropic`, `gemini`, and `ollama` are reserved names but not implemented yet (`AIProviderConfigurationError`).
 
-Without a provider key, metrics still return with warnings. Output is informational only.
+Without a provider key, metrics still return with warnings. AI language, Redis narrative cache, and “not advice” limits: [product-scope.md](product-scope.md#market-data-and-ai-sources).
 
 ## Data freshness
 

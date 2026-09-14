@@ -20,6 +20,7 @@ Stale sessions: if `request.session["user_id"]` is missing or the user row was d
 | Watchlist items | `watchlist_items.user_id` | FK + unique `(user_id, stock_id)` |
 | Portfolio positions/assets | `portfolio_positions.user_id`, `portfolio_assets.user_id` | scoped CRUD |
 | Portfolio history | `portfolio_history_snapshots.user_id` | scoped queries |
+| Realized trades | `realized_trades.user_id` | scoped CRUD (`/api/realized-trades`) |
 | Alerts / events | `alert_rules.user_id`, `alert_events.user_id` | scoped CRUD + evaluation |
 | AI prefs / API keys | `user_ai_preferences.user_id`, `user_api_keys.user_id` | scoped get/upsert |
 | OAuth link | `oauth_identities.user_id` | unique `(provider, subject)` |

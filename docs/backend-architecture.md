@@ -1,6 +1,6 @@
 # Backend architecture
 
-FastAPI backend layout for reviewers and new contributors.
+FastAPI backend layout for reviewers and new contributors. Product intent: [product-scope.md](product-scope.md).
 
 ## Repository map
 
