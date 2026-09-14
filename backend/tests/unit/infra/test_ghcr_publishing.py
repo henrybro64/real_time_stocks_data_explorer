@@ -10,16 +10,10 @@ from pathlib import Path
 import pytest
 import yaml
 
-
-def _repo_root() -> Path:
-    here = Path(__file__).resolve()
-    for candidate in (here, *here.parents):
-        if (candidate / "docs").is_dir() and (candidate / "k8s").is_dir():
-            return candidate
-    raise AssertionError(f"could not locate repo root from {here}")
+from tests.repo_root import repo_root
 
 
-_REPO = _repo_root()
+_REPO = repo_root()
 _WORKFLOW = _REPO / ".github" / "workflows" / "publish-ghcr.yml"
 _TEST_AND_SMOKE = _REPO / ".github" / "workflows" / "test-and-smoke.yml"
 _LIB = _REPO / "scripts" / "lib" / "k8s_images.sh"
