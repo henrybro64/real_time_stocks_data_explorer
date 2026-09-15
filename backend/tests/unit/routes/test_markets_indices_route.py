@@ -50,6 +50,8 @@ def test_markets_indices_route_serializes_unavailable_placeholder(monkeypatch) -
     assert response[0]["value"] is None
     assert response[0]["unavailableReason"] == "taiwan_provider_unavailable"
     assert response[1]["status"] == "ok"
-    assert response[-1]["id"] == sox.id
-    assert response[-1]["label"] == sox.label
-    assert response[-1]["status"] == "ok"
+    by_id = {item["id"]: item for item in response}
+    assert by_id[sox.id]["label"] == sox.label
+    assert by_id[sox.id]["status"] == "ok"
+    assert by_id["BTC-USD"]["market"] == "CRYPTO"
+    assert by_id["BTC-USD"]["isMarketOpen"] is True
