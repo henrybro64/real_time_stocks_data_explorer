@@ -33,8 +33,8 @@ variable "ttl_days" {
   default     = 7
 
   validation {
-    condition     = var.ttl_days >= 1 && var.ttl_days <= 30
-    error_message = "ttl_days must be between 1 and 30."
+    condition     = var.ttl_days == floor(var.ttl_days) && var.ttl_days >= 1 && var.ttl_days <= 30
+    error_message = "ttl_days must be a whole number between 1 and 30."
   }
 }
 
@@ -44,8 +44,8 @@ variable "stale_after_seconds" {
   default     = 1800
 
   validation {
-    condition     = var.stale_after_seconds >= 900 && var.stale_after_seconds <= 7200
-    error_message = "stale_after_seconds must be between 900 and 7200."
+    condition     = var.stale_after_seconds == floor(var.stale_after_seconds) && var.stale_after_seconds >= 900 && var.stale_after_seconds <= 7200
+    error_message = "stale_after_seconds must be a whole number between 900 and 7200."
   }
 }
 

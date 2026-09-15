@@ -123,8 +123,9 @@ all access keys.
 
 ## Deploy home CronJob
 
-The CronJob is in the default `k8s/` kustomization but **`suspend: true`** until
-credentials exist (so vanilla deploys stay green).
+The CronJob is in the default `k8s/` kustomization and is **not** suspended
+(redeploys must not flip an enabled job back off). Secret refs are optional: with
+no credentials the job exits 0 and logs `status=skipped`.
 
 ```bash
 cp k8s/aws-health-heartbeat-secret.yaml.example k8s/aws-health-heartbeat-secret.yaml
@@ -136,11 +137,9 @@ cp k8s/aws-health-heartbeat-secret.yaml.example k8s/aws-health-heartbeat-secret.
 # TTL_DAYS=$(terraform -chdir=infra/aws-health-monitor output -raw ttl_days)
 
 kubectl -n stock-ticker apply -f k8s/aws-health-heartbeat-secret.yaml
-kubectl -n stock-ticker patch cronjob stock-ticker-aws-health-heartbeat \
-  -p '{"spec":{"suspend":false}}'
 ```
 
-Each run:
+Each run (when the Secret is present):
 
 1. GETs in-cluster `http://stock-ticker-backend:8000/health`
 2. Requires HTTP 200 + JSON `status == "ok"` for `healthy` (still writes an
@@ -192,7 +191,7 @@ aws dynamodb query \
   --table-name "$TABLE" \
   --key-condition-expression "service_name = :s" \
   --expression-attribute-values '{":s":{"S":"stock-ticker-backend"}}' \
-  --scan-index-forward false \
+  --no-scan-index-forward \
   --limit 10
 ```
 
@@ -201,9 +200,7 @@ CloudWatch: `terraform output -raw log_group_name`.
 ## Teardown
 
 ```bash
-# pause home writer
-kubectl -n stock-ticker patch cronjob stock-ticker-aws-health-heartbeat \
-  -p '{"spec":{"suspend":true}}'
+# pause home writer (remove credentials; CronJob stays applied and skips)
 kubectl -n stock-ticker delete secret stock-ticker-aws-health-heartbeat --ignore-not-found
 
 cd infra/aws-health-monitor

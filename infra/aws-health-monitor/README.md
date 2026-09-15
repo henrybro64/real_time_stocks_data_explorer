@@ -54,4 +54,5 @@ and [k8s/aws-health-heartbeat-secret.yaml.example](../../k8s/aws-health-heartbea
 After apply, copy terraform outputs `aws_region`, `dynamodb_table_name`,
 `service_name`, and `ttl_days` into the Secret (plus an access key created
 outside Terraform). `ttl_days` is not a Lambda setting — the home PutItem
-writes `expires_at`.
+writes `expires_at`. The IAM user has `force_destroy = true` so
+`terraform destroy` can remove it while those external keys still exist.

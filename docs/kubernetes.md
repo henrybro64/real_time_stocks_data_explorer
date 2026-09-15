@@ -12,8 +12,8 @@ Remove the app (including Postgres PVC): `./scripts/k8s-teardown.sh k3d|k3s` or 
 Optional workload monitoring: [observability.md](observability.md) (`kubectl apply -k k8s/observability` or `OBSERVABILITY=1 ./scripts/deploy-k3s.sh …`).
 
 Optional AWS outbound heartbeat (home → DynamoDB; AWS never calls the node):
-[aws-health-monitor.md](aws-health-monitor.md). The CronJob ships suspended until
-you create `k8s/aws-health-heartbeat-secret.yaml` and unsuspend it.
+[aws-health-monitor.md](aws-health-monitor.md). The CronJob is always applied;
+without `k8s/aws-health-heartbeat-secret.yaml` it skips cleanly.
 
 ## Prerequisites
 

@@ -190,9 +190,10 @@ def test_docs_state_outbound_only_and_free_tier_is_not_a_cap() -> None:
     assert "health_url" in docs
 
 
-def test_cronjob_is_suspended_and_uses_in_cluster_health() -> None:
+def test_cronjob_skips_without_secret_and_is_not_suspended() -> None:
     text = CRONJOB.read_text(encoding="utf-8")
-    assert "suspend: true" in text
+    assert "suspend:" not in text
+    assert "optional: true" in text
     assert "http://stock-ticker-backend:8000/health" in text
     assert "*/15 * * * *" in text
     assert "image: stock-ticker-backend:local" in text
@@ -204,6 +205,20 @@ def test_cronjob_is_suspended_and_uses_in_cluster_health() -> None:
     kustomization = KUSTOMIZATION.read_text(encoding="utf-8")
     assert "aws-health-heartbeat.yaml" in kustomization
     assert "stock-ticker-aws-health-heartbeat-script" in kustomization
+
+
+def test_integer_validations_and_force_destroy_and_query_flag() -> None:
+    variables = VARIABLES_TF.read_text(encoding="utf-8")
+    main = MAIN_TF.read_text(encoding="utf-8")
+    outputs = OUTPUTS_TF.read_text(encoding="utf-8")
+    assert "var.ttl_days == floor(var.ttl_days)" in variables
+    assert "var.stale_after_seconds == floor(var.stale_after_seconds)" in variables
+    assert "force_destroy = true" in main
+    assert "--no-scan-index-forward" in outputs
+    assert "--scan-index-forward false" not in outputs
+    # Zip lands in the module dir so a fresh checkout does not need a nested build/.
+    assert 'output_path = "${path.module}/stale_check.zip"' in main
+    assert "${path.module}/build/" not in main
 
 
 def test_ttl_days_is_documented_output_not_lambda_env() -> None:

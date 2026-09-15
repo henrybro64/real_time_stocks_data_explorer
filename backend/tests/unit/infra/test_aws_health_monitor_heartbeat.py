@@ -218,6 +218,17 @@ def test_sigv4_signed_headers_without_session_token(
     assert "X-Amz-Security-Token" not in headers
 
 
+def test_main_skips_without_credentials(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
+    monkeypatch.delenv("AWS_ACCESS_KEY_ID", raising=False)
+    monkeypatch.delenv("AWS_SECRET_ACCESS_KEY", raising=False)
+    monkeypatch.delenv("AWS_REGION", raising=False)
+    monkeypatch.delenv("TABLE_NAME", raising=False)
+    assert hb.main() == 0
+    logged = json.loads(capsys.readouterr().out.strip())
+    assert logged["status"] == "skipped"
+    assert logged["reason"] == "missing_credentials"
+
+
 def test_put_dynamodb_item_posts_signed_payload(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

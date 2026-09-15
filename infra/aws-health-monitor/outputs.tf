@@ -86,5 +86,5 @@ output "intended_resources" {
 
 output "query_recent_heartbeats" {
   description = "CLI to inspect the latest heartbeat records without a table scan."
-  value       = "aws dynamodb query --table-name ${aws_dynamodb_table.heartbeats.name} --key-condition-expression 'service_name = :s' --expression-attribute-values '{\":s\":{\"S\":\"${var.service_name}\"}}' --scan-index-forward false --limit 10"
+  value       = "aws dynamodb query --table-name ${aws_dynamodb_table.heartbeats.name} --key-condition-expression 'service_name = :s' --expression-attribute-values '{\":s\":{\"S\":\"${var.service_name}\"}}' --no-scan-index-forward --limit 10"
 }

@@ -12,7 +12,9 @@ data "aws_caller_identity" "current" {}
 data "archive_file" "stale_check" {
   type        = "zip"
   source_file = "${path.module}/lambda/stale_check.py"
-  output_path = "${path.module}/build/stale_check.zip"
+  # Same directory as the module (exists on a fresh checkout). Nested build/
+  # is gitignored at repo root and is not created by the archive provider.
+  output_path = "${path.module}/stale_check.zip"
 }
 
 data "aws_iam_policy_document" "lambda_assume" {
@@ -207,9 +209,11 @@ resource "aws_scheduler_schedule" "stale_check" {
 
 # Home-node writer. Access keys are created outside Terraform and stored in a
 # Kubernetes Secret — never committed and never outputted here.
+# force_destroy allows terraform destroy while those external keys still exist.
 resource "aws_iam_user" "heartbeat_sender" {
-  name = local.sender_user
-  tags = var.tags
+  name          = local.sender_user
+  force_destroy = true
+  tags          = var.tags
 }
 
 resource "aws_iam_user_policy" "heartbeat_sender" {

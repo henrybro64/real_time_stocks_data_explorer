@@ -233,14 +233,30 @@ def put_dynamodb_item(
 
 def main(argv: list[str] | None = None) -> int:
     _ = argv
+    access_key_id = os.environ.get("AWS_ACCESS_KEY_ID", "").strip()
+    secret_access_key = os.environ.get("AWS_SECRET_ACCESS_KEY", "").strip()
+    region = os.environ.get("AWS_REGION", "").strip()
+    table_name = os.environ.get("TABLE_NAME", "").strip()
+    # Optional Secret refs leave these empty until the operator creates the Secret.
+    # Exit 0 so vanilla deploys (no AWS credentials) do not mark the CronJob failed.
+    if not access_key_id or not secret_access_key or not region or not table_name:
+        print(
+            json.dumps(
+                {
+                    "event": "aws_health_monitor.heartbeat",
+                    "status": "skipped",
+                    "reason": "missing_credentials",
+                },
+                separators=(",", ":"),
+            ),
+            flush=True,
+        )
+        return 0
+
     health_url = os.environ.get(
         "HEALTH_URL",
         "http://stock-ticker-backend:8000/health",
     )
-    table_name = os.environ["TABLE_NAME"]
-    region = os.environ["AWS_REGION"]
-    access_key_id = os.environ["AWS_ACCESS_KEY_ID"]
-    secret_access_key = os.environ["AWS_SECRET_ACCESS_KEY"]
     session_token = os.environ.get("AWS_SESSION_TOKEN") or None
     service_name = os.environ.get("SERVICE_NAME", SERVICE_NAME)
     ttl_days = int(os.environ.get("TTL_DAYS", str(DEFAULT_TTL_DAYS)))
