@@ -76,7 +76,7 @@ def test_get_latest_always_returns_catalog_slots() -> None:
     records = service.get_latest()
 
     assert [item.id for item in records] == CATALOG_IDS
-    assert records[-1].label == SOX_LABEL
+    assert next(item.label for item in records if item.id == SOX_ID) == SOX_LABEL
     assert all(item.status == "ok" for item in records)
 
 
