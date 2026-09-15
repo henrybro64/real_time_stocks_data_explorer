@@ -140,6 +140,8 @@ describe("MarketIndicesStrip", () => {
       "app-price-up",
       "app-price-convention-us",
     );
+    expect(screen.getByTestId("market-index-card-^VIX")).toBeInTheDocument();
+    expect(screen.getByTestId("market-index-card-GC=F")).toHaveTextContent("最新");
   });
 
   it("keeps other index cards when SOX is unavailable", () => {
