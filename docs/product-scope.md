@@ -8,7 +8,7 @@ Setup, env vars, APIs, and Kubernetes live in the focused docs linked below. Thi
 
 ## Product summary
 
-- **Markets:** U.S. and Taiwan (TWSE / TPEx) stocks, plus a small dashboard snapshot of selected indices, USD/TWD, and WTI.
+- **Markets:** U.S. and Taiwan (TWSE / TPEx) stocks, plus a small dashboard snapshot of selected indices, BTC/ETH prices, USD/TWD, and WTI.
 - **UI:** English and Traditional Chinese are user-selectable. Stock display names follow that choice when bilingual metadata exists. Localization is incomplete: many API error messages stay in English, and portfolio AI does not follow the selected UI language.
 - **Hosting:** run locally or on your own k3d/k3s cluster. There is no hosted brokerage or cloud requirement.
 - **Freshness:** quotes and rankings can be live, delayed, stale, closed, cached, or unavailable. Do not treat the app as an exchange-grade real-time terminal.
