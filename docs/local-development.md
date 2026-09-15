@@ -69,7 +69,7 @@ GET /api/markets/fx/usd-twd
 GET /api/markets/commodities/wti-crude-oil
 ```
 
-Market indices and BTC/ETH (USD) use the fixed catalog in `packages/shared-contracts/marketIndexCatalog.json`; crypto trades continuously and refreshes with the live dashboard cadence. FX/commodity quotes soft-cache ~60s and may serve retained values as stale after provider failure.
+Market indices plus BTC/ETH (USD) and gold futures (USD/oz) use the fixed catalog in `packages/shared-contracts/marketIndexCatalog.json`; crypto trades continuously and refreshes with the live dashboard cadence. FX/commodity quotes soft-cache ~60s and may serve retained values as stale after provider failure.
 
 ## Market rankings
 
