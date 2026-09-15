@@ -8,6 +8,7 @@ import pytest
 from app.services.market_index_service import (
     MarketIndexRecord,
     MarketIndexService,
+    _COMMODITY_YAHOO_SYMBOLS,
     _CRYPTO_YAHOO_SYMBOLS,
     _INDEX_CATALOG,
     _US_STOOQ_SYMBOLS,
@@ -21,6 +22,7 @@ from app.services.market_index_service import (
 CATALOG_IDS = [slot.id for slot in _INDEX_CATALOG]
 US_INDEX_IDS = [slot.id for slot in _INDEX_CATALOG if slot.market == "US"]
 CRYPTO_INDEX_IDS = [slot.id for slot in _INDEX_CATALOG if slot.market == "CRYPTO"]
+COMMODITY_INDEX_IDS = [slot.id for slot in _INDEX_CATALOG if slot.market == "COMMODITY"]
 TW_ID = next(slot.id for slot in _INDEX_CATALOG if slot.market == "TW")
 TW_LABEL = next(slot.label for slot in _INDEX_CATALOG if slot.market == "TW")
 SOX_ID = "^SOX"
@@ -327,6 +329,36 @@ def test_crypto_quotes_use_yahoo_and_are_always_live() -> None:
     }
 
 
+def test_gold_futures_use_yahoo_and_have_neutral_session_state() -> None:
+    yahoo_calls: list[tuple[str, str, str]] = []
+
+    def yahoo_commodity_fetcher(yahoo_symbol: str, record_id: str, label: str):
+        yahoo_calls.append((yahoo_symbol, record_id, label))
+        return _ok_record(
+            record_id=record_id,
+            market="US",
+            label=label,
+            value=2450.75,
+        )
+
+    service = MarketIndexService(
+        twse_fetcher=_ok_tw,
+        stooq_fetcher=_ok_stooq,
+        yahoo_us_fetcher=_ok_yahoo_us,
+        yahoo_commodity_fetcher=yahoo_commodity_fetcher,
+    )
+
+    commodity_records = [
+        item for item in service.get_latest() if item.market == "COMMODITY"
+    ]
+
+    assert [item.id for item in commodity_records] == COMMODITY_INDEX_IDS
+    assert all(not item.is_market_open for item in commodity_records)
+    assert yahoo_calls == [
+        ("GC=F", "GC=F", "Gold Futures (USD/oz)"),
+    ]
+
+
 def test_parse_float_handles_placeholders() -> None:
     assert _parse_float("1,234.5") == pytest.approx(1234.5)
     assert _parse_float("N/D") is None
@@ -348,3 +380,7 @@ def test_us_catalog_provider_maps_cover_every_us_slot() -> None:
 
 def test_crypto_catalog_provider_map_covers_every_crypto_slot() -> None:
     assert set(CRYPTO_INDEX_IDS) == set(_CRYPTO_YAHOO_SYMBOLS)
+
+
+def test_commodity_catalog_provider_map_covers_every_commodity_slot() -> None:
+    assert set(COMMODITY_INDEX_IDS) == set(_COMMODITY_YAHOO_SYMBOLS)
