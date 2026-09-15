@@ -8,6 +8,7 @@ import pytest
 from app.services.market_index_service import (
     MarketIndexRecord,
     MarketIndexService,
+    _CRYPTO_YAHOO_SYMBOLS,
     _INDEX_CATALOG,
     _US_STOOQ_SYMBOLS,
     _US_YAHOO_SYMBOLS,
@@ -19,6 +20,7 @@ from app.services.market_index_service import (
 
 CATALOG_IDS = [slot.id for slot in _INDEX_CATALOG]
 US_INDEX_IDS = [slot.id for slot in _INDEX_CATALOG if slot.market == "US"]
+CRYPTO_INDEX_IDS = [slot.id for slot in _INDEX_CATALOG if slot.market == "CRYPTO"]
 TW_ID = next(slot.id for slot in _INDEX_CATALOG if slot.market == "TW")
 TW_LABEL = next(slot.label for slot in _INDEX_CATALOG if slot.market == "TW")
 SOX_ID = "^SOX"
@@ -89,7 +91,8 @@ def test_taiwan_success_keeps_us_indices() -> None:
 
     assert records[0].value == pytest.approx(21950.32)
     assert records[0].status == "ok"
-    assert [item.id for item in records[1:]] == US_INDEX_IDS
+    assert [item.id for item in records if item.market == "US"] == US_INDEX_IDS
+    assert [item.id for item in records if item.market == "CRYPTO"] == CRYPTO_INDEX_IDS
 
 
 def test_taiwan_timeout_falls_back_to_yahoo_then_keeps_slot() -> None:
@@ -169,7 +172,8 @@ def test_taiwan_provider_failure_does_not_drop_us_indices() -> None:
 
     assert len(records) == len(CATALOG_IDS)
     assert records[0].status == "unavailable"
-    assert [item.id for item in records[1:]] == US_INDEX_IDS
+    assert [item.id for item in records if item.market == "US"] == US_INDEX_IDS
+    assert [item.id for item in records if item.market == "CRYPTO"] == CRYPTO_INDEX_IDS
     assert all(item.status == "ok" and item.value == pytest.approx(1000.0) for item in records[1:])
 
 
@@ -294,6 +298,35 @@ def test_yahoo_sox_quote_normalizes_value_change_and_timestamp(monkeypatch) -> N
     assert "SOXX" not in captured_url["value"]
 
 
+def test_crypto_quotes_use_yahoo_and_are_always_live() -> None:
+    yahoo_calls: list[tuple[str, str, str]] = []
+
+    def yahoo_crypto_fetcher(yahoo_symbol: str, record_id: str, label: str):
+        yahoo_calls.append((yahoo_symbol, record_id, label))
+        return _ok_record(
+            record_id=record_id,
+            market="CRYPTO",
+            label=label,
+            value=67000.0,
+        )
+
+    service = MarketIndexService(
+        twse_fetcher=_ok_tw,
+        stooq_fetcher=_ok_stooq,
+        yahoo_us_fetcher=_ok_yahoo_us,
+        yahoo_crypto_fetcher=yahoo_crypto_fetcher,
+    )
+
+    crypto_records = [item for item in service.get_latest() if item.market == "CRYPTO"]
+
+    assert [item.id for item in crypto_records] == CRYPTO_INDEX_IDS
+    assert all(item.is_market_open for item in crypto_records)
+    assert {(symbol, record_id) for symbol, record_id, _label in yahoo_calls} == {
+        ("BTC-USD", "BTC-USD"),
+        ("ETH-USD", "ETH-USD"),
+    }
+
+
 def test_parse_float_handles_placeholders() -> None:
     assert _parse_float("1,234.5") == pytest.approx(1234.5)
     assert _parse_float("N/D") is None
@@ -311,3 +344,7 @@ def test_us_catalog_provider_maps_cover_every_us_slot() -> None:
         "marketIndexCatalog.json",
         "market_index_catalog.json",
     }
+
+
+def test_crypto_catalog_provider_map_covers_every_crypto_slot() -> None:
+    assert set(CRYPTO_INDEX_IDS) == set(_CRYPTO_YAHOO_SYMBOLS)
