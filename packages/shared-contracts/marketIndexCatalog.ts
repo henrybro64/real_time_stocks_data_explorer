@@ -2,7 +2,7 @@ import catalog from "./marketIndexCatalog.json";
 
 export type MarketIndexCatalogEntry = {
   id: string;
-  market: "TW" | "US" | "CRYPTO";
+  market: "TW" | "US" | "CRYPTO" | "COMMODITY";
   label: string;
   labelZhTw: string;
 };
