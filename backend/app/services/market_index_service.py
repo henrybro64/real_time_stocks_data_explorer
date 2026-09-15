@@ -434,7 +434,7 @@ def _unavailable_index(slot: _IndexSlot, *, reason: str) -> MarketIndexRecord:
         change=None,
         change_percent=None,
         timestamp=now.isoformat(),
-        is_market_open=slot.market == "CRYPTO" or is_market_open(slot.market, now),
+        is_market_open=slot.market == "CRYPTO"\n        or (slot.market in {"TW", "US"} and is_market_open(slot.market, now)),
         status="unavailable",
         unavailable_reason=reason,
     )

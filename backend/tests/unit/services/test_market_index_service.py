@@ -8,6 +8,7 @@ import pytest
 from app.services.market_index_service import (
     MarketIndexRecord,
     MarketIndexService,
+    _IndexSlot,
     _COMMODITY_YAHOO_SYMBOLS,
     _CRYPTO_YAHOO_SYMBOLS,
     _INDEX_CATALOG,
@@ -17,6 +18,7 @@ from app.services.market_index_service import (
     _fetch_yahoo_index,
     _parse_float,
     _resolve_catalog_path,
+    _unavailable_index,
 )
 
 CATALOG_IDS = [slot.id for slot in _INDEX_CATALOG]
@@ -357,6 +359,19 @@ def test_gold_futures_use_yahoo_and_have_neutral_session_state() -> None:
     assert yahoo_calls == [
         ("GC=F", "GC=F", "Gold Futures (USD/oz)"),
     ]
+
+
+def test_unavailable_unknown_market_does_not_call_market_clock() -> None:
+    record = _unavailable_index(
+        _IndexSlot(id="UNKNOWN", market="UNSUPPORTED", label="Unknown"),
+        reason="unsupported_market",
+    )
+
+    assert record.id == "UNKNOWN"
+    assert record.market == "UNSUPPORTED"
+    assert record.is_market_open is False
+    assert record.status == "unavailable"
+    assert record.unavailable_reason == "unsupported_market"
 
 
 def test_parse_float_handles_placeholders() -> None:
