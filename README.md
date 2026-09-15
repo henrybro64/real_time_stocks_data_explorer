@@ -23,7 +23,7 @@ k8s/                  Kubernetes manifests
 packages/shared-contracts/  Shared TypeScript API types
 scripts/              Deploy, backup, and dev helpers
 docs/                 Architecture, ops, and feature guides
-infra/                Optional Azure rankings archive (Terraform)
+infra/                Optional Azure archive + AWS heartbeat monitor (Terraform)
 ```
 
 Backend layering is summarized in [docs/backend-architecture.md](docs/backend-architecture.md).
@@ -104,6 +104,7 @@ Other machines on your network should use `http://<host-ip>:3000` when Next bind
 | Structured logging | [docs/backend-logging.md](docs/backend-logging.md) |
 | Multi-user / auth model | [docs/multi-user-design.md](docs/multi-user-design.md) |
 | Azure EOD rankings archive (optional) | [docs/azure-rankings-archive.md](docs/azure-rankings-archive.md) |
+| AWS outbound heartbeat monitor (optional) | [docs/aws-health-monitor.md](docs/aws-health-monitor.md) |
 | k8s workload monitoring | [docs/observability.md](docs/observability.md) |
 | Taiwan 資券 upstream endpoints | [docs/taiwan-margin-short-endpoints.md](docs/taiwan-margin-short-endpoints.md) |
 | Taiwan market-data SonarCloud | [docs/taiwan-market-data-sonar-checklist.md](docs/taiwan-market-data-sonar-checklist.md) |

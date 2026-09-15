@@ -147,11 +147,20 @@ write_k8s_image_overlay() {
   cp -R "${resources_dir}" "${outdir}/k8s"
 
   local secret_patch=""
+  local cronjob_secret_patch=""
   if [[ -n "${pull_secret}" ]]; then
     secret_patch=$(
       cat <<EOF
       - op: add
         path: /spec/template/spec/imagePullSecrets
+        value:
+          - name: ${pull_secret}
+EOF
+    )
+    cronjob_secret_patch=$(
+      cat <<EOF
+      - op: add
+        path: /spec/jobTemplate/spec/template/spec/imagePullSecrets
         value:
           - name: ${pull_secret}
 EOF
@@ -186,6 +195,14 @@ ${secret_patch}
         path: /spec/template/spec/containers/0/imagePullPolicy
         value: ${frontend_policy}
 ${secret_patch}
+  - target:
+      kind: CronJob
+      name: stock-ticker-aws-health-heartbeat
+    patch: |-
+      - op: replace
+        path: /spec/jobTemplate/spec/template/spec/containers/0/imagePullPolicy
+        value: ${backend_policy}
+${cronjob_secret_patch}
 EOF
 }
 

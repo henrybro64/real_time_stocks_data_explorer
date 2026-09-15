@@ -1,0 +1,79 @@
+# Optional AWS heartbeat CronJob (#216).
+# Requires Secret stock-ticker-aws-health-heartbeat (see aws-health-heartbeat-secret.yaml.example).
+# Suspended by default so a vanilla k3s deploy does not fail without AWS credentials.
+# After creating the secret: kubectl -n stock-ticker patch cronjob stock-ticker-aws-health-heartbeat \
+#   -p '{"spec":{"suspend":false}}'
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: stock-ticker-aws-health-heartbeat
+spec:
+  schedule: "*/15 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  suspend: true
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: heartbeat
+              # Reuse the backend image already imported/pulled for the app so
+              # the CronJob does not need a separate Docker Hub python pull.
+              # GHCR overlays rewrite stock-ticker-backend via kustomize images.
+              image: stock-ticker-backend:local
+              imagePullPolicy: Never
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 64Mi
+                limits:
+                  cpu: 200m
+                  memory: 128Mi
+              env:
+                - name: HEALTH_URL
+                  value: http://stock-ticker-backend:8000/health
+                - name: AWS_ACCESS_KEY_ID
+                  valueFrom:
+                    secretKeyRef:
+                      name: stock-ticker-aws-health-heartbeat
+                      key: AWS_ACCESS_KEY_ID
+                - name: AWS_SECRET_ACCESS_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: stock-ticker-aws-health-heartbeat
+                      key: AWS_SECRET_ACCESS_KEY
+                - name: AWS_REGION
+                  valueFrom:
+                    secretKeyRef:
+                      name: stock-ticker-aws-health-heartbeat
+                      key: AWS_REGION
+                - name: TABLE_NAME
+                  valueFrom:
+                    secretKeyRef:
+                      name: stock-ticker-aws-health-heartbeat
+                      key: TABLE_NAME
+                - name: SERVICE_NAME
+                  valueFrom:
+                    secretKeyRef:
+                      name: stock-ticker-aws-health-heartbeat
+                      key: SERVICE_NAME
+                - name: TTL_DAYS
+                  valueFrom:
+                    secretKeyRef:
+                      name: stock-ticker-aws-health-heartbeat
+                      key: TTL_DAYS
+              volumeMounts:
+                - name: heartbeat-script
+                  mountPath: /heartbeat
+                  readOnly: true
+              command:
+                - python
+                - /heartbeat/send_heartbeat.py
+          volumes:
+            - name: heartbeat-script
+              configMap:
+                name: stock-ticker-aws-health-heartbeat-script
