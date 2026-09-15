@@ -1,0 +1,15 @@
+# Copy to terraform.tfvars (gitignored). No public URL is required.
+# AWS never calls the home node; the home CronJob pushes heartbeats out.
+
+aws_region = "us-east-1"
+
+# Optional overrides:
+# name_prefix = "stock-ticker-health"
+# service_name = "stock-ticker-backend"
+# stale_after_seconds = 1800
+# ttl_days = 7
+# log_retention_days = 3
+# scheduler_retry_attempts = 1
+
+# Optional $1 monthly budget email (uses one of the two free AWS Budget slots).
+# budget_notification_email = "you@example.com"

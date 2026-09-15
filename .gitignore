@@ -94,6 +94,11 @@ lcov.info
 *.local
 # Home-node Azure rankings archive secret (copy from .example, fill locally)
 k8s/backend-rankings-archive-secret.yaml
+# Home-node AWS heartbeat credentials (copy from .example, fill locally)
+k8s/aws-health-heartbeat-secret.yaml
+# Local AWS CLI installer unpack (never commit)
+awscli-bundle/
+awscli-bundle.zip
 
 # -----------------------------------------------------------------------------
 # IDE & local editor state

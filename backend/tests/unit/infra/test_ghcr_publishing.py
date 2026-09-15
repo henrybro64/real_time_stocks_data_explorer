@@ -119,10 +119,13 @@ def test_image_ref_parsers_handle_digest_and_tag() -> None:
 def test_default_k8s_manifests_still_use_local_never_pull() -> None:
     backend = _BACKEND_DEPLOY.read_text(encoding="utf-8")
     frontend = _FRONTEND_DEPLOY.read_text(encoding="utf-8")
+    heartbeat = (_REPO / "k8s" / "aws-health-heartbeat.yaml").read_text(encoding="utf-8")
     assert "image: stock-ticker-backend:local" in backend
     assert "image: stock-ticker-frontend:local" in frontend
     assert "imagePullPolicy: Never" in backend
     assert "imagePullPolicy: Never" in frontend
+    assert "image: stock-ticker-backend:local" in heartbeat
+    assert "imagePullPolicy: Never" in heartbeat
 
 
 def test_image_overlay_rewrites_ghcr_images_and_pull_policy(tmp_path: Path) -> None:
@@ -143,6 +146,13 @@ def test_image_overlay_rewrites_ghcr_images_and_pull_policy(tmp_path: Path) -> N
     assert "imagePullSecrets" in patches
     assert "ghcr-pull" in patches
     assert "Never" not in patches
+    assert "/spec/jobTemplate/spec/template/spec/containers/0/imagePullPolicy" in patches
+    assert "/spec/jobTemplate/spec/template/spec/imagePullSecrets" in patches
+    assert any(
+        patch.get("target", {}).get("kind") == "CronJob"
+        and patch.get("target", {}).get("name") == "stock-ticker-aws-health-heartbeat"
+        for patch in overlay["patches"]
+    )
 
 
 def test_image_overlay_rewrites_digest_refs(tmp_path: Path) -> None:
@@ -177,6 +187,9 @@ def test_image_overlay_kustomize_build_rewrites_deployments(tmp_path: Path) -> N
     assert "stock-ticker-backend:local" not in rendered
     assert "imagePullPolicy: IfNotPresent" in rendered
     assert "name: ghcr-pull" in rendered
+    assert "kind: CronJob" in rendered
+    # Heartbeat CronJob must use the rewritten backend image + pull secret.
+    assert rendered.count("ghcr.io/henrybro64/real_time_stocks_data_explorer-backend:deadbeef") >= 2
 
 
 @pytest.mark.skipif(shutil.which("kubectl") is None, reason="kubectl not installed")

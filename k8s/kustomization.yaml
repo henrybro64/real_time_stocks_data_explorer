@@ -9,5 +9,14 @@ resources:
   - backend-auth-secret.yaml
   - backend.yaml
   - backend-history-capture-cronjob.yaml
+  - aws-health-heartbeat.yaml
   - frontend.yaml
   - frontend-nodeport.yaml
+
+configMapGenerator:
+  # Distinct from Secret stock-ticker-aws-health-heartbeat (credentials).
+  - name: stock-ticker-aws-health-heartbeat-script
+    files:
+      - send_heartbeat.py=aws-health-heartbeat/send_heartbeat.py
+    options:
+      disableNameSuffixHash: true

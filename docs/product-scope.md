@@ -83,7 +83,7 @@ Intervals below are **defaults** and are configurable.
 
 **Implemented today:** the workflows above, bilingual UI selection, freshness/stale/unavailable signaling on the relevant contracts, and self-hosted deploy.
 
-**Conditional / optional:** OpenAI or Perplexity keys, Finnhub, Redis, Azure SQL rankings archive, observability stack, GHCR-published images.
+**Conditional / optional:** OpenAI or Perplexity keys, Finnhub, Redis, Azure SQL rankings archive, observability stack, GHCR-published images, AWS outbound heartbeat monitor.
 
 **Intentionally out of scope:**
 
