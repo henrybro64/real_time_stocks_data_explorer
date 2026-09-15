@@ -29,6 +29,18 @@
       "market": "US",
       "label": "PHLX Semiconductor",
       "labelZhTw": "費城半導體指數"
+    },
+    {
+      "id": "BTC-USD",
+      "market": "CRYPTO",
+      "label": "Bitcoin (BTC/USD)",
+      "labelZhTw": "比特幣 (BTC/USD)"
+    },
+    {
+      "id": "ETH-USD",
+      "market": "CRYPTO",
+      "label": "Ethereum (ETH/USD)",
+      "labelZhTw": "以太幣 (ETH/USD)"
     }
   ],
   "usYahooSymbols": {
@@ -42,5 +54,9 @@
     "^NDQ": "^NDQ",
     "^SPX": "^SPX",
     "^SOX": null
+  },
+  "cryptoYahooSymbols": {
+    "BTC-USD": "BTC-USD",
+    "ETH-USD": "ETH-USD"
   }
 }
