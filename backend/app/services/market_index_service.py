@@ -330,7 +330,13 @@ class MarketIndexService:
             )
             record = None
         if record is not None:
-            return record
+            return replace(
+                record,
+                id=slot.id,
+                market="CRYPTO",
+                label=slot.label,
+                is_market_open=True,
+            )
 
         logger.warning(
             "Crypto quote unavailable",
