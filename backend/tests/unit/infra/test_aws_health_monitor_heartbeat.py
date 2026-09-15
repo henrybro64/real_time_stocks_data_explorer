@@ -18,7 +18,8 @@ K8S_COPY_PATH = ROOT / "k8s" / "aws-health-heartbeat" / "send_heartbeat.py"
 
 def _load_module():
     spec = importlib.util.spec_from_file_location("aws_health_heartbeat", HEARTBEAT_PATH)
-    assert spec is not None and spec.loader is not None
+    assert spec is not None
+    assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module

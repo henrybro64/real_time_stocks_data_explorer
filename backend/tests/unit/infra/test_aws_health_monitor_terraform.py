@@ -186,7 +186,8 @@ def test_docs_state_outbound_only_and_free_tier_is_not_a_cap() -> None:
     assert "terraform destroy" in docs
     assert "NAT Gateway" in docs
     assert "health_url" in docs.lower()  # explicitly saying there is no such var
-    assert "no" in docs.lower() and "health_url" in docs
+    assert "no" in docs.lower()
+    assert "health_url" in docs
 
 
 def test_cronjob_is_suspended_and_uses_in_cluster_health() -> None:

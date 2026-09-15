@@ -31,9 +31,9 @@ heartbeats stop. Lambda then classifies the latest record as **stale** or
 **missing**. No Cloudflare Tunnel, port-forward, or public `/health` URL is
 required.
 
-Terraform: [`infra/aws-health-monitor/`](../infra/aws-health-monitor/)  
+Terraform: [`infra/aws-health-monitor/README.md`](../infra/aws-health-monitor/README.md)  
 Home CronJob: [`k8s/aws-health-heartbeat.yaml`](../k8s/aws-health-heartbeat.yaml)  
-Do not mix with [`infra/azure-rankings-archive/`](../infra/azure-rankings-archive/).
+Do not mix with [`infra/azure-rankings-archive/README.md`](../infra/azure-rankings-archive/README.md).
 
 ## Cost and Free Tier
 

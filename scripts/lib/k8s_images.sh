@@ -12,35 +12,45 @@ GHCR_OWNER="${GHCR_OWNER:-henrybro64}"
 GHCR_REPOSITORY_NAME="${GHCR_REPOSITORY_NAME:-real_time_stocks_data_explorer}"
 
 k8s_images_lowercase() {
-  printf '%s' "$1" | tr '[:upper:]' '[:lower:]'
+  local value="${1:-}"
+  printf '%s' "${value}" | tr '[:upper:]' '[:lower:]'
+  return 0
 }
 
 ghcr_owner() {
   k8s_images_lowercase "${GHCR_OWNER}"
+  return 0
 }
 
 ghcr_repository_name() {
   k8s_images_lowercase "${GHCR_REPOSITORY_NAME}"
+  return 0
 }
 
 ghcr_backend_image_name() {
   printf '%s/%s/%s-backend' "$(k8s_images_lowercase "${GHCR_REGISTRY}")" "$(ghcr_owner)" "$(ghcr_repository_name)"
+  return 0
 }
 
 ghcr_frontend_image_name() {
   printf '%s/%s/%s-frontend' "$(k8s_images_lowercase "${GHCR_REGISTRY}")" "$(ghcr_owner)" "$(ghcr_repository_name)"
+  return 0
 }
 
 # True when the reference includes a registry host or namespaced path (e.g. ghcr.io/a/b:tag).
 is_registry_image() {
   local ref="${1:-}"
-  [[ "${ref}" == */* ]]
+  if [[ "${ref}" == */* ]]; then
+    return 0
+  fi
+  return 1
 }
 
 # Strip @sha256:... (or other @digest) from a pull spec.
 image_ref_without_digest() {
   local ref="${1:-}"
   printf '%s' "${ref%%@*}"
+  return 0
 }
 
 image_digest_part() {
@@ -48,6 +58,7 @@ image_digest_part() {
   if [[ "${ref}" == *"@"* ]]; then
     printf '%s' "${ref#*@}"
   fi
+  return 0
 }
 
 # Tag is the last colon after the last slash, ignoring a digest suffix.
@@ -55,7 +66,10 @@ image_has_explicit_tag() {
   local without_digest after_slash
   without_digest="$(image_ref_without_digest "${1:-}")"
   after_slash="${without_digest##*/}"
-  [[ "${after_slash}" == *":"* ]]
+  if [[ "${after_slash}" == *":"* ]]; then
+    return 0
+  fi
+  return 1
 }
 
 image_name_part() {
@@ -66,6 +80,7 @@ image_name_part() {
   else
     printf '%s' "${without_digest}"
   fi
+  return 0
 }
 
 image_tag_part() {
@@ -76,23 +91,25 @@ image_tag_part() {
   else
     printf '%s' "latest"
   fi
+  return 0
 }
 
 image_pull_policy_for() {
   local ref="${1:-}"
   if ! is_registry_image "${ref}"; then
     printf '%s' "Never"
-    return
+    return 0
   fi
   if [[ -n "$(image_digest_part "${ref}")" ]]; then
     printf '%s' "IfNotPresent"
-    return
+    return 0
   fi
   if [[ "$(image_tag_part "${ref}")" == "latest" ]]; then
     printf '%s' "Always"
   else
     printf '%s' "IfNotPresent"
   fi
+  return 0
 }
 
 kustomize_image_transform() {
@@ -111,12 +128,16 @@ kustomize_image_transform() {
   else
     printf '    newTag: "%s"\n' "$(image_tag_part "${image_ref}")"
   fi
+  return 0
 }
 
 uses_custom_app_images() {
   local backend="${1:-${DEFAULT_BACKEND_IMAGE}}"
   local frontend="${2:-${DEFAULT_FRONTEND_IMAGE}}"
-  [[ "${backend}" != "${DEFAULT_BACKEND_IMAGE}" || "${frontend}" != "${DEFAULT_FRONTEND_IMAGE}" ]]
+  if [[ "${backend}" != "${DEFAULT_BACKEND_IMAGE}" || "${frontend}" != "${DEFAULT_FRONTEND_IMAGE}" ]]; then
+    return 0
+  fi
+  return 1
 }
 
 # Write a kustomize overlay that retargets app images and pull policy.
@@ -204,6 +225,7 @@ ${secret_patch}
         value: ${backend_policy}
 ${cronjob_secret_patch}
 EOF
+  return 0
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then

@@ -18,7 +18,8 @@ LAMBDA_PATH = ROOT / "infra" / "aws-health-monitor" / "lambda" / "stale_check.py
 
 def _load_module():
     spec = importlib.util.spec_from_file_location("aws_stale_check", LAMBDA_PATH)
-    assert spec is not None and spec.loader is not None
+    assert spec is not None
+    assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
