@@ -146,6 +146,20 @@ const E2E_MARKET_INDEX_QUOTES: Record<
     timestamp: "2026-05-10T16:00:00-04:00",
     isMarketOpen: false,
   },
+  "BTC-USD": {
+    value: 67123.45,
+    change: 812.34,
+    changePercent: 1.23,
+    timestamp: "2026-05-11T02:00:00Z",
+    isMarketOpen: true,
+  },
+  "ETH-USD": {
+    value: 3456.78,
+    change: -34.56,
+    changePercent: -0.99,
+    timestamp: "2026-05-11T02:00:00Z",
+    isMarketOpen: true,
+  },
 };
 
 const E2E_MARKET_INDICES = MARKET_INDEX_CATALOG.map((entry) => {
