@@ -22,7 +22,7 @@ export type MarketStatus = {
 
 export type MarketIndex = {
   id: string;
-  market: MarketCode;
+  market: MarketCode | "CRYPTO";
   label: string;
   value: number | null;
   change: number | null;
