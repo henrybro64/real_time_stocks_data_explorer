@@ -89,6 +89,7 @@ def _load_market_index_catalog() -> tuple[
     dict[str, str],
     dict[str, str | None],
     dict[str, str],
+    dict[str, str],
 ]:
     payload = json.loads(_resolve_catalog_path().read_text(encoding="utf-8"))
     slots = tuple(
@@ -103,7 +104,16 @@ def _load_market_index_catalog() -> tuple[
     crypto_yahoo_symbols = {
         str(key): str(value) for key, value in payload["cryptoYahooSymbols"].items()
     }
-    return slots, yahoo_symbols, stooq_symbols, crypto_yahoo_symbols
+    commodity_yahoo_symbols = {
+        str(key): str(value) for key, value in payload["commodityYahooSymbols"].items()
+    }
+    return (
+        slots,
+        yahoo_symbols,
+        stooq_symbols,
+        crypto_yahoo_symbols,
+        commodity_yahoo_symbols,
+    )
 
 
 (
@@ -111,6 +121,7 @@ def _load_market_index_catalog() -> tuple[
     _US_YAHOO_SYMBOLS,
     _US_STOOQ_SYMBOLS,
     _CRYPTO_YAHOO_SYMBOLS,
+    _COMMODITY_YAHOO_SYMBOLS,
 ) = _load_market_index_catalog()
 _TW_SLOT = next(slot for slot in _INDEX_CATALOG if slot.market == "TW")
 _TW_INDEX_ID = _TW_SLOT.id
@@ -126,6 +137,7 @@ class MarketIndexService:
         stooq_fetcher: Callable[[str, str], MarketIndexRecord | None] | None = None,
         yahoo_us_fetcher: Callable[[str, str, str], MarketIndexRecord | None] | None = None,
         yahoo_crypto_fetcher: Callable[[str, str, str], MarketIndexRecord | None] | None = None,
+        yahoo_commodity_fetcher: Callable[[str, str, str], MarketIndexRecord | None] | None = None,
     ) -> None:
         self._twse_fetcher = twse_fetcher or _fetch_twse_index
         self._yahoo_taiwan_fetcher = yahoo_taiwan_fetcher or (
@@ -172,6 +184,21 @@ class MarketIndexService:
                     timezone_name=_TZ_UTC,
                 )
             )
+        if yahoo_commodity_fetcher is not None:
+            self._yahoo_commodity_fetcher = yahoo_commodity_fetcher
+        elif yahoo_us_fetcher is not None:
+            # Preserve dependency injection for callers/tests that replace Yahoo.
+            self._yahoo_commodity_fetcher = yahoo_us_fetcher
+        else:
+            self._yahoo_commodity_fetcher = (
+                lambda yahoo_symbol, record_id, label: _fetch_yahoo_index(
+                    yahoo_symbol,
+                    record_id,
+                    label,
+                    market="COMMODITY",
+                    timezone_name=_TZ_NEW_YORK,
+                )
+            )
 
     def get_latest(self) -> list[MarketIndexRecord]:
         """Always return the fixed dashboard catalog (never omit a market slot)."""
@@ -183,6 +210,8 @@ class MarketIndexService:
                 records.append(self._resolve_us(slot))
             elif slot.market == "CRYPTO":
                 records.append(self._resolve_crypto(slot))
+            elif slot.market == "COMMODITY":
+                records.append(self._resolve_commodity(slot))
             else:
                 records.append(_unavailable_index(slot, reason="unsupported_market"))
         return records
@@ -350,12 +379,51 @@ class MarketIndexService:
         )
         return _unavailable_index(slot, reason="crypto_provider_unavailable")
 
+    def _resolve_commodity(self, slot: _IndexSlot) -> MarketIndexRecord:
+        yahoo_symbol = _COMMODITY_YAHOO_SYMBOLS[slot.id]
+        try:
+            record = self._yahoo_commodity_fetcher(yahoo_symbol, slot.id, slot.label)
+        except Exception as exc:  # noqa: BLE001 - never drop the dashboard slot
+            logger.warning(
+                "Commodity Yahoo quote fetch raised",
+                extra={
+                    "event": "market_index.yahoo_commodity.error",
+                    "provider": "yahoo_finance",
+                    "index_id": slot.id,
+                    "yahoo_symbol": yahoo_symbol,
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                },
+            )
+            record = None
+        if record is not None:
+            return replace(
+                record,
+                id=slot.id,
+                market="COMMODITY",
+                label=slot.label,
+                is_market_open=False,
+            )
+
+        logger.warning(
+            "Commodity quote unavailable",
+            extra={
+                "event": "market_index.commodity.unavailable",
+                "provider": "yahoo_finance",
+                "index_id": slot.id,
+                "yahoo_symbol": yahoo_symbol,
+                "request_url": _YAHOO_CHART_URL,
+            },
+        )
+        return _unavailable_index(slot, reason="commodity_provider_unavailable")
+
 
 def _unavailable_index(slot: _IndexSlot, *, reason: str) -> MarketIndexRecord:
     timezone_name = {
         "TW": _TZ_TAIPEI,
         "US": _TZ_NEW_YORK,
         "CRYPTO": _TZ_UTC,
+        "COMMODITY": _TZ_NEW_YORK,
     }.get(slot.market, _TZ_UTC)
     now = datetime.now(ZoneInfo(timezone_name))
     return MarketIndexRecord(
@@ -604,7 +672,8 @@ def _fetch_yahoo_index(
         change=round(change, 2),
         change_percent=round(change_percent, 2),
         timestamp=quote_time.isoformat(),
-        is_market_open=market == "CRYPTO" or is_market_open(market, market_now),
+        is_market_open=market == "CRYPTO"
+        or (market in {"TW", "US"} and is_market_open(market, market_now)),
     )
 
 
