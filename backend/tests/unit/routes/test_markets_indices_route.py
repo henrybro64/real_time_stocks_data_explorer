@@ -55,3 +55,6 @@ def test_markets_indices_route_serializes_unavailable_placeholder(monkeypatch) -
     assert by_id[sox.id]["status"] == "ok"
     assert by_id["BTC-USD"]["market"] == "CRYPTO"
     assert by_id["BTC-USD"]["isMarketOpen"] is True
+    assert by_id["^VIX"]["market"] == "US"
+    assert by_id["GC=F"]["market"] == "COMMODITY"
+    assert by_id["GC=F"]["isMarketOpen"] is False
