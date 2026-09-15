@@ -39,6 +39,7 @@ _BROWSER_USER_AGENT = (
 _TW_YAHOO_SYMBOL = "^TWII"
 _TZ_TAIPEI = "Asia/Taipei"
 _TZ_NEW_YORK = "America/New_York"
+_TZ_UTC = "UTC"
 
 IndexStatus = Literal["ok", "unavailable"]
 IndexFetcher = Callable[[], "MarketIndexRecord | None"]
@@ -87,6 +88,7 @@ def _load_market_index_catalog() -> tuple[
     tuple[_IndexSlot, ...],
     dict[str, str],
     dict[str, str | None],
+    dict[str, str],
 ]:
     payload = json.loads(_resolve_catalog_path().read_text(encoding="utf-8"))
     slots = tuple(
@@ -98,10 +100,18 @@ def _load_market_index_catalog() -> tuple[
         str(key): (None if value is None else str(value))
         for key, value in payload["usStooqSymbols"].items()
     }
-    return slots, yahoo_symbols, stooq_symbols
+    crypto_yahoo_symbols = {
+        str(key): str(value) for key, value in payload["cryptoYahooSymbols"].items()
+    }
+    return slots, yahoo_symbols, stooq_symbols, crypto_yahoo_symbols
 
 
-_INDEX_CATALOG, _US_YAHOO_SYMBOLS, _US_STOOQ_SYMBOLS = _load_market_index_catalog()
+(
+    _INDEX_CATALOG,
+    _US_YAHOO_SYMBOLS,
+    _US_STOOQ_SYMBOLS,
+    _CRYPTO_YAHOO_SYMBOLS,
+) = _load_market_index_catalog()
 _TW_SLOT = next(slot for slot in _INDEX_CATALOG if slot.market == "TW")
 _TW_INDEX_ID = _TW_SLOT.id
 _TW_INDEX_LABEL = _TW_SLOT.label
@@ -115,6 +125,7 @@ class MarketIndexService:
         yahoo_taiwan_fetcher: IndexFetcher | None = None,
         stooq_fetcher: Callable[[str, str], MarketIndexRecord | None] | None = None,
         yahoo_us_fetcher: Callable[[str, str, str], MarketIndexRecord | None] | None = None,
+        yahoo_crypto_fetcher: Callable[[str, str, str], MarketIndexRecord | None] | None = None,
     ) -> None:
         self._twse_fetcher = twse_fetcher or _fetch_twse_index
         self._yahoo_taiwan_fetcher = yahoo_taiwan_fetcher or (
@@ -136,14 +147,45 @@ class MarketIndexService:
                 timezone_name=_TZ_NEW_YORK,
             )
         )
+        if yahoo_crypto_fetcher is not None:
+            self._yahoo_crypto_fetcher = yahoo_crypto_fetcher
+        elif yahoo_us_fetcher is not None:
+            # Preserve dependency injection for callers/tests that replace Yahoo.
+            def injected_crypto_fetcher(
+                yahoo_symbol: str,
+                record_id: str,
+                label: str,
+            ) -> MarketIndexRecord | None:
+                record = yahoo_us_fetcher(yahoo_symbol, record_id, label)
+                if record is None:
+                    return None
+                return replace(record, market="CRYPTO", is_market_open=True)
+
+            self._yahoo_crypto_fetcher = injected_crypto_fetcher
+        else:
+            self._yahoo_crypto_fetcher = (
+                lambda yahoo_symbol, record_id, label: _fetch_yahoo_index(
+                    yahoo_symbol,
+                    record_id,
+                    label,
+                    market="CRYPTO",
+                    timezone_name=_TZ_UTC,
+                )
+            )
 
     def get_latest(self) -> list[MarketIndexRecord]:
         """Always return the fixed dashboard catalog (never omit a market slot)."""
-        tw_slot, *us_slots = _INDEX_CATALOG
-        return [
-            self._resolve_taiwan(tw_slot),
-            *[self._resolve_us(slot) for slot in us_slots],
-        ]
+        records: list[MarketIndexRecord] = []
+        for slot in _INDEX_CATALOG:
+            if slot.market == "TW":
+                records.append(self._resolve_taiwan(slot))
+            elif slot.market == "US":
+                records.append(self._resolve_us(slot))
+            elif slot.market == "CRYPTO":
+                records.append(self._resolve_crypto(slot))
+            else:
+                records.append(_unavailable_index(slot, reason="unsupported_market"))
+        return records
 
     def _resolve_taiwan(self, slot: _IndexSlot) -> MarketIndexRecord:
         try:
@@ -270,9 +312,45 @@ class MarketIndexService:
         )
         return _unavailable_index(slot, reason="us_provider_unavailable")
 
+    def _resolve_crypto(self, slot: _IndexSlot) -> MarketIndexRecord:
+        yahoo_symbol = _CRYPTO_YAHOO_SYMBOLS[slot.id]
+        try:
+            record = self._yahoo_crypto_fetcher(yahoo_symbol, slot.id, slot.label)
+        except Exception as exc:  # noqa: BLE001 - never drop the dashboard slot
+            logger.warning(
+                "Crypto Yahoo quote fetch raised",
+                extra={
+                    "event": "market_index.yahoo_crypto.error",
+                    "provider": "yahoo_finance",
+                    "index_id": slot.id,
+                    "yahoo_symbol": yahoo_symbol,
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                },
+            )
+            record = None
+        if record is not None:
+            return record
+
+        logger.warning(
+            "Crypto quote unavailable",
+            extra={
+                "event": "market_index.crypto.unavailable",
+                "provider": "yahoo_finance",
+                "index_id": slot.id,
+                "yahoo_symbol": yahoo_symbol,
+                "request_url": _YAHOO_CHART_URL,
+            },
+        )
+        return _unavailable_index(slot, reason="crypto_provider_unavailable")
+
 
 def _unavailable_index(slot: _IndexSlot, *, reason: str) -> MarketIndexRecord:
-    timezone_name = _TZ_TAIPEI if slot.market == "TW" else _TZ_NEW_YORK
+    timezone_name = {
+        "TW": _TZ_TAIPEI,
+        "US": _TZ_NEW_YORK,
+        "CRYPTO": _TZ_UTC,
+    }.get(slot.market, _TZ_UTC)
     now = datetime.now(ZoneInfo(timezone_name))
     return MarketIndexRecord(
         id=slot.id,
@@ -282,7 +360,7 @@ def _unavailable_index(slot: _IndexSlot, *, reason: str) -> MarketIndexRecord:
         change=None,
         change_percent=None,
         timestamp=now.isoformat(),
-        is_market_open=is_market_open(slot.market, now),
+        is_market_open=slot.market == "CRYPTO" or is_market_open(slot.market, now),
         status="unavailable",
         unavailable_reason=reason,
     )
@@ -520,7 +598,7 @@ def _fetch_yahoo_index(
         change=round(change, 2),
         change_percent=round(change_percent, 2),
         timestamp=quote_time.isoformat(),
-        is_market_open=is_market_open(market, market_now),
+        is_market_open=market == "CRYPTO" or is_market_open(market, market_now),
     )
 
 
