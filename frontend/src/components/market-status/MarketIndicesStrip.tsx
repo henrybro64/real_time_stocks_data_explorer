@@ -83,10 +83,10 @@ export function MarketIndicesStrip({ error, isLoading = false, items }: Props) {
   const copy =
     language === "zh-TW"
       ? {
-          eyebrow: "最新指數",
-          title: "最新市場指數",
+          eyebrow: "最新市場價格",
+          title: "最新市場價格",
           subtitle: catalogSubtitle(language),
-          loading: "載入市場指數中",
+          loading: "載入市場價格中",
           live: "開盤中",
           closed: "已收盤",
           unavailable: "暫時無法取得",
@@ -97,7 +97,7 @@ export function MarketIndicesStrip({ error, isLoading = false, items }: Props) {
           eyebrow: "Latest market prices",
           title: "Latest Market Prices",
           subtitle: catalogSubtitle(language),
-          loading: "Loading market indices",
+          loading: "Loading market prices",
           live: "Live",
           closed: "Closed",
           unavailable: "Temporarily unavailable",
