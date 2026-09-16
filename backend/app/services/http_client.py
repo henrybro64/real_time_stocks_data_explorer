@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import random
 import threading
 import time
 from time import perf_counter
@@ -41,13 +42,15 @@ class HttpFetchError(RuntimeError):
 
 _DEFAULT_TIMEOUT_SECONDS = 10.0
 _DEFAULT_RETRIES = 2
-_RETRYABLE_STATUS_CODES = {408, 425, 429, 500, 502, 503, 504}
+_RETRYABLE_STATUS_CODES = frozenset({408, 425, 429, 500, 502, 503, 504})
 # Deterministic client auth denials must not burn the retry budget (#182).
-_NON_RETRYABLE_STATUS_CODES = {401, 403}
+_NON_RETRYABLE_STATUS_CODES = frozenset({401, 403})
 # Cap Retry-After sleeps so a hostile/large header cannot stall worker threads.
 _MAX_RETRY_AFTER_SLEEP_SECONDS = 30.0
 # Abrupt upstream disconnects: at most one retry (2 attempts total) (#183).
 _MAX_REMOTE_PROTOCOL_ATTEMPTS = 2
+# Jitter is uniform in [0, base * _RETRY_JITTER_FRACTION) — 25% of exponential base.
+_RETRY_JITTER_FRACTION = 0.25
 _PROVIDER_NAMES_BY_HOST = {
     "api.openai.com": "openai",
     "api.perplexity.ai": "perplexity",
@@ -155,12 +158,27 @@ def parse_retry_after_seconds(value: str | None) -> float | None:
         return None
 
 
-def capped_retry_sleep_seconds(retry_after: float | None, *, attempt: int) -> float:
-    """Backoff sleep for retries, honoring Retry-After with a hard ceiling."""
-    base = 0.25 * (attempt + 1)
-    if retry_after is None:
-        return base
-    return min(max(base, float(retry_after)), _MAX_RETRY_AFTER_SLEEP_SECONDS)
+def capped_retry_sleep_seconds(
+    retry_after: float | None,
+    *,
+    attempt: int,
+    jitter_random: Callable[[], float] | None = None,
+) -> float:
+    """Exponential backoff with bounded jitter, honoring Retry-After with a ceiling.
+
+    Base delay is ``0.25 * (2 ** attempt)`` seconds (0.25 → 0.50 → 1.00 → 2.00 …).
+    Jitter is uniform in ``[0, 0.25 * base)`` (25% of base), injected via
+    ``jitter_random`` (defaults to ``random.random``, returns ``[0.0, 1.0)``).
+    When Retry-After is present, sleep is at least that value (still capped at
+    ``_MAX_RETRY_AFTER_SLEEP_SECONDS``).
+    """
+    rng = random.random if jitter_random is None else jitter_random
+    base = 0.25 * (2**attempt)
+    jitter = float(rng()) * base * _RETRY_JITTER_FRACTION
+    sleep = base + jitter
+    if retry_after is not None:
+        sleep = max(sleep, float(retry_after))
+    return min(sleep, _MAX_RETRY_AFTER_SLEEP_SECONDS)
 
 
 def _failure_status_code(exc: Exception, *, last_status_code: int | None) -> int | None:
@@ -178,18 +196,29 @@ def _should_retry_http_failure(
     attempt: int,
     attempts: int,
     remote_protocol_failures: int,
+    retryable_status_codes: frozenset[int],
 ) -> bool:
-    """Decide whether another attempt is useful before falling back/raising."""
+    """Decide whether another attempt is useful before falling back/raising.
+
+    Retries only transient failures: configured retryable statuses, connection
+    timeouts / network errors (no status), and bounded remote-protocol disconnects.
+    Permanent client/auth errors (400/401/403/404/…) are never retried.
+    """
     if attempt >= attempts - 1:
         return False
     if status_code in _NON_RETRYABLE_STATUS_CODES:
         return False
     if isinstance(exc, HttpFetchError) and exc.classification == "auth_denied":
         return False
+    if isinstance(exc, HttpFetchError) and exc.classification == "unexpected_content":
+        # Malformed/unexpected bodies are not cured by another HTTP attempt.
+        return False
     if isinstance(exc, httpx.RemoteProtocolError):
         # Server disconnected without a response: one quick retry, then fallback.
         return remote_protocol_failures < _MAX_REMOTE_PROTOCOL_ATTEMPTS
-    return True
+    if status_code is None:
+        return True
+    return status_code in retryable_status_codes
 
 
 def _should_attempt_insecure_tls_fallback(exc: Exception | None) -> bool:
@@ -218,6 +247,7 @@ def fetch_json(
     method: HttpMethod = "GET",
     params: dict[str, str] | None = None,
     data: dict[str, str] | None = None,
+    json_body: object | None = None,
     headers: dict[str, str] | None = None,
     timeout_seconds: float = _DEFAULT_TIMEOUT_SECONDS,
     retries: int = _DEFAULT_RETRIES,
@@ -225,12 +255,14 @@ def fetch_json(
     provider_name: str | None = None,
     operation_name: str | None = None,
     resource_id: str | None = None,
+    retryable_status_codes: frozenset[int] | None = None,
 ) -> object:
     response = _request_with_retries(
         url,
         method=method,
         params=params,
         data=data,
+        json_body=json_body,
         headers=headers,
         timeout_seconds=timeout_seconds,
         retries=retries,
@@ -238,6 +270,7 @@ def fetch_json(
         provider_name=provider_name,
         operation_name=operation_name,
         resource_id=resource_id,
+        retryable_status_codes=retryable_status_codes,
     )
     content_type = response.headers.get("content-type")
     try:
@@ -261,6 +294,7 @@ def fetch_text(
     method: HttpMethod = "GET",
     params: dict[str, str] | None = None,
     data: dict[str, str] | None = None,
+    json_body: object | None = None,
     headers: dict[str, str] | None = None,
     timeout_seconds: float = _DEFAULT_TIMEOUT_SECONDS,
     retries: int = _DEFAULT_RETRIES,
@@ -269,12 +303,14 @@ def fetch_text(
     provider_name: str | None = None,
     operation_name: str | None = None,
     resource_id: str | None = None,
+    retryable_status_codes: frozenset[int] | None = None,
 ) -> str:
     response = _request_with_retries(
         url,
         method=method,
         params=params,
         data=data,
+        json_body=json_body,
         headers=headers,
         timeout_seconds=timeout_seconds,
         retries=retries,
@@ -282,6 +318,7 @@ def fetch_text(
         provider_name=provider_name,
         operation_name=operation_name,
         resource_id=resource_id,
+        retryable_status_codes=retryable_status_codes,
     )
     if encoding:
         response.encoding = encoding
@@ -294,6 +331,7 @@ def _request_with_retries(
     method: HttpMethod,
     params: dict[str, str] | None,
     data: dict[str, str] | None,
+    json_body: object | None,
     headers: dict[str, str] | None,
     timeout_seconds: float,
     retries: int,
@@ -301,10 +339,19 @@ def _request_with_retries(
     provider_name: str | None,
     operation_name: str | None,
     resource_id: str | None,
+    retryable_status_codes: frozenset[int] | None = None,
+    jitter_random: Callable[[], float] | None = None,
 ) -> httpx.Response:
+    if data is not None and json_body is not None:
+        raise ValueError("data and json_body are mutually exclusive")
     started_at = perf_counter()
     timeout = httpx.Timeout(timeout_seconds)
     attempts = max(retries + 1, 1)
+    effective_retryable = (
+        _RETRYABLE_STATUS_CODES
+        if retryable_status_codes is None
+        else retryable_status_codes
+    )
     last_error: Exception | None = None
     last_status_code: int | None = None
     last_content_type: str | None = None
@@ -336,13 +383,14 @@ def _request_with_retries(
                 url,
                 params=params,
                 data=data,
+                json=json_body,
                 headers=headers,
                 timeout=timeout,
                 follow_redirects=True,
             )
             last_status_code = response.status_code
             last_content_type = response.headers.get("content-type")
-            if response.status_code in _RETRYABLE_STATUS_CODES:
+            if response.status_code in effective_retryable:
                 retry_after = parse_retry_after_seconds(
                     response.headers.get("retry-after")
                 )
@@ -394,12 +442,25 @@ def _request_with_retries(
                 attempt=attempt,
                 attempts=attempts,
                 remote_protocol_failures=remote_protocol_failures,
+                retryable_status_codes=effective_retryable,
             ):
                 break
             retry_after = None
             if isinstance(exc, HttpFetchError):
                 retry_after = exc.retry_after_seconds
-            sleep_seconds = capped_retry_sleep_seconds(retry_after, attempt=attempt)
+            sleep_seconds = capped_retry_sleep_seconds(
+                retry_after,
+                attempt=attempt,
+                jitter_random=jitter_random,
+            )
+            classification = (
+                exc.classification
+                if isinstance(exc, HttpFetchError)
+                else classify_http_failure(
+                    status_for_retry,
+                    content_type=last_content_type,
+                )
+            )
             logger.warning(
                 "External HTTP request attempt failed",
                 extra={
@@ -418,14 +479,8 @@ def _request_with_retries(
                     "error": str(exc),
                     "retry_after_seconds": retry_after,
                     "sleep_seconds": sleep_seconds,
-                    "response_classification": (
-                        exc.classification
-                        if isinstance(exc, HttpFetchError)
-                        else classify_http_failure(
-                            status_for_retry,
-                            content_type=last_content_type,
-                        )
-                    ),
+                    "classification": classification,
+                    "response_classification": classification,
                 },
             )
             time.sleep(sleep_seconds)
@@ -442,6 +497,7 @@ def _request_with_retries(
                 url,
                 params=params,
                 data=data,
+                json=json_body,
                 headers=headers,
                 timeout=timeout,
                 follow_redirects=True,

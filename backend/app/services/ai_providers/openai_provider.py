@@ -1,10 +1,7 @@
 from __future__ import annotations
 
-import json
 import logging
 from time import perf_counter
-from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
 
 from app.core.diagnostics import elapsed_ms
 from app.services.ai_providers.base import (
@@ -15,8 +12,11 @@ from app.services.ai_providers.base import (
     build_portfolio_analysis_user_prompt,
     build_stock_analysis_user_prompt,
 )
+from app.services.http_client import HttpFetchError, fetch_json
 
 logger = logging.getLogger(__name__)
+
+_AI_RETRYABLE_STATUS_CODES = frozenset({429, 502, 503, 504})
 
 
 class OpenAIProvider(AIProvider):
@@ -58,15 +58,24 @@ class OpenAIProvider(AIProvider):
                 },
             ],
         }
-        request = Request("https://api.openai.com/v1/responses", method="POST")
-        request.add_header("Authorization", f"Bearer {self._api_key}")
-        request.add_header("Content-Type", "application/json")
-        request.add_header("Accept", "application/json")
-        body = json.dumps(payload).encode("utf-8")
         try:
-            with urlopen(request, data=body, timeout=20) as response:
-                data = json.load(response)
-        except (HTTPError, URLError, TimeoutError) as exc:
+            data = fetch_json(
+                "https://api.openai.com/v1/responses",
+                method="POST",
+                json_body=payload,
+                headers={
+                    "Authorization": f"Bearer {self._api_key}",
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
+                },
+                timeout_seconds=20,
+                retries=1,
+                retryable_status_codes=_AI_RETRYABLE_STATUS_CODES,
+                provider_name=self.provider_name,
+                operation_name="openai_responses",
+                resource_id=self.model_name,
+            )
+        except HttpFetchError as exc:
             logger.warning(
                 "OpenAI request failed",
                 extra={
@@ -79,6 +88,8 @@ class OpenAIProvider(AIProvider):
                 },
             )
             raise AIProviderError("OpenAI request failed.") from exc
+        if not isinstance(data, dict):
+            raise AIProviderError("OpenAI returned an empty analysis.")
         content = data.get("output_text")
         if not isinstance(content, str) or not content.strip():
             raise AIProviderError("OpenAI returned an empty analysis.")
