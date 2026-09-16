@@ -60,7 +60,7 @@ const profitabilityPayload: TaiwanProfitabilityResponse = {
   stockId: "TW:2330",
   quarters: 12,
   asOf: "2025-09-30",
-  source: "yfinance_quarterly_income",
+  source: "yahoo_finance_quarterly_income",
   stale: false,
   points: [
     {
@@ -160,5 +160,19 @@ describe("TaiwanSignalsPanel", () => {
       expect(fetchTaiwanProfitability).toHaveBeenCalledWith("TW:2330", 12);
     });
     expect(await screen.findByTestId("tw-profit-margins-summary")).toBeInTheDocument();
+  });
+
+  it("does not refetch profitability when switching away and back within staleTime", async () => {
+    renderPanel("en");
+    fireEvent.click(screen.getByRole("tab", { name: "Profitability margins" }));
+    await waitFor(() => {
+      expect(fetchTaiwanProfitability).toHaveBeenCalledTimes(1);
+    });
+    fireEvent.click(screen.getByRole("tab", { name: "Institutional activity" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Profitability margins" }));
+    await waitFor(() => {
+      expect(screen.getByTestId("tw-profit-margins-summary")).toBeInTheDocument();
+    });
+    expect(fetchTaiwanProfitability).toHaveBeenCalledTimes(1);
   });
 });

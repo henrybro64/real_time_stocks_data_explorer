@@ -245,7 +245,7 @@ export type TaiwanOwnershipConcentrationResponse = {
   points: TaiwanOwnershipConcentrationPoint[];
 };
 
-/** Taiwan 財報三率 / profitability margins from yfinance quarterly income. */
+/** Taiwan 財報三率 / profitability margins from Yahoo quarterly income. */
 export type TaiwanProfitabilityPoint = {
   fiscalQuarter: string;
   periodEnd: string;

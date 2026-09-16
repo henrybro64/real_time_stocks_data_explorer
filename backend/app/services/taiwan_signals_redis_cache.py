@@ -1,7 +1,7 @@
 """Best-effort Redis L2 cache for Taiwan Signals tab payloads.
 
 Process memory remains L1. When Redis is configured and healthy, successful
-payloads are shared across replicas so TDCC/yfinance cold paths are not
+payloads are shared across replicas so TDCC/Yahoo cold paths are not
 repeated per pod. Redis failures never break the read path.
 """
 

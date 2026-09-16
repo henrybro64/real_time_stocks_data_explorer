@@ -164,7 +164,7 @@ describe("fetchTaiwanProfitability", () => {
         stockId: "TW:2330",
         quarters: 12,
         asOf: null,
-        source: "yfinance_quarterly_income",
+        source: "yahoo_finance_quarterly_income",
         stale: false,
         points: [],
       }),

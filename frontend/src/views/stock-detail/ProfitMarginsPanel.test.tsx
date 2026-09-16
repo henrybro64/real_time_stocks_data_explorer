@@ -21,7 +21,7 @@ const samplePayload: TaiwanProfitabilityResponse = {
   stockId: "TW:2330",
   quarters: 12,
   asOf: "2025-09-30",
-  source: "yfinance_quarterly_income",
+  source: "yahoo_finance_quarterly_income",
   stale: false,
   points: [
     {

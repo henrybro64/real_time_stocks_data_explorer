@@ -56,6 +56,7 @@ _PROVIDER_NAMES_BY_HOST = {
     "news.google.com": "google_news",
     "openapi.twse.com.tw": "twse_openapi",
     "query1.finance.yahoo.com": "yahoo_finance",
+    "query2.finance.yahoo.com": "yahoo_finance",
     "stooq.com": "stooq",
     "www.sec.gov": "sec",
     "www.tpex.org.tw": "tpex",

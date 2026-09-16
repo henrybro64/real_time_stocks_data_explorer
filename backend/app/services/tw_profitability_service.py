@@ -1,18 +1,22 @@
-"""Taiwan profitability margins (財報三率) from yfinance quarterly income statements.
+"""Taiwan profitability margins (財報三率) from Yahoo quarterly income statements.
 
-v1 uses labeled Yahoo Finance quarterly income statements (not WantGoo, not MOPS).
-Ratios are computed in this service. ``convert_ytd_to_quarterly`` exists for
-cumulative official sources but is not auto-enabled for yfinance (already
-single-quarter columns).
+v1 prefers Yahoo Finance fundamentals via the shared HTTP client (not WantGoo).
+Official MOPS/XBRL remains a follow-up when a stable open adapter fits this
+architecture. Ratios are computed here. ``convert_ytd_to_quarterly`` exists for
+cumulative official sources but is not auto-enabled for Yahoo single-quarter
+columns.
 """
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from time import perf_counter
 from typing import Any
 
+from app.core.diagnostics import elapsed_ms
 from app.services.quote_service import QuoteService, quote_service
 from app.services.taiwan_market_data import normalize_taiwan_date, require_taiwan_stock
 from app.services.taiwan_signals_redis_cache import (
@@ -21,6 +25,9 @@ from app.services.taiwan_signals_redis_cache import (
     profitability_cache_key,
     set_cached_json,
 )
+from app.services.tw_profitability_yahoo import fetch_quarterly_income_statement
+
+logger = logging.getLogger(__name__)
 
 _RESULT_CACHE_TTL = timedelta(hours=24)
 _STALE_REFRESH_BACKOFF = timedelta(minutes=15)
@@ -30,7 +37,7 @@ _ALLOWED_QUARTERS = {8, 12, 20}
 _STOCK_NOT_FOUND_ERROR = "Stock not found"
 _NON_TW_STOCK_ERROR = "Taiwan profitability margins are only available for TW stocks"
 _UPSTREAM_UNAVAILABLE_ERROR = "Taiwan profitability margins upstream temporarily unavailable"
-_SOURCE = "yfinance_quarterly_income"
+_SOURCE = "yahoo_finance_quarterly_income"
 
 _REVENUE_LABELS = (
     "Total Revenue",
@@ -104,14 +111,28 @@ class TwProfitabilityService:
         stale_refresh_backoff: timedelta = _STALE_REFRESH_BACKOFF,
     ) -> None:
         self._quote_source = quote_source or quote_service
-        self._quarterly_income_fetcher = quarterly_income_fetcher or _default_quarterly_income_fetcher
         self._now_provider = now_provider or (lambda: datetime.now(UTC))
         self._result_cache_ttl = result_cache_ttl
         self._stale_refresh_backoff = stale_refresh_backoff
         self._result_cache: dict[tuple[str, int], _ProfitabilityCacheEntry] = {}
+        self._last_source: str = _SOURCE
+        self._quarterly_income_fetcher = (
+            quarterly_income_fetcher or self._fetch_default_quarterly_income
+        )
 
     def clear_cache(self) -> None:
         self._result_cache.clear()
+
+    def _fetch_default_quarterly_income(
+        self, symbol: str
+    ) -> Mapping[Any, Mapping[Any, Any]] | None:
+        fetched = fetch_quarterly_income_statement(symbol)
+        if fetched is None:
+            self._last_source = _SOURCE
+            return None
+        statement, source = fetched
+        self._last_source = source
+        return statement
 
     def get_profitability(
         self,
@@ -124,6 +145,12 @@ class TwProfitabilityService:
         cache_key = (stock_id, requested_quarters)
         cached = self._result_cache.get(cache_key)
         if cached is not None and now - cached.cached_at < self._result_cache_ttl:
+            logger.info(
+                "tw_profitability cache_hit stock_id=%s quarters=%s points=%s",
+                stock_id,
+                requested_quarters,
+                len(cached.result.points),
+            )
             return cached.result
 
         if (
@@ -131,6 +158,11 @@ class TwProfitabilityService:
             and cached.last_failure_at is not None
             and now - cached.last_failure_at < self._stale_refresh_backoff
         ):
+            logger.info(
+                "tw_profitability stale_backoff stock_id=%s quarters=%s",
+                stock_id,
+                requested_quarters,
+            )
             return _as_stale(cached.result)
 
         redis_payload = get_cached_json(profitability_cache_key(stock_id, requested_quarters))
@@ -147,12 +179,31 @@ class TwProfitabilityService:
                 cached_at=redis_cached_at,
                 result=redis_result,
             )
+            logger.info(
+                "tw_profitability redis_hit stock_id=%s quarters=%s points=%s",
+                stock_id,
+                requested_quarters,
+                len(redis_result.points),
+            )
             return redis_result
 
+        started_at = perf_counter()
         try:
             result = self._compute(stock_id, requested_quarters=requested_quarters)
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                "tw_profitability upstream_failed stock_id=%s quarters=%s duration_ms=%s reason=%s",
+                stock_id,
+                requested_quarters,
+                elapsed_ms(started_at),
+                exc,
+            )
             if cached is not None:
+                logger.warning(
+                    "tw_profitability stale_fallback stock_id=%s quarters=%s",
+                    stock_id,
+                    requested_quarters,
+                )
                 stale_result = _as_stale(cached.result)
                 self._result_cache[cache_key] = _ProfitabilityCacheEntry(
                     cached_at=cached.cached_at,
@@ -161,6 +212,11 @@ class TwProfitabilityService:
                 )
                 return stale_result
             if redis_result is not None:
+                logger.warning(
+                    "tw_profitability redis_stale_fallback stock_id=%s quarters=%s",
+                    stock_id,
+                    requested_quarters,
+                )
                 stale_result = _as_stale(redis_result)
                 self._result_cache[cache_key] = _ProfitabilityCacheEntry(
                     cached_at=redis_cached_at or now,
@@ -170,6 +226,14 @@ class TwProfitabilityService:
                 return stale_result
             raise
 
+        logger.info(
+            "tw_profitability cache_store stock_id=%s quarters=%s points=%s source=%s duration_ms=%s",
+            stock_id,
+            requested_quarters,
+            len(result.points),
+            result.source,
+            elapsed_ms(started_at),
+        )
         self._result_cache[cache_key] = _ProfitabilityCacheEntry(cached_at=now, result=result)
         set_cached_json(
             profitability_cache_key(stock_id, requested_quarters),
@@ -201,7 +265,7 @@ class TwProfitabilityService:
             stock_id=stock.id,
             quarters=requested_quarters,
             as_of=as_of,
-            source=_SOURCE,
+            source=self._last_source,
             stale=False,
             points=tuple(points),
         )
@@ -322,7 +386,7 @@ def build_profitability_points(
         net = values.get("net")
         points.append(
             TaiwanProfitabilityPoint(
-                fiscal_quarter=_fiscal_quarter_label(period_end),
+                fiscal_quarter=fiscal_quarter_label(period_end),
                 period_end=period_end,
                 gross_margin_percent=margin_percent(gross, revenue),
                 operating_margin_percent=margin_percent(operating, revenue),
@@ -333,6 +397,7 @@ def build_profitability_points(
             )
         )
 
+    points = _dedupe_fiscal_quarters(points)
     if quarters > 0:
         points = points[-quarters:]
     return points
@@ -426,7 +491,11 @@ def _normalize_yfinance_statement(
 def convert_ytd_to_quarterly(
     columns: dict[str, dict[str, float | None]],
 ) -> dict[str, dict[str, float | None]]:
-    """Convert cumulative YTD columns within each fiscal year to quarterly increments."""
+    """Convert cumulative YTD columns within each fiscal year to quarterly increments.
+
+    Within a year, Q1 stays as-is, Q2/Q3 differ from prior YTD, and Q4 uses
+    annual (or Q4 YTD) minus Q3 YTD when present.
+    """
     if len(columns) < 2:
         return columns
 
@@ -513,11 +582,34 @@ def _period_end_key(value: object) -> str | None:
     return normalize_taiwan_date(str(value)[:10] if value is not None else None)
 
 
-def _fiscal_quarter_label(period_end: str) -> str:
+def fiscal_quarter_label(period_end: str) -> str:
+    """Map a period-end date to a calendar fiscal-quarter label (``2025Q3``).
+
+    Early-month dates on quarter boundaries (e.g. ``2025-04-01``) snap to the
+    prior calendar quarter so filing/settlement slips do not shift the axis.
+    """
     year = int(period_end[:4])
     month = int(period_end[5:7])
+    day = int(period_end[8:10])
+    if day <= 7 and month in {1, 4, 7, 10}:
+        if month == 1:
+            return f"{year - 1}Q4"
+        prior_quarter_month = month - 1
+        return f"{year}Q{(prior_quarter_month - 1) // 3 + 1}"
     quarter = (month - 1) // 3 + 1
     return f"{year}Q{quarter}"
+
+
+def _dedupe_fiscal_quarters(
+    points: list[TaiwanProfitabilityPoint],
+) -> list[TaiwanProfitabilityPoint]:
+    """Prefer the latest period_end when restatements share a fiscal quarter."""
+    best: dict[str, TaiwanProfitabilityPoint] = {}
+    for point in points:
+        current = best.get(point.fiscal_quarter)
+        if current is None or point.period_end >= current.period_end:
+            best[point.fiscal_quarter] = point
+    return sorted(best.values(), key=lambda item: item.period_end)
 
 
 def _as_float(value: object) -> float | None:
@@ -538,52 +630,6 @@ def _normalize_quarters(value: int) -> int:
     if value not in _ALLOWED_QUARTERS:
         raise ValueError(f"Unsupported profitability quarters: {value}")
     return value
-
-
-def _default_quarterly_income_fetcher(symbol: str) -> Mapping[Any, Mapping[Any, Any]] | None:
-    try:
-        import yfinance as yf  # pylint: disable=import-outside-toplevel
-    except Exception as exc:  # noqa: BLE001
-        raise RuntimeError(_UPSTREAM_UNAVAILABLE_ERROR) from exc
-
-    for suffix in (".TW", ".TWO"):
-        ticker = yf.Ticker(f"{symbol}{suffix}")
-        try:
-            frame = ticker.quarterly_income_stmt
-        except Exception:  # noqa: BLE001 - try next suffix
-            continue
-        if frame is None:
-            continue
-        try:
-            if getattr(frame, "empty", False):
-                continue
-            # Convert DataFrame to nested mapping: index(row) -> columns(period) -> value
-            return {
-                str(index): {
-                    column: (None if _is_na(value) else value)
-                    for column, value in row.items()
-                }
-                for index, row in frame.to_dict(orient="index").items()
-            }
-        except Exception:  # noqa: BLE001
-            continue
-    return None
-
-
-def _is_na(value: object) -> bool:
-    try:
-        import math
-
-        if isinstance(value, float) and math.isnan(value):
-            return True
-    except Exception:  # noqa: BLE001
-        return False
-    try:
-        import pandas as pd  # pylint: disable=import-outside-toplevel
-
-        return bool(pd.isna(value))
-    except Exception:  # noqa: BLE001
-        return False
 
 
 tw_profitability_service = TwProfitabilityService()

@@ -164,6 +164,7 @@ export function TaiwanMultiSeriesLineChart({
             role="img"
             viewBox="0 0 100 100"
             onMouseLeave={() => setHoverIndex(null)}
+            onPointerLeave={() => setHoverIndex(null)}
           >
             {[PLOT_TOP_Y, 32, 50, 68, PLOT_BOTTOM_Y].map((position) => (
               <line
@@ -220,7 +221,11 @@ export function TaiwanMultiSeriesLineChart({
                   width={100 / Math.max(points.length, 1)}
                   x={x - 100 / Math.max(points.length, 1) / 2}
                   y="0"
-                  onMouseEnter={() => setHoverIndex(index)}
+                  onPointerDown={(event) => {
+                    event.preventDefault();
+                    setHoverIndex(index);
+                  }}
+                  onPointerEnter={() => setHoverIndex(index)}
                 />
               );
             })}
