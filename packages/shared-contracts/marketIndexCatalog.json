@@ -29,18 +29,51 @@
       "market": "US",
       "label": "PHLX Semiconductor",
       "labelZhTw": "費城半導體指數"
+    },
+    {
+      "id": "^VIX",
+      "market": "US",
+      "label": "CBOE Volatility Index",
+      "labelZhTw": "芝加哥選擇權交易所波動率指數"
+    },
+    {
+      "id": "BTC-USD",
+      "market": "CRYPTO",
+      "label": "Bitcoin (BTC/USD)",
+      "labelZhTw": "比特幣 (BTC/USD)"
+    },
+    {
+      "id": "ETH-USD",
+      "market": "CRYPTO",
+      "label": "Ethereum (ETH/USD)",
+      "labelZhTw": "以太幣 (ETH/USD)"
+    },
+    {
+      "id": "GC=F",
+      "market": "COMMODITY",
+      "label": "Gold Futures (USD/oz)",
+      "labelZhTw": "黃金期貨 (USD/盎司)"
     }
   ],
   "usYahooSymbols": {
     "^DJI": "^DJI",
     "^NDQ": "^IXIC",
     "^SPX": "^GSPC",
-    "^SOX": "^SOX"
+    "^SOX": "^SOX",
+    "^VIX": "^VIX"
   },
   "usStooqSymbols": {
     "^DJI": "^DJI",
     "^NDQ": "^NDQ",
     "^SPX": "^SPX",
-    "^SOX": null
+    "^SOX": null,
+    "^VIX": null
+  },
+  "cryptoYahooSymbols": {
+    "BTC-USD": "BTC-USD",
+    "ETH-USD": "ETH-USD"
+  },
+  "commodityYahooSymbols": {
+    "GC=F": "GC=F"
   }
 }

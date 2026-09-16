@@ -32,10 +32,13 @@ function sessionTagType(item: MarketIndex, unavailable: boolean): "green" | "gra
 function sessionTagLabel(
   item: MarketIndex,
   unavailable: boolean,
-  copy: { live: string; closed: string; unavailable: string },
+  copy: { live: string; closed: string; latest: string; unavailable: string },
 ): string {
   if (unavailable) {
     return copy.unavailable;
+  }
+  if (item.market === "COMMODITY") {
+    return copy.latest;
   }
   return item.isMarketOpen ? copy.live : copy.closed;
 }
@@ -83,12 +86,13 @@ export function MarketIndicesStrip({ error, isLoading = false, items }: Props) {
   const copy =
     language === "zh-TW"
       ? {
-          eyebrow: "最新指數",
-          title: "最新市場指數",
+          eyebrow: "最新市場價格",
+          title: "最新市場價格",
           subtitle: catalogSubtitle(language),
-          loading: "載入市場指數中",
+          loading: "載入市場價格中",
           live: "開盤中",
           closed: "已收盤",
+          latest: "最新",
           unavailable: "暫時無法取得",
           updated: "更新",
           emDash: "—",
@@ -97,9 +101,10 @@ export function MarketIndicesStrip({ error, isLoading = false, items }: Props) {
           eyebrow: "Latest market prices",
           title: "Latest Market Prices",
           subtitle: catalogSubtitle(language),
-          loading: "Loading market indices",
+          loading: "Loading market prices",
           live: "Live",
           closed: "Closed",
+          latest: "Latest",
           unavailable: "Temporarily unavailable",
           updated: "Updated",
           emDash: "—",

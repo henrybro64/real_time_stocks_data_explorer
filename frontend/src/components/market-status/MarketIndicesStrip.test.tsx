@@ -103,7 +103,7 @@ describe("MarketIndicesStrip", () => {
   it("does not flash unavailable cards during the initial loading state", () => {
     renderWithLanguage(<MarketIndicesStrip isLoading items={[]} />);
 
-    expect(screen.getByText("載入市場指數中")).toBeInTheDocument();
+    expect(screen.getByText("載入市場價格中")).toBeInTheDocument();
     expect(screen.queryByTestId("market-index-card-TWSE:TAIEX")).not.toBeInTheDocument();
     expect(screen.queryByText("資料來源暫時不可用")).not.toBeInTheDocument();
     expect(screen.queryByText("暫時無法取得")).not.toBeInTheDocument();
@@ -135,6 +135,13 @@ describe("MarketIndicesStrip", () => {
       "app-price-convention-us",
     );
     expect(screen.getByTestId("market-index-change-^SOX")).toHaveTextContent("+");
+    expect(screen.getByTestId("market-index-card-BTC-USD")).toBeInTheDocument();
+    expect(screen.getByTestId("market-index-change-BTC-USD")).toHaveClass(
+      "app-price-up",
+      "app-price-convention-us",
+    );
+    expect(screen.getByTestId("market-index-card-^VIX")).toBeInTheDocument();
+    expect(screen.getByTestId("market-index-card-GC=F")).toHaveTextContent("最新");
   });
 
   it("keeps other index cards when SOX is unavailable", () => {
