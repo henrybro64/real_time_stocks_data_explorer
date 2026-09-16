@@ -32,8 +32,14 @@ const ownershipPayload: TaiwanOwnershipConcentrationResponse = {
   stockId: "TW:2330",
   range: "1Y",
   asOf: "2026-09-11",
-  source: "tdcc+twse_mi_qfiis",
+  source: "tdcc_portal+twse_mi_qfiis+quote_history",
   stale: false,
+  currency: "TWD",
+  dataStatus: {
+    tdcc: { status: "available" },
+    foreignOwnership: { status: "available" },
+    weeklyClose: { status: "available" },
+  },
   points: [
     {
       date: "2026-06-12",

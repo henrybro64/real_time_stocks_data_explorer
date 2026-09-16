@@ -93,4 +93,41 @@ describe("TaiwanMultiSeriesLineChart", () => {
     expect(screen.getByTestId("tw-multi-series-tooltip")).toHaveTextContent("2025Q3");
     expect(screen.getByTestId("tw-multi-series-tooltip")).toHaveTextContent("14");
   });
+
+  it("renders right axis for price series and skips nulls as zero", async () => {
+    const user = userEvent.setup();
+    const { container } = render(
+      <TaiwanMultiSeriesLineChart
+        dateRangeLabel="range"
+        emptyLabel="empty"
+        language="en"
+        missingValueLabel="n/a"
+        lines={[
+          { key: "holders", label: "Holders", color: "#78a9ff", axis: "left", unit: "%" },
+          { key: "close", label: "Close", color: "#8a3ffc", axis: "right", unit: "TWD" },
+        ]}
+        points={[
+          { date: "2026-06-12", values: { holders: 61.5, close: null } },
+          { date: "2026-09-11", values: { holders: 63.46, close: 8.37 } },
+        ]}
+        title="Ownership"
+      />,
+    );
+
+    expect(screen.getByTestId("tw-multi-series-right-axis")).toBeInTheDocument();
+    expect(screen.getByRole("img", { name: "Ownership" })).toBeInTheDocument();
+    const closeDots = container.querySelectorAll('circle[data-axis="right"]');
+    expect(closeDots).toHaveLength(1);
+
+    const targets = container.querySelectorAll("rect");
+    await user.hover(targets[0]!);
+    const tooltipMissing = screen.getByTestId("tw-multi-series-tooltip");
+    expect(tooltipMissing).toHaveTextContent("n/a");
+    expect(tooltipMissing).not.toHaveTextContent("Close: 0");
+
+    await user.hover(targets[1]!);
+    const tooltipPrice = screen.getByTestId("tw-multi-series-tooltip");
+    expect(tooltipPrice).toHaveTextContent("8.37 TWD");
+    expect(tooltipPrice).not.toHaveTextContent("8.4 TWD");
+  });
 });

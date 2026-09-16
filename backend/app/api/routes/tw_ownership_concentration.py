@@ -5,10 +5,14 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, HTTPException, Query
 
 from app.schemas.tw_ownership_concentration import (
+    OwnershipComponentStateResponse,
+    OwnershipDataStatusResponse,
     TaiwanOwnershipConcentrationPointResponse,
     TaiwanOwnershipConcentrationResponse,
 )
 from app.services.tw_ownership_concentration_service import (
+    OwnershipComponentState,
+    OwnershipDataStatus,
     TaiwanOwnershipConcentrationPoint,
     TaiwanOwnershipConcentrationResult,
     tw_ownership_concentration_service,
@@ -58,8 +62,22 @@ def _tw_ownership_concentration_schema(
         asOf=result.as_of,
         source=result.source,
         stale=result.stale,
+        currency=result.currency,
+        dataStatus=_data_status_schema(result.data_status),
         points=[_point_schema(point) for point in result.points],
     )
+
+
+def _data_status_schema(status: OwnershipDataStatus) -> OwnershipDataStatusResponse:
+    return OwnershipDataStatusResponse(
+        tdcc=_component_schema(status.tdcc),
+        foreignOwnership=_component_schema(status.foreign_ownership),
+        weeklyClose=_component_schema(status.weekly_close),
+    )
+
+
+def _component_schema(state: OwnershipComponentState) -> OwnershipComponentStateResponse:
+    return OwnershipComponentStateResponse(status=state.status, reason=state.reason)
 
 
 def _point_schema(

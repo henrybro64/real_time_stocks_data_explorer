@@ -3,6 +3,8 @@ import pytest
 
 from app.api.routes import tw_ownership_concentration as ownership_route
 from app.services.tw_ownership_concentration_service import (
+    OwnershipComponentState,
+    OwnershipDataStatus,
     TaiwanOwnershipConcentrationPoint,
     TaiwanOwnershipConcentrationResult,
 )
@@ -22,8 +24,14 @@ def _sample_result(*, stale: bool = False) -> TaiwanOwnershipConcentrationResult
         stock_id="TW:2330",
         range="1Y",
         as_of="2026-09-11",
-        source="tdcc_portal+twse_mi_qfiis",
+        source="tdcc_portal+twse_mi_qfiis+quote_history",
         stale=stale,
+        currency="TWD",
+        data_status=OwnershipDataStatus(
+            tdcc=OwnershipComponentState(status="available"),
+            foreign_ownership=OwnershipComponentState(status="available"),
+            weekly_close=OwnershipComponentState(status="available"),
+        ),
         points=(point,),
     )
 
@@ -33,12 +41,47 @@ def test_tw_ownership_schema_camel_case() -> None:
     assert payload["stockId"] == "TW:2330"
     assert payload["range"] == "1Y"
     assert payload["asOf"] == "2026-09-11"
-    assert payload["source"] == "tdcc_portal+twse_mi_qfiis"
+    assert payload["source"] == "tdcc_portal+twse_mi_qfiis+quote_history"
     assert payload["stale"] is False
+    assert payload["currency"] == "TWD"
+    assert payload["dataStatus"]["tdcc"]["status"] == "available"
+    assert payload["dataStatus"]["foreignOwnership"]["status"] == "available"
+    assert payload["dataStatus"]["weeklyClose"]["status"] == "available"
     assert payload["points"][0]["holders400LotsOrMorePercent"] == pytest.approx(63.46)
     assert payload["points"][0]["foreignOwnershipPercent"] == pytest.approx(18.21)
     assert payload["points"][0]["investmentTrustOwnershipPercent"] is None
     assert payload["points"][0]["weeklyClose"] == pytest.approx(88.1)
+
+
+def test_tw_ownership_schema_preserves_component_reasons() -> None:
+    result = _sample_result()
+    result = TaiwanOwnershipConcentrationResult(
+        stock_id=result.stock_id,
+        range=result.range,
+        as_of=result.as_of,
+        source="tdcc_portal",
+        stale=False,
+        currency="TWD",
+        data_status=OwnershipDataStatus(
+            tdcc=OwnershipComponentState(status="available"),
+            foreign_ownership=OwnershipComponentState(
+                status="temporarily_unavailable",
+                reason="upstream_timeout",
+            ),
+            weekly_close=OwnershipComponentState(
+                status="temporarily_unavailable",
+                reason="history_unavailable",
+            ),
+        ),
+        points=result.points,
+    )
+    payload = ownership_route._tw_ownership_concentration_schema(result).model_dump()
+    assert payload["source"] == "tdcc_portal"
+    assert payload["dataStatus"]["foreignOwnership"] == {
+        "status": "temporarily_unavailable",
+        "reason": "upstream_timeout",
+    }
+    assert payload["dataStatus"]["weeklyClose"]["reason"] == "history_unavailable"
 
 
 def test_tw_ownership_route_success(monkeypatch) -> None:
@@ -50,6 +93,8 @@ def test_tw_ownership_route_success(monkeypatch) -> None:
     response = ownership_route.get_tw_ownership_concentration("TW:2330", range="1Y")
     assert response.stockId == "TW:2330"
     assert response.points[0].holders400LotsOrMorePercent == pytest.approx(63.46)
+    assert response.dataStatus.tdcc.status == "available"
+    assert response.currency == "TWD"
 
 
 def test_tw_ownership_route_maps_non_tw_to_404(monkeypatch) -> None:

@@ -4,12 +4,16 @@ import json
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
+import httpx
 import pytest
 
 from app.models.stock import StockRecord
 from app.services.tdcc_shareholding import parse_tdcc_shareholding_csv, parse_tdcc_shareholding_rows
 from app.services.tw_ownership_concentration_service import (
     TwOwnershipConcentrationService,
+    lookup_foreign_percent,
+    normalize_ownership_symbol,
+    ownership_symbol_lookup_keys,
     parse_mi_qfiis_foreign_ownership,
 )
 
@@ -112,6 +116,15 @@ def test_parse_mi_qfiis_foreign_ownership() -> None:
     assert parse_mi_qfiis_foreign_ownership(_load_json("mi_qfiis_no_data.json")) is None
 
 
+def test_symbol_normalization_and_leading_zeros() -> None:
+    assert normalize_ownership_symbol("TW:2330") == "2330"
+    assert normalize_ownership_symbol("2330.TW") == "2330"
+    assert normalize_ownership_symbol("8455.TWO") == "8455"
+    assert "02330" in ownership_symbol_lookup_keys("2330")
+    assert lookup_foreign_percent({"02330": 12.5}, "2330") == pytest.approx(12.5)
+    assert lookup_foreign_percent({"2330": 12.5}, "02330") == pytest.approx(12.5)
+
+
 def test_ownership_service_range_filter_and_null_series() -> None:
     csv_text = _load_text("tdcc_2330_multi_date.csv")
     mi_payload = _load_json("mi_qfiis_success.json")
@@ -128,15 +141,19 @@ def test_ownership_service_range_filter_and_null_series() -> None:
         quote_source=_FakeQuoteSource(_tw_stock()),
         tdcc_csv_fetcher=tdcc_fetcher,
         foreign_ownership_fetcher=foreign_fetcher,
-        close_history_fetcher=lambda _stock_id, _range: {},
+        close_history_fetcher=lambda _stock_id, _range: {"2026-09-11": 88.1},
         now_provider=lambda: datetime(2026, 9, 12, 10, 0, tzinfo=UTC),
     )
 
     result = service.get_ownership_concentration("TW:2330", range_name="3M")
     assert result.range == "3M"
-    assert result.source == "tdcc_portal+twse_mi_qfiis"
+    assert result.source == "tdcc_portal+twse_mi_qfiis+quote_history"
     assert result.stale is False
+    assert result.currency == "TWD"
     assert result.as_of == "2026-09-11"
+    assert result.data_status.tdcc.status == "available"
+    assert result.data_status.foreign_ownership.status == "available"
+    assert result.data_status.weekly_close.status == "available"
     # 3M from 2026-09-12 excludes March point.
     assert [point.date for point in result.points] == ["2026-06-12", "2026-09-11"]
     latest = result.points[-1]
@@ -145,7 +162,7 @@ def test_ownership_service_range_filter_and_null_series() -> None:
     assert latest.investment_trust_ownership_percent is None
     assert latest.dealer_ownership_percent is None
     assert latest.director_ownership_percent is None
-    assert latest.weekly_close is None
+    assert latest.weekly_close == pytest.approx(88.1)
 
 
 def test_ownership_service_cache_hit() -> None:
@@ -184,7 +201,7 @@ def test_ownership_service_stale_fallback_on_upstream_failure() -> None:
         quote_source=_FakeQuoteSource(_tw_stock()),
         tdcc_csv_fetcher=tdcc_fetcher,
         foreign_ownership_fetcher=lambda _current, _board: {"2330": 11.0},
-        close_history_fetcher=lambda _stock_id, _range: {},
+        close_history_fetcher=lambda _stock_id, _range: {"2026-09-11": 88.1},
         now_provider=lambda: now["value"],
         result_cache_ttl=timedelta(hours=12),
     )
@@ -196,6 +213,7 @@ def test_ownership_service_stale_fallback_on_upstream_failure() -> None:
     stale = service.get_ownership_concentration("TW:2330", range_name="1Y")
     assert stale.stale is True
     assert stale.points == fresh.points
+    assert stale.data_status.tdcc.status == "available"
 
 
 def test_ownership_service_rejects_non_tw_stock() -> None:
@@ -324,7 +342,8 @@ def test_one_foreign_probe_failure_keeps_other_dates() -> None:
         ]
 
     def foreign_fetcher(current: date, _board: str) -> dict[str, float] | None:
-        if current.isoformat() == "2026-06-12":
+        # Fail the exact date and every lookback day for June so it stays null.
+        if current <= date(2026, 6, 12) and current >= date(2026, 6, 5):
             raise HttpFetchError("timeout", status_code=504)
         return {"2330": 18.21}
 
@@ -339,6 +358,229 @@ def test_one_foreign_probe_failure_keeps_other_dates() -> None:
     by_date = {point.date: point.foreign_ownership_percent for point in result.points}
     assert by_date["2026-06-12"] is None
     assert by_date["2026-09-04"] == pytest.approx(18.21)
+    assert result.points[0].holders_400_lots_or_more_percent == pytest.approx(61.5)
+    assert result.data_status.foreign_ownership.status == "available"
+    assert result.data_status.foreign_ownership.reason == "partial_upstream_error"
+
+
+def test_foreign_lookback_attaches_to_tdcc_holiday_friday() -> None:
+    from app.services.tdcc_shareholding import TdccConcentrationPoint
+
+    probed: list[str] = []
+
+    def history_fetcher(symbol: str, start: date, end: date):
+        return [TdccConcentrationPoint("2026-09-04", symbol, 63.46)]
+
+    def foreign_fetcher(current: date, _board: str) -> dict[str, float] | None:
+        probed.append(current.isoformat())
+        if current.isoformat() == "2026-09-04":
+            return None  # holiday / no_data
+        if current.isoformat() == "2026-09-03":
+            return {"2330": 17.5}
+        return None
+
+    service = TwOwnershipConcentrationService(
+        quote_source=_FakeQuoteSource(_tw_stock()),
+        tdcc_history_fetcher=history_fetcher,
+        foreign_ownership_fetcher=foreign_fetcher,
+        close_history_fetcher=lambda _stock_id, _range: {},
+        now_provider=lambda: datetime(2026, 9, 12, 10, 0, tzinfo=UTC),
+    )
+    result = service.get_ownership_concentration("TW:2330", range_name="3M")
+    assert [point.date for point in result.points] == ["2026-09-04"]
+    assert result.points[0].foreign_ownership_percent == pytest.approx(17.5)
+    assert result.points[0].holders_400_lots_or_more_percent == pytest.approx(63.46)
+    assert probed[:2] == ["2026-09-04", "2026-09-03"]
+
+
+def test_symbol_absent_on_loaded_table_does_not_look_back() -> None:
+    from app.services.tdcc_shareholding import TdccConcentrationPoint
+
+    probed: list[str] = []
+
+    def foreign_fetcher(current: date, _board: str) -> dict[str, float] | None:
+        probed.append(current.isoformat())
+        if current.isoformat() == "2026-09-04":
+            return {"9999": 1.0}  # loaded table, symbol omitted
+        return {"2330": 17.5}
+
+    service = TwOwnershipConcentrationService(
+        quote_source=_FakeQuoteSource(_tw_stock()),
+        tdcc_history_fetcher=lambda symbol, start, end: [
+            TdccConcentrationPoint("2026-09-04", symbol, 63.46)
+        ],
+        foreign_ownership_fetcher=foreign_fetcher,
+        close_history_fetcher=lambda _s, _r: {"2026-09-04": 88.0},
+        now_provider=lambda: datetime(2026, 9, 12, 10, 0, tzinfo=UTC),
+        foreign_lookback_days=3,
+    )
+    result = service.get_ownership_concentration("TW:2330", range_name="3M")
+    assert result.points[0].foreign_ownership_percent is None
+    assert result.data_status.foreign_ownership.status == "not_published"
+    assert probed == ["2026-09-04"]
+
+
+def test_weekly_close_uses_nearest_prior_within_window() -> None:
+    from app.services.tdcc_shareholding import TdccConcentrationPoint
+
+    service = TwOwnershipConcentrationService(
+        quote_source=_FakeQuoteSource(_tw_stock()),
+        tdcc_history_fetcher=lambda symbol, start, end: [
+            TdccConcentrationPoint("2026-09-04", symbol, 63.46)
+        ],
+        foreign_ownership_fetcher=lambda _current, _board: {"2330": 18.0},
+        close_history_fetcher=lambda _stock_id, _range: {"2026-09-02": 900.5},
+        now_provider=lambda: datetime(2026, 9, 12, 10, 0, tzinfo=UTC),
+    )
+    result = service.get_ownership_concentration("TW:2330", range_name="3M")
+    assert result.points[0].weekly_close == pytest.approx(900.5)
+    assert result.data_status.weekly_close.status == "available"
+
+
+def test_close_history_failure_marks_temporarily_unavailable() -> None:
+    from app.services.tdcc_shareholding import TdccConcentrationPoint
+
+    def boom(_stock_id: str, _range: str) -> dict[str, float]:
+        raise RuntimeError("yahoo down")
+
+    service = TwOwnershipConcentrationService(
+        quote_source=_FakeQuoteSource(_tw_stock()),
+        tdcc_history_fetcher=lambda symbol, start, end: [
+            TdccConcentrationPoint("2026-09-04", symbol, 63.46)
+        ],
+        foreign_ownership_fetcher=lambda _current, _board: {"2330": 18.0},
+        close_history_fetcher=boom,
+        now_provider=lambda: datetime(2026, 9, 12, 10, 0, tzinfo=UTC),
+    )
+    result = service.get_ownership_concentration("TW:2330", range_name="3M")
+    assert result.points[0].holders_400_lots_or_more_percent == pytest.approx(63.46)
+    assert result.points[0].weekly_close is None
+    assert result.data_status.weekly_close.status == "temporarily_unavailable"
+    assert result.data_status.weekly_close.reason == "history_unavailable"
+    assert result.source == "tdcc_portal+twse_mi_qfiis"
+
+
+def test_foreign_symbol_absent_is_not_published_preserves_tdcc() -> None:
+    from app.services.tdcc_shareholding import TdccConcentrationPoint
+
+    service = TwOwnershipConcentrationService(
+        quote_source=_FakeQuoteSource(_tw_stock()),
+        tdcc_history_fetcher=lambda symbol, start, end: [
+            TdccConcentrationPoint("2026-09-04", symbol, 63.46)
+        ],
+        foreign_ownership_fetcher=lambda _current, _board: {"9999": 1.0},
+        close_history_fetcher=lambda _stock_id, _range: {"2026-09-04": 88.0},
+        now_provider=lambda: datetime(2026, 9, 12, 10, 0, tzinfo=UTC),
+        foreign_lookback_days=0,
+    )
+    result = service.get_ownership_concentration("TW:2330", range_name="3M")
+    assert result.points[0].holders_400_lots_or_more_percent == pytest.approx(63.46)
+    assert result.points[0].foreign_ownership_percent is None
+    assert result.data_status.foreign_ownership.status == "not_published"
+    assert result.data_status.foreign_ownership.reason == "symbol_absent"
+    assert result.source == "tdcc_portal+quote_history"
+
+
+def test_foreign_upstream_errors_temporarily_unavailable() -> None:
+    from app.services.http_client import HttpFetchError
+    from app.services.tdcc_shareholding import TdccConcentrationPoint
+
+    service = TwOwnershipConcentrationService(
+        quote_source=_FakeQuoteSource(_tw_stock()),
+        tdcc_history_fetcher=lambda symbol, start, end: [
+            TdccConcentrationPoint("2026-09-04", symbol, 63.46)
+        ],
+        foreign_ownership_fetcher=lambda _current, _board: (_ for _ in ()).throw(
+            HttpFetchError("timeout", status_code=504)
+        ),
+        close_history_fetcher=lambda _stock_id, _range: {"2026-09-04": 88.0},
+        now_provider=lambda: datetime(2026, 9, 12, 10, 0, tzinfo=UTC),
+        foreign_lookback_days=0,
+    )
+    result = service.get_ownership_concentration("TW:2330", range_name="3M")
+    assert result.points[0].holders_400_lots_or_more_percent == pytest.approx(63.46)
+    assert result.data_status.foreign_ownership.status == "temporarily_unavailable"
+    assert result.source == "tdcc_portal+quote_history"
+
+
+def test_incomplete_uses_short_ttl_and_prefers_stale_complete(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.services.tdcc_shareholding import TdccConcentrationPoint
+    from app.services import tw_ownership_concentration_service as ownership_mod
+
+    stored: dict[str, object] = {}
+
+    def fake_set(key: str, *, ttl_seconds: int, payload: dict) -> None:
+        stored["ttl"] = ttl_seconds
+        stored["payload"] = payload
+
+    monkeypatch.setattr(ownership_mod, "set_cached_json", fake_set)
+    monkeypatch.setattr(ownership_mod, "get_cached_json", lambda _key: None)
+
+    now = {"value": datetime(2026, 9, 12, 10, 0, tzinfo=UTC)}
+    mode = {"value": "complete"}
+
+    def foreign_fetcher(_current: date, _board: str):
+        if mode["value"] == "complete":
+            return {"2330": 18.0}
+        raise RuntimeError("down")
+
+    def closes(_stock_id: str, _range: str):
+        if mode["value"] == "complete":
+            return {"2026-09-04": 88.0}
+        raise RuntimeError("close down")
+
+    service = TwOwnershipConcentrationService(
+        quote_source=_FakeQuoteSource(_tw_stock()),
+        tdcc_history_fetcher=lambda symbol, start, end: [
+            TdccConcentrationPoint("2026-09-04", symbol, 63.46)
+        ],
+        foreign_ownership_fetcher=foreign_fetcher,
+        close_history_fetcher=closes,
+        now_provider=lambda: now["value"],
+        result_cache_ttl=timedelta(hours=12),
+        incomplete_result_cache_ttl=timedelta(minutes=20),
+        foreign_lookback_days=0,
+    )
+    complete = service.get_ownership_concentration("TW:2330", range_name="3M")
+    assert complete.data_status.foreign_ownership.status == "available"
+    assert complete.data_status.weekly_close.status == "available"
+    assert stored["ttl"] == int(timedelta(hours=24).total_seconds())
+
+    mode["value"] = "incomplete"
+    now["value"] = now["value"] + timedelta(hours=13)
+    stale = service.get_ownership_concentration("TW:2330", range_name="3M")
+    assert stale.stale is True
+    assert stale.data_status.foreign_ownership.status == "available"
+    assert stale.points[0].weekly_close == pytest.approx(88.0)
+
+
+def test_incomplete_short_ttl_when_no_complete_cache(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.services.tdcc_shareholding import TdccConcentrationPoint
+    from app.services import tw_ownership_concentration_service as ownership_mod
+
+    stored: dict[str, object] = {}
+
+    def fake_set(key: str, *, ttl_seconds: int, payload: dict) -> None:
+        stored["ttl"] = ttl_seconds
+        stored["payload"] = payload
+
+    monkeypatch.setattr(ownership_mod, "set_cached_json", fake_set)
+    monkeypatch.setattr(ownership_mod, "get_cached_json", lambda _key: None)
+
+    service = TwOwnershipConcentrationService(
+        quote_source=_FakeQuoteSource(_tw_stock()),
+        tdcc_history_fetcher=lambda symbol, start, end: [
+            TdccConcentrationPoint("2026-09-04", symbol, 63.46)
+        ],
+        foreign_ownership_fetcher=lambda _c, _b: (_ for _ in ()).throw(RuntimeError("down")),
+        close_history_fetcher=lambda _s, _r: {"2026-09-04": 88.0},
+        now_provider=lambda: datetime(2026, 9, 12, 10, 0, tzinfo=UTC),
+        foreign_lookback_days=0,
+    )
+    result = service.get_ownership_concentration("TW:2330", range_name="3M")
+    assert result.data_status.foreign_ownership.status == "temporarily_unavailable"
+    assert result.stale is False
+    assert stored["ttl"] == int(timedelta(minutes=45).total_seconds())
 
 
 def test_stale_fallback_backs_off_before_retrying() -> None:
@@ -356,7 +598,7 @@ def test_stale_fallback_backs_off_before_retrying() -> None:
         quote_source=_FakeQuoteSource(_tw_stock()),
         tdcc_csv_fetcher=tdcc_fetcher,
         foreign_ownership_fetcher=lambda _current, _board: {"2330": 11.0},
-        close_history_fetcher=lambda _stock_id, _range: {},
+        close_history_fetcher=lambda _stock_id, _range: {"2026-09-11": 88.0},
         now_provider=lambda: now["value"],
         result_cache_ttl=timedelta(hours=12),
         stale_refresh_backoff=timedelta(minutes=15),
@@ -391,12 +633,13 @@ def test_tpex_stock_uses_tpex_source_label() -> None:
         foreign_ownership_fetcher=lambda _current, board: (
             {"8455": 87.84} if board == "TPEx" else None
         ),
-        close_history_fetcher=lambda _stock_id, _range: {},
+        close_history_fetcher=lambda _stock_id, _range: {"2026-09-11": 50.0},
         now_provider=lambda: datetime(2026, 9, 12, 10, 0, tzinfo=UTC),
     )
     result = service.get_ownership_concentration("TW:8455", range_name="3M")
-    assert result.source == "tdcc_portal+tpex_qfii"
+    assert result.source == "tdcc_portal+tpex_qfii+quote_history"
     assert result.points[-1].foreign_ownership_percent == pytest.approx(87.84)
+    assert result.data_status.foreign_ownership.status == "available"
 
 
 def test_select_portal_dates_newest_first_and_capped() -> None:
@@ -420,6 +663,7 @@ def test_missing_synchronizer_token_fails_closed(monkeypatch: pytest.MonkeyPatch
         def __init__(self, text: str) -> None:
             self.text = text
             self.status_code = 200
+            self.headers = {}
 
         def raise_for_status(self) -> None:
             return None
@@ -448,3 +692,224 @@ def test_missing_synchronizer_token_fails_closed(monkeypatch: pytest.MonkeyPatch
             end_date=date(2026, 9, 12),
             max_weeks=4,
         )
+
+
+def test_mi_qfiis_schema_failure_is_not_official_no_data() -> None:
+    from app.services.tw_ownership_concentration_service import (
+        ForeignOwnershipSchemaError,
+        parse_mi_qfiis_foreign_ownership,
+    )
+
+    assert parse_mi_qfiis_foreign_ownership(_load_json("mi_qfiis_no_data.json")) is None
+    with pytest.raises(ForeignOwnershipSchemaError, match="unknown_columns"):
+        parse_mi_qfiis_foreign_ownership(_load_json("mi_qfiis_schema_bad.json"))
+
+
+def test_foreign_schema_error_marks_temporarily_unavailable() -> None:
+    from app.services.tdcc_shareholding import TdccConcentrationPoint
+    from app.services.tw_ownership_concentration_service import ForeignOwnershipSchemaError
+
+    service = TwOwnershipConcentrationService(
+        quote_source=_FakeQuoteSource(_tw_stock()),
+        tdcc_history_fetcher=lambda symbol, start, end: [
+            TdccConcentrationPoint("2026-09-04", symbol, 63.46)
+        ],
+        foreign_ownership_fetcher=lambda _c, _b: (_ for _ in ()).throw(
+            ForeignOwnershipSchemaError("foreign_ownership_unknown_columns")
+        ),
+        close_history_fetcher=lambda _s, _r: {"2026-09-04": 88.0},
+        now_provider=lambda: datetime(2026, 9, 12, 10, 0, tzinfo=UTC),
+        foreign_lookback_days=0,
+    )
+    result = service.get_ownership_concentration("TW:2330", range_name="3M")
+    assert result.points[0].holders_400_lots_or_more_percent == pytest.approx(63.46)
+    assert result.points[0].foreign_ownership_percent is None
+    assert result.data_status.foreign_ownership.status == "temporarily_unavailable"
+    assert result.data_status.foreign_ownership.reason == "schema_error"
+    assert result.source == "tdcc_portal+quote_history"
+
+
+def test_etf_foreign_ownership_resolved_via_inclusive_mi_qfiis() -> None:
+    from app.services.tdcc_shareholding import TdccConcentrationPoint
+    from app.services.tw_ownership_concentration_service import parse_mi_qfiis_foreign_ownership
+
+    parsed = parse_mi_qfiis_foreign_ownership(_load_json("mi_qfiis_with_etf.json"))
+    assert parsed is not None
+    assert parsed["0050"] == pytest.approx(62.4)
+
+    etf = StockRecord(
+        id="TW:0050",
+        symbol="0050",
+        name="元大台灣50",
+        market="TW",
+        currency="TWD",
+        exchange="TWSE",
+        timezone="Asia/Taipei",
+    )
+    service = TwOwnershipConcentrationService(
+        quote_source=_FakeQuoteSource(etf),
+        tdcc_history_fetcher=lambda symbol, start, end: [
+            TdccConcentrationPoint("2026-09-04", symbol, 55.0)
+        ],
+        foreign_ownership_fetcher=lambda _c, _b: parsed,
+        close_history_fetcher=lambda _s, _r: {"2026-09-04": 180.0},
+        now_provider=lambda: datetime(2026, 9, 12, 10, 0, tzinfo=UTC),
+        foreign_lookback_days=0,
+    )
+    result = service.get_ownership_concentration("TW:0050", range_name="3M")
+    assert result.points[0].foreign_ownership_percent == pytest.approx(62.4)
+    assert result.data_status.foreign_ownership.status == "available"
+    assert result.source == "tdcc_portal+twse_mi_qfiis+quote_history"
+
+
+def test_default_mi_qfiis_fetcher_uses_inclusive_select_type(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.services import tw_ownership_concentration_service as ownership_mod
+
+    captured: dict[str, object] = {}
+
+    def fake_twse(url: str, *, params: dict, **_kwargs):
+        captured["url"] = url
+        captured["params"] = params
+        return _load_json("mi_qfiis_with_etf.json")
+
+    monkeypatch.setattr(ownership_mod, "fetch_twse_data", fake_twse)
+    parsed = ownership_mod._default_foreign_ownership_fetcher(date(2026, 9, 11), "TWSE")
+    assert captured["params"]["selectType"] == "ALL"
+    assert parsed is not None
+    assert parsed["0050"] == pytest.approx(62.4)
+
+
+def test_portal_request_retries_transient_status(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.services.tw_ownership_concentration_service import _portal_request_with_retries
+
+    sleeps: list[float] = []
+    monkeypatch.setattr(
+        "app.services.tw_ownership_concentration_service.time.sleep",
+        lambda seconds: sleeps.append(seconds),
+    )
+    monkeypatch.setattr(
+        "app.services.tw_ownership_concentration_service.capped_retry_sleep_seconds",
+        lambda retry_after, *, attempt, jitter_random=None: 0.01,
+    )
+
+    class _Resp:
+        def __init__(self, status_code: int, text: str = "ok") -> None:
+            self.status_code = status_code
+            self.text = text
+            self.headers = {"retry-after": "1"} if status_code == 503 else {}
+
+        def raise_for_status(self) -> None:
+            if self.status_code >= 400:
+                raise httpx.HTTPStatusError(
+                    "err",
+                    request=httpx.Request("GET", "https://example.test"),
+                    response=httpx.Response(self.status_code),
+                )
+
+    class _Client:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def get(self, _url: str):
+            self.calls += 1
+            if self.calls < 3:
+                return _Resp(503)
+            return _Resp(200, "<html>ok</html>")
+
+        def post(self, *_args, **_kwargs):
+            raise AssertionError("unexpected POST")
+
+    client = _Client()
+    response = _portal_request_with_retries(
+        client,  # type: ignore[arg-type]
+        method="GET",
+        url="https://www.tdcc.com.tw/portal/zh/smWeb/qryStock",
+        resource_id="portal_get",
+    )
+    assert response.status_code == 200
+    assert client.calls == 3
+    assert len(sleeps) == 2
+
+
+def test_no_data_weekly_close_uses_short_incomplete_ttl(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.services.tdcc_shareholding import TdccConcentrationPoint
+    from app.services import tw_ownership_concentration_service as ownership_mod
+
+    stored: dict[str, object] = {}
+
+    def fake_set(key: str, *, ttl_seconds: int, payload: dict) -> None:
+        stored["ttl"] = ttl_seconds
+        stored["payload"] = payload
+
+    monkeypatch.setattr(ownership_mod, "set_cached_json", fake_set)
+    monkeypatch.setattr(ownership_mod, "get_cached_json", lambda _key: None)
+
+    service = TwOwnershipConcentrationService(
+        quote_source=_FakeQuoteSource(_tw_stock()),
+        tdcc_history_fetcher=lambda symbol, start, end: [
+            TdccConcentrationPoint("2026-09-04", symbol, 63.46)
+        ],
+        foreign_ownership_fetcher=lambda _c, _b: {"2330": 18.0},
+        close_history_fetcher=lambda _s, _r: {},
+        now_provider=lambda: datetime(2026, 9, 12, 10, 0, tzinfo=UTC),
+        foreign_lookback_days=0,
+    )
+    result = service.get_ownership_concentration("TW:2330", range_name="3M")
+    assert result.data_status.weekly_close.status == "no_data_for_period"
+    assert result.data_status.foreign_ownership.status == "available"
+    assert stored["ttl"] == int(timedelta(minutes=45).total_seconds())
+
+
+def test_partial_foreign_success_keeps_points_and_marks_incomplete(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.http_client import HttpFetchError
+    from app.services.tdcc_shareholding import TdccConcentrationPoint
+    from app.services import tw_ownership_concentration_service as ownership_mod
+
+    stored: dict[str, object] = {}
+
+    def fake_set(key: str, *, ttl_seconds: int, payload: dict) -> None:
+        stored["ttl"] = ttl_seconds
+
+    monkeypatch.setattr(ownership_mod, "set_cached_json", fake_set)
+    monkeypatch.setattr(ownership_mod, "get_cached_json", lambda _key: None)
+
+    def foreign_fetcher(current: date, _board: str) -> dict[str, float] | None:
+        if current.isoformat() == "2026-09-04":
+            raise HttpFetchError("timeout", status_code=504)
+        return {"2330": 18.21}
+
+    service = TwOwnershipConcentrationService(
+        quote_source=_FakeQuoteSource(_tw_stock()),
+        tdcc_history_fetcher=lambda symbol, start, end: [
+            TdccConcentrationPoint("2026-06-12", symbol, 61.5),
+            TdccConcentrationPoint("2026-09-04", symbol, 63.46),
+        ],
+        foreign_ownership_fetcher=foreign_fetcher,
+        close_history_fetcher=lambda _s, _r: {
+            "2026-06-12": 80.0,
+            "2026-09-04": 88.0,
+        },
+        now_provider=lambda: datetime(2026, 9, 12, 10, 0, tzinfo=UTC),
+        foreign_lookback_days=0,
+    )
+    result = service.get_ownership_concentration("TW:2330", range_name="3M")
+    by_date = {point.date: point.foreign_ownership_percent for point in result.points}
+    assert by_date["2026-06-12"] == pytest.approx(18.21)
+    assert by_date["2026-09-04"] is None
+    assert result.data_status.foreign_ownership.status == "available"
+    assert result.data_status.foreign_ownership.reason == "partial_upstream_error"
+    assert "twse_mi_qfiis" in result.source
+    assert stored["ttl"] == int(timedelta(minutes=45).total_seconds())
+
+
+def test_tpex_malformed_tables_envelope_raises_schema_error() -> None:
+    from app.services.tw_ownership_concentration_service import (
+        ForeignOwnershipSchemaError,
+        parse_tpex_qfii_foreign_ownership,
+    )
+
+    with pytest.raises(ForeignOwnershipSchemaError, match="tables_not_list"):
+        parse_tpex_qfii_foreign_ownership({"stat": "OK", "tables": {"bad": True}})
+
