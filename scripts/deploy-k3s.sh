@@ -297,8 +297,10 @@ import_into_k3s() {
 
   local tmp_dir
   tmp_dir="$(mktemp -d)"
-  # EXIT must not reference `tmp_dir` after this function returns (local goes out of scope with set -u).
-  trap 'rm -rf "${tmp_dir}"' EXIT
+  # Expand the path when registering the trap. A delayed EXIT after this function
+  # returns must not expand the now-unbound local under ``set -u``.
+  # shellcheck disable=SC2064
+  trap "rm -rf $(printf '%q' "${tmp_dir}")" EXIT
 
   if should_skip_app_image_import; then
     echo "Skipping app image import; k3s will pull ${BACKEND_IMAGE} and ${FRONTEND_IMAGE}"
