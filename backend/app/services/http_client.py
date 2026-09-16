@@ -60,6 +60,8 @@ _PROVIDER_NAMES_BY_HOST = {
     "www.sec.gov": "sec",
     "www.tpex.org.tw": "tpex",
     "www.twse.com.tw": "twse",
+    "smart.tdcc.com.tw": "tdcc",
+    "www.tdcc.com.tw": "tdcc",
 }
 
 logger = logging.getLogger(__name__)

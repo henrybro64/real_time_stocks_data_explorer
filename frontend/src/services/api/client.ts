@@ -31,6 +31,8 @@ import type {
   StockAnalysisResponse,
   TaiwanInstitutionalInvestorsResponse,
   TaiwanMarginShortResponse,
+  TaiwanOwnershipConcentrationResponse,
+  TaiwanProfitabilityResponse,
   TWStockInsights,
   USStockInsights,
   WatchlistResponse,
@@ -551,6 +553,21 @@ export function fetchTaiwanInstitutionalInvestors(stockId: string, days = 90) {
 export function fetchTaiwanMarginShort(stockId: string, days = 90) {
   return fetchJson<TaiwanMarginShortResponse>(
     `/stocks/${encodeURIComponent(stockId)}/margin-short?days=${days}`,
+  );
+}
+
+export function fetchTaiwanOwnershipConcentration(
+  stockId: string,
+  range: "3M" | "6M" | "1Y" = "1Y",
+) {
+  return fetchJson<TaiwanOwnershipConcentrationResponse>(
+    `/stocks/${encodeURIComponent(stockId)}/tw-ownership-concentration?range=${encodeURIComponent(range)}`,
+  );
+}
+
+export function fetchTaiwanProfitability(stockId: string, quarters: 8 | 12 | 20 = 12) {
+  return fetchJson<TaiwanProfitabilityResponse>(
+    `/stocks/${encodeURIComponent(stockId)}/tw-profitability?quarters=${quarters}`,
   );
 }
 
