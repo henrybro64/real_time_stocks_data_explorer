@@ -45,6 +45,9 @@ _HTTP_RETRIES = 1
 _YFINANCE_TIMEOUT_SECONDS = 12.0
 _SOURCE_YAHOO_HTTP = "yahoo_finance_quarterly_income"
 _SOURCE_YFINANCE = "yfinance_quarterly_income"
+# Shared pool: do not use a per-call ``with ThreadPoolExecutor`` — exiting the
+# context waits on hung workers and can stall FastAPI request threads.
+_YFINANCE_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="tw-profit-yf")
 
 
 def fetch_quarterly_income_statement(symbol: str) -> tuple[Mapping[Any, Mapping[Any, Any]], str] | None:
@@ -56,13 +59,13 @@ def fetch_quarterly_income_statement(symbol: str) -> tuple[Mapping[Any, Mapping[
     for suffix in (".TW", ".TWO"):
         yahoo_symbol = f"{bare}{suffix}"
         http_statement = _fetch_yahoo_timeseries_statement(yahoo_symbol)
-        http_periods = _statement_period_count(http_statement)
+        http_periods = _revenue_backed_period_count(http_statement)
         # Prefer shared HTTP client when it already covers the shortest UI range (8Q).
         if http_statement and http_periods >= 8:
             return http_statement, _SOURCE_YAHOO_HTTP
 
         yf_statement = _fetch_yfinance_statement_bounded(yahoo_symbol)
-        yf_periods = _statement_period_count(yf_statement)
+        yf_periods = _revenue_backed_period_count(yf_statement)
         if yf_statement and yf_periods > http_periods:
             return yf_statement, _SOURCE_YFINANCE
         if http_statement and http_periods > 0:
@@ -70,14 +73,30 @@ def fetch_quarterly_income_statement(symbol: str) -> tuple[Mapping[Any, Mapping[
     return None
 
 
-def _statement_period_count(statement: Mapping[Any, Mapping[Any, Any]] | None) -> int:
+def _revenue_backed_period_count(statement: Mapping[Any, Mapping[Any, Any]] | None) -> int:
+    """Count periods that have usable revenue (required for every margin)."""
     if not statement:
         return 0
-    periods: set[str] = set()
-    for series in statement.values():
-        if isinstance(series, Mapping):
-            periods.update(str(key)[:10] for key in series)
-    return len(periods)
+    revenue_series = None
+    for label in ("Total Revenue", "Operating Revenue", "Revenue", "TotalRevenue"):
+        candidate = statement.get(label)
+        if isinstance(candidate, Mapping) and candidate:
+            revenue_series = candidate
+            break
+    if revenue_series is None:
+        return 0
+    count = 0
+    for value in revenue_series.values():
+        if value is None or isinstance(value, bool):
+            continue
+        try:
+            numeric = float(value)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            continue
+        if numeric != numeric:  # NaN
+            continue
+        count += 1
+    return count
 
 
 def _yahoo_headers() -> dict[str, str]:
@@ -164,24 +183,24 @@ def _parse_yahoo_timeseries_payload(payload: object) -> dict[str, dict[str, Any]
 
 
 def _fetch_yfinance_statement_bounded(yahoo_symbol: str) -> dict[str, dict[str, Any]] | None:
-    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="tw-profit-yf") as pool:
-        future = pool.submit(_fetch_yfinance_statement, yahoo_symbol)
-        try:
-            return future.result(timeout=_YFINANCE_TIMEOUT_SECONDS)
-        except FuturesTimeout:
-            logger.warning(
-                "tw_profitability yfinance_timeout symbol=%s timeout_s=%s",
-                yahoo_symbol,
-                _YFINANCE_TIMEOUT_SECONDS,
-            )
-            return None
-        except Exception as exc:  # noqa: BLE001 - upstream shapes vary
-            logger.info(
-                "tw_profitability yfinance_failed symbol=%s reason=%s",
-                yahoo_symbol,
-                exc,
-            )
-            return None
+    future = _YFINANCE_EXECUTOR.submit(_fetch_yfinance_statement, yahoo_symbol)
+    try:
+        return future.result(timeout=_YFINANCE_TIMEOUT_SECONDS)
+    except FuturesTimeout:
+        future.cancel()
+        logger.warning(
+            "tw_profitability yfinance_timeout symbol=%s timeout_s=%s",
+            yahoo_symbol,
+            _YFINANCE_TIMEOUT_SECONDS,
+        )
+        return None
+    except Exception as exc:  # noqa: BLE001 - upstream shapes vary
+        logger.info(
+            "tw_profitability yfinance_failed symbol=%s reason=%s",
+            yahoo_symbol,
+            exc,
+        )
+        return None
 
 
 def _fetch_yfinance_statement(yahoo_symbol: str) -> dict[str, dict[str, Any]] | None:

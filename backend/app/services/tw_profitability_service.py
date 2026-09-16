@@ -97,7 +97,12 @@ class _ProfitabilityCacheEntry:
     last_failure_at: datetime | None = None
 
 
-QuarterlyIncomeFetcher = Callable[[str], Mapping[Any, Mapping[Any, Any]] | None]
+QuarterlyIncomeFetchResult = (
+    Mapping[Any, Mapping[Any, Any]]
+    | tuple[Mapping[Any, Mapping[Any, Any]], str]
+    | None
+)
+QuarterlyIncomeFetcher = Callable[[str], QuarterlyIncomeFetchResult]
 
 
 class TwProfitabilityService:
@@ -115,7 +120,6 @@ class TwProfitabilityService:
         self._result_cache_ttl = result_cache_ttl
         self._stale_refresh_backoff = stale_refresh_backoff
         self._result_cache: dict[tuple[str, int], _ProfitabilityCacheEntry] = {}
-        self._last_source: str = _SOURCE
         self._quarterly_income_fetcher = (
             quarterly_income_fetcher or self._fetch_default_quarterly_income
         )
@@ -123,16 +127,8 @@ class TwProfitabilityService:
     def clear_cache(self) -> None:
         self._result_cache.clear()
 
-    def _fetch_default_quarterly_income(
-        self, symbol: str
-    ) -> Mapping[Any, Mapping[Any, Any]] | None:
-        fetched = fetch_quarterly_income_statement(symbol)
-        if fetched is None:
-            self._last_source = _SOURCE
-            return None
-        statement, source = fetched
-        self._last_source = source
-        return statement
+    def _fetch_default_quarterly_income(self, symbol: str) -> QuarterlyIncomeFetchResult:
+        return fetch_quarterly_income_statement(symbol)
 
     def get_profitability(
         self,
@@ -252,10 +248,11 @@ class TwProfitabilityService:
         symbol = (stock.symbol or "").strip().upper() or stock.id.split(":", 1)[-1].strip().upper()
 
         try:
-            statement = self._quarterly_income_fetcher(symbol)
+            fetched = self._quarterly_income_fetcher(symbol)
         except Exception as exc:  # noqa: BLE001 - upstream shapes vary
             raise RuntimeError(_UPSTREAM_UNAVAILABLE_ERROR) from exc
 
+        statement, source = _unwrap_quarterly_income_fetch(fetched)
         if statement is None:
             raise RuntimeError(_UPSTREAM_UNAVAILABLE_ERROR)
 
@@ -265,10 +262,24 @@ class TwProfitabilityService:
             stock_id=stock.id,
             quarters=requested_quarters,
             as_of=as_of,
-            source=self._last_source,
+            source=source,
             stale=False,
             points=tuple(points),
         )
+
+
+def _unwrap_quarterly_income_fetch(
+    fetched: QuarterlyIncomeFetchResult,
+) -> tuple[Mapping[Any, Mapping[Any, Any]] | None, str]:
+    """Keep provider source request-local (never mutate shared service state)."""
+    if fetched is None:
+        return None, _SOURCE
+    if isinstance(fetched, tuple):
+        statement, source = fetched
+        if not isinstance(source, str) or not source:
+            return statement, _SOURCE
+        return statement, source
+    return fetched, _SOURCE
 
 
 def _as_stale(result: TaiwanProfitabilityResult) -> TaiwanProfitabilityResult:
