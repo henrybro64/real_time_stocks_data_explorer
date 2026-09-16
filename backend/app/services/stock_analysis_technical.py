@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Literal
+import logging
 
 import pandas as pd
 
@@ -18,6 +19,10 @@ from app.services.moving_average import (
     completed_daily_candles,
     compute_sma_series,
     is_daily_candle_complete,
+)
+from app.services.stock_analysis_key_price_levels import (
+    build_key_price_levels,
+    unavailable_key_price_levels,
 )
 from app.services.stock_analysis_metrics import (
     calculate_average_volume,
@@ -37,6 +42,8 @@ _VOLUME_AVERAGE_WINDOW = 30
 # and moving averages match what the user sees.
 _PRICE_COLUMN_PREFERENCE = ("Close", "Adj Close")
 
+logger = logging.getLogger(__name__)
+
 
 def build_technical_analysis(
     history: pd.DataFrame,
@@ -50,16 +57,17 @@ def build_technical_analysis(
     chart). Caller supplies roughly one year of daily bars.
     """
     base: dict[str, object] = {"period": _ANALYSIS_PERIOD}
+    currency = "TWD" if market.upper() == "TW" else "USD"
     if history is None or not isinstance(history, pd.DataFrame) or history.empty:
-        return _null_payload(base, availability="unavailable")
+        return _null_payload(base, availability="unavailable", currency=currency)
 
     candles, price_basis = _history_to_candles(history)
     if not candles:
-        return _null_payload(base, availability="unavailable")
+        return _null_payload(base, availability="unavailable", currency=currency)
 
     completed = completed_daily_candles(candles, market, now=now)
     if not completed:
-        return _null_payload(base, availability="unavailable")
+        return _null_payload(base, availability="unavailable", currency=currency)
 
     closes = pd.Series([float(candle.close) for candle in completed], dtype="float64")
     volumes = pd.Series([float(candle.volume) for candle in completed], dtype="float64")
@@ -73,6 +81,25 @@ def build_technical_analysis(
 
     recent_high_20d = _recent_extreme(completed, kind="high")
     recent_low_20d = _recent_extreme(completed, kind="low")
+
+    try:
+        key_price_levels = build_key_price_levels(
+            completed,
+            currency=currency,
+            data_as_of=data_as_of,
+            reference_price=float(closes.iloc[-1]),
+        )
+    except Exception:  # noqa: BLE001 — soft-fail; do not break technicalAnalysis
+        logger.exception(
+            "key_price_levels soft-fail market=%s data_as_of=%s",
+            market,
+            data_as_of,
+        )
+        key_price_levels = unavailable_key_price_levels(
+            currency=currency,
+            data_as_of=data_as_of,
+            reference_price=latest_close,
+        )
 
     return {
         **base,
@@ -105,6 +132,7 @@ def build_technical_analysis(
         ),
         "rsi14": calculate_rsi(closes, period=14),
         "volumeVsAverage30dPercent": _volume_vs_average_percent(volumes),
+        "keyPriceLevels": key_price_levels,
         "availability": _availability(sma60, sma60_direction),
     }
 
@@ -146,7 +174,12 @@ def _availability(sma60: float | None, sma60_direction: SmaDirection | None) -> 
     return "insufficient"
 
 
-def _null_payload(base: dict[str, object], *, availability: Availability) -> dict[str, object]:
+def _null_payload(
+    base: dict[str, object],
+    *,
+    availability: Availability,
+    currency: str = "USD",
+) -> dict[str, object]:
     return {
         **base,
         "dataAsOf": None,
@@ -172,6 +205,7 @@ def _null_payload(base: dict[str, object], *, availability: Availability) -> dic
         "distanceFromRecentLowPercent": None,
         "rsi14": None,
         "volumeVsAverage30dPercent": None,
+        "keyPriceLevels": unavailable_key_price_levels(currency=currency),
         "availability": availability,
     }
 

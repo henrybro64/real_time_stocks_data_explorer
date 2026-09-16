@@ -1670,6 +1670,7 @@ input {
 }
 
 .app-tw-inst-chart-plot {
+  position: relative;
   display: grid;
   gap: 0.45rem;
 }
@@ -1697,6 +1698,69 @@ input {
   color: var(--cds-text-secondary);
   font-size: 0.75rem;
   font-variant-numeric: tabular-nums;
+}
+
+.app-tw-multi-series-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem 1rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: var(--cds-text-secondary);
+  font-size: 0.85rem;
+}
+
+.app-tw-multi-series-swatch {
+  display: inline-block;
+  width: 0.7rem;
+  height: 0.7rem;
+  margin-right: 0.35rem;
+  border-radius: 0.1rem;
+  vertical-align: -0.05rem;
+}
+
+.app-tw-multi-series-line-2,
+.app-tw-multi-series-line-3,
+.app-tw-multi-series-line-4 {
+  stroke-width: 1.15;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.app-tw-multi-series-tooltip {
+  position: absolute;
+  top: 0.4rem;
+  right: 0.4rem;
+  z-index: 2;
+  max-width: 14rem;
+  padding: 0.45rem 0.55rem;
+  border: 1px solid var(--cds-border-subtle-01);
+  background: var(--cds-layer-01);
+  color: var(--cds-text-primary);
+  font-size: 0.75rem;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+}
+
+.app-tw-multi-series-tooltip p,
+.app-tw-multi-series-tooltip ul {
+  margin: 0;
+}
+
+.app-tw-multi-series-tooltip ul {
+  margin-top: 0.25rem;
+  padding-left: 0;
+  list-style: none;
+}
+
+.app-tw-range-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-inline-size: 0;
 }
 
 .app-tw-market-positive {

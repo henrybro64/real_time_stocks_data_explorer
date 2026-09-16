@@ -12,6 +12,8 @@ import {
   refreshRankings,
   fetchTaiwanInstitutionalInvestors,
   fetchTaiwanMarginShort,
+  fetchTaiwanOwnershipConcentration,
+  fetchTaiwanProfitability,
   shouldRetryHistoryDatesQuery,
   shouldRetryRankingsQuery,
 } from "./client";
@@ -118,6 +120,62 @@ describe("fetchTaiwanMarginShort", () => {
       detail,
       kind,
     });
+  });
+});
+
+describe("fetchTaiwanOwnershipConcentration", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("encodes the stock id and passes the range query param", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        stockId: "TW:2330",
+        range: "1Y",
+        asOf: null,
+        source: "tdcc+twse_mi_qfiis",
+        stale: false,
+        points: [],
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await fetchTaiwanOwnershipConcentration("TW:2330", "6M");
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [requestUrl] = fetchMock.mock.calls[0] ?? [];
+    expect(String(requestUrl)).toContain(
+      "/api/stocks/TW%3A2330/tw-ownership-concentration?range=6M",
+    );
+  });
+});
+
+describe("fetchTaiwanProfitability", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("encodes the stock id and passes the quarters query param", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        stockId: "TW:2330",
+        quarters: 12,
+        asOf: null,
+        source: "yfinance_quarterly_income",
+        stale: false,
+        points: [],
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await fetchTaiwanProfitability("TW:2330", 8);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [requestUrl] = fetchMock.mock.calls[0] ?? [];
+    expect(String(requestUrl)).toContain("/api/stocks/TW%3A2330/tw-profitability?quarters=8");
   });
 });
 
@@ -435,7 +493,7 @@ describe("refreshRankings", () => {
     expect(String(fetchMock.mock.calls[0]?.[0])).toContain("/rankings/refresh");
     const init = fetchMock.mock.calls[0]?.[1] as RequestInit | undefined;
     expect(init?.method).toBe("POST");
-    expect(JSON.parse(String(init?.body))).toEqual({
+    expect(JSON.parse(String(init?.body ?? ""))).toEqual({
       market: "US",
       rankingType: "volume",
       universe: "DJIA",

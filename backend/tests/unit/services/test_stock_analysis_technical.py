@@ -93,6 +93,55 @@ def test_bullish_alignment_and_up_directions() -> None:
     assert payload["return5dPercent"] is not None
     assert payload["return5dPercent"] > 0
     assert payload["rsi14"] is not None
+    assert "keyPriceLevels" in payload
+    assert payload["keyPriceLevels"]["availability"] == "ok"
+    assert payload["keyPriceLevels"]["currency"] == "USD"
+
+
+def test_key_price_levels_currency_for_tw_market() -> None:
+    closes = [100.0 + index * 0.5 for index in range(90)]
+    history = _daily_history(closes, tz=ZoneInfo("Asia/Taipei"))
+    now = history.index[-1].to_pydatetime() + timedelta(hours=1)
+
+    payload = build_technical_analysis(history, market="TW", now=now)
+
+    assert "keyPriceLevels" in payload
+    assert payload["keyPriceLevels"]["currency"] == "TWD"
+    assert payload["keyPriceLevels"]["availability"] in {"ok", "insufficient"}
+
+
+def test_unavailable_payload_includes_key_price_levels_stub() -> None:
+    payload = build_technical_analysis(pd.DataFrame(), market="US")
+
+    assert payload["keyPriceLevels"]["availability"] == "unavailable"
+    assert payload["keyPriceLevels"]["supports"] == []
+    assert payload["keyPriceLevels"]["resistances"] == []
+    assert payload["keyPriceLevels"]["currency"] == "USD"
+
+    tw_payload = build_technical_analysis(pd.DataFrame(), market="TW")
+    assert tw_payload["keyPriceLevels"]["currency"] == "TWD"
+
+
+def test_key_price_levels_soft_fail_keeps_rest_of_technical_analysis(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    closes = [100.0 + (index % 5) for index in range(90)]
+    history = _daily_history(closes)
+    now = history.index[-1].to_pydatetime() + timedelta(hours=1)
+
+    def _boom(*_args: object, **_kwargs: object) -> dict:
+        raise RuntimeError("key levels exploded")
+
+    monkeypatch.setattr(
+        "app.services.stock_analysis_technical.build_key_price_levels",
+        _boom,
+    )
+    payload = build_technical_analysis(history, market="US", now=now)
+    assert payload["availability"] == "ok"
+    assert payload["latestClose"] is not None
+    assert payload["keyPriceLevels"]["availability"] == "unavailable"
+    assert payload["keyPriceLevels"]["supports"] == []
+    assert payload["sma20"] is not None
 
 
 def test_bearish_alignment_and_down_directions() -> None:

@@ -131,6 +131,8 @@ export type TranslationKey =
   | "detail.twSignals.description"
   | "detail.twSignals.institutionalTitle"
   | "detail.twSignals.marginShortTitle"
+  | "detail.twSignals.ownershipTitle"
+  | "detail.twSignals.profitMarginsTitle"
   | "quote.updatedAt"
   | "quote.open"
   | "quote.high"
@@ -643,11 +645,13 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "detail.backToDashboard": "Back to dashboard",
     "detail.createAlert": "Create alert",
     "detail.twSignals.eyebrow": "Taiwan market signals",
-    "detail.twSignals.title": "Institutional & margin data",
+    "detail.twSignals.title": "Institutional, ownership & margins",
     "detail.twSignals.description":
-      "Taiwan institutional activity and margin / short changes are shown with official daily data when available.",
+      "Taiwan institutional activity, margin / short changes, ownership concentration, and profitability margins when official or labeled sources are available.",
     "detail.twSignals.institutionalTitle": "Institutional activity",
     "detail.twSignals.marginShortTitle": "Margin / short changes",
+    "detail.twSignals.ownershipTitle": "Ownership concentration",
+    "detail.twSignals.profitMarginsTitle": "Profitability margins",
     "quote.updatedAt": "Updated {time}",
     "quote.open": "Open",
     "quote.high": "High",
@@ -1183,10 +1187,13 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "detail.backToDashboard": "返回儀表板",
     "detail.createAlert": "建立警示",
     "detail.twSignals.eyebrow": "台股市場訊號",
-    "detail.twSignals.title": "法人與資券資料",
-    "detail.twSignals.description": "此區塊顯示台股三大法人日買賣超與資券變化，皆以官方日資料為主。",
+    "detail.twSignals.title": "法人、籌碼與財報三率",
+    "detail.twSignals.description":
+      "此區塊顯示台股三大法人日買賣超、資券變化、籌碼集中度與財報三率；官方來源為主，財報三率標示 yfinance。",
     "detail.twSignals.institutionalTitle": "法人動態",
     "detail.twSignals.marginShortTitle": "資券變化",
+    "detail.twSignals.ownershipTitle": "籌碼集中度",
+    "detail.twSignals.profitMarginsTitle": "財報三率",
     "quote.updatedAt": "更新時間 {time}",
     "quote.open": "開盤",
     "quote.high": "最高",

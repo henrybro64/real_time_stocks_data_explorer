@@ -18,6 +18,8 @@ from app.api.routes.stream import router as stream_router
 from app.api.routes.themes import router as themes_router
 from app.api.routes.tw_institutional import router as tw_institutional_router
 from app.api.routes.tw_margin_short import router as tw_margin_short_router
+from app.api.routes.tw_ownership_concentration import router as tw_ownership_concentration_router
+from app.api.routes.tw_profitability import router as tw_profitability_router
 from app.api.routes.taiwan_market_data import router as taiwan_market_data_router
 from app.api.routes.watchlist import router as watchlist_router
 from app.core.config import settings
@@ -58,6 +60,8 @@ app.include_router(quotes_router, prefix=settings.api_prefix)
 app.include_router(history_router, prefix=settings.api_prefix)
 app.include_router(tw_institutional_router, prefix=settings.api_prefix)
 app.include_router(tw_margin_short_router, prefix=settings.api_prefix)
+app.include_router(tw_ownership_concentration_router, prefix=settings.api_prefix)
+app.include_router(tw_profitability_router, prefix=settings.api_prefix)
 app.include_router(taiwan_market_data_router, prefix=settings.api_prefix)
 app.include_router(watchlist_router, prefix=settings.api_prefix)
 app.include_router(portfolio_router, prefix=settings.api_prefix)

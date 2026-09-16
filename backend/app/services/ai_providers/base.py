@@ -8,7 +8,7 @@ from typing import Mapping, Protocol
 SYSTEM_PROMPT = (
     "You are a plain-language equity research assistant for non-finance readers. "
     "Use ONLY the provided computed JSON as the primary source of truth. "
-    "Do not invent prices, news details, institutional trends, support/resistance levels, "
+    "Do not invent prices, news details, institutional trends, key price levels, "
     "or valuation inputs that are missing from the payload. "
     "Clearly distinguish observed facts from interpretation, and use uncertainty language "
     "(may, suggests, possibly). "
@@ -175,7 +175,7 @@ def _build_en_stock_analysis_prompt(
         "## Plain-language summary",
         "## Price trend and momentum",
         "## Moving averages",
-        "## Support and resistance",
+        "## Key price levels",
     ]
     if include_institutional:
         sections.append("## Institutional activity")
@@ -227,7 +227,7 @@ def _build_en_stock_analysis_prompt(
     return (
         "Respond in English only. Write for a reader without finance training.\n\n"
         "Use ONLY the computed JSON below as primary truth. Do not invent prices, news "
-        "details, institutional trends, support/resistance levels, or valuation inputs.\n"
+        "details, institutional trends, key price levels, or valuation inputs.\n"
         "Distinguish facts from interpretation. Use uncertainty language (may, suggests, "
         "possibly). Never state that the user should definitely buy or sell. This is "
         "informational only and not investment advice.\n\n"
@@ -235,7 +235,7 @@ def _build_en_stock_analysis_prompt(
         "Plain-language summary: 2–3 sentences. Other sections: 1–3 short bullets each.\n\n"
         "Which JSON block feeds which section:\n"
         "- technicalAnalysis is the source of truth for price trend, momentum, moving "
-        "averages, and support/resistance. Do not recompute indicators yourself.\n"
+        "averages, and key price levels. Do not recompute indicators yourself.\n"
         "- institutionalAnalysis is the only source for Taiwan institutional activity.\n"
         "- fundamentalOutlook is the only source for the Fundamental outlook section.\n"
         "- recentNewsContext is the only source for news statements.\n"
@@ -252,8 +252,11 @@ def _build_en_stock_analysis_prompt(
         "technicalAnalysis.period and technicalAnalysis.dataAsOf in everyday wording.\n"
         "- When the moving averages, momentum, and volume disagree, call the picture mixed. "
         "Do not force a bullish or bearish verdict.\n"
-        "- Support and resistance must come only from supplied recent highs/lows and moving "
-        "averages—describe them as areas to watch, not guaranteed turning prices.\n"
+        "- Key price levels must come only from technicalAnalysis.keyPriceLevels. Show each "
+        "zone as a price range with the supplied currency. Explain the listed evidence in "
+        "plain language. These are watch zones, not guarantees. You may omit weak zones. "
+        "You must NOT invent, move, or strengthen levels. Mention keyPriceLevels.dataAsOf. "
+        "Use conditional break language only (e.g. if price holds / if price breaks).\n"
         "- Keep the Fundamental outlook section about the business (revenue, earnings, "
         "estimates, dividends) and separate from the chart. A strong chart can coexist with "
         "weak fundamentals and the reverse. Label historical results, company guidance, and "
@@ -283,7 +286,7 @@ def _build_zh_tw_stock_analysis_prompt(
         "## 白話摘要",
         "## 價格趨勢與動能",
         "## 移動平均線",
-        "## 支撐與壓力",
+        "## 關鍵價位",
     ]
     if include_institutional:
         sections.append("## 法人動向")
@@ -330,13 +333,13 @@ def _build_zh_tw_stock_analysis_prompt(
     return (
         "請使用繁體中文輸出，寫給沒有金融背景的讀者。\n\n"
         "只能以下方已計算的 JSON 作為主要事實來源。不可捏造價格、新聞細節、法人趨勢、"
-        "支撐／壓力價位或估值輸入。\n"
+        "關鍵價位或估值輸入。\n"
         "請清楚區分事實與解讀，並使用不確定用語（可能、顯示、或許）。"
         "不可斷言使用者「應該」買進或賣出。內容僅供參考，並非投資建議。\n\n"
         "全文請保持簡短：約等同於英文 700 字以內的繁中篇幅。"
         "白話摘要：2–3 句。其餘各段：1–3 則短要點。\n\n"
         "各段落對應的 JSON 區塊：\n"
-        "- technicalAnalysis 是價格趨勢、動能、移動平均線與支撐壓力的唯一事實來源，"
+        "- technicalAnalysis 是價格趨勢、動能、移動平均線與關鍵價位的唯一事實來源，"
         "請勿自行重算指標。\n"
         "- institutionalAnalysis 是台股法人動向的唯一來源。\n"
         "- fundamentalOutlook 是「基本面展望」段落的唯一來源。\n"
@@ -352,8 +355,10 @@ def _build_zh_tw_stock_analysis_prompt(
         "（取自 technicalAnalysis.period 與 technicalAnalysis.dataAsOf）。\n"
         "- 當移動平均線、動能與成交量訊號彼此不一致時，請直接說是「訊號分歧」，"
         "不要硬套看多或看空。\n"
-        "- 支撐與壓力只能來自提供的近期高低點與移動平均線，應描述為觀察區間，"
-        "而非保證轉折價。\n"
+        "- 關鍵價位只能來自 technicalAnalysis.keyPriceLevels。請以提供的幣別顯示價位區間，"
+        "並用白話說明所列證據。這些是觀察區間而非保證轉折價。可省略弱勢區間。"
+        "不可捏造、移動或強化價位。請提及 keyPriceLevels.dataAsOf。"
+        "突破／守住僅能用條件句（例如：若守住／若跌破）。\n"
         "- 「基本面展望」請聚焦公司營運（營收、獲利、預估、股利），與技術線型分開陳述；"
         "線型強勢與基本面疲弱可能同時存在，反之亦然。"
         "請分別標示歷史結果、公司財測與分析師共識，且不可把你的解讀當成其中任何一種。\n"

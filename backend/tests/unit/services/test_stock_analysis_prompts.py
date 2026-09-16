@@ -40,7 +40,7 @@ EN_REQUIRED_HEADINGS = [
     "## Plain-language summary",
     "## Price trend and momentum",
     "## Moving averages",
-    "## Support and resistance",
+    "## Key price levels",
     "## Possible entry considerations",
     "## Possible exit/risk considerations",
     "## Fundamental outlook",
@@ -53,7 +53,7 @@ ZH_REQUIRED_HEADINGS = [
     "## 白話摘要",
     "## 價格趨勢與動能",
     "## 移動平均線",
-    "## 支撐與壓力",
+    "## 關鍵價位",
     "## 可能的進場考量",
     "## 可能的出場與風險考量",
     "## 基本面展望",
@@ -304,6 +304,23 @@ def test_prompt_requires_reconciling_evidence_layers() -> None:
     assert "相互支持還是彼此矛盾" in zh
     assert "無法連結" in zh
     assert "正面標題本身不足以" in zh
+
+
+def test_prompt_forbids_inventing_key_price_levels() -> None:
+    en = build_stock_analysis_user_prompt(_tw_payload(language="en"))
+    zh = build_stock_analysis_user_prompt(_us_payload(language="zh-TW"))
+
+    assert "technicalAnalysis.keyPriceLevels" in en
+    assert "must NOT invent, move, or strengthen levels" in en
+    assert "watch zones, not guarantees" in en
+    assert "keyPriceLevels.dataAsOf" in en
+    assert "## Support and resistance" not in en
+
+    assert "technicalAnalysis.keyPriceLevels" in zh
+    assert "不可捏造、移動或強化價位" in zh
+    assert "觀察區間而非保證轉折價" in zh
+    assert "keyPriceLevels.dataAsOf" in zh
+    assert "## 支撐與壓力" not in zh
 
 
 def test_openai_and_perplexity_build_the_same_prompt() -> None:

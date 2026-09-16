@@ -222,6 +222,49 @@ export type TaiwanMarginShortResponse = {
   emptyReason?: "not_published" | "no_data_for_stock" | null;
 };
 
+/** Taiwan 籌碼集中度 — TDCC 400張以上 + TWSE MI_QFIIS foreign ownership. */
+export type TaiwanOwnershipConcentrationPoint = {
+  date: string;
+  holders400LotsOrMorePercent: number | null;
+  foreignOwnershipPercent: number | null;
+  /** Not published by TDCC open data / MI_QFIIS; always null. */
+  investmentTrustOwnershipPercent: number | null;
+  /** Not published by TDCC open data / MI_QFIIS; always null. */
+  dealerOwnershipPercent: number | null;
+  /** Not published by TDCC open data / MI_QFIIS; always null. */
+  directorOwnershipPercent: number | null;
+  weeklyClose: number | null;
+};
+
+export type TaiwanOwnershipConcentrationResponse = {
+  stockId: string;
+  range: "3M" | "6M" | "1Y";
+  asOf: string | null;
+  source: string;
+  stale: boolean;
+  points: TaiwanOwnershipConcentrationPoint[];
+};
+
+/** Taiwan 財報三率 / profitability margins from yfinance quarterly income. */
+export type TaiwanProfitabilityPoint = {
+  fiscalQuarter: string;
+  periodEnd: string;
+  grossMarginPercent: number | null;
+  operatingMarginPercent: number | null;
+  pretaxMarginPercent: number | null;
+  netMarginPercent: number | null;
+  quarterEndClose: number | null;
+};
+
+export type TaiwanProfitabilityResponse = {
+  stockId: string;
+  quarters: 8 | 12 | 20;
+  asOf: string | null;
+  source: string;
+  stale: boolean;
+  points: TaiwanProfitabilityPoint[];
+};
+
 export type WatchlistResponse = {
   ids: string[];
 };
