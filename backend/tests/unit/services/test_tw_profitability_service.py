@@ -8,6 +8,7 @@ from app.models.stock import StockRecord
 from app.services.tw_profitability_service import (
     TwProfitabilityService,
     build_profitability_points,
+    fiscal_quarter_label,
     margin_percent,
 )
 
@@ -237,7 +238,7 @@ def test_profitability_service_cache_and_stale_fallback() -> None:
     now["value"] = now["value"] + timedelta(hours=25)
     stale = service.get_profitability("TW:2330", quarters=12)
     assert stale.stale is True
-    assert stale.source == "yfinance_quarterly_income"
+    assert stale.source == "yahoo_finance_quarterly_income"
     assert calls["n"] == 2
 
     # Backoff: another request shortly after stale fallback must not re-hit yfinance.
@@ -272,3 +273,175 @@ def test_profitability_invalid_quarters() -> None:
     )
     with pytest.raises(ValueError, match="Unsupported profitability quarters"):
         service.get_profitability("TW:2330", quarters=10)
+
+
+def test_negative_margins_preserved() -> None:
+    statement = {
+        "Total Revenue": {"2025-09-30": 100.0},
+        "Gross Profit": {"2025-09-30": -5.0},
+        "Operating Income": {"2025-09-30": -12.0},
+        "Pretax Income": {"2025-09-30": -15.0},
+        "Net Income": {"2025-09-30": -20.0},
+    }
+    points = build_profitability_points(statement, quarters=12)
+    assert points[0].gross_margin_percent == pytest.approx(-5.0)
+    assert points[0].operating_margin_percent == pytest.approx(-12.0)
+    assert points[0].pretax_margin_percent == pytest.approx(-15.0)
+    assert points[0].net_margin_percent == pytest.approx(-20.0)
+
+
+def test_ytd_q4_uses_annual_minus_q3() -> None:
+    """Q4 single-quarter = annual (or Q4 YTD) minus Q3 YTD."""
+    statement = {
+        "Total Revenue": {
+            "2025-03-31": 100.0,
+            "2025-06-30": 250.0,
+            "2025-09-30": 400.0,
+            "2025-12-31": 600.0,  # annual / Q4 YTD
+        },
+        "Gross Profit": {
+            "2025-03-31": 40.0,
+            "2025-06-30": 100.0,
+            "2025-09-30": 160.0,
+            "2025-12-31": 220.0,
+        },
+        "Operating Income": {
+            "2025-03-31": 20.0,
+            "2025-06-30": 50.0,
+            "2025-09-30": 80.0,
+            "2025-12-31": 110.0,
+        },
+        "Pretax Income": {
+            "2025-03-31": 18.0,
+            "2025-06-30": 45.0,
+            "2025-09-30": 72.0,
+            "2025-12-31": 100.0,
+        },
+        "Net Income": {
+            "2025-03-31": 10.0,
+            "2025-06-30": 25.0,
+            "2025-09-30": 40.0,
+            "2025-12-31": 55.0,
+        },
+    }
+    points = build_profitability_points(statement, quarters=12, treat_as_ytd=True)
+    assert [point.fiscal_quarter for point in points] == [
+        "2025Q1",
+        "2025Q2",
+        "2025Q3",
+        "2025Q4",
+    ]
+    # Q4 revenue 200, gross 60 => 30%
+    assert points[3].gross_margin_percent == pytest.approx(30.0)
+    assert points[3].net_margin_percent == pytest.approx(7.5)
+
+
+def test_fiscal_quarter_label_snaps_early_boundary_dates() -> None:
+    assert fiscal_quarter_label("2025-03-31") == "2025Q1"
+    assert fiscal_quarter_label("2025-04-01") == "2025Q1"
+    assert fiscal_quarter_label("2025-01-02") == "2024Q4"
+    assert fiscal_quarter_label("2025-09-30") == "2025Q3"
+
+
+def test_restated_period_prefers_later_period_end() -> None:
+    statement = {
+        "Total Revenue": {
+            "2025-03-28": 100.0,
+            "2025-03-31": 110.0,  # restatement for same Q1
+        },
+        "Net Income": {
+            "2025-03-28": 10.0,
+            "2025-03-31": 12.0,
+        },
+    }
+    points = build_profitability_points(statement, quarters=12)
+    assert len(points) == 1
+    assert points[0].fiscal_quarter == "2025Q1"
+    assert points[0].period_end == "2025-03-31"
+    assert points[0].net_margin_percent == pytest.approx(10.91)
+
+
+def test_yahoo_timeseries_payload_parses_to_statement() -> None:
+    from app.services.tw_profitability_yahoo import _parse_yahoo_timeseries_payload
+
+    payload = {
+        "timeseries": {
+            "result": [
+                {
+                    "meta": {"type": ["quarterlyTotalRevenue"]},
+                    "quarterlyTotalRevenue": [
+                        {
+                            "asOfDate": "2025-06-30",
+                            "reportedValue": {"raw": 100.0},
+                        },
+                        {
+                            "asOfDate": "2025-09-30",
+                            "reportedValue": {"raw": 200.0},
+                        },
+                    ],
+                },
+                {
+                    "meta": {"type": ["quarterlyNetIncome"]},
+                    "quarterlyNetIncome": [
+                        {
+                            "asOfDate": "2025-06-30",
+                            "reportedValue": {"raw": 10.0},
+                        },
+                        {
+                            "asOfDate": "2025-09-30",
+                            "reportedValue": {"raw": 40.0},
+                        },
+                    ],
+                },
+            ]
+        }
+    }
+    statement = _parse_yahoo_timeseries_payload(payload)
+    assert statement is not None
+    points = build_profitability_points(statement, quarters=12)
+    assert [point.fiscal_quarter for point in points] == ["2025Q2", "2025Q3"]
+    assert points[1].net_margin_percent == pytest.approx(20.0)
+
+
+def test_revenue_backed_period_count_ignores_non_revenue_dates() -> None:
+    from app.services.tw_profitability_yahoo import _revenue_backed_period_count
+
+    statement = {
+        "Total Revenue": {
+            "2025-03-31": 100.0,
+            "2025-06-30": 200.0,
+        },
+        "Net Income": {
+            "2025-03-31": 10.0,
+            "2025-06-30": 20.0,
+            "2025-09-30": 30.0,
+            "2024-12-31": 5.0,
+            "2024-09-30": 4.0,
+            "2024-06-30": 3.0,
+            "2024-03-31": 2.0,
+            "2023-12-31": 1.0,
+        },
+    }
+    # Union would look like 8 periods; revenue-backed is only 2.
+    assert _revenue_backed_period_count(statement) == 2
+
+
+def test_request_local_source_label_from_fetcher_tuple() -> None:
+    statement = {
+        "Total Revenue": {"2025-09-30": 100.0},
+        "Gross Profit": {"2025-09-30": 50.0},
+        "Operating Income": {"2025-09-30": 40.0},
+        "Pretax Income": {"2025-09-30": 35.0},
+        "Net Income": {"2025-09-30": 30.0},
+    }
+
+    def fetcher(_symbol: str):
+        return statement, "yfinance_quarterly_income"
+
+    service = TwProfitabilityService(
+        quote_source=_FakeQuoteSource(_tw_stock()),
+        quarterly_income_fetcher=fetcher,
+    )
+    result = service.get_profitability("TW:2330", quarters=12)
+    assert result.source == "yfinance_quarterly_income"
+    assert result.points[0].net_margin_percent == pytest.approx(30.0)

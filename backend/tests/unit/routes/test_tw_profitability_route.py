@@ -22,7 +22,7 @@ def _sample_result() -> TaiwanProfitabilityResult:
         stock_id="TW:2330",
         quarters=12,
         as_of="2025-09-30",
-        source="yfinance_quarterly_income",
+        source="yahoo_finance_quarterly_income",
         stale=False,
         points=(point,),
     )
@@ -33,7 +33,7 @@ def test_tw_profitability_schema_camel_case() -> None:
     assert payload["stockId"] == "TW:2330"
     assert payload["quarters"] == 12
     assert payload["asOf"] == "2025-09-30"
-    assert payload["source"] == "yfinance_quarterly_income"
+    assert payload["source"] == "yahoo_finance_quarterly_income"
     assert payload["points"][0]["fiscalQuarter"] == "2025Q3"
     assert payload["points"][0]["grossMarginPercent"] == pytest.approx(54.12)
     assert payload["points"][0]["quarterEndClose"] is None

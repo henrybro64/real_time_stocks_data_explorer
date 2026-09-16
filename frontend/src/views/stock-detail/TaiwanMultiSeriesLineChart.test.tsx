@@ -70,4 +70,27 @@ describe("TaiwanMultiSeriesLineChart", () => {
     await user.hover(hoverTarget!);
     expect(screen.getByTestId("tw-multi-series-tooltip")).toHaveTextContent("2025Q2");
   });
+
+  it("shows tooltip on pointer interaction for touch devices", async () => {
+    const user = userEvent.setup();
+    const { container } = render(
+      <TaiwanMultiSeriesLineChart
+        dateRangeLabel="range"
+        emptyLabel="empty"
+        formatPointLabel={(point) => point.label ?? point.date}
+        language="en"
+        lines={[{ key: "net", label: "Net", color: "#8a3ffc" }]}
+        points={[
+          { date: "2025-06-30", label: "2025Q2", values: { net: -5 } },
+          { date: "2025-09-30", label: "2025Q3", values: { net: 14 } },
+        ]}
+        title="Margins"
+      />,
+    );
+    const targets = container.querySelectorAll("rect");
+    expect(targets.length).toBeGreaterThan(1);
+    await user.pointer({ keys: "[TouchA>]", target: targets[1]! });
+    expect(screen.getByTestId("tw-multi-series-tooltip")).toHaveTextContent("2025Q3");
+    expect(screen.getByTestId("tw-multi-series-tooltip")).toHaveTextContent("14");
+  });
 });

@@ -647,7 +647,7 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "detail.twSignals.eyebrow": "Taiwan market signals",
     "detail.twSignals.title": "Institutional, ownership & margins",
     "detail.twSignals.description":
-      "Taiwan institutional activity, margin / short changes, ownership concentration, and profitability margins when official or labeled sources are available.",
+      "Taiwan institutional activity, margin / short changes, ownership concentration, and profitability margins. Institutional / margin / ownership prefer official sources; profitability margins are labeled Yahoo Finance.",
     "detail.twSignals.institutionalTitle": "Institutional activity",
     "detail.twSignals.marginShortTitle": "Margin / short changes",
     "detail.twSignals.ownershipTitle": "Ownership concentration",
@@ -1189,7 +1189,7 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "detail.twSignals.eyebrow": "台股市場訊號",
     "detail.twSignals.title": "法人、籌碼與財報三率",
     "detail.twSignals.description":
-      "此區塊顯示台股三大法人日買賣超、資券變化、籌碼集中度與財報三率；官方來源為主，財報三率標示 yfinance。",
+      "此區塊顯示台股三大法人日買賣超、資券變化、籌碼集中度與財報三率；法人／資券／籌碼以官方來源為主，財報三率標示 Yahoo Finance。",
     "detail.twSignals.institutionalTitle": "法人動態",
     "detail.twSignals.marginShortTitle": "資券變化",
     "detail.twSignals.ownershipTitle": "籌碼集中度",
