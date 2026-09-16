@@ -222,6 +222,26 @@ export type TaiwanMarginShortResponse = {
   emptyReason?: "not_published" | "no_data_for_stock" | null;
 };
 
+/** Per-component status for Taiwan ownership concentration enrichment. */
+export type OwnershipComponentStatus =
+  | "available"
+  | "not_published"
+  | "unsupported"
+  | "temporarily_unavailable"
+  | "no_data_for_period";
+
+export type OwnershipComponentState = {
+  status: OwnershipComponentStatus;
+  /** Machine-readable reason: upstream_timeout, parse_error, symbol_absent, history_unavailable, ... */
+  reason?: string | null;
+};
+
+export type OwnershipDataStatus = {
+  tdcc: OwnershipComponentState;
+  foreignOwnership: OwnershipComponentState;
+  weeklyClose: OwnershipComponentState;
+};
+
 /** Taiwan 籌碼集中度 — TDCC 400張以上 + TWSE MI_QFIIS foreign ownership. */
 export type TaiwanOwnershipConcentrationPoint = {
   date: string;
@@ -242,6 +262,9 @@ export type TaiwanOwnershipConcentrationResponse = {
   asOf: string | null;
   source: string;
   stale: boolean;
+  /** Currency for weekly close formatting (typically TWD). */
+  currency?: string | null;
+  dataStatus: OwnershipDataStatus;
   points: TaiwanOwnershipConcentrationPoint[];
 };
 

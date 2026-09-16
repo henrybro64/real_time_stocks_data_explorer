@@ -15,6 +15,10 @@ export type TaiwanMultiSeriesLine = {
   key: string;
   label: string;
   color: string;
+  /** Independent Y scale; defaults to left (percentage) axis. */
+  axis?: "left" | "right";
+  /** Optional unit suffix for tooltip values (e.g. `%`, `TWD`). */
+  unit?: string;
 };
 
 type Props = {
@@ -26,6 +30,8 @@ type Props = {
   title: string;
   /** When set, axis/tooltip use this label instead of formatting ``date``. */
   formatPointLabel?: (point: TaiwanMultiSeriesPoint) => string;
+  /** Localized label for missing tooltip values. */
+  missingValueLabel?: string;
 };
 
 const PLOT_TOP_Y = 12;
@@ -45,6 +51,7 @@ export function TaiwanMultiSeriesLineChart({
   points,
   title,
   formatPointLabel,
+  missingValueLabel = "—",
 }: Readonly<Props>) {
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
 
@@ -59,22 +66,48 @@ export function TaiwanMultiSeriesLineChart({
   };
 
   const plotted = useMemo(() => {
-    const finiteValues = points.flatMap((point) =>
-      lines
-        .map((line) => point.values[line.key])
-        .filter((value): value is number => typeof value === "number" && Number.isFinite(value)),
-    );
-    if (finiteValues.length === 0) {
+    const leftLines = lines.filter((line) => (line.axis ?? "left") === "left");
+    const rightLines = lines.filter((line) => line.axis === "right");
+
+    const valuesFor = (axisLines: TaiwanMultiSeriesLine[]) =>
+      points.flatMap((point) =>
+        axisLines
+          .map((line) => point.values[line.key])
+          .filter((value): value is number => typeof value === "number" && Number.isFinite(value)),
+      );
+
+    const leftValues = valuesFor(leftLines);
+    const rightValues = valuesFor(rightLines);
+    if (leftValues.length === 0 && rightValues.length === 0) {
       return null;
     }
-    const { minValue, maxValue } = paddedValueRange(finiteValues);
-    const valueSpan = maxValue - minValue || 1;
+
+    const leftRange = leftValues.length > 0 ? paddedValueRange(leftValues) : null;
+    const rightRange = rightValues.length > 0 ? paddedValueRange(rightValues) : null;
     const xDivisor = Math.max(points.length - 1, 1);
+
+    const yFor = (
+      value: number,
+      range: { minValue: number; maxValue: number } | null,
+    ): number | null => {
+      if (range == null) {
+        return null;
+      }
+      const span = range.maxValue - range.minValue || 1;
+      return PLOT_BOTTOM_Y - ((value - range.minValue) / span) * (PLOT_BOTTOM_Y - PLOT_TOP_Y);
+    };
+
     const series = lines.map((line, lineIndex) => {
+      const axis = line.axis ?? "left";
+      const range = axis === "right" ? rightRange : leftRange;
       const plottedPoints = points
         .map((point, index) => {
           const value = point.values[line.key];
           if (typeof value !== "number" || !Number.isFinite(value)) {
+            return null;
+          }
+          const y = yFor(value, range);
+          if (y == null) {
             return null;
           }
           return {
@@ -82,7 +115,7 @@ export function TaiwanMultiSeriesLineChart({
             index,
             value,
             x: (index / xDivisor) * 100,
-            y: PLOT_BOTTOM_Y - ((value - minValue) / valueSpan) * (PLOT_BOTTOM_Y - PLOT_TOP_Y),
+            y,
           };
         })
         .filter((point): point is NonNullable<typeof point> => point != null);
@@ -106,18 +139,25 @@ export function TaiwanMultiSeriesLineChart({
 
       return {
         ...line,
+        axis,
         className: SERIES_CLASS[lineIndex % SERIES_CLASS.length],
         plottedPoints,
         segments,
       };
     });
 
-    const zeroY =
-      minValue < 0 && maxValue > 0
-        ? PLOT_BOTTOM_Y - ((0 - minValue) / valueSpan) * (PLOT_BOTTOM_Y - PLOT_TOP_Y)
+    const leftZeroY =
+      leftRange != null && leftRange.minValue < 0 && leftRange.maxValue > 0
+        ? yFor(0, leftRange)
         : null;
 
-    return { minValue, maxValue, series, zeroY };
+    return {
+      leftRange,
+      rightRange,
+      series,
+      zeroY: leftZeroY,
+      hasRightAxis: rightRange != null,
+    };
   }, [lines, points]);
 
   if (plotted == null) {
@@ -135,6 +175,9 @@ export function TaiwanMultiSeriesLineChart({
   const startLabel = labelFor(points[0]);
   const endLabel = labelFor(points[points.length - 1]);
   const hoverPoint = hoverIndex != null ? points[hoverIndex] : null;
+  const shellClass = plotted.hasRightAxis
+    ? "app-tw-inst-chart-shell app-tw-inst-chart-shell--dual"
+    : "app-tw-inst-chart-shell";
 
   return (
     <section className="app-subtile app-tw-inst-chart-card" data-testid="tw-multi-series-chart">
@@ -150,11 +193,26 @@ export function TaiwanMultiSeriesLineChart({
           </li>
         ))}
       </ul>
-      <div className="app-tw-inst-chart-shell">
-        <div className="app-tw-inst-chart-y-axis" aria-hidden>
-          <span>{formatAxisValue(plotted.maxValue, language)}</span>
-          <span>{formatAxisValue((plotted.minValue + plotted.maxValue) / 2, language)}</span>
-          <span>{formatAxisValue(plotted.minValue, language)}</span>
+      <div className={shellClass}>
+        <div className="app-tw-inst-chart-y-axis" aria-hidden data-testid="tw-multi-series-left-axis">
+          {plotted.leftRange ? (
+            <>
+              <span>{formatAxisValue(plotted.leftRange.maxValue, language)}</span>
+              <span>
+                {formatAxisValue(
+                  (plotted.leftRange.minValue + plotted.leftRange.maxValue) / 2,
+                  language,
+                )}
+              </span>
+              <span>{formatAxisValue(plotted.leftRange.minValue, language)}</span>
+            </>
+          ) : (
+            <>
+              <span />
+              <span />
+              <span />
+            </>
+          )}
         </div>
         <div className="app-tw-inst-chart-plot">
           <svg
@@ -190,6 +248,7 @@ export function TaiwanMultiSeriesLineChart({
                 <polyline
                   key={`${series.key}-${segment}`}
                   className={series.className}
+                  data-axis={series.axis}
                   fill="none"
                   points={segment}
                   stroke={series.color}
@@ -204,6 +263,7 @@ export function TaiwanMultiSeriesLineChart({
                   className="app-value-chart-dot"
                   cx={point.x}
                   cy={point.y}
+                  data-axis={series.axis}
                   fill={series.color}
                   r="1.2"
                   stroke={series.color}
@@ -240,13 +300,15 @@ export function TaiwanMultiSeriesLineChart({
               <ul>
                 {lines.map((line) => {
                   const value = hoverPoint.values[line.key];
+                  const formatted =
+                    typeof value === "number" && Number.isFinite(value)
+                      ? formatTooltipValue(value, language, line.unit)
+                      : missingValueLabel;
                   return (
                     <li key={line.key}>
                       <span style={{ color: line.color }}>{line.label}</span>
                       {": "}
-                      {typeof value === "number" && Number.isFinite(value)
-                        ? formatAxisValue(value, language)
-                        : "—"}
+                      {formatted}
                     </li>
                   );
                 })}
@@ -254,6 +316,22 @@ export function TaiwanMultiSeriesLineChart({
             </output>
           ) : null}
         </div>
+        {plotted.hasRightAxis && plotted.rightRange ? (
+          <div
+            className="app-tw-inst-chart-y-axis app-tw-inst-chart-y-axis--right"
+            aria-hidden
+            data-testid="tw-multi-series-right-axis"
+          >
+            <span>{formatAxisValue(plotted.rightRange.maxValue, language)}</span>
+            <span>
+              {formatAxisValue(
+                (plotted.rightRange.minValue + plotted.rightRange.maxValue) / 2,
+                language,
+              )}
+            </span>
+            <span>{formatAxisValue(plotted.rightRange.minValue, language)}</span>
+          </div>
+        ) : null}
       </div>
     </section>
   );
@@ -278,4 +356,13 @@ function formatAxisValue(value: number, language: "en" | "zh-TW"): string {
     minimumFractionDigits: 0,
     maximumFractionDigits: Number.isInteger(value) ? 0 : 1,
   }).format(value);
+}
+
+function formatTooltipValue(
+  value: number,
+  language: "en" | "zh-TW",
+  unit: string | undefined,
+): string {
+  const formatted = formatAxisValue(value, language);
+  return unit ? `${formatted} ${unit}` : formatted;
 }

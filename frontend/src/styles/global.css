@@ -1659,6 +1659,10 @@ input {
   align-items: stretch;
 }
 
+.app-tw-inst-chart-shell--dual {
+  grid-template-columns: 4rem minmax(0, 1fr) 4rem;
+}
+
 .app-tw-inst-chart-y-axis {
   display: flex;
   flex-direction: column;
@@ -1667,6 +1671,15 @@ input {
   font-size: 0.75rem;
   font-variant-numeric: tabular-nums;
   min-height: 12rem;
+}
+
+.app-tw-inst-chart-y-axis--right {
+  text-align: right;
+}
+
+.app-tw-ownership-notes {
+  display: grid;
+  gap: 0.35rem;
 }
 
 .app-tw-inst-chart-plot {
@@ -1916,13 +1929,18 @@ input {
     flex: 1 1 100%;
   }
 
-  .app-tw-inst-chart-shell {
+  .app-tw-inst-chart-shell,
+  .app-tw-inst-chart-shell--dual {
     grid-template-columns: 1fr;
   }
 
   .app-tw-inst-chart-y-axis {
     flex-direction: row;
     min-height: auto;
+  }
+
+  .app-tw-inst-chart-y-axis--right {
+    text-align: left;
   }
 }
 
