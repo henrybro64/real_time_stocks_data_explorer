@@ -76,3 +76,22 @@ def test_tw_profitability_route_maps_upstream_to_502(monkeypatch) -> None:
     with pytest.raises(HTTPException) as exc_info:
         profitability_route.get_tw_profitability("TW:2330", quarters=12)
     assert exc_info.value.status_code == 502
+
+
+def test_tw_profitability_route_rejects_unsupported_quarters_before_service(monkeypatch) -> None:
+    calls = {"n": 0}
+
+    def fake_get(stock_id, quarters=12):
+        calls["n"] += 1
+        return _sample_result()
+
+    monkeypatch.setattr(
+        profitability_route.tw_profitability_service,
+        "get_profitability",
+        fake_get,
+    )
+    with pytest.raises(HTTPException) as exc_info:
+        profitability_route.get_tw_profitability("TW:2330", quarters=10)
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "quarters must be 8, 12, or 20"
+    assert calls["n"] == 0

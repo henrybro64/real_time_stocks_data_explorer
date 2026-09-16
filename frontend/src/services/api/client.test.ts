@@ -16,6 +16,7 @@ import {
   fetchTaiwanProfitability,
   shouldRetryHistoryDatesQuery,
   shouldRetryRankingsQuery,
+  shouldRetryStockDetailQuery,
 } from "./client";
 
 function emptyUsRankingJson(overrides: Record<string, unknown> = {}) {
@@ -176,6 +177,82 @@ describe("fetchTaiwanProfitability", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [requestUrl] = fetchMock.mock.calls[0] ?? [];
     expect(String(requestUrl)).toContain("/api/stocks/TW%3A2330/tw-profitability?quarters=8");
+  });
+
+  it("classifies HTTP 422 as validation", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 422,
+      headers: { get: () => null },
+      json: async () => ({
+        detail: [
+          {
+            type: "literal_error",
+            loc: ["query", "quarters"],
+            msg: "Input should be 8, 12 or 20",
+            input: "12",
+          },
+        ],
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(fetchTaiwanProfitability("TW:2330", 12)).rejects.toMatchObject({
+      status: 422,
+      kind: "validation",
+    });
+  });
+
+  it("classifies HTTP 400 as validation", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 400,
+      headers: { get: () => null },
+      json: async () => ({ detail: "quarters must be 8, 12, or 20" }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(fetchTaiwanProfitability("TW:2330", 12)).rejects.toMatchObject({
+      status: 400,
+      kind: "validation",
+      detail: "quarters must be 8, 12, or 20",
+    });
+  });
+});
+
+describe("shouldRetryStockDetailQuery", () => {
+  it("does not retry validation 400/422 or not-found/auth outcomes", () => {
+    expect(
+      shouldRetryStockDetailQuery(
+        0,
+        new ApiError("bad quarters", { status: 422, kind: "validation" }),
+      ),
+    ).toBe(false);
+    expect(
+      shouldRetryStockDetailQuery(
+        0,
+        new ApiError("bad quarters", { status: 400, kind: "validation" }),
+      ),
+    ).toBe(false);
+    expect(
+      shouldRetryStockDetailQuery(
+        0,
+        new ApiError("missing", { status: 404, kind: "not_found" }),
+      ),
+    ).toBe(false);
+    expect(
+      shouldRetryStockDetailQuery(
+        0,
+        new ApiError("login", { status: 401, kind: "auth" }),
+      ),
+    ).toBe(false);
+  });
+
+  it("retries transient 502/503 within a bounded budget", () => {
+    const upstream = new ApiError("upstream", { status: 502, kind: "unavailable" });
+    expect(shouldRetryStockDetailQuery(0, upstream)).toBe(true);
+    expect(shouldRetryStockDetailQuery(1, upstream)).toBe(true);
+    expect(shouldRetryStockDetailQuery(2, upstream)).toBe(false);
   });
 });
 

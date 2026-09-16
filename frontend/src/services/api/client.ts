@@ -141,13 +141,50 @@ function classifyApiErrorKind(status: number | null, detail: string | null, mess
   ) {
     return "unavailable";
   }
-  if (status === 400) {
+  if (status === 400 || status === 422) {
     return "validation";
   }
   if (status === 404) {
     return "not_found";
   }
   return "unknown";
+}
+
+/** Bounded React Query retries for stock-detail TW profitability (and similar). */
+export const STOCK_DETAIL_QUERY_MAX_RETRIES = 2;
+
+/**
+ * Retry only transient upstream/network failures. Never retry validation,
+ * auth, permission, or not-found — those will not fix themselves (#230).
+ */
+export function shouldRetryStockDetailQuery(failureCount: number, error: unknown): boolean {
+  if (isAbortError(error)) {
+    return false;
+  }
+  const apiError = error instanceof ApiError ? error : toApiError(error);
+  if (
+    apiError.kind === "validation" ||
+    apiError.kind === "auth" ||
+    apiError.kind === "permission" ||
+    apiError.kind === "not_found" ||
+    apiError.status === 400 ||
+    apiError.status === 422 ||
+    apiError.status === 401 ||
+    apiError.status === 403 ||
+    apiError.status === 404
+  ) {
+    return false;
+  }
+  if (
+    apiError.status === 429 ||
+    apiError.status === 502 ||
+    apiError.status === 503 ||
+    apiError.status === 504 ||
+    apiError.kind === "unavailable"
+  ) {
+    return failureCount < STOCK_DETAIL_QUERY_MAX_RETRIES;
+  }
+  return false;
 }
 
 /** FastAPI error bodies: `detail` as string, validation array, or object. */

@@ -98,6 +98,37 @@ describe("ProfitMarginsPanel", () => {
     expect(await screen.findByText(/Profitability margins/i)).toBeInTheDocument();
   });
 
+  it("shows localized validation copy instead of raw Pydantic JSON", async () => {
+    vi.mocked(fetchTaiwanProfitability).mockRejectedValue(
+      new ApiError('Request failed: 422 - [{"type":"literal_error"}]', {
+        status: 422,
+        kind: "validation",
+        detail: '[{"type":"literal_error","loc":["query","quarters"]}]',
+      }),
+    );
+    renderPanel(true, "en");
+    expect(await screen.findByTestId("tw-profit-margins-validation")).toHaveTextContent(
+      "Invalid reporting period. Select 8Q, 12Q, or 20Q.",
+    );
+    expect(screen.queryByText(/literal_error/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Could not save/i)).not.toBeInTheDocument();
+  });
+
+  it("shows ZH validation copy for validation failures", async () => {
+    vi.mocked(fetchTaiwanProfitability).mockRejectedValue(
+      new ApiError("Request failed: 400", {
+        status: 400,
+        kind: "validation",
+        detail: "quarters must be 8, 12, or 20",
+      }),
+    );
+    renderPanel(true, "zh-TW");
+    expect(await screen.findByTestId("tw-profit-margins-validation")).toHaveTextContent(
+      "無效的財報期間，請選擇 8Q、12Q 或 20Q。",
+    );
+    expect(screen.queryByText("無法儲存")).not.toBeInTheDocument();
+  });
+
   it("shows stale notice and fiscal-quarter axis labels", async () => {
     vi.mocked(fetchTaiwanProfitability).mockResolvedValue({
       ...samplePayload,

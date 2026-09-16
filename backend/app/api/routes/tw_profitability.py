@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Query
 
@@ -16,7 +16,9 @@ from app.services.tw_profitability_service import (
 
 router = APIRouter(prefix="/stocks", tags=["tw-profitability"])
 
-QuartersQuery = Literal[8, 12, 20]
+# Query params arrive as text; parse as int first, then allow-list (#230).
+_ALLOWED_QUARTERS = frozenset({8, 12, 20})
+_INVALID_QUARTERS_DETAIL = "quarters must be 8, 12, or 20"
 
 
 @router.get(
@@ -24,13 +26,16 @@ QuartersQuery = Literal[8, 12, 20]
     responses={
         404: {"description": "Stock not found or not a Taiwan stock"},
         400: {"description": "Invalid quarters parameter"},
+        422: {"description": "Quarters query could not be parsed as an integer"},
         502: {"description": "Upstream temporarily unavailable"},
     },
 )
 def get_tw_profitability(
     stock_id: str,
-    quarters: Annotated[QuartersQuery, Query()] = 12,
+    quarters: Annotated[int, Query()] = 12,
 ) -> TaiwanProfitabilityResponse:
+    if quarters not in _ALLOWED_QUARTERS:
+        raise HTTPException(status_code=400, detail=_INVALID_QUARTERS_DETAIL)
     try:
         result = tw_profitability_service.get_profitability(
             stock_id,
