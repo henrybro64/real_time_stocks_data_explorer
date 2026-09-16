@@ -7,7 +7,7 @@ import { useState } from "react";
 
 import { useLanguage } from "../../app/i18n";
 import { RequestStateNotice, errorToNoticeKind } from "../../components/state/RequestStateNotice";
-import { fetchTaiwanProfitability, toApiError } from "../../services/api/client";
+import { fetchTaiwanProfitability, shouldRetryStockDetailQuery, stockDetailRetryDelayMs, toApiError } from "../../services/api/client";
 import { TaiwanMultiSeriesLineChart } from "./TaiwanMultiSeriesLineChart";
 import { formatDisplayDate, formatUnsignedMetric } from "./twSignalsFormat";
 
@@ -32,6 +32,7 @@ type ProfitCopy = {
   chartTitle: string;
   empty: string;
   gross: string;
+  invalidQuarters: string;
   loading: string;
   net: string;
   operating: string;
@@ -49,6 +50,7 @@ function profitCopy(language: "en" | "zh-TW"): ProfitCopy {
       chartTitle: "毛利率 / 營益率 / 稅前 / 淨利率",
       empty: "目前沒有可顯示的財報三率資料。",
       gross: "毛利率(%)",
+      invalidQuarters: "無效的財報期間，請選擇 8Q、12Q 或 20Q。",
       loading: "載入財報三率中",
       net: "淨利率(%)",
       operating: "營業利益率(%)",
@@ -64,6 +66,7 @@ function profitCopy(language: "en" | "zh-TW"): ProfitCopy {
     chartTitle: "Gross / operating / pretax / net margins",
     empty: "No profitability margin data is available for this stock yet.",
     gross: "Gross margin (%)",
+    invalidQuarters: "Invalid reporting period. Select 8Q, 12Q, or 20Q.",
     loading: "Loading profitability margins",
     net: "Net margin (%)",
     operating: "Operating margin (%)",
@@ -85,6 +88,8 @@ export function ProfitMarginsPanel({ active = true, stockId }: Readonly<Props>) 
     queryFn: () => fetchTaiwanProfitability(stockId, quarters),
     enabled: active && stockId.length > 0,
     staleTime: 60_000,
+    retry: shouldRetryStockDetailQuery,
+    retryDelay: (failureCount, error) => stockDetailRetryDelayMs(failureCount, error),
   });
 
   const payload = profitabilityQuery.data;
@@ -121,11 +126,22 @@ export function ProfitMarginsPanel({ active = true, stockId }: Readonly<Props>) 
       ) : null}
 
       {!payload && profitabilityQuery.isError && !shouldShowUnavailableCopy ? (
-        <RequestStateNotice
-          detail={apiError?.detail ?? null}
-          kind={errorToNoticeKind(profitabilityQuery.error)}
-          scopeLabel={t("detail.twSignals.profitMarginsTitle")}
-        />
+        apiError?.kind === "validation" ? (
+          <p
+            className="app-supporting-copy"
+            data-testid="tw-profit-margins-validation"
+            role="alert"
+          >
+            {copy.invalidQuarters}
+          </p>
+        ) : (
+          <RequestStateNotice
+            detail={apiError?.detail ?? null}
+            kind={errorToNoticeKind(profitabilityQuery.error)}
+            scopeLabel={t("detail.twSignals.profitMarginsTitle")}
+            status={apiError?.status ?? null}
+          />
+        )
       ) : null}
 
       {payload && points.length === 0 ? <p className="app-supporting-copy">{copy.empty}</p> : null}

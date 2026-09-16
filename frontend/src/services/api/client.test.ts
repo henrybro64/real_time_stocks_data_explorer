@@ -16,6 +16,9 @@ import {
   fetchTaiwanProfitability,
   shouldRetryHistoryDatesQuery,
   shouldRetryRankingsQuery,
+  shouldRetryStockDetailQuery,
+  stockDetailRetryDelayMs,
+  toApiError,
 } from "./client";
 
 function emptyUsRankingJson(overrides: Record<string, unknown> = {}) {
@@ -176,6 +179,119 @@ describe("fetchTaiwanProfitability", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [requestUrl] = fetchMock.mock.calls[0] ?? [];
     expect(String(requestUrl)).toContain("/api/stocks/TW%3A2330/tw-profitability?quarters=8");
+  });
+
+  it("classifies HTTP 422 as validation", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 422,
+      headers: { get: () => null },
+      json: async () => ({
+        detail: [
+          {
+            type: "literal_error",
+            loc: ["query", "quarters"],
+            msg: "Input should be 8, 12 or 20",
+            input: "12",
+          },
+        ],
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(fetchTaiwanProfitability("TW:2330", 12)).rejects.toMatchObject({
+      status: 422,
+      kind: "validation",
+    });
+  });
+
+  it("classifies HTTP 400 as validation", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 400,
+      headers: { get: () => null },
+      json: async () => ({ detail: "quarters must be 8, 12, or 20" }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(fetchTaiwanProfitability("TW:2330", 12)).rejects.toMatchObject({
+      status: 400,
+      kind: "validation",
+      detail: "quarters must be 8, 12, or 20",
+    });
+  });
+});
+
+describe("shouldRetryStockDetailQuery", () => {
+  it("does not retry validation 400/422 or not-found/auth outcomes", () => {
+    expect(
+      shouldRetryStockDetailQuery(
+        0,
+        new ApiError("bad quarters", { status: 422, kind: "validation" }),
+      ),
+    ).toBe(false);
+    expect(
+      shouldRetryStockDetailQuery(
+        0,
+        new ApiError("bad quarters", { status: 400, kind: "validation" }),
+      ),
+    ).toBe(false);
+    expect(
+      shouldRetryStockDetailQuery(
+        0,
+        new ApiError("missing", { status: 404, kind: "not_found" }),
+      ),
+    ).toBe(false);
+    expect(
+      shouldRetryStockDetailQuery(
+        0,
+        new ApiError("login", { status: 401, kind: "auth" }),
+      ),
+    ).toBe(false);
+  });
+
+  it("retries transient 502/503 within a bounded budget", () => {
+    const upstream = new ApiError("upstream", { status: 502, kind: "unavailable" });
+    expect(shouldRetryStockDetailQuery(0, upstream)).toBe(true);
+    expect(shouldRetryStockDetailQuery(1, upstream)).toBe(true);
+    expect(shouldRetryStockDetailQuery(2, upstream)).toBe(false);
+  });
+
+  it("retries status-less network failures including Safari Load failed", () => {
+    expect(shouldRetryStockDetailQuery(0, new TypeError("Load failed"))).toBe(true);
+    expect(shouldRetryStockDetailQuery(0, new TypeError("Failed to fetch"))).toBe(true);
+    expect(
+      shouldRetryStockDetailQuery(
+        0,
+        new ApiError("Load failed", { status: null, kind: "unavailable" }),
+      ),
+    ).toBe(true);
+  });
+});
+
+describe("stockDetailRetryDelayMs", () => {
+  it("honors Retry-After seconds on 429", () => {
+    const rateLimited = new ApiError("slow down", {
+      status: 429,
+      kind: "unavailable",
+      retryAfterSeconds: 5,
+    });
+    expect(stockDetailRetryDelayMs(0, rateLimited)).toBe(5_000);
+  });
+
+  it("falls back to bounded backoff without Retry-After", () => {
+    expect(stockDetailRetryDelayMs(0)).toBe(1_000);
+    expect(stockDetailRetryDelayMs(1)).toBe(2_000);
+  });
+});
+
+describe("toApiError", () => {
+  it("maps TypeError network failures to unavailable", () => {
+    expect(toApiError(new TypeError("Load failed"))).toMatchObject({
+      kind: "unavailable",
+      status: null,
+      message: "Load failed",
+    });
   });
 });
 

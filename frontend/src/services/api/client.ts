@@ -130,6 +130,8 @@ function classifyApiErrorKind(status: number | null, detail: string | null, mess
     status === 503 ||
     status === 504 ||
     text.includes("failed to fetch") ||
+    text.includes("load failed") ||
+    text.includes("failed to load") ||
     text.includes("networkerror") ||
     text.includes("network request failed") ||
     text.includes("timeout") ||
@@ -141,13 +143,65 @@ function classifyApiErrorKind(status: number | null, detail: string | null, mess
   ) {
     return "unavailable";
   }
-  if (status === 400) {
+  if (status === 400 || status === 422) {
     return "validation";
   }
   if (status === 404) {
     return "not_found";
   }
   return "unknown";
+}
+
+/** Bounded React Query retries for stock-detail TW profitability (and similar). */
+export const STOCK_DETAIL_QUERY_MAX_RETRIES = 2;
+export const STOCK_DETAIL_RETRY_DELAY_MS = 1_000;
+
+/**
+ * Retry only transient upstream/network failures. Never retry validation,
+ * auth, permission, or not-found — those will not fix themselves (#230).
+ */
+export function shouldRetryStockDetailQuery(failureCount: number, error: unknown): boolean {
+  if (isAbortError(error)) {
+    return false;
+  }
+  const apiError = error instanceof ApiError ? error : toApiError(error);
+  if (
+    apiError.kind === "validation" ||
+    apiError.kind === "auth" ||
+    apiError.kind === "permission" ||
+    apiError.kind === "not_found" ||
+    apiError.status === 400 ||
+    apiError.status === 422 ||
+    apiError.status === 401 ||
+    apiError.status === 403 ||
+    apiError.status === 404
+  ) {
+    return false;
+  }
+  if (
+    apiError.status === 429 ||
+    apiError.status === 502 ||
+    apiError.status === 503 ||
+    apiError.status === 504 ||
+    apiError.kind === "unavailable" ||
+    // Status-less browser network failures (e.g. Safari "Load failed" TypeError).
+    apiError.status == null
+  ) {
+    return failureCount < STOCK_DETAIL_QUERY_MAX_RETRIES;
+  }
+  return false;
+}
+
+/** Honor Retry-After on 429; otherwise use a short bounded backoff (#230). */
+export function stockDetailRetryDelayMs(failureCount: number, error?: unknown): number {
+  if (
+    error instanceof ApiError &&
+    error.retryAfterSeconds != null &&
+    error.retryAfterSeconds > 0
+  ) {
+    return Math.max(error.retryAfterSeconds * 1000, STOCK_DETAIL_RETRY_DELAY_MS);
+  }
+  return STOCK_DETAIL_RETRY_DELAY_MS * Math.max(1, failureCount + 1);
 }
 
 /** FastAPI error bodies: `detail` as string, validation array, or object. */
@@ -205,6 +259,14 @@ async function failedRequestError(response: Response): Promise<ApiError> {
 export function toApiError(error: unknown): ApiError {
   if (error instanceof ApiError) {
     return error;
+  }
+  // fetch() network failures are typically TypeError; Safari often uses "Load failed".
+  if (error instanceof TypeError) {
+    return new ApiError(error.message, {
+      status: null,
+      detail: error.message,
+      kind: "unavailable",
+    });
   }
   if (error instanceof Error) {
     return new ApiError(error.message, {

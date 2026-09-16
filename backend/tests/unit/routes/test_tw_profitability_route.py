@@ -76,3 +76,25 @@ def test_tw_profitability_route_maps_upstream_to_502(monkeypatch) -> None:
     with pytest.raises(HTTPException) as exc_info:
         profitability_route.get_tw_profitability("TW:2330", quarters=12)
     assert exc_info.value.status_code == 502
+
+
+def test_tw_profitability_route_rejects_unsupported_quarters_before_service(monkeypatch) -> None:
+    """Direct Python calls bypass FastAPI enum coercion; service still rejects."""
+    calls = {"n": 0}
+
+    def fake_get(stock_id, quarters=12):
+        calls["n"] += 1
+        raise ValueError("Unsupported profitability quarters: 10")
+
+    monkeypatch.setattr(
+        profitability_route.tw_profitability_service,
+        "get_profitability",
+        fake_get,
+    )
+    with pytest.raises(HTTPException) as exc_info:
+        profitability_route.get_tw_profitability(
+            "TW:2330",
+            quarters=10,  # type: ignore[arg-type]
+        )
+    assert exc_info.value.status_code == 400
+    assert calls["n"] == 1
