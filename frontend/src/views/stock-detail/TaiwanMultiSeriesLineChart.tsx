@@ -363,6 +363,12 @@ function formatTooltipValue(
   language: "en" | "zh-TW",
   unit: string | undefined,
 ): string {
-  const formatted = formatAxisValue(value, language);
+  // Price series (e.g. TWD weekly close) keep two decimal places; percentage
+  // tooltips stay compact like the axis labels.
+  const isPriceUnit = unit != null && unit !== "%" && !unit.includes("%");
+  const formatted = new Intl.NumberFormat(language === "zh-TW" ? "zh-TW" : "en-US", {
+    minimumFractionDigits: isPriceUnit ? 2 : 0,
+    maximumFractionDigits: isPriceUnit ? 2 : Number.isInteger(value) ? 0 : 1,
+  }).format(value);
   return unit ? `${formatted} ${unit}` : formatted;
 }

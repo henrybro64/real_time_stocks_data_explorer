@@ -432,6 +432,7 @@ class TwOwnershipConcentrationService:
                 source=_build_source(
                     board,
                     foreign_status=foreign_result.status,
+                    foreign_contributed=bool(foreign_result.by_tdcc_date),
                     weekly_close_status=_weekly_close_state(
                         close_load, has_any_close=False
                     ).status,
@@ -472,6 +473,7 @@ class TwOwnershipConcentrationService:
             source=_build_source(
                 board,
                 foreign_status=foreign_result.status,
+                foreign_contributed=bool(foreign_result.by_tdcc_date),
                 weekly_close_status=data_status.weekly_close.status,
             ),
             stale=False,
@@ -637,7 +639,10 @@ class TwOwnershipConcentrationService:
                         tdcc_iso,
                         probe_date.isoformat(),
                     )
-                    continue
+                    # Published table omitted this security — do not attach an
+                    # older day's % to the TDCC date (holiday lookback is only
+                    # for official no_data / missing tables).
+                    break
 
                 resolved_percent = percent
                 resolved_date = probe_date
@@ -668,6 +673,14 @@ class TwOwnershipConcentrationService:
                 )
 
         if results:
+            if saw_error:
+                # Some dates resolved, but others hit schema/upstream failures —
+                # keep usable points and mark incomplete for short TTL / UI.
+                return _ForeignCollectionResult(
+                    by_tdcc_date=results,
+                    status="available",
+                    reason="partial_upstream_error",
+                )
             return _ForeignCollectionResult(
                 by_tdcc_date=results,
                 status="available",
@@ -773,9 +786,10 @@ def _build_source(
     *,
     foreign_status: OwnershipComponentStatus,
     weekly_close_status: OwnershipComponentStatus,
+    foreign_contributed: bool = False,
 ) -> str:
     parts = ["tdcc_portal"]
-    if foreign_status == "available":
+    if foreign_status == "available" or foreign_contributed:
         parts.append(_FOREIGN_SOURCE_BY_BOARD[board])
     if weekly_close_status == "available":
         parts.append(_QUOTE_HISTORY_SOURCE)
@@ -806,6 +820,9 @@ def _is_complete(result: TaiwanOwnershipConcentrationResult) -> bool:
         return False
     if status.weekly_close.status != "available":
         return False
+    # Mixed foreign success + probe failures must not get the long complete TTL.
+    if status.foreign_ownership.reason == "partial_upstream_error":
+        return False
     if status.foreign_ownership.status == "available":
         return True
     # Intentional absence after inclusive MI_QFIIS ALL / TPEx fetch still counts
@@ -814,11 +831,12 @@ def _is_complete(result: TaiwanOwnershipConcentrationResult) -> bool:
 
 
 def _is_incomplete(result: TaiwanOwnershipConcentrationResult) -> bool:
-    status = result.data_status
-    return any(
-        component.status == "temporarily_unavailable"
-        for component in (status.tdcc, status.foreign_ownership, status.weekly_close)
-    )
+    """Use short TTL whenever the result is not a durable complete snapshot.
+
+    Includes ``temporarily_unavailable`` and empty ``no_data_for_period`` outcomes
+    so pre-publication / empty upstream responses are not cached for 12–24h.
+    """
+    return not _is_complete(result)
 
 
 def _soft_ttl_for(
@@ -1205,7 +1223,9 @@ def parse_tpex_qfii_foreign_ownership(payload: object) -> dict[str, float] | Non
     if not isinstance(payload, dict):
         raise ForeignOwnershipSchemaError("tpex_qfii_payload_not_object")
     tables = payload.get("tables")
-    if not isinstance(tables, list) or not tables:
+    if not isinstance(tables, list):
+        raise ForeignOwnershipSchemaError("tpex_qfii_tables_not_list")
+    if not tables:
         return None
     table = tables[0]
     if not isinstance(table, dict):

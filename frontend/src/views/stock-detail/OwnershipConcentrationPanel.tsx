@@ -143,10 +143,11 @@ function hasTemporarilyUnavailable(status: OwnershipDataStatus | undefined): boo
   if (status == null) {
     return false;
   }
-  return (
-    status.tdcc.status === "temporarily_unavailable" ||
-    status.foreignOwnership.status === "temporarily_unavailable" ||
-    status.weeklyClose.status === "temporarily_unavailable"
+  const components = [status.tdcc, status.foreignOwnership, status.weeklyClose];
+  return components.some(
+    (component) =>
+      component.status === "temporarily_unavailable" ||
+      component.reason === "partial_upstream_error",
   );
 }
 

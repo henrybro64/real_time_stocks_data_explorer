@@ -108,7 +108,7 @@ describe("TaiwanMultiSeriesLineChart", () => {
         ]}
         points={[
           { date: "2026-06-12", values: { holders: 61.5, close: null } },
-          { date: "2026-09-11", values: { holders: 63.46, close: 88.1 } },
+          { date: "2026-09-11", values: { holders: 63.46, close: 8.37 } },
         ]}
         title="Ownership"
       />,
@@ -121,8 +121,13 @@ describe("TaiwanMultiSeriesLineChart", () => {
 
     const targets = container.querySelectorAll("rect");
     await user.hover(targets[0]!);
-    const tooltip = screen.getByTestId("tw-multi-series-tooltip");
-    expect(tooltip).toHaveTextContent("n/a");
-    expect(tooltip).not.toHaveTextContent("Close: 0");
+    const tooltipMissing = screen.getByTestId("tw-multi-series-tooltip");
+    expect(tooltipMissing).toHaveTextContent("n/a");
+    expect(tooltipMissing).not.toHaveTextContent("Close: 0");
+
+    await user.hover(targets[1]!);
+    const tooltipPrice = screen.getByTestId("tw-multi-series-tooltip");
+    expect(tooltipPrice).toHaveTextContent("8.37 TWD");
+    expect(tooltipPrice).not.toHaveTextContent("8.4 TWD");
   });
 });
