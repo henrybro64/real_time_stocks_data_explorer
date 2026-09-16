@@ -79,6 +79,20 @@ def test_build_points_from_yfinance_style_mapping() -> None:
     assert points[0].quarter_end_close is None
 
 
+def test_alias_priority_prefers_operating_income_and_net_income() -> None:
+    statement = {
+        "Total Revenue": {"2025-09-30": 100.0},
+        "EBIT": {"2025-09-30": 10.0},
+        "Operating Income": {"2025-09-30": 40.0},
+        "Net Income Including Noncontrolling Interests": {"2025-09-30": 5.0},
+        "Net Income": {"2025-09-30": 30.0},
+        "Gross Profit": {"2025-09-30": 50.0},
+        "Pretax Income": {"2025-09-30": 35.0},
+    }
+    points = build_profitability_points(statement, quarters=12)
+    assert points[0].operating_margin_percent == pytest.approx(40.0)
+    assert points[0].net_margin_percent == pytest.approx(30.0)
+
 def test_ytd_cumulative_converted_to_quarterly_when_flagged() -> None:
     statement = {
         "Total Revenue": {

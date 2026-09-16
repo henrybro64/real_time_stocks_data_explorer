@@ -119,7 +119,7 @@ def test_ownership_service_range_filter_and_null_series() -> None:
     def tdcc_fetcher() -> str:
         return csv_text
 
-    def foreign_fetcher(current: date) -> dict[str, float] | None:
+    def foreign_fetcher(current: date, _board: str) -> dict[str, float] | None:
         if current.isoformat() == "2026-09-11":
             return parse_mi_qfiis_foreign_ownership(mi_payload)
         return None
@@ -159,7 +159,7 @@ def test_ownership_service_cache_hit() -> None:
     service = TwOwnershipConcentrationService(
         quote_source=_FakeQuoteSource(_tw_stock()),
         tdcc_csv_fetcher=tdcc_fetcher,
-        foreign_ownership_fetcher=lambda _current: {"2330": 10.0},
+        foreign_ownership_fetcher=lambda _current, _board: {"2330": 10.0},
         close_history_fetcher=lambda _stock_id, _range: {"2026-09-11": 88.1},
         now_provider=lambda: datetime(2026, 9, 12, 10, 0, tzinfo=UTC),
     )
@@ -183,7 +183,7 @@ def test_ownership_service_stale_fallback_on_upstream_failure() -> None:
     service = TwOwnershipConcentrationService(
         quote_source=_FakeQuoteSource(_tw_stock()),
         tdcc_csv_fetcher=tdcc_fetcher,
-        foreign_ownership_fetcher=lambda _current: {"2330": 11.0},
+        foreign_ownership_fetcher=lambda _current, _board: {"2330": 11.0},
         close_history_fetcher=lambda _stock_id, _range: {},
         now_provider=lambda: now["value"],
         result_cache_ttl=timedelta(hours=12),
@@ -211,7 +211,7 @@ def test_ownership_service_rejects_non_tw_stock() -> None:
     service = TwOwnershipConcentrationService(
         quote_source=_FakeQuoteSource(us_stock),
         tdcc_csv_fetcher=lambda: "",
-        foreign_ownership_fetcher=lambda _current: None,
+        foreign_ownership_fetcher=lambda _current, _board: None,
         close_history_fetcher=lambda _stock_id, _range: {},
     )
     with pytest.raises(ValueError, match="only available for TW stocks"):
@@ -222,7 +222,7 @@ def test_ownership_service_raises_when_no_cache_and_upstream_fails() -> None:
     service = TwOwnershipConcentrationService(
         quote_source=_FakeQuoteSource(_tw_stock()),
         tdcc_csv_fetcher=lambda: (_ for _ in ()).throw(RuntimeError("down")),
-        foreign_ownership_fetcher=lambda _current: None,
+        foreign_ownership_fetcher=lambda _current, _board: None,
         close_history_fetcher=lambda _stock_id, _range: {},
         now_provider=lambda: datetime(2026, 9, 12, 10, 0, tzinfo=UTC),
     )
@@ -264,7 +264,7 @@ def test_ownership_service_uses_injected_tdcc_history_for_multi_week() -> None:
     service = TwOwnershipConcentrationService(
         quote_source=_FakeQuoteSource(_tw_stock()),
         tdcc_history_fetcher=history_fetcher,
-        foreign_ownership_fetcher=lambda current: (
+        foreign_ownership_fetcher=lambda current, _board: (
             {"2330": 18.21} if current.isoformat() == "2026-09-04" else None
         ),
         close_history_fetcher=lambda _stock_id, _range: {},
@@ -274,3 +274,126 @@ def test_ownership_service_uses_injected_tdcc_history_for_multi_week() -> None:
     assert [point.date for point in result.points] == ["2026-06-12", "2026-09-04"]
     assert result.points[-1].holders_400_lots_or_more_percent == pytest.approx(63.46)
     assert result.points[-1].foreign_ownership_percent == pytest.approx(18.21)
+
+
+def test_parse_tpex_qfii_foreign_ownership() -> None:
+    from app.services.tw_ownership_concentration_service import parse_tpex_qfii_foreign_ownership
+
+    parsed = parse_tpex_qfii_foreign_ownership(_load_json("tpex_qfii_sample.json"))
+    assert parsed is not None
+    assert parsed["8455"] == pytest.approx(87.84)
+
+
+def test_foreign_probes_prefer_newest_dates_within_cap() -> None:
+    from app.services.tdcc_shareholding import TdccConcentrationPoint
+
+    probed: list[str] = []
+
+    def history_fetcher(symbol: str, start: date, end: date):
+        return [
+            TdccConcentrationPoint((end - timedelta(days=offset * 7)).isoformat(), symbol, 60.0)
+            for offset in range(40)
+        ]
+
+    def foreign_fetcher(current: date, _board: str) -> dict[str, float] | None:
+        probed.append(current.isoformat())
+        return {"2330": 10.0}
+
+    service = TwOwnershipConcentrationService(
+        quote_source=_FakeQuoteSource(_tw_stock()),
+        tdcc_history_fetcher=history_fetcher,
+        foreign_ownership_fetcher=foreign_fetcher,
+        close_history_fetcher=lambda _stock_id, _range: {},
+        now_provider=lambda: datetime(2026, 9, 12, 10, 0, tzinfo=UTC),
+        max_foreign_probes=5,
+    )
+    result = service.get_ownership_concentration("TW:2330", range_name="1Y")
+    assert len(probed) == 5
+    assert probed == sorted(probed, reverse=True)
+    assert result.points[-1].foreign_ownership_percent == pytest.approx(10.0)
+
+
+def test_one_foreign_probe_failure_keeps_other_dates() -> None:
+    from app.services.http_client import HttpFetchError
+    from app.services.tdcc_shareholding import TdccConcentrationPoint
+
+    def history_fetcher(symbol: str, start: date, end: date):
+        return [
+            TdccConcentrationPoint("2026-06-12", symbol, 61.5),
+            TdccConcentrationPoint("2026-09-04", symbol, 63.46),
+        ]
+
+    def foreign_fetcher(current: date, _board: str) -> dict[str, float] | None:
+        if current.isoformat() == "2026-06-12":
+            raise HttpFetchError("timeout", status_code=504)
+        return {"2330": 18.21}
+
+    service = TwOwnershipConcentrationService(
+        quote_source=_FakeQuoteSource(_tw_stock()),
+        tdcc_history_fetcher=history_fetcher,
+        foreign_ownership_fetcher=foreign_fetcher,
+        close_history_fetcher=lambda _stock_id, _range: {},
+        now_provider=lambda: datetime(2026, 9, 12, 10, 0, tzinfo=UTC),
+    )
+    result = service.get_ownership_concentration("TW:2330", range_name="3M")
+    by_date = {point.date: point.foreign_ownership_percent for point in result.points}
+    assert by_date["2026-06-12"] is None
+    assert by_date["2026-09-04"] == pytest.approx(18.21)
+
+
+def test_stale_fallback_backs_off_before_retrying() -> None:
+    csv_text = _load_text("tdcc_2330_multi_date.csv")
+    calls = {"count": 0}
+
+    def tdcc_fetcher() -> str:
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return csv_text
+        raise RuntimeError("boom")
+
+    now = {"value": datetime(2026, 9, 12, 10, 0, tzinfo=UTC)}
+    service = TwOwnershipConcentrationService(
+        quote_source=_FakeQuoteSource(_tw_stock()),
+        tdcc_csv_fetcher=tdcc_fetcher,
+        foreign_ownership_fetcher=lambda _current, _board: {"2330": 11.0},
+        close_history_fetcher=lambda _stock_id, _range: {},
+        now_provider=lambda: now["value"],
+        result_cache_ttl=timedelta(hours=12),
+        stale_refresh_backoff=timedelta(minutes=15),
+    )
+    fresh = service.get_ownership_concentration("TW:2330", range_name="1Y")
+    assert fresh.stale is False
+
+    now["value"] = now["value"] + timedelta(hours=13)
+    stale = service.get_ownership_concentration("TW:2330", range_name="1Y")
+    assert stale.stale is True
+    assert calls["count"] == 2
+
+    now["value"] = now["value"] + timedelta(minutes=5)
+    again = service.get_ownership_concentration("TW:2330", range_name="1Y")
+    assert again.stale is True
+    assert calls["count"] == 2
+
+
+def test_tpex_stock_uses_tpex_source_label() -> None:
+    stock = StockRecord(
+        id="TW:8455",
+        symbol="8455",
+        name="大拓-KY",
+        market="TW",
+        currency="TWD",
+        exchange="TPEx",
+        timezone="Asia/Taipei",
+    )
+    service = TwOwnershipConcentrationService(
+        quote_source=_FakeQuoteSource(stock),
+        tdcc_csv_fetcher=lambda: "資料日期,證券代號,持股分級,人數,股數,占集保庫存數比例%\n20260911,8455,15,1,1,50.00\n20260911,8455,16,1,1,50.00\n",
+        foreign_ownership_fetcher=lambda _current, board: (
+            {"8455": 87.84} if board == "TPEx" else None
+        ),
+        close_history_fetcher=lambda _stock_id, _range: {},
+        now_provider=lambda: datetime(2026, 9, 12, 10, 0, tzinfo=UTC),
+    )
+    result = service.get_ownership_concentration("TW:8455", range_name="3M")
+    assert result.source == "tdcc_portal+tpex_qfii"
+    assert result.points[-1].foreign_ownership_percent == pytest.approx(87.84)

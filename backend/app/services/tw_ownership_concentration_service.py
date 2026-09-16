@@ -1,8 +1,10 @@
-"""Taiwan ownership concentration (籌碼集中度) from TDCC + TWSE MI_QFIIS.
+"""Taiwan ownership concentration (籌碼集中度) from TDCC + foreign ownership %.
 
 TDCC open-data ``id=1-5`` is a weekly overwrite snapshot only. Multi-week
 ``400張以上`` history comes from the official TDCC portal qryStock pages
 (about one year of Fridays), not from WantGoo.
+
+Foreign ownership uses TWSE ``MI_QFIIS`` or TPEx ``insti/qfii`` by board.
 """
 
 from __future__ import annotations
@@ -14,15 +16,17 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Literal
 
 from app.models.quote import CandleRecord
-from app.services.http_client import HttpFetchError, fetch_text
+from app.services.http_client import fetch_text
 from app.services.quote_service import QuoteService, quote_service
-from app.services.taiwan_history_scan import ResultCacheEntry, candidate_start_date
+from app.services.taiwan_history_scan import candidate_start_date
 from app.services.taiwan_market_data import (
+    fetch_tpex_data,
     fetch_twse_data,
     is_taiwan_no_data_payload,
     normalize_taiwan_date,
     parse_taiwan_number,
     require_taiwan_stock,
+    require_twse_or_tpex_symbol,
     taiwan_field_index,
     taiwan_row_value,
 )
@@ -35,20 +39,27 @@ from app.services.tdcc_shareholding import (
 )
 
 OwnershipRange = Literal["3M", "6M", "1Y"]
+TaiwanBoard = Literal["TWSE", "TPEx"]
 
 logger = logging.getLogger(__name__)
 
 _RESULT_CACHE_TTL = timedelta(hours=12)
-# Fridays only; ~26 covers 6M weekly or 1Y biweekly-ish. Prefer TDCC dates first.
+_STALE_REFRESH_BACKOFF = timedelta(minutes=15)
+# Fridays only; ~26 covers 6M weekly or 1Y biweekly-ish. Prefer newest TDCC dates.
 _MAX_FOREIGN_PROBES = 26
 _MAX_TDCC_WEEKS = 55
 _TDCC_OPEN_DATA_URL = "https://smart.tdcc.com.tw/opendata/getOD.ashx"
 _TDCC_PORTAL_URL = "https://www.tdcc.com.tw/portal/zh/smWeb/qryStock"
 _TWSE_MI_QFIIS_URL = "https://www.twse.com.tw/rwd/zh/fund/MI_QFIIS"
+_TPEX_QFII_URL = "https://www.tpex.org.tw/www/zh-tw/insti/qfii"
 _STOCK_NOT_FOUND_ERROR = "Stock not found"
 _NON_TW_STOCK_ERROR = "Taiwan ownership concentration is only available for TW stocks"
+_UNKNOWN_TW_MARKET_ERROR = "Taiwan ownership market is unavailable for this stock"
 _UPSTREAM_UNAVAILABLE_ERROR = "Taiwan ownership concentration upstream temporarily unavailable"
-_SOURCE = "tdcc_portal+twse_mi_qfiis"
+_SOURCE_BY_BOARD: dict[TaiwanBoard, str] = {
+    "TWSE": "tdcc_portal+twse_mi_qfiis",
+    "TPEx": "tdcc_portal+tpex_qfii",
+}
 _RANGE_DAYS: dict[OwnershipRange, int] = {
     "3M": 93,
     "6M": 186,
@@ -82,8 +93,16 @@ class TaiwanOwnershipConcentrationResult:
     points: tuple[TaiwanOwnershipConcentrationPoint, ...]
 
 
+@dataclass
+class _OwnershipCacheEntry:
+    cached_at: datetime
+    result: TaiwanOwnershipConcentrationResult
+    last_failure_at: datetime | None = None
+
+
 TdccHistoryFetcher = Callable[[str, date, date], list[TdccConcentrationPoint]]
-ForeignOwnershipFetcher = Callable[[date], dict[str, float] | None]
+# (probe_date, board) -> symbol -> ownership %
+ForeignOwnershipFetcher = Callable[[date, TaiwanBoard], dict[str, float] | None]
 CloseHistoryFetcher = Callable[[str, OwnershipRange], dict[str, float]]
 
 
@@ -99,19 +118,23 @@ class TwOwnershipConcentrationService:
         close_history_fetcher: CloseHistoryFetcher | None = None,
         now_provider: Callable[[], datetime] | None = None,
         result_cache_ttl: timedelta = _RESULT_CACHE_TTL,
+        stale_refresh_backoff: timedelta = _STALE_REFRESH_BACKOFF,
         max_foreign_probes: int = _MAX_FOREIGN_PROBES,
         max_tdcc_weeks: int = _MAX_TDCC_WEEKS,
     ) -> None:
         self._quote_source = quote_source or quote_service
         self._tdcc_csv_fetcher = tdcc_csv_fetcher
         self._tdcc_history_fetcher = tdcc_history_fetcher or self._default_tdcc_history_fetcher
-        self._foreign_ownership_fetcher = foreign_ownership_fetcher or _default_foreign_ownership_fetcher
+        self._foreign_ownership_fetcher = (
+            foreign_ownership_fetcher or _default_foreign_ownership_fetcher
+        )
         self._close_history_fetcher = close_history_fetcher or self._default_close_history_fetcher
         self._now_provider = now_provider or (lambda: datetime.now(UTC))
         self._result_cache_ttl = result_cache_ttl
+        self._stale_refresh_backoff = stale_refresh_backoff
         self._max_foreign_probes = max(1, max_foreign_probes)
         self._max_tdcc_weeks = max(1, max_tdcc_weeks)
-        self._result_cache: dict[tuple[str, OwnershipRange], ResultCacheEntry[TaiwanOwnershipConcentrationResult]] = {}
+        self._result_cache: dict[tuple[str, OwnershipRange], _OwnershipCacheEntry] = {}
 
     def clear_cache(self) -> None:
         self._result_cache.clear()
@@ -134,6 +157,18 @@ class TwOwnershipConcentrationService:
             )
             return cached.result
 
+        if (
+            cached is not None
+            and cached.last_failure_at is not None
+            and now - cached.last_failure_at < self._stale_refresh_backoff
+        ):
+            logger.info(
+                "tw_ownership_concentration stale_backoff stock_id=%s range=%s",
+                stock_id,
+                requested_range,
+            )
+            return _as_stale(cached.result)
+
         try:
             result = self._compute(stock_id, requested_range=requested_range, now=now)
         except Exception:
@@ -143,14 +178,13 @@ class TwOwnershipConcentrationService:
                     stock_id,
                     requested_range,
                 )
-                return TaiwanOwnershipConcentrationResult(
-                    stock_id=cached.result.stock_id,
-                    range=cached.result.range,
-                    as_of=cached.result.as_of,
-                    source=cached.result.source,
-                    stale=True,
-                    points=cached.result.points,
+                stale_result = _as_stale(cached.result)
+                self._result_cache[cache_key] = _OwnershipCacheEntry(
+                    cached_at=cached.cached_at,
+                    result=stale_result,
+                    last_failure_at=now,
                 )
+                return stale_result
             raise
 
         logger.info(
@@ -159,7 +193,7 @@ class TwOwnershipConcentrationService:
             requested_range,
             len(result.points),
         )
-        self._result_cache[cache_key] = ResultCacheEntry(cached_at=now, result=result)
+        self._result_cache[cache_key] = _OwnershipCacheEntry(cached_at=now, result=result)
         return result
 
     def _compute(
@@ -175,18 +209,22 @@ class TwOwnershipConcentrationService:
             not_found_error=_STOCK_NOT_FOUND_ERROR,
             non_taiwan_error=_NON_TW_STOCK_ERROR,
         )
-        symbol = (stock.symbol or "").strip().upper() or stock.id.split(":", 1)[-1].strip().upper()
+        board, symbol = require_twse_or_tpex_symbol(
+            stock,
+            quote_source=self._quote_source,
+            unknown_market_error=_UNKNOWN_TW_MARKET_ERROR,
+        )
+        source = _SOURCE_BY_BOARD[board]
 
         as_of_date = candidate_start_date(now)
         start_date = as_of_date - timedelta(days=_RANGE_DAYS[requested_range] - 1)
 
         try:
             if self._tdcc_csv_fetcher is not None:
-                # Test / single-snapshot seam.
                 tdcc_points = parse_tdcc_shareholding_csv(self._tdcc_csv_fetcher(), symbol=symbol)
             else:
                 tdcc_points = self._tdcc_history_fetcher(symbol, start_date, as_of_date)
-        except (HttpFetchError, OSError, ValueError, RuntimeError) as exc:
+        except (OSError, ValueError, RuntimeError) as exc:
             raise RuntimeError(_UPSTREAM_UNAVAILABLE_ERROR) from exc
 
         holders_by_date = {
@@ -196,13 +234,15 @@ class TwOwnershipConcentrationService:
         }
 
         try:
+            # Newest-first so the probe budget covers the summary card first.
             foreign_by_date = self._collect_foreign_ownership(
                 symbol=symbol,
+                board=board,
                 start_date=start_date,
                 end_date=as_of_date,
-                prefer_dates=sorted(holders_by_date),
+                prefer_dates=sorted(holders_by_date, reverse=True),
             )
-        except (HttpFetchError, OSError, ValueError, RuntimeError) as exc:
+        except (OSError, ValueError, RuntimeError) as exc:
             if not holders_by_date:
                 raise RuntimeError(_UPSTREAM_UNAVAILABLE_ERROR) from exc
             foreign_by_date = {}
@@ -212,7 +252,7 @@ class TwOwnershipConcentrationService:
                 stock_id=stock.id,
                 range=requested_range,
                 as_of=None,
-                source=_SOURCE,
+                source=source,
                 stale=False,
                 points=(),
             )
@@ -224,7 +264,7 @@ class TwOwnershipConcentrationService:
                 date=point_date,
                 holders_400_lots_or_more_percent=holders_by_date.get(point_date),
                 foreign_ownership_percent=foreign_by_date.get(point_date),
-                # Official TDCC / MI_QFIIS do not publish these ownership % series.
+                # Official TDCC / MI_QFIIS / TPEx QFII do not publish these series.
                 investment_trust_ownership_percent=None,
                 dealer_ownership_percent=None,
                 director_ownership_percent=None,
@@ -237,7 +277,7 @@ class TwOwnershipConcentrationService:
             stock_id=stock.id,
             range=requested_range,
             as_of=as_of,
-            source=_SOURCE,
+            source=source,
             stale=False,
             points=points,
         )
@@ -271,7 +311,7 @@ class TwOwnershipConcentrationService:
             for point in parse_tdcc_shareholding_csv(open_data_csv, symbol=symbol):
                 if _date_in_range(point.date, start_date=start_date, end_date=end_date):
                     by_date[point.date] = point
-        except (HttpFetchError, OSError, ValueError, RuntimeError):
+        except (OSError, ValueError, RuntimeError):
             # Portal history alone is enough when open-data is down.
             pass
 
@@ -281,11 +321,12 @@ class TwOwnershipConcentrationService:
         self,
         *,
         symbol: str,
+        board: TaiwanBoard,
         start_date: date,
         end_date: date,
         prefer_dates: list[str],
     ) -> dict[str, float]:
-        """Probe Fridays (prefer TDCC dates), bounded."""
+        """Probe Fridays (prefer newest TDCC dates), bounded; soft-fail per date."""
         results: dict[str, float] = {}
         preferred: list[date] = []
         for raw in prefer_dates:
@@ -305,7 +346,15 @@ class TwOwnershipConcentrationService:
         for probes, current in enumerate(candidates):
             if probes >= self._max_foreign_probes:
                 break
-            payload_map = self._foreign_ownership_fetcher(current)
+            try:
+                payload_map = self._foreign_ownership_fetcher(current, board)
+            except (OSError, ValueError, RuntimeError):
+                logger.warning(
+                    "tw_ownership_concentration foreign_probe_failed board=%s date=%s",
+                    board,
+                    current.isoformat(),
+                )
+                continue
             if not payload_map:
                 continue
             percent = payload_map.get(symbol)
@@ -333,6 +382,17 @@ class TwOwnershipConcentrationService:
         return _closes_from_candles(candles)
 
 
+def _as_stale(result: TaiwanOwnershipConcentrationResult) -> TaiwanOwnershipConcentrationResult:
+    return TaiwanOwnershipConcentrationResult(
+        stock_id=result.stock_id,
+        range=result.range,
+        as_of=result.as_of,
+        source=result.source,
+        stale=True,
+        points=result.points,
+    )
+
+
 def _fetch_tdcc_portal_history(
     *,
     symbol: str,
@@ -348,71 +408,78 @@ def _fetch_tdcc_portal_history(
         "User-Agent": "stock-ticker-tw-ownership/1",
         "Referer": _TDCC_PORTAL_URL,
     }
-
-    def _load_with_client(verify: bool) -> list[TdccConcentrationPoint]:
+    try:
         with httpx.Client(
             follow_redirects=True,
             timeout=timeout,
-            verify=verify,
+            verify=True,
             headers=headers,
         ) as client:
-            portal_response = client.get(_TDCC_PORTAL_URL)
-            portal_response.raise_for_status()
-            portal_html = portal_response.text
-            token = extract_tdcc_synchronizer_token(portal_html)
-            available = extract_tdcc_available_dates(portal_html)
-            if not available:
-                available = [
-                    current.isoformat() for current in _iter_friday_candidates(start_date, end_date)
-                ]
-            fir_date = available[0].replace("-", "") if available else end_date.strftime("%Y%m%d")
-            selected = [
-                point_date
-                for point_date in available
-                if _date_in_range(point_date, start_date=start_date, end_date=end_date)
-            ][:max_weeks]
-
-            points: list[TdccConcentrationPoint] = []
-            for point_date in selected:
-                if token is None:
-                    break
-                sca = point_date.replace("-", "")
-                result_response = client.post(
-                    _TDCC_PORTAL_URL,
-                    data={
-                        "SYNCHRONIZER_TOKEN": token,
-                        "SYNCHRONIZER_URI": "/portal/zh/smWeb/qryStock",
-                        "method": "submit",
-                        "firDate": fir_date,
-                        "scaDate": sca,
-                        "sqlMethod": "StockNo",
-                        "stockNo": symbol,
-                        "stockName": "",
-                    },
-                )
-                result_response.raise_for_status()
-                result_html = result_response.text
-                token = extract_tdcc_synchronizer_token(result_html) or token
-                point = parse_tdcc_qry_stock_html(
-                    result_html,
-                    symbol=symbol,
-                    point_date=point_date,
-                )
-                if point is not None:
-                    points.append(point)
-            return points
-
-    try:
-        return _load_with_client(verify=True)
-    except httpx.HTTPError:
-        try:
-            logger.warning(
-                "tdcc portal history retrying with insecure TLS fallback symbol=%s",
-                symbol,
+            return _portal_history_with_client(
+                client,
+                symbol=symbol,
+                start_date=start_date,
+                end_date=end_date,
+                max_weeks=max_weeks,
             )
-            return _load_with_client(verify=False)
-        except httpx.HTTPError as exc:
-            raise RuntimeError(_UPSTREAM_UNAVAILABLE_ERROR) from exc
+    except httpx.HTTPError as exc:
+        raise RuntimeError(_UPSTREAM_UNAVAILABLE_ERROR) from exc
+
+
+def _portal_history_with_client(
+    client: object,
+    *,
+    symbol: str,
+    start_date: date,
+    end_date: date,
+    max_weeks: int,
+) -> list[TdccConcentrationPoint]:
+    portal_response = client.get(_TDCC_PORTAL_URL)  # type: ignore[attr-defined]
+    portal_response.raise_for_status()
+    portal_html = portal_response.text
+    token = extract_tdcc_synchronizer_token(portal_html)
+    if token is None:
+        raise RuntimeError(_UPSTREAM_UNAVAILABLE_ERROR)
+
+    available = extract_tdcc_available_dates(portal_html)
+    if not available:
+        available = [current.isoformat() for current in _iter_friday_candidates(start_date, end_date)]
+    fir_date = available[0].replace("-", "") if available else end_date.strftime("%Y%m%d")
+    selected = [
+        point_date
+        for point_date in available
+        if _date_in_range(point_date, start_date=start_date, end_date=end_date)
+    ][:max_weeks]
+
+    points: list[TdccConcentrationPoint] = []
+    for point_date in selected:
+        if token is None:
+            raise RuntimeError(_UPSTREAM_UNAVAILABLE_ERROR)
+        sca = point_date.replace("-", "")
+        result_response = client.post(  # type: ignore[attr-defined]
+            _TDCC_PORTAL_URL,
+            data={
+                "SYNCHRONIZER_TOKEN": token,
+                "SYNCHRONIZER_URI": "/portal/zh/smWeb/qryStock",
+                "method": "submit",
+                "firDate": fir_date,
+                "scaDate": sca,
+                "sqlMethod": "StockNo",
+                "stockNo": symbol,
+                "stockName": "",
+            },
+        )
+        result_response.raise_for_status()
+        result_html = result_response.text
+        token = extract_tdcc_synchronizer_token(result_html) or token
+        point = parse_tdcc_qry_stock_html(
+            result_html,
+            symbol=symbol,
+            point_date=point_date,
+        )
+        if point is not None:
+            points.append(point)
+    return points
 
 
 def _iter_friday_candidates(start_date: date, end_date: date):
@@ -424,7 +491,23 @@ def _iter_friday_candidates(start_date: date, end_date: date):
         current -= timedelta(days=1)
 
 
-def _default_foreign_ownership_fetcher(current_date: date) -> dict[str, float] | None:
+def _default_foreign_ownership_fetcher(
+    current_date: date,
+    board: TaiwanBoard,
+) -> dict[str, float] | None:
+    if board == "TPEx":
+        payload = fetch_tpex_data(
+            _TPEX_QFII_URL,
+            params={
+                "date": current_date.strftime("%Y%m%d"),
+                "id": "",
+                "response": "json",
+            },
+            operation_name="tw_ownership_tpex_qfii",
+            resource_id=current_date.isoformat(),
+        )
+        return parse_tpex_qfii_foreign_ownership(payload)
+
     payload = fetch_twse_data(
         _TWSE_MI_QFIIS_URL,
         params={
@@ -440,6 +523,38 @@ def _default_foreign_ownership_fetcher(current_date: date) -> dict[str, float] |
 
 def parse_mi_qfiis_foreign_ownership(payload: object) -> dict[str, float] | None:
     """Extract symbol -> 全體外資及陸資持股比率 from a MI_QFIIS JSON payload."""
+    return _parse_foreign_ownership_table(
+        payload,
+        symbol_labels=("證券代號", "股票代號"),
+        percent_labels=("全體外資及陸資持股比率", "外資及陸資持股比率", "持股比率"),
+    )
+
+
+def parse_tpex_qfii_foreign_ownership(payload: object) -> dict[str, float] | None:
+    """Extract symbol -> 僑外資及陸資持股比率 from a TPEx QFII tables payload."""
+    if is_taiwan_no_data_payload(payload):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    tables = payload.get("tables")
+    if not isinstance(tables, list) or not tables:
+        return None
+    table = tables[0]
+    if not isinstance(table, dict):
+        return None
+    return _parse_foreign_ownership_table(
+        table,
+        symbol_labels=("代號", "證券代號", "股票代號"),
+        percent_labels=("僑外資及陸資持股比率(E=C/A)", "僑外資及陸資持股比率", "持股比率"),
+    )
+
+
+def _parse_foreign_ownership_table(
+    payload: object,
+    *,
+    symbol_labels: tuple[str, ...],
+    percent_labels: tuple[str, ...],
+) -> dict[str, float] | None:
     if is_taiwan_no_data_payload(payload):
         return None
     if not isinstance(payload, dict):
@@ -450,33 +565,53 @@ def parse_mi_qfiis_foreign_ownership(payload: object) -> dict[str, float] | None
     if not isinstance(fields, list) or not isinstance(data, list):
         return None
 
-    symbol_idx = taiwan_field_index(fields, "證券代號", "股票代號")
-    percent_idx = taiwan_field_index(
-        fields,
-        "全體外資及陸資持股比率",
-        "外資及陸資持股比率",
-        "持股比率",
-    )
+    symbol_idx = taiwan_field_index(fields, *symbol_labels)
+    percent_idx = taiwan_field_index(fields, *percent_labels)
     if symbol_idx is None or percent_idx is None:
         return None
 
     parsed: dict[str, float] = {}
     for row in data:
-        if not isinstance(row, (list, tuple)):
+        symbol, percent = _row_symbol_percent(
+            row,
+            fields=fields,
+            symbol_idx=symbol_idx,
+            percent_idx=percent_idx,
+            percent_labels=percent_labels,
+        )
+        if symbol is None or percent is None:
             continue
-        symbol_value = row[symbol_idx] if symbol_idx < len(row) else None
-        symbol = str(symbol_value).strip().upper() if symbol_value is not None else ""
-        if not symbol:
-            continue
-        percent = parse_taiwan_number(row[percent_idx] if percent_idx < len(row) else None)
-        if percent is None:
-            percent = parse_taiwan_number(
-                taiwan_row_value(row, fields, "全體外資及陸資持股比率", "外資及陸資持股比率")
-            )
-        if percent is None:
-            continue
-        parsed[symbol] = round(float(percent), 2)
+        parsed[symbol] = percent
     return parsed
+
+
+def _row_symbol_percent(
+    row: object,
+    *,
+    fields: list[object],
+    symbol_idx: int,
+    percent_idx: int,
+    percent_labels: tuple[str, ...],
+) -> tuple[str | None, float | None]:
+    if not isinstance(row, (list, tuple)):
+        return None, None
+    symbol_value = row[symbol_idx] if symbol_idx < len(row) else None
+    symbol = str(symbol_value).strip().upper() if symbol_value is not None else ""
+    if not symbol:
+        return None, None
+    raw_percent = row[percent_idx] if percent_idx < len(row) else None
+    percent = _parse_ownership_percent(raw_percent)
+    if percent is None:
+        percent = _parse_ownership_percent(taiwan_row_value(row, fields, *percent_labels))
+    if percent is None:
+        return symbol, None
+    return symbol, round(float(percent), 2)
+
+
+def _parse_ownership_percent(value: object) -> float | None:
+    if isinstance(value, str):
+        value = value.strip().rstrip("%％")
+    return parse_taiwan_number(value)
 
 
 def _closes_from_candles(candles: list[CandleRecord]) -> dict[str, float]:

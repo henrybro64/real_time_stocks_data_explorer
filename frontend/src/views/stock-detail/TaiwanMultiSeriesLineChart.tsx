@@ -230,7 +230,7 @@ export function TaiwanMultiSeriesLineChart({
             <span>{endLabel}</span>
           </div>
           {hoverPoint ? (
-            <div className="app-tw-multi-series-tooltip" data-testid="tw-multi-series-tooltip" role="status">
+            <output className="app-tw-multi-series-tooltip" data-testid="tw-multi-series-tooltip">
               <p>{labelFor(hoverPoint)}</p>
               <ul>
                 {lines.map((line) => {
@@ -246,7 +246,7 @@ export function TaiwanMultiSeriesLineChart({
                   );
                 })}
               </ul>
-            </div>
+            </output>
           ) : null}
         </div>
       </div>

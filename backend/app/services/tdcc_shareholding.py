@@ -98,22 +98,34 @@ def parse_tdcc_shareholding_rows(
     """Parse list-of-dict or list-of-list rows into concentration points."""
     if not rows:
         return []
-
     if isinstance(rows[0], dict):
-        # Reuse CSV path via a synthetic CSV for consistent header handling.
-        dict_rows = [row for row in rows if isinstance(row, dict)]
-        if not dict_rows:
-            return []
-        buffer = io.StringIO()
-        writer = csv.DictWriter(buffer, fieldnames=list(dict_rows[0].keys()))
-        writer.writeheader()
-        for row in dict_rows:
-            writer.writerow({key: "" if value is None else value for key, value in row.items()})
-        return parse_tdcc_shareholding_csv(buffer.getvalue(), symbol=symbol)
-
+        return _parse_tdcc_dict_rows([row for row in rows if isinstance(row, dict)], symbol=symbol)
     if fields is None:
         return []
+    return _parse_tdcc_list_rows(rows, fields=fields, symbol=symbol)
 
+
+def _parse_tdcc_dict_rows(
+    dict_rows: list[dict[str, object]],
+    *,
+    symbol: str | None,
+) -> list[TdccConcentrationPoint]:
+    if not dict_rows:
+        return []
+    buffer = io.StringIO()
+    writer = csv.DictWriter(buffer, fieldnames=list(dict_rows[0].keys()))
+    writer.writeheader()
+    for row in dict_rows:
+        writer.writerow({key: "" if value is None else value for key, value in row.items()})
+    return parse_tdcc_shareholding_csv(buffer.getvalue(), symbol=symbol)
+
+
+def _parse_tdcc_list_rows(
+    rows: list[dict[str, object]] | list[list[object]],
+    *,
+    fields: list[str],
+    symbol: str | None,
+) -> list[TdccConcentrationPoint]:
     field_map = {_normalize_header(name): index for index, name in enumerate(fields)}
     date_idx = _first_index(field_map, _DATE_HEADERS)
     symbol_idx = _first_index(field_map, _SYMBOL_HEADERS)
@@ -128,25 +140,43 @@ def parse_tdcc_shareholding_rows(
     for raw in rows:
         if not isinstance(raw, (list, tuple)):
             continue
-        try:
-            tier = _parse_tier_values(
-                date_value=raw[date_idx] if date_idx < len(raw) else None,
-                symbol_value=raw[symbol_idx] if symbol_idx < len(raw) else None,
-                level_value=raw[level_idx] if level_idx < len(raw) else None,
-                shares_value=raw[shares_idx] if shares_idx is not None and shares_idx < len(raw) else None,
-                percent_value=(
-                    raw[percent_idx] if percent_idx is not None and percent_idx < len(raw) else None
-                ),
-            )
-        except (TypeError, ValueError, IndexError):
-            continue
+        tier = _tier_from_list_row(
+            raw,
+            date_idx=date_idx,
+            symbol_idx=symbol_idx,
+            level_idx=level_idx,
+            shares_idx=shares_idx,
+            percent_idx=percent_idx,
+        )
         if tier is None:
             continue
         if wanted is not None and tier.symbol != wanted:
             continue
         tiers.append(tier)
-
     return concentrate_tiers(tiers)
+
+
+def _tier_from_list_row(
+    raw: list[object] | tuple[object, ...],
+    *,
+    date_idx: int,
+    symbol_idx: int,
+    level_idx: int,
+    shares_idx: int | None,
+    percent_idx: int | None,
+) -> TdccShareholdingTierRow | None:
+    try:
+        return _parse_tier_values(
+            date_value=raw[date_idx] if date_idx < len(raw) else None,
+            symbol_value=raw[symbol_idx] if symbol_idx < len(raw) else None,
+            level_value=raw[level_idx] if level_idx < len(raw) else None,
+            shares_value=raw[shares_idx] if shares_idx is not None and shares_idx < len(raw) else None,
+            percent_value=(
+                raw[percent_idx] if percent_idx is not None and percent_idx < len(raw) else None
+            ),
+        )
+    except (TypeError, ValueError, IndexError):
+        return None
 
 
 def parse_tdcc_qry_stock_html(
@@ -396,19 +426,21 @@ def _first_index(field_map: dict[str, int], labels: tuple[str, ...]) -> int | No
 
 
 def _extract_shareholding_table_html(text: str) -> str | None:
-    match = re.search(
-        r'<table[^>]*class=["\'][^"\']*table[^"\']*["\'][^>]*>[\s\S]*?</table>',
-        text,
-        flags=re.IGNORECASE,
-    )
-    if match and ("持股" in match.group(0) or "占集保" in match.group(0) or "佔集保" in match.group(0)):
-        return match.group(0)
-    # Fallback: first table that mentions the percent header.
-    for table_match in re.finditer(r"<table[\s\S]*?</table>", text, flags=re.IGNORECASE):
-        table = table_match.group(0)
+    """Return the first HTML table that looks like a TDCC shareholding result."""
+    lower = text.lower()
+    search_from = 0
+    while True:
+        start = lower.find("<table", search_from)
+        if start < 0:
+            return None
+        end = lower.find("</table>", start)
+        if end < 0:
+            return None
+        end += len("</table>")
+        table = text[start:end]
         if "占集保" in table or "佔集保" in table or "持股" in table:
             return table
-    return None
+        search_from = end
 
 
 class _HtmlTableExtractor(HTMLParser):

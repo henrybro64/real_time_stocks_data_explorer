@@ -88,7 +88,7 @@ def test_sma_candidates_present_with_enough_history() -> None:
         for i in range(220)
     ]
     candles = _series_from_ohlc(rows)
-    labels = {label for _, label in _collect_candidates(candles, reference=100.0)}
+    labels = {label for _, label in _collect_candidates(candles, evidence_candles=candles, reference=100.0)}
     assert {"sma10", "sma20", "sma50", "sma60", "sma200"}.issubset(labels)
 
     payload = build_key_price_levels(
@@ -114,7 +114,7 @@ def test_20d_and_60d_extremes() -> None:
     tail = [(50.0, 52.0, 48.0, 50.0)] * 14
     candles = _series_from_ohlc(base + spike_60 + mid + spike_20 + tail)
 
-    labels = {label for _, label in _collect_candidates(candles, reference=100.0)}
+    labels = {label for _, label in _collect_candidates(candles, evidence_candles=candles, reference=100.0)}
     assert "high_20d" in labels
     assert "high_60d" in labels
     # Identical window lows keep the longer label only.
@@ -309,7 +309,7 @@ def test_repeated_touch_and_consolidation_boundary_evidence() -> None:
     # Flat 10-day consolidation around 100, then a close at 100.
     final_rows = [(100.0, 101.0, 99.0, 100.0)] * 12
     candles = _flat_then_range(sessions=80, base=100.0, final_rows=final_rows)
-    labels = {label for _, label in _collect_candidates(candles, reference=100.0)}
+    labels = {label for _, label in _collect_candidates(candles, evidence_candles=candles, reference=100.0)}
     assert "repeated_touch" in labels
     assert "consolidation_boundary" in labels
 
@@ -324,8 +324,8 @@ def test_role_reversal_evidence_when_level_is_crossed() -> None:
             (110.0, 111.0, 100.0, 101.0),
         ],
     )
-    labels = {label for price, label in _collect_candidates(candles, reference=101.0) if price == 110.0 or label == "role_reversal"}
-    assert "role_reversal" in {label for _, label in _collect_candidates(candles, reference=101.0)}
+    labels = {label for price, label in _collect_candidates(candles, evidence_candles=candles, reference=101.0) if price == 110.0 or label == "role_reversal"}
+    assert "role_reversal" in {label for _, label in _collect_candidates(candles, evidence_candles=candles, reference=101.0)}
 
 
 def test_strength_scoring_maps_evidence_counts() -> None:

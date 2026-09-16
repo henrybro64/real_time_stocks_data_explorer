@@ -218,26 +218,35 @@ def _normalize_statement_columns(
     statement: Mapping[Any, Mapping[Any, Any]] | Sequence[Mapping[str, Any]],
 ) -> dict[str, dict[str, float | None]]:
     if isinstance(statement, Sequence) and not isinstance(statement, (str, bytes)):
-        columns: dict[str, dict[str, float | None]] = {}
-        for row in statement:
-            if not isinstance(row, Mapping):
-                continue
-            period_end = normalize_taiwan_date(row.get("periodEnd") or row.get("period_end") or row.get("date"))
-            if period_end is None:
-                continue
-            columns[period_end] = {
-                "revenue": _as_float(row.get("revenue") or row.get("Total Revenue")),
-                "gross": _as_float(row.get("gross") or row.get("Gross Profit")),
-                "operating": _as_float(row.get("operating") or row.get("Operating Income")),
-                "pretax": _as_float(row.get("pretax") or row.get("Pretax Income")),
-                "net": _as_float(row.get("net") or row.get("Net Income")),
-            }
-        return columns
-
+        return _normalize_period_row_list(statement)
     if not isinstance(statement, Mapping):
         return {}
+    return _normalize_yfinance_statement(statement)
 
-    # yfinance DataFrame-like: row label -> {Timestamp/str: value}
+
+def _normalize_period_row_list(
+    statement: Sequence[Mapping[str, Any]],
+) -> dict[str, dict[str, float | None]]:
+    columns: dict[str, dict[str, float | None]] = {}
+    for row in statement:
+        if not isinstance(row, Mapping):
+            continue
+        period_end = normalize_taiwan_date(row.get("periodEnd") or row.get("period_end") or row.get("date"))
+        if period_end is None:
+            continue
+        columns[period_end] = {
+            "revenue": _as_float(row.get("revenue") or row.get("Total Revenue")),
+            "gross": _as_float(row.get("gross") or row.get("Gross Profit")),
+            "operating": _as_float(row.get("operating") or row.get("Operating Income")),
+            "pretax": _as_float(row.get("pretax") or row.get("Pretax Income")),
+            "net": _as_float(row.get("net") or row.get("Net Income")),
+        }
+    return columns
+
+
+def _normalize_yfinance_statement(
+    statement: Mapping[Any, Mapping[Any, Any]],
+) -> dict[str, dict[str, float | None]]:
     period_ends: set[str] = set()
     labeled_rows: dict[str, Mapping[Any, Any]] = {}
     for raw_label, series in statement.items():
@@ -261,10 +270,18 @@ def _normalize_statement_columns(
         for period in period_ends
     }
 
+    # Prefer earlier aliases in each label tuple (e.g. Operating Income over EBIT).
+    best_series: dict[str, tuple[int, Mapping[Any, Any]]] = {}
     for label, series in labeled_rows.items():
-        field = _map_row_label(label)
-        if field is None:
+        mapped = _map_row_label_priority(label)
+        if mapped is None:
             continue
+        field, priority = mapped
+        current = best_series.get(field)
+        if current is None or priority < current[0]:
+            best_series[field] = (priority, series)
+
+    for field, (_priority, series) in best_series.items():
         for period, value in series.items():
             period_end = _period_end_key(period)
             if period_end is None or period_end not in columns:
@@ -286,35 +303,49 @@ def convert_ytd_to_quarterly(
         by_year.setdefault(year, []).append(period)
 
     converted: dict[str, dict[str, float | None]] = {}
-    for _year, periods in by_year.items():
-        previous: dict[str, float | None] = {
-            "revenue": 0.0,
-            "gross": 0.0,
-            "operating": 0.0,
-            "pretax": 0.0,
-            "net": 0.0,
-        }
-        for period in periods:
-            current = columns[period]
-            quarter_values: dict[str, float | None] = {}
-            for field in ("revenue", "gross", "operating", "pretax", "net"):
-                current_value = current.get(field)
-                previous_value = previous.get(field)
-                if current_value is None:
-                    quarter_values[field] = None
-                elif previous_value is None:
-                    quarter_values[field] = current_value
-                else:
-                    quarter_values[field] = current_value - previous_value
-                if current_value is not None:
-                    previous[field] = current_value
-            converted[period] = quarter_values
+    for periods in by_year.values():
+        converted.update(_ytd_year_to_quarterly(columns, periods))
     return converted
 
 
-def _map_row_label(label: str) -> str | None:
+def _ytd_year_to_quarterly(
+    columns: dict[str, dict[str, float | None]],
+    periods: list[str],
+) -> dict[str, dict[str, float | None]]:
+    previous: dict[str, float | None] = {
+        "revenue": 0.0,
+        "gross": 0.0,
+        "operating": 0.0,
+        "pretax": 0.0,
+        "net": 0.0,
+    }
+    converted: dict[str, dict[str, float | None]] = {}
+    for period in periods:
+        current = columns[period]
+        quarter_values: dict[str, float | None] = {}
+        for field in ("revenue", "gross", "operating", "pretax", "net"):
+            quarter_values[field] = _ytd_field_delta(current.get(field), previous.get(field))
+            if current.get(field) is not None:
+                previous[field] = current.get(field)
+        converted[period] = quarter_values
+    return converted
+
+
+def _ytd_field_delta(
+    current_value: float | None,
+    previous_value: float | None,
+) -> float | None:
+    if current_value is None:
+        return None
+    if previous_value is None:
+        return current_value
+    return current_value - previous_value
+
+
+def _map_row_label_priority(label: str) -> tuple[str, int] | None:
+    """Return ``(field, priority)`` where lower priority wins when aliases coexist."""
     normalized = " ".join(label.strip().split())
-    compact = normalized.replace(" ", "")
+    compact = normalized.replace(" ", "").lower()
     checks = (
         ("revenue", _REVENUE_LABELS),
         ("gross", _GROSS_LABELS),
@@ -323,10 +354,15 @@ def _map_row_label(label: str) -> str | None:
         ("net", _NET_LABELS),
     )
     for field, labels in checks:
-        for candidate in labels:
-            if normalized.lower() == candidate.lower() or compact.lower() == candidate.replace(" ", "").lower():
-                return field
+        for priority, candidate in enumerate(labels):
+            if normalized.lower() == candidate.lower() or compact == candidate.replace(" ", "").lower():
+                return field, priority
     return None
+
+
+def _map_row_label(label: str) -> str | None:
+    mapped = _map_row_label_priority(label)
+    return None if mapped is None else mapped[0]
 
 
 def _period_end_key(value: object) -> str | None:
@@ -358,7 +394,9 @@ def _as_float(value: object) -> float | None:
         numeric = float(value)  # type: ignore[arg-type]
     except (TypeError, ValueError):
         return None
-    if numeric != numeric:  # NaN
+    import math
+
+    if math.isnan(numeric):
         return None
     return numeric
 

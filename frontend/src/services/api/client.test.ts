@@ -493,7 +493,7 @@ describe("refreshRankings", () => {
     expect(String(fetchMock.mock.calls[0]?.[0])).toContain("/rankings/refresh");
     const init = fetchMock.mock.calls[0]?.[1] as RequestInit | undefined;
     expect(init?.method).toBe("POST");
-    expect(JSON.parse(String(init?.body))).toEqual({
+    expect(JSON.parse(String(init?.body ?? ""))).toEqual({
       market: "US",
       rankingType: "volume",
       universe: "DJIA",

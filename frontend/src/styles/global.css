@@ -1757,6 +1757,10 @@ input {
   display: flex;
   flex-wrap: wrap;
   gap: 0.4rem;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-inline-size: 0;
 }
 
 .app-tw-market-positive {

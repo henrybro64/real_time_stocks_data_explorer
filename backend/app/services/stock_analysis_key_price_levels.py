@@ -18,6 +18,7 @@ Side = Literal["support", "resistance"]
 
 _MIN_SESSIONS = 20
 _GOOD_COVERAGE_SESSIONS = 60
+_VISIBLE_EVIDENCE_SESSIONS = 260  # Match chart 1Y visible window; exclude SMA warm-up.
 _NEAR_REFERENCE_PCT = 0.003  # 0.3% — skip (decision zone) for v1
 _CLUSTER_PCT = 0.004  # 0.4% of mid
 _MAX_ZONE_WIDTH_PCT = 0.03  # ~3% of reference
@@ -86,7 +87,17 @@ def build_key_price_levels(
             availability="unavailable",
         )
 
-    candidates = _collect_candidates(candles, reference=reference)
+    evidence_candles = (
+        candles[-_VISIBLE_EVIDENCE_SESSIONS:]
+        if len(candles) > _VISIBLE_EVIDENCE_SESSIONS
+        else candles
+    )
+    # SMAs may use warm-up history; non-SMA evidence stays in the visible 1Y window.
+    candidates = _collect_candidates(
+        candles,
+        evidence_candles=evidence_candles,
+        reference=reference,
+    )
     supports = _build_side_zones(candidates, reference=reference, side="support")
     resistances = _build_side_zones(candidates, reference=reference, side="resistance")
 
@@ -153,22 +164,52 @@ def _round_price(value: float) -> float:
 def _collect_candidates(
     candles: list[CandleRecord],
     *,
+    evidence_candles: list[CandleRecord],
     reference: float,
 ) -> list[tuple[float, str]]:
-    """Return (price, evidence_type) pairs; invalid prices are dropped."""
-    candidates: list[tuple[float, str]] = []
+    """Return (price, evidence_type) pairs; invalid prices are dropped.
 
+    ``candles`` may include SMA warm-up. ``evidence_candles`` should be the
+    visible analysis window (e.g. ~260 1Y sessions) for swings/touches/windows.
+    """
+    candidates: list[tuple[float, str]] = []
+    _append_session_extremes(candidates, evidence_candles)
+    _append_sma_candidates(candidates, candles)
+    _append_window_extremes(candidates, evidence_candles)
+    for price in _swing_extremes(evidence_candles, kind="high"):
+        _append_candidate(candidates, price, "swing_high")
+    for price in _swing_extremes(evidence_candles, kind="low"):
+        _append_candidate(candidates, price, "swing_low")
+    for price in _repeated_touch_levels(evidence_candles):
+        _append_candidate(candidates, price, "repeated_touch")
+    for price in _consolidation_boundaries(evidence_candles):
+        _append_candidate(candidates, price, "consolidation_boundary")
+    _append_role_reversals(candidates, evidence_candles, reference=reference)
+    return candidates
+
+
+def _append_session_extremes(
+    candidates: list[tuple[float, str]],
+    candles: list[CandleRecord],
+) -> None:
+    if not candles:
+        return
     latest = candles[-1]
     _append_candidate(candidates, float(latest.high), "latest_high")
     _append_candidate(candidates, float(latest.low), "latest_low")
+    if len(candles) < 2:
+        return
+    prior = candles[-2]
+    # Prior session extremes help clustering but have no dedicated evidence
+    # label; only keep them when they later merge with labeled candidates.
+    _append_candidate(candidates, float(prior.high), "_prior_high")
+    _append_candidate(candidates, float(prior.low), "_prior_low")
 
-    if len(candles) >= 2:
-        prior = candles[-2]
-        # Prior session extremes help clustering but have no dedicated evidence
-        # label; only keep them when they later merge with labeled candidates.
-        _append_candidate(candidates, float(prior.high), "_prior_high")
-        _append_candidate(candidates, float(prior.low), "_prior_low")
 
+def _append_sma_candidates(
+    candidates: list[tuple[float, str]],
+    candles: list[CandleRecord],
+) -> None:
     for window, label in _SMA_WINDOWS:
         if len(candles) < window:
             continue
@@ -179,6 +220,11 @@ def _collect_candidates(
         if value is not None:
             _append_candidate(candidates, float(value), label)
 
+
+def _append_window_extremes(
+    candidates: list[tuple[float, str]],
+    candles: list[CandleRecord],
+) -> None:
     high_20d = _window_extreme(candles, 20, kind="high")
     low_20d = _window_extreme(candles, 20, kind="low")
     high_60d = _window_extreme(candles, 60, kind="high")
@@ -205,29 +251,24 @@ def _collect_candidates(
             drop_labels={"low_20d", "latest_low"},
         )
 
-    for price in _swing_extremes(candles, kind="high"):
-        _append_candidate(candidates, price, "swing_high")
-    for price in _swing_extremes(candles, kind="low"):
-        _append_candidate(candidates, price, "swing_low")
 
-    for price in _repeated_touch_levels(candles):
-        _append_candidate(candidates, price, "repeated_touch")
-
-    for price in _consolidation_boundaries(candles):
-        _append_candidate(candidates, price, "consolidation_boundary")
-
-    # Role-reversal: a level between prior close and current close flipped sides.
-    if len(candles) >= 2:
-        prior_close = float(candles[-2].close)
-        if _is_valid_price(prior_close):
-            for price, label in list(candidates):
-                if label.startswith("_"):
-                    continue
-                crossed = (prior_close - price) * (reference - price) < 0
-                if crossed:
-                    _append_candidate(candidates, price, "role_reversal")
-
-    return candidates
+def _append_role_reversals(
+    candidates: list[tuple[float, str]],
+    candles: list[CandleRecord],
+    *,
+    reference: float,
+) -> None:
+    if len(candles) < 2:
+        return
+    prior_close = float(candles[-2].close)
+    if not _is_valid_price(prior_close):
+        return
+    for price, label in tuple(candidates):
+        if label.startswith("_"):
+            continue
+        crossed = (prior_close - price) * (reference - price) < 0
+        if crossed:
+            _append_candidate(candidates, price, "role_reversal")
 
 
 def _consolidation_boundaries(candles: list[CandleRecord]) -> list[float]:
@@ -305,28 +346,42 @@ def _swing_extremes(
         return []
     swings: list[float] = []
     for index in range(n, len(candles) - n):
-        candle = candles[index]
-        if kind == "high":
-            pivot = float(candle.high)
-            if not _is_valid_price(pivot):
-                continue
-            if all(
-                pivot > float(candles[index - offset].high)
-                and pivot > float(candles[index + offset].high)
-                for offset in range(1, n + 1)
-            ):
-                swings.append(pivot)
-        else:
-            pivot = float(candle.low)
-            if not _is_valid_price(pivot):
-                continue
-            if all(
-                pivot < float(candles[index - offset].low)
-                and pivot < float(candles[index + offset].low)
-                for offset in range(1, n + 1)
-            ):
-                swings.append(pivot)
+        pivot = _swing_pivot(candles, index=index, kind=kind, neighbors=n)
+        if pivot is not None:
+            swings.append(pivot)
     return swings
+
+
+def _swing_pivot(
+    candles: list[CandleRecord],
+    *,
+    index: int,
+    kind: Literal["high", "low"],
+    neighbors: int,
+) -> float | None:
+    candle = candles[index]
+    if kind == "high":
+        pivot = float(candle.high)
+        if not _is_valid_price(pivot):
+            return None
+        if all(
+            pivot > float(candles[index - offset].high)
+            and pivot > float(candles[index + offset].high)
+            for offset in range(1, neighbors + 1)
+        ):
+            return pivot
+        return None
+
+    pivot = float(candle.low)
+    if not _is_valid_price(pivot):
+        return None
+    if all(
+        pivot < float(candles[index - offset].low)
+        and pivot < float(candles[index + offset].low)
+        for offset in range(1, neighbors + 1)
+    ):
+        return pivot
+    return None
 
 
 def _repeated_touch_levels(candles: list[CandleRecord]) -> list[float]:
@@ -346,9 +401,11 @@ def _repeated_touch_levels(candles: list[CandleRecord]) -> list[float]:
     levels: list[float] = []
     cluster: list[float] = [touches[0]]
     for price in touches[1:]:
-        mid = (cluster[0] + price) / 2.0
-        tolerance = _cluster_tolerance(mid)
-        if abs(price - cluster[-1]) <= tolerance:
+        # Bound width against the cluster anchor so single-linkage cannot chain
+        # a trending series into one artificially wide "repeated" level.
+        anchor = cluster[0]
+        tolerance = _cluster_tolerance(anchor)
+        if abs(price - anchor) <= tolerance:
             cluster.append(price)
             continue
         _maybe_add_repeated_level(levels, cluster)
