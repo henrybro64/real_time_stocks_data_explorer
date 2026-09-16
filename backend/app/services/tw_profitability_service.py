@@ -14,10 +14,17 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from app.services.quote_service import QuoteService, quote_service
-from app.services.taiwan_history_scan import ResultCacheEntry
 from app.services.taiwan_market_data import normalize_taiwan_date, require_taiwan_stock
+from app.services.taiwan_signals_redis_cache import (
+    get_cached_json,
+    parse_cached_at,
+    profitability_cache_key,
+    set_cached_json,
+)
 
 _RESULT_CACHE_TTL = timedelta(hours=24)
+_STALE_REFRESH_BACKOFF = timedelta(minutes=15)
+_REDIS_HARD_TTL = timedelta(hours=48)
 _DEFAULT_QUARTERS = 12
 _ALLOWED_QUARTERS = {8, 12, 20}
 _STOCK_NOT_FOUND_ERROR = "Stock not found"
@@ -76,6 +83,13 @@ class TaiwanProfitabilityResult:
     points: tuple[TaiwanProfitabilityPoint, ...]
 
 
+@dataclass
+class _ProfitabilityCacheEntry:
+    cached_at: datetime
+    result: TaiwanProfitabilityResult
+    last_failure_at: datetime | None = None
+
+
 QuarterlyIncomeFetcher = Callable[[str], Mapping[Any, Mapping[Any, Any]] | None]
 
 
@@ -87,12 +101,14 @@ class TwProfitabilityService:
         quarterly_income_fetcher: QuarterlyIncomeFetcher | None = None,
         now_provider: Callable[[], datetime] | None = None,
         result_cache_ttl: timedelta = _RESULT_CACHE_TTL,
+        stale_refresh_backoff: timedelta = _STALE_REFRESH_BACKOFF,
     ) -> None:
         self._quote_source = quote_source or quote_service
         self._quarterly_income_fetcher = quarterly_income_fetcher or _default_quarterly_income_fetcher
         self._now_provider = now_provider or (lambda: datetime.now(UTC))
         self._result_cache_ttl = result_cache_ttl
-        self._result_cache: dict[tuple[str, int], ResultCacheEntry[TaiwanProfitabilityResult]] = {}
+        self._stale_refresh_backoff = stale_refresh_backoff
+        self._result_cache: dict[tuple[str, int], _ProfitabilityCacheEntry] = {}
 
     def clear_cache(self) -> None:
         self._result_cache.clear()
@@ -110,21 +126,56 @@ class TwProfitabilityService:
         if cached is not None and now - cached.cached_at < self._result_cache_ttl:
             return cached.result
 
+        if (
+            cached is not None
+            and cached.last_failure_at is not None
+            and now - cached.last_failure_at < self._stale_refresh_backoff
+        ):
+            return _as_stale(cached.result)
+
+        redis_payload = get_cached_json(profitability_cache_key(stock_id, requested_quarters))
+        redis_cached_at = parse_cached_at(redis_payload) if redis_payload else None
+        redis_result = (
+            _result_from_redis_payload(redis_payload) if redis_payload is not None else None
+        )
+        if (
+            redis_result is not None
+            and redis_cached_at is not None
+            and now - redis_cached_at < self._result_cache_ttl
+        ):
+            self._result_cache[cache_key] = _ProfitabilityCacheEntry(
+                cached_at=redis_cached_at,
+                result=redis_result,
+            )
+            return redis_result
+
         try:
             result = self._compute(stock_id, requested_quarters=requested_quarters)
         except Exception:
             if cached is not None:
-                return TaiwanProfitabilityResult(
-                    stock_id=cached.result.stock_id,
-                    quarters=cached.result.quarters,
-                    as_of=cached.result.as_of,
-                    source=cached.result.source,
-                    stale=True,
-                    points=cached.result.points,
+                stale_result = _as_stale(cached.result)
+                self._result_cache[cache_key] = _ProfitabilityCacheEntry(
+                    cached_at=cached.cached_at,
+                    result=stale_result,
+                    last_failure_at=now,
                 )
+                return stale_result
+            if redis_result is not None:
+                stale_result = _as_stale(redis_result)
+                self._result_cache[cache_key] = _ProfitabilityCacheEntry(
+                    cached_at=redis_cached_at or now,
+                    result=stale_result,
+                    last_failure_at=now,
+                )
+                return stale_result
             raise
 
-        self._result_cache[cache_key] = ResultCacheEntry(cached_at=now, result=result)
+        self._result_cache[cache_key] = _ProfitabilityCacheEntry(cached_at=now, result=result)
+        set_cached_json(
+            profitability_cache_key(stock_id, requested_quarters),
+            ttl_seconds=int(_REDIS_HARD_TTL.total_seconds()),
+            payload=_result_to_redis_payload(result, cached_at=now),
+        )
         return result
 
     def _compute(self, stock_id: str, *, requested_quarters: int) -> TaiwanProfitabilityResult:
@@ -154,6 +205,88 @@ class TwProfitabilityService:
             stale=False,
             points=tuple(points),
         )
+
+
+def _as_stale(result: TaiwanProfitabilityResult) -> TaiwanProfitabilityResult:
+    return TaiwanProfitabilityResult(
+        stock_id=result.stock_id,
+        quarters=result.quarters,
+        as_of=result.as_of,
+        source=result.source,
+        stale=True,
+        points=result.points,
+    )
+
+
+def _result_to_redis_payload(result: TaiwanProfitabilityResult, *, cached_at: datetime) -> dict:
+    return {
+        "cachedAt": cached_at.isoformat().replace("+00:00", "Z"),
+        "stockId": result.stock_id,
+        "quarters": result.quarters,
+        "asOf": result.as_of,
+        "source": result.source,
+        "stale": False,
+        "points": [
+            {
+                "fiscalQuarter": point.fiscal_quarter,
+                "periodEnd": point.period_end,
+                "grossMarginPercent": point.gross_margin_percent,
+                "operatingMarginPercent": point.operating_margin_percent,
+                "pretaxMarginPercent": point.pretax_margin_percent,
+                "netMarginPercent": point.net_margin_percent,
+                "quarterEndClose": point.quarter_end_close,
+            }
+            for point in result.points
+        ],
+    }
+
+
+def _result_from_redis_payload(payload: dict) -> TaiwanProfitabilityResult | None:
+    stock_id = payload.get("stockId")
+    quarters = payload.get("quarters")
+    if not isinstance(stock_id, str) or quarters not in _ALLOWED_QUARTERS:
+        return None
+    raw_points = payload.get("points")
+    if not isinstance(raw_points, list):
+        return None
+    points: list[TaiwanProfitabilityPoint] = []
+    for item in raw_points:
+        if not isinstance(item, dict):
+            continue
+        fiscal = item.get("fiscalQuarter")
+        period_end = item.get("periodEnd")
+        if not isinstance(fiscal, str) or not isinstance(period_end, str):
+            continue
+        points.append(
+            TaiwanProfitabilityPoint(
+                fiscal_quarter=fiscal,
+                period_end=period_end,
+                gross_margin_percent=_optional_float(item.get("grossMarginPercent")),
+                operating_margin_percent=_optional_float(item.get("operatingMarginPercent")),
+                pretax_margin_percent=_optional_float(item.get("pretaxMarginPercent")),
+                net_margin_percent=_optional_float(item.get("netMarginPercent")),
+                quarter_end_close=_optional_float(item.get("quarterEndClose")),
+            )
+        )
+    as_of = payload.get("asOf")
+    source = payload.get("source")
+    return TaiwanProfitabilityResult(
+        stock_id=stock_id,
+        quarters=int(quarters),
+        as_of=as_of if isinstance(as_of, str) else None,
+        source=source if isinstance(source, str) else _SOURCE,
+        stale=False,
+        points=tuple(points),
+    )
+
+
+def _optional_float(value: object) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
 
 
 def build_profitability_points(

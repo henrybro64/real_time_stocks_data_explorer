@@ -30,6 +30,12 @@ from app.services.taiwan_market_data import (
     taiwan_field_index,
     taiwan_row_value,
 )
+from app.services.taiwan_signals_redis_cache import (
+    get_cached_json,
+    ownership_cache_key,
+    parse_cached_at,
+    set_cached_json,
+)
 from app.services.tdcc_shareholding import (
     TdccConcentrationPoint,
     extract_tdcc_available_dates,
@@ -45,6 +51,8 @@ logger = logging.getLogger(__name__)
 
 _RESULT_CACHE_TTL = timedelta(hours=12)
 _STALE_REFRESH_BACKOFF = timedelta(minutes=15)
+# Hard Redis TTL keeps a stale copy available after soft TTL for failover.
+_REDIS_HARD_TTL = timedelta(hours=24)
 # Fridays only; ~26 covers 6M weekly or 1Y biweekly-ish. Prefer newest TDCC dates.
 _MAX_FOREIGN_PROBES = 26
 _MAX_TDCC_WEEKS = 55
@@ -169,6 +177,29 @@ class TwOwnershipConcentrationService:
             )
             return _as_stale(cached.result)
 
+        redis_payload = get_cached_json(ownership_cache_key(stock_id, requested_range))
+        redis_cached_at = parse_cached_at(redis_payload) if redis_payload else None
+        redis_result = (
+            _result_from_redis_payload(redis_payload)
+            if redis_payload is not None
+            else None
+        )
+        if (
+            redis_result is not None
+            and redis_cached_at is not None
+            and now - redis_cached_at < self._result_cache_ttl
+        ):
+            self._result_cache[cache_key] = _OwnershipCacheEntry(
+                cached_at=redis_cached_at,
+                result=redis_result,
+            )
+            logger.info(
+                "tw_ownership_concentration redis_hit stock_id=%s range=%s",
+                stock_id,
+                requested_range,
+            )
+            return redis_result
+
         try:
             result = self._compute(stock_id, requested_range=requested_range, now=now)
         except Exception:
@@ -185,6 +216,19 @@ class TwOwnershipConcentrationService:
                     last_failure_at=now,
                 )
                 return stale_result
+            if redis_result is not None:
+                logger.warning(
+                    "tw_ownership_concentration redis_stale_fallback stock_id=%s range=%s",
+                    stock_id,
+                    requested_range,
+                )
+                stale_result = _as_stale(redis_result)
+                self._result_cache[cache_key] = _OwnershipCacheEntry(
+                    cached_at=redis_cached_at or now,
+                    result=stale_result,
+                    last_failure_at=now,
+                )
+                return stale_result
             raise
 
         logger.info(
@@ -194,6 +238,11 @@ class TwOwnershipConcentrationService:
             len(result.points),
         )
         self._result_cache[cache_key] = _OwnershipCacheEntry(cached_at=now, result=result)
+        set_cached_json(
+            ownership_cache_key(stock_id, requested_range),
+            ttl_seconds=int(_REDIS_HARD_TTL.total_seconds()),
+            payload=_result_to_redis_payload(result, cached_at=now),
+        )
         return result
 
     def _compute(
@@ -289,11 +338,13 @@ class TwOwnershipConcentrationService:
         end_date: date,
     ) -> list[TdccConcentrationPoint]:
         """Fetch per-Friday portal history, merging the latest open-data snapshot."""
+        span_weeks = max(1, (end_date - start_date).days // 7 + 2)
+        max_weeks = min(self._max_tdcc_weeks, span_weeks)
         portal_points = _fetch_tdcc_portal_history(
             symbol=symbol,
             start_date=start_date,
             end_date=end_date,
-            max_weeks=self._max_tdcc_weeks,
+            max_weeks=max_weeks,
         )
         by_date = {point.date: point for point in portal_points}
 
@@ -382,6 +433,22 @@ class TwOwnershipConcentrationService:
         return _closes_from_candles(candles)
 
 
+def _select_portal_dates(
+    available: list[str],
+    *,
+    start_date: date,
+    end_date: date,
+    max_weeks: int,
+) -> list[str]:
+    """Return in-range portal Fridays newest-first, capped at ``max_weeks``."""
+    in_range = [
+        point_date
+        for point_date in available
+        if _date_in_range(point_date, start_date=start_date, end_date=end_date)
+    ]
+    return sorted(set(in_range), reverse=True)[: max(1, max_weeks)]
+
+
 def _as_stale(result: TaiwanOwnershipConcentrationResult) -> TaiwanOwnershipConcentrationResult:
     return TaiwanOwnershipConcentrationResult(
         stock_id=result.stock_id,
@@ -391,6 +458,79 @@ def _as_stale(result: TaiwanOwnershipConcentrationResult) -> TaiwanOwnershipConc
         stale=True,
         points=result.points,
     )
+
+
+def _result_to_redis_payload(
+    result: TaiwanOwnershipConcentrationResult,
+    *,
+    cached_at: datetime,
+) -> dict:
+    return {
+        "cachedAt": cached_at.isoformat().replace("+00:00", "Z"),
+        "stockId": result.stock_id,
+        "range": result.range,
+        "asOf": result.as_of,
+        "source": result.source,
+        "stale": False,
+        "points": [
+            {
+                "date": point.date,
+                "holders400LotsOrMorePercent": point.holders_400_lots_or_more_percent,
+                "foreignOwnershipPercent": point.foreign_ownership_percent,
+                "investmentTrustOwnershipPercent": point.investment_trust_ownership_percent,
+                "dealerOwnershipPercent": point.dealer_ownership_percent,
+                "directorOwnershipPercent": point.director_ownership_percent,
+                "weeklyClose": point.weekly_close,
+            }
+            for point in result.points
+        ],
+    }
+
+
+def _result_from_redis_payload(payload: dict) -> TaiwanOwnershipConcentrationResult | None:
+    stock_id = payload.get("stockId")
+    range_name = payload.get("range")
+    if not isinstance(stock_id, str) or range_name not in _RANGE_DAYS:
+        return None
+    raw_points = payload.get("points")
+    if not isinstance(raw_points, list):
+        return None
+    points: list[TaiwanOwnershipConcentrationPoint] = []
+    for item in raw_points:
+        if not isinstance(item, dict) or not isinstance(item.get("date"), str):
+            continue
+        points.append(
+            TaiwanOwnershipConcentrationPoint(
+                date=item["date"],
+                holders_400_lots_or_more_percent=_optional_float(item.get("holders400LotsOrMorePercent")),
+                foreign_ownership_percent=_optional_float(item.get("foreignOwnershipPercent")),
+                investment_trust_ownership_percent=_optional_float(
+                    item.get("investmentTrustOwnershipPercent")
+                ),
+                dealer_ownership_percent=_optional_float(item.get("dealerOwnershipPercent")),
+                director_ownership_percent=_optional_float(item.get("directorOwnershipPercent")),
+                weekly_close=_optional_float(item.get("weeklyClose")),
+            )
+        )
+    as_of = payload.get("asOf")
+    source = payload.get("source")
+    return TaiwanOwnershipConcentrationResult(
+        stock_id=stock_id,
+        range=range_name,  # type: ignore[arg-type]
+        as_of=as_of if isinstance(as_of, str) else None,
+        source=source if isinstance(source, str) else _SOURCE_BY_BOARD["TWSE"],
+        stale=False,
+        points=tuple(points),
+    )
+
+
+def _optional_float(value: object) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
 
 
 def _fetch_tdcc_portal_history(
@@ -444,12 +584,14 @@ def _portal_history_with_client(
     available = extract_tdcc_available_dates(portal_html)
     if not available:
         available = [current.isoformat() for current in _iter_friday_candidates(start_date, end_date)]
-    fir_date = available[0].replace("-", "") if available else end_date.strftime("%Y%m%d")
-    selected = [
-        point_date
-        for point_date in available
-        if _date_in_range(point_date, start_date=start_date, end_date=end_date)
-    ][:max_weeks]
+    # Portal HTML option order is not a contract — always take newest first.
+    selected = _select_portal_dates(
+        available,
+        start_date=start_date,
+        end_date=end_date,
+        max_weeks=max_weeks,
+    )
+    fir_date = selected[0].replace("-", "") if selected else end_date.strftime("%Y%m%d")
 
     points: list[TdccConcentrationPoint] = []
     for point_date in selected:

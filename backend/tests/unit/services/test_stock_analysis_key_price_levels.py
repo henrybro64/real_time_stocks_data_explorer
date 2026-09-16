@@ -314,6 +314,53 @@ def test_repeated_touch_and_consolidation_boundary_evidence() -> None:
     assert "consolidation_boundary" in labels
 
 
+def test_repeated_touch_cluster_bounded_by_anchor_not_chain() -> None:
+    from app.services.stock_analysis_key_price_levels import _repeated_touch_levels
+
+    # Dense rising highs: neighbor-only single-linkage would merge the whole run
+    # into one wide "repeated" level near the midpoint; anchor bounding must not.
+    highs = [100.0 + index * 0.2 for index in range(30)]  # 100 → 105.8
+    candles = [
+        CandleRecord(
+            time=f"2026-03-{(index % 28) + 1:02d}",
+            open=price,
+            high=price,
+            low=price - 0.05,
+            close=price,
+            volume=1_000,
+        )
+        for index, price in enumerate(highs)
+    ]
+    levels = _repeated_touch_levels(candles)
+    assert levels
+    full_span_mid = (highs[0] + highs[-1]) / 2.0
+    # Neighbor-chaining would emit one midpoint; anchor bounding emits many locals.
+    assert len(levels) >= 5
+    assert min(abs(level - full_span_mid) for level in levels) > 0.05
+
+
+def test_evidence_window_excludes_sma_warmup_swings() -> None:
+    from app.services.stock_analysis_key_price_levels import _VISIBLE_EVIDENCE_SESSIONS
+
+    # Unique swing high only in the warm-up prefix; visible window is flat.
+    warmup_rows = [(80.0, 80.0, 80.0, 80.0)] * 40
+    warmup_rows[20] = (80.0, 200.0, 79.0, 80.0)  # swing high 200 only in warm-up
+    visible_rows = [(100.0, 101.0, 99.0, 100.0)] * _VISIBLE_EVIDENCE_SESSIONS
+    candles = _series_from_ohlc(warmup_rows + visible_rows)
+    payload = build_key_price_levels(
+        candles,
+        currency="USD",
+        data_as_of="2026-09-01",
+        reference_price=100.0,
+    )
+    assert payload["availability"] == "ok"
+    zone_prices = [
+        price
+        for zone in payload["supports"] + payload["resistances"]
+        for price in (zone["lower"], zone["upper"])
+    ]
+    assert all(abs(price - 200.0) > 1.0 for price in zone_prices)
+
 def test_role_reversal_evidence_when_level_is_crossed() -> None:
     # Prior close above 105, latest close below 105 → SMA/level flipped sides.
     candles = _flat_then_range(

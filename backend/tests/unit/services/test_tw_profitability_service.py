@@ -238,6 +238,13 @@ def test_profitability_service_cache_and_stale_fallback() -> None:
     stale = service.get_profitability("TW:2330", quarters=12)
     assert stale.stale is True
     assert stale.source == "yfinance_quarterly_income"
+    assert calls["n"] == 2
+
+    # Backoff: another request shortly after stale fallback must not re-hit yfinance.
+    now["value"] = now["value"] + timedelta(minutes=5)
+    again = service.get_profitability("TW:2330", quarters=12)
+    assert again.stale is True
+    assert calls["n"] == 2
 
 
 def test_profitability_rejects_non_tw() -> None:

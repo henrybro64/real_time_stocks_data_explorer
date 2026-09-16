@@ -397,3 +397,54 @@ def test_tpex_stock_uses_tpex_source_label() -> None:
     result = service.get_ownership_concentration("TW:8455", range_name="3M")
     assert result.source == "tdcc_portal+tpex_qfii"
     assert result.points[-1].foreign_ownership_percent == pytest.approx(87.84)
+
+
+def test_select_portal_dates_newest_first_and_capped() -> None:
+    from app.services.tw_ownership_concentration_service import _select_portal_dates
+
+    selected = _select_portal_dates(
+        ["2026-01-02", "2026-09-04", "2026-06-12", "2025-01-03"],
+        start_date=date(2026, 3, 1),
+        end_date=date(2026, 9, 12),
+        max_weeks=2,
+    )
+    assert selected == ["2026-09-04", "2026-06-12"]
+
+
+def test_missing_synchronizer_token_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+    import httpx
+
+    from app.services.tw_ownership_concentration_service import _fetch_tdcc_portal_history
+
+    class _FakeResponse:
+        def __init__(self, text: str) -> None:
+            self.text = text
+            self.status_code = 200
+
+        def raise_for_status(self) -> None:
+            return None
+
+    class _FakeClient:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def get(self, _url: str):
+            return _FakeResponse("<html><body>no token here</body></html>")
+
+        def post(self, *_args, **_kwargs):
+            raise AssertionError("POST must not run without a CSRF token")
+
+    monkeypatch.setattr(httpx, "Client", _FakeClient)
+    with pytest.raises(RuntimeError, match="upstream temporarily unavailable"):
+        _fetch_tdcc_portal_history(
+            symbol="2330",
+            start_date=date(2026, 6, 1),
+            end_date=date(2026, 9, 12),
+            max_weeks=4,
+        )
