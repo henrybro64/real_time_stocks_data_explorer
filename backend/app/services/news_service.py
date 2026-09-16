@@ -8,12 +8,10 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from email.utils import parsedate_to_datetime
 from time import perf_counter
-from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
-from urllib.request import Request, urlopen
 
 from app.core.diagnostics import elapsed_ms
 from app.models.stock import StockRecord
+from app.services.http_client import HttpFetchError, fetch_text
 
 _REQUEST_TIMEOUT_SECONDS = 8
 _GOOGLE_NEWS_RSS_URL = "https://news.google.com/rss/search"
@@ -516,17 +514,22 @@ def _fetch_google_news(
 ) -> list[NewsItem]:
     started_at = perf_counter()
     params = {"q": f"{query} when:{window_days}d", **profile}
-    request = Request(f"{_GOOGLE_NEWS_RSS_URL}?{urlencode(params)}")
-    request.add_header("User-Agent", "Mozilla/5.0")
-    request.add_header(
-        "Accept",
-        "application/rss+xml,application/xml,text/xml,*/*",
-    )
 
     try:
-        with urlopen(request, timeout=_REQUEST_TIMEOUT_SECONDS) as response:
-            xml_payload = response.read().decode("utf-8", errors="ignore")
-    except (HTTPError, URLError, TimeoutError) as exc:
+        xml_payload = fetch_text(
+            _GOOGLE_NEWS_RSS_URL,
+            params=params,
+            headers={
+                "User-Agent": "Mozilla/5.0",
+                "Accept": "application/rss+xml,application/xml,text/xml,*/*",
+            },
+            timeout_seconds=_REQUEST_TIMEOUT_SECONDS,
+            retries=1,
+            provider_name="google_news",
+            operation_name="google_news_rss",
+            resource_id=stock_id,
+        )
+    except HttpFetchError as exc:
         logger.warning(
             "Google News request failed",
             extra={
