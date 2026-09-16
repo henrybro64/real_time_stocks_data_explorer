@@ -7,7 +7,7 @@ import { useState } from "react";
 
 import { useLanguage } from "../../app/i18n";
 import { RequestStateNotice, errorToNoticeKind } from "../../components/state/RequestStateNotice";
-import { fetchTaiwanProfitability, shouldRetryStockDetailQuery, toApiError } from "../../services/api/client";
+import { fetchTaiwanProfitability, shouldRetryStockDetailQuery, stockDetailRetryDelayMs, toApiError } from "../../services/api/client";
 import { TaiwanMultiSeriesLineChart } from "./TaiwanMultiSeriesLineChart";
 import { formatDisplayDate, formatUnsignedMetric } from "./twSignalsFormat";
 
@@ -89,6 +89,7 @@ export function ProfitMarginsPanel({ active = true, stockId }: Readonly<Props>) 
     enabled: active && stockId.length > 0,
     staleTime: 60_000,
     retry: shouldRetryStockDetailQuery,
+    retryDelay: (failureCount, error) => stockDetailRetryDelayMs(failureCount, error),
   });
 
   const payload = profitabilityQuery.data;

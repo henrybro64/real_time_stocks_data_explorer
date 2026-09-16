@@ -17,6 +17,8 @@ import {
   shouldRetryHistoryDatesQuery,
   shouldRetryRankingsQuery,
   shouldRetryStockDetailQuery,
+  stockDetailRetryDelayMs,
+  toApiError,
 } from "./client";
 
 function emptyUsRankingJson(overrides: Record<string, unknown> = {}) {
@@ -253,6 +255,43 @@ describe("shouldRetryStockDetailQuery", () => {
     expect(shouldRetryStockDetailQuery(0, upstream)).toBe(true);
     expect(shouldRetryStockDetailQuery(1, upstream)).toBe(true);
     expect(shouldRetryStockDetailQuery(2, upstream)).toBe(false);
+  });
+
+  it("retries status-less network failures including Safari Load failed", () => {
+    expect(shouldRetryStockDetailQuery(0, new TypeError("Load failed"))).toBe(true);
+    expect(shouldRetryStockDetailQuery(0, new TypeError("Failed to fetch"))).toBe(true);
+    expect(
+      shouldRetryStockDetailQuery(
+        0,
+        new ApiError("Load failed", { status: null, kind: "unavailable" }),
+      ),
+    ).toBe(true);
+  });
+});
+
+describe("stockDetailRetryDelayMs", () => {
+  it("honors Retry-After seconds on 429", () => {
+    const rateLimited = new ApiError("slow down", {
+      status: 429,
+      kind: "unavailable",
+      retryAfterSeconds: 5,
+    });
+    expect(stockDetailRetryDelayMs(0, rateLimited)).toBe(5_000);
+  });
+
+  it("falls back to bounded backoff without Retry-After", () => {
+    expect(stockDetailRetryDelayMs(0)).toBe(1_000);
+    expect(stockDetailRetryDelayMs(1)).toBe(2_000);
+  });
+});
+
+describe("toApiError", () => {
+  it("maps TypeError network failures to unavailable", () => {
+    expect(toApiError(new TypeError("Load failed"))).toMatchObject({
+      kind: "unavailable",
+      status: null,
+      message: "Load failed",
+    });
   });
 });
 

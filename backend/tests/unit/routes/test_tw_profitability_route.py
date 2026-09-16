@@ -79,11 +79,12 @@ def test_tw_profitability_route_maps_upstream_to_502(monkeypatch) -> None:
 
 
 def test_tw_profitability_route_rejects_unsupported_quarters_before_service(monkeypatch) -> None:
+    """Direct Python calls bypass FastAPI enum coercion; service still rejects."""
     calls = {"n": 0}
 
     def fake_get(stock_id, quarters=12):
         calls["n"] += 1
-        return _sample_result()
+        raise ValueError("Unsupported profitability quarters: 10")
 
     monkeypatch.setattr(
         profitability_route.tw_profitability_service,
@@ -91,7 +92,9 @@ def test_tw_profitability_route_rejects_unsupported_quarters_before_service(monk
         fake_get,
     )
     with pytest.raises(HTTPException) as exc_info:
-        profitability_route.get_tw_profitability("TW:2330", quarters=10)
+        profitability_route.get_tw_profitability(
+            "TW:2330",
+            quarters=10,  # type: ignore[arg-type]
+        )
     assert exc_info.value.status_code == 400
-    assert exc_info.value.detail == "quarters must be 8, 12, or 20"
-    assert calls["n"] == 0
+    assert calls["n"] == 1

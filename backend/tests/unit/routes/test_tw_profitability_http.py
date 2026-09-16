@@ -98,7 +98,7 @@ def test_http_omitted_quarters_defaults_to_12(monkeypatch: pytest.MonkeyPatch) -
     assert response.json()["stockId"] == "TW:2330"
 
 
-def test_http_unsupported_quarters_returns_400_without_calling_service(
+def test_http_unsupported_quarters_returns_422_without_calling_service(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls = {"n": 0}
@@ -115,9 +115,20 @@ def test_http_unsupported_quarters_returns_400_without_calling_service(
 
     response = client.get("/api/stocks/TW:2330/tw-profitability?quarters=10")
 
-    assert response.status_code == 400
-    assert response.json()["detail"] == "quarters must be 8, 12, or 20"
+    assert response.status_code == 422
     assert calls["n"] == 0
+
+
+def test_http_openapi_documents_quarters_enum() -> None:
+    schema = client.app.openapi()
+    param = next(
+        item
+        for item in schema["paths"]["/api/stocks/{stock_id}/tw-profitability"]["get"]["parameters"]
+        if item["name"] == "quarters"
+    )
+    enum_schema = schema["components"]["schemas"]["TwProfitabilityQuarters"]
+    assert set(enum_schema["enum"]) == {8, 12, 20}
+    assert param["schema"].get("default") == 12 or param["schema"].get("$ref")
 
 
 def test_http_malformed_quarters_returns_422_without_calling_service(

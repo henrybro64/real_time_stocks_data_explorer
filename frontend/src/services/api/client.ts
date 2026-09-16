@@ -130,6 +130,8 @@ function classifyApiErrorKind(status: number | null, detail: string | null, mess
     status === 503 ||
     status === 504 ||
     text.includes("failed to fetch") ||
+    text.includes("load failed") ||
+    text.includes("failed to load") ||
     text.includes("networkerror") ||
     text.includes("network request failed") ||
     text.includes("timeout") ||
@@ -152,6 +154,7 @@ function classifyApiErrorKind(status: number | null, detail: string | null, mess
 
 /** Bounded React Query retries for stock-detail TW profitability (and similar). */
 export const STOCK_DETAIL_QUERY_MAX_RETRIES = 2;
+export const STOCK_DETAIL_RETRY_DELAY_MS = 1_000;
 
 /**
  * Retry only transient upstream/network failures. Never retry validation,
@@ -180,11 +183,25 @@ export function shouldRetryStockDetailQuery(failureCount: number, error: unknown
     apiError.status === 502 ||
     apiError.status === 503 ||
     apiError.status === 504 ||
-    apiError.kind === "unavailable"
+    apiError.kind === "unavailable" ||
+    // Status-less browser network failures (e.g. Safari "Load failed" TypeError).
+    apiError.status == null
   ) {
     return failureCount < STOCK_DETAIL_QUERY_MAX_RETRIES;
   }
   return false;
+}
+
+/** Honor Retry-After on 429; otherwise use a short bounded backoff (#230). */
+export function stockDetailRetryDelayMs(failureCount: number, error?: unknown): number {
+  if (
+    error instanceof ApiError &&
+    error.retryAfterSeconds != null &&
+    error.retryAfterSeconds > 0
+  ) {
+    return Math.max(error.retryAfterSeconds * 1000, STOCK_DETAIL_RETRY_DELAY_MS);
+  }
+  return STOCK_DETAIL_RETRY_DELAY_MS * Math.max(1, failureCount + 1);
 }
 
 /** FastAPI error bodies: `detail` as string, validation array, or object. */
@@ -242,6 +259,14 @@ async function failedRequestError(response: Response): Promise<ApiError> {
 export function toApiError(error: unknown): ApiError {
   if (error instanceof ApiError) {
     return error;
+  }
+  // fetch() network failures are typically TypeError; Safari often uses "Load failed".
+  if (error instanceof TypeError) {
+    return new ApiError(error.message, {
+      status: null,
+      detail: error.message,
+      kind: "unavailable",
+    });
   }
   if (error instanceof Error) {
     return new ApiError(error.message, {
