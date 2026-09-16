@@ -9,6 +9,7 @@ v1 uses Yahoo fundamentals timeseries through the shared ``fetch_json`` client
 from __future__ import annotations
 
 import logging
+import math
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeout
@@ -93,7 +94,7 @@ def _revenue_backed_period_count(statement: Mapping[Any, Mapping[Any, Any]] | No
             numeric = float(value)  # type: ignore[arg-type]
         except (TypeError, ValueError):
             continue
-        if numeric != numeric:  # NaN
+        if math.isnan(numeric) or math.isinf(numeric):
             continue
         count += 1
     return count
