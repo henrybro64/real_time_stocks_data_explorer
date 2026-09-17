@@ -30,12 +30,11 @@ Cadence for [issue #236](https://github.com/henrybro64/real_time_stocks_data_exp
 
 | Check | Result |
 | --- | --- |
-| `pytest backend/tests/unit` | **1173 passed**, 1 failed: `test_fetch_google_news_retries_transient_http_once` (news HTTP retry mock; unrelated to this cleanup — pre-existing/time-sensitive, not touched here) |
+| `pytest backend/tests/unit` | Pass (news retry fixture uses relative `pubDate` so `window_days=1` stays valid across CI dates) |
 | `pytest backend/tests/integration` | Skipped locally (no `DATABASE_URL`); covered in CI |
 | `npm test --prefix frontend` | **382 passed** |
 | `npm run build --prefix frontend` | Passed |
 
-Do not hide or weaken CI for the news failure; track separately if it persists in CI.
 
 ## Intentionally kept (look unused in UI)
 

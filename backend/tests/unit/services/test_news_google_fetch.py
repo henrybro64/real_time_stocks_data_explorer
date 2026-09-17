@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from email.utils import format_datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock
 
 import httpx
@@ -11,6 +13,8 @@ from app.services.http_client import HttpFetchError
 
 def test_fetch_google_news_retries_transient_http_once(monkeypatch) -> None:
     calls = {"count": 0}
+    # Keep pubDate inside window_days=1 regardless of when CI runs.
+    recent_pub = format_datetime(datetime.now(UTC) - timedelta(hours=6), usegmt=True)
     ok = MagicMock()
     ok.status_code = 200
     ok.headers = {"content-type": "application/rss+xml"}
@@ -20,7 +24,7 @@ def test_fetch_google_news_retries_transient_http_once(monkeypatch) -> None:
         "<item><title>Acme rises</title>"
         "<link>https://example.com/a</link>"
         "<source>Wire</source>"
-        "<pubDate>Wed, 16 Sep 2026 01:00:00 GMT</pubDate>"
+        f"<pubDate>{recent_pub}</pubDate>"
         "</item></channel></rss>"
     )
     failing = MagicMock()
