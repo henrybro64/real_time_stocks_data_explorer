@@ -51,8 +51,8 @@ const DEFAULT_LIMIT = 50;
 const DEFAULT_MARKET = "TW" as const;
 const HISTORY_DATES_LIMIT = 5;
 /** Sentinel value for the date selector: live/current rankings. */
-export const RANKINGS_DATE_CURRENT = "current";
-export const RANKINGS_REFRESH_COOLDOWN_MS = 15_000;
+const RANKINGS_DATE_CURRENT = "current";
+const RANKINGS_REFRESH_COOLDOWN_MS = 15_000;
 type RankingMarket = RankingResponse["market"];
 type TwBoardSegment = "TWSE" | "TPEx";
 type UsUniverseSegment = "DJIA" | "NASDAQ100";
@@ -252,7 +252,7 @@ function twQuoteScopeNoticeKeyFromState(
   return keys[twBoard];
 }
 
-export function getRankingsRefetchInterval(isMarketOpen: boolean, rankingType: RankingType) {
+function getRankingsRefetchInterval(isMarketOpen: boolean, rankingType: RankingType) {
   if (isInstitutionalRanking(rankingType)) {
     return 12 * 60 * 60 * 1000;
   }

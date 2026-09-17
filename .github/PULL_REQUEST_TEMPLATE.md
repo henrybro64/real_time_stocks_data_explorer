@@ -9,7 +9,7 @@
 
 ## Taiwan market-data backend (if applicable)
 
-Use when touching institutional, 資券, Taiwan refresh/store, or shared Taiwan helpers.
+Use when touching institutional, 資券, ownership/籌碼, profitability/財報三率, Taiwan refresh/store, or shared Taiwan helpers.
 
 Follow [docs/taiwan-market-data-sonar-checklist.md](https://github.com/henrybro64/real_time_stocks_data_explorer/blob/main/docs/taiwan-market-data-sonar-checklist.md):
 

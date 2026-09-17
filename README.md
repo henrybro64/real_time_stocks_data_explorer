@@ -27,6 +27,7 @@ infra/                Optional Azure archive + AWS heartbeat monitor (Terraform)
 ```
 
 Backend layering is summarized in [docs/backend-architecture.md](docs/backend-architecture.md).
+Recurring code/docs cleanup cadence: [docs/maintenance-cleanup.md](docs/maintenance-cleanup.md).
 
 ## Quick start (local)
 

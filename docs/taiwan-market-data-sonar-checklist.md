@@ -1,7 +1,7 @@
 # Taiwan market-data SonarCloud checklist
 
 Owner checklist for backend PRs that touch Taiwan market-data paths
-(institutional / 資券 / refresh jobs / shared Taiwan helpers).
+(institutional / 資券 / ownership / profitability / refresh jobs / shared Taiwan helpers).
 
 **Why:** functional CI (`backend-pytest`, Playwright, k3s) can be green while
 SonarCloud still fails the quality gate on maintainability, duplication,
@@ -27,9 +27,11 @@ Use this checklist for PRs that change any of:
 
 | Area | Typical paths |
 | --- | --- |
-| Shared Taiwan helpers | `backend/app/services/taiwan_market_data.py`, `taiwan_history_scan.py` |
+| Shared Taiwan helpers | `backend/app/services/taiwan_market_data.py`, `taiwan_history_scan.py`, `http_client.py` |
 | Institutional API | `tw_institutional_service.py`, `api/routes/tw_institutional.py` |
-| 資券 API | `tw_margin_short_service.py`, `api/routes/tw_margin_short.py`, `http_client.py`, `docs/taiwan-margin-short-endpoints.md` |
+| 資券 API | `tw_margin_short_service.py`, `api/routes/tw_margin_short.py`, `docs/taiwan-margin-short-endpoints.md` |
+| Ownership / 籌碼 | `tw_ownership_concentration_service.py`, `tdcc_shareholding.py`, `taiwan_signals_redis_cache.py`, `api/routes/tw_ownership_concentration.py` |
+| Profitability / 財報三率 | `tw_profitability_service.py`, `api/routes/tw_profitability.py` |
 | Refresh / store | `taiwan_market_data_refresh_service.py`, `taiwan_market_daily_repository.py`, related migrations |
 | Jobs / settings | `backend/app/jobs/runtime.py`, `core/config.py` Taiwan refresh flags |
 
@@ -73,6 +75,14 @@ python -m pytest backend/tests/unit/services/test_tw_institutional_service.py \
 python -m pytest backend/tests/unit/services/test_tw_margin_short_service.py \
   backend/tests/unit/routes/test_tw_margin_short_route.py \
   backend/tests/unit/services/test_http_client.py -q
+
+# Ownership / 籌碼 + profitability / 財報三率
+python -m pytest backend/tests/unit/services/test_tw_ownership_concentration_service.py \
+  backend/tests/unit/services/test_tdcc_shareholding.py \
+  backend/tests/unit/routes/test_tw_ownership_concentration_route.py \
+  backend/tests/unit/services/test_tw_profitability_service.py \
+  backend/tests/unit/routes/test_tw_profitability_route.py \
+  backend/tests/unit/routes/test_tw_profitability_http.py -q
 
 # Refresh + store + capture route
 python -m pytest backend/tests/unit/services/test_taiwan_market_data_refresh_service.py \
