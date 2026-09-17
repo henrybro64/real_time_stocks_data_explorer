@@ -22,6 +22,8 @@ Shared TypeScript contracts: `packages/shared-contracts/`. Deploy manifests: `k8
 | --- | --- |
 | Quotes / search | `services/providers/` (`us_provider`, `tw_provider`) |
 | AI analysis | `services/ai_providers/` |
+| Stock analysis metrics | `stock_analysis_*` (technicals, key price levels, prompts) |
+| TW ownership / profitability | `tw_ownership_concentration_service`, `tdcc_shareholding`, `tw_profitability_service` |
 | Rankings adapters | `services/ranking_data_providers.py` |
 
 Routes call services; services call adapters — not raw provider HTTP from handlers.
@@ -48,7 +50,7 @@ Implementations live in service modules; only orchestration is centralized.
 
 User-owned data flows through repositories (`watchlist`, `portfolio`, `alert`, `realized_trade`, `ranking_snapshot`, `user`, `api_key`, etc.) so routes stay thin.
 
-Taiwan market-data shares `taiwan_market_data.py` and `taiwan_history_scan.py`. 資券 upstream contracts: [taiwan-margin-short-endpoints.md](taiwan-margin-short-endpoints.md). Backend PRs in this area must also pass **SonarCloud** — see [taiwan-market-data-sonar-checklist.md](taiwan-market-data-sonar-checklist.md).
+Taiwan market-data shares `taiwan_market_data.py` and `taiwan_history_scan.py`. On-demand ownership/profitability use dedicated services (see table above) plus optional Redis via `taiwan_signals_redis_cache.py`. 資券 upstream contracts: [taiwan-margin-short-endpoints.md](taiwan-margin-short-endpoints.md). Backend PRs in this area must also pass **SonarCloud** — see [taiwan-market-data-sonar-checklist.md](taiwan-market-data-sonar-checklist.md).
 
 ## Test session overrides
 

@@ -16,13 +16,11 @@ import type {
   NewsItem,
   AiProviderPreference,
   ApiKeyStatus,
-  AiInsightResponse,
   PortfolioAsset,
   PortfolioAnalysisResponse,
   PortfolioAssetCreate,
   PortfolioHistoryResponse,
   PortfolioAssetSummary,
-  PortfolioAssetUpdate,
   PortfolioPosition,
   PortfolioPositionCreate,
   PortfolioPositionUpdate,
@@ -40,7 +38,7 @@ import type {
 import type { TimeRange } from "@shared/quote";
 import type { Stock } from "@shared/stock";
 
-export type ApiErrorKind =
+type ApiErrorKind =
   | "auth"
   | "permission"
   | "unavailable"
@@ -98,7 +96,7 @@ function buildPath(path: string): string {
 }
 
 /** Full URL for HTTP(S) requests (relative when same-origin). */
-export function apiUrl(path: string): string {
+function apiUrl(path: string): string {
   const p = buildPath(path);
   if (API_BASE_URL === "") {
     return p;
@@ -153,8 +151,8 @@ function classifyApiErrorKind(status: number | null, detail: string | null, mess
 }
 
 /** Bounded React Query retries for stock-detail TW profitability (and similar). */
-export const STOCK_DETAIL_QUERY_MAX_RETRIES = 2;
-export const STOCK_DETAIL_RETRY_DELAY_MS = 1_000;
+const STOCK_DETAIL_QUERY_MAX_RETRIES = 2;
+const STOCK_DETAIL_RETRY_DELAY_MS = 1_000;
 
 /**
  * Retry only transient upstream/network failures. Never retry validation,
@@ -346,7 +344,7 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
 export const RANKINGS_REQUEST_TIMEOUT_MS = 20_000;
 export const RANKINGS_REQUEST_TIMEOUT_DETAIL = "Rankings request timed out";
 
-export function isRankingsRequestTimeoutError(error: unknown): boolean {
+function isRankingsRequestTimeoutError(error: unknown): boolean {
   return (
     error instanceof ApiError &&
     error.kind === "unavailable" &&
@@ -374,8 +372,8 @@ export function shouldRetryRankingsQuery(failureCount: number, error: unknown): 
 }
 
 /** Bounded retries for Azure SQL AutoPause / cold-start on history dates (#177). */
-export const HISTORY_DATES_MAX_RETRIES = 4;
-export const HISTORY_DATES_RETRY_DELAY_MS = 8_000;
+const HISTORY_DATES_MAX_RETRIES = 4;
+const HISTORY_DATES_RETRY_DELAY_MS = 8_000;
 
 export function shouldRetryHistoryDatesQuery(
   failureCount: number,
@@ -755,10 +753,6 @@ export async function addPortfolioAsset(payload: PortfolioAssetCreate) {
   return requestJsonWithBody<PortfolioAsset>("/portfolio/assets", "POST", payload);
 }
 
-export async function updatePortfolioAsset(assetId: number, payload: PortfolioAssetUpdate) {
-  return requestJsonWithBody<PortfolioAsset>(`/portfolio/assets/${assetId}`, "PATCH", payload);
-}
-
 export async function deletePortfolioAsset(assetId: number) {
   await requestVoid(`/portfolio/assets/${assetId}`, {
     method: "DELETE",
@@ -787,10 +781,4 @@ export async function saveApiKey(provider: "openai" | "perplexity", apiKey: stri
     },
     body: JSON.stringify({ apiKey }),
   });
-}
-
-export function fetchAiInsight(stockId: string, provider: "openai" | "perplexity") {
-  return fetchJson<AiInsightResponse>(
-    `/ai/insights/${encodeURIComponent(stockId)}?provider=${provider}`,
-  );
 }

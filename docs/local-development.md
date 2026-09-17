@@ -38,7 +38,7 @@ Each response includes `X-Request-ID` when possible. See [backend-logging.md](ba
 
 Stock detail: `GET /api/stocks/{stock_id}/analysis`. Technicals prefer the same candles the chart plots; yfinance is the fallback and still supplies company info. An optional AI provider then writes a narrative from that backend JSON.
 
-`computedData` carries the context blocks the narrative must cite: `technicalAnalysis` (chart-aligned moving averages and momentum on completed sessions only), `institutionalAnalysis` (Taiwan 法人 net lots), `fundamentalOutlook`, and `recentNewsContext`. Anything unavailable is reported with a classified reason rather than being filled in by the model.
+`computedData` carries the context blocks the narrative must cite: `technicalAnalysis` (chart-aligned moving averages, momentum, and backend-derived `keyPriceLevels` on completed sessions only), `institutionalAnalysis` (Taiwan 法人 net lots), `fundamentalOutlook`, and `recentNewsContext`. Anything unavailable is reported with a classified reason rather than being filled in by the model.
 
 `?language=en|zh-TW` selects the narrative language (default `zh-TW`) and is part of the Redis cache key, so the two languages never overwrite each other. `?refresh=true` regenerates the narrative and is the only path that fetches news; plain reads restore the news snapshot stored with the cached narrative.
 
@@ -84,6 +84,15 @@ Key settings: `RANKINGS_SNAPSHOT_ENABLED`, `RANKINGS_REFRESH_SECONDS`, `RANKINGS
 ## Taiwan market data
 
 Scheduled job persists TWSE/TPEx institutional and 資券 daily rows. Detail API reads from store when fresh; otherwise probes a recent weekday window.
+
+On-demand Taiwan stock-detail tabs (lazy-loaded in the UI):
+
+```text
+GET /api/stocks/{stock_id}/tw-ownership-concentration?range=3M|6M|1Y
+GET /api/stocks/{stock_id}/tw-profitability?quarters=8|12|20
+```
+
+Ownership uses TDCC concentration plus TWSE `MI_QFIIS` / TPEx QFII foreign % and quote-history closes. Profitability derives quarterly margins from yfinance income statements.
 
 - Lot size: use `shares_to_lots` / `taiwan_shares_per_lot` (default 1000 shares/張; `K`/`C` ETF heuristic → 100).
 - **SonarCloud:** backend PRs in this area must clear the quality gate — [taiwan-market-data-sonar-checklist.md](taiwan-market-data-sonar-checklist.md).

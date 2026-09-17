@@ -1,4 +1,4 @@
-export type TwSignalLanguage = "en" | "zh-TW";
+type TwSignalLanguage = "en" | "zh-TW";
 
 export function buildDateRangeLabel(
   history: Array<{ date: string }>,
@@ -73,7 +73,7 @@ export function formatUnsignedMetric(
   return `${formatLocalizedMetric(value, formatNumber)} ${unit}`;
 }
 
-export function formatLocalizedMetric(
+function formatLocalizedMetric(
   value: number,
   formatNumber: (value: number) => string,
 ): string {

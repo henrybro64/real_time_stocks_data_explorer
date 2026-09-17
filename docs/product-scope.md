@@ -32,7 +32,7 @@ The user remains responsible for the final investment decision.
 Verified on the default branch (details: [local-development.md](local-development.md)):
 
 - **Dashboard** — market snapshot, stock search, and watchlist quotes with freshness badges.
-- **Stock detail** — quote, selectable chart ranges, backend SMA overlays, key statistics (optional Finnhub enrichment), news when available, Taiwan insights / 法人 / 資券 for TW names, U.S. peer snapshot for US names, and stock AI analysis.
+- **Stock detail** — quote, selectable chart ranges, backend SMA overlays, key statistics (optional Finnhub enrichment), news when available, Taiwan insights / 法人 / 資券 / 籌碼集中度 / 財報三率 for TW names, U.S. peer snapshot for US names, and stock AI analysis (including backend-derived key price levels).
 - **Rankings** — U.S. DJIA / NASDAQ-100 and Taiwan TWSE / TPEx universes; types include volume, movers, valuation, and Taiwan net-buy/net-sell. U.S. net-buy/net-sell is unsupported on free sources.
 - **Portfolio** — share positions with unrealized P/L, non-stock assets, USD/TWD views, sampled value history, and optional portfolio AI analysis.
 - **Realized P/L** — manual closed-trade records in **TWD or USD**, including cumulative dividends and period summaries. No automatic FX conversion or tax-lot accounting.
@@ -57,12 +57,12 @@ Watchlists, portfolio data, realized trades, alerts/events, and AI keys/preferen
 
 ## Market data and AI sources
 
-Adapters fetch U.S. and Taiwan quotes, history, and search. **Yahoo Finance** is the primary U.S. path; **TWSE / TPEx** (and related official pages) feed Taiwan quotes, rankings, 法人, and 資券. **Google News RSS** supplies headline metadata. Stock-AI technicals prefer the **same candles the chart plots**; **yfinance** is the fallback and still supplies company info and fundamentals. **Finnhub** may enrich key statistics when `FINNHUB_API_KEY` is set.
+Adapters fetch U.S. and Taiwan quotes, history, and search. **Yahoo Finance** is the primary U.S. path; **TWSE / TPEx** (and related official pages) feed Taiwan quotes, rankings, 法人, 資券, and ownership concentration. **TDCC** supplies 400張以上 concentration; **yfinance** quarterly income supports 財報三率. **Google News RSS** supplies headline metadata. Stock-AI technicals prefer the **same candles the chart plots**; **yfinance** is the fallback and still supplies company info and fundamentals. **Finnhub** may enrich key statistics when `FINNHUB_API_KEY` is set.
 
-Free or unofficial sources can be delayed, rate-limited, incomplete, or down. Taiwan 法人 and 資券 are separate persisted datasets, not live ticks.
+Free or unofficial sources can be delayed, rate-limited, incomplete, or down. Taiwan 法人, 資券, 籌碼, and 財報三率 are separate datasets (some persisted, some on-demand), not live ticks.
 
 - **Postgres** stores users, watchlists, portfolios, realized trades, alerts, rankings snapshots, and Taiwan daily history.
-- **Redis** is optional for quote caching. Quote reads still degrade to in-memory last-known values when Redis is missing or failing.
+- **Redis** is optional for quote caching and Taiwan stock-detail signal caches (ownership / profitability). Quote reads still degrade to in-memory last-known values when Redis is missing or failing; those Taiwan tabs also keep an in-process fallback cache.
 - **Stock AI narratives** persist only in Redis. Without `REDIS_URL`, a generated narrative is not kept in an in-memory narrative cache. Backend-computed metrics on the next read can be newer than that narrative.
 - AI is given backend-computed facts plus optional news/fundamental context. It is **not** a market-data source and must not invent missing numbers.
 
