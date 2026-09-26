@@ -6,8 +6,6 @@ import {
   BACKEND_QUOTE_REFRESHER_OPEN_POLL_MS,
   isAnyTrackedMarketOpen,
   isQuoteWarmingTimedOut,
-  LEGACY_WATCHLIST_REFETCH_INTERVAL_OTHER_MS,
-  LEGACY_WATCHLIST_REFETCH_INTERVAL_TW_MS,
   marketCodesFromStockIds,
   QUOTE_WARMING_TIMEOUT_MS,
   quotesAreWarming,
@@ -201,8 +199,9 @@ describe("resolveWatchlistQuoteQueryTiming", () => {
     expect(timing.staleTime).toBeGreaterThan(0);
     expect(timing.refetchInterval).toBe(WATCHLIST_QUOTE_REFETCH_INTERVAL_OPEN_MS);
     expect(timing.refetchInterval).toBe(BACKEND_QUOTE_REFRESHER_OPEN_POLL_MS);
-    expect(timing.refetchInterval).toBeGreaterThan(LEGACY_WATCHLIST_REFETCH_INTERVAL_TW_MS);
-    expect(timing.refetchInterval).toBeGreaterThanOrEqual(LEGACY_WATCHLIST_REFETCH_INTERVAL_OTHER_MS);
+    // Former 2s / 5s watchlist polls must stay retired.
+    expect(timing.refetchInterval).toBeGreaterThan(2_000);
+    expect(timing.refetchInterval).toBeGreaterThanOrEqual(5_000);
     expect(timing.refetchIntervalInBackground).toBe(false);
     expect(timing.refetchOnMount).toBe(true);
     expect(timing.refetchOnWindowFocus).toBe(true);

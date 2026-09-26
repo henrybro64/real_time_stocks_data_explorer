@@ -167,6 +167,11 @@ export type TranslationKey =
   | "rankings.tab.lowPe"
   | "rankings.tab.netBuy"
   | "rankings.tab.netSell"
+  | "rankings.tab.limitUp"
+  | "rankings.tab.limitDown"
+  | "rankings.empty.limitUp"
+  | "rankings.empty.limitDown"
+  | "rankings.liveOnly"
   | "rankings.column.rank"
   | "rankings.column.symbol"
   | "rankings.column.board"
@@ -174,6 +179,9 @@ export type TranslationKey =
   | "rankings.column.lastPrice"
   | "rankings.column.changePercent"
   | "rankings.column.volume"
+  | "rankings.column.limitUpPrice"
+  | "rankings.column.limitDownPrice"
+  | "rankings.column.priceLimitStatus"
   | "rankings.column.netBuySell"
   | "rankings.column.peRatio"
   | "rankings.column.peRatioSource"
@@ -188,6 +196,7 @@ export type TranslationKey =
   | "rankings.sourceType.cache"
   | "rankings.sourceType.unsupported"
   | "rankings.snapshotState.intraday"
+  | "rankings.snapshotState.liveOnly"
   | "rankings.snapshotState.daily"
   | "rankings.snapshotState.eodArchive"
   | "rankings.snapshotState.cache"
@@ -208,6 +217,7 @@ export type TranslationKey =
   | "rankings.notice.twQuoteScopeFallbackTwse"
   | "rankings.notice.twQuoteScopeFallbackTpex"
   | "rankings.twBoard.groupLabel"
+  | "rankings.twBoard.all"
   | "rankings.twBoard.twse"
   | "rankings.twBoard.tpex"
   | "rankings.usUniverse.groupLabel"
@@ -226,6 +236,16 @@ export type TranslationKey =
   | "rankings.notice.twDaily"
   | "rankings.notice.twDailyTpex"
   | "rankings.notice.usInstitutionalUnsupported"
+  | "rankings.notice.usPriceLimitUnsupported"
+  | "rankings.notice.twPriceLimit"
+  | "rankings.notice.twPriceLimitPartial"
+  | "rankings.notice.twPriceLimitUnavailable"
+  | "rankings.freshness.twPriceLimitOpen"
+  | "rankings.freshness.twPriceLimitClosed"
+  | "rankings.freshness.unsupported"
+  | "rankings.source.twPriceLimit"
+  | "rankings.badge.limitUp"
+  | "rankings.badge.limitDown"
   | "rankings.notice.twInstitutionalUnavailable"
   | "rankings.notice.twInstitutionalTpexUnavailable"
   | "rankings.notice.twQuoteFallback"
@@ -679,6 +699,9 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "rankings.market.tw": "Taiwan",
     "rankings.loading": "Loading rankings",
     "rankings.empty": "No ranking rows are available for this selection right now.",
+    "rankings.empty.limitUp": "No Taiwan stocks are at limit-up right now.",
+    "rankings.empty.limitDown": "No Taiwan stocks are at limit-down right now.",
+    "rankings.liveOnly": "This list is live-only and is not saved in the rankings archive.",
     "rankings.tab.volume": "Volume",
     "rankings.tab.volumeUp": "Volume up",
     "rankings.tab.volumeDown": "Volume down",
@@ -687,6 +710,8 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "rankings.tab.lowPe": "Low P/E",
     "rankings.tab.netBuy": "Net buy",
     "rankings.tab.netSell": "Net sell",
+    "rankings.tab.limitUp": "Limit-up",
+    "rankings.tab.limitDown": "Limit-down",
     "rankings.column.rank": "Rank",
     "rankings.column.symbol": "Symbol",
     "rankings.column.board": "Board",
@@ -694,6 +719,9 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "rankings.column.lastPrice": "Last price",
     "rankings.column.changePercent": "Change %",
     "rankings.column.volume": "Volume",
+    "rankings.column.limitUpPrice": "Limit-up price",
+    "rankings.column.limitDownPrice": "Limit-down price",
+    "rankings.column.priceLimitStatus": "Limit",
     "rankings.column.netBuySell": "Net buy / sell",
     "rankings.column.peRatio": "P/E",
     "rankings.column.peRatioSource": "P/E source",
@@ -708,6 +736,7 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "rankings.sourceType.cache": "Cache",
     "rankings.sourceType.unsupported": "Unsupported",
     "rankings.snapshotState.intraday": "30-minute intraday snapshot",
+    "rankings.snapshotState.liveOnly": "Live only",
     "rankings.snapshotState.daily": "Daily TW institutional data",
     "rankings.snapshotState.eodArchive": "Archived end-of-day snapshot",
     "rankings.snapshotState.cache": "Latest cached snapshot",
@@ -735,6 +764,7 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "rankings.notice.twQuoteScopeTpex":
       "Taiwan quote rankings for this tab are filtered to TPEx-listed (上櫃) names from the app's configured free quote universe.",
     "rankings.twBoard.groupLabel": "Board",
+    "rankings.twBoard.all": "All",
     "rankings.twBoard.twse": "Listed (TWSE)",
     "rankings.twBoard.tpex": "TPEx (OTC)",
     "rankings.usUniverse.groupLabel": "Index universe",
@@ -759,6 +789,22 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
       "TPEx institutional net buy/sell rankings use daily data, not intraday real-time data.",
     "rankings.notice.usInstitutionalUnsupported":
       "U.S. institutional net buy/sell is not available in this free-only app.",
+    "rankings.notice.usPriceLimitUnsupported":
+      "U.S. markets do not use Taiwan daily price-limit rankings in this app.",
+    "rankings.notice.twPriceLimit":
+      "Limit-up and limit-down lists use official TWSE MIS limit prices for TWSE and TPEx. A stock is included only when its traded price equals that limit, not because the change is about 10%.",
+    "rankings.notice.twPriceLimitPartial":
+      "Some Taiwan quotes could not be classified. Those symbols are omitted instead of guessing from the change percentage.",
+    "rankings.notice.twPriceLimitUnavailable":
+      "Taiwan limit-price quotes are temporarily unavailable. No symbols are listed, so a missing feed is not treated as a limit-up or limit-down ranking.",
+    "rankings.freshness.twPriceLimitOpen":
+      "Market open; Taiwan limit-up and limit-down rankings use official MIS limit prices and are live-only.",
+    "rankings.freshness.twPriceLimitClosed":
+      "Market closed; Taiwan limit-up and limit-down rankings use the latest MIS session limit prices and are live-only.",
+    "rankings.freshness.unsupported": "Unsupported in this free-only app.",
+    "rankings.source.twPriceLimit": "TWSE/TPEx MIS quotes with official daily limit prices.",
+    "rankings.badge.limitUp": "Limit up",
+    "rankings.badge.limitDown": "Limit down",
     "rankings.notice.twInstitutionalUnavailable":
       "Taiwan institutional daily data is temporarily unavailable from the free public source.",
     "rankings.notice.twInstitutionalTpexUnavailable":
@@ -1221,6 +1267,9 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "rankings.market.tw": "台股",
     "rankings.loading": "載入排行中",
     "rankings.empty": "目前沒有可顯示的排行資料。",
+    "rankings.empty.limitUp": "目前沒有漲停股票",
+    "rankings.empty.limitDown": "目前沒有跌停股票",
+    "rankings.liveOnly": "此清單僅提供即時查詢，不會寫入排行封存。",
     "rankings.tab.volume": "成交量",
     "rankings.tab.volumeUp": "量增",
     "rankings.tab.volumeDown": "量減",
@@ -1229,6 +1278,8 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "rankings.tab.lowPe": "低本益比",
     "rankings.tab.netBuy": "買超",
     "rankings.tab.netSell": "賣超",
+    "rankings.tab.limitUp": "漲停板",
+    "rankings.tab.limitDown": "跌停板",
     "rankings.column.rank": "排名",
     "rankings.column.symbol": "代碼",
     "rankings.column.board": "板別",
@@ -1236,6 +1287,9 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "rankings.column.lastPrice": "最新價",
     "rankings.column.changePercent": "漲跌幅",
     "rankings.column.volume": "成交量",
+    "rankings.column.limitUpPrice": "漲停價",
+    "rankings.column.limitDownPrice": "跌停價",
+    "rankings.column.priceLimitStatus": "漲跌停",
     "rankings.column.netBuySell": "買賣超",
     "rankings.column.peRatio": "本益比",
     "rankings.column.peRatioSource": "本益比來源",
@@ -1250,6 +1304,7 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "rankings.sourceType.cache": "快取",
     "rankings.sourceType.unsupported": "不支援",
     "rankings.snapshotState.intraday": "30 分鐘盤中快照",
+    "rankings.snapshotState.liveOnly": "即時查詢",
     "rankings.snapshotState.daily": "台股法人日資料",
     "rankings.snapshotState.eodArchive": "已封存收盤快照",
     "rankings.snapshotState.cache": "最新快取快照",
@@ -1274,6 +1329,7 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "rankings.notice.twQuoteScopeTpex":
       "此分頁的台股報價排行僅含上櫃（TPEx）且來自本應用程式設定的免費報價清單。",
     "rankings.twBoard.groupLabel": "交易別",
+    "rankings.twBoard.all": "全部",
     "rankings.twBoard.twse": "上市",
     "rankings.twBoard.tpex": "上櫃",
     "rankings.usUniverse.groupLabel": "指數範圍",
@@ -1295,6 +1351,21 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "rankings.notice.twDaily": "台股三大法人買賣超為日資料，非盤中即時資料。",
     "rankings.notice.twDailyTpex": "上櫃（TPEx）三大法人買賣超為日資料，非盤中即時資料。",
     "rankings.notice.usInstitutionalUnsupported": "此免費版本不提供美股法人買超／賣超。",
+    "rankings.notice.usPriceLimitUnsupported": "此應用程式的漲停／跌停排行只適用台股。",
+    "rankings.notice.twPriceLimit":
+      "漲停板與跌停板使用證交所 MIS 公布的漲跌停價。只有成交價等於該價格才會列入，不會因為漲跌幅約為 10% 就判定。",
+    "rankings.notice.twPriceLimitPartial":
+      "部分台股報價無法完成漲跌停判定，這些股票已略過，不會用漲跌幅百分比來猜測。",
+    "rankings.notice.twPriceLimitUnavailable":
+      "暫時無法取得台股漲跌停報價。為避免把普通漲跌誤判成漲停或跌停，目前不列出任何股票。",
+    "rankings.freshness.twPriceLimitOpen":
+      "市場開盤中；漲停與跌停排行使用 MIS 官方漲跌停價，且僅提供即時查詢。",
+    "rankings.freshness.twPriceLimitClosed":
+      "市場休市；漲停與跌停排行使用 MIS 最近一個交易時段的漲跌停價，且僅提供即時查詢。",
+    "rankings.freshness.unsupported": "此免費版本不支援此排行。",
+    "rankings.source.twPriceLimit": "上市／上櫃 MIS 報價與官方漲跌停價。",
+    "rankings.badge.limitUp": "漲停",
+    "rankings.badge.limitDown": "跌停",
     "rankings.notice.twInstitutionalUnavailable": "目前無法從免費公開來源取得台股法人日資料。",
     "rankings.notice.twInstitutionalTpexUnavailable":
       "目前無法從免費公開來源取得上櫃（TPEx）法人日資料。",

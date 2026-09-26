@@ -6,8 +6,11 @@ from pydantic import BaseModel, Field, model_validator
 from app.schemas.stock import StockResponse
 
 TwBoard = Literal["TWSE", "TPEx"]
+# ``all`` is the combined TWSE + TPEx filter for live Taiwan price-limit rankings.
+TwRankingBoard = Literal["all", "TWSE", "TPEx"]
 UsUniverse = Literal["DJIA", "NASDAQ100"]
 RankingUniverse = Literal["TWSE", "TPEx", "DJIA", "NASDAQ100"]
+PriceLimitStatus = Literal["limit_up", "limit_down", "none", "unknown"]
 _TW_UNIVERSES = {"TWSE", "TPEx"}
 _US_UNIVERSES = {"DJIA", "NASDAQ100"}
 
@@ -37,6 +40,9 @@ class RankingType(str, Enum):
     valuation_low_pe = "valuation_low_pe"
     net_buy = "net_buy"
     net_sell = "net_sell"
+    # Taiwan-only live rankings. Not archived. See docs/azure-rankings-archive.md.
+    limit_up = "limit_up"
+    limit_down = "limit_down"
 
 
 class RankingSourceType(str, Enum):
@@ -59,6 +65,11 @@ class RankingItem(BaseModel):
     peRatioSource: str | None = None
     valuationAsOf: str | None = None
     valuationWarning: str | None = None
+    # Taiwan daily price-limit fields. U.S. rows use ``none`` and null prices.
+    priceLimitStatus: PriceLimitStatus | None = None
+    referencePrice: float | None = None
+    limitUpPrice: float | None = None
+    limitDownPrice: float | None = None
     timestamp: str
 
 
@@ -66,7 +77,8 @@ class RankingResponse(BaseModel):
     market: str
     rankingType: RankingType
     # When ``market`` is TW, which listing segment this response is scoped to.
-    twBoard: TwBoard | None = None
+    # ``all`` means the combined TWSE and TPEx price-limit list.
+    twBoard: TwRankingBoard | None = None
     # Selected ranking universe: TWSE/TPEx or DJIA/NASDAQ100.
     universe: RankingUniverse | None = None
     items: list[RankingItem]
@@ -98,10 +110,19 @@ class RankingsHistoryDatesResponse(BaseModel):
 class RankingsRefreshRequest(BaseModel):
     market: Literal["US", "TW"]
     rankingType: RankingType
-    universe: RankingUniverse
+    universe: RankingUniverse | Literal["all"]
     limit: int = Field(default=50, ge=1, le=50)
 
     @model_validator(mode="after")
     def universe_matches_market(self) -> "RankingsRefreshRequest":
+        if self.universe == "all":
+            if self.market != "TW" or self.rankingType not in {
+                RankingType.limit_up,
+                RankingType.limit_down,
+            }:
+                raise ValueError(
+                    "universe all is only supported for Taiwan limit_up and limit_down rankings"
+                )
+            return self
         coerce_ranking_universe(self.market, self.universe)
         return self

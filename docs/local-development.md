@@ -77,7 +77,7 @@ Market indices plus BTC/ETH (USD) and gold futures (USD/oz) use the fixed catalo
 GET /api/rankings?market=TW|US&type=...&limit=50
 ```
 
-Optional `twBoard` (`TWSE` | `TPEx`) for Taiwan. Postgres stores intraday/daily snapshots; optional Azure SQL EOD archive is separate — see [azure-rankings-archive.md](azure-rankings-archive.md).
+Optional `twBoard` (`TWSE` | `TPEx`) for Taiwan. `limit_up` and `limit_down` also accept `twBoard=all` and are live-only: history routes return 422. Postgres stores the other intraday/daily snapshots; optional Azure SQL EOD archive is separate — see [azure-rankings-archive.md](azure-rankings-archive.md).
 
 Key settings: `RANKINGS_SNAPSHOT_ENABLED`, `RANKINGS_REFRESH_SECONDS`, `RANKINGS_UNIVERSE_US`, `RANKINGS_UNIVERSE_TW`, `RANKINGS_CAPTURE_TOKEN`.
 

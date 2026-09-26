@@ -24,7 +24,7 @@ Shared TypeScript contracts: `packages/shared-contracts/`. Deploy manifests: `k8
 | AI analysis | `services/ai_providers/` |
 | Stock analysis metrics | `stock_analysis_*` (technicals, key price levels, prompts) |
 | TW ownership / profitability | `tw_ownership_concentration_service`, `tdcc_shareholding`, `tw_profitability_service` |
-| Rankings adapters | `services/ranking_data_providers.py` |
+| Rankings adapters | `services/ranking_data_providers.py`; Taiwan limit-up/limit-down in `tw_price_limits.py` and `tw_price_limit_rankings.py` |
 
 Routes call services; services call adapters — not raw provider HTTP from handlers.
 
@@ -54,4 +54,4 @@ Taiwan market-data shares `taiwan_market_data.py` and `taiwan_history_scan.py`. 
 
 ## Test session overrides
 
-`alert_repository` and `ranking_snapshot_repository` support `set_session_factory_override()` for unit tests that monkeypatch `SessionLocal`. Other repositories use the shared `SessionLocal` from `repositories/session.py`.
+`alert_repository`, `ranking_snapshot_repository`, and `rankings_archive_repository` support `set_session_factory_override()` for unit tests. Other repositories call `require_session_factory()` in `repositories/session.py`, which returns `SessionLocal` from `db/session.py`.

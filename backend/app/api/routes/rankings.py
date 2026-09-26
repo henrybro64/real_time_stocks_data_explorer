@@ -12,6 +12,7 @@ from app.schemas.rankings import (
     RankingsHistoryDatesResponse,
     RankingsRefreshRequest,
     TwBoard,
+    TwRankingBoard,
     coerce_ranking_universe,
 )
 from app.services.rankings_archive_service import (
@@ -30,6 +31,10 @@ router = APIRouter(prefix="/rankings", tags=["rankings"])
 _ARCHIVE_UNAVAILABLE_DETAIL = "Rankings archive is unavailable"
 _ARCHIVE_QUERY_FAILED_DETAIL = "Rankings archive query failed"
 _ARCHIVE_RETRY_AFTER_SECONDS = "10"
+_LIVE_ONLY_PRICE_LIMIT_DETAIL = (
+    "Taiwan limit_up and limit_down rankings are live-only and are not archived"
+)
+_LIVE_ONLY_PRICE_LIMIT_TYPES = {RankingType.limit_up, RankingType.limit_down}
 
 
 def _archive_unavailable_http() -> HTTPException:
@@ -47,6 +52,11 @@ def _archive_query_failed_http() -> HTTPException:
         status_code=500,
         detail=_ARCHIVE_QUERY_FAILED_DETAIL,
     )
+
+
+def _reject_live_only_price_limit(ranking_type: RankingType) -> None:
+    if ranking_type in _LIVE_ONLY_PRICE_LIMIT_TYPES:
+        raise HTTPException(status_code=422, detail=_LIVE_ONLY_PRICE_LIMIT_DETAIL)
 
 
 def _validated_universe(
@@ -69,9 +79,24 @@ def get_rankings(
     market: Literal["US", "TW"] = Query(...),
     ranking_type: RankingType = Query(..., alias="type"),
     limit: int = Query(default=50, ge=1, le=50),
-    tw_board: Annotated[TwBoard | None, Query(alias="twBoard")] = None,
+    tw_board: Annotated[TwRankingBoard | None, Query(alias="twBoard")] = None,
     universe: Annotated[RankingUniverse | None, Query()] = None,
 ) -> RankingResponse:
+    if tw_board == "all":
+        if market != "TW" or ranking_type not in {RankingType.limit_up, RankingType.limit_down}:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "twBoard=all is only supported for Taiwan limit_up and limit_down rankings"
+                ),
+            )
+        return rankings_snapshot_service.get_rankings(
+            market=market,
+            ranking_type=ranking_type,
+            limit=limit,
+            tw_board="all",
+            universe=None,
+        )
     resolved_universe = _validated_universe(market, tw_board, universe)
     return rankings_snapshot_service.get_rankings(
         market=market,
@@ -86,7 +111,7 @@ def get_rankings(
     "/history/dates",
     response_model=RankingsHistoryDatesResponse,
     responses={
-        422: {"description": "Invalid universe for the selected market"},
+        422: {"description": "Invalid universe, or a live-only Taiwan price-limit ranking"},
         500: {"description": "Rankings archive query failed"},
         503: {"description": "Rankings archive database unavailable"},
     },
@@ -98,6 +123,7 @@ def get_rankings_history_dates(
     limit: int = Query(default=5, ge=1, le=30),
 ) -> RankingsHistoryDatesResponse:
     """List archived trading dates for a market/universe/type, newest first (#168)."""
+    _reject_live_only_price_limit(ranking_type)
     resolved_universe = _validated_universe(market, None, universe)
     if not rankings_archive_service.is_available():
         if not rankings_archive_service.is_configured():
@@ -130,7 +156,7 @@ def get_rankings_history_dates(
     response_model=RankingResponse,
     responses={
         404: {"description": "No archive for the requested trading date"},
-        422: {"description": "Invalid universe or date for the selected market"},
+        422: {"description": "Invalid universe or date, or a live-only Taiwan price-limit ranking"},
         500: {"description": "Rankings archive query failed"},
         503: {"description": "Rankings archive database unavailable"},
     },
@@ -144,6 +170,7 @@ def get_rankings_history(
     universe: Annotated[RankingUniverse | None, Query()] = None,
 ) -> RankingResponse:
     """Return one archived EOD ranking list. Never falls back to current rankings (#168)."""
+    _reject_live_only_price_limit(ranking_type)
     resolved_universe = _validated_universe(market, tw_board, universe)
     if not rankings_archive_service.is_available():
         raise _archive_unavailable_http()
@@ -173,12 +200,23 @@ def get_rankings_history(
 @router.post("/refresh")
 def refresh_rankings(payload: RankingsRefreshRequest) -> RankingResponse:
     try:
+        tw_board: TwRankingBoard | None
+        universe: RankingUniverse | None
+        if payload.universe == "all":
+            tw_board = "all"
+            universe = None
+        elif payload.market == "TW" and payload.universe in {"TWSE", "TPEx"}:
+            tw_board = payload.universe
+            universe = payload.universe
+        else:
+            tw_board = None
+            universe = payload.universe if payload.universe in {"DJIA", "NASDAQ100"} else None
         return rankings_snapshot_service.refresh_rankings(
             market=payload.market,
             ranking_type=payload.rankingType,
             limit=payload.limit,
-            tw_board=payload.universe if payload.market == "TW" else None,
-            universe=payload.universe,
+            tw_board=tw_board,
+            universe=universe,
         )
     except RankingsRefreshError as exc:
         raise HTTPException(

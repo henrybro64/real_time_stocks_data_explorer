@@ -6,34 +6,30 @@ Cadence for [issue #236](https://github.com/henrybro64/real_time_stocks_data_exp
 
 | Field | Value |
 | --- | --- |
-| Issue | #236 |
-| Branch | `issue-236-recurring-cleanup` |
-| Focus | Docs sync after TW ownership / profitability / key price levels; remove unused frontend client wrappers and dead shared-contract aliases; narrow module-private exports |
-| Next suggested trigger | **~2026-11-01**, or sooner if another large feature cluster lands |
+| Date | 2026-09-26 |
+| Branch | `feature/tw-limit-up-down-rankings` |
+| Focus | Remove unused helpers left after the limit-ranking work and earlier features; sync rankings docs |
+| Next suggested trigger | **~2026-11-15**, or sooner if another large feature cluster lands |
 
-### Removed / shortened in this pass
+### Removed in this pass
 
 | Item | Evidence |
 | --- | --- |
-| `updatePortfolioAsset`, `fetchAiInsight` in `frontend/src/services/api/client.ts` | No frontend callers |
-| `SearchResult`, `QuotesResponse` in `packages/shared-contracts/api.ts` | Aliases unused; call sites use `Stock` / `QuoteResponse[]` |
-| Unexported module-private helpers/constants in `client.ts`, `RankingsPage.tsx`, `twSignalsFormat.ts` | Still used in-file only |
-| Docs updates for 籌碼 / 財報三率 / key price levels | Product, local-dev, architecture, Sonar checklist, PR template |
+| Module wrappers `fetch_twse_text` / `fetch_tpex_text` | Callers use `fetch_*_data` or `TaiwanMarketDataClient` methods |
+| `TimedOperation` | No callers; `elapsed_ms` remains |
+| Archive session-factory override and `reset_rankings_archive_for_tests` | Never called; tests use repository `set_session_factory_override` |
+| `StockThemeService.get_themes_for_stock` | Only unit tests called it; routes use `list_themes` / `get_stocks_for_theme` |
+| `isRankingsCopyKey`, stock-id price-tone helpers, legacy watchlist poll constants, unused e2e `searchFromPortfolio` | No production callers |
 
-### Suggested PR summary
+Docs now mention live-only Taiwan limit-up/limit-down rankings in product scope, local development, architecture, and the Sonar checklist.
 
-- Sync docs and Sonar checklist for ownership, profitability, and key price levels.
-- Remove unused frontend wrappers and dead shared-contract aliases; narrow private exports.
-- Record cadence / next trigger in this file.
+**Verification (local, 2026-09-26):** `pytest backend/tests/unit` — 1211 passed. Frontend: price-tone, watchlist timing, and rankings page tests — 79 passed. Full frontend suite and production build were not re-run.
 
-**Verification (local, 2026-09-17):**
+### Previous pass (#236, 2026-09-17)
 
-| Check | Result |
-| --- | --- |
-| `pytest backend/tests/unit` | Pass (news retry fixture uses relative `pubDate` so `window_days=1` stays valid across CI dates) |
-| `pytest backend/tests/integration` | Skipped locally (no `DATABASE_URL`); covered in CI |
-| `npm test --prefix frontend` | **382 passed** |
-| `npm run build --prefix frontend` | Passed |
+Removed unused `updatePortfolioAsset` / `fetchAiInsight` wrappers and dead `SearchResult` / `QuotesResponse` aliases. Synced ownership, profitability, and key-price-level docs.
+
+**Verification (local, 2026-09-17):** unit pytest passed; integration skipped without `DATABASE_URL`; frontend **382** tests and `npm run build` passed.
 
 
 ## Intentionally kept (look unused in UI)

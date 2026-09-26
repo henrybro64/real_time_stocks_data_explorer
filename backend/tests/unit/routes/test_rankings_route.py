@@ -1,5 +1,6 @@
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
+import pytest
 from fastapi import HTTPException
 
 from app.api.routes import rankings as rankings_route
@@ -91,6 +92,79 @@ def test_get_rankings_route_delegates_to_snapshot_service(monkeypatch) -> None:
     }
     assert response.rankingType == RankingType.volume
     assert response.items[0].stock.symbol == "2330"
+
+
+def test_get_rankings_route_accepts_all_board_for_price_limits(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_get_rankings(market, ranking_type, limit, tw_board=None, universe=None):
+        captured["tw_board"] = tw_board
+        captured["universe"] = universe
+        captured["ranking_type"] = ranking_type
+        return _sample_response()
+
+    monkeypatch.setattr(
+        rankings_route.rankings_snapshot_service,
+        "get_rankings",
+        fake_get_rankings,
+    )
+
+    rankings_route.get_rankings(
+        market="TW",
+        ranking_type=RankingType.limit_down,
+        limit=50,
+        tw_board="all",
+        universe=None,
+    )
+
+    assert captured == {
+        "tw_board": "all",
+        "universe": None,
+        "ranking_type": RankingType.limit_down,
+    }
+
+
+def test_get_rankings_route_rejects_all_board_for_other_types() -> None:
+    with pytest.raises(HTTPException) as exc_info:
+        rankings_route.get_rankings(
+            market="TW",
+            ranking_type=RankingType.volume,
+            limit=50,
+            tw_board="all",
+            universe=None,
+        )
+    assert exc_info.value.status_code == 422
+
+
+def test_refresh_rankings_route_passes_all_board(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_refresh_rankings(market, ranking_type, limit, tw_board=None, universe=None):
+        captured["tw_board"] = tw_board
+        captured["universe"] = universe
+        captured["ranking_type"] = ranking_type
+        return _sample_response()
+
+    monkeypatch.setattr(
+        rankings_route.rankings_snapshot_service,
+        "refresh_rankings",
+        fake_refresh_rankings,
+    )
+
+    rankings_route.refresh_rankings(
+        RankingsRefreshRequest(
+            market="TW",
+            rankingType=RankingType.limit_up,
+            universe="all",
+            limit=50,
+        )
+    )
+
+    assert captured == {
+        "tw_board": "all",
+        "universe": None,
+        "ranking_type": RankingType.limit_up,
+    }
 
 
 def test_capture_rankings_snapshots_route_requires_configured_token(monkeypatch) -> None:
@@ -208,4 +282,34 @@ def test_get_rankings_rejects_universe_that_does_not_match_market() -> None:
         assert "TWSE or TPEx" in str(exc.detail)
     else:
         raise AssertionError("Expected mismatched universe to raise HTTPException")
+
+
+def test_rankings_history_rejects_live_only_price_limits() -> None:
+    try:
+        rankings_route.get_rankings_history(
+            market="TW",
+            ranking_type=RankingType.limit_up,
+            trading_date=date(2026, 9, 25),
+        )
+    except HTTPException as exc:
+        assert exc.status_code == 422
+        assert exc.detail == (
+            "Taiwan limit_up and limit_down rankings are live-only and are not archived"
+        )
+    else:
+        raise AssertionError("Expected live-only history to raise HTTPException")
+
+
+def test_rankings_history_dates_rejects_live_only_price_limits() -> None:
+    try:
+        rankings_route.get_rankings_history_dates(
+            market="TW",
+            universe="TWSE",
+            ranking_type=RankingType.limit_down,
+        )
+    except HTTPException as exc:
+        assert exc.status_code == 422
+        assert "live-only" in str(exc.detail)
+    else:
+        raise AssertionError("Expected live-only history dates to raise HTTPException")
 

@@ -65,7 +65,19 @@ const FRESHNESS_LABEL_KEYS: Record<string, RankingsCopyKey> = {
     "rankings.freshness.twQuoteFallbackOpen",
   "Market closed; showing a limited hard-coded quote fallback because the broader Taiwan ranking source is unavailable.":
     "rankings.freshness.twQuoteFallbackClosed",
+  "Market open; Taiwan limit-up and limit-down rankings use official MIS limit prices and are live-only.":
+    "rankings.freshness.twPriceLimitOpen",
+  "Market closed; Taiwan limit-up and limit-down rankings use the latest MIS session limit prices and are live-only.":
+    "rankings.freshness.twPriceLimitClosed",
+  "Unsupported in this free-only app.": "rankings.freshness.unsupported",
 };
+
+const TW_PRICE_LIMIT_UNAVAILABLE_WARNING =
+  "Taiwan limit-price quotes are temporarily unavailable. No symbols are listed, so a missing feed is not treated as a limit-up or limit-down ranking.";
+
+export function isTwPriceLimitUnavailableWarning(message: string | null | undefined) {
+  return message === TW_PRICE_LIMIT_UNAVAILABLE_WARNING;
+}
 
 const WARNING_MESSAGE_KEYS: Record<string, RankingsCopyKey> = {
   "Free unofficial quote source; data may be delayed or unavailable.": "rankings.notice.quoteUnofficial",
@@ -73,11 +85,16 @@ const WARNING_MESSAGE_KEYS: Record<string, RankingsCopyKey> = {
   "上櫃（TPEx）三大法人買賣超為日資料，非盤中即時資料。": "rankings.notice.twDailyTpex",
   "Broader Taiwan quote rankings are temporarily unavailable. This table uses a small hard-coded fallback universe, not a complete TWSE/TPEx ranking.":
     "rankings.notice.twQuoteFallback",
+  "Some Taiwan quotes could not be classified. Those symbols are omitted instead of guessing from the change percentage.":
+    "rankings.notice.twPriceLimitPartial",
+  [TW_PRICE_LIMIT_UNAVAILABLE_WARNING]: "rankings.notice.twPriceLimitUnavailable",
 };
 
 const UNSUPPORTED_REASON_KEYS: Record<string, RankingsCopyKey> = {
   "US institutional net-buy/net-sell is not available in this free-only app.":
     "rankings.notice.usInstitutionalUnsupported",
+  "U.S. markets do not use Taiwan daily price-limit rankings in this app.":
+    "rankings.notice.usPriceLimitUnsupported",
   "TW institutional daily data is temporarily unavailable from the free public source.":
     "rankings.notice.twInstitutionalUnavailable",
   "TPEx institutional daily data is temporarily unavailable from the free public source.":
@@ -100,6 +117,7 @@ const SOURCE_KEYS: Record<string, RankingsCopyKey> = {
   "TPEx institutional daily data": "rankings.source.tpexInstitutional",
   "TWSE T86 daily institutional data": "rankings.source.twse",
   "Unsupported in this free-only app": "rankings.source.unsupported",
+  "TWSE/TPEx MIS quotes with official daily limit prices.": "rankings.source.twPriceLimit",
 };
 
 type TranslateRankingsCopy = (key: RankingsCopyKey) => string;
@@ -143,11 +161,3 @@ export function getLocalizedRankingsSource(
 ) {
   return localizeKnownString(response.source, SOURCE_KEYS, translate) ?? response.source;
 }
-
-export function isRankingsCopyKey(key: string): key is RankingsCopyKey {
-  return key.startsWith("rankings.notice.")
-    || key.startsWith("rankings.freshness.")
-    || key.startsWith("rankings.source.");
-}
-
-export type { RankingsCopyKey };

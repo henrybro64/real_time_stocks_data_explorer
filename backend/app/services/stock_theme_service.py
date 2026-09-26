@@ -104,14 +104,6 @@ class StockThemeService:
                 stocks.append(stock)
         return ThemeStockGroup(theme=theme, stocks=tuple(stocks))
 
-    def get_themes_for_stock(self, stock_id: str) -> tuple[ThemeDefinition, ...]:
-        stock_themes: list[ThemeDefinition] = []
-        for assignment in self._assignments:
-            if assignment.stock_id != stock_id:
-                continue
-            stock_themes.extend(self._themes_by_key[theme_key] for theme_key in assignment.theme_keys)
-        return tuple(stock_themes)
-
     def _validate_configuration(self) -> None:
         seen_theme_keys: set[str] = set()
         for theme in self._themes:

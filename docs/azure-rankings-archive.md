@@ -62,6 +62,10 @@ Supported combinations match the Rankings UI:
 - US: DJIA, NASDAQ100 × volume, valuation_low_pe, change_up, change_down
 - TW: TWSE, TPEx × those four plus net_buy / net_sell
 
+Taiwan `limit_up` and `limit_down` rankings are live-only. They are served from
+TWSE MIS for the current session and are not snapshotted or written to this archive.
+`GET /rankings/history` and `GET /rankings/history/dates` return 422 for those types.
+
 Scheduling uses market-local timezones (`America/New_York`, `Asia/Taipei`),
 skips non-trading days, and waits for settle delay (US quotes +45m after close;
 TW quotes +30m; TW institutional after 18:00 Taipei).

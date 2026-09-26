@@ -44,6 +44,7 @@ import {
   getLocalizedRankingsSource,
   getLocalizedRankingsUnsupportedReason,
   getLocalizedRankingsWarningMessage,
+  isTwPriceLimitUnavailableWarning,
 } from "./rankingsCopy";
 import { defaultRankingsMarketFromStatuses } from "./defaultRankingsMarket";
 
@@ -54,18 +55,18 @@ const HISTORY_DATES_LIMIT = 5;
 const RANKINGS_DATE_CURRENT = "current";
 const RANKINGS_REFRESH_COOLDOWN_MS = 15_000;
 type RankingMarket = RankingResponse["market"];
-type TwBoardSegment = "TWSE" | "TPEx";
+type TwBoardSegment = "all" | "TWSE" | "TPEx";
 type UsUniverseSegment = "DJIA" | "NASDAQ100";
 
 type RankingsRefreshVars = {
   market: RankingMarket;
   rankingType: RankingType;
-  universe: RankingUniverse;
+  universe: RankingUniverse | "all";
 };
 
 function rankingsQueryKey(
   market: RankingMarket,
-  universe: RankingUniverse,
+  universe: RankingUniverse | "all",
   rankingType: RankingType,
   tradingDate: string | null = null,
 ) {
@@ -164,7 +165,9 @@ type RankingsTabLabelKey =
   | "rankings.tab.changeDown"
   | "rankings.tab.lowPe"
   | "rankings.tab.netBuy"
-  | "rankings.tab.netSell";
+  | "rankings.tab.netSell"
+  | "rankings.tab.limitUp"
+  | "rankings.tab.limitDown";
 
 type RankingsSourceTypeLabelKey =
   | "rankings.sourceType.freePublic"
@@ -174,6 +177,7 @@ type RankingsSourceTypeLabelKey =
 
 type RankingsSnapshotStateLabelKey =
   | "rankings.snapshotState.intraday"
+  | "rankings.snapshotState.liveOnly"
   | "rankings.snapshotState.daily"
   | "rankings.snapshotState.eodArchive"
   | "rankings.snapshotState.cache"
@@ -186,6 +190,8 @@ const TW_RANKING_TABS: Array<{ key: RankingType; labelKey: RankingsTabLabelKey }
   { key: "change_down", labelKey: "rankings.tab.changeDown" },
   { key: "net_buy", labelKey: "rankings.tab.netBuy" },
   { key: "net_sell", labelKey: "rankings.tab.netSell" },
+  { key: "limit_up", labelKey: "rankings.tab.limitUp" },
+  { key: "limit_down", labelKey: "rankings.tab.limitDown" },
 ];
 
 const US_RANKING_TABS: Array<{ key: RankingType; labelKey: RankingsTabLabelKey }> = [
@@ -211,6 +217,10 @@ function isInstitutionalRanking(rankingType: RankingType) {
 
 function isValuationRanking(rankingType: RankingType) {
   return rankingType === "valuation_low_pe";
+}
+
+function isPriceLimitRanking(rankingType: RankingType) {
+  return rankingType === "limit_up" || rankingType === "limit_down";
 }
 
 function usScopeNoticeKeyFromState(
@@ -249,7 +259,8 @@ function twQuoteScopeNoticeKeyFromState(
   const aligned = data?.market === "TW" && data.rankingType === rankingType;
   const scope = aligned && data?.twRankingsScope ? data.twRankingsScope : "quote";
   const keys = TW_QUOTE_SCOPE_NOTICE[scope] ?? TW_QUOTE_SCOPE_NOTICE.quote;
-  return keys[twBoard];
+  const board: "TWSE" | "TPEx" = twBoard === "TPEx" ? "TPEx" : "TWSE";
+  return keys[board];
 }
 
 function getRankingsRefetchInterval(isMarketOpen: boolean, rankingType: RankingType) {
@@ -338,6 +349,9 @@ function rankingsSnapshotStateLabelKey(
   if (response.market === "TW" && isInstitutionalRanking(response.rankingType)) {
     return "rankings.snapshotState.daily";
   }
+  if (isPriceLimitRanking(response.rankingType)) {
+    return "rankings.snapshotState.liveOnly";
+  }
   return "rankings.snapshotState.intraday";
 }
 
@@ -422,7 +436,8 @@ export function RankingsPage() {
   const [refreshError, setRefreshError] = useState<string | null>(null);
   const [refreshCooldownUntil, setRefreshCooldownUntil] = useState(0);
   const rankingTabs = tabsForMarket(market);
-  const selectedScope: RankingUniverse = market === "TW" ? twBoard : usUniverse;
+  const selectedScope: RankingUniverse | "all" = market === "TW" ? twBoard : usUniverse;
+  const priceLimitRanking = isPriceLimitRanking(rankingType);
   const historyContextKey = `${market}:${selectedScope}:${rankingType}`;
   const historyDatesRequested = historyDatesOptInKey === historyContextKey;
   const isHistorical = selectedTradingDate != null;
@@ -451,17 +466,22 @@ export function RankingsPage() {
   }, [historyContextKey]);
 
   const historyDatesQuery = useQuery({
-    queryKey: rankingsHistoryDatesQueryKey(market, selectedScope, rankingType),
+    queryKey: rankingsHistoryDatesQueryKey(
+      market,
+      selectedScope === "all" ? "TWSE" : selectedScope,
+      rankingType,
+    ),
     queryFn: ({ signal }) =>
       fetchRankingsHistoryDates(
         market,
-        selectedScope,
+        selectedScope === "all" ? "TWSE" : selectedScope,
         rankingType,
         HISTORY_DATES_LIMIT,
         signal,
       ),
     // Lazy: only after explicit opt-in (or while viewing a historical date).
-    enabled: historyDatesRequested || selectedTradingDate != null,
+    // Price-limit lists are live-only and are not stored in the archive.
+    enabled: !priceLimitRanking && selectedScope !== "all" && (historyDatesRequested || selectedTradingDate != null),
     staleTime: 5 * 60_000,
     retry: shouldRetryHistoryDatesQuery,
     retryDelay: (failureCount, error) => historyDatesRetryDelayMs(failureCount, error),
@@ -502,7 +522,7 @@ export function RankingsPage() {
   const rankingsQuery = useQuery<RankingResponse>({
     queryKey: rankingsQueryKeyValue,
     queryFn: ({ signal }) => {
-      if (selectedTradingDate != null) {
+      if (selectedTradingDate != null && selectedScope !== "all") {
         return fetchRankingsHistory(
           market,
           rankingType,
@@ -567,6 +587,14 @@ export function RankingsPage() {
   });
 
   const data = rankingsQuery.data;
+  const rankingItems =
+    data == null
+      ? []
+      : priceLimitRanking
+        ? data.items.filter((item) => item.priceLimitStatus === rankingType)
+        : data.items;
+  const priceLimitFeedUnavailable =
+    priceLimitRanking && isTwPriceLimitUnavailableWarning(data?.warningMessage);
   const rankingsError = rankingsQuery.error != null ? toApiError(rankingsQuery.error) : null;
   const showError = rankingsError != null && data == null;
   const showUnsupported = !!data?.unsupportedReason;
@@ -582,6 +610,8 @@ export function RankingsPage() {
   if (!isHistorical) {
     if (market === "US") {
       scopeNoteKey = usScopeNoticeKeyFromState(rankingType, data);
+    } else if (isPriceLimitRanking(rankingType)) {
+      scopeNoteKey = "rankings.notice.twPriceLimit";
     } else if (isInstitutionalRanking(rankingType)) {
       if (twBoard === "TPEx") {
         scopeNoteKey = showUnsupported
@@ -654,13 +684,20 @@ export function RankingsPage() {
               groupLabel={t("rankings.twBoard.groupLabel")}
               value={twBoard}
               options={[
+                ...(priceLimitRanking
+                  ? [{
+                      value: "all" as const,
+                      testId: "rankings-tw-board-all",
+                      label: t("rankings.twBoard.all"),
+                    }]
+                  : []),
                 {
-                  value: "TWSE",
+                  value: "TWSE" as const,
                   testId: "rankings-tw-board-twse",
                   label: t("rankings.twBoard.twse"),
                 },
                 {
-                  value: "TPEx",
+                  value: "TPEx" as const,
                   testId: "rankings-tw-board-tpex",
                   label: t("rankings.twBoard.tpex"),
                 },
@@ -694,20 +731,26 @@ export function RankingsPage() {
               }}
             />
           )}
-          <Select
-            id="rankings-date-select"
-            data-testid="rankings-date-select"
-            labelText={t("rankings.date.label")}
-            value={selectedTradingDate ?? RANKINGS_DATE_CURRENT}
-            onChange={(event) => handleDateChange(event.currentTarget.value)}
-            style={{ marginTop: "1rem", maxWidth: "22rem" }}
-          >
-            <SelectItem value={RANKINGS_DATE_CURRENT} text={t("rankings.date.current")} />
-            {dateOptions.map((tradingDate) => (
-              <SelectItem key={tradingDate} value={tradingDate} text={tradingDate} />
-            ))}
-          </Select>
-          {!historyDatesRequested && selectedTradingDate == null ? (
+          {priceLimitRanking ? (
+            <p className="app-supporting-copy" data-testid="rankings-live-only" style={{ marginTop: "0.75rem" }}>
+              {t("rankings.liveOnly")}
+            </p>
+          ) : (
+            <Select
+              id="rankings-date-select"
+              data-testid="rankings-date-select"
+              labelText={t("rankings.date.label")}
+              value={selectedTradingDate ?? RANKINGS_DATE_CURRENT}
+              onChange={(event) => handleDateChange(event.currentTarget.value)}
+              style={{ marginTop: "1rem", maxWidth: "22rem" }}
+            >
+              <SelectItem value={RANKINGS_DATE_CURRENT} text={t("rankings.date.current")} />
+              {dateOptions.map((tradingDate) => (
+                <SelectItem key={tradingDate} value={tradingDate} text={tradingDate} />
+              ))}
+            </Select>
+          )}
+          {!priceLimitRanking && !historyDatesRequested && selectedTradingDate == null ? (
             <Button
               kind="ghost"
               size="sm"
@@ -718,12 +761,12 @@ export function RankingsPage() {
               {t("rankings.date.loadHistory")}
             </Button>
           ) : null}
-          {historyDatesRetrying ? (
+          {!priceLimitRanking && historyDatesRetrying ? (
             <p className="app-supporting-copy" data-testid="rankings-history-dates-waking">
               {t("rankings.date.historyWaking")}
             </p>
           ) : null}
-          {historyDatesUnavailable ? (
+          {!priceLimitRanking && historyDatesUnavailable ? (
             <p className="app-supporting-copy" data-testid="rankings-history-dates-unavailable">
               {t("rankings.date.historyUnavailable")}
             </p>
@@ -737,7 +780,15 @@ export function RankingsPage() {
               testId: `rankings-tab-${tab.key}`,
               label: t(tab.labelKey),
             }))}
-            onChange={setRankingType}
+            onChange={(next) => {
+              if (!isPriceLimitRanking(next) && twBoard === "all") {
+                setTwBoard("TWSE");
+              }
+              if (isPriceLimitRanking(next)) {
+                setSelectedTradingDate(null);
+              }
+              setRankingType(next);
+            }}
           />
         </Tile>
       </Column>
@@ -824,7 +875,7 @@ export function RankingsPage() {
                 </>
               ) : null}
 
-              {data && data.items.length > 0 ? (
+              {data && rankingItems.length > 0 ? (
                 <TableContainer
                   title={tableTitle(data, t("rankings.title"), t)}
                   className="app-portfolio-table-wrap"
@@ -838,6 +889,18 @@ export function RankingsPage() {
                         <TableHeader>{t("rankings.column.name")}</TableHeader>
                         <TableHeader>{t("rankings.column.lastPrice")}</TableHeader>
                         <TableHeader>{t("rankings.column.changePercent")}</TableHeader>
+                        {priceLimitRanking ? (
+                          <TableHeader>
+                            {t(
+                              rankingType === "limit_down"
+                                ? "rankings.column.limitDownPrice"
+                                : "rankings.column.limitUpPrice",
+                            )}
+                          </TableHeader>
+                        ) : null}
+                        {priceLimitRanking ? (
+                          <TableHeader>{t("rankings.column.priceLimitStatus")}</TableHeader>
+                        ) : null}
                         <TableHeader>{t("rankings.column.volume")}</TableHeader>
                         {showNetBuySellColumn ? <TableHeader>{t("rankings.column.netBuySell")}</TableHeader> : null}
                         {showValuationColumns ? <TableHeader>{t("rankings.column.peRatio")}</TableHeader> : null}
@@ -848,7 +911,7 @@ export function RankingsPage() {
                       </TableRow>
                     </TableHead>
                     <TableBody>
-                      {data.items.map((item) => {
+                      {rankingItems.map((item) => {
                         const detailHref = `/stock/${encodeURIComponent(item.stock.id)}`;
                         return (
                         <TableRow
@@ -889,6 +952,21 @@ export function RankingsPage() {
                               </span>
                             )}
                           </TableCell>
+                          {priceLimitRanking ? (
+                            <TableCell data-testid={`rankings-limit-price-${item.stock.id}`}>
+                              {formatMaybeCurrency(
+                                rankingType === "limit_down"
+                                  ? (item.limitDownPrice ?? null)
+                                  : (item.limitUpPrice ?? null),
+                                "TWD",
+                              )}
+                            </TableCell>
+                          ) : null}
+                          {priceLimitRanking ? (
+                            <TableCell>
+                              <PriceLimitBadge status={item.priceLimitStatus} stockId={item.stock.id} label={t} />
+                            </TableCell>
+                          ) : null}
                           <TableCell>{formatMaybeNumber(item.volume, formatNumber)}</TableCell>
                           {showNetBuySellColumn ? (
                             <TableCell>{formatMaybeNumber(item.netBuySellShares, formatNumber)}</TableCell>
@@ -912,14 +990,43 @@ export function RankingsPage() {
                 </TableContainer>
               ) : null}
 
-              {data && data.items.length === 0 && !showUnsupported ? (
-                <p className="app-supporting-copy">{t("rankings.empty")}</p>
+              {data && rankingItems.length === 0 && !showUnsupported && !priceLimitFeedUnavailable ? (
+                <p className="app-supporting-copy" data-testid="rankings-empty-state">
+                  {rankingType === "limit_up"
+                    ? t("rankings.empty.limitUp")
+                    : rankingType === "limit_down"
+                      ? t("rankings.empty.limitDown")
+                      : t("rankings.empty")}
+                </p>
               ) : null}
             </>
           )}
         </Tile>
       </Column>
     </Grid>
+  );
+}
+
+function PriceLimitBadge({
+  status,
+  stockId,
+  label,
+}: {
+  status: RankingResponse["items"][number]["priceLimitStatus"];
+  stockId: string;
+  label: (key: "rankings.badge.limitUp" | "rankings.badge.limitDown") => string;
+}) {
+  if (status !== "limit_up" && status !== "limit_down") {
+    return <span data-testid={`rankings-price-limit-badge-${stockId}`}>—</span>;
+  }
+  return (
+    <Tag
+      data-testid={`rankings-price-limit-badge-${stockId}`}
+      size="sm"
+      type={status === "limit_up" ? "red" : "green"}
+    >
+      {status === "limit_up" ? label("rankings.badge.limitUp") : label("rankings.badge.limitDown")}
+    </Tag>
   );
 }
 

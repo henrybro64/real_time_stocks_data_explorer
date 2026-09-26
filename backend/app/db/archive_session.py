@@ -34,8 +34,6 @@ _INIT_IN_REQUEST_ATTEMPTS = len(_INIT_IN_REQUEST_BACKOFF_SECONDS) + 1
 _lock = Lock()
 _engine: Engine | None = None
 _session_factory: sessionmaker[Session] | None = None
-_UNSET = object()
-_session_factory_override: sessionmaker[Session] | None | object = _UNSET
 _schema_ready = False
 _last_init_failure_at: float | None = None
 
@@ -44,26 +42,14 @@ def rankings_archive_database_url() -> str:
     return settings.rankings_archive_database_url.strip()
 
 
-def set_rankings_archive_session_factory_override(
-    session_factory: sessionmaker[Session] | None,
-) -> None:
-    """Test helper: force a session factory (or None) without reading env URL."""
-    global _session_factory_override, _schema_ready
-    with _lock:
-        _session_factory_override = session_factory
-        _schema_ready = False
-
-
 def reset_rankings_archive_session_state() -> None:
-    """Test helper: clear cached engine/session factory and overrides."""
-    global _engine, _session_factory, _session_factory_override, _schema_ready
-    global _last_init_failure_at
+    """Test helper: clear cached engine and session factory."""
+    global _engine, _session_factory, _schema_ready, _last_init_failure_at
     with _lock:
         if _engine is not None:
             _engine.dispose()
         _engine = None
         _session_factory = None
-        _session_factory_override = _UNSET
         _schema_ready = False
         _last_init_failure_at = None
 
@@ -95,8 +81,6 @@ def invalidate_rankings_archive_engine(*, reason: str = "outage") -> None:
 
 
 def rankings_archive_is_configured() -> bool:
-    if _session_factory_override is not _UNSET:
-        return _session_factory_override is not None
     return bool(rankings_archive_database_url())
 
 
@@ -239,8 +223,6 @@ def _initialize_engine() -> Engine | None:
 
 
 def get_rankings_archive_engine() -> Engine | None:
-    if _session_factory_override is not _UNSET:
-        return None
     with _lock:
         if _engine is not None:
             return _engine
@@ -248,8 +230,6 @@ def get_rankings_archive_engine() -> Engine | None:
 
 
 def get_rankings_archive_session_factory() -> sessionmaker[Session] | None:
-    if _session_factory_override is not _UNSET:
-        return _session_factory_override  # type: ignore[return-value]
     with _lock:
         if _session_factory is not None:
             return _session_factory
@@ -268,14 +248,6 @@ def ensure_rankings_archive_schema() -> bool:
         if _schema_ready:
             return True
         engine = _engine
-        if engine is None and _session_factory_override is not _UNSET:
-            # Override path: derive bind from a temporary session.
-            with factory() as session:
-                bind = session.get_bind()
-                ArchiveBase.metadata.create_all(bind=bind)
-                _ensure_archive_compat_columns(bind)
-            _schema_ready = True
-            return True
         if engine is None:
             return False
         try:

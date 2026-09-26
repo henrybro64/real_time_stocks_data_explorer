@@ -1,10 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  marketFromStockId,
   PRICE_STROKE_COLORS,
   priceColorConventionFromMarket,
-  priceColorConventionFromStockId,
   priceStrokeColor,
   priceToneClass,
   priceToneClassForDisplayCurrency,
@@ -12,17 +10,9 @@ import {
 } from "./priceTone";
 
 describe("priceTone", () => {
-  it("detects market from canonical stock ids", () => {
-    expect(marketFromStockId("TW:2330")).toBe("TW");
-    expect(marketFromStockId("US:AAPL")).toBe("US");
-    expect(marketFromStockId("EUR:XYZ")).toBeNull();
-  });
-
   it("maps markets to price color conventions using exact MarketCode", () => {
     expect(priceColorConventionFromMarket("TW")).toBe("taiwan");
     expect(priceColorConventionFromMarket("US")).toBe("us");
-    expect(priceColorConventionFromStockId("TW:6488")).toBe("taiwan");
-    expect(priceColorConventionFromStockId("US:NVDA")).toBe("us");
     expect(priceColorConventionFromMarket(null)).toBe("us");
     // Exchange labels must not be treated as Taiwan market codes.
     expect(priceColorConventionFromMarket("TWSE")).toBe("us");

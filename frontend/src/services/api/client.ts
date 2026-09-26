@@ -492,11 +492,13 @@ export function fetchQuote(stockId: string) {
   return fetchJson<QuoteResponse>(`/quotes/${encodeURIComponent(stockId)}`);
 }
 
+export type RankingQueryScope = RankingUniverse | "all";
+
 export function fetchRankings(
   market: "US" | "TW",
   rankingType: RankingType,
   limit = 50,
-  scope?: RankingUniverse,
+  scope?: RankingQueryScope,
   signal?: AbortSignal,
 ) {
   const params = new URLSearchParams({
@@ -504,7 +506,9 @@ export function fetchRankings(
     type: rankingType,
     limit: String(limit),
   });
-  if (scope === "TWSE" || scope === "TPEx") {
+  if (scope === "all") {
+    params.set("twBoard", "all");
+  } else if (scope === "TWSE" || scope === "TPEx") {
     params.set("twBoard", scope);
     params.set("universe", scope);
   } else if (scope === "DJIA" || scope === "NASDAQ100") {
@@ -567,7 +571,7 @@ export function fetchRankingsHistory(
 export function refreshRankings(
   market: "US" | "TW",
   rankingType: RankingType,
-  scope: RankingUniverse,
+  scope: RankingQueryScope,
   limit = 50,
   signal?: AbortSignal,
 ) {

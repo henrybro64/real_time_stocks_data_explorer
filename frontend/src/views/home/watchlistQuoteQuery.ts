@@ -34,10 +34,6 @@ export const WATCHLIST_QUOTE_REFETCH_INTERVAL_CLOSED_MS = 180_000;
  */
 export const WATCHLIST_QUOTE_REFETCH_INTERVAL_WARMING_MS = 5_000;
 
-/** Legacy aggressive intervals that must not be used for steady-state watchlist quotes. */
-export const LEGACY_WATCHLIST_REFETCH_INTERVAL_TW_MS = 2_000;
-export const LEGACY_WATCHLIST_REFETCH_INTERVAL_OTHER_MS = 5_000;
-
 export type WatchlistQuoteQueryTiming = {
   staleTime: number;
   refetchInterval: number;

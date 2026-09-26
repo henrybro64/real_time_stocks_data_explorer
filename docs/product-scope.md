@@ -33,7 +33,7 @@ Verified on the default branch (details: [local-development.md](local-developmen
 
 - **Dashboard** — market snapshot, stock search, and watchlist quotes with freshness badges.
 - **Stock detail** — quote, selectable chart ranges, backend SMA overlays, key statistics (optional Finnhub enrichment), news when available, Taiwan insights / 法人 / 資券 / 籌碼集中度 / 財報三率 for TW names, U.S. peer snapshot for US names, and stock AI analysis (including backend-derived key price levels).
-- **Rankings** — U.S. DJIA / NASDAQ-100 and Taiwan TWSE / TPEx universes; types include volume, movers, valuation, and Taiwan net-buy/net-sell. U.S. net-buy/net-sell is unsupported on free sources.
+- **Rankings** — U.S. DJIA / NASDAQ-100 and Taiwan TWSE / TPEx universes; types include volume, movers, valuation, and Taiwan net-buy/net-sell. Taiwan limit-up and limit-down compare the traded price to official MIS limit prices, can cover both boards, and are live-only (not snapshotted or archived). U.S. net-buy/net-sell and U.S. price-limit rankings are unsupported on free sources.
 - **Portfolio** — share positions with unrealized P/L, non-stock assets, USD/TWD views, sampled value history, and optional portfolio AI analysis.
 - **Realized P/L** — manual closed-trade records in **TWD or USD**, including cumulative dividends and period summaries. No automatic FX conversion or tax-lot accounting.
 - **Alerts** — `price_above` / `price_below` rules and an in-app event history. No email or push delivery.
@@ -75,7 +75,7 @@ Intervals below are **defaults** and are configurable.
 | Request / on-demand | An API call may return a fresh cache hit, fetch upstream, or serve last-known stale data. |
 | Background quote refresher | Market-aware polling (default ~45s open / ~15min closed) warms watchlist and portfolio quotes, with throttling and a circuit breaker. |
 | WebSocket `/api/stream` | Pushes **cache-first** quote snapshots every **3 seconds**. Not an exchange tick stream. |
-| Scheduled jobs | Portfolio history (~5 min), alert evaluation (~60s), rankings snapshots (~30 min), Taiwan market-data refresh (daily after a configured hour), optional rankings archive. |
+| Scheduled jobs | Portfolio history (~5 min), alert evaluation (~60s), rankings snapshots (~30 min), Taiwan market-data refresh (daily after a configured hour), optional rankings archive. Taiwan limit-up and limit-down rankings are not part of those snapshot or archive jobs. |
 | Manual refresh | Some screens explicitly request updated data or regenerate AI: rankings refresh, dashboard quote retry, stock AI `refresh=true`, and on-demand portfolio AI. |
 | Cached AI narrative | With Redis, a normal stock-AI read may reuse a saved narrative; `refresh=true` regenerates it. Without Redis, the narrative is not retained. |
 

@@ -22,7 +22,9 @@ from app.schemas.rankings import (
     RankingType,
     RankingUniverse,
     TwBoard,
+    TwRankingBoard,
 )
+from app.services.tw_price_limit_rankings import TW_PRICE_LIMIT_UNAVAILABLE_WARNING
 from app.schemas.stock import StockResponse
 from app.services.market_clock import (
     is_market_open,
@@ -165,7 +167,7 @@ class RankingsSnapshotService:
         ranking_type: RankingType | str,
         limit: int,
         now: datetime | None = None,
-        tw_board: TwBoard | None = None,
+        tw_board: TwRankingBoard | None = None,
         universe: RankingUniverse | None = None,
     ) -> RankingResponse:
         _sync_repository_sessionlocal()
@@ -175,7 +177,13 @@ class RankingsSnapshotService:
         limit = _effective_limit(query, limit)
         provider = self._provider_registry.get_provider(query)
 
-        if _is_explicitly_unsupported(query) or not ranking_snapshot_repository.is_available():
+        # Price-limit lists are live-only: an empty board is a real result, and
+        # these types are not written to the snapshot table or the EOD archive.
+        if (
+            _is_explicitly_unsupported(query)
+            or _is_live_only_price_limit_query(query)
+            or not ranking_snapshot_repository.is_available()
+        ):
             response = _truncate_response(
                 provider.fetch(query, limit=limit, now=current),
                 limit,
@@ -297,7 +305,7 @@ class RankingsSnapshotService:
         ranking_type: RankingType | str,
         limit: int,
         now: datetime | None = None,
-        tw_board: TwBoard | None = None,
+        tw_board: TwRankingBoard | None = None,
         universe: RankingUniverse | None = None,
     ) -> RankingResponse:
         _sync_repository_sessionlocal()
@@ -351,6 +359,7 @@ class RankingsSnapshotService:
                 limit=max(limit, _MAX_CAPTURE_LIMIT),
                 now=current,
                 allow_hardcoded_fallback=False,
+                force_refresh=True,
             )
         except Exception as exc:  # noqa: BLE001
             logger.exception(
@@ -375,6 +384,12 @@ class RankingsSnapshotService:
             raise RankingsRefreshError(
                 live.unsupportedReason or _REFRESH_FAILURE_DETAIL,
             )
+        if _is_live_only_price_limit_query(query):
+            if live.warningMessage == TW_PRICE_LIMIT_UNAVAILABLE_WARNING:
+                raise RankingsRefreshError(_REFRESH_FAILURE_DETAIL)
+            response = _truncate_response(live, limit)
+            _log_rankings_response(query, response, started_at)
+            return response
         if not live.items:
             raise RankingsRefreshError(_REFRESH_FAILURE_DETAIL)
 
@@ -768,9 +783,17 @@ class RankingsSnapshotService:
 def _normalize_query(
     market: RankingMarket,
     ranking_type: RankingType,
-    tw_board: TwBoard | None,
+    tw_board: TwRankingBoard | None,
     universe: RankingUniverse | str | None = None,
 ) -> RankingQuery:
+    if market == "TW" and (tw_board == "all" or universe == "all"):
+        if ranking_type in {RankingType.limit_up, RankingType.limit_down}:
+            return RankingQuery(
+                market=market,
+                ranking_type=ranking_type,
+                tw_board="all",
+                universe=None,
+            )
     if market == "TW":
         board: TwBoard
         if universe in {"TWSE", "TPEx"}:
@@ -839,9 +862,21 @@ def _truncate_response(response: RankingResponse, limit: int) -> RankingResponse
 
 
 def _is_explicitly_unsupported(query: RankingQuery) -> bool:
-    return query.market == "US" and query.ranking_type in {
+    if query.market == "US" and query.ranking_type in {
         RankingType.net_buy,
         RankingType.net_sell,
+        RankingType.limit_up,
+        RankingType.limit_down,
+    }:
+        return True
+    return False
+
+
+def _is_live_only_price_limit_query(query: RankingQuery) -> bool:
+    """Taiwan 漲停／跌停 rankings stay on the live MIS feed and are not archived."""
+    return query.market == "TW" and query.ranking_type in {
+        RankingType.limit_up,
+        RankingType.limit_down,
     }
 
 
@@ -968,6 +1003,26 @@ def _ranking_item_from_snapshot(row: RankingSnapshotItem) -> RankingItem:
             if isinstance(raw_payload, dict)
             else None
         ),
+        priceLimitStatus=(
+            raw_payload.get("priceLimitStatus")
+            if isinstance(raw_payload, dict)
+            else None
+        ),
+        referencePrice=(
+            raw_payload.get("referencePrice")
+            if isinstance(raw_payload, dict)
+            else None
+        ),
+        limitUpPrice=(
+            raw_payload.get("limitUpPrice")
+            if isinstance(raw_payload, dict)
+            else None
+        ),
+        limitDownPrice=(
+            raw_payload.get("limitDownPrice")
+            if isinstance(raw_payload, dict)
+            else None
+        ),
         timestamp=row.data_time,
     )
 
@@ -1043,6 +1098,8 @@ def _tw_daily_bucket_start_from_response(response: RankingResponse) -> datetime 
 
 
 def _scheduled_queries() -> list[RankingQuery]:
+    # limit_up / limit_down are live-only MIS rankings and are intentionally
+    # omitted here so they are not snapshotted or copied into the EOD archive.
     queries: list[RankingQuery] = []
     for universe in ("DJIA", "NASDAQ100"):
         queries.extend(
