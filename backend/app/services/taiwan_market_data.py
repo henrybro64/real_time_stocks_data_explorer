@@ -338,64 +338,6 @@ def fetch_tpex_data(
     )
 
 
-def fetch_twse_text(
-    url: str,
-    *,
-    method: HttpMethod = "GET",
-    params: dict[str, str] | None = None,
-    data: dict[str, str] | None = None,
-    headers: dict[str, str] | None = None,
-    timeout_seconds: float = _DEFAULT_TIMEOUT_SECONDS,
-    retries: int = _DEFAULT_RETRIES,
-    cache_ttl: timedelta = _DEFAULT_CACHE_TTL,
-    encoding: str | None = None,
-    operation_name: str = "taiwan_market_data_twse_text",
-    resource_id: str | None = None,
-) -> str:
-    return taiwan_market_data_client.fetch_twse_text(
-        url,
-        method=method,
-        params=params,
-        data=data,
-        headers=headers,
-        timeout_seconds=timeout_seconds,
-        retries=retries,
-        cache_ttl=cache_ttl,
-        encoding=encoding,
-        operation_name=operation_name,
-        resource_id=resource_id,
-    )
-
-
-def fetch_tpex_text(
-    url: str,
-    *,
-    method: HttpMethod = "GET",
-    params: dict[str, str] | None = None,
-    data: dict[str, str] | None = None,
-    headers: dict[str, str] | None = None,
-    timeout_seconds: float = _DEFAULT_TIMEOUT_SECONDS,
-    retries: int = _DEFAULT_RETRIES,
-    cache_ttl: timedelta = _DEFAULT_CACHE_TTL,
-    encoding: str | None = None,
-    operation_name: str = "taiwan_market_data_tpex_text",
-    resource_id: str | None = None,
-) -> str:
-    return taiwan_market_data_client.fetch_tpex_text(
-        url,
-        method=method,
-        params=params,
-        data=data,
-        headers=headers,
-        timeout_seconds=timeout_seconds,
-        retries=retries,
-        cache_ttl=cache_ttl,
-        encoding=encoding,
-        operation_name=operation_name,
-        resource_id=resource_id,
-    )
-
-
 def require_taiwan_stock(
     stock_id: str,
     *,

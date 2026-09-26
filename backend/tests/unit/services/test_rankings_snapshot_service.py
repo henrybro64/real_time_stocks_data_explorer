@@ -688,6 +688,75 @@ def test_us_institutional_queries_remain_unsupported(monkeypatch) -> None:
     assert net_sell.unsupportedReason == "US institutional net-buy/net-sell is not available in this free-only app."
 
 
+def test_us_price_limit_rankings_remain_unsupported(monkeypatch) -> None:
+    _install_in_memory_sessionlocal(monkeypatch)
+    service = RankingsSnapshotService()
+
+    response = service.get_rankings("US", RankingType.limit_up, limit=10)
+
+    assert response.sourceType == RankingSourceType.unsupported
+    assert response.items == []
+    assert response.unsupportedReason == (
+        "U.S. markets do not use Taiwan daily price-limit rankings in this app."
+    )
+
+
+def test_tw_price_limit_empty_result_stays_live_and_is_not_archived(monkeypatch) -> None:
+    _install_in_memory_sessionlocal(monkeypatch)
+    now = datetime(2026, 9, 26, 8, 0, tzinfo=timezone.utc)
+    live = RankingResponse(
+        market="TW",
+        rankingType=RankingType.limit_up,
+        twBoard="all",
+        universe=None,
+        items=[],
+        timestamp=now.isoformat(),
+        source="TWSE/TPEx MIS quotes with official daily limit prices.",
+        sourceType=RankingSourceType.free_public,
+        isMarketOpen=False,
+        dataFreshnessLabel=(
+            "Market closed; Taiwan limit-up and limit-down rankings use the latest MIS session "
+            "limit prices and are live-only."
+        ),
+        warningMessage=None,
+        unsupportedReason=None,
+        usRankingsScope=None,
+        twRankingsScope=None,
+    )
+    provider = FakeProvider(bucket_start=now, response=live)
+    service = RankingsSnapshotService(
+        provider_registry=FakeRegistry({("TW", RankingType.limit_up.value, "all"): provider})
+    )
+
+    result = service.get_rankings(
+        "TW",
+        RankingType.limit_up,
+        limit=50,
+        now=now,
+        tw_board="all",
+        universe=None,
+    )
+
+    assert result.items == []
+    assert result.dataFreshnessLabel == live.dataFreshnessLabel
+    assert result.twRankingsScope is None
+    assert provider.fetch_calls == 1
+    session_local = snapshot_service_module.SessionLocal
+    with session_local() as session:
+        assert session.scalars(select(RankingSnapshot)).all() == []
+
+    refreshed = service.refresh_rankings(
+        "TW",
+        RankingType.limit_up,
+        limit=50,
+        now=now,
+        tw_board="all",
+        universe=None,
+    )
+    assert refreshed.items == []
+    assert provider.fetch_calls == 2
+
+
 def test_tw_daily_capture_uses_free_public_then_cached_limit(monkeypatch) -> None:
     _install_in_memory_sessionlocal(monkeypatch)
     bucket_start = datetime(2026, 7, 2, 10, 0, tzinfo=timezone.utc)
@@ -924,6 +993,9 @@ def test_start_background_sampler_passes_poll_seconds_to_thread(monkeypatch) -> 
 def test_scheduled_queries_cover_visible_ranking_tabs() -> None:
     us_types = {query.ranking_type for query in _scheduled_queries() if query.market == "US"}
     assert {RankingType.change_up, RankingType.change_down, RankingType.valuation_low_pe} <= us_types
+    scheduled_types = {query.ranking_type for query in _scheduled_queries()}
+    assert RankingType.limit_up not in scheduled_types
+    assert RankingType.limit_down not in scheduled_types
 
 
 def test_scheduled_queries_capture_volume_deltas_before_volume_baseline() -> None:

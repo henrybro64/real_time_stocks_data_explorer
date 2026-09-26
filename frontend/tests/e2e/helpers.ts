@@ -5,9 +5,8 @@ import { installE2eApiMocks } from "./e2eApiMocks";
 export const TW_STOCK_ID = "TW:2330";
 export const TW_STOCK_SYMBOL = "2330";
 export const TPEX_STOCK_ID = "TW:6488";
-export const TPEX_STOCK_SYMBOL = "6488";
 export const US_STOCK_ID = "US:AAPL";
-export const US_STOCK_SYMBOL = "AAPL";
+const US_STOCK_SYMBOL = "AAPL";
 
 export const E2E_TW_STOCK_SEARCH_RESULT = {
   id: TW_STOCK_ID,
@@ -104,15 +103,6 @@ export async function openHome(page: Page) {
 
 export async function searchFromHome(page: Page, query = TW_STOCK_SYMBOL) {
   return waitForSearchResult(page, "stock-search-section", query);
-}
-
-export async function searchFromPortfolio(page: Page, query = TW_STOCK_SYMBOL) {
-  await installE2eApiMocks(page);
-  await waitForBackendHealth(page);
-  await page.goto("/portfolio");
-  await expect(page.locator("#main-content")).toBeVisible();
-  await page.waitForLoadState("load");
-  return waitForSearchResult(page, "portfolio-search-section", query);
 }
 
 export async function ensureWatchlistDoesNotContain(page: Page, stockId = TW_STOCK_ID) {

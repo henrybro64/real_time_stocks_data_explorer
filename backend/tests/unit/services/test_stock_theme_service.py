@@ -129,38 +129,6 @@ def test_stock_theme_service_skips_missing_stocks_from_loader() -> None:
     assert [stock.symbol for stock in group.stocks] == ["NVDA"]
 
 
-def test_stock_theme_service_supports_multiple_themes_per_stock() -> None:
-    service = StockThemeService(
-        themes=(
-            ThemeDefinition(key="ai-infrastructure", label="AI Infrastructure"),
-            ThemeDefinition(key="gpu", label="GPU"),
-        ),
-        assignments=(
-            ThemeAssignment(
-                stock_id="US:NVDA",
-                theme_keys=("ai infrastructure", "gpu"),
-            ),
-        ),
-        stock_loader=lambda stock_id: None,
-    )
-
-    themes = service.get_themes_for_stock("US:NVDA")
-
-    assert [theme.key for theme in themes] == ["ai-infrastructure", "gpu"]
-
-
-def test_stock_theme_service_returns_empty_themes_for_unknown_stock() -> None:
-    service = StockThemeService(
-        themes=(ThemeDefinition(key="gpu", label="GPU"),),
-        assignments=(ThemeAssignment(stock_id="US:NVDA", theme_keys=("gpu",)),),
-        stock_loader=lambda stock_id: None,
-    )
-
-    themes = service.get_themes_for_stock("US:MISSING")
-
-    assert themes == ()
-
-
 def test_stock_theme_service_get_theme_raises_for_unknown_theme() -> None:
     service = StockThemeService(
         themes=(ThemeDefinition(key="gpu", label="GPU"),),

@@ -11,6 +11,7 @@ from app.schemas.rankings import (
     RankingType,
     RankingUniverse,
     TwBoard,
+    TwRankingBoard,
     UsUniverse,
 )
 from app.services.market_clock import (
@@ -35,7 +36,7 @@ _UNSUPPORTED_US_INSTITUTIONAL_REASON = (
 class RankingQuery:
     market: RankingMarket
     ranking_type: RankingType
-    tw_board: TwBoard | None = None
+    tw_board: TwRankingBoard | None = None
     universe: RankingUniverse | None = None
 
 

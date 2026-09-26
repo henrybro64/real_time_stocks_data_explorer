@@ -19,16 +19,6 @@ export const PRICE_STROKE_COLORS = {
   },
 } as const;
 
-export function marketFromStockId(stockId: string): MarketCode | null {
-  if (stockId.startsWith("TW:")) {
-    return "TW";
-  }
-  if (stockId.startsWith("US:")) {
-    return "US";
-  }
-  return null;
-}
-
 export function priceColorConventionFromMarket(
   market: MarketCode | string | null | undefined,
 ): PriceColorConvention {
@@ -36,10 +26,6 @@ export function priceColorConventionFromMarket(
     return "taiwan";
   }
   return "us";
-}
-
-export function priceColorConventionFromStockId(stockId: string): PriceColorConvention {
-  return priceColorConventionFromMarket(marketFromStockId(stockId));
 }
 
 /**

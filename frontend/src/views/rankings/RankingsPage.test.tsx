@@ -1839,4 +1839,267 @@ describe("RankingsPage", () => {
     // Initial attempt + HISTORY_DATES_MAX_RETRIES (4).
     expect(fetchRankingsHistoryDates.mock.calls.length).toBeGreaterThanOrEqual(5);
   });
+
+  it("shows Taiwan limit-up rankings from the backend status, not the percentage", async () => {
+    const user = userEvent.setup();
+    vi.mocked(fetchRankings).mockImplementation(async (_market, rankingType, _limit, scope) => {
+      if (rankingType === "limit_up") {
+        return buildResponse({
+          rankingType: "limit_up",
+          twBoard: scope === "all" ? "all" : scope === "TPEx" ? "TPEx" : "TWSE",
+          source: "TWSE/TPEx MIS quotes with official daily limit prices.",
+          sourceType: "free-public",
+          dataFreshnessLabel:
+            "Market closed; Taiwan limit-up and limit-down rankings use the latest MIS session limit prices and are live-only.",
+          warningMessage: null,
+          items: [
+            {
+              ...buildResponse().items[0],
+              changePercent: 9.85,
+              priceLimitStatus: "limit_up",
+              referencePrice: 100,
+              limitUpPrice: 109.85,
+              limitDownPrice: 90.15,
+            },
+          ],
+        });
+      }
+      return buildResponse();
+    });
+
+    renderRankingsPage();
+    await screen.findByTestId("rankings-row-TW:2330");
+    expect(screen.queryByTestId("rankings-tab-limit_up")).toBeInTheDocument();
+    await user.click(screen.getByTestId("rankings-tab-limit_up"));
+
+    await waitFor(() => {
+      expect(fetchRankings).toHaveBeenLastCalledWith(
+        "TW",
+        "limit_up",
+        50,
+        "TWSE",
+        expect.any(AbortSignal),
+      );
+    });
+    expect(await screen.findByTestId("rankings-price-limit-badge-TW:2330")).toHaveTextContent("漲停");
+    expect(screen.getByTestId("rankings-limit-price-TW:2330")).toHaveTextContent("109.85");
+    expect(screen.getByTestId("rankings-live-only")).toBeInTheDocument();
+    expect(screen.getByTestId("rankings-snapshot-state-tag")).toHaveTextContent("即時查詢");
+    expect(screen.queryByTestId("rankings-date-select")).not.toBeInTheDocument();
+    expect(screen.getByTestId("rankings-tw-board-all")).toBeInTheDocument();
+
+    await user.click(screen.getByTestId("rankings-tw-board-all"));
+    await waitFor(() => {
+      expect(fetchRankings).toHaveBeenLastCalledWith(
+        "TW",
+        "limit_up",
+        50,
+        "all",
+        expect.any(AbortSignal),
+      );
+    });
+
+    await user.click(screen.getByTestId("rankings-tw-board-tpex"));
+    await waitFor(() => {
+      expect(fetchRankings).toHaveBeenLastCalledWith(
+        "TW",
+        "limit_up",
+        50,
+        "TPEx",
+        expect.any(AbortSignal),
+      );
+    });
+  });
+
+  it("shows an empty limit-down list and a partial warning without guessing", async () => {
+    const user = userEvent.setup();
+    vi.mocked(fetchRankings).mockImplementation(async (_market, rankingType) => {
+      if (rankingType === "limit_down") {
+        return buildResponse({
+          rankingType: "limit_down",
+          items: [],
+          source: "TWSE/TPEx MIS quotes with official daily limit prices.",
+          sourceType: "free-public",
+          dataFreshnessLabel:
+            "Market closed; Taiwan limit-up and limit-down rankings use the latest MIS session limit prices and are live-only.",
+          warningMessage:
+            "Some Taiwan quotes could not be classified. Those symbols are omitted instead of guessing from the change percentage.",
+        });
+      }
+      if (rankingType === "limit_up") {
+        return buildResponse({
+          rankingType: "limit_up",
+          items: [],
+          warningMessage: null,
+          source: "TWSE/TPEx MIS quotes with official daily limit prices.",
+          sourceType: "free-public",
+          dataFreshnessLabel:
+            "Market closed; Taiwan limit-up and limit-down rankings use the latest MIS session limit prices and are live-only.",
+        });
+      }
+      return buildResponse();
+    });
+
+    renderRankingsPage();
+    await screen.findByTestId("rankings-row-TW:2330");
+    await user.click(screen.getByTestId("rankings-tab-limit_up"));
+    expect(await screen.findByTestId("rankings-empty-state")).toHaveTextContent("目前沒有漲停股票");
+
+    await user.click(screen.getByTestId("rankings-tab-limit_down"));
+    await waitFor(() => {
+      expect(fetchRankings).toHaveBeenLastCalledWith(
+        "TW",
+        "limit_down",
+        50,
+        "TWSE",
+        expect.any(AbortSignal),
+      );
+    });
+    expect(screen.getByTestId("rankings-warning-message")).toHaveTextContent("略過");
+    expect(screen.getByTestId("rankings-empty-state")).toHaveTextContent("目前沒有跌停股票");
+  });
+
+  it("hides the empty sentence when the limit-price feed is unavailable", async () => {
+    const user = userEvent.setup();
+    vi.mocked(fetchRankings).mockImplementation(async (_market, rankingType) => {
+      if (rankingType === "limit_up") {
+        return buildResponse({
+          rankingType: "limit_up",
+          items: [],
+          source: "TWSE/TPEx MIS quotes with official daily limit prices.",
+          sourceType: "free-public",
+          dataFreshnessLabel:
+            "Market closed; Taiwan limit-up and limit-down rankings use the latest MIS session limit prices and are live-only.",
+          warningMessage:
+            "Taiwan limit-price quotes are temporarily unavailable. No symbols are listed, so a missing feed is not treated as a limit-up or limit-down ranking.",
+        });
+      }
+      return buildResponse();
+    });
+
+    renderRankingsPage();
+    await screen.findByTestId("rankings-row-TW:2330");
+    await user.click(screen.getByTestId("rankings-tab-limit_up"));
+    expect(await screen.findByTestId("rankings-warning-message")).toHaveTextContent("暫時無法取得");
+    expect(screen.queryByTestId("rankings-empty-state")).not.toBeInTheDocument();
+  });
+
+  it("shows a limit-down row and drops a quote that is not at that limit", async () => {
+    const user = userEvent.setup();
+    vi.mocked(fetchRankings).mockImplementation(async (_market, rankingType) => {
+      if (rankingType === "limit_down") {
+        return buildResponse({
+          rankingType: "limit_down",
+          twBoard: "TWSE",
+          source: "TWSE/TPEx MIS quotes with official daily limit prices.",
+          sourceType: "free-public",
+          dataFreshnessLabel:
+            "Market closed; Taiwan limit-up and limit-down rankings use the latest MIS session limit prices and are live-only.",
+          warningMessage: null,
+          items: [
+            {
+              ...buildResponse().items[0],
+              stock: {
+                ...buildResponse().items[0].stock,
+                id: "TW:6488",
+                symbol: "6488",
+                name: "環球晶",
+                nameZhTw: "環球晶",
+              },
+              changePercent: -9.94,
+              priceLimitStatus: "limit_down",
+              referencePrice: 100,
+              limitUpPrice: 110,
+              limitDownPrice: 90,
+            },
+            {
+              ...buildResponse().items[0],
+              changePercent: 9.85,
+              priceLimitStatus: "unknown",
+              referencePrice: 100,
+              limitUpPrice: null,
+              limitDownPrice: 90,
+            },
+          ],
+        });
+      }
+      return buildResponse();
+    });
+
+    renderRankingsPage();
+    await screen.findByTestId("rankings-row-TW:2330");
+    await user.click(screen.getByTestId("rankings-tab-limit_down"));
+    expect(await screen.findByTestId("rankings-price-limit-badge-TW:6488")).toHaveTextContent("跌停");
+    expect(screen.getByTestId("rankings-limit-price-TW:6488")).toHaveTextContent("90");
+    expect(screen.queryByTestId("rankings-row-TW:2330")).not.toBeInTheDocument();
+  });
+
+  it("uses English limit badges", async () => {
+    const user = userEvent.setup();
+    vi.mocked(fetchRankings).mockImplementation(async (_market, rankingType) => {
+      if (rankingType === "limit_up") {
+        return buildResponse({
+          rankingType: "limit_up",
+          source: "TWSE/TPEx MIS quotes with official daily limit prices.",
+          sourceType: "free-public",
+          dataFreshnessLabel:
+            "Market closed; Taiwan limit-up and limit-down rankings use the latest MIS session limit prices and are live-only.",
+          warningMessage: null,
+          items: [
+            {
+              ...buildResponse().items[0],
+              priceLimitStatus: "limit_up",
+              limitUpPrice: 109.85,
+              limitDownPrice: 90.15,
+            },
+          ],
+        });
+      }
+      return buildResponse();
+    });
+
+    renderRankingsPage("en");
+    await screen.findByTestId("rankings-row-TW:2330");
+    await user.click(screen.getByTestId("rankings-tab-limit_up"));
+    expect(await screen.findByTestId("rankings-price-limit-badge-TW:2330")).toHaveTextContent(
+      "Limit up",
+    );
+  });
+
+  it("hides limit rankings on the U.S. market and keeps volume rankings", async () => {
+    const user = userEvent.setup();
+    vi.mocked(fetchRankings).mockImplementation(async (market, rankingType) => {
+      if (market === "US") {
+        return buildUsResponse({ rankingType });
+      }
+      return buildResponse({ rankingType });
+    });
+
+    renderRankingsPage();
+    await screen.findByTestId("rankings-row-TW:2330");
+    await user.selectOptions(screen.getByLabelText("市場"), "US");
+    await screen.findByTestId("rankings-row-US:MSFT");
+    expect(screen.queryByTestId("rankings-tab-limit_up")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("rankings-tab-limit_down")).not.toBeInTheDocument();
+    expect(screen.getByTestId("rankings-tab-volume")).toBeInTheDocument();
+  });
+
+  it("shows the rankings error state for a failed limit-up request", async () => {
+    const user = userEvent.setup();
+    vi.mocked(fetchRankings).mockImplementation(async (_market, rankingType) => {
+      if (rankingType === "limit_up") {
+        throw new ApiError("limit feed down", {
+          status: 503,
+          kind: "unavailable",
+          detail: "limit feed down",
+        });
+      }
+      return buildResponse();
+    });
+
+    renderRankingsPage();
+    await screen.findByTestId("rankings-row-TW:2330");
+    await user.click(screen.getByTestId("rankings-tab-limit_up"));
+    expect(await screen.findByText("資料來源暫時不可用")).toBeInTheDocument();
+  });
 });

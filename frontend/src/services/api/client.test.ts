@@ -520,6 +520,24 @@ describe("fetchRankings", () => {
     expect(url).toContain("universe=NASDAQ100");
     expect(url).not.toContain("twBoard=");
   });
+
+  it("requests the combined Taiwan board for limit rankings without a universe", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => emptyUsRankingJson({
+        market: "TW",
+        rankingType: "limit_up",
+        twBoard: "all",
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await fetchRankings("TW", "limit_up", 50, "all");
+    const url = String(fetchMock.mock.calls[0]?.[0]);
+    expect(url).toContain("type=limit_up");
+    expect(url).toContain("twBoard=all");
+    expect(url).not.toContain("universe=");
+  });
 });
 
 describe("fetchRankingsHistoryDates", () => {

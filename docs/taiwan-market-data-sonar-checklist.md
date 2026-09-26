@@ -1,7 +1,7 @@
 # Taiwan market-data SonarCloud checklist
 
 Owner checklist for backend PRs that touch Taiwan market-data paths
-(institutional / 資券 / ownership / profitability / refresh jobs / shared Taiwan helpers).
+(institutional / 資券 / ownership / profitability / price limits / refresh jobs / shared Taiwan helpers).
 
 **Why:** functional CI (`backend-pytest`, Playwright, k3s) can be green while
 SonarCloud still fails the quality gate on maintainability, duplication,
@@ -32,6 +32,7 @@ Use this checklist for PRs that change any of:
 | 資券 API | `tw_margin_short_service.py`, `api/routes/tw_margin_short.py`, `docs/taiwan-margin-short-endpoints.md` |
 | Ownership / 籌碼 | `tw_ownership_concentration_service.py`, `tdcc_shareholding.py`, `taiwan_signals_redis_cache.py`, `api/routes/tw_ownership_concentration.py` |
 | Profitability / 財報三率 | `tw_profitability_service.py`, `api/routes/tw_profitability.py` |
+| Price limits / 漲跌停 | `tw_price_limits.py`, `tw_price_limit_rankings.py`, `api/routes/rankings.py` |
 | Refresh / store | `taiwan_market_data_refresh_service.py`, `taiwan_market_daily_repository.py`, related migrations |
 | Jobs / settings | `backend/app/jobs/runtime.py`, `core/config.py` Taiwan refresh flags |
 

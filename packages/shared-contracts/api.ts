@@ -85,7 +85,11 @@ export type RankingType =
   | "change_down"
   | "valuation_low_pe"
   | "net_buy"
-  | "net_sell";
+  | "net_sell"
+  | "limit_up"
+  | "limit_down";
+
+export type PriceLimitStatus = "limit_up" | "limit_down" | "none" | "unknown";
 
 export type RankingSourceType =
   | "free-public"
@@ -114,13 +118,17 @@ export type RankingItem = {
   peRatioSource?: string | null;
   valuationAsOf?: string | null;
   valuationWarning?: string | null;
+  priceLimitStatus?: PriceLimitStatus | null;
+  referencePrice?: number | null;
+  limitUpPrice?: number | null;
+  limitDownPrice?: number | null;
   timestamp: string;
 };
 
 export type RankingResponse = {
   market: MarketCode;
   rankingType: RankingType;
-  twBoard?: "TWSE" | "TPEx" | null;
+  twBoard?: "all" | "TWSE" | "TPEx" | null;
   universe?: RankingUniverse | null;
   items: RankingItem[];
   timestamp: string;

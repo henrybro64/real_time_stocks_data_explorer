@@ -21,6 +21,7 @@ from app.schemas.rankings import (
     RankingType,
     RankingUniverse,
     TwBoard,
+    TwRankingBoard,
     UsUniverse,
 )
 from app.schemas.stock import StockResponse
@@ -36,6 +37,17 @@ from app.services.quote_service import QuoteService, quote_service
 from app.services.rankings_external_source import (
     RankingsExternalSource,
     rankings_external_source,
+)
+from app.services.tw_price_limit_rankings import (
+    TW_PRICE_LIMIT_FRESHNESS_CLOSED,
+    TW_PRICE_LIMIT_FRESHNESS_OPEN,
+    TW_PRICE_LIMIT_PARTIAL_WARNING,
+    TW_PRICE_LIMIT_SOURCE,
+    TW_PRICE_LIMIT_UNAVAILABLE_WARNING,
+    US_PRICE_LIMIT_UNSUPPORTED_REASON,
+    TwPriceLimitRankingsSource,
+    api_price,
+    tw_price_limit_rankings_source,
 )
 from app.services.rankings_volume_baseline_cache import (
     VolumeBaselineStore,
@@ -292,6 +304,10 @@ class _RankingCandidate:
     valuation_as_of: str | None
     valuation_warning: str | None
     timestamp: str
+    price_limit_status: str | None = None
+    reference_price: float | None = None
+    limit_up_price: float | None = None
+    limit_down_price: float | None = None
 
 
 class RankingsService:
@@ -304,6 +320,7 @@ class RankingsService:
         sp500_quote_batch: Callable[[list[StockRecord]], dict[str, QuoteRecord]] | None = None,
         sp500_symbol_loader: Callable[[], tuple[str, ...]] | None = None,
         tw_stock_ids_resolver: Callable[[TwBoard], list[str]] | None = None,
+        price_limit_source: TwPriceLimitRankingsSource | None = None,
     ) -> None:
         self.quote_source = quote_source or quote_service
         self._volume_baselines = volume_baseline_store or default_volume_baseline_store
@@ -311,6 +328,7 @@ class RankingsService:
         self._sp500_quote_batch = sp500_quote_batch or yahoo_v7_quotes_batch
         self._sp500_symbol_loader = sp500_symbol_loader or load_sp500_symbols
         self._tw_stock_ids_resolver = tw_stock_ids_resolver or _tw_quote_universe_ids
+        self._price_limit_source = price_limit_source or tw_price_limit_rankings_source
         # Scheduler injects a bounded settings universe; only the default hard-coded
         # TWSE/TPEx lists should be advertised as a limited fallback.
         self._uses_hardcoded_tw_quote_universe = (
@@ -323,19 +341,39 @@ class RankingsService:
         ranking_type: RankingType | str,
         limit: int,
         now: datetime | None = None,
-        tw_board: TwBoard | None = None,
+        tw_board: TwRankingBoard | None = None,
         us_universe: UsUniverse | None = None,
         allow_hardcoded_fallback: bool = True,
     ) -> RankingResponse:
         started_at = perf_counter()
         current = now or datetime.now(timezone.utc)
         normalized_type = RankingType(ranking_type)
-        effective_tw_board: TwBoard | None = tw_board if market == "TW" else None
+        effective_tw_board: TwRankingBoard | None = tw_board if market == "TW" else None
         if market == "TW" and effective_tw_board is None:
+            effective_tw_board = "TWSE"
+        if effective_tw_board == "all" and normalized_type not in {
+            RankingType.limit_up,
+            RankingType.limit_down,
+        }:
             effective_tw_board = "TWSE"
         effective_us_universe: UsUniverse | None = us_universe if market == "US" else None
         effective_limit = _effective_ranking_limit(limit, effective_us_universe)
-        if normalized_type in {RankingType.net_buy, RankingType.net_sell}:
+        if normalized_type in {RankingType.limit_up, RankingType.limit_down}:
+            if market == "US":
+                response = self._unsupported_us_price_limit_response(
+                    normalized_type,
+                    current,
+                    effective_us_universe,
+                )
+            else:
+                assert effective_tw_board in {"all", "TWSE", "TPEx"}
+                response = self._build_tw_price_limit_ranking(
+                    normalized_type,
+                    effective_limit,
+                    current,
+                    effective_tw_board,
+                )
+        elif normalized_type in {RankingType.net_buy, RankingType.net_sell}:
             if market == "US":
                 response = self._unsupported_response(
                     market, normalized_type, current, effective_us_universe
@@ -381,6 +419,98 @@ class RankingsService:
             },
         )
         return response
+
+    def _unsupported_us_price_limit_response(
+        self,
+        ranking_type: RankingType,
+        now: datetime,
+        us_universe: UsUniverse | None,
+    ) -> RankingResponse:
+        return RankingResponse(
+            market="US",
+            rankingType=ranking_type,
+            twBoard=None,
+            universe=us_universe or "DJIA",
+            items=[],
+            timestamp=now.isoformat(),
+            source="Unsupported in this free-only app",
+            sourceType=RankingSourceType.unsupported,
+            isMarketOpen=is_market_open("US", now),
+            dataFreshnessLabel="Unsupported in this free-only app.",
+            warningMessage=None,
+            unsupportedReason=US_PRICE_LIMIT_UNSUPPORTED_REASON,
+            usRankingsScope=None,
+            twRankingsScope=None,
+        )
+
+    def _build_tw_price_limit_ranking(
+        self,
+        ranking_type: RankingType,
+        limit: int,
+        now: datetime,
+        tw_board: TwRankingBoard,
+    ) -> RankingResponse:
+        """Live Taiwan 漲停／跌停 list. Never falls back to the hard-coded universe."""
+        market_open = is_market_open("TW", now)
+        fetched = self._price_limit_source.fetch(ranking_type, tw_board, now)
+        if fetched.unavailable:
+            warning = TW_PRICE_LIMIT_UNAVAILABLE_WARNING
+            quotes = []
+        else:
+            warning = TW_PRICE_LIMIT_PARTIAL_WARNING if fetched.partial else None
+            quotes = fetched.quotes[:limit]
+        items = [
+            _ranking_item(
+                index,
+                _RankingCandidate(
+                    stock=StockResponse(
+                        id=f"TW:{quote.symbol}",
+                        market="TW",
+                        symbol=quote.symbol,
+                        name=quote.name,
+                        exchange=quote.exchange,
+                        currency="TWD",
+                        timezone="Asia/Taipei",
+                        nameEn=None,
+                        nameZhTw=quote.name,
+                    ),
+                    last_price=api_price(quote.last_price),
+                    change_percent=api_price(quote.change_percent),
+                    volume=quote.volume,
+                    volume_delta_percent=None,
+                    net_buy_sell_shares=None,
+                    pe_ratio=None,
+                    pe_ratio_type=None,
+                    pe_ratio_source=None,
+                    valuation_as_of=None,
+                    valuation_warning=None,
+                    timestamp=quote.timestamp,
+                    price_limit_status=quote.status,
+                    reference_price=api_price(quote.reference_price),
+                    limit_up_price=api_price(quote.limit_up_price),
+                    limit_down_price=api_price(quote.limit_down_price),
+                ),
+            )
+            for index, quote in enumerate(quotes, start=1)
+        ]
+        return RankingResponse(
+            market="TW",
+            rankingType=ranking_type,
+            twBoard=tw_board,
+            universe=None if tw_board == "all" else tw_board,
+            items=items,
+            timestamp=now.isoformat(),
+            source=TW_PRICE_LIMIT_SOURCE,
+            sourceType=RankingSourceType.free_public,
+            isMarketOpen=market_open,
+            dataFreshnessLabel=(
+                TW_PRICE_LIMIT_FRESHNESS_OPEN if market_open else TW_PRICE_LIMIT_FRESHNESS_CLOSED
+            ),
+            warningMessage=warning,
+            unsupportedReason=None,
+            usRankingsScope=None,
+            twRankingsScope=None,
+        )
 
     def _build_quote_ranking(
         self,
@@ -1509,6 +1639,12 @@ def _stock_schema(stock: StockRecord) -> StockResponse:
 
 
 def _ranking_item(rank: int, candidate: _RankingCandidate) -> RankingItem:
+    if candidate.price_limit_status in {"limit_up", "limit_down", "none", "unknown"}:
+        price_limit_status = candidate.price_limit_status
+    elif candidate.stock.market == "US":
+        price_limit_status = "none"
+    else:
+        price_limit_status = "unknown"
     return RankingItem(
         rank=rank,
         stock=candidate.stock,
@@ -1522,6 +1658,10 @@ def _ranking_item(rank: int, candidate: _RankingCandidate) -> RankingItem:
         peRatioSource=candidate.pe_ratio_source,
         valuationAsOf=candidate.valuation_as_of,
         valuationWarning=candidate.valuation_warning,
+        priceLimitStatus=price_limit_status,
+        referencePrice=candidate.reference_price,
+        limitUpPrice=candidate.limit_up_price,
+        limitDownPrice=candidate.limit_down_price,
         timestamp=candidate.timestamp,
     )
 

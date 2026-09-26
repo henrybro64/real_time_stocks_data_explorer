@@ -19,10 +19,7 @@ from sqlalchemy.exc import TimeoutError as SATimeoutError
 
 from app.core.config import settings
 from app.core.diagnostics import elapsed_ms
-from app.db.archive_session import (
-    invalidate_rankings_archive_engine,
-    reset_rankings_archive_session_state,
-)
+from app.db.archive_session import invalidate_rankings_archive_engine
 from app.repositories.rankings_archive_repository import (
     CAPTURE_SCOPE_END_OF_DAY,
     rankings_archive_repository,
@@ -1473,11 +1470,3 @@ class RankingsArchiveService:
 
 
 rankings_archive_service = RankingsArchiveService()
-
-
-def reset_rankings_archive_for_tests() -> None:
-    reset_rankings_archive_session_state()
-    with rankings_archive_service._lock:
-        rankings_archive_service._last_retention_purge_at = None
-        rankings_archive_service._stop_event.clear()
-        rankings_archive_service._thread = None
