@@ -359,6 +359,7 @@ class RankingsSnapshotService:
                 limit=max(limit, _MAX_CAPTURE_LIMIT),
                 now=current,
                 allow_hardcoded_fallback=False,
+                force_refresh=True,
             )
         except Exception as exc:  # noqa: BLE001
             logger.exception(

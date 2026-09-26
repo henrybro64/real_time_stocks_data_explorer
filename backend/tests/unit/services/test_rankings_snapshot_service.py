@@ -2034,7 +2034,7 @@ def test_refresh_coalesces_in_flight_requests(monkeypatch) -> None:
     provider = _djia_volume_provider(["AAPL"])
     original_fetch = provider.fetch
 
-    def blocking_fetch(query, *, limit, now, allow_hardcoded_fallback=True):
+    def blocking_fetch(query, *, limit, now, allow_hardcoded_fallback=True, force_refresh=False):
         started.set()
         assert release.wait(timeout=5)
         return original_fetch(
@@ -2042,6 +2042,7 @@ def test_refresh_coalesces_in_flight_requests(monkeypatch) -> None:
             limit=limit,
             now=now,
             allow_hardcoded_fallback=allow_hardcoded_fallback,
+            force_refresh=force_refresh,
         )
 
     provider.fetch = blocking_fetch  # type: ignore[method-assign]

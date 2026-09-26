@@ -278,6 +278,7 @@ class FakeRankingProvider:
         limit: int,
         now: datetime,
         allow_hardcoded_fallback: bool = True,
+        force_refresh: bool = False,
     ) -> RankingResponse:  # noqa: ARG002
         self.fetch_calls += 1
         if self._error is not None:

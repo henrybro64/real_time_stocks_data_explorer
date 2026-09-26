@@ -344,6 +344,7 @@ class RankingsService:
         tw_board: TwRankingBoard | None = None,
         us_universe: UsUniverse | None = None,
         allow_hardcoded_fallback: bool = True,
+        force_refresh: bool = False,
     ) -> RankingResponse:
         started_at = perf_counter()
         current = now or datetime.now(timezone.utc)
@@ -372,6 +373,7 @@ class RankingsService:
                     effective_limit,
                     current,
                     effective_tw_board,
+                    force_refresh=force_refresh,
                 )
         elif normalized_type in {RankingType.net_buy, RankingType.net_sell}:
             if market == "US":
@@ -449,10 +451,17 @@ class RankingsService:
         limit: int,
         now: datetime,
         tw_board: TwRankingBoard,
+        *,
+        force_refresh: bool = False,
     ) -> RankingResponse:
         """Live Taiwan 漲停／跌停 list. Never falls back to the hard-coded universe."""
         market_open = is_market_open("TW", now)
-        fetched = self._price_limit_source.fetch(ranking_type, tw_board, now)
+        fetched = self._price_limit_source.fetch(
+            ranking_type,
+            tw_board,
+            now,
+            force_refresh=force_refresh,
+        )
         if fetched.unavailable:
             warning = TW_PRICE_LIMIT_UNAVAILABLE_WARNING
             quotes = []

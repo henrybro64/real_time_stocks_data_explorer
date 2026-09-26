@@ -259,7 +259,8 @@ function twQuoteScopeNoticeKeyFromState(
   const aligned = data?.market === "TW" && data.rankingType === rankingType;
   const scope = aligned && data?.twRankingsScope ? data.twRankingsScope : "quote";
   const keys = TW_QUOTE_SCOPE_NOTICE[scope] ?? TW_QUOTE_SCOPE_NOTICE.quote;
-  return keys[twBoard];
+  const board: "TWSE" | "TPEx" = twBoard === "TPEx" ? "TPEx" : "TWSE";
+  return keys[board];
 }
 
 function getRankingsRefetchInterval(isMarketOpen: boolean, rankingType: RankingType) {
@@ -465,7 +466,11 @@ export function RankingsPage() {
   }, [historyContextKey]);
 
   const historyDatesQuery = useQuery({
-    queryKey: rankingsHistoryDatesQueryKey(market, selectedScope, rankingType),
+    queryKey: rankingsHistoryDatesQueryKey(
+      market,
+      selectedScope === "all" ? "TWSE" : selectedScope,
+      rankingType,
+    ),
     queryFn: ({ signal }) =>
       fetchRankingsHistoryDates(
         market,

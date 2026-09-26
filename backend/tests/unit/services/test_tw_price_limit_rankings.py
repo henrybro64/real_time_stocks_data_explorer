@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from time import monotonic, sleep
 
 import pytest
 
@@ -188,7 +189,11 @@ def test_classified_non_limit_quotes_are_a_real_empty_ranking() -> None:
         _row("2330", last="100", reference="100", limit_up="110", limit_down="90"),
         _row("1101", last="10", reference="10", limit_up="11", limit_down="9"),
     ]
-    source, _calls = _source(rows)
+    source = TwPriceLimitRankingsSource(
+        symbol_loader=lambda: {"TWSE": ("2330", "1101"), "TPEx": ()},
+        mis_fetcher=lambda _ex_chs: rows,
+        cache_ttl_seconds=600,
+    )
     result = source.fetch(RankingType.limit_up, "all", datetime(2026, 9, 26, tzinfo=timezone.utc))
     assert result.quotes == []
     assert result.unavailable is False
@@ -277,7 +282,11 @@ def test_service_shapes_limit_lists_and_rejects_us() -> None:
         _row("2330", last="110", reference="100", limit_up="110", limit_down="90", name="台積電"),
         _row("6488", last="90", reference="100", limit_up="110", limit_down="90", exchange="TPEx"),
     ]
-    source, _calls = _source(rows)
+    source = TwPriceLimitRankingsSource(
+        symbol_loader=lambda: {"TWSE": ("2330",), "TPEx": ("6488",)},
+        mis_fetcher=lambda _ex_chs: rows,
+        cache_ttl_seconds=600,
+    )
     service = RankingsService(price_limit_source=source)
     now = datetime(2026, 9, 26, 5, 0, tzinfo=timezone.utc)
 
@@ -314,7 +323,6 @@ def test_service_shapes_limit_lists_and_rejects_us() -> None:
     assert us.items == []
     assert us.sourceType == RankingSourceType.unsupported
     assert us.unsupportedReason == US_PRICE_LIMIT_UNSUPPORTED_REASON
-    assert _calls["mis"] == 1
 
 
 def test_service_provider_failure_does_not_invent_limits() -> None:
@@ -367,3 +375,107 @@ def test_service_partial_warning_is_explicit() -> None:
     assert response.warningMessage == TW_PRICE_LIMIT_PARTIAL_WARNING
     assert response.items[0].stock.symbol == "6488"
     assert response.items[0].priceLimitStatus == "limit_down"
+
+
+def test_six_digit_symbol_uses_published_limits() -> None:
+    rows = [_row("006208", last="20", reference="18.20", limit_up="20", limit_down="16.40")]
+    source = TwPriceLimitRankingsSource(
+        symbol_loader=lambda: {"TWSE": ("006208", "NOT-A-CODE"), "TPEx": ()},
+        mis_fetcher=lambda _ex_chs: rows,
+        cache_ttl_seconds=600,
+    )
+    result = source.fetch(RankingType.limit_up, "TWSE", datetime(2026, 9, 26, tzinfo=timezone.utc))
+    assert [quote.symbol for quote in result.quotes] == ["006208"]
+    assert result.partial is False
+    assert result.unavailable is False
+
+
+def test_unknown_quote_and_missing_symbol_mark_the_scan_partial() -> None:
+    rows = [
+        _row("2330", last="110", reference="100", limit_up="110", limit_down="90"),
+        _row("1101", last="10.05", reference="9.15", limit_up="10.05", limit_down=None),
+    ]
+    source = TwPriceLimitRankingsSource(
+        symbol_loader=lambda: {"TWSE": ("2330", "1101", "0050"), "TPEx": ()},
+        mis_fetcher=lambda _ex_chs: rows,
+        cache_ttl_seconds=600,
+    )
+    result = source.fetch(RankingType.limit_up, "all", datetime(2026, 9, 26, tzinfo=timezone.utc))
+    assert [quote.symbol for quote in result.quotes] == ["2330"]
+    assert result.partial is True
+    assert result.unavailable is False
+
+
+def test_force_refresh_bypasses_both_cache_layers() -> None:
+    calls = {"mis": 0}
+
+    def mis_fetcher(_ex_chs: list[str]) -> list[dict[str, str]]:
+        calls["mis"] += 1
+        return [_row("2330", last="110", reference="100", limit_up="110", limit_down="90")]
+
+    source = TwPriceLimitRankingsSource(
+        symbol_loader=lambda: {"TWSE": ("2330",), "TPEx": ()},
+        mis_fetcher=mis_fetcher,
+        cache_ttl_seconds=600,
+    )
+    now = datetime(2026, 9, 26, tzinfo=timezone.utc)
+    first = source.fetch(RankingType.limit_up, "TWSE", now)
+    second = source.fetch(RankingType.limit_up, "TWSE", now)
+    refreshed = source.fetch(RankingType.limit_up, "TWSE", now, force_refresh=True)
+    assert [quote.symbol for quote in first.quotes] == ["2330"]
+    assert [quote.symbol for quote in second.quotes] == ["2330"]
+    assert [quote.symbol for quote in refreshed.quotes] == ["2330"]
+    assert calls["mis"] == 2
+
+
+def test_scan_deadline_returns_unavailable_without_draining_the_queue(monkeypatch) -> None:
+    monkeypatch.setattr("app.services.tw_price_limit_rankings._SCAN_DEADLINE_SECONDS", 0)
+    calls = {"mis": 0}
+
+    def mis_fetcher(_ex_chs: list[str]) -> list[dict[str, str]]:
+        calls["mis"] += 1
+        sleep(2)
+        return []
+
+    source = TwPriceLimitRankingsSource(
+        symbol_loader=lambda: {
+            "TWSE": tuple(f"{index:04d}" for index in range(80)),
+            "TPEx": (),
+        },
+        mis_fetcher=mis_fetcher,
+        cache_ttl_seconds=600,
+    )
+    started = monotonic()
+    result = source.fetch(RankingType.limit_up, "all", datetime(2026, 9, 26, tzinfo=timezone.utc))
+    assert result.unavailable is True
+    assert result.quotes == []
+    assert calls["mis"] == 0
+    assert monotonic() - started < 1
+
+
+def test_open_mis_circuit_skips_the_scan() -> None:
+    from app.services.providers.tw_provider import (
+        note_mis_transport_failure,
+        reset_mis_circuit_for_tests,
+    )
+
+    reset_mis_circuit_for_tests()
+    calls = {"mis": 0}
+
+    def mis_fetcher(_ex_chs: list[str]) -> list[dict[str, str]]:
+        calls["mis"] += 1
+        return [_row("2330", last="110", reference="100", limit_up="110", limit_down="90")]
+
+    try:
+        for _ in range(3):
+            note_mis_transport_failure("test")
+        source = TwPriceLimitRankingsSource(
+            symbol_loader=lambda: {"TWSE": ("2330",), "TPEx": ()},
+            mis_fetcher=mis_fetcher,
+            cache_ttl_seconds=600,
+        )
+        result = source.fetch(RankingType.limit_up, "TWSE", datetime(2026, 9, 26, tzinfo=timezone.utc))
+        assert result.unavailable is True
+        assert calls["mis"] == 0
+    finally:
+        reset_mis_circuit_for_tests()

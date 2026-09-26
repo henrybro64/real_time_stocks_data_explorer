@@ -745,6 +745,18 @@ def _note_mis_failure(*, classification: str) -> None:
         )
 
 
+def mis_circuit_is_open() -> bool:
+    return _mis_circuit_is_open()
+
+
+def note_mis_transport_success() -> None:
+    _note_mis_success()
+
+
+def note_mis_transport_failure(classification: str) -> None:
+    _note_mis_failure(classification=classification)
+
+
 def reset_mis_circuit_for_tests() -> None:
     """Test helper: clear MIS circuit and warmed session state."""
     global _mis_consecutive_failures, _mis_circuit_open_until

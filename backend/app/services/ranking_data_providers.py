@@ -54,6 +54,7 @@ class RankingDataProvider(Protocol):
         limit: int,
         now: datetime,
         allow_hardcoded_fallback: bool = True,
+        force_refresh: bool = False,
     ) -> RankingResponse: ...
 
 
@@ -140,6 +141,7 @@ class FreeQuoteRankingProvider:
         limit: int,
         now: datetime,
         allow_hardcoded_fallback: bool = True,
+        force_refresh: bool = False,
     ) -> RankingResponse:
         us_universe: UsUniverse | None = None
         if query.market == "US" and query.universe in {"DJIA", "NASDAQ100"}:
@@ -152,6 +154,7 @@ class FreeQuoteRankingProvider:
             tw_board=query.tw_board,
             us_universe=us_universe,
             allow_hardcoded_fallback=allow_hardcoded_fallback,
+            force_refresh=force_refresh,
         )
 
 
@@ -177,8 +180,9 @@ class FreeTWInstitutionalDailyProvider:
         limit: int,
         now: datetime,
         allow_hardcoded_fallback: bool = True,
+        force_refresh: bool = False,
     ) -> RankingResponse:
-        del allow_hardcoded_fallback
+        del allow_hardcoded_fallback, force_refresh
         return self._service.get_rankings(
             "TW",
             query.ranking_type,
@@ -204,8 +208,9 @@ class UnsupportedUSInstitutionalProvider:
         limit: int,
         now: datetime,
         allow_hardcoded_fallback: bool = True,
+        force_refresh: bool = False,
     ) -> RankingResponse:
-        del limit, allow_hardcoded_fallback
+        del limit, allow_hardcoded_fallback, force_refresh
         return RankingResponse(
             market="US",
             rankingType=query.ranking_type,

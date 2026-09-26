@@ -18,7 +18,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
@@ -72,6 +72,9 @@ _BROWSER_USER_AGENT = (
 _BATCH_SIZE = 40
 _MAX_WORKERS = 2
 _MIS_REQUEST_GAP_SECONDS = 0.15
+# Stay under the rankings request timeout so a cold MIS outage returns unavailable
+# instead of draining every queued batch.
+_SCAN_DEADLINE_SECONDS = 18.0
 _SYMBOL_LIST_TTL = timedelta(hours=12)
 _FAILURE_CACHE_SECONDS = 60
 _CACHE_KEY_PREFIX = "rankings:tw-price-limit:v1:"
@@ -213,16 +216,19 @@ class TwPriceLimitRankingsSource:
         ranking_type: RankingType,
         board: TwLimitBoard,
         now: datetime | None = None,
+        *,
+        force_refresh: bool = False,
     ) -> TwPriceLimitFetchResult:
         if ranking_type not in _PRICE_LIMIT_TYPES:
             raise ValueError(f"{ranking_type} is not a Taiwan price-limit ranking")
         current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
         cache_key = _result_cache_key(ranking_type, board)
-        cached = self._read(cache_key, current)
-        if cached is not None:
-            return TwPriceLimitFetchResult.from_dict(cached)
+        if not force_refresh:
+            cached = self._read(cache_key, current)
+            if cached is not None:
+                return TwPriceLimitFetchResult.from_dict(cached)
 
-        classified = self._load_classified(current)
+        classified = self._load_classified(current, force_refresh=force_refresh)
         result = _filter_classified(classified, ranking_type, board)
         ttl = (
             min(_FAILURE_CACHE_SECONDS, self._cache_ttl_seconds)
@@ -232,15 +238,16 @@ class TwPriceLimitRankingsSource:
         self._write(cache_key, result.as_dict(), current, ttl_seconds=ttl)
         return result
 
-    def _load_classified(self, now: datetime) -> _ClassifiedUniverse:
-        cached = self._read(_CLASSIFIED_KEY, now)
-        if cached is not None:
-            restored = TwPriceLimitFetchResult.from_dict(cached)
-            return _ClassifiedUniverse(
-                quotes=restored.quotes,
-                partial=restored.partial,
-                unavailable=restored.unavailable,
-            )
+    def _load_classified(self, now: datetime, *, force_refresh: bool = False) -> _ClassifiedUniverse:
+        if not force_refresh:
+            cached = self._read(_CLASSIFIED_KEY, now)
+            if cached is not None:
+                restored = TwPriceLimitFetchResult.from_dict(cached)
+                return _ClassifiedUniverse(
+                    quotes=restored.quotes,
+                    partial=restored.partial,
+                    unavailable=restored.unavailable,
+                )
 
         classified = self._fetch_classified(now)
         if not classified.unavailable:
@@ -273,28 +280,29 @@ class TwPriceLimitRankingsSource:
         if not batches:
             return _ClassifiedUniverse(quotes=[], partial=False, unavailable=True)
 
-        quotes: list[TwLimitRankingQuote] = []
-        failures = 0
-        empty_successes = 0
-        workers = min(_MAX_WORKERS, len(batches))
-        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="tw-limit") as pool:
-            futures = [
-                pool.submit(self._fetch_batch_paced, batch, now) for batch in batches
-            ]
-            for future in as_completed(futures):
-                try:
-                    batch_quotes = future.result()
-                except (HttpFetchError, TimeoutError, ValueError, OSError):
-                    failures += 1
-                    continue
-                if not batch_quotes:
-                    empty_successes += 1
-                quotes.extend(batch_quotes)
+        from app.services.providers.tw_provider import (  # pylint: disable=import-outside-toplevel
+            mis_circuit_is_open,
+        )
 
+        if mis_circuit_is_open():
+            logger.warning(
+                "Taiwan price-limit scan skipped because the MIS circuit is open",
+                extra={"event": "rankings.tw_price_limit.circuit_open"},
+            )
+            return _ClassifiedUniverse(quotes=[], partial=False, unavailable=True)
+
+        quotes, failures, empty_successes, unclassified, timed_out = self._scan_batches(
+            batches,
+            now,
+        )
         successful = len(batches) - failures
         # A 200 with no parsed quotes is a missing feed, not "nobody is at limit".
-        # A real empty ranking still parsed quotes, then filtered them below.
-        if failures == len(batches) or (successful > 0 and empty_successes == successful):
+        # A deadline with nothing parsed is the same: do not publish an empty ranking.
+        if (
+            failures == len(batches)
+            or (successful > 0 and empty_successes == successful and not quotes)
+            or (timed_out and not quotes)
+        ):
             return _ClassifiedUniverse(quotes=[], partial=False, unavailable=True)
         deduped = [
             quote
@@ -303,15 +311,84 @@ class TwPriceLimitRankingsSource:
         ]
         return _ClassifiedUniverse(
             quotes=deduped,
-            partial=failures > 0 or symbol_partial or (empty_successes > 0 and len(quotes) > 0),
+            partial=(
+                failures > 0
+                or symbol_partial
+                or unclassified > 0
+                or timed_out
+                or (empty_successes > 0 and len(quotes) > 0)
+            ),
             unavailable=False,
         )
+
+    def _scan_batches(
+        self,
+        batches: list[list[tuple[Literal["TWSE", "TPEx"], str]]],
+        now: datetime,
+    ) -> tuple[list[TwLimitRankingQuote], int, int, int, bool]:
+        """Fetch MIS batches until the scan deadline. Do not wait out a stalled queue."""
+        from app.services.providers.tw_provider import (  # pylint: disable=import-outside-toplevel
+            mis_circuit_is_open,
+        )
+
+        quotes: list[TwLimitRankingQuote] = []
+        failures = 0
+        empty_successes = 0
+        unclassified = 0
+        timed_out = False
+        pending = list(batches)
+        inflight: dict[Future[tuple[list[TwLimitRankingQuote], int]], None] = {}
+        workers = min(_MAX_WORKERS, len(batches))
+        deadline = monotonic() + _SCAN_DEADLINE_SECONDS
+        pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="tw-limit")
+        try:
+            while pending or inflight:
+                if mis_circuit_is_open() and pending:
+                    timed_out = True
+                    break
+                while pending and len(inflight) < workers and monotonic() < deadline:
+                    batch = pending.pop(0)
+                    inflight[pool.submit(self._fetch_batch_paced, batch, now)] = None
+                if not inflight:
+                    break
+                remaining = deadline - monotonic()
+                if remaining <= 0:
+                    timed_out = True
+                    break
+                done, _pending_futures = wait(
+                    tuple(inflight),
+                    timeout=remaining,
+                    return_when=FIRST_COMPLETED,
+                )
+                if not done:
+                    timed_out = True
+                    break
+                for future in done:
+                    del inflight[future]
+                    try:
+                        batch_quotes, batch_unclassified = future.result()
+                    except (HttpFetchError, TimeoutError, ValueError, OSError):
+                        failures += 1
+                        continue
+                    unclassified += batch_unclassified
+                    if not batch_quotes and batch_unclassified == 0:
+                        empty_successes += 1
+                    quotes.extend(batch_quotes)
+        finally:
+            for future in inflight:
+                future.cancel()
+            pool.shutdown(wait=False, cancel_futures=True)
+        unfinished = len(pending) + len(inflight)
+        if unfinished:
+            failures += unfinished
+            timed_out = True
+        return quotes, failures, empty_successes, unclassified, timed_out
 
     def _fetch_batch_paced(
         self,
         batch: list[tuple[Literal["TWSE", "TPEx"], str]],
         now: datetime,
-    ) -> list[TwLimitRankingQuote]:
+    ) -> tuple[list[TwLimitRankingQuote], int]:
         """Space MIS calls so a full-universe scan does not get disconnected."""
         with self._lock:
             previous = getattr(self, "_last_mis_at", 0.0)
@@ -325,7 +402,7 @@ class TwPriceLimitRankingsSource:
         self,
         batch: list[tuple[Literal["TWSE", "TPEx"], str]],
         now: datetime,
-    ) -> list[TwLimitRankingQuote]:
+    ) -> tuple[list[TwLimitRankingQuote], int]:
         requested = {symbol: exchange for exchange, symbol in batch}
         ex_chs = [
             f"{'otc' if exchange == 'TPEx' else 'tse'}_{symbol}.tw"
@@ -333,13 +410,21 @@ class TwPriceLimitRankingsSource:
         ]
         rows = self._mis_fetcher(ex_chs)
         quotes: list[TwLimitRankingQuote] = []
+        seen: set[str] = set()
+        unclassified = 0
         for row in rows:
             if not isinstance(row, dict):
                 continue
             parsed = _quote_from_mis_row(row, requested, now)
-            if parsed is not None:
-                quotes.append(parsed)
-        return quotes
+            if parsed is None:
+                continue
+            seen.add(parsed.symbol)
+            quotes.append(parsed)
+            if parsed.status == "unknown":
+                unclassified += 1
+        if rows:
+            unclassified += sum(1 for symbol in requested if symbol not in seen)
+        return quotes, unclassified
 
     def _symbols_by_board(
         self,
@@ -357,8 +442,8 @@ class TwPriceLimitRankingsSource:
         else:
             raw_symbols = loaded
         normalized = {
-            "TWSE": _four_digit_symbols(raw_symbols.get("TWSE", ())),
-            "TPEx": _four_digit_symbols(raw_symbols.get("TPEx", ())),
+            "TWSE": _listed_symbols(raw_symbols.get("TWSE", ())),
+            "TPEx": _listed_symbols(raw_symbols.get("TPEx", ())),
         }
         with self._lock:
             self._symbol_cache = (monotonic(), (normalized, partial))
@@ -451,12 +536,13 @@ def _mis_batches(
     return [flat[index : index + _BATCH_SIZE] for index in range(0, len(flat), _BATCH_SIZE)]
 
 
-def _four_digit_symbols(symbols: tuple[str, ...] | list[str]) -> tuple[str, ...]:
+def _listed_symbols(symbols: tuple[str, ...] | list[str]) -> tuple[str, ...]:
+    """Keep 4–6 digit codes. Tick fallback stays 4-digit; longer codes need MIS ``u``/``w``."""
     seen: set[str] = set()
     ordered: list[str] = []
     for raw in symbols:
         code = str(raw).strip()
-        if len(code) == 4 and code.isdigit() and code not in seen:
+        if code.isdigit() and 4 <= len(code) <= 6 and code not in seen:
             seen.add(code)
             ordered.append(code)
     return tuple(ordered)
@@ -635,6 +721,24 @@ def _symbols_from_rows(payload: object, field: str) -> tuple[str, ...]:
 
 
 def _default_mis_fetcher(ex_chs: list[str]) -> list[dict[str, Any]]:
+    from app.services.providers.tw_provider import (  # pylint: disable=import-outside-toplevel
+        mis_circuit_is_open,
+        note_mis_transport_failure,
+        note_mis_transport_success,
+    )
+
+    if mis_circuit_is_open():
+        raise TimeoutError("TWSE MIS circuit is open")
+    try:
+        payload = _fetch_mis_payload(ex_chs)
+    except (HttpFetchError, TimeoutError, ValueError, OSError):
+        note_mis_transport_failure("tw_price_limit")
+        raise
+    note_mis_transport_success()
+    return payload
+
+
+def _fetch_mis_payload(ex_chs: list[str]) -> list[dict[str, Any]]:
     payload = fetch_json(
         _MIS_URL,
         params={"ex_ch": "|".join(ex_chs), "json": "1", "delay": "0"},
