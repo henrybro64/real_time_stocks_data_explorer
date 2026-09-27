@@ -1,5 +1,7 @@
 export type TimeRange = "1D" | "1W" | "1M" | "3M" | "6M" | "1Y";
 
+export type PriceLimitStatus = "limit_up" | "limit_down" | "none" | "unknown";
+
 export type Quote = {
   id: string;
   lastPrice: number;
@@ -12,6 +14,11 @@ export type Quote = {
   volume?: number;
   timestamp: string;
   isMarketOpen: boolean;
+  /** Taiwan MIS classification. Missing or unknown must not be inferred from changePercent. */
+  priceLimitStatus?: PriceLimitStatus | null;
+  referencePrice?: number | null;
+  limitUpPrice?: number | null;
+  limitDownPrice?: number | null;
 };
 
 export type QuoteCacheSource = "redis" | "memory" | "provider" | "none";

@@ -2,10 +2,13 @@ import type {
   Candle,
   ChartLayout,
   MovingAverageSeries,
+  PriceLimitStatus,
   Quote,
   QuoteFreshnessMeta,
   TimeRange,
 } from "./quote";
+
+export type { PriceLimitStatus };
 import type { MarketCode, Stock } from "./stock";
 
 export type MarketStatus = {
@@ -88,8 +91,6 @@ export type RankingType =
   | "net_sell"
   | "limit_up"
   | "limit_down";
-
-export type PriceLimitStatus = "limit_up" | "limit_down" | "none" | "unknown";
 
 export type RankingSourceType =
   | "free-public"

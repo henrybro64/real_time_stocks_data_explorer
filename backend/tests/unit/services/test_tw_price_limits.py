@@ -4,6 +4,7 @@ import pytest
 
 from app.services.tw_price_limits import (
     classify_taiwan_price_limit,
+    restore_cached_price_limit,
     limit_down_price,
     limit_up_price,
     parse_price,
@@ -76,6 +77,33 @@ def test_authoritative_limit_beats_a_ten_percent_guess() -> None:
     assert near_ten_percent == "none"
 
 
+def test_regular_quote_does_not_calculate_a_limit_when_the_official_band_is_missing() -> None:
+    """Rankings may calculate; a quote with no official u/w must stay unknown."""
+    calculated, *_calculated_prices = classify_taiwan_price_limit(
+        last_price=Decimal("110"),
+        reference_price=Decimal("100"),
+        limit_up_price_value=None,
+        limit_down_price_value=None,
+        traded=True,
+        symbol="2330",
+    )
+    assert calculated == "limit_up"
+
+    status, reference, limit_up, limit_down = classify_taiwan_price_limit(
+        last_price=Decimal("110"),
+        reference_price=Decimal("100"),
+        limit_up_price_value=None,
+        limit_down_price_value=None,
+        traded=True,
+        symbol="2330",
+        allow_calculated=False,
+    )
+    assert status == "unknown"
+    assert reference == Decimal("100")
+    assert limit_up is None
+    assert limit_down is None
+
+
 def test_calculated_boundary_is_not_a_rounded_percentage() -> None:
     status, _reference, limit_up, _limit_down = classify_taiwan_price_limit(
         last_price=Decimal("10.05"),
@@ -133,3 +161,41 @@ def test_parse_signed_decimal_keeps_negative_change_and_rejects_prices() -> None
     assert parse_signed_decimal("-9.94") == Decimal("-9.94")
     assert parse_price("-9.94") is None
     assert parse_signed_decimal("—") is None
+
+
+def test_restore_cached_price_limit_keeps_a_consistent_payload() -> None:
+    status, reference, limit_up, limit_down = restore_cached_price_limit(
+        last_price=110.0,
+        status="limit_up",
+        reference_price=100,
+        limit_up_price=110,
+        limit_down_price=90,
+    )
+    assert status == "limit_up"
+    assert reference == pytest.approx(100)
+    assert limit_up == pytest.approx(110)
+    assert limit_down == pytest.approx(90)
+
+
+def test_restore_cached_price_limit_drops_inconsistent_or_legacy_payloads() -> None:
+    assert restore_cached_price_limit(
+        last_price=105.0,
+        status=None,
+        reference_price=None,
+        limit_up_price=None,
+        limit_down_price=None,
+    ) == (None, None, None, None)
+    assert restore_cached_price_limit(
+        last_price=105.0,
+        status="limit_up",
+        reference_price=100,
+        limit_up_price=110,
+        limit_down_price=90,
+    ) == ("unknown", None, None, None)
+    assert restore_cached_price_limit(
+        last_price=110.0,
+        status="limit_down",
+        reference_price=100,
+        limit_up_price=110,
+        limit_down_price=None,
+    ) == ("unknown", None, None, None)

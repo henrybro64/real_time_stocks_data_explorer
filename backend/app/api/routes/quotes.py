@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException, Query
 
 from app.models.quote import QuoteRecord
 from app.models.stock import StockRecord
-from app.schemas.quote import QuoteEnvelope, QuoteFreshnessResponse, QuoteResponse
+from app.schemas.quote import QuoteEnvelope, QuoteFreshnessResponse, QuoteResponse, quote_to_response
 from app.schemas.stock import StockResponse
 from app.services.quote_service import QuoteBatchItem, quote_service
 
@@ -66,16 +66,4 @@ def _stock_schema(stock: StockRecord) -> StockResponse:
 
 
 def _quote_schema(quote: QuoteRecord) -> QuoteResponse:
-    return QuoteResponse(
-        id=quote.id,
-        lastPrice=quote.last_price,
-        change=quote.change,
-        changePercent=quote.change_percent,
-        previousClose=quote.previous_close,
-        open=quote.open,
-        high=quote.high,
-        low=quote.low,
-        volume=quote.volume,
-        timestamp=quote.timestamp,
-        isMarketOpen=quote.is_market_open,
-    )
+    return quote_to_response(quote)

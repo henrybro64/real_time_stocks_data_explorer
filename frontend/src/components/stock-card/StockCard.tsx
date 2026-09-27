@@ -8,6 +8,7 @@ import { useId, type KeyboardEvent, type MouseEvent } from "react";
 import { useRouter } from "next/navigation";
 import { getDisplayStockName, useLanguage } from "../../app/i18n";
 import { fetchHistory, fetchQuote } from "../../services/api/client";
+import { LimitPrice } from "../quote/LimitPrice";
 import { QuoteFreshnessTag } from "../state/QuoteFreshnessTag";
 import { RequestStateNotice, errorToNoticeKind } from "../state/RequestStateNotice";
 import {
@@ -134,7 +135,14 @@ export function StockCard({
       {quote ? (
         <>
           <div className="app-stock-card-price-block">
-            <p className="app-stock-card-price">{formatCurrency(quote.lastPrice, stock.currency)}</p>
+            <LimitPrice
+              currency={stock.currency}
+              lastPrice={quote.lastPrice}
+              market={stock.market}
+              priceLimitStatus={quote.priceLimitStatus}
+              testId={`stock-card-price-${stock.id}`}
+              variant="card"
+            />
             <p
               className={`${priceToneClassForMarket(stock.market, quote.change)} app-stock-card-change`}
               data-testid={`stock-card-change-${stock.id}`}

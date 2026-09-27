@@ -14,9 +14,14 @@ import httpx
 
 from app.core.diagnostics import elapsed_ms
 from app.services.http_client import HttpFetchError, fetch_json, fetch_text
-from app.models.quote import CandleRecord, QuoteRecord
+from app.models.quote import CandleRecord, PriceLimitStatus, QuoteRecord
 from app.models.stock import StockRecord
 from app.services.market_clock import is_market_open
+from app.services.tw_price_limits import (
+    classify_taiwan_price_limit,
+    decimal_to_api_float,
+    parse_price,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -390,6 +395,9 @@ class TWProvider:
         )
         change = round(last_price - previous_close, 2)
         change_percent = round((change / previous_close) * 100, 2)
+        price_limit_status, reference_price, limit_up_price, limit_down_price = (
+            _mis_price_limit_fields(item, stock.symbol)
+        )
         _note_mis_success()
 
         return QuoteRecord(
@@ -404,6 +412,10 @@ class TWProvider:
             volume=volume,
             timestamp=quote_timestamp.isoformat(),
             is_market_open=is_market_open(stock.market, quote_timestamp),
+            price_limit_status=price_limit_status,
+            reference_price=reference_price,
+            limit_up_price=limit_up_price,
+            limit_down_price=limit_down_price,
         )
 
     def _fetch_yahoo_tw_quote(self, stock: StockRecord) -> QuoteRecord | None:
@@ -482,6 +494,12 @@ class TWProvider:
                 volume=volume,
                 timestamp=quote_time.isoformat(),
                 is_market_open=is_market_open(stock.market, quote_time),
+                # Yahoo chart meta has no official MIS u/w band. Do not copy a
+                # previous limit classification or infer one from change percent.
+                price_limit_status="unknown",
+                reference_price=None,
+                limit_up_price=None,
+                limit_down_price=None,
             )
 
         return None
@@ -857,6 +875,38 @@ def _load_text(url: str) -> str:
         retries=2,
         encoding="big5-hkscs",
         allow_insecure_fallback_hosts={"isin.twse.com.tw"},
+    )
+
+
+def _mis_price_limit_fields(
+    item: dict,
+    symbol: str,
+) -> tuple[PriceLimitStatus, float | None, float | None, float | None]:
+    """Classify the MIS trade price ``z`` against official ``u`` / ``w``.
+
+    ``_fetch_quote`` may display ``pz`` or reference ``y`` when ``z`` is missing.
+    That fallback is not a trade, so it must stay ``unknown`` even if the
+    displayed number equals a limit price or the change is about ±10%.
+
+    Both official limits must be present. The rankings ±10% calculator is not
+    used here: a quote with no ``u``/``w`` band is incomplete, not a limit.
+    """
+    trade_text = item.get("z") if isinstance(item.get("z"), str) else None
+    traded_price = parse_price(trade_text) if _parse_float(trade_text) is not None else None
+    status, reference, limit_up, limit_down = classify_taiwan_price_limit(
+        last_price=traded_price,
+        reference_price=parse_price(item.get("y")),
+        limit_up_price_value=parse_price(item.get("u")),
+        limit_down_price_value=parse_price(item.get("w")),
+        traded=traded_price is not None,
+        symbol=symbol,
+        allow_calculated=False,
+    )
+    return (
+        status,
+        decimal_to_api_float(reference),
+        decimal_to_api_float(limit_up),
+        decimal_to_api_float(limit_down),
     )
 
 

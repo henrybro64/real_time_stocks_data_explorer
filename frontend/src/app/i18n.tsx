@@ -137,6 +137,8 @@ export type TranslationKey =
   | "quote.open"
   | "quote.high"
   | "quote.low"
+  | "quote.limitUp"
+  | "quote.limitDown"
   | "chart.noData"
   | "chart.title"
   | "chart.rangeSummary"
@@ -676,6 +678,8 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "quote.open": "Open",
     "quote.high": "High",
     "quote.low": "Low",
+    "quote.limitUp": "Limit up",
+    "quote.limitDown": "Limit down",
     "chart.noData": "No chart data is available.",
     "chart.title": "Price history",
     "chart.rangeSummary": "{range} range {min} - {max}",
@@ -1244,6 +1248,8 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "quote.open": "開盤",
     "quote.high": "最高",
     "quote.low": "最低",
+    "quote.limitUp": "漲停",
+    "quote.limitDown": "跌停",
     "chart.noData": "沒有可顯示的圖表資料。",
     "chart.title": "價格走勢",
     "chart.rangeSummary": "{range} 區間高低 {min} - {max}",
