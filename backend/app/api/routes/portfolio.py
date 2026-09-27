@@ -28,7 +28,7 @@ from app.schemas.portfolio import (
     PortfolioSummaryResponse,
 )
 from app.core.config import settings
-from app.schemas.quote import ChartLayoutResponse, QuoteResponse
+from app.schemas.quote import ChartLayoutResponse, QuoteResponse, quote_to_response
 from app.schemas.stock import StockResponse
 from app.services.chart_layout import build_value_chart_layout
 from app.services.fx_service import get_usd_twd_fx_snapshot
@@ -414,19 +414,7 @@ def _stock_schema(stock: StockRecord) -> StockResponse:
 
 
 def _quote_schema(quote: QuoteRecord) -> QuoteResponse:
-    return QuoteResponse(
-        id=quote.id,
-        lastPrice=quote.last_price,
-        change=quote.change,
-        changePercent=quote.change_percent,
-        previousClose=quote.previous_close,
-        open=quote.open,
-        high=quote.high,
-        low=quote.low,
-        volume=quote.volume,
-        timestamp=quote.timestamp,
-        isMarketOpen=quote.is_market_open,
-    )
+    return quote_to_response(quote)
 
 
 def _to_asset_response(asset: PortfolioAsset) -> PortfolioAssetResponse:

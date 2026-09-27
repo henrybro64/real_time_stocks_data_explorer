@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { LanguageProvider } from "../../app/i18n";
 import { fetchQuote } from "../../services/api/client";
+import { formatCurrency } from "../../services/format/quote";
 import { PRICE_STROKE_COLORS } from "../../services/market-data/priceTone";
 import { StockCard } from "./StockCard";
 
@@ -582,5 +583,167 @@ describe("StockCard", () => {
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Refresh" })).toBeInTheDocument();
   });
+
+  it("shows a compact red limit-up price on a Taiwan card", () => {
+    renderCardWith({
+      ...quote,
+      lastPrice: 110,
+      change: 10,
+      changePercent: 10,
+      previousClose: 100,
+      priceLimitStatus: "limit_up",
+    });
+
+    const price = screen.getByTestId("stock-card-price-TW:2330");
+    const accessibleName = `${formatCurrency(110, "TWD")}, 漲停`;
+    expect(price).toHaveClass("app-price-limit", "app-price-limit--card", "app-price-limit--up");
+    expect(price).not.toHaveClass("app-price-limit--detail");
+    expect(price).toHaveAttribute("role", "group");
+    expect(screen.getByRole("group", { name: accessibleName })).toBe(price);
+    expect(screen.getByTestId("stock-card-price-TW:2330-label")).toHaveTextContent("漲停");
+    expect(price).toHaveAttribute("aria-label", accessibleName);
+    expect(screen.getByTestId("stock-card-change-TW:2330")).toHaveTextContent("+10.00%");
+  });
+
+  it("shows a compact green limit-down price on a Taiwan card", () => {
+    renderCardWith({
+      ...quote,
+      lastPrice: 90,
+      change: -10,
+      changePercent: -10,
+      previousClose: 100,
+      priceLimitStatus: "limit_down",
+    });
+
+    const price = screen.getByTestId("stock-card-price-TW:2330");
+    expect(price).toHaveClass("app-price-limit--card", "app-price-limit--down");
+    expect(screen.getByTestId("stock-card-price-TW:2330-label")).toHaveTextContent("跌停");
+    expect(price).toHaveAttribute("aria-label", `${formatCurrency(90, "TWD")}, 跌停`);
+  });
+
+  it("keeps a normal price when a Taiwan move is near 10 percent but not at the limit", () => {
+    renderCardWith({
+      ...quote,
+      lastPrice: 110,
+      change: 10,
+      changePercent: 10,
+      priceLimitStatus: "none",
+    });
+
+    const price = screen.getByTestId("stock-card-price-TW:2330");
+    expect(price).not.toHaveClass("app-price-limit");
+    expect(screen.queryByTestId("stock-card-price-TW:2330-label")).not.toBeInTheDocument();
+    expect(price).toHaveTextContent(formatCurrency(110, "TWD"));
+  });
+
+  it("does not guess a limit badge when Taiwan status is unknown or missing", () => {
+    renderCardWith({
+      ...quote,
+      changePercent: -10,
+      priceLimitStatus: "unknown",
+    });
+
+    expect(screen.getByTestId("stock-card-price-TW:2330")).not.toHaveClass("app-price-limit");
+    expect(screen.queryByText("跌停")).not.toBeInTheDocument();
+  });
+
+  it("leaves U.S. prices unchanged even if a limit status is present", () => {
+    const usStock = {
+      id: "US:AAPL",
+      market: "US" as const,
+      symbol: "AAPL",
+      name: "Apple Inc.",
+      exchange: "NASDAQ",
+      currency: "USD" as const,
+      timezone: "America/New_York",
+      nameEn: "Apple Inc.",
+      nameZhTw: null,
+    };
+    renderCardWith(
+      {
+        ...quote,
+        id: "US:AAPL",
+        lastPrice: 190,
+        change: 1,
+        changePercent: 0.5,
+        priceLimitStatus: "limit_up",
+      },
+      usStock,
+    );
+
+    const price = screen.getByTestId("stock-card-price-US:AAPL");
+    expect(price).not.toHaveClass("app-price-limit");
+    expect(screen.queryByText("漲停")).not.toBeInTheDocument();
+    expect(price).toHaveTextContent(formatCurrency(190, "USD"));
+  });
+
+  it("uses the English limit-up label on a Taiwan card", () => {
+    window.localStorage.setItem("stock-ticker-language", "en");
+    renderCardWith({
+      ...quote,
+      lastPrice: 110,
+      priceLimitStatus: "limit_up",
+    });
+
+    const accessibleName = `${formatCurrency(110, "TWD")}, Limit up`;
+    expect(screen.getByTestId("stock-card-price-TW:2330-label")).toHaveTextContent("Limit up");
+    expect(screen.getByRole("group", { name: accessibleName })).toHaveAttribute(
+      "aria-label",
+      accessibleName,
+    );
+  });
+
+  it("applies the same limit treatment when the card hydrates its own quote", async () => {
+    vi.mocked(fetchQuote).mockResolvedValue({
+      stock,
+      quote: {
+        ...quote,
+        lastPrice: 110,
+        change: 10,
+        changePercent: 10,
+        priceLimitStatus: "limit_up",
+      },
+      freshness: {
+        cachedAt: "2026-09-26T05:30:00Z",
+        ageSeconds: 2,
+        stale: false,
+        source: "provider",
+        refreshStatus: "idle",
+      },
+    });
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <LanguageProvider>
+          <StockCard isTracked={false} onToggle={vi.fn()} stock={stock} />
+        </LanguageProvider>
+      </QueryClientProvider>,
+    );
+
+    const price = await screen.findByTestId("stock-card-price-TW:2330");
+    expect(price).toHaveClass("app-price-limit--card", "app-price-limit--up");
+    expect(screen.getByTestId("stock-card-price-TW:2330-label")).toHaveTextContent("漲停");
+  });
 });
+
+function renderCardWith(
+  nextQuote: typeof quote,
+  nextStock: typeof stock = stock,
+) {
+  const queryClient = new QueryClient({
+    defaultOptions: {
+      queries: { retry: false },
+      mutations: { retry: false },
+    },
+  });
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <LanguageProvider>
+        <StockCard isTracked={false} onToggle={vi.fn()} quote={nextQuote} stock={nextStock} />
+      </LanguageProvider>
+    </QueryClientProvider>,
+  );
+}
 

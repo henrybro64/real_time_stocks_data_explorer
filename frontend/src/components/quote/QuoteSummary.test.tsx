@@ -4,6 +4,7 @@ import type { Quote } from "@shared/quote";
 import type { Stock } from "@shared/stock";
 
 import { LanguageProvider } from "../../app/i18n";
+import { formatCurrency } from "../../services/format/quote";
 import { QuoteSummary } from "./QuoteSummary";
 
 const sampleStock: Stock = {
@@ -147,4 +148,91 @@ describe("QuoteSummary", () => {
     expect(change).toHaveClass("app-price-down", "app-price-convention-taiwan");
     expect(change).toHaveTextContent("-");
   });
+
+  it("shows a large red limit-up price for a Taiwan quote", () => {
+    renderTaiwanSummary({ priceLimitStatus: "limit_up", lastPrice: 26.95, change: 2.45, changePercent: 10 });
+
+    const price = screen.getByTestId("quote-summary-price");
+    const accessibleName = `${formatCurrency(26.95, "TWD")}, 漲停`;
+    expect(price).toHaveClass("app-price-limit", "app-price-limit--detail", "app-price-limit--up");
+    expect(price).not.toHaveClass("app-price-limit--card");
+    expect(price).toHaveAttribute("role", "group");
+    expect(screen.getByRole("group", { name: accessibleName })).toBe(price);
+    expect(screen.getByTestId("quote-summary-price-label")).toHaveTextContent("漲停");
+    expect(price).toHaveAttribute("aria-label", accessibleName);
+    expect(screen.getByTestId("quote-summary-change")).toHaveTextContent("+10.00%");
+    expect(screen.getByTestId("quote-create-alert-button")).toBeInTheDocument();
+  });
+
+  it("shows a large green limit-down price for a Taiwan quote", () => {
+    renderTaiwanSummary({ priceLimitStatus: "limit_down", lastPrice: 90, change: -10, changePercent: -10 });
+
+    const price = screen.getByTestId("quote-summary-price");
+    expect(price).toHaveClass("app-price-limit--detail", "app-price-limit--down");
+    expect(screen.getByTestId("quote-summary-price-label")).toHaveTextContent("跌停");
+  });
+
+  it("keeps the normal detail price for a Taiwan quote that is not at the limit", () => {
+    renderTaiwanSummary({ priceLimitStatus: "none", lastPrice: 110, change: 10, changePercent: 10 });
+
+    const price = screen.getByTestId("quote-summary-price");
+    expect(price).toHaveClass("app-detail-price");
+    expect(price).not.toHaveClass("app-price-limit");
+    expect(screen.queryByTestId("quote-summary-price-label")).not.toBeInTheDocument();
+  });
+
+  it("does not invent a limit treatment when Taiwan status is unknown", () => {
+    renderTaiwanSummary({ priceLimitStatus: "unknown", changePercent: 10 });
+
+    expect(screen.getByTestId("quote-summary-price")).not.toHaveClass("app-price-limit");
+    expect(screen.queryByText("漲停")).not.toBeInTheDocument();
+  });
+
+  it("does not restyle a U.S. detail price", () => {
+    renderSummary();
+
+    const price = screen.getByTestId("quote-summary-price");
+    expect(price).toHaveClass("app-detail-price");
+    expect(price).not.toHaveClass("app-price-limit");
+    expect(price).toHaveTextContent(formatCurrency(900, "USD"));
+  });
+
+  it("uses the English limit-down label on the detail price", () => {
+    window.localStorage.setItem("stock-ticker-language", "en");
+    renderTaiwanSummary({ priceLimitStatus: "limit_down", lastPrice: 90, change: -10, changePercent: -10 });
+
+    const accessibleName = `${formatCurrency(90, "TWD")}, Limit down`;
+    expect(screen.getByTestId("quote-summary-price-label")).toHaveTextContent("Limit down");
+    expect(screen.getByRole("group", { name: accessibleName })).toHaveAttribute(
+      "aria-label",
+      accessibleName,
+    );
+  });
 });
+
+function renderTaiwanSummary(quotePatch: Partial<Quote>) {
+  return render(
+    <LanguageProvider>
+      <QuoteSummary
+        item={{
+          stock: {
+            id: "TW:2330",
+            market: "TW",
+            symbol: "2330",
+            name: "台積電",
+            exchange: "TWSE",
+            currency: "TWD",
+            timezone: "Asia/Taipei",
+            nameEn: "TSMC",
+            nameZhTw: "台積電",
+          },
+          quote: {
+            ...sampleQuote,
+            id: "TW:2330",
+            ...quotePatch,
+          },
+        }}
+      />
+    </LanguageProvider>,
+  );
+}

@@ -135,6 +135,10 @@ def test_quotes_endpoint_returns_stock_and_quote_payload(monkeypatch, client) ->
                 "high": 188.0,
                 "low": 185.2,
                 "volume": 1_250_000,
+                "priceLimitStatus": "unknown",
+                "referencePrice": None,
+                "limitUpPrice": None,
+                "limitDownPrice": None,
             },
             "freshness": {
                 "cachedAt": "2026-04-01T13:30:00Z",

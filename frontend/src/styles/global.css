@@ -6,6 +6,9 @@
   --app-shell-inline-padding: clamp(0.5rem, 1.4vw, 1rem);
   --app-page-inline-padding: clamp(1rem, 2vw, 1.5rem);
   --app-chart-height: 18rem;
+  /* White text on these fills stays above 4.5:1. Carbon red #da1e28, green 60 #198038. */
+  --app-price-limit-up: #da1e28;
+  --app-price-limit-down: #198038;
 }
 
 @supports (height: 100dvh) {
@@ -884,6 +887,56 @@ input {
   margin: 0;
   font-size: clamp(2rem, 5vw, 3.5rem);
   line-height: 1.1;
+}
+
+.app-price-limit {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.app-price-limit-pill {
+  display: inline-block;
+  width: fit-content;
+  max-width: 100%;
+  margin: 0;
+  border-radius: 0.35rem;
+  color: #ffffff;
+  font-weight: 700;
+  line-height: 1.15;
+}
+
+.app-price-limit--card .app-price-limit-pill {
+  padding: 0.12rem 0.45rem;
+}
+
+.app-price-limit--detail .app-price-limit-pill {
+  padding: 0.22rem 0.7rem;
+  border-radius: 0.5rem;
+}
+
+.app-price-limit--up .app-price-limit-pill {
+  background: var(--app-price-limit-up);
+}
+
+.app-price-limit--down .app-price-limit-pill {
+  background: var(--app-price-limit-down);
+}
+
+.app-price-limit-label {
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.app-price-limit--card .app-price-limit-label {
+  font-size: 0.875rem;
+}
+
+.app-price-limit--detail .app-price-limit-label {
+  font-size: 1.125rem;
 }
 
 .app-detail-change {
@@ -1917,6 +1970,11 @@ input {
   .app-detail-price-row,
   .app-section-header {
     flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .app-price-limit--card,
+  .app-price-limit--detail {
     align-items: flex-start;
   }
 

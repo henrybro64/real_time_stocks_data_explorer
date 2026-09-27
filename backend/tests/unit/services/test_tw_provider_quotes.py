@@ -283,3 +283,228 @@ def test_tpex_yahoo_quote_tries_two_before_tw(monkeypatch) -> None:
     two_idx = next(i for i, url in enumerate(requested) if "/6562.TWO?" in url)
     tw_idx = next(i for i, url in enumerate(requested) if "/6562.TW?" in url)
     assert two_idx < tw_idx
+    assert quote.price_limit_status == "unknown"
+    assert quote.reference_price is None
+    assert quote.limit_up_price is None
+    assert quote.limit_down_price is None
+
+
+def _use_stock(monkeypatch, stock: StockRecord) -> None:
+    tw_provider.reset_mis_circuit_for_tests()
+    monkeypatch.setattr(tw_provider.TWProvider, "_stock_catalog", lambda self: {stock.id: stock})
+    tw_provider.TWProvider._quote_cache.clear()
+    tw_provider.TWProvider._quote_cached_at.clear()
+
+
+def _mis_payload(**overrides: str) -> dict[str, list[dict[str, str]]]:
+    row = {
+        "z": "105.00",
+        "pz": "104.00",
+        "y": "100.00",
+        "u": "110.00",
+        "w": "90.00",
+        "o": "101.00",
+        "h": "106.00",
+        "l": "100.00",
+        "v": "12",
+        "d": "20260926",
+        "t": "13:30:00",
+    }
+    row.update(overrides)
+    return {"msgArray": [row]}
+
+
+def test_twse_quote_at_official_upper_limit_is_limit_up(monkeypatch) -> None:
+    stock = _tw_stock()
+    _use_stock(monkeypatch, stock)
+    monkeypatch.setattr(tw_provider, "_load_json", lambda *_a, **_k: _mis_payload(z="110.00"))
+
+    quote = tw_provider.TWProvider().get_quote(stock.id)
+
+    assert quote is not None
+    assert quote.last_price == pytest.approx(110.0)
+    assert quote.price_limit_status == "limit_up"
+    assert quote.reference_price == pytest.approx(100.0)
+    assert quote.limit_up_price == pytest.approx(110.0)
+    assert quote.limit_down_price == pytest.approx(90.0)
+
+
+def test_tpex_quote_at_official_lower_limit_is_limit_down(monkeypatch) -> None:
+    stock = _tpex_stock()
+    _use_stock(monkeypatch, stock)
+    monkeypatch.setattr(tw_provider, "_load_json", lambda *_a, **_k: _mis_payload(z="90.00"))
+
+    quote = tw_provider.TWProvider().get_quote(stock.id)
+
+    assert quote is not None
+    assert quote.price_limit_status == "limit_down"
+    assert quote.limit_down_price == pytest.approx(90.0)
+    assert quote.limit_up_price == pytest.approx(110.0)
+
+
+def test_ordinary_taiwan_quote_is_not_a_price_limit(monkeypatch) -> None:
+    stock = _tw_stock()
+    _use_stock(monkeypatch, stock)
+    monkeypatch.setattr(tw_provider, "_load_json", lambda *_a, **_k: _mis_payload(z="105.00"))
+
+    quote = tw_provider.TWProvider().get_quote(stock.id)
+
+    assert quote is not None
+    assert quote.price_limit_status == "none"
+    assert quote.change_percent == pytest.approx(5.0)
+
+
+def test_near_ten_percent_move_is_not_limit_up(monkeypatch) -> None:
+    stock = _tw_stock()
+    _use_stock(monkeypatch, stock)
+    monkeypatch.setattr(
+        tw_provider,
+        "_load_json",
+        lambda *_a, **_k: _mis_payload(z="110.00", y="100.00", u="110.50", w="90.00"),
+    )
+
+    quote = tw_provider.TWProvider().get_quote(stock.id)
+
+    assert quote is not None
+    assert quote.change_percent == pytest.approx(10.0)
+    assert quote.price_limit_status == "none"
+    assert quote.last_price == pytest.approx(110.0)
+    assert quote.limit_up_price == pytest.approx(110.5)
+
+
+def test_missing_both_official_limits_is_unknown(monkeypatch) -> None:
+    stock = _tw_stock()
+    _use_stock(monkeypatch, stock)
+    monkeypatch.setattr(
+        tw_provider,
+        "_load_json",
+        lambda *_a, **_k: _mis_payload(z="110.00", y="100.00", u="-", w="-"),
+    )
+
+    quote = tw_provider.TWProvider().get_quote(stock.id)
+
+    assert quote is not None
+    assert quote.last_price == pytest.approx(110.0)
+    assert quote.change_percent == pytest.approx(10.0)
+    assert quote.price_limit_status == "unknown"
+    assert quote.reference_price == pytest.approx(100.0)
+    assert quote.limit_up_price is None
+    assert quote.limit_down_price is None
+
+
+def test_missing_one_limit_side_is_unknown(monkeypatch) -> None:
+    stock = _tw_stock()
+    _use_stock(monkeypatch, stock)
+    monkeypatch.setattr(
+        tw_provider,
+        "_load_json",
+        lambda *_a, **_k: _mis_payload(z="110.00", w="-"),
+    )
+
+    quote = tw_provider.TWProvider().get_quote(stock.id)
+
+    assert quote is not None
+    assert quote.price_limit_status == "unknown"
+    assert quote.limit_up_price == pytest.approx(110.0)
+    assert quote.limit_down_price is None
+
+
+def test_no_trade_reference_fallback_is_not_a_limit(monkeypatch) -> None:
+    stock = _tw_stock()
+    _use_stock(monkeypatch, stock)
+    monkeypatch.setattr(
+        tw_provider,
+        "_load_json",
+        lambda *_a, **_k: _mis_payload(z="-", pz="-", y="110.00", u="110.00", w="90.00"),
+    )
+
+    quote = tw_provider.TWProvider().get_quote(stock.id)
+
+    assert quote is not None
+    assert quote.last_price == pytest.approx(110.0)
+    assert quote.price_limit_status == "unknown"
+    assert quote.reference_price == pytest.approx(110.0)
+
+
+def test_previous_price_fallback_is_not_a_limit_trade(monkeypatch) -> None:
+    stock = _tw_stock()
+    _use_stock(monkeypatch, stock)
+    monkeypatch.setattr(
+        tw_provider,
+        "_load_json",
+        lambda *_a, **_k: _mis_payload(z="-", pz="110.00", y="100.00"),
+    )
+
+    quote = tw_provider.TWProvider().get_quote(stock.id)
+
+    assert quote is not None
+    assert quote.last_price == pytest.approx(110.0)
+    assert quote.price_limit_status == "unknown"
+
+
+def test_cached_quote_keeps_limit_fields_from_the_same_payload(monkeypatch) -> None:
+    stock = _tw_stock()
+    _use_stock(monkeypatch, stock)
+    calls = {"count": 0}
+
+    def load_json(*_args, **_kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return _mis_payload(z="110.00")
+        raise HttpFetchError("disconnect", classification="network_failure")
+
+    monkeypatch.setattr(tw_provider, "_load_json", load_json)
+    monkeypatch.setattr(tw_provider.TWProvider, "_fetch_yahoo_tw_quote", lambda self, _stock: None)
+    provider = tw_provider.TWProvider()
+
+    first = provider.get_quote(stock.id)
+    second = provider.get_quote(stock.id)
+
+    assert first is not None and first.price_limit_status == "limit_up"
+    assert second is not None
+    assert second.price_limit_status == "limit_up"
+    assert second.limit_up_price == pytest.approx(110.0)
+    assert second.last_price == pytest.approx(110.0)
+
+
+def test_yahoo_fallback_does_not_keep_a_previous_limit_classification(monkeypatch) -> None:
+    stock = _tw_stock()
+    _use_stock(monkeypatch, stock)
+    calls = {"count": 0}
+
+    def load_json(*_args, **_kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return _mis_payload(z="110.00")
+        raise HttpFetchError("disconnect", classification="network_failure")
+
+    def fetch_json(url: str, **_kwargs):
+        return {
+            "chart": {
+                "result": [
+                    {
+                        "meta": {
+                            "regularMarketPrice": 101.0,
+                            "chartPreviousClose": 100.0,
+                            "regularMarketTime": 1756897200,
+                        }
+                    }
+                ]
+            }
+        }
+
+    monkeypatch.setattr(tw_provider, "_load_json", load_json)
+    monkeypatch.setattr(tw_provider, "fetch_json", fetch_json)
+    provider = tw_provider.TWProvider()
+
+    first = provider.get_quote(stock.id)
+    second = provider.get_quote(stock.id)
+
+    assert first is not None and first.price_limit_status == "limit_up"
+    assert second is not None
+    assert second.last_price == pytest.approx(101.0)
+    assert second.change_percent == pytest.approx(1.0)
+    assert second.price_limit_status == "unknown"
+    assert second.reference_price is None
+    assert second.limit_up_price is None
+    assert second.limit_down_price is None

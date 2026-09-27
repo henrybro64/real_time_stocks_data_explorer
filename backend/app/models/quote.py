@@ -1,4 +1,9 @@
 from dataclasses import dataclass
+from typing import Literal
+
+# Absent (None) means the payload predates price-limit fields or the market
+# has no Taiwan limit classification. API serializers map that to "unknown".
+PriceLimitStatus = Literal["limit_up", "limit_down", "none", "unknown"]
 
 
 @dataclass(frozen=True)
@@ -14,6 +19,10 @@ class QuoteRecord:
     high: float | None = None
     low: float | None = None
     volume: int | None = None
+    price_limit_status: PriceLimitStatus | None = None
+    reference_price: float | None = None
+    limit_up_price: float | None = None
+    limit_down_price: float | None = None
 
 
 @dataclass(frozen=True)

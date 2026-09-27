@@ -2,6 +2,7 @@ import { Button, Column, Grid, Tag, Tile } from "@carbon/react";
 import type { Quote, QuoteFreshnessMeta } from "@shared/quote";
 import type { Stock } from "@shared/stock";
 import { getDisplayStockName, useLanguage } from "../../app/i18n";
+import { LimitPrice } from "./LimitPrice";
 import { QuoteFreshnessTag } from "../state/QuoteFreshnessTag";
 import { formatCurrency, formatLastUpdated, formatPercent, formatSignedNumber } from "../../services/format/quote";
 import { priceToneClassForMarket } from "../../services/market-data/priceTone";
@@ -38,7 +39,14 @@ export function QuoteSummary({ item, refreshFailed = false, freshness = null }: 
         </div>
       </div>
       <div className="app-detail-price-row">
-        <p className="app-detail-price">{formatCurrency(quote.lastPrice, stock.currency)}</p>
+        <LimitPrice
+          currency={stock.currency}
+          lastPrice={quote.lastPrice}
+          market={stock.market}
+          priceLimitStatus={quote.priceLimitStatus}
+          testId="quote-summary-price"
+          variant="detail"
+        />
         <p
           className={`${priceToneClassForMarket(stock.market, quote.change)} app-detail-change`}
           data-testid="quote-summary-change"

@@ -113,6 +113,52 @@ def decimal_to_api_float(value: Decimal | None) -> float | None:
     return float(quantized)
 
 
+def restore_cached_price_limit(
+    *,
+    last_price: float,
+    status: object,
+    reference_price: object,
+    limit_up_price: object,
+    limit_down_price: object,
+) -> tuple[PriceLimitStatus | None, float | None, float | None, float | None]:
+    """Keep cached limit fields only when they still describe this quote.
+
+    Older payloads omit the fields. Those stay unset so callers can treat them
+    as unknown without inventing a limit. A stored 漲停／跌停／none label is kept
+    only when both official limit prices are present and the traded price still
+    matches that label.
+    """
+    if status is None:
+        return (None, None, None, None)
+    if status not in {"limit_up", "limit_down", "none", "unknown"}:
+        return ("unknown", None, None, None)
+
+    reference = _cached_price(reference_price)
+    limit_up = _cached_price(limit_up_price)
+    limit_down = _cached_price(limit_down_price)
+    if status == "unknown":
+        return ("unknown", reference, limit_up, limit_down)
+    if limit_up is None or limit_down is None:
+        return ("unknown", None, None, None)
+    at_up = _prices_match(last_price, limit_up)
+    at_down = _prices_match(last_price, limit_down)
+    if status == "limit_up" and at_up and not at_down:
+        return ("limit_up", reference, limit_up, limit_down)
+    if status == "limit_down" and at_down and not at_up:
+        return ("limit_down", reference, limit_up, limit_down)
+    if status == "none" and not at_up and not at_down:
+        return ("none", reference, limit_up, limit_down)
+    return ("unknown", None, None, None)
+
+
+def _cached_price(value: object) -> float | None:
+    return decimal_to_api_float(parse_price(value))
+
+
+def _prices_match(left: float, right: float) -> bool:
+    return abs(left - right) <= 0.005
+
+
 def is_no_limit_band(limit_up: Decimal, limit_down: Decimal) -> bool:
     """TWSE/TPEx publish 9999.95 / 0.01 when a security has no daily band."""
     return limit_up >= _NO_LIMIT_SENTINEL or (
@@ -128,12 +174,18 @@ def classify_taiwan_price_limit(
     limit_down_price_value: Decimal | None,
     traded: bool,
     symbol: str | None = None,
+    allow_calculated: bool = True,
 ) -> tuple[PriceLimitStatus, Decimal | None, Decimal | None, Decimal | None]:
     """Classify one quote.
 
     Returns ``(status, reference, limit_up, limit_down)``. Missing trades,
     suspended rows, and incomplete bands are ``unknown`` so callers can drop
     them from a definitive 漲停／跌停 list.
+
+    ``allow_calculated`` keeps the ±10% tick fallback used by market-wide
+    rankings when both official limits are absent. Regular quotes pass
+    ``False``: a missing MIS ``u``/``w`` pair is incomplete and must stay
+    ``unknown`` rather than become a badge.
     """
     if not traded or last_price is None:
         return ("unknown", reference_price, limit_up_price_value, limit_down_price_value)
@@ -152,13 +204,15 @@ def classify_taiwan_price_limit(
 
     kind = tick_kind_for_symbol(symbol or "")
     if (
-        reference_price is None
+        not allow_calculated
+        or reference_price is None
         or reference_price <= 0
         or kind is None
         or limit_up_price_value is not None
         or limit_down_price_value is not None
     ):
-        # A single missing side, or a security we cannot tick-round, stays unknown.
+        # A single missing side, a security we cannot tick-round, or a caller
+        # that refuses the calculated band stays unknown.
         return ("unknown", reference_price, limit_up_price_value, limit_down_price_value)
 
     calculated_up = limit_up_price(reference_price, kind=kind)

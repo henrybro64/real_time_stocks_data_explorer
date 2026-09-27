@@ -23,6 +23,7 @@ from uuid import uuid4
 
 from app.core.config import settings
 from app.models.quote import QuoteRecord
+from app.services.tw_price_limits import restore_cached_price_limit
 
 logger = logging.getLogger(__name__)
 
@@ -366,6 +367,10 @@ def _serialize(quote: QuoteRecord, *, cached_at: datetime) -> dict[str, Any]:
             "high": quote.high,
             "low": quote.low,
             "volume": quote.volume,
+            "price_limit_status": quote.price_limit_status,
+            "reference_price": quote.reference_price,
+            "limit_up_price": quote.limit_up_price,
+            "limit_down_price": quote.limit_down_price,
         },
     }
 
@@ -376,9 +381,17 @@ def _deserialize_quote(data: dict[str, Any]) -> QuoteRecord:
         return float(v) if v is not None else None
 
     vol = data.get("volume")
+    last_price = float(data["last_price"])
+    status, reference_price, limit_up_price, limit_down_price = restore_cached_price_limit(
+        last_price=last_price,
+        status=data.get("price_limit_status"),
+        reference_price=data.get("reference_price"),
+        limit_up_price=data.get("limit_up_price"),
+        limit_down_price=data.get("limit_down_price"),
+    )
     return QuoteRecord(
         id=data["id"],
-        last_price=float(data["last_price"]),
+        last_price=last_price,
         change=float(data["change"]),
         change_percent=float(data["change_percent"]),
         previous_close=float(data["previous_close"]),
@@ -388,6 +401,10 @@ def _deserialize_quote(data: dict[str, Any]) -> QuoteRecord:
         high=_of("high"),
         low=_of("low"),
         volume=int(vol) if vol is not None else None,
+        price_limit_status=status,
+        reference_price=reference_price,
+        limit_up_price=limit_up_price,
+        limit_down_price=limit_down_price,
     )
 
 

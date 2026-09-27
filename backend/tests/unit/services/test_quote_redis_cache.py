@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 import json
 import threading
@@ -197,6 +198,81 @@ def test_corrupt_payload_is_treated_as_miss() -> None:
     entries = cache.get_cached_quote_entries(["US:AAPL"])
 
     assert entries == {}
+
+
+def test_price_limit_fields_round_trip_memory_cache() -> None:
+    quote = replace(
+        quote_record(
+            "TW:2330",
+            last_price=90.0,
+            change=-10.0,
+            change_percent=-10.0,
+            previous_close=100.0,
+            timestamp="2026-09-26T13:30:00+08:00",
+            is_market_open=True,
+        ),
+        price_limit_status="limit_down",
+        reference_price=100.0,
+        limit_up_price=110.0,
+        limit_down_price=90.0,
+    )
+    cache.set_cached_quote("TW:2330", quote)
+
+    stored = cache.get_cached_quote("TW:2330")
+
+    assert stored is not None
+    assert stored.price_limit_status == "limit_down"
+    assert stored.reference_price == pytest.approx(100.0)
+    assert stored.limit_up_price == pytest.approx(110.0)
+    assert stored.limit_down_price == pytest.approx(90.0)
+
+
+def test_legacy_quote_payload_without_price_limits_stays_readable() -> None:
+    legacy = {
+        "cached_at": "2026-09-26T05:30:00Z",
+        "quote": {
+            "id": "US:AAPL",
+            "last_price": 187.23,
+            "change": 1.5,
+            "change_percent": 0.81,
+            "previous_close": 185.73,
+            "timestamp": "2026-04-01T09:30:00-04:00",
+            "is_market_open": True,
+            "open": None,
+            "high": None,
+            "low": None,
+            "volume": None,
+        },
+    }
+    entry = cache._entry_from_payload(json.dumps(legacy))
+    assert entry is not None
+    assert entry.quote.last_price == pytest.approx(187.23)
+    assert entry.quote.price_limit_status is None
+    assert entry.quote.limit_up_price is None
+
+
+def test_inconsistent_cached_limit_status_is_not_trusted() -> None:
+    payload = {
+        "cached_at": "2026-09-26T05:30:00Z",
+        "quote": {
+            "id": "TW:2330",
+            "last_price": 105.0,
+            "change": 5.0,
+            "change_percent": 5.0,
+            "previous_close": 100.0,
+            "timestamp": "2026-09-26T13:30:00+08:00",
+            "is_market_open": True,
+            "price_limit_status": "limit_up",
+            "reference_price": 100.0,
+            "limit_up_price": 110.0,
+            "limit_down_price": 90.0,
+        },
+    }
+    entry = cache._entry_from_payload(json.dumps(payload))
+    assert entry is not None
+    assert entry.quote.price_limit_status == "unknown"
+    assert entry.quote.limit_up_price is None
+    assert entry.quote.reference_price is None
 
 
 def test_legacy_payload_without_cached_at_still_deserializes() -> None:
