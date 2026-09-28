@@ -322,11 +322,17 @@ describe("PortfolioPage", () => {
     expect(await screen.findByTestId("portfolio-table-currency-hint")).toHaveTextContent(
       "最新價與持倉市值皆依各檔股票原幣顯示，例如 USD 或 TWD。",
     );
-    expect(screen.getByRole("columnheader", { name: "最新價（原幣）" })).toBeInTheDocument();
-    expect(screen.getByRole("columnheader", { name: "持倉市值（原幣）" })).toBeInTheDocument();
+    const twSection = screen.getByTestId("portfolio-market-section-tw");
+    const usSection = screen.getByTestId("portfolio-market-section-us");
+    expect(within(twSection).getByRole("heading", { name: "台灣股票" })).toBeInTheDocument();
+    expect(within(usSection).getByRole("heading", { name: "美國股票" })).toBeInTheDocument();
+    expect(within(twSection).getByText("1 筆持股")).toBeInTheDocument();
+    expect(within(usSection).getByText("1 筆持股")).toBeInTheDocument();
+    expect(within(twSection).getByRole("columnheader", { name: "最新價（原幣）" })).toBeInTheDocument();
+    expect(within(usSection).getByRole("columnheader", { name: "持倉市值（原幣）" })).toBeInTheDocument();
 
-    const twRow = screen.getByTestId("portfolio-position-TW:2330");
-    const usRow = screen.getByTestId("portfolio-position-US:AAPL");
+    const twRow = within(twSection).getByTestId("portfolio-position-TW:2330");
+    const usRow = within(usSection).getByTestId("portfolio-position-US:AAPL");
     expect(within(twRow).getByText("TWSE")).toBeInTheDocument();
     expect(twRow).toHaveTextContent("TWD");
     expect(twRow).toHaveTextContent("950.00");
@@ -366,9 +372,13 @@ describe("PortfolioPage", () => {
     expect(await screen.findByTestId("portfolio-table-currency-hint")).toHaveTextContent(
       "Last price and position value are shown in each holding's stock currency, such as USD or TWD.",
     );
-    expect(screen.getByRole("columnheader", { name: "Last price (stock currency)" })).toBeInTheDocument();
-    expect(screen.getByRole("columnheader", { name: "Position value (stock currency)" })).toBeInTheDocument();
-    expect(screen.getByRole("columnheader", { name: "Avg cost (stock currency)" })).toBeInTheDocument();
+    const twSection = screen.getByTestId("portfolio-market-section-tw");
+    const usSection = screen.getByTestId("portfolio-market-section-us");
+    expect(within(twSection).getByRole("heading", { name: "Taiwan Holdings" })).toBeInTheDocument();
+    expect(within(usSection).getByRole("heading", { name: "U.S. Holdings" })).toBeInTheDocument();
+    expect(within(twSection).getByRole("columnheader", { name: "Last price (stock currency)" })).toBeInTheDocument();
+    expect(within(usSection).getByRole("columnheader", { name: "Position value (stock currency)" })).toBeInTheDocument();
+    expect(within(usSection).getByRole("columnheader", { name: "Avg cost (stock currency)" })).toBeInTheDocument();
     expect(screen.getByText("Apple Inc.")).toBeInTheDocument();
     expect(screen.getByText("TSMC")).toBeInTheDocument();
   });
