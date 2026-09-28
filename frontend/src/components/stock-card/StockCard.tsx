@@ -18,6 +18,7 @@ import {
   formatPercent,
   formatSignedNumber,
 } from "../../services/format/quote";
+import { formatListingSymbol } from "../../services/market-data/classifyMarket";
 import {
   priceColorConventionFromMarket,
   priceStrokeColor,
@@ -125,7 +126,7 @@ export function StockCard({
       <div className="app-stock-card-top">
         <div>
           <p className="app-result-symbol">
-            {stock.symbol} <span>{stock.exchange}</span>
+            {formatListingSymbol(stock)} <span>{stock.exchange}</span>
           </p>
           <p className="app-result-name">{getDisplayStockName(stock, language)}</p>
         </div>
