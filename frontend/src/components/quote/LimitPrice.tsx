@@ -5,6 +5,7 @@ import type { CurrencyCode, MarketCode } from "@shared/stock";
 
 import { useLanguage } from "../../app/i18n";
 import { formatCurrency } from "../../services/format/quote";
+import { classifyMarket } from "../../services/market-data/classifyMarket";
 
 type Props = {
   market: MarketCode;
@@ -27,7 +28,7 @@ export function LimitPrice({
   const { t } = useLanguage();
   const formatted = formatCurrency(lastPrice, currency);
   const priceClass = variant === "card" ? "app-stock-card-price" : "app-detail-price";
-  const status = market === "TW" ? priceLimitStatus : null;
+  const status = classifyMarket({ market }) === "TW" ? priceLimitStatus : null;
   const limited = status === "limit_up" || status === "limit_down";
 
   if (!limited) {

@@ -59,6 +59,11 @@ export type TranslationKey =
   | "watchlist.loading"
   | "watchlist.empty"
   | "watchlist.manageAlerts"
+  | "watchlist.market.tw"
+  | "watchlist.market.us"
+  | "watchlist.market.unknown"
+  | "watchlist.sectionCount"
+  | "watchlist.sectionCount.one"
   | "alerts.title"
   | "alerts.description"
   | "alerts.form.eyebrow"
@@ -595,6 +600,11 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "watchlist.loading": "Loading watchlist quotes",
     "watchlist.empty": "Add stocks from search. Latest quotes and update times will appear here.",
     "watchlist.manageAlerts": "Manage alerts",
+    "watchlist.market.tw": "Taiwan Stocks",
+    "watchlist.market.us": "U.S. Stocks",
+    "watchlist.market.unknown": "Other symbols",
+    "watchlist.sectionCount": "{count} symbols",
+    "watchlist.sectionCount.one": "{count} symbol",
     "alerts.title": "Threshold alerts",
     "alerts.description":
       "Create price-above and price-below rules for stocks you care about, then review the recent trigger history in one place.",
@@ -1167,6 +1177,11 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "watchlist.loading": "載入自選報價中",
     "watchlist.empty": "搜尋股票後加入清單，這裡會持續顯示最新報價與更新時間。",
     "watchlist.manageAlerts": "管理警示",
+    "watchlist.market.tw": "台灣股票",
+    "watchlist.market.us": "美股",
+    "watchlist.market.unknown": "其他代碼",
+    "watchlist.sectionCount": "{count} 檔",
+    "watchlist.sectionCount.one": "{count} 檔",
     "alerts.title": "門檻警示",
     "alerts.description": "建立價格高於或低於門檻的規則，並集中查看最近觸發紀錄。",
     "alerts.form.eyebrow": "規則編輯器",
