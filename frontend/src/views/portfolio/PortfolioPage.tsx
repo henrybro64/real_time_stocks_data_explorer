@@ -18,7 +18,7 @@ import {
 } from "@carbon/react";
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import type { PortfolioAnalysisResponse } from "@shared/api";
+import type { PortfolioAnalysisResponse, PortfolioPosition } from "@shared/api";
 import type { TimeRange } from "@shared/quote";
 import type { Stock } from "@shared/stock";
 import Link from "next/link";
@@ -78,6 +78,11 @@ export function PortfolioPage() {
     refetchInterval: 5000,
   });
   const items = portfolio.positions;
+  const taiwanPositions = items.filter((position) => position.stock.market === "TW");
+  const usPositions = items.filter((position) => position.stock.market === "US");
+  const otherPositions = items.filter(
+    (position) => position.stock.market !== "TW" && position.stock.market !== "US",
+  );
   const fxQuery = useQuery({
     queryKey: ["usd-twd-fx-rate"],
     queryFn: fetchUsdTwdFxRate,
@@ -280,6 +285,168 @@ export function PortfolioPage() {
     }
     return <span>{`${displayCurrency} ${formatCurrency(value, displayCurrency)}`}</span>;
   };
+
+  const renderHoldingsTable = (
+    positions: PortfolioPosition[],
+    title: string,
+    testId: string,
+  ) => (
+    <section data-testid={testId}>
+      <div className="app-section-header">
+        <div>
+          <h2>{title}</h2>
+          <p className="app-section-meta">{t("portfolio.marketSection.count", { count: positions.length })}</p>
+        </div>
+      </div>
+      <TableContainer title={title} className="app-portfolio-table-wrap">
+        <Table size="lg" useZebraStyles>
+          <TableHead>
+            <TableRow>
+              <TableHeader>{t("portfolio.column.symbol")}</TableHeader>
+              <TableHeader>{t("portfolio.column.name")}</TableHeader>
+              <TableHeader>{t("portfolio.column.market")}</TableHeader>
+              <TableHeader>{t("portfolio.column.quantity")}</TableHeader>
+              <TableHeader>{t("portfolio.column.averageCost")}</TableHeader>
+              <TableHeader>{t("portfolio.column.last")}</TableHeader>
+              <TableHeader>{t("portfolio.column.marketValue")}</TableHeader>
+              <TableHeader>{t("portfolio.column.change")}</TableHeader>
+              <TableHeader>{t("portfolio.column.changePercent")}</TableHeader>
+              <TableHeader>{t("portfolio.column.volume")}</TableHeader>
+              <TableHeader>{t("portfolio.column.updated")}</TableHeader>
+              <TableHeader>{t("portfolio.column.actions")}</TableHeader>
+            </TableRow>
+          </TableHead>
+          <TableBody>
+            {positions.map((position) => (
+              <TableRow data-testid={`portfolio-position-${position.stockId}`} key={position.id}>
+                <TableCell>
+                  <span className="app-result-symbol">{position.stock.symbol}</span>
+                </TableCell>
+                <TableCell>
+                  <span className="app-portfolio-name-cell">
+                    {getDisplayStockName(position.stock, language)}
+                  </span>
+                </TableCell>
+                <TableCell>{position.stock.exchange}</TableCell>
+                <TableCell>
+                  <div className="app-portfolio-quantity-input-wrap">
+                    <TextInput
+                      data-testid={`portfolio-quantity-input-${position.stockId}`}
+                      hideLabel
+                      id={`portfolio-quantity-${position.id}`}
+                      labelText={t("portfolio.column.quantity")}
+                      onBlur={() => handleQuantityBlur(position.id, position.quantity)}
+                      onChange={(event) =>
+                        handleQuantityDraftChange(position.id, event.currentTarget.value)
+                      }
+                      onKeyDown={(event) =>
+                        handleQuantityKeyDown(event, position.id, position.quantity)
+                      }
+                      size="sm"
+                      type="number"
+                      min={0}
+                      step="any"
+                      value={draftQuantities[position.id] ?? String(position.quantity)}
+                      disabled={portfolio.isMutating}
+                    />
+                    <div className="app-portfolio-quantity-status">
+                      {savingPositionIds[position.id] ? (
+                        <span className="app-supporting-copy">{t("portfolio.quantity.saving")}</span>
+                      ) : savedPositionIds[position.id] ? (
+                        <span className="app-positive">{t("portfolio.quantity.saved")}</span>
+                      ) : null}
+                    </div>
+                  </div>
+                </TableCell>
+                <TableCell>
+                  <div className="app-portfolio-quantity-input-wrap">
+                    <TextInput
+                      data-testid={`portfolio-average-cost-input-${position.stockId}`}
+                      hideLabel
+                      id={`portfolio-average-cost-${position.id}`}
+                      labelText={t("portfolio.column.averageCost")}
+                      onBlur={() => handleAverageCostBlur(position.id, position.averageCost)}
+                      onChange={(event) =>
+                        handleAverageCostDraftChange(position.id, event.currentTarget.value)
+                      }
+                      onKeyDown={(event) =>
+                        handleAverageCostKeyDown(event, position.id, position.averageCost)
+                      }
+                      size="sm"
+                      type="number"
+                      min={0}
+                      step="any"
+                      value={draftAverageCosts[position.id] ?? String(position.averageCost)}
+                      disabled={portfolio.isMutating}
+                    />
+                  </div>
+                </TableCell>
+                <TableCell>
+                  {position.quote != null
+                    ? renderCurrencyValue(position.quote.lastPrice, position.stock.currency)
+                    : "—"}
+                </TableCell>
+                <TableCell>{renderCurrencyValue(position.marketValue, position.stock.currency)}</TableCell>
+                <TableCell>
+                  {position.quote != null ? (
+                    <span
+                      className={priceToneClassForMarket(position.stock.market, position.quote.change)}
+                      data-testid={`portfolio-quote-change-${position.stockId}`}
+                    >
+                      {formatSignedNumber(position.quote.change, position.stock.currency)}
+                    </span>
+                  ) : (
+                    "—"
+                  )}
+                </TableCell>
+                <TableCell>
+                  {position.quote != null ? (
+                    <span
+                      className={priceToneClassForMarket(
+                        position.stock.market,
+                        position.quote.changePercent,
+                      )}
+                      data-testid={`portfolio-quote-change-percent-${position.stockId}`}
+                    >
+                      {formatPercent(position.quote.changePercent)}
+                    </span>
+                  ) : (
+                    "—"
+                  )}
+                </TableCell>
+                <TableCell>
+                  {position.quote?.volume != null ? formatNumber(position.quote.volume) : "—"}
+                </TableCell>
+                <TableCell>
+                  {position.quote?.timestamp
+                    ? formatLastUpdated(position.quote.timestamp)
+                    : "—"}
+                </TableCell>
+                <TableCell>
+                  <div className="app-portfolio-actions">
+                    <Link
+                      className="cds--link"
+                      href={`/stock/${encodeURIComponent(position.stock.id)}`}
+                    >
+                      {t("stock.viewDetails")}
+                    </Link>
+                    <Button
+                      data-testid={`portfolio-remove-${position.stockId}`}
+                      kind="ghost"
+                      size="sm"
+                      onClick={() => portfolio.remove(position.id)}
+                    >
+                      {t("portfolio.removeHolding")}
+                    </Button>
+                  </div>
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </TableContainer>
+    </section>
+  );
 
   const analysis = analysisMutation.data;
   const concentrationRiskLevel =
@@ -710,153 +877,29 @@ export function PortfolioPage() {
               <p className="app-section-meta" data-testid="portfolio-table-currency-hint">
                 {t("portfolio.table.currencyHint")}
               </p>
-              <TableContainer title={t("portfolio.title")} className="app-portfolio-table-wrap">
-                <Table size="lg" useZebraStyles>
-                  <TableHead>
-                    <TableRow>
-                      <TableHeader>{t("portfolio.column.symbol")}</TableHeader>
-                      <TableHeader>{t("portfolio.column.name")}</TableHeader>
-                      <TableHeader>{t("portfolio.column.market")}</TableHeader>
-                      <TableHeader>{t("portfolio.column.quantity")}</TableHeader>
-                      <TableHeader>{t("portfolio.column.averageCost")}</TableHeader>
-                      <TableHeader>{t("portfolio.column.last")}</TableHeader>
-                      <TableHeader>{t("portfolio.column.marketValue")}</TableHeader>
-                      <TableHeader>{t("portfolio.column.change")}</TableHeader>
-                      <TableHeader>{t("portfolio.column.changePercent")}</TableHeader>
-                      <TableHeader>{t("portfolio.column.volume")}</TableHeader>
-                      <TableHeader>{t("portfolio.column.updated")}</TableHeader>
-                      <TableHeader>{t("portfolio.column.actions")}</TableHeader>
-                    </TableRow>
-                  </TableHead>
-                  <TableBody>
-                    {items.map((position) => (
-                      <TableRow data-testid={`portfolio-position-${position.stockId}`} key={position.id}>
-                        <TableCell>
-                          <span className="app-result-symbol">{position.stock.symbol}</span>
-                        </TableCell>
-                        <TableCell>
-                          <span className="app-portfolio-name-cell">
-                            {getDisplayStockName(position.stock, language)}
-                          </span>
-                        </TableCell>
-                        <TableCell>{position.stock.exchange}</TableCell>
-                        <TableCell>
-                          <div className="app-portfolio-quantity-input-wrap">
-                            <TextInput
-                              data-testid={`portfolio-quantity-input-${position.stockId}`}
-                              hideLabel
-                              id={`portfolio-quantity-${position.id}`}
-                              labelText={t("portfolio.column.quantity")}
-                              onBlur={() => handleQuantityBlur(position.id, position.quantity)}
-                              onChange={(event) =>
-                                handleQuantityDraftChange(position.id, event.currentTarget.value)
-                              }
-                              onKeyDown={(event) =>
-                                handleQuantityKeyDown(event, position.id, position.quantity)
-                              }
-                              size="sm"
-                              type="number"
-                              min={0}
-                              step="any"
-                              value={draftQuantities[position.id] ?? String(position.quantity)}
-                              disabled={portfolio.isMutating}
-                            />
-                            <div className="app-portfolio-quantity-status">
-                              {savingPositionIds[position.id] ? (
-                                <span className="app-supporting-copy">{t("portfolio.quantity.saving")}</span>
-                              ) : savedPositionIds[position.id] ? (
-                                <span className="app-positive">{t("portfolio.quantity.saved")}</span>
-                              ) : null}
-                            </div>
-                          </div>
-                        </TableCell>
-                        <TableCell>
-                          <div className="app-portfolio-quantity-input-wrap">
-                            <TextInput
-                              data-testid={`portfolio-average-cost-input-${position.stockId}`}
-                              hideLabel
-                              id={`portfolio-average-cost-${position.id}`}
-                              labelText={t("portfolio.column.averageCost")}
-                              onBlur={() => handleAverageCostBlur(position.id, position.averageCost)}
-                              onChange={(event) =>
-                                handleAverageCostDraftChange(position.id, event.currentTarget.value)
-                              }
-                              onKeyDown={(event) =>
-                                handleAverageCostKeyDown(event, position.id, position.averageCost)
-                              }
-                              size="sm"
-                              type="number"
-                              min={0}
-                              step="any"
-                              value={draftAverageCosts[position.id] ?? String(position.averageCost)}
-                              disabled={portfolio.isMutating}
-                            />
-                          </div>
-                        </TableCell>
-                        <TableCell>
-                          {position.quote != null
-                            ? renderCurrencyValue(position.quote.lastPrice, position.stock.currency)
-                            : "—"}
-                        </TableCell>
-                        <TableCell>{renderCurrencyValue(position.marketValue, position.stock.currency)}</TableCell>
-                        <TableCell>
-                          {position.quote != null ? (
-                            <span
-                              className={priceToneClassForMarket(position.stock.market, position.quote.change)}
-                              data-testid={`portfolio-quote-change-${position.stockId}`}
-                            >
-                              {formatSignedNumber(position.quote.change, position.stock.currency)}
-                            </span>
-                          ) : (
-                            "—"
-                          )}
-                        </TableCell>
-                        <TableCell>
-                          {position.quote != null ? (
-                            <span
-                              className={priceToneClassForMarket(
-                                position.stock.market,
-                                position.quote.changePercent,
-                              )}
-                              data-testid={`portfolio-quote-change-percent-${position.stockId}`}
-                            >
-                              {formatPercent(position.quote.changePercent)}
-                            </span>
-                          ) : (
-                            "—"
-                          )}
-                        </TableCell>
-                        <TableCell>
-                          {position.quote?.volume != null ? formatNumber(position.quote.volume) : "—"}
-                        </TableCell>
-                        <TableCell>
-                          {position.quote?.timestamp
-                            ? formatLastUpdated(position.quote.timestamp)
-                            : "—"}
-                        </TableCell>
-                        <TableCell>
-                          <div className="app-portfolio-actions">
-                            <Link
-                              className="cds--link"
-                              href={`/stock/${encodeURIComponent(position.stock.id)}`}
-                            >
-                              {t("stock.viewDetails")}
-                            </Link>
-                            <Button
-                              data-testid={`portfolio-remove-${position.stockId}`}
-                              kind="ghost"
-                              size="sm"
-                              onClick={() => portfolio.remove(position.id)}
-                            >
-                              {t("portfolio.removeHolding")}
-                            </Button>
-                          </div>
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </TableContainer>
+              <div className="app-stock-analysis-body">
+                {taiwanPositions.length > 0
+                  ? renderHoldingsTable(
+                      taiwanPositions,
+                      t("portfolio.marketSection.tw"),
+                      "portfolio-market-section-tw",
+                    )
+                  : null}
+                {usPositions.length > 0
+                  ? renderHoldingsTable(
+                      usPositions,
+                      t("portfolio.marketSection.us"),
+                      "portfolio-market-section-us",
+                    )
+                  : null}
+                {otherPositions.length > 0
+                  ? renderHoldingsTable(
+                      otherPositions,
+                      t("portfolio.marketSection.other"),
+                      "portfolio-market-section-other",
+                    )
+                  : null}
+              </div>
             </>
           )}
         </Tile>
