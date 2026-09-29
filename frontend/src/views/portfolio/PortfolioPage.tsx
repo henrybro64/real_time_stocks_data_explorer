@@ -291,15 +291,15 @@ export function PortfolioPage() {
     title: string,
     testId: string,
   ) => (
-    <section data-testid={testId}>
+    <section aria-labelledby={`${testId}-heading`} data-testid={testId}>
       <div className="app-section-header">
         <div>
-          <h2>{title}</h2>
+          <h2 id={`${testId}-heading`}>{title}</h2>
           <p className="app-section-meta">{t("portfolio.marketSection.count", { count: positions.length })}</p>
         </div>
       </div>
-      <TableContainer title={title} className="app-portfolio-table-wrap">
-        <Table size="lg" useZebraStyles>
+      <TableContainer className="app-portfolio-table-wrap">
+        <Table aria-labelledby={`${testId}-heading`} size="lg" useZebraStyles>
           <TableHead>
             <TableRow>
               <TableHeader>{t("portfolio.column.symbol")}</TableHeader>
