@@ -3,6 +3,10 @@
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import type { Stock } from "@shared/stock";
 import {
+  portfolioMarketSectionMessages,
+  type PortfolioMarketSectionTranslationKey,
+} from "../views/portfolio/portfolioMarketSectionI18n";
+import {
   realizedGainsMessages,
   type RealizedGainsTranslationKey,
 } from "../views/realized-gains/realizedGainsI18n";
@@ -306,6 +310,7 @@ export type TranslationKey =
   | "portfolio.loadError"
   | "portfolio.empty"
   | "portfolio.table.currencyHint"
+  | PortfolioMarketSectionTranslationKey
   | "portfolio.column.symbol"
   | "portfolio.column.name"
   | "portfolio.column.market"
@@ -904,6 +909,7 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "portfolio.empty": "No positions yet. Search below to add symbols you hold.",
     "portfolio.table.currencyHint":
       "Last price and position value are shown in each holding's stock currency, such as USD or TWD.",
+    ...portfolioMarketSectionMessages.en,
     "portfolio.search.eyebrow": "Holdings",
     "portfolio.search.title": "Add symbols to your portfolio",
     "portfolio.search.description": "Search U.S. and Taiwan stocks. Add only names you consider real holdings.",
@@ -1449,6 +1455,7 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "portfolio.loadError": "無法載入持倉。請確認後端已啟動後再試。",
     "portfolio.empty": "尚無持倉。請在下方搜尋並加入您持有的標的。",
     "portfolio.table.currencyHint": "最新價與持倉市值皆依各檔股票原幣顯示，例如 USD 或 TWD。",
+    ...portfolioMarketSectionMessages["zh-TW"],
     "portfolio.search.eyebrow": "持倉",
     "portfolio.search.title": "將標的加入投資組合",
     "portfolio.search.description": "搜尋美股與台股，僅加入您視為實際持倉的標的。",
