@@ -1503,8 +1503,32 @@ input {
   gap: 1rem;
 }
 
+.app-portfolio-holdings-column {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.app-portfolio-holdings-tile {
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: clip;
+}
+
+.app-portfolio-market-sections,
+.app-portfolio-market-sections > section,
+.app-portfolio-market-sections .app-section-header {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.app-portfolio-market-sections > section + section {
+  margin-top: 1rem;
+}
+
 .app-portfolio-table-wrap {
   width: 100%;
+  max-width: 100%;
+  min-width: 0;
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
   overscroll-behavior-x: contain;

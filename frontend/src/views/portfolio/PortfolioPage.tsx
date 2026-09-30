@@ -859,8 +859,8 @@ export function PortfolioPage() {
         />
       </Column>
 
-      <Column className="app-column-spacing" sm={4} md={8} lg={16}>
-        <Tile className="app-section-tile">
+      <Column className="app-column-spacing app-portfolio-holdings-column" sm={4} md={8} lg={16}>
+        <Tile className="app-section-tile app-portfolio-holdings-tile">
           {portfolioTableNoticeKind ? (
             <div className="app-state-notice-wrap">
               <RequestStateNotice kind={portfolioTableNoticeKind} scopeLabel={t("portfolio.title")} />
@@ -877,7 +877,7 @@ export function PortfolioPage() {
               <p className="app-section-meta" data-testid="portfolio-table-currency-hint">
                 {t("portfolio.table.currencyHint")}
               </p>
-              <div className="app-stock-analysis-body">
+              <div className="app-portfolio-market-sections" data-testid="portfolio-market-sections">
                 {taiwanPositions.length > 0
                   ? renderHoldingsTable(
                       taiwanPositions,
