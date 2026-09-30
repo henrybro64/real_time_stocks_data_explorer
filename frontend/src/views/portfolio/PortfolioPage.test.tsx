@@ -324,6 +324,11 @@ describe("PortfolioPage", () => {
     );
     const twSection = screen.getByTestId("portfolio-market-section-tw");
     const usSection = screen.getByTestId("portfolio-market-section-us");
+    const marketSections = screen.getByTestId("portfolio-market-sections");
+    expect(marketSections).toHaveClass("app-portfolio-market-sections");
+    expect(marketSections).not.toHaveClass("app-stock-analysis-body");
+    expect(marketSections).toContainElement(twSection);
+    expect(marketSections).toContainElement(usSection);
     expect(within(twSection).getByRole("heading", { name: "台灣股票" })).toBeInTheDocument();
     expect(within(usSection).getByRole("heading", { name: "美國股票" })).toBeInTheDocument();
     expect(within(twSection).getByText("1 筆持股")).toBeInTheDocument();
