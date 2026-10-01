@@ -150,6 +150,33 @@ def test_incomplete_same_day_daily_bar_is_excluded_from_sma_inputs() -> None:
     assert averages.sma10[-1].value is None
 
 
+def test_tw_forming_candle_is_incomplete_during_session_and_complete_after_close() -> None:
+    tz = ZoneInfo("Asia/Taipei")
+    prior = CandleRecord(
+        time="2026-07-10T13:30:00+08:00",
+        open=100,
+        high=101,
+        low=99,
+        close=100.5,
+        volume=1_000,
+    )
+    forming = CandleRecord(
+        time="2026-07-13T13:30:00+08:00",
+        open=946,
+        high=955,
+        low=940,
+        close=950,
+        volume=1_000_000,
+    )
+    during_session = datetime(2026, 7, 13, 11, 0, tzinfo=tz)
+    after_close = datetime(2026, 7, 13, 14, 0, tzinfo=tz)
+
+    assert not is_daily_candle_complete(forming, "TW", now=during_session)
+    assert is_daily_candle_complete(forming, "TW", now=after_close)
+    assert completed_daily_candles([prior, forming], "TW", now=during_session) == [prior]
+    assert completed_daily_candles([prior, forming], "TW", now=after_close) == [prior, forming]
+
+
 def test_us_early_close_session_marks_daily_bar_complete_at_1300() -> None:
     # 2026-11-27 is the day after Thanksgiving (Black Friday early close).
     tz = ZoneInfo("America/New_York")

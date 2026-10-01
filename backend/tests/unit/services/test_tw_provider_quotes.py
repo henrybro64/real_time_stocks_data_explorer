@@ -223,6 +223,106 @@ def test_tpex_get_quote_falls_back_to_yahoo_when_mis_empty(monkeypatch) -> None:
     assert mis_calls[0]["ex_ch"] == "otc_6562.tw"
 
 
+def test_yahoo_quote_reads_session_open_from_the_daily_bar(monkeypatch) -> None:
+    tw_provider.reset_mis_circuit_for_tests()
+    stock = _tpex_stock()
+    tz = ZoneInfo("Asia/Taipei")
+    previous_time = int(datetime(2026, 7, 10, 13, 30, tzinfo=tz).timestamp())
+    session_time = int(datetime(2026, 7, 13, 10, 0, tzinfo=tz).timestamp())
+
+    def fake_fetch_json(url: str, **_kwargs) -> dict[str, object]:
+        return {
+            "chart": {
+                "result": [
+                    {
+                        "meta": {
+                            "regularMarketPrice": 121.0,
+                            "chartPreviousClose": 119.0,
+                            "regularMarketTime": session_time,
+                            "regularMarketDayHigh": 122.0,
+                            "regularMarketDayLow": 118.5,
+                            "regularMarketVolume": 88000,
+                        },
+                        "timestamp": [previous_time, session_time],
+                        "indicators": {
+                            "quote": [
+                                {
+                                    "open": [118.0, 119.5],
+                                    "high": [119.0, 122.0],
+                                    "low": [117.5, 118.5],
+                                    "close": [119.0, 121.0],
+                                    "volume": [1000, 88000],
+                                }
+                            ]
+                        },
+                    }
+                ]
+            }
+        }
+
+    monkeypatch.setattr(tw_provider, "_load_json", lambda *_a, **_k: {"msgArray": []})
+    monkeypatch.setattr(tw_provider, "fetch_json", fake_fetch_json)
+    monkeypatch.setattr(tw_provider.TWProvider, "_stock_catalog", lambda self: {stock.id: stock})
+    tw_provider.TWProvider._quote_cache.clear()
+    tw_provider.TWProvider._quote_cached_at.clear()
+
+    quote = tw_provider.TWProvider().get_quote(stock.id)
+    assert quote is not None
+    assert quote.open == pytest.approx(119.5)
+    assert quote.high == pytest.approx(122.0)
+    assert quote.low == pytest.approx(118.5)
+    assert quote.volume == 88000
+
+
+def test_yahoo_quote_does_not_reuse_the_previous_session_bar(monkeypatch) -> None:
+    tw_provider.reset_mis_circuit_for_tests()
+    stock = _tpex_stock()
+    tz = ZoneInfo("Asia/Taipei")
+    previous_time = int(datetime(2026, 7, 10, 13, 30, tzinfo=tz).timestamp())
+    session_time = int(datetime(2026, 7, 13, 10, 0, tzinfo=tz).timestamp())
+
+    def fake_fetch_json(url: str, **_kwargs) -> dict[str, object]:
+        return {
+            "chart": {
+                "result": [
+                    {
+                        "meta": {
+                            "regularMarketPrice": 121.0,
+                            "chartPreviousClose": 119.0,
+                            "regularMarketTime": session_time,
+                        },
+                        "timestamp": [previous_time, session_time],
+                        "indicators": {
+                            "quote": [
+                                {
+                                    "open": [118.0, None],
+                                    "high": [119.0, None],
+                                    "low": [117.5, None],
+                                    "close": [119.0, None],
+                                    "volume": [1000, None],
+                                }
+                            ]
+                        },
+                    }
+                ]
+            }
+        }
+
+    monkeypatch.setattr(tw_provider, "_load_json", lambda *_a, **_k: {"msgArray": []})
+    monkeypatch.setattr(tw_provider, "fetch_json", fake_fetch_json)
+    monkeypatch.setattr(tw_provider.TWProvider, "_stock_catalog", lambda self: {stock.id: stock})
+    tw_provider.TWProvider._quote_cache.clear()
+    tw_provider.TWProvider._quote_cached_at.clear()
+
+    quote = tw_provider.TWProvider().get_quote(stock.id)
+    assert quote is not None
+    assert quote.last_price == pytest.approx(121.0)
+    assert quote.open is None
+    assert quote.high is None
+    assert quote.low is None
+    assert quote.volume is None
+
+
 def test_tpex_get_quote_returns_none_when_mis_and_yahoo_fail(monkeypatch) -> None:
     tw_provider.reset_mis_circuit_for_tests()
     stock = _tpex_stock()

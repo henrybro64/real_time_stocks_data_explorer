@@ -33,6 +33,7 @@ import {
 } from "../../services/api/client";
 
 const RANGES: TimeRange[] = ["1D", "1W", "1M", "3M", "6M", "1Y"];
+const HISTORY_REFETCH_INTERVAL_OPEN_MS = 60_000;
 
 type Props = {
   stockId?: string;
@@ -53,10 +54,13 @@ export function StockDetailPage({ stockId = "" }: Props) {
     refetchInterval: 5_000,
   });
 
+  const marketOpen = quoteQuery.data?.quote?.isMarketOpen === true;
   const historyQuery = useQuery<HistoryResponse>({
     queryKey: ["history", decodedStockId, range],
     queryFn: () => fetchHistory(decodedStockId, range),
     enabled: decodedStockId.length > 0,
+    refetchInterval: marketOpen ? HISTORY_REFETCH_INTERVAL_OPEN_MS : false,
+    refetchIntervalInBackground: false,
   });
 
   const newsQuery = useQuery<NewsItem[]>({

@@ -449,6 +449,7 @@ def test_get_stock_accepts_class_share_symbols_with_hyphen(monkeypatch) -> None:
 @pytest.mark.parametrize(
     ("range_name", "min_candles", "expected"),
     [
+        ("1D", None, ("5m", "1d")),
         ("1M", None, ("1d", "1mo")),
         ("3M", None, ("1d", "3mo")),
         ("3M", 65, ("1d", "3mo")),

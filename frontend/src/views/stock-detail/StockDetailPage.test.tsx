@@ -378,6 +378,35 @@ describe("StockDetailPage", () => {
     expect(screen.getByText("TWSE")).toBeInTheDocument();
   });
 
+  it("refetches history while the quoted market is open for Taiwan and U.S. stocks", () => {
+    mockQueries({ quote: sampleTaiwanQuote, history: sampleHistory });
+    renderStockDetailPage("TW%3A2330");
+    const taiwanHistory = useQueryMock.mock.calls.find((call) => call[0]?.queryKey?.[0] === "history");
+    expect(taiwanHistory?.[0].refetchInterval).toBe(60_000);
+    expect(taiwanHistory?.[0].refetchIntervalInBackground).toBe(false);
+
+    useQueryMock.mockClear();
+    mockQueries({ quote: sampleQuote, history: { ...sampleHistory, stock: sampleQuote.stock } });
+    renderStockDetailPage("US%3ANVDA");
+    const usHistory = useQueryMock.mock.calls.find((call) => call[0]?.queryKey?.[0] === "history");
+    expect(usHistory?.[0].refetchInterval).toBe(60_000);
+    expect(usHistory?.[0].refetchIntervalInBackground).toBe(false);
+  });
+
+  it("does not poll history when the quoted market is closed", () => {
+    mockQueries({
+      quote: {
+        ...sampleQuote,
+        quote: { ...sampleQuote.quote, isMarketOpen: false },
+      },
+      history: { ...sampleHistory, stock: sampleQuote.stock },
+    });
+    renderStockDetailPage("US%3ANVDA");
+    const history = useQueryMock.mock.calls.find((call) => call[0]?.queryKey?.[0] === "history");
+    expect(history?.[0].refetchInterval).toBe(false);
+    expect(history?.[0].refetchIntervalInBackground).toBe(false);
+  });
+
   it("renders the price chart when OHLC history is available", () => {
     mockQueries({ quote: sampleTaiwanQuote, history: sampleHistory });
     renderStockDetailPage("TW%3A2330");

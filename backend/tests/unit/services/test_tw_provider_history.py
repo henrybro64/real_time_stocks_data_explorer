@@ -9,8 +9,11 @@ import pytest
 
 from app.models.quote import CandleRecord, QuoteRecord
 from app.services.http_client import HttpFetchError
+from app.services import market_clock
 from app.services.providers import tw_provider
 from tests.support import stock_record
+
+_REAL_FETCH_YAHOO_LISTING_QUOTE = tw_provider.TWProvider._fetch_yahoo_listing_quote
 
 
 TWSE_STOCK = stock_record(
@@ -106,13 +109,139 @@ def provider(monkeypatch: pytest.MonkeyPatch) -> tw_provider.TWProvider:
             TPEX_STOCK.id: TPEX_STOCK,
         }.get(stock_id),
     )
+    monkeypatch.setattr(tw_provider.TWProvider, "_fetch_quote", lambda self, stock: None)
+    monkeypatch.setattr(tw_provider.TWProvider, "_fetch_yahoo_tw_quote", lambda self, stock: None)
+    monkeypatch.setattr(tw_provider.TWProvider, "_fetch_yahoo_listing_quote", lambda self, stock: None)
+    monkeypatch.setattr(tw_provider, "is_trading_day", lambda market, now=None: True)
     return tw_provider.TWProvider()
 
 
-def test_get_history_1d_uses_quote_candles_for_twse_and_tpex(
+def _yahoo_intraday_payload() -> dict:
+    tz = ZoneInfo("Asia/Taipei")
+    stamps = [
+        datetime(2026, 7, 13, 9, 0, tzinfo=tz),
+        datetime(2026, 7, 13, 9, 5, tzinfo=tz),
+        datetime(2026, 7, 13, 9, 10, tzinfo=tz),
+    ]
+    return {
+        "chart": {
+            "result": [
+                {
+                    "meta": {"exchangeTimezoneName": "Asia/Taipei"},
+                    "timestamp": [int(item.timestamp()) for item in stamps],
+                    "indicators": {
+                        "quote": [
+                            {
+                                "open": [100.0, None, 102.0],
+                                "high": [101.0, 103.0, 104.0],
+                                "low": [99.5, 100.0, 101.5],
+                                "close": [100.5, None, 103.5],
+                                "volume": [1000, 50, 2500],
+                            }
+                        ]
+                    },
+                }
+            ],
+            "error": None,
+        }
+    }
+
+
+def test_get_history_1d_uses_yahoo_intraday_ohlc_for_twse_and_tpex(
     provider: tw_provider.TWProvider,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    urls: list[str] = []
+
+    def fake_fetch(url: str, **_kwargs):
+        urls.append(url)
+        if "6488.TWO" in url or "2330.TW" in url:
+            return _yahoo_intraday_payload()
+        raise AssertionError(f"unexpected intraday url {url}")
+
+    monkeypatch.setattr(tw_provider, "fetch_json", fake_fetch)
+    monkeypatch.setattr(
+        tw_provider.TWProvider,
+        "_fetch_daily_history",
+        lambda *args, **kwargs: _raise_assertion("daily fetch should not run for 1D"),
+    )
+
+    for stock_id, symbol in ((TWSE_STOCK.id, "2330.TW"), (TPEX_STOCK.id, "6488.TWO")):
+        candles = provider.get_history(stock_id, "1D")
+        assert [candle.time for candle in candles] == [
+            "2026-07-13T09:00:00+08:00",
+            "2026-07-13T09:10:00+08:00",
+        ]
+        assert [(candle.open, candle.high, candle.low, candle.close, candle.volume) for candle in candles] == [
+            (100.0, 101.0, 99.5, 100.5, 1000),
+            (102.0, 104.0, 101.5, 103.5, 2500),
+        ]
+        assert any(symbol in url and "interval=5m" in url and "range=1d" in url for url in urls)
+
+    assert not hasattr(tw_provider, "_approximate_intraday_candles")
+
+
+def test_get_history_1d_raises_when_the_listing_chart_fails(
+    provider: tw_provider.TWProvider,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    urls: list[str] = []
+
+    def fail_fetch(url: str, **_kwargs):
+        urls.append(url)
+        raise HttpFetchError("yahoo chart unavailable")
+
+    monkeypatch.setattr(tw_provider, "fetch_json", fail_fetch)
+    for stock_id, symbol in ((TWSE_STOCK.id, "2330.TW"), (TPEX_STOCK.id, "6488.TWO")):
+        with pytest.raises(RuntimeError, match="intraday history temporarily unavailable"):
+            provider.get_history(stock_id, "1D")
+        assert urls[-1].endswith(f"/{symbol}?interval=5m&range=1d")
+
+    assert [url.rsplit("/", 1)[-1].split("?", 1)[0] for url in urls] == ["2330.TW", "6488.TWO"]
+
+
+def test_get_history_1d_raises_when_the_chart_payload_is_unusable(
+    provider: tw_provider.TWProvider,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        tw_provider,
+        "fetch_json",
+        lambda *_args, **_kwargs: {"chart": {"result": None, "error": {"code": "Not Found"}}},
+    )
+    with pytest.raises(RuntimeError, match="intraday history temporarily unavailable"):
+        provider.get_history(TWSE_STOCK.id, "1D")
+
+
+def test_get_history_1d_returns_empty_when_the_listing_has_no_session_bars(
+    provider: tw_provider.TWProvider,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        tw_provider,
+        "fetch_json",
+        lambda *_args, **_kwargs: {
+            "chart": {
+                "error": None,
+                "result": [
+                    {
+                        "meta": {"exchangeTimezoneName": "Asia/Taipei"},
+                        "timestamp": [],
+                        "indicators": {"quote": [{}]},
+                    }
+                ],
+            }
+        },
+    )
+    assert provider.get_history(TWSE_STOCK.id, "1D") == []
+
+
+def test_daily_history_merges_forming_candle_during_session(
+    provider: tw_provider.TWProvider,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _freeze_provider_clock(monkeypatch)
+    monkeypatch.setattr(tw_provider, "is_trading_day", lambda market, now=None: True)
     monkeypatch.setattr(
         tw_provider.TWProvider,
         "_fetch_quote",
@@ -120,14 +249,317 @@ def test_get_history_1d_uses_quote_candles_for_twse_and_tpex(
     )
     monkeypatch.setattr(
         tw_provider.TWProvider,
-        "_fetch_daily_history",
-        lambda *args, **kwargs: _raise_assertion("daily fetch should not run for 1D"),
+        "_fetch_twse_month_rows",
+        lambda self, stock, month_date: [_twse_row("115/07/10")],
+    )
+    monkeypatch.setattr(
+        tw_provider.TWProvider,
+        "_fetch_tpex_month_rows",
+        lambda self, stock, month_date: [_tpex_row("115/07/10")],
     )
 
     for stock_id in (TWSE_STOCK.id, TPEX_STOCK.id):
-        candles = provider.get_history(stock_id, "1D")
-        assert candles
-        assert all(isinstance(item, CandleRecord) for item in candles)
+        candles = provider.get_history(stock_id, "1M")
+        today = [candle for candle in candles if candle.time.startswith("2026-07-13")]
+        assert len(today) == 1
+        assert today[0].open == 946.0
+        assert today[0].high == 955.0
+        assert today[0].low == 940.0
+        assert today[0].close == 950.0
+        assert today[0].volume == 1_000_000
+        assert candles[-1].time == today[0].time
+
+
+def test_daily_history_updates_existing_today_candle_instead_of_duplicating(
+    provider: tw_provider.TWProvider,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _freeze_provider_clock(monkeypatch)
+    monkeypatch.setattr(tw_provider, "is_trading_day", lambda market, now=None: True)
+    monkeypatch.setattr(
+        tw_provider.TWProvider,
+        "_fetch_quote",
+        lambda self, stock: _quote(stock.id),
+    )
+    monkeypatch.setattr(
+        tw_provider.TWProvider,
+        "_fetch_twse_month_rows",
+        lambda self, stock, month_date: [_twse_row("115/07/13")],
+    )
+
+    candles = provider.get_history(TWSE_STOCK.id, "1M")
+    today = [candle for candle in candles if candle.time.startswith("2026-07-13")]
+    assert len(today) == 1
+    assert today[0].close == 950.0
+    assert today[0].open == 946.0
+
+
+def test_daily_history_keeps_official_candle_after_close(
+    provider: tw_provider.TWProvider,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _AfterClose(datetime):
+        @classmethod
+        def now(cls, tz=None):  # type: ignore[override]
+            return datetime(2026, 7, 13, 14, 0, tzinfo=tz or ZoneInfo("Asia/Taipei"))
+
+    monkeypatch.setattr(tw_provider, "datetime", _AfterClose)
+    monkeypatch.setattr(tw_provider, "is_trading_day", lambda market, now=None: True)
+    monkeypatch.setattr(
+        tw_provider.TWProvider,
+        "_fetch_quote",
+        lambda self, stock: _quote(stock.id),
+    )
+    monkeypatch.setattr(
+        tw_provider.TWProvider,
+        "_fetch_twse_month_rows",
+        lambda self, stock, month_date: [_twse_row("115/07/13")],
+    )
+
+    candles = provider.get_history(TWSE_STOCK.id, "1M")
+    today = [candle for candle in candles if "2026-07-13" in candle.time]
+    assert len(today) == 1
+    assert today[0].close == 105.0
+
+
+def test_daily_history_appends_session_candle_after_close_when_official_row_is_missing(
+    provider: tw_provider.TWProvider,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _AfterClose(datetime):
+        @classmethod
+        def now(cls, tz=None):  # type: ignore[override]
+            return datetime(2026, 7, 13, 14, 0, tzinfo=tz or ZoneInfo("Asia/Taipei"))
+
+    monkeypatch.setattr(tw_provider, "datetime", _AfterClose)
+    monkeypatch.setattr(tw_provider, "is_trading_day", lambda market, now=None: True)
+    monkeypatch.setattr(
+        tw_provider.TWProvider,
+        "_fetch_quote",
+        lambda self, stock: _quote(stock.id),
+    )
+    monkeypatch.setattr(
+        tw_provider.TWProvider,
+        "_fetch_twse_month_rows",
+        lambda self, stock, month_date: [_twse_row("115/07/10")],
+    )
+
+    candles = provider.get_history(TWSE_STOCK.id, "1M")
+    today = [candle for candle in candles if candle.time.startswith("2026-07-13")]
+    assert len(today) == 1
+    assert today[0].close == 950.0
+
+
+def test_daily_history_uses_yahoo_session_quote_when_mis_has_no_open(
+    provider: tw_provider.TWProvider,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _freeze_provider_clock(monkeypatch)
+    monkeypatch.setattr(tw_provider.TWProvider, "_fetch_quote", lambda self, stock: None)
+    monkeypatch.setattr(
+        tw_provider.TWProvider,
+        "_fetch_yahoo_listing_quote",
+        lambda self, stock: _quote(stock.id),
+    )
+    monkeypatch.setattr(
+        tw_provider.TWProvider,
+        "_fetch_twse_month_rows",
+        lambda self, stock, month_date: [_twse_row("115/07/10")],
+    )
+
+    candles = provider.get_history(TWSE_STOCK.id, "1M")
+    today = [candle for candle in candles if candle.time.startswith("2026-07-13")]
+    assert len(today) == 1
+    assert today[0].open == 946.0
+    assert today[0].close == 950.0
+
+
+def test_daily_history_does_not_build_today_from_the_previous_yahoo_bar(
+    provider: tw_provider.TWProvider,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _freeze_provider_clock(monkeypatch)
+    tz = ZoneInfo("Asia/Taipei")
+    previous_time = int(datetime(2026, 7, 10, 13, 30, tzinfo=tz).timestamp())
+    session_time = int(datetime(2026, 7, 13, 10, 0, tzinfo=tz).timestamp())
+    monkeypatch.setattr(tw_provider.TWProvider, "_fetch_quote", lambda self, stock: None)
+    monkeypatch.setattr(
+        tw_provider.TWProvider,
+        "_fetch_yahoo_listing_quote",
+        _REAL_FETCH_YAHOO_LISTING_QUOTE,
+    )
+    monkeypatch.setattr(
+        tw_provider,
+        "fetch_json",
+        lambda *_args, **_kwargs: {
+            "chart": {
+                "result": [
+                    {
+                        "meta": {
+                            "regularMarketPrice": 950.0,
+                            "chartPreviousClose": 945.0,
+                            "regularMarketTime": session_time,
+                        },
+                        "timestamp": [previous_time, session_time],
+                        "indicators": {
+                            "quote": [
+                                {
+                                    "open": [100.0, None],
+                                    "high": [110.0, None],
+                                    "low": [90.0, None],
+                                    "close": [105.0, None],
+                                    "volume": [1000, None],
+                                }
+                            ]
+                        },
+                    }
+                ]
+            }
+        },
+    )
+    monkeypatch.setattr(
+        tw_provider.TWProvider,
+        "_fetch_twse_month_rows",
+        lambda self, stock, month_date: [_twse_row("115/07/10")],
+    )
+
+    candles = provider.get_history(TWSE_STOCK.id, "1M")
+    assert candles
+    assert all(not candle.time.startswith("2026-07-13") for candle in candles)
+
+
+def test_daily_history_does_not_take_the_other_board_when_the_listing_quote_fails(
+    provider: tw_provider.TWProvider,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _freeze_provider_clock(monkeypatch)
+    urls: list[str] = []
+
+    def fake_fetch(url: str, **_kwargs):
+        urls.append(url)
+        if "/2330.TW?" in url:
+            raise HttpFetchError("listing chart unavailable")
+        return {
+            "chart": {
+                "result": [
+                    {
+                        "meta": {
+                            "regularMarketPrice": 50.0,
+                            "regularMarketOpen": 49.0,
+                            "regularMarketDayHigh": 51.0,
+                            "regularMarketDayLow": 48.0,
+                            "regularMarketVolume": 9000,
+                            "chartPreviousClose": 48.0,
+                            "regularMarketTime": int(
+                                datetime(2026, 7, 13, 10, 0, tzinfo=ZoneInfo("Asia/Taipei")).timestamp()
+                            ),
+                        }
+                    }
+                ]
+            }
+        }
+
+    monkeypatch.setattr(tw_provider.TWProvider, "_fetch_quote", lambda self, stock: None)
+    monkeypatch.setattr(
+        tw_provider.TWProvider,
+        "_fetch_yahoo_listing_quote",
+        _REAL_FETCH_YAHOO_LISTING_QUOTE,
+    )
+    monkeypatch.setattr(tw_provider, "fetch_json", fake_fetch)
+    monkeypatch.setattr(
+        tw_provider.TWProvider,
+        "_fetch_twse_month_rows",
+        lambda self, stock, month_date: [_twse_row("115/07/10")],
+    )
+
+    candles = provider.get_history(TWSE_STOCK.id, "1M")
+    assert all(not candle.time.startswith("2026-07-13") for candle in candles)
+    assert [url.rsplit("/", 1)[-1].split("?", 1)[0] for url in urls] == ["2330.TW"]
+
+
+def test_daily_history_ignores_a_quote_from_another_session(
+    provider: tw_provider.TWProvider,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _freeze_provider_clock(monkeypatch)
+    stale = _quote(TWSE_STOCK.id)
+    stale = QuoteRecord(
+        id=stale.id,
+        last_price=stale.last_price,
+        change=stale.change,
+        change_percent=stale.change_percent,
+        previous_close=stale.previous_close,
+        open=stale.open,
+        high=stale.high,
+        low=stale.low,
+        volume=stale.volume,
+        timestamp="2026-07-10T13:20:00+08:00",
+        is_market_open=False,
+    )
+    monkeypatch.setattr(tw_provider.TWProvider, "_fetch_quote", lambda self, stock: stale)
+    monkeypatch.setattr(
+        tw_provider.TWProvider,
+        "_fetch_twse_month_rows",
+        lambda self, stock, month_date: [_twse_row("115/07/10")],
+    )
+
+    candles = provider.get_history(TWSE_STOCK.id, "1M")
+    assert all(not candle.time.startswith("2026-07-13") for candle in candles)
+
+
+def test_daily_history_does_not_invent_a_candle_before_open_or_on_weekends(
+    provider: tw_provider.TWProvider,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    quote_calls = {"count": 0}
+
+    def counting_quote(self, stock):
+        quote_calls["count"] += 1
+        return _quote(stock.id)
+
+    monkeypatch.setattr(tw_provider.TWProvider, "_fetch_quote", counting_quote)
+    monkeypatch.setattr(
+        tw_provider.TWProvider,
+        "_fetch_twse_month_rows",
+        lambda self, stock, month_date: [_twse_row("115/07/10")],
+    )
+
+    class _BeforeOpen(datetime):
+        @classmethod
+        def now(cls, tz=None):  # type: ignore[override]
+            return datetime(2026, 7, 13, 8, 30, tzinfo=tz or ZoneInfo("Asia/Taipei"))
+
+    monkeypatch.setattr(tw_provider, "datetime", _BeforeOpen)
+    monkeypatch.setattr(tw_provider, "is_trading_day", lambda market, now=None: True)
+    before_open = provider.get_history(TWSE_STOCK.id, "1M")
+    assert all("2026-07-13" not in candle.time for candle in before_open)
+    assert quote_calls["count"] == 0
+
+    class _Weekend(datetime):
+        @classmethod
+        def now(cls, tz=None):  # type: ignore[override]
+            return datetime(2026, 7, 18, 12, 0, tzinfo=tz or ZoneInfo("Asia/Taipei"))
+
+    monkeypatch.setattr(tw_provider, "datetime", _Weekend)
+    monkeypatch.setattr(tw_provider, "is_trading_day", market_clock.is_trading_day)
+    weekend = provider.get_history(TWSE_STOCK.id, "1M")
+    assert all("2026-07-13" not in candle.time for candle in weekend)
+    assert quote_calls["count"] == 0
+
+    class _Holiday(datetime):
+        @classmethod
+        def now(cls, tz=None):  # type: ignore[override]
+            return datetime(2026, 7, 15, 12, 0, tzinfo=tz or ZoneInfo("Asia/Taipei"))
+
+    monkeypatch.setattr(tw_provider, "datetime", _Holiday)
+    monkeypatch.setattr(
+        market_clock,
+        "_tw_market_holidays",
+        lambda year: frozenset({date(2026, 7, 15)}),
+    )
+    holiday = provider.get_history(TWSE_STOCK.id, "1M")
+    assert all("2026-07-15" not in candle.time for candle in holiday)
+    assert quote_calls["count"] == 0
 
 
 @pytest.mark.parametrize("range_name", ["1W", "1M", "3M", "6M", "1Y"])

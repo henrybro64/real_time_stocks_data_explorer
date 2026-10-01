@@ -4,6 +4,7 @@ import logging
 import math
 import re
 import threading
+from typing import NoReturn
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from time import monotonic, perf_counter
@@ -16,7 +17,12 @@ from app.core.diagnostics import elapsed_ms
 from app.services.http_client import HttpFetchError, fetch_json, fetch_text
 from app.models.quote import CandleRecord, PriceLimitStatus, QuoteRecord
 from app.models.stock import StockRecord
-from app.services.market_clock import is_market_open
+from app.services.market_clock import (
+    is_market_open,
+    is_trading_day,
+    market_session_close,
+    market_session_window,
+)
 from app.services.tw_price_limits import (
     classify_taiwan_price_limit,
     decimal_to_api_float,
@@ -239,10 +245,76 @@ _TWSE_NO_DATA_STAT_MARKERS = (
 
 
 def _yahoo_tw_symbol_candidates(stock: StockRecord) -> tuple[str, ...]:
-    sym = stock.symbol.strip()
+    listing = _yahoo_listing_symbol(stock)
+    alternate = f"{stock.symbol.strip()}.TW" if listing.endswith(".TWO") else f"{stock.symbol.strip()}.TWO"
+    return (listing, alternate)
+
+
+def _yahoo_listing_symbol(stock: StockRecord) -> str:
+    """Yahoo suffix for this stock's exchange. Never the other board."""
+    symbol = stock.symbol.strip()
     if stock.exchange == "TPEx":
-        return (f"{sym}.TWO", f"{sym}.TW")
-    return (f"{sym}.TW", f"{sym}.TWO")
+        return f"{symbol}.TWO"
+    return f"{symbol}.TW"
+
+
+def _last_daily_bar(
+    block: dict,
+    *,
+    session_date: date,
+    timezone_name: str,
+) -> dict[str, float | int] | None:
+    """OHLC from the Yahoo daily bar on ``session_date`` only."""
+    timestamps = block.get("timestamp")
+    if not isinstance(timestamps, list):
+        return None
+    indicators = block.get("indicators")
+    if not isinstance(indicators, dict):
+        return None
+    quotes = indicators.get("quote")
+    if not isinstance(quotes, list) or not quotes or not isinstance(quotes[0], dict):
+        return None
+    first = quotes[0]
+    opens = first.get("open")
+    highs = first.get("high")
+    lows = first.get("low")
+    closes = first.get("close")
+    volumes = first.get("volume")
+    if not all(isinstance(series, list) for series in (opens, highs, lows, closes)):
+        return None
+    tz = ZoneInfo(timezone_name)
+    for index in range(len(closes) - 1, -1, -1):
+        if (
+            index >= len(timestamps)
+            or index >= len(opens)
+            or index >= len(highs)
+            or index >= len(lows)
+        ):
+            continue
+        raw_ts = timestamps[index]
+        if not isinstance(raw_ts, (int, float)):
+            continue
+        if datetime.fromtimestamp(raw_ts, tz=tz).date() != session_date:
+            continue
+        open_value = opens[index]
+        high_value = highs[index]
+        low_value = lows[index]
+        close_value = closes[index]
+        if not all(
+            isinstance(value, (int, float))
+            for value in (open_value, high_value, low_value, close_value)
+        ):
+            continue
+        volume_raw = volumes[index] if isinstance(volumes, list) and index < len(volumes) else None
+        volume = int(volume_raw) if isinstance(volume_raw, (int, float)) else 0
+        return {
+            "open": float(open_value),
+            "high": float(high_value),
+            "low": float(low_value),
+            "close": float(close_value),
+            "volume": volume,
+        }
+    return None
 
 
 def _previous_close_from_chart_block(block: dict) -> float | None:
@@ -319,24 +391,7 @@ class TWProvider:
             return []
 
         if range_name == "1D":
-            quote = self._fetch_quote(stock)
-            if quote is not None:
-                self.__class__._quote_cache[stock_id] = quote
-                self.__class__._quote_cached_at[stock_id] = datetime.now(
-                    ZoneInfo(stock.timezone)
-                )
-                return _approximate_intraday_candles(stock, quote)
-            quote = self._fetch_yahoo_tw_quote(stock)
-            if quote is not None:
-                self.__class__._quote_cache[stock_id] = quote
-                self.__class__._quote_cached_at[stock_id] = datetime.now(
-                    ZoneInfo(stock.timezone)
-                )
-                return _approximate_intraday_candles(stock, quote)
-            cached_quote = self._cached_quote(stock)
-            if cached_quote is not None:
-                return _approximate_intraday_candles(stock, cached_quote)
-            return []
+            return self._fetch_yahoo_intraday_candles(stock)
 
         daily_limit = limit if limit is not None else _daily_limit(range_name)
         candles = self._fetch_daily_history(
@@ -344,9 +399,9 @@ class TWProvider:
             limit=daily_limit,
             range_name=range_name,
         )
-        if candles:
-            return candles
-        return []
+        if not candles:
+            return []
+        return self._merge_live_session_daily_candle(stock, candles)
 
     def _fetch_quote(self, stock: StockRecord) -> QuoteRecord | None:
         if _mis_circuit_is_open():
@@ -418,14 +473,25 @@ class TWProvider:
             limit_down_price=limit_down_price,
         )
 
+    def _fetch_yahoo_listing_quote(self, stock: StockRecord) -> QuoteRecord | None:
+        """Yahoo quote for this exchange only. Used to build today's candle."""
+        return self._fetch_yahoo_chart_quote(stock, (_yahoo_listing_symbol(stock),))
+
     def _fetch_yahoo_tw_quote(self, stock: StockRecord) -> QuoteRecord | None:
         """Yahoo chart meta when TWSE mis API is flaky or blocked."""
+        return self._fetch_yahoo_chart_quote(stock, _yahoo_tw_symbol_candidates(stock))
+
+    def _fetch_yahoo_chart_quote(
+        self,
+        stock: StockRecord,
+        symbols: tuple[str, ...],
+    ) -> QuoteRecord | None:
         headers = {
             "User-Agent": _BROWSER_USER_AGENT,
             "Accept": "application/json,text/plain,*/*",
         }
         tz = ZoneInfo(stock.timezone)
-        for candidate in _yahoo_tw_symbol_candidates(stock):
+        for candidate in symbols:
             path_symbol = quote(candidate, safe="-.")
             url = f"{_YAHOO_CHART_URL}/{path_symbol}?interval=1d&range=5d"
             try:
@@ -475,8 +541,26 @@ class TWProvider:
 
             volume_raw = meta.get("regularMarketVolume")
             volume = int(volume_raw) if isinstance(volume_raw, (int, float)) else None
+            session_bar = (
+                _last_daily_bar(
+                    block,
+                    session_date=quote_time.date(),
+                    timezone_name=stock.timezone,
+                )
+                if isinstance(block, dict)
+                else None
+            )
             high_raw = meta.get("regularMarketDayHigh")
+            if not isinstance(high_raw, (int, float)) and session_bar is not None:
+                high_raw = session_bar["high"]
             low_raw = meta.get("regularMarketDayLow")
+            if not isinstance(low_raw, (int, float)) and session_bar is not None:
+                low_raw = session_bar["low"]
+            open_raw = meta.get("regularMarketOpen")
+            if not isinstance(open_raw, (int, float)) and session_bar is not None:
+                open_raw = session_bar["open"]
+            if volume is None and session_bar is not None:
+                volume = session_bar["volume"]
 
             return QuoteRecord(
                 id=stock.id,
@@ -484,7 +568,7 @@ class TWProvider:
                 change=change,
                 change_percent=change_percent,
                 previous_close=round(float(previous_close), 2),
-                open=None,
+                open=round(float(open_raw), 2) if isinstance(open_raw, (int, float)) else None,
                 high=round(float(high_raw), 2)
                 if isinstance(high_raw, (int, float))
                 else None,
@@ -503,6 +587,56 @@ class TWProvider:
             )
 
         return None
+
+    def _fetch_yahoo_intraday_candles(self, stock: StockRecord) -> list[CandleRecord]:
+        """Yahoo 5-minute bars for this listing only.
+
+        A failed or unusable chart raises. A chart that answered with no complete
+        OHLC bars returns an empty list instead of another board's prices.
+        """
+        listing = _yahoo_listing_symbol(stock)
+        path_symbol = quote(listing, safe="-.")
+        url = f"{_YAHOO_CHART_URL}/{path_symbol}?interval=5m&range=1d"
+        try:
+            payload = fetch_json(
+                url,
+                headers={
+                    "User-Agent": _BROWSER_USER_AGENT,
+                    "Accept": "application/json,text/plain,*/*",
+                },
+                timeout_seconds=_REQUEST_TIMEOUT_SECONDS,
+                retries=2,
+            )
+        except (HttpFetchError, TimeoutError, ValueError):
+            _raise_intraday_history_unavailable(stock, reason="fetch_failed")
+        if _yahoo_chart_block(payload) is None:
+            _raise_intraday_history_unavailable(stock, reason="chart_unavailable")
+        return _candles_from_yahoo_chart(payload, stock)
+
+    def _merge_live_session_daily_candle(
+        self,
+        stock: StockRecord,
+        candles: list[CandleRecord],
+    ) -> list[CandleRecord]:
+        """Append or refresh today's session bar from a live quote. Never invent one."""
+        now = datetime.now(ZoneInfo(stock.timezone))
+        if not is_trading_day(stock.market, now):
+            return candles
+        session_start, _session_end = market_session_window(stock.market, now.date())
+        if now.time().replace(second=0, microsecond=0) < session_start:
+            return candles
+
+        quote = self._fetch_quote(stock)
+        if quote is None:
+            quote = self._fetch_yahoo_listing_quote(stock)
+        session = _session_daily_candle(stock, quote, now)
+        if session is None:
+            return candles
+        return _upsert_candle_by_local_date(
+            candles,
+            session,
+            replace_existing=is_market_open(stock.market, now),
+        )
 
     def _fetch_daily_history(
         self,
@@ -1053,6 +1187,21 @@ def _log_history_month_empty(
     )
 
 
+def _raise_intraday_history_unavailable(stock: StockRecord, *, reason: str) -> NoReturn:
+    logger.warning(
+        "Taiwan intraday history temporarily unavailable",
+        extra={
+            "event": "tw.history.intraday_unavailable",
+            "stock_id": stock.id,
+            "exchange": stock.exchange,
+            "reason": reason,
+        },
+    )
+    raise RuntimeError(
+        f"Taiwan intraday history temporarily unavailable for {stock.id} ({stock.exchange})"
+    )
+
+
 def _raise_history_unavailable(
     stock: StockRecord,
     *,
@@ -1298,59 +1447,141 @@ def _stock_from_isin_row(
     )
 
 
-def _approximate_intraday_candles(stock: StockRecord, quote: QuoteRecord) -> list[CandleRecord]:
-    tz = ZoneInfo(stock.timezone)
-    quote_time = datetime.fromisoformat(quote.timestamp).astimezone(tz)
-    market_open_time = datetime.combine(quote_time.date(), time(9, 0), tzinfo=tz)
-    market_close_time = datetime.combine(quote_time.date(), time(13, 30), tzinfo=tz)
+def _yahoo_chart_block(payload: object) -> dict | None:
+    """Chart result block when Yahoo answered. ``None`` means the payload is unusable."""
+    if not isinstance(payload, dict):
+        return None
+    chart = payload.get("chart")
+    if not isinstance(chart, dict) or chart.get("error"):
+        return None
+    results = chart.get("result")
+    if not isinstance(results, list) or not results or not isinstance(results[0], dict):
+        return None
+    return results[0]
 
-    session_end = min(max(quote_time, market_open_time), market_close_time)
-    total_minutes = max(int((session_end - market_open_time).total_seconds() // 60), 1)
-    points = 32
 
-    start_price = quote.open or quote.previous_close
-    end_price = quote.last_price
-    high_price = max(filter(None, [quote.high, start_price, end_price]))
-    low_price = min(filter(None, [quote.low, start_price, end_price]))
-    total_volume = quote.volume or 0
+def _candles_from_yahoo_chart(payload: object, stock: StockRecord) -> list[CandleRecord]:
+    block = _yahoo_chart_block(payload)
+    if block is None:
+        return []
+    timestamps = block.get("timestamp")
+    if not isinstance(timestamps, list) or not timestamps:
+        return []
+    indicators = block.get("indicators")
+    if not isinstance(indicators, dict):
+        return []
+    quotes = indicators.get("quote")
+    if not isinstance(quotes, list) or not quotes or not isinstance(quotes[0], dict):
+        return []
+    first = quotes[0]
+    opens = first.get("open")
+    highs = first.get("high")
+    lows = first.get("low")
+    closes = first.get("close")
+    volumes = first.get("volume")
+    if not all(isinstance(series, list) for series in (opens, highs, lows, closes)):
+        return []
+    if not isinstance(volumes, list):
+        volumes = [None] * len(timestamps)
 
+    meta = block.get("meta")
+    tz_name = (
+        meta.get("exchangeTimezoneName")
+        if isinstance(meta, dict) and isinstance(meta.get("exchangeTimezoneName"), str)
+        else stock.timezone
+    )
+    tz = ZoneInfo(tz_name)
     candles: list[CandleRecord] = []
-    accumulated_volume = 0
-    for index in range(points):
-        progress = (index + 1) / points
-        candle_minutes = int(total_minutes * progress)
-        candle_time = market_open_time + timedelta(minutes=candle_minutes)
-
-        baseline = start_price + (end_price - start_price) * progress
-        wave = math.sin(progress * math.pi * 2.6) * max(high_price - low_price, 0.01) * 0.06
-        close_price = round(min(max(baseline + wave, low_price), high_price), 2)
-        open_price = start_price if index == 0 else candles[-1].close
-        candle_high = round(max(open_price, close_price), 2)
-        candle_low = round(min(open_price, close_price), 2)
-
-        next_volume_total = int(total_volume * progress)
-        candle_volume = max(next_volume_total - accumulated_volume, 0)
-        accumulated_volume = next_volume_total
-
+    for index, raw_ts in enumerate(timestamps):
+        if not isinstance(raw_ts, (int, float)):
+            continue
+        if index >= len(opens) or index >= len(highs) or index >= len(lows) or index >= len(closes):
+            continue
+        open_value = opens[index]
+        high_value = highs[index]
+        low_value = lows[index]
+        close_value = closes[index]
+        if not all(isinstance(value, (int, float)) for value in (open_value, high_value, low_value, close_value)):
+            continue
+        volume_raw = volumes[index] if index < len(volumes) else None
+        volume = int(volume_raw) if isinstance(volume_raw, (int, float)) else 0
         candles.append(
             CandleRecord(
-                time=candle_time.isoformat(),
-                open=round(open_price, 2),
-                high=candle_high,
-                low=candle_low,
-                close=close_price,
-                volume=candle_volume,
+                time=datetime.fromtimestamp(raw_ts, tz=tz).isoformat(),
+                open=round(float(open_value), 2),
+                high=round(float(high_value), 2),
+                low=round(float(low_value), 2),
+                close=round(float(close_value), 2),
+                volume=volume,
             )
         )
-
-    if candles:
-        candles[-1] = CandleRecord(
-            time=candles[-1].time,
-            open=candles[-1].open,
-            high=round(max(candles[-1].open, quote.last_price, high_price), 2),
-            low=round(min(candles[-1].open, quote.last_price, low_price), 2),
-            close=round(quote.last_price, 2),
-            volume=max(total_volume - sum(candle.volume for candle in candles[:-1]), 0),
-        )
-
+    candles.sort(key=lambda item: item.time)
     return candles
+
+
+def _session_daily_candle(
+    stock: StockRecord,
+    quote: QuoteRecord | None,
+    now: datetime,
+) -> CandleRecord | None:
+    if quote is None:
+        return None
+    open_price = quote.open
+    high_price = quote.high
+    low_price = quote.low
+    volume = quote.volume
+    if open_price is None or high_price is None or low_price is None or volume is None:
+        return None
+    tz = ZoneInfo(stock.timezone)
+    try:
+        quote_time = datetime.fromisoformat(quote.timestamp)
+    except ValueError:
+        return None
+    if quote_time.tzinfo is None:
+        quote_time = quote_time.replace(tzinfo=tz)
+    if quote_time.astimezone(tz).date() != now.astimezone(tz).date():
+        return None
+    session_day = now.astimezone(tz).date()
+    session_close = datetime.combine(
+        session_day,
+        market_session_close(stock.market, session_day),
+        tzinfo=tz,
+    )
+    return CandleRecord(
+        time=session_close.isoformat(),
+        open=round(float(open_price), 2),
+        high=round(float(high_price), 2),
+        low=round(float(low_price), 2),
+        close=round(float(quote.last_price), 2),
+        volume=int(volume),
+    )
+
+
+def _candle_local_date(candle: CandleRecord, timezone_name: str) -> date:
+    tz = ZoneInfo(timezone_name)
+    candle_time = datetime.fromisoformat(candle.time)
+    if candle_time.tzinfo is None:
+        candle_time = candle_time.replace(tzinfo=tz)
+    return candle_time.astimezone(tz).date()
+
+
+def _upsert_candle_by_local_date(
+    candles: list[CandleRecord],
+    session: CandleRecord,
+    *,
+    replace_existing: bool,
+) -> list[CandleRecord]:
+    session_date = _candle_local_date(session, "Asia/Taipei")
+    kept: list[CandleRecord] = []
+    found = False
+    for candle in candles:
+        if _candle_local_date(candle, "Asia/Taipei") == session_date:
+            found = True
+            if not replace_existing:
+                kept.append(candle)
+            continue
+        kept.append(candle)
+    if replace_existing or not found:
+        kept.append(session)
+    kept.sort(key=lambda item: item.time)
+    return kept
