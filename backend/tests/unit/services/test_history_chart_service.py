@@ -135,6 +135,47 @@ def test_empty_daily_history_returns_null_moving_averages(monkeypatch) -> None:
     assert payload.chart_layout is None
 
 
+def test_tw_forming_daily_candle_is_visible_and_excluded_from_sma(monkeypatch) -> None:
+    tz = ZoneInfo("Asia/Taipei")
+    now = datetime(2026, 7, 13, 11, 0, tzinfo=tz)
+    stock = stock_record(
+        "TW:2330",
+        market="TW",
+        symbol="2330",
+        name="台積電",
+        exchange="TWSE",
+        currency="TWD",
+        timezone="Asia/Taipei",
+    )
+    completed = _series(20, end=datetime(2026, 7, 10, 13, 30, tzinfo=tz))
+    forming = candle_record(
+        time="2026-07-13T13:30:00+08:00",
+        open_price=946,
+        high=955,
+        low=940,
+        close=950,
+        volume=1_000_000,
+    )
+    monkeypatch.setattr(
+        history_chart_service.quote_service,
+        "get_history",
+        lambda stock_id, range_name, *, limit=None: (stock, completed + [forming]),
+    )
+    monkeypatch.setattr(
+        "app.services.moving_average.market_local_time",
+        lambda market, current=None: now,
+    )
+
+    payload = get_history_chart("TW:2330", "1M")
+
+    assert payload is not None
+    assert payload.candles[-1].time == forming.time
+    assert payload.moving_averages is not None
+    assert payload.moving_averages.sma10[-1].time == forming.time
+    assert payload.moving_averages.sma10[-1].value is None
+    assert payload.moving_averages.sma10[-2].value is not None
+
+
 def test_incomplete_today_bar_stays_visible_but_sma_is_null(monkeypatch) -> None:
     stock = _stock()
     prior = _series(89)

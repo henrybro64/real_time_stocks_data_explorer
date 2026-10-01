@@ -16,6 +16,7 @@ from zoneinfo import ZoneInfo
 
 from app.models.quote import QuoteRecord
 from app.models.stock import StockRecord
+from app.services.moving_average import completed_daily_candles
 from app.services.quote_service import quote_service
 
 _BROWSER_USER_AGENT = (
@@ -155,6 +156,7 @@ def _tw_from_candles(stock: StockRecord, base: dict[str, object]) -> dict[str, o
     if data is None:
         return out
     _, candles = data
+    candles = completed_daily_candles(candles, stock.market)
     if not candles:
         return out
 
