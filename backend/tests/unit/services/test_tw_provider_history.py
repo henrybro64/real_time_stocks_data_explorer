@@ -236,6 +236,100 @@ def test_get_history_1d_returns_empty_when_the_listing_has_no_session_bars(
     assert provider.get_history(TWSE_STOCK.id, "1D") == []
 
 
+def test_daily_history_merges_forming_candle_when_official_history_is_empty(
+    provider: tw_provider.TWProvider,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _freeze_provider_clock(monkeypatch)
+    monkeypatch.setattr(
+        tw_provider.TWProvider,
+        "_fetch_daily_history",
+        lambda self, stock, limit, *, range_name: [],
+    )
+    monkeypatch.setattr(
+        tw_provider.TWProvider,
+        "_fetch_quote",
+        lambda self, stock: _quote(stock.id),
+    )
+
+    candles = provider.get_history(TWSE_STOCK.id, "1M")
+    assert len(candles) == 1
+    assert candles[0].time.startswith("2026-07-13")
+    assert candles[0].close == 950.0
+
+
+def test_daily_history_keeps_the_requested_limit_after_merging_today(
+    provider: tw_provider.TWProvider,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _freeze_provider_clock(monkeypatch)
+    official = [
+        CandleRecord(
+            time=f"2026-07-{day:02d}T13:30:00+08:00",
+            open=100,
+            high=110,
+            low=90,
+            close=105,
+            volume=1_000,
+        )
+        for day in range(1, 8)
+    ]
+    monkeypatch.setattr(
+        tw_provider.TWProvider,
+        "_fetch_daily_history",
+        lambda self, stock, limit, *, range_name: official,
+    )
+    monkeypatch.setattr(
+        tw_provider.TWProvider,
+        "_fetch_quote",
+        lambda self, stock: _quote(stock.id),
+    )
+
+    candles = provider.get_history(TWSE_STOCK.id, "1W")
+    assert len(candles) == tw_provider._daily_limit("1W")
+    assert candles[0].time.startswith("2026-07-02")
+    assert candles[-1].time.startswith("2026-07-13")
+    assert candles[-1].close == 950.0
+
+
+def test_daily_history_uses_yahoo_when_mis_omits_session_fields(
+    provider: tw_provider.TWProvider,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _freeze_provider_clock(monkeypatch)
+    partial = _quote(TWSE_STOCK.id)
+    partial = QuoteRecord(
+        id=partial.id,
+        last_price=partial.last_price,
+        change=partial.change,
+        change_percent=partial.change_percent,
+        previous_close=partial.previous_close,
+        open=None,
+        high=None,
+        low=None,
+        volume=None,
+        timestamp=partial.timestamp,
+        is_market_open=True,
+    )
+    monkeypatch.setattr(tw_provider.TWProvider, "_fetch_quote", lambda self, stock: partial)
+    monkeypatch.setattr(
+        tw_provider.TWProvider,
+        "_fetch_yahoo_listing_quote",
+        lambda self, stock: _quote(stock.id),
+    )
+    monkeypatch.setattr(
+        tw_provider.TWProvider,
+        "_fetch_twse_month_rows",
+        lambda self, stock, month_date: [_twse_row("115/07/10")],
+    )
+
+    candles = provider.get_history(TWSE_STOCK.id, "1M")
+    today = [candle for candle in candles if candle.time.startswith("2026-07-13")]
+    assert len(today) == 1
+    assert today[0].open == 946.0
+    assert today[0].volume == 1_000_000
+
+
 def test_daily_history_merges_forming_candle_during_session(
     provider: tw_provider.TWProvider,
     monkeypatch: pytest.MonkeyPatch,

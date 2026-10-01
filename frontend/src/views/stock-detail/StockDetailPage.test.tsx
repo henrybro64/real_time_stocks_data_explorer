@@ -1,6 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type {
   HistoryResponse,
+  MarketStatus,
   QuoteResponse,
   TaiwanInstitutionalInvestorsResponse,
   TaiwanMarginShortResponse,
@@ -262,6 +263,25 @@ function renderStockDetailPage(stockId = "US%3ANVDA") {
   );
 }
 
+const OPEN_MARKETS: MarketStatus[] = [
+  {
+    market: "TW",
+    label: "Taiwan",
+    timezone: "Asia/Taipei",
+    isOpen: true,
+    localTime: "2026-04-21T13:00:00+08:00",
+    withinHourBeforeOpen: false,
+  },
+  {
+    market: "US",
+    label: "United States",
+    timezone: "America/New_York",
+    isOpen: true,
+    localTime: "2026-04-21T10:00:00-04:00",
+    withinHourBeforeOpen: false,
+  },
+];
+
 function mockQueries(options: {
   quote?: QuoteResponse | undefined;
   quoteError?: boolean;
@@ -269,6 +289,7 @@ function mockQueries(options: {
   history?: HistoryResponse | undefined;
   historyError?: boolean | ApiError;
   historyLoading?: boolean;
+  markets?: MarketStatus[] | undefined;
   institutional?: TaiwanInstitutionalInvestorsResponse | undefined;
   institutionalError?: boolean;
   institutionalLoading?: boolean;
@@ -298,6 +319,14 @@ function mockQueries(options: {
         isError: Boolean(historyError),
         isLoading: Boolean(options.historyLoading),
         error: historyError,
+      };
+    }
+    if (key === "markets") {
+      return {
+        data: "markets" in options ? options.markets : undefined,
+        isError: false,
+        isLoading: false,
+        error: null,
       };
     }
     if (key === "institutional-investors") {
@@ -378,28 +407,39 @@ describe("StockDetailPage", () => {
     expect(screen.getByText("TWSE")).toBeInTheDocument();
   });
 
-  it("refetches history while the quoted market is open for Taiwan and U.S. stocks", () => {
-    mockQueries({ quote: sampleTaiwanQuote, history: sampleHistory });
+  it("refetches history while the current market clock is open for Taiwan and U.S. stocks", () => {
+    mockQueries({
+      quote: {
+        ...sampleTaiwanQuote,
+        quote: { ...sampleTaiwanQuote.quote, isMarketOpen: false },
+      },
+      history: sampleHistory,
+      markets: OPEN_MARKETS,
+    });
     renderStockDetailPage("TW%3A2330");
     const taiwanHistory = useQueryMock.mock.calls.find((call) => call[0]?.queryKey?.[0] === "history");
     expect(taiwanHistory?.[0].refetchInterval).toBe(60_000);
     expect(taiwanHistory?.[0].refetchIntervalInBackground).toBe(false);
 
     useQueryMock.mockClear();
-    mockQueries({ quote: sampleQuote, history: { ...sampleHistory, stock: sampleQuote.stock } });
+    mockQueries({
+      quote: sampleQuote,
+      history: { ...sampleHistory, stock: sampleQuote.stock },
+      markets: OPEN_MARKETS,
+    });
     renderStockDetailPage("US%3ANVDA");
     const usHistory = useQueryMock.mock.calls.find((call) => call[0]?.queryKey?.[0] === "history");
     expect(usHistory?.[0].refetchInterval).toBe(60_000);
     expect(usHistory?.[0].refetchIntervalInBackground).toBe(false);
   });
 
-  it("does not poll history when the quoted market is closed", () => {
+  it("does not poll history when the market clock is closed even if the quote stamp is open", () => {
     mockQueries({
-      quote: {
-        ...sampleQuote,
-        quote: { ...sampleQuote.quote, isMarketOpen: false },
-      },
+      quote: sampleQuote,
       history: { ...sampleHistory, stock: sampleQuote.stock },
+      markets: OPEN_MARKETS.map((status) =>
+        status.market === "US" ? { ...status, isOpen: false } : status,
+      ),
     });
     renderStockDetailPage("US%3ANVDA");
     const history = useQueryMock.mock.calls.find((call) => call[0]?.queryKey?.[0] === "history");

@@ -6,6 +6,7 @@ import { useQuery } from "@tanstack/react-query";
 import type {
   HistoryResponse,
   KeyStatistics,
+  MarketStatus,
   NewsItem,
   QuoteResponse,
   TWStockInsights,
@@ -26,6 +27,7 @@ import { TaiwanSignalsPanel } from "./TaiwanSignalsPanel";
 import {
   fetchHistory,
   fetchKeyStatistics,
+  fetchMarkets,
   fetchQuote,
   fetchStockNews,
   fetchTwStockInsights,
@@ -54,7 +56,17 @@ export function StockDetailPage({ stockId = "" }: Props) {
     refetchInterval: 5_000,
   });
 
-  const marketOpen = quoteQuery.data?.quote?.isMarketOpen === true;
+  const marketsQuery = useQuery<MarketStatus[]>({
+    queryKey: ["markets"],
+    queryFn: fetchMarkets,
+    staleTime: 60_000,
+    refetchInterval: 60_000,
+    refetchIntervalInBackground: false,
+  });
+  const stockMarket = decodedStockId.split(":")[0];
+  const marketOpen =
+    (stockMarket === "TW" || stockMarket === "US") &&
+    marketsQuery.data?.some((status) => status.market === stockMarket && status.isOpen) === true;
   const historyQuery = useQuery<HistoryResponse>({
     queryKey: ["history", decodedStockId, range],
     queryFn: () => fetchHistory(decodedStockId, range),

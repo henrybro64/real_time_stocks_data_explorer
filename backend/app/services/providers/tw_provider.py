@@ -399,9 +399,10 @@ class TWProvider:
             limit=daily_limit,
             range_name=range_name,
         )
-        if not candles:
-            return []
-        return self._merge_live_session_daily_candle(stock, candles)
+        merged = self._merge_live_session_daily_candle(stock, candles)
+        if daily_limit > 0 and len(merged) > daily_limit:
+            return merged[-daily_limit:]
+        return merged
 
     def _fetch_quote(self, stock: StockRecord) -> QuoteRecord | None:
         if _mis_circuit_is_open():
@@ -627,8 +628,10 @@ class TWProvider:
             return candles
 
         quote = self._fetch_quote(stock)
-        if quote is None:
-            quote = self._fetch_yahoo_listing_quote(stock)
+        if not _quote_has_session_ohlc(quote):
+            yahoo_quote = self._fetch_yahoo_listing_quote(stock)
+            if _quote_has_session_ohlc(yahoo_quote):
+                quote = yahoo_quote
         session = _session_daily_candle(stock, quote, now)
         if session is None:
             return candles
@@ -1517,6 +1520,12 @@ def _candles_from_yahoo_chart(payload: object, stock: StockRecord) -> list[Candl
         )
     candles.sort(key=lambda item: item.time)
     return candles
+
+
+def _quote_has_session_ohlc(quote: QuoteRecord | None) -> bool:
+    if quote is None:
+        return False
+    return None not in (quote.open, quote.high, quote.low, quote.volume)
 
 
 def _session_daily_candle(

@@ -1,7 +1,10 @@
+from datetime import datetime
 from threading import Lock
+from zoneinfo import ZoneInfo
 
 import pytest
 
+from app.models.quote import CandleRecord
 from app.services import key_stats_service
 from app.services.quote_service import quote_service
 from tests.support import quote_record, stock_record
@@ -512,6 +515,52 @@ def test_tw_from_candles_tolerates_history_outages(monkeypatch) -> None:
     assert payload["fiftyTwoWeekLow"] is None
     assert payload["avgVolume10d"] is None
     assert payload["peRatio"] == pytest.approx(12.5)
+
+
+def test_tw_from_candles_excludes_a_forming_session_from_volume_and_range(monkeypatch) -> None:
+    stock = stock_record(
+        "TW:2330",
+        market="TW",
+        symbol="2330",
+        name="台積電",
+        exchange="TWSE",
+        currency="TWD",
+        timezone="Asia/Taipei",
+    )
+    completed = [
+        CandleRecord(
+            time=f"2026-06-{day:02d}T13:30:00+08:00",
+            open=100,
+            high=101,
+            low=99,
+            close=100,
+            volume=100,
+        )
+        for day in range(1, 11)
+    ]
+    forming = CandleRecord(
+        time="2026-07-13T13:30:00+08:00",
+        open=100,
+        high=999,
+        low=90,
+        close=100,
+        volume=5_000,
+    )
+    monkeypatch.setattr(
+        quote_service,
+        "get_history",
+        lambda stock_id, range_name, limit=None: (stock, completed + [forming]),
+    )
+    monkeypatch.setattr(
+        "app.services.moving_average.market_local_time",
+        lambda market, current=None: datetime(2026, 7, 13, 11, 0, tzinfo=ZoneInfo("Asia/Taipei")),
+    )
+
+    payload = key_stats_service._tw_from_candles(stock, {})
+
+    assert payload["avgVolume10d"] == 100
+    assert payload["fiftyTwoWeekHigh"] == 101
+    assert payload["fiftyTwoWeekLow"] == 99
 
 
 @pytest.mark.parametrize(
