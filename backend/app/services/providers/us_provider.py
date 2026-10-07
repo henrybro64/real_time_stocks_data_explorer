@@ -11,9 +11,9 @@ from app.models.stock import StockRecord
 from app.services.http_client import HttpFetchError, fetch_json
 from app.services.market_clock import is_market_open
 from app.services.providers.yahoo_chart import (
+    chart_quote_price,
     coherent_price_change,
     market_time,
-    previous_session_close,
 )
 
 logger = logging.getLogger(__name__)
@@ -550,44 +550,12 @@ def _fetch_yahoo_chart_quote(stock: StockRecord) -> QuoteRecord | None:
         if not isinstance(meta, dict):
             continue
 
-        last_price = meta.get("regularMarketPrice")
-        if not isinstance(last_price, (int, float)):
+        chart_price = chart_quote_price(block, meta, stock.timezone)
+        if chart_price is None:
+            # Needs the price, its market time, and the prior session's close.
             continue
-
-        quote_time = market_time(meta, stock.timezone)
-        if quote_time is None:
-            # Without the market time we cannot tell a live price from an old one.
-            continue
-        previous_close = previous_session_close(
-            block,
-            meta,
-            session_date=quote_time.date(),
-            timezone_name=stock.timezone,
-        )
-        if previous_close is None:
-            continue
-        last_value, previous_value, change, change_percent = coherent_price_change(
-            float(last_price), previous_close
-        )
-
-        volume_raw = meta.get("regularMarketVolume")
-        volume = int(volume_raw) if isinstance(volume_raw, (int, float)) else None
-        high_raw = meta.get("regularMarketDayHigh")
-        low_raw = meta.get("regularMarketDayLow")
-
-        return QuoteRecord(
-            id=stock.id,
-            last_price=last_value,
-            change=change,
-            change_percent=change_percent,
-            previous_close=previous_value,
-            open=None,
-            high=round(float(high_raw), 2) if isinstance(high_raw, (int, float)) else None,
-            low=round(float(low_raw), 2) if isinstance(low_raw, (int, float)) else None,
-            volume=volume,
-            timestamp=quote_time.isoformat(),
-            is_market_open=is_market_open(stock.market, quote_time),
-        )
+        quote_time, priced = chart_price
+        return _quote_from_yahoo_fields(stock, meta, priced, quote_time)
 
     return None
 
@@ -607,29 +575,40 @@ def quote_from_yahoo_v7_item(item: dict, stock: StockRecord) -> QuoteRecord | No
     quote_time = market_time(item, stock.timezone)
     if quote_time is None:
         return None
-    last_value, previous_value, change, change_percent = coherent_price_change(
-        float(last_price), float(previous_close)
-    )
+    priced = coherent_price_change(float(last_price), float(previous_close))
+    if priced is None:
+        return None
+    return _quote_from_yahoo_fields(stock, item, priced, quote_time)
 
-    volume_raw = item.get("regularMarketVolume")
-    volume = int(volume_raw) if isinstance(volume_raw, (int, float)) else None
-    open_raw = item.get("regularMarketOpen")
-    high_raw = item.get("regularMarketDayHigh")
-    low_raw = item.get("regularMarketDayLow")
 
+def _quote_from_yahoo_fields(
+    stock: StockRecord,
+    fields: dict,
+    priced: tuple[float, float, float, float],
+    quote_time: datetime,
+) -> QuoteRecord:
+    """Build a quote from Yahoo ``regularMarket*`` fields (chart meta or v7 row)."""
+    last_value, previous_value, change, change_percent = priced
+    volume_raw = fields.get("regularMarketVolume")
     return QuoteRecord(
         id=stock.id,
         last_price=last_value,
         change=change,
         change_percent=change_percent,
         previous_close=previous_value,
-        open=round(float(open_raw), 2) if isinstance(open_raw, (int, float)) else None,
-        high=round(float(high_raw), 2) if isinstance(high_raw, (int, float)) else None,
-        low=round(float(low_raw), 2) if isinstance(low_raw, (int, float)) else None,
-        volume=volume,
+        open=_rounded_price(fields.get("regularMarketOpen")),
+        high=_rounded_price(fields.get("regularMarketDayHigh")),
+        low=_rounded_price(fields.get("regularMarketDayLow")),
+        volume=int(volume_raw) if isinstance(volume_raw, (int, float)) else None,
         timestamp=quote_time.isoformat(),
         is_market_open=is_market_open(stock.market, quote_time),
     )
+
+
+def _rounded_price(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return round(float(value), 2)
 
 
 def yahoo_v7_quotes_batch(stocks: list[StockRecord]) -> dict[str, QuoteRecord]:

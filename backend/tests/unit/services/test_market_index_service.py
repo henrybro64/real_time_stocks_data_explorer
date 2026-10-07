@@ -530,3 +530,31 @@ def test_stooq_index_without_a_timestamp_is_rejected(monkeypatch) -> None:
     )
 
     assert _fetch_stooq_index("^DJI", "Dow Jones") is None
+
+
+def test_slots_resolve_concurrently_so_stalled_providers_do_not_add_up() -> None:
+    import threading
+    import time
+
+    lock = threading.Lock()
+    state = {"active": 0, "max_active": 0}
+
+    def stalled_yahoo(_yahoo_symbol: str, _record_id: str, _label: str):
+        with lock:
+            state["active"] += 1
+            state["max_active"] = max(state["max_active"], state["active"])
+        time.sleep(0.2)
+        with lock:
+            state["active"] -= 1
+        return None
+
+    service = MarketIndexService(
+        twse_fetcher=_ok_tw,
+        stooq_fetcher=_ok_stooq,
+        yahoo_us_fetcher=stalled_yahoo,
+    )
+
+    records = service.get_latest()
+
+    assert [r.id for r in records] == CATALOG_IDS
+    assert state["max_active"] >= 2

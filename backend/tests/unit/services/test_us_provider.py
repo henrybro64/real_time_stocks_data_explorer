@@ -608,3 +608,13 @@ def test_live_quote_is_unavailable_rather_than_a_change_since_open(monkeypatch) 
 
     assert us_provider._fetch_live_quote(_aapl()) is None
     assert not hasattr(us_provider, "_fetch_stooq_quote")
+
+
+def test_sub_cent_previous_close_is_not_a_quote_rather_than_an_error(monkeypatch) -> None:
+    chart = _aapl_five_day_chart()
+    result = chart["chart"]["result"][0]  # type: ignore[index]
+    result["meta"]["regularMarketPrice"] = 0.01  # type: ignore[index]
+    result["indicators"]["quote"][0]["close"] = [0.003, 0.003, 0.003, 0.004, 0.01]  # type: ignore[index]
+    monkeypatch.setattr(us_provider, "_load_json_get", lambda _url, _headers: chart)
+
+    assert us_provider._fetch_yahoo_chart_quote(_aapl()) is None

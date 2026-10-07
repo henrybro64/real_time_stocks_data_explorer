@@ -24,11 +24,7 @@ from app.services.market_clock import (
     market_session_close,
     market_session_window,
 )
-from app.services.providers.yahoo_chart import (
-    coherent_price_change,
-    market_time,
-    previous_session_close,
-)
+from app.services.providers.yahoo_chart import chart_quote_price, coherent_price_change
 from app.services.tw_mis_trade import mis_last_trade
 from app.services.tw_price_limits import (
     classify_taiwan_price_limit,
@@ -486,9 +482,10 @@ class TWProvider:
             )
             return None
 
-        last_price, previous_close, change, change_percent = coherent_price_change(
-            float(last_trade.price), previous_close
-        )
+        priced = coherent_price_change(float(last_trade.price), previous_close)
+        if priced is None:
+            return None
+        last_price, previous_close, change, change_percent = priced
         price_limit_status, reference_price, limit_up_price, limit_down_price = (
             _mis_price_limit_fields(item, stock.symbol, last_trade.price)
         )
@@ -552,26 +549,11 @@ class TWProvider:
             if not isinstance(meta, dict):
                 continue
 
-            last_price = meta.get("regularMarketPrice")
-            if not isinstance(last_price, (int, float)):
+            chart_price = chart_quote_price(block, meta, stock.timezone)
+            if chart_price is None:
+                # Needs the price, its market time, and the prior session's close.
                 continue
-
-            quote_time = market_time(meta, stock.timezone)
-            if quote_time is None:
-                # Without the trade time we cannot tell a live price from an old one.
-                continue
-
-            previous_close = previous_session_close(
-                block,
-                meta,
-                session_date=quote_time.date(),
-                timezone_name=stock.timezone,
-            )
-            if previous_close is None:
-                continue
-            last_value, previous_value, change, change_percent = coherent_price_change(
-                float(last_price), previous_close
-            )
+            quote_time, (last_value, previous_value, change, change_percent) = chart_price
 
             volume_raw = meta.get("regularMarketVolume")
             volume = int(volume_raw) if isinstance(volume_raw, (int, float)) else None
