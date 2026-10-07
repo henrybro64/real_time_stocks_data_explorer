@@ -584,6 +584,38 @@ describe("StockCard", () => {
     expect(screen.getByRole("button", { name: "Refresh" })).toBeInTheDocument();
   });
 
+  it("shows the corrected Taiwan daily move instead of a false zero change (#258)", () => {
+    renderCardWith({
+      ...quote,
+      lastPrice: 1182,
+      change: 77,
+      changePercent: 6.97,
+      previousClose: 1105,
+      open: 1160,
+      high: 1215,
+      low: 1150,
+    });
+
+    expect(screen.getByTestId("stock-card-price-TW:2330")).toHaveTextContent(formatCurrency(1182, "TWD"));
+    const change = screen.getByTestId("stock-card-change-TW:2330");
+    expect(change).toHaveTextContent(`+${formatCurrency(77, "TWD")} (+6.97%)`);
+    expect(change).not.toHaveTextContent("0.00%");
+  });
+
+  it("still shows 0.00% for a genuinely unchanged Taiwan stock", () => {
+    renderCardWith({
+      ...quote,
+      lastPrice: 1105,
+      change: 0,
+      changePercent: 0,
+      previousClose: 1105,
+    });
+
+    expect(screen.getByTestId("stock-card-change-TW:2330")).toHaveTextContent(
+      `+${formatCurrency(0, "TWD")} (+0.00%)`,
+    );
+  });
+
   it("shows a compact red limit-up price on a Taiwan card", () => {
     renderCardWith({
       ...quote,

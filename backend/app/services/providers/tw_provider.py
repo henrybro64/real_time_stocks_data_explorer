@@ -317,17 +317,52 @@ def _last_daily_bar(
     return None
 
 
-def _previous_close_from_chart_block(block: dict) -> float | None:
-    quotes = block.get("indicators", {}).get("quote")
-    if not isinstance(quotes, list) or not quotes:
-        return None
-    closes = quotes[0].get("close")
+def _yahoo_previous_session_close(
+    block: dict,
+    meta: dict,
+    *,
+    session_date: date,
+    timezone_name: str,
+) -> float | None:
+    """Close of the last session before ``session_date``, or ``None``.
+
+    With ``range=5d`` Yahoo's ``chartPreviousClose`` is the close before the
+    window's first bar, several sessions back. It is only the prior session's
+    close when no earlier bar is in the window (#258).
+    """
+    timestamps = block.get("timestamp")
+    indicators = block.get("indicators")
+    quotes = indicators.get("quote") if isinstance(indicators, dict) else None
+    first = quotes[0] if isinstance(quotes, list) and quotes and isinstance(quotes[0], dict) else {}
+    closes = first.get("close")
     if not isinstance(closes, list):
-        return None
-    numeric = [float(c) for c in closes if isinstance(c, (int, float))]
-    if len(numeric) < 2:
-        return None
-    return numeric[-2]
+        closes = []
+
+    earlier_session_in_window = False
+    if isinstance(timestamps, list):
+        tz = ZoneInfo(timezone_name)
+        for index in range(len(timestamps) - 1, -1, -1):
+            raw_ts = timestamps[index]
+            if not isinstance(raw_ts, (int, float)):
+                continue
+            if datetime.fromtimestamp(raw_ts, tz=tz).date() >= session_date:
+                continue
+            earlier_session_in_window = True
+            close_value = closes[index] if index < len(closes) else None
+            if isinstance(close_value, (int, float)) and close_value > 0:
+                return float(close_value)
+
+    meta_previous = meta.get("previousClose")
+    if isinstance(meta_previous, (int, float)) and meta_previous > 0:
+        return float(meta_previous)
+    chart_previous = meta.get("chartPreviousClose")
+    if (
+        not earlier_session_in_window
+        and isinstance(chart_previous, (int, float))
+        and chart_previous > 0
+    ):
+        return float(chart_previous)
+    return None
 
 
 class TWProvider:
@@ -432,16 +467,31 @@ class TWProvider:
             return None
 
         item = items[0]
-        last_price = _first_number(item.get("z"), item.get("pz"), item.get("y"))
+        # Reachable MIS is a transport success even when the snapshot is unusable.
+        _note_mis_success()
+        # ``y`` is the reference/previous close only. It is never a current price (#258).
         previous_close = _parse_float(item.get("y"))
         open_price = _parse_float(item.get("o"))
         high_price = _parse_float(item.get("h"))
         low_price = _parse_float(item.get("l"))
         volume_lots = _parse_int(item.get("v"))
         volume = volume_lots * 1000 if volume_lots is not None else None
+        last_price = _mis_current_price(
+            item,
+            high_price=high_price,
+            low_price=low_price,
+            volume_lots=volume_lots,
+        )
 
         if last_price is None or previous_close in (None, 0):
-            _note_mis_success()
+            logger.debug(
+                "MIS snapshot has no trustworthy current price",
+                extra={
+                    "event": "tw.quote.mis_no_current_price",
+                    "stock_id": stock.id,
+                    "has_reference": previous_close not in (None, 0),
+                },
+            )
             return None
 
         quote_timestamp = _parse_quote_timestamp(
@@ -449,19 +499,19 @@ class TWProvider:
             raw_time=item.get("t") or item.get("%") or item.get("ot"),
             timezone_name=stock.timezone,
         )
-        change = round(last_price - previous_close, 2)
-        change_percent = round((change / previous_close) * 100, 2)
+        last_price, previous_close, change, change_percent = _coherent_price_change(
+            last_price, previous_close
+        )
         price_limit_status, reference_price, limit_up_price, limit_down_price = (
             _mis_price_limit_fields(item, stock.symbol)
         )
-        _note_mis_success()
 
         return QuoteRecord(
             id=stock.id,
-            last_price=round(last_price, 2),
+            last_price=last_price,
             change=change,
             change_percent=change_percent,
-            previous_close=round(previous_close, 2),
+            previous_close=previous_close,
             open=round(open_price, 2) if open_price is not None else None,
             high=round(high_price, 2) if high_price is not None else None,
             low=round(low_price, 2) if low_price is not None else None,
@@ -520,25 +570,23 @@ class TWProvider:
             if not isinstance(last_price, (int, float)):
                 continue
 
-            previous_close = meta.get("chartPreviousClose")
-            if not isinstance(previous_close, (int, float)) or previous_close == 0:
-                alt = meta.get("previousClose")
-                if isinstance(alt, (int, float)) and alt != 0:
-                    previous_close = alt
-                else:
-                    inferred = _previous_close_from_chart_block(block)
-                    if inferred is None or inferred == 0:
-                        continue
-                    previous_close = inferred
-
             market_time = meta.get("regularMarketTime")
-            quote_time = (
-                datetime.fromtimestamp(market_time, tz=tz)
-                if isinstance(market_time, (int, float))
-                else datetime.now(tz)
+            if not isinstance(market_time, (int, float)):
+                # Without the trade time we cannot tell a live price from an old one.
+                continue
+            quote_time = datetime.fromtimestamp(market_time, tz=tz)
+
+            previous_close = _yahoo_previous_session_close(
+                block,
+                meta,
+                session_date=quote_time.date(),
+                timezone_name=stock.timezone,
             )
-            change = round(float(last_price) - float(previous_close), 2)
-            change_percent = round((change / float(previous_close)) * 100, 2)
+            if previous_close is None:
+                continue
+            last_value, previous_value, change, change_percent = _coherent_price_change(
+                float(last_price), previous_close
+            )
 
             volume_raw = meta.get("regularMarketVolume")
             volume = int(volume_raw) if isinstance(volume_raw, (int, float)) else None
@@ -565,10 +613,10 @@ class TWProvider:
 
             return QuoteRecord(
                 id=stock.id,
-                last_price=round(float(last_price), 2),
+                last_price=last_value,
                 change=change,
                 change_percent=change_percent,
-                previous_close=round(float(previous_close), 2),
+                previous_close=previous_value,
                 open=round(float(open_raw), 2) if isinstance(open_raw, (int, float)) else None,
                 high=round(float(high_raw), 2)
                 if isinstance(high_raw, (int, float))
@@ -1021,8 +1069,8 @@ def _mis_price_limit_fields(
 ) -> tuple[PriceLimitStatus, float | None, float | None, float | None]:
     """Classify the MIS trade price ``z`` against official ``u`` / ``w``.
 
-    ``_fetch_quote`` may display ``pz`` or reference ``y`` when ``z`` is missing.
-    That fallback is not a trade, so it must stay ``unknown`` even if the
+    ``_fetch_quote`` may display a corroborated ``pz`` when ``z`` is missing.
+    That is not the latest trade, so it must stay ``unknown`` even if the
     displayed number equals a limit price or the change is about ±10%.
 
     Both official limits must be present. The rankings ±10% calculator is not
@@ -1047,12 +1095,59 @@ def _mis_price_limit_fields(
     )
 
 
-def _first_number(*values: str | None) -> float | None:
-    for value in values:
-        parsed = _parse_float(value)
-        if parsed is not None:
-            return parsed
+def _mis_current_price(
+    item: dict,
+    *,
+    high_price: float | None,
+    low_price: float | None,
+    volume_lots: int | None,
+) -> float | None:
+    """Current price from a field that represents a session trade, else ``None``.
+
+    Selection is by field provenance, not by comparing against previous close:
+
+    - ``z`` is the latest trade. It is used when the session range, if present,
+      contains it. A snapshot whose trade lies outside its own high/low is
+      incoherent and is rejected.
+    - ``pz`` is undocumented. It is accepted only when the same snapshot shows
+      the session has traded (volume and high/low present) and it lies inside
+      that range, so it cannot be an earlier session's price.
+    - ``y`` (reference/previous close) and ``u`` / ``w`` (limit prices) are
+      never used. A missing trade means no current price (#258).
+    """
+    has_session_range = high_price is not None and low_price is not None
+    traded = _parse_float(item.get("z"))
+    if traded is not None:
+        if has_session_range and not low_price <= traded <= high_price:
+            return None
+        return traded
+
+    previous_trade = _parse_float(item.get("pz"))
+    if (
+        previous_trade is not None
+        and has_session_range
+        and volume_lots is not None
+        and volume_lots > 0
+        and low_price <= previous_trade <= high_price
+    ):
+        return previous_trade
     return None
+
+
+def _coherent_price_change(
+    last_price: float,
+    previous_close: float,
+) -> tuple[float, float, float, float]:
+    """Round and derive ``change`` / ``change_percent`` from one price pair.
+
+    Every Taiwan quote computes these four values together so a replaced or
+    fallback ``last_price`` can never keep a stale change (#258).
+    """
+    last = round(float(last_price), 2)
+    previous = round(float(previous_close), 2)
+    change = round(last - previous, 2)
+    change_percent = round((change / previous) * 100, 2)
+    return last, previous, change, change_percent
 
 
 def _parse_float(raw_value: str | None) -> float | None:

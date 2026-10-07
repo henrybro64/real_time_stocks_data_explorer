@@ -411,6 +411,13 @@ def _mis_payload(**overrides: str) -> dict[str, list[dict[str, str]]]:
         "t": "13:30:00",
     }
     row.update(overrides)
+    # Real MIS snapshots keep the latest trade inside the session high/low.
+    trade = tw_provider._parse_float(row.get("z"))
+    if trade is not None:
+        if "h" not in overrides:
+            row["h"] = f"{max(float(row['h']), trade):.2f}"
+        if "l" not in overrides:
+            row["l"] = f"{min(float(row['l']), trade):.2f}"
     return {"msgArray": [row]}
 
 
@@ -509,7 +516,7 @@ def test_missing_one_limit_side_is_unknown(monkeypatch) -> None:
     assert quote.limit_down_price is None
 
 
-def test_no_trade_reference_fallback_is_not_a_limit(monkeypatch) -> None:
+def test_no_trade_reference_price_is_never_the_current_price(monkeypatch) -> None:
     stock = _tw_stock()
     _use_stock(monkeypatch, stock)
     monkeypatch.setattr(
@@ -517,22 +524,19 @@ def test_no_trade_reference_fallback_is_not_a_limit(monkeypatch) -> None:
         "_load_json",
         lambda *_a, **_k: _mis_payload(z="-", pz="-", y="110.00", u="110.00", w="90.00"),
     )
+    monkeypatch.setattr(tw_provider.TWProvider, "_fetch_yahoo_tw_quote", lambda self, _stock: None)
 
-    quote = tw_provider.TWProvider().get_quote(stock.id)
-
-    assert quote is not None
-    assert quote.last_price == pytest.approx(110.0)
-    assert quote.price_limit_status == "unknown"
-    assert quote.reference_price == pytest.approx(110.0)
+    # ``y`` is the reference price, not a trade (#258).
+    assert tw_provider.TWProvider().get_quote(stock.id) is None
 
 
-def test_previous_price_fallback_is_not_a_limit_trade(monkeypatch) -> None:
+def test_corroborated_previous_trade_is_not_a_limit_trade(monkeypatch) -> None:
     stock = _tw_stock()
     _use_stock(monkeypatch, stock)
     monkeypatch.setattr(
         tw_provider,
         "_load_json",
-        lambda *_a, **_k: _mis_payload(z="-", pz="110.00", y="100.00"),
+        lambda *_a, **_k: _mis_payload(z="-", pz="110.00", y="100.00", h="110.00"),
     )
 
     quote = tw_provider.TWProvider().get_quote(stock.id)
