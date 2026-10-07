@@ -99,11 +99,6 @@ def _refresh_usd_twd_fx_snapshot() -> dict[str, Any]:
     }
 
 
-def _fetch_usd_twd_rate() -> float | None:
-    snapshot = _fetch_usd_twd_snapshot()
-    return None if snapshot is None else float(snapshot["rate"])
-
-
 def _fetch_usd_twd_snapshot() -> dict[str, Any] | None:
     headers = {
         "User-Agent": _BROWSER_USER_AGENT,

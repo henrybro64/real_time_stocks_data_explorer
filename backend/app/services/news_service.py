@@ -147,15 +147,6 @@ class NewsService:
         )
         return []
 
-    def select_for_analysis(
-        self,
-        stock: StockRecord,
-        *,
-        now: datetime | None = None,
-        fetch_items: Callable[..., list[NewsItem]] | None = None,
-    ) -> AnalysisNewsContext:
-        return select_news_for_analysis(stock, now=now, fetch_items=fetch_items)
-
 
 news_service = NewsService()
 

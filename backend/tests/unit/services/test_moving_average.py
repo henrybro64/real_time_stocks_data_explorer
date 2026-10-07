@@ -13,7 +13,6 @@ from app.services.moving_average import (
     history_fetch_limit,
     is_daily_candle_complete,
     supports_daily_moving_averages,
-    trim_moving_averages,
     visible_daily_candles,
     visible_daily_limit,
 )
@@ -84,15 +83,14 @@ def test_directions_up_down_flat() -> None:
     assert any(point.direction == "down" for point in points)
 
 
-def test_warmup_produces_first_visible_sma_and_is_trimmed_out() -> None:
+def test_warmup_gives_sma60_values_for_the_last_30_sessions() -> None:
     closes = [100.0 + index * 0.5 for index in range(90)]
     full = build_moving_averages(_candles(closes))
-    visible = trim_moving_averages(full, visible_count=30)
 
-    assert len(visible.sma60) == 30
-    assert visible.sma60[0].value is not None
-    assert visible.sma60[0].time == full.sma60[-30].time
-    assert visible.sma10[0].time != full.sma10[0].time
+    assert len(full.sma60) == 90
+    assert full.sma60[-31].value is not None
+    assert all(point.value is not None for point in full.sma60[-30:])
+    assert full.sma60[58].value is None
 
 
 def test_missing_sessions_are_just_absent_trading_days() -> None:

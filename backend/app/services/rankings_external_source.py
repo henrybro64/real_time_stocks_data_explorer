@@ -331,14 +331,6 @@ class RankingsExternalSource:
         self._memory_cache[key] = entry
         return entry
 
-    def _read_cache(
-        self,
-        key: str,
-        now: datetime,
-    ) -> list[tuple[StockRecord, QuoteRecord]] | None:
-        entry = self._read_cache_entry(key, now)
-        return entry.envelopes if entry is not None else None
-
     def _write_cache(
         self,
         key: str,

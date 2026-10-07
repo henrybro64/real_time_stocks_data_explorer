@@ -4,9 +4,7 @@ from datetime import UTC, datetime, timedelta
 
 from app.models.stock import StockRecord
 from app.services.news_service import (
-    AnalysisNewsContext,
     NewsItem,
-    NewsService,
     select_news_for_analysis,
 )
 from tests.support import stock_record
@@ -426,25 +424,6 @@ def test_prompt_payload_shape_when_unavailable() -> None:
             "failureReason": "empty",
         }
     }
-
-
-def test_news_service_select_for_analysis_delegates() -> None:
-    stock = _apple()
-    item = _item(
-        title="Apple Inc. partners with suppliers",
-        published_at=NOW - timedelta(hours=5),
-    )
-
-    def fetch_items(_stock, *, window_days: int) -> list[NewsItem]:
-        return [item]
-
-    result = NewsService().select_for_analysis(
-        stock, now=NOW, fetch_items=fetch_items
-    )
-
-    assert isinstance(result, AnalysisNewsContext)
-    assert result.available is True
-    assert result.selected_count == 1
 
 
 def test_taiwan_name_zh_tw_match() -> None:

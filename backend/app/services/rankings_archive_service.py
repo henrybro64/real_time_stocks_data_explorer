@@ -126,14 +126,6 @@ class RankingsArchiveQueryError(RuntimeError):
     """Archive query failed due to SQL/app logic (not a reconnectable outage)."""
 
 
-@dataclass(frozen=True)
-class ArchiveCaptureTarget:
-    market: Literal["US", "TW"]
-    universe: str
-    ranking_type: RankingType
-    trading_date: date
-
-
 class RankingsArchiveService:
     def __init__(
         self,
@@ -197,10 +189,6 @@ class RankingsArchiveService:
             current,
             ranking_type=ranking_type,
         )
-
-    def any_settle_window_open(self, now: datetime | None = None) -> bool:
-        """Deprecated alias — prefer ``any_active_capture_window`` (#187)."""
-        return self.any_active_capture_window(now)
 
     def any_active_capture_window(self, now: datetime | None = None) -> bool:
         """True when a settle is within the same-day retry budget (no DB I/O).
@@ -406,21 +394,6 @@ class RankingsArchiveService:
             response.timestamp,
             market=market,
         )
-
-    def _provider_date_matches_target(
-        self,
-        response: RankingResponse,
-        *,
-        market: Literal["US", "TW"],
-        ranking_type: RankingType,
-        target_date: date,
-    ) -> tuple[bool, date | None]:
-        inferred = self._infer_provider_trading_date(
-            response,
-            market=market,
-            ranking_type=ranking_type,
-        )
-        return inferred == target_date, inferred
 
     def _archive_exists(
         self,

@@ -89,96 +89,6 @@ def parse_tdcc_shareholding_csv(text: str, *, symbol: str | None = None) -> list
     return concentrate_tiers(tiers)
 
 
-def parse_tdcc_shareholding_rows(
-    rows: list[dict[str, object]] | list[list[object]],
-    *,
-    fields: list[str] | None = None,
-    symbol: str | None = None,
-) -> list[TdccConcentrationPoint]:
-    """Parse list-of-dict or list-of-list rows into concentration points."""
-    if not rows:
-        return []
-    if isinstance(rows[0], dict):
-        return _parse_tdcc_dict_rows([row for row in rows if isinstance(row, dict)], symbol=symbol)
-    if fields is None:
-        return []
-    return _parse_tdcc_list_rows(rows, fields=fields, symbol=symbol)
-
-
-def _parse_tdcc_dict_rows(
-    dict_rows: list[dict[str, object]],
-    *,
-    symbol: str | None,
-) -> list[TdccConcentrationPoint]:
-    if not dict_rows:
-        return []
-    buffer = io.StringIO()
-    writer = csv.DictWriter(buffer, fieldnames=list(dict_rows[0].keys()))
-    writer.writeheader()
-    for row in dict_rows:
-        writer.writerow({key: "" if value is None else value for key, value in row.items()})
-    return parse_tdcc_shareholding_csv(buffer.getvalue(), symbol=symbol)
-
-
-def _parse_tdcc_list_rows(
-    rows: list[dict[str, object]] | list[list[object]],
-    *,
-    fields: list[str],
-    symbol: str | None,
-) -> list[TdccConcentrationPoint]:
-    field_map = {_normalize_header(name): index for index, name in enumerate(fields)}
-    date_idx = _first_index(field_map, _DATE_HEADERS)
-    symbol_idx = _first_index(field_map, _SYMBOL_HEADERS)
-    level_idx = _first_index(field_map, _LEVEL_HEADERS)
-    shares_idx = _first_index(field_map, _SHARES_HEADERS)
-    percent_idx = _first_index(field_map, _PERCENT_HEADERS)
-    if date_idx is None or symbol_idx is None or level_idx is None:
-        return []
-
-    wanted = _normalize_symbol(symbol) if symbol else None
-    tiers: list[TdccShareholdingTierRow] = []
-    for raw in rows:
-        if not isinstance(raw, (list, tuple)):
-            continue
-        tier = _tier_from_list_row(
-            raw,
-            date_idx=date_idx,
-            symbol_idx=symbol_idx,
-            level_idx=level_idx,
-            shares_idx=shares_idx,
-            percent_idx=percent_idx,
-        )
-        if tier is None:
-            continue
-        if wanted is not None and tier.symbol != wanted:
-            continue
-        tiers.append(tier)
-    return concentrate_tiers(tiers)
-
-
-def _tier_from_list_row(
-    raw: list[object] | tuple[object, ...],
-    *,
-    date_idx: int,
-    symbol_idx: int,
-    level_idx: int,
-    shares_idx: int | None,
-    percent_idx: int | None,
-) -> TdccShareholdingTierRow | None:
-    try:
-        return _parse_tier_values(
-            date_value=raw[date_idx] if date_idx < len(raw) else None,
-            symbol_value=raw[symbol_idx] if symbol_idx < len(raw) else None,
-            level_value=raw[level_idx] if level_idx < len(raw) else None,
-            shares_value=raw[shares_idx] if shares_idx is not None and shares_idx < len(raw) else None,
-            percent_value=(
-                raw[percent_idx] if percent_idx is not None and percent_idx < len(raw) else None
-            ),
-        )
-    except (TypeError, ValueError, IndexError):
-        return None
-
-
 def parse_tdcc_qry_stock_html(
     text: str,
     *,
@@ -414,14 +324,6 @@ def _first_mapped(field_map: dict[str, str], labels: tuple[str, ...]) -> str | N
         key = field_map.get(_normalize_header(label))
         if key is not None:
             return key
-    return None
-
-
-def _first_index(field_map: dict[str, int], labels: tuple[str, ...]) -> int | None:
-    for label in labels:
-        index = field_map.get(_normalize_header(label))
-        if index is not None:
-            return index
     return None
 
 
