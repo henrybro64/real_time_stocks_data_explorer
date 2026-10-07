@@ -14,6 +14,11 @@ from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
 from app.services.market_clock import is_market_open
+from app.services.providers.yahoo_chart import (
+    coherent_price_change,
+    market_time,
+    previous_session_close,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -277,35 +282,18 @@ class MarketIndexService:
         )
 
     def _resolve_us(self, slot: _IndexSlot) -> MarketIndexRecord:
-        stooq_symbol = _US_STOOQ_SYMBOLS.get(slot.id)
-        record = None
-        if stooq_symbol is not None:
-            try:
-                record = self._stooq_fetcher(stooq_symbol, slot.label)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "US Stooq index fetch raised; trying Yahoo fallback",
-                    extra={
-                        "event": "market_index.stooq.error",
-                        "provider": "stooq",
-                        "index_id": slot.id,
-                        "error_type": type(exc).__name__,
-                        "error": str(exc),
-                    },
-                )
-                record = None
-            if record is not None:
-                # Always expose the catalog id (Stooq symbol may differ in future).
-                if record.id != slot.id:
-                    return replace(record, id=slot.id, label=slot.label)
-                return record
+        """Yahoo first; Stooq only as a price-only fallback.
 
+        Stooq's quote row has no previous close, so it cannot give a daily
+        change. Using it first showed the move since the open as the day's
+        change (#258 follow-up).
+        """
         yahoo_symbol = _US_YAHOO_SYMBOLS[slot.id]
         try:
-            fallback = self._yahoo_us_fetcher(yahoo_symbol, slot.id, slot.label)
+            record = self._yahoo_us_fetcher(yahoo_symbol, slot.id, slot.label)
         except Exception as exc:  # noqa: BLE001
             logger.warning(
-                "US Yahoo index fallback raised",
+                "US Yahoo index fetch raised",
                 extra={
                     "event": "market_index.yahoo_us.error",
                     "provider": "yahoo_finance",
@@ -315,28 +303,49 @@ class MarketIndexService:
                     "error": str(exc),
                 },
             )
-            fallback = None
-        if fallback is not None:
-            if stooq_symbol is not None:
+            record = None
+        if record is not None:
+            return record
+
+        stooq_symbol = _US_STOOQ_SYMBOLS.get(slot.id)
+        if stooq_symbol is not None:
+            try:
+                fallback = self._stooq_fetcher(stooq_symbol, slot.label)
+            except Exception as exc:  # noqa: BLE001
                 logger.warning(
-                    "US index using Yahoo fallback after Stooq failure",
+                    "US Stooq index fallback raised",
+                    extra={
+                        "event": "market_index.stooq.error",
+                        "provider": "stooq",
+                        "index_id": slot.id,
+                        "error_type": type(exc).__name__,
+                        "error": str(exc),
+                    },
+                )
+                fallback = None
+            if fallback is not None:
+                logger.warning(
+                    "US index using Stooq price-only fallback after Yahoo failure",
                     extra={
                         "event": "market_index.stooq.fallback_used",
-                        "provider": "yahoo_finance",
+                        "provider": "stooq",
                         "index_id": slot.id,
                         "yahoo_symbol": yahoo_symbol,
                     },
                 )
-            return fallback
+                # Always expose the catalog id (Stooq symbol may differ in future).
+                if fallback.id != slot.id:
+                    return replace(fallback, id=slot.id, label=slot.label)
+                return fallback
 
         logger.warning(
             "US index unavailable after providers failed",
             extra={
                 "event": "market_index.us.unavailable",
-                "provider": "stooq" if stooq_symbol is not None else "yahoo_finance",
-                "fallback_provider": "yahoo_finance" if stooq_symbol is not None else None,
+                "provider": "yahoo_finance",
+                "fallback_provider": "stooq" if stooq_symbol is not None else None,
                 "index_id": slot.id,
-                "request_url": _STOOQ_QUOTE_URL if stooq_symbol is not None else _YAHOO_CHART_URL,
+                "request_url": _YAHOO_CHART_URL,
             },
         )
         return _unavailable_index(slot, reason="us_provider_unavailable")
@@ -484,7 +493,6 @@ def _fetch_stooq_index(stooq_symbol: str, label: str) -> MarketIndexRecord | Non
         return None
 
     date_text, time_text = parts[1], parts[2]
-    open_value = _parse_float(parts[3])
     close_value = _parse_float(parts[6])
     if close_value is None:
         _log_parse_failure(
@@ -496,19 +504,27 @@ def _fetch_stooq_index(stooq_symbol: str, label: str) -> MarketIndexRecord | Non
         )
         return None
 
-    previous_close = open_value if open_value is not None else close_value
-    change = close_value - previous_close
-    change_percent = (change / previous_close * 100) if previous_close else 0.0
     quote_time = _parse_stooq_timestamp(date_text, time_text, _TZ_NEW_YORK)
+    if quote_time is None:
+        _log_parse_failure(
+            event="market_index.stooq.malformed_payload",
+            provider="stooq",
+            index_id=stooq_symbol,
+            request_url=_STOOQ_QUOTE_URL,
+            detail="missing_timestamp",
+        )
+        return None
     market_now = datetime.now(ZoneInfo(_TZ_NEW_YORK))
 
+    # The quote row has no previous close, so report the level without a daily
+    # change rather than the move since the open.
     return MarketIndexRecord(
         id=stooq_symbol,
         market="US",
         label=label,
         value=round(close_value, 2),
-        change=round(change, 2),
-        change_percent=round(change_percent, 2),
+        change=None,
+        change_percent=None,
         timestamp=quote_time.isoformat(),
         is_market_open=is_market_open("US", market_now),
     )
@@ -641,8 +657,18 @@ def _fetch_yahoo_index(
         return None
 
     last_price = meta.get("regularMarketPrice")
-    prev_close = meta.get("chartPreviousClose")
-    if not isinstance(last_price, (int, float)) or not isinstance(prev_close, (int, float)):
+    quote_time = market_time(meta, timezone_name)
+    prev_close = (
+        previous_session_close(
+            block,
+            meta,
+            session_date=quote_time.date(),
+            timezone_name=timezone_name,
+        )
+        if quote_time is not None
+        else None
+    )
+    if not isinstance(last_price, (int, float)) or quote_time is None or prev_close is None:
         _log_parse_failure(
             event="market_index.yahoo.malformed_payload",
             provider="yahoo_finance",
@@ -651,27 +677,19 @@ def _fetch_yahoo_index(
             detail="missing_price_fields",
         )
         return None
-    if prev_close == 0:
-        return None
 
-    market_time = meta.get("regularMarketTime")
-    tz = ZoneInfo(timezone_name)
-    quote_time = (
-        datetime.fromtimestamp(market_time, tz=tz)
-        if isinstance(market_time, (int, float))
-        else datetime.now(tz)
+    value, _previous, change, change_percent = coherent_price_change(
+        float(last_price), prev_close
     )
-    change = float(last_price) - float(prev_close)
-    change_percent = change / float(prev_close) * 100
-    market_now = datetime.now(tz)
+    market_now = datetime.now(ZoneInfo(timezone_name))
 
     return MarketIndexRecord(
         id=record_id,
         market=market,
         label=label,
-        value=round(float(last_price), 2),
-        change=round(change, 2),
-        change_percent=round(change_percent, 2),
+        value=value,
+        change=change,
+        change_percent=change_percent,
         timestamp=quote_time.isoformat(),
         is_market_open=market == "CRYPTO"
         or (market in {"TW", "US"} and is_market_open(market, market_now)),
@@ -767,7 +785,8 @@ def _parse_float(raw_value: str) -> float | None:
         return None
 
 
-def _parse_stooq_timestamp(raw_date: str, raw_time: str, timezone_name: str) -> datetime:
+def _parse_stooq_timestamp(raw_date: str, raw_time: str, timezone_name: str) -> datetime | None:
+    """Stooq row time, or ``None``. Never "now": that would make old data look live."""
     tz = ZoneInfo(timezone_name)
     if (
         len(raw_date) == 8
@@ -780,8 +799,8 @@ def _parse_stooq_timestamp(raw_date: str, raw_time: str, timezone_name: str) -> 
                 tzinfo=tz
             )
         except ValueError:
-            return datetime.now(tz)
-    return datetime.now(tz)
+            return None
+    return None
 
 
 def _parse_twse_timestamp(raw_date: str, raw_time: str, timezone_name: str) -> datetime:

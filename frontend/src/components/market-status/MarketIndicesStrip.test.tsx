@@ -144,6 +144,23 @@ describe("MarketIndicesStrip", () => {
     expect(screen.getByTestId("market-index-card-GC=F")).toHaveTextContent("最新");
   });
 
+  it("shows a dash instead of a false 0.00% when an index has no daily change", () => {
+    renderWithLanguage(
+      <MarketIndicesStrip
+        items={catalogOkIndices({
+          "^DJI": { value: 51521.28, change: null, changePercent: null },
+        })}
+      />,
+    );
+
+    const change = screen.getByTestId("market-index-change-^DJI");
+    expect(change).toHaveTextContent("—");
+    expect(change).not.toHaveTextContent("0.00");
+    expect(change).not.toHaveClass("app-price-up");
+    expect(change).not.toHaveClass("app-price-down");
+    expect(screen.getByTestId("market-index-card-^DJI")).toHaveTextContent("51,521.28");
+  });
+
   it("keeps other index cards when SOX is unavailable", () => {
     renderWithLanguage(
       <MarketIndicesStrip
