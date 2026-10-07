@@ -89,6 +89,23 @@ def test_rankings_use_limit_prices_not_rounded_percent() -> None:
     assert limit_up.unavailable is False
 
 
+def test_live_rows_with_blank_z_use_the_latest_trade() -> None:
+    """Live MIS snapshots leave ``z`` as "-" between trades; ``trade`` holds the last one (#258)."""
+    at_limit = _row("1101", last="-", reference="9.15", limit_up="10.05", limit_down="8.24")
+    at_limit["t"] = "10:46:45"
+    at_limit["trade"] = {"t": "10:46:18", "v": 3, "z": "10.0500", "ft": 20}
+    no_trade = _row("2330", last="-", reference="100", limit_up="110", limit_down="90")
+    reference_only = _row("6488", last="-", reference="110", limit_up="121", limit_down="99", exchange="TPEx")
+    reference_only["pz"] = "110.00"
+    source, _calls = _source([at_limit, no_trade, reference_only])
+
+    result = source.fetch(RankingType.limit_up, "all", datetime(2026, 9, 24, 3, 0, tzinfo=timezone.utc))
+
+    assert [quote.symbol for quote in result.quotes] == ["1101"]
+    assert result.quotes[0].last_price == Decimal("10.05")
+    assert result.quotes[0].timestamp.startswith("2026-09-24T10:46:18")
+
+
 def test_missing_limits_use_tick_calculation_and_skip_no_trade_rows() -> None:
     reference = Decimal("9.15")
     up = limit_up_price(reference, kind="equity")

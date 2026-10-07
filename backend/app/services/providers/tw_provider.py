@@ -7,6 +7,7 @@ import threading
 from typing import NoReturn
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
+from decimal import Decimal
 from time import monotonic, perf_counter
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
@@ -23,6 +24,7 @@ from app.services.market_clock import (
     market_session_close,
     market_session_window,
 )
+from app.services.tw_mis_trade import mis_last_trade
 from app.services.tw_price_limits import (
     classify_taiwan_price_limit,
     decimal_to_api_float,
@@ -43,6 +45,12 @@ _mis_circuit_open_until = 0.0
 _mis_session_cookie_header: str | None = None
 # 0.0 means warm-up has never been attempted; None cookie can still be cached.
 _mis_session_warmed_at = 0.0
+# After MIS has no trustworthy price and Yahoo also fails, skip Yahoo for that
+# stock briefly. Pre-open and no-trade stocks would otherwise call it on every
+# refresh (#258). MIS is still tried every time.
+_YAHOO_QUOTE_FAILURE_BACKOFF_SECONDS = 60.0
+_yahoo_quote_backoff_lock = threading.Lock()
+_yahoo_quote_backoff_until: dict[str, float] = {}
 
 
 @dataclass(frozen=True)
@@ -232,6 +240,7 @@ _ISIN_OTC_URL = "https://isin.twse.com.tw/isin/C_public.jsp?strMode=4"
 _REQUEST_TIMEOUT_SECONDS = 5
 _CATALOG_TTL = timedelta(hours=12)
 _QUOTE_CACHE_TTL = timedelta(minutes=15)
+_MIS_FUTURE_TOLERANCE = timedelta(minutes=1)
 _YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart"
 _BROWSER_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -317,17 +326,52 @@ def _last_daily_bar(
     return None
 
 
-def _previous_close_from_chart_block(block: dict) -> float | None:
-    quotes = block.get("indicators", {}).get("quote")
-    if not isinstance(quotes, list) or not quotes:
-        return None
-    closes = quotes[0].get("close")
+def _yahoo_previous_session_close(
+    block: dict,
+    meta: dict,
+    *,
+    session_date: date,
+    timezone_name: str,
+) -> float | None:
+    """Close of the last session before ``session_date``, or ``None``.
+
+    With ``range=5d`` Yahoo's ``chartPreviousClose`` is the close before the
+    window's first bar, several sessions back. It is only the prior session's
+    close when no earlier bar is in the window (#258).
+    """
+    timestamps = block.get("timestamp")
+    indicators = block.get("indicators")
+    quotes = indicators.get("quote") if isinstance(indicators, dict) else None
+    first = quotes[0] if isinstance(quotes, list) and quotes and isinstance(quotes[0], dict) else {}
+    closes = first.get("close")
     if not isinstance(closes, list):
-        return None
-    numeric = [float(c) for c in closes if isinstance(c, (int, float))]
-    if len(numeric) < 2:
-        return None
-    return numeric[-2]
+        closes = []
+
+    earlier_session_in_window = False
+    if isinstance(timestamps, list):
+        tz = ZoneInfo(timezone_name)
+        for index in range(len(timestamps) - 1, -1, -1):
+            raw_ts = timestamps[index]
+            if not isinstance(raw_ts, (int, float)):
+                continue
+            if datetime.fromtimestamp(raw_ts, tz=tz).date() >= session_date:
+                continue
+            earlier_session_in_window = True
+            close_value = closes[index] if index < len(closes) else None
+            if isinstance(close_value, (int, float)) and close_value > 0:
+                return float(close_value)
+
+    meta_previous = meta.get("previousClose")
+    if isinstance(meta_previous, (int, float)) and meta_previous > 0:
+        return float(meta_previous)
+    chart_previous = meta.get("chartPreviousClose")
+    if (
+        not earlier_session_in_window
+        and isinstance(chart_previous, (int, float))
+        and chart_previous > 0
+    ):
+        return float(chart_previous)
+    return None
 
 
 class TWProvider:
@@ -367,7 +411,7 @@ class TWProvider:
                 ZoneInfo(stock.timezone)
             )
             return quote
-        quote = self._fetch_yahoo_tw_quote(stock)
+        quote = self._fallback_yahoo_quote(stock)
         if quote is not None:
             self.__class__._quote_cache[stock_id] = quote
             self.__class__._quote_cached_at[stock_id] = datetime.now(
@@ -378,6 +422,14 @@ class TWProvider:
         if cached_quote is not None:
             return cached_quote
         return None
+
+    def _fallback_yahoo_quote(self, stock: StockRecord) -> QuoteRecord | None:
+        if _yahoo_quote_backoff_active(stock.id):
+            return None
+        quote = self._fetch_yahoo_tw_quote(stock)
+        if quote is None:
+            _start_yahoo_quote_backoff(stock.id)
+        return quote
 
     def get_history(
         self,
@@ -432,42 +484,70 @@ class TWProvider:
             return None
 
         item = items[0]
-        last_price = _first_number(item.get("z"), item.get("pz"), item.get("y"))
+        # Reachable MIS is a transport success even when the snapshot is unusable.
+        _note_mis_success()
+        # ``y`` is the reference/previous close only. It is never a current price (#258).
         previous_close = _parse_float(item.get("y"))
         open_price = _parse_float(item.get("o"))
         high_price = _parse_float(item.get("h"))
         low_price = _parse_float(item.get("l"))
         volume_lots = _parse_int(item.get("v"))
         volume = volume_lots * 1000 if volume_lots is not None else None
+        last_trade = mis_last_trade(item)
+        # The trade's own time, else the snapshot time when ``z`` is in this snapshot.
+        quote_timestamp = (
+            _parse_quote_timestamp(
+                raw_date=item.get("d"),
+                raw_time=last_trade.trade_time
+                or item.get("t")
+                or item.get("%")
+                or item.get("ot"),
+                timezone_name=stock.timezone,
+            )
+            if last_trade is not None
+            else None
+        )
 
-        if last_price is None or previous_close in (None, 0):
-            _note_mis_success()
+        if (
+            last_trade is None
+            or quote_timestamp is None
+            # A pre-open or post-session stamp is not a regular-session trade.
+            or not _within_trading_session(stock, quote_timestamp)
+            # Nor is a trade stamped in the future (e.g. yesterday's time on today's date).
+            or quote_timestamp > datetime.now(quote_timestamp.tzinfo) + _MIS_FUTURE_TOLERANCE
+            or previous_close in (None, 0)
+        ):
+            logger.debug(
+                "MIS snapshot has no trustworthy current price",
+                extra={
+                    "event": "tw.quote.mis_no_current_price",
+                    "stock_id": stock.id,
+                    "has_trade": last_trade is not None,
+                    "has_timestamp": quote_timestamp is not None,
+                    "has_reference": previous_close not in (None, 0),
+                },
+            )
             return None
 
-        quote_timestamp = _parse_quote_timestamp(
-            raw_date=item.get("d"),
-            raw_time=item.get("t") or item.get("%") or item.get("ot"),
-            timezone_name=stock.timezone,
+        last_price, previous_close, change, change_percent = _coherent_price_change(
+            float(last_trade.price), previous_close
         )
-        change = round(last_price - previous_close, 2)
-        change_percent = round((change / previous_close) * 100, 2)
         price_limit_status, reference_price, limit_up_price, limit_down_price = (
-            _mis_price_limit_fields(item, stock.symbol)
+            _mis_price_limit_fields(item, stock.symbol, last_trade.price)
         )
-        _note_mis_success()
 
         return QuoteRecord(
             id=stock.id,
-            last_price=round(last_price, 2),
+            last_price=last_price,
             change=change,
             change_percent=change_percent,
-            previous_close=round(previous_close, 2),
+            previous_close=previous_close,
             open=round(open_price, 2) if open_price is not None else None,
             high=round(high_price, 2) if high_price is not None else None,
             low=round(low_price, 2) if low_price is not None else None,
             volume=volume,
             timestamp=quote_timestamp.isoformat(),
-            is_market_open=is_market_open(stock.market, quote_timestamp),
+            is_market_open=_quote_session_is_live(stock, quote_timestamp),
             price_limit_status=price_limit_status,
             reference_price=reference_price,
             limit_up_price=limit_up_price,
@@ -520,25 +600,23 @@ class TWProvider:
             if not isinstance(last_price, (int, float)):
                 continue
 
-            previous_close = meta.get("chartPreviousClose")
-            if not isinstance(previous_close, (int, float)) or previous_close == 0:
-                alt = meta.get("previousClose")
-                if isinstance(alt, (int, float)) and alt != 0:
-                    previous_close = alt
-                else:
-                    inferred = _previous_close_from_chart_block(block)
-                    if inferred is None or inferred == 0:
-                        continue
-                    previous_close = inferred
-
             market_time = meta.get("regularMarketTime")
-            quote_time = (
-                datetime.fromtimestamp(market_time, tz=tz)
-                if isinstance(market_time, (int, float))
-                else datetime.now(tz)
+            if not isinstance(market_time, (int, float)):
+                # Without the trade time we cannot tell a live price from an old one.
+                continue
+            quote_time = datetime.fromtimestamp(market_time, tz=tz)
+
+            previous_close = _yahoo_previous_session_close(
+                block,
+                meta,
+                session_date=quote_time.date(),
+                timezone_name=stock.timezone,
             )
-            change = round(float(last_price) - float(previous_close), 2)
-            change_percent = round((change / float(previous_close)) * 100, 2)
+            if previous_close is None:
+                continue
+            last_value, previous_value, change, change_percent = _coherent_price_change(
+                float(last_price), previous_close
+            )
 
             volume_raw = meta.get("regularMarketVolume")
             volume = int(volume_raw) if isinstance(volume_raw, (int, float)) else None
@@ -565,10 +643,10 @@ class TWProvider:
 
             return QuoteRecord(
                 id=stock.id,
-                last_price=round(float(last_price), 2),
+                last_price=last_value,
                 change=change,
                 change_percent=change_percent,
-                previous_close=round(float(previous_close), 2),
+                previous_close=previous_value,
                 open=round(float(open_raw), 2) if isinstance(open_raw, (int, float)) else None,
                 high=round(float(high_raw), 2)
                 if isinstance(high_raw, (int, float))
@@ -578,7 +656,7 @@ class TWProvider:
                 else None,
                 volume=volume,
                 timestamp=quote_time.isoformat(),
-                is_market_open=is_market_open(stock.market, quote_time),
+                is_market_open=_quote_session_is_live(stock, quote_time),
                 # Yahoo chart meta has no official MIS u/w band. Do not copy a
                 # previous limit classification or infer one from change percent.
                 price_limit_status="unknown",
@@ -912,8 +990,24 @@ def note_mis_transport_failure(classification: str) -> None:
     _note_mis_failure(classification=classification)
 
 
+def _yahoo_quote_backoff_active(stock_id: str) -> bool:
+    with _yahoo_quote_backoff_lock:
+        until = _yahoo_quote_backoff_until.get(stock_id)
+        if until is None:
+            return False
+        if monotonic() < until:
+            return True
+        _yahoo_quote_backoff_until.pop(stock_id, None)
+        return False
+
+
+def _start_yahoo_quote_backoff(stock_id: str) -> None:
+    with _yahoo_quote_backoff_lock:
+        _yahoo_quote_backoff_until[stock_id] = monotonic() + _YAHOO_QUOTE_FAILURE_BACKOFF_SECONDS
+
+
 def reset_mis_circuit_for_tests() -> None:
-    """Test helper: clear MIS circuit and warmed session state."""
+    """Test helper: clear MIS circuit, warmed session and Yahoo backoff state."""
     global _mis_consecutive_failures, _mis_circuit_open_until
     global _mis_session_cookie_header, _mis_session_warmed_at
     with _mis_circuit_lock:
@@ -921,6 +1015,8 @@ def reset_mis_circuit_for_tests() -> None:
         _mis_circuit_open_until = 0.0
         _mis_session_cookie_header = None
         _mis_session_warmed_at = 0.0
+    with _yahoo_quote_backoff_lock:
+        _yahoo_quote_backoff_until.clear()
 
 
 def _mis_cookie_header() -> str | None:
@@ -1018,24 +1114,19 @@ def _load_text(url: str) -> str:
 def _mis_price_limit_fields(
     item: dict,
     symbol: str,
+    traded_price: Decimal,
 ) -> tuple[PriceLimitStatus, float | None, float | None, float | None]:
-    """Classify the MIS trade price ``z`` against official ``u`` / ``w``.
-
-    ``_fetch_quote`` may display ``pz`` or reference ``y`` when ``z`` is missing.
-    That fallback is not a trade, so it must stay ``unknown`` even if the
-    displayed number equals a limit price or the change is about ±10%.
+    """Classify the latest MIS trade against official ``u`` / ``w``.
 
     Both official limits must be present. The rankings ±10% calculator is not
     used here: a quote with no ``u``/``w`` band is incomplete, not a limit.
     """
-    trade_text = item.get("z") if isinstance(item.get("z"), str) else None
-    traded_price = parse_price(trade_text) if _parse_float(trade_text) is not None else None
     status, reference, limit_up, limit_down = classify_taiwan_price_limit(
         last_price=traded_price,
         reference_price=parse_price(item.get("y")),
         limit_up_price_value=parse_price(item.get("u")),
         limit_down_price_value=parse_price(item.get("w")),
-        traded=traded_price is not None,
+        traded=True,
         symbol=symbol,
         allow_calculated=False,
     )
@@ -1047,12 +1138,44 @@ def _mis_price_limit_fields(
     )
 
 
-def _first_number(*values: str | None) -> float | None:
-    for value in values:
-        parsed = _parse_float(value)
-        if parsed is not None:
-            return parsed
-    return None
+def _within_trading_session(stock: StockRecord, moment: datetime) -> bool:
+    """True when ``moment`` falls inside the regular session of a trading day.
+
+    Compared to the minute like ``is_market_open``, so a closing-auction trade
+    stamped 13:30:01–13:30:59 still counts as the session close.
+    """
+    if not is_trading_day(stock.market, moment):
+        return False
+    start, end = market_session_window(stock.market, moment.date())
+    return start <= moment.time().replace(second=0, microsecond=0) <= end
+
+
+def _quote_session_is_live(stock: StockRecord, quote_time: datetime) -> bool:
+    """True only while the market is open now and the quote is from today's session.
+
+    Judging the quote's own timestamp would label a previous session's 13:30
+    price as open during today's session (#258).
+    """
+    now = datetime.now(ZoneInfo(stock.timezone))
+    if not is_market_open(stock.market, now):
+        return False
+    return quote_time.astimezone(now.tzinfo).date() == now.date()
+
+
+def _coherent_price_change(
+    last_price: float,
+    previous_close: float,
+) -> tuple[float, float, float, float]:
+    """Round and derive ``change`` / ``change_percent`` from one price pair.
+
+    Every Taiwan quote computes these four values together so a replaced or
+    fallback ``last_price`` can never keep a stale change (#258).
+    """
+    last = round(float(last_price), 2)
+    previous = round(float(previous_close), 2)
+    change = round(last - previous, 2)
+    change_percent = round((change / previous) * 100, 2)
+    return last, previous, change, change_percent
 
 
 def _parse_float(raw_value: str | None) -> float | None:
@@ -1075,15 +1198,21 @@ def _parse_int(raw_value: str | None) -> int | None:
     return int(number) if number is not None else None
 
 
-def _parse_quote_timestamp(raw_date: str | None, raw_time: str | None, timezone_name: str) -> datetime:
-    tz = ZoneInfo(timezone_name)
+def _parse_quote_timestamp(
+    raw_date: str | None,
+    raw_time: str | None,
+    timezone_name: str,
+) -> datetime | None:
+    """MIS snapshot time, or ``None``. Never "now": that would make old data look live."""
     if not raw_date or not raw_time:
-        return datetime.now(tz)
+        return None
 
     try:
-        return datetime.strptime(f"{raw_date}{raw_time}", "%Y%m%d%H:%M:%S").replace(tzinfo=tz)
+        return datetime.strptime(f"{raw_date}{raw_time}", "%Y%m%d%H:%M:%S").replace(
+            tzinfo=ZoneInfo(timezone_name)
+        )
     except ValueError:
-        return datetime.now(tz)
+        return None
 
 
 def _quote_exchange_prefix(exchange: str) -> str:

@@ -27,7 +27,8 @@ from app.services.tw_price_limits import restore_cached_price_limit
 
 logger = logging.getLogger(__name__)
 
-_KEY_PREFIX = "quote:v1:"
+# v2 drops entries cached before Taiwan quote integrity checks (#258).
+_KEY_PREFIX = "quote:v2:"
 _LOCK_PREFIX = "quote:refresh:v1:"
 
 RedisSuccessKind = Literal["ping", "read", "write"]
