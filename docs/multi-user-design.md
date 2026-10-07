@@ -1,41 +1,79 @@
 # Multi-user design
 
-The backend enforces ownership in the data model and on every user-owned route, in both single-user and session auth modes.
+**Short answer: yes, the app is multi-user internally, not just in the UI.** Every user-owned row carries a `user_id`, every user-owned route resolves the caller's id on the server, and every query filters by it. This holds in both modes: single-user mode is the same code path with one fixed user, not a bypass.
 
-## Identity
+## The feature flag
 
-| Mode | Setting | Resolved user |
+| Setting | Login | Requests act as | Startup behavior |
+| --- | --- | --- | --- |
+| `AUTH_ENABLED=false` (default) | None | `default-user` | `seed_default_user()` inserts `users.id = "default-user"` if missing (`backend/app/db/init_db.py`). |
+| `AUTH_ENABLED=true` + `LOCAL_AUTH_ENABLED=true` | Username/password, session cookie | The `users.id` stored in the session | Requires `SESSION_SECRET` of 16+ characters. If `LOCAL_AUTH_USERNAME` / `LOCAL_AUTH_PASSWORD` are set, creates that user or resets its password. |
+| `AUTH_ENABLED=true` + `LOCAL_AUTH_ENABLED=false` | — | — | Startup fails: local auth is the only implemented login method. |
+
+These checks are startup hooks in `backend/app/main.py`. Local dev defaults to auth off; the k8s manifests ship with auth on (`k8s/backend.yaml`, `k8s/backend-auth-secret.yaml`).
+
+## How a request gets its user
+
+`backend/app/api/deps.py`:
+
+- `get_request_identity(request)`
+  - auth off → always `default-user`;
+  - auth on → `request.session["user_id"]`. If it is missing, or the user row no longer exists, the session is cleared and the request is anonymous.
+- `get_effective_user_id(request)` returns that id or raises **401**. Every user-owned route depends on it.
+
+The user id is **never** taken from the request body or query string; `test_forged_user_id_in_request_body_is_ignored` checks this.
+
+Login endpoints (`backend/app/api/routes/auth.py`, under `/api/auth`):
+
+| Endpoint | Behavior |
+| --- | --- |
+| `GET /status` | `authEnabled`, `loggedIn`, the user, and enabled providers. The UI uses it to decide whether to redirect to `/login`. |
+| `POST /login/local` | Verifies a PBKDF2-SHA256 hash (120,000 iterations) and sets `session["user_id"]`. |
+| `POST /register/local` | Creates a user and logs them in. |
+| `POST /logout` | Clears the session. |
+
+The session is Starlette's signed cookie (`SessionMiddleware`, `same_site="lax"`).
+
+## User-scoped data
+
+| Entity | Owner column | Ownership enforcement |
 | --- | --- | --- |
-| Single-user | `AUTH_ENABLED=false` | Seeded `default-user` (`backend/app/db/init_ids.py`; startup `seed_default_user()`) |
-| Multi-user | `AUTH_ENABLED=true` | Session cookie → `users.id` via `get_effective_user_id()` in `backend/app/api/deps.py` |
-
-Compatibility mode still uses the same `user_id` columns and scoped queries — auth off does **not** bypass ownership checks.
-
-Stale sessions: if `request.session["user_id"]` is missing or the user row was deleted, the session is cleared and the request gets `401`.
-
-## User-owned entities
-
-| Entity | Owner column | Enforcement |
-| --- | --- | --- |
-| Watchlist items | `watchlist_items.user_id` | FK + unique `(user_id, stock_id)` |
-| Portfolio positions/assets | `portfolio_positions.user_id`, `portfolio_assets.user_id` | scoped CRUD |
-| Portfolio history | `portfolio_history_snapshots.user_id` | scoped queries |
+| Watchlist | `watchlist_items.user_id` | unique `(user_id, stock_id)` |
+| Portfolio positions | `portfolio_positions.user_id` | unique `(user_id, stock_id)` |
+| Other assets | `portfolio_assets.user_id` | scoped CRUD |
+| Portfolio value history | `portfolio_history_snapshots.user_id` | unique `(user_id, snapshot_hour, source_window)` |
 | Realized trades | `realized_trades.user_id` | scoped CRUD (`/api/realized-trades`) |
-| Alerts / events | `alert_rules.user_id`, `alert_events.user_id` | scoped CRUD + evaluation |
-| AI prefs / API keys | `user_ai_preferences.user_id`, `user_api_keys.user_id` | scoped get/upsert |
-| OAuth link | `oauth_identities.user_id` | unique `(provider, subject)` |
+| Alert rules and events | `alert_rules.user_id`, `alert_events.user_id` | scoped CRUD; the evaluator writes events for the rule's owner |
+| AI preference | `user_ai_preferences.user_id` | one row per user |
+| AI provider API keys | `user_api_keys.user_id` | unique `(user_id, provider)` |
+| Stock-AI narrative cache | Redis key `stock_analysis:v1:{user_id}:...` | cache key includes the user |
 
-Saved layouts/dashboard settings are not persisted today. New features must follow the same explicit `user_id` pattern.
+User-owned tables use `UserOwnedRowMixin` (`backend/app/db/row_mixins.py`) or declare the same column: `user_id` is non-null, indexed, and a foreign key to `users.id` with `ON DELETE CASCADE`.
+
+**Shared, not user-scoped:** quotes, history, search, rankings, market snapshot, news, and Taiwan institutional / margin-short / ownership / profitability data. These routes stay public when auth is on, because market data is the same for every user. The background quote refresher warms the **union** of all users' watchlist and portfolio symbols.
 
 ## Enforcement layers
 
-1. **Routes** — watchlist, portfolio, alerts, realized trades, AI depend on `get_effective_user_id()`.
-2. **Services** — all queries/mutations filter by `user_id` (updates match resource id **and** user).
-3. **Schema** — FKs to `users.id`, `ON DELETE CASCADE`, user-scoped uniqueness.
+1. **Routes** — watchlist, portfolio (positions, assets, history), realized trades, alerts, AI settings, and stock AI analysis depend on `get_effective_user_id`.
+2. **Services and repositories** — reads filter by `user_id`; updates and deletes match the resource id **and** the user, so a request cannot modify another user's row.
+3. **Schema** — foreign keys, cascades, and per-user unique constraints.
+4. **UI** — `AppChrome` redirects to `/login` when `authEnabled && !loggedIn`. This is a convenience; the backend's 401 is the real boundary.
 
-## Feature flags
+Internal capture endpoints are the deliberate exception: they act for **all** users and are guarded by a shared header token instead of a session. Examples are `POST /api/portfolio/history/capture` (called by the k8s CronJob, `PORTFOLIO_HISTORY_CAPTURE_TOKEN`) and the rankings / Taiwan market-data capture tokens. Each returns an error when its token is not configured.
 
-| Setting | Login | Acts as |
-| --- | --- | --- |
-| `AUTH_ENABLED=false` | No | `default-user` |
-| `AUTH_ENABLED=true` + `LOCAL_AUTH_ENABLED=true` | Yes (`/api/auth/login/local`, register) | Session user |
+## Tests that cover isolation
+
+- `backend/tests/integration/api/test_multi_user_design.py` (Postgres): default-user bootstrap, anonymous 401, stale-session 401, per-session isolation of watchlist / portfolio / alerts, cross-user delete, forged `user_id` ignored, AI preference isolation.
+- `frontend/tests/e2e/multi-user-isolation.spec.ts`: two browser sessions keep watchlist, portfolio, and alerts separate.
+
+## Current limitations
+
+- **Open registration.** With auth on, anyone who can reach the app can register. There are no roles, admin user, or invite flow.
+- **No login rate limiting or lockout.**
+- **Plaintext AI API keys.** `user_api_keys.api_key` is stored as plain text; responses only expose the last four characters.
+- **Session cookie.** `https_only=False` and Starlette's default 14-day lifetime. There is no server-side session store, so a single session cannot be revoked (rotating `SESSION_SECRET` logs everyone out).
+- **Bootstrap password reset.** When `LOCAL_AUTH_USERNAME` / `LOCAL_AUTH_PASSWORD` are set, that user's password is reset to the configured value on every startup.
+- **Switching modes does not migrate data.** Data created as `default-user` stays under that id after enabling auth, and `default-user` has no password, so nobody can log in as it.
+- **Dormant OAuth table.** `oauth_identities` exists in the schema (migration `20260404_0004`), but no code reads or writes it.
+- **Single replica assumed.** The alert evaluator uses in-process locks; see [architecture-overview.md](architecture-overview.md#architectural-tradeoffs).
+- Saved layouts and dashboard settings are not persisted per user. New user-owned features must follow the same `user_id` + `get_effective_user_id` pattern.
