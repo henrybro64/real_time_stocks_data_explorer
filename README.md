@@ -63,10 +63,10 @@ Details: [docs/architecture-overview.md](docs/architecture-overview.md).
 
 ## Key design decisions
 
-- **Free data, honest freshness.** No paid feed, so every quote carries its own market timestamp plus cache metadata (`stale`, `refreshStatus`). The UI shows live / delayed / stale / closed / unavailable instead of pretending to be real-time. When no source has a trustworthy price, the API returns *unavailable* rather than a stale or substituted number.
-- **Cache-first reads, background refresh.** A market-aware refresher (45 s open, 15 min closed) with concurrency limits, jitter, circuit breakers, and a Redis leader lock protects rate-limited free providers, so UI polling never fans out to upstream. See [docs/quote-refresh-design.md](docs/quote-refresh-design.md).
+- **Free data, honest freshness.** No paid feed, so quotes carry the provider's market timestamp plus cache metadata (`stale`, `refreshStatus`). The UI shows live / delayed / stale / closed / unavailable instead of pretending to be real-time. Last-known values are served only with a stale flag, and when no source has a trustworthy Taiwan price the API returns *unavailable* rather than substituting one.
+- **Cache-first reads, background refresh.** A market-aware refresher (45 s open, 15 min closed) with concurrency limits, jitter, circuit breakers, and a Redis leader lock protects rate-limited free providers, so quote polling from the UI never fans out to upstream. See [docs/quote-refresh-design.md](docs/quote-refresh-design.md).
 - **Multi-user in the data model, not just the UI.** Every user-owned row has a `user_id`; routes resolve the user server-side; single-user mode is the same code with a seeded `default-user`.
-- **Numbers computed in the backend.** Change %, moving averages, chart layout, Taiwan limit status, and AI input metrics are calculated once in Python, so the UI only renders. AI explains these numbers; it is never a data source.
+- **Market math in the backend.** Change %, moving averages, chart layout, Taiwan limit status, and AI input metrics are calculated once in Python; the UI formats and renders them (realized-P/L period summaries are the main client-side calculation). AI explains these numbers; it is never a data source.
 - **Modular monolith on a home cluster.** One FastAPI service plus in-process jobs is simple to run on a single k3s node. The cost is that scaling out needs Redis and more care around background jobs.
 - **Market-specific rules where they matter.** Taiwan red-up/green-down colors, official limit prices from the exchange, TWSE vs. TPEx boards, and exchange holiday calendars are handled explicitly.
 
@@ -176,7 +176,7 @@ infra/                      Optional Terraform: Azure SQL rankings archive, AWS 
 
 ## Known limitations
 
-- **Data is best-effort.** Free sources can be delayed (Yahoo is ~20 min behind for Taiwan), rate-limited, or change format without notice; the app flags this instead of hiding it.
+- **Data is best-effort.** Free sources can be delayed (Yahoo is ~20 min behind for Taiwan), rate-limited, or change format without notice; the app flags this where it can. The U.S. quote path has known gaps listed in [docs/quote-refresh-design.md](docs/quote-refresh-design.md#current-limitations).
 - **Single-node deployment.** Background jobs run inside the API process, and the k8s manifests run one backend replica with in-cluster Postgres.
 - **Basic authentication.** Local username/password only: open self-registration, no rate limiting, and per-user AI keys stored unencrypted.
 - **Manual records.** No broker sync, automatic FX conversion, or tax-lot accounting; alerts are in-app only (no email/push).

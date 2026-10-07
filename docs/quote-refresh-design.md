@@ -28,7 +28,7 @@ How market data is fetched, cached, and exposed, and what the app does when it i
 | Background refresher | **Scheduled** | Refreshes the union of all users' watchlist and portfolio symbols, plus symbols requested by reads. |
 | Price history / charts | **Request-driven, uncached** | Each chart request goes to the provider (Yahoo, or TWSE/TPEx monthly files for Taiwan daily bars). During a session the daily chart merges a "forming" candle from the live quote. |
 | Rankings | **Snapshot-backed** | See [Rankings](#rankings). |
-| Taiwan 法人 / 資券 history | **Scheduled + stored** | Daily refresh after `TAIWAN_MARKET_DATA_REFRESH_HOUR` (18:00 Asia/Taipei) into Postgres; detail pages read the store. |
+| Taiwan 法人 / 資券 history | **Scheduled + stored** | Daily refresh after `TAIWAN_MARKET_DATA_REFRESH_HOUR` (18:00 Asia/Taipei) into Postgres. Detail pages read the store; when it is empty or stale they fetch only the recent window live and persist it (#105). |
 | `/api/stream` WebSocket | Push of cache-first quotes every 3 s | Implemented, but the frontend does not use it; it polls instead. |
 
 ## Quote cache and refresher
@@ -105,14 +105,16 @@ U.S. net-buy/net-sell and U.S. price-limit rankings are reported as `unsupported
 Rules the code follows; keep them when changing providers:
 
 1. **Never invent a price.** A reference or previous close is never used as the current price. If no source has a trustworthy current price, the API returns `quote: null` with `refreshStatus: "unavailable"` (#258).
-2. **One snapshot per quote.** `lastPrice`, `previousClose`, `change`, and `changePercent` come from the same source and price pair (`_coherent_price_change`). Fields from different snapshots are never mixed.
-3. **Timestamps describe the data, not the fetch.** A quote is stamped with its trade or market time. Quotes without one are rejected rather than stamped "now".
+2. **One snapshot per quote.** `lastPrice`, `previousClose`, `change`, and `changePercent` come from the same source and price pair. Fields from different snapshots are never mixed. (Taiwan enforces this in `_coherent_price_change`.)
+3. **Timestamps describe the data, not the fetch.** A quote is stamped with its trade or market time. Taiwan quotes without one are rejected rather than stamped "now" (the U.S. path does not do this yet; see below).
 4. **`isMarketOpen`** (Taiwan) is true only while the market is open now *and* the quote is from today's session.
 5. **Serve last-known data with a flag** rather than nothing: stale cache entries (up to the hard TTL) and stored ranking snapshots are returned with `stale` / freshness labels and their original timestamps.
 6. **Prefer unavailable over wrong.** Taiwan trades outside the regular session, stamped in the future, or outside the snapshot's own high/low are rejected.
 
 ## Current limitations
 
+- **U.S. previous close is wrong on the Yahoo chart path.** `us_provider` requests `interval=1d&range=5d` and uses `chartPreviousClose`, which is the close *before the 5-day window*, not the prior session. U.S. `change` / `changePercent` are therefore measured against a close several sessions old. Taiwan fixed the same issue in #258.
+- **U.S. quotes can be stamped "now".** When Yahoo omits `regularMarketTime`, `us_provider` uses the fetch time, which can make an old price look live.
 - Price history is not cached. Detail-page chart polling while a market is open repeats upstream history calls.
 - The alert evaluator uses whatever quote the cache returns, which may be up to the 1-hour hard TTL old; events record that quote's timestamp.
 - Without Redis and with more than one backend replica, each replica has its own memory cache and refresher.
