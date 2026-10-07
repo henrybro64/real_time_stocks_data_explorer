@@ -149,6 +149,46 @@ describe("QuoteSummary", () => {
     expect(change).toHaveTextContent("-");
   });
 
+  it("shows the corrected Taiwan daily move instead of a false zero change (#258)", () => {
+    renderTaiwanSummary({
+      lastPrice: 1182,
+      change: 77,
+      changePercent: 6.97,
+      previousClose: 1105,
+      open: 1160,
+      high: 1215,
+      low: 1150,
+    });
+
+    expect(screen.getByTestId("quote-summary-price")).toHaveTextContent(formatCurrency(1182, "TWD"));
+    const change = screen.getByTestId("quote-summary-change");
+    expect(change).toHaveTextContent(`+${formatCurrency(77, "TWD")} (+6.97%)`);
+    expect(change).not.toHaveTextContent("0.00%");
+  });
+
+  it("still shows 0.00% for a genuinely unchanged Taiwan quote", () => {
+    renderTaiwanSummary({ lastPrice: 1105, change: 0, changePercent: 0, previousClose: 1105 });
+
+    expect(screen.getByTestId("quote-summary-change")).toHaveTextContent(
+      `+${formatCurrency(0, "TWD")} (+0.00%)`,
+    );
+  });
+
+  it("does not label a previous-session Taiwan fallback quote as live", () => {
+    renderTaiwanSummary({
+      lastPrice: 1105,
+      change: 33,
+      changePercent: 3.08,
+      previousClose: 1072,
+      timestamp: "2026-04-20T05:30:00Z",
+      isMarketOpen: false,
+    });
+
+    const tag = screen.getByTestId("quote-freshness-tag");
+    expect(tag).toHaveTextContent("已收盤");
+    expect(tag).not.toHaveTextContent("即時");
+  });
+
   it("shows a large red limit-up price for a Taiwan quote", () => {
     renderTaiwanSummary({ priceLimitStatus: "limit_up", lastPrice: 26.95, change: 2.45, changePercent: 10 });
 

@@ -11,7 +11,14 @@ import pytest
 from app.models.quote import QuoteRecord
 from app.models.stock import StockRecord
 from app.services.http_client import HttpFetchError
+from app.services import market_clock
 from app.services.providers import tw_provider
+
+
+@pytest.fixture(autouse=True)
+def _no_holiday_calendar_fetch(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep quote tests off the network: market status reads the TWSE holiday page."""
+    monkeypatch.setattr(market_clock, "_tw_market_holidays", lambda _year: frozenset())
 
 
 def _tw_stock() -> StockRecord:
@@ -407,7 +414,7 @@ def _mis_payload(**overrides: str) -> dict[str, list[dict[str, str]]]:
         "h": "106.00",
         "l": "100.00",
         "v": "12",
-        "d": "20260926",
+        "d": "20260925",
         "t": "13:30:00",
     }
     row.update(overrides)
@@ -530,7 +537,7 @@ def test_no_trade_reference_price_is_never_the_current_price(monkeypatch) -> Non
     assert tw_provider.TWProvider().get_quote(stock.id) is None
 
 
-def test_corroborated_previous_trade_is_not_a_limit_trade(monkeypatch) -> None:
+def test_undocumented_pz_is_never_the_current_price(monkeypatch) -> None:
     stock = _tw_stock()
     _use_stock(monkeypatch, stock)
     monkeypatch.setattr(
@@ -538,12 +545,9 @@ def test_corroborated_previous_trade_is_not_a_limit_trade(monkeypatch) -> None:
         "_load_json",
         lambda *_a, **_k: _mis_payload(z="-", pz="110.00", y="100.00", h="110.00"),
     )
+    monkeypatch.setattr(tw_provider.TWProvider, "_fetch_yahoo_tw_quote", lambda self, _stock: None)
 
-    quote = tw_provider.TWProvider().get_quote(stock.id)
-
-    assert quote is not None
-    assert quote.last_price == pytest.approx(110.0)
-    assert quote.price_limit_status == "unknown"
+    assert tw_provider.TWProvider().get_quote(stock.id) is None
 
 
 def test_cached_quote_keeps_limit_fields_from_the_same_payload(monkeypatch) -> None:

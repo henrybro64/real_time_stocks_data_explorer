@@ -96,7 +96,7 @@ def test_mget_reads_bulk_redis_entries(monkeypatch) -> None:
     entries = cache.get_cached_quote_entries(["US:AAPL", "US:MSFT"])
 
     assert set(entries) == {"US:AAPL"}
-    client.mget.assert_called_once_with(["quote:v1:US:AAPL", "quote:v1:US:MSFT"])
+    client.mget.assert_called_once_with(["quote:v2:US:AAPL", "quote:v2:US:MSFT"])
     health = cache.get_quote_cache_health()
     assert health["last_success_read_at"] is not None
 

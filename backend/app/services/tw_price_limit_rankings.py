@@ -29,6 +29,7 @@ from zoneinfo import ZoneInfo
 from app.core.config import settings
 from app.schemas.rankings import RankingType
 from app.services.http_client import HttpFetchError, fetch_json
+from app.services.tw_mis_trade import mis_last_trade
 from app.services.tw_price_limits import (
     PriceLimitStatus,
     classify_taiwan_price_limit,
@@ -80,7 +81,6 @@ _FAILURE_CACHE_SECONDS = 60
 _CACHE_KEY_PREFIX = "rankings:tw-price-limit:v1:"
 _CLASSIFIED_KEY = f"{_CACHE_KEY_PREFIX}classified"
 _TAIPEI = ZoneInfo("Asia/Taipei")
-_NO_TRADE_TOKENS = {"", "-", "--", "---", "----"}
 _PRICE_LIMIT_TYPES = {RankingType.limit_up, RankingType.limit_down}
 
 
@@ -566,8 +566,10 @@ def _quote_from_mis_row(
     exchange = _exchange_from_row(row, requested[symbol])
     if exchange is None:
         return None
-    traded = _is_traded_price(row.get("z"))
-    last_price = parse_price(row.get("z")) if traded else None
+    # Live rows usually have ``z`` = "-"; the latest trade is in ``trade`` (#258).
+    last_trade = mis_last_trade(row)
+    traded = last_trade is not None
+    last_price = last_trade.price if last_trade is not None else None
     reference = parse_price(row.get("y"))
     limit_up = parse_price(row.get("u"))
     limit_down = parse_price(row.get("w"))
@@ -590,7 +592,11 @@ def _quote_from_mis_row(
         limit_down_price=limit_down,
         change_percent=_change_percent(last_price, reference),
         volume=_volume_shares(row.get("v")),
-        timestamp=_session_timestamp(row.get("d"), row.get("t"), now),
+        timestamp=_session_timestamp(
+            row.get("d"),
+            last_trade.trade_time if last_trade is not None and last_trade.trade_time else row.get("t"),
+            now,
+        ),
         status=status,
     )
 
@@ -605,15 +611,6 @@ def _exchange_from_row(
     if raw == "otc":
         return "TPEx"
     return requested
-
-
-def _is_traded_price(value: object) -> bool:
-    if value is None:
-        return False
-    text = str(value).strip()
-    if text.casefold() in _NO_TRADE_TOKENS:
-        return False
-    return parse_price(text) is not None
 
 
 def _change_percent(last_price: Decimal | None, reference: Decimal | None) -> Decimal | None:
