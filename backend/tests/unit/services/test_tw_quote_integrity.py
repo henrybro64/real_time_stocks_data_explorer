@@ -643,6 +643,35 @@ def test_trade_stamped_in_the_future_is_rejected(monkeypatch) -> None:
     assert tw_provider.TWProvider()._fetch_quote(stock) is None
 
 
+@pytest.mark.parametrize("closing_time", ["13:30:00", "13:30:01", "13:30:59"])
+def test_closing_auction_trade_within_the_close_minute_is_kept(monkeypatch, closing_time) -> None:
+    stock = _stock()
+    _use_stock(monkeypatch, stock)
+    monkeypatch.setattr(
+        tw_provider,
+        "_load_json",
+        lambda *_a, **_k: _mis_2368(z="-", t="13:31:05", trade=_trade("1185.0000", closing_time)),
+    )
+
+    quote = tw_provider.TWProvider()._fetch_quote(stock)
+
+    assert quote is not None
+    assert quote.last_price == pytest.approx(1185.0)
+    assert quote.timestamp == f"2026-07-13T{closing_time}+08:00"
+
+
+def test_trade_after_the_close_minute_is_rejected(monkeypatch) -> None:
+    stock = _stock()
+    _use_stock(monkeypatch, stock)
+    monkeypatch.setattr(
+        tw_provider,
+        "_load_json",
+        lambda *_a, **_k: _mis_2368(z="-", t="13:31:05", trade=_trade("1185.0000", "13:31:00")),
+    )
+
+    assert tw_provider.TWProvider()._fetch_quote(stock) is None
+
+
 def test_pre_open_snapshot_z_is_not_a_trade(monkeypatch) -> None:
     stock = _stock()
     _use_stock(monkeypatch, stock)

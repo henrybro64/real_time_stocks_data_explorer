@@ -1139,11 +1139,15 @@ def _mis_price_limit_fields(
 
 
 def _within_trading_session(stock: StockRecord, moment: datetime) -> bool:
-    """True when ``moment`` falls inside the regular session of a trading day."""
+    """True when ``moment`` falls inside the regular session of a trading day.
+
+    Compared to the minute like ``is_market_open``, so a closing-auction trade
+    stamped 13:30:01–13:30:59 still counts as the session close.
+    """
     if not is_trading_day(stock.market, moment):
         return False
     start, end = market_session_window(stock.market, moment.date())
-    return start <= moment.time().replace(microsecond=0) <= end
+    return start <= moment.time().replace(second=0, microsecond=0) <= end
 
 
 def _quote_session_is_live(stock: StockRecord, quote_time: datetime) -> bool:
