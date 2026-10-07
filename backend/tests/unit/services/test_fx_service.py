@@ -13,7 +13,7 @@ def _reset_fx_cache() -> None:
     fx_service.clear_fx_cache_for_tests()
 
 
-def test_fetch_usd_twd_rate_parses_valid_payload(monkeypatch) -> None:
+def test_fetch_usd_twd_snapshot_parses_valid_payload(monkeypatch) -> None:
     def fake_fetch_json(*args, **kwargs):
         return {
             "chart": {
@@ -31,7 +31,7 @@ def test_fetch_usd_twd_rate_parses_valid_payload(monkeypatch) -> None:
 
     monkeypatch.setattr(fx_service, "fetch_json", fake_fetch_json)
 
-    assert fx_service._fetch_usd_twd_rate() == 32.1235
+    assert fx_service._fetch_usd_twd_snapshot()["rate"] == 32.1235
 
 
 def test_snapshot_includes_change_when_previous_close_present(monkeypatch) -> None:
@@ -62,23 +62,23 @@ def test_snapshot_includes_change_when_previous_close_present(monkeypatch) -> No
     assert snapshot["status"] == "ok"
 
 
-def test_fetch_usd_twd_rate_returns_none_for_malformed_payload(monkeypatch) -> None:
+def test_fetch_usd_twd_snapshot_returns_none_for_malformed_payload(monkeypatch) -> None:
     monkeypatch.setattr(
         fx_service,
         "fetch_json",
         lambda *args, **kwargs: {"chart": {"result": [{"meta": {}}]}},
     )
 
-    assert fx_service._fetch_usd_twd_rate() is None
+    assert fx_service._fetch_usd_twd_snapshot() is None
 
 
-def test_fetch_usd_twd_rate_returns_none_when_http_fails(monkeypatch) -> None:
+def test_fetch_usd_twd_snapshot_returns_none_when_http_fails(monkeypatch) -> None:
     def fake_fetch_json(*args, **kwargs):
         raise HttpFetchError("boom")
 
     monkeypatch.setattr(fx_service, "fetch_json", fake_fetch_json)
 
-    assert fx_service._fetch_usd_twd_rate() is None
+    assert fx_service._fetch_usd_twd_snapshot() is None
 
 
 def test_snapshot_uses_fallback_status_when_live_fetch_fails(monkeypatch) -> None:

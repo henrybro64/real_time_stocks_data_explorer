@@ -340,7 +340,7 @@ Postgres rollout failed. Common causes on k3s:
 - postgres:16-alpine still pulling (first boot needs network). Check: kubectl describe pod -n stock-ticker -l app=stock-ticker-postgres
 - Volume permissions: see pod Events.
 - RWO PVC + RollingUpdate: use strategy Recreate on stock-ticker-postgres (see k8s/postgres.yaml) so only one pod mounts the volume.
-- Corrupt or half-initialized data on the PVC: delete deployment + PVC, re-apply (see README).
+- Corrupt or half-initialized data on the PVC: delete deployment + PVC, re-apply (see docs/kubernetes.md).
 
 Debug:
   kubectl -n stock-ticker get pvc
@@ -356,7 +356,7 @@ print_backend_debug_help() {
 
 Backend rollout failed. Common causes:
 - Postgres pod not ready or DATABASE_URL wrong (default: in-cluster stock-ticker-postgres).
-- If using host Postgres instead: wrong hostname / pg_hba — see README and scripts/k8s-test-host-postgres.sh
+- If using host Postgres instead: wrong hostname / pg_hba — see docs/kubernetes.md#host-postgres-optional and scripts/k8s-test-host-postgres.sh
 
 Debug (use the same kubectl command you use for apply, e.g. sudo k3s kubectl on Ubuntu):
   kubectl -n stock-ticker get pods -l app=stock-ticker-backend

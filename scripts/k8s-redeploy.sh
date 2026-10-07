@@ -18,7 +18,7 @@ Usage:
 
 Runs k8s-teardown.sh then deploy-k3s.sh (full reset of the stock-ticker app and Postgres data).
 
-If teardown fails because the namespace is stuck Terminating, see README (k8s-unstick-namespace.sh).
+If teardown fails because the namespace is stuck Terminating, see docs/kubernetes.md (k8s-unstick-namespace.sh).
 EOF
 }
 

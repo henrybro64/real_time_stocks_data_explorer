@@ -14,6 +14,7 @@ from app.services.market_index_service import (
     _INDEX_CATALOG,
     _US_STOOQ_SYMBOLS,
     _US_YAHOO_SYMBOLS,
+    _fetch_stooq_index,
     _fetch_twse_index,
     _fetch_yahoo_index,
     _parse_float,
@@ -399,3 +400,161 @@ def test_crypto_catalog_provider_map_covers_every_crypto_slot() -> None:
 
 def test_commodity_catalog_provider_map_covers_every_commodity_slot() -> None:
     assert set(COMMODITY_INDEX_IDS) == set(_COMMODITY_YAHOO_SYMBOLS)
+
+
+# --- Previous close and source order (#258 follow-up) -------------------------
+
+
+def _ny_ts(month: int, day: int, hour: int = 9, minute: int = 30) -> int:
+    from zoneinfo import ZoneInfo
+
+    return int(datetime(2026, month, day, hour, minute, tzinfo=ZoneInfo("America/New_York")).timestamp())
+
+
+def _spx_five_day_chart(*, with_market_time: bool = True) -> dict[str, object]:
+    """Recorded ^GSPC shape from 2026-10-07: chartPreviousClose is Sep 29's close."""
+    meta: dict[str, object] = {
+        "regularMarketPrice": 7818.93,
+        "chartPreviousClose": 7670.84,
+    }
+    if with_market_time:
+        meta["regularMarketTime"] = _ny_ts(10, 7, 11, 5)
+    return {
+        "chart": {
+            "result": [
+                {
+                    "meta": meta,
+                    "timestamp": [_ny_ts(10, d) for d in (1, 2, 5, 6, 7)],
+                    "indicators": {
+                        "quote": [{"close": [7702.1, 7731.5, 7750.2, 7773.95, 7818.93]}]
+                    },
+                }
+            ]
+        }
+    }
+
+
+def test_yahoo_index_uses_the_prior_session_close_not_the_window_start(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.services.market_index_service._load_json_get",
+        lambda _url, _headers: _spx_five_day_chart(),
+    )
+
+    record = _fetch_yahoo_index("^GSPC", "^SPX", "S&P 500", market="US", timezone_name="America/New_York")
+
+    assert record is not None
+    assert record.value == pytest.approx(7818.93)
+    assert record.change == pytest.approx(44.98)  # vs 7773.95, not 7670.84
+    assert record.change_percent == pytest.approx(0.58)
+
+
+def test_yahoo_index_without_a_market_time_is_rejected(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.services.market_index_service._load_json_get",
+        lambda _url, _headers: _spx_five_day_chart(with_market_time=False),
+    )
+
+    assert _fetch_yahoo_index("^GSPC", "^SPX", "S&P 500", market="US", timezone_name="America/New_York") is None
+
+
+def test_us_index_prefers_yahoo_and_skips_stooq() -> None:
+    stooq_calls: list[str] = []
+
+    def stooq_fetcher(symbol: str, label: str):
+        stooq_calls.append(symbol)
+        return _ok_stooq(symbol, label)
+
+    service = MarketIndexService(
+        twse_fetcher=_ok_tw,
+        stooq_fetcher=stooq_fetcher,
+        yahoo_us_fetcher=lambda yahoo, rid, label: _ok_yahoo_us(yahoo, rid, label, value=7.0),
+    )
+
+    records = service.get_latest()
+
+    assert stooq_calls == []
+    assert all(r.value == pytest.approx(7.0) for r in records if r.market == "US")
+
+
+def test_us_index_falls_back_to_stooq_price_without_a_change() -> None:
+    def stooq_fetcher(symbol: str, label: str):
+        return MarketIndexRecord(
+            id=symbol,
+            market="US",
+            label=label,
+            value=123.0,
+            change=None,
+            change_percent=None,
+            timestamp=datetime(2026, 10, 6, 20, 0, tzinfo=UTC).isoformat(),
+            is_market_open=False,
+        )
+
+    service = MarketIndexService(
+        twse_fetcher=_ok_tw,
+        stooq_fetcher=stooq_fetcher,
+        yahoo_us_fetcher=lambda _yahoo, _rid, _label: None,
+    )
+
+    records = service.get_latest()
+    stooq_ids = {slot_id for slot_id, symbol in _US_STOOQ_SYMBOLS.items() if symbol}
+    stooq_backed = [r for r in records if r.id in stooq_ids]
+
+    assert len(stooq_backed) == len(stooq_ids) > 0
+    # Slots without a Stooq symbol (^SOX, ^VIX) are unavailable, not invented.
+    assert all(r.status == "unavailable" for r in records if r.market == "US" and r.id not in stooq_ids)
+    for record in stooq_backed:
+        assert record.status == "ok"
+        assert record.value == pytest.approx(123.0)
+        assert record.change is None
+        assert record.change_percent is None
+
+
+def test_stooq_index_reports_the_level_without_a_change_since_open(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.services.market_index_service._load_text",
+        lambda _url, _params, _headers: "^DJI,20261006,220000,51349.92,51600.00,51200.00,51521.28,0\n",
+    )
+
+    record = _fetch_stooq_index("^DJI", "Dow Jones")
+
+    assert record is not None
+    assert record.value == pytest.approx(51521.28)
+    assert record.change is None
+    assert record.change_percent is None
+
+
+def test_stooq_index_without_a_timestamp_is_rejected(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.services.market_index_service._load_text",
+        lambda _url, _params, _headers: "^DJI,N/D,N/D,51349.92,51600.00,51200.00,51521.28,0\n",
+    )
+
+    assert _fetch_stooq_index("^DJI", "Dow Jones") is None
+
+
+def test_slots_resolve_concurrently_so_stalled_providers_do_not_add_up() -> None:
+    import threading
+    import time
+
+    lock = threading.Lock()
+    state = {"active": 0, "max_active": 0}
+
+    def stalled_yahoo(_yahoo_symbol: str, _record_id: str, _label: str):
+        with lock:
+            state["active"] += 1
+            state["max_active"] = max(state["max_active"], state["active"])
+        time.sleep(0.2)
+        with lock:
+            state["active"] -= 1
+        return None
+
+    service = MarketIndexService(
+        twse_fetcher=_ok_tw,
+        stooq_fetcher=_ok_stooq,
+        yahoo_us_fetcher=stalled_yahoo,
+    )
+
+    records = service.get_latest()
+
+    assert [r.id for r in records] == CATALOG_IDS
+    assert state["max_active"] >= 2

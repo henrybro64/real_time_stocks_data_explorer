@@ -8,7 +8,7 @@ import httpx
 import pytest
 
 from app.models.stock import StockRecord
-from app.services.tdcc_shareholding import parse_tdcc_shareholding_csv, parse_tdcc_shareholding_rows
+from app.services.tdcc_shareholding import parse_tdcc_shareholding_csv
 from app.services.tw_ownership_concentration_service import (
     TwOwnershipConcentrationService,
     lookup_foreign_percent,
@@ -79,34 +79,6 @@ def test_parse_tdcc_shares_fallback_when_percent_missing() -> None:
     points = parse_tdcc_shareholding_csv(_load_text("tdcc_shares_fallback.csv"), symbol="2330")
     assert len(points) == 1
     assert points[0].holders_400_lots_or_more_percent == pytest.approx(100.0)
-
-
-def test_parse_tdcc_rows_list_of_dicts() -> None:
-    rows = [
-        {
-            "資料日期": "20260911",
-            "證券代號": "2330",
-            "持股分級": 12,
-            "股數": 100,
-            "占集保庫存數比例%": 10,
-        },
-        {
-            "資料日期": "20260911",
-            "證券代號": "2330",
-            "持股分級": 15,
-            "股數": 100,
-            "占集保庫存數比例%": 20,
-        },
-        {
-            "資料日期": "20260911",
-            "證券代號": "2330",
-            "持股分級": 999,
-            "股數": 200,
-            "占集保庫存數比例%": 100,
-        },
-    ]
-    points = parse_tdcc_shareholding_rows(rows, symbol="2330")
-    assert points[0].holders_400_lots_or_more_percent == pytest.approx(30.0)
 
 
 def test_parse_mi_qfiis_foreign_ownership() -> None:

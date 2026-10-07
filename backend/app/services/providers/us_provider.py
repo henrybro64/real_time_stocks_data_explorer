@@ -8,8 +8,13 @@ from zoneinfo import ZoneInfo
 
 from app.models.quote import CandleRecord, QuoteRecord
 from app.models.stock import StockRecord
-from app.services.http_client import HttpFetchError, fetch_json, fetch_text
+from app.services.http_client import HttpFetchError, fetch_json
 from app.services.market_clock import is_market_open
+from app.services.providers.yahoo_chart import (
+    chart_quote_price,
+    coherent_price_change,
+    market_time,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -111,7 +116,6 @@ _CATALOG_URL = "https://www.sec.gov/files/company_tickers_exchange.json"
 _CATALOG_TTL = timedelta(hours=12)
 _REQUEST_TIMEOUT_SECONDS = 10
 _USER_AGENT = "stock-ticker-app/0.1 contact@example.com"
-_STOOQ_QUOTE_URL = "https://stooq.com/q/l/"
 _YAHOO_QUOTE_URL = "https://query1.finance.yahoo.com/v7/finance/quote"
 # v7 quote often returns Unauthorized for server-side requests; v8 chart is more reliable.
 _YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart"
@@ -309,17 +313,6 @@ def _load_json_with_headers(
     )
 
 
-def _load_text_with_headers(url: str, params: dict[str, str], headers: dict[str, str]) -> str:
-    return fetch_text(
-        url,
-        params=params,
-        headers=headers,
-        timeout_seconds=_REQUEST_TIMEOUT_SECONDS,
-        retries=2,
-        encoding="utf-8",
-    )
-
-
 def _load_json_get(url: str, headers: dict[str, str]) -> dict:
     return fetch_json(
         url,
@@ -462,19 +455,6 @@ def _search_rank(stock: StockRecord, normalized_query: str, raw_symbol_query: st
     return (3, symbol)
 
 
-def _previous_close_from_chart_block(block: dict) -> float | None:
-    quotes = block.get("indicators", {}).get("quote")
-    if not isinstance(quotes, list) or not quotes:
-        return None
-    closes = quotes[0].get("close")
-    if not isinstance(closes, list):
-        return None
-    numeric = [float(c) for c in closes if isinstance(c, (int, float))]
-    if len(numeric) < 2:
-        return None
-    return numeric[-2]
-
-
 def _stock_from_yahoo_chart_meta(stock_id: str, meta: dict[object, object]) -> StockRecord | None:
     requested_symbol = _normalize_us_symbol(stock_id)
     if requested_symbol is None:
@@ -551,7 +531,6 @@ def _fetch_yahoo_chart_quote(stock: StockRecord) -> QuoteRecord | None:
         "User-Agent": _BROWSER_USER_AGENT,
         "Accept": "application/json,text/plain,*/*",
     }
-    tz = ZoneInfo(stock.timezone)
     for candidate in (stock.symbol, f"{stock.symbol}.US"):
         path_symbol = quote(candidate, safe="-.")
         url = f"{_YAHOO_CHART_URL}/{path_symbol}?interval=1d&range=5d"
@@ -571,48 +550,12 @@ def _fetch_yahoo_chart_quote(stock: StockRecord) -> QuoteRecord | None:
         if not isinstance(meta, dict):
             continue
 
-        last_price = meta.get("regularMarketPrice")
-        if not isinstance(last_price, (int, float)):
+        chart_price = chart_quote_price(block, meta, stock.timezone)
+        if chart_price is None:
+            # Needs the price, its market time, and the prior session's close.
             continue
-
-        previous_close = meta.get("chartPreviousClose")
-        if not isinstance(previous_close, (int, float)) or previous_close == 0:
-            alt = meta.get("previousClose")
-            if isinstance(alt, (int, float)) and alt != 0:
-                previous_close = alt
-            else:
-                inferred = _previous_close_from_chart_block(block)
-                if inferred is None or inferred == 0:
-                    continue
-                previous_close = inferred
-
-        market_time = meta.get("regularMarketTime")
-        quote_time = (
-            datetime.fromtimestamp(market_time, tz=tz)
-            if isinstance(market_time, (int, float))
-            else datetime.now(tz)
-        )
-        change = round(float(last_price) - float(previous_close), 2)
-        change_percent = round((change / float(previous_close)) * 100, 2)
-
-        volume_raw = meta.get("regularMarketVolume")
-        volume = int(volume_raw) if isinstance(volume_raw, (int, float)) else None
-        high_raw = meta.get("regularMarketDayHigh")
-        low_raw = meta.get("regularMarketDayLow")
-
-        return QuoteRecord(
-            id=stock.id,
-            last_price=round(float(last_price), 2),
-            change=change,
-            change_percent=change_percent,
-            previous_close=round(float(previous_close), 2),
-            open=None,
-            high=round(float(high_raw), 2) if isinstance(high_raw, (int, float)) else None,
-            low=round(float(low_raw), 2) if isinstance(low_raw, (int, float)) else None,
-            volume=volume,
-            timestamp=quote_time.isoformat(),
-            is_market_open=is_market_open(stock.market, quote_time),
-        )
+        quote_time, priced = chart_price
+        return _quote_from_yahoo_fields(stock, meta, priced, quote_time)
 
     return None
 
@@ -629,34 +572,43 @@ def quote_from_yahoo_v7_item(item: dict, stock: StockRecord) -> QuoteRecord | No
     if not isinstance(last_price, (int, float)) or not isinstance(previous_close, (int, float)) or previous_close == 0:
         return None
 
-    market_time = item.get("regularMarketTime")
-    quote_time = (
-        datetime.fromtimestamp(market_time, tz=ZoneInfo("America/New_York"))
-        if isinstance(market_time, (int, float))
-        else datetime.now(ZoneInfo("America/New_York"))
-    )
-    change = round(float(last_price) - float(previous_close), 2)
-    change_percent = round((change / float(previous_close)) * 100, 2)
+    quote_time = market_time(item, stock.timezone)
+    if quote_time is None:
+        return None
+    priced = coherent_price_change(float(last_price), float(previous_close))
+    if priced is None:
+        return None
+    return _quote_from_yahoo_fields(stock, item, priced, quote_time)
 
-    volume_raw = item.get("regularMarketVolume")
-    volume = int(volume_raw) if isinstance(volume_raw, (int, float)) else None
-    open_raw = item.get("regularMarketOpen")
-    high_raw = item.get("regularMarketDayHigh")
-    low_raw = item.get("regularMarketDayLow")
 
+def _quote_from_yahoo_fields(
+    stock: StockRecord,
+    fields: dict,
+    priced: tuple[float, float, float, float],
+    quote_time: datetime,
+) -> QuoteRecord:
+    """Build a quote from Yahoo ``regularMarket*`` fields (chart meta or v7 row)."""
+    last_value, previous_value, change, change_percent = priced
+    volume_raw = fields.get("regularMarketVolume")
     return QuoteRecord(
         id=stock.id,
-        last_price=round(float(last_price), 2),
+        last_price=last_value,
         change=change,
         change_percent=change_percent,
-        previous_close=round(float(previous_close), 2),
-        open=round(float(open_raw), 2) if isinstance(open_raw, (int, float)) else None,
-        high=round(float(high_raw), 2) if isinstance(high_raw, (int, float)) else None,
-        low=round(float(low_raw), 2) if isinstance(low_raw, (int, float)) else None,
-        volume=volume,
+        previous_close=previous_value,
+        open=_rounded_price(fields.get("regularMarketOpen")),
+        high=_rounded_price(fields.get("regularMarketDayHigh")),
+        low=_rounded_price(fields.get("regularMarketDayLow")),
+        volume=int(volume_raw) if isinstance(volume_raw, (int, float)) else None,
         timestamp=quote_time.isoformat(),
         is_market_open=is_market_open(stock.market, quote_time),
     )
+
+
+def _rounded_price(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return round(float(value), 2)
 
 
 def yahoo_v7_quotes_batch(stocks: list[StockRecord]) -> dict[str, QuoteRecord]:
@@ -766,8 +718,9 @@ def _fetch_yahoo_v7_quote(stock: StockRecord) -> QuoteRecord | None:
 
 
 def _fetch_live_quote(stock: StockRecord) -> QuoteRecord | None:
-    # Stooq first caused wrong/stale prices for some tickers (e.g. SIMO). Prefer Yahoo chart.
-    for fetcher in (_fetch_yahoo_chart_quote, _fetch_yahoo_v7_quote, _fetch_stooq_quote):
+    # Stooq is not used: its quote row has no previous close, so it cannot give a
+    # correct daily change (it used to compare against the day's open).
+    for fetcher in (_fetch_yahoo_chart_quote, _fetch_yahoo_v7_quote):
         quote = fetcher(stock)
         if quote is not None:
             return quote
@@ -898,102 +851,3 @@ def _yahoo_history_window(
     if min_candles <= 220:
         return "1d", "1y"
     return "1d", "2y"
-
-
-def _fetch_stooq_quote(stock: StockRecord) -> QuoteRecord | None:
-    symbol = f"{stock.symbol.lower()}.us"
-    try:
-        csv_payload = _load_text_with_headers(
-            _STOOQ_QUOTE_URL,
-            {"s": symbol, "i": "d"},
-            {
-                "User-Agent": _BROWSER_USER_AGENT,
-                "Accept": "text/csv,text/plain,*/*",
-            },
-        )
-    except (HttpFetchError, TimeoutError, ValueError):
-        return None
-
-    if "Exceeded the daily hits limit" in csv_payload or "N/D" == csv_payload.strip():
-        return None
-
-    lines = [line.strip() for line in csv_payload.strip().splitlines() if line.strip()]
-    columns: list[str] | None = None
-    date_text = ""
-    for line in reversed(lines):
-        cols = line.split(",")
-        if len(cols) < 8:
-            continue
-        dt = cols[1].strip()
-        if len(dt) != 8 or not dt.isdigit():
-            continue
-        close_value = _parse_number(cols[6])
-        if close_value is None:
-            continue
-        sym_cell = cols[0].strip()
-        if sym_cell and _normalize_stooq_symbol_cell(sym_cell) != stock.symbol.upper():
-            continue
-        columns = cols
-        date_text = dt
-        break
-
-    if columns is None:
-        return None
-
-    open_value = _parse_number(columns[3])
-    high_value = _parse_number(columns[4])
-    low_value = _parse_number(columns[5])
-    close_value = _parse_number(columns[6])
-    volume_value = _parse_int_number(columns[7])
-    if close_value is None:
-        return None
-
-    previous_close = open_value if open_value is not None else close_value
-    change = round(close_value - previous_close, 2)
-    change_percent = round((change / previous_close) * 100, 2) if previous_close else 0.0
-
-    quote_time = _parse_stooq_timestamp(date_text, stock.timezone)
-    return QuoteRecord(
-        id=stock.id,
-        last_price=round(close_value, 2),
-        change=change,
-        change_percent=change_percent,
-        previous_close=round(previous_close, 2),
-        open=round(open_value, 2) if open_value is not None else None,
-        high=round(high_value, 2) if high_value is not None else None,
-        low=round(low_value, 2) if low_value is not None else None,
-        volume=volume_value,
-        timestamp=quote_time.isoformat(),
-        is_market_open=is_market_open(stock.market, quote_time),
-    )
-
-
-def _parse_number(raw_value: str) -> float | None:
-    cleaned = raw_value.strip()
-    if not cleaned or cleaned in {"N/D", "-"}:
-        return None
-    try:
-        return float(cleaned)
-    except ValueError:
-        return None
-
-
-def _parse_int_number(raw_value: str) -> int | None:
-    number = _parse_number(raw_value)
-    return int(number) if number is not None else None
-
-
-def _normalize_stooq_symbol_cell(sym_cell: str) -> str:
-    normalized = sym_cell.strip().upper()
-    for suffix in (".US", ".U"):
-        if normalized.endswith(suffix):
-            normalized = normalized[: -len(suffix)]
-    return normalized
-
-
-def _parse_stooq_timestamp(raw_date: str, timezone_name: str) -> datetime:
-    tz = ZoneInfo(timezone_name)
-    try:
-        return datetime.strptime(raw_date.strip(), "%Y%m%d").replace(hour=16, minute=0, tzinfo=tz)
-    except ValueError:
-        return datetime.now(tz)

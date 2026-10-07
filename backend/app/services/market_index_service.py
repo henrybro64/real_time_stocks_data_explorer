@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import contextvars
 import json
 import logging
 import ssl
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from datetime import datetime
 from http.client import RemoteDisconnected
@@ -14,6 +16,7 @@ from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
 from app.services.market_clock import is_market_open
+from app.services.providers.yahoo_chart import chart_quote_price
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +33,8 @@ _FETCH_ERRORS: tuple[type[BaseException], ...] = (
     ValueError,
 )
 _STOOQ_QUOTE_URL = "https://stooq.com/q/l/"
+# Dashboard slots resolve in parallel so stalled providers do not add up.
+_INDEX_FETCH_WORKERS = 8
 _TWSE_INDEX_URL = "https://mis.twse.com.tw/stock/api/getStockInfo.jsp"
 _YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart"
 _BROWSER_USER_AGENT = (
@@ -201,54 +206,51 @@ class MarketIndexService:
             )
 
     def get_latest(self) -> list[MarketIndexRecord]:
-        """Always return the fixed dashboard catalog (never omit a market slot)."""
-        records: list[MarketIndexRecord] = []
-        for slot in _INDEX_CATALOG:
-            if slot.market == "TW":
-                records.append(self._resolve_taiwan(slot))
-            elif slot.market == "US":
-                records.append(self._resolve_us(slot))
-            elif slot.market == "CRYPTO":
-                records.append(self._resolve_crypto(slot))
-            elif slot.market == "COMMODITY":
-                records.append(self._resolve_commodity(slot))
-            else:
-                records.append(_unavailable_index(slot, reason="unsupported_market"))
-        return records
+        """Always return the fixed dashboard catalog (never omit a market slot).
+
+        Slots resolve concurrently, so a stalled provider costs one timeout for
+        the whole strip rather than one per slot.
+        """
+        with ThreadPoolExecutor(
+            max_workers=min(_INDEX_FETCH_WORKERS, len(_INDEX_CATALOG)),
+            thread_name_prefix="market-index",
+        ) as pool:
+            futures = [
+                pool.submit(contextvars.copy_context().run, self._resolve_slot, slot)
+                for slot in _INDEX_CATALOG
+            ]
+            return [future.result() for future in futures]
+
+    def _resolve_slot(self, slot: _IndexSlot) -> MarketIndexRecord:
+        if slot.market == "TW":
+            return self._resolve_taiwan(slot)
+        if slot.market == "US":
+            return self._resolve_us(slot)
+        if slot.market == "CRYPTO":
+            return self._resolve_crypto(slot)
+        if slot.market == "COMMODITY":
+            return self._resolve_commodity(slot)
+        return _unavailable_index(slot, reason="unsupported_market")
 
     def _resolve_taiwan(self, slot: _IndexSlot) -> MarketIndexRecord:
-        try:
-            record = self._twse_fetcher()
-        except Exception as exc:  # noqa: BLE001 - never drop the dashboard slot
-            logger.warning(
-                "Taiwan index provider raised; trying fallback",
-                extra={
-                    "event": "market_index.twse.error",
-                    "provider": "twse_mis",
-                    "index_id": slot.id,
-                    "error_type": type(exc).__name__,
-                    "error": str(exc),
-                },
-            )
-            record = None
+        record = _guarded_fetch(
+            self._twse_fetcher,
+            message="Taiwan index provider raised; trying fallback",
+            event="market_index.twse.error",
+            provider="twse_mis",
+            index_id=slot.id,
+        )
         if record is not None:
             return record
 
-        try:
-            fallback = self._yahoo_taiwan_fetcher()
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "Taiwan Yahoo fallback raised",
-                extra={
-                    "event": "market_index.yahoo_tw.error",
-                    "provider": "yahoo_finance",
-                    "index_id": slot.id,
-                    "yahoo_symbol": _TW_YAHOO_SYMBOL,
-                    "error_type": type(exc).__name__,
-                    "error": str(exc),
-                },
-            )
-            fallback = None
+        fallback = _guarded_fetch(
+            self._yahoo_taiwan_fetcher,
+            message="Taiwan Yahoo fallback raised",
+            event="market_index.yahoo_tw.error",
+            provider="yahoo_finance",
+            index_id=slot.id,
+            yahoo_symbol=_TW_YAHOO_SYMBOL,
+        )
         if fallback is not None:
             logger.warning(
                 "Taiwan index using Yahoo fallback after TWSE failure",
@@ -271,151 +273,147 @@ class MarketIndexService:
                 "request_url": _TWSE_INDEX_URL,
             },
         )
-        return _unavailable_index(
-            slot,
-            reason="taiwan_provider_unavailable",
-        )
+        return _unavailable_index(slot, reason="taiwan_provider_unavailable")
 
     def _resolve_us(self, slot: _IndexSlot) -> MarketIndexRecord:
-        stooq_symbol = _US_STOOQ_SYMBOLS.get(slot.id)
-        record = None
-        if stooq_symbol is not None:
-            try:
-                record = self._stooq_fetcher(stooq_symbol, slot.label)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "US Stooq index fetch raised; trying Yahoo fallback",
-                    extra={
-                        "event": "market_index.stooq.error",
-                        "provider": "stooq",
-                        "index_id": slot.id,
-                        "error_type": type(exc).__name__,
-                        "error": str(exc),
-                    },
-                )
-                record = None
-            if record is not None:
-                # Always expose the catalog id (Stooq symbol may differ in future).
-                if record.id != slot.id:
-                    return replace(record, id=slot.id, label=slot.label)
-                return record
+        """Yahoo first; Stooq only as a price-only fallback.
 
+        Stooq's quote row has no previous close, so it cannot give a daily
+        change. Using it first showed the move since the open as the day's
+        change (#258 follow-up).
+        """
         yahoo_symbol = _US_YAHOO_SYMBOLS[slot.id]
-        try:
-            fallback = self._yahoo_us_fetcher(yahoo_symbol, slot.id, slot.label)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "US Yahoo index fallback raised",
-                extra={
-                    "event": "market_index.yahoo_us.error",
-                    "provider": "yahoo_finance",
-                    "index_id": slot.id,
-                    "yahoo_symbol": yahoo_symbol,
-                    "error_type": type(exc).__name__,
-                    "error": str(exc),
-                },
+        record = _guarded_fetch(
+            lambda: self._yahoo_us_fetcher(yahoo_symbol, slot.id, slot.label),
+            message="US Yahoo index fetch raised",
+            event="market_index.yahoo_us.error",
+            provider="yahoo_finance",
+            index_id=slot.id,
+            yahoo_symbol=yahoo_symbol,
+        )
+        if record is not None:
+            return record
+
+        stooq_symbol = _US_STOOQ_SYMBOLS.get(slot.id)
+        if stooq_symbol is not None:
+            fallback = _guarded_fetch(
+                lambda: self._stooq_fetcher(stooq_symbol, slot.label),
+                message="US Stooq index fallback raised",
+                event="market_index.stooq.error",
+                provider="stooq",
+                index_id=slot.id,
             )
-            fallback = None
-        if fallback is not None:
-            if stooq_symbol is not None:
+            if fallback is not None:
                 logger.warning(
-                    "US index using Yahoo fallback after Stooq failure",
+                    "US index using Stooq price-only fallback after Yahoo failure",
                     extra={
                         "event": "market_index.stooq.fallback_used",
-                        "provider": "yahoo_finance",
+                        "provider": "stooq",
                         "index_id": slot.id,
                         "yahoo_symbol": yahoo_symbol,
                     },
                 )
-            return fallback
+                # Always expose the catalog id (Stooq symbol may differ in future).
+                return replace(fallback, id=slot.id, label=slot.label)
 
         logger.warning(
             "US index unavailable after providers failed",
             extra={
                 "event": "market_index.us.unavailable",
-                "provider": "stooq" if stooq_symbol is not None else "yahoo_finance",
-                "fallback_provider": "yahoo_finance" if stooq_symbol is not None else None,
+                "provider": "yahoo_finance",
+                "fallback_provider": "stooq" if stooq_symbol is not None else None,
                 "index_id": slot.id,
-                "request_url": _STOOQ_QUOTE_URL if stooq_symbol is not None else _YAHOO_CHART_URL,
+                "request_url": _YAHOO_CHART_URL,
             },
         )
         return _unavailable_index(slot, reason="us_provider_unavailable")
 
     def _resolve_crypto(self, slot: _IndexSlot) -> MarketIndexRecord:
-        yahoo_symbol = _CRYPTO_YAHOO_SYMBOLS[slot.id]
-        try:
-            record = self._yahoo_crypto_fetcher(yahoo_symbol, slot.id, slot.label)
-        except Exception as exc:  # noqa: BLE001 - never drop the dashboard slot
-            logger.warning(
-                "Crypto Yahoo quote fetch raised",
-                extra={
-                    "event": "market_index.yahoo_crypto.error",
-                    "provider": "yahoo_finance",
-                    "index_id": slot.id,
-                    "yahoo_symbol": yahoo_symbol,
-                    "error_type": type(exc).__name__,
-                    "error": str(exc),
-                },
-            )
-            record = None
-        if record is not None:
-            return replace(
-                record,
-                id=slot.id,
-                market="CRYPTO",
-                label=slot.label,
-                is_market_open=True,
-            )
-
-        logger.warning(
-            "Crypto quote unavailable",
-            extra={
-                "event": "market_index.crypto.unavailable",
-                "provider": "yahoo_finance",
-                "index_id": slot.id,
-                "yahoo_symbol": yahoo_symbol,
-                "request_url": _YAHOO_CHART_URL,
-            },
+        return self._resolve_yahoo_only(
+            slot,
+            self._yahoo_crypto_fetcher,
+            _CRYPTO_YAHOO_SYMBOLS[slot.id],
+            kind="crypto",
+            market="CRYPTO",
+            is_open=True,
         )
-        return _unavailable_index(slot, reason="crypto_provider_unavailable")
 
     def _resolve_commodity(self, slot: _IndexSlot) -> MarketIndexRecord:
-        yahoo_symbol = _COMMODITY_YAHOO_SYMBOLS[slot.id]
-        try:
-            record = self._yahoo_commodity_fetcher(yahoo_symbol, slot.id, slot.label)
-        except Exception as exc:  # noqa: BLE001 - never drop the dashboard slot
-            logger.warning(
-                "Commodity Yahoo quote fetch raised",
-                extra={
-                    "event": "market_index.yahoo_commodity.error",
-                    "provider": "yahoo_finance",
-                    "index_id": slot.id,
-                    "yahoo_symbol": yahoo_symbol,
-                    "error_type": type(exc).__name__,
-                    "error": str(exc),
-                },
-            )
-            record = None
+        return self._resolve_yahoo_only(
+            slot,
+            self._yahoo_commodity_fetcher,
+            _COMMODITY_YAHOO_SYMBOLS[slot.id],
+            kind="commodity",
+            market="COMMODITY",
+            is_open=False,
+        )
+
+    @staticmethod
+    def _resolve_yahoo_only(
+        slot: _IndexSlot,
+        fetcher: Callable[[str, str, str], MarketIndexRecord | None],
+        yahoo_symbol: str,
+        *,
+        kind: Literal["crypto", "commodity"],
+        market: str,
+        is_open: bool,
+    ) -> MarketIndexRecord:
+        record = _guarded_fetch(
+            lambda: fetcher(yahoo_symbol, slot.id, slot.label),
+            message=f"{kind.capitalize()} Yahoo quote fetch raised",
+            event=f"market_index.yahoo_{kind}.error",
+            provider="yahoo_finance",
+            index_id=slot.id,
+            yahoo_symbol=yahoo_symbol,
+        )
         if record is not None:
             return replace(
                 record,
                 id=slot.id,
-                market="COMMODITY",
+                market=market,
                 label=slot.label,
-                is_market_open=False,
+                is_market_open=is_open,
             )
 
         logger.warning(
-            "Commodity quote unavailable",
+            "%s quote unavailable",
+            kind.capitalize(),
             extra={
-                "event": "market_index.commodity.unavailable",
+                "event": f"market_index.{kind}.unavailable",
                 "provider": "yahoo_finance",
                 "index_id": slot.id,
                 "yahoo_symbol": yahoo_symbol,
                 "request_url": _YAHOO_CHART_URL,
             },
         )
-        return _unavailable_index(slot, reason="commodity_provider_unavailable")
+        return _unavailable_index(slot, reason=f"{kind}_provider_unavailable")
+
+
+def _guarded_fetch(
+    fetch: Callable[[], MarketIndexRecord | None],
+    *,
+    message: str,
+    event: str,
+    provider: str,
+    index_id: str,
+    **context: object,
+) -> MarketIndexRecord | None:
+    """Run one provider call; log and return ``None`` instead of dropping the slot."""
+    try:
+        return fetch()
+    except Exception as exc:  # noqa: BLE001 - never drop the dashboard slot
+        logger.warning(
+            message,
+            extra={
+                "event": event,
+                "provider": provider,
+                "index_id": index_id,
+                **context,
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+            },
+        )
+        return None
 
 
 def _unavailable_index(slot: _IndexSlot, *, reason: str) -> MarketIndexRecord:
@@ -484,7 +482,6 @@ def _fetch_stooq_index(stooq_symbol: str, label: str) -> MarketIndexRecord | Non
         return None
 
     date_text, time_text = parts[1], parts[2]
-    open_value = _parse_float(parts[3])
     close_value = _parse_float(parts[6])
     if close_value is None:
         _log_parse_failure(
@@ -496,19 +493,27 @@ def _fetch_stooq_index(stooq_symbol: str, label: str) -> MarketIndexRecord | Non
         )
         return None
 
-    previous_close = open_value if open_value is not None else close_value
-    change = close_value - previous_close
-    change_percent = (change / previous_close * 100) if previous_close else 0.0
     quote_time = _parse_stooq_timestamp(date_text, time_text, _TZ_NEW_YORK)
+    if quote_time is None:
+        _log_parse_failure(
+            event="market_index.stooq.malformed_payload",
+            provider="stooq",
+            index_id=stooq_symbol,
+            request_url=_STOOQ_QUOTE_URL,
+            detail="missing_timestamp",
+        )
+        return None
     market_now = datetime.now(ZoneInfo(_TZ_NEW_YORK))
 
+    # The quote row has no previous close, so report the level without a daily
+    # change rather than the move since the open.
     return MarketIndexRecord(
         id=stooq_symbol,
         market="US",
         label=label,
         value=round(close_value, 2),
-        change=round(change, 2),
-        change_percent=round(change_percent, 2),
+        change=None,
+        change_percent=None,
         timestamp=quote_time.isoformat(),
         is_market_open=is_market_open("US", market_now),
     )
@@ -640,9 +645,8 @@ def _fetch_yahoo_index(
     if not isinstance(meta, dict):
         return None
 
-    last_price = meta.get("regularMarketPrice")
-    prev_close = meta.get("chartPreviousClose")
-    if not isinstance(last_price, (int, float)) or not isinstance(prev_close, (int, float)):
+    chart_price = chart_quote_price(block, meta, timezone_name)
+    if chart_price is None:
         _log_parse_failure(
             event="market_index.yahoo.malformed_payload",
             provider="yahoo_finance",
@@ -651,27 +655,16 @@ def _fetch_yahoo_index(
             detail="missing_price_fields",
         )
         return None
-    if prev_close == 0:
-        return None
-
-    market_time = meta.get("regularMarketTime")
-    tz = ZoneInfo(timezone_name)
-    quote_time = (
-        datetime.fromtimestamp(market_time, tz=tz)
-        if isinstance(market_time, (int, float))
-        else datetime.now(tz)
-    )
-    change = float(last_price) - float(prev_close)
-    change_percent = change / float(prev_close) * 100
-    market_now = datetime.now(tz)
+    quote_time, (value, _previous, change, change_percent) = chart_price
+    market_now = datetime.now(ZoneInfo(timezone_name))
 
     return MarketIndexRecord(
         id=record_id,
         market=market,
         label=label,
-        value=round(float(last_price), 2),
-        change=round(change, 2),
-        change_percent=round(change_percent, 2),
+        value=value,
+        change=change,
+        change_percent=change_percent,
         timestamp=quote_time.isoformat(),
         is_market_open=market == "CRYPTO"
         or (market in {"TW", "US"} and is_market_open(market, market_now)),
@@ -767,7 +760,8 @@ def _parse_float(raw_value: str) -> float | None:
         return None
 
 
-def _parse_stooq_timestamp(raw_date: str, raw_time: str, timezone_name: str) -> datetime:
+def _parse_stooq_timestamp(raw_date: str, raw_time: str, timezone_name: str) -> datetime | None:
+    """Stooq row time, or ``None``. Never "now": that would make old data look live."""
     tz = ZoneInfo(timezone_name)
     if (
         len(raw_date) == 8
@@ -780,8 +774,8 @@ def _parse_stooq_timestamp(raw_date: str, raw_time: str, timezone_name: str) -> 
                 tzinfo=tz
             )
         except ValueError:
-            return datetime.now(tz)
-    return datetime.now(tz)
+            return None
+    return None
 
 
 def _parse_twse_timestamp(raw_date: str, raw_time: str, timezone_name: str) -> datetime:

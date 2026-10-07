@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Literal
 from urllib.parse import urlparse
 
 from app.models.stock import StockRecord
-from app.services.http_client import HttpFetchError, HttpMethod, fetch_json, fetch_text
+from app.services.http_client import HttpFetchError, HttpMethod, fetch_json
 
 if TYPE_CHECKING:
     from app.services.quote_service import QuoteService
@@ -57,8 +57,6 @@ class TaiwanMarketDataClient:
                 str,
                 str,
                 str,
-                str,
-                str | None,
                 tuple[tuple[str, str], ...],
                 tuple[tuple[str, str], ...],
                 tuple[tuple[str, str], ...],
@@ -84,7 +82,6 @@ class TaiwanMarketDataClient:
         return self._fetch(
             url,
             provider_name="twse",
-            response_kind="json",
             method=method,
             params=params,
             data=data,
@@ -114,7 +111,6 @@ class TaiwanMarketDataClient:
         return self._fetch(
             url,
             provider_name="tpex",
-            response_kind="json",
             method=method,
             params=params,
             data=data,
@@ -125,72 +121,6 @@ class TaiwanMarketDataClient:
             operation_name=operation_name,
             resource_id=resource_id,
         )
-
-    def fetch_twse_text(
-        self,
-        url: str,
-        *,
-        method: HttpMethod = "GET",
-        params: dict[str, str] | None = None,
-        data: dict[str, str] | None = None,
-        headers: dict[str, str] | None = None,
-        timeout_seconds: float = _DEFAULT_TIMEOUT_SECONDS,
-        retries: int = _DEFAULT_RETRIES,
-        cache_ttl: timedelta = _DEFAULT_CACHE_TTL,
-        encoding: str | None = None,
-        operation_name: str = "taiwan_market_data_twse_text",
-        resource_id: str | None = None,
-    ) -> str:
-        self._validate_host(url, allowed_hosts=_TWSE_HOSTS)
-        payload = self._fetch(
-            url,
-            provider_name="twse",
-            response_kind="text",
-            method=method,
-            params=params,
-            data=data,
-            headers=headers,
-            timeout_seconds=timeout_seconds,
-            retries=retries,
-            cache_ttl=cache_ttl,
-            operation_name=operation_name,
-            resource_id=resource_id,
-            encoding=encoding,
-        )
-        return str(payload)
-
-    def fetch_tpex_text(
-        self,
-        url: str,
-        *,
-        method: HttpMethod = "GET",
-        params: dict[str, str] | None = None,
-        data: dict[str, str] | None = None,
-        headers: dict[str, str] | None = None,
-        timeout_seconds: float = _DEFAULT_TIMEOUT_SECONDS,
-        retries: int = _DEFAULT_RETRIES,
-        cache_ttl: timedelta = _DEFAULT_CACHE_TTL,
-        encoding: str | None = None,
-        operation_name: str = "taiwan_market_data_tpex_text",
-        resource_id: str | None = None,
-    ) -> str:
-        self._validate_host(url, allowed_hosts=_TPEX_HOSTS)
-        payload = self._fetch(
-            url,
-            provider_name="tpex",
-            response_kind="text",
-            method=method,
-            params=params,
-            data=data,
-            headers=headers,
-            timeout_seconds=timeout_seconds,
-            retries=retries,
-            cache_ttl=cache_ttl,
-            operation_name=operation_name,
-            resource_id=resource_id,
-            encoding=encoding,
-        )
-        return str(payload)
 
     def clear_cache(self) -> None:
         self._cache.clear()
@@ -200,7 +130,6 @@ class TaiwanMarketDataClient:
         url: str,
         *,
         provider_name: str,
-        response_kind: Literal["json", "text"],
         method: HttpMethod,
         params: dict[str, str] | None,
         data: dict[str, str] | None,
@@ -210,7 +139,6 @@ class TaiwanMarketDataClient:
         cache_ttl: timedelta,
         operation_name: str,
         resource_id: str | None,
-        encoding: str | None = None,
     ) -> object:
         merged_headers = dict(_DEFAULT_HEADERS)
         if headers:
@@ -218,10 +146,8 @@ class TaiwanMarketDataClient:
 
         cache_key = (
             provider_name,
-            response_kind,
             method,
             url,
-            encoding,
             tuple(sorted((params or {}).items())),
             tuple(sorted((data or {}).items())),
             tuple(sorted(merged_headers.items())),
@@ -236,33 +162,18 @@ class TaiwanMarketDataClient:
                 return cached.payload
 
         try:
-            if response_kind == "text":
-                payload: object = fetch_text(
-                    url,
-                    method=method,
-                    params=params,
-                    data=data,
-                    headers=merged_headers,
-                    timeout_seconds=timeout_seconds,
-                    retries=retries,
-                    encoding=encoding,
-                    provider_name=provider_name,
-                    operation_name=operation_name,
-                    resource_id=resource_id,
-                )
-            else:
-                payload = fetch_json(
-                    url,
-                    method=method,
-                    params=params,
-                    data=data,
-                    headers=merged_headers,
-                    timeout_seconds=timeout_seconds,
-                    retries=retries,
-                    provider_name=provider_name,
-                    operation_name=operation_name,
-                    resource_id=resource_id,
-                )
+            payload: object = fetch_json(
+                url,
+                method=method,
+                params=params,
+                data=data,
+                headers=merged_headers,
+                timeout_seconds=timeout_seconds,
+                retries=retries,
+                provider_name=provider_name,
+                operation_name=operation_name,
+                resource_id=resource_id,
+            )
         except HttpFetchError:
             # Propagate structured upstream failures so callers can return empty/error
             # responses without crashing the process.

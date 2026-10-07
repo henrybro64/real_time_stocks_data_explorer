@@ -5,10 +5,8 @@ import {
 } from "../../services/market-data/quoteWarming";
 
 export {
-  isNullQuoteWarming,
   isQuoteWarmingTimedOut,
   quotesAreWarming,
-  resolveWarmingTimeoutState,
   QUOTE_WARMING_TIMEOUT_MS,
 } from "../../services/market-data/quoteWarming";
 

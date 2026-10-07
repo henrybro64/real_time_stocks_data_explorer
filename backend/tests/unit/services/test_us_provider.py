@@ -509,3 +509,112 @@ def test_yahoo_v7_quotes_batch_aborts_remaining_chunks_on_auth_denied(monkeypatc
     monkeypatch.setattr(us_provider, "_load_json_with_headers", fake_load)
     assert us_provider.yahoo_v7_quotes_batch(stocks) == {}
     assert calls["count"] == 1
+
+
+# --- Previous close and market time (#258 follow-up) -----------------------------
+
+
+def _aapl() -> "us_provider.StockRecord":
+    return us_provider.StockRecord(
+        id="US:AAPL",
+        market="US",
+        symbol="AAPL",
+        name="Apple Inc.",
+        exchange="NASDAQ",
+        currency="USD",
+        timezone="America/New_York",
+    )
+
+
+def _ny_ts(month: int, day: int, hour: int = 9, minute: int = 30) -> int:
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    return int(datetime(2026, month, day, hour, minute, tzinfo=ZoneInfo("America/New_York")).timestamp())
+
+
+def _aapl_five_day_chart(*, with_market_time: bool = True) -> dict[str, object]:
+    """Recorded AAPL chart from 2026-10-07: chartPreviousClose (329.40) is Sep 29's close."""
+    meta: dict[str, object] = {
+        "symbol": "AAPL",
+        "regularMarketPrice": 333.63,
+        "chartPreviousClose": 329.4,
+        "regularMarketDayHigh": 334.1,
+        "regularMarketDayLow": 331.2,
+        "regularMarketVolume": 41_000_000,
+    }
+    if with_market_time:
+        meta["regularMarketTime"] = _ny_ts(10, 6, 16, 0)
+    return {
+        "chart": {
+            "result": [
+                {
+                    "meta": meta,
+                    "timestamp": [_ny_ts(9, 30), _ny_ts(10, 1), _ny_ts(10, 2), _ny_ts(10, 5), _ny_ts(10, 6)],
+                    "indicators": {"quote": [{"close": [333.02, 330.32, 333.69, 332.89, 333.63]}]},
+                }
+            ],
+            "error": None,
+        }
+    }
+
+
+def test_yahoo_chart_quote_uses_the_prior_session_close(monkeypatch) -> None:
+    monkeypatch.setattr(us_provider, "_load_json_get", lambda _url, _headers: _aapl_five_day_chart())
+
+    quote = us_provider._fetch_yahoo_chart_quote(_aapl())
+
+    assert quote is not None
+    assert quote.last_price == pytest.approx(333.63)
+    assert quote.previous_close == pytest.approx(332.89)  # Oct 5, not Sep 29's 329.40
+    assert quote.change == pytest.approx(0.74)
+    assert quote.change_percent == pytest.approx(0.22)
+    assert quote.timestamp == "2026-10-06T16:00:00-04:00"
+
+
+def test_yahoo_chart_quote_without_a_market_time_is_rejected(monkeypatch) -> None:
+    monkeypatch.setattr(
+        us_provider,
+        "_load_json_get",
+        lambda _url, _headers: _aapl_five_day_chart(with_market_time=False),
+    )
+
+    assert us_provider._fetch_yahoo_chart_quote(_aapl()) is None
+
+
+def test_yahoo_v7_quote_requires_a_market_time() -> None:
+    item = {"regularMarketPrice": 333.63, "regularMarketPreviousClose": 332.89}
+
+    assert us_provider.quote_from_yahoo_v7_item(item, _aapl()) is None
+
+    quote = us_provider.quote_from_yahoo_v7_item(
+        {**item, "regularMarketTime": _ny_ts(10, 6, 16, 0)},
+        _aapl(),
+    )
+    assert quote is not None
+    assert quote.change == pytest.approx(0.74)
+    assert quote.change_percent == pytest.approx(0.22)
+
+
+def test_live_quote_is_unavailable_rather_than_a_change_since_open(monkeypatch) -> None:
+    """Stooq has no previous close, so it is no longer a quote fallback."""
+    from app.services.http_client import HttpFetchError
+
+    def fail(*_args, **_kwargs):
+        raise HttpFetchError("blocked", classification="network_failure")
+
+    monkeypatch.setattr(us_provider, "_load_json_get", fail)
+    monkeypatch.setattr(us_provider, "fetch_json", fail)
+
+    assert us_provider._fetch_live_quote(_aapl()) is None
+    assert not hasattr(us_provider, "_fetch_stooq_quote")
+
+
+def test_sub_cent_previous_close_is_not_a_quote_rather_than_an_error(monkeypatch) -> None:
+    chart = _aapl_five_day_chart()
+    result = chart["chart"]["result"][0]  # type: ignore[index]
+    result["meta"]["regularMarketPrice"] = 0.01  # type: ignore[index]
+    result["indicators"]["quote"][0]["close"] = [0.003, 0.003, 0.003, 0.004, 0.01]  # type: ignore[index]
+    monkeypatch.setattr(us_provider, "_load_json_get", lambda _url, _headers: chart)
+
+    assert us_provider._fetch_yahoo_chart_quote(_aapl()) is None

@@ -573,11 +573,6 @@ def _map_row_label_priority(label: str) -> tuple[str, int] | None:
     return None
 
 
-def _map_row_label(label: str) -> str | None:
-    mapped = _map_row_label_priority(label)
-    return None if mapped is None else mapped[0]
-
-
 def _period_end_key(value: object) -> str | None:
     if hasattr(value, "date") and callable(getattr(value, "date")):
         try:

@@ -201,20 +201,6 @@ def _aligned_points(
     return aligned
 
 
-def trim_moving_averages(
-    series: MovingAverageSeriesRecord,
-    *,
-    visible_count: int,
-) -> MovingAverageSeriesRecord:
-    if visible_count <= 0:
-        return MovingAverageSeriesRecord(sma10=(), sma20=(), sma60=())
-    return MovingAverageSeriesRecord(
-        sma10=series.sma10[-visible_count:],
-        sma20=series.sma20[-visible_count:],
-        sma60=series.sma60[-visible_count:],
-    )
-
-
 def collect_sma_values(*series: MovingAverageSeriesRecord | None) -> list[float]:
     values: list[float] = []
     for item in series:

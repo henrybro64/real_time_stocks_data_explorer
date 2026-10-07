@@ -452,42 +452,24 @@ def test_fetch_tpex_data_uses_short_ttl_for_nested_empty_tables(monkeypatch) -> 
     assert calls["count"] == 2
 
 
-def test_fetch_text_cache_key_includes_encoding_and_headers(monkeypatch) -> None:
+def test_fetch_cache_key_includes_headers(monkeypatch) -> None:
     client = TaiwanMarketDataClient()
-    calls: list[dict[str, object]] = []
+    calls: list[dict[str, str] | None] = []
 
-    def fake_fetch_text(url: str, **kwargs):
-        calls.append(
-            {
-                "encoding": kwargs.get("encoding"),
-                "headers": kwargs.get("headers"),
-            }
-        )
-        return f"payload-{kwargs.get('encoding')}"
+    def fake_fetch_json(url: str, **kwargs):
+        calls.append(kwargs.get("headers"))
+        return {"stat": "OK", "accept": (kwargs.get("headers") or {}).get("Accept")}
 
-    monkeypatch.setattr(taiwan_market_data, "fetch_text", fake_fetch_text)
+    monkeypatch.setattr(taiwan_market_data, "fetch_json", fake_fetch_json)
 
-    first = client.fetch_twse_text(
-        "https://isin.twse.com.tw/isin/C_public.jsp?strMode=2",
-        encoding=None,
-        headers={"Accept": "text/html"},
-    )
-    second = client.fetch_twse_text(
-        "https://isin.twse.com.tw/isin/C_public.jsp?strMode=2",
-        encoding="big5",
-        headers={"Accept": "text/csv"},
-    )
-    third = client.fetch_twse_text(
-        "https://isin.twse.com.tw/isin/C_public.jsp?strMode=2",
-        encoding="big5",
-        headers={"Accept": "text/csv"},
-    )
+    url = "https://www.twse.com.tw/rwd/zh/fund/T86"
+    first = client.fetch_twse_data(url, headers={"Accept": "application/json"})
+    second = client.fetch_twse_data(url, headers={"Accept": "text/plain"})
+    third = client.fetch_twse_data(url, headers={"Accept": "text/plain"})
 
     assert first != second
     assert second == third
     assert len(calls) == 2
-    assert calls[0]["encoding"] is None
-    assert calls[1]["encoding"] == "big5"
 
 
 def test_resolve_taiwan_market_skips_default_quote_source_when_known_stocks_resolve(
@@ -544,24 +526,6 @@ def test_fetch_tpex_data_supports_post_payloads(monkeypatch) -> None:
     assert captured["kwargs"]["method"] == "POST"
     assert captured["kwargs"]["data"] == {"response": "json", "date": "2026/07/09"}
     assert captured["kwargs"]["provider_name"] == "tpex"
-
-
-def test_fetch_twse_text_supports_csv_style_payloads(monkeypatch) -> None:
-    client = TaiwanMarketDataClient()
-
-    def fake_fetch_text(url: str, **kwargs):
-        assert url.startswith("https://www.twse.com.tw/")
-        assert kwargs["provider_name"] == "twse"
-        return "證券代號,證券名稱\n2330,台積電\n"
-
-    monkeypatch.setattr(taiwan_market_data, "fetch_text", fake_fetch_text)
-
-    payload = client.fetch_twse_text(
-        "https://www.twse.com.tw/exchangeReport/STOCK_DAY_ALL",
-        params={"response": "csv"},
-    )
-
-    assert "2330,台積電" in payload
 
 
 def test_fetch_taiwan_data_rejects_non_official_hosts() -> None:

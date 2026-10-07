@@ -163,12 +163,19 @@ export function MarketIndicesStrip({ error, isLoading = false, items }: Props) {
               ) : (
                 <>
                   <p className="app-stock-card-price">{numberFormat.format(item.value ?? 0)}</p>
-                  <p
-                    className={`${priceToneClassForMarket(item.market, item.change ?? 0)} app-stock-card-change`}
-                    data-testid={`market-index-change-${item.id}`}
-                  >
-                    {signedNumberFormat.format(item.change ?? 0)} ({formatPercent(item.changePercent ?? 0)})
-                  </p>
+                  {item.change == null || item.changePercent == null ? (
+                    // No trustworthy previous close (e.g. price-only fallback): never show a false 0.00%.
+                    <p className="app-stock-card-change" data-testid={`market-index-change-${item.id}`}>
+                      {copy.emDash}
+                    </p>
+                  ) : (
+                    <p
+                      className={`${priceToneClassForMarket(item.market, item.change)} app-stock-card-change`}
+                      data-testid={`market-index-change-${item.id}`}
+                    >
+                      {signedNumberFormat.format(item.change)} ({formatPercent(item.changePercent)})
+                    </p>
+                  )}
                   <p className="app-section-meta">
                     {copy.updated} {formatLastUpdated(item.timestamp)}
                   </p>

@@ -1,6 +1,6 @@
 # Backend architecture
 
-FastAPI backend layout for reviewers and new contributors. Product intent: [product-scope.md](product-scope.md).
+FastAPI backend layout for reviewers and new contributors. Product intent: [product-scope.md](product-scope.md). System-level view: [architecture-overview.md](architecture-overview.md).
 
 ## Repository map
 
@@ -40,7 +40,7 @@ Routes call services; services call adapters — not raw provider HTTP from hand
 
 Implementations live in service modules; only orchestration is centralized.
 
-**Quote refresher:** in-process with optional Redis leader lock when `replicas > 1`. With `QUOTE_REFRESHER_OWNS_UPSTREAM=true` and a live sampler, read paths prefer cache and request warm-up instead of per-request provider calls. Settings: `QUOTE_REFRESHER_*`, `QUOTE_REDIS_*`. Health exposes `quote_cache` diagnostics.
+**Quote refresher:** in-process with optional Redis leader lock when `replicas > 1`. With `QUOTE_REFRESHER_OWNS_UPSTREAM=true` and a live sampler, read paths prefer cache and request warm-up instead of per-request provider calls. Settings: `QUOTE_REFRESHER_*`, `QUOTE_REDIS_*`. Health exposes `quote_cache` diagnostics. Full design, freshness contract, and failure handling: [quote-refresh-design.md](quote-refresh-design.md).
 
 ## Configuration
 

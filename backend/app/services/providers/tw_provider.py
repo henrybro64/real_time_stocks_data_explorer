@@ -24,6 +24,7 @@ from app.services.market_clock import (
     market_session_close,
     market_session_window,
 )
+from app.services.providers.yahoo_chart import chart_quote_price, coherent_price_change
 from app.services.tw_mis_trade import mis_last_trade
 from app.services.tw_price_limits import (
     classify_taiwan_price_limit,
@@ -326,54 +327,6 @@ def _last_daily_bar(
     return None
 
 
-def _yahoo_previous_session_close(
-    block: dict,
-    meta: dict,
-    *,
-    session_date: date,
-    timezone_name: str,
-) -> float | None:
-    """Close of the last session before ``session_date``, or ``None``.
-
-    With ``range=5d`` Yahoo's ``chartPreviousClose`` is the close before the
-    window's first bar, several sessions back. It is only the prior session's
-    close when no earlier bar is in the window (#258).
-    """
-    timestamps = block.get("timestamp")
-    indicators = block.get("indicators")
-    quotes = indicators.get("quote") if isinstance(indicators, dict) else None
-    first = quotes[0] if isinstance(quotes, list) and quotes and isinstance(quotes[0], dict) else {}
-    closes = first.get("close")
-    if not isinstance(closes, list):
-        closes = []
-
-    earlier_session_in_window = False
-    if isinstance(timestamps, list):
-        tz = ZoneInfo(timezone_name)
-        for index in range(len(timestamps) - 1, -1, -1):
-            raw_ts = timestamps[index]
-            if not isinstance(raw_ts, (int, float)):
-                continue
-            if datetime.fromtimestamp(raw_ts, tz=tz).date() >= session_date:
-                continue
-            earlier_session_in_window = True
-            close_value = closes[index] if index < len(closes) else None
-            if isinstance(close_value, (int, float)) and close_value > 0:
-                return float(close_value)
-
-    meta_previous = meta.get("previousClose")
-    if isinstance(meta_previous, (int, float)) and meta_previous > 0:
-        return float(meta_previous)
-    chart_previous = meta.get("chartPreviousClose")
-    if (
-        not earlier_session_in_window
-        and isinstance(chart_previous, (int, float))
-        and chart_previous > 0
-    ):
-        return float(chart_previous)
-    return None
-
-
 class TWProvider:
     market = "TW"
     _catalog_cache: dict[str, StockRecord] | None = None
@@ -529,9 +482,10 @@ class TWProvider:
             )
             return None
 
-        last_price, previous_close, change, change_percent = _coherent_price_change(
-            float(last_trade.price), previous_close
-        )
+        priced = coherent_price_change(float(last_trade.price), previous_close)
+        if priced is None:
+            return None
+        last_price, previous_close, change, change_percent = priced
         price_limit_status, reference_price, limit_up_price, limit_down_price = (
             _mis_price_limit_fields(item, stock.symbol, last_trade.price)
         )
@@ -571,7 +525,6 @@ class TWProvider:
             "User-Agent": _BROWSER_USER_AGENT,
             "Accept": "application/json,text/plain,*/*",
         }
-        tz = ZoneInfo(stock.timezone)
         for candidate in symbols:
             path_symbol = quote(candidate, safe="-.")
             url = f"{_YAHOO_CHART_URL}/{path_symbol}?interval=1d&range=5d"
@@ -596,27 +549,11 @@ class TWProvider:
             if not isinstance(meta, dict):
                 continue
 
-            last_price = meta.get("regularMarketPrice")
-            if not isinstance(last_price, (int, float)):
+            chart_price = chart_quote_price(block, meta, stock.timezone)
+            if chart_price is None:
+                # Needs the price, its market time, and the prior session's close.
                 continue
-
-            market_time = meta.get("regularMarketTime")
-            if not isinstance(market_time, (int, float)):
-                # Without the trade time we cannot tell a live price from an old one.
-                continue
-            quote_time = datetime.fromtimestamp(market_time, tz=tz)
-
-            previous_close = _yahoo_previous_session_close(
-                block,
-                meta,
-                session_date=quote_time.date(),
-                timezone_name=stock.timezone,
-            )
-            if previous_close is None:
-                continue
-            last_value, previous_value, change, change_percent = _coherent_price_change(
-                float(last_price), previous_close
-            )
+            quote_time, (last_value, previous_value, change, change_percent) = chart_price
 
             volume_raw = meta.get("regularMarketVolume")
             volume = int(volume_raw) if isinstance(volume_raw, (int, float)) else None
@@ -1160,22 +1097,6 @@ def _quote_session_is_live(stock: StockRecord, quote_time: datetime) -> bool:
     if not is_market_open(stock.market, now):
         return False
     return quote_time.astimezone(now.tzinfo).date() == now.date()
-
-
-def _coherent_price_change(
-    last_price: float,
-    previous_close: float,
-) -> tuple[float, float, float, float]:
-    """Round and derive ``change`` / ``change_percent`` from one price pair.
-
-    Every Taiwan quote computes these four values together so a replaced or
-    fallback ``last_price`` can never keep a stale change (#258).
-    """
-    last = round(float(last_price), 2)
-    previous = round(float(previous_close), 2)
-    change = round(last - previous, 2)
-    change_percent = round((change / previous) * 100, 2)
-    return last, previous, change, change_percent
 
 
 def _parse_float(raw_value: str | None) -> float | None:
