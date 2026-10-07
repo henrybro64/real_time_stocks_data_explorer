@@ -53,3 +53,13 @@ def test_readme_explains_the_system_before_setup() -> None:
         assert heading in readme, f"README is missing {heading!r}"
     assert "```mermaid" in readme
     assert "### Sample flows" in readme
+
+
+def test_readme_screenshots_exist() -> None:
+    import re
+
+    readme = _README.read_text(encoding="utf-8")
+    images = re.findall(r"!\[[^\]]*\]\(([^)]+)\)", readme)
+    assert images, "README should show screenshots (#7)"
+    missing = [path for path in images if not (_REPO / path).is_file()]
+    assert missing == [], f"README images missing: {missing}"

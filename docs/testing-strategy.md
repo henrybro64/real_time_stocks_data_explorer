@@ -1,6 +1,6 @@
 # Testing strategy
 
-What is tested today, where, how to run it, and where the gaps are. Counts are approximate and drift as tests are added.
+What is tested today, where, how to run it, and where the gaps are. Sizes are approximate as of October 2026 and grow as tests are added; re-check them during the [maintenance cleanup](maintenance-cleanup.md) pass.
 
 ## Layers at a glance
 

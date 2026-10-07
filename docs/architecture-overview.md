@@ -50,7 +50,7 @@ The browser only talks to the Next.js origin. Next.js rewrites `/api/*` to FastA
 ```text
 backend/app/api/routes/     HTTP handlers; thin, call services
 backend/app/services/       business logic, caching, market clock, background samplers
-backend/app/services/providers/   US (Yahoo/Stooq/SEC) and TW (MIS/TWSE/TPEx/Yahoo) adapters
+backend/app/services/providers/   US (Yahoo/SEC) and TW (MIS/TWSE/TPEx/Yahoo) adapters, shared Yahoo quote math
 backend/app/repositories/   SQLAlchemy persistence, always scoped by user_id for user data
 backend/app/db/ + alembic/  models and migrations
 backend/tests/              unit, integration (Postgres), k3s smoke

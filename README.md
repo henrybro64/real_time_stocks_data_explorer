@@ -27,7 +27,29 @@ Stock Ticker brings this into one self-hosted app: one watchlist and portfolio a
 4. **Get notified.** Create a `price_above` alert. The backend evaluator checks it every 60 s and records an event you see on the Alerts page.
 5. **Scan the market.** Rankings shows today's TWSE limit-up list from the exchange's own limit prices, or the top U.S. movers, each labeled with its data time and source.
 
-Screenshots are not committed yet; the flows above match the UI on the default branch.
+### Screenshots
+
+Captured on 2026-10-07 after the Taiwan close from a local run with live market data. Watchlist, holdings, and alert entries are sample data.
+
+**Dashboard watchlist** — Taiwan and U.S. sections, freshness badges, 1-week sparklines (Taiwan colors: red up, green down).
+
+![Dashboard watchlist grouped into Taiwan and U.S. stocks](docs/images/dashboard-watchlist.png)
+
+**Latest market prices** — indices, crypto, and gold with session state; daily change is measured against the prior session's close.
+
+![Index, crypto, and gold tiles on the dashboard](docs/images/dashboard-market-prices.png)
+
+**Stock detail** — quote summary and a 6-month candlestick chart with SMA 10/20/60 overlays.
+
+![TSMC stock detail with a six-month chart and moving averages](docs/images/stock-detail.png)
+
+**Portfolio holdings** — Taiwan and U.S. positions in their own currency.
+
+![Portfolio holdings split into Taiwan and U.S. tables](docs/images/portfolio-holdings.png)
+
+**Alert rules** — price-above / price-below rules with the last observed price from the background evaluator.
+
+![Alert rules table](docs/images/alerts.png)
 
 ## Architecture
 
@@ -63,7 +85,7 @@ Details: [docs/architecture-overview.md](docs/architecture-overview.md).
 
 ## Key design decisions
 
-- **Free data, honest freshness.** No paid feed, so quotes carry the provider's market timestamp plus cache metadata (`stale`, `refreshStatus`). The UI shows live / delayed / stale / closed / unavailable instead of pretending to be real-time. Last-known values are served only with a stale flag, and when no source has a trustworthy Taiwan price the API returns *unavailable* rather than substituting one.
+- **Free data, honest freshness.** No paid feed, so every quote carries the provider's market timestamp (quotes without one are rejected) plus cache metadata (`stale`, `refreshStatus`). The UI shows live / delayed / stale / closed / unavailable instead of pretending to be real-time. Last-known values are served only with a stale flag, and when no source has a trustworthy price the API returns *unavailable* rather than substituting one.
 - **Cache-first reads, background refresh.** A market-aware refresher (45 s open, 15 min closed) with concurrency limits, jitter, circuit breakers, and a Redis leader lock protects rate-limited free providers, so quote polling from the UI never fans out to upstream. See [docs/quote-refresh-design.md](docs/quote-refresh-design.md).
 - **Multi-user in the data model, not just the UI.** Every user-owned row has a `user_id`; routes resolve the user server-side; single-user mode is the same code with a seeded `default-user`.
 - **Market math in the backend.** Change %, moving averages, chart layout, Taiwan limit status, and AI input metrics are calculated once in Python; the UI formats and renders them (realized-P/L period summaries are the main client-side calculation). AI explains these numbers; it is never a data source.
@@ -83,9 +105,9 @@ Watchlists, portfolios, assets, history, realized trades, alerts, and AI keys/pr
 
 | Layer | Tooling | Scope |
 | --- | --- | --- |
-| Backend unit | pytest (~1,300 cases) | services, providers with recorded payloads, routes, repositories, docs/infra guardrails |
+| Backend unit | pytest | services, providers with recorded payloads, routes, repositories, docs/infra guardrails |
 | Backend integration | pytest + Postgres | real API + database: CRUD, rankings, Taiwan data, multi-user isolation |
-| Frontend unit | Vitest + Testing Library (~420 cases) | components, page state, formatting, freshness labels |
+| Frontend unit | Vitest + Testing Library | components, page state, formatting, freshness labels |
 | E2E | Playwright | user flows on the real Next.js app with a deterministic mocked API |
 | Deployment smoke | k3s on the CI runner | pods Ready, migrations ran, `/health`, frontend → backend proxy |
 
@@ -176,7 +198,7 @@ infra/                      Optional Terraform: Azure SQL rankings archive, AWS 
 
 ## Known limitations
 
-- **Data is best-effort.** Free sources can be delayed (Yahoo is ~20 min behind for Taiwan), rate-limited, or change format without notice; the app flags this where it can. The U.S. quote path has known gaps listed in [docs/quote-refresh-design.md](docs/quote-refresh-design.md#current-limitations).
+- **Data is best-effort.** Free sources can be delayed (Yahoo is ~20 min behind for Taiwan), rate-limited, or change format without notice. The app flags stale or missing data instead of hiding it; see [docs/quote-refresh-design.md](docs/quote-refresh-design.md#current-limitations).
 - **Single-node deployment.** Background jobs run inside the API process, and the k8s manifests run one backend replica with in-cluster Postgres.
 - **Basic authentication.** Local username/password only: open self-registration, no rate limiting, and per-user AI keys stored unencrypted.
 - **Manual records.** No broker sync, automatic FX conversion, or tax-lot accounting; alerts are in-app only (no email/push).

@@ -9,11 +9,12 @@ How market data is fetched, cached, and exposed, and what the app does when it i
 | Quote read paths, freshness envelope | `services/quote_service.py`, `api/routes/quotes.py` |
 | Quote cache (Redis or per-process memory) | `services/quote_redis_cache.py` |
 | Background quote refresher | `services/quote_refresher_service.py` |
-| U.S. adapter | `services/providers/us_provider.py`: Yahoo chart → Yahoo v7 quote → Stooq; SEC ticker catalog; Yahoo history |
+| U.S. adapter | `services/providers/us_provider.py`: Yahoo chart → Yahoo v7 quote; SEC ticker catalog; Yahoo history |
+| Shared Yahoo quote math | `services/providers/yahoo_chart.py`: prior-session close, coherent change, required market time |
 | Taiwan adapter | `services/providers/tw_provider.py`: TWSE MIS latest trade (`services/tw_mis_trade.py`) → Yahoo fallback; TWSE / TPEx daily history; Yahoo 5-minute intraday |
 | Rankings | `services/rankings_snapshot_service.py` (snapshot store), `rankings_service.py` (builders), `ranking_data_providers.py`, `rankings_external_source.py` (Yahoo pre-ranked lists), `tw_price_limit_rankings.py` (Taiwan limit-up/down) |
 | EOD rankings archive (optional) | `services/rankings_archive_service.py` → [azure-rankings-archive.md](azure-rankings-archive.md) |
-| Market snapshot tiles | `market_index_service.py`, `fx_service.py`, `commodity_service.py`, `market_snapshot_cache.py` |
+| Market snapshot tiles | `market_index_service.py` (Taiwan from MIS; U.S. indices, crypto, gold from Yahoo; Stooq as a price-only U.S. fallback), `fx_service.py`, `commodity_service.py`, `market_snapshot_cache.py` |
 | Taiwan daily datasets (法人, 資券) | `taiwan_market_data_refresh_service.py` writing Postgres |
 | Market hours, holidays, snapshot buckets | `services/market_clock.py` |
 
@@ -96,7 +97,7 @@ U.S. net-buy/net-sell and U.S. price-limit rankings are reported as `unsupported
 
 - **TWSE MIS** returns 5-second snapshots. The top-level `z` is usually `-` between trades, so the latest trade must be read from the row's `trade` object; `pz` is undocumented and unused. Field semantics are unofficial and can change.
 - **Yahoo** is about **20 minutes delayed for Taiwan**. With `range=5d`, `chartPreviousClose` is the close before the window, not yesterday's close. Requests can be rate-limited or blocked, and U.S. screens need cookie/crumb handling.
-- **Stooq** can be stale for some U.S. tickers, so it is the last U.S. fallback.
+- **Stooq** quote rows carry no previous close, so they cannot give a daily change. Stooq is used only as a price-only fallback for U.S. indices (the UI shows a dash for the change), never for stock quotes.
 - **TWSE / TPEx daily files** appear after the close; the institutional files apply after 18:00 Taipei.
 - No provider has an SLA. HTML-scraped sources (Yahoo TW rank pages, TWSE ISIN list) break when markup changes.
 
@@ -105,16 +106,14 @@ U.S. net-buy/net-sell and U.S. price-limit rankings are reported as `unsupported
 Rules the code follows; keep them when changing providers:
 
 1. **Never invent a price.** A reference or previous close is never used as the current price. If no source has a trustworthy current price, the API returns `quote: null` with `refreshStatus: "unavailable"` (#258).
-2. **One snapshot per quote.** `lastPrice`, `previousClose`, `change`, and `changePercent` come from the same source and price pair. Fields from different snapshots are never mixed. (Taiwan enforces this in `_coherent_price_change`.)
-3. **Timestamps describe the data, not the fetch.** A quote is stamped with its trade or market time. Taiwan quotes without one are rejected rather than stamped "now" (the U.S. path does not do this yet; see below).
+2. **One snapshot per quote.** `lastPrice`, `previousClose`, `change`, and `changePercent` come from the same source and price pair (`coherent_price_change` in `yahoo_chart.py`). Fields from different snapshots are never mixed. A daily change is never computed against the day's open.
+3. **Timestamps describe the data, not the fetch.** A quote or index is stamped with its trade or market time. Without one it is rejected rather than stamped "now".
 4. **`isMarketOpen`** (Taiwan) is true only while the market is open now *and* the quote is from today's session.
 5. **Serve last-known data with a flag** rather than nothing: stale cache entries (up to the hard TTL) and stored ranking snapshots are returned with `stale` / freshness labels and their original timestamps.
 6. **Prefer unavailable over wrong.** Taiwan trades outside the regular session, stamped in the future, or outside the snapshot's own high/low are rejected.
 
 ## Current limitations
 
-- **U.S. previous close is wrong on the Yahoo chart path.** `us_provider` requests `interval=1d&range=5d` and uses `chartPreviousClose`, which is the close *before the 5-day window*, not the prior session. U.S. `change` / `changePercent` are therefore measured against a close several sessions old. Taiwan fixed the same issue in #258.
-- **U.S. quotes can be stamped "now".** When Yahoo omits `regularMarketTime`, `us_provider` uses the fetch time, which can make an old price look live.
 - Price history is not cached. Detail-page chart polling while a market is open repeats upstream history calls.
 - The alert evaluator uses whatever quote the cache returns, which may be up to the 1-hour hard TTL old; events record that quote's timestamp.
 - Without Redis and with more than one backend replica, each replica has its own memory cache and refresher.
