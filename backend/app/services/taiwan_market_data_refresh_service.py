@@ -44,6 +44,11 @@ TWBoard = Literal["TWSE", "TPEx"]
 DatasetKind = Literal["institutional", "margin_short"]
 _DEFAULT_RECENT_DAYS = 7
 _MARKETS: tuple[TWBoard, ...] = ("TWSE", "TPEx")
+_REQUIRED_DAY_FEEDS: tuple[tuple[DatasetKind, TWBoard], ...] = tuple(
+    (dataset, market)
+    for dataset in ("institutional", "margin_short")
+    for market in _MARKETS
+)
 # Lunar New Year closures can span more than a week. Match the institutional
 # lookback so a holiday does not get stuck waiting for a date that never trades.
 _TRADING_DAY_LOOKBACK = 21
@@ -578,19 +583,40 @@ class TaiwanMarketDataRefreshService:
         return target
 
     @staticmethod
+    def _feed_stored_for_date(result: DatasetDayResult, target_text: str) -> bool:
+        """True when this feed persisted rows whose session date is ``target_text``."""
+        return (
+            result.error is None
+            and result.resolved_date == target_text
+            and (result.rows_inserted + result.rows_updated) > 0
+        )
+
+    @staticmethod
     def _current_trading_day_stored(
         summary: TaiwanMarketDataRefreshSummary,
         local_day: date,
     ) -> bool:
-        """True when the latest TW trading day on/before ``local_day`` was persisted (#266)."""
+        """True when every required feed persisted the latest TW trading day (#266)."""
         target_text = TaiwanMarketDataRefreshService._latest_taiwan_trading_day(
             local_day
         ).isoformat()
-        return any(
-            result.requested_date == target_text
-            and (result.rows_inserted + result.rows_updated) > 0
-            for result in summary.results
-        )
+        for dataset, market in _REQUIRED_DAY_FEEDS:
+            matched = next(
+                (
+                    result
+                    for result in summary.results
+                    if result.dataset == dataset
+                    and result.market == market
+                    and result.requested_date == target_text
+                ),
+                None,
+            )
+            if matched is None or not TaiwanMarketDataRefreshService._feed_stored_for_date(
+                matched,
+                target_text,
+            ):
+                return False
+        return True
 
 
 taiwan_market_data_refresh_service = TaiwanMarketDataRefreshService()

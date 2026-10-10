@@ -23,7 +23,7 @@ from uuid import uuid4
 
 from app.core.config import settings
 from app.models.quote import QuoteRecord
-from app.services.market_clock import MARKET_TIMEZONES, quote_session_is_live
+from app.services.market_clock import MARKET_TIMEZONES, is_market_open, quote_session_is_live
 from app.services.tw_price_limits import restore_cached_price_limit
 
 logger = logging.getLogger(__name__)
@@ -428,7 +428,13 @@ def _with_live_market_open(
         quote_time = datetime.fromisoformat(quote.timestamp)
     except ValueError:
         return replace(quote, is_market_open=False)
-    live = quote_session_is_live(market, quote_time, now=now)
+    # Holiday calendars are preloaded before this runs under the cache lock.
+    live = quote_session_is_live(
+        market,
+        quote_time,
+        now=now,
+        allow_holiday_fetch=False,
+    )
     if live == quote.is_market_open:
         return quote
     return replace(quote, is_market_open=live)
@@ -708,12 +714,28 @@ def _purge_expired_memory_locked() -> None:
         _memory_quotes.pop(stock_id, None)
 
 
+def _preload_market_calendars(stock_ids: list[str], now: datetime) -> None:
+    """Fetch exchange calendars before quote deserialization takes ``_memory_lock``.
+
+    Taiwan market status otherwise requests the TWSE holiday page, and an
+    8-second timeout under the cache lock would stall every quote read, write,
+    and refresh lock.
+    """
+    markets = {
+        stock_id.split(":", 1)[0] for stock_id in stock_ids if ":" in stock_id
+    }
+    for market in markets:
+        if market in MARKET_TIMEZONES:
+            is_market_open(market, now)
+
+
 def _mget_entries(
     client: Any,
     stock_ids: list[str],
     *,
     now: datetime,
 ) -> dict[str, CachedQuoteEntry]:
+    _preload_market_calendars(stock_ids, now)
     keys = [_KEY_PREFIX + stock_id for stock_id in stock_ids]
     values = client.mget(keys)
     entries: dict[str, CachedQuoteEntry] = {}
@@ -731,6 +753,7 @@ def _get_entries_from_memory(
     *,
     now: datetime,
 ) -> dict[str, CachedQuoteEntry]:
+    _preload_market_calendars(stock_ids, now)
     entries: dict[str, CachedQuoteEntry] = {}
     now_mono = time.monotonic()
     with _memory_lock:

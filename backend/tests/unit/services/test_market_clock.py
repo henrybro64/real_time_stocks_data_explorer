@@ -3,8 +3,9 @@ from datetime import date, datetime
 from app.services.http_client import HttpFetchError
 from app.services.market_clock import (
     TW_DAILY_PUBLISH_TIME,
+    _TW_HOLIDAY_FAILURE_RETRY_SECONDS,
+    _clear_tw_market_holiday_cache,
     _tw_market_holidays,
-    _tw_market_holidays_cached,
     current_rankings_snapshot_bucket,
     current_snapshot_bucket,
     is_market_open,
@@ -277,16 +278,38 @@ def test_tw_market_holidays_caches_fetch_failure(monkeypatch) -> None:
         raise HttpFetchError("TWSE holiday schedule unavailable")
 
     monkeypatch.setattr("app.services.market_clock.fetch_text", _boom)
-    _tw_market_holidays_cached.cache_clear()
+    _clear_tw_market_holiday_cache()
     try:
         first = _tw_market_holidays(2026)
         second = _tw_market_holidays(2026)
     finally:
-        _tw_market_holidays_cached.cache_clear()
+        _clear_tw_market_holiday_cache()
 
     assert first == frozenset()
     assert second == frozenset()
     assert calls["count"] == 1
+
+
+def test_tw_market_holidays_retries_fetch_after_the_failure_window(monkeypatch) -> None:
+    calls = {"count": 0}
+    clock = {"now": 1_000.0}
+
+    def _boom(*_args, **_kwargs):
+        calls["count"] += 1
+        raise HttpFetchError("TWSE holiday schedule unavailable")
+
+    monkeypatch.setattr("app.services.market_clock.fetch_text", _boom)
+    monkeypatch.setattr("app.services.market_clock.monotonic", lambda: clock["now"])
+    _clear_tw_market_holiday_cache()
+    try:
+        assert _tw_market_holidays(2026) == frozenset()
+        assert _tw_market_holidays(2026) == frozenset()
+        assert calls["count"] == 1
+        clock["now"] += _TW_HOLIDAY_FAILURE_RETRY_SECONDS
+        assert _tw_market_holidays(2026) == frozenset()
+        assert calls["count"] == 2
+    finally:
+        _clear_tw_market_holiday_cache()
 
 
 def test_tw_institutional_daily_bucket_from_timestamp_normalizes_to_publish_time() -> None:

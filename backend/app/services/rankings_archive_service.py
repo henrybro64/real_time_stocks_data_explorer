@@ -1436,7 +1436,10 @@ class RankingsArchiveService:
                         "sql_round_trips": result.get("sql_round_trips"),
                     },
                 )
-                note_job_success("rankings-archive-eod")
+                failed = int(result.get("failed") or 0)
+                still_missing = int(result.get("still_missing") or 0)
+                if failed == 0 and still_missing == 0:
+                    note_job_success("rankings-archive-eod")
             except Exception as exc:  # noqa: BLE001
                 note_job_failure("rankings-archive-eod", exc)
                 logger.exception(

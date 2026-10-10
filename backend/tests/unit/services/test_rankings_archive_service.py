@@ -23,6 +23,7 @@ from app.schemas.rankings import (
     RankingType,
 )
 from app.schemas.stock import StockResponse
+from app.jobs.health import get_background_jobs_health, reset_job_health_for_tests
 from app.services.rankings_archive_service import RankingsArchiveService
 
 
@@ -839,8 +840,47 @@ def test_run_sampler_captures_once_then_sleeps_until_next_wake(monkeypatch) -> N
         return True
 
     monkeypatch.setattr(service._stop_event, "wait", _wait)
+    reset_job_health_for_tests()
     service._run_sampler(poll_seconds=900)
     assert calls == ["capture"]
+    assert (
+        get_background_jobs_health()["rankings-archive-eod"]["last_success_at"] is not None
+    )
+
+
+def test_run_sampler_does_not_record_success_when_capture_fails(monkeypatch) -> None:
+    service = RankingsArchiveService(repository=_FakeRepo())
+
+    def _capture(**_kwargs):
+        return {
+            "captured": 0,
+            "skipped": 0,
+            "failed": 2,
+            "had_missing": 0,
+            "still_missing": 0,
+            "sql_round_trips": 2,
+        }
+
+    monkeypatch.setattr(service, "capture_eod_archives", _capture)
+    monkeypatch.setattr(
+        "app.services.rankings_archive_service.settings.rankings_archive_eod_enabled",
+        True,
+    )
+    monkeypatch.setattr(service, "any_active_capture_window", lambda _now=None: True)
+
+    def _wait(seconds: float) -> bool:
+        service._stop_event.set()
+        return True
+
+    monkeypatch.setattr(service._stop_event, "wait", _wait)
+    reset_job_health_for_tests()
+    service._run_sampler(poll_seconds=120)
+    assert (
+        get_background_jobs_health()
+        .get("rankings-archive-eod", {})
+        .get("last_success_at")
+        is None
+    )
 
 
 def test_run_sampler_retries_within_budget_when_still_missing(monkeypatch) -> None:
@@ -872,10 +912,17 @@ def test_run_sampler_retries_within_budget_when_still_missing(monkeypatch) -> No
         return True
 
     monkeypatch.setattr(service._stop_event, "wait", _wait)
+    reset_job_health_for_tests()
     service._run_sampler(poll_seconds=120)
     assert calls == ["capture"]
     # After capture with still_missing, next_wake is now+poll; loop waits that gap.
     assert wake_gaps and wake_gaps[0] <= 120
+    assert (
+        get_background_jobs_health()
+        .get("rankings-archive-eod", {})
+        .get("last_success_at")
+        is None
+    )
 
 
 def test_missed_friday_recovered_on_tuesday_settle_candidates() -> None:

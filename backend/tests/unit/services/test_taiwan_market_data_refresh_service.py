@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, date, datetime
 from zoneinfo import ZoneInfo
 
@@ -621,24 +622,48 @@ def test_sampler_skips_before_refresh_hour(monkeypatch) -> None:
 
 
 def _stored_summary(*, local_day: date, rows: int = 1) -> TaiwanMarketDataRefreshSummary:
+    text = local_day.isoformat()
+    results = tuple(
+        DatasetDayResult(
+            dataset=dataset,
+            market=market,
+            requested_date=text,
+            resolved_date=text,
+            rows_fetched=rows,
+            rows_inserted=rows,
+            rows_updated=0,
+            skipped_no_data=False,
+        )
+        for dataset in ("institutional", "margin_short")
+        for market in ("TWSE", "TPEx")
+    )
     return TaiwanMarketDataRefreshSummary(
         trigger="scheduler",
         days=7,
         started_at="2026-07-10T12:00:00+00:00",
         finished_at="2026-07-10T12:00:01+00:00",
-        results=(
-            DatasetDayResult(
-                dataset="institutional",
-                market="TWSE",
-                requested_date=local_day.isoformat(),
-                resolved_date=local_day.isoformat(),
-                rows_fetched=rows,
-                rows_inserted=rows,
-                rows_updated=0,
-                skipped_no_data=False,
-            ),
-        ),
+        results=results,
     )
+
+
+def test_trading_day_stored_requires_resolved_rows_from_every_feed(monkeypatch) -> None:
+    friday = date(2026, 7, 10)
+    _stub_tw_holidays(monkeypatch)
+    complete = _stored_summary(local_day=friday)
+    assert TaiwanMarketDataRefreshService._current_trading_day_stored(complete, friday)
+
+    stale_rows = list(complete.results)
+    stale_rows[0] = replace(stale_rows[0], resolved_date="2026-07-09")
+    stale = replace(complete, results=tuple(stale_rows))
+    assert TaiwanMarketDataRefreshService._current_trading_day_stored(stale, friday) is False
+
+    partial = replace(complete, results=complete.results[:1])
+    assert TaiwanMarketDataRefreshService._current_trading_day_stored(partial, friday) is False
+
+    failed_rows = list(complete.results)
+    failed_rows[-1] = replace(failed_rows[-1], error="timeout")
+    failed = replace(complete, results=tuple(failed_rows))
+    assert TaiwanMarketDataRefreshService._current_trading_day_stored(failed, friday) is False
 
 
 def test_latest_trading_day_skips_weekend_and_weekday_holiday(monkeypatch) -> None:
@@ -833,6 +858,51 @@ def test_sampler_retries_holiday_until_previous_trading_day_is_stored(monkeypatc
         .get("taiwan-market-data-refresh", {})
         .get("last_success_at")
         is None
+    )
+
+
+def test_sampler_accepts_previous_session_once_holiday_calendar_recovers(monkeypatch) -> None:
+    calls: list[str] = []
+    reset_job_health_for_tests()
+    holiday = date(2026, 7, 13)
+    friday = date(2026, 7, 10)
+    lookups = {"count": 0}
+
+    def _holidays(year: int) -> frozenset[date]:
+        lookups["count"] += 1
+        if lookups["count"] == 1:
+            return frozenset()
+        return frozenset({holiday}) if year == 2026 else frozenset()
+
+    monkeypatch.setattr("app.services.market_clock._tw_market_holidays", _holidays)
+    late = datetime(2026, 7, 13, 12, 0, tzinfo=UTC)
+    service = TaiwanMarketDataRefreshService(
+        institutional_repository=FakeInstitutionalRepo(),
+        margin_short_repository=FakeMarginRepo(),
+        now_provider=lambda: late,
+    )
+    monkeypatch.setattr(
+        service,
+        "refresh_recent",
+        lambda **kwargs: calls.append(kwargs["trigger"]) or _stored_summary(local_day=friday),
+    )
+
+    wait_state = {"count": 0}
+
+    def fake_wait(timeout=None):
+        if timeout == 0:
+            wait_state["count"] += 1
+            return wait_state["count"] > 2
+        return False if wait_state["count"] <= 2 else True
+
+    monkeypatch.setattr(service._stop_event, "wait", fake_wait)
+    service._run_sampler(poll_seconds=1, refresh_hour=18, recent_days=7)
+
+    assert calls == ["scheduler", "scheduler"]
+    assert service._last_scheduler_local_date == holiday
+    assert (
+        get_background_jobs_health()["taiwan-market-data-refresh"]["last_success_at"]
+        is not None
     )
 
 
