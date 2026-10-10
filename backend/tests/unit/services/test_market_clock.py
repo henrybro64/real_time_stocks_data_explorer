@@ -6,6 +6,7 @@ from app.services.market_clock import (
     _TW_HOLIDAY_FAILURE_RETRY_SECONDS,
     _clear_tw_market_holiday_cache,
     _tw_market_holidays,
+    refresh_tw_market_holidays,
     current_rankings_snapshot_bucket,
     current_snapshot_bucket,
     is_market_open,
@@ -280,8 +281,8 @@ def test_tw_market_holidays_caches_fetch_failure(monkeypatch) -> None:
     monkeypatch.setattr("app.services.market_clock.fetch_text", _boom)
     _clear_tw_market_holiday_cache()
     try:
-        first = _tw_market_holidays(2026)
-        second = _tw_market_holidays(2026)
+        first = refresh_tw_market_holidays(2026)
+        second = refresh_tw_market_holidays(2026)
     finally:
         _clear_tw_market_holiday_cache()
 
@@ -302,11 +303,11 @@ def test_tw_market_holidays_retries_fetch_after_the_failure_window(monkeypatch) 
     monkeypatch.setattr("app.services.market_clock.monotonic", lambda: clock["now"])
     _clear_tw_market_holiday_cache()
     try:
-        assert _tw_market_holidays(2026) == frozenset()
-        assert _tw_market_holidays(2026) == frozenset()
+        assert refresh_tw_market_holidays(2026) == frozenset()
+        assert refresh_tw_market_holidays(2026) == frozenset()
         assert calls["count"] == 1
         clock["now"] += _TW_HOLIDAY_FAILURE_RETRY_SECONDS
-        assert _tw_market_holidays(2026) == frozenset()
+        assert refresh_tw_market_holidays(2026) == frozenset()
         assert calls["count"] == 2
     finally:
         _clear_tw_market_holiday_cache()

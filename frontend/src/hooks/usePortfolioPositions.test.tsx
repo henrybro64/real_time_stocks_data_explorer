@@ -13,13 +13,23 @@ import {
   updatePortfolioPosition,
 } from "../services/api/client";
 
-vi.mock("../services/api/client", () => ({
-  addPortfolioPosition: vi.fn(),
-  fetchQuote: vi.fn(),
-  deletePortfolioPosition: vi.fn(),
-  fetchPortfolioPositions: vi.fn(),
-  updatePortfolioPosition: vi.fn(),
-}));
+vi.mock("../services/api/client", async () => {
+  const actual = await vi.importActual<typeof import("../services/api/client")>(
+    "../services/api/client",
+  );
+  return {
+    ...actual,
+    addPortfolioPosition: vi.fn(),
+    fetchQuote: vi.fn(),
+    deletePortfolioPosition: vi.fn(),
+    fetchPortfolioPositions: vi.fn(),
+    updatePortfolioPosition: vi.fn(),
+    fetchMarkets: vi.fn().mockResolvedValue([
+      { market: "US", label: "US", timezone: "America/New_York", isOpen: true, localTime: "", withinHourBeforeOpen: false },
+      { market: "TW", label: "TW", timezone: "Asia/Taipei", isOpen: false, localTime: "", withinHourBeforeOpen: false },
+    ]),
+  };
+});
 
 function createWrapper() {
   const queryClient = new QueryClient({

@@ -1551,6 +1551,11 @@ def test_tw_institutional_quote_enrichment_does_not_enqueue_swr_refresh(
     fixture = _tw_quote_source({"TW:2330": 10.0, "TW:2317": 20.0})
     quote_cache.set_cached_quote("TW:2330", fixture._quotes["TW:2330"])
     age_memory_cached_quote("TW:2330")
+    # Aged quotes are soft-stale only while the session is active (#270).
+    monkeypatch.setattr(quote_cache, "is_market_open", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        quote_cache, "is_within_hour_before_market_open", lambda *_args, **_kwargs: False
+    )
     scheduled: list[str] = []
 
     class StubTWProvider:

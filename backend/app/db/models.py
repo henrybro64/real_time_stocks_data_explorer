@@ -247,6 +247,76 @@ class TaiwanMarginShortDaily(TaiwanMarketDailyColumns, Base):
     )
 
 
+class DailyPriceBar(TimestampedRowMixin, Base):
+    """Persisted OHLCV daily bars shared by charts, key stats, and analysis (#269)."""
+
+    __tablename__ = "daily_price_bars"
+    __table_args__ = (
+        UniqueConstraint(
+            "market",
+            "symbol",
+            "date",
+            name="uq_daily_price_bars_market_symbol_date",
+        ),
+        Index(
+            "ix_daily_price_bars_lookup",
+            "market",
+            "symbol",
+            "date",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    market: Mapped[str] = mapped_column(String(8), nullable=False)
+    symbol: Mapped[str] = mapped_column(String(32), nullable=False)
+    date: Mapped[date] = mapped_column(Date(), nullable=False)
+    open: Mapped[float] = mapped_column(Float, nullable=False)
+    high: Mapped[float] = mapped_column(Float, nullable=False)
+    low: Mapped[float] = mapped_column(Float, nullable=False)
+    close: Mapped[float] = mapped_column(Float, nullable=False)
+    volume: Mapped[int] = mapped_column(nullable=False)
+    source: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class DailyPriceMonthFetch(Base):
+    """A month of daily history that has already been requested from upstream (#269)."""
+
+    __tablename__ = "daily_price_month_fetches"
+    __table_args__ = (
+        UniqueConstraint(
+            "market",
+            "symbol",
+            "month_start",
+            name="uq_daily_price_month_fetches_market_symbol_month",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    market: Mapped[str] = mapped_column(String(8), nullable=False)
+    symbol: Mapped[str] = mapped_column(String(32), nullable=False)
+    month_start: Mapped[date] = mapped_column(Date(), nullable=False)
+    bar_count: Mapped[int] = mapped_column(nullable=False, server_default=text("0"))
+    fetched_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+
+
+class ReferenceSnapshot(Base):
+    """Last good catalog or holiday calendar, so a restart keeps it (#264)."""
+
+    __tablename__ = "reference_snapshots"
+
+    cache_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+
+
 class RankingSnapshot(Base):
     __tablename__ = "ranking_snapshots"
     __table_args__ = (

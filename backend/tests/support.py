@@ -190,7 +190,7 @@ class StubUSProvider:
 
 
 class FakeTrackedIdsRepo:
-    """In-memory watchlist/portfolio repo stub for refresher unit tests."""
+    """In-memory watchlist/portfolio/alert repo stub for refresher unit tests."""
 
     def __init__(self, ids: list[str] | None = None) -> None:
         self.ids = list(ids or [])
@@ -202,6 +202,9 @@ class FakeTrackedIdsRepo:
         return list(self.ids)
 
     def list_distinct_position_stock_ids(self) -> list[str]:
+        return list(self.ids)
+
+    def list_distinct_enabled_stock_ids(self) -> list[str]:
         return list(self.ids)
 
 

@@ -433,20 +433,25 @@ def _us_early_close_days(year: int) -> frozenset[date]:
 
 # A failed TWSE holiday fetch must not stick for the process lifetime. While
 # the empty result is cached, weekday holidays look like trading days and the
-# daily refresh never accepts the preceding session (#266).
+# daily refresh never accepts the preceding session (#266 / #264).
 _TW_HOLIDAY_FAILURE_RETRY_SECONDS = 15 * 60
+# Successful calendars expire so same-day typhoon closures can be picked up (#264).
+_TW_HOLIDAY_SUCCESS_TTL_SECONDS = 4 * 60 * 60
 _tw_holiday_lock = Lock()
 _tw_holiday_success: dict[int, frozenset[date]] = {}
+_tw_holiday_success_at: dict[int, float] = {}
 _tw_holiday_retry_after: dict[int, float] = {}
 
 
 def _clear_tw_market_holiday_cache() -> None:
     with _tw_holiday_lock:
         _tw_holiday_success.clear()
+        _tw_holiday_success_at.clear()
         _tw_holiday_retry_after.clear()
 
 
 def _tw_market_holidays(year: int) -> frozenset[date]:
+    """Return the cached or persisted calendar. This path does not call TWSE."""
     cached = _tw_holiday_success.get(year)
     if cached is not None:
         return cached
@@ -454,17 +459,56 @@ def _tw_market_holidays(year: int) -> frozenset[date]:
         cached = _tw_holiday_success.get(year)
         if cached is not None:
             return cached
-        if monotonic() < _tw_holiday_retry_after.get(year, 0.0):
+        loaded = _load_persisted_holidays(year)
+        if loaded is None:
             return frozenset()
+        holidays, updated_at = loaded
+        _tw_holiday_success[year] = holidays
+        age_seconds = max(0.0, (datetime.now(timezone.utc) - updated_at).total_seconds())
+        _tw_holiday_success_at[year] = monotonic() - age_seconds
+        return holidays
+
+
+def refresh_tw_market_holidays(year: int) -> frozenset[date]:
+    """Fetch the TWSE holiday page, keep the previous calendar on failure, and persist it."""
+    now_mono = monotonic()
+    persisted: frozenset[date] | None = None
+    with _tw_holiday_lock:
+        cached = _tw_holiday_success.get(year)
+        cached_at = _tw_holiday_success_at.get(year)
+        if (
+            cached is not None
+            and cached_at is not None
+            and now_mono - cached_at < _TW_HOLIDAY_SUCCESS_TTL_SECONDS
+        ):
+            return cached
+        if now_mono < _tw_holiday_retry_after.get(year, 0.0):
+            return cached if cached is not None else frozenset()
         try:
             holidays = _load_tw_market_holidays(year)
         except HttpFetchError:
             logger.warning("Failed to fetch TWSE holiday schedule for %s", year)
-            _tw_holiday_retry_after[year] = monotonic() + _TW_HOLIDAY_FAILURE_RETRY_SECONDS
-            return frozenset()
+            _tw_holiday_retry_after[year] = now_mono + _TW_HOLIDAY_FAILURE_RETRY_SECONDS
+            return cached if cached is not None else frozenset()
         _tw_holiday_retry_after.pop(year, None)
         _tw_holiday_success[year] = holidays
-        return holidays
+        _tw_holiday_success_at[year] = now_mono
+        persisted = holidays
+    if persisted is not None:
+        _save_persisted_holidays(year, persisted)
+    return persisted
+
+
+def _load_persisted_holidays(year: int) -> tuple[frozenset[date], datetime] | None:
+    from app.services.reference_data_store import load_holiday_snapshot
+
+    return load_holiday_snapshot(year)
+
+
+def _save_persisted_holidays(year: int, holidays: frozenset[date]) -> None:
+    from app.services.reference_data_store import save_holiday_snapshot
+
+    save_holiday_snapshot(year, holidays)
 
 
 def _load_tw_market_holidays(year: int) -> frozenset[date]:

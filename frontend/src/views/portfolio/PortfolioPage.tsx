@@ -28,6 +28,7 @@ import { getHistoryZoomState, stepHistoryRange } from "../../components/chart/hi
 import { StockSearch } from "../../components/search/StockSearch";
 import { RequestStateNotice, errorToNoticeKind } from "../../components/state/RequestStateNotice";
 import { usePortfolioPositions } from "../../hooks/usePortfolioPositions";
+import { useQuoteDerivedRefetchInterval } from "../../hooks/useQuoteDerivedRefetchInterval";
 import {
   analyzePortfolio,
   fetchPortfolioHoldingsHistory,
@@ -61,6 +62,7 @@ export function PortfolioPage() {
   const [savingPositionIds, setSavingPositionIds] = useState<Record<number, boolean>>({});
   const [savedPositionIds, setSavedPositionIds] = useState<Record<number, boolean>>({});
   const portfolio = usePortfolioPositions();
+  const quoteRefetchInterval = useQuoteDerivedRefetchInterval(portfolio.ids);
   const analysisMutation = useMutation<PortfolioAnalysisResponse>({
     mutationFn: analyzePortfolio,
     retry: false,
@@ -75,7 +77,8 @@ export function PortfolioPage() {
   const summaryQuery = useQuery({
     queryKey: ["portfolio-summary"],
     queryFn: fetchPortfolioSummary,
-    refetchInterval: 5000,
+    refetchInterval: quoteRefetchInterval,
+    refetchIntervalInBackground: false,
   });
   const items = portfolio.positions;
   const taiwanPositions = items.filter((position) => position.stock.market === "TW");

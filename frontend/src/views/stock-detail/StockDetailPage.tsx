@@ -23,6 +23,7 @@ import { QuoteSummary } from "../../components/quote/QuoteSummary";
 import { RequestStateNotice, errorToNoticeKind } from "../../components/state/RequestStateNotice";
 import { TwInsightsPanel } from "../../components/tw-insights/TwInsightsPanel";
 import { UsInsightsPanel } from "../../components/us-insights/UsInsightsPanel";
+import { useQuoteDerivedRefetchInterval } from "../../hooks/useQuoteDerivedRefetchInterval";
 import { TaiwanSignalsPanel } from "./TaiwanSignalsPanel";
 import {
   fetchHistory,
@@ -49,13 +50,6 @@ export function StockDetailPage({ stockId = "" }: Props) {
   const isTaiwanStock = decodedStockId.startsWith("TW:");
   const isUsStock = decodedStockId.startsWith("US:");
 
-  const quoteQuery = useQuery<QuoteResponse>({
-    queryKey: ["quote", decodedStockId],
-    queryFn: () => fetchQuote(decodedStockId),
-    enabled: decodedStockId.length > 0,
-    refetchInterval: 5_000,
-  });
-
   const marketsQuery = useQuery<MarketStatus[]>({
     queryKey: ["markets"],
     queryFn: fetchMarkets,
@@ -67,6 +61,16 @@ export function StockDetailPage({ stockId = "" }: Props) {
   const marketOpen =
     (stockMarket === "TW" || stockMarket === "US") &&
     marketsQuery.data?.some((status) => status.market === stockMarket && status.isOpen) === true;
+  const quoteRefetchInterval = useQuoteDerivedRefetchInterval(
+    decodedStockId.length > 0 ? [decodedStockId] : [],
+  );
+  const quoteQuery = useQuery<QuoteResponse>({
+    queryKey: ["quote", decodedStockId],
+    queryFn: () => fetchQuote(decodedStockId),
+    enabled: decodedStockId.length > 0,
+    refetchInterval: quoteRefetchInterval,
+    refetchIntervalInBackground: false,
+  });
   const historyQuery = useQuery<HistoryResponse>({
     queryKey: ["history", decodedStockId, range],
     queryFn: () => fetchHistory(decodedStockId, range),

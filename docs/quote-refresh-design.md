@@ -112,9 +112,12 @@ Rules the code follows; keep them when changing providers:
 5. **Serve last-known data with a flag** rather than nothing: stale cache entries (up to the hard TTL) and stored ranking snapshots are returned with `stale` / freshness labels and their original timestamps. A Taiwan provider last-good fallback must not be re-cached as a fresh provider success (#263).
 6. **Prefer unavailable over wrong.** Taiwan trades outside the regular session, stamped in the future, or outside the snapshot's own high/low are rejected.
 
+## Price history storage (#269)
+
+Daily OHLCV bars live in Postgres (`daily_price_bars`, keyed by market/symbol/date). A chart, key-stat, analysis, or ownership request reads that store. It backfills a month only when that month has no stored bars and no fetch record, spacing each Taiwan month by the upstream host interval. A month that already has bars stays put through the session. Today's forming candle comes from the quote cache and is left out of the official store. While the market is closed, the reference-refresh job updates the current month for watchlist, portfolio, and alert symbols when the stored series lags the last completed session. A failed month waits 15 minutes and leaves stored bars in place. Intraday ranges (`1D`, and short-lived `1W` responses) use a 30–60 s Redis/memory cache. When Redis holds the single-flight lock, other callers wait for that cache entry. The dashboard watchlist uses one batch sparkline request (`GET /api/stocks/sparklines`). A missing older month leaves the chart on the bars already stored. Taiwan and U.S. catalogs and the Taiwan holiday calendar are persisted in `reference_snapshots` and refreshed by the same background job. Request paths read the stored catalog and calendar.
+
 ## Current limitations
 
-- Price history is not cached. Detail-page chart polling while a market is open repeats upstream history calls.
 - The alert evaluator uses whatever quote the cache returns, which may be up to the 1-hour hard TTL old; events record that quote's timestamp.
 - Without Redis and with more than one backend replica, each replica has its own memory cache and refresher.
 - With Redis configured but down, refresher cycles stop (fail closed). Reads then serve memory or stale data until Redis returns.

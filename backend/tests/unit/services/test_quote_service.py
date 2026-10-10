@@ -21,6 +21,13 @@ def _reset_quote_cache(monkeypatch):
     # Keep request-path SWR enqueue tests exercising the local scheduler.
     monkeypatch.setattr(cache.settings, "quote_refresher_enabled", False)
     monkeypatch.setattr(cache.settings, "quote_refresher_owns_upstream", False)
+    # Soft-TTL staleness is market-aware (#270); force open so age-based tests hold.
+    monkeypatch.setattr(cache, "is_market_open", lambda market, now=None, **_kwargs: True)
+    monkeypatch.setattr(
+        cache,
+        "is_within_hour_before_market_open",
+        lambda market, now=None: False,
+    )
     yield
     cache.clear_quote_cache_for_tests()
 

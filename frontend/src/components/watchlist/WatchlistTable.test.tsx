@@ -31,6 +31,7 @@ vi.mock("../../services/api/client", async () => {
       chartLayout: null,
       movingAverages: [],
     }),
+    fetchWatchlistSparklines: vi.fn().mockResolvedValue({}),
   };
 });
 

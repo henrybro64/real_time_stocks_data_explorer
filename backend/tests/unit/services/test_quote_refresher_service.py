@@ -46,6 +46,13 @@ def _reset_cache(monkeypatch):
         "app.services.quote_refresher_service.is_within_hour_before_market_open",
         lambda market, now=None: False,
     )
+    # Cache soft-stale is market-aware (#270); keep open for age-based assertions.
+    monkeypatch.setattr(cache, "is_market_open", lambda market, now=None, **_kwargs: True)
+    monkeypatch.setattr(
+        cache,
+        "is_within_hour_before_market_open",
+        lambda market, now=None: False,
+    )
     yield
     cache.clear_quote_cache_for_tests()
 
@@ -54,6 +61,7 @@ def _service(
     *,
     watchlist: list[str] | None = None,
     portfolio: list[str] | None = None,
+    alerts: list[str] | None = None,
     provider: StubUSProvider | None = None,
     now: datetime | None = None,
     random_values: list[float] | None = None,
@@ -71,6 +79,7 @@ def _service(
     refresher = QuoteRefresherService(
         watchlist_repo=FakeTrackedIdsRepo(watchlist),
         portfolio_repo=FakeTrackedIdsRepo(portfolio),
+        alert_repo=FakeTrackedIdsRepo(alerts),
         quote_source=quote_source,
         now_provider=lambda: now or datetime(2026, 5, 12, 14, 0, tzinfo=UTC),
         sleep_fn=lambda _seconds: None,
@@ -83,11 +92,38 @@ def test_collect_tracked_stock_ids_deduplicates_across_users_and_portfolios() ->
     refresher, _stub = _service(
         watchlist=["US:AAPL", "US:MSFT", "US:AAPL"],
         portfolio=["US:MSFT", "US:AAPL"],
+        alerts=["US:AAPL", "US:GOOG"],
     )
 
     ids, duplicates = refresher.collect_tracked_stock_ids()
-    assert ids == ["US:AAPL", "US:MSFT"]
-    assert duplicates == 3
+    assert ids == ["US:AAPL", "US:MSFT", "US:GOOG"]
+    assert duplicates == 4
+
+
+def test_request_immediate_refresh_skips_closed_market_with_cached_quote(
+    monkeypatch,
+) -> None:
+    refresher, stub = _service(watchlist=["US:AAPL"])
+    cache.set_cached_quote("US:AAPL", stub._quotes["US:AAPL"])
+    monkeypatch.setattr(
+        "app.services.quote_refresher_service.is_market_open",
+        lambda market, now=None: False,
+    )
+    monkeypatch.setattr(
+        "app.services.quote_refresher_service.is_within_hour_before_market_open",
+        lambda market, now=None: False,
+    )
+    submitted: list[str] = []
+    monkeypatch.setattr(
+        refresher._pool,
+        "submit",
+        lambda fn, stock_id: submitted.append(stock_id),
+    )
+
+    refresher.request_immediate_refresh("US:AAPL")
+
+    assert submitted == []
+    assert stub.quote_calls == []
 
 
 def test_select_poll_seconds_uses_open_and_closed_cadence(monkeypatch) -> None:
@@ -504,7 +540,7 @@ def test_immediate_refresh_empty_outcome_notes_circuit_failure() -> None:
     assert cache.refresh_failure_active("US:AAPL")
 
 
-def test_immediate_refresh_failure_clears_queue_and_allows_retry() -> None:
+def test_immediate_refresh_failure_clears_queue_and_honours_backoff() -> None:
     refresher, stub = _service(watchlist=[])
     stub.get_quote = lambda _stock_id: None  # type: ignore[method-assign]
     submitted: list[str] = []
@@ -519,8 +555,9 @@ def test_immediate_refresh_failure_clears_queue_and_allows_retry() -> None:
     assert cache.refresh_failure_active("US:AAPL")
 
     submitted.clear()
+    # Failure backoff must suppress immediate re-queues (#270).
     refresher.request_immediate_refresh("US:AAPL")
-    assert submitted == ["US:AAPL"]
+    assert submitted == []
 
 
 def test_immediate_refresh_success_clears_failure_marker() -> None:

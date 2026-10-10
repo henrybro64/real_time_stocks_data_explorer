@@ -19,6 +19,7 @@ from uuid import uuid4
 
 from app.core.config import settings
 from app.core.diagnostics import elapsed_ms
+from app.repositories.alert_repository import alert_repository
 from app.repositories.portfolio_repository import portfolio_repository
 from app.repositories.watchlist_repository import watchlist_repository
 from app.services.http_client import (
@@ -28,9 +29,11 @@ from app.services.http_client import (
 from app.services.market_clock import is_market_open, is_within_hour_before_market_open
 from app.services.quote_redis_cache import (
     clear_refresh_failure,
+    get_cached_quote_entry,
     get_cached_quote_entries,
     record_refresh_failure,
     redis_enabled,
+    refresh_failure_active,
     refresh_failure_backoff_seconds,
     refresh_lock_seconds,
     release_refresh_lock,
@@ -97,6 +100,7 @@ class QuoteRefresherService:
         *,
         watchlist_repo=watchlist_repository,
         portfolio_repo=portfolio_repository,
+        alert_repo=alert_repository,
         quote_source=quote_service,
         now_provider: Callable[[], datetime] | None = None,
         sleep_fn: Callable[[float], None] = time.sleep,
@@ -104,6 +108,7 @@ class QuoteRefresherService:
     ) -> None:
         self._watchlist_repo = watchlist_repo
         self._portfolio_repo = portfolio_repo
+        self._alert_repo = alert_repo
         self._quote_source = quote_source
         self._now_provider = now_provider or (lambda: datetime.now(UTC))
         self._sleep = sleep_fn
@@ -185,16 +190,37 @@ class QuoteRefresherService:
         )
 
     def request_immediate_refresh(self, stock_id: str) -> None:
-        """Queue a newly tracked symbol onto the bounded refresher pool."""
+        """Queue a newly tracked symbol onto the bounded refresher pool.
+
+        Closed-market symbols that already hold a closing quote are skipped so
+        UI polling cannot defeat the closed-market cycle (#270). Failure
+        backoff is honoured the same way as cache-first read paths.
+        """
         normalized = stock_id.strip()
         if not normalized:
+            return
+        if not settings.quote_refresher_enabled:
+            return
+        if refresh_failure_active(normalized):
+            return
+        if self._should_skip_closed_market_immediate(normalized):
             return
         with self._immediate_lock:
             already_queued = normalized in self._immediate
             self._immediate.add(normalized)
-        if already_queued or not settings.quote_refresher_enabled:
+        if already_queued:
             return
         self._pool.submit(self._safe_immediate_refresh, normalized)
+
+    def _should_skip_closed_market_immediate(self, stock_id: str) -> bool:
+        market = stock_id.split(":", 1)[0]
+        if market not in _MARKETS:
+            return False
+        now = self._now_provider()
+        if is_market_open(market, now) or is_within_hour_before_market_open(market, now):
+            return False
+        entry = get_cached_quote_entry(stock_id)
+        return entry is not None and entry.quote is not None
 
     def _safe_immediate_refresh(self, stock_id: str) -> None:
         outcome = "failed"
@@ -272,11 +298,25 @@ class QuoteRefresherService:
         """Return unique IDs and how many duplicate rows were collapsed."""
         watchlist_ids = self._watchlist_repo.list_distinct_stock_ids()
         portfolio_ids = self._portfolio_repo.list_distinct_position_stock_ids()
+        alert_ids: list[str] = []
+        if self._alert_repo is not None and self._alert_repo.is_available():
+            try:
+                alert_ids = self._alert_repo.list_distinct_enabled_stock_ids()
+            except Exception:  # noqa: BLE001 - never fail the refresher for alerts
+                logger.debug(
+                    "Could not load alert-tracked stock ids",
+                    extra={"event": "quote_refresher.alerts.list_failed"},
+                )
+                alert_ids = []
         with self._immediate_lock:
             immediate = sorted(self._immediate)
             # Immediate IDs stay listed only while an attempt is in flight.
-        raw_count = len(watchlist_ids) + len(portfolio_ids) + len(immediate)
-        unique = list(dict.fromkeys([*watchlist_ids, *portfolio_ids, *immediate]))
+        raw_count = (
+            len(watchlist_ids) + len(portfolio_ids) + len(alert_ids) + len(immediate)
+        )
+        unique = list(
+            dict.fromkeys([*watchlist_ids, *portfolio_ids, *alert_ids, *immediate])
+        )
         return unique, max(0, raw_count - len(unique))
 
     def select_poll_seconds(self, *, now: datetime | None = None) -> int:

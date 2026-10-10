@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
 from datetime import datetime, timedelta
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
@@ -114,6 +115,7 @@ US_STOCKS: dict[str, StockRecord] = {
 
 _CATALOG_URL = "https://www.sec.gov/files/company_tickers_exchange.json"
 _CATALOG_TTL = timedelta(hours=12)
+_CATALOG_FAILURE_RETRY = timedelta(minutes=15)
 _REQUEST_TIMEOUT_SECONDS = 10
 _USER_AGENT = "stock-ticker-app/0.1 contact@example.com"
 _YAHOO_QUOTE_URL = "https://query1.finance.yahoo.com/v7/finance/quote"
@@ -152,6 +154,8 @@ class USProvider:
     market = "US"
     _catalog_cache: dict[str, StockRecord] | None = None
     _catalog_cached_at: datetime | None = None
+    _catalog_degraded: bool = False
+    _catalog_lock = threading.Lock()
 
     def list_stocks(self) -> list[StockRecord]:
         return list(self._stock_catalog().values())
@@ -237,6 +241,16 @@ class USProvider:
         if stock is None:
             return []
 
+        if range_name in {"1W", "1M", "3M", "6M", "1Y", "MAX"}:
+            from app.services.daily_price_history_service import daily_price_history_service
+
+            return daily_price_history_service.get_daily_history(
+                stock,
+                range_name,
+                limit=limit,
+                provider=self,
+            )
+
         live_history = _fetch_yahoo_history(stock, range_name, min_candles=limit)
         if live_history and limit is not None:
             return live_history[-limit:]
@@ -244,22 +258,82 @@ class USProvider:
             return live_history
         return []
 
-    def _stock_catalog(self) -> dict[str, StockRecord]:
-        now = datetime.now(ZoneInfo("UTC"))
-        if (
-            self.__class__._catalog_cache is not None
-            and self.__class__._catalog_cached_at is not None
-            and now - self.__class__._catalog_cached_at < _CATALOG_TTL
-        ):
-            return self.__class__._catalog_cache
+    def fetch_daily_history_uncached(
+        self,
+        stock: StockRecord,
+        *,
+        limit: int,
+        range_name: str,
+    ) -> list[CandleRecord]:
+        live_history = _fetch_yahoo_history(stock, range_name, min_candles=limit)
+        if live_history and limit > 0:
+            return live_history[-limit:]
+        return live_history or []
 
+    def _catalog_refresh_is_current(self, now: datetime) -> bool:
+        cached = self.__class__._catalog_cache
+        cached_at = self.__class__._catalog_cached_at
+        if cached is None or cached_at is None:
+            return False
+        ttl = (
+            _CATALOG_FAILURE_RETRY
+            if self.__class__._catalog_degraded
+            else _CATALOG_TTL
+        )
+        return now - cached_at < ttl
+
+    def _stock_catalog(self) -> dict[str, StockRecord]:
+        """Return the in-memory or persisted catalog. This path does not call upstream."""
+        cached = self.__class__._catalog_cache
+        if cached is not None:
+            return cached
+        with self.__class__._catalog_lock:
+            cached = self.__class__._catalog_cache
+            if cached is not None:
+                return cached
+            return self._hydrate_or_seed_catalog(datetime.now(ZoneInfo("UTC")))
+
+    def refresh_catalog(self) -> dict[str, StockRecord]:
+        """Download the SEC catalog, keep the previous one on failure, and persist it."""
+        from app.services.reference_data_store import CATALOG_US_KEY, save_catalog_snapshot
+
+        now = datetime.now(ZoneInfo("UTC"))
+        with self.__class__._catalog_lock:
+            if self._catalog_refresh_is_current(now):
+                return self.__class__._catalog_cache or {}
+            catalog = self._load_stock_catalog(now)
+            degraded = self.__class__._catalog_degraded
+            snapshot = dict(catalog)
+        save_catalog_snapshot(CATALOG_US_KEY, snapshot, degraded=degraded)
+        return catalog
+
+    def _hydrate_or_seed_catalog(self, now: datetime) -> dict[str, StockRecord]:
+        from app.services.reference_data_store import CATALOG_US_KEY, load_catalog_snapshot
+
+        loaded = load_catalog_snapshot(CATALOG_US_KEY)
+        if loaded is not None:
+            stocks, degraded, cached_at = loaded
+            self.__class__._catalog_cache = stocks
+            self.__class__._catalog_cached_at = cached_at.astimezone(ZoneInfo("UTC"))
+            self.__class__._catalog_degraded = degraded
+            return stocks
         catalog = dict(US_STOCKS)
+        self.__class__._catalog_cache = catalog
+        self.__class__._catalog_cached_at = now - _CATALOG_FAILURE_RETRY
+        self.__class__._catalog_degraded = True
+        return catalog
+
+    def _load_stock_catalog(self, now: datetime) -> dict[str, StockRecord]:
+        """Refresh the SEC catalog with stale-if-error semantics (#264)."""
+        previous = self.__class__._catalog_cache
         try:
             payload = _load_catalog_payload()
         except (HttpFetchError, TimeoutError, ValueError):
-            self.__class__._catalog_cache = catalog
-            self.__class__._catalog_cached_at = now
-            return catalog
+            return self._keep_or_seed_us_catalog(
+                previous,
+                now,
+                reason="fetch_failed",
+            )
 
         fields = payload.get("fields", [])
         rows = payload.get("data", [])
@@ -269,19 +343,65 @@ class USProvider:
         exchange_index = field_positions.get("exchange")
 
         if None in {ticker_index, name_index, exchange_index}:
-            self.__class__._catalog_cache = catalog
-            self.__class__._catalog_cached_at = now
-            return catalog
+            return self._keep_or_seed_us_catalog(
+                previous,
+                now,
+                reason="payload_invalid",
+            )
 
+        catalog = dict(previous) if previous else dict(US_STOCKS)
+        added = 0
         for row in rows:
             if not isinstance(row, list):
                 continue
             stock = _stock_from_sec_row(row, ticker_index, name_index, exchange_index)
             if stock is not None:
                 catalog[stock.id] = stock
+                added += 1
+
+        if added == 0:
+            return self._keep_or_seed_us_catalog(
+                previous,
+                now,
+                reason="empty_rows",
+            )
 
         self.__class__._catalog_cache = catalog
         self.__class__._catalog_cached_at = now
+        self.__class__._catalog_degraded = False
+        return catalog
+
+    def _keep_or_seed_us_catalog(
+        self,
+        previous: dict[str, StockRecord] | None,
+        now: datetime,
+        *,
+        reason: str,
+    ) -> dict[str, StockRecord]:
+        if previous is not None:
+            logger.warning(
+                "U.S. catalog refresh failed; keeping previous good catalog",
+                extra={
+                    "event": "us.catalog.refresh.stale_keep",
+                    "reason": reason,
+                    "previous_size": len(previous),
+                },
+            )
+            self.__class__._catalog_cached_at = now
+            self.__class__._catalog_degraded = True
+            return previous
+        catalog = dict(US_STOCKS)
+        logger.warning(
+            "U.S. catalog refresh failed; using built-in seed with short retry",
+            extra={
+                "event": "us.catalog.refresh.builtin_only",
+                "reason": reason,
+                "seed_size": len(catalog),
+            },
+        )
+        self.__class__._catalog_cache = catalog
+        self.__class__._catalog_cached_at = now
+        self.__class__._catalog_degraded = True
         return catalog
 
 
