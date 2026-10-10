@@ -522,6 +522,9 @@ function buildPortfolioSummary(positions: PortfolioPositionRow[]) {
     combinedGainPercent,
     usdTwdRate: 32,
     fxTimestamp: "2026-05-11T01:00:00Z",
+    fxStatus: "ok",
+    incomplete: false,
+    missingQuoteStockIds: [],
     positions: positions.map((position) => ({
       stockId: position.stockId,
       symbol: position.stock.symbol,

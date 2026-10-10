@@ -11,6 +11,7 @@ BACKEND_IMAGE="${BACKEND_IMAGE:-${DEFAULT_BACKEND_IMAGE}}"
 FRONTEND_IMAGE="${FRONTEND_IMAGE:-${DEFAULT_FRONTEND_IMAGE}}"
 IMAGE_PULL_SECRET="${IMAGE_PULL_SECRET:-}"
 K3D_CLUSTER_NAME="${K3D_CLUSTER_NAME:-stock-ticker}"
+STOCK_TICKER_HOSTNAME="${STOCK_TICKER_HOSTNAME:-stock-ticker.ai}"
 # Optional override, e.g. KUBECTL_CMD=kubectl ./scripts/deploy-k3s.sh k3s after fixing ~/.kube/config
 KUBECTL_CMD="${KUBECTL_CMD:-}"
 
@@ -42,6 +43,7 @@ Optional env:
   DOCKER_PULL_RETRIES / DOCKER_PULL_RETRY_DELAY_SEC  Pre-pull retry tuning (default: 3 / 15)
   DOCKER_PULL_MIRRORS  Comma-separated mirror hosts (default: mirror.gcr.io,docker.m.daocloud.io)
   DOCKER_PULL_SKIP_MIRRORS=1  Skip mirror fallbacks when Docker Hub works but mirrors do not
+  STOCK_TICKER_HOSTNAME  Ingress host (default: stock-ticker.ai). Point LAN DNS at the node IP.
 
 k3d one-time setup (before first deploy):
   k3d cluster create stock-ticker
@@ -401,9 +403,53 @@ EOF
   exit 1
 }
 
+ensure_backend_auth_secret() {
+  local secret_path="${ROOT_DIR}/k8s/backend-auth-secret.yaml"
+  if [[ -f "${secret_path}" ]]; then
+    echo "Using existing ${secret_path}"
+    return 0
+  fi
+  require_cmd openssl
+  local session_secret capture_token
+  session_secret="$(openssl rand -hex 32)"
+  capture_token="$(openssl rand -hex 24)"
+  cat >"${secret_path}" <<EOF
+apiVersion: v1
+kind: Secret
+metadata:
+  name: stock-ticker-backend-auth
+type: Opaque
+stringData:
+  SESSION_SECRET: "${session_secret}"
+  LOCAL_AUTH_USERNAME: ""
+  LOCAL_AUTH_PASSWORD: ""
+  PORTFOLIO_HISTORY_CAPTURE_TOKEN: "${capture_token}"
+  SESSION_COOKIE_SECURE: "false"
+EOF
+  echo "Generated ${secret_path} (gitignored). Register a user after login, or set LOCAL_AUTH_* locally."
+}
+
+apply_backend_auth_secret() {
+  ensure_backend_auth_secret
+  ${KUBECTL_CMD} apply -n "${NAMESPACE}" -f "${ROOT_DIR}/k8s/backend-auth-secret.yaml"
+}
+
+apply_frontend_ingress_host() {
+  local ingress_path="${ROOT_DIR}/k8s/frontend-ingress.yaml"
+  local rendered
+  rendered="$(mktemp)"
+  sed "s/host: stock-ticker\\.ai/host: ${STOCK_TICKER_HOSTNAME}/" \
+    "${ingress_path}" >"${rendered}"
+  echo "Applying Ingress host: ${STOCK_TICKER_HOSTNAME}"
+  ${KUBECTL_CMD} apply -n "${NAMESPACE}" -f "${rendered}"
+  rm -f "${rendered}"
+}
+
 deploy_manifests() {
   echo "Applying Kubernetes manifests"
   ensure_image_pull_secret
+  ensure_namespace
+  apply_backend_auth_secret
   if uses_custom_app_images "${BACKEND_IMAGE}" "${FRONTEND_IMAGE}" || [[ -n "${IMAGE_PULL_SECRET}" ]]; then
     local overlay_dir
     overlay_dir="$(mktemp -d)"
@@ -421,6 +467,7 @@ deploy_manifests() {
   else
     ${KUBECTL_CMD} apply -k "${ROOT_DIR}/k8s"
   fi
+  apply_frontend_ingress_host
 
   echo "Waiting for Redis"
   ${KUBECTL_CMD} -n "${NAMESPACE}" rollout status deployment/stock-ticker-redis --timeout=180s

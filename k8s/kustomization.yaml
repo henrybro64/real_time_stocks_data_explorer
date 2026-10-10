@@ -6,12 +6,13 @@ resources:
   - redis.yaml
   - postgres.yaml
   - backend-database-secret.yaml
-  - backend-auth-secret.yaml
+  # backend-auth-secret.yaml is generated/copied locally (see .example + deploy-k3s.sh).
   - backend.yaml
   - backend-history-capture-cronjob.yaml
   - aws-health-heartbeat.yaml
   - frontend.yaml
   - frontend-nodeport.yaml
+  - frontend-ingress.yaml
 
 configMapGenerator:
   # Distinct from Secret stock-ticker-aws-health-heartbeat (credentials).

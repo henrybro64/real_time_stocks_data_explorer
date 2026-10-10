@@ -118,11 +118,14 @@ export function PortfolioPage() {
       ? (holdingsHistoryQuery.data ? "stale" : errorToNoticeKind(holdingsHistoryQuery.error))
       : null;
 
-  /** Sum table `marketValue` by native currency — matches the grid; avoids $0 while /summary is slow. */
+  /** Sum table `marketValue` by native currency — matches the grid; skips unpriced rows (#265). */
   const holdingsNativeTotals = useMemo(() => {
     let usd = 0;
     let twd = 0;
     for (const p of items) {
+      if (p.marketValue == null) {
+        continue;
+      }
       const c = p.stock.currency;
       if (c === "USD") {
         usd += p.marketValue;
@@ -386,7 +389,11 @@ export function PortfolioPage() {
                     ? renderCurrencyValue(position.quote.lastPrice, position.stock.currency)
                     : "—"}
                 </TableCell>
-                <TableCell>{renderCurrencyValue(position.marketValue, position.stock.currency)}</TableCell>
+                <TableCell>
+                  {position.marketValue != null
+                    ? renderCurrencyValue(position.marketValue, position.stock.currency)
+                    : "—"}
+                </TableCell>
                 <TableCell>
                   {position.quote != null ? (
                     <span
@@ -552,10 +559,20 @@ export function PortfolioPage() {
             <p className="app-section-meta">
               {t("portfolio.aggregate.fxRate")}:{" "}
               {usdTwdRate > 0 ? `1 USD = ${usdTwdRate.toFixed(4)} TWD` : "—"}
+              {summaryQuery.data?.fxStatus ? ` (${summaryQuery.data.fxStatus})` : ""}
             </p>
-            {summaryQuery.data && summaryQuery.data.skippedStockIds.length > 0 ? (
-              <p className="app-section-meta">
-                Quote unavailable: {summaryQuery.data.skippedStockIds.join(", ")}
+            {summaryQuery.data?.incomplete ? (
+              <p className="app-section-meta" data-testid="portfolio-totals-incomplete">
+                {t("portfolio.aggregate.incomplete")}
+                {summaryQuery.data.missingQuoteStockIds.length > 0
+                  ? ` — ${t("portfolio.aggregate.missingQuotes")}: ${summaryQuery.data.missingQuoteStockIds.join(", ")}`
+                  : ""}
+                {summaryQuery.data.skippedStockIds.length > 0
+                  ? ` — ${t("portfolio.aggregate.unknownStocks")}: ${summaryQuery.data.skippedStockIds.join(", ")}`
+                  : ""}
+                {summaryQuery.data.fxStatus === "fallback"
+                  ? ` — ${t("portfolio.aggregate.fxFallback")}`
+                  : ""}
               </p>
             ) : null}
           </Tile>

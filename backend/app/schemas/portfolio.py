@@ -30,9 +30,9 @@ class PortfolioPositionResponse(BaseModel):
     notes: str | None = None
     stock: StockResponse
     quote: QuoteResponse | None = None
-    marketValue: float
-    unrealizedPl: float
-    unrealizedPlPercent: float
+    marketValue: float | None = None
+    unrealizedPl: float | None = None
+    unrealizedPlPercent: float | None = None
 
 
 class PortfolioAssetCreate(BaseModel):
@@ -66,7 +66,7 @@ class PortfolioSummaryPosition(BaseModel):
     currency: str
     quantity: float
     lastPrice: float | None = None
-    marketValue: float
+    marketValue: float | None = None
     allocationPercent: float
     timestamp: str | None = None
 
@@ -85,6 +85,9 @@ class PortfolioSummaryResponse(BaseModel):
     combinedGainPercent: float
     usdTwdRate: float
     fxTimestamp: str
+    fxStatus: str
+    incomplete: bool = False
+    missingQuoteStockIds: list[str] = []
     positions: list[PortfolioSummaryPosition]
     skippedStockIds: list[str]
 
@@ -100,6 +103,9 @@ class PortfolioAssetSummaryResponse(BaseModel):
     liquidCombinedTwd: float
     usdTwdRate: float
     fxTimestamp: str
+    fxStatus: str
+    incomplete: bool = False
+    missingQuoteStockIds: list[str] = []
     skippedStockIds: list[str]
 
 

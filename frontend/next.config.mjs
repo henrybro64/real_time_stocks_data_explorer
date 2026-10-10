@@ -32,12 +32,35 @@ const nextConfig = {
     return config;
   },
   async rewrites() {
-    return [
-      {
-        source: "/api/:path*",
-        destination: `${backendProxyUrl}/api/:path*`,
-      },
-    ];
+    // Proxy browser API traffic to FastAPI. Internal capture endpoints stay
+    // off this path so LAN hostname access cannot invoke them (#267).
+    return {
+      beforeFiles: [
+        {
+          source: "/api/portfolio/history/capture",
+          destination: "/api/capture-blocked",
+        },
+        {
+          source: "/api/rankings/snapshots/capture",
+          destination: "/api/capture-blocked",
+        },
+        {
+          source: "/api/rankings/archive/capture",
+          destination: "/api/capture-blocked",
+        },
+        {
+          source: "/api/taiwan-market-data/capture",
+          destination: "/api/capture-blocked",
+        },
+      ],
+      afterFiles: [
+        {
+          source: "/api/:path*",
+          destination: `${backendProxyUrl}/api/:path*`,
+        },
+      ],
+      fallback: [],
+    };
   },
 };
 

@@ -360,9 +360,9 @@ export type PortfolioPosition = {
   notes: string | null;
   stock: Stock;
   quote: Quote | null;
-  marketValue: number;
-  unrealizedPl: number;
-  unrealizedPlPercent: number;
+  marketValue: number | null;
+  unrealizedPl: number | null;
+  unrealizedPlPercent: number | null;
 };
 
 export type PortfolioPositionCreate = {
@@ -386,10 +386,12 @@ export type PortfolioSummaryPosition = {
   currency: string;
   quantity: number;
   lastPrice: number | null;
-  marketValue: number;
+  marketValue: number | null;
   allocationPercent: number;
   timestamp: string | null;
 };
+
+export type FxStatus = "ok" | "stale" | "fallback" | string;
 
 export type PortfolioSummary = {
   totalUsd: number;
@@ -405,6 +407,9 @@ export type PortfolioSummary = {
   combinedGainPercent: number;
   usdTwdRate: number;
   fxTimestamp: string;
+  fxStatus: FxStatus;
+  incomplete: boolean;
+  missingQuoteStockIds: string[];
   positions: PortfolioSummaryPosition[];
   skippedStockIds: string[];
 };
@@ -420,6 +425,9 @@ export type PortfolioAssetSummary = {
   liquidCombinedTwd: number;
   usdTwdRate: number;
   fxTimestamp: string;
+  fxStatus: FxStatus;
+  incomplete: boolean;
+  missingQuoteStockIds: string[];
   skippedStockIds: string[];
 };
 

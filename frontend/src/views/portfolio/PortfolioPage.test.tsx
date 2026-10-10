@@ -152,6 +152,9 @@ const portfolioSummary: PortfolioSummary = {
   combinedGainPercent: 5.67,
   usdTwdRate: 32,
   fxTimestamp: "2026-04-01T01:00:00Z",
+  fxStatus: "ok",
+  incomplete: false,
+  missingQuoteStockIds: [],
   positions: [
     {
       stockId: "TW:2330",

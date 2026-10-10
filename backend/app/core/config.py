@@ -114,6 +114,9 @@ class Settings(BaseSettings):
     local_auth_password: str = Field(default="")
     # Starlette session signing; use a long random value in production when auth_enabled.
     session_secret: str = Field(default="dev-session-secret-change-me")
+    # Secure session cookie. Keep false for plain HTTP (local / LAN Ingress);
+    # set true when serving over HTTPS (#267).
+    session_cookie_secure: bool = Field(default=False)
     # Comma-separated CORS origins (different-origin UIs). Same-origin `/` + `/api` does not
     # require CORS; defaults cover dev (direct API + separate UI port).
     cors_origins: str = Field(

@@ -173,6 +173,17 @@ class PortfolioHistoryService:
             return 0
 
         metrics = self._build_snapshot_metrics(user_id)
+        if metrics is None:
+            logger.info(
+                "Portfolio history capture skipped; valuation incomplete",
+                extra={
+                    "event": "portfolio_history.capture_user.skipped",
+                    "user_id": user_id,
+                    "trigger": trigger,
+                    "reason": "incomplete_valuation",
+                },
+            )
+            return 0
         captured_at = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
 
         touched = portfolio_history_repository.upsert_snapshots(
@@ -254,22 +265,25 @@ class PortfolioHistoryService:
                 ),
             )
 
-    def _build_snapshot_metrics(self, user_id: str) -> SnapshotMetrics:
+    def _build_snapshot_metrics(self, user_id: str) -> SnapshotMetrics | None:
+        """Build a complete valuation, or ``None`` when any input is invented (#265)."""
         positions = portfolio_service.list_positions(user_id)
         assets = portfolio_service.list_assets(user_id)
         fx_snapshot = get_usd_twd_fx_snapshot()
+        fx_status = str(fx_snapshot.get("status") or "fallback")
+        if fx_status not in {"ok", "stale"}:
+            return None
         usd_twd_rate = float(fx_snapshot["rate"])
 
         holdings_entries: list[tuple[str, float]] = []
         for position in positions:
             stock = quote_service.get_stock(position.stock_id)
             if stock is None:
-                continue
+                return None
             quote = self._resolve_quote(position)
-            if quote is not None:
-                market_value = round(position.quantity * quote.last_price, 2)
-            else:
-                market_value = round(position.quantity * float(position.average_cost), 2)
+            if quote is None:
+                return None
+            market_value = round(position.quantity * quote.last_price, 2)
             holdings_entries.append((stock.currency, market_value))
 
         holdings_totals = portfolio_service.summarize_currency_buckets(

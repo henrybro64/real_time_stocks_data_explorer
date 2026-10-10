@@ -142,11 +142,15 @@ class PortfolioService:
     def build_metrics(
         position: PortfolioPosition,
         quote: QuoteRecord | None,
-    ) -> tuple[float, float, float]:
+    ) -> tuple[float | None, float | None, float | None]:
+        """Market value and P/L from a live quote only.
+
+        Without a trustworthy quote, return ``None`` values rather than
+        substituting cost basis as if it were a current price (#265).
+        """
         cost_basis = PortfolioService.build_cost_basis(position)
         if quote is None:
-            market_value = cost_basis
-            return market_value, 0.0, 0.0
+            return None, None, None
         market_value = round(position.quantity * quote.last_price, 2)
         unrealized_pl = round(market_value - cost_basis, 2)
         unrealized_pl_percent = (

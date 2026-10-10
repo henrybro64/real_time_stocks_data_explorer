@@ -40,6 +40,8 @@ kubectl -n stock-ticker port-forward svc/stock-ticker-frontend 3000:3000
 
 Open `http://127.0.0.1:3000`. LAN access without port-forward: NodePort **`http://<node-ip>:30080`**.
 
+Friendly LAN hostname (HTTP Ingress, Traefik on k3s/k3d): point local DNS at the node IP, then open `http://stock-ticker.ai` (override with `STOCK_TICKER_HOSTNAME`). NodePort **30080** stays as a fallback. See [Local DNS and Ingress](#local-dns-and-ingress).
+
 Delete app: `./scripts/k8s-teardown.sh k3d`. Delete cluster: `k3d cluster delete stock-ticker`.
 
 ## Ubuntu (k3s) quick path
@@ -82,6 +84,8 @@ Remove app: `./scripts/k8s-teardown.sh k3s`. Uninstall k3s: `sudo /usr/local/bin
 - `stock-ticker-backend:local`, `stock-ticker-frontend:local`
 - Backend init container: `alembic upgrade head`; API seeds `default-user` when DB is reachable
 - NodePort frontend on **30080** for LAN access
+- HTTP Ingress (`k8s/frontend-ingress.yaml`) for a LAN hostname (default `stock-ticker.ai`)
+- Auth Secret generated locally by `deploy-k3s.sh` (not committed; see `.example`)
 
 Expected pods: `stock-ticker-backend`, `stock-ticker-frontend`, `stock-ticker-postgres`, `stock-ticker-redis` — all `Running`.
 
@@ -123,14 +127,37 @@ A **full** dump is for disaster recovery into an **empty** database (wipe the PV
 
 ## Multi-user auth in k8s
 
-Edit `k8s/backend-auth-secret.yaml`: set `SESSION_SECRET`. Optional bootstrap: `LOCAL_AUTH_USERNAME` / `LOCAL_AUTH_PASSWORD`. Keep `AUTH_ENABLED=true` and `LOCAL_AUTH_ENABLED=true` in the backend ConfigMap. Apply and restart:
+`./scripts/deploy-k3s.sh` creates `k8s/backend-auth-secret.yaml` (gitignored) with a random `SESSION_SECRET` and capture token when the file is missing. To customize, copy `k8s/backend-auth-secret.yaml.example`, fill real values, then apply:
 
 ```bash
+kubectl apply -n stock-ticker -f k8s/backend-auth-secret.yaml
 kubectl apply -k k8s
 kubectl -n stock-ticker rollout restart deployment/stock-ticker-backend deployment/stock-ticker-frontend
 ```
 
+Keep `AUTH_ENABLED=true` and `LOCAL_AUTH_ENABLED=true` in the backend ConfigMap. The backend refuses default/placeholder session secrets, bootstrap passwords, and capture tokens. Optional bootstrap: set both `LOCAL_AUTH_USERNAME` and `LOCAL_AUTH_PASSWORD` (8+ characters). Leave both empty to rely on self-registration.
+
+`SESSION_COOKIE_SECURE` defaults to `false` for plain HTTP Ingress/NodePort. Set it to `true` only after HTTPS is enabled.
+
 Do not commit real secrets.
+
+## Local DNS and Ingress
+
+k3s/k3d already ship Traefik. This repo adds a host-based Ingress to the existing ClusterIP Service `stock-ticker-frontend` (port 3000). It does **not** install a second ingress controller.
+
+1. Deploy (sets Ingress host from `STOCK_TICKER_HOSTNAME`, default `stock-ticker.ai`):
+   ```bash
+   STOCK_TICKER_HOSTNAME=stock-ticker.ai ./scripts/deploy-k3s.sh k3s
+   ```
+2. On your router/local DNS, create an A record:
+   ```text
+   stock-ticker.ai -> <k3s-node-lan-ip>
+   ```
+   Example: `stock-ticker.ai -> 192.168.120.102`.
+3. From a LAN client, open `http://stock-ticker.ai` (port 80 via Traefik).
+4. Keep NodePort fallback: `http://192.168.120.102:30080`.
+
+HTTPS/TLS and Cloudflare remote access are follow-ups after hostname routing is stable. Internal capture endpoints are not proxied through the frontend `/api` rewrite.
 
 ## Host Postgres (optional)
 
