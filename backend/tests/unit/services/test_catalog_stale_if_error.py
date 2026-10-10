@@ -133,11 +133,20 @@ def test_us_catalog_keeps_previous_on_sec_failure(monkeypatch) -> None:
     assert USProvider._catalog_degraded is True
 
 
+def _expire_holiday_success(year: int = 2026) -> None:
+    """Place the success timestamp outside the TTL even on a freshly booted runner."""
+    market_clock._tw_holiday_success_at[year] = (
+        market_clock.monotonic() - market_clock._TW_HOLIDAY_SUCCESS_TTL_SECONDS - 1
+    )
+
+
 def test_holiday_failure_keeps_previous_and_retries(monkeypatch) -> None:
+    # A runner booted less than four hours ago has a small monotonic clock.
+    monkeypatch.setattr(market_clock, "monotonic", lambda: 1_000.0)
     market_clock._tw_holiday_success[2026] = frozenset(
         {datetime(2026, 1, 1).date()}
     )
-    market_clock._tw_holiday_success_at[2026] = 0.0  # expired success TTL
+    _expire_holiday_success()
 
     calls = {"n": 0}
 
@@ -154,8 +163,9 @@ def test_holiday_failure_keeps_previous_and_retries(monkeypatch) -> None:
 
 
 def test_holiday_success_expires_and_refetches(monkeypatch) -> None:
+    monkeypatch.setattr(market_clock, "monotonic", lambda: 1_000.0)
     market_clock._tw_holiday_success[2026] = frozenset()
-    market_clock._tw_holiday_success_at[2026] = 0.0
+    _expire_holiday_success()
 
     monkeypatch.setattr(
         market_clock,
@@ -200,7 +210,7 @@ def test_empty_catalog_hydrates_from_store_without_fetch(monkeypatch) -> None:
 
 def test_expired_holiday_read_does_not_fetch(monkeypatch) -> None:
     market_clock._tw_holiday_success[2026] = frozenset({datetime(2026, 1, 1).date()})
-    market_clock._tw_holiday_success_at[2026] = 0.0
+    _expire_holiday_success()
 
     def _should_not_fetch(_year: int):
         raise AssertionError("holiday read must not call upstream")
