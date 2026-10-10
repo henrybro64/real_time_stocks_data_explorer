@@ -45,7 +45,13 @@ def _sample_quote(
     )
 
 
-def test_set_and_get_cached_quote_round_trip_memory() -> None:
+def test_set_and_get_cached_quote_round_trip_memory(monkeypatch) -> None:
+    monkeypatch.setattr(cache, "is_market_open", lambda market, now=None, **_kwargs: True)
+    monkeypatch.setattr(
+        cache,
+        "is_within_hour_before_market_open",
+        lambda market, now=None: False,
+    )
     quote = _sample_quote()
     cache.set_cached_quote("US:AAPL", quote)
 
@@ -88,7 +94,10 @@ def test_closed_market_quote_is_not_soft_stale(monkeypatch) -> None:
         "is_within_hour_before_market_open",
         lambda market, now=None: False,
     )
-    quote = _sample_quote(last_price=10.0, is_market_open=False)
+    quote = replace(
+        _sample_quote(last_price=10.0, is_market_open=False),
+        timestamp="2026-04-01T16:00:00-04:00",
+    )
     cached_at = datetime(2026, 4, 1, 21, 0, tzinfo=UTC)
     payload = json.dumps(cache._serialize(quote, cached_at=cached_at))
     with cache._memory_lock:
@@ -99,6 +108,26 @@ def test_closed_market_quote_is_not_soft_stale(monkeypatch) -> None:
 
     assert entries["US:AAPL"].stale is False
     assert entries["US:AAPL"].age_seconds == pytest.approx(3 * 3600)
+
+
+def test_closed_market_intraday_quote_stays_soft_stale(monkeypatch) -> None:
+    monkeypatch.setattr(cache.settings, "quote_cache_ttl_seconds", 10)
+    monkeypatch.setattr(cache, "is_market_open", lambda market, now=None, **_kwargs: False)
+    monkeypatch.setattr(
+        cache,
+        "is_within_hour_before_market_open",
+        lambda market, now=None: False,
+    )
+    quote = _sample_quote(last_price=10.0, is_market_open=False)
+    cached_at = datetime(2026, 4, 1, 21, 0, tzinfo=UTC)
+    payload = json.dumps(cache._serialize(quote, cached_at=cached_at))
+    with cache._memory_lock:
+        cache._memory_quotes["US:AAPL"] = (1e18, payload)
+
+    now = cached_at + timedelta(hours=3)
+    entries = cache._get_entries_from_memory(["US:AAPL"], now=now)
+
+    assert entries["US:AAPL"].stale is True
 
 
 def test_stale_value_remains_readable_after_soft_ttl_via_public_api(monkeypatch) -> None:

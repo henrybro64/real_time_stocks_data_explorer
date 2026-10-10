@@ -92,18 +92,36 @@ def try_acquire_intraday_lock(stock_id: str, range_name: str) -> str | None:
         return token
 
 
+def intraday_lock_is_held(stock_id: str, range_name: str) -> bool:
+    key = cache_key(stock_id, range_name)
+    if redis_configured():
+        try:
+            from app.services.quote_redis_cache import _redis
+
+            client = _redis()
+            if client is not None:
+                return bool(client.exists(_LOCK_PREFIX + key))
+        except Exception:  # noqa: BLE001
+            return False
+    with _memory_lock:
+        expires_at, owner = _memory_locks.get(key, (0.0, ""))
+        return bool(owner) and expires_at > time.monotonic()
+
+
 def wait_for_cached_intraday(
     stock_id: str,
     range_name: str,
     *,
     timeout_seconds: float = _LOCK_SECONDS,
 ) -> list[CandleRecord] | None:
-    """Poll until the lock holder fills the cache or the lock window ends."""
+    """Poll until the holder fills the cache or releases the lock."""
     deadline = time.monotonic() + timeout_seconds
     while True:
         cached = get_cached_intraday(stock_id, range_name)
         if cached is not None:
             return cached
+        if not intraday_lock_is_held(stock_id, range_name):
+            return None
         if time.monotonic() >= deadline:
             return None
         time.sleep(0.05)

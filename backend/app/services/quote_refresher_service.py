@@ -26,7 +26,11 @@ from app.services.http_client import (
     HttpFetchError,
     set_provider_request_spacing,
 )
-from app.services.market_clock import is_market_open, is_within_hour_before_market_open
+from app.services.market_clock import (
+    is_market_open,
+    is_within_hour_before_market_open,
+    timestamp_is_completed_session_close,
+)
 from app.services.quote_redis_cache import (
     clear_refresh_failure,
     get_cached_quote_entry,
@@ -192,8 +196,9 @@ class QuoteRefresherService:
     def request_immediate_refresh(self, stock_id: str) -> None:
         """Queue a newly tracked symbol onto the bounded refresher pool.
 
-        Closed-market symbols that already hold a closing quote are skipped so
-        UI polling cannot defeat the closed-market cycle (#270). Failure
+        Closed-market symbols that already hold the session's closing print are
+        skipped so UI polling cannot defeat the closed-market cycle (#270).
+        An intraday print cached before the close is still refreshed. Failure
         backoff is honoured the same way as cache-first read paths.
         """
         normalized = stock_id.strip()
@@ -220,7 +225,14 @@ class QuoteRefresherService:
         if is_market_open(market, now) or is_within_hour_before_market_open(market, now):
             return False
         entry = get_cached_quote_entry(stock_id)
-        return entry is not None and entry.quote is not None
+        if entry is None or entry.quote is None:
+            return False
+        return timestamp_is_completed_session_close(
+            market,
+            entry.quote.timestamp,
+            now,
+            allow_holiday_fetch=False,
+        )
 
     def _safe_immediate_refresh(self, stock_id: str) -> None:
         outcome = "failed"

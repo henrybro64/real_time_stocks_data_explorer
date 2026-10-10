@@ -350,3 +350,149 @@ def test_closed_market_refreshes_only_the_lagging_month(monkeypatch) -> None:
     )
     assert service.refresh_closed_current_month(stock, provider) is False
     assert provider.months == ["2026-10-01"]
+
+
+def test_current_month_stays_eligible_until_the_last_completed_session(
+    monkeypatch,
+) -> None:
+    repo = _FakeRepo()
+    repo.rows = [
+        CandleRecord(time="2026-09-15", open=1, high=2, low=1, close=1.5, volume=10),
+        CandleRecord(time="2026-10-01", open=1, high=2, low=1, close=1.5, volume=10),
+    ]
+
+    def list_bars(*, market, symbol, limit):
+        class Row:
+            def __init__(self, candle: CandleRecord):
+                self.date = datetime.fromisoformat(candle.time).date()
+                self.open = candle.open
+                self.high = candle.high
+                self.low = candle.low
+                self.close = candle.close
+                self.volume = candle.volume
+
+        return [Row(candle) for candle in repo.rows[-limit:]]
+
+    repo.list_bars = list_bars  # type: ignore[method-assign]
+
+    def upsert_candles(*, market, symbol, candles, source):
+        by_day = {candle.time[:10]: candle for candle in repo.rows}
+        for candle in candles:
+            by_day[candle.time[:10]] = candle
+        repo.rows = sorted(by_day.values(), key=lambda candle: candle.time)
+
+    repo.upsert_candles = upsert_candles  # type: ignore[method-assign]
+    provider = _MonthProvider()
+
+    def fetch_daily_month(stock, month):
+        provider.months.append(month.isoformat())
+        return [
+            CandleRecord(time="2026-10-09", open=1, high=2, low=1, close=2, volume=10)
+        ]
+
+    provider.fetch_daily_month = fetch_daily_month  # type: ignore[method-assign]
+    service = DailyPriceHistoryService(repository=repo)
+    monkeypatch.setattr(
+        "app.services.daily_price_history_service._wait_for_host_slot",
+        lambda _host: None,
+    )
+    monkeypatch.setattr(
+        "app.services.daily_price_history_service.months_needed_for_limit",
+        lambda _limit: 2,
+    )
+    monkeypatch.setattr(
+        "app.services.daily_price_history_service.datetime",
+        type(
+            "FixedDateTime",
+            (),
+            {
+                "now": staticmethod(
+                    lambda tz=None: datetime(
+                        2026, 10, 10, 10, 30, tzinfo=tz or ZoneInfo("Asia/Taipei")
+                    )
+                ),
+                "combine": staticmethod(datetime.combine),
+                "min": datetime.min,
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        "app.services.daily_price_history_service.is_trading_day",
+        lambda *_a, **_k: True,
+    )
+    monkeypatch.setattr(
+        "app.services.daily_price_history_service.is_market_open",
+        lambda *_a, **_k: True,
+    )
+    monkeypatch.setattr(
+        "app.services.daily_price_history_service.market_session_window",
+        lambda *_a, **_k: (
+            datetime(2026, 10, 10, 9, 0).time(),
+            datetime(2026, 10, 10, 13, 30).time(),
+        ),
+    )
+    monkeypatch.setattr(
+        "app.services.daily_price_history_service.get_cached_quote",
+        lambda _stock_id: None,
+    )
+
+    service.get_daily_history(_tw_stock(), "1M", limit=90, provider=provider)
+    service.get_daily_history(_tw_stock(), "1M", limit=90, provider=provider)
+
+    assert provider.months == ["2026-10-01"]
+
+
+def test_empty_range_backfill_is_not_marked_fetched(monkeypatch) -> None:
+    provider = _FakeProvider([])
+    service = DailyPriceHistoryService(repository=_FakeRepo())
+    monkeypatch.setattr(
+        "app.services.daily_price_history_service._wait_for_host_slot",
+        lambda _host: None,
+    )
+    monkeypatch.setattr(
+        "app.services.daily_price_history_service.months_needed_for_limit",
+        lambda _limit: 2,
+    )
+    monkeypatch.setattr(
+        "app.services.daily_price_history_service.is_trading_day",
+        lambda *_a, **_k: False,
+    )
+    clock = {"now": 1_000.0}
+    monkeypatch.setattr(
+        "app.services.daily_price_history_service.time.monotonic",
+        lambda: clock["now"],
+    )
+
+    with pytest.raises(RuntimeError, match="temporarily unavailable"):
+        service.get_daily_history(_tw_stock(), "1M", limit=90, provider=provider)
+    service.get_daily_history(_tw_stock(), "1M", limit=90, provider=provider)
+    assert provider.calls == 1
+
+    clock["now"] += 15 * 60
+    with pytest.raises(RuntimeError, match="temporarily unavailable"):
+        service.get_daily_history(_tw_stock(), "1M", limit=90, provider=provider)
+    assert provider.calls == 2
+
+
+def test_forming_candle_rejects_a_quote_from_another_session() -> None:
+    from app.services.daily_price_history_service import _session_candle_from_quote
+
+    candle = _session_candle_from_quote(
+        _tw_stock(),
+        QuoteRecord(
+            id="TW:2330",
+            last_price=120.0,
+            change=1.0,
+            change_percent=1.0,
+            previous_close=119.0,
+            timestamp="2026-10-09T13:30:00+08:00",
+            is_market_open=False,
+            open=118.0,
+            high=121.0,
+            low=117.0,
+            volume=5000,
+        ),
+        datetime(2026, 10, 10, 9, 5, tzinfo=ZoneInfo("Asia/Taipei")),
+    )
+
+    assert candle is None

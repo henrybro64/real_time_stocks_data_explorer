@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 import threading
 import time
@@ -104,7 +105,12 @@ def test_request_immediate_refresh_skips_closed_market_with_cached_quote(
     monkeypatch,
 ) -> None:
     refresher, stub = _service(watchlist=["US:AAPL"])
-    cache.set_cached_quote("US:AAPL", stub._quotes["US:AAPL"])
+    closing = replace(
+        stub._quotes["US:AAPL"],
+        timestamp="2026-05-11T16:00:00-04:00",
+        is_market_open=False,
+    )
+    cache.set_cached_quote("US:AAPL", closing)
     monkeypatch.setattr(
         "app.services.quote_refresher_service.is_market_open",
         lambda market, now=None: False,
@@ -124,6 +130,31 @@ def test_request_immediate_refresh_skips_closed_market_with_cached_quote(
 
     assert submitted == []
     assert stub.quote_calls == []
+
+
+def test_request_immediate_refresh_still_runs_for_an_intraday_print_after_close(
+    monkeypatch,
+) -> None:
+    refresher, stub = _service(watchlist=["US:AAPL"])
+    cache.set_cached_quote("US:AAPL", stub._quotes["US:AAPL"])
+    monkeypatch.setattr(
+        "app.services.quote_refresher_service.is_market_open",
+        lambda market, now=None: False,
+    )
+    monkeypatch.setattr(
+        "app.services.quote_refresher_service.is_within_hour_before_market_open",
+        lambda market, now=None: False,
+    )
+    submitted: list[str] = []
+    monkeypatch.setattr(
+        refresher._pool,
+        "submit",
+        lambda fn, stock_id: submitted.append(stock_id),
+    )
+
+    refresher.request_immediate_refresh("US:AAPL")
+
+    assert submitted == ["US:AAPL"]
 
 
 def test_select_poll_seconds_uses_open_and_closed_cadence(monkeypatch) -> None:

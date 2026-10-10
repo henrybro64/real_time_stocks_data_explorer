@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
+from datetime import datetime as stdlib_datetime
 import logging
 import math
 import threading
@@ -88,6 +89,24 @@ class DailyPriceHistoryService:
             return merged[-candle_limit:]
         return merged
 
+    def peek_daily_history(
+        self,
+        stock: StockRecord,
+        range_name: str,
+        *,
+        limit: int | None = None,
+    ) -> tuple[list[CandleRecord], bool]:
+        """Stored bars plus the forming candle, and whether upstream months are still missing."""
+        candle_limit = limit if limit is not None else _RANGE_LIMITS.get(range_name, 90)
+        stored, readable = self._load_stored(stock, max(candle_limit + 5, 40))
+        if not readable:
+            return [], True
+        missing = self._missing_months(stock, stored, candle_limit)
+        merged = self._merge_forming_candle_from_cache(stock, stored)
+        if candle_limit > 0 and len(merged) > candle_limit:
+            merged = merged[-candle_limit:]
+        return merged, bool(missing)
+
     def refresh_closed_current_month(self, stock: StockRecord, provider) -> bool:
         """After the close, fill the last completed session's month for one symbol."""
         now = datetime.now(ZoneInfo(stock.timezone))
@@ -122,7 +141,7 @@ class DailyPriceHistoryService:
             return False
         if fetched:
             self._persist(stock, fetched)
-        self._mark_month(stock, month, len(fetched))
+        self._settle_month_fetch(stock, month, fetched)
         return True
 
     def _load_stored(
@@ -178,19 +197,43 @@ class DailyPriceHistoryService:
     def _missing_months(
         self, stock: StockRecord, stored: list[CandleRecord], limit: int
     ) -> list[date]:
-        today = datetime.now(ZoneInfo(stock.timezone)).date()
+        now = datetime.now(ZoneInfo(stock.timezone))
+        today = now.date()
+        current_month = date(today.year, today.month, 1)
         covered = {candle.time[:7] for candle in stored if len(candle.time) >= 7}
         marked = self._known_month_keys(stock)
         missing: list[date] = []
         for offset in range(months_needed_for_limit(limit)):
             month = _month_start(today, offset)
+            if self._month_is_cooling(stock, month):
+                continue
+            if month == current_month:
+                if self._current_month_is_behind(stock, stored, month, now, marked):
+                    missing.append(month)
+                continue
             token = month.strftime("%Y-%m")
             if token in covered or token in marked:
                 continue
-            if self._month_is_cooling(stock, month):
-                continue
             missing.append(month)
         return missing
+
+    def _current_month_is_behind(
+        self,
+        stock: StockRecord,
+        stored: list[CandleRecord],
+        month: date,
+        now: datetime,
+        marked: set[str],
+    ) -> bool:
+        """The open month stays eligible until its latest bar reaches the last close."""
+        token = month.strftime("%Y-%m")
+        latest = _latest_bar_date(
+            [candle for candle in stored if candle.time[:7] == token]
+        )
+        last_completed = _last_completed_session_date(stock, now)
+        if last_completed is None or last_completed < month:
+            return latest is None and token not in marked
+        return latest is None or latest < last_completed
 
     def _fetch_legacy(
         self,
@@ -233,7 +276,7 @@ class DailyPriceHistoryService:
                     failed = True
                     continue
                 collected.extend(bars)
-                self._mark_month(stock, month, len(bars))
+                self._settle_month_fetch(stock, month, bars)
             return collected, failed
 
         _wait_for_host_slot(_host_for_stock(stock))
@@ -252,8 +295,24 @@ class DailyPriceHistoryService:
             for month in missing:
                 self._cool_month(stock, month)
             return [], True
+        # An empty range call is how Yahoo reports a temporary failure. Do not
+        # record those months as fetched.
+        if not bars:
+            for month in missing:
+                self._cool_month(stock, month)
+            return [], True
+        now = datetime.now(ZoneInfo(stock.timezone))
+        current_month = date(now.year, now.month, 1)
+        represented = {candle.time[:7] for candle in bars if len(candle.time) >= 7}
         for month in missing:
-            self._mark_month(stock, month, len(bars))
+            token = month.strftime("%Y-%m")
+            month_bars = [candle for candle in bars if candle.time[:7] == token]
+            if month_bars:
+                self._settle_month_fetch(stock, month, month_bars)
+            elif month < current_month:
+                self._mark_month(stock, month, 0)
+            else:
+                self._cool_month(stock, month)
         return bars, False
 
     def _fetch_one_month(
@@ -306,6 +365,23 @@ class DailyPriceHistoryService:
                 },
             )
         return keys
+
+    def _settle_month_fetch(
+        self, stock: StockRecord, month: date, bars: list[CandleRecord]
+    ) -> None:
+        self._mark_month(stock, month, len(bars))
+        now = datetime.now(ZoneInfo(stock.timezone))
+        current_month = date(now.year, now.month, 1)
+        if month != current_month:
+            return
+        last_completed = _last_completed_session_date(stock, now)
+        latest = _latest_bar_date(bars)
+        if (
+            last_completed is not None
+            and last_completed >= month
+            and (latest is None or latest < last_completed)
+        ):
+            self._cool_month(stock, month)
 
     def _mark_month(self, stock: StockRecord, month: date, bar_count: int) -> None:
         token = month.strftime("%Y-%m")
@@ -365,6 +441,19 @@ class DailyPriceHistoryService:
         )
 
 
+def _quote_is_for_session_date(stock: StockRecord, quote: QuoteRecord, session_day: date) -> bool:
+    raw = (quote.timestamp or "").strip()
+    if not raw:
+        return False
+    try:
+        parsed = stdlib_datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=ZoneInfo(stock.timezone))
+    return parsed.astimezone(ZoneInfo(stock.timezone)).date() == session_day
+
+
 def _host_for_stock(stock: StockRecord) -> str:
     if stock.market == "TW":
         return "tpex" if stock.exchange == "TPEx" else "twse"
@@ -388,6 +477,8 @@ def _session_candle_from_quote(
     now: datetime,
 ) -> CandleRecord | None:
     if quote is None:
+        return None
+    if not _quote_is_for_session_date(stock, quote, now.date()):
         return None
     open_price = quote.open
     high_price = quote.high
@@ -467,7 +558,15 @@ def _overlay(stored: list[CandleRecord], fetched: list[CandleRecord]) -> list[Ca
 def _last_completed_session_date(stock: StockRecord, now: datetime) -> date | None:
     day = now.date()
     for _ in range(12):
-        probe = datetime.combine(day, datetime.min.time(), tzinfo=now.tzinfo)
+        probe = now.replace(
+            year=day.year,
+            month=day.month,
+            day=day.day,
+            hour=12,
+            minute=0,
+            second=0,
+            microsecond=0,
+        )
         if is_trading_day(stock.market, probe):
             _session_start, session_end = market_session_window(stock.market, day)
             if day < now.date() or now.time() >= session_end:

@@ -28,6 +28,7 @@ from app.services.market_clock import (
     is_market_open,
     is_within_hour_before_market_open,
     quote_session_is_live,
+    timestamp_is_completed_session_close,
 )
 from app.services.tw_price_limits import restore_cached_price_limit
 
@@ -109,7 +110,12 @@ def _quote_is_soft_stale(
     age_seconds: float,
     now: datetime,
 ) -> bool:
-    """Soft-stale when open (or pre-open); closing prints stay fresh while closed (#270)."""
+    """Soft-stale while the session is active, and after the close until the print is the close.
+
+    A cached intraday price must not stay fresh all evening as if it were the
+    official close (#270). Once the timestamp is the completed session's
+    closing print, closed-market reads stop treating it as stale.
+    """
     market = quote.id.split(":", 1)[0] if ":" in quote.id else ""
     if market not in MARKET_TIMEZONES:
         return age_seconds >= soft_ttl_seconds()
@@ -119,7 +125,12 @@ def _quote_is_soft_stale(
     ) or is_within_hour_before_market_open(market, now)
     if session_active:
         return age_seconds >= soft_ttl_seconds()
-    return False
+    return not timestamp_is_completed_session_close(
+        market,
+        quote.timestamp,
+        now,
+        allow_holiday_fetch=False,
+    )
 
 
 def refresh_lock_seconds() -> int:
