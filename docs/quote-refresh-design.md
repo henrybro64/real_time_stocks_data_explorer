@@ -53,7 +53,7 @@ How market data is fetched, cached, and exposed, and what the app does when it i
 
 - TWSE MIS has its own circuit (3 network failures → 45 s pause).
 - After MIS has no trustworthy price **and** Yahoo also fails, Yahoo is skipped for that Taiwan stock for 60 s.
-- `TWProvider` keeps a 15-minute last-good quote as a final fallback.
+- After MIS and Yahoo both miss, `TWProvider.get_quote` returns no quote. The shared quote cache (soft/hard TTL) serves last-known data as stale; the refresher treats the miss as a failure for the market circuit (#263).
 
 ## Freshness contract
 
@@ -108,8 +108,8 @@ Rules the code follows; keep them when changing providers:
 1. **Never invent a price.** A reference or previous close is never used as the current price. If no source has a trustworthy current price, the API returns `quote: null` with `refreshStatus: "unavailable"` (#258).
 2. **One snapshot per quote.** `lastPrice`, `previousClose`, `change`, and `changePercent` come from the same source and price pair (`coherent_price_change` in `yahoo_chart.py`). Fields from different snapshots are never mixed. A daily change is never computed against the day's open.
 3. **Timestamps describe the data, not the fetch.** A quote or index is stamped with its trade or market time. Without one it is rejected rather than stamped "now".
-4. **`isMarketOpen`** (Taiwan) is true only while the market is open now *and* the quote is from today's session.
-5. **Serve last-known data with a flag** rather than nothing: stale cache entries (up to the hard TTL) and stored ranking snapshots are returned with `stale` / freshness labels and their original timestamps.
+4. **`isMarketOpen`** (Taiwan and U.S.) is true only while the market is open **now** *and* the quote is from today's session. The flag is derived at read time from the quote cache so a closing print cached during the session cannot stay “open” after the close (#262).
+5. **Serve last-known data with a flag** rather than nothing: stale cache entries (up to the hard TTL) and stored ranking snapshots are returned with `stale` / freshness labels and their original timestamps. A Taiwan provider last-good fallback must not be re-cached as a fresh provider success (#263).
 6. **Prefer unavailable over wrong.** Taiwan trades outside the regular session, stamped in the future, or outside the snapshot's own high/low are rejected.
 
 ## Current limitations

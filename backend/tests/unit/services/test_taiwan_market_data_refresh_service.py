@@ -7,7 +7,12 @@ from app.repositories.taiwan_market_daily_repository import (
     DailyUpsertStats,
 )
 from app.services.http_client import HttpFetchError
-from app.services.taiwan_market_data_refresh_service import TaiwanMarketDataRefreshService
+from app.jobs.health import get_background_jobs_health, reset_job_health_for_tests
+from app.services.taiwan_market_data_refresh_service import (
+    DatasetDayResult,
+    TaiwanMarketDataRefreshService,
+    TaiwanMarketDataRefreshSummary,
+)
 
 
 class FakeInstitutionalRepo:
@@ -579,6 +584,7 @@ def test_sampler_skips_when_database_unavailable() -> None:
 
 def test_sampler_skips_before_refresh_hour(monkeypatch) -> None:
     calls: list[str] = []
+    reset_job_health_for_tests()
     early = datetime(2026, 7, 10, 2, 0, tzinfo=UTC)  # 10:00 Asia/Taipei
     service = TaiwanMarketDataRefreshService(
         institutional_repository=FakeInstitutionalRepo(),
@@ -606,21 +612,67 @@ def test_sampler_skips_before_refresh_hour(monkeypatch) -> None:
 
     assert early.astimezone(ZoneInfo("Asia/Taipei")).hour < 18
     assert calls == []
+    assert (
+        get_background_jobs_health()
+        .get("taiwan-market-data-refresh", {})
+        .get("last_success_at")
+        is None
+    )
+
+
+def _stored_summary(*, local_day: date, rows: int = 1) -> TaiwanMarketDataRefreshSummary:
+    return TaiwanMarketDataRefreshSummary(
+        trigger="scheduler",
+        days=7,
+        started_at="2026-07-10T12:00:00+00:00",
+        finished_at="2026-07-10T12:00:01+00:00",
+        results=(
+            DatasetDayResult(
+                dataset="institutional",
+                market="TWSE",
+                requested_date=local_day.isoformat(),
+                resolved_date=local_day.isoformat(),
+                rows_fetched=rows,
+                rows_inserted=rows,
+                rows_updated=0,
+                skipped_no_data=False,
+            ),
+        ),
+    )
+
+
+def test_latest_trading_day_skips_weekend_and_weekday_holiday(monkeypatch) -> None:
+    friday = date(2026, 7, 10)
+    _stub_tw_holidays(monkeypatch, frozenset({date(2026, 7, 13)}))
+
+    assert TaiwanMarketDataRefreshService._latest_taiwan_trading_day(friday) == friday
+    assert TaiwanMarketDataRefreshService._latest_taiwan_trading_day(date(2026, 7, 11)) == friday
+    assert TaiwanMarketDataRefreshService._latest_taiwan_trading_day(date(2026, 7, 13)) == friday
+
+
+def _stub_tw_holidays(monkeypatch, holidays: frozenset[date] = frozenset()) -> None:
+    monkeypatch.setattr(
+        "app.services.market_clock._tw_market_holidays",
+        lambda year: holidays if year == 2026 else frozenset(),
+    )
 
 
 def test_sampler_runs_after_refresh_hour(monkeypatch) -> None:
     calls: list[str] = []
+    reset_job_health_for_tests()
+    _stub_tw_holidays(monkeypatch)
     late = datetime(2026, 7, 10, 12, 0, tzinfo=UTC)  # 20:00 Asia/Taipei
     service = TaiwanMarketDataRefreshService(
         institutional_repository=FakeInstitutionalRepo(),
         margin_short_repository=FakeMarginRepo(),
         now_provider=lambda: late,
     )
-    monkeypatch.setattr(
-        service,
-        "refresh_recent",
-        lambda **kwargs: calls.append(kwargs["trigger"]),
-    )
+
+    def fake_refresh(**kwargs):
+        calls.append(kwargs["trigger"])
+        return _stored_summary(local_day=date(2026, 7, 10))
+
+    monkeypatch.setattr(service, "refresh_recent", fake_refresh)
 
     wait_state = {"entered": False}
 
@@ -637,6 +689,151 @@ def test_sampler_runs_after_refresh_hour(monkeypatch) -> None:
 
     assert calls == ["scheduler"]
     assert service._last_scheduler_local_date == date(2026, 7, 10)
+    assert get_background_jobs_health()["taiwan-market-data-refresh"]["last_success_at"] is not None
+
+
+def test_sampler_retries_same_day_when_trading_day_not_stored(monkeypatch) -> None:
+    calls: list[str] = []
+    reset_job_health_for_tests()
+    _stub_tw_holidays(monkeypatch)
+    late = datetime(2026, 7, 10, 12, 0, tzinfo=UTC)
+    service = TaiwanMarketDataRefreshService(
+        institutional_repository=FakeInstitutionalRepo(),
+        margin_short_repository=FakeMarginRepo(),
+        now_provider=lambda: late,
+    )
+
+    def fake_refresh(**kwargs):
+        calls.append(kwargs["trigger"])
+        return TaiwanMarketDataRefreshSummary(
+            trigger="scheduler",
+            days=7,
+            started_at="2026-07-10T12:00:00+00:00",
+            finished_at="2026-07-10T12:00:01+00:00",
+            results=(
+                DatasetDayResult(
+                    dataset="institutional",
+                    market="TWSE",
+                    requested_date="2026-07-10",
+                    resolved_date=None,
+                    rows_fetched=0,
+                    rows_inserted=0,
+                    rows_updated=0,
+                    skipped_no_data=True,
+                ),
+            ),
+        )
+
+    monkeypatch.setattr(service, "refresh_recent", fake_refresh)
+
+    wait_state = {"count": 0}
+
+    def fake_wait(timeout=None):
+        if timeout == 0:
+            wait_state["count"] += 1
+            return wait_state["count"] > 2
+        return False if wait_state["count"] <= 2 else True
+
+    monkeypatch.setattr(service._stop_event, "wait", fake_wait)
+    service._run_sampler(poll_seconds=1, refresh_hour=18, recent_days=7)
+
+    assert calls == ["scheduler", "scheduler"]
+    assert service._last_scheduler_local_date is None
+    health = get_background_jobs_health().get("taiwan-market-data-refresh", {})
+    assert health.get("last_success_at") is None
+    assert health.get("last_error_at") is None
+
+
+def test_sampler_marks_holiday_done_from_previous_trading_day(monkeypatch) -> None:
+    """A weekday holiday must not poll all day waiting for a date that never trades."""
+    calls: list[str] = []
+    reset_job_health_for_tests()
+    holiday = date(2026, 7, 13)  # Monday
+    friday = date(2026, 7, 10)
+    _stub_tw_holidays(monkeypatch, frozenset({holiday}))
+    late = datetime(2026, 7, 13, 12, 0, tzinfo=UTC)  # 20:00 Asia/Taipei
+    service = TaiwanMarketDataRefreshService(
+        institutional_repository=FakeInstitutionalRepo(),
+        margin_short_repository=FakeMarginRepo(),
+        now_provider=lambda: late,
+    )
+
+    def fake_refresh(**kwargs):
+        calls.append(kwargs["trigger"])
+        return _stored_summary(local_day=friday)
+
+    monkeypatch.setattr(service, "refresh_recent", fake_refresh)
+
+    wait_state = {"count": 0}
+
+    def fake_wait(timeout=None):
+        if timeout == 0:
+            wait_state["count"] += 1
+            return wait_state["count"] > 2
+        return False if wait_state["count"] <= 2 else True
+
+    monkeypatch.setattr(service._stop_event, "wait", fake_wait)
+    service._run_sampler(poll_seconds=1, refresh_hour=18, recent_days=7)
+
+    assert calls == ["scheduler"]
+    assert service._last_scheduler_local_date == holiday
+    assert get_background_jobs_health()["taiwan-market-data-refresh"]["last_success_at"] is not None
+
+
+def test_sampler_retries_holiday_until_previous_trading_day_is_stored(monkeypatch) -> None:
+    calls: list[str] = []
+    reset_job_health_for_tests()
+    holiday = date(2026, 7, 13)
+    _stub_tw_holidays(monkeypatch, frozenset({holiday}))
+    late = datetime(2026, 7, 13, 12, 0, tzinfo=UTC)
+    service = TaiwanMarketDataRefreshService(
+        institutional_repository=FakeInstitutionalRepo(),
+        margin_short_repository=FakeMarginRepo(),
+        now_provider=lambda: late,
+    )
+
+    def fake_refresh(**kwargs):
+        calls.append(kwargs["trigger"])
+        return TaiwanMarketDataRefreshSummary(
+            trigger="scheduler",
+            days=7,
+            started_at="2026-07-13T12:00:00+00:00",
+            finished_at="2026-07-13T12:00:01+00:00",
+            results=(
+                DatasetDayResult(
+                    dataset="institutional",
+                    market="TWSE",
+                    requested_date=holiday.isoformat(),
+                    resolved_date=None,
+                    rows_fetched=0,
+                    rows_inserted=0,
+                    rows_updated=0,
+                    skipped_no_data=True,
+                ),
+            ),
+        )
+
+    monkeypatch.setattr(service, "refresh_recent", fake_refresh)
+
+    wait_state = {"count": 0}
+
+    def fake_wait(timeout=None):
+        if timeout == 0:
+            wait_state["count"] += 1
+            return wait_state["count"] > 2
+        return False if wait_state["count"] <= 2 else True
+
+    monkeypatch.setattr(service._stop_event, "wait", fake_wait)
+    service._run_sampler(poll_seconds=1, refresh_hour=18, recent_days=7)
+
+    assert calls == ["scheduler", "scheduler"]
+    assert service._last_scheduler_local_date is None
+    assert (
+        get_background_jobs_health()
+        .get("taiwan-market-data-refresh", {})
+        .get("last_success_at")
+        is None
+    )
 
 
 def test_sampler_skips_second_run_same_local_day(monkeypatch) -> None:

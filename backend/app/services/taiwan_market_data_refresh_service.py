@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from threading import Event, Lock, Thread
 from time import perf_counter
 from typing import Callable, Literal
@@ -14,6 +14,7 @@ from app.repositories.taiwan_market_daily_repository import (
     taiwan_margin_short_daily_repository,
 )
 from app.services.http_client import HttpFetchError
+from app.services.market_clock import MARKET_TIMEZONES, is_trading_day
 from app.services.taiwan_history_scan import (
     candidate_start_date,
     iter_candidate_weekdays,
@@ -43,6 +44,9 @@ TWBoard = Literal["TWSE", "TPEx"]
 DatasetKind = Literal["institutional", "margin_short"]
 _DEFAULT_RECENT_DAYS = 7
 _MARKETS: tuple[TWBoard, ...] = ("TWSE", "TPEx")
+# Lunar New Year closures can span more than a week. Match the institutional
+# lookback so a holiday does not get stuck waiting for a date that never trades.
+_TRADING_DAY_LOOKBACK = 21
 
 PayloadFetcher = Callable[[date], object]
 NowProvider = Callable[[], datetime]
@@ -506,38 +510,87 @@ class TaiwanMarketDataRefreshService:
 
     def _run_sampler(self, poll_seconds: int, refresh_hour: int, recent_days: int) -> None:
         from app.core.config import settings
+        from app.jobs.health import JOB_TICK_INCOMPLETE, run_guarded_tick
 
         timezone_name = settings.taiwan_market_data_timezone or "Asia/Taipei"
         local_tz = ZoneInfo(timezone_name)
         while not self._stop_event.wait(0):
-            now = self._now_provider()
-            local_now = now.astimezone(local_tz)
-            local_hour = local_now.hour
-            local_day = local_now.date()
-            if local_hour < refresh_hour:
+            def _tick() -> object:
+                now = self._now_provider()
+                local_now = now.astimezone(local_tz)
+                local_hour = local_now.hour
+                local_day = local_now.date()
+                if local_hour < refresh_hour:
+                    logger.info(
+                        "Taiwan market data refresh skipped before local publish hour",
+                        extra={
+                            "event": "taiwan_market_data.scheduler.skipped_before_hour",
+                            "local_hour": local_hour,
+                            "refresh_hour": refresh_hour,
+                            "timezone": timezone_name,
+                        },
+                    )
+                    return JOB_TICK_INCOMPLETE
+                if self._last_scheduler_local_date == local_day:
+                    logger.info(
+                        "Taiwan market data refresh skipped; already ran today",
+                        extra={
+                            "event": "taiwan_market_data.scheduler.skipped_already_ran",
+                            "local_date": local_day.isoformat(),
+                            "timezone": timezone_name,
+                        },
+                    )
+                    return JOB_TICK_INCOMPLETE
+                summary = self.refresh_recent(trigger="scheduler", recent_days=recent_days)
+                if self._current_trading_day_stored(summary, local_day):
+                    self._last_scheduler_local_date = local_day
+                    return None
                 logger.info(
-                    "Taiwan market data refresh skipped before local publish hour",
+                    "Taiwan market data refresh will retry; trading-day data not stored yet",
                     extra={
-                        "event": "taiwan_market_data.scheduler.skipped_before_hour",
-                        "local_hour": local_hour,
-                        "refresh_hour": refresh_hour,
-                        "timezone": timezone_name,
-                    },
-                )
-            elif self._last_scheduler_local_date == local_day:
-                logger.info(
-                    "Taiwan market data refresh skipped; already ran today",
-                    extra={
-                        "event": "taiwan_market_data.scheduler.skipped_already_ran",
+                        "event": "taiwan_market_data.scheduler.retry_same_day",
                         "local_date": local_day.isoformat(),
                         "timezone": timezone_name,
+                        "rows_upserted": summary.rows_upserted,
+                        "error_count": summary.error_count,
                     },
                 )
-            else:
-                self.refresh_recent(trigger="scheduler", recent_days=recent_days)
-                self._last_scheduler_local_date = local_day
+                return JOB_TICK_INCOMPLETE
+
+            run_guarded_tick(
+                "taiwan-market-data-refresh",
+                event="taiwan_market_data.scheduler.failed",
+                tick=_tick,
+            )
             if self._stop_event.wait(poll_seconds):
                 return
+
+    @staticmethod
+    def _latest_taiwan_trading_day(local_day: date) -> date:
+        """Latest TW session on or before ``local_day``, including exchange holidays."""
+        target = local_day
+        tz = MARKET_TIMEZONES["TW"]
+        for _ in range(_TRADING_DAY_LOOKBACK):
+            probe = datetime.combine(target, time(12, 0), tzinfo=tz)
+            if is_trading_day("TW", probe):
+                return target
+            target -= timedelta(days=1)
+        return target
+
+    @staticmethod
+    def _current_trading_day_stored(
+        summary: TaiwanMarketDataRefreshSummary,
+        local_day: date,
+    ) -> bool:
+        """True when the latest TW trading day on/before ``local_day`` was persisted (#266)."""
+        target_text = TaiwanMarketDataRefreshService._latest_taiwan_trading_day(
+            local_day
+        ).isoformat()
+        return any(
+            result.requested_date == target_text
+            and (result.rows_inserted + result.rows_updated) > 0
+            for result in summary.results
+        )
 
 
 taiwan_market_data_refresh_service = TaiwanMarketDataRefreshService()

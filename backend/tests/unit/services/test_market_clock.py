@@ -11,6 +11,7 @@ from app.services.market_clock import (
     is_within_hour_before_market_open,
     latest_trading_day_bucket,
     market_session_close,
+    quote_session_is_live,
     tw_institutional_daily_bucket_from_timestamp,
     tw_institutional_daily_snapshot_bucket,
 )
@@ -58,6 +59,35 @@ def test_us_early_close_day_after_thanksgiving() -> None:
 
     assert is_market_open("US", during_session) is True
     assert is_market_open("US", after_early_close) is False
+
+
+def test_us_quote_session_is_live_false_after_hours_even_with_closing_print() -> None:
+    quote_time = datetime.fromisoformat("2026-10-07T16:00:01-04:00")
+    evening = datetime.fromisoformat("2026-10-07T18:00:00-04:00")
+
+    assert is_market_open("US", quote_time) is True
+    assert quote_session_is_live("US", quote_time, now=evening) is False
+
+
+def test_us_quote_session_is_live_during_session_for_today_quote() -> None:
+    quote_time = datetime.fromisoformat("2026-10-07T15:59:00-04:00")
+    now = datetime.fromisoformat("2026-10-07T15:59:30-04:00")
+
+    assert quote_session_is_live("US", quote_time, now=now) is True
+
+
+def test_us_quote_session_is_live_false_on_weekend() -> None:
+    quote_time = datetime.fromisoformat("2026-10-09T15:00:00-04:00")  # Friday
+    saturday = datetime.fromisoformat("2026-10-10T12:00:00-04:00")
+
+    assert quote_session_is_live("US", quote_time, now=saturday) is False
+
+
+def test_us_quote_session_is_live_false_after_early_close() -> None:
+    quote_time = datetime.fromisoformat("2026-11-27T12:59:00-05:00")
+    after_close = datetime.fromisoformat("2026-11-27T14:00:00-05:00")
+
+    assert quote_session_is_live("US", quote_time, now=after_close) is False
 
 
 def test_tw_market_is_closed_on_configured_holiday(monkeypatch) -> None:

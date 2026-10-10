@@ -536,3 +536,21 @@ def test_health_payload_exposes_fields_expected_by_http_surface() -> None:
         "retry_after_seconds",
     }
     assert expected <= set(payload)
+
+
+def test_cached_us_quote_is_market_open_is_derived_at_read_time() -> None:
+    quote = replace(
+        _sample_quote(),
+        timestamp="2026-10-07T15:59:00-04:00",
+        is_market_open=True,
+    )
+    cached_at = datetime(2026, 10, 7, 19, 59, tzinfo=UTC)  # 15:59 ET
+    payload = json.dumps(cache._serialize(quote, cached_at=cached_at))
+    with cache._memory_lock:
+        cache._memory_quotes["US:AAPL"] = (1e18, payload)
+
+    after_close = datetime(2026, 10, 7, 20, 5, tzinfo=UTC)  # 16:05 ET
+    entry = cache._get_entries_from_memory(["US:AAPL"], now=after_close)["US:AAPL"]
+
+    assert entry.quote.is_market_open is False
+    assert entry.cached_at == cached_at

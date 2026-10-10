@@ -127,9 +127,11 @@ def stop_runtime_background_jobs() -> None:
 
 @app.get("/health")
 def healthcheck() -> dict:
+    from app.jobs.health import get_background_jobs_health
     from app.services.quote_redis_cache import get_quote_cache_health
 
     return {
         "status": "ok",
         "quote_cache": get_quote_cache_health(),
+        "background_jobs": get_background_jobs_health(),
     }

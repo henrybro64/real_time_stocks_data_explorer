@@ -103,6 +103,23 @@ def is_market_open(market: str, now: datetime | None = None) -> bool:
     return start <= current_time <= end
 
 
+def quote_session_is_live(
+    market: str,
+    quote_time: datetime,
+    now: datetime | None = None,
+) -> bool:
+    """True only while the market is open now and the quote is from today's session.
+
+    Judging the quote's own timestamp alone would keep a closing print
+    (for example U.S. 16:00:01 ET) marked open all evening (#262). Taiwan
+    already used this rule (#258); U.S. quotes and cached reads share it.
+    """
+    current = market_local_time(market, now)
+    if not is_market_open(market, current):
+        return False
+    return quote_time.astimezone(current.tzinfo).date() == current.date()
+
+
 def is_within_hour_before_market_open(
     market: str, now: datetime | None = None
 ) -> bool:
