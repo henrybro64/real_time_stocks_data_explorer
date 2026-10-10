@@ -461,18 +461,14 @@ class QuoteRefresherService:
         return float(self._random(0.0, upper))
 
     def _run_sampler(self) -> None:
+        from app.jobs.health import run_guarded_tick
+
         while not self._stop_event.is_set():
-            try:
-                self.run_cycle()
-            except Exception as exc:  # noqa: BLE001 - keep sampler alive
-                logger.exception(
-                    "Quote refresher cycle crashed",
-                    extra={
-                        "event": "quote_refresher.cycle.failed",
-                        "error_type": type(exc).__name__,
-                        "error": str(exc),
-                    },
-                )
+            run_guarded_tick(
+                "quote-refresher",
+                event="quote_refresher.cycle.failed",
+                tick=self.run_cycle,
+            )
             poll_seconds = self.select_poll_seconds()
             if self._stop_event.wait(poll_seconds):
                 return

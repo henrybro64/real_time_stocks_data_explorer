@@ -65,30 +65,15 @@ def test_get_quote_falls_back_to_yahoo_when_mis_disconnects(monkeypatch) -> None
         lambda self, _stock: yahoo_quote,
     )
     monkeypatch.setattr(tw_provider.TWProvider, "_stock_catalog", lambda self: {stock.id: stock})
-    tw_provider.TWProvider._quote_cache.clear()
-    tw_provider.TWProvider._quote_cached_at.clear()
 
     quote = tw_provider.TWProvider().get_quote(stock.id)
     assert quote == yahoo_quote
     assert mis_calls["count"] == 1
 
 
-def test_get_quote_uses_cache_when_mis_and_yahoo_fail(monkeypatch) -> None:
+def test_get_quote_does_not_return_last_good_when_mis_and_yahoo_fail(monkeypatch) -> None:
     tw_provider.reset_mis_circuit_for_tests()
     stock = _tw_stock()
-    cached = QuoteRecord(
-        id=stock.id,
-        last_price=880.0,
-        change=-1.0,
-        change_percent=-0.1,
-        previous_close=881.0,
-        open=881.0,
-        high=882.0,
-        low=879.0,
-        volume=500,
-        timestamp=datetime(2026, 8, 27, 13, 0, tzinfo=ZoneInfo("Asia/Taipei")).isoformat(),
-        is_market_open=True,
-    )
     monkeypatch.setattr(
         tw_provider,
         "_load_json",
@@ -102,11 +87,9 @@ def test_get_quote_uses_cache_when_mis_and_yahoo_fail(monkeypatch) -> None:
         lambda self, _stock: None,
     )
     monkeypatch.setattr(tw_provider.TWProvider, "_stock_catalog", lambda self: {stock.id: stock})
-    tw_provider.TWProvider._quote_cache[stock.id] = cached
-    tw_provider.TWProvider._quote_cached_at[stock.id] = datetime.now(ZoneInfo(stock.timezone))
 
     quote = tw_provider.TWProvider().get_quote(stock.id)
-    assert quote == cached
+    assert quote is None
 
 
 def test_mis_circuit_skips_mis_after_repeated_disconnects(monkeypatch) -> None:
@@ -142,8 +125,6 @@ def test_mis_circuit_skips_mis_after_repeated_disconnects(monkeypatch) -> None:
         lambda self, _stock: yahoo_quote,
     )
     monkeypatch.setattr(tw_provider.TWProvider, "_stock_catalog", lambda self: {stock.id: stock})
-    tw_provider.TWProvider._quote_cache.clear()
-    tw_provider.TWProvider._quote_cached_at.clear()
 
     provider = tw_provider.TWProvider()
     for _ in range(tw_provider._MIS_FAILURE_THRESHOLD):
@@ -222,8 +203,6 @@ def test_tpex_get_quote_falls_back_to_yahoo_when_mis_empty(monkeypatch) -> None:
         lambda self, _stock: yahoo_quote,
     )
     monkeypatch.setattr(tw_provider.TWProvider, "_stock_catalog", lambda self: {stock.id: stock})
-    tw_provider.TWProvider._quote_cache.clear()
-    tw_provider.TWProvider._quote_cached_at.clear()
 
     quote = tw_provider.TWProvider().get_quote(stock.id)
     assert quote == yahoo_quote
@@ -270,8 +249,6 @@ def test_yahoo_quote_reads_session_open_from_the_daily_bar(monkeypatch) -> None:
     monkeypatch.setattr(tw_provider, "_load_json", lambda *_a, **_k: {"msgArray": []})
     monkeypatch.setattr(tw_provider, "fetch_json", fake_fetch_json)
     monkeypatch.setattr(tw_provider.TWProvider, "_stock_catalog", lambda self: {stock.id: stock})
-    tw_provider.TWProvider._quote_cache.clear()
-    tw_provider.TWProvider._quote_cached_at.clear()
 
     quote = tw_provider.TWProvider().get_quote(stock.id)
     assert quote is not None
@@ -318,8 +295,6 @@ def test_yahoo_quote_does_not_reuse_the_previous_session_bar(monkeypatch) -> Non
     monkeypatch.setattr(tw_provider, "_load_json", lambda *_a, **_k: {"msgArray": []})
     monkeypatch.setattr(tw_provider, "fetch_json", fake_fetch_json)
     monkeypatch.setattr(tw_provider.TWProvider, "_stock_catalog", lambda self: {stock.id: stock})
-    tw_provider.TWProvider._quote_cache.clear()
-    tw_provider.TWProvider._quote_cached_at.clear()
 
     quote = tw_provider.TWProvider().get_quote(stock.id)
     assert quote is not None
@@ -346,8 +321,6 @@ def test_tpex_get_quote_returns_none_when_mis_and_yahoo_fail(monkeypatch) -> Non
         lambda self, _stock: None,
     )
     monkeypatch.setattr(tw_provider.TWProvider, "_stock_catalog", lambda self: {stock.id: stock})
-    tw_provider.TWProvider._quote_cache.clear()
-    tw_provider.TWProvider._quote_cached_at.clear()
 
     assert tw_provider.TWProvider().get_quote(stock.id) is None
 
@@ -379,8 +352,6 @@ def test_tpex_yahoo_quote_tries_two_before_tw(monkeypatch) -> None:
     monkeypatch.setattr(tw_provider, "_load_json", lambda *_a, **_k: {"msgArray": []})
     monkeypatch.setattr(tw_provider, "fetch_json", fake_fetch_json)
     monkeypatch.setattr(tw_provider.TWProvider, "_stock_catalog", lambda self: {stock.id: stock})
-    tw_provider.TWProvider._quote_cache.clear()
-    tw_provider.TWProvider._quote_cached_at.clear()
 
     quote = tw_provider.TWProvider().get_quote(stock.id)
     assert quote is not None
@@ -399,8 +370,6 @@ def test_tpex_yahoo_quote_tries_two_before_tw(monkeypatch) -> None:
 def _use_stock(monkeypatch, stock: StockRecord) -> None:
     tw_provider.reset_mis_circuit_for_tests()
     monkeypatch.setattr(tw_provider.TWProvider, "_stock_catalog", lambda self: {stock.id: stock})
-    tw_provider.TWProvider._quote_cache.clear()
-    tw_provider.TWProvider._quote_cached_at.clear()
 
 
 def _mis_payload(**overrides: str) -> dict[str, list[dict[str, str]]]:
@@ -550,7 +519,7 @@ def test_undocumented_pz_is_never_the_current_price(monkeypatch) -> None:
     assert tw_provider.TWProvider().get_quote(stock.id) is None
 
 
-def test_cached_quote_keeps_limit_fields_from_the_same_payload(monkeypatch) -> None:
+def test_provider_last_good_is_not_returned_after_mis_and_yahoo_fail(monkeypatch) -> None:
     stock = _tw_stock()
     _use_stock(monkeypatch, stock)
     calls = {"count": 0}
@@ -569,10 +538,8 @@ def test_cached_quote_keeps_limit_fields_from_the_same_payload(monkeypatch) -> N
     second = provider.get_quote(stock.id)
 
     assert first is not None and first.price_limit_status == "limit_up"
-    assert second is not None
-    assert second.price_limit_status == "limit_up"
-    assert second.limit_up_price == pytest.approx(110.0)
-    assert second.last_price == pytest.approx(110.0)
+    assert first.last_price == pytest.approx(110.0)
+    assert second is None
 
 
 def test_yahoo_fallback_does_not_keep_a_previous_limit_classification(monkeypatch) -> None:

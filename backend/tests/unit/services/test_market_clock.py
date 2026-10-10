@@ -3,14 +3,16 @@ from datetime import date, datetime
 from app.services.http_client import HttpFetchError
 from app.services.market_clock import (
     TW_DAILY_PUBLISH_TIME,
+    _TW_HOLIDAY_FAILURE_RETRY_SECONDS,
+    _clear_tw_market_holiday_cache,
     _tw_market_holidays,
-    _tw_market_holidays_cached,
     current_rankings_snapshot_bucket,
     current_snapshot_bucket,
     is_market_open,
     is_within_hour_before_market_open,
     latest_trading_day_bucket,
     market_session_close,
+    quote_session_is_live,
     tw_institutional_daily_bucket_from_timestamp,
     tw_institutional_daily_snapshot_bucket,
 )
@@ -58,6 +60,35 @@ def test_us_early_close_day_after_thanksgiving() -> None:
 
     assert is_market_open("US", during_session) is True
     assert is_market_open("US", after_early_close) is False
+
+
+def test_us_quote_session_is_live_false_after_hours_even_with_closing_print() -> None:
+    quote_time = datetime.fromisoformat("2026-10-07T16:00:01-04:00")
+    evening = datetime.fromisoformat("2026-10-07T18:00:00-04:00")
+
+    assert is_market_open("US", quote_time) is True
+    assert quote_session_is_live("US", quote_time, now=evening) is False
+
+
+def test_us_quote_session_is_live_during_session_for_today_quote() -> None:
+    quote_time = datetime.fromisoformat("2026-10-07T15:59:00-04:00")
+    now = datetime.fromisoformat("2026-10-07T15:59:30-04:00")
+
+    assert quote_session_is_live("US", quote_time, now=now) is True
+
+
+def test_us_quote_session_is_live_false_on_weekend() -> None:
+    quote_time = datetime.fromisoformat("2026-10-09T15:00:00-04:00")  # Friday
+    saturday = datetime.fromisoformat("2026-10-10T12:00:00-04:00")
+
+    assert quote_session_is_live("US", quote_time, now=saturday) is False
+
+
+def test_us_quote_session_is_live_false_after_early_close() -> None:
+    quote_time = datetime.fromisoformat("2026-11-27T12:59:00-05:00")
+    after_close = datetime.fromisoformat("2026-11-27T14:00:00-05:00")
+
+    assert quote_session_is_live("US", quote_time, now=after_close) is False
 
 
 def test_tw_market_is_closed_on_configured_holiday(monkeypatch) -> None:
@@ -247,16 +278,38 @@ def test_tw_market_holidays_caches_fetch_failure(monkeypatch) -> None:
         raise HttpFetchError("TWSE holiday schedule unavailable")
 
     monkeypatch.setattr("app.services.market_clock.fetch_text", _boom)
-    _tw_market_holidays_cached.cache_clear()
+    _clear_tw_market_holiday_cache()
     try:
         first = _tw_market_holidays(2026)
         second = _tw_market_holidays(2026)
     finally:
-        _tw_market_holidays_cached.cache_clear()
+        _clear_tw_market_holiday_cache()
 
     assert first == frozenset()
     assert second == frozenset()
     assert calls["count"] == 1
+
+
+def test_tw_market_holidays_retries_fetch_after_the_failure_window(monkeypatch) -> None:
+    calls = {"count": 0}
+    clock = {"now": 1_000.0}
+
+    def _boom(*_args, **_kwargs):
+        calls["count"] += 1
+        raise HttpFetchError("TWSE holiday schedule unavailable")
+
+    monkeypatch.setattr("app.services.market_clock.fetch_text", _boom)
+    monkeypatch.setattr("app.services.market_clock.monotonic", lambda: clock["now"])
+    _clear_tw_market_holiday_cache()
+    try:
+        assert _tw_market_holidays(2026) == frozenset()
+        assert _tw_market_holidays(2026) == frozenset()
+        assert calls["count"] == 1
+        clock["now"] += _TW_HOLIDAY_FAILURE_RETRY_SECONDS
+        assert _tw_market_holidays(2026) == frozenset()
+        assert calls["count"] == 2
+    finally:
+        _clear_tw_market_holiday_cache()
 
 
 def test_tw_institutional_daily_bucket_from_timestamp_normalizes_to_publish_time() -> None:

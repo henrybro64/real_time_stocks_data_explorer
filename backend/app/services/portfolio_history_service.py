@@ -243,18 +243,16 @@ class PortfolioHistoryService:
         }
 
     def _run_sampler(self, poll_seconds: int) -> None:
+        from app.jobs.health import run_guarded_tick
+
         while not self._stop_event.wait(poll_seconds):
-            try:
-                self.capture_due_snapshots_for_all_users(trigger="background_sampler")
-            except Exception:
-                logger.exception(
-                    "Portfolio history sampler failed",
-                    extra={
-                        "event": "portfolio_history.sampler.failed",
-                        "job_name": "portfolio-history-sampler",
-                        "poll_seconds": poll_seconds,
-                    },
-                )
+            run_guarded_tick(
+                "portfolio-history-sampler",
+                event="portfolio_history.sampler.failed",
+                tick=lambda: self.capture_due_snapshots_for_all_users(
+                    trigger="background_sampler"
+                ),
+            )
 
     def _build_snapshot_metrics(self, user_id: str) -> SnapshotMetrics:
         positions = portfolio_service.list_positions(user_id)

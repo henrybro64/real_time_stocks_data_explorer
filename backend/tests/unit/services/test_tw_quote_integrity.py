@@ -42,8 +42,6 @@ def _stock(symbol: str = "2368", exchange: str = "TWSE") -> StockRecord:
 def _use_stock(monkeypatch: pytest.MonkeyPatch, stock: StockRecord) -> None:
     tw_provider.reset_mis_circuit_for_tests()
     monkeypatch.setattr(tw_provider.TWProvider, "_stock_catalog", lambda self: {stock.id: stock})
-    tw_provider.TWProvider._quote_cache.clear()
-    tw_provider.TWProvider._quote_cached_at.clear()
 
 
 def _mis_2368(**overrides: str) -> dict[str, list[dict[str, str]]]:
@@ -532,6 +530,7 @@ def _freeze_clock(monkeypatch: pytest.MonkeyPatch, day: int, hour: int, minute: 
             return datetime(2026, 7, day, hour, minute, tzinfo=tz or _TZ)
 
     monkeypatch.setattr(tw_provider, "datetime", _Frozen)
+    monkeypatch.setattr("app.services.market_clock.datetime", _Frozen)
 
 
 def test_mis_timestamp_and_market_status_come_from_the_snapshot(monkeypatch) -> None:
@@ -736,8 +735,6 @@ def test_yahoo_backoff_is_per_stock(monkeypatch) -> None:
         "_stock_catalog",
         lambda self: {stock.id: stock, other.id: other},
     )
-    tw_provider.TWProvider._quote_cache.clear()
-    tw_provider.TWProvider._quote_cached_at.clear()
     monkeypatch.setattr(tw_provider, "monotonic", lambda: 1000.0)
     monkeypatch.setattr(tw_provider, "_load_json", lambda *_a, **_k: _mis_2368(z="-", pz="-"))
     yahoo_calls: list[str] = []
@@ -751,8 +748,6 @@ def test_yahoo_backoff_is_per_stock(monkeypatch) -> None:
 
     assert provider.get_quote(stock.id) is None
     assert provider.get_quote(other.id) is not None
-    tw_provider.TWProvider._quote_cache.clear()
-    tw_provider.TWProvider._quote_cached_at.clear()
     assert provider.get_quote(stock.id) is None  # backed off
     assert provider.get_quote(other.id) is not None  # a successful stock is not
     assert yahoo_calls == [stock.id, other.id, other.id]

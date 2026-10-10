@@ -52,8 +52,6 @@ def test_tw_provider_search_matches_symbol_and_chinese_name_without_network(monk
 def test_tw_provider_get_quote_returns_none_when_live_sources_unavailable(monkeypatch) -> None:
     monkeypatch.setattr(tw_provider.TWProvider, "_fetch_quote", lambda self, stock: None)
     monkeypatch.setattr(tw_provider.TWProvider, "_fetch_yahoo_tw_quote", lambda self, stock: None)
-    tw_provider.TWProvider._quote_cache.clear()
-    tw_provider.TWProvider._quote_cached_at.clear()
 
     provider = tw_provider.TWProvider()
 

@@ -1384,6 +1384,8 @@ class RankingsArchiveService:
                 remaining = (next_wake - now).total_seconds()
                 self._stop_event.wait(min(float(poll_seconds), max(1.0, remaining)))
                 continue
+            from app.jobs.health import note_job_failure, note_job_success
+
             try:
                 if not settings.rankings_archive_eod_enabled:
                     next_wake = now + timedelta(seconds=poll_seconds)
@@ -1434,7 +1436,12 @@ class RankingsArchiveService:
                         "sql_round_trips": result.get("sql_round_trips"),
                     },
                 )
-            except Exception:  # noqa: BLE001
+                failed = int(result.get("failed") or 0)
+                still_missing = int(result.get("still_missing") or 0)
+                if failed == 0 and still_missing == 0:
+                    note_job_success("rankings-archive-eod")
+            except Exception as exc:  # noqa: BLE001
+                note_job_failure("rankings-archive-eod", exc)
                 logger.exception(
                     "Rankings archive sampler cycle failed",
                     extra={"event": "rankings_archive.sampler.failed"},

@@ -4,6 +4,8 @@ from datetime import date, datetime, time, timedelta, timezone
 from functools import lru_cache
 from html.parser import HTMLParser
 import logging
+from threading import Lock
+from time import monotonic
 from zoneinfo import ZoneInfo
 
 from app.services.http_client import HttpFetchError, fetch_text
@@ -69,7 +71,12 @@ def market_local_time(market: str, now: datetime | None = None) -> datetime:
     return current.astimezone(MARKET_TIMEZONES[market])
 
 
-def is_trading_day(market: str, now: datetime | None = None) -> bool:
+def is_trading_day(
+    market: str,
+    now: datetime | None = None,
+    *,
+    allow_holiday_fetch: bool = True,
+) -> bool:
     current = market_local_time(market, now)
     current_date = current.date()
     if current.weekday() >= 5:
@@ -77,6 +84,12 @@ def is_trading_day(market: str, now: datetime | None = None) -> bool:
     if market == "US":
         return current_date not in _us_market_holidays(current_date.year)
     if market == "TW":
+        if not allow_holiday_fetch:
+            holidays = _tw_holiday_success.get(current_date.year)
+            # A missing calendar must not start a TWSE request on this path.
+            if holidays is None:
+                return True
+            return current_date not in holidays
         return current_date not in _tw_market_holidays(current_date.year)
     raise KeyError(market)
 
@@ -94,13 +107,41 @@ def market_session_window(market: str, on_date: date) -> tuple[time, time]:
     return start, market_session_close(market, on_date)
 
 
-def is_market_open(market: str, now: datetime | None = None) -> bool:
+def is_market_open(
+    market: str,
+    now: datetime | None = None,
+    *,
+    allow_holiday_fetch: bool = True,
+) -> bool:
     current = market_local_time(market, now)
-    if not is_trading_day(market, current):
+    if not is_trading_day(market, current, allow_holiday_fetch=allow_holiday_fetch):
         return False
     start, end = market_session_window(market, current.date())
     current_time = current.time().replace(second=0, microsecond=0)
     return start <= current_time <= end
+
+
+def quote_session_is_live(
+    market: str,
+    quote_time: datetime,
+    now: datetime | None = None,
+    *,
+    allow_holiday_fetch: bool = True,
+) -> bool:
+    """True only while the market is open now and the quote is from today's session.
+
+    Judging the quote's own timestamp alone would keep a closing print
+    (for example U.S. 16:00:01 ET) marked open all evening (#262). Taiwan
+    already used this rule (#258); U.S. quotes and cached reads share it.
+
+    Cached quote reads pass ``allow_holiday_fetch=False`` so a TWSE holiday
+    lookup cannot run while the quote-cache lock is held. Callers preload
+    the calendar before taking that lock.
+    """
+    current = market_local_time(market, now)
+    if not is_market_open(market, current, allow_holiday_fetch=allow_holiday_fetch):
+        return False
+    return quote_time.astimezone(current.tzinfo).date() == current.date()
 
 
 def is_within_hour_before_market_open(
@@ -390,25 +431,51 @@ def _us_early_close_days(year: int) -> frozenset[date]:
     return frozenset(early_closes)
 
 
+# A failed TWSE holiday fetch must not stick for the process lifetime. While
+# the empty result is cached, weekday holidays look like trading days and the
+# daily refresh never accepts the preceding session (#266).
+_TW_HOLIDAY_FAILURE_RETRY_SECONDS = 15 * 60
+_tw_holiday_lock = Lock()
+_tw_holiday_success: dict[int, frozenset[date]] = {}
+_tw_holiday_retry_after: dict[int, float] = {}
+
+
+def _clear_tw_market_holiday_cache() -> None:
+    with _tw_holiday_lock:
+        _tw_holiday_success.clear()
+        _tw_holiday_retry_after.clear()
+
+
 def _tw_market_holidays(year: int) -> frozenset[date]:
-    return _tw_market_holidays_cached(year)
+    cached = _tw_holiday_success.get(year)
+    if cached is not None:
+        return cached
+    with _tw_holiday_lock:
+        cached = _tw_holiday_success.get(year)
+        if cached is not None:
+            return cached
+        if monotonic() < _tw_holiday_retry_after.get(year, 0.0):
+            return frozenset()
+        try:
+            holidays = _load_tw_market_holidays(year)
+        except HttpFetchError:
+            logger.warning("Failed to fetch TWSE holiday schedule for %s", year)
+            _tw_holiday_retry_after[year] = monotonic() + _TW_HOLIDAY_FAILURE_RETRY_SECONDS
+            return frozenset()
+        _tw_holiday_retry_after.pop(year, None)
+        _tw_holiday_success[year] = holidays
+        return holidays
 
 
-@lru_cache(maxsize=8)
-def _tw_market_holidays_cached(year: int) -> frozenset[date]:
+def _load_tw_market_holidays(year: int) -> frozenset[date]:
     query_year = year - 1911
-    try:
-        html = fetch_text(
-            _TWSE_HOLIDAY_URL,
-            params={"response": "html", "queryYear": str(query_year)},
-            headers={"User-Agent": _BROWSER_USER_AGENT},
-            timeout_seconds=8.0,
-            retries=1,
-        )
-    except HttpFetchError:
-        logger.warning("Failed to fetch TWSE holiday schedule for %s", year)
-        return frozenset()
-
+    html = fetch_text(
+        _TWSE_HOLIDAY_URL,
+        params={"response": "html", "queryYear": str(query_year)},
+        headers={"User-Agent": _BROWSER_USER_AGENT},
+        timeout_seconds=8.0,
+        retries=1,
+    )
     parser = _TableRowParser()
     parser.feed(html)
 

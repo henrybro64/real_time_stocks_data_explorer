@@ -23,6 +23,7 @@ from app.services.market_clock import (
     is_trading_day,
     market_session_close,
     market_session_window,
+    quote_session_is_live,
 )
 from app.services.providers.yahoo_chart import chart_quote_price, coherent_price_change
 from app.services.tw_mis_trade import mis_last_trade
@@ -240,7 +241,6 @@ _ISIN_LISTED_URL = "https://isin.twse.com.tw/isin/C_public.jsp?strMode=2"
 _ISIN_OTC_URL = "https://isin.twse.com.tw/isin/C_public.jsp?strMode=4"
 _REQUEST_TIMEOUT_SECONDS = 5
 _CATALOG_TTL = timedelta(hours=12)
-_QUOTE_CACHE_TTL = timedelta(minutes=15)
 _MIS_FUTURE_TOLERANCE = timedelta(minutes=1)
 _YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart"
 _BROWSER_USER_AGENT = (
@@ -332,8 +332,6 @@ class TWProvider:
     _catalog_cache: dict[str, StockRecord] | None = None
     _catalog_cached_at: datetime | None = None
     _catalog_lock = threading.Lock()
-    _quote_cache: dict[str, QuoteRecord] = {}
-    _quote_cached_at: dict[str, datetime] = {}
 
     def list_stocks(self) -> list[StockRecord]:
         return list(self._stock_catalog().values())
@@ -359,21 +357,13 @@ class TWProvider:
 
         quote = self._fetch_quote(stock)
         if quote is not None:
-            self.__class__._quote_cache[stock_id] = quote
-            self.__class__._quote_cached_at[stock_id] = datetime.now(
-                ZoneInfo(stock.timezone)
-            )
             return quote
         quote = self._fallback_yahoo_quote(stock)
         if quote is not None:
-            self.__class__._quote_cache[stock_id] = quote
-            self.__class__._quote_cached_at[stock_id] = datetime.now(
-                ZoneInfo(stock.timezone)
-            )
             return quote
-        cached_quote = self._cached_quote(stock)
-        if cached_quote is not None:
-            return cached_quote
+        # Do not invent a current price from an older in-process snapshot.
+        # The shared quote cache serves last-known data as stale; a dual
+        # MIS/Yahoo miss is a failed fetch for the refresher circuit (#263).
         return None
 
     def _fallback_yahoo_quote(self, stock: StockRecord) -> QuoteRecord | None:
@@ -501,7 +491,7 @@ class TWProvider:
             low=round(low_price, 2) if low_price is not None else None,
             volume=volume,
             timestamp=quote_timestamp.isoformat(),
-            is_market_open=_quote_session_is_live(stock, quote_timestamp),
+            is_market_open=quote_session_is_live(stock.market, quote_timestamp),
             price_limit_status=price_limit_status,
             reference_price=reference_price,
             limit_up_price=limit_up_price,
@@ -593,7 +583,7 @@ class TWProvider:
                 else None,
                 volume=volume,
                 timestamp=quote_time.isoformat(),
-                is_market_open=_quote_session_is_live(stock, quote_time),
+                is_market_open=quote_session_is_live(stock.market, quote_time),
                 # Yahoo chart meta has no official MIS u/w band. Do not copy a
                 # previous limit classification or infer one from change percent.
                 price_limit_status="unknown",
@@ -871,20 +861,6 @@ class TWProvider:
         self.__class__._catalog_cached_at = now
         return catalog
 
-    def _cached_quote(self, stock: StockRecord) -> QuoteRecord | None:
-        cached_quote = self.__class__._quote_cache.get(stock.id)
-        cached_at = self.__class__._quote_cached_at.get(stock.id)
-        if cached_quote is None or cached_at is None:
-            return None
-
-        now = datetime.now(ZoneInfo(stock.timezone))
-        if now - cached_at > _QUOTE_CACHE_TTL:
-            self.__class__._quote_cache.pop(stock.id, None)
-            self.__class__._quote_cached_at.pop(stock.id, None)
-            return None
-        return cached_quote
-
-
 def _mis_circuit_is_open() -> bool:
     with _mis_circuit_lock:
         return monotonic() < _mis_circuit_open_until
@@ -1085,18 +1061,6 @@ def _within_trading_session(stock: StockRecord, moment: datetime) -> bool:
         return False
     start, end = market_session_window(stock.market, moment.date())
     return start <= moment.time().replace(second=0, microsecond=0) <= end
-
-
-def _quote_session_is_live(stock: StockRecord, quote_time: datetime) -> bool:
-    """True only while the market is open now and the quote is from today's session.
-
-    Judging the quote's own timestamp would label a previous session's 13:30
-    price as open during today's session (#258).
-    """
-    now = datetime.now(ZoneInfo(stock.timezone))
-    if not is_market_open(stock.market, now):
-        return False
-    return quote_time.astimezone(now.tzinfo).date() == now.date()
 
 
 def _parse_float(raw_value: str | None) -> float | None:

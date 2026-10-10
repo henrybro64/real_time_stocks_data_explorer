@@ -18,3 +18,12 @@ def test_health_includes_quote_cache_section(client) -> None:
     assert "last_success_write_at" in quote_cache
     assert "last_error_category" in quote_cache
     assert "redis://" not in response.text
+
+
+def test_health_includes_background_jobs_section(client) -> None:
+    response = client.get("/health")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert "background_jobs" in payload
+    assert isinstance(payload["background_jobs"], dict)

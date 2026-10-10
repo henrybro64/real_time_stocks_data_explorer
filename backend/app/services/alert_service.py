@@ -199,11 +199,14 @@ class AlertService:
         thread.join(timeout=1.0)
 
     def _run_evaluator(self, poll_seconds: int) -> None:
+        from app.jobs.health import run_guarded_tick
+
         while not self._stop_event.wait(poll_seconds):
-            try:
-                self.evaluate_rules_for_all_users()
-            except Exception:
-                logger.exception("Alert evaluator failed")
+            run_guarded_tick(
+                "alert-rule-evaluator",
+                event="alerts.evaluator.failed",
+                tick=self.evaluate_rules_for_all_users,
+            )
 
     def _evaluate_rules(
         self,

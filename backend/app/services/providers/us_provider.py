@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 from app.models.quote import CandleRecord, QuoteRecord
 from app.models.stock import StockRecord
 from app.services.http_client import HttpFetchError, fetch_json
-from app.services.market_clock import is_market_open
+from app.services.market_clock import quote_session_is_live
 from app.services.providers.yahoo_chart import (
     chart_quote_price,
     coherent_price_change,
@@ -601,7 +601,7 @@ def _quote_from_yahoo_fields(
         low=_rounded_price(fields.get("regularMarketDayLow")),
         volume=int(volume_raw) if isinstance(volume_raw, (int, float)) else None,
         timestamp=quote_time.isoformat(),
-        is_market_open=is_market_open(stock.market, quote_time),
+        is_market_open=quote_session_is_live(stock.market, quote_time),
     )
 
 

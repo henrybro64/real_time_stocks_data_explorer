@@ -11,7 +11,7 @@ after a rate-limited backoff without restarting the backend process.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 import json
 import logging
@@ -23,6 +23,7 @@ from uuid import uuid4
 
 from app.core.config import settings
 from app.models.quote import QuoteRecord
+from app.services.market_clock import MARKET_TIMEZONES, is_market_open, quote_session_is_live
 from app.services.tw_price_limits import restore_cached_price_limit
 
 logger = logging.getLogger(__name__)
@@ -376,7 +377,11 @@ def _serialize(quote: QuoteRecord, *, cached_at: datetime) -> dict[str, Any]:
     }
 
 
-def _deserialize_quote(data: dict[str, Any]) -> QuoteRecord:
+def _deserialize_quote(
+    data: dict[str, Any],
+    *,
+    now: datetime | None = None,
+) -> QuoteRecord:
     def _of(key: str) -> float | None:
         v = data.get(key)
         return float(v) if v is not None else None
@@ -390,7 +395,7 @@ def _deserialize_quote(data: dict[str, Any]) -> QuoteRecord:
         limit_up_price=data.get("limit_up_price"),
         limit_down_price=data.get("limit_down_price"),
     )
-    return QuoteRecord(
+    quote = QuoteRecord(
         id=data["id"],
         last_price=last_price,
         change=float(data["change"]),
@@ -407,6 +412,32 @@ def _deserialize_quote(data: dict[str, Any]) -> QuoteRecord:
         limit_up_price=limit_up_price,
         limit_down_price=limit_down_price,
     )
+    return _with_live_market_open(quote, now=now)
+
+
+def _with_live_market_open(
+    quote: QuoteRecord,
+    *,
+    now: datetime | None = None,
+) -> QuoteRecord:
+    """Derive ``is_market_open`` at read time so a cached closing print cannot stay open (#262)."""
+    market = quote.id.split(":", 1)[0]
+    if market not in MARKET_TIMEZONES:
+        return quote
+    try:
+        quote_time = datetime.fromisoformat(quote.timestamp)
+    except ValueError:
+        return replace(quote, is_market_open=False)
+    # Holiday calendars are preloaded before this runs under the cache lock.
+    live = quote_session_is_live(
+        market,
+        quote_time,
+        now=now,
+        allow_holiday_fetch=False,
+    )
+    if live == quote.is_market_open:
+        return quote
+    return replace(quote, is_market_open=live)
 
 
 def _parse_cached_at(raw: object, *, fallback: datetime) -> datetime:
@@ -435,7 +466,7 @@ def _entry_from_payload(
         current = now or datetime.now(UTC)
         quote_payload = payload.get("quote")
         if isinstance(quote_payload, dict):
-            quote = _deserialize_quote(quote_payload)
+            quote = _deserialize_quote(quote_payload, now=current)
             cached_at = _parse_cached_at(
                 payload.get("cached_at"),
                 fallback=current,
@@ -443,7 +474,7 @@ def _entry_from_payload(
         else:
             # Legacy payload: quote fields at top level, no cached_at.
             # Treat as soft-stale so SWR refreshes instead of looking brand-new.
-            quote = _deserialize_quote(payload)
+            quote = _deserialize_quote(payload, now=current)
             cached_at = current - timedelta(seconds=soft_ttl_seconds())
 
         age_seconds = max(0.0, (current - cached_at).total_seconds())
@@ -683,12 +714,28 @@ def _purge_expired_memory_locked() -> None:
         _memory_quotes.pop(stock_id, None)
 
 
+def _preload_market_calendars(stock_ids: list[str], now: datetime) -> None:
+    """Fetch exchange calendars before quote deserialization takes ``_memory_lock``.
+
+    Taiwan market status otherwise requests the TWSE holiday page, and an
+    8-second timeout under the cache lock would stall every quote read, write,
+    and refresh lock.
+    """
+    markets = {
+        stock_id.split(":", 1)[0] for stock_id in stock_ids if ":" in stock_id
+    }
+    for market in markets:
+        if market in MARKET_TIMEZONES:
+            is_market_open(market, now)
+
+
 def _mget_entries(
     client: Any,
     stock_ids: list[str],
     *,
     now: datetime,
 ) -> dict[str, CachedQuoteEntry]:
+    _preload_market_calendars(stock_ids, now)
     keys = [_KEY_PREFIX + stock_id for stock_id in stock_ids]
     values = client.mget(keys)
     entries: dict[str, CachedQuoteEntry] = {}
@@ -706,6 +753,7 @@ def _get_entries_from_memory(
     *,
     now: datetime,
 ) -> dict[str, CachedQuoteEntry]:
+    _preload_market_calendars(stock_ids, now)
     entries: dict[str, CachedQuoteEntry] = {}
     now_mono = time.monotonic()
     with _memory_lock:

@@ -612,3 +612,62 @@ def test_immediate_refresh_circuit_outcome_clears_queue_and_records_failure() ->
     assert stub.quote_calls == []
     assert "US:AAPL" not in refresher._immediate
     assert cache.refresh_failure_active("US:AAPL")
+
+
+def test_taiwan_provider_miss_does_not_refresh_cache_or_reset_circuit() -> None:
+    """MIS+Yahoo miss must not re-cache last-good as fresh (#263)."""
+    tw = stock_record(
+        "TW:2330",
+        market="TW",
+        symbol="2330",
+        name="TSMC",
+        exchange="TWSE",
+        currency="TWD",
+        timezone="Asia/Taipei",
+        name_zh_tw="台積電",
+    )
+    prior = quote_record(
+        "TW:2330",
+        last_price=500.0,
+        change=1.0,
+        change_percent=0.2,
+        previous_close=499.0,
+        timestamp="2026-05-12T13:00:00+08:00",
+        is_market_open=False,
+    )
+    cache.set_cached_quote("TW:2330", prior)
+    age_memory_cached_quote("TW:2330")
+    before = cache.get_cached_quote_entry("TW:2330")
+    assert before is not None
+    prior_cached_at = before.cached_at
+
+    class EmptyTW:
+        def get_quote(self, stock_id: str):
+            return None
+
+        def get_stock(self, stock_id: str):
+            return tw if stock_id == "TW:2330" else None
+
+    quote_source = QuoteService()
+    quote_source.providers = {"TW": EmptyTW()}
+    refresher = QuoteRefresherService(
+        watchlist_repo=FakeTrackedIdsRepo(["TW:2330"]),
+        portfolio_repo=FakeTrackedIdsRepo([]),
+        quote_source=quote_source,
+        now_provider=lambda: datetime(2026, 5, 12, 14, 0, tzinfo=UTC),
+        sleep_fn=lambda _seconds: None,
+    )
+    monkeypatch_threshold = 3
+    refresher._circuits["TW"] = ProviderCircuitState(consecutive_failures=0)
+
+    for _ in range(monkeypatch_threshold):
+        outcome = refresher._refresh_one("TW:2330")
+        refresher._apply_refresh_outcome("TW:2330", outcome)
+
+    after = cache.get_cached_quote_entry("TW:2330")
+    assert after is not None
+    assert after.cached_at == prior_cached_at
+    assert after.stale is True
+    assert after.quote.last_price == pytest.approx(500.0)
+    assert refresher._circuits["TW"].consecutive_failures >= monkeypatch_threshold
+    assert refresher._hard_circuit_is_open("TW")
