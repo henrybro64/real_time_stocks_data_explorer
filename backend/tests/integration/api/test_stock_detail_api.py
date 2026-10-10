@@ -5,17 +5,16 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.api.routes import history as history_routes
-from app.core.config import settings
 from app.main import app
 from app.services import key_stats_service
 from app.services.news_service import NewsItem, news_service
 from app.services.quote_service import quote_service
-from tests.support import quote_record
 from app.services.stock_analysis_service import (
     ComputedStockAnalysisData,
     StockAnalysisResult,
 )
-from tests.support import candle_record, stock_record
+from tests.integration.local_auth_helpers import enable_local_auth
+from tests.support import candle_record, quote_record, stock_record
 
 
 pytestmark = pytest.mark.integration
@@ -379,8 +378,7 @@ def test_analysis_endpoint_returns_computed_metrics_when_ai_is_unavailable(
 def test_analysis_endpoint_rejects_anonymous_when_auth_enabled(
     monkeypatch,
 ) -> None:
-    monkeypatch.setattr(settings, "auth_enabled", True)
-    monkeypatch.setattr(settings, "local_auth_enabled", True)
+    enable_local_auth(monkeypatch)
 
     with TestClient(app) as unauthenticated_client:
         response = unauthenticated_client.get("/api/stocks/US:AAPL/analysis")

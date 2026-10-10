@@ -148,6 +148,7 @@ def test_capture_due_snapshots_upserts_current_hour(
             "pair": "USD/TWD",
             "rate": 32.0,
             "timestamp": "2026-05-05T15:45:00+00:00",
+            "status": "ok",
         },
     )
 

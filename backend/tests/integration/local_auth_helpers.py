@@ -11,6 +11,8 @@ def enable_local_auth(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "local_auth_enabled", True)
     monkeypatch.setattr(settings, "local_auth_username", "")
     monkeypatch.setattr(settings, "local_auth_password", "")
+    # Startup refuses the default placeholder once auth is on (#267).
+    monkeypatch.setattr(settings, "session_secret", "integration-test-session-secret")
 
 
 def register_local_user(
