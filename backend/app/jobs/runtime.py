@@ -8,6 +8,7 @@ from app.services.alert_service import alert_service
 from app.services.portfolio_history_service import portfolio_history_service
 from app.services.quote_refresher_service import quote_refresher_service
 from app.services.rankings_archive_service import rankings_archive_service
+from app.services.reference_refresh_service import reference_refresh_service
 from app.services.rankings_snapshot_service import rankings_snapshot_service
 from app.services.taiwan_market_data_refresh_service import (
     taiwan_market_data_refresh_service,
@@ -98,6 +99,22 @@ def start_enabled_background_jobs() -> None:
             thread=quote_refresher_service._thread,
         )
 
+    if not settings.reference_refresh_enabled:
+        logger.info(
+            "Reference refresh sampler is disabled",
+            extra={"event": "reference_refresh.sampler.disabled"},
+        )
+        register_background_job("reference-refresh", enabled=False)
+    else:
+        reference_refresh_service.start_background_sampler(
+            settings.reference_refresh_poll_seconds,
+        )
+        register_background_job(
+            "reference-refresh",
+            enabled=True,
+            thread=reference_refresh_service._thread,
+        )
+
     if not settings.rankings_archive_eod_enabled:
         logger.info(
             "Rankings archive EOD sampler is disabled",
@@ -121,6 +138,7 @@ def stop_background_jobs() -> None:
     rankings_snapshot_service.stop_background_sampler()
     taiwan_market_data_refresh_service.stop_background_sampler()
     quote_refresher_service.stop_background_sampler()
+    reference_refresh_service.stop_background_sampler()
     rankings_archive_service.stop_background_sampler()
     for job_name in (
         "portfolio-history-sampler",
@@ -128,6 +146,7 @@ def stop_background_jobs() -> None:
         "rankings-snapshot-sampler",
         "taiwan-market-data-refresh",
         "quote-refresher",
+        "reference-refresh",
         "rankings-archive-eod",
     ):
         register_background_job(job_name, enabled=False, thread=None)

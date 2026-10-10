@@ -10,10 +10,16 @@ import {
   fetchPortfolioPositions,
   updatePortfolioPosition,
 } from "../services/api/client";
+import { useQuoteDerivedRefetchInterval } from "./useQuoteDerivedRefetchInterval";
 
 export function usePortfolioPositions() {
   const queryClient = useQueryClient();
   const [actionError, setActionError] = useState<unknown>(null);
+  const cachedPositions =
+    queryClient.getQueryData<PortfolioPosition[]>(["portfolio-positions"]) ?? [];
+  const refetchInterval = useQuoteDerivedRefetchInterval(
+    cachedPositions.map((item) => item.stockId),
+  );
   const invalidatePortfolioQueries = () => {
     queryClient.invalidateQueries({ queryKey: ["portfolio-positions"] });
     queryClient.invalidateQueries({ queryKey: ["portfolio-summary"] });
@@ -23,7 +29,8 @@ export function usePortfolioPositions() {
   const query = useQuery({
     queryKey: ["portfolio-positions"],
     queryFn: fetchPortfolioPositions,
-    refetchInterval: 5000,
+    refetchInterval,
+    refetchIntervalInBackground: false,
   });
 
   const addMutation = useMutation({

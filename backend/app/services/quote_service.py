@@ -4,6 +4,7 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 import logging
+from threading import Lock, Thread
 from time import perf_counter
 from typing import Literal
 
@@ -31,6 +32,54 @@ from app.services.quote_redis_cache import (
 )
 
 logger = logging.getLogger(__name__)
+
+_SPARKLINE_BATCH_LIMIT = 40
+_sparkline_backfill_lock = Lock()
+_sparkline_backfill_pending: set[tuple[str, str]] = set()
+_sparkline_backfill_thread: Thread | None = None
+
+
+def _schedule_sparkline_backfill(
+    service: QuoteService,
+    stock_ids: list[str],
+    range_name: str,
+) -> None:
+    if not stock_ids:
+        return
+    global _sparkline_backfill_thread
+    with _sparkline_backfill_lock:
+        for stock_id in stock_ids:
+            _sparkline_backfill_pending.add((stock_id, range_name))
+        if _sparkline_backfill_thread is not None and _sparkline_backfill_thread.is_alive():
+            return
+        _sparkline_backfill_thread = Thread(
+            target=_drain_sparkline_backfill,
+            args=(service,),
+            daemon=True,
+            name="sparkline-backfill",
+        )
+        _sparkline_backfill_thread.start()
+
+
+def _drain_sparkline_backfill(service: QuoteService) -> None:
+    global _sparkline_backfill_thread
+    while True:
+        with _sparkline_backfill_lock:
+            if not _sparkline_backfill_pending:
+                _sparkline_backfill_thread = None
+                return
+            stock_id, range_name = _sparkline_backfill_pending.pop()
+        try:
+            service.get_history(stock_id, range_name)
+        except Exception:  # noqa: BLE001 - the next poll can retry this symbol
+            logger.debug(
+                "Sparkline backfill failed for symbol",
+                extra={
+                    "event": "quote.sparkline.backfill_failed",
+                    "stock_id": stock_id,
+                    "range_name": range_name,
+                },
+            )
 
 RefreshStatus = Literal["idle", "queued", "refreshing", "unavailable"]
 CacheSource = Literal["redis", "memory", "provider", "none"]
@@ -395,6 +444,13 @@ class QuoteService:
         for stock_id in unique_ids:
             stock = self.get_stock(stock_id)
             if stock is None:
+                # Report unknown catalog rows instead of dropping them (#264).
+                placeholder = self._placeholder_stock(stock_id)
+                if placeholder is None:
+                    continue
+                items.append(
+                    self._empty_batch_item(placeholder, refresh_status="unavailable")
+                )
                 continue
             cached = cached_by_id.get(stock_id)
             if cached is None:
@@ -709,7 +765,9 @@ class QuoteService:
             return None
         started_at = perf_counter()
         try:
-            candles = provider.get_history(stock_id, range_name, limit=limit)
+            candles = self._get_history_candles(
+                provider, stock_id, range_name, limit=limit
+            )
         except Exception as exc:
             logger.exception(
                 "History provider raised an unexpected error",
@@ -737,9 +795,116 @@ class QuoteService:
         )
         return stock, candles
 
+    def _get_history_candles(
+        self,
+        provider,
+        stock_id: str,
+        range_name: str,
+        *,
+        limit: int | None,
+    ) -> list[CandleRecord]:
+        # Short Redis/memory cache for intraday ranges with single-flight (#269).
+        if range_name in {"1D", "1W"}:
+            from app.services.intraday_history_cache import (
+                get_cached_intraday,
+                release_intraday_lock,
+                set_cached_intraday,
+                try_acquire_intraday_lock,
+                wait_for_cached_intraday,
+            )
+
+            cached = get_cached_intraday(stock_id, range_name)
+            if cached is not None:
+                return cached if limit is None else cached[-limit:]
+            token = try_acquire_intraday_lock(stock_id, range_name)
+            if token is None:
+                cached = wait_for_cached_intraday(stock_id, range_name)
+                if cached is not None:
+                    return cached if limit is None else cached[-limit:]
+                token = try_acquire_intraday_lock(stock_id, range_name)
+                if token is None:
+                    cached = get_cached_intraday(stock_id, range_name)
+                    if cached is not None:
+                        return cached if limit is None else cached[-limit:]
+                    return []
+            try:
+                candles = provider.get_history(stock_id, range_name, limit=limit)
+                if candles:
+                    set_cached_intraday(stock_id, range_name, candles)
+                return candles
+            finally:
+                if token is not None:
+                    release_intraday_lock(stock_id, range_name, token)
+        return provider.get_history(stock_id, range_name, limit=limit)
+
+    def get_sparkline_batch(
+        self, stock_ids: list[str], *, range_name: str = "1W"
+    ) -> dict[str, list[CandleRecord]]:
+        """One request for watchlist card sparklines (#269).
+
+        Returns bars already stored and schedules any cold backfill off this
+        request. One symbol's failure does not drop the rest of the batch.
+        """
+        unique_ids = list(dict.fromkeys(stock_ids))[:_SPARKLINE_BATCH_LIMIT]
+        result: dict[str, list[CandleRecord]] = {}
+        pending: list[str] = []
+        for stock_id in unique_ids:
+            try:
+                candles, needs_backfill = self._peek_sparkline(stock_id, range_name)
+            except Exception:  # noqa: BLE001 - one symbol must not blank the batch
+                logger.debug(
+                    "Sparkline read failed for symbol",
+                    extra={
+                        "event": "quote.sparkline.failed",
+                        "stock_id": stock_id,
+                    },
+                )
+                result[stock_id] = []
+                continue
+            result[stock_id] = candles
+            if needs_backfill:
+                pending.append(stock_id)
+        _schedule_sparkline_backfill(self, pending, range_name)
+        return result
+
+    def _peek_sparkline(
+        self, stock_id: str, range_name: str
+    ) -> tuple[list[CandleRecord], bool]:
+        from app.services.daily_price_history_service import daily_price_history_service
+
+        provider = self.providers.get(self._market_from_id(stock_id))
+        if provider is None:
+            return [], False
+        stock = provider.get_stock(stock_id)
+        if stock is None:
+            return [], False
+        if not daily_price_history_service.supports_range(range_name):
+            return [], False
+        return daily_price_history_service.peek_daily_history(stock, range_name)
+
     @staticmethod
     def _market_from_id(stock_id: str) -> str:
         return stock_id.split(":", 1)[0]
+
+    @staticmethod
+    def _placeholder_stock(stock_id: str) -> StockRecord | None:
+        """Minimal stock row so unknown catalog IDs stay visible in batch responses (#264)."""
+        if ":" not in stock_id:
+            return None
+        market, symbol = stock_id.split(":", 1)
+        market = market.strip().upper()
+        symbol = symbol.strip()
+        if market not in {"US", "TW"} or not symbol:
+            return None
+        return StockRecord(
+            id=f"{market}:{symbol}",
+            market=market,
+            symbol=symbol,
+            name=f"{symbol} (unknown)",
+            exchange="UNKNOWN",
+            currency="TWD" if market == "TW" else "USD",
+            timezone="Asia/Taipei" if market == "TW" else "America/New_York",
+        )
 
     def _providers_for_search_query(self, query: str):
         # Taiwan equities/ETFs use numeric symbols; avoid slow, irrelevant US catalog

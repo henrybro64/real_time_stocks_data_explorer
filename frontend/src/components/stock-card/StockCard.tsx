@@ -40,6 +40,13 @@ type Props = {
   isRetryingQuote?: boolean;
   /** Parent-owned warming timeout (single clock for poll cadence + card UI). */
   warmingTimedOut?: boolean;
+  /**
+   * Prefetched sparkline from the watchlist batch endpoint (#269).
+   * When provided (including `null`), the card does not fetch its own history.
+   */
+  sparkline?: ChartLayout | null;
+  sparklineLoading?: boolean;
+  sparklineError?: unknown;
 };
 
 export function StockCard({
@@ -53,6 +60,9 @@ export function StockCard({
   onRetryQuote,
   isRetryingQuote = false,
   warmingTimedOut = false,
+  sparkline,
+  sparklineLoading = false,
+  sparklineError,
 }: Props) {
   const router = useRouter();
   const { language, t, formatNumber } = useLanguage();
@@ -71,15 +81,25 @@ export function StockCard({
   const freshness =
     initialQuote === undefined ? quoteQuery.data?.freshness ?? null : initialFreshness;
   const quoteMarketOpen = quote?.isMarketOpen ?? true;
+  const useBatchedSparkline = sparkline !== undefined;
 
   const historyQuery = useQuery({
     queryKey: ["card-history", stock.id, "1W"],
     queryFn: () => fetchHistory(stock.id, "1W"),
+    enabled: !useBatchedSparkline,
     staleTime: quoteMarketOpen ? 120_000 : 240_000,
     refetchInterval: quoteMarketOpen ? 180_000 : 300_000,
     refetchIntervalInBackground: false,
   });
-  const chartLayout = historyQuery.data?.chartLayout ?? null;
+  const chartLayout = useBatchedSparkline
+    ? sparkline
+    : (historyQuery.data?.chartLayout ?? null);
+  const sparklineIsLoading = useBatchedSparkline
+    ? sparklineLoading
+    : historyQuery.isLoading;
+  const sparklineQueryError = useBatchedSparkline
+    ? sparklineError
+    : historyQuery.error;
   const quoteRefreshFailed = initialQuote === undefined && quoteQuery.isError && quote != null;
   const detailHref = `/stock/${encodeURIComponent(stock.id)}`;
 
@@ -171,8 +191,8 @@ export function StockCard({
           <Sparkline
             chartLayout={chartLayout}
             currency={stock.currency}
-            error={historyQuery.error}
-            isLoading={historyQuery.isLoading}
+            error={sparklineQueryError}
+            isLoading={sparklineIsLoading}
             market={stock.market}
             scopeLabel={`${stock.symbol} ${t("stock.weekRange")}`}
           />

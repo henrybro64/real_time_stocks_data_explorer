@@ -872,43 +872,55 @@ def test_yahoo_without_a_verifiable_previous_close_is_rejected(monkeypatch) -> N
 # --- Daily chart forming candle -------------------------------------------------
 
 
-class _DuringSession(datetime):
-    @classmethod
-    def now(cls, tz=None):  # type: ignore[override]
-        return datetime(2026, 7, 13, 10, 45, tzinfo=tz or _TZ)
+def test_session_candle_uses_the_cached_last_price_not_the_previous_close() -> None:
+    from app.services.daily_price_history_service import _session_candle_from_quote
 
-
-def test_session_candle_does_not_close_at_previous_close_when_trade_is_missing(
-    monkeypatch,
-) -> None:
     stock = _stock()
-    _use_stock(monkeypatch, stock)
-    monkeypatch.setattr(tw_provider, "datetime", _DuringSession)
-    monkeypatch.setattr(tw_provider, "is_trading_day", lambda market, now=None: True)
-    monkeypatch.setattr(tw_provider, "_load_json", lambda *_a, **_k: _mis_2368(z="-", pz="-"))
-    monkeypatch.setattr(tw_provider, "fetch_json", lambda *_a, **_k: _yahoo_chart(price=1182.0))
-
-    candles = tw_provider.TWProvider()._merge_live_session_daily_candle(stock, [])
-
-    assert len(candles) == 1
-    assert candles[0].close == pytest.approx(1182.0)
-    assert candles[0].open == pytest.approx(1160.0)
-    assert candles[0].high == pytest.approx(1215.0)
-
-
-def test_session_candle_is_omitted_when_no_trustworthy_price_exists(monkeypatch) -> None:
-    stock = _stock()
-    _use_stock(monkeypatch, stock)
-    monkeypatch.setattr(tw_provider, "datetime", _DuringSession)
-    monkeypatch.setattr(tw_provider, "is_trading_day", lambda market, now=None: True)
-    monkeypatch.setattr(tw_provider, "_load_json", lambda *_a, **_k: _mis_2368(z="-", pz="-"))
-    monkeypatch.setattr(
-        tw_provider,
-        "fetch_json",
-        lambda *_a, **_k: {"chart": {"result": None, "error": {"code": "Not Found"}}},
+    candle = _session_candle_from_quote(
+        stock,
+        QuoteRecord(
+            id=stock.id,
+            last_price=1182.0,
+            change=77.0,
+            change_percent=6.97,
+            previous_close=1105.0,
+            timestamp="2026-07-13T10:45:00+08:00",
+            is_market_open=True,
+            open=1160.0,
+            high=1215.0,
+            low=1150.0,
+            volume=1000,
+        ),
+        datetime(2026, 7, 13, 10, 45, tzinfo=_TZ),
     )
 
-    assert tw_provider.TWProvider()._merge_live_session_daily_candle(stock, []) == []
+    assert candle is not None
+    assert candle.close == pytest.approx(1182.0)
+    assert candle.close != pytest.approx(1105.0)
+    assert candle.open == pytest.approx(1160.0)
+
+
+def test_session_candle_is_omitted_when_no_trustworthy_price_exists() -> None:
+    from app.services.daily_price_history_service import _session_candle_from_quote
+
+    stock = _stock()
+    now = datetime(2026, 7, 13, 10, 45, tzinfo=_TZ)
+    missing_trade = QuoteRecord(
+        id=stock.id,
+        last_price=1105.0,
+        change=0.0,
+        change_percent=0.0,
+        previous_close=1105.0,
+        timestamp="2026-07-13T10:45:00+08:00",
+        is_market_open=True,
+        open=None,
+        high=None,
+        low=None,
+        volume=None,
+    )
+
+    assert _session_candle_from_quote(stock, None, now) is None
+    assert _session_candle_from_quote(stock, missing_trade, now) is None
 
 
 # --- API contract ---------------------------------------------------------------

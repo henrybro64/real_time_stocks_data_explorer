@@ -46,6 +46,18 @@ class AlertRepository:
             ).scalars()
             return list(rows)
 
+    def list_distinct_enabled_stock_ids(self) -> list[str]:
+        """Stock IDs with at least one enabled alert rule (for the quote refresher)."""
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            rows = session.execute(
+                select(AlertRule.stock_id)
+                .where(AlertRule.enabled.is_(True))
+                .distinct()
+                .order_by(AlertRule.stock_id.asc()),
+            ).scalars()
+            return [str(stock_id) for stock_id in rows]
+
     def get_rule(self, user_id: str, rule_id: int) -> AlertRule | None:
         session_factory = self._session_factory()
         with session_factory() as session:

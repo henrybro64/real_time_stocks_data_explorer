@@ -49,6 +49,23 @@ from app.services.user_ai_provider_service import resolve_user_ai_provider
 router = APIRouter(prefix="/stocks", tags=["history"])
 
 
+@router.get("/sparklines")
+def get_watchlist_sparklines(
+    ids: str = Query(..., description="Comma-separated stock ids"),
+    range_name: str = Query(default="1W", alias="range"),
+) -> dict[str, ChartLayoutResponse | None]:
+    """Batch sparkline chart layouts for the whole watchlist (#269)."""
+    from app.services.chart_layout import build_chart_layout
+
+    stock_ids = [item.strip() for item in ids.split(",") if item.strip()]
+    batch = quote_service.get_sparkline_batch(stock_ids, range_name=range_name)
+    result: dict[str, ChartLayoutResponse | None] = {}
+    for stock_id, candles in batch.items():
+        layout = build_chart_layout(candles) if candles else None
+        result[stock_id] = ChartLayoutResponse(**layout) if layout else None
+    return result
+
+
 @router.get(
     "/{stock_id}/history",
     responses={

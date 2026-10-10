@@ -35,7 +35,7 @@ import type {
   USStockInsights,
   WatchlistResponse,
 } from "@shared/api";
-import type { TimeRange } from "@shared/quote";
+import type { ChartLayout, TimeRange } from "@shared/quote";
 import type { Stock } from "@shared/stock";
 
 type ApiErrorKind =
@@ -597,6 +597,16 @@ export function refreshRankings(
 export function fetchHistory(stockId: string, range: TimeRange) {
   return fetchJson<HistoryResponse>(
     `/stocks/${encodeURIComponent(stockId)}/history?range=${range}`,
+  );
+}
+
+/** One request for watchlist card sparklines regardless of list size (#269). */
+export function fetchWatchlistSparklines(ids: string[], range: TimeRange = "1W") {
+  if (ids.length === 0) {
+    return Promise.resolve({} as Record<string, ChartLayout | null>);
+  }
+  return fetchJson<Record<string, ChartLayout | null>>(
+    `/stocks/sparklines?ids=${encodeURIComponent(ids.join(","))}&range=${range}`,
   );
 }
 

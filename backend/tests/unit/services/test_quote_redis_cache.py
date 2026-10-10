@@ -27,7 +27,12 @@ def _reset_cache(monkeypatch):
     cache.clear_quote_cache_for_tests()
 
 
-def _sample_quote(stock_id: str = "US:AAPL", *, last_price: float = 187.23):
+def _sample_quote(
+    stock_id: str = "US:AAPL",
+    *,
+    last_price: float = 187.23,
+    is_market_open: bool = True,
+):
     return quote_record(
         stock_id,
         last_price=last_price,
@@ -35,12 +40,18 @@ def _sample_quote(stock_id: str = "US:AAPL", *, last_price: float = 187.23):
         change_percent=0.81,
         previous_close=185.73,
         timestamp="2026-04-01T09:30:00-04:00",
-        is_market_open=True,
+        is_market_open=is_market_open,
         volume=100,
     )
 
 
-def test_set_and_get_cached_quote_round_trip_memory() -> None:
+def test_set_and_get_cached_quote_round_trip_memory(monkeypatch) -> None:
+    monkeypatch.setattr(cache, "is_market_open", lambda market, now=None, **_kwargs: True)
+    monkeypatch.setattr(
+        cache,
+        "is_within_hour_before_market_open",
+        lambda market, now=None: False,
+    )
     quote = _sample_quote()
     cache.set_cached_quote("US:AAPL", quote)
 
@@ -54,8 +65,15 @@ def test_set_and_get_cached_quote_round_trip_memory() -> None:
 
 def test_get_cached_quote_entries_marks_stale_after_soft_ttl(monkeypatch) -> None:
     monkeypatch.setattr(cache.settings, "quote_cache_ttl_seconds", 10)
+    monkeypatch.setattr(cache, "is_market_open", lambda market, now=None, **_kwargs: True)
+    monkeypatch.setattr(
+        cache,
+        "is_within_hour_before_market_open",
+        lambda market, now=None: False,
+    )
     quote = _sample_quote(last_price=10.0)
-    cached_at = datetime(2026, 4, 1, 12, 0, tzinfo=UTC)
+    # 18:00 UTC = 14:00 ET on a weekday — U.S. cash session open.
+    cached_at = datetime(2026, 4, 1, 18, 0, tzinfo=UTC)
     payload = json.dumps(cache._serialize(quote, cached_at=cached_at))
     with cache._memory_lock:
         # Hard retention still holds the payload after soft TTL.
@@ -68,9 +86,59 @@ def test_get_cached_quote_entries_marks_stale_after_soft_ttl(monkeypatch) -> Non
     assert entries["US:AAPL"].age_seconds == pytest.approx(15.0)
 
 
+def test_closed_market_quote_is_not_soft_stale(monkeypatch) -> None:
+    monkeypatch.setattr(cache.settings, "quote_cache_ttl_seconds", 10)
+    monkeypatch.setattr(cache, "is_market_open", lambda market, now=None, **_kwargs: False)
+    monkeypatch.setattr(
+        cache,
+        "is_within_hour_before_market_open",
+        lambda market, now=None: False,
+    )
+    quote = replace(
+        _sample_quote(last_price=10.0, is_market_open=False),
+        timestamp="2026-04-01T16:00:00-04:00",
+    )
+    cached_at = datetime(2026, 4, 1, 21, 0, tzinfo=UTC)
+    payload = json.dumps(cache._serialize(quote, cached_at=cached_at))
+    with cache._memory_lock:
+        cache._memory_quotes["US:AAPL"] = (1e18, payload)
+
+    now = cached_at + timedelta(hours=3)
+    entries = cache._get_entries_from_memory(["US:AAPL"], now=now)
+
+    assert entries["US:AAPL"].stale is False
+    assert entries["US:AAPL"].age_seconds == pytest.approx(3 * 3600)
+
+
+def test_closed_market_intraday_quote_stays_soft_stale(monkeypatch) -> None:
+    monkeypatch.setattr(cache.settings, "quote_cache_ttl_seconds", 10)
+    monkeypatch.setattr(cache, "is_market_open", lambda market, now=None, **_kwargs: False)
+    monkeypatch.setattr(
+        cache,
+        "is_within_hour_before_market_open",
+        lambda market, now=None: False,
+    )
+    quote = _sample_quote(last_price=10.0, is_market_open=False)
+    cached_at = datetime(2026, 4, 1, 21, 0, tzinfo=UTC)
+    payload = json.dumps(cache._serialize(quote, cached_at=cached_at))
+    with cache._memory_lock:
+        cache._memory_quotes["US:AAPL"] = (1e18, payload)
+
+    now = cached_at + timedelta(hours=3)
+    entries = cache._get_entries_from_memory(["US:AAPL"], now=now)
+
+    assert entries["US:AAPL"].stale is True
+
+
 def test_stale_value_remains_readable_after_soft_ttl_via_public_api(monkeypatch) -> None:
     monkeypatch.setattr(cache.settings, "quote_cache_ttl_seconds", 10)
     monkeypatch.setattr(cache.settings, "quote_cache_hard_ttl_seconds", 900)
+    monkeypatch.setattr(cache, "is_market_open", lambda market, now=None, **_kwargs: True)
+    monkeypatch.setattr(
+        cache,
+        "is_within_hour_before_market_open",
+        lambda market, now=None: False,
+    )
     quote = _sample_quote(last_price=11.0)
     cached_at = datetime.now(UTC) - timedelta(seconds=30)
     payload = json.dumps(cache._serialize(quote, cached_at=cached_at))
@@ -275,7 +343,13 @@ def test_inconsistent_cached_limit_status_is_not_trusted() -> None:
     assert entry.quote.reference_price is None
 
 
-def test_legacy_payload_without_cached_at_still_deserializes() -> None:
+def test_legacy_payload_without_cached_at_still_deserializes(monkeypatch) -> None:
+    monkeypatch.setattr(cache, "is_market_open", lambda market, now=None, **_kwargs: True)
+    monkeypatch.setattr(
+        cache,
+        "is_within_hour_before_market_open",
+        lambda market, now=None: False,
+    )
     legacy = {
         "id": "US:AAPL",
         "last_price": 10.0,

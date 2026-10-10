@@ -241,6 +241,9 @@ _ISIN_LISTED_URL = "https://isin.twse.com.tw/isin/C_public.jsp?strMode=2"
 _ISIN_OTC_URL = "https://isin.twse.com.tw/isin/C_public.jsp?strMode=4"
 _REQUEST_TIMEOUT_SECONDS = 5
 _CATALOG_TTL = timedelta(hours=12)
+# Failed or built-in-only catalog loads retry quickly; never pin a degraded copy
+# for the full success TTL (#264).
+_CATALOG_FAILURE_RETRY = timedelta(minutes=15)
 _MIS_FUTURE_TOLERANCE = timedelta(minutes=1)
 _YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart"
 _BROWSER_USER_AGENT = (
@@ -331,6 +334,7 @@ class TWProvider:
     market = "TW"
     _catalog_cache: dict[str, StockRecord] | None = None
     _catalog_cached_at: datetime | None = None
+    _catalog_degraded: bool = False
     _catalog_lock = threading.Lock()
 
     def list_stocks(self) -> list[StockRecord]:
@@ -389,15 +393,39 @@ class TWProvider:
             return self._fetch_yahoo_intraday_candles(stock)
 
         daily_limit = limit if limit is not None else _daily_limit(range_name)
-        candles = self._fetch_daily_history(
+        from app.services.daily_price_history_service import daily_price_history_service
+
+        return daily_price_history_service.get_daily_history(
             stock,
+            range_name,
             limit=daily_limit,
+            provider=self,
+        )
+
+    def fetch_daily_history_uncached(
+        self,
+        stock: StockRecord,
+        *,
+        limit: int,
+        range_name: str,
+    ) -> list[CandleRecord]:
+        """Upstream daily bars only (no MIS merge). Used by the Postgres backfill (#269)."""
+        return self._fetch_daily_history(
+            stock,
+            limit=limit,
             range_name=range_name,
         )
-        merged = self._merge_live_session_daily_candle(stock, candles)
-        if daily_limit > 0 and len(merged) > daily_limit:
-            return merged[-daily_limit:]
-        return merged
+
+    def fetch_daily_month(self, stock: StockRecord, month: date) -> list[CandleRecord]:
+        """One official STOCK_DAY or TPEx month. Raises when that month cannot be fetched."""
+        if stock.exchange not in {"TWSE", "TPEx"}:
+            return []
+        month_date = date(month.year, month.month, 1)
+        rows = self._fetch_month_rows(stock, month_date)
+        candles_by_time: dict[str, CandleRecord] = {}
+        volume_scale = _TPEX_HISTORY_VOLUME_SCALE if stock.exchange == "TPEx" else 1
+        _ingest_daily_rows(candles_by_time, rows, stock.timezone, volume_scale)
+        return sorted(candles_by_time.values(), key=lambda item: item.time)
 
     def _fetch_quote(self, stock: StockRecord) -> QuoteRecord | None:
         if _mis_circuit_is_open():
@@ -619,33 +647,6 @@ class TWProvider:
             _raise_intraday_history_unavailable(stock, reason="chart_unavailable")
         return _candles_from_yahoo_chart(payload, stock)
 
-    def _merge_live_session_daily_candle(
-        self,
-        stock: StockRecord,
-        candles: list[CandleRecord],
-    ) -> list[CandleRecord]:
-        """Append or refresh today's session bar from a live quote. Never invent one."""
-        now = datetime.now(ZoneInfo(stock.timezone))
-        if not is_trading_day(stock.market, now):
-            return candles
-        session_start, _session_end = market_session_window(stock.market, now.date())
-        if now.time().replace(second=0, microsecond=0) < session_start:
-            return candles
-
-        quote = self._fetch_quote(stock)
-        if not _quote_has_session_ohlc(quote):
-            yahoo_quote = self._fetch_yahoo_listing_quote(stock)
-            if _quote_has_session_ohlc(yahoo_quote):
-                quote = yahoo_quote
-        session = _session_daily_candle(stock, quote, now)
-        if session is None:
-            return candles
-        return _upsert_candle_by_local_date(
-            candles,
-            session,
-            replace_existing=is_market_open(stock.market, now),
-        )
-
     def _fetch_daily_history(
         self,
         stock: StockRecord,
@@ -681,7 +682,9 @@ class TWProvider:
             volume_scale=volume_scale,
         )
         trimmed = sorted(collected.candles_by_time.values(), key=lambda item: item.time)[-limit:]
-        if collected.fetch_failures > 0:
+        # Serve partial history when older months fail (#269). Only fail hard
+        # when there is nothing usable to return.
+        if collected.fetch_failures > 0 and not trimmed:
             _raise_history_unavailable(
                 stock,
                 range_name=range_name,
@@ -811,35 +814,74 @@ class TWProvider:
         )
         return _extract_tpex_daily_rows(payload)
 
-    def _cached_catalog_if_fresh(self, now: datetime) -> dict[str, StockRecord] | None:
+    def _catalog_refresh_is_current(self, now: datetime) -> bool:
         cached = self.__class__._catalog_cache
         cached_at = self.__class__._catalog_cached_at
-        if cached is not None and cached_at is not None and now - cached_at < _CATALOG_TTL:
-            return cached
-        return None
+        if cached is None or cached_at is None:
+            return False
+        ttl = (
+            _CATALOG_FAILURE_RETRY
+            if self.__class__._catalog_degraded
+            else _CATALOG_TTL
+        )
+        return now - cached_at < ttl
 
     def _stock_catalog(self) -> dict[str, StockRecord]:
-        now = datetime.now(ZoneInfo("Asia/Taipei"))
-        cached = self._cached_catalog_if_fresh(now)
+        """Return the in-memory or persisted catalog. This path does not call upstream."""
+        cached = self.__class__._catalog_cache
         if cached is not None:
             return cached
-
         with self.__class__._catalog_lock:
-            now = datetime.now(ZoneInfo("Asia/Taipei"))
-            cached = self._cached_catalog_if_fresh(now)
+            cached = self.__class__._catalog_cache
             if cached is not None:
                 return cached
-            return self._load_stock_catalog(now)
+            return self._hydrate_or_seed_catalog(datetime.now(ZoneInfo("Asia/Taipei")))
+
+    def refresh_catalog(self) -> dict[str, StockRecord]:
+        """Download the catalog, keep the previous one on failure, and persist it."""
+        from app.services.reference_data_store import CATALOG_TW_KEY, save_catalog_snapshot
+
+        now = datetime.now(ZoneInfo("Asia/Taipei"))
+        with self.__class__._catalog_lock:
+            if self._catalog_refresh_is_current(now):
+                return self.__class__._catalog_cache or {}
+            catalog = self._load_stock_catalog(now)
+            degraded = self.__class__._catalog_degraded
+            snapshot = dict(catalog)
+        save_catalog_snapshot(CATALOG_TW_KEY, snapshot, degraded=degraded)
+        return catalog
+
+    def _hydrate_or_seed_catalog(self, now: datetime) -> dict[str, StockRecord]:
+        from app.services.reference_data_store import CATALOG_TW_KEY, load_catalog_snapshot
+
+        loaded = load_catalog_snapshot(CATALOG_TW_KEY)
+        if loaded is not None:
+            stocks, degraded, cached_at = loaded
+            self.__class__._catalog_cache = stocks
+            self.__class__._catalog_cached_at = cached_at.astimezone(ZoneInfo("Asia/Taipei"))
+            self.__class__._catalog_degraded = degraded
+            return stocks
+        catalog = dict(TW_STOCKS)
+        self.__class__._catalog_cache = catalog
+        # Already due, so the background job refreshes the seed on its first tick.
+        self.__class__._catalog_cached_at = now - _CATALOG_FAILURE_RETRY
+        self.__class__._catalog_degraded = True
+        return catalog
 
     def _load_stock_catalog(self, now: datetime) -> dict[str, StockRecord]:
-        catalog = dict(TW_STOCKS)
+        """Refresh the catalog with stale-if-error and partial-merge semantics (#264)."""
+        previous = self.__class__._catalog_cache
+        # Never shrink a previously good catalog when one source fails.
+        catalog = dict(previous) if previous else dict(TW_STOCKS)
         detailed_company_rows: dict[str, StockRecord] = {}
+        sources_ok = 0
         try:
             payload = _load_json(_COMPANY_LIST_URL, {})
         except (HttpFetchError, TimeoutError, ValueError):
             payload = None
 
         if isinstance(payload, list):
+            sources_ok += 1
             for row in payload:
                 if not isinstance(row, dict):
                     continue
@@ -853,12 +895,39 @@ class TWProvider:
                 html = _load_text(html_url)
             except (HttpFetchError, TimeoutError, UnicodeDecodeError):
                 continue
-
+            sources_ok += 1
             for stock in _stocks_from_isin_html(html, detailed_company_rows):
                 catalog[stock.id] = stock
 
+        if sources_ok == 0:
+            if previous is not None:
+                logger.warning(
+                    "Taiwan catalog refresh failed; keeping previous good catalog",
+                    extra={
+                        "event": "tw.catalog.refresh.stale_keep",
+                        "previous_size": len(previous),
+                    },
+                )
+                self.__class__._catalog_cached_at = now
+                self.__class__._catalog_degraded = True
+                return previous
+            logger.warning(
+                "Taiwan catalog refresh failed; using built-in seed with short retry",
+                extra={
+                    "event": "tw.catalog.refresh.builtin_only",
+                    "seed_size": len(TW_STOCKS),
+                },
+            )
+            catalog = dict(TW_STOCKS)
+            self.__class__._catalog_cache = catalog
+            self.__class__._catalog_cached_at = now
+            self.__class__._catalog_degraded = True
+            return catalog
+
         self.__class__._catalog_cache = catalog
         self.__class__._catalog_cached_at = now
+        # Partial loads keep known symbols but retry sooner than a full success.
+        self.__class__._catalog_degraded = sources_ok < 3
         return catalog
 
 def _mis_circuit_is_open() -> bool:

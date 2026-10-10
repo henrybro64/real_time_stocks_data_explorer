@@ -415,6 +415,7 @@ def test_search_resolves_ita_when_prefix_matches_exist_without_exact_symbol(
     monkeypatch.setattr(us_provider, "_load_json_get", fake_load_json_get)
 
     provider = us_provider.USProvider()
+    provider.refresh_catalog()
     matches = provider.search("ITA")
 
     assert matches[0].id == "US:ITA"

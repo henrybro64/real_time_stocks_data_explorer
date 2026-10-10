@@ -1,9 +1,11 @@
 import { Button, InlineLoading, Tag, Tile } from "@carbon/react";
+import { useQuery } from "@tanstack/react-query";
 import type { QuoteResponse } from "@shared/api";
-import type { QuoteFreshnessMeta } from "@shared/quote";
+import type { ChartLayout, QuoteFreshnessMeta } from "@shared/quote";
 import type { Stock } from "@shared/stock";
 import { useMemo, useState } from "react";
 import { useLanguage } from "../../app/i18n";
+import { fetchWatchlistSparklines } from "../../services/api/client";
 import {
   classifyMarket,
   formatListingSymbol,
@@ -49,6 +51,16 @@ export function WatchlistTable({
   const count = trackedCount ?? items.length;
   const showOnlyNotice = noticeKind !== null && items.length === 0 && pendingIds.length === 0;
   const sections = useMemo(() => groupWatchlistEntries(items, pendingIds), [items, pendingIds]);
+  const sparklineIds = useMemo(() => items.map((item) => item.stock.id), [items]);
+  const sparklinesQuery = useQuery({
+    queryKey: ["watchlist-sparklines", sparklineIds],
+    queryFn: () => fetchWatchlistSparklines(sparklineIds, "1W"),
+    enabled: sparklineIds.length > 0,
+    staleTime: 120_000,
+    refetchInterval: 180_000,
+    refetchIntervalInBackground: false,
+  });
+  const sparklines = sparklinesQuery.data ?? {};
 
   return (
     <Tile className="app-section-tile" data-testid="watchlist-section">
@@ -95,6 +107,9 @@ export function WatchlistTable({
                 entries={section.entries}
                 isRetryingQuote={isRetryingQuote}
                 market={section.market}
+                sparklines={sparklines}
+                sparklinesError={sparklinesQuery.error}
+                sparklinesLoading={sparklinesQuery.isLoading}
                 title={t(section.titleKey)}
                 warmingTimedOutById={warmingTimedOutById}
                 onRemove={onRemove}
@@ -144,6 +159,9 @@ function WatchlistMarketSection({
   countLabel,
   entries,
   isRetryingQuote,
+  sparklines,
+  sparklinesLoading,
+  sparklinesError,
   warmingTimedOutById,
   onRemove,
   onRetryQuote,
@@ -153,6 +171,9 @@ function WatchlistMarketSection({
   countLabel: string;
   entries: WatchlistEntry[];
   isRetryingQuote: boolean;
+  sparklines: Record<string, ChartLayout | null>;
+  sparklinesLoading: boolean;
+  sparklinesError: unknown;
   warmingTimedOutById: Record<string, boolean>;
   onRemove: (stockId: string) => void;
   onRetryQuote?: () => void;
@@ -191,6 +212,9 @@ function WatchlistMarketSection({
               onRetryQuote={onRetryQuote}
               onToggle={onRemove}
               quote={entry.item.quote}
+              sparkline={sparklines[entry.item.stock.id] ?? null}
+              sparklineError={sparklinesError}
+              sparklineLoading={sparklinesLoading}
               stock={entry.item.stock}
               warmingTimedOut={Boolean(warmingTimedOutById[entry.item.stock.id])}
             />

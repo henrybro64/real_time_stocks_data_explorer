@@ -23,7 +23,13 @@ from uuid import uuid4
 
 from app.core.config import settings
 from app.models.quote import QuoteRecord
-from app.services.market_clock import MARKET_TIMEZONES, is_market_open, quote_session_is_live
+from app.services.market_clock import (
+    MARKET_TIMEZONES,
+    is_market_open,
+    is_within_hour_before_market_open,
+    quote_session_is_live,
+    timestamp_is_completed_session_close,
+)
 from app.services.tw_price_limits import restore_cached_price_limit
 
 logger = logging.getLogger(__name__)
@@ -96,6 +102,35 @@ def soft_ttl_seconds() -> int:
 
 def hard_ttl_seconds() -> int:
     return max(int(settings.quote_cache_hard_ttl_seconds), soft_ttl_seconds())
+
+
+def _quote_is_soft_stale(
+    quote: QuoteRecord,
+    *,
+    age_seconds: float,
+    now: datetime,
+) -> bool:
+    """Soft-stale while the session is active, and after the close until the print is the close.
+
+    A cached intraday price must not stay fresh all evening as if it were the
+    official close (#270). Once the timestamp is the completed session's
+    closing print, closed-market reads stop treating it as stale.
+    """
+    market = quote.id.split(":", 1)[0] if ":" in quote.id else ""
+    if market not in MARKET_TIMEZONES:
+        return age_seconds >= soft_ttl_seconds()
+    # Holiday calendar must already be preloaded before cache locks are held.
+    session_active = is_market_open(
+        market, now, allow_holiday_fetch=False
+    ) or is_within_hour_before_market_open(market, now)
+    if session_active:
+        return age_seconds >= soft_ttl_seconds()
+    return not timestamp_is_completed_session_close(
+        market,
+        quote.timestamp,
+        now,
+        allow_holiday_fetch=False,
+    )
 
 
 def refresh_lock_seconds() -> int:
@@ -482,7 +517,7 @@ def _entry_from_payload(
             quote=quote,
             cached_at=cached_at,
             age_seconds=age_seconds,
-            stale=age_seconds >= soft_ttl_seconds(),
+            stale=_quote_is_soft_stale(quote, age_seconds=age_seconds, now=current),
         )
     except (TypeError, ValueError, KeyError):
         return None

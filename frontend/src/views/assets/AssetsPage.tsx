@@ -25,6 +25,7 @@ import { useLanguage } from "../../app/i18n";
 import { HistoricalValueChart } from "../../components/chart/HistoricalValueChart";
 import { getHistoryZoomState, stepHistoryRange } from "../../components/chart/historyRange";
 import { RequestStateNotice, errorToNoticeKind } from "../../components/state/RequestStateNotice";
+import { useQuoteDerivedRefetchInterval } from "../../hooks/useQuoteDerivedRefetchInterval";
 import {
   addPortfolioAsset,
   deletePortfolioAsset,
@@ -42,6 +43,8 @@ export function AssetsPage() {
   const [assetNameDraft, setAssetNameDraft] = useState("");
   const [assetCurrencyDraft, setAssetCurrencyDraft] = useState("USD");
   const [assetValueDraft, setAssetValueDraft] = useState("");
+  // Asset totals include portfolio holdings; track both venues (#270).
+  const quoteRefetchInterval = useQuoteDerivedRefetchInterval(["TW:_", "US:_"]);
 
   const assetsQuery = useQuery<PortfolioAsset[]>({
     queryKey: ["portfolio-assets"],
@@ -50,7 +53,8 @@ export function AssetsPage() {
   const assetSummaryQuery = useQuery({
     queryKey: ["portfolio-assets-summary"],
     queryFn: fetchPortfolioAssetSummary,
-    refetchInterval: 5_000,
+    refetchInterval: quoteRefetchInterval,
+    refetchIntervalInBackground: false,
   });
   const assetsHistoryQuery = useQuery({
     queryKey: ["portfolio-assets-history", historyRange],

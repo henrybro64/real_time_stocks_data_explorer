@@ -74,11 +74,8 @@ def list_portfolio_positions(
 
     rows: list[PortfolioPositionResponse] = []
     for position in positions:
-        try:
-            q = quote_by_stock.get(position.stock_id)
-            rows.append(_to_response(position, q))
-        except HTTPException:
-            continue
+        q = quote_by_stock.get(position.stock_id)
+        rows.append(_to_response(position, q))
     return rows
 
 
@@ -487,10 +484,13 @@ def _to_response(
 ) -> PortfolioPositionResponse:
     stock = quote_service.get_stock(position.stock_id)
     if stock is None:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unknown stock id: {position.stock_id}",
-        )
+        # Keep unknown holdings visible instead of silently dropping them (#264).
+        stock = quote_service._placeholder_stock(position.stock_id)
+        if stock is None:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unknown stock id: {position.stock_id}",
+            )
     if quote is _MISSING_QUOTE:
         quote = quote_service.get_quote(position.stock_id)
     market_value, unrealized_pl, unrealized_pl_percent = portfolio_service.build_metrics(
