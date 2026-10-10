@@ -364,6 +364,7 @@ def test_portfolio_summary_includes_backend_calculated_combined_gain(
             "pair": "USD/TWD",
             "rate": 32.0,
             "timestamp": "2026-04-01T01:00:00Z",
+            "status": "ok",
         },
     )
 
@@ -445,6 +446,7 @@ def test_portfolio_summary_includes_per_holding_allocation_percent(
             "pair": "USD/TWD",
             "rate": 32.0,
             "timestamp": "2026-04-01T01:00:00Z",
+            "status": "ok",
         },
     )
 

@@ -6,7 +6,8 @@ resources:
   - redis.yaml
   - postgres.yaml
   - backend-database-secret.yaml
-  # backend-auth-secret.yaml is generated/copied locally (see .example + deploy-k3s.sh).
+  # backend-auth-secret.yaml is not in this kustomization. Apply it before
+  # `kubectl apply -k` (deploy-k3s.sh does this; see docs/kubernetes.md).
   - backend.yaml
   - backend-history-capture-cronjob.yaml
   - aws-health-heartbeat.yaml

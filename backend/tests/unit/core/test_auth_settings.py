@@ -47,5 +47,17 @@ def test_auth_enabled_rejects_placeholder_capture_token() -> None:
         _ok(portfolio_history_capture_token="k8s-dev-replace-with-random-capture-token")
 
 
+def test_auth_disabled_rejects_placeholder_capture_token() -> None:
+    with pytest.raises(RuntimeError, match="PORTFOLIO_HISTORY_CAPTURE_TOKEN"):
+        validate_auth_runtime_settings(
+            auth_enabled=False,
+            local_auth_enabled=False,
+            session_secret="dev-session-secret-change-me",
+            local_auth_username="",
+            local_auth_password="",
+            portfolio_history_capture_token="change-me",
+        )
+
+
 def test_auth_enabled_accepts_random_secret() -> None:
     _ok(session_secret="9f" * 16, portfolio_history_capture_token="tok-" + "ab" * 12)

@@ -67,23 +67,23 @@ class PortfolioSummaryPosition(BaseModel):
     quantity: float
     lastPrice: float | None = None
     marketValue: float | None = None
-    allocationPercent: float
+    allocationPercent: float | None = None
     timestamp: str | None = None
 
 
 class PortfolioSummaryResponse(BaseModel):
     totalUsd: float
     totalTwd: float
-    combinedUsd: float
-    combinedTwd: float
+    combinedUsd: float | None = None
+    combinedTwd: float | None = None
     totalCostUsd: float
     totalCostTwd: float
-    combinedCostUsd: float
-    combinedCostTwd: float
-    combinedGainUsd: float
-    combinedGainTwd: float
-    combinedGainPercent: float
-    usdTwdRate: float
+    combinedCostUsd: float | None = None
+    combinedCostTwd: float | None = None
+    combinedGainUsd: float | None = None
+    combinedGainTwd: float | None = None
+    combinedGainPercent: float | None = None
+    usdTwdRate: float | None = None
     fxTimestamp: str
     fxStatus: str
     incomplete: bool = False
@@ -95,13 +95,13 @@ class PortfolioSummaryResponse(BaseModel):
 class PortfolioAssetSummaryResponse(BaseModel):
     totalUsd: float
     totalTwd: float
-    combinedUsd: float
-    combinedTwd: float
+    combinedUsd: float | None = None
+    combinedTwd: float | None = None
     liquidTotalUsd: float
     liquidTotalTwd: float
-    liquidCombinedUsd: float
-    liquidCombinedTwd: float
-    usdTwdRate: float
+    liquidCombinedUsd: float | None = None
+    liquidCombinedTwd: float | None = None
+    usdTwdRate: float | None = None
     fxTimestamp: str
     fxStatus: str
     incomplete: bool = False

@@ -36,5 +36,11 @@ def test_frontend_ingress_targets_clusterip_and_keeps_nodeport() -> None:
 def test_deploy_script_generates_auth_secret_and_hostname_override() -> None:
     script = (_ROOT / "scripts" / "deploy-k3s.sh").read_text(encoding="utf-8")
     assert "ensure_backend_auth_secret" in script
+    assert "umask 077" in script
+    assert "chmod 600" in script
+    assert 'k3d cluster create stock-ticker -p "80:80@loadbalancer"' in script
     assert "STOCK_TICKER_HOSTNAME" in script
     assert "apply_frontend_ingress_host" in script
+    manual = (_ROOT / "docs" / "kubernetes.md").read_text(encoding="utf-8")
+    assert "kubectl apply -n stock-ticker -f k8s/backend-auth-secret.yaml" in manual
+    assert 'k3d cluster create stock-ticker -p "80:80@loadbalancer"' in manual

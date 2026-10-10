@@ -51,6 +51,15 @@ def validate_auth_runtime_settings(
     if local_auth_password and len(local_auth_password) < 8:
         raise RuntimeError("LOCAL_AUTH_PASSWORD must be at least 8 characters.")
 
+    # Capture endpoints stay reachable when session auth is off, so a guessable
+    # token is refused either way.
+    _reject_placeholder_capture_tokens(
+        portfolio_history_capture_token=portfolio_history_capture_token,
+        rankings_capture_token=rankings_capture_token,
+        rankings_archive_capture_token=rankings_archive_capture_token,
+        taiwan_market_data_capture_token=taiwan_market_data_capture_token,
+    )
+
     if not auth_enabled:
         return
 
@@ -70,6 +79,15 @@ def validate_auth_runtime_settings(
             "AUTH_ENABLED refuses a placeholder LOCAL_AUTH_PASSWORD. "
             "Choose a unique bootstrap password or leave both username and password empty.",
         )
+
+
+def _reject_placeholder_capture_tokens(
+    *,
+    portfolio_history_capture_token: str,
+    rankings_capture_token: str,
+    rankings_archive_capture_token: str,
+    taiwan_market_data_capture_token: str,
+) -> None:
     for label, token in (
         ("PORTFOLIO_HISTORY_CAPTURE_TOKEN", portfolio_history_capture_token),
         ("RANKINGS_CAPTURE_TOKEN", rankings_capture_token),
@@ -81,8 +99,7 @@ def validate_auth_runtime_settings(
             continue
         if cleaned in _PLACEHOLDER_CAPTURE_TOKENS or _looks_like_placeholder(cleaned):
             raise RuntimeError(
-                f"AUTH_ENABLED refuses a placeholder {label}. "
-                "Generate a random token or leave the value empty.",
+                f"{label} is a placeholder. Generate a random token or leave the value empty.",
             )
 
 

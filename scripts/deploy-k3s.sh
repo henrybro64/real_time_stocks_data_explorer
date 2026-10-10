@@ -46,7 +46,7 @@ Optional env:
   STOCK_TICKER_HOSTNAME  Ingress host (default: stock-ticker.ai). Point LAN DNS at the node IP.
 
 k3d one-time setup (before first deploy):
-  k3d cluster create stock-ticker
+  k3d cluster create stock-ticker -p "80:80@loadbalancer"
   kubectl config use-context k3d-stock-ticker
 
 k3s: uses "sudo k3s kubectl" by default (kubeconfig under /etc/rancher is root-readable).
@@ -241,7 +241,7 @@ ensure_k3d_cluster_exists() {
 Error: k3d cluster '${K3D_CLUSTER_NAME}' was not found.
 
 Create it once, then point kubectl at it:
-  k3d cluster create ${K3D_CLUSTER_NAME}
+  k3d cluster create ${K3D_CLUSTER_NAME} -p "80:80@loadbalancer"
   kubectl config use-context k3d-${K3D_CLUSTER_NAME}
 
 Re-run:
@@ -268,7 +268,7 @@ is selected instead of k3d. Fix:
   kubectl config use-context ${expected}
 
 If that context is missing, create the cluster first:
-  k3d cluster create ${K3D_CLUSTER_NAME}
+  k3d cluster create ${K3D_CLUSTER_NAME} -p "80:80@loadbalancer"
 EOF
     exit 1
   fi
@@ -405,15 +405,15 @@ EOF
 
 ensure_backend_auth_secret() {
   local secret_path="${ROOT_DIR}/k8s/backend-auth-secret.yaml"
-  if [[ -f "${secret_path}" ]]; then
-    echo "Using existing ${secret_path}"
-    return 0
-  fi
-  require_cmd openssl
-  local session_secret capture_token
-  session_secret="$(openssl rand -hex 32)"
-  capture_token="$(openssl rand -hex 24)"
-  cat >"${secret_path}" <<EOF
+  if [[ ! -f "${secret_path}" ]]; then
+    require_cmd openssl
+    local session_secret capture_token
+    session_secret="$(openssl rand -hex 32)"
+    capture_token="$(openssl rand -hex 24)"
+    # umask 077 so the session secret is never created world-readable.
+    (
+      umask 077
+      cat >"${secret_path}" <<EOF
 apiVersion: v1
 kind: Secret
 metadata:
@@ -426,7 +426,12 @@ stringData:
   PORTFOLIO_HISTORY_CAPTURE_TOKEN: "${capture_token}"
   SESSION_COOKIE_SECURE: "false"
 EOF
-  echo "Generated ${secret_path} (gitignored). Register a user after login, or set LOCAL_AUTH_* locally."
+    )
+    echo "Generated ${secret_path} (gitignored). Register a user after login, or set LOCAL_AUTH_* locally."
+  else
+    echo "Using existing ${secret_path}"
+  fi
+  chmod 600 "${secret_path}"
 }
 
 apply_backend_auth_secret() {

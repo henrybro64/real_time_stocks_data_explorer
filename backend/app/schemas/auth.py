@@ -15,7 +15,9 @@ class AuthStatusResponse(BaseModel):
 
 class LocalLoginRequest(BaseModel):
     username: str = Field(min_length=1, max_length=64)
-    password: str = Field(min_length=1, max_length=256)
+    # No maximum: accounts and bootstrap users created before the register cap
+    # can still sign in with a longer stored password.
+    password: str = Field(min_length=1)
 
 
 class LocalRegisterRequest(BaseModel):

@@ -31,7 +31,7 @@ brew install colima docker docker-buildx kubectl k3d
 colima start --cpu 4 --memory 8 --disk 30
 docker context use colima && docker buildx use colima
 
-k3d cluster create stock-ticker
+k3d cluster create stock-ticker -p "80:80@loadbalancer"
 kubectl config use-context k3d-stock-ticker
 
 ./scripts/deploy-k3s.sh k3d
@@ -40,7 +40,7 @@ kubectl -n stock-ticker port-forward svc/stock-ticker-frontend 3000:3000
 
 Open `http://127.0.0.1:3000`. LAN access without port-forward: NodePort **`http://<node-ip>:30080`**.
 
-Friendly LAN hostname (HTTP Ingress, Traefik on k3s/k3d): point local DNS at the node IP, then open `http://stock-ticker.ai` (override with `STOCK_TICKER_HOSTNAME`). NodePort **30080** stays as a fallback. See [Local DNS and Ingress](#local-dns-and-ingress).
+Friendly LAN hostname (HTTP Ingress, Traefik): the `-p "80:80@loadbalancer"` flag above publishes Traefik's port 80 on the machine running k3d. Point local DNS at that host, then open `http://stock-ticker.ai` (override with `STOCK_TICKER_HOSTNAME`). Native k3s already listens on the node. NodePort **30080** stays as a fallback. See [Local DNS and Ingress](#local-dns-and-ingress).
 
 Delete app: `./scripts/k8s-teardown.sh k3d`. Delete cluster: `k3d cluster delete stock-ticker`.
 
@@ -270,11 +270,19 @@ kubectl -n stock-ticker get pod -l 'app in (stock-ticker-backend,stock-ticker-fr
 
 ## Manual deploy (without helper script)
 
+`kubectl apply -k k8s` does not create `stock-ticker-backend-auth`. Apply that Secret first or the backend and history CronJob stay in `CreateContainerConfigError`.
+
 ```bash
 docker build -t stock-ticker-backend:local -f backend/Dockerfile .
 docker build -t stock-ticker-frontend:local -f frontend/Dockerfile .
 # k3d: k3d image import … -c stock-ticker
 # k3s: docker save + sudo k3s ctr -n k8s.io images import …
+kubectl apply -f k8s/namespace.yaml
+umask 077
+cp k8s/backend-auth-secret.yaml.example k8s/backend-auth-secret.yaml
+# Fill SESSION_SECRET (`openssl rand -hex 32`) and PORTFOLIO_HISTORY_CAPTURE_TOKEN.
+# Do not commit the filled file.
+kubectl apply -n stock-ticker -f k8s/backend-auth-secret.yaml
 kubectl apply -k k8s
 kubectl -n stock-ticker rollout status deployment/stock-ticker-backend
 kubectl -n stock-ticker port-forward svc/stock-ticker-frontend 3000:3000

@@ -136,17 +136,31 @@ export function PortfolioPage() {
     return { totalUsd: usd, totalTwd: twd };
   }, [items]);
 
+  const summary = summaryQuery.data;
+  const fx = fxQuery.data;
+  const summaryRate = summary?.usdTwdRate;
+  const fxRateUsable = fx != null && fx.status !== "fallback" && fx.rate > 0;
   const usdTwdRate =
-    summaryQuery.data != null && summaryQuery.data.usdTwdRate > 0
-      ? summaryQuery.data.usdTwdRate
-      : fxQuery.data?.rate ?? 0;
+    summaryRate != null && summaryRate > 0 ? summaryRate : fxRateUsable ? fx.rate : 0;
 
-  const totalUsd = summaryQuery.data?.totalUsd ?? holdingsNativeTotals.totalUsd;
-  const totalTwd = summaryQuery.data?.totalTwd ?? holdingsNativeTotals.totalTwd;
+  const totalUsd = summary?.totalUsd ?? holdingsNativeTotals.totalUsd;
+  const totalTwd = summary?.totalTwd ?? holdingsNativeTotals.totalTwd;
   const combinedUsd =
-    summaryQuery.data?.combinedUsd ?? (usdTwdRate > 0 ? totalUsd + totalTwd / usdTwdRate : totalUsd);
+    summary != null
+      ? summary.combinedUsd
+      : usdTwdRate > 0
+        ? totalUsd + totalTwd / usdTwdRate
+        : totalTwd === 0
+          ? totalUsd
+          : null;
   const combinedTwd =
-    summaryQuery.data?.combinedTwd ?? (usdTwdRate > 0 ? totalTwd + totalUsd * usdTwdRate : totalTwd);
+    summary != null
+      ? summary.combinedTwd
+      : usdTwdRate > 0
+        ? totalTwd + totalUsd * usdTwdRate
+        : totalUsd === 0
+          ? totalTwd
+          : null;
   const combinedCostUsd = summaryQuery.data?.combinedCostUsd ?? null;
   const combinedCostTwd = summaryQuery.data?.combinedCostTwd ?? null;
   const combinedGainUsd = summaryQuery.data?.combinedGainUsd ?? null;
@@ -501,7 +515,7 @@ export function PortfolioPage() {
                 </p>
                 <p className="app-section-meta">{t("portfolio.aggregate.combinedUsd")}</p>
                 <p className="app-portfolio-combined-amount" data-testid="portfolio-combined-usd">
-                  {formatCurrency(combinedUsd, "USD")}
+                  {combinedUsd == null ? "—" : formatCurrency(combinedUsd, "USD")}
                 </p>
                 <p className="app-section-meta">{t("portfolio.aggregate.totalCostBasis")}</p>
                 <p className="app-portfolio-secondary-amount" data-testid="portfolio-combined-cost-usd">
@@ -529,7 +543,7 @@ export function PortfolioPage() {
                 </p>
                 <p className="app-section-meta">{t("portfolio.aggregate.combinedTwd")}</p>
                 <p className="app-portfolio-combined-amount" data-testid="portfolio-combined-twd">
-                  {formatCurrency(combinedTwd, "TWD")}
+                  {combinedTwd == null ? "—" : formatCurrency(combinedTwd, "TWD")}
                 </p>
                 <p className="app-section-meta">{t("portfolio.aggregate.totalCostBasis")}</p>
                 <p className="app-portfolio-secondary-amount" data-testid="portfolio-combined-cost-twd">

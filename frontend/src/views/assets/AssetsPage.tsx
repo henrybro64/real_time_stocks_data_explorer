@@ -149,11 +149,13 @@ export function AssetsPage() {
                     </p>
                     <p className="app-section-meta">{t("portfolio.aggregate.combinedUsd")}</p>
                     <p className="app-portfolio-combined-amount" data-testid="assets-combined-usd">
-                      {formatCurrency(summary!.combinedUsd, "USD")}
+                      {summary!.combinedUsd == null ? "—" : formatCurrency(summary!.combinedUsd, "USD")}
                     </p>
                     <p className="app-section-meta">{t("portfolio.aggregate.liquidAssets")}</p>
                     <p className="app-portfolio-secondary-amount" data-testid="assets-liquid-usd">
-                      {formatCurrency(summary!.liquidCombinedUsd, "USD")}
+                      {summary!.liquidCombinedUsd == null
+                        ? "—"
+                        : formatCurrency(summary!.liquidCombinedUsd, "USD")}
                     </p>
                   </>
                 )}
@@ -169,11 +171,13 @@ export function AssetsPage() {
                     </p>
                     <p className="app-section-meta">{t("portfolio.aggregate.combinedTwd")}</p>
                     <p className="app-portfolio-combined-amount" data-testid="assets-combined-twd">
-                      {formatCurrency(summary!.combinedTwd, "TWD")}
+                      {summary!.combinedTwd == null ? "—" : formatCurrency(summary!.combinedTwd, "TWD")}
                     </p>
                     <p className="app-section-meta">{t("portfolio.aggregate.liquidAssets")}</p>
                     <p className="app-portfolio-secondary-amount" data-testid="assets-liquid-twd">
-                      {formatCurrency(summary!.liquidCombinedTwd, "TWD")}
+                      {summary!.liquidCombinedTwd == null
+                        ? "—"
+                        : formatCurrency(summary!.liquidCombinedTwd, "TWD")}
                     </p>
                   </>
                 )}
