@@ -46,7 +46,7 @@ export type FxRate = {
   /**
    * `ok` = live/provider value (or soft-cached).
    * `stale` = last-known provider value after a refresh failure.
-   * `fallback` = synthetic constant used only so portfolio math can continue.
+   * `fallback` = synthetic constant. Portfolio totals that need this rate are omitted.
    */
   status?: "ok" | "stale" | "fallback";
 };
@@ -360,9 +360,9 @@ export type PortfolioPosition = {
   notes: string | null;
   stock: Stock;
   quote: Quote | null;
-  marketValue: number;
-  unrealizedPl: number;
-  unrealizedPlPercent: number;
+  marketValue: number | null;
+  unrealizedPl: number | null;
+  unrealizedPlPercent: number | null;
 };
 
 export type PortfolioPositionCreate = {
@@ -386,25 +386,30 @@ export type PortfolioSummaryPosition = {
   currency: string;
   quantity: number;
   lastPrice: number | null;
-  marketValue: number;
-  allocationPercent: number;
+  marketValue: number | null;
+  allocationPercent: number | null;
   timestamp: string | null;
 };
+
+export type FxStatus = "ok" | "stale" | "fallback" | string;
 
 export type PortfolioSummary = {
   totalUsd: number;
   totalTwd: number;
-  combinedUsd: number;
-  combinedTwd: number;
+  combinedUsd: number | null;
+  combinedTwd: number | null;
   totalCostUsd: number;
   totalCostTwd: number;
-  combinedCostUsd: number;
-  combinedCostTwd: number;
-  combinedGainUsd: number;
-  combinedGainTwd: number;
-  combinedGainPercent: number;
-  usdTwdRate: number;
+  combinedCostUsd: number | null;
+  combinedCostTwd: number | null;
+  combinedGainUsd: number | null;
+  combinedGainTwd: number | null;
+  combinedGainPercent: number | null;
+  usdTwdRate: number | null;
   fxTimestamp: string;
+  fxStatus: FxStatus;
+  incomplete: boolean;
+  missingQuoteStockIds: string[];
   positions: PortfolioSummaryPosition[];
   skippedStockIds: string[];
 };
@@ -412,14 +417,17 @@ export type PortfolioSummary = {
 export type PortfolioAssetSummary = {
   totalUsd: number;
   totalTwd: number;
-  combinedUsd: number;
-  combinedTwd: number;
+  combinedUsd: number | null;
+  combinedTwd: number | null;
   liquidTotalUsd: number;
   liquidTotalTwd: number;
-  liquidCombinedUsd: number;
-  liquidCombinedTwd: number;
-  usdTwdRate: number;
+  liquidCombinedUsd: number | null;
+  liquidCombinedTwd: number | null;
+  usdTwdRate: number | null;
   fxTimestamp: string;
+  fxStatus: FxStatus;
+  incomplete: boolean;
+  missingQuoteStockIds: string[];
   skippedStockIds: string[];
 };
 

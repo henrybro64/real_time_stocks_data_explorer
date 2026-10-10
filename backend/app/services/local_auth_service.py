@@ -64,19 +64,28 @@ def verify_local_login(username: str, password: str) -> str | None:
 
 
 def register_local_user(username: str, password: str) -> str:
+    from sqlalchemy.exc import IntegrityError
+
     if not user_repository.is_available():
         raise RuntimeError("DATABASE_URL is not configured")
     uname = username.strip()
     if not uname:
         raise ValueError("Username is required")
+    if len(uname) > 64:
+        raise ValueError("Username must be at most 64 characters")
+    if not password or len(password) < 8:
+        raise ValueError("Password must be at least 8 characters")
     existing = user_repository.get_by_username(uname)
     if existing is not None:
         raise ValueError("Username already exists")
-    user = user_repository.create_local_user(
-        user_id=f"u-{uuid.uuid4().hex[:16]}",
-        username=uname[:64],
-        password_hash=_hash_password(password),
-    )
+    try:
+        user = user_repository.create_local_user(
+            user_id=f"u-{uuid.uuid4().hex[:16]}",
+            username=uname,
+            password_hash=_hash_password(password),
+        )
+    except IntegrityError as exc:
+        raise ValueError("Username already exists") from exc
     return user.id
 
 

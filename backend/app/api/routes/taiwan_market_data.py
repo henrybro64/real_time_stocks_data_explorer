@@ -24,14 +24,13 @@ def capture_taiwan_market_data(
     days: Annotated[int | None, Query(ge=1, le=360)] = None,
     x_taiwan_market_data_token: Annotated[str | None, Header()] = None,
 ) -> dict[str, object]:
-    expected = settings.taiwan_market_data_capture_token.strip()
-    if not expected:
-        raise HTTPException(
-            status_code=503,
-            detail="Taiwan market data capture endpoint is not configured",
-        )
-    if x_taiwan_market_data_token != expected:
-        raise HTTPException(status_code=403, detail="Forbidden")
+    from app.api.capture_auth import require_capture_token
+
+    require_capture_token(
+        x_taiwan_market_data_token,
+        settings.taiwan_market_data_capture_token,
+        not_configured_detail="Taiwan market data capture endpoint is not configured",
+    )
 
     requested_days = days or settings.taiwan_market_data_refresh_days
     summary = taiwan_market_data_refresh_service.refresh(

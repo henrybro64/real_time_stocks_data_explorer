@@ -152,6 +152,9 @@ const portfolioSummary: PortfolioSummary = {
   combinedGainPercent: 5.67,
   usdTwdRate: 32,
   fxTimestamp: "2026-04-01T01:00:00Z",
+  fxStatus: "ok",
+  incomplete: false,
+  missingQuoteStockIds: [],
   positions: [
     {
       stockId: "TW:2330",
@@ -386,6 +389,35 @@ describe("PortfolioPage", () => {
     expect(within(usSection).getByRole("columnheader", { name: "Avg cost (stock currency)" })).toBeInTheDocument();
     expect(screen.getByText("Apple Inc.")).toBeInTheDocument();
     expect(screen.getByText("TSMC")).toBeInTheDocument();
+  });
+
+  it("shows a dash when converted totals are omitted for a fallback FX rate", async () => {
+    vi.mocked(fetchPortfolioSummary).mockResolvedValue({
+      ...portfolioSummary,
+      fxStatus: "fallback",
+      incomplete: true,
+      usdTwdRate: null,
+      combinedUsd: null,
+      combinedTwd: null,
+      combinedCostUsd: null,
+      combinedCostTwd: null,
+      combinedGainUsd: null,
+      combinedGainTwd: null,
+      combinedGainPercent: null,
+    });
+    vi.mocked(fetchUsdTwdFxRate).mockResolvedValue({
+      pair: "USD/TWD",
+      rate: 32,
+      timestamp: "2026-04-01T01:00:00Z",
+      status: "fallback",
+    });
+
+    renderPortfolioPage("en");
+
+    expect(await screen.findByTestId("portfolio-combined-usd")).toHaveTextContent("—");
+    expect(screen.getByTestId("portfolio-combined-twd")).toHaveTextContent("—");
+    expect(screen.getByTestId("portfolio-total-usd")).toHaveTextContent("$374.46");
+    expect(await screen.findByTestId("portfolio-totals-incomplete")).toHaveTextContent(/fallback/i);
   });
 
   it("renders backend-provided total gain values from the portfolio summary", async () => {

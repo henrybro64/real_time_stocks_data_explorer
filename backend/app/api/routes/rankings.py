@@ -234,14 +234,13 @@ def refresh_rankings(payload: RankingsRefreshRequest) -> RankingResponse:
 def capture_rankings_snapshots(
     x_rankings_capture_token: str | None = Header(default=None),
 ) -> dict[str, int]:
-    expected = settings.rankings_capture_token.strip()
-    if not expected:
-        raise HTTPException(
-            status_code=503,
-            detail="Rankings snapshot capture endpoint is not configured",
-        )
-    if x_rankings_capture_token != expected:
-        raise HTTPException(status_code=403, detail="Forbidden")
+    from app.api.capture_auth import require_capture_token
+
+    require_capture_token(
+        x_rankings_capture_token,
+        settings.rankings_capture_token,
+        not_configured_detail="Rankings snapshot capture endpoint is not configured",
+    )
     captured = rankings_snapshot_service.capture_scheduled_snapshots(
         trigger="capture_endpoint",
     )
@@ -272,14 +271,13 @@ def capture_rankings_archive(
     x_rankings_archive_capture_token: Annotated[str | None, Header()] = None,
 ) -> dict[str, int]:
     """Token-gated manual EOD archive capture into Azure SQL (#167)."""
-    expected = settings.rankings_archive_capture_token.strip()
-    if not expected:
-        raise HTTPException(
-            status_code=503,
-            detail="Rankings archive capture endpoint is not configured",
-        )
-    if x_rankings_archive_capture_token != expected:
-        raise HTTPException(status_code=403, detail="Forbidden")
+    from app.api.capture_auth import require_capture_token
+
+    require_capture_token(
+        x_rankings_archive_capture_token,
+        settings.rankings_archive_capture_token,
+        not_configured_detail="Rankings archive capture endpoint is not configured",
+    )
     request = payload or RankingsArchiveCaptureRequest()
     return rankings_archive_service.capture_eod_archives(
         trigger="archive_capture_endpoint",

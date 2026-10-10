@@ -431,6 +431,10 @@ export type TranslationKey =
   | "portfolio.aggregate.totalGain"
   | "portfolio.aggregate.liquidAssets"
   | "portfolio.aggregate.fxRate"
+  | "portfolio.aggregate.incomplete"
+  | "portfolio.aggregate.missingQuotes"
+  | "portfolio.aggregate.unknownStocks"
+  | "portfolio.aggregate.fxFallback"
   | "portfolio.history.loading"
   | "portfolio.history.empty"
   | "portfolio.history.range"
@@ -1033,6 +1037,10 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "portfolio.aggregate.totalGain": "Total gain / loss",
     "portfolio.aggregate.liquidAssets": "Liquid assets excl. real estate",
     "portfolio.aggregate.fxRate": "FX rate",
+    "portfolio.aggregate.incomplete": "Totals are incomplete",
+    "portfolio.aggregate.missingQuotes": "Missing live quotes",
+    "portfolio.aggregate.unknownStocks": "Unknown symbols",
+    "portfolio.aggregate.fxFallback": "FX rate is a temporary fallback, not a live quote",
     "portfolio.history.loading": "Loading historical portfolio values",
     "portfolio.history.empty": "No historical data yet. Hourly snapshots appear while Taiwan or U.S. markets are open.",
     "portfolio.history.range": "Range: {range}",
@@ -1570,6 +1578,10 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "portfolio.aggregate.totalGain": "總損益",
     "portfolio.aggregate.liquidAssets": "可變現資產（不含房地產）",
     "portfolio.aggregate.fxRate": "匯率",
+    "portfolio.aggregate.incomplete": "總額尚不完整",
+    "portfolio.aggregate.missingQuotes": "缺少即時報價",
+    "portfolio.aggregate.unknownStocks": "未知股票代碼",
+    "portfolio.aggregate.fxFallback": "目前匯率為暫時備援值，非即時報價",
     "portfolio.history.loading": "載入歷史資產資料中",
     "portfolio.history.empty": "目前還沒有歷史資料。台灣或美國市場開盤期間會按小時累積快照。",
     "portfolio.history.range": "區間：{range}",

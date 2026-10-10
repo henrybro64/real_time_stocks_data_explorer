@@ -1,0 +1,25 @@
+# Host-based HTTP Ingress for LAN access (#241).
+# Default host: stock-ticker.ai — override with STOCK_TICKER_HOSTNAME when running
+# ./scripts/deploy-k3s.sh, or edit the host below before apply.
+# Uses the Traefik controller bundled with k3s/k3d. Keep frontend-nodeport.yaml
+# as a fallback on :30080. No TLS in this issue.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: stock-ticker-frontend
+  annotations:
+    # Explicit HTTP routing; TLS is a follow-up after local hostname is stable.
+    traefik.ingress.kubernetes.io/router.entrypoints: web
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: stock-ticker.ai
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: stock-ticker-frontend
+                port:
+                  number: 3000

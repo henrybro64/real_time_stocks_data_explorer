@@ -153,16 +153,24 @@ def get_portfolio_summary(
     positions = portfolio_service.list_positions(user_id)
     fx_snapshot = get_usd_twd_fx_snapshot()
     usd_twd_rate = float(fx_snapshot["rate"])
-    rows, position_entries, skipped_stock_ids = _summarize_positions(positions)
-    totals = portfolio_service.summarize_position_buckets(position_entries, usd_twd_rate)
-    allocation_percents = portfolio_service.summarize_allocation_percents(
-        [(currency, market_value) for currency, market_value, _ in position_entries],
-        usd_twd_rate,
+    fx_status = str(fx_snapshot.get("status") or "fallback")
+    fx_usable = _fx_rate_is_usable(fx_status)
+    rows, position_entries, skipped_stock_ids, missing_quote_ids = _summarize_positions(
+        positions
     )
-    rows_with_allocations = [
+    totals = _mask_position_totals(
+        portfolio_service.summarize_position_buckets(position_entries, usd_twd_rate),
+        fx_usable=fx_usable,
+    )
+    priced_rows = [row for row in rows if row.marketValue is not None]
+    allocation_percents = _allocation_percents(position_entries, usd_twd_rate, fx_usable=fx_usable)
+    priced_with_allocations = [
         row.model_copy(update={"allocationPercent": allocation_percent})
-        for row, allocation_percent in zip(rows, allocation_percents, strict=True)
+        for row, allocation_percent in zip(priced_rows, allocation_percents, strict=True)
     ]
+    unpriced_rows = [row for row in rows if row.marketValue is None]
+    rows_with_allocations = priced_with_allocations + unpriced_rows
+    incomplete = bool(skipped_stock_ids or missing_quote_ids or fx_status == "fallback")
 
     return PortfolioSummaryResponse(
         totalUsd=totals["totalUsd"],
@@ -176,8 +184,11 @@ def get_portfolio_summary(
         combinedGainUsd=totals["combinedGainUsd"],
         combinedGainTwd=totals["combinedGainTwd"],
         combinedGainPercent=totals["combinedGainPercent"],
-        usdTwdRate=usd_twd_rate,
+        usdTwdRate=usd_twd_rate if fx_usable else None,
         fxTimestamp=str(fx_snapshot["timestamp"]),
+        fxStatus=fx_status,
+        incomplete=incomplete,
+        missingQuoteStockIds=missing_quote_ids,
         positions=rows_with_allocations,
         skippedStockIds=skipped_stock_ids,
     )
@@ -204,8 +215,11 @@ def get_portfolio_asset_summary(
     assets = portfolio_service.list_assets(user_id)
     fx_snapshot = get_usd_twd_fx_snapshot()
     usd_twd_rate = float(fx_snapshot["rate"])
+    fx_status = str(fx_snapshot.get("status") or "fallback")
 
-    _, position_entries, skipped_stock_ids = _summarize_positions(positions)
+    _, position_entries, skipped_stock_ids, missing_quote_ids = _summarize_positions(
+        positions
+    )
     market_entries = [(currency, market_value) for currency, market_value, _ in position_entries]
     all_entries = list(market_entries)
     liquid_entries = list(market_entries)
@@ -216,8 +230,16 @@ def get_portfolio_asset_summary(
         if asset.asset_type != "real_estate":
             liquid_entries.append((asset.currency, value))
 
-    totals = portfolio_service.summarize_currency_buckets(all_entries, usd_twd_rate)
-    liquid_totals = portfolio_service.summarize_currency_buckets(liquid_entries, usd_twd_rate)
+    fx_usable = _fx_rate_is_usable(fx_status)
+    totals = _mask_currency_bucket_totals(
+        portfolio_service.summarize_currency_buckets(all_entries, usd_twd_rate),
+        fx_usable=fx_usable,
+    )
+    liquid_totals = _mask_currency_bucket_totals(
+        portfolio_service.summarize_currency_buckets(liquid_entries, usd_twd_rate),
+        fx_usable=fx_usable,
+    )
+    incomplete = bool(skipped_stock_ids or missing_quote_ids or fx_status == "fallback")
 
     return PortfolioAssetSummaryResponse(
         totalUsd=totals["totalUsd"],
@@ -228,8 +250,11 @@ def get_portfolio_asset_summary(
         liquidTotalTwd=liquid_totals["totalTwd"],
         liquidCombinedUsd=liquid_totals["combinedUsd"],
         liquidCombinedTwd=liquid_totals["combinedTwd"],
-        usdTwdRate=usd_twd_rate,
+        usdTwdRate=usd_twd_rate if fx_usable else None,
         fxTimestamp=str(fx_snapshot["timestamp"]),
+        fxStatus=fx_status,
+        incomplete=incomplete,
+        missingQuoteStockIds=missing_quote_ids,
         skippedStockIds=skipped_stock_ids,
     )
 
@@ -270,14 +295,13 @@ def get_portfolio_combined_assets_history(
 def capture_portfolio_history_snapshots(
     x_portfolio_history_token: str | None = Header(default=None),
 ) -> dict[str, int]:
-    expected = settings.portfolio_history_capture_token.strip()
-    if not expected:
-        raise HTTPException(
-            status_code=503,
-            detail="History capture endpoint is not configured",
-        )
-    if x_portfolio_history_token != expected:
-        raise HTTPException(status_code=403, detail="Forbidden")
+    from app.api.capture_auth import require_capture_token
+
+    require_capture_token(
+        x_portfolio_history_token,
+        settings.portfolio_history_capture_token,
+        not_configured_detail="History capture endpoint is not configured",
+    )
     captured = portfolio_history_service.capture_due_snapshots_for_all_users(
         trigger="capture_endpoint",
     )
@@ -334,12 +358,99 @@ def delete_portfolio_asset(
     _refresh_history_snapshot(user_id)
 
 
+_USABLE_FX_STATUSES = frozenset({"ok", "stale"})
+
+
+def _fx_rate_is_usable(fx_status: str) -> bool:
+    return fx_status in _USABLE_FX_STATUSES
+
+
+def _mask_currency_bucket_totals(
+    totals: dict[str, float],
+    *,
+    fx_usable: bool,
+) -> dict[str, float | None]:
+    """Keep native sums. Drop a combined side that was produced with a fallback rate."""
+    published: dict[str, float | None] = dict(totals)
+    if fx_usable:
+        return published
+    has_usd = totals["totalUsd"] != 0
+    has_twd = totals["totalTwd"] != 0
+    if not has_usd and not has_twd:
+        return published
+    if has_usd and has_twd:
+        published["combinedUsd"] = None
+        published["combinedTwd"] = None
+        return published
+    if has_usd:
+        published["combinedTwd"] = None
+    else:
+        published["combinedUsd"] = None
+    return published
+
+
+def _mask_position_totals(
+    totals: dict[str, float],
+    *,
+    fx_usable: bool,
+) -> dict[str, float | None]:
+    published: dict[str, float | None] = dict(totals)
+    if fx_usable:
+        return published
+    has_usd = totals["totalUsd"] != 0 or totals["totalCostUsd"] != 0
+    has_twd = totals["totalTwd"] != 0 or totals["totalCostTwd"] != 0
+    if not has_usd and not has_twd:
+        return published
+    if has_usd and has_twd:
+        for key in (
+            "combinedUsd",
+            "combinedTwd",
+            "combinedCostUsd",
+            "combinedCostTwd",
+            "combinedGainUsd",
+            "combinedGainTwd",
+            "combinedGainPercent",
+        ):
+            published[key] = None
+        return published
+    if has_usd:
+        published["combinedTwd"] = None
+        published["combinedCostTwd"] = None
+        published["combinedGainTwd"] = None
+    else:
+        published["combinedUsd"] = None
+        published["combinedCostUsd"] = None
+        published["combinedGainUsd"] = None
+    return published
+
+
+def _allocation_percents(
+    position_entries: list[tuple[str, float, float]],
+    usd_twd_rate: float,
+    *,
+    fx_usable: bool,
+) -> list[float | None]:
+    currencies = {currency for currency, _, _ in position_entries}
+    if not fx_usable and len(currencies) > 1:
+        return [None] * len(position_entries)
+    return portfolio_service.summarize_allocation_percents(
+        [(currency, market_value) for currency, market_value, _ in position_entries],
+        usd_twd_rate,
+    )
+
+
 def _summarize_positions(
     positions: list[PortfolioPosition],
-) -> tuple[list[PortfolioSummaryPosition], list[tuple[str, float, float]], list[str]]:
+) -> tuple[
+    list[PortfolioSummaryPosition],
+    list[tuple[str, float, float]],
+    list[str],
+    list[str],
+]:
     rows: list[PortfolioSummaryPosition] = []
     entries: list[tuple[str, float, float]] = []
     skipped_stock_ids: list[str] = []
+    missing_quote_ids: list[str] = []
 
     for position in positions:
         stock = quote_service.get_stock(position.stock_id)
@@ -347,10 +458,13 @@ def _summarize_positions(
             skipped_stock_ids.append(position.stock_id)
             continue
         quote = quote_service.get_quote(position.stock_id)
-        market_value, unrealized_pl, _ = portfolio_service.build_metrics(position, quote)
+        market_value, _unrealized_pl, _ = portfolio_service.build_metrics(position, quote)
         cost_basis = portfolio_service.build_cost_basis(position)
         currency = portfolio_service.normalize_currency(stock.currency)
-        entries.append((currency, market_value, cost_basis))
+        if market_value is None:
+            missing_quote_ids.append(position.stock_id)
+        else:
+            entries.append((currency, market_value, cost_basis))
         rows.append(
             PortfolioSummaryPosition(
                 stockId=position.stock_id,
@@ -364,7 +478,7 @@ def _summarize_positions(
             )
         )
 
-    return rows, entries, skipped_stock_ids
+    return rows, entries, skipped_stock_ids, missing_quote_ids
 
 
 def _to_response(

@@ -30,9 +30,9 @@ class PortfolioPositionResponse(BaseModel):
     notes: str | None = None
     stock: StockResponse
     quote: QuoteResponse | None = None
-    marketValue: float
-    unrealizedPl: float
-    unrealizedPlPercent: float
+    marketValue: float | None = None
+    unrealizedPl: float | None = None
+    unrealizedPlPercent: float | None = None
 
 
 class PortfolioAssetCreate(BaseModel):
@@ -66,25 +66,28 @@ class PortfolioSummaryPosition(BaseModel):
     currency: str
     quantity: float
     lastPrice: float | None = None
-    marketValue: float
-    allocationPercent: float
+    marketValue: float | None = None
+    allocationPercent: float | None = None
     timestamp: str | None = None
 
 
 class PortfolioSummaryResponse(BaseModel):
     totalUsd: float
     totalTwd: float
-    combinedUsd: float
-    combinedTwd: float
+    combinedUsd: float | None = None
+    combinedTwd: float | None = None
     totalCostUsd: float
     totalCostTwd: float
-    combinedCostUsd: float
-    combinedCostTwd: float
-    combinedGainUsd: float
-    combinedGainTwd: float
-    combinedGainPercent: float
-    usdTwdRate: float
+    combinedCostUsd: float | None = None
+    combinedCostTwd: float | None = None
+    combinedGainUsd: float | None = None
+    combinedGainTwd: float | None = None
+    combinedGainPercent: float | None = None
+    usdTwdRate: float | None = None
     fxTimestamp: str
+    fxStatus: str
+    incomplete: bool = False
+    missingQuoteStockIds: list[str] = []
     positions: list[PortfolioSummaryPosition]
     skippedStockIds: list[str]
 
@@ -92,14 +95,17 @@ class PortfolioSummaryResponse(BaseModel):
 class PortfolioAssetSummaryResponse(BaseModel):
     totalUsd: float
     totalTwd: float
-    combinedUsd: float
-    combinedTwd: float
+    combinedUsd: float | None = None
+    combinedTwd: float | None = None
     liquidTotalUsd: float
     liquidTotalTwd: float
-    liquidCombinedUsd: float
-    liquidCombinedTwd: float
-    usdTwdRate: float
+    liquidCombinedUsd: float | None = None
+    liquidCombinedTwd: float | None = None
+    usdTwdRate: float | None = None
     fxTimestamp: str
+    fxStatus: str
+    incomplete: bool = False
+    missingQuoteStockIds: list[str] = []
     skippedStockIds: list[str]
 
 

@@ -118,11 +118,14 @@ export function PortfolioPage() {
       ? (holdingsHistoryQuery.data ? "stale" : errorToNoticeKind(holdingsHistoryQuery.error))
       : null;
 
-  /** Sum table `marketValue` by native currency — matches the grid; avoids $0 while /summary is slow. */
+  /** Sum table `marketValue` by native currency — matches the grid; skips unpriced rows (#265). */
   const holdingsNativeTotals = useMemo(() => {
     let usd = 0;
     let twd = 0;
     for (const p of items) {
+      if (p.marketValue == null) {
+        continue;
+      }
       const c = p.stock.currency;
       if (c === "USD") {
         usd += p.marketValue;
@@ -133,17 +136,31 @@ export function PortfolioPage() {
     return { totalUsd: usd, totalTwd: twd };
   }, [items]);
 
+  const summary = summaryQuery.data;
+  const fx = fxQuery.data;
+  const summaryRate = summary?.usdTwdRate;
+  const fxRateUsable = fx != null && fx.status !== "fallback" && fx.rate > 0;
   const usdTwdRate =
-    summaryQuery.data != null && summaryQuery.data.usdTwdRate > 0
-      ? summaryQuery.data.usdTwdRate
-      : fxQuery.data?.rate ?? 0;
+    summaryRate != null && summaryRate > 0 ? summaryRate : fxRateUsable ? fx.rate : 0;
 
-  const totalUsd = summaryQuery.data?.totalUsd ?? holdingsNativeTotals.totalUsd;
-  const totalTwd = summaryQuery.data?.totalTwd ?? holdingsNativeTotals.totalTwd;
+  const totalUsd = summary?.totalUsd ?? holdingsNativeTotals.totalUsd;
+  const totalTwd = summary?.totalTwd ?? holdingsNativeTotals.totalTwd;
   const combinedUsd =
-    summaryQuery.data?.combinedUsd ?? (usdTwdRate > 0 ? totalUsd + totalTwd / usdTwdRate : totalUsd);
+    summary != null
+      ? summary.combinedUsd
+      : usdTwdRate > 0
+        ? totalUsd + totalTwd / usdTwdRate
+        : totalTwd === 0
+          ? totalUsd
+          : null;
   const combinedTwd =
-    summaryQuery.data?.combinedTwd ?? (usdTwdRate > 0 ? totalTwd + totalUsd * usdTwdRate : totalTwd);
+    summary != null
+      ? summary.combinedTwd
+      : usdTwdRate > 0
+        ? totalTwd + totalUsd * usdTwdRate
+        : totalUsd === 0
+          ? totalTwd
+          : null;
   const combinedCostUsd = summaryQuery.data?.combinedCostUsd ?? null;
   const combinedCostTwd = summaryQuery.data?.combinedCostTwd ?? null;
   const combinedGainUsd = summaryQuery.data?.combinedGainUsd ?? null;
@@ -386,7 +403,11 @@ export function PortfolioPage() {
                     ? renderCurrencyValue(position.quote.lastPrice, position.stock.currency)
                     : "—"}
                 </TableCell>
-                <TableCell>{renderCurrencyValue(position.marketValue, position.stock.currency)}</TableCell>
+                <TableCell>
+                  {position.marketValue != null
+                    ? renderCurrencyValue(position.marketValue, position.stock.currency)
+                    : "—"}
+                </TableCell>
                 <TableCell>
                   {position.quote != null ? (
                     <span
@@ -494,7 +515,7 @@ export function PortfolioPage() {
                 </p>
                 <p className="app-section-meta">{t("portfolio.aggregate.combinedUsd")}</p>
                 <p className="app-portfolio-combined-amount" data-testid="portfolio-combined-usd">
-                  {formatCurrency(combinedUsd, "USD")}
+                  {combinedUsd == null ? "—" : formatCurrency(combinedUsd, "USD")}
                 </p>
                 <p className="app-section-meta">{t("portfolio.aggregate.totalCostBasis")}</p>
                 <p className="app-portfolio-secondary-amount" data-testid="portfolio-combined-cost-usd">
@@ -522,7 +543,7 @@ export function PortfolioPage() {
                 </p>
                 <p className="app-section-meta">{t("portfolio.aggregate.combinedTwd")}</p>
                 <p className="app-portfolio-combined-amount" data-testid="portfolio-combined-twd">
-                  {formatCurrency(combinedTwd, "TWD")}
+                  {combinedTwd == null ? "—" : formatCurrency(combinedTwd, "TWD")}
                 </p>
                 <p className="app-section-meta">{t("portfolio.aggregate.totalCostBasis")}</p>
                 <p className="app-portfolio-secondary-amount" data-testid="portfolio-combined-cost-twd">
@@ -552,10 +573,20 @@ export function PortfolioPage() {
             <p className="app-section-meta">
               {t("portfolio.aggregate.fxRate")}:{" "}
               {usdTwdRate > 0 ? `1 USD = ${usdTwdRate.toFixed(4)} TWD` : "—"}
+              {summaryQuery.data?.fxStatus ? ` (${summaryQuery.data.fxStatus})` : ""}
             </p>
-            {summaryQuery.data && summaryQuery.data.skippedStockIds.length > 0 ? (
-              <p className="app-section-meta">
-                Quote unavailable: {summaryQuery.data.skippedStockIds.join(", ")}
+            {summaryQuery.data?.incomplete ? (
+              <p className="app-section-meta" data-testid="portfolio-totals-incomplete">
+                {t("portfolio.aggregate.incomplete")}
+                {summaryQuery.data.missingQuoteStockIds.length > 0
+                  ? ` — ${t("portfolio.aggregate.missingQuotes")}: ${summaryQuery.data.missingQuoteStockIds.join(", ")}`
+                  : ""}
+                {summaryQuery.data.skippedStockIds.length > 0
+                  ? ` — ${t("portfolio.aggregate.unknownStocks")}: ${summaryQuery.data.skippedStockIds.join(", ")}`
+                  : ""}
+                {summaryQuery.data.fxStatus === "fallback"
+                  ? ` — ${t("portfolio.aggregate.fxFallback")}`
+                  : ""}
               </p>
             ) : null}
           </Tile>

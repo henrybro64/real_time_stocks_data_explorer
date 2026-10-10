@@ -48,6 +48,7 @@ def test_portfolio_positions_and_summary_handle_updates_and_missing_quotes(
             "pair": "USD/TWD",
             "rate": 32.0,
             "timestamp": "2026-04-01T01:00:00Z",
+            "status": "ok",
         },
     )
 
@@ -90,14 +91,19 @@ def test_portfolio_positions_and_summary_handle_updates_and_missing_quotes(
     assert positions.json()[0]["quote"] is None
     assert positions.json()[0]["currentPrice"] is None
     assert positions.json()[0]["costBasis"] == 2700.0
-    assert positions.json()[0]["marketValue"] == 2700.0
-    assert positions.json()[0]["unrealizedPl"] == 0.0
-    assert positions.json()[0]["unrealizedPlPercent"] == 0.0
+    assert positions.json()[0]["marketValue"] is None
+    assert positions.json()[0]["unrealizedPl"] is None
+    assert positions.json()[0]["unrealizedPlPercent"] is None
     assert summary.status_code == 200
-    assert summary.json()["totalTwd"] == 2700.0
-    assert summary.json()["totalCostTwd"] == 2700.0
-    assert summary.json()["combinedCostUsd"] == 84.38
-    assert summary.json()["combinedUsd"] == 84.38
+    summary_payload = summary.json()
+    assert summary_payload["positions"][0]["marketValue"] is None
+    assert summary_payload["missingQuoteStockIds"] == ["TW:2330"]
+    assert summary_payload["incomplete"] is True
+    assert summary_payload["fxStatus"] == "ok"
+    assert summary_payload["totalTwd"] == 0.0
+    assert summary_payload["totalCostTwd"] == 0.0
+    assert summary_payload["combinedCostUsd"] == 0.0
+    assert summary_payload["combinedUsd"] == 0.0
     assert delete.status_code == 204
 
 
@@ -140,6 +146,7 @@ def test_portfolio_summary_skips_unknown_stocks(monkeypatch, client) -> None:
             "pair": "USD/TWD",
             "rate": 32.0,
             "timestamp": "2026-04-01T01:00:00Z",
+            "status": "ok",
         },
     )
 
@@ -158,8 +165,13 @@ def test_portfolio_summary_skips_unknown_stocks(monkeypatch, client) -> None:
 
     assert create.status_code == 200
     assert response.status_code == 200
-    assert response.json()["skippedStockIds"] == ["US:AAPL"]
-    assert response.json()["positions"] == []
+    payload = response.json()
+    assert payload["skippedStockIds"] == ["US:AAPL"]
+    assert payload["positions"] == []
+    assert payload["missingQuoteStockIds"] == []
+    assert payload["incomplete"] is True
+    assert payload["fxStatus"] == "ok"
+    assert payload["totalUsd"] == 0.0
 
 
 def test_portfolio_summary_renormalizes_allocation_when_stocks_are_skipped(
@@ -258,7 +270,7 @@ def test_portfolio_summary_renormalizes_allocation_when_stocks_are_skipped(
     assert payload["positions"][0]["allocationPercent"] == 100.0
 
 
-def test_portfolio_summary_uses_cost_basis_for_allocation_when_quote_missing(
+def test_portfolio_summary_excludes_unpriced_holdings_from_allocation(
     monkeypatch,
     client,
 ) -> None:
@@ -293,6 +305,7 @@ def test_portfolio_summary_uses_cost_basis_for_allocation_when_quote_missing(
             "pair": "USD/TWD",
             "rate": 32.0,
             "timestamp": "2026-04-01T01:00:00Z",
+            "status": "ok",
         },
     )
 
@@ -311,8 +324,12 @@ def test_portfolio_summary_uses_cost_basis_for_allocation_when_quote_missing(
 
     assert create.status_code == 200
     assert response.status_code == 200
-    assert response.json()["positions"][0]["marketValue"] == 2700.0
-    assert response.json()["positions"][0]["allocationPercent"] == 100.0
+    payload = response.json()
+    assert payload["positions"][0]["marketValue"] is None
+    assert payload["positions"][0]["allocationPercent"] == 0.0
+    assert payload["missingQuoteStockIds"] == ["TW:2330"]
+    assert payload["incomplete"] is True
+    assert payload["totalTwd"] == 0.0
 
 
 def test_portfolio_summary_includes_backend_calculated_combined_gain(
@@ -347,6 +364,7 @@ def test_portfolio_summary_includes_backend_calculated_combined_gain(
             "pair": "USD/TWD",
             "rate": 32.0,
             "timestamp": "2026-04-01T01:00:00Z",
+            "status": "ok",
         },
     )
 
@@ -428,6 +446,7 @@ def test_portfolio_summary_includes_per_holding_allocation_percent(
             "pair": "USD/TWD",
             "rate": 32.0,
             "timestamp": "2026-04-01T01:00:00Z",
+            "status": "ok",
         },
     )
 

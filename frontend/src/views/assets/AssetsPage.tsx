@@ -149,11 +149,13 @@ export function AssetsPage() {
                     </p>
                     <p className="app-section-meta">{t("portfolio.aggregate.combinedUsd")}</p>
                     <p className="app-portfolio-combined-amount" data-testid="assets-combined-usd">
-                      {formatCurrency(summary!.combinedUsd, "USD")}
+                      {summary!.combinedUsd == null ? "—" : formatCurrency(summary!.combinedUsd, "USD")}
                     </p>
                     <p className="app-section-meta">{t("portfolio.aggregate.liquidAssets")}</p>
                     <p className="app-portfolio-secondary-amount" data-testid="assets-liquid-usd">
-                      {formatCurrency(summary!.liquidCombinedUsd, "USD")}
+                      {summary!.liquidCombinedUsd == null
+                        ? "—"
+                        : formatCurrency(summary!.liquidCombinedUsd, "USD")}
                     </p>
                   </>
                 )}
@@ -169,11 +171,13 @@ export function AssetsPage() {
                     </p>
                     <p className="app-section-meta">{t("portfolio.aggregate.combinedTwd")}</p>
                     <p className="app-portfolio-combined-amount" data-testid="assets-combined-twd">
-                      {formatCurrency(summary!.combinedTwd, "TWD")}
+                      {summary!.combinedTwd == null ? "—" : formatCurrency(summary!.combinedTwd, "TWD")}
                     </p>
                     <p className="app-section-meta">{t("portfolio.aggregate.liquidAssets")}</p>
                     <p className="app-portfolio-secondary-amount" data-testid="assets-liquid-twd">
-                      {formatCurrency(summary!.liquidCombinedTwd, "TWD")}
+                      {summary!.liquidCombinedTwd == null
+                        ? "—"
+                        : formatCurrency(summary!.liquidCombinedTwd, "TWD")}
                     </p>
                   </>
                 )}
@@ -188,7 +192,22 @@ export function AssetsPage() {
           <p className="app-section-meta">
             {t("portfolio.aggregate.fxRate")}:{" "}
             {usdTwdRate > 0 ? `1 USD = ${usdTwdRate.toFixed(4)} TWD` : "—"}
+            {summary?.fxStatus ? ` (${summary.fxStatus})` : ""}
           </p>
+          {summary?.incomplete ? (
+            <p className="app-section-meta" data-testid="assets-totals-incomplete">
+              {t("portfolio.aggregate.incomplete")}
+              {summary.missingQuoteStockIds.length > 0
+                ? ` — ${t("portfolio.aggregate.missingQuotes")}: ${summary.missingQuoteStockIds.join(", ")}`
+                : ""}
+              {summary.skippedStockIds.length > 0
+                ? ` — ${t("portfolio.aggregate.unknownStocks")}: ${summary.skippedStockIds.join(", ")}`
+                : ""}
+              {summary.fxStatus === "fallback"
+                ? ` — ${t("portfolio.aggregate.fxFallback")}`
+                : ""}
+            </p>
+          ) : null}
         </Tile>
       </Column>
 

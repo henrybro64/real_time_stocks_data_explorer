@@ -380,6 +380,8 @@ def _build_holding(
         position,
         quote,
     )
+    if market_value is None or unrealized_pl is None or unrealized_pl_percent is None:
+        raise ValueError(f"Missing quote for portfolio analysis holding: {position.stock_id}")
     cost_basis_usd = round(_convert_to_usd(currency, cost_basis, usd_twd_rate), 2)
     cost_basis_twd = round(_convert_to_twd(currency, cost_basis, usd_twd_rate), 2)
     market_value_usd = round(_convert_to_usd(currency, market_value, usd_twd_rate), 2)

@@ -6,12 +6,14 @@ resources:
   - redis.yaml
   - postgres.yaml
   - backend-database-secret.yaml
-  - backend-auth-secret.yaml
+  # backend-auth-secret.yaml is not in this kustomization. Apply it before
+  # `kubectl apply -k` (deploy-k3s.sh does this; see docs/kubernetes.md).
   - backend.yaml
   - backend-history-capture-cronjob.yaml
   - aws-health-heartbeat.yaml
   - frontend.yaml
   - frontend-nodeport.yaml
+  - frontend-ingress.yaml
 
 configMapGenerator:
   # Distinct from Secret stock-ticker-aws-health-heartbeat (credentials).

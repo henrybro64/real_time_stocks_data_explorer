@@ -47,7 +47,7 @@ app.add_middleware(
     SessionMiddleware,
     secret_key=settings.session_secret,
     same_site="lax",
-    https_only=False,
+    https_only=bool(settings.session_cookie_secure),
 )
 
 app.include_router(auth_router, prefix=settings.api_prefix)
@@ -74,20 +74,19 @@ install_request_context_middleware(app, logger=logger)
 
 @app.on_event("startup")
 def validate_auth_settings() -> None:
-    if settings.auth_enabled and len(settings.session_secret) < 16:
-        raise RuntimeError(
-            "AUTH_ENABLED requires SESSION_SECRET (or session_secret) "
-            "with at least 16 characters.",
-        )
-    if settings.auth_enabled and not settings.local_auth_enabled:
-        raise RuntimeError("AUTH_ENABLED requires LOCAL_AUTH_ENABLED=true in local auth mode.")
-    # local_auth_username/password are optional bootstrap credentials; users can also self-register.
-    if bool(settings.local_auth_username) ^ bool(settings.local_auth_password):
-        raise RuntimeError(
-            "Set both LOCAL_AUTH_USERNAME and LOCAL_AUTH_PASSWORD, or leave both empty.",
-        )
-    if settings.local_auth_password and len(settings.local_auth_password) < 8:
-        raise RuntimeError("LOCAL_AUTH_PASSWORD must be at least 8 characters.")
+    from app.core.auth_settings import validate_auth_runtime_settings
+
+    validate_auth_runtime_settings(
+        auth_enabled=settings.auth_enabled,
+        local_auth_enabled=settings.local_auth_enabled,
+        session_secret=settings.session_secret,
+        local_auth_username=settings.local_auth_username,
+        local_auth_password=settings.local_auth_password,
+        portfolio_history_capture_token=settings.portfolio_history_capture_token,
+        rankings_capture_token=settings.rankings_capture_token,
+        rankings_archive_capture_token=settings.rankings_archive_capture_token,
+        taiwan_market_data_capture_token=settings.taiwan_market_data_capture_token,
+    )
 
 
 @app.on_event("startup")
