@@ -1425,6 +1425,7 @@ class RankingsArchiveService:
                     )
                     continue
                 from app.services.job_leader_lock import (
+                    leader_retry_wait_seconds,
                     release_job_leadership,
                     try_acquire_job_leadership,
                 )
@@ -1435,7 +1436,8 @@ class RankingsArchiveService:
                 )
                 idle_until = None
                 if leader_token is None:
-                    next_wake = now + timedelta(seconds=poll_seconds)
+                    # No success recorded (idle_until is None); retry soon (#292).
+                    next_wake = now + timedelta(seconds=leader_retry_wait_seconds(poll_seconds))
                     continue
                 try:
                     result = self.capture_eod_archives(trigger="sampler")

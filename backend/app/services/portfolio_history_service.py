@@ -281,15 +281,23 @@ class PortfolioHistoryService:
 
     def _run_sampler(self, poll_seconds: int) -> None:
         from app.jobs.health import run_guarded_tick
+        from app.services.job_leader_lock import next_tick_wait_seconds, run_leader_tick
 
-        while not self._stop_event.wait(poll_seconds):
+        job_name = "portfolio-history-sampler"
+        wait_seconds = float(poll_seconds)
+        while not self._stop_event.wait(wait_seconds):
             run_guarded_tick(
-                "portfolio-history-sampler",
+                job_name,
                 event="portfolio_history.sampler.failed",
-                tick=lambda: self.capture_due_snapshots_for_all_users(
-                    trigger="background_sampler"
+                tick=lambda: run_leader_tick(
+                    job_name,
+                    lambda: self.capture_due_snapshots_for_all_users(
+                        trigger="background_sampler"
+                    ),
                 ),
             )
+            # A tick skipped for leadership retries soon, not after a full poll (#292).
+            wait_seconds = next_tick_wait_seconds(job_name, poll_seconds)
 
     def _build_snapshot_metrics(self, user_id: str) -> SnapshotMetrics | None:
         """Build a complete valuation, or ``None`` when any input is invented (#265)."""

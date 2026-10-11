@@ -211,6 +211,14 @@ def test_stop_background_jobs_stops_all_samplers(monkeypatch) -> None:
         "stop_background_sampler",
         lambda: stopped.__setitem__("archive", stopped["archive"] + 1),
     )
+    calls: list[str] = []
+
+    def _release_all() -> None:
+        # Released after every sampler has stopped, so no tick re-acquires (#292).
+        assert all(count == 1 for count in stopped.values()), stopped
+        calls.append("release_all")
+
+    monkeypatch.setattr(jobs_runtime_module, "release_all_job_leadership", _release_all)
 
     stop_background_jobs()
 
@@ -223,3 +231,4 @@ def test_stop_background_jobs_stops_all_samplers(monkeypatch) -> None:
         "reference": 1,
         "archive": 1,
     }
+    assert calls == ["release_all"]

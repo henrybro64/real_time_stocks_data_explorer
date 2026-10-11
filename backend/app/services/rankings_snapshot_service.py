@@ -814,11 +814,19 @@ class RankingsSnapshotService:
 
     def _run_sampler(self, poll_seconds: int) -> None:
         from app.jobs.health import run_guarded_tick
+        from app.services.job_leader_lock import (
+            leadership_skipped,
+            next_tick_wait_seconds,
+            run_leader_tick,
+        )
 
+        job_name = "rankings-snapshot-sampler"
         while not self._stop_event.wait(0):
             def _tick() -> None:
                 started_at = perf_counter()
                 captured = self.capture_scheduled_snapshots(trigger="scheduler")
+                if leadership_skipped(job_name):
+                    return
                 logger.info(
                     "Scheduled rankings capture completed",
                     extra={
@@ -829,11 +837,12 @@ class RankingsSnapshotService:
                 )
 
             run_guarded_tick(
-                "rankings-snapshot-sampler",
+                job_name,
                 event="rankings_snapshot.scheduler.failed",
-                tick=_tick,
+                tick=lambda: run_leader_tick(job_name, _tick),
             )
-            if self._stop_event.wait(poll_seconds):
+            # A tick skipped for leadership retries soon, not after a full poll (#292).
+            if self._stop_event.wait(next_tick_wait_seconds(job_name, poll_seconds)):
                 return
 
 

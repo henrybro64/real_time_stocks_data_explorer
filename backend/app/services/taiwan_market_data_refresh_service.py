@@ -518,8 +518,10 @@ class TaiwanMarketDataRefreshService:
         from app.jobs.health import JOB_TICK_INCOMPLETE, run_guarded_tick
         from app.services.job_leader_lock import (
             daily_job_already_ran,
+            next_tick_wait_seconds,
             release_job_leadership,
             remember_daily_job,
+            run_leader_tick,
             try_acquire_job_leadership,
         )
 
@@ -595,9 +597,13 @@ class TaiwanMarketDataRefreshService:
             run_guarded_tick(
                 "taiwan-market-data-refresh",
                 event="taiwan_market_data.scheduler.failed",
-                tick=_tick,
+                tick=lambda: run_leader_tick("taiwan-market-data-refresh", _tick),
             )
-            if self._stop_event.wait(poll_seconds):
+            # Only a leadership skip retries soon. "Before publish hour" and "already
+            # ran today" are incomplete too, but keep the normal poll (#292).
+            if self._stop_event.wait(
+                next_tick_wait_seconds("taiwan-market-data-refresh", poll_seconds)
+            ):
                 return
 
     @staticmethod

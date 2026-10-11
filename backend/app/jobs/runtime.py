@@ -5,6 +5,7 @@ import logging
 from app.core.config import settings
 from app.jobs.health import register_background_job
 from app.services.alert_service import alert_service
+from app.services.job_leader_lock import release_all_job_leadership
 from app.services.portfolio_history_service import portfolio_history_service
 from app.services.quote_refresher_service import quote_refresher_service
 from app.services.rankings_archive_service import rankings_archive_service
@@ -183,3 +184,5 @@ def stop_background_jobs() -> None:
         "rankings-archive-eod",
     ):
         register_background_job(job_name, enabled=False, thread=None)
+    # Hand each owned window to the next worker now, not after its TTL (#292).
+    release_all_job_leadership()
