@@ -15,7 +15,9 @@ if settings.sqlalchemy_database_url:
     config.set_main_option("sqlalchemy.url", settings.sqlalchemy_database_url)
 
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # Keep loggers the application already configured. The default disables every
+    # logger that exists when a migration runs in-process, including during tests.
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = Base.metadata
 
