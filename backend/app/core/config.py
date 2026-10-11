@@ -60,6 +60,8 @@ class Settings(BaseSettings):
     quote_refresher_circuit_failure_threshold: int = Field(default=5, ge=2, le=50)
     # Circuit breaker open duration (seconds) after threshold is hit.
     quote_refresher_circuit_open_seconds: int = Field(default=120, ge=30, le=3600)
+    # Wait before retrying a cycle skipped for leadership, not a full poll (#291).
+    quote_refresher_leader_retry_seconds: float = Field(default=5.0, ge=1.0, le=60.0)
     # Max ids accepted by GET /api/quotes and /api/stream (#272).
     quote_batch_ids_max: int = Field(default=100, ge=1, le=500)
     # TTL for Redis-cached stock AI narrative (metrics are always recomputed).

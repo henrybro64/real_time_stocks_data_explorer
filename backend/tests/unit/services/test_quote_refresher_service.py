@@ -999,3 +999,164 @@ def test_batch_renews_refresh_locks_while_the_request_runs(monkeypatch) -> None:
     )
     refresher.run_cycle()
     assert "US:AAPL" in during_batch
+
+
+class _LeaderRedis:
+    """Fake Redis for leader-lock tests: SET NX/EX, owner-checked renew and release (#291)."""
+
+    def __init__(self) -> None:
+        self.values: dict[str, str] = {}
+        self.sets: dict[str, set[str]] = {}
+
+    def set(self, key, value, nx=False, ex=None):
+        del ex
+        if nx and key in self.values:
+            return False
+        self.values[key] = value
+        return True
+
+    def get(self, key):
+        return self.values.get(key)
+
+    def eval(self, script, numkeys, *args):
+        del numkeys
+        key, token = args[0], args[1]
+        if self.values.get(key) != token:
+            return 0
+        if '"EX"' in script:
+            return 1  # renew own lease
+        self.values.pop(key, None)
+        return 1
+
+    def spop(self, key, count):
+        members = self.sets.get(key, set())
+        popped = [members.pop() for _ in range(min(count, len(members)))]
+        return popped
+
+    def mget(self, keys):
+        return [None for _ in keys]
+
+
+def _use_leader_redis(monkeypatch, client) -> None:
+    monkeypatch.setattr(cache.settings, "redis_url", "redis://localhost:6379/0")
+    monkeypatch.setattr(cache, "_redis", lambda: client)
+
+
+def test_skipped_cycle_retries_after_a_short_wait_not_a_full_poll(monkeypatch) -> None:
+    monkeypatch.setattr(cache.settings, "quote_refresher_leader_retry_seconds", 5.0)
+    monkeypatch.setattr(
+        "app.services.quote_refresher_service.is_market_open", lambda market, now=None: False
+    )
+    refresher, _stub = _service()
+
+    assert refresher.seconds_until_next_cycle(elapsed_seconds=1.0, skipped_leader=True) == 5.0
+    # A cycle that ran keeps the full start-to-start closed-market poll.
+    assert refresher.seconds_until_next_cycle(elapsed_seconds=1.0, skipped_leader=False) == 899.0
+
+
+def test_stale_leader_key_from_a_dead_worker_is_retried_until_it_expires(monkeypatch) -> None:
+    from app.services.quote_refresher_service import _LEADER_KEY
+
+    client = _LeaderRedis()
+    client.values[_LEADER_KEY] = "dead-worker-token"
+    _use_leader_redis(monkeypatch, client)
+    refresher, stub = _service(watchlist=["US:AAPL"])
+
+    first = refresher.run_cycle()
+    assert first.skipped_leader is True
+    assert stub.quote_calls == []
+
+    client.values.pop(_LEADER_KEY)  # the dead worker's TTL ran out
+    second = refresher.run_cycle()
+    assert second.skipped_leader is False
+    assert stub.quote_calls == ["US:AAPL"]
+
+
+def test_redis_down_then_back_runs_on_the_next_attempt(monkeypatch) -> None:
+    client = _LeaderRedis()
+    available = {"up": False}
+    monkeypatch.setattr(cache.settings, "redis_url", "redis://localhost:6379/0")
+    monkeypatch.setattr(cache, "_redis", lambda: client if available["up"] else None)
+    refresher, stub = _service(watchlist=["US:AAPL"])
+
+    assert refresher.run_cycle().skipped_leader is True
+    available["up"] = True
+    assert refresher.run_cycle().refreshed == 1
+    assert stub.quote_calls == ["US:AAPL"]
+
+
+def test_owner_renews_its_own_lease_but_others_stay_out(monkeypatch) -> None:
+    client = _LeaderRedis()
+    _use_leader_redis(monkeypatch, client)
+    owner, stub = _service(watchlist=["US:AAPL"])
+    other, _ = _service(watchlist=["US:AAPL"], provider=stub)
+
+    assert owner.run_cycle().refreshed == 1
+    # The key from the last cycle has not expired yet; the owner still runs.
+    assert owner.run_cycle().skipped_leader is False
+    assert other.run_cycle().skipped_leader is True
+
+
+def test_stop_releases_own_leader_key_only(monkeypatch) -> None:
+    from app.services.quote_refresher_service import _LEADER_KEY
+
+    def _stopped_thread() -> threading.Thread:
+        thread = threading.Thread(target=lambda: None)
+        thread.start()
+        thread.join()
+        return thread
+
+    client = _LeaderRedis()
+    _use_leader_redis(monkeypatch, client)
+
+    owner, _ = _service(watchlist=["US:AAPL"])
+    owner.run_cycle()
+    assert _LEADER_KEY in client.values
+    owner._thread = _stopped_thread()
+    owner.stop_background_sampler()
+    assert _LEADER_KEY not in client.values
+
+    # Our lease expired and another worker took the key: stopping must leave it.
+    late, _ = _service(watchlist=["US:AAPL"])
+    late.run_cycle()
+    client.values[_LEADER_KEY] = "other-worker-token"
+    late._thread = _stopped_thread()
+    late.stop_background_sampler()
+    assert client.values[_LEADER_KEY] == "other-worker-token"
+
+
+def test_sampler_drains_immediate_queue_and_reports_incomplete_without_leadership(
+    monkeypatch,
+) -> None:
+    from app.jobs.health import (
+        get_background_jobs_health,
+        register_background_job,
+        reset_job_health_for_tests,
+    )
+    from app.services.quote_refresher_service import _LEADER_KEY
+
+    monkeypatch.setattr(cache.settings, "quote_refresher_leader_retry_seconds", 5.0)
+    client = _LeaderRedis()
+    client.values[_LEADER_KEY] = "other-worker-token"
+    _use_leader_redis(monkeypatch, client)
+    refresher, _stub = _service(watchlist=["US:AAPL"])
+    drained: list[bool] = []
+    waits: list[float] = []
+    monkeypatch.setattr(refresher, "_drain_immediate_redis", lambda: drained.append(True))
+
+    def _wait_then_stop(timeout: float) -> bool:
+        waits.append(timeout)
+        return True
+
+    monkeypatch.setattr(refresher._stop_event, "wait", _wait_then_stop)
+    reset_job_health_for_tests()
+    register_background_job("quote-refresher", enabled=True)
+
+    refresher._run_sampler()
+
+    assert drained == [True]  # drained although another worker leads (#291)
+    assert waits == [2.0]  # first 2s slice of the 5s retry, not of a 45s poll
+    health = get_background_jobs_health()["quote-refresher"]
+    assert health["last_success_at"] is None
+    assert health["last_tick_at"] is not None
+    reset_job_health_for_tests()
