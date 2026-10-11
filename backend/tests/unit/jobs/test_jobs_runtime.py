@@ -149,6 +149,22 @@ def test_start_enabled_background_jobs_starts_enabled_samplers(monkeypatch) -> N
         "archive": [555],
     }
 
+    # Every enabled job gets a heartbeat budget so /livez can see a stuck thread (#289).
+    from app.jobs import health as health_module
+
+    job_names = (
+        "portfolio-history-sampler",
+        "alert-rule-evaluator",
+        "rankings-snapshot-sampler",
+        "taiwan-market-data-refresh",
+        "quote-refresher",
+        "reference-refresh",
+        "rankings-archive-eod",
+    )
+    with health_module._lock:
+        gaps = {name: health_module._jobs[name].max_tick_gap_seconds for name in job_names}
+    assert all(gap is not None and gap >= 3600 for gap in gaps.values()), gaps
+
 
 def test_stop_background_jobs_stops_all_samplers(monkeypatch) -> None:
     stopped = {

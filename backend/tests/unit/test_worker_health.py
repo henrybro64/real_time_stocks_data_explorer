@@ -31,7 +31,7 @@ def test_no_jobs_is_healthy_and_live(client) -> None:
     assert client.get("/health").status_code == 200
     live = client.get("/livez")
     assert live.status_code == 200
-    assert live.json() == {"status": "ok", "role": "worker", "dead_jobs": []}
+    assert live.json() == {"status": "ok", "role": "worker", "dead_jobs": [], "hung_jobs": []}
 
 
 def test_stale_job_fails_readiness_but_not_liveness(client) -> None:
@@ -53,5 +53,30 @@ def test_dead_thread_fails_liveness(client) -> None:
 
     live = client.get("/livez")
     assert live.status_code == 503
-    assert live.json() == {"status": "dead", "role": "worker", "dead_jobs": ["quote-refresher"]}
+    assert live.json()["status"] == "stuck"
+    assert live.json()["dead_jobs"] == ["quote-refresher"]
     assert client.get("/health").status_code == 503
+
+
+def test_stuck_thread_fails_liveness(client) -> None:
+    # Alive but blocked forever, like a query waiting on a lock with no timeout.
+    release = threading.Event()
+    blocked = threading.Thread(target=release.wait, daemon=True)
+    blocked.start()
+    try:
+        register_background_job(
+            "rankings-archive-eod", enabled=True, thread=blocked, max_tick_gap_seconds=3600
+        )
+        assert client.get("/livez").status_code == 200
+        with health_module._lock:
+            health_module._jobs["rankings-archive-eod"].registered_at = datetime.now(
+                UTC
+            ) - timedelta(hours=2)
+
+        live = client.get("/livez")
+        assert live.status_code == 503
+        assert live.json()["hung_jobs"] == ["rankings-archive-eod"]
+        assert live.json()["dead_jobs"] == []
+    finally:
+        release.set()
+        blocked.join(timeout=5)

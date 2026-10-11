@@ -1377,11 +1377,13 @@ class RankingsArchiveService:
         idle — and the same-day retry spacing inside ``_SAME_DAY_RETRY_BUDGET``.
         It is not a fixed Azure wake interval outside an active capture window.
         """
-        from app.jobs.health import note_job_failure, note_job_success
+        from app.jobs.health import note_job_failure, note_job_success, note_job_tick
 
         next_wake: datetime | None = None
         idle_until: datetime | None = None
         while not self._stop_event.is_set():
+            # Heartbeat each pass; a capture stuck on Azure SQL stops it (#289).
+            note_job_tick("rankings-archive-eod")
             now = datetime.now(timezone.utc)
             if next_wake is not None and now < next_wake:
                 if idle_until is not None and now < idle_until:

@@ -20,7 +20,7 @@ def _container(manifest: str, deployment: str, container: str) -> dict:
     raise AssertionError(f"{deployment}/{container} not found in {manifest}")
 
 
-def test_worker_liveness_restarts_only_on_dead_threads() -> None:
+def test_worker_liveness_uses_livez_and_readiness_uses_health() -> None:
     worker = _container("backend-worker.yaml", "stock-ticker-backend-worker", "worker")
     assert worker["livenessProbe"]["httpGet"]["path"] == "/livez"
     assert worker["readinessProbe"]["httpGet"]["path"] == "/health"

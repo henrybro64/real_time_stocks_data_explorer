@@ -18,6 +18,11 @@ from app.services.taiwan_market_data_refresh_service import (
 logger = logging.getLogger(__name__)
 
 
+def _max_tick_gap(poll_seconds: float) -> float:
+    # Each loop wakes at least once per poll; 3 polls (1h floor) means stuck (#289).
+    return max(3600.0, 3.0 * float(poll_seconds))
+
+
 def start_enabled_background_jobs() -> None:
     if not settings.portfolio_history_sampler_enabled:
         logger.info(
@@ -34,6 +39,7 @@ def start_enabled_background_jobs() -> None:
             enabled=True,
             thread=portfolio_history_service._thread,
             max_stale_seconds=max(120, settings.portfolio_history_poll_seconds * 4),
+            max_tick_gap_seconds=_max_tick_gap(settings.portfolio_history_poll_seconds),
         )
 
     if not settings.alert_evaluator_enabled:
@@ -51,6 +57,7 @@ def start_enabled_background_jobs() -> None:
             enabled=True,
             thread=alert_service._thread,
             max_stale_seconds=max(120, settings.alert_evaluator_poll_seconds * 4),
+            max_tick_gap_seconds=_max_tick_gap(settings.alert_evaluator_poll_seconds),
         )
 
     if not settings.rankings_snapshot_enabled:
@@ -68,6 +75,7 @@ def start_enabled_background_jobs() -> None:
             enabled=True,
             thread=rankings_snapshot_service._thread,
             max_stale_seconds=max(300, settings.rankings_refresh_seconds * 3),
+            max_tick_gap_seconds=_max_tick_gap(settings.rankings_refresh_seconds),
         )
 
     if not settings.taiwan_market_data_refresh_enabled:
@@ -87,6 +95,9 @@ def start_enabled_background_jobs() -> None:
             enabled=True,
             thread=taiwan_market_data_refresh_service._thread,
             max_stale_seconds=26 * 60 * 60,
+            max_tick_gap_seconds=_max_tick_gap(
+                settings.taiwan_market_data_refresh_poll_seconds
+            ),
         )
 
     if not settings.quote_refresher_enabled:
@@ -107,6 +118,12 @@ def start_enabled_background_jobs() -> None:
                 settings.quote_refresher_closed_poll_seconds,
             )
             * 3,
+            max_tick_gap_seconds=_max_tick_gap(
+                max(
+                    settings.quote_refresher_open_poll_seconds,
+                    settings.quote_refresher_closed_poll_seconds,
+                )
+            ),
         )
 
     if not settings.reference_refresh_enabled:
@@ -124,6 +141,7 @@ def start_enabled_background_jobs() -> None:
             enabled=True,
             thread=reference_refresh_service._thread,
             max_stale_seconds=max(300, settings.reference_refresh_poll_seconds * 3),
+            max_tick_gap_seconds=_max_tick_gap(settings.reference_refresh_poll_seconds),
         )
 
     if not settings.rankings_archive_eod_enabled:
@@ -143,6 +161,7 @@ def start_enabled_background_jobs() -> None:
             # Backstop if the loop stops waking. Idle time until the next
             # settle records success on each poll, so a weekend is healthy.
             max_stale_seconds=26 * 60 * 60,
+            max_tick_gap_seconds=_max_tick_gap(settings.rankings_archive_eod_poll_seconds),
         )
 
 
