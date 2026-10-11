@@ -66,6 +66,38 @@ Free or unofficial sources can be delayed, rate-limited, incomplete, or down. Ta
 - **Stock AI narratives** persist only in Redis. Without `REDIS_URL`, a generated narrative is not kept in an in-memory narrative cache. Backend-computed metrics on the next read can be newer than that narrative.
 - AI is given backend-computed facts plus optional news/fundamental context. It is **not** a market-data source and must not invent missing numbers.
 
+### Audience and data-source stance (#277)
+
+**Decision (recorded 2026-10-12): the app is self-hosted, for the owner and people the owner invites, and free.** It is not a public service and is not sold. A cloud deployment (#59) serves the same invite-only audience.
+
+Every market-data source below is free and unofficial or public-web. This project has not reviewed each source's terms of use for redistribution, and this page is not a legal opinion. The sources are kept on the basis that this is a personal, invite-only, non-commercial dashboard. Opening the app to the public, or charging for it, reopens #277: each source's terms then need checking, with proper advice for a paid product, and the "If public or paid" column becomes the work list.
+
+| Source | Used for | Code (under `backend/app/`) | Self-hosted, invite-only (this decision) | If public or paid |
+| --- | --- | --- | --- | --- |
+| Yahoo Finance chart/quote endpoints (`query1`/`query2.finance.yahoo.com`) | U.S. quotes and history; dashboard indices, BTC/ETH, gold, WTI, USD/TWD; Taiwan quote fallback; key statistics | `services/providers/us_provider.py`, `providers/tw_provider.py`, `market_index_service.py`, `commodity_service.py`, `fx_service.py`, `key_stats_service.py`, `us_insights_service.py` | Keep | Replace with a licensed U.S. feed |
+| `yfinance` (Yahoo, unofficial library) | Fundamentals and company info for stock AI; 財報三率; U.S. rankings screens | `stock_analysis_service.py`, `stock_analysis_fundamental.py`, `tw_profitability_*.py`, `rankings_external_source.py` | Keep | Replace |
+| Yahoo Taiwan pages (`tw.stock.yahoo.com`, HTML scraping) | Taiwan rankings lists; Taiwan peer comparison | `rankings_external_source.py`, `tw_insights_service.py` | Keep | Replace or drop the feature |
+| TWSE MIS (`mis.twse.com.tw`) | Taiwan live quotes, Taiwan index, limit-up/limit-down prices | `providers/tw_provider.py`, `market_index_service.py`, `tw_price_limit_rankings.py` | Keep | Check exchange display and vendor terms |
+| TWSE site and OpenAPI (`www`/`openapi.twse.com.tw`) | Daily files: price history, P/E, 法人, 資券, rankings inputs, holiday calendar | `providers/tw_provider.py`, `key_stats_service.py`, `taiwan_market_data.py`, `tw_institutional_service.py`, `tw_margin_short_service.py`, `rankings_service.py`, `market_clock.py` | Keep | Check exchange display and vendor terms |
+| TWSE ISIN pages (`isin.twse.com.tw`) | Taiwan stock catalog | `taiwan_market_data.py`, `providers/tw_provider.py` | Keep | Check terms |
+| TPEx (`www.tpex.org.tw`) | Same daily datasets for the TPEx board | same files as TWSE | Keep | Check exchange display and vendor terms |
+| TDCC (`www`/`smart.tdcc.com.tw`) | 籌碼集中度 (400張以上 ownership concentration) | `tw_ownership_concentration_service.py` | Keep | Check terms, or drop the feature |
+| Stooq (`stooq.com`) | Price-only fallback for U.S. indices when Yahoo fails | `market_index_service.py` | Keep | Drop (fallback only) |
+| Google News RSS (`news.google.com`) | Headline metadata on stock detail and as AI context | `news_service.py` | Keep | Replace with a licensed news API, or drop |
+| SEC ticker list (`www.sec.gov`) | U.S. symbol catalog | `providers/us_provider.py` | Keep | Keep (public U.S. government data; follow SEC fair-access rules) |
+| Wikipedia | Index constituent lists (DJIA, S&P 500, NASDAQ-100), committed as JSON snapshots, not fetched at runtime | `data/*_constituents.json` | Keep | Replace with the index provider's list |
+| Finnhub (optional) | Key-statistics enrichment with the operator's own free API key | `key_stats_service.py` | Keep (operator's key, operator's terms) | Needs a plan that allows the new audience |
+
+The AI providers (OpenAI, Perplexity) are not market-data sources: each user supplies their own key, under their own agreement with that provider.
+
+**Features with no single licensed replacement in view.** These depend on scraped pages or niche public files. A licensed feed would need checking for each one before any switch: Taiwan rankings from Yahoo Taiwan pages, Taiwan peer comparison, 籌碼集中度 from TDCC, Taiwan limit-up/limit-down from MIS limit prices, and news headlines.
+
+**Consequences of this decision:**
+
+- No licensed provider adapter is planned, so #277 creates no follow-up adapter issues. The provider boundary in `backend/app/services/providers/` keeps a later swap possible.
+- The #59 out-of-scope line ("do not add paid market-data providers") stands.
+- Hosting from a cloud IP is still allowed for this audience, but data centres are throttled more readily than a home connection (see #59).
+
 ## Refresh and delivery
 
 Intervals below are **defaults** and are configurable.
