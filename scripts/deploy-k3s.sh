@@ -519,7 +519,7 @@ preflight_live_auth_secrets() {
   # check that file instead; otherwise a broken live Secret could never be repaired.
   local problems=()
   local session_secret portfolio_token archive_token local_password
-  local rankings_token taiwan_token local_user auth_label
+  local rankings_token taiwan_token local_user auth_label reset_password
   local local_secret_path="${ROOT_DIR}/k8s/backend-auth-secret.yaml"
 
   PREFLIGHT_AUTH_SOURCE=""
@@ -561,6 +561,12 @@ preflight_live_auth_secrets() {
     if _capture_token_is_placeholder "${taiwan_token}"; then
       problems+=("${auth_label}/TAIWAN_MARKET_DATA_CAPTURE_TOKEN is a placeholder (capture disabled until rotated)")
     fi
+    reset_password="$(_lowercase "$(_preflight_auth_value LOCAL_AUTH_RESET_PASSWORD)")"
+    case "${reset_password}" in
+      1|true|yes|on)
+        problems+=("${auth_label}/LOCAL_AUTH_RESET_PASSWORD is on: every API restart resets the bootstrap account's password. Turn it off after a one-time reset (#286)")
+        ;;
+    esac
     if [[ -n "${local_password}" ]] && _bootstrap_password_is_placeholder "${local_password}"; then
       problems+=("${auth_label}/LOCAL_AUTH_PASSWORD is a placeholder — clear BOTH LOCAL_AUTH_USERNAME and LOCAL_AUTH_PASSWORD (do not set a new password; that can overwrite a stored account when LOCAL_AUTH_RESET_PASSWORD is enabled)")
     fi
@@ -606,7 +612,7 @@ EOF
   if [[ "${hard}" -eq 1 ]]; then
     exit 1
   fi
-  echo "Continuing: remaining findings are non-fatal capture-token placeholders." >&2
+  echo "Continuing: remaining findings are non-fatal warnings." >&2
 }
 
 _local_auth_secret_value() {
@@ -633,33 +639,42 @@ for line in text.splitlines():
         if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "\"'":
             raw = raw[1:-1]
         values[name.strip()] = raw
-print(values.get(wanted, ""))
+if wanted == "--keys":
+    print("\n".join(sorted(values)))
+else:
+    print(values.get(wanted, ""))
 PY
+}
+
+_live_secret_keys() {
+  ${KUBECTL_CMD} -n "${NAMESPACE}" get secret "$1" \
+    -o go-template='{{range $k, $v := .data}}{{$k}}{{"\n"}}{{end}}' 2>/dev/null || true
 }
 
 apply_backend_auth_secret() {
   ensure_backend_auth_secret
   local secret_path="${ROOT_DIR}/k8s/backend-auth-secret.yaml"
   if ${KUBECTL_CMD} -n "${NAMESPACE}" get secret stock-ticker-backend-auth >/dev/null 2>&1; then
-    local live_session local_session live_user local_user live_pass local_pass live_capture local_capture
-    live_session="$(_live_secret_data_value stock-ticker-backend-auth SESSION_SECRET)"
-    live_user="$(_live_secret_data_value stock-ticker-backend-auth LOCAL_AUTH_USERNAME)"
-    live_pass="$(_live_secret_data_value stock-ticker-backend-auth LOCAL_AUTH_PASSWORD)"
-    live_capture="$(_live_secret_data_value stock-ticker-backend-auth PORTFOLIO_HISTORY_CAPTURE_TOKEN)"
-    local_session="$(_local_auth_secret_value "${secret_path}" SESSION_SECRET)"
-    local_user="$(_local_auth_secret_value "${secret_path}" LOCAL_AUTH_USERNAME)"
-    local_pass="$(_local_auth_secret_value "${secret_path}" LOCAL_AUTH_PASSWORD)"
-    local_capture="$(_local_auth_secret_value "${secret_path}" PORTFOLIO_HISTORY_CAPTURE_TOKEN)"
-
-    local differing=()
-    [[ "${live_session}" != "${local_session}" ]] && differing+=("SESSION_SECRET")
-    [[ "${live_user}" != "${local_user}" ]] && differing+=("LOCAL_AUTH_USERNAME")
-    [[ "${live_pass}" != "${local_pass}" ]] && differing+=("LOCAL_AUTH_PASSWORD")
-    [[ "${live_capture}" != "${local_capture}" ]] && differing+=("PORTFOLIO_HISTORY_CAPTURE_TOKEN")
+    # Compare every key in either Secret, not a hand-picked list, so a stale local
+    # value (for example LOCAL_AUTH_RESET_PASSWORD=true) cannot slip through (#286).
+    local differing=() key live_value local_value
+    while IFS= read -r key; do
+      [[ -z "${key}" ]] && continue
+      live_value="$(_live_secret_data_value stock-ticker-backend-auth "${key}")"
+      local_value="$(_local_auth_secret_value "${secret_path}" "${key}")"
+      if [[ "${live_value}" != "${local_value}" ]]; then
+        differing+=("${key}")
+      fi
+    done < <(
+      {
+        _live_secret_keys stock-ticker-backend-auth
+        _local_auth_secret_value "${secret_path}" --keys
+      } | sort -u
+    )
 
     if ((${#differing[@]} > 0)) && [[ "${FORCE_AUTH_SECRET_APPLY:-0}" != "1" ]]; then
       echo "Skipping apply of ${secret_path}: live Secret differs on: ${differing[*]}"
-      echo "Set FORCE_AUTH_SECRET_APPLY=1 to overwrite. Do not overwrite LOCAL_AUTH_PASSWORD casually (#284/#286)."
+      echo "Set FORCE_AUTH_SECRET_APPLY=1 to overwrite. Do not overwrite LOCAL_AUTH_* casually (#284/#286)."
       return 0
     fi
   fi
