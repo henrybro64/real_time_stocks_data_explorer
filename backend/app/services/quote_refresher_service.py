@@ -838,8 +838,7 @@ class QuoteRefresherService:
         token = try_acquire_refresh_lock(stock_id)
         if token is None:
             return "locked"
-        if not renew_refresh_lock(stock_id, token):
-            return "locked"
+        # Shared heartbeat renews held locks; skip an immediate renew round-trip (#274).
         self._hold_refresh_lock(stock_id, token)
         with self._in_flight_lock:
             self._in_flight += 1

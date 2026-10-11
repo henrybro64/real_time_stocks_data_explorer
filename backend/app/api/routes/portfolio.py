@@ -68,7 +68,7 @@ def list_portfolio_positions(
 
     rows: list[PortfolioPositionResponse] = []
     for position in positions:
-        q = quote_by_stock.get(position.stock_id)
+        q = _quote_for_stored_id(quote_by_stock, position.stock_id)
         rows.append(_to_response(position, q))
     return rows
 
@@ -441,6 +441,38 @@ def _allocation_percents(
     )
 
 
+def _quote_for_stored_id(
+    quote_by_stock: dict[str, QuoteRecord | None],
+    stock_id: str,
+) -> QuoteRecord | None:
+    """Resolve a quote stored under either the raw id or its canonical id."""
+    if stock_id in quote_by_stock and quote_by_stock[stock_id] is not None:
+        return quote_by_stock[stock_id]
+    stock = quote_service.get_stock(stock_id)
+    if stock is not None and stock.id in quote_by_stock:
+        return quote_by_stock[stock.id]
+    return quote_by_stock.get(stock_id)
+
+
+def _quotes_for_portfolio_stock_ids(
+    stock_ids: list[str],
+) -> dict[str, QuoteRecord | None]:
+    """Load quotes for portfolio rows without a per-request ThreadPool (#274)."""
+    if not stock_ids:
+        return {}
+    if quote_service.background_refresher_owns_upstream():
+        cached = quote_service.peek_cached_quotes(stock_ids)
+        return {item.stock.id: item.quote for item in cached}
+    # allow_stale=True sequential reads (same semantics as the old per-row path).
+    quotes: dict[str, QuoteRecord | None] = {}
+    for stock_id in stock_ids:
+        stock = quote_service.get_stock(stock_id)
+        if stock is None:
+            continue
+        quotes[stock.id] = quote_service.get_quote(stock_id)
+    return quotes
+
+
 def _summarize_positions(
     positions: list[PortfolioPosition],
 ) -> tuple[
@@ -454,12 +486,16 @@ def _summarize_positions(
     skipped_stock_ids: list[str] = []
     missing_quote_ids: list[str] = []
 
+    quote_by_stock = _quotes_for_portfolio_stock_ids(
+        [position.stock_id for position in positions]
+    )
+
     for position in positions:
         stock = quote_service.get_stock(position.stock_id)
         if stock is None:
             skipped_stock_ids.append(position.stock_id)
             continue
-        quote = quote_service.get_quote(position.stock_id)
+        quote = _quote_for_stored_id(quote_by_stock, position.stock_id)
         market_value, _unrealized_pl, _ = portfolio_service.build_metrics(position, quote)
         cost_basis = portfolio_service.build_cost_basis(position)
         currency = portfolio_service.normalize_currency(stock.currency)

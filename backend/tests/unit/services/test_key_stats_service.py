@@ -805,3 +805,25 @@ def test_get_valuation_snapshots_preloads_us_yfinance_once(monkeypatch) -> None:
     assert preload_calls == [[us_stock]]
     assert snapshots["US:AAA"]["peRatio"] == 12.0
     assert snapshots["TW:2330"]["peRatio"] == 12.0
+
+
+def test_get_key_statistics_returns_empty_quote_fields_on_cold_cache(monkeypatch) -> None:
+    """Known stock with no cached quote must not look like 'Stock not found' (#275)."""
+    stock = stock_record(
+        "US:AAPL",
+        market="US",
+        symbol="AAPL",
+        name="Apple Inc.",
+        exchange="NASDAQ",
+        currency="USD",
+        timezone="America/New_York",
+        name_en="Apple Inc.",
+    )
+    _patch_common(monkeypatch, stock, None)
+
+    payload = key_stats_service.get_key_statistics("US:AAPL")
+
+    assert payload is not None
+    assert payload["lastPrice"] is None
+    assert payload["previousClose"] is None
+    assert payload["volume"] is None

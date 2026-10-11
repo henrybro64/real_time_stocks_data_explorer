@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     Date,
     DateTime,
@@ -214,12 +215,12 @@ class TaiwanInstitutionalDaily(TaiwanMarketDailyColumns, Base):
         "uq_taiwan_institutional_daily_market_symbol_date",
     )
 
-    foreign_net_shares: Mapped[int] = mapped_column(nullable=False)
-    investment_trust_net_shares: Mapped[int] = mapped_column(nullable=False)
-    dealer_self_net_shares: Mapped[int | None] = mapped_column(nullable=True)
-    dealer_hedge_net_shares: Mapped[int | None] = mapped_column(nullable=True)
-    dealer_net_shares: Mapped[int] = mapped_column(nullable=False)
-    total_net_shares: Mapped[int] = mapped_column(nullable=False)
+    foreign_net_shares: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    investment_trust_net_shares: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    dealer_self_net_shares: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    dealer_hedge_net_shares: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    dealer_net_shares: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    total_net_shares: Mapped[int] = mapped_column(BigInteger, nullable=False)
 
 
 class TaiwanMarginShortDaily(TaiwanMarketDailyColumns, Base):
@@ -367,11 +368,11 @@ class RankingSnapshotItem(Base):
     name: Mapped[str] = mapped_column(String(128), nullable=False)
     last_price: Mapped[float | None] = mapped_column(Float, nullable=True)
     change_percent: Mapped[float | None] = mapped_column(Float, nullable=True)
-    volume: Mapped[int | None] = mapped_column(nullable=True)
-    volume_delta: Mapped[int | None] = mapped_column(nullable=True)
+    volume: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    volume_delta: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     volume_delta_percent: Mapped[float | None] = mapped_column(Float, nullable=True)
-    net_buy: Mapped[int | None] = mapped_column(nullable=True)
-    net_sell: Mapped[int | None] = mapped_column(nullable=True)
+    net_buy: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    net_sell: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     data_time: Mapped[str] = mapped_column(String(64), nullable=False)
     raw_payload_json: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
 

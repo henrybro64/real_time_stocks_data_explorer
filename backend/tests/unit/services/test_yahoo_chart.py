@@ -57,6 +57,10 @@ def test_coherent_change_is_derived_from_the_rounded_pair() -> None:
     assert coherent_price_change(333.634, 332.891) == (333.63, 332.89, 0.74, 0.22)
 
 
-@pytest.mark.parametrize("previous", [0.004, 0.0, -1.0])
+def test_coherent_change_keeps_four_decimals_under_one_dollar() -> None:
+    assert coherent_price_change(0.12345, 0.12001) == (0.1235, 0.12, 0.0035, 2.92)
+
+
+@pytest.mark.parametrize("previous", [0.00004, 0.0, -1.0])
 def test_previous_close_that_rounds_to_zero_has_no_change(previous: float) -> None:
     assert coherent_price_change(0.01, previous) is None

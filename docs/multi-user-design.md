@@ -93,7 +93,7 @@ User-owned tables use `UserOwnedRowMixin` (`backend/app/db/row_mixins.py`) or de
 3. **Schema** — foreign keys, cascades, and per-user unique constraints.
 4. **UI** — `AppChrome` redirects to `/login` when `authEnabled && !loggedIn`. This is a convenience; the backend's 401 is the real boundary.
 
-Internal capture endpoints are the deliberate exception: they act for **all** users and are guarded by a shared header token instead of a session (constant-time compare). Examples are `POST /api/portfolio/history/capture` (called by the k8s CronJob against the backend Service, `PORTFOLIO_HISTORY_CAPTURE_TOKEN`) and the rankings / Taiwan market-data capture tokens. Each returns an error when its token is not configured. The Next.js `/api` rewrite does not proxy these capture paths.
+Internal capture endpoints are the deliberate exception: they act for **all** users and are guarded by a shared header token instead of a session (constant-time compare). Portfolio history is sampled by the worker's in-process job (`PORTFOLIO_HISTORY_SAMPLER_ENABLED`); the k8s `stock-ticker-history-capture` CronJob is suspended (#275) but `POST /api/portfolio/history/capture` remains for manual/ops use (`PORTFOLIO_HISTORY_CAPTURE_TOKEN`). Rankings / Taiwan market-data capture tokens follow the same pattern. Each returns an error when its token is not configured. The Next.js `/api` rewrite does not proxy these capture paths.
 
 ## Tests that cover isolation
 

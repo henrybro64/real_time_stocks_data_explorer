@@ -228,6 +228,28 @@ describe("QuoteSummary", () => {
     expect(screen.queryByText("漲停")).not.toBeInTheDocument();
   });
 
+  it("shows four decimals for a sub-dollar U.S. price and its change", () => {
+    render(
+      <LanguageProvider>
+        <QuoteSummary
+          item={{
+            stock: sampleStock,
+            quote: {
+              ...sampleQuote,
+              lastPrice: 0.1235,
+              change: 0.0035,
+              changePercent: 2.92,
+              previousClose: 0.12,
+            },
+          }}
+        />
+      </LanguageProvider>,
+    );
+
+    expect(screen.getByTestId("quote-summary-price")).toHaveTextContent("$0.1235");
+    expect(screen.getByTestId("quote-summary-change")).toHaveTextContent("+$0.0035 (+2.92%)");
+  });
+
   it("does not restyle a U.S. detail price", () => {
     renderSummary();
 

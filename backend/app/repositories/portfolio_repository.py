@@ -108,7 +108,11 @@ class PortfolioRepository:
                     notes=notes,
                 )
                 session.add(position)
-                session.commit()
+                try:
+                    session.commit()
+                except Exception:
+                    session.rollback()
+                    raise
                 session.refresh(position)
                 return position
 

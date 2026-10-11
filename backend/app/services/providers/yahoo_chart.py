@@ -63,6 +63,11 @@ def previous_session_close(
     return None
 
 
+def price_display_decimals(price: float) -> int:
+    """Decimals for quote display: four under $1, otherwise two (#275)."""
+    return 4 if abs(float(price)) < 1.0 else 2
+
+
 def coherent_price_change(
     last_price: float,
     previous_close: float,
@@ -71,14 +76,18 @@ def coherent_price_change(
 
     Computing all four values together means a replaced or fallback
     ``last_price`` can never keep a stale change (#258). Returns ``None`` when
-    the previous close rounds to zero (a sub-cent price), since no meaningful
-    percentage change exists at two decimals.
+    the previous close rounds to zero, since no meaningful percentage exists.
+    Sub-dollar U.S. names keep four decimals so penny moves are not flattened (#275).
     """
-    last = round(float(last_price), 2)
-    previous = round(float(previous_close), 2)
+    decimals = max(
+        price_display_decimals(last_price),
+        price_display_decimals(previous_close),
+    )
+    last = round(float(last_price), decimals)
+    previous = round(float(previous_close), decimals)
     if previous <= 0:
         return None
-    change = round(last - previous, 2)
+    change = round(last - previous, decimals)
     change_percent = round((change / previous) * 100, 2)
     return last, previous, change, change_percent
 

@@ -117,7 +117,7 @@ show usage vs limits without starving a laptop cluster:
 | frontend | 25m / 128Mi | 500m / 512Mi |
 | postgres | 50m / 256Mi | 500m / 1Gi |
 | redis | 25m / 64Mi | 250m / 256Mi |
-| history-capture CronJob | 10m / 32Mi | 100m / 64Mi |
+| history-capture CronJob (suspended; worker sampler owns history) | 10m / 32Mi | 100m / 64Mi |
 | prometheus | 50m / 256Mi | 500m / 768Mi |
 | grafana | 50m / 128Mi | 300m / 512Mi |
 | kube-state-metrics | 20m / 64Mi | 200m / 256Mi |

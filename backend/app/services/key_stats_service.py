@@ -915,17 +915,17 @@ def get_valuation_snapshots(
 
 def get_key_statistics(stock_id: str) -> dict[str, object] | None:
     stock = quote_service.get_stock(stock_id)
-    quote = quote_service.get_quote(stock_id)
-    if stock is None or quote is None:
+    if stock is None:
         return None
 
+    quote = quote_service.get_quote(stock_id)
     base: dict[str, object] = {
-        "open": quote.open,
-        "previousClose": quote.previous_close,
-        "volume": quote.volume,
-        "lastPrice": quote.last_price,
-        "dayLow": quote.low,
-        "dayHigh": quote.high,
+        "open": quote.open if quote is not None else None,
+        "previousClose": quote.previous_close if quote is not None else None,
+        "volume": quote.volume if quote is not None else None,
+        "lastPrice": quote.last_price if quote is not None else None,
+        "dayLow": quote.low if quote is not None else None,
+        "dayHigh": quote.high if quote is not None else None,
         "fiftyTwoWeekLow": None,
         "fiftyTwoWeekHigh": None,
         "fiftyTwoWeekLowDate": None,
@@ -942,4 +942,7 @@ def get_key_statistics(stock_id: str) -> dict[str, object] | None:
         merged = _tw_from_candles(stock, base)
 
     enriched = _finnhub_enrich(merged, stock)
+    if quote is None:
+        # Cold quote cache: stock is known — return empty quote fields, not 404 (#275).
+        return _merge_range_markers(enriched)
     return _merge_range_markers(_apply_valuation_enrichment(enriched, stock, quote))

@@ -589,3 +589,35 @@ def test_shared_client_is_reused_across_requests(monkeypatch) -> None:
     http_client_module.fetch_json("https://example.test/a")
     http_client_module.fetch_json("https://example.test/b")
     assert calls == [client, client]
+
+
+def test_insecure_tls_fallback_reuses_one_client(monkeypatch) -> None:
+    from app.services import http_client as http_client_module
+
+    calls: list[object] = []
+
+    class _Client:
+        is_closed = False
+
+        def request(self, method, url, **kwargs):
+            del kwargs
+            calls.append(self)
+            return httpx.Response(
+                200,
+                json={"ok": True},
+                request=httpx.Request(method, url),
+            )
+
+    client = _Client()
+    monkeypatch.setattr(http_client_module, "get_shared_insecure_http_client", lambda: client)
+
+    def fail_verified(method, url, **kwargs):
+        del method, url, kwargs
+        raise httpx.ConnectError("certificate verify failed")
+
+    monkeypatch.setattr(http_client_module, "_send_http_request", fail_verified)
+    url = "https://mis.twse.com.tw/stock/api/getStockInfo.jsp"
+    hosts = {"mis.twse.com.tw"}
+    http_client_module.fetch_json(url, retries=0, allow_insecure_fallback_hosts=hosts)
+    http_client_module.fetch_json(url, retries=0, allow_insecure_fallback_hosts=hosts)
+    assert calls == [client, client]

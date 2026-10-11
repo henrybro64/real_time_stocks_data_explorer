@@ -78,7 +78,7 @@ scripts/                    deploy, backup/restore, CI smoke helpers
 | Mode | How | Notes |
 | --- | --- | --- |
 | Local dev | `uvicorn app.main:app` + `npm run dev`, local Postgres, optional Redis via `backend/docker-compose.redis.yml` | `AUTH_ENABLED=false` by default: single-user `default-user`. [local-development.md](local-development.md) |
-| k3d / k3s | `./scripts/deploy-k3s.sh k3d` (macOS) or `k3s` (Ubuntu): build images, import into the cluster, `kubectl apply -k k8s` | Namespace with Postgres, Redis, backend API (jobs off), backend worker (jobs on), frontend, NodePort `:30080`, history-capture CronJob. Ships with `AUTH_ENABLED=true`. [kubernetes.md](kubernetes.md) |
+| k3d / k3s | `./scripts/deploy-k3s.sh k3d` (macOS) or `k3s` (Ubuntu): build images, import into the cluster, `kubectl apply -k k8s` | Namespace with Postgres, Redis, backend API (jobs off), backend worker (jobs on), frontend, NodePort `:30080`. Portfolio history is sampled by the worker (the history-capture CronJob is suspended). Ships with `AUTH_ENABLED=true`. [kubernetes.md](kubernetes.md) |
 | GHCR images | `publish-ghcr.yml` builds and pushes backend/frontend images after green `Test And Smoke` on `main` or tags | Optional pull path for k3s. |
 | Optional add-ons | Prometheus/Grafana overlay, Azure SQL EOD rankings archive, AWS outbound heartbeat | [observability.md](observability.md), [azure-rankings-archive.md](azure-rankings-archive.md), [aws-health-monitor.md](aws-health-monitor.md) |
 

@@ -817,7 +817,10 @@ def _quote_from_yahoo_fields(
 def _rounded_price(value: object) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
-    return round(float(value), 2)
+    from app.services.providers.yahoo_chart import price_display_decimals
+
+    price = float(value)
+    return round(price, price_display_decimals(price))
 
 
 def _unquoted_stock_ids(

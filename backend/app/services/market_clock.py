@@ -412,6 +412,20 @@ def _observed_fixed_holiday(year: int, month: int, day: int) -> date:
     return current
 
 
+def _observed_new_years_day(year: int) -> date | None:
+    """NYSE New Year's Day observance, or ``None`` when the exchange stays open.
+
+    Saturday 1 January is not observed on the preceding Friday (#275). Sunday
+    1 January moves to Monday.
+    """
+    current = date(year, 1, 1)
+    if current.weekday() == 5:
+        return None
+    if current.weekday() == 6:
+        return current + timedelta(days=1)
+    return current
+
+
 def _nth_weekday(year: int, month: int, weekday: int, occurrence: int) -> date:
     current = date(year, month, 1)
     while current.weekday() != weekday:
@@ -449,8 +463,7 @@ def _easter_sunday(year: int) -> date:
 
 @lru_cache(maxsize=16)
 def _us_market_holidays(year: int) -> frozenset[date]:
-    holidays = {
-        _observed_fixed_holiday(year, 1, 1),
+    holidays: set[date] = {
         _nth_weekday(year, 1, 0, 3),  # MLK Day
         _nth_weekday(year, 2, 0, 3),  # Presidents Day
         _easter_sunday(year) - timedelta(days=2),  # Good Friday
@@ -461,9 +474,13 @@ def _us_market_holidays(year: int) -> frozenset[date]:
         _nth_weekday(year, 11, 3, 4),  # Thanksgiving
         _observed_fixed_holiday(year, 12, 25),  # Christmas
     }
-    next_new_year_observed = _observed_fixed_holiday(year + 1, 1, 1)
-    if next_new_year_observed.year == year:
-        holidays.add(next_new_year_observed)
+    new_years = _observed_new_years_day(year)
+    if new_years is not None:
+        holidays.add(new_years)
+    # Only pull next year's Monday observance into this year (never Sat→Fri) (#275).
+    next_new_years = _observed_new_years_day(year + 1)
+    if next_new_years is not None and next_new_years.year == year:
+        holidays.add(next_new_years)
     return frozenset(holidays)
 
 
