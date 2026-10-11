@@ -44,7 +44,13 @@ type Props = {
 
 export function StockDetailPage({ stockId = "" }: Props) {
   const { language, t } = useLanguage();
-  const decodedStockId = decodeURIComponent(stockId);
+  let decodedStockId = stockId;
+  try {
+    decodedStockId = decodeURIComponent(stockId);
+  } catch {
+    // Malformed % sequences must not crash the page (#275).
+    decodedStockId = stockId;
+  }
   const [range, setRange] = useState<TimeRange>("1D");
   const selectedIndex = RANGES.indexOf(range);
   const isTaiwanStock = decodedStockId.startsWith("TW:");

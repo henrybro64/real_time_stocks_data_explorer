@@ -9,6 +9,15 @@ from tests.support import quote_record, stock_record
 pytestmark = pytest.mark.integration
 
 
+def _use_request_quotes(monkeypatch) -> None:
+    """Summary math tests supply quotes via get_quote.
+
+    The TestClient starts the refresher, so summary would otherwise peek the
+    process cache and ignore that mock.
+    """
+    monkeypatch.setattr(quote_service, "background_refresher_owns_upstream", lambda: False)
+
+
 def test_portfolio_positions_and_summary_handle_updates_and_missing_quotes(
     monkeypatch,
     client,
@@ -41,6 +50,7 @@ def test_portfolio_positions_and_summary_handle_updates_and_missing_quotes(
     }
     monkeypatch.setattr(quote_service, "get_stock", lambda stock_id: stock if stock_id == "TW:2330" else None)
     monkeypatch.setattr(quote_service, "get_quote", lambda stock_id: quotes.get(stock_id))
+    _use_request_quotes(monkeypatch)
     monkeypatch.setattr(
         portfolio_routes,
         "get_usd_twd_fx_snapshot",
@@ -124,6 +134,7 @@ def test_portfolio_summary_skips_unknown_stocks(monkeypatch, client) -> None:
         if stock_id == "US:AAPL"
         else None,
     )
+    _use_request_quotes(monkeypatch)
     monkeypatch.setattr(
         quote_service,
         "get_quote",
@@ -221,6 +232,7 @@ def test_portfolio_summary_renormalizes_allocation_when_stocks_are_skipped(
 
     monkeypatch.setattr(quote_service, "get_stock", lambda stock_id: stocks.get(stock_id))
     monkeypatch.setattr(quote_service, "get_quote", lambda stock_id: quotes.get(stock_id))
+    _use_request_quotes(monkeypatch)
     monkeypatch.setattr(
         portfolio_routes,
         "get_usd_twd_fx_snapshot",
@@ -298,6 +310,7 @@ def test_portfolio_summary_excludes_unpriced_holdings_from_allocation(
 
     monkeypatch.setattr(quote_service, "get_stock", lambda stock_id: stock if stock_id == "TW:2330" else None)
     monkeypatch.setattr(quote_service, "get_quote", lambda stock_id: quotes.get(stock_id))
+    _use_request_quotes(monkeypatch)
     monkeypatch.setattr(
         portfolio_routes,
         "get_usd_twd_fx_snapshot",
@@ -357,6 +370,7 @@ def test_portfolio_summary_includes_backend_calculated_combined_gain(
     )
     monkeypatch.setattr(quote_service, "get_stock", lambda stock_id: stock if stock_id == "US:AAPL" else None)
     monkeypatch.setattr(quote_service, "get_quote", lambda stock_id: quote if stock_id == "US:AAPL" else None)
+    _use_request_quotes(monkeypatch)
     monkeypatch.setattr(
         portfolio_routes,
         "get_usd_twd_fx_snapshot",
@@ -439,6 +453,7 @@ def test_portfolio_summary_includes_per_holding_allocation_percent(
     }
     monkeypatch.setattr(quote_service, "get_stock", lambda stock_id: stocks.get(stock_id))
     monkeypatch.setattr(quote_service, "get_quote", lambda stock_id: quotes.get(stock_id))
+    _use_request_quotes(monkeypatch)
     monkeypatch.setattr(
         portfolio_routes,
         "get_usd_twd_fx_snapshot",

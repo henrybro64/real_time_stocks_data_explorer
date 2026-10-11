@@ -322,6 +322,7 @@ def test_app_and_observability_workloads_declare_resource_requests_and_limits() 
 
     cron_docs = _load_all_yaml(_APP_CRONJOB)
     cron = next(doc for doc in cron_docs if doc.get("kind") == "CronJob")
+    assert cron["spec"].get("suspend") is True
     containers = cron["spec"]["jobTemplate"]["spec"]["template"]["spec"]["containers"]
     assert containers, "history-capture CronJob has no containers"
     for container in containers:

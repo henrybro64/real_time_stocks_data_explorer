@@ -1,9 +1,17 @@
+function currencyFractionDigits(value: number): { minimumFractionDigits: number; maximumFractionDigits: number } {
+  // Match backend quote rounding: four decimals under 1, otherwise two (#275).
+  if (Math.abs(value) < 1) {
+    return { minimumFractionDigits: 2, maximumFractionDigits: 4 };
+  }
+  return { minimumFractionDigits: 2, maximumFractionDigits: 2 };
+}
+
 export function formatCurrency(value: number, currency: "USD" | "TWD") {
   const locale = currency === "USD" ? "en-US" : "zh-TW";
   return new Intl.NumberFormat(locale, {
     style: "currency",
     currency,
-    maximumFractionDigits: currency === "USD" ? 2 : 2,
+    ...currencyFractionDigits(value),
   }).format(value);
 }
 

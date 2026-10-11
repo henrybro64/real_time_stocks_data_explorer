@@ -74,7 +74,20 @@ class WatchlistRepository:
                         stock_id=stock_id,
                     ),
                 )
-                session.commit()
+                try:
+                    session.commit()
+                except Exception as exc:
+                    session.rollback()
+                    # Concurrent adds race past the existence check (#275).
+                    from app.db.constraint_errors import is_user_stock_unique_violation
+
+                    if is_user_stock_unique_violation(
+                        exc,
+                        constraint="uq_watchlist_items_user_stock",
+                        table="watchlist_items",
+                    ):
+                        return
+                    raise
 
     def remove(self, user_id: str, stock_id: str) -> None:
         session_factory = require_session_factory()

@@ -29,25 +29,41 @@ class PortfolioService:
         notes: str | None,
     ) -> PortfolioPosition:
         stock = self._validate_stock(stock_id)
+        # Persist the canonical id so US:aapl and US:AAPL share one row (#275).
+        canonical_id = stock.id
         normalized_currency = self._validate_holding_currency(stock, currency)
-        existing = portfolio_repository.find_position_by_stock(user_id, stock_id)
+        existing = portfolio_repository.find_position_by_stock(user_id, canonical_id)
         if existing is not None:
             raise ValueError(
-                f"Position already exists for stock id: {stock_id}",
+                f"Position already exists for stock id: {canonical_id}",
             )
         enforce_portfolio_position_cap(
             user_id,
             current_count=portfolio_repository.count_positions(user_id),
         )
-        position = portfolio_repository.create_position(
-            user_id=user_id,
-            stock_id=stock_id,
-            quantity=quantity,
-            average_cost=average_cost,
-            currency=normalized_currency,
-            notes=notes,
-        )
-        quote_refresher_service.request_immediate_refresh(stock_id)
+        try:
+            position = portfolio_repository.create_position(
+                user_id=user_id,
+                stock_id=canonical_id,
+                quantity=quantity,
+                average_cost=average_cost,
+                currency=normalized_currency,
+                notes=notes,
+            )
+        except Exception as exc:
+            # Concurrent inserts race past the existence check (#275).
+            from app.db.constraint_errors import is_user_stock_unique_violation
+
+            if is_user_stock_unique_violation(
+                exc,
+                constraint="uq_portfolio_positions_user_stock",
+                table="portfolio_positions",
+            ):
+                raise ValueError(
+                    f"Position already exists for stock id: {canonical_id}",
+                ) from exc
+            raise
+        quote_refresher_service.request_immediate_refresh(canonical_id)
         return position
 
     def update_position(

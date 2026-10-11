@@ -3,6 +3,10 @@ kind: CronJob
 metadata:
   name: stock-ticker-history-capture
 spec:
+  # Suspended: the worker's in-process portfolio-history sampler (every 5 min)
+  # is the sole scheduler (#275). Keep this CronJob for optional manual enable;
+  # POST /api/portfolio/history/capture remains available with the capture token.
+  suspend: true
   schedule: "*/10 * * * *"
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 1

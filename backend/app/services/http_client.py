@@ -12,7 +12,12 @@ import httpx
 from app.core.diagnostics import elapsed_ms
 
 _shared_client: httpx.Client | None = None
+_insecure_client: httpx.Client | None = None
 _shared_client_lock = threading.Lock()
+_CLIENT_LIMITS = httpx.Limits(
+    max_keepalive_connections=20,
+    max_connections=100,
+)
 
 
 def get_shared_http_client() -> httpx.Client:
@@ -22,16 +27,30 @@ def get_shared_http_client() -> httpx.Client:
         if _shared_client is None or _shared_client.is_closed:
             _shared_client = httpx.Client(
                 follow_redirects=True,
-                limits=httpx.Limits(
-                    max_keepalive_connections=20,
-                    max_connections=100,
-                ),
+                limits=_CLIENT_LIMITS,
             )
         return _shared_client
 
 
+def get_shared_insecure_http_client() -> httpx.Client:
+    """Pooled client for the certificate-bypass fallback (#274)."""
+    global _insecure_client
+    with _shared_client_lock:
+        if _insecure_client is None or _insecure_client.is_closed:
+            _insecure_client = httpx.Client(
+                follow_redirects=True,
+                verify=False,
+                limits=_CLIENT_LIMITS,
+            )
+        return _insecure_client
+
+
 def _send_http_request(method: str, url: str, **kwargs: object) -> httpx.Response:
     return get_shared_http_client().request(method, url, **kwargs)
+
+
+def _send_insecure_http_request(method: str, url: str, **kwargs: object) -> httpx.Response:
+    return get_shared_insecure_http_client().request(method, url, **kwargs)
 
 
 HttpFailureClassification = Literal[
@@ -534,7 +553,7 @@ def _request_with_retries(
         and _should_attempt_insecure_tls_fallback(last_error)
     ):
         try:
-            response = httpx.request(
+            response = _send_insecure_http_request(
                 method,
                 url,
                 params=params,
@@ -542,8 +561,6 @@ def _request_with_retries(
                 json=json_body,
                 headers=headers,
                 timeout=timeout,
-                follow_redirects=True,
-                verify=False,
             )
             logger.warning(
                 "External HTTP request used insecure TLS fallback",

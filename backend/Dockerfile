@@ -44,7 +44,7 @@ RUN python -m pip install "pip==25.2" \
         "httpx==0.28.1" \
         "itsdangerous==2.2.0" \
         "redis==8.1.0" \
-        "PyJWT[crypto]==2.13.0" \
+        "PyJWT[crypto]==2.15.0" \
         "cryptography==50.0.1" \
         "numpy==2.4.6" \
         "pandas==3.0.5" \

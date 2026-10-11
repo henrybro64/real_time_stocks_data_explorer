@@ -90,6 +90,8 @@ Remove app: `./scripts/k8s-teardown.sh k3s`. Uninstall k3s: `sudo /usr/local/bin
 
 Expected pods: `stock-ticker-backend`, `stock-ticker-backend-worker`, `stock-ticker-frontend`, `stock-ticker-postgres`, `stock-ticker-redis` — all `Running`.
 
+Portfolio history: the worker sampler (every 5 minutes) is the sole scheduler. The `stock-ticker-history-capture` CronJob stays in the manifests with `suspend: true` so it can be re-enabled for ops; prefer the capture endpoint for one-off runs (#275).
+
 ## Helper scripts
 
 | Script | Purpose |
