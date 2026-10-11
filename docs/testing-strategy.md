@@ -47,7 +47,7 @@ Provider HTTP is never called. Tests monkeypatch the fetch functions (`_load_jso
 `k3s-smoke` installs k3s on the runner and deploys with `scripts/deploy-k3s.sh k3s`. It then checks that:
 
 - the pods are Ready and the migration init container completed;
-- the backend `/health` and `/api/markets` respond;
+- the backend `/health` responds, and `/api/markets` responds after the smoke user signs in;
 - the frontend reaches the backend through the Next.js rewrite and service DNS.
 
 Evidence (kubectl snapshots, logs, responses) is uploaded as an artifact.
