@@ -83,7 +83,7 @@ Remove app: `./scripts/k8s-teardown.sh k3s`. Uninstall k3s: `sudo /usr/local/bin
 - `redis:7-alpine`
 - `stock-ticker-backend:local`, `stock-ticker-frontend:local`
 - Backend API Deployment (`RUN_BACKGROUND_JOBS=false`) with init container `alembic upgrade head`
-- Backend worker Deployment (`python -m app.worker`, `RUN_BACKGROUND_JOBS=true`) for quote refresher, alerts, samplers (#276). Schema upgrades stay on the API Deployment's `migrate-db` init container so two pods do not run Alembic at once. `/health` on port 8001 returns 503 when an enabled job has stopped succeeding, so the pod leaves Ready. Replica count stays 1; the Redis locks still keep a second replica from repeating the same interval.
+- Backend worker Deployment (`python -m app.worker`, `RUN_BACKGROUND_JOBS=true`) for quote refresher, alerts, samplers (#276). Schema upgrades stay on the API Deployment's `migrate-db` init container so two pods do not run Alembic at once. `/health` on port 8001 returns 503 when an enabled job has stopped succeeding or its thread has died; readiness uses it, so the pod leaves Ready. Liveness uses `/livez`, which returns 503 only when a job thread has died or is stuck (no completed loop pass for 3 poll intervals, at least an hour), so a Postgres or provider outage does not restart the worker (#289). Both Deployments set probe `timeoutSeconds: 5`. Replica count stays 1; the Redis locks still keep a second replica from repeating the same interval.
 - NodePort frontend on **30080** for LAN access
 - HTTP Ingress (`k8s/frontend-ingress.yaml`) for a LAN hostname (default `stock-ticker.ai`)
 - Auth Secret generated locally by `deploy-k3s.sh` (not committed; see `.example`)

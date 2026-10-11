@@ -66,3 +66,93 @@ def test_stale_enabled_job_is_unhealthy() -> None:
             seconds=30
         )
     assert unhealthy_job_names() == ["demo-job"]
+
+
+def _finished_thread():
+    import threading
+
+    thread = threading.Thread(target=lambda: None)
+    thread.start()
+    thread.join()
+    return thread
+
+
+def test_stale_job_is_unhealthy_but_not_dead() -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from app.jobs import health as health_module
+    from app.jobs.health import dead_job_names, unhealthy_job_names
+
+    reset_job_health_for_tests()
+    register_background_job("demo-job", enabled=True, max_stale_seconds=10)
+    with health_module._lock:
+        health_module._jobs["demo-job"].registered_at = datetime.now(UTC) - timedelta(
+            seconds=30
+        )
+    # Stale (for example Postgres down) is a readiness problem, not a liveness one (#289).
+    assert unhealthy_job_names() == ["demo-job"]
+    assert dead_job_names() == []
+
+
+def test_dead_thread_is_both_dead_and_unhealthy() -> None:
+    from app.jobs.health import dead_job_names, unhealthy_job_names
+
+    reset_job_health_for_tests()
+    register_background_job("demo-job", enabled=True, thread=_finished_thread())
+    assert dead_job_names() == ["demo-job"]
+    assert unhealthy_job_names() == ["demo-job"]
+
+
+def test_disabled_or_threadless_jobs_are_not_dead() -> None:
+    from app.jobs.health import dead_job_names
+
+    reset_job_health_for_tests()
+    register_background_job("off-job", enabled=False, thread=_finished_thread())
+    register_background_job("no-thread-job", enabled=True)
+    assert dead_job_names() == []
+
+
+def test_every_tick_outcome_records_a_heartbeat() -> None:
+    from app.jobs import health as health_module
+
+    reset_job_health_for_tests()
+    register_background_job("demo-job", enabled=True)
+
+    def _boom() -> None:
+        raise ValueError("provider down")
+
+    for tick in (lambda: None, lambda: JOB_TICK_INCOMPLETE, _boom):
+        with health_module._lock:
+            health_module._jobs["demo-job"].last_tick_at = None
+        run_guarded_tick("demo-job", event="demo.failed", tick=tick)
+        # A failing dependency still shows a turning loop, so it is not "hung".
+        assert get_background_jobs_health()["demo-job"]["last_tick_at"] is not None
+
+
+def test_alive_thread_without_heartbeat_is_hung_not_dead() -> None:
+    import threading
+    from datetime import UTC, datetime, timedelta
+
+    from app.jobs import health as health_module
+    from app.jobs.health import dead_job_names, hung_job_names, note_job_tick
+
+    reset_job_health_for_tests()
+    release = threading.Event()
+    blocked = threading.Thread(target=release.wait, daemon=True)
+    blocked.start()
+    try:
+        register_background_job(
+            "demo-job", enabled=True, thread=blocked, max_tick_gap_seconds=60
+        )
+        assert hung_job_names() == []
+        later = datetime.now(UTC) + timedelta(seconds=120)
+        assert hung_job_names(now=later) == ["demo-job"]
+        assert dead_job_names() == []
+        # A fresh heartbeat clears it.
+        note_job_tick("demo-job")
+        with health_module._lock:
+            health_module._jobs["demo-job"].last_tick_at = later
+        assert hung_job_names(now=later) == []
+    finally:
+        release.set()
+        blocked.join(timeout=5)
