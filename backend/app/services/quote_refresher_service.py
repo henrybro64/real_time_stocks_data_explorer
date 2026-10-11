@@ -49,6 +49,8 @@ from app.services.quote_redis_cache import (
 )
 from app.services.quote_service import quote_service
 
+_IMMEDIATE_REDIS_KEY = "quote:immediate:v1"
+
 logger = logging.getLogger(__name__)
 
 _LEADER_KEY = "quote:refresher:v1:leader"
@@ -115,6 +117,11 @@ class QuoteRefresherService:
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
+        self._cycle_leader_until = 0.0
+        self._held_refresh_locks: dict[str, str] = {}
+        self._held_refresh_locks_guard = threading.Lock()
+        self._heartbeat_stop = threading.Event()
+        self._heartbeat_thread: threading.Thread | None = None
         self._immediate: set[str] = set()
         self._immediate_lock = threading.Lock()
         self._immediate_dropped = 0
@@ -191,7 +198,12 @@ class QuoteRefresherService:
                 return
             self._thread = None
             self._stop_event.set()
+            self._heartbeat_stop.set()
         thread.join(timeout=2.0)
+        heartbeat = self._heartbeat_thread
+        if heartbeat is not None:
+            heartbeat.join(timeout=1.0)
+            self._heartbeat_thread = None
         logger.info(
             "Quote refresher stopped",
             extra={"event": "quote_refresher.sampler.stopped"},
@@ -206,6 +218,9 @@ class QuoteRefresherService:
         backoff is honoured the same way as cache-first read paths. The
         immediate pool is separate from the scheduled cycle so a burst of
         cache-miss reads cannot starve the cycle deadline.
+
+        When Redis is configured, API replicas (``RUN_BACKGROUND_JOBS=false``)
+        publish into a shared Redis set that the worker drains (#276).
         """
         normalized = stock_id.strip()
         if not normalized:
@@ -217,6 +232,13 @@ class QuoteRefresherService:
         if self._should_skip_closed_market_immediate(normalized):
             return
         queue_max = max(int(settings.quote_refresher_immediate_queue_max), 1)
+        if settings.redis_url.strip() and not self.is_sampler_running():
+            if self._enqueue_immediate_redis(normalized, queue_max=queue_max):
+                return
+            # Redis unavailable: fall through to local queue when this process
+            # can still run work (single-process / jobs-on-API).
+            if not settings.run_background_jobs:
+                return
         with self._immediate_lock:
             already_queued = normalized in self._immediate
             if already_queued:
@@ -235,6 +257,65 @@ class QuoteRefresherService:
                 return
             self._immediate.add(normalized)
         self._immediate_pool.submit(self._safe_immediate_refresh, normalized)
+
+    def _enqueue_immediate_redis(self, stock_id: str, *, queue_max: int) -> bool:
+        """Publish an immediate refresh request for the worker. True if handled."""
+        if not redis_enabled():
+            return False
+        from app.services.quote_redis_cache import run_redis
+
+        def _enqueue(client):
+            if client.sismember(_IMMEDIATE_REDIS_KEY, stock_id):
+                return True
+            size = int(client.scard(_IMMEDIATE_REDIS_KEY) or 0)
+            if size >= queue_max:
+                return "full"
+            client.sadd(_IMMEDIATE_REDIS_KEY, stock_id)
+            client.expire(_IMMEDIATE_REDIS_KEY, 3600)
+            return True
+
+        result = run_redis("quote immediate enqueue", _enqueue, kind="write")
+        if result == "full":
+            self._immediate_dropped += 1
+            logger.warning(
+                "Immediate quote refresh Redis queue full; dropping request",
+                extra={
+                    "event": "quote_refresher.immediate.dropped_redis",
+                    "stock_id": stock_id,
+                    "queue_max": queue_max,
+                },
+            )
+            return True
+        return bool(result)
+
+    def _drain_immediate_redis(self) -> None:
+        """Pull Redis-queued symbols into the local immediate pool (worker)."""
+        if not settings.redis_url.strip() or not redis_enabled():
+            return
+        from app.services.quote_redis_cache import run_redis
+
+        queue_max = max(int(settings.quote_refresher_immediate_queue_max), 1)
+        batch = run_redis(
+            "quote immediate drain",
+            lambda client: list(client.spop(_IMMEDIATE_REDIS_KEY, min(queue_max, 32)) or []),
+            kind="write",
+        )
+        if not batch:
+            return
+        for raw in batch:
+            stock_id = raw.decode() if isinstance(raw, (bytes, bytearray)) else str(raw)
+            stock_id = stock_id.strip()
+            if not stock_id:
+                continue
+            if refresh_failure_active(stock_id):
+                continue
+            if self._should_skip_closed_market_immediate(stock_id):
+                continue
+            with self._immediate_lock:
+                if stock_id in self._immediate or len(self._immediate) >= queue_max:
+                    continue
+                self._immediate.add(stock_id)
+            self._immediate_pool.submit(self._safe_immediate_refresh, stock_id)
 
     def _should_skip_closed_market_immediate(self, stock_id: str) -> bool:
         market = stock_id.split(":", 1)[0]
@@ -403,8 +484,12 @@ class QuoteRefresherService:
             stats.duration_ms = elapsed_ms(started_at)
             self._log_cycle(stats)
             return stats
-        finally:
+        except Exception:
+            # A failed cycle may be retried by another replica. A finished cycle
+            # keeps the lock until its TTL so the same window is not fetched twice.
             self._release_cycle_leadership(leader_token)
+            self._cycle_leader_until = 0.0
+            raise
 
     def _select_symbols_to_refresh(
         self,
@@ -565,14 +650,9 @@ class QuoteRefresherService:
             if not unlocked:
                 continue
 
-            stop_heartbeat = threading.Event()
-            heartbeat = threading.Thread(
-                target=self._renew_locks_until,
-                args=(dict(locked_tokens), stop_heartbeat),
-                daemon=True,
-                name=f"quote-batch-lock-{market}",
-            )
-            heartbeat.start()
+            for stock_id, token in locked_tokens.items():
+                self._hold_refresh_lock(stock_id, token)
+            still_held = set(unlocked)
             try:
                 try:
                     raw = self._quote_source.fetch_quotes_for_refresh_batch(
@@ -584,8 +664,7 @@ class QuoteRefresherService:
                         "Batch refresh unavailable; falling back per symbol: %s",
                         exc,
                     )
-                    for stock_id, token in locked_tokens.items():
-                        release_refresh_lock(stock_id, token)
+                    for stock_id in unlocked:
                         remaining.append(stock_id)
                     continue
 
@@ -607,7 +686,9 @@ class QuoteRefresherService:
                             continue
                         if attempt.quote is not None:
                             set_cached_quote(stock_id, attempt.quote)
-                            self._apply_refresh_outcome(stock_id, "refreshed", stats=stats)
+                            self._apply_refresh_outcome(
+                                stock_id, "refreshed", stats=stats
+                            )
                             with self._priority_lock:
                                 if stock_id in self._priority_refresh:
                                     self._priority_refresh = [
@@ -623,6 +704,8 @@ class QuoteRefresherService:
                             continue
                         remaining.append(stock_id)
                     finally:
+                        still_held.discard(stock_id)
+                        self._drop_refresh_lock(stock_id, token)
                         release_refresh_lock(stock_id, token)
                 hard_stop = batch.hard_stops.get(market)
                 if hard_stop is not None:
@@ -643,8 +726,11 @@ class QuoteRefresherService:
                         1 for sid in unlocked if sid in deferred
                     )
             finally:
-                stop_heartbeat.set()
-                heartbeat.join(timeout=1.0)
+                for stock_id in list(still_held):
+                    token = locked_tokens[stock_id]
+                    still_held.discard(stock_id)
+                    self._drop_refresh_lock(stock_id, token)
+                    release_refresh_lock(stock_id, token)
         pending = set(remaining)
         return [stock_id for stock_id in to_refresh if stock_id in pending]
 
@@ -709,6 +795,8 @@ class QuoteRefresherService:
         while not self._stop_event.is_set():
             # Fixed period measured start-to-start so cycles stay inside soft TTL (#271).
             cycle_started = time.monotonic()
+            if self._holds_cycle_leadership():
+                self._drain_immediate_redis()
             run_guarded_tick(
                 "quote-refresher",
                 event="quote_refresher.cycle.failed",
@@ -717,8 +805,15 @@ class QuoteRefresherService:
             poll_seconds = float(self.select_poll_seconds())
             elapsed = time.monotonic() - cycle_started
             wait_seconds = max(0.0, poll_seconds - elapsed)
-            if self._stop_event.wait(wait_seconds):
-                return
+            # Drain Redis immediate requests while waiting so API replicas stay responsive (#276).
+            remaining = wait_seconds
+            while remaining > 0 and not self._stop_event.is_set():
+                slice_seconds = min(2.0, remaining)
+                if self._stop_event.wait(slice_seconds):
+                    return
+                remaining -= slice_seconds
+                if self._holds_cycle_leadership():
+                    self._drain_immediate_redis()
 
     def _refresh_one(
         self,
@@ -745,14 +840,7 @@ class QuoteRefresherService:
             return "locked"
         if not renew_refresh_lock(stock_id, token):
             return "locked"
-        stop_heartbeat = threading.Event()
-        heartbeat = threading.Thread(
-            target=self._renew_lock_until,
-            args=(stock_id, token, stop_heartbeat),
-            daemon=True,
-            name=f"quote-lock-{stock_id}",
-        )
-        heartbeat.start()
+        self._hold_refresh_lock(stock_id, token)
         with self._in_flight_lock:
             self._in_flight += 1
             self._in_flight_peak = max(self._in_flight_peak, self._in_flight)
@@ -773,8 +861,7 @@ class QuoteRefresherService:
             return "empty"
         finally:
             set_provider_request_spacing(None)
-            stop_heartbeat.set()
-            heartbeat.join(timeout=1.0)
+            self._drop_refresh_lock(stock_id, token)
             with self._in_flight_lock:
                 self._in_flight = max(0, self._in_flight - 1)
             release_refresh_lock(stock_id, token)
@@ -854,6 +941,7 @@ class QuoteRefresherService:
         redis_url = (settings.redis_url or "").strip()
         if not redis_url:
             # Local/dev without Redis: single-process leadership.
+            self._cycle_leader_until = time.monotonic() + 10**9
             return "local"
         if not redis_enabled():
             logger.warning(
@@ -863,10 +951,9 @@ class QuoteRefresherService:
             return None
         from app.services.quote_redis_cache import run_redis
 
-        ttl = max(
-            int(settings.quote_refresher_open_poll_seconds),
-            int(settings.quote_refresher_cycle_timeout_seconds),
-        ) + 15
+        # Hold the window for one poll. Do not delete the key when the cycle
+        # returns, or the other worker starts the same interval immediately.
+        ttl = max(int(self.select_poll_seconds()), 1)
         token = uuid4().hex
         acquired = run_redis(
             "quote refresher leader lock",
@@ -882,7 +969,49 @@ class QuoteRefresherService:
                 },
             )
             return None
-        return token if acquired else None
+        if acquired:
+            self._cycle_leader_until = time.monotonic() + float(ttl)
+            return token
+        return None
+
+    def _holds_cycle_leadership(self) -> bool:
+        if not (settings.redis_url or "").strip():
+            return True
+        return time.monotonic() < self._cycle_leader_until
+
+    def _ensure_refresh_lock_heartbeat(self) -> None:
+        with self._held_refresh_locks_guard:
+            if (
+                self._heartbeat_thread is not None
+                and self._heartbeat_thread.is_alive()
+            ):
+                return
+            self._heartbeat_stop.clear()
+            self._heartbeat_thread = threading.Thread(
+                target=self._refresh_lock_heartbeat_loop,
+                daemon=True,
+                name="quote-lock-heartbeat",
+            )
+            self._heartbeat_thread.start()
+
+    def _hold_refresh_lock(self, stock_id: str, token: str) -> None:
+        self._ensure_refresh_lock_heartbeat()
+        with self._held_refresh_locks_guard:
+            self._held_refresh_locks[stock_id] = token
+
+    def _drop_refresh_lock(self, stock_id: str, token: str) -> None:
+        with self._held_refresh_locks_guard:
+            if self._held_refresh_locks.get(stock_id) == token:
+                self._held_refresh_locks.pop(stock_id, None)
+
+    def _refresh_lock_heartbeat_loop(self) -> None:
+        interval = max(1.0, float(refresh_lock_seconds()) / 3.0)
+        while not self._heartbeat_stop.wait(interval):
+            with self._held_refresh_locks_guard:
+                pairs = list(self._held_refresh_locks.items())
+            for stock_id, token in pairs:
+                if not renew_refresh_lock(stock_id, token):
+                    self._drop_refresh_lock(stock_id, token)
 
     def _release_cycle_leadership(self, token: str) -> None:
         if token == "local":

@@ -491,6 +491,14 @@ deploy_manifests() {
     exit 1
   fi
 
+  echo "Waiting for backend worker"
+  if ! ${KUBECTL_CMD} -n "${NAMESPACE}" rollout status deployment/stock-ticker-backend-worker --timeout=600s; then
+    echo "Backend worker rollout failed."
+    ${KUBECTL_CMD} -n "${NAMESPACE}" get pods -l app=stock-ticker-backend-worker || true
+    ${KUBECTL_CMD} -n "${NAMESPACE}" logs deployment/stock-ticker-backend-worker -c worker --tail=80 || true
+    exit 1
+  fi
+
   echo "Waiting for frontend"
   ${KUBECTL_CMD} -n "${NAMESPACE}" rollout status deployment/stock-ticker-frontend --timeout=180s
 

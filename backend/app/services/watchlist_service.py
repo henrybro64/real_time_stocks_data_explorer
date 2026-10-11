@@ -1,6 +1,7 @@
 from app.repositories.watchlist_repository import watchlist_repository
 from app.services.quote_refresher_service import quote_refresher_service
 from app.services.quote_service import quote_service
+from app.services.user_quota_service import enforce_watchlist_cap
 
 
 class WatchlistService:
@@ -10,6 +11,10 @@ class WatchlistService:
     def add(self, user_id: str, stock_id: str) -> list[str]:
         if quote_service.get_stock(stock_id) is None:
             raise ValueError(f"Unknown stock id: {stock_id}")
+        current = self.get_ids(user_id)
+        if stock_id in current:
+            return current
+        enforce_watchlist_cap(user_id, current_count=len(current))
         watchlist_repository.add_if_missing(user_id, stock_id)
         quote_refresher_service.request_immediate_refresh(stock_id)
         return self.get_ids(user_id)

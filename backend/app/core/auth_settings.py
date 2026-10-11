@@ -1,4 +1,4 @@
-"""Startup validation for auth and capture secrets (#267)."""
+"""Startup validation for auth and capture secrets (#267, #240)."""
 
 from __future__ import annotations
 
@@ -41,9 +41,26 @@ def validate_auth_runtime_settings(
     rankings_capture_token: str = "",
     rankings_archive_capture_token: str = "",
     taiwan_market_data_capture_token: str = "",
+    entra_external_id_enabled: bool = False,
+    entra_tenant_id: str = "",
+    entra_client_id: str = "",
+    entra_redirect_uri: str = "",
+    entra_authority: str = "",
 ) -> None:
-    if auth_enabled and not local_auth_enabled:
-        raise RuntimeError("AUTH_ENABLED requires LOCAL_AUTH_ENABLED=true in local auth mode.")
+    entra_ready = bool(
+        entra_external_id_enabled
+        and entra_tenant_id.strip()
+        and entra_client_id.strip()
+        and entra_redirect_uri.strip()
+        and entra_authority.strip()
+    )
+    if auth_enabled and not local_auth_enabled and not entra_ready:
+        raise RuntimeError(
+            "AUTH_ENABLED requires LOCAL_AUTH_ENABLED=true and/or a fully "
+            "configured Entra External ID provider "
+            "(ENTRA_EXTERNAL_ID_ENABLED, ENTRA_TENANT_ID, ENTRA_CLIENT_ID, "
+            "ENTRA_REDIRECT_URI, and ENTRA_AUTHORITY).",
+        )
     if bool(local_auth_username) ^ bool(local_auth_password):
         raise RuntimeError(
             "Set both LOCAL_AUTH_USERNAME and LOCAL_AUTH_PASSWORD, or leave both empty.",
@@ -74,10 +91,16 @@ def validate_auth_runtime_settings(
             "AUTH_ENABLED refuses a default or placeholder SESSION_SECRET. "
             "Generate a random value (for example openssl rand -hex 32).",
         )
-    if local_auth_password.strip().casefold() in _PLACEHOLDER_BOOTSTRAP_PASSWORDS:
+    if local_auth_enabled and local_auth_password.strip().casefold() in _PLACEHOLDER_BOOTSTRAP_PASSWORDS:
         raise RuntimeError(
             "AUTH_ENABLED refuses a placeholder LOCAL_AUTH_PASSWORD. "
             "Choose a unique bootstrap password or leave both username and password empty.",
+        )
+    if entra_external_id_enabled and not entra_ready:
+        raise RuntimeError(
+            "ENTRA_EXTERNAL_ID_ENABLED requires ENTRA_TENANT_ID, ENTRA_CLIENT_ID, "
+            "ENTRA_REDIRECT_URI, and ENTRA_AUTHORITY "
+            "(the tenant's https://<tenant>.ciamlogin.com/<tenant-id>/v2.0 URL).",
         )
 
 

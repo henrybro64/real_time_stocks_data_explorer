@@ -8,7 +8,8 @@
 | --- | --- | --- | --- |
 | `AUTH_ENABLED=false` (default) | None | `default-user` | `seed_default_user()` inserts `users.id = "default-user"` if missing (`backend/app/db/init_db.py`). |
 | `AUTH_ENABLED=true` + `LOCAL_AUTH_ENABLED=true` | Username/password, session cookie | The `users.id` stored in the session | Requires a non-placeholder `SESSION_SECRET` of 16+ characters. Placeholder bootstrap passwords and capture tokens are refused. If `LOCAL_AUTH_USERNAME` / `LOCAL_AUTH_PASSWORD` are set, creates that user or resets its password. |
-| `AUTH_ENABLED=true` + `LOCAL_AUTH_ENABLED=false` | — | — | Startup fails: local auth is the only implemented login method. |
+| `AUTH_ENABLED=true` + Entra External ID | Microsoft OIDC → same session cookie | Linked `users.id` via `oauth_identities` | Requires `ENTRA_EXTERNAL_ID_ENABLED=true` plus tenant, client id, and redirect URI. May run with or without local auth (#240). |
+| `AUTH_ENABLED=true` with neither provider | — | — | Startup fails. |
 
 These checks are startup hooks in `backend/app/main.py` (`validate_auth_runtime_settings`). Local dev defaults to auth off; k8s enables auth via `k8s/backend.yaml` and a locally generated `k8s/backend-auth-secret.yaml` (see `.example`; never commit real secrets).
 
@@ -19,7 +20,7 @@ These checks are startup hooks in `backend/app/main.py` (`validate_auth_runtime_
 - `get_request_identity(request)`
   - auth off → always `default-user`;
   - auth on → `request.session["user_id"]`. If it is missing, or the user row no longer exists, the session is cleared and the request is anonymous.
-- `get_effective_user_id(request)` returns that id or raises **401**. Every user-owned route depends on it.
+- `get_effective_user_id(request)` returns that id or raises **401**. Every user-owned route depends on it. When auth is on, it also applies the soft per-user API rate limit (`API_USER_RATE_LIMIT_PER_MINUTE`, default 300/min).
 
 The user id is **never** taken from the request body or query string; `test_forged_user_id_in_request_body_is_ignored` checks this.
 
@@ -27,12 +28,36 @@ Login endpoints (`backend/app/api/routes/auth.py`, under `/api/auth`):
 
 | Endpoint | Behavior |
 | --- | --- |
-| `GET /status` | `authEnabled`, `loggedIn`, the user, and enabled providers. The UI uses it to decide whether to redirect to `/login`. |
-| `POST /login/local` | Verifies a PBKDF2-SHA256 hash (120,000 iterations) and sets `session["user_id"]`. |
-| `POST /register/local` | Creates a user and logs them in. Username 1–64 characters; password at least 8 characters (empty passwords rejected). Duplicate usernames return 400. |
+| `GET /status` | `authEnabled`, `loggedIn`, the user, and enabled providers (`local`, `entra`). The UI uses it to decide whether to redirect to `/login`. |
+| `POST /login/local` | Verifies a PBKDF2-SHA256 hash (120,000 iterations) and sets `session["user_id"]`. Rate-limited per IP. |
+| `POST /register/local` | Creates a user and logs them in. Username 1–64 characters; password at least 8 characters. Duplicate usernames return 400. Rate-limited per IP. |
+| `GET /login/entra` | Starts the Entra External ID authorization-code flow (stores `state`/`nonce` in the session). |
+| `GET /callback/entra` | Exchanges the code, validates the ID token (PyJWT + JWKS), links or creates `users.id` via `oauth_identities`, sets the session. |
 | `POST /logout` | Clears the session. |
 
 The session is Starlette's signed cookie (`SessionMiddleware`, `same_site="lax"`). `SESSION_COOKIE_SECURE` controls the Secure flag (default false for plain HTTP; set true behind HTTPS).
+
+## Quotas and rate limits (#273)
+
+Defaults stay large enough for one person. The quote refresher tracks the union of watchlist items, portfolio positions, and alert rules, so the caps keep one account from putting a few hundred symbols on the shared upstream budget:
+
+| Cap / limit | Env | Default |
+| --- | --- | --- |
+| Watchlist items | `USER_WATCHLIST_MAX_ITEMS` | 100 |
+| Portfolio positions | `USER_PORTFOLIO_MAX_POSITIONS` | 80 |
+| Other assets | `USER_PORTFOLIO_MAX_ASSETS` | 50 |
+| Alert rules | `USER_ALERT_MAX_RULES` | 80 |
+| Server-key AI calls / user / day | `USER_AI_SERVER_KEY_DAILY_LIMIT` | 50 (0 disables server key) |
+| Login attempts / IP / minute | `AUTH_LOGIN_RATE_LIMIT_PER_MINUTE` | 20 |
+| Registrations / IP / hour | `AUTH_REGISTER_RATE_LIMIT_PER_HOUR` | 10 |
+| Authenticated API calls / user / minute | `API_USER_RATE_LIMIT_PER_MINUTE` | 300 (0 disables) |
+| Trusted proxy hops for auth IP | `TRUSTED_PROXY_HOPS` | 1 |
+
+Quota breaches return **409** and do not write the row. The count is checked again inside the insert transaction, with a row lock on Postgres, so two overlapping adds cannot both pass the cap. Rate limits return **429** with `Retry-After`. Counters use Redis when `REDIS_URL` is set, otherwise an in-process fallback.
+
+Login and registration buckets use the client address `TRUSTED_PROXY_HOPS` entries from the right of `X-Forwarded-For`. A caller-supplied leftmost value does not open a new bucket. `0` ignores the header and uses the TCP peer. In k8s the ConfigMap sets `1` because Traefik appends the client and Next forwards that header.
+
+Stock-analysis calls that use the **user's own** provider key do not consume the server-key daily budget. A refresh consumes a slot only after the server key returns an analysis. A failed refresh, or a deployment with no server key, does not.
 
 ## User-scoped data
 
@@ -46,6 +71,7 @@ The session is Starlette's signed cookie (`SessionMiddleware`, `same_site="lax"`
 | Alert rules and events | `alert_rules.user_id`, `alert_events.user_id` | scoped CRUD; the evaluator writes events for the rule's owner |
 | AI preference | `user_ai_preferences.user_id` | one row per user |
 | AI provider API keys | `user_api_keys.user_id` | unique `(user_id, provider)` |
+| OAuth identities | `oauth_identities.user_id` | unique `(provider, subject)` → `users.id` |
 | Stock-AI narrative cache | Redis key `stock_analysis:v1:{user_id}:...` | cache key includes the user |
 
 User-owned tables use `UserOwnedRowMixin` (`backend/app/db/row_mixins.py`) or declare the same column: `user_id` is non-null, indexed, and a foreign key to `users.id` with `ON DELETE CASCADE`.
@@ -56,7 +82,7 @@ User-owned tables use `UserOwnedRowMixin` (`backend/app/db/row_mixins.py`) or de
 
 | Access | Routes |
 | --- | --- |
-| Always open | `/health`, `/api/auth/*` (status, login, logout, register) |
+| Always open | `/health`, `/api/auth/*` (status, login, logout, register, Entra callback) |
 | Session required when `AUTH_ENABLED=true` | User-owned routes **and** shared market-data routes listed above |
 | Capture token (not session) | `POST /api/portfolio/history/capture`, rankings snapshot/archive capture, Taiwan market-data capture |
 
@@ -76,12 +102,9 @@ Internal capture endpoints are the deliberate exception: they act for **all** us
 
 ## Current limitations
 
-- **Open registration.** With auth on, anyone who can reach the app can register. There are no roles, admin user, or invite flow.
-- **No login rate limiting or lockout.**
+- **Open registration.** With local auth on, anyone who can reach the app can register. There are no roles, admin user, or invite flow.
 - **Plaintext AI API keys.** `user_api_keys.api_key` is stored as plain text; responses only expose the last four characters.
 - **Session cookie.** `SESSION_COOKIE_SECURE` defaults to false for HTTP; Starlette's default 14-day lifetime still applies. There is no server-side session store, so a single session cannot be revoked (rotating `SESSION_SECRET` logs everyone out).
 - **Bootstrap password reset.** When `LOCAL_AUTH_USERNAME` / `LOCAL_AUTH_PASSWORD` are set, that user's password is reset to the configured value on every startup.
 - **Switching modes does not migrate data.** Data created as `default-user` stays under that id after enabling auth, and `default-user` has no password, so nobody can log in as it.
-- **Dormant OAuth table.** `oauth_identities` exists in the schema (migration `20260404_0004`), but no code reads or writes it.
-- **Single replica assumed.** The alert evaluator uses in-process locks; see [architecture-overview.md](architecture-overview.md#architectural-tradeoffs).
 - Saved layouts and dashboard settings are not persisted per user. New user-owned features must follow the same `user_id` + `get_effective_user_id` pattern.

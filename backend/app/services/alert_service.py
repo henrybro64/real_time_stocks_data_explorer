@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 import logging
 from threading import Event, Lock, Thread
 
+from app.core.config import settings
 from app.db.session import SessionLocal as DefaultSessionLocal
 from app.db.models import AlertEvent, AlertRule
 from app.models.quote import QuoteRecord
@@ -64,6 +65,12 @@ class AlertService:
         _sync_repository_sessionlocal()
         resolved_stock_id = self._resolve_stock_id(stock_id)
         self._validate_rule_input(resolved_stock_id, rule_type, threshold_value)
+        from app.services.user_quota_service import enforce_alert_rule_cap
+
+        enforce_alert_rule_cap(
+            user_id,
+            current_count=alert_repository.count_rules(user_id),
+        )
         return alert_repository.create_rule(
             user_id=user_id,
             stock_id=resolved_stock_id,
@@ -168,10 +175,27 @@ class AlertService:
         _sync_repository_sessionlocal()
         if not alert_repository.is_available():
             return 0
-        with self._evaluation_lock:
-            return alert_repository.evaluate_enabled_rules_for_all_users(
-                lambda rules: self._evaluate_rules(rules, now=now),
-            )
+        from app.services.job_leader_lock import (
+            release_job_leadership,
+            try_acquire_job_leadership,
+        )
+
+        # One evaluation per poll window. The lock stays until its TTL so a
+        # second worker cannot repeat the same interval (#276).
+        token = try_acquire_job_leadership(
+            "alert-rule-evaluator",
+            ttl_seconds=max(30, int(settings.alert_evaluator_poll_seconds)),
+        )
+        if token is None:
+            return 0
+        try:
+            with self._evaluation_lock:
+                return alert_repository.evaluate_enabled_rules_for_all_users(
+                    lambda rules: self._evaluate_rules(rules, now=now),
+                )
+        except Exception:
+            release_job_leadership("alert-rule-evaluator", token)
+            raise
 
     def start_background_evaluator(self, poll_seconds: int) -> None:
         _sync_repository_sessionlocal()
@@ -230,6 +254,14 @@ class AlertService:
                 float(rule.threshold_value),
             )
 
+            state_changed = (
+                rule.last_observed_price != observed_price
+                or rule.last_observed_quote_timestamp != quote.timestamp
+                or bool(rule.last_condition_met) != condition_met
+            )
+            if not state_changed:
+                continue
+
             rule.last_observed_price = observed_price
             rule.last_observed_quote_timestamp = quote.timestamp
             rule.last_evaluated_at = evaluated_at
@@ -256,6 +288,17 @@ class AlertService:
         return events
 
     def _load_quotes(self, stock_ids: set[str]) -> dict[str, QuoteRecord | None]:
+        # Peek only for the live quote service. A test that installs the same
+        # callable on both attributes must still be invoked (#274).
+        loader = self._quote_loader
+        production = quote_service.get_quote
+        uses_shared_cache = (
+            getattr(loader, "__func__", None) is getattr(production, "__func__", None)
+            and getattr(loader, "__self__", None) is quote_service
+        )
+        if uses_shared_cache and stock_ids:
+            items = quote_service.peek_cached_quotes(list(stock_ids))
+            return {item.stock.id: item.quote for item in items}
         quotes_by_stock: dict[str, QuoteRecord | None] = {}
         for stock_id in stock_ids:
             try:

@@ -143,13 +143,41 @@ def get_stock_analysis(
 
     try:
         if refresh:
-            result = stock_analysis_service.analyze_stock(
-                stock_id,
-                provider_override=provider_override,
-                run_ai=True,
-                language=normalized_language,
-                include_news=True,
+            # Reserve a server-key slot before the provider call (#273).
+            from app.services.user_quota_service import server_ai_provider_configured
+
+            spend_server_key = (
+                provider_override is None and server_ai_provider_configured()
             )
+            if spend_server_key:
+                from app.api.http_quota import raise_quota_http
+                from app.services.rate_limit_service import RateLimitExceededError
+                from app.services.user_quota_service import consume_server_ai_budget
+
+                try:
+                    # Reserve before the provider so overlapping refreshes cannot
+                    # all pass a non-consuming check (#273).
+                    consume_server_ai_budget(user_id)
+                except RateLimitExceededError as exc:
+                    raise_quota_http(exc)
+            try:
+                result = stock_analysis_service.analyze_stock(
+                    stock_id,
+                    provider_override=provider_override,
+                    run_ai=True,
+                    language=normalized_language,
+                    include_news=True,
+                )
+            except Exception:
+                if spend_server_key:
+                    from app.services.user_quota_service import refund_server_ai_budget
+
+                    refund_server_ai_budget(user_id)
+                raise
+            if spend_server_key and not result.ai_analysis:
+                from app.services.user_quota_service import refund_server_ai_budget
+
+                refund_server_ai_budget(user_id)
             if result.ai_analysis:
                 now = datetime.now(timezone.utc)
                 set_cached_stock_analysis(

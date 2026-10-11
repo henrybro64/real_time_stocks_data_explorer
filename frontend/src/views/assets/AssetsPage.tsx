@@ -32,6 +32,7 @@ import {
   fetchPortfolioAssets,
   fetchPortfolioCombinedAssetsHistory,
   fetchPortfolioAssetSummary,
+  toApiError,
 } from "../../services/api/client";
 import { formatCurrency } from "../../services/format/quote";
 
@@ -253,6 +254,15 @@ export function AssetsPage() {
 
       <Column className="app-column-spacing" sm={4} md={8} lg={16}>
         <Tile className="app-section-tile">
+          {addAssetMutation.error != null ? (
+            <div className="app-state-notice-wrap">
+              <RequestStateNotice
+                detail={toApiError(addAssetMutation.error).detail}
+                kind={errorToNoticeKind(addAssetMutation.error)}
+                scopeLabel={t("portfolio.assets.column.name")}
+              />
+            </div>
+          ) : null}
           <div className="app-portfolio-asset-form">
             <Select
               id="portfolio-asset-type"

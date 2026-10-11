@@ -61,3 +61,59 @@ def test_auth_disabled_rejects_placeholder_capture_token() -> None:
 
 def test_auth_enabled_accepts_random_secret() -> None:
     _ok(session_secret="9f" * 16, portfolio_history_capture_token="tok-" + "ab" * 12)
+
+
+def test_auth_enabled_allows_entra_without_local() -> None:
+    validate_auth_runtime_settings(
+        auth_enabled=True,
+        local_auth_enabled=False,
+        session_secret="9f" * 16,
+        local_auth_username="",
+        local_auth_password="",
+        entra_external_id_enabled=True,
+        entra_tenant_id="tenant",
+        entra_client_id="client",
+        entra_redirect_uri="http://localhost/api/auth/callback/entra",
+        entra_authority="https://contoso.ciamlogin.com/tenant/v2.0",
+    )
+
+
+def test_auth_enabled_rejects_entra_without_authority() -> None:
+    with pytest.raises(RuntimeError, match="ENTRA_AUTHORITY"):
+        validate_auth_runtime_settings(
+            auth_enabled=True,
+            local_auth_enabled=False,
+            session_secret="9f" * 16,
+            local_auth_username="",
+            local_auth_password="",
+            entra_external_id_enabled=True,
+            entra_tenant_id="tenant",
+            entra_client_id="client",
+            entra_redirect_uri="http://localhost/api/auth/callback/entra",
+        )
+
+
+def test_auth_enabled_rejects_entra_half_configured() -> None:
+    with pytest.raises(RuntimeError, match="ENTRA_EXTERNAL_ID_ENABLED"):
+        validate_auth_runtime_settings(
+            auth_enabled=True,
+            local_auth_enabled=True,
+            session_secret="9f" * 16,
+            local_auth_username="",
+            local_auth_password="",
+            entra_external_id_enabled=True,
+            entra_tenant_id="tenant",
+            entra_client_id="",
+            entra_redirect_uri="",
+        )
+
+
+def test_auth_enabled_rejects_no_providers() -> None:
+    with pytest.raises(RuntimeError, match="LOCAL_AUTH_ENABLED"):
+        validate_auth_runtime_settings(
+            auth_enabled=True,
+            local_auth_enabled=False,
+            session_secret="9f" * 16,
+            local_auth_username="",
+            local_auth_password="",
+        )

@@ -38,16 +38,27 @@ _yfinance_info_cache: dict[str, tuple[float, dict[str, object] | None]] = {}
 
 
 def _yahoo_chart(symbol: str, interval: str, range_name: str) -> dict | None:
+    from app.services.http_client import HttpFetchError, fetch_json
+
     enc = quote(symbol, safe="-.")
     url = f"{_YAHOO_CHART}/{enc}?interval={interval}&range={range_name}"
-    request = Request(url)
-    request.add_header("User-Agent", _BROWSER_USER_AGENT)
-    request.add_header("Accept", "application/json,text/plain,*/*")
     try:
-        with urlopen(request, timeout=_TIMEOUT) as response:
-            return json.load(response)
-    except (HTTPError, URLError, TimeoutError, ValueError, json.JSONDecodeError):
+        payload = fetch_json(
+            url,
+            headers={
+                "User-Agent": _BROWSER_USER_AGENT,
+                "Accept": "application/json,text/plain,*/*",
+            },
+            timeout_seconds=_TIMEOUT,
+            retries=0,
+            provider_name="yahoo",
+            operation_name="key_stats_chart",
+            resource_id=symbol,
+            retry_rate_limits=False,
+        )
+    except (HttpFetchError, TimeoutError, ValueError, json.JSONDecodeError):
         return None
+    return payload if isinstance(payload, dict) else None
 
 
 def _avg_last_n_int(values: list[object | None], n: int) -> int | None:

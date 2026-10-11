@@ -48,3 +48,21 @@ def test_incomplete_tick_does_not_advance_last_success() -> None:
     assert health["last_success_at"] is None
     assert health["last_error_at"] is None
     assert health["alive"] is False
+
+
+def test_stale_enabled_job_is_unhealthy() -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from app.jobs.health import unhealthy_job_names
+
+    reset_job_health_for_tests()
+    register_background_job("demo-job", enabled=True, max_stale_seconds=10)
+    note_job_success("demo-job")
+    assert unhealthy_job_names() == []
+    from app.jobs import health as health_module
+
+    with health_module._lock:
+        health_module._jobs["demo-job"].last_success_at = datetime.now(UTC) - timedelta(
+            seconds=30
+        )
+    assert unhealthy_job_names() == ["demo-job"]

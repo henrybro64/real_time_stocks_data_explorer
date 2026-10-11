@@ -804,8 +804,12 @@ def test_run_sampler_skips_db_on_weekend_restart(monkeypatch) -> None:
         return True
 
     monkeypatch.setattr(service._stop_event, "wait", _wait)
+    reset_job_health_for_tests()
     service._run_sampler(poll_seconds=60)
     assert calls == []
+    assert (
+        get_background_jobs_health()["rankings-archive-eod"]["last_success_at"] is not None
+    )
     assert (service.next_sampler_wake_at(saturday) - saturday.astimezone(timezone.utc)) > timedelta(
         hours=24
     )
@@ -867,6 +871,11 @@ def test_run_sampler_does_not_record_success_when_capture_fails(monkeypatch) -> 
         True,
     )
     monkeypatch.setattr(service, "any_active_capture_window", lambda _now=None: True)
+    monkeypatch.setattr(
+        service,
+        "_active_capture_window_end",
+        lambda _now: datetime.now(timezone.utc) + timedelta(minutes=30),
+    )
 
     def _wait(seconds: float) -> bool:
         service._stop_event.set()
@@ -905,6 +914,11 @@ def test_run_sampler_retries_within_budget_when_still_missing(monkeypatch) -> No
         True,
     )
     monkeypatch.setattr(service, "any_active_capture_window", lambda _now=None: True)
+    monkeypatch.setattr(
+        service,
+        "_active_capture_window_end",
+        lambda _now: datetime.now(timezone.utc) + timedelta(minutes=30),
+    )
 
     def _wait(seconds: float) -> bool:
         wake_gaps.append(seconds)

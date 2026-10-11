@@ -217,6 +217,14 @@ ${secret_patch}
         value: ${frontend_policy}
 ${secret_patch}
   - target:
+      kind: Deployment
+      name: stock-ticker-backend-worker
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/imagePullPolicy
+        value: ${backend_policy}
+${secret_patch}
+  - target:
       kind: CronJob
       name: stock-ticker-aws-health-heartbeat
     patch: |-

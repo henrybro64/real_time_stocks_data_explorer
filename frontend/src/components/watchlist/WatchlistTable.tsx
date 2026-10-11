@@ -26,6 +26,7 @@ type Props = {
   isLoading?: boolean;
   isRefreshing?: boolean;
   items: WatchlistItem[];
+  noticeDetail?: string | null;
   noticeKind?: RequestNoticeKind | null;
   pendingIds?: string[];
   trackedCount?: number;
@@ -39,6 +40,7 @@ export function WatchlistTable({
   isLoading = false,
   isRefreshing = false,
   items,
+  noticeDetail = null,
   noticeKind = null,
   pendingIds = [],
   trackedCount,
@@ -78,7 +80,11 @@ export function WatchlistTable({
       </div>
       {noticeKind ? (
         <div className="app-state-notice-wrap">
-          <RequestStateNotice kind={noticeKind} scopeLabel={t("watchlist.title")} />
+          <RequestStateNotice
+            detail={noticeKind === "validation" ? noticeDetail : null}
+            kind={noticeKind}
+            scopeLabel={t("watchlist.title")}
+          />
         </div>
       ) : null}
       {isLoading ? (

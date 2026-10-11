@@ -278,3 +278,51 @@ def test_price_below_rule_uses_strict_threshold_boundary(monkeypatch) -> None:
     assert len(events) == 1
     assert events[0].rule_type == "price_below"
     assert events[0].threshold_value == 200.0
+
+
+def test_installed_quote_loader_is_called_when_it_replaces_get_quote(monkeypatch) -> None:
+    from app.services.quote_service import quote_service
+
+    service = AlertService()
+    seen: list[str] = []
+
+    def get_quote(stock_id: str):
+        seen.append(stock_id)
+        return quote_record(
+            "US:AAPL",
+            last_price=205.0,
+            change=1.0,
+            change_percent=0.5,
+            previous_close=204.0,
+            timestamp="2026-05-26T09:30:00-04:00",
+            is_market_open=True,
+        )
+
+    def fail_peek(_stock_ids: list[str]):
+        raise AssertionError("cache peek must not replace an installed quote loader")
+
+    monkeypatch.setattr(quote_service, "get_quote", get_quote)
+    monkeypatch.setattr(quote_service, "peek_cached_quotes", fail_peek)
+    service._quote_loader = get_quote
+
+    loaded = service._load_quotes({"US:AAPL"})
+
+    assert seen == ["US:AAPL"]
+    assert loaded["US:AAPL"] is not None
+    assert loaded["US:AAPL"].last_price == 205.0
+
+
+def test_default_quote_loader_reads_the_shared_cache(monkeypatch) -> None:
+    from app.services.quote_service import quote_service
+
+    service = AlertService()
+    peeked: list[str] = []
+
+    def peek(stock_ids: list[str]) -> list:
+        peeked.extend(stock_ids)
+        return []
+
+    monkeypatch.setattr(quote_service, "peek_cached_quotes", peek)
+
+    assert service._load_quotes({"US:AAPL"}) == {}
+    assert peeked == ["US:AAPL"]

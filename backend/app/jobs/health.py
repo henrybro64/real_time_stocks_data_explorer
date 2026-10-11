@@ -22,6 +22,8 @@ class _JobState:
     last_success_at: datetime | None = None
     last_error_at: datetime | None = None
     last_error_type: str | None = None
+    max_stale_seconds: float | None = None
+    registered_at: datetime | None = None
 
 
 def reset_job_health_for_tests() -> None:
@@ -34,11 +36,15 @@ def register_background_job(
     *,
     enabled: bool,
     thread: Thread | None = None,
+    max_stale_seconds: float | None = None,
 ) -> None:
     with _lock:
         state = _jobs.setdefault(job_name, _JobState())
         state.enabled = enabled
         state.thread = thread
+        state.max_stale_seconds = max_stale_seconds
+        if state.registered_at is None:
+            state.registered_at = datetime.now(UTC)
 
 
 def note_job_success(job_name: str) -> None:
@@ -98,6 +104,8 @@ def get_background_jobs_health() -> dict[str, Any]:
                 last_success_at=state.last_success_at,
                 last_error_at=state.last_error_at,
                 last_error_type=state.last_error_type,
+                max_stale_seconds=state.max_stale_seconds,
+                registered_at=state.registered_at,
             )
             for name, state in _jobs.items()
         }
@@ -111,6 +119,33 @@ def get_background_jobs_health() -> dict[str, Any]:
         }
         for name, state in sorted(snapshot.items())
     }
+
+
+def unhealthy_job_names(now: datetime | None = None) -> list[str]:
+    """Enabled jobs whose thread died or whose last success is past its budget.
+
+    A job with no success yet is healthy until ``max_stale_seconds`` after it
+    was registered, so a daily job is not failed during startup.
+    """
+    current = now or datetime.now(UTC)
+    with _lock:
+        snapshot = list(_jobs.items())
+    names: list[str] = []
+    for name, state in snapshot:
+        if not state.enabled:
+            continue
+        if state.thread is not None and not state.thread.is_alive():
+            names.append(name)
+            continue
+        stale_after = state.max_stale_seconds
+        if not stale_after:
+            continue
+        anchor = state.last_success_at or state.registered_at
+        if anchor is None:
+            continue
+        if (current - anchor).total_seconds() > float(stale_after):
+            names.append(name)
+    return names
 
 
 def _iso_utc(value: datetime | None) -> str | None:

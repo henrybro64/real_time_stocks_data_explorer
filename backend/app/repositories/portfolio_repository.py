@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 
 from app.db.models import PortfolioAsset, PortfolioPosition
 
@@ -13,6 +13,28 @@ UNSET = object()
 class PortfolioRepository:
     def is_available(self) -> bool:
         return database_is_configured()
+
+    def count_positions(self, user_id: str) -> int:
+        session_factory = require_session_factory()
+        with session_factory() as session:
+            return int(
+                session.execute(
+                    select(func.count())
+                    .select_from(PortfolioPosition)
+                    .where(PortfolioPosition.user_id == user_id),
+                ).scalar_one()
+            )
+
+    def count_assets(self, user_id: str) -> int:
+        session_factory = require_session_factory()
+        with session_factory() as session:
+            return int(
+                session.execute(
+                    select(func.count())
+                    .select_from(PortfolioAsset)
+                    .where(PortfolioAsset.user_id == user_id),
+                ).scalar_one()
+            )
 
     def list_positions(self, user_id: str) -> list[PortfolioPosition]:
         session_factory = require_session_factory()
@@ -59,20 +81,36 @@ class PortfolioRepository:
         currency: str,
         notes: str | None,
     ) -> PortfolioPosition:
-        session_factory = require_session_factory()
-        with session_factory() as session:
-            position = PortfolioPosition(
-                user_id=user_id,
-                stock_id=stock_id,
-                quantity=quantity,
-                average_cost=average_cost,
-                currency=currency,
-                notes=notes,
-            )
-            session.add(position)
-            session.commit()
-            session.refresh(position)
-            return position
+        from app.services.user_quota_service import (
+            enforce_portfolio_position_cap,
+            lock_owner_row,
+            user_quota_write,
+        )
+
+        with user_quota_write("portfolio-position", user_id):
+            session_factory = require_session_factory()
+            with session_factory() as session:
+                lock_owner_row(session, user_id)
+                current_count = int(
+                    session.execute(
+                        select(func.count())
+                        .select_from(PortfolioPosition)
+                        .where(PortfolioPosition.user_id == user_id),
+                    ).scalar_one()
+                )
+                enforce_portfolio_position_cap(user_id, current_count=current_count)
+                position = PortfolioPosition(
+                    user_id=user_id,
+                    stock_id=stock_id,
+                    quantity=quantity,
+                    average_cost=average_cost,
+                    currency=currency,
+                    notes=notes,
+                )
+                session.add(position)
+                session.commit()
+                session.refresh(position)
+                return position
 
     def update_position(
         self,
@@ -137,20 +175,36 @@ class PortfolioRepository:
         value: float,
         notes: str | None,
     ) -> PortfolioAsset:
-        session_factory = require_session_factory()
-        with session_factory() as session:
-            asset = PortfolioAsset(
-                user_id=user_id,
-                asset_type=asset_type,
-                name=name,
-                currency=currency,
-                value=value,
-                notes=notes,
-            )
-            session.add(asset)
-            session.commit()
-            session.refresh(asset)
-            return asset
+        from app.services.user_quota_service import (
+            enforce_portfolio_asset_cap,
+            lock_owner_row,
+            user_quota_write,
+        )
+
+        with user_quota_write("portfolio-asset", user_id):
+            session_factory = require_session_factory()
+            with session_factory() as session:
+                lock_owner_row(session, user_id)
+                current_count = int(
+                    session.execute(
+                        select(func.count())
+                        .select_from(PortfolioAsset)
+                        .where(PortfolioAsset.user_id == user_id),
+                    ).scalar_one()
+                )
+                enforce_portfolio_asset_cap(user_id, current_count=current_count)
+                asset = PortfolioAsset(
+                    user_id=user_id,
+                    asset_type=asset_type,
+                    name=name,
+                    currency=currency,
+                    value=value,
+                    notes=notes,
+                )
+                session.add(asset)
+                session.commit()
+                session.refresh(asset)
+                return asset
 
     def update_asset(
         self,

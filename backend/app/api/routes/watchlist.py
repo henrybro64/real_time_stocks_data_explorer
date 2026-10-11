@@ -24,6 +24,11 @@ def add_watchlist_item(
         ids = watchlist_service.add(user_id, payload.id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        from app.api.http_quota import raise_quota_http
+
+        raise_quota_http(exc)
+        raise
     return WatchlistResponse(ids=ids)
 
 

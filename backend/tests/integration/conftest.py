@@ -57,6 +57,14 @@ def setup_database() -> Iterator[None]:
 
 
 @pytest.fixture(autouse=True)
+def _reset_shared_limiters() -> None:
+    """Drop process-wide counters so one suite does not exhaust auth limits."""
+    from app.services.rate_limit_service import clear_rate_limits_for_tests
+
+    clear_rate_limits_for_tests()
+
+
+@pytest.fixture(autouse=True)
 def reset_database() -> Iterator[None]:
     if engine is None or SessionLocal is None:
         raise RuntimeError("DATABASE_URL is configured but SessionLocal is missing")

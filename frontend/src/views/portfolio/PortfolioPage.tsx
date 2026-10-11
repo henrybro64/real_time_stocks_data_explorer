@@ -36,6 +36,7 @@ import {
   fetchPortfolioSummary,
   fetchUsdTwdFxRate,
   searchStocks,
+  toApiError,
 } from "../../services/api/client";
 import { formatCurrency, formatLastUpdated, formatPercent, formatSignedNumber } from "../../services/format/quote";
 import {
@@ -499,7 +500,15 @@ export function PortfolioPage() {
 
       {portfolioActionNoticeKind ? (
         <Column className="app-column-spacing" sm={4} md={8} lg={16}>
-          <RequestStateNotice kind={portfolioActionNoticeKind} scopeLabel={t("portfolio.title")} />
+          <RequestStateNotice
+            detail={
+              portfolioActionNoticeKind === "validation"
+                ? toApiError(portfolio.mutationError ?? portfolio.actionError).detail
+                : null
+            }
+            kind={portfolioActionNoticeKind}
+            scopeLabel={t("portfolio.title")}
+          />
         </Column>
       ) : null}
 

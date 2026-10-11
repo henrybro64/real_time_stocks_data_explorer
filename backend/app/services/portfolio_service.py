@@ -7,6 +7,10 @@ from app.repositories.portfolio_repository import (
 )
 from app.services.quote_refresher_service import quote_refresher_service
 from app.services.quote_service import quote_service
+from app.services.user_quota_service import (
+    enforce_portfolio_asset_cap,
+    enforce_portfolio_position_cap,
+)
 
 SUPPORTED_PORTFOLIO_CURRENCIES = frozenset({"USD", "TWD"})
 
@@ -31,6 +35,10 @@ class PortfolioService:
             raise ValueError(
                 f"Position already exists for stock id: {stock_id}",
             )
+        enforce_portfolio_position_cap(
+            user_id,
+            current_count=portfolio_repository.count_positions(user_id),
+        )
         position = portfolio_repository.create_position(
             user_id=user_id,
             stock_id=stock_id,
@@ -88,6 +96,10 @@ class PortfolioService:
         value: float,
         notes: str | None,
     ) -> PortfolioAsset:
+        enforce_portfolio_asset_cap(
+            user_id,
+            current_count=portfolio_repository.count_assets(user_id),
+        )
         return portfolio_repository.create_asset(
             user_id=user_id,
             asset_type=asset_type,

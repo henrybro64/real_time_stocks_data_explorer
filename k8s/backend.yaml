@@ -10,6 +10,10 @@ data:
   # Local auth: when enabled, users must sign in with LOCAL_AUTH_USERNAME / LOCAL_AUTH_PASSWORD.
   AUTH_ENABLED: "true"
   LOCAL_AUTH_ENABLED: "true"
+  # API pods serve requests only; stock-ticker-backend-worker runs jobs (#276).
+  RUN_BACKGROUND_JOBS: "false"
+  # Traefik appends the client. Next forwards that header. One trusted hop (#273).
+  TRUSTED_PROXY_HOPS: "1"
   # Background quote refresher (#130)
   QUOTE_REFRESHER_ENABLED: "true"
   QUOTE_REFRESHER_OWNS_UPSTREAM: "true"

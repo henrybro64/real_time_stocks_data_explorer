@@ -48,7 +48,7 @@ These remain part of the public backend/API surface even though the current UI d
 | `PATCH /api/portfolio/assets/{id}` (+ `PortfolioAssetUpdate` contracts) | Live update API; assets UI is create/delete-only today |
 | `GET /api/ai/insights/{stock_id}` (+ `AiInsightResponse` contracts) | Live insight endpoint; stock detail uses `/analysis` instead |
 | Shared-contract response subtypes used only as nested fields | Compose imported response types; not dead |
-| `oauth_identities` table / `OAuthIdentity` model | Unused today; dropping it needs a migration, and #240 (Entra External ID) may use it. Decide with #240 |
+| `oauth_identities` table / `OAuthIdentity` model | Used by Entra External ID (#240); keep |
 | `/api/stream` WebSocket | Unused by the frontend (it polls), but documented in product scope as a cache-first push API for other clients |
 | Test seams: `ready_trading_date`, `get_rankings_archive_engine`, `get_cached_quote`, `*_for_tests` resets | Production uses the underlying logic; these keep that logic directly testable |
 | `RankingsArchiveService.preview_retention_purge` | Documented operator-shell tool (#188), not called by the app by design |

@@ -79,6 +79,9 @@ class Settings(BaseSettings):
     # Background snapshot capture for free-only rankings persistence.
     rankings_snapshot_enabled: bool = Field(default=True)
     rankings_refresh_seconds: int = Field(default=1800, ge=60)
+    # In-app ranking history. Older rows are deleted by the snapshot sampler.
+    # The Azure archive keeps the long-term copy (#274).
+    ranking_snapshot_retention_days: int = Field(default=400, ge=30, le=3650)
     # Manual POST /rankings/refresh cooldown per market+universe+type.
     rankings_manual_refresh_cooldown_seconds: int = Field(default=15, ge=1, le=120)
     rankings_universe_us: str = Field(
@@ -116,17 +119,53 @@ class Settings(BaseSettings):
     alert_evaluator_enabled: bool = Field(default=True)
     alert_evaluator_poll_seconds: int = Field(default=60, ge=30)
 
+    # When false, FastAPI serves requests only; jobs run in the worker process (#276).
+    # Default true keeps single-process local/k3s behaviour.
+    run_background_jobs: bool = Field(default=True)
+    # Worker health bind address. Loopback unless WORKER_HEALTH_HOST is set.
+    # The worker Deployment sets that so kubelet can probe the pod.
+    worker_health_host: str = Field(default="127.0.0.1")
+
     # Multi-user auth. When false, API uses default-user only.
     auth_enabled: bool = Field(default=False)
     # Local username/password auth flow (no external providers).
     local_auth_enabled: bool = Field(default=False)
     local_auth_username: str = Field(default="")
     local_auth_password: str = Field(default="")
+    # Microsoft Entra External ID (OIDC) as an additional provider (#240).
+    entra_external_id_enabled: bool = Field(default=False)
+    entra_tenant_id: str = Field(default="")
+    entra_client_id: str = Field(default="")
+    entra_client_secret: str = Field(default="")
+    # e.g. https://<tenant>.ciamlogin.com/<tenant_id>/v2.0
+    entra_authority: str = Field(default="")
+    entra_redirect_uri: str = Field(default="")
+    entra_post_logout_redirect_uri: str = Field(default="")
     # Starlette session signing; use a long random value in production when auth_enabled.
     session_secret: str = Field(default="dev-session-secret-change-me")
     # Secure session cookie. Keep false for plain HTTP (local / LAN Ingress);
     # set true when serving over HTTPS (#267).
     session_cookie_secure: bool = Field(default=False)
+
+    # Per-user resource caps (#273). The quote refresher tracks the union of
+    # watchlist, positions, and alert rules. These defaults stay usable for one
+    # person and keep a single account from putting a few hundred symbols on
+    # the shared upstream budget.
+    user_watchlist_max_items: int = Field(default=100, ge=1, le=10_000)
+    user_portfolio_max_positions: int = Field(default=80, ge=1, le=10_000)
+    user_portfolio_max_assets: int = Field(default=50, ge=1, le=10_000)
+    user_alert_max_rules: int = Field(default=80, ge=1, le=10_000)
+    # Daily budget for stock-analysis calls that burn the server AI key (#273).
+    user_ai_server_key_daily_limit: int = Field(default=50, ge=0, le=10_000)
+    # How many reverse proxies append to X-Forwarded-For. The client address is
+    # that many hops from the right, so a caller cannot rotate the leftmost value
+    # into a fresh login bucket (#273). 0 ignores the header and uses the TCP peer.
+    trusted_proxy_hops: int = Field(default=1, ge=0, le=10)
+    # Auth route rate limits (per IP). Failed logins share the login bucket.
+    auth_login_rate_limit_per_minute: int = Field(default=20, ge=1, le=1_000)
+    auth_register_rate_limit_per_hour: int = Field(default=10, ge=1, le=1_000)
+    # General authenticated API soft limit (per user). 0 disables.
+    api_user_rate_limit_per_minute: int = Field(default=300, ge=0, le=100_000)
     # Comma-separated CORS origins (different-origin UIs). Same-origin `/` + `/api` does not
     # require CORS; defaults cover dev (direct API + separate UI port).
     cors_origins: str = Field(

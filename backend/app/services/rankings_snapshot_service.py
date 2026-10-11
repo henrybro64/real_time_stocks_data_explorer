@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import logging
 from collections.abc import Callable
 from threading import Event, Lock, Thread
@@ -429,6 +429,29 @@ class RankingsSnapshotService:
         *,
         trigger: str = "manual",
     ) -> int:
+        from app.services.job_leader_lock import (
+            release_job_leadership,
+            try_acquire_job_leadership,
+        )
+
+        token = try_acquire_job_leadership(
+            "rankings-snapshot-sampler",
+            ttl_seconds=max(60, int(settings.rankings_refresh_seconds)),
+        )
+        if token is None:
+            return 0
+        try:
+            return self._capture_scheduled_snapshots_locked(now, trigger=trigger)
+        except Exception:
+            release_job_leadership("rankings-snapshot-sampler", token)
+            raise
+
+    def _capture_scheduled_snapshots_locked(
+        self,
+        now: datetime | None = None,
+        *,
+        trigger: str = "manual",
+    ) -> int:
         _sync_repository_sessionlocal()
         if not ranking_snapshot_repository.is_available():
             return 0
@@ -514,7 +537,19 @@ class RankingsSnapshotService:
                 bucket_start,
                 response,
             )
+        self._prune_expired_snapshots(current)
         return captured
+
+    def _prune_expired_snapshots(self, current: datetime) -> None:
+        """Drop in-app snapshots older than the retention window (#274).
+
+        The Azure rankings archive is the long-term copy. This table keeps a
+        little more than a year so the product can still read recent history.
+        """
+        if not ranking_snapshot_repository.is_available():
+            return
+        cutoff = current - timedelta(days=int(settings.ranking_snapshot_retention_days))
+        ranking_snapshot_repository.delete_snapshots_before(cutoff)
 
     def _persist_scheduled_snapshot(
         self,

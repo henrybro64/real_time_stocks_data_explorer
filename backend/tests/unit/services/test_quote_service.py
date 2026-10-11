@@ -484,6 +484,31 @@ def test_get_quote_does_not_hit_provider_when_refresher_owns_upstream(monkeypatc
     assert requested == ["US:AAPL"]
 
 
+def test_external_worker_owns_upstream_when_api_jobs_are_off(monkeypatch) -> None:
+    monkeypatch.setattr(cache.settings, "quote_refresher_enabled", True)
+    monkeypatch.setattr(cache.settings, "quote_refresher_owns_upstream", True)
+    monkeypatch.setattr(cache.settings, "run_background_jobs", False)
+    monkeypatch.setattr(cache.settings, "redis_url", "redis://worker:6379/0")
+    monkeypatch.setattr(
+        "app.services.quote_refresher_service.quote_refresher_service.is_sampler_running",
+        lambda: False,
+    )
+    provider = StubUSProvider()
+    service = _service_with_provider(provider)
+    requested: list[str] = []
+    monkeypatch.setattr(
+        service,
+        "_request_background_refresh",
+        lambda stock_id: requested.append(stock_id),
+    )
+
+    quote = service.get_quote("US:AAPL")
+
+    assert quote is None
+    assert provider.quote_calls == []
+    assert requested == ["US:AAPL"]
+
+
 def test_get_quote_falls_back_to_provider_when_refresher_not_running(monkeypatch) -> None:
     monkeypatch.setattr(cache.settings, "quote_refresher_enabled", True)
     monkeypatch.setattr(cache.settings, "quote_refresher_owns_upstream", True)
