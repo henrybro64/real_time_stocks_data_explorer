@@ -119,6 +119,12 @@ def run_snapshot_refresh_singleflight(key: str, refresh_fn: Callable[[], T]) -> 
         with gate.cond:
             gate.refreshing = False
             gate.cond.notify_all()
+            # Drop the gate once this wave finishes. Waiters already hold the
+            # object and can read its result; a later bucket must not keep the
+            # Lock forever (#272).
+            with _gates_lock:
+                if _refresh_gates.get(key) is gate:
+                    _refresh_gates.pop(key, None)
 
 
 def _gate_for(key: str) -> _RefreshGate:

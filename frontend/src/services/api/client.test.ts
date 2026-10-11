@@ -4,6 +4,7 @@ import {
   ApiError,
   RANKINGS_REQUEST_TIMEOUT_DETAIL,
   RANKINGS_REQUEST_TIMEOUT_MS,
+  fetchQuotes,
   fetchRankings,
   fetchRankingsHistory,
   fetchRankingsHistoryDates,
@@ -633,5 +634,31 @@ describe("refreshRankings", () => {
       universe: "DJIA",
       limit: 50,
     });
+  });
+});
+
+describe("fetchQuotes", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("splits a watchlist longer than the quote id cap", async () => {
+    const ids = Array.from({ length: 101 }, (_value, index) => `US:S${index}`);
+    const fetchMock = vi.fn(async () =>
+      new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(fetchQuotes(ids)).resolves.toEqual([]);
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const firstUrl = String(fetchMock.mock.calls[0]?.[0]);
+    const secondUrl = String(fetchMock.mock.calls[1]?.[0]);
+    expect(firstUrl).toContain("US%3AS0");
+    expect(firstUrl).not.toContain("US%3AS100");
+    expect(secondUrl).toContain("US%3AS100");
   });
 });

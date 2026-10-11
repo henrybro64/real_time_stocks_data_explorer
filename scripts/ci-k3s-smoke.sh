@@ -54,18 +54,28 @@ dump_proxy_failure_evidence() {
     >"${ARTIFACT_DIR}/frontend-backend-proxy-env.txt" 2>&1 || true
 }
 
+# k3s runs with AUTH_ENABLED=true, so market-data GETs need this session (#272).
+SMOKE_USERNAME="k3s-smoke"
+SMOKE_PASSWORD="k3s-smoke-pass"
+
 # Retry HTTP GETs so brief Next.js rewrite / CoreDNS races do not fail the smoke.
 curl_get_ok() {
   local url="$1"
   local out_file="$2"
   local attempts="${3:-10}"
   local delay_seconds="${4:-3}"
+  local cookie_jar="${5:-}"
   local attempt http_code body curl_status
+  local -a curl_args
 
   for ((attempt = 1; attempt <= attempts; attempt++)); do
     printf '+ curl attempt %s/%s %s\n' "${attempt}" "${attempts}" "${url}" >&2
+    curl_args=(-sS -w '\n%{http_code}' --max-time 20)
+    if [[ -n "${cookie_jar}" ]]; then
+      curl_args+=(-b "${cookie_jar}")
+    fi
     set +e
-    body="$(curl -sS -w '\n%{http_code}' --max-time 20 "${url}")"
+    body="$(curl "${curl_args[@]}" "${url}")"
     curl_status=$?
     set -e
     if [[ "${curl_status}" -eq 0 ]]; then
@@ -88,6 +98,47 @@ curl_get_ok() {
 
   dump_proxy_failure_evidence
   echo "Failed to GET ${url} after ${attempts} attempts" >&2
+  return 1
+}
+
+# Register a disposable user, or sign in when that username already exists.
+ensure_market_data_session() {
+  local base_url="$1"
+  local cookie_jar="$2"
+  local payload http_code attempt
+
+  payload="$(printf '{"username":"%s","password":"%s"}' "${SMOKE_USERNAME}" "${SMOKE_PASSWORD}")"
+  rm -f "${cookie_jar}"
+  for ((attempt = 1; attempt <= 5; attempt++)); do
+    http_code="$(
+      curl -sS -o "${ARTIFACT_DIR}/auth-register.body" -w '%{http_code}' \
+        -c "${cookie_jar}" -b "${cookie_jar}" \
+        -H 'Content-Type: application/json' \
+        --data "${payload}" \
+        --max-time 20 \
+        "${base_url}/api/auth/register/local" || true
+    )"
+    if [[ "${http_code}" == "200" ]]; then
+      echo "Registered smoke session via ${base_url}"
+      return 0
+    fi
+    http_code="$(
+      curl -sS -o "${ARTIFACT_DIR}/auth-login.body" -w '%{http_code}' \
+        -c "${cookie_jar}" -b "${cookie_jar}" \
+        -H 'Content-Type: application/json' \
+        --data "${payload}" \
+        --max-time 20 \
+        "${base_url}/api/auth/login/local" || true
+    )"
+    if [[ "${http_code}" == "200" ]]; then
+      echo "Signed in smoke session via ${base_url}"
+      return 0
+    fi
+    printf 'Smoke sign-in HTTP %s via %s (attempt %s/5)\n' \
+      "${http_code}" "${base_url}" "${attempt}" >&2
+    sleep 2
+  done
+  echo "Failed to establish a smoke session via ${base_url}" >&2
   return 1
 }
 
@@ -169,8 +220,12 @@ backend_health="$(curl_get_ok http://127.0.0.1:8000/health "${ARTIFACT_DIR}/back
 grep -q '"status":"ok"' <<< "${backend_health}"
 append_summary_section "Backend /health" "${backend_health}"
 
+echo "Signing in before market-data reads"
+backend_cookie_jar="${ARTIFACT_DIR}/backend-session.cookies"
+ensure_market_data_session "http://127.0.0.1:8000" "${backend_cookie_jar}"
+
 echo "Checking backend /api/markets through service port-forward"
-backend_markets="$(curl_get_ok http://127.0.0.1:8000/api/markets "${ARTIFACT_DIR}/backend-markets.json" 8 2)"
+backend_markets="$(curl_get_ok http://127.0.0.1:8000/api/markets "${ARTIFACT_DIR}/backend-markets.json" 8 2 "${backend_cookie_jar}")"
 grep -q '"market"' <<< "${backend_markets}"
 append_summary_section "Backend /api/markets" "${backend_markets}"
 
@@ -178,7 +233,9 @@ echo "Checking frontend -> backend service DNS path via Next.js rewrite"
 run_kubectl -n "${NAMESPACE}" port-forward svc/stock-ticker-frontend 3000:3000 >"${ARTIFACT_DIR}/frontend-port-forward.log" 2>&1 &
 FRONTEND_PORT_FORWARD_PID=$!
 sleep 5
-frontend_proxy="$(curl_get_ok http://127.0.0.1:3000/api/markets "${ARTIFACT_DIR}/frontend-backend-proxy.json" 12 3)"
+frontend_cookie_jar="${ARTIFACT_DIR}/frontend-session.cookies"
+ensure_market_data_session "http://127.0.0.1:3000" "${frontend_cookie_jar}"
+frontend_proxy="$(curl_get_ok http://127.0.0.1:3000/api/markets "${ARTIFACT_DIR}/frontend-backend-proxy.json" 12 3 "${frontend_cookie_jar}")"
 grep -q '"market"' <<< "${frontend_proxy}"
 append_summary_section "Frontend /api/markets via frontend service" "${frontend_proxy}"
 

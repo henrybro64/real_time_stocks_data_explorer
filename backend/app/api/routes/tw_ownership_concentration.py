@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
+from app.api.deps import get_effective_user_id
 from app.schemas.tw_ownership_concentration import (
     OwnershipComponentStateResponse,
     OwnershipDataStatusResponse,
@@ -18,7 +19,11 @@ from app.services.tw_ownership_concentration_service import (
     tw_ownership_concentration_service,
 )
 
-router = APIRouter(prefix="/stocks", tags=["tw-ownership-concentration"])
+router = APIRouter(
+    prefix="/stocks",
+    tags=["tw-ownership-concentration"],
+    dependencies=[Depends(get_effective_user_id)],
+)
 
 OwnershipRangeQuery = Literal["3M", "6M", "1Y"]
 

@@ -125,33 +125,7 @@ def test_parse_retry_after_seconds() -> None:
     assert parse_retry_after_seconds(http_date) == pytest.approx(45.0, abs=2.0)
 
 
-def test_fetch_json_honors_retry_after_on_retry_sleep(monkeypatch) -> None:
-    response = MagicMock()
-    response.status_code = 429
-    response.headers = {"content-type": "application/json", "retry-after": "5"}
-    sleeps: list[float] = []
-    calls = {"count": 0}
-
-    def fake_request(*_args, **_kwargs):
-        calls["count"] += 1
-        if calls["count"] == 1:
-            return response
-        raise httpx.ConnectTimeout("give up")
-
-    monkeypatch.setattr("app.services.http_client.httpx.request", fake_request)
-    monkeypatch.setattr(
-        "app.services.http_client.time.sleep",
-        lambda seconds: sleeps.append(seconds),
-    )
-    monkeypatch.setattr("app.services.http_client.random.random", lambda: 0.0)
-
-    with pytest.raises(HttpFetchError):
-        fetch_json("https://www.twse.com.tw/rwd/zh/marginTrading/TWT93U", retries=1)
-
-    assert sleeps == [pytest.approx(5.0)]
-
-
-def test_fetch_json_caps_large_retry_after_sleep(monkeypatch) -> None:
+def test_fetch_json_does_not_retry_rate_limited(monkeypatch) -> None:
     response = MagicMock()
     response.status_code = 429
     response.headers = {"content-type": "application/json", "retry-after": "3600"}
@@ -160,26 +134,28 @@ def test_fetch_json_caps_large_retry_after_sleep(monkeypatch) -> None:
 
     def fake_request(*_args, **_kwargs):
         calls["count"] += 1
-        if calls["count"] == 1:
-            return response
-        raise httpx.ConnectTimeout("give up")
+        return response
 
     monkeypatch.setattr("app.services.http_client.httpx.request", fake_request)
     monkeypatch.setattr(
         "app.services.http_client.time.sleep",
         lambda seconds: sleeps.append(seconds),
     )
-    monkeypatch.setattr("app.services.http_client.random.random", lambda: 0.0)
 
     with pytest.raises(HttpFetchError) as exc_info:
-        fetch_json("https://www.twse.com.tw/rwd/zh/marginTrading/TWT93U", retries=1)
+        fetch_json(
+            "https://www.twse.com.tw/rwd/zh/marginTrading/TWT93U",
+            retries=2,
+            retry_rate_limits=False,
+        )
 
-    assert sleeps == [pytest.approx(30.0)]
-    assert exc_info.value.classification == "network_failure"
+    assert calls["count"] == 1
+    assert sleeps == []
+    assert exc_info.value.classification == "rate_limited"
+    assert exc_info.value.retry_after_seconds == pytest.approx(3600.0)
     last = get_last_http_fetch_error()
     assert last is not None
     assert last.classification == "rate_limited"
-    assert last.retry_after_seconds == pytest.approx(3600.0)
 
 
 def test_fetch_json_exponential_backoff_sleeps(monkeypatch) -> None:
@@ -448,14 +424,14 @@ def test_fetch_json_limits_remote_protocol_error_retries(monkeypatch) -> None:
 def test_fetch_json_does_not_reuse_prior_rate_limit_after_timeout(monkeypatch) -> None:
     rate_limited = MagicMock()
     rate_limited.status_code = 429
-    rate_limited.headers = {"content-type": "application/json"}
+    rate_limited.headers = {"content-type": "application/json", "retry-after": "4"}
     calls = {"count": 0}
 
     def fake_request(*_args, **_kwargs):
         calls["count"] += 1
         if calls["count"] == 1:
             return rate_limited
-        raise httpx.ConnectTimeout("timed out on retry")
+        raise httpx.ConnectTimeout("timed out on a later request")
 
     monkeypatch.setattr("app.services.http_client.httpx.request", fake_request)
     monkeypatch.setattr("app.services.http_client.time.sleep", lambda _seconds: None)
@@ -466,6 +442,9 @@ def test_fetch_json_does_not_reuse_prior_rate_limit_after_timeout(monkeypatch) -
     assert calls["count"] == 2
     assert exc_info.value.classification == "network_failure"
     assert exc_info.value.status_code is None
+    remembered = get_last_http_fetch_error()
+    assert remembered is not None
+    assert remembered.classification == "rate_limited"
 
 
 def test_provider_spacing_hook_called_per_upstream_attempt(monkeypatch) -> None:

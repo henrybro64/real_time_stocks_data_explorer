@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
+from app.api.deps import get_effective_user_id
 from app.schemas.tw_institutional import (
     TaiwanInstitutionalInvestorHistoryPointResponse,
     TaiwanInstitutionalInvestorsResponse,
@@ -17,7 +18,11 @@ from app.services.tw_institutional_service import (
 )
 
 
-router = APIRouter(prefix="/stocks", tags=["tw-institutional"])
+router = APIRouter(
+    prefix="/stocks",
+    tags=["tw-institutional"],
+    dependencies=[Depends(get_effective_user_id)],
+)
 
 
 @router.get(

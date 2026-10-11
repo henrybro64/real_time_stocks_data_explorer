@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+import inspect
 import logging
 from threading import Lock, Thread
 from time import perf_counter
@@ -13,9 +14,11 @@ from app.models.quote import CandleRecord, QuoteRecord
 from app.models.stock import StockRecord
 from app.services.http_client import (
     HttpFetchError,
+    ProviderRequestAborted,
     clear_last_http_fetch_error,
     get_last_http_fetch_error,
 )
+from app.services.quote_batch import QuoteBatchInterrupted
 from app.services.providers.tw_provider import TWProvider
 from app.services.providers.us_provider import USProvider
 from app.services.quote_redis_cache import (
@@ -107,6 +110,42 @@ class QuoteFetchAttempt:
 
     quote: QuoteRecord | None
     error: HttpFetchError | None = None
+
+
+@dataclass
+class QuoteRefreshBatch:
+    """Batched refresh outcome. Hard-stopped ids are not per-symbol fallbacks."""
+
+    attempts: dict[str, QuoteFetchAttempt] = field(default_factory=dict)
+    hard_stops: dict[str, Exception] = field(default_factory=dict)
+    deferred_ids: list[str] = field(default_factory=list)
+    timed_out_ids: list[str] = field(default_factory=list)
+
+
+def _call_quotes_batch(batch_fn, stocks: list[StockRecord], before_chunk):
+    parameters = inspect.signature(batch_fn).parameters
+    accepts_chunk = "before_chunk" in parameters or any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters.values()
+    )
+    if accepts_chunk:
+        return batch_fn(stocks, before_chunk=before_chunk)
+    return batch_fn(stocks)
+
+
+def _record_interrupted_batch(
+    batch: QuoteRefreshBatch,
+    market: str,
+    interrupted: QuoteBatchInterrupted,
+) -> None:
+    for stock_id, quote in interrupted.quotes.items():
+        batch.attempts[stock_id] = QuoteFetchAttempt(quote=quote)
+    if interrupted.timed_out:
+        batch.timed_out_ids.extend(interrupted.deferred_ids)
+        return
+    if interrupted.error is not None:
+        batch.hard_stops[market] = interrupted.error
+    batch.deferred_ids.extend(interrupted.deferred_ids)
 
 
 def _format_cached_at(cached_at) -> str:
@@ -250,7 +289,9 @@ class QuoteService:
             return cached.quote
 
         if self._background_refresher_owns_upstream() and allow_stale:
-            self._request_background_refresh(stock_id)
+            # Honour per-symbol failure backoff before re-queueing (#268).
+            if not refresh_failure_active(stock_id):
+                self._request_background_refresh(stock_id)
             if cached is not None:
                 logger.debug(
                     "Quote served from stale cache; refresher owns upstream",
@@ -396,6 +437,81 @@ class QuoteService:
             return QuoteFetchAttempt(quote=quote)
         return QuoteFetchAttempt(quote=None, error=get_last_http_fetch_error())
 
+    def fetch_quotes_for_refresh_batch(
+        self,
+        stock_ids: list[str],
+        *,
+        before_chunk_for_market: Callable[[str], Callable[[], None]] | None = None,
+    ) -> QuoteRefreshBatch:
+        """Batched provider fetch for the refresher cycle (#271).
+
+        Symbols missing from a completed batch are left out so the caller can
+        fall back per symbol. A rate limit or cycle deadline keeps quotes
+        already parsed and defers the rest with one market failure (#268).
+        A Yahoo v7 auth denial is not that interrupt: the provider returns the
+        rows it parsed so the chart path can still run.
+        """
+        batch = QuoteRefreshBatch()
+        by_market: dict[str, list[str]] = {}
+        for stock_id in stock_ids:
+            market = self._market_from_id(stock_id)
+            by_market.setdefault(market, []).append(stock_id)
+
+        for market, ids in by_market.items():
+            provider = self.providers.get(market)
+            if provider is None:
+                for stock_id in ids:
+                    batch.attempts[stock_id] = QuoteFetchAttempt(quote=None)
+                continue
+            batch_fn = getattr(provider, "get_quotes_batch", None)
+            if not callable(batch_fn):
+                continue
+            stocks: list[StockRecord] = []
+            for stock_id in ids:
+                stock = self.get_catalog_stock(stock_id)
+                if stock is not None:
+                    stocks.append(stock)
+            if not stocks:
+                continue
+            before_chunk = (
+                before_chunk_for_market(market)
+                if before_chunk_for_market is not None
+                else None
+            )
+            clear_last_http_fetch_error()
+            try:
+                quotes = _call_quotes_batch(batch_fn, stocks, before_chunk)
+            except QuoteBatchInterrupted as interrupted:
+                _record_interrupted_batch(batch, market, interrupted)
+                continue
+            except ProviderRequestAborted:
+                batch.timed_out_ids.extend(stock.id for stock in stocks)
+                continue
+            except HttpFetchError as exc:
+                batch.hard_stops[market] = exc
+                batch.deferred_ids.extend(stock.id for stock in stocks)
+                continue
+            except Exception as exc:  # noqa: BLE001 - one market failure, no fan-out
+                logger.exception(
+                    "Batch quote refresh failed",
+                    extra={
+                        "event": "quote.batch_refresh.failed",
+                        "provider": market,
+                        "symbol_count": len(stocks),
+                        "error_type": type(exc).__name__,
+                    },
+                )
+                batch.hard_stops[market] = exc
+                batch.deferred_ids.extend(stock.id for stock in stocks)
+                continue
+            if not isinstance(quotes, dict):
+                continue
+            for stock in stocks:
+                quote = quotes.get(stock.id)
+                if quote is not None:
+                    batch.attempts[stock.id] = QuoteFetchAttempt(quote=quote)
+        return batch
+
     def _request_background_refresh(self, stock_id: str) -> None:
         try:
             from app.services.quote_refresher_service import quote_refresher_service
@@ -442,7 +558,8 @@ class QuoteService:
         items: list[QuoteBatchItem] = []
 
         for stock_id in unique_ids:
-            stock = self.get_stock(stock_id)
+            # Batch reads stay catalog-only — never Yahoo chart per id (#272).
+            stock = self.get_catalog_stock(stock_id)
             if stock is None:
                 # Report unknown catalog rows instead of dropping them (#264).
                 placeholder = self._placeholder_stock(stock_id)

@@ -484,8 +484,23 @@ export function searchStocks(query: string) {
   return fetchJson<Stock[]>(`/search?q=${encodeURIComponent(query)}`);
 }
 
-export function fetchQuotes(ids: string[]) {
-  return fetchJson<QuoteResponse[]>(`/quotes?ids=${encodeURIComponent(ids.join(","))}`);
+/** Matches the backend `QUOTE_BATCH_IDS_MAX` default (#272). */
+const QUOTE_IDS_PER_REQUEST = 100;
+
+export async function fetchQuotes(ids: string[]) {
+  if (ids.length === 0) {
+    return [];
+  }
+  const pages: QuoteResponse[][] = [];
+  for (let start = 0; start < ids.length; start += QUOTE_IDS_PER_REQUEST) {
+    const slice = ids.slice(start, start + QUOTE_IDS_PER_REQUEST);
+    pages.push(
+      await fetchJson<QuoteResponse[]>(
+        `/quotes?ids=${encodeURIComponent(slice.join(","))}`,
+      ),
+    );
+  }
+  return pages.flat();
 }
 
 export function fetchQuote(stockId: string) {

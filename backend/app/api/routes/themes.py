@@ -1,12 +1,17 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
+from app.api.deps import get_effective_user_id
 from app.models.stock import StockRecord
 from app.schemas.stock import StockResponse
 from app.schemas.theme import ThemeResponse, ThemeStocksResponse
 from app.services.stock_theme_service import ThemeStockGroup, ThemeDefinition, stock_theme_service
 
 
-router = APIRouter(prefix="/themes", tags=["themes"])
+router = APIRouter(
+    prefix="/themes",
+    tags=["themes"],
+    dependencies=[Depends(get_effective_user_id)],
+)
 
 
 @router.get("", response_model=list[ThemeResponse])

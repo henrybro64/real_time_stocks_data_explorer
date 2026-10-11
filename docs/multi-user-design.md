@@ -50,11 +50,19 @@ The session is Starlette's signed cookie (`SessionMiddleware`, `same_site="lax"`
 
 User-owned tables use `UserOwnedRowMixin` (`backend/app/db/row_mixins.py`) or declare the same column: `user_id` is non-null, indexed, and a foreign key to `users.id` with `ON DELETE CASCADE`.
 
-**Shared, not user-scoped:** quotes, history, search, rankings, market snapshot, news, and Taiwan institutional / margin-short / ownership / profitability data. These routes stay public when auth is on, because market data is the same for every user. The background quote refresher warms the **union** of all users' watchlist and portfolio symbols.
+**Shared market data (session required when auth is on):** quotes, history, search, rankings, market snapshot, news, themes, WebSocket `/api/stream`, and Taiwan institutional / margin-short / ownership / profitability routes. The payload is the same for every user, but anonymous callers cannot spend the upstream rate-limit budget (#272). `GET /api/quotes` and `/api/stream` cap `ids` at `QUOTE_BATCH_IDS_MAX` (default 100) and accept only `US:` plus a ticker (optional `-` or `.` class suffix) or `TW:` plus 4–6 digits. With `AUTH_ENABLED=false`, these routes still resolve to the seeded `default-user` (single-user mode unchanged). The background quote refresher warms the **union** of all users' watchlist, portfolio, and alert symbols.
+
+## Public vs protected routes
+
+| Access | Routes |
+| --- | --- |
+| Always open | `/health`, `/api/auth/*` (status, login, logout, register) |
+| Session required when `AUTH_ENABLED=true` | User-owned routes **and** shared market-data routes listed above |
+| Capture token (not session) | `POST /api/portfolio/history/capture`, rankings snapshot/archive capture, Taiwan market-data capture |
 
 ## Enforcement layers
 
-1. **Routes** — watchlist, portfolio (positions, assets, history), realized trades, alerts, AI settings, and stock AI analysis depend on `get_effective_user_id`.
+1. **Routes** — watchlist, portfolio (positions, assets, history), realized trades, alerts, AI settings, stock AI analysis, and shared market-data routes depend on `get_effective_user_id`.
 2. **Services and repositories** — reads filter by `user_id`; updates and deletes match the resource id **and** the user, so a request cannot modify another user's row.
 3. **Schema** — foreign keys, cascades, and per-user unique constraints.
 4. **UI** — `AppChrome` redirects to `/login` when `authEnabled && !loggedIn`. This is a convenience; the backend's 401 is the real boundary.

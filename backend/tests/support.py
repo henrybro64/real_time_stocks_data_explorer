@@ -168,6 +168,26 @@ class StubUSProvider:
     def get_stock(self, stock_id: str):
         return self._stocks.get(stock_id)
 
+    def get_catalog_stock(self, stock_id: str):
+        return self.get_stock(stock_id)
+
+    def get_quotes_batch(self, stocks):
+        """Batch helper for refresher tests; skips soft failures for per-symbol fallback."""
+        from app.services.http_client import HttpFetchError
+
+        out = {}
+        for stock in stocks:
+            try:
+                quote = self.get_quote(stock.id)
+            except HttpFetchError:
+                # Surface rate limits / auth denials to the batch caller (#268).
+                raise
+            except Exception:
+                continue
+            if quote is not None:
+                out[stock.id] = quote
+        return out
+
     def get_quote(self, stock_id: str):
         self.quote_calls.append(stock_id)
         if self.quote_delay_seconds:

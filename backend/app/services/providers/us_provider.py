@@ -1,16 +1,19 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 import logging
 import re
 import threading
+import time
 from datetime import datetime, timedelta
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
 from app.models.quote import CandleRecord, QuoteRecord
 from app.models.stock import StockRecord
-from app.services.http_client import HttpFetchError, fetch_json
+from app.services.http_client import HttpFetchError, ProviderRequestAborted, fetch_json
 from app.services.market_clock import quote_session_is_live
+from app.services.quote_batch import QuoteBatchInterrupted
 from app.services.providers.yahoo_chart import (
     chart_quote_price,
     coherent_price_change,
@@ -18,6 +21,66 @@ from app.services.providers.yahoo_chart import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Stop Yahoo candidate / endpoint fallbacks so one 429/403 does not fan out (#268).
+_YAHOO_HARD_STOP_CLASSIFICATIONS = frozenset({"rate_limited", "auth_denied"})
+_UNKNOWN_STOCK_NEGATIVE_TTL_SECONDS = 300.0
+_unknown_stock_negative_until: dict[str, float] = {}
+_unknown_stock_negative_lock = threading.Lock()
+# v7 quote is often unauthorized while v8 chart still works. Remember that
+# denial so per-symbol fallback uses chart and does not hit v7 again.
+_V7_AUTH_DENIED_COOLDOWN_SECONDS = 120.0
+_v7_auth_denied_until = 0.0
+_v7_auth_denied_lock = threading.Lock()
+
+
+def _reraise_yahoo_hard_stop(exc: BaseException) -> None:
+    """Re-raise transport denials that must abort the Yahoo fallback chain."""
+    if (
+        isinstance(exc, HttpFetchError)
+        and exc.classification in _YAHOO_HARD_STOP_CLASSIFICATIONS
+    ):
+        raise exc
+
+
+def _unknown_stock_negatively_cached(stock_id: str) -> bool:
+    with _unknown_stock_negative_lock:
+        until = _unknown_stock_negative_until.get(stock_id)
+        if until is None:
+            return False
+        if time.monotonic() < until:
+            return True
+        _unknown_stock_negative_until.pop(stock_id, None)
+        return False
+
+
+def _remember_unknown_stock(stock_id: str) -> None:
+    with _unknown_stock_negative_lock:
+        _unknown_stock_negative_until[stock_id] = (
+            time.monotonic() + _UNKNOWN_STOCK_NEGATIVE_TTL_SECONDS
+        )
+
+
+def clear_unknown_stock_negative_cache_for_tests() -> None:
+    with _unknown_stock_negative_lock:
+        _unknown_stock_negative_until.clear()
+
+
+def _v7_auth_denied_active() -> bool:
+    with _v7_auth_denied_lock:
+        return time.monotonic() < _v7_auth_denied_until
+
+
+def _remember_v7_auth_denied() -> None:
+    global _v7_auth_denied_until
+    with _v7_auth_denied_lock:
+        _v7_auth_denied_until = time.monotonic() + _V7_AUTH_DENIED_COOLDOWN_SECONDS
+
+
+def clear_v7_auth_denied_for_tests() -> None:
+    global _v7_auth_denied_until
+    with _v7_auth_denied_lock:
+        _v7_auth_denied_until = 0.0
 
 
 US_STOCKS: dict[str, StockRecord] = {
@@ -172,9 +235,10 @@ class USProvider:
             if symbol and stock.symbol.upper().startswith(symbol)
         ]
 
+        # Search stays catalog-only so keystrokes never spend Yahoo budget (#272).
         dynamic_stock: StockRecord | None = None
         if normalized_symbol and (not symbol_matches or len(normalized_symbol) > 2):
-            dynamic_stock = self.get_stock(f"US:{normalized_symbol}")
+            dynamic_stock = self.get_catalog_stock(f"US:{normalized_symbol}")
 
         if symbol_matches:
             matches = list(symbol_matches)
@@ -206,8 +270,16 @@ class USProvider:
         if stock is not None:
             return stock
 
-        dynamic_stock = _fetch_yahoo_chart_stock(normalized_stock_id)
+        if _unknown_stock_negatively_cached(normalized_stock_id):
+            return None
+
+        try:
+            dynamic_stock = _fetch_yahoo_chart_stock(normalized_stock_id)
+        except HttpFetchError:
+            # Hard-stop / transport failure: do not pin a negative cache entry.
+            return None
         if dynamic_stock is None:
+            _remember_unknown_stock(normalized_stock_id)
             return None
         catalog[dynamic_stock.id] = dynamic_stock
         self.__class__._catalog_cache = catalog
@@ -229,6 +301,15 @@ class USProvider:
             return None
 
         return _fetch_live_quote(stock)
+
+    def get_quotes_batch(
+        self,
+        stocks: list[StockRecord],
+        *,
+        before_chunk: Callable[[], None] | None = None,
+    ) -> dict[str, QuoteRecord]:
+        """Batched Yahoo v7 quotes for the refresher cycle (#271)."""
+        return yahoo_v7_quotes_batch(stocks, before_chunk=before_chunk)
 
     def get_history(
         self,
@@ -430,6 +511,7 @@ def _load_json_with_headers(
         headers=headers,
         timeout_seconds=_REQUEST_TIMEOUT_SECONDS,
         retries=retries,
+        retry_rate_limits=False,
     )
 
 
@@ -439,6 +521,7 @@ def _load_json_get(url: str, headers: dict[str, str]) -> dict:
         headers=headers,
         timeout_seconds=_REQUEST_TIMEOUT_SECONDS,
         retries=2,
+        retry_rate_limits=False,
     )
 
 
@@ -623,7 +706,10 @@ def _fetch_yahoo_chart_stock(stock_id: str) -> StockRecord | None:
         url = f"{_YAHOO_CHART_URL}/{path_symbol}?interval=1d&range=5d"
         try:
             payload = _load_json_get(url, headers)
-        except (HttpFetchError, TimeoutError, ValueError):
+        except HttpFetchError as exc:
+            _reraise_yahoo_hard_stop(exc)
+            continue
+        except (TimeoutError, ValueError):
             continue
 
         chart = payload.get("chart")
@@ -656,7 +742,10 @@ def _fetch_yahoo_chart_quote(stock: StockRecord) -> QuoteRecord | None:
         url = f"{_YAHOO_CHART_URL}/{path_symbol}?interval=1d&range=5d"
         try:
             payload = _load_json_get(url, headers)
-        except (HttpFetchError, TimeoutError, ValueError):
+        except HttpFetchError as exc:
+            _reraise_yahoo_hard_stop(exc)
+            continue
+        except (TimeoutError, ValueError):
             continue
 
         chart = payload.get("chart")
@@ -731,12 +820,26 @@ def _rounded_price(value: object) -> float | None:
     return round(float(value), 2)
 
 
-def yahoo_v7_quotes_batch(stocks: list[StockRecord]) -> dict[str, QuoteRecord]:
+def _unquoted_stock_ids(
+    stocks: list[StockRecord],
+    quotes: dict[str, QuoteRecord],
+) -> list[str]:
+    return [stock.id for stock in stocks if stock.id not in quotes]
+
+
+def yahoo_v7_quotes_batch(
+    stocks: list[StockRecord],
+    *,
+    before_chunk: Callable[[], None] | None = None,
+) -> dict[str, QuoteRecord]:
     """Fetch Yahoo v7 quotes for many tickers using a few batched HTTP calls.
 
     Keys are ``stock.id`` (``US:SYMBOL``). Missing or invalid rows are omitted.
-    Auth denials abort remaining chunks so callers can fall back to chart/live
-    paths without burning latency on every chunk (#182).
+    A rate limit aborts remaining chunks and raises ``QuoteBatchInterrupted``
+    so callers keep earlier rows and do not fall back onto the same host
+    (#182, #268). A 401/403 stops further v7 chunks but returns rows already
+    parsed: v7 is often unauthorized while the chart endpoint still works, so
+    those symbols stay eligible for the chart fallback.
     """
     if not stocks:
         return {}
@@ -750,17 +853,24 @@ def yahoo_v7_quotes_batch(stocks: list[StockRecord]) -> dict[str, QuoteRecord]:
         chunk = stocks[start : start + chunk_size]
         symbols_param = ",".join(_yahoo_v7_request_symbol(s.symbol) for s in chunk)
         try:
-            # Keep normal retries for transient 429/5xx/timeouts. Auth denials are
-            # already non-retryable in http_client (#182 Codex).
+            if before_chunk is not None:
+                before_chunk()
             payload = _load_json_with_headers(
                 _YAHOO_QUOTE_URL,
                 {"symbols": symbols_param},
                 headers,
             )
+        except ProviderRequestAborted as exc:
+            raise QuoteBatchInterrupted(
+                quotes=out,
+                deferred_ids=_unquoted_stock_ids(stocks, out),
+                timed_out=True,
+            ) from exc
         except HttpFetchError as exc:
             if exc.classification == "auth_denied":
+                _remember_v7_auth_denied()
                 logger.warning(
-                    "Yahoo v7 quote batch auth denied; aborting remaining chunks",
+                    "Yahoo v7 quote batch unauthorized; chart fallback covers the rest",
                     extra={
                         "event": "yahoo_v7_quotes_batch.auth_denied",
                         "provider": "yahoo_finance",
@@ -770,7 +880,24 @@ def yahoo_v7_quotes_batch(stocks: list[StockRecord]) -> dict[str, QuoteRecord]:
                         "response_classification": exc.classification,
                     },
                 )
-                break
+                return out
+            if exc.classification == "rate_limited":
+                logger.warning(
+                    "Yahoo v7 quote batch hard-stopped; aborting remaining chunks",
+                    extra={
+                        "event": "yahoo_v7_quotes_batch.hard_stop",
+                        "provider": "yahoo_finance",
+                        "chunk_start": start,
+                        "chunk_size": len(chunk),
+                        "status_code": exc.status_code,
+                        "response_classification": exc.classification,
+                    },
+                )
+                raise QuoteBatchInterrupted(
+                    quotes=out,
+                    deferred_ids=_unquoted_stock_ids(stocks, out),
+                    error=exc,
+                ) from exc
             continue
         except (TimeoutError, ValueError):
             continue
@@ -816,7 +943,10 @@ def _fetch_yahoo_v7_quote(stock: StockRecord) -> QuoteRecord | None:
                 {"symbols": candidate},
                 headers,
             )
-        except (HttpFetchError, TimeoutError, ValueError):
+        except HttpFetchError as exc:
+            _reraise_yahoo_hard_stop(exc)
+            continue
+        except (TimeoutError, ValueError):
             continue
 
         quote_response = payload.get("quoteResponse")
@@ -840,7 +970,12 @@ def _fetch_yahoo_v7_quote(stock: StockRecord) -> QuoteRecord | None:
 def _fetch_live_quote(stock: StockRecord) -> QuoteRecord | None:
     # Stooq is not used: its quote row has no previous close, so it cannot give a
     # correct daily change (it used to compare against the day's open).
-    for fetcher in (_fetch_yahoo_chart_quote, _fetch_yahoo_v7_quote):
+    # Hard-stop errors from chart (429/403) propagate and skip v7 (#268).
+    # A recent v7 401/403 skips v7 here; chart is the endpoint that still works.
+    fetchers = [_fetch_yahoo_chart_quote]
+    if not _v7_auth_denied_active():
+        fetchers.append(_fetch_yahoo_v7_quote)
+    for fetcher in fetchers:
         quote = fetcher(stock)
         if quote is not None:
             return quote
@@ -863,7 +998,10 @@ def _fetch_yahoo_history(
         url = f"{_YAHOO_CHART_URL}/{path_symbol}?interval={interval}&range={range_param}"
         try:
             payload = _load_json_get(url, headers)
-        except (HttpFetchError, TimeoutError, ValueError):
+        except HttpFetchError as exc:
+            _reraise_yahoo_hard_stop(exc)
+            continue
+        except (TimeoutError, ValueError):
             continue
 
         chart = payload.get("chart")

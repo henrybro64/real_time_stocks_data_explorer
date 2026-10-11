@@ -1,8 +1,9 @@
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
+from app.api.deps import get_effective_user_id
 from app.services.market_clock import (
     MARKET_TIMEZONES,
     is_market_open,
@@ -19,7 +20,11 @@ from app.services.fx_service import get_usd_twd_fx_snapshot
 from app.services.market_index_service import market_index_service
 
 
-router = APIRouter(prefix="/markets", tags=["markets"])
+router = APIRouter(
+    prefix="/markets",
+    tags=["markets"],
+    dependencies=[Depends(get_effective_user_id)],
+)
 
 
 @router.get("")

@@ -225,11 +225,24 @@ class RankingsSnapshotService:
                 return response
 
             try:
-                live = provider.fetch(
-                    query,
-                    limit=max(limit, _MAX_CAPTURE_LIMIT),
-                    now=current,
+                # Coalesce concurrent bucket-miss fetches at the 30-minute rollover (#272).
+                from app.services.market_snapshot_cache import (
+                    run_snapshot_refresh_singleflight,
                 )
+
+                flight_key = (
+                    f"rankings:ondemand:{query.market}:{query.universe}:"
+                    f"{query.ranking_type.value}:{bucket_start.isoformat()}"
+                )
+
+                def _fetch_live() -> RankingResponse:
+                    return provider.fetch(
+                        query,
+                        limit=max(limit, _MAX_CAPTURE_LIMIT),
+                        now=current,
+                    )
+
+                live = run_snapshot_refresh_singleflight(flight_key, _fetch_live)
             except Exception:  # noqa: BLE001
                 logger.exception(
                     "Rankings snapshot capture failed",
