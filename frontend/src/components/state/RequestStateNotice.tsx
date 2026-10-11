@@ -285,7 +285,8 @@ export function RequestStateNotice({
           {current.action}
         </Link>
       ) : null}
-      {onRetry && kind !== "auth" && kind !== "stale" ? (
+      {/* Stale data needs Retry too: it is what a dashboard shows after a mid-session outage (#285). */}
+      {onRetry && kind !== "auth" ? (
         <Button kind="ghost" size="sm" onClick={onRetry}>
           {t("auth.retry")}
         </Button>

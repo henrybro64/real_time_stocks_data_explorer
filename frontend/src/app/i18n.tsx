@@ -32,6 +32,8 @@ export type TranslationKey =
   | "auth.loading"
   | "auth.serverUnreachableTitle"
   | "auth.serverUnreachableBody"
+  | "auth.serverErrorTitle"
+  | "auth.serverErrorBody"
   | "auth.retry"
   | "language.english"
   | "language.traditionalChinese"
@@ -584,6 +586,9 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "auth.serverUnreachableTitle": "Cannot reach the server",
     "auth.serverUnreachableBody":
       "The API did not respond. Check that the backend is running, then retry. This page recovers automatically when the server returns.",
+    "auth.serverErrorTitle": "The server returned an unexpected response",
+    "auth.serverErrorBody":
+      "The API is up but could not report your sign-in status. Retry, or check the proxy and backend logs. This page retries automatically.",
     "auth.retry": "Retry",
     "language.english": "English",
     "language.traditionalChinese": "Traditional Chinese",
@@ -1174,6 +1179,9 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "auth.serverUnreachableTitle": "無法連線到伺服器",
     "auth.serverUnreachableBody":
       "後端 API 沒有回應。請確認服務已啟動後再重試；伺服器恢復後此頁會自動重新連線。",
+    "auth.serverErrorTitle": "伺服器回應異常",
+    "auth.serverErrorBody":
+      "API 有回應，但無法取得登入狀態。請重試，或檢查代理與後端日誌；此頁會自動重試。",
     "auth.retry": "重試",
     "language.english": "英文",
     "language.traditionalChinese": "繁體中文",

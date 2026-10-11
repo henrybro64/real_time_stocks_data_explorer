@@ -106,14 +106,22 @@ fi
 
 echo
 echo "== Alembic current =="
+# Compare against the image's own head so this check does not rot with each migration.
 alembic_out="$(
   ${KUBECTL_CMD} -n "${NAMESPACE}" exec deploy/stock-ticker-backend -c backend -- alembic current 2>&1 || true
 )"
-printf '%s\n' "${alembic_out}"
-if printf '%s\n' "${alembic_out}" | grep -q '20261011_0020'; then
-  pass "alembic current includes 20261011_0020"
+alembic_heads="$(
+  ${KUBECTL_CMD} -n "${NAMESPACE}" exec deploy/stock-ticker-backend -c backend -- alembic heads 2>&1 || true
+)"
+printf 'current: %s\nheads:   %s\n' "${alembic_out}" "${alembic_heads}"
+head_revs="$(printf '%s\n' "${alembic_heads}" | awk '/\(head\)/ {print $1}')"
+current_revs="$(printf '%s\n' "${alembic_out}" | awk '/\(head\)/ {print $1}')"
+if [[ -z "${head_revs}" ]]; then
+  fail "could not read alembic heads"
+elif [[ "$(printf '%s\n' "${head_revs}" | sort)" == "$(printf '%s\n' "${current_revs}" | sort)" ]]; then
+  pass "alembic current is at head (${head_revs//$'\n'/ })"
 else
-  fail "alembic current is not at 20261011_0020"
+  fail "alembic current is not at head (${head_revs//$'\n'/ })"
 fi
 
 echo

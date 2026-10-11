@@ -5,6 +5,7 @@ import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import type { CommodityQuote, FxRate } from "@shared/api";
 import { useLanguage } from "../../app/i18n";
 import { fetchUsdTwdFxRate, fetchWtiCrudeOilQuote } from "../../services/api/client";
+import { refetchIntervalWhileErroring } from "../../services/api/pollingInterval";
 import { formatLastUpdated, formatPercent } from "../../services/format/quote";
 import { priceToneClass } from "../../services/market-data/priceTone";
 import { RequestStateNotice } from "../state/RequestStateNotice";
@@ -150,7 +151,7 @@ export function MarketSnapshot() {
     queryKey: ["usd-twd-fx-rate"],
     queryFn: fetchUsdTwdFxRate,
     staleTime: STALE_MS,
-    refetchInterval: (query) => (query.state.status === "error" ? false : REFRESH_MS),
+    refetchInterval: (query) => refetchIntervalWhileErroring(query.state.status, REFRESH_MS),
     refetchIntervalInBackground: false,
     placeholderData: keepPreviousData,
   });
@@ -159,7 +160,7 @@ export function MarketSnapshot() {
     queryKey: ["wti-crude-oil"],
     queryFn: fetchWtiCrudeOilQuote,
     staleTime: STALE_MS,
-    refetchInterval: (query) => (query.state.status === "error" ? false : REFRESH_MS),
+    refetchInterval: (query) => refetchIntervalWhileErroring(query.state.status, REFRESH_MS),
     refetchIntervalInBackground: false,
     placeholderData: keepPreviousData,
   });

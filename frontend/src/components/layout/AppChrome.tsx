@@ -12,17 +12,23 @@ type Props = {
   children: ReactNode;
 };
 
-type GateState = "loading" | "allowed" | "redirecting" | "unreachable";
+type GateState = "loading" | "allowed" | "redirecting" | "unreachable" | "unexpected";
 
 const OFFLINE_SHELL =
   typeof process !== "undefined" && process.env.NEXT_PUBLIC_ALLOW_OFFLINE_SHELL === "true";
 
-function isBackendUnreachable(error: unknown): boolean {
-  const apiError = error instanceof ApiError ? error : toApiError(error);
-  if (apiError.status == null) {
-    return true;
+type ProbeFailure = "signed-out" | "unreachable" | "unexpected";
+
+function classifyProbeFailure(error: unknown): ProbeFailure {
+  const { status } = error instanceof ApiError ? error : toApiError(error);
+  if (status == null || status >= 500) {
+    return "unreachable";
   }
-  return apiError.status >= 500;
+  // A proxy or expired session answering the status probe still means "sign in".
+  if (status === 401 || status === 403) {
+    return "signed-out";
+  }
+  return "unexpected";
 }
 
 /**
@@ -46,6 +52,18 @@ export function AppChrome({ children }: Props) {
     let cancelled = false;
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
     setGate("loading");
+
+    const scheduleRetry = () => {
+      const attempt = attemptRef.current;
+      attemptRef.current = attempt + 1;
+      const delayMs = Math.min(30_000, 1_000 * 2 ** Math.min(attempt, 4));
+      retryTimer = setTimeout(() => {
+        if (!cancelled) {
+          // Keep the failure screen up while retrying so it does not flicker to "Loading…".
+          probe();
+        }
+      }, delayMs);
+    };
 
     const probe = () => {
       fetchAuthStatus()
@@ -73,21 +91,19 @@ export function AppChrome({ children }: Props) {
             setGate("allowed");
             return;
           }
-          if (!isBackendUnreachable(error)) {
-            // Unexpected client/auth response: still avoid a false dashboard shell.
-            setGate("unreachable");
+          const failure = classifyProbeFailure(error);
+          if (failure === "signed-out") {
+            attemptRef.current = 0;
+            if (pathname === "/login") {
+              setGate("allowed");
+              return;
+            }
+            setGate("redirecting");
+            router.replace("/login");
             return;
           }
-          setGate("unreachable");
-          const attempt = attemptRef.current;
-          attemptRef.current = attempt + 1;
-          const delayMs = Math.min(30_000, 1_000 * 2 ** Math.min(attempt, 4));
-          retryTimer = setTimeout(() => {
-            if (!cancelled) {
-              setGate("loading");
-              probe();
-            }
-          }, delayMs);
+          setGate(failure);
+          scheduleRetry();
         });
     };
 
@@ -101,11 +117,16 @@ export function AppChrome({ children }: Props) {
     };
   }, [pathname, router, retryTick]);
 
-  if (gate === "unreachable") {
+  if (gate === "unreachable" || gate === "unexpected") {
+    const unreachable = gate === "unreachable";
     return (
       <div className="app-auth-gate app-auth-gate-unreachable" role="alert">
-        <p className="cds--heading-03">{t("auth.serverUnreachableTitle")}</p>
-        <p className="cds--body-compact-01">{t("auth.serverUnreachableBody")}</p>
+        <p className="cds--heading-03">
+          {t(unreachable ? "auth.serverUnreachableTitle" : "auth.serverErrorTitle")}
+        </p>
+        <p className="cds--body-compact-01">
+          {t(unreachable ? "auth.serverUnreachableBody" : "auth.serverErrorBody")}
+        </p>
         <Button kind="primary" size="md" onClick={retryNow}>
           {t("auth.retry")}
         </Button>

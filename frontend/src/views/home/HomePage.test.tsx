@@ -17,6 +17,7 @@ import {
   fetchQuotes,
   searchStocks,
 } from "../../services/api/client";
+import { ERROR_REFETCH_MS } from "../../services/api/pollingInterval";
 import { HomePage } from "./HomePage";
 import {
   WATCHLIST_QUOTE_REFETCH_INTERVAL_CLOSED_MS,
@@ -34,7 +35,15 @@ vi.mock("../../components/search/StockSearch", () => ({
 }));
 
 vi.mock("../../components/market-status/MarketStatusStrip", () => ({
-  MarketStatusStrip: () => <div data-testid="market-status-strip" />,
+  MarketStatusStrip: ({ error, onRetry }: { error?: unknown; onRetry?: () => void }) => (
+    <div data-testid="market-status-strip">
+      {error && onRetry ? (
+        <button type="button" onClick={onRetry}>
+          Retry
+        </button>
+      ) : null}
+    </div>
+  ),
 }));
 
 vi.mock("../../components/market-status/MarketIndicesStrip", () => ({
@@ -563,13 +572,14 @@ describe("HomePage watchlist quote query", () => {
     expect(screen.queryByTestId("watchlist-retrying-quote")).not.toBeInTheDocument();
   });
 
-  it("ends a failed market summary on a retry instead of a spinner", async () => {
+  it("ends a failed market summary on one retry instead of a spinner", async () => {
     const user = userEvent.setup();
     vi.mocked(fetchMarkets).mockRejectedValue(new Error("backend down"));
     const queryClient = createQueryClient();
     renderHome(queryClient);
 
     const retry = await screen.findByRole("button", { name: /Retry|重試/ });
+    expect(screen.getByText(/Markets: —|市場數: —/)).toBeInTheDocument();
     expect(screen.queryByText(/Syncing market data|同步市場資料中/)).not.toBeInTheDocument();
 
     vi.mocked(fetchMarkets).mockResolvedValue([TW_OPEN, US_CLOSED]);
@@ -577,5 +587,20 @@ describe("HomePage watchlist quote query", () => {
     await waitFor(() => {
       expect(screen.getByText(/Markets: 2|市場數: 2/)).toBeInTheDocument();
     });
+  });
+
+  it("keeps polling markets after an error so the page heals on its own", async () => {
+    vi.mocked(fetchMarkets).mockRejectedValue(new Error("backend down"));
+    const queryClient = createQueryClient();
+    renderHome(queryClient);
+
+    await screen.findByRole("button", { name: /Retry|重試/ });
+    const query = queryClient.getQueryCache().find({ queryKey: ["markets"] });
+    const observer = query?.observers[0];
+    const refetchInterval = observer?.options.refetchInterval;
+    expect(typeof refetchInterval).toBe("function");
+    expect(
+      (refetchInterval as (q: typeof query) => number | false)(query),
+    ).toBe(ERROR_REFETCH_MS);
   });
 });

@@ -47,6 +47,8 @@ Optional env:
   FORCE_AUTH_SECRET_APPLY=1
                    Apply k8s/backend-auth-secret.yaml even when the live Secret
                    differs. Default is to skip and print differing keys (#284).
+                   The preflight then validates that local file, so a broken
+                   live SESSION_SECRET can be repaired by a forced apply.
                    Never use this to rotate LOCAL_AUTH_PASSWORD casually (#286).
 
 k3d one-time setup (before first deploy):
@@ -438,17 +440,49 @@ EOF
   chmod 600 "${secret_path}"
 }
 
-_secret_looks_like_placeholder() {
-  local value="${1:-}"
+# Placeholder rules mirror backend/app/core/auth_settings.py so the preflight
+# blocks exactly what the API rejects, no more (#284).
+_lowercase() {
+  printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]'
+}
+
+_has_placeholder_marker() {
   local lowered
-  lowered="$(printf '%s' "${value}" | tr '[:upper:]' '[:lower:]')"
-  [[ -z "${value}" ]] && return 1
-  case "${lowered}" in
-    change-me|changeme|secret|session-secret|capture-token|password|admin|change-me-local-password|dev-session-secret-change-me|k8s-dev-replace-with-openssl-rand-hex-32-chars-minimum-16|k8s-dev-replace-with-random-capture-token|replace-with-long-random-token)
+  lowered="$(_lowercase "${1:-}")"
+  [[ "${lowered}" == *replace* || "${lowered}" == *change-me* || "${lowered}" == *changeme* ]]
+}
+
+_session_secret_is_placeholder() {
+  local value="${1:-}"
+  case "${value}" in
+    dev-session-secret-change-me|k8s-dev-replace-with-openssl-rand-hex-32-chars-minimum-16|change-me|secret|session-secret)
       return 0
       ;;
   esac
-  [[ "${lowered}" == *replace* || "${lowered}" == *change-me* || "${lowered}" == *changeme* ]]
+  _has_placeholder_marker "${value}"
+}
+
+_capture_token_is_placeholder() {
+  local value="${1:-}"
+  [[ -z "${value}" ]] && return 1
+  case "${value}" in
+    k8s-dev-replace-with-random-capture-token|change-me|capture-token|replace-with-long-random-token)
+      return 0
+      ;;
+  esac
+  _has_placeholder_marker "${value}"
+}
+
+_bootstrap_password_is_placeholder() {
+  # Backend compares the trimmed, casefolded value against an exact list only.
+  local trimmed
+  trimmed="$(printf '%s' "${1:-}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+  case "$(_lowercase "${trimmed}")" in
+    change-me-local-password|change-me|password|admin)
+      return 0
+      ;;
+  esac
+  return 1
 }
 
 _live_secret_data_value() {
@@ -468,48 +502,73 @@ _live_secret_data_value() {
     || true
 }
 
+_preflight_auth_value() {
+  local key="$1"
+  if [[ "${PREFLIGHT_AUTH_SOURCE}" == "local" ]]; then
+    _local_auth_secret_value "${ROOT_DIR}/k8s/backend-auth-secret.yaml" "${key}"
+  else
+    _live_secret_data_value stock-ticker-backend-auth "${key}"
+  fi
+}
+
 preflight_live_auth_secrets() {
-  # Stop before rollout when live Secrets still hold values the new image rejects (#284).
-  # Capture-token placeholders no longer crash the API, but SESSION_SECRET still does.
-  # This step never rewrites LOCAL_AUTH_*.
+  # Stop before rollout when the auth Secret the pods will see holds values the
+  # new image rejects (#284). Capture-token placeholders no longer crash the API,
+  # but SESSION_SECRET still does. This step never rewrites LOCAL_AUTH_*.
+  # With FORCE_AUTH_SECRET_APPLY=1 the local file replaces the live Secret, so
+  # check that file instead; otherwise a broken live Secret could never be repaired.
   local problems=()
   local session_secret portfolio_token archive_token local_password
-  local rankings_token taiwan_token local_user
+  local rankings_token taiwan_token local_user auth_label
+  local local_secret_path="${ROOT_DIR}/k8s/backend-auth-secret.yaml"
 
-  if ${KUBECTL_CMD} -n "${NAMESPACE}" get secret stock-ticker-backend-auth >/dev/null 2>&1; then
-    session_secret="$(_live_secret_data_value stock-ticker-backend-auth SESSION_SECRET)"
-    portfolio_token="$(_live_secret_data_value stock-ticker-backend-auth PORTFOLIO_HISTORY_CAPTURE_TOKEN)"
-    rankings_token="$(_live_secret_data_value stock-ticker-backend-auth RANKINGS_CAPTURE_TOKEN)"
-    taiwan_token="$(_live_secret_data_value stock-ticker-backend-auth TAIWAN_MARKET_DATA_CAPTURE_TOKEN)"
-    local_user="$(_live_secret_data_value stock-ticker-backend-auth LOCAL_AUTH_USERNAME)"
-    local_password="$(_live_secret_data_value stock-ticker-backend-auth LOCAL_AUTH_PASSWORD)"
+  PREFLIGHT_AUTH_SOURCE=""
+  if [[ "${FORCE_AUTH_SECRET_APPLY:-0}" == "1" && -f "${local_secret_path}" ]]; then
+    PREFLIGHT_AUTH_SOURCE="local"
+    auth_label="${local_secret_path}"
+  elif ${KUBECTL_CMD} -n "${NAMESPACE}" get secret stock-ticker-backend-auth >/dev/null 2>&1; then
+    PREFLIGHT_AUTH_SOURCE="live"
+    auth_label="stock-ticker-backend-auth"
+  fi
+
+  if [[ -n "${PREFLIGHT_AUTH_SOURCE}" ]]; then
+    session_secret="$(_preflight_auth_value SESSION_SECRET)"
+    portfolio_token="$(_preflight_auth_value PORTFOLIO_HISTORY_CAPTURE_TOKEN)"
+    rankings_token="$(_preflight_auth_value RANKINGS_CAPTURE_TOKEN)"
+    taiwan_token="$(_preflight_auth_value TAIWAN_MARKET_DATA_CAPTURE_TOKEN)"
+    local_user="$(_preflight_auth_value LOCAL_AUTH_USERNAME)"
+    local_password="$(_preflight_auth_value LOCAL_AUTH_PASSWORD)"
+    # Backend strips SESSION_SECRET before checking length and placeholders.
+    session_secret="$(printf '%s' "${session_secret}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
     if [[ -z "${session_secret}" ]]; then
-      problems+=("stock-ticker-backend-auth/SESSION_SECRET is empty (API will refuse to start)")
-    elif _secret_looks_like_placeholder "${session_secret}"; then
-      problems+=("stock-ticker-backend-auth/SESSION_SECRET is a placeholder (API will refuse to start)")
+      problems+=("${auth_label}/SESSION_SECRET is empty (API will refuse to start)")
     elif [[ ${#session_secret} -lt 16 ]]; then
-      problems+=("stock-ticker-backend-auth/SESSION_SECRET is shorter than 16 characters")
+      problems+=("${auth_label}/SESSION_SECRET is shorter than 16 characters (API will refuse to start)")
+    elif _session_secret_is_placeholder "${session_secret}"; then
+      problems+=("${auth_label}/SESSION_SECRET is a placeholder (API will refuse to start)")
     fi
     if [[ -n "${local_user}" && -z "${local_password}" ]] || [[ -z "${local_user}" && -n "${local_password}" ]]; then
-      problems+=("stock-ticker-backend-auth LOCAL_AUTH_USERNAME and LOCAL_AUTH_PASSWORD must both be set or both be empty")
+      problems+=("${auth_label} LOCAL_AUTH_USERNAME and LOCAL_AUTH_PASSWORD must both be set or both be empty")
+    elif [[ -n "${local_password}" && ${#local_password} -lt 8 ]]; then
+      problems+=("${auth_label}/LOCAL_AUTH_PASSWORD is shorter than 8 characters (API will refuse to start)")
     fi
-    if [[ -n "${portfolio_token}" ]] && _secret_looks_like_placeholder "${portfolio_token}"; then
-      problems+=("stock-ticker-backend-auth/PORTFOLIO_HISTORY_CAPTURE_TOKEN is a placeholder (capture disabled until rotated)")
+    if _capture_token_is_placeholder "${portfolio_token}"; then
+      problems+=("${auth_label}/PORTFOLIO_HISTORY_CAPTURE_TOKEN is a placeholder (capture disabled until rotated)")
     fi
-    if [[ -n "${rankings_token}" ]] && _secret_looks_like_placeholder "${rankings_token}"; then
-      problems+=("stock-ticker-backend-auth/RANKINGS_CAPTURE_TOKEN is a placeholder (capture disabled until rotated)")
+    if _capture_token_is_placeholder "${rankings_token}"; then
+      problems+=("${auth_label}/RANKINGS_CAPTURE_TOKEN is a placeholder (capture disabled until rotated)")
     fi
-    if [[ -n "${taiwan_token}" ]] && _secret_looks_like_placeholder "${taiwan_token}"; then
-      problems+=("stock-ticker-backend-auth/TAIWAN_MARKET_DATA_CAPTURE_TOKEN is a placeholder (capture disabled until rotated)")
+    if _capture_token_is_placeholder "${taiwan_token}"; then
+      problems+=("${auth_label}/TAIWAN_MARKET_DATA_CAPTURE_TOKEN is a placeholder (capture disabled until rotated)")
     fi
-    if [[ -n "${local_password}" ]] && _secret_looks_like_placeholder "${local_password}"; then
-      problems+=("stock-ticker-backend-auth/LOCAL_AUTH_PASSWORD is a placeholder — clear BOTH LOCAL_AUTH_USERNAME and LOCAL_AUTH_PASSWORD (do not set a new password; that can overwrite a stored account when LOCAL_AUTH_RESET_PASSWORD is enabled)")
+    if [[ -n "${local_password}" ]] && _bootstrap_password_is_placeholder "${local_password}"; then
+      problems+=("${auth_label}/LOCAL_AUTH_PASSWORD is a placeholder — clear BOTH LOCAL_AUTH_USERNAME and LOCAL_AUTH_PASSWORD (do not set a new password; that can overwrite a stored account when LOCAL_AUTH_RESET_PASSWORD is enabled)")
     fi
   fi
 
   if ${KUBECTL_CMD} -n "${NAMESPACE}" get secret stock-ticker-backend-rankings-archive >/dev/null 2>&1; then
     archive_token="$(_live_secret_data_value stock-ticker-backend-rankings-archive RANKINGS_ARCHIVE_CAPTURE_TOKEN)"
-    if [[ -n "${archive_token}" ]] && _secret_looks_like_placeholder "${archive_token}"; then
+    if _capture_token_is_placeholder "${archive_token}"; then
       problems+=("stock-ticker-backend-rankings-archive/RANKINGS_ARCHIVE_CAPTURE_TOKEN is a placeholder (capture disabled until rotated)")
     fi
   fi
@@ -518,14 +577,15 @@ preflight_live_auth_secrets() {
     return 0
   fi
 
-  echo "Preflight failed: live Secrets contain values the new image will reject or disable (#284):" >&2
+  echo "Preflight failed: Secrets contain values the new image will reject or disable (#284):" >&2
   local item
   for item in "${problems[@]}"; do
     echo "  - ${item}" >&2
   done
   cat <<'EOF' >&2
 
-Fix SESSION_SECRET (required) before redeploying, for example:
+Fix SESSION_SECRET (required) before redeploying, either by fixing
+k8s/backend-auth-secret.yaml and re-running with FORCE_AUTH_SECRET_APPLY=1, or live:
   kubectl -n stock-ticker patch secret stock-ticker-backend-auth --type merge \
     -p "{\"stringData\":{\"SESSION_SECRET\":\"$(openssl rand -hex 32)\"}}"
 
@@ -566,9 +626,13 @@ for line in text.splitlines():
         continue
     if in_string_data and line and not line[0].isspace():
         break
-    if in_string_data and ":" in line:
-        name, _, raw = line.strip().partition(":")
-        values[name.strip()] = raw.strip().strip('"')
+    stripped = line.strip()
+    if in_string_data and stripped and not stripped.startswith("#") and ":" in stripped:
+        name, _, raw = stripped.partition(":")
+        raw = raw.strip()
+        if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "\"'":
+            raw = raw[1:-1]
+        values[name.strip()] = raw
 print(values.get(wanted, ""))
 PY
 }

@@ -15,3 +15,6 @@ override.tf.json
 *.key
 .env
 .env.*
+# Saved plans (terraform plan -out) can embed secret values.
+tfplan
+*.tfplan

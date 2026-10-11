@@ -32,6 +32,18 @@ describe("RequestStateNotice", () => {
     expect(onRetry).toHaveBeenCalledOnce();
   });
 
+  it("offers retry on stale data so a frozen dashboard can recover", async () => {
+    const onRetry = vi.fn();
+    const user = userEvent.setup();
+    renderWithLanguage(
+      <RequestStateNotice kind="stale" scopeLabel="Markets" onRetry={onRetry} />,
+      "en",
+    );
+
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    expect(onRetry).toHaveBeenCalledOnce();
+  });
+
   it("renders a stale-data warning", () => {
     renderWithLanguage(<RequestStateNotice kind="stale" scopeLabel="Price history" />);
 

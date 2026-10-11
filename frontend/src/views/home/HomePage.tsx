@@ -11,10 +11,10 @@ import { useDebouncedValue } from "../../hooks/useDebouncedValue";
 import { MarketIndicesStrip } from "../../components/market-status/MarketIndicesStrip";
 import { MarketStatusStrip } from "../../components/market-status/MarketStatusStrip";
 import { MarketSnapshot } from "../../components/market-snapshot/MarketSnapshot";
-import { RequestStateNotice } from "../../components/state/RequestStateNotice";
 import { StockSearch } from "../../components/search/StockSearch";
 import { WatchlistTable } from "../../components/watchlist/WatchlistTable";
 import { useWatchlist } from "../../hooks/useWatchlist";
+import { refetchIntervalWhileErroring } from "../../services/api/pollingInterval";
 import { fetchMarketIndices, fetchMarkets, fetchQuotes, searchStocks, toApiError } from "../../services/api/client";
 import { resolveWarmingTimeoutState } from "../../services/market-data/quoteWarming";
 import { resolveWatchlistQuoteQueryTiming } from "./watchlistQuoteQuery";
@@ -44,7 +44,7 @@ export function HomePage() {
   const marketsQuery = useQuery<MarketStatus[]>({
     queryKey: ["markets"],
     queryFn: fetchMarkets,
-    refetchInterval: (query) => (query.state.status === "error" ? false : 60_000),
+    refetchInterval: (query) => refetchIntervalWhileErroring(query.state.status, 60_000),
     staleTime: 60_000,
     refetchIntervalInBackground: false,
   });
@@ -55,14 +55,10 @@ export function HomePage() {
     staleTime: 30_000,
     refetchIntervalInBackground: false,
     refetchInterval: (query) => {
-      if (query.state.status === "error") {
-        return false;
-      }
       const items = query.state.data;
-      if (!items || items.length === 0) {
-        return 60_000;
-      }
-      return items.some((item) => item.isMarketOpen) ? 30_000 : 120_000;
+      const intervalMs =
+        !items || items.length === 0 ? 60_000 : items.some((item) => item.isMarketOpen) ? 30_000 : 120_000;
+      return refetchIntervalWhileErroring(query.state.status, intervalMs);
     },
   });
 
@@ -83,18 +79,19 @@ export function HomePage() {
         ).allWarmingTimedOut,
       }).staleTime,
     refetchInterval: (query) =>
-      query.state.status === "error"
-        ? false
-        : resolveWatchlistQuoteQueryTiming({
-        stockIds: watchlist.ids,
-        markets: marketsQuery.data,
-        quotes: query.state.data,
-        warmingTimedOut: resolveWarmingTimeoutState(
-          query.state.data ?? [],
-          warmingStartedAtByIdRef.current,
-          Date.now(),
-        ).allWarmingTimedOut,
-      }).refetchInterval,
+      refetchIntervalWhileErroring(
+        query.state.status,
+        resolveWatchlistQuoteQueryTiming({
+          stockIds: watchlist.ids,
+          markets: marketsQuery.data,
+          quotes: query.state.data,
+          warmingTimedOut: resolveWarmingTimeoutState(
+            query.state.data ?? [],
+            warmingStartedAtByIdRef.current,
+            Date.now(),
+          ).allWarmingTimedOut,
+        }).refetchInterval,
+      ),
     refetchIntervalInBackground: false,
     refetchOnMount: true,
     refetchOnWindowFocus: true,
@@ -190,20 +187,10 @@ export function HomePage() {
             <p className="app-body-copy app-hero-description">{t("home.hero.description")}</p>
           </div>
           <div className="app-hero-kpis">
-            {marketsFailed ? (
-              <RequestStateNotice
-                compact
-                kind="unavailable"
-                scopeLabel={t("home.summary.markets")}
-                onRetry={() => {
-                  void marketsQuery.refetch();
-                }}
-              />
-            ) : (
-              <span>
-                {t("home.summary.markets")}: {marketsQuery.data?.length ?? 0}
-              </span>
-            )}
+            {/* The markets strip below carries the failure notice and Retry; avoid a second copy here. */}
+            <span>
+              {t("home.summary.markets")}: {marketsFailed ? "—" : (marketsQuery.data?.length ?? 0)}
+            </span>
             <span>
               {t("home.summary.tracked")}: {watchlist.ids.length}
             </span>
