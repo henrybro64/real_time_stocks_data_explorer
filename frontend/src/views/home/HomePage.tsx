@@ -98,7 +98,7 @@ export function HomePage() {
   const searchQuery = useQuery<Stock[]>({
     queryKey: ["search", deferredQuery],
     queryFn: () => searchStocks(deferredQuery),
-    enabled: deferredQuery.trim().length >= 2,
+    enabled: deferredQuery.trim().length >= 1,
   });
 
   const watchlistItems = useMemo(() => {

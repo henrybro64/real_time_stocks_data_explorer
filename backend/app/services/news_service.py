@@ -19,6 +19,7 @@ _REQUEST_TIMEOUT_SECONDS = 8
 _GOOGLE_NEWS_RSS_URL = "https://news.google.com/rss/search"
 _MAX_ITEMS = 12
 _NEWS_CACHE_TTL_SECONDS = 180.0
+_NEWS_CACHE_MAX_ENTRIES = 256
 _news_cache_lock = threading.Lock()
 _news_cache: dict[str, tuple[float, list]] = {}
 _ANALYSIS_MAX_FETCH = 40
@@ -172,11 +173,17 @@ def _get_cached_news(stock_id: str) -> list[NewsItem] | None:
 
 
 def _set_cached_news(stock_id: str, items: list[NewsItem]) -> None:
+    now = time.monotonic()
     with _news_cache_lock:
-        _news_cache[stock_id] = (
-            time.monotonic() + _NEWS_CACHE_TTL_SECONDS,
-            list(items),
-        )
+        expired = [
+            key for key, (expires_at, _cached) in _news_cache.items() if now >= expires_at
+        ]
+        for key in expired:
+            _news_cache.pop(key, None)
+        _news_cache[stock_id] = (now + _NEWS_CACHE_TTL_SECONDS, list(items))
+        while len(_news_cache) > _NEWS_CACHE_MAX_ENTRIES:
+            oldest = min(_news_cache, key=lambda key: _news_cache[key][0])
+            _news_cache.pop(oldest, None)
 
 
 def clear_news_cache_for_tests() -> None:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from email.utils import format_datetime
 from datetime import UTC, datetime, timedelta
+import time
 from unittest.mock import MagicMock
 
 import httpx
@@ -132,3 +133,20 @@ def test_fetch_google_news_passes_fetch_text_kwargs(monkeypatch) -> None:
     assert isinstance(params, dict)
     assert params["q"] == "ACME stock when:7d"
     assert params["hl"] == "en-US"
+
+
+def test_news_cache_evicts_expired_entries_and_stays_bounded(monkeypatch) -> None:
+    news_service.clear_news_cache_for_tests()
+    monkeypatch.setattr(news_service, "_NEWS_CACHE_MAX_ENTRIES", 2)
+    news_service._set_cached_news("US:OLD", [])
+    with news_service._news_cache_lock:
+        news_service._news_cache["US:OLD"] = (time.monotonic() - 1, [])
+
+    news_service._set_cached_news("US:A", [])
+    news_service._set_cached_news("US:B", [])
+    news_service._set_cached_news("US:C", [])
+
+    assert "US:OLD" not in news_service._news_cache
+    assert len(news_service._news_cache) == 2
+    assert "US:C" in news_service._news_cache
+    news_service.clear_news_cache_for_tests()

@@ -74,7 +74,7 @@ export function PortfolioPage() {
   const searchQuery = useQuery<Stock[]>({
     queryKey: ["portfolio-search", trimmedSearch],
     queryFn: () => searchStocks(trimmedSearch),
-    enabled: trimmedSearch.length >= 2,
+    enabled: trimmedSearch.length >= 1,
   });
   const summaryQuery = useQuery({
     queryKey: ["portfolio-summary"],

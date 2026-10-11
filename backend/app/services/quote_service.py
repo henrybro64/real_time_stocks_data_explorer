@@ -446,8 +446,10 @@ class QuoteService:
         """Batched provider fetch for the refresher cycle (#271).
 
         Symbols missing from a completed batch are left out so the caller can
-        fall back per symbol. A rate limit, auth denial, or cycle deadline keeps
-        quotes already parsed and defers the rest with one market failure (#268).
+        fall back per symbol. A rate limit or cycle deadline keeps quotes
+        already parsed and defers the rest with one market failure (#268).
+        A Yahoo v7 auth denial is not that interrupt: the provider returns the
+        rows it parsed so the chart path can still run.
         """
         batch = QuoteRefreshBatch()
         by_market: dict[str, list[str]] = {}

@@ -151,7 +151,7 @@ def test_quotes_endpoint_returns_stock_and_quote_payload(monkeypatch, client) ->
     ]
 
 
-def test_search_endpoint_resolves_us_etf_missing_from_catalog(monkeypatch, client) -> None:
+def test_search_endpoint_does_not_fetch_yahoo_for_catalog_miss(monkeypatch, client) -> None:
     monkeypatch.setattr(us_provider.USProvider, "_catalog_cache", None)
     monkeypatch.setattr(us_provider.USProvider, "_catalog_cached_at", None)
     monkeypatch.setattr(
@@ -163,50 +163,29 @@ def test_search_endpoint_resolves_us_etf_missing_from_catalog(monkeypatch, clien
         },
     )
 
-    def fake_load_json_get(url: str, headers: dict[str, str]) -> dict[str, object]:
-        del headers
-        assert "/IBAT?" in url
-        return {
-            "chart": {
-                "result": [
-                    {
-                        "meta": {
-                            "symbol": "IBAT",
-                            "longName": "iShares Energy Storage & Materials ETF",
-                            "fullExchangeName": "NYSEArca",
-                            "exchangeTimezoneName": "America/New_York",
-                            "currency": "USD",
-                            "quoteType": "ETF",
-                            "regularMarketPrice": 91.23,
-                        }
-                    }
-                ],
-                "error": None,
-            }
-        }
+    def fail_load_json_get(url: str, headers: dict[str, str]) -> dict[str, object]:
+        del url, headers
+        raise AssertionError("search must not call Yahoo")
 
-    monkeypatch.setattr(us_provider, "_load_json_get", fake_load_json_get)
+    monkeypatch.setattr(us_provider, "_load_json_get", fail_load_json_get)
 
     response = client.get("/api/search", params={"q": "IBAT", "limit": 10})
 
     assert response.status_code == 200
-    assert response.json()[0] == {
-        "id": "US:IBAT",
-        "market": "US",
-        "symbol": "IBAT",
-        "name": "iShares Energy Storage & Materials ETF",
-        "exchange": "AMEX",
-        "currency": "USD",
-        "timezone": "America/New_York",
-        "nameEn": "iShares Energy Storage & Materials ETF",
-        "nameZhTw": None,
-    }
+    assert response.json() == []
+
+
+def test_single_quote_endpoint_rejects_malformed_id(client) -> None:
+    response = client.get("/api/quotes/INVALID:404")
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "Invalid stock id"
 
 
 def test_single_quote_endpoint_rejects_unknown_stock_safely(monkeypatch, client) -> None:
     monkeypatch.setattr(quote_service, "get_quote_detail", lambda stock_id: None)
 
-    response = client.get("/api/quotes/INVALID:404")
+    response = client.get("/api/quotes/US:ZZZZ")
 
     assert response.status_code == 404
     assert response.json() == {"detail": "Stock not found"}

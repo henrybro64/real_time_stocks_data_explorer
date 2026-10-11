@@ -27,6 +27,11 @@ _YAHOO_HARD_STOP_CLASSIFICATIONS = frozenset({"rate_limited", "auth_denied"})
 _UNKNOWN_STOCK_NEGATIVE_TTL_SECONDS = 300.0
 _unknown_stock_negative_until: dict[str, float] = {}
 _unknown_stock_negative_lock = threading.Lock()
+# v7 quote is often unauthorized while v8 chart still works. Remember that
+# denial so per-symbol fallback uses chart and does not hit v7 again.
+_V7_AUTH_DENIED_COOLDOWN_SECONDS = 120.0
+_v7_auth_denied_until = 0.0
+_v7_auth_denied_lock = threading.Lock()
 
 
 def _reraise_yahoo_hard_stop(exc: BaseException) -> None:
@@ -59,6 +64,23 @@ def _remember_unknown_stock(stock_id: str) -> None:
 def clear_unknown_stock_negative_cache_for_tests() -> None:
     with _unknown_stock_negative_lock:
         _unknown_stock_negative_until.clear()
+
+
+def _v7_auth_denied_active() -> bool:
+    with _v7_auth_denied_lock:
+        return time.monotonic() < _v7_auth_denied_until
+
+
+def _remember_v7_auth_denied() -> None:
+    global _v7_auth_denied_until
+    with _v7_auth_denied_lock:
+        _v7_auth_denied_until = time.monotonic() + _V7_AUTH_DENIED_COOLDOWN_SECONDS
+
+
+def clear_v7_auth_denied_for_tests() -> None:
+    global _v7_auth_denied_until
+    with _v7_auth_denied_lock:
+        _v7_auth_denied_until = 0.0
 
 
 US_STOCKS: dict[str, StockRecord] = {
@@ -813,9 +835,11 @@ def yahoo_v7_quotes_batch(
     """Fetch Yahoo v7 quotes for many tickers using a few batched HTTP calls.
 
     Keys are ``stock.id`` (``US:SYMBOL``). Missing or invalid rows are omitted.
-    Auth denials and rate limits abort remaining chunks and raise
-    ``QuoteBatchInterrupted`` so callers keep earlier rows and do not fall
-    back onto the same host (#182, #268).
+    A rate limit aborts remaining chunks and raises ``QuoteBatchInterrupted``
+    so callers keep earlier rows and do not fall back onto the same host
+    (#182, #268). A 401/403 stops further v7 chunks but returns rows already
+    parsed: v7 is often unauthorized while the chart endpoint still works, so
+    those symbols stay eligible for the chart fallback.
     """
     if not stocks:
         return {}
@@ -843,7 +867,21 @@ def yahoo_v7_quotes_batch(
                 timed_out=True,
             ) from exc
         except HttpFetchError as exc:
-            if exc.classification in _YAHOO_HARD_STOP_CLASSIFICATIONS:
+            if exc.classification == "auth_denied":
+                _remember_v7_auth_denied()
+                logger.warning(
+                    "Yahoo v7 quote batch unauthorized; chart fallback covers the rest",
+                    extra={
+                        "event": "yahoo_v7_quotes_batch.auth_denied",
+                        "provider": "yahoo_finance",
+                        "chunk_start": start,
+                        "chunk_size": len(chunk),
+                        "status_code": exc.status_code,
+                        "response_classification": exc.classification,
+                    },
+                )
+                return out
+            if exc.classification == "rate_limited":
                 logger.warning(
                     "Yahoo v7 quote batch hard-stopped; aborting remaining chunks",
                     extra={
@@ -933,7 +971,11 @@ def _fetch_live_quote(stock: StockRecord) -> QuoteRecord | None:
     # Stooq is not used: its quote row has no previous close, so it cannot give a
     # correct daily change (it used to compare against the day's open).
     # Hard-stop errors from chart (429/403) propagate and skip v7 (#268).
-    for fetcher in (_fetch_yahoo_chart_quote, _fetch_yahoo_v7_quote):
+    # A recent v7 401/403 skips v7 here; chart is the endpoint that still works.
+    fetchers = [_fetch_yahoo_chart_quote]
+    if not _v7_auth_denied_active():
+        fetchers.append(_fetch_yahoo_v7_quote)
+    for fetcher in fetchers:
         quote = fetcher(stock)
         if quote is not None:
             return quote

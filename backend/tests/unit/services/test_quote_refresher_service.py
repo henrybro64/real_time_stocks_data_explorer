@@ -308,20 +308,30 @@ def test_bounded_concurrency_uses_configured_worker_limit(monkeypatch) -> None:
 
 
 def test_provider_min_interval_spaces_requests(monkeypatch) -> None:
+    from app.services.http_client import get_provider_request_spacing
+
     monkeypatch.setattr(cache.settings, "quote_refresher_min_interval_seconds", 0.5)
     sleeps: list[float] = []
     refresher, stub = _service(watchlist=["US:AAPL", "US:MSFT"])
-    # Per-symbol fallback still spaces host requests once each (#271).
+    # Per-symbol fallback spaces each upstream attempt, not the whole symbol once.
     monkeypatch.setattr(
         refresher._quote_source,
         "fetch_quotes_for_refresh_batch",
         lambda _ids, **_kwargs: {},
     )
+    original = stub.get_quote
+
+    def spaced(stock_id: str):
+        hook = get_provider_request_spacing()
+        assert hook is not None
+        hook("yahoo_finance")
+        hook("yahoo_finance")
+        return original(stock_id)
+
+    stub.get_quote = spaced  # type: ignore[method-assign]
     refresher._sleep = lambda seconds: sleeps.append(seconds)
     refresher.run_cycle()
     assert stub.quote_calls
-    # Second concurrent US fetch waits ~min_interval; wall clock between lock
-    # acquisitions can shave a few ms off the sleep.
     assert any(s == pytest.approx(0.5, abs=0.05) for s in sleeps)
 
 
@@ -905,3 +915,60 @@ def test_viewed_and_alerted_symbols_stay_ahead_of_rotation() -> None:
     assert second[:2] == ["US:NVDA", "US:MSFT"]
     assert first[2:] == ["US:AAPL", "US:GOOG"]
     assert second[2:] == ["US:GOOG", "US:AAPL"]
+
+
+def test_hot_symbols_batch_ahead_of_the_other_market() -> None:
+    refresher, _ = _service(watchlist=[])
+    refresher._alert_ids.add("TW:2330")
+    refresher._priority_refresh = ["US:AAPL", "US:MSFT"]
+    ordered = refresher._order_symbols_for_cycle(["US:AAPL", "US:MSFT", "TW:2330"])
+
+    assert ordered[0] == "TW:2330"
+    groups = refresher._market_batches(ordered)
+    assert groups[0] == ("TW", ["TW:2330"])
+    assert groups[1][0] == "US"
+    assert "TW:2330" not in groups[1][1]
+
+
+def test_slot_wait_does_not_start_a_request_after_the_deadline(monkeypatch) -> None:
+    from app.services.http_client import ProviderRequestAborted
+
+    clock = {"now": 1_000.0}
+    monkeypatch.setattr(time, "monotonic", lambda: clock["now"])
+    monkeypatch.setattr(cache.settings, "quote_refresher_min_interval_seconds", 5.0)
+    refresher, _ = _service(watchlist=["US:AAPL"])
+    refresher._sleep = lambda seconds: clock.__setitem__("now", clock["now"] + seconds)
+    refresher._next_provider_slot["US"] = clock["now"] + 5.0
+    refresher._deadline_local.deadline = clock["now"] + 1.0
+
+    with pytest.raises(ProviderRequestAborted):
+        refresher._reserve_provider_slot("US")
+
+
+def test_batch_renews_refresh_locks_while_the_request_runs(monkeypatch) -> None:
+    from app.services import quote_refresher_service as refresher_module
+
+    monkeypatch.setattr(cache.settings, "quote_refresh_lock_seconds", 3)
+    renewed: list[str] = []
+    real_renew = refresher_module.renew_refresh_lock
+
+    def renew(stock_id: str, token: str) -> bool:
+        renewed.append(stock_id)
+        return real_renew(stock_id, token)
+
+    monkeypatch.setattr(refresher_module, "renew_refresh_lock", renew)
+    refresher, _ = _service(watchlist=["US:AAPL"])
+    during_batch: list[str] = []
+
+    def slow(_ids, **_kwargs):
+        time.sleep(1.4)
+        during_batch.extend(renewed)
+        return {}
+
+    monkeypatch.setattr(
+        refresher._quote_source,
+        "fetch_quotes_for_refresh_batch",
+        slow,
+    )
+    refresher.run_cycle()
+    assert "US:AAPL" in during_batch

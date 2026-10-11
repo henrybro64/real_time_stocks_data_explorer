@@ -19,8 +19,9 @@ def search_stocks(
     limit: int = Query(default=30, ge=1, le=100),
 ) -> list[StockResponse]:
     query = q.strip()
-    # Short queries are noise; keep upstream catalog scans off the hot path (#272).
-    if len(query) < 2:
+    # Empty input would list the whole catalog. One character is a real ticker
+    # (F, T, C) and the search is catalog-local, so it does not spend Yahoo (#272).
+    if not query:
         return []
     return [_to_schema(stock) for stock in search_service.search(query)[:limit]]
 

@@ -457,11 +457,11 @@ def test_get_catalog_stock_does_not_fetch_yahoo_chart(monkeypatch) -> None:
     assert provider.get_catalog_stock("US:JPM") is None
 
 
-def test_yahoo_v7_quotes_batch_aborts_remaining_chunks_on_auth_denied(monkeypatch) -> None:
+def test_yahoo_v7_quotes_batch_auth_denied_keeps_chart_fallback(monkeypatch) -> None:
     from app.models.stock import StockRecord
     from app.services.http_client import HttpFetchError
-    from app.services.quote_batch import QuoteBatchInterrupted
 
+    us_provider.clear_v7_auth_denied_for_tests()
     stocks = [
         StockRecord(
             id=f"US:S{i:02d}",
@@ -485,13 +485,12 @@ def test_yahoo_v7_quotes_batch_aborts_remaining_chunks_on_auth_denied(monkeypatc
         )
 
     monkeypatch.setattr(us_provider, "_load_json_with_headers", fake_load)
-    with pytest.raises(QuoteBatchInterrupted) as exc_info:
-        us_provider.yahoo_v7_quotes_batch(stocks)
-    assert calls["count"] == 1
-    assert exc_info.value.quotes == {}
-    assert exc_info.value.error is not None
-    assert exc_info.value.error.classification == "auth_denied"
-    assert len(exc_info.value.deferred_ids) == len(stocks)
+    try:
+        assert us_provider.yahoo_v7_quotes_batch(stocks) == {}
+        assert calls["count"] == 1
+        assert us_provider._v7_auth_denied_active()
+    finally:
+        us_provider.clear_v7_auth_denied_for_tests()
 
 
 def test_yahoo_v7_quotes_batch_aborts_on_rate_limited(monkeypatch) -> None:
