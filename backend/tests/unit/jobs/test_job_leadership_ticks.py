@@ -205,3 +205,16 @@ def test_each_job_skipped_for_leadership_records_no_success_and_retries_soon(
     assert health["last_tick_at"] is not None
     # The wait after the skipped tick is the short retry (10s + up to 20%), not the poll.
     assert 0 < waits[-1] <= 12.0, waits
+
+
+def test_release_all_can_be_limited_to_some_jobs(monkeypatch) -> None:
+    client = _OwnableRedis()
+    monkeypatch.setattr(cache, "_redis", lambda: client)
+    job_leader_lock.try_acquire_job_leadership("alert-rule-evaluator")
+    job_leader_lock.try_acquire_job_leadership("reference-refresh")
+
+    job_leader_lock.release_all_job_leadership(job_names=["reference-refresh"])
+
+    # A still-running tick keeps its lease so the next worker cannot overlap it.
+    assert "job:leader:v1:alert-rule-evaluator" in client.values
+    assert "job:leader:v1:reference-refresh" not in client.values

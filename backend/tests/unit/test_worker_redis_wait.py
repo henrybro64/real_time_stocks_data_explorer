@@ -24,6 +24,7 @@ class _Clock:
 @pytest.fixture
 def redis_configured(monkeypatch):
     monkeypatch.setattr(worker.settings, "redis_url", "redis://localhost:6379/0")
+    monkeypatch.setattr(worker.settings, "redis_socket_connect_timeout_seconds", 2.0)
 
 
 def test_no_redis_configured_does_not_wait(monkeypatch) -> None:
@@ -47,8 +48,33 @@ def test_gives_up_at_the_bound(redis_configured, monkeypatch) -> None:
     clock = _Clock()
 
     assert worker.wait_for_redis(5, sleep=clock.sleep, monotonic=clock.monotonic) is False
-    assert clock.now == 5.0  # never sleeps past the bound
-    assert clock.sleeps == [2.0, 2.0, 1.0]
+    # With 1s left, a 2s connect attempt could overrun, so it is not started.
+    assert clock.sleeps == [2.0, 2.0]
+    assert clock.now <= 5.0
+
+
+def test_zero_budget_makes_no_connection_attempt(redis_configured, monkeypatch) -> None:
+    calls: list[bool] = []
+    monkeypatch.setattr(quote_redis_cache, "redis_enabled", lambda: calls.append(True) or True)
+    clock = _Clock()
+
+    assert worker.wait_for_redis(0, sleep=clock.sleep, monotonic=clock.monotonic) is False
+    assert calls == []
+
+
+def test_a_blocking_connect_never_overruns_the_deadline(redis_configured, monkeypatch) -> None:
+    # Each attempt blocks for the full connect timeout, as with an unreachable host.
+    monkeypatch.setattr(worker.settings, "redis_socket_connect_timeout_seconds", 3.0)
+    clock = _Clock()
+
+    def _blocking_attempt() -> bool:
+        clock.now += 3.0
+        return False
+
+    monkeypatch.setattr(quote_redis_cache, "redis_enabled", _blocking_attempt)
+
+    assert worker.wait_for_redis(10, sleep=clock.sleep, monotonic=clock.monotonic) is False
+    assert clock.now <= 10.0
 
 
 def test_worker_waits_for_redis_before_starting_jobs(monkeypatch) -> None:

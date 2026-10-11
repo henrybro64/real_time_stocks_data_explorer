@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 import random
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from threading import Lock
 from uuid import uuid4
 
@@ -139,12 +139,18 @@ def release_job_leadership(job_name: str, token: str | None) -> None:
     run_redis(f"job leader release {job_name}", _release, kind="write")
 
 
-def release_all_job_leadership() -> None:
-    """Release every leader key this process holds; others' keys are untouched (#292)."""
+def release_all_job_leadership(job_names: Iterable[str] | None = None) -> None:
+    """Release leader keys this process holds; others' keys are untouched (#292).
+
+    ``job_names`` limits the release to those jobs, for callers that must keep a
+    lease whose tick may still be running.
+    """
     with _held_lock:
         held = list(_held_tokens.items())
+    wanted = None if job_names is None else set(job_names)
     for job_name, token in held:
-        release_job_leadership(job_name, token)
+        if wanted is None or job_name in wanted:
+            release_job_leadership(job_name, token)
 
 
 def leadership_skipped(job_name: str) -> bool:

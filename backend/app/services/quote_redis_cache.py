@@ -378,6 +378,21 @@ def _run_redis(
         return None
 
 
+def redis_evicted_keys() -> int | None:
+    """Redis's cumulative ``evicted_keys`` counter, or None when unavailable (#293).
+
+    Eviction (``allkeys-lru`` at ``maxmemory``) can drop leader locks or rate-limit
+    counters as well as cache entries, so callers surface any increase.
+    """
+    stats = _run_redis("redis info stats", lambda client: client.info("stats"), kind="read")
+    if not isinstance(stats, dict):
+        return None
+    try:
+        return int(stats.get("evicted_keys", 0))
+    except (TypeError, ValueError):
+        return None
+
+
 def run_redis(
     operation: str,
     fn: Callable[[Any], T],

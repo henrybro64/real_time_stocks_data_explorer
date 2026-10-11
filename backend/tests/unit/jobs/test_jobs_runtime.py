@@ -211,12 +211,12 @@ def test_stop_background_jobs_stops_all_samplers(monkeypatch) -> None:
         "stop_background_sampler",
         lambda: stopped.__setitem__("archive", stopped["archive"] + 1),
     )
-    calls: list[str] = []
+    calls: list[list[str]] = []
 
-    def _release_all() -> None:
+    def _release_all(job_names=None) -> None:
         # Released after every sampler has stopped, so no tick re-acquires (#292).
         assert all(count == 1 for count in stopped.values()), stopped
-        calls.append("release_all")
+        calls.append(sorted(job_names))
 
     monkeypatch.setattr(jobs_runtime_module, "release_all_job_leadership", _release_all)
 
@@ -231,4 +231,66 @@ def test_stop_background_jobs_stops_all_samplers(monkeypatch) -> None:
         "reference": 1,
         "archive": 1,
     }
-    assert calls == ["release_all"]
+    assert calls == [
+        sorted(
+            [
+                "alert-rule-evaluator",
+                "portfolio-history-sampler",
+                "rankings-archive-eod",
+                "rankings-snapshot-sampler",
+                "reference-refresh",
+                "taiwan-market-data-refresh",
+            ]
+        )
+    ]
+
+
+def test_stop_keeps_leases_for_jobs_whose_tick_is_still_running(monkeypatch) -> None:
+    import threading
+
+    release = threading.Event()
+    running = threading.Thread(target=release.wait, daemon=True)
+    running.start()
+    finished = threading.Thread(target=lambda: None)
+    finished.start()
+    finished.join()
+    for service, stop_name in (
+        (jobs_runtime_module.portfolio_history_service, "stop_background_sampler"),
+        (jobs_runtime_module.alert_service, "stop_background_evaluator"),
+        (jobs_runtime_module.rankings_snapshot_service, "stop_background_sampler"),
+        (jobs_runtime_module.taiwan_market_data_refresh_service, "stop_background_sampler"),
+        (jobs_runtime_module.quote_refresher_service, "stop_background_sampler"),
+        (jobs_runtime_module.reference_refresh_service, "stop_background_sampler"),
+        (jobs_runtime_module.rankings_archive_service, "stop_background_sampler"),
+    ):
+        monkeypatch.setattr(service, stop_name, lambda: None)
+    for service in (
+        jobs_runtime_module.portfolio_history_service,
+        jobs_runtime_module.rankings_snapshot_service,
+        jobs_runtime_module.taiwan_market_data_refresh_service,
+        jobs_runtime_module.reference_refresh_service,
+        jobs_runtime_module.rankings_archive_service,
+    ):
+        monkeypatch.setattr(service, "_thread", finished)
+    # The alert evaluator's stop() timed out with a tick still running.
+    monkeypatch.setattr(jobs_runtime_module.alert_service, "_thread", running)
+    released: list[list[str]] = []
+    monkeypatch.setattr(
+        jobs_runtime_module,
+        "release_all_job_leadership",
+        lambda job_names=None: released.append(sorted(job_names)),
+    )
+    try:
+        stop_background_jobs()
+    finally:
+        release.set()
+
+    assert released == [
+        [
+            "portfolio-history-sampler",
+            "rankings-archive-eod",
+            "rankings-snapshot-sampler",
+            "reference-refresh",
+            "taiwan-market-data-refresh",
+        ]
+    ]

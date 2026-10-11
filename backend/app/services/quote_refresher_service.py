@@ -132,6 +132,8 @@ class QuoteRefresherService:
         self._cycle_leader_until = 0.0
         # One token per process so a later cycle can renew its own lease (#291).
         self._cycle_leader_token = uuid4().hex
+        self._cycle_leader_renewed_at = 0.0
+        self._last_evicted_keys = 0
         self._held_refresh_locks: dict[str, str] = {}
         self._held_refresh_locks_guard = threading.Lock()
         self._heartbeat_stop = threading.Event()
@@ -219,10 +221,16 @@ class QuoteRefresherService:
             heartbeat.join(timeout=1.0)
             self._heartbeat_thread = None
         # Hand the window to the next worker now instead of after the TTL (#291).
-        # The owner-checked script leaves another process's key alone.
-        if self._cycle_leader_until > 0.0 and (settings.redis_url or "").strip():
+        # The owner-checked script leaves another process's key alone. If the
+        # cycle is still running, keep the lease so the next worker cannot overlap it.
+        if thread.is_alive():
+            logger.warning(
+                "Quote refresher cycle still running at stop; leader lease kept until it expires",
+                extra={"event": "quote_refresher.leader.release_deferred"},
+            )
+        elif self._cycle_leader_until > 0.0 and (settings.redis_url or "").strip():
             self._release_cycle_leadership(self._cycle_leader_token)
-        self._cycle_leader_until = 0.0
+            self._cycle_leader_until = 0.0
         logger.info(
             "Quote refresher stopped",
             extra={"event": "quote_refresher.sampler.stopped"},
@@ -824,8 +832,10 @@ class QuoteRefresherService:
         while not self._stop_event.is_set():
             # Fixed period measured start-to-start so cycles stay inside soft TTL (#271).
             cycle_started = time.monotonic()
-            # Any live worker may drain: SPOP is atomic and each symbol has its own lock (#291).
-            self._drain_immediate_redis()
+            # Only the leader drains, so provider spacing, concurrency and the circuit
+            # breaker (all per process) still bound the whole deployment (#291).
+            if self._holds_cycle_leadership():
+                self._drain_immediate_redis()
             skipped = False
 
             def _tick() -> object:
@@ -842,6 +852,8 @@ class QuoteRefresherService:
                 event="quote_refresher.cycle.failed",
                 tick=_tick,
             )
+            if not skipped and self._holds_cycle_leadership():
+                self._warn_if_redis_evicted()
             wait_seconds = self.seconds_until_next_cycle(
                 elapsed_seconds=time.monotonic() - cycle_started,
                 skipped_leader=skipped,
@@ -853,7 +865,9 @@ class QuoteRefresherService:
                 if self._stop_event.wait(slice_seconds):
                     return
                 remaining -= slice_seconds
-                self._drain_immediate_redis()
+                self._renew_cycle_leadership_if_due()
+                if self._holds_cycle_leadership():
+                    self._drain_immediate_redis()
 
     def _refresh_one(
         self,
@@ -990,9 +1004,10 @@ class QuoteRefresherService:
             return None
         from app.services.quote_redis_cache import run_redis
 
-        # Hold the window for one poll. Do not delete the key when the cycle
-        # returns, or the other worker starts the same interval immediately.
-        ttl = max(int(self.select_poll_seconds()), 1)
+        # A short lease, renewed while this process is alive (see
+        # _renew_cycle_leadership_if_due), not one poll: after a crash the next
+        # worker takes over within one lease instead of a whole poll (#291).
+        ttl = self._leader_lease_seconds()
         token = self._cycle_leader_token
 
         def _acquire(client) -> bool:
@@ -1011,9 +1026,71 @@ class QuoteRefresherService:
             )
             return None
         if acquired:
-            self._cycle_leader_until = time.monotonic() + float(ttl)
+            now = time.monotonic()
+            self._cycle_leader_until = now + float(ttl)
+            self._cycle_leader_renewed_at = now
             return token
         return None
+
+    def _warn_if_redis_evicted(self) -> None:
+        """Make Redis eviction loud: it can drop leader locks and rate-limit counters (#293)."""
+        if not (settings.redis_url or "").strip():
+            return
+        from app.services.quote_redis_cache import redis_evicted_keys
+
+        count = redis_evicted_keys()
+        if count is None:
+            return
+        previous, self._last_evicted_keys = self._last_evicted_keys, count
+        if count < previous:
+            previous = 0  # Redis restarted and its counter reset
+        if count > previous:
+            logger.warning(
+                "Redis evicted keys at maxmemory; leader locks or rate-limit counters "
+                "may have been dropped",
+                extra={
+                    "event": "redis.keys_evicted",
+                    "evicted_since_last_check": count - previous,
+                    "evicted_total": count,
+                },
+            )
+
+    @staticmethod
+    def _leader_lease_seconds() -> int:
+        # Outlasts one full cycle, which does not renew while it runs.
+        return max(60, 2 * int(settings.quote_refresher_cycle_timeout_seconds))
+
+    def _holds_cycle_leadership(self) -> bool:
+        if not (settings.redis_url or "").strip():
+            return True
+        return time.monotonic() < self._cycle_leader_until
+
+    def _renew_cycle_leadership_if_due(self) -> None:
+        """Keep the lease alive between cycles; drop leadership if it was lost (#291)."""
+        if not (settings.redis_url or "").strip() or not self._holds_cycle_leadership():
+            return
+        ttl = self._leader_lease_seconds()
+        if time.monotonic() - self._cycle_leader_renewed_at < ttl / 3:
+            return
+        from app.services.quote_redis_cache import run_redis
+
+        token = self._cycle_leader_token
+        renewed = run_redis(
+            "quote refresher leader renew",
+            lambda client: client.eval(_RENEW_LEADER_SCRIPT, 1, _LEADER_KEY, token, ttl),
+            kind="write",
+        )
+        if renewed:
+            now = time.monotonic()
+            self._cycle_leader_until = now + float(ttl)
+            self._cycle_leader_renewed_at = now
+            return
+        # Key expired, was taken, or Redis failed: stop acting as leader (no draining).
+        self._cycle_leader_until = 0.0
+        logger.warning(
+            "Quote refresher lost cycle leadership",
+            extra={"event": "quote_refresher.leader.lost"},
+        )
 
     def _ensure_refresh_lock_heartbeat(self) -> None:
         with self._held_refresh_locks_guard:

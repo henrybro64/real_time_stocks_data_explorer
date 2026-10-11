@@ -167,6 +167,15 @@ def start_enabled_background_jobs() -> None:
 
 
 def stop_background_jobs() -> None:
+    # Capture the sampler threads first; each stop() clears its reference.
+    threads = {
+        "portfolio-history-sampler": portfolio_history_service._thread,
+        "alert-rule-evaluator": alert_service._thread,
+        "rankings-snapshot-sampler": rankings_snapshot_service._thread,
+        "taiwan-market-data-refresh": taiwan_market_data_refresh_service._thread,
+        "reference-refresh": reference_refresh_service._thread,
+        "rankings-archive-eod": rankings_archive_service._thread,
+    }
     portfolio_history_service.stop_background_sampler()
     alert_service.stop_background_evaluator()
     rankings_snapshot_service.stop_background_sampler()
@@ -185,4 +194,16 @@ def stop_background_jobs() -> None:
     ):
         register_background_job(job_name, enabled=False, thread=None)
     # Hand each owned window to the next worker now, not after its TTL (#292).
-    release_all_job_leadership()
+    # A stop() waits only briefly: if a tick is still running, keep its lease so
+    # the next worker cannot overlap it; it expires with its TTL instead.
+    still_running = sorted(
+        name for name, thread in threads.items() if thread is not None and thread.is_alive()
+    )
+    if still_running:
+        logger.warning(
+            "Kept leader leases for jobs whose tick is still running",
+            extra={"event": "jobs.leader.release_deferred", "job_names": still_running},
+        )
+    release_all_job_leadership(
+        job_names=[name for name in threads if name not in still_running]
+    )

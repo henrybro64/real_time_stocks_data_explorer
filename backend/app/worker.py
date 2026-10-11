@@ -72,16 +72,29 @@ def wait_for_redis(
     """Wait up to ``timeout_seconds`` for Redis before starting jobs (#293).
 
     After a node or k3s restart the worker can start before the Redis Service
-    answers. Starting jobs then would skip every leader-locked tick. Never blocks
-    past the bound; the jobs retry leadership on their own afterwards (#291, #292).
+    answers. Starting jobs then would skip every leader-locked tick. Never runs
+    past the bound: an attempt that could block for the connect timeout is only
+    started when that much budget is left. Jobs retry leadership on their own
+    afterwards (#291, #292).
     """
     from app.services import quote_redis_cache
 
     if not settings.redis_url.strip():
         return True
-    deadline = monotonic() + max(0.0, float(timeout_seconds))
+    budget = max(0.0, float(timeout_seconds))
+    if budget <= 0:
+        return False
+    connect_timeout = float(settings.redis_socket_connect_timeout_seconds)
     started = monotonic()
+    deadline = started + budget
     while True:
+        remaining = deadline - monotonic()
+        if remaining < connect_timeout:
+            logger.warning(
+                "Redis still unreachable; starting background jobs anyway",
+                extra={"event": "worker.redis.wait_timed_out", "timeout_seconds": budget},
+            )
+            return False
         # During reconnect backoff this returns at once without connecting.
         if quote_redis_cache.redis_enabled():
             logger.info(
@@ -93,13 +106,8 @@ def wait_for_redis(
             )
             return True
         remaining = deadline - monotonic()
-        if remaining <= 0:
-            logger.warning(
-                "Redis still unreachable; starting background jobs anyway",
-                extra={"event": "worker.redis.wait_timed_out", "timeout_seconds": timeout_seconds},
-            )
-            return False
-        sleep(min(2.0, remaining))
+        if remaining > 0:
+            sleep(min(2.0, remaining))
 
 
 def main() -> None:
