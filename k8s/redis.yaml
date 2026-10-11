@@ -11,7 +11,8 @@ data:
     protected-mode no
     port 6379
     dir /data
-    # RDB snapshots only: losing the last minute of a cache on a crash is fine.
+    # RDB snapshots only. Redis also saves on SIGTERM, so a rollout loses nothing; a
+    # crash loses up to 5 minutes (normal write rates stay under 1000 per 60s), fine for a cache.
     save 300 10
     save 60 1000
     appendonly no
