@@ -143,6 +143,23 @@ def get_stock_analysis(
 
     try:
         if refresh:
+            # Count a server-key call only after it returns an analysis (#273).
+            from app.services.user_quota_service import server_ai_provider_configured
+
+            spend_server_key = (
+                provider_override is None and server_ai_provider_configured()
+            )
+            if spend_server_key:
+                from app.api.http_quota import raise_quota_http
+                from app.services.rate_limit_service import RateLimitExceededError
+                from app.services.user_quota_service import (
+                    ensure_server_ai_budget_available,
+                )
+
+                try:
+                    ensure_server_ai_budget_available(user_id)
+                except RateLimitExceededError as exc:
+                    raise_quota_http(exc)
             result = stock_analysis_service.analyze_stock(
                 stock_id,
                 provider_override=provider_override,
@@ -150,6 +167,15 @@ def get_stock_analysis(
                 language=normalized_language,
                 include_news=True,
             )
+            if spend_server_key and result.ai_analysis:
+                from app.services.rate_limit_service import RateLimitExceededError
+                from app.services.user_quota_service import consume_server_ai_budget
+
+                try:
+                    consume_server_ai_budget(user_id)
+                except RateLimitExceededError:
+                    # The analysis already used the key. The next refresh is blocked.
+                    pass
             if result.ai_analysis:
                 now = datetime.now(timezone.utc)
                 set_cached_stock_analysis(

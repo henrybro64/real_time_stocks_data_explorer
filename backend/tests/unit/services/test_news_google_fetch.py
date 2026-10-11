@@ -38,7 +38,7 @@ def test_fetch_google_news_retries_transient_http_once(monkeypatch) -> None:
             return failing
         return ok
 
-    monkeypatch.setattr("app.services.http_client.httpx.request", fake_request)
+    monkeypatch.setattr("app.services.http_client._send_http_request", fake_request)
     monkeypatch.setattr("app.services.http_client.time.sleep", lambda _s: None)
     monkeypatch.setattr("app.services.http_client.random.random", lambda: 0.0)
 
@@ -63,7 +63,7 @@ def test_fetch_google_news_soft_fails_after_bounded_retries(monkeypatch) -> None
         calls["count"] += 1
         raise httpx.ConnectTimeout("timed out")
 
-    monkeypatch.setattr("app.services.http_client.httpx.request", fake_request)
+    monkeypatch.setattr("app.services.http_client._send_http_request", fake_request)
     monkeypatch.setattr("app.services.http_client.time.sleep", lambda _s: None)
     monkeypatch.setattr("app.services.http_client.random.random", lambda: 0.0)
 
@@ -90,7 +90,7 @@ def test_fetch_google_news_malformed_rss_does_not_retry_http(monkeypatch) -> Non
         calls["count"] += 1
         return response
 
-    monkeypatch.setattr("app.services.http_client.httpx.request", fake_request)
+    monkeypatch.setattr("app.services.http_client._send_http_request", fake_request)
     monkeypatch.setattr("app.services.http_client.time.sleep", lambda _s: None)
 
     items = news_service._fetch_google_news(

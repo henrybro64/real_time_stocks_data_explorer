@@ -141,7 +141,7 @@ function classifyApiErrorKind(status: number | null, detail: string | null, mess
   ) {
     return "unavailable";
   }
-  if (status === 400 || status === 422) {
+  if (status === 400 || status === 409 || status === 422) {
     return "validation";
   }
   if (status === 404) {

@@ -195,19 +195,15 @@ class TaiwanMarketDailyColumns(TimestampedRowMixin):
     source: Mapped[str] = mapped_column(Text, nullable=False)
 
 
-def _taiwan_daily_table_args(unique_name: str, index_name: str) -> tuple:
+def _taiwan_daily_table_args(unique_name: str) -> tuple:
+    # The unique constraint already covers (market, symbol, date). A second
+    # index on the same columns is redundant (#274).
     return (
         UniqueConstraint(
             "market",
             "symbol",
             "date",
             name=unique_name,
-        ),
-        Index(
-            index_name,
-            "market",
-            "symbol",
-            "date",
         ),
     )
 
@@ -216,7 +212,6 @@ class TaiwanInstitutionalDaily(TaiwanMarketDailyColumns, Base):
     __tablename__ = "taiwan_institutional_daily"
     __table_args__ = _taiwan_daily_table_args(
         "uq_taiwan_institutional_daily_market_symbol_date",
-        "ix_taiwan_institutional_daily_lookup",
     )
 
     foreign_net_shares: Mapped[int] = mapped_column(nullable=False)
@@ -231,7 +226,6 @@ class TaiwanMarginShortDaily(TaiwanMarketDailyColumns, Base):
     __tablename__ = "taiwan_margin_short_daily"
     __table_args__ = _taiwan_daily_table_args(
         "uq_taiwan_margin_short_daily_market_symbol_date",
-        "ix_taiwan_margin_short_daily_lookup",
     )
 
     close_price: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -257,12 +251,6 @@ class DailyPriceBar(TimestampedRowMixin, Base):
             "symbol",
             "date",
             name="uq_daily_price_bars_market_symbol_date",
-        ),
-        Index(
-            "ix_daily_price_bars_lookup",
-            "market",
-            "symbol",
-            "date",
         ),
     )
 
@@ -327,14 +315,6 @@ class RankingSnapshot(Base):
             "bucket_start",
             "capture_scope",
             name="uq_ranking_snapshots_market_board_type_bucket_scope",
-        ),
-        Index(
-            "ix_ranking_snapshots_lookup",
-            "market",
-            "tw_board",
-            "ranking_type",
-            "bucket_start",
-            "capture_scope",
         ),
     )
 

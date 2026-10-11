@@ -6,6 +6,7 @@ import logging
 from threading import Event, Lock, Thread
 from time import perf_counter
 
+from app.core.config import settings
 from app.core.diagnostics import elapsed_ms
 from app.db.models import PortfolioHistorySnapshot, PortfolioPosition
 from app.models.quote import QuoteRecord
@@ -107,6 +108,31 @@ class PortfolioHistoryService:
         )
 
     def capture_due_snapshots_for_all_users(
+        self,
+        now: datetime | None = None,
+        *,
+        trigger: str = "manual",
+    ) -> int:
+        from app.services.job_leader_lock import (
+            release_job_leadership,
+            try_acquire_job_leadership,
+        )
+
+        token = try_acquire_job_leadership(
+            "portfolio-history-sampler",
+            ttl_seconds=max(30, int(settings.portfolio_history_poll_seconds)),
+        )
+        if token is None:
+            return 0
+        try:
+            return self._capture_due_snapshots_for_all_users_locked(
+                now, trigger=trigger
+            )
+        except Exception:
+            release_job_leadership("portfolio-history-sampler", token)
+            raise
+
+    def _capture_due_snapshots_for_all_users_locked(
         self,
         now: datetime | None = None,
         *,
@@ -276,6 +302,12 @@ class PortfolioHistoryService:
         usd_twd_rate = float(fx_snapshot["rate"])
 
         holdings_entries: list[tuple[str, float]] = []
+        self._quote_batch = {
+            item.stock.id: item.quote
+            for item in quote_service.peek_cached_quotes(
+                [position.stock_id for position in positions]
+            )
+        }
         for position in positions:
             stock = quote_service.get_stock(position.stock_id)
             if stock is None:
@@ -306,8 +338,11 @@ class PortfolioHistoryService:
         )
 
     def _resolve_quote(self, position: PortfolioPosition) -> QuoteRecord | None:
+        batch = getattr(self, "_quote_batch", None)
+        if isinstance(batch, dict) and position.stock_id in batch:
+            return batch[position.stock_id]
         try:
-            return quote_service.get_quote(position.stock_id)
+            items = quote_service.peek_cached_quotes([position.stock_id])
         except Exception as exc:
             logger.warning(
                 "Snapshot quote lookup failed",
@@ -319,6 +354,7 @@ class PortfolioHistoryService:
                 },
             )
             return None
+        return items[0].quote if items else None
 
 
 def _range_delta(range_name: str) -> timedelta:

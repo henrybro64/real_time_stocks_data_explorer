@@ -45,6 +45,11 @@ def create_alert_rule(
         return _rule_response(alert_service.get_rule(user_id, rule.id))
     except AlertValidationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        from app.api.http_quota import raise_quota_http
+
+        raise_quota_http(exc)
+        raise
 
 
 @router.patch("/rules/{rule_id}", response_model=AlertRuleResponse)

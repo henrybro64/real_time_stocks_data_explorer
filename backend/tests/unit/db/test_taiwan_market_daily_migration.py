@@ -54,8 +54,8 @@ def test_taiwan_market_daily_migration_creates_tables_with_constraints(
     margin_indexes = {
         index["name"] for index in inspector.get_indexes("taiwan_margin_short_daily")
     }
-    assert "ix_taiwan_institutional_daily_lookup" in institutional_indexes
-    assert "ix_taiwan_margin_short_daily_lookup" in margin_indexes
+    assert "ix_taiwan_institutional_daily_lookup" not in institutional_indexes
+    assert "ix_taiwan_margin_short_daily_lookup" not in margin_indexes
 
     margin_columns = {
         column["name"]: column

@@ -11,6 +11,28 @@ from urllib.parse import urlparse
 import httpx
 from app.core.diagnostics import elapsed_ms
 
+_shared_client: httpx.Client | None = None
+_shared_client_lock = threading.Lock()
+
+
+def get_shared_http_client() -> httpx.Client:
+    """Process-wide client so upstream calls reuse connections (#274)."""
+    global _shared_client
+    with _shared_client_lock:
+        if _shared_client is None or _shared_client.is_closed:
+            _shared_client = httpx.Client(
+                follow_redirects=True,
+                limits=httpx.Limits(
+                    max_keepalive_connections=20,
+                    max_connections=100,
+                ),
+            )
+        return _shared_client
+
+
+def _send_http_request(method: str, url: str, **kwargs: object) -> httpx.Response:
+    return get_shared_http_client().request(method, url, **kwargs)
+
 
 HttpFailureClassification = Literal[
     "auth_denied",
@@ -397,7 +419,7 @@ def _request_with_retries(
             except Exception as spacing_exc:  # noqa: BLE001 - never block HTTP
                 logger.debug("Provider spacing hook failed: %s", spacing_exc)
         try:
-            response = httpx.request(
+            response = _send_http_request(
                 method,
                 url,
                 params=params,

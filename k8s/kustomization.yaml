@@ -9,6 +9,7 @@ resources:
   # backend-auth-secret.yaml is not in this kustomization. Apply it before
   # `kubectl apply -k` (deploy-k3s.sh does this; see docs/kubernetes.md).
   - backend.yaml
+  - backend-worker.yaml
   - backend-history-capture-cronjob.yaml
   - aws-health-heartbeat.yaml
   - frontend.yaml

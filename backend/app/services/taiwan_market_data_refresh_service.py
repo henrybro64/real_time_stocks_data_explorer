@@ -516,51 +516,81 @@ class TaiwanMarketDataRefreshService:
     def _run_sampler(self, poll_seconds: int, refresh_hour: int, recent_days: int) -> None:
         from app.core.config import settings
         from app.jobs.health import JOB_TICK_INCOMPLETE, run_guarded_tick
+        from app.services.job_leader_lock import (
+            daily_job_already_ran,
+            release_job_leadership,
+            remember_daily_job,
+            try_acquire_job_leadership,
+        )
 
         timezone_name = settings.taiwan_market_data_timezone or "Asia/Taipei"
         local_tz = ZoneInfo(timezone_name)
         while not self._stop_event.wait(0):
             def _tick() -> object:
-                now = self._now_provider()
-                local_now = now.astimezone(local_tz)
-                local_hour = local_now.hour
-                local_day = local_now.date()
-                if local_hour < refresh_hour:
-                    logger.info(
-                        "Taiwan market data refresh skipped before local publish hour",
-                        extra={
-                            "event": "taiwan_market_data.scheduler.skipped_before_hour",
-                            "local_hour": local_hour,
-                            "refresh_hour": refresh_hour,
-                            "timezone": timezone_name,
-                        },
-                    )
+                token = try_acquire_job_leadership(
+                    "taiwan-market-data-refresh",
+                    ttl_seconds=max(120, int(poll_seconds)),
+                )
+                if token is None:
                     return JOB_TICK_INCOMPLETE
-                if self._last_scheduler_local_date == local_day:
+                try:
+                    now = self._now_provider()
+                    local_now = now.astimezone(local_tz)
+                    local_hour = local_now.hour
+                    local_day = local_now.date()
+                    if local_hour < refresh_hour:
+                        logger.info(
+                            "Taiwan market data refresh skipped before local publish hour",
+                            extra={
+                                "event": "taiwan_market_data.scheduler.skipped_before_hour",
+                                "local_hour": local_hour,
+                                "refresh_hour": refresh_hour,
+                                "timezone": timezone_name,
+                            },
+                        )
+                        return JOB_TICK_INCOMPLETE
+                    if (
+                        self._last_scheduler_local_date == local_day
+                        or daily_job_already_ran(
+                            "taiwan-market-data-refresh",
+                            local_day.isoformat(),
+                        )
+                    ):
+                        logger.info(
+                            "Taiwan market data refresh skipped; already ran today",
+                            extra={
+                                "event": "taiwan_market_data.scheduler.skipped_already_ran",
+                                "local_date": local_day.isoformat(),
+                                "timezone": timezone_name,
+                            },
+                        )
+                        return JOB_TICK_INCOMPLETE
+                    summary = self.refresh_recent(
+                        trigger="scheduler",
+                        recent_days=recent_days,
+                    )
+                    if self._current_trading_day_stored(summary, local_day):
+                        self._last_scheduler_local_date = local_day
+                        remember_daily_job(
+                            "taiwan-market-data-refresh",
+                            local_day.isoformat(),
+                        )
+                        return None
                     logger.info(
-                        "Taiwan market data refresh skipped; already ran today",
+                        "Taiwan market data refresh will retry; trading-day data not stored yet",
                         extra={
-                            "event": "taiwan_market_data.scheduler.skipped_already_ran",
+                            "event": "taiwan_market_data.scheduler.retry_same_day",
                             "local_date": local_day.isoformat(),
                             "timezone": timezone_name,
+                            "rows_upserted": summary.rows_upserted,
+                            "error_count": summary.error_count,
                         },
                     )
+                    release_job_leadership("taiwan-market-data-refresh", token)
                     return JOB_TICK_INCOMPLETE
-                summary = self.refresh_recent(trigger="scheduler", recent_days=recent_days)
-                if self._current_trading_day_stored(summary, local_day):
-                    self._last_scheduler_local_date = local_day
-                    return None
-                logger.info(
-                    "Taiwan market data refresh will retry; trading-day data not stored yet",
-                    extra={
-                        "event": "taiwan_market_data.scheduler.retry_same_day",
-                        "local_date": local_day.isoformat(),
-                        "timezone": timezone_name,
-                        "rows_upserted": summary.rows_upserted,
-                        "error_count": summary.error_count,
-                    },
-                )
-                return JOB_TICK_INCOMPLETE
+                except Exception:
+                    release_job_leadership("taiwan-market-data-refresh", token)
+                    raise
 
             run_guarded_tick(
                 "taiwan-market-data-refresh",

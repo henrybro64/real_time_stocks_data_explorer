@@ -86,6 +86,11 @@ def validate_auth_settings() -> None:
         rankings_capture_token=settings.rankings_capture_token,
         rankings_archive_capture_token=settings.rankings_archive_capture_token,
         taiwan_market_data_capture_token=settings.taiwan_market_data_capture_token,
+        entra_external_id_enabled=settings.entra_external_id_enabled,
+        entra_tenant_id=settings.entra_tenant_id,
+        entra_client_id=settings.entra_client_id,
+        entra_redirect_uri=settings.entra_redirect_uri,
+        entra_authority=settings.entra_authority,
     )
 
 
@@ -116,16 +121,25 @@ def bootstrap_local_auth_user() -> None:
 
 @app.on_event("startup")
 def start_background_jobs() -> None:
+    # API replicas set RUN_BACKGROUND_JOBS=false; the worker Deployment runs jobs (#276).
+    if not settings.run_background_jobs:
+        logger.info(
+            "Background jobs disabled in this process",
+            extra={"event": "app.jobs.disabled", "run_background_jobs": False},
+        )
+        return
     start_enabled_background_jobs()
 
 
 @app.on_event("shutdown")
 def stop_runtime_background_jobs() -> None:
+    if not settings.run_background_jobs:
+        return
     stop_background_jobs()
 
 
 @app.get("/health")
-def healthcheck() -> dict:
+async def healthcheck() -> dict:
     from app.jobs.health import get_background_jobs_health
     from app.services.quote_redis_cache import get_quote_cache_health
 

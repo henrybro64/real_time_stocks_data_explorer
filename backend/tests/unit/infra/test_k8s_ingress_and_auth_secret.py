@@ -33,6 +33,19 @@ def test_frontend_ingress_targets_clusterip_and_keeps_nodeport() -> None:
     assert "frontend-nodeport.yaml" in kustomization
 
 
+def test_backend_worker_deployment_is_wired() -> None:
+    worker = (_K8S / "backend-worker.yaml").read_text(encoding="utf-8")
+    assert "name: stock-ticker-backend-worker" in worker
+    assert "python" in worker
+    assert "app.worker" in worker
+    assert 'value: "true"' in worker
+    assert "alembic upgrade head" in worker
+    backend = (_K8S / "backend.yaml").read_text(encoding="utf-8")
+    assert 'RUN_BACKGROUND_JOBS: "false"' in backend
+    kustomization = (_K8S / "kustomization.yaml").read_text(encoding="utf-8")
+    assert "backend-worker.yaml" in kustomization
+
+
 def test_deploy_script_generates_auth_secret_and_hostname_override() -> None:
     script = (_ROOT / "scripts" / "deploy-k3s.sh").read_text(encoding="utf-8")
     assert "ensure_backend_auth_secret" in script

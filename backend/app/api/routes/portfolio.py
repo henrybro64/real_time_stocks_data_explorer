@@ -1,4 +1,3 @@
-from concurrent.futures import ThreadPoolExecutor, as_completed
 import logging
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
@@ -58,19 +57,8 @@ def list_portfolio_positions(
     if not positions:
         return []
 
-    quote_by_stock: dict[str, QuoteRecord | None] = {}
-    workers = min(16, max(1, len(positions)))
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        future_to_sid = {
-            pool.submit(quote_service.get_quote, p.stock_id): p.stock_id
-            for p in positions
-        }
-        for fut in as_completed(future_to_sid):
-            sid = future_to_sid[fut]
-            try:
-                quote_by_stock[sid] = fut.result()
-            except Exception:
-                quote_by_stock[sid] = None
+    cached = quote_service.peek_cached_quotes([position.stock_id for position in positions])
+    quote_by_stock = {item.stock.id: item.quote for item in cached}
 
     rows: list[PortfolioPositionResponse] = []
     for position in positions:
@@ -95,6 +83,11 @@ def add_portfolio_position(
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        from app.api.http_quota import raise_quota_http
+
+        raise_quota_http(exc)
+        raise
     _refresh_history_snapshot(user_id)
     return _to_response(position)
 
@@ -309,14 +302,20 @@ def add_portfolio_asset(
     payload: PortfolioAssetCreate,
     user_id: str = Depends(get_effective_user_id),
 ) -> PortfolioAssetResponse:
-    asset = portfolio_service.add_asset(
-        user_id,
-        asset_type=payload.assetType,
-        name=payload.name,
-        currency=payload.currency,
-        value=payload.value,
-        notes=payload.notes,
-    )
+    try:
+        asset = portfolio_service.add_asset(
+            user_id,
+            asset_type=payload.assetType,
+            name=payload.name,
+            currency=payload.currency,
+            value=payload.value,
+            notes=payload.notes,
+        )
+    except Exception as exc:
+        from app.api.http_quota import raise_quota_http
+
+        raise_quota_http(exc)
+        raise
     _refresh_history_snapshot(user_id)
     return _to_asset_response(asset)
 

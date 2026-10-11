@@ -252,6 +252,17 @@ class RankingSnapshotRepository:
         return rows
 
 
+    def delete_snapshots_before(self, cutoff: datetime) -> int:
+        """Delete snapshot rows (and cascaded items) with ``bucket_start`` before cutoff."""
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            deleted = session.execute(
+                delete(RankingSnapshot).where(RankingSnapshot.bucket_start < cutoff)
+            )
+            session.commit()
+            return int(deleted.rowcount or 0)
+
+
 def _volume_delta_value(item: RankingItem) -> int | None:
     if item.volume is None or item.volumeDeltaPercent is None:
         return None

@@ -65,7 +65,7 @@ def test_ai_providers_do_not_retry_auth_or_bad_request(
         calls["count"] += 1
         return failing
 
-    monkeypatch.setattr("app.services.http_client.httpx.request", fake_request)
+    monkeypatch.setattr("app.services.http_client._send_http_request", fake_request)
     monkeypatch.setattr("app.services.http_client.time.sleep", lambda _s: None)
 
     provider = provider_cls(api_key="sk-test", model_name="test-model")
@@ -104,7 +104,7 @@ def test_ai_providers_retry_transient_statuses_once(
             return failing
         return ok
 
-    monkeypatch.setattr("app.services.http_client.httpx.request", fake_request)
+    monkeypatch.setattr("app.services.http_client._send_http_request", fake_request)
     monkeypatch.setattr("app.services.http_client.time.sleep", lambda _s: None)
     monkeypatch.setattr("app.services.http_client.random.random", lambda: 0.0)
 
@@ -128,7 +128,7 @@ def test_openai_empty_content_after_200_does_not_rehttp(monkeypatch) -> None:
         calls["count"] += 1
         return response
 
-    monkeypatch.setattr("app.services.http_client.httpx.request", fake_request)
+    monkeypatch.setattr("app.services.http_client._send_http_request", fake_request)
     monkeypatch.setattr("app.services.http_client.time.sleep", lambda _s: None)
 
     provider = OpenAIProvider(api_key="sk-test", model_name="test-model")
@@ -151,7 +151,7 @@ def test_perplexity_preserves_citations_after_retry(monkeypatch) -> None:
             return failing
         return ok
 
-    monkeypatch.setattr("app.services.http_client.httpx.request", fake_request)
+    monkeypatch.setattr("app.services.http_client._send_http_request", fake_request)
     monkeypatch.setattr("app.services.http_client.time.sleep", lambda _s: None)
     monkeypatch.setattr("app.services.http_client.random.random", lambda: 0.0)
 
@@ -174,7 +174,7 @@ def test_openai_does_not_retry_http_500_with_strict_codes(monkeypatch) -> None:
         calls["count"] += 1
         return failing
 
-    monkeypatch.setattr("app.services.http_client.httpx.request", fake_request)
+    monkeypatch.setattr("app.services.http_client._send_http_request", fake_request)
     monkeypatch.setattr("app.services.http_client.time.sleep", lambda _s: None)
 
     provider = OpenAIProvider(api_key="sk-test", model_name="test-model")

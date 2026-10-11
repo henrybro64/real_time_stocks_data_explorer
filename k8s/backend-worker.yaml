@@ -1,0 +1,89 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: stock-ticker-backend-worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: stock-ticker-backend-worker
+  template:
+    metadata:
+      labels:
+        app: stock-ticker-backend-worker
+    spec:
+      initContainers:
+        - name: migrate-db
+          image: stock-ticker-backend:local
+          imagePullPolicy: Never
+          workingDir: /app/backend
+          command:
+            - sh
+            - -c
+            - alembic upgrade head
+          envFrom:
+            - configMapRef:
+                name: stock-ticker-backend-env
+            - secretRef:
+                name: stock-ticker-backend-database
+            - secretRef:
+                name: stock-ticker-backend-auth
+            - secretRef:
+                name: stock-ticker-backend-rankings-archive
+                optional: true
+      containers:
+        - name: worker
+          image: stock-ticker-backend:local
+          imagePullPolicy: Never
+          workingDir: /app/backend
+          command:
+            - python
+            - -m
+            - app.worker
+          ports:
+            - containerPort: 8001
+              name: health
+          env:
+            - name: RUN_BACKGROUND_JOBS
+              value: "true"
+          envFrom:
+            - configMapRef:
+                name: stock-ticker-backend-env
+            - secretRef:
+                name: stock-ticker-backend-database
+            - secretRef:
+                name: stock-ticker-backend-auth
+            - secretRef:
+                name: stock-ticker-backend-rankings-archive
+                optional: true
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: health
+            initialDelaySeconds: 20
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 50m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: stock-ticker-backend-worker
+spec:
+  selector:
+    app: stock-ticker-backend-worker
+  ports:
+    - name: health
+      port: 8001
+      targetPort: health

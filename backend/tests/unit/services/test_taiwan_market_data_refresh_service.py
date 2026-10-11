@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import replace
+
+import pytest
 from datetime import UTC, date, datetime
 from zoneinfo import ZoneInfo
 
@@ -9,11 +11,19 @@ from app.repositories.taiwan_market_daily_repository import (
 )
 from app.services.http_client import HttpFetchError
 from app.jobs.health import get_background_jobs_health, reset_job_health_for_tests
+from app.services.job_leader_lock import clear_daily_job_markers_for_tests
 from app.services.taiwan_market_data_refresh_service import (
     DatasetDayResult,
     TaiwanMarketDataRefreshService,
     TaiwanMarketDataRefreshSummary,
 )
+
+
+@pytest.fixture(autouse=True)
+def _clear_shared_daily_marker() -> None:
+    clear_daily_job_markers_for_tests()
+    yield
+    clear_daily_job_markers_for_tests()
 
 
 class FakeInstitutionalRepo:

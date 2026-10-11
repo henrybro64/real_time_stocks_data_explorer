@@ -12,7 +12,8 @@ import {
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Suspense, useEffect, useState } from "react";
-import { fetchAuthStatus, loginLocal, registerLocal } from "../../services/api/auth";
+import { entraLoginUrl, fetchAuthStatus, loginLocal, registerLocal } from "../../services/api/auth";
+import { toApiError } from "../../services/api/client";
 
 function LoginFallback() {
   return (
@@ -91,6 +92,15 @@ function LoginPageInner() {
               </p>
             ) : null}
             <Stack gap={3}>
+              {providers.entra ? (
+                <Button
+                  size="lg"
+                  kind={providers.local ? "tertiary" : "primary"}
+                  href={entraLoginUrl()}
+                >
+                  Sign in with Microsoft
+                </Button>
+              ) : null}
               {providers.local ? (
                 <Stack gap={4}>
                   <TextInput
@@ -115,8 +125,13 @@ function LoginPageInner() {
                         await loginLocal(localUsername.trim(), localPassword);
                         router.replace("/");
                         router.refresh();
-                      } catch {
-                        setLocalError("Invalid username or password.");
+                      } catch (error) {
+                        const apiError = toApiError(error);
+                        setLocalError(
+                          apiError.status === 429 && apiError.detail
+                            ? apiError.detail
+                            : "Invalid username or password.",
+                        );
                       }
                     }}
                   >
@@ -136,8 +151,13 @@ function LoginPageInner() {
                         await registerLocal(uname, localPassword);
                         router.replace("/");
                         router.refresh();
-                      } catch {
-                        setLocalError("Could not create account (username may already exist).");
+                      } catch (error) {
+                        const apiError = toApiError(error);
+                        setLocalError(
+                          apiError.status === 429 && apiError.detail
+                            ? apiError.detail
+                            : "Could not create account (username may already exist).",
+                        );
                       }
                     }}
                   >
@@ -145,10 +165,10 @@ function LoginPageInner() {
                   </Button>
                 </Stack>
               ) : null}
-              {!providers.local ? (
+              {!providers.local && !providers.entra ? (
                 <p className="cds--helper-text-01">
-                  Local auth is not configured on the server. Set LOCAL_AUTH_ENABLED,
-                  LOCAL_AUTH_USERNAME and LOCAL_AUTH_PASSWORD in backend environment.
+                  No login providers are configured. Enable local auth and/or Entra External ID
+                  on the backend.
                 </p>
               ) : null}
             </Stack>

@@ -1415,7 +1415,27 @@ class RankingsArchiveService:
                         },
                     )
                     continue
-                result = self.capture_eod_archives(trigger="sampler")
+                from app.services.job_leader_lock import (
+                    release_job_leadership,
+                    try_acquire_job_leadership,
+                )
+
+                leader_token = try_acquire_job_leadership(
+                    "rankings-archive-eod",
+                    ttl_seconds=max(120, int(poll_seconds)),
+                )
+                if leader_token is None:
+                    next_wake = now + timedelta(seconds=poll_seconds)
+                    continue
+                try:
+                    result = self.capture_eod_archives(trigger="sampler")
+                except Exception:
+                    release_job_leadership("rankings-archive-eod", leader_token)
+                    raise
+                failed = int(result.get("failed") or 0)
+                still_missing = int(result.get("still_missing") or 0)
+                if failed or still_missing:
+                    release_job_leadership("rankings-archive-eod", leader_token)
                 next_wake, reason = self._sampler_next_wake_after_capture(
                     now=now,
                     poll_seconds=poll_seconds,

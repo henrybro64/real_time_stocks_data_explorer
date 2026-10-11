@@ -82,12 +82,13 @@ Remove app: `./scripts/k8s-teardown.sh k3s`. Uninstall k3s: `sudo /usr/local/bin
 - `postgres:16-alpine` + **2Gi PVC** (durable while cluster exists)
 - `redis:7-alpine`
 - `stock-ticker-backend:local`, `stock-ticker-frontend:local`
-- Backend init container: `alembic upgrade head`; API seeds `default-user` when DB is reachable
+- Backend API Deployment (`RUN_BACKGROUND_JOBS=false`) with init container `alembic upgrade head`
+- Backend worker Deployment (`python -m app.worker`, `RUN_BACKGROUND_JOBS=true`) for quote refresher, alerts, samplers (#276). It runs the same `alembic upgrade head` init container as the API so a fresh install does not start jobs before the schema exists. `/health` on port 8001 returns 503 when an enabled job has stopped succeeding, so the pod leaves Ready. Replica count stays 1; the Redis locks still keep a second replica from repeating the same interval.
 - NodePort frontend on **30080** for LAN access
 - HTTP Ingress (`k8s/frontend-ingress.yaml`) for a LAN hostname (default `stock-ticker.ai`)
 - Auth Secret generated locally by `deploy-k3s.sh` (not committed; see `.example`)
 
-Expected pods: `stock-ticker-backend`, `stock-ticker-frontend`, `stock-ticker-postgres`, `stock-ticker-redis` — all `Running`.
+Expected pods: `stock-ticker-backend`, `stock-ticker-backend-worker`, `stock-ticker-frontend`, `stock-ticker-postgres`, `stock-ticker-redis` — all `Running`.
 
 ## Helper scripts
 
@@ -132,10 +133,12 @@ A **full** dump is for disaster recovery into an **empty** database (wipe the PV
 ```bash
 kubectl apply -n stock-ticker -f k8s/backend-auth-secret.yaml
 kubectl apply -k k8s
-kubectl -n stock-ticker rollout restart deployment/stock-ticker-backend deployment/stock-ticker-frontend
+kubectl -n stock-ticker rollout restart deployment/stock-ticker-backend deployment/stock-ticker-backend-worker deployment/stock-ticker-frontend
 ```
 
 Keep `AUTH_ENABLED=true` and `LOCAL_AUTH_ENABLED=true` in the backend ConfigMap. The backend refuses default/placeholder session secrets, bootstrap passwords, and capture tokens. Optional bootstrap: set both `LOCAL_AUTH_USERNAME` and `LOCAL_AUTH_PASSWORD` (8+ characters). Leave both empty to rely on self-registration.
+
+Optional Microsoft Entra External ID (#240): set `ENTRA_EXTERNAL_ID_ENABLED=true` plus `ENTRA_TENANT_ID`, `ENTRA_CLIENT_ID`, `ENTRA_REDIRECT_URI` (and optional `ENTRA_AUTHORITY` / `ENTRA_CLIENT_SECRET`) on the backend ConfigMap or Secret. Redirect URI should be the public origin + `/api/auth/callback/entra`. Local auth and Entra can both be enabled.
 
 `SESSION_COOKIE_SECURE` defaults to `false` for plain HTTP Ingress/NodePort. Set it to `true` only after HTTPS is enabled.
 

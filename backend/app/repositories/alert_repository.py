@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 
 from app.db.models import AlertEvent, AlertRule
 
@@ -35,6 +35,19 @@ class AlertRepository:
                 raise RuntimeError("DATABASE_URL is not configured")
             return self._session_factory_override
         return require_session_factory()
+
+    def count_rules(self, user_id: str) -> int:
+        from sqlalchemy import func
+
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            return int(
+                session.execute(
+                    select(func.count())
+                    .select_from(AlertRule)
+                    .where(AlertRule.user_id == user_id),
+                ).scalar_one()
+            )
 
     def list_rules(self, user_id: str) -> list[AlertRule]:
         session_factory = self._session_factory()
@@ -77,19 +90,35 @@ class AlertRepository:
         threshold_value: float,
         enabled: bool,
     ) -> AlertRule:
-        session_factory = self._session_factory()
-        with session_factory() as session:
-            return persist_new(
-                session,
-                AlertRule(
-                    user_id=user_id,
-                    stock_id=stock_id,
-                    rule_type=rule_type,
-                    threshold_value=threshold_value,
-                    enabled=enabled,
-                    last_condition_met=False,
-                ),
-            )
+        from app.services.user_quota_service import (
+            enforce_alert_rule_cap,
+            lock_owner_row,
+            user_quota_write,
+        )
+
+        with user_quota_write("alert-rule", user_id):
+            session_factory = self._session_factory()
+            with session_factory() as session:
+                lock_owner_row(session, user_id)
+                current_count = int(
+                    session.execute(
+                        select(func.count())
+                        .select_from(AlertRule)
+                        .where(AlertRule.user_id == user_id),
+                    ).scalar_one()
+                )
+                enforce_alert_rule_cap(user_id, current_count=current_count)
+                return persist_new(
+                    session,
+                    AlertRule(
+                        user_id=user_id,
+                        stock_id=stock_id,
+                        rule_type=rule_type,
+                        threshold_value=threshold_value,
+                        enabled=enabled,
+                        last_condition_met=False,
+                    ),
+                )
 
     def update_rule(
         self,

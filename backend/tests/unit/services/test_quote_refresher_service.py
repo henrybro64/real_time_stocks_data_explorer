@@ -438,9 +438,6 @@ def test_leader_lock_prevents_second_replica_cycle(monkeypatch) -> None:
 
     first, stub = _service(watchlist=["US:AAPL"])
     second, _ = _service(watchlist=["US:AAPL"], provider=stub)
-    # Leadership is per-cycle; hold the first replica's lock so the second cannot
-    # steal the cycle while the first is still "leader".
-    monkeypatch.setattr(first, "_release_cycle_leadership", lambda _token: None)
 
     first_stats = first.run_cycle()
     second_stats = second.run_cycle()

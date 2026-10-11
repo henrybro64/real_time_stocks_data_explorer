@@ -33,6 +33,7 @@ def start_enabled_background_jobs() -> None:
             "portfolio-history-sampler",
             enabled=True,
             thread=portfolio_history_service._thread,
+            max_stale_seconds=max(120, settings.portfolio_history_poll_seconds * 4),
         )
 
     if not settings.alert_evaluator_enabled:
@@ -49,6 +50,7 @@ def start_enabled_background_jobs() -> None:
             "alert-rule-evaluator",
             enabled=True,
             thread=alert_service._thread,
+            max_stale_seconds=max(120, settings.alert_evaluator_poll_seconds * 4),
         )
 
     if not settings.rankings_snapshot_enabled:
@@ -65,6 +67,7 @@ def start_enabled_background_jobs() -> None:
             "rankings-snapshot-sampler",
             enabled=True,
             thread=rankings_snapshot_service._thread,
+            max_stale_seconds=max(300, settings.rankings_refresh_seconds * 3),
         )
 
     if not settings.taiwan_market_data_refresh_enabled:
@@ -83,6 +86,7 @@ def start_enabled_background_jobs() -> None:
             "taiwan-market-data-refresh",
             enabled=True,
             thread=taiwan_market_data_refresh_service._thread,
+            max_stale_seconds=26 * 60 * 60,
         )
 
     if not settings.quote_refresher_enabled:
@@ -97,6 +101,12 @@ def start_enabled_background_jobs() -> None:
             "quote-refresher",
             enabled=True,
             thread=quote_refresher_service._thread,
+            max_stale_seconds=max(
+                180,
+                settings.quote_refresher_open_poll_seconds,
+                settings.quote_refresher_closed_poll_seconds,
+            )
+            * 3,
         )
 
     if not settings.reference_refresh_enabled:
@@ -113,6 +123,7 @@ def start_enabled_background_jobs() -> None:
             "reference-refresh",
             enabled=True,
             thread=reference_refresh_service._thread,
+            max_stale_seconds=max(300, settings.reference_refresh_poll_seconds * 3),
         )
 
     if not settings.rankings_archive_eod_enabled:
@@ -129,6 +140,7 @@ def start_enabled_background_jobs() -> None:
             "rankings-archive-eod",
             enabled=True,
             thread=rankings_archive_service._thread,
+            max_stale_seconds=26 * 60 * 60,
         )
 
 

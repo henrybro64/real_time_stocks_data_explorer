@@ -50,7 +50,7 @@ How market data is fetched, cached, and exposed, and what the app does when it i
 - **Immediate refreshes:** separate 1-worker pool with a bounded queue (`QUOTE_REFRESHER_IMMEDIATE_QUEUE_MAX`, default 64). Overflow is dropped so a burst of cache-miss reads cannot starve the scheduled cycle.
 - **Capacity (stubbed providers):** a cycle over ~500 tracked symbols completes within the open-market poll interval when batching is used; with live upstreams, capacity is roughly `batch_size / spacing` requests per market inside the 40 s deadline.
 - **Circuit breaker per market:** after 5 consecutive **transport** failures, that market pauses for 120 s. Empty / unusable symbol results back off that symbol only (#268). Provider `Retry-After` hints extend the backoff.
-- **Multiple replicas:** a Redis leader lock (`SET NX`) lets one replica run each cycle. If Redis is configured but unreachable, cycles are skipped (fail closed) instead of every replica hitting providers.
+- **Multiple replicas:** a Redis leader lock (`SET NX`) is held for the poll interval, so a second worker does not start another cycle until that window expires. The lock is deleted early only when the cycle raises. If Redis is configured but unreachable, cycles are skipped (fail closed) instead of every replica hitting providers. Immediate-refresh ids are drained only by the replica that holds the current window.
 - **`QUOTE_REFRESHER_OWNS_UPSTREAM=true`:** while the sampler thread is alive, UI read paths never call providers; they serve cache and enqueue refreshes.
 
 **Provider-level protection:**

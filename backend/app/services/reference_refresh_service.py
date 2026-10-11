@@ -7,6 +7,8 @@ from datetime import datetime
 from threading import Event, Lock, Thread
 from zoneinfo import ZoneInfo
 
+from app.core.config import settings
+
 logger = logging.getLogger(__name__)
 
 
@@ -51,8 +53,23 @@ class ReferenceRefreshService:
                 return
 
     def run_once(self) -> None:
-        self.refresh_reference_data()
-        self.refresh_closed_daily_months()
+        from app.services.job_leader_lock import (
+            release_job_leadership,
+            try_acquire_job_leadership,
+        )
+
+        token = try_acquire_job_leadership(
+            "reference-refresh",
+            ttl_seconds=max(60, int(settings.reference_refresh_poll_seconds)),
+        )
+        if token is None:
+            return
+        try:
+            self.refresh_reference_data()
+            self.refresh_closed_daily_months()
+        except Exception:
+            release_job_leadership("reference-refresh", token)
+            raise
 
     def refresh_reference_data(self) -> None:
         from app.services.market_clock import refresh_tw_market_holidays

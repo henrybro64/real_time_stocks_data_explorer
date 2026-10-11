@@ -3,7 +3,6 @@ from __future__ import annotations
 from datetime import datetime
 
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
 
 from app.db.models import PortfolioHistorySnapshot, User
 
@@ -31,42 +30,46 @@ class PortfolioHistoryRepository:
         combined_assets_usd: float,
         combined_assets_twd: float,
     ) -> int:
+        from app.repositories.session import _dialect_insert
+
         session_factory = require_session_factory()
+        payloads = [
+            {
+                "user_id": user_id,
+                "snapshot_hour": snapshot_hour,
+                "source_window": source_window,
+                "captured_at": captured_at,
+                "usd_twd_rate": fx_rate,
+                "holdings_value_usd": holdings_value_usd,
+                "holdings_value_twd": holdings_value_twd,
+                "combined_assets_usd": combined_assets_usd,
+                "combined_assets_twd": combined_assets_twd,
+            }
+            for source_window, snapshot_hour in windows
+        ]
+        if not payloads:
+            return 0
         with session_factory() as session:
-            touched = 0
-            for source_window, snapshot_hour in windows:
-                snapshot = PortfolioHistorySnapshot(
-                    user_id=user_id,
-                    snapshot_hour=snapshot_hour,
-                    source_window=source_window,
-                    captured_at=captured_at,
-                    usd_twd_rate=fx_rate,
-                    holdings_value_usd=holdings_value_usd,
-                    holdings_value_twd=holdings_value_twd,
-                    combined_assets_usd=combined_assets_usd,
-                    combined_assets_twd=combined_assets_twd,
+            insert = _dialect_insert(session)
+            if insert is None:
+                raise RuntimeError("Unsupported database dialect for snapshot upsert")
+            stmt = insert(PortfolioHistorySnapshot).values(payloads)
+            excluded = stmt.excluded
+            session.execute(
+                stmt.on_conflict_do_update(
+                    index_elements=["user_id", "snapshot_hour", "source_window"],
+                    set_={
+                        "captured_at": excluded.captured_at,
+                        "usd_twd_rate": excluded.usd_twd_rate,
+                        "holdings_value_usd": excluded.holdings_value_usd,
+                        "holdings_value_twd": excluded.holdings_value_twd,
+                        "combined_assets_usd": excluded.combined_assets_usd,
+                        "combined_assets_twd": excluded.combined_assets_twd,
+                    },
                 )
-                try:
-                    with session.begin_nested():
-                        session.add(snapshot)
-                        session.flush()
-                except IntegrityError:
-                    snapshot = session.execute(
-                        select(PortfolioHistorySnapshot).where(
-                            PortfolioHistorySnapshot.user_id == user_id,
-                            PortfolioHistorySnapshot.snapshot_hour == snapshot_hour,
-                            PortfolioHistorySnapshot.source_window == source_window,
-                        )
-                    ).scalar_one()
-                    snapshot.captured_at = captured_at
-                    snapshot.usd_twd_rate = fx_rate
-                    snapshot.holdings_value_usd = holdings_value_usd
-                    snapshot.holdings_value_twd = holdings_value_twd
-                    snapshot.combined_assets_usd = combined_assets_usd
-                    snapshot.combined_assets_twd = combined_assets_twd
-                touched += 1
+            )
             session.commit()
-            return touched
+            return len(payloads)
 
     def list_snapshots_since(
         self,

@@ -84,7 +84,7 @@ def test_fetch_json_raises_auth_denied_for_http_401(monkeypatch) -> None:
     )
 
     monkeypatch.setattr(
-        "app.services.http_client.httpx.request",
+        "app.services.http_client._send_http_request",
         lambda *args, **kwargs: response,
     )
 
@@ -101,7 +101,7 @@ def test_fetch_json_raises_rate_limited_for_http_429(monkeypatch) -> None:
     response.headers = {"content-type": "application/json", "retry-after": "7"}
 
     monkeypatch.setattr(
-        "app.services.http_client.httpx.request",
+        "app.services.http_client._send_http_request",
         lambda *args, **kwargs: response,
     )
 
@@ -136,7 +136,7 @@ def test_fetch_json_does_not_retry_rate_limited(monkeypatch) -> None:
         calls["count"] += 1
         return response
 
-    monkeypatch.setattr("app.services.http_client.httpx.request", fake_request)
+    monkeypatch.setattr("app.services.http_client._send_http_request", fake_request)
     monkeypatch.setattr(
         "app.services.http_client.time.sleep",
         lambda seconds: sleeps.append(seconds),
@@ -166,7 +166,7 @@ def test_fetch_json_exponential_backoff_sleeps(monkeypatch) -> None:
         calls["count"] += 1
         raise httpx.ConnectTimeout("timed out")
 
-    monkeypatch.setattr("app.services.http_client.httpx.request", fake_request)
+    monkeypatch.setattr("app.services.http_client._send_http_request", fake_request)
     monkeypatch.setattr(
         "app.services.http_client.time.sleep",
         lambda seconds: sleeps.append(seconds),
@@ -198,7 +198,7 @@ def test_fetch_json_retries_transient_status_codes(monkeypatch) -> None:
                 return _failing
             return ok
 
-        monkeypatch.setattr("app.services.http_client.httpx.request", fake_request)
+        monkeypatch.setattr("app.services.http_client._send_http_request", fake_request)
         monkeypatch.setattr("app.services.http_client.time.sleep", lambda _s: None)
         monkeypatch.setattr("app.services.http_client.random.random", lambda: 0.0)
 
@@ -222,7 +222,7 @@ def test_fetch_json_retries_timeout_and_network_errors(monkeypatch) -> None:
             raise httpx.ConnectError("connection reset")
         return ok
 
-    monkeypatch.setattr("app.services.http_client.httpx.request", fake_request)
+    monkeypatch.setattr("app.services.http_client._send_http_request", fake_request)
     monkeypatch.setattr("app.services.http_client.time.sleep", lambda _s: None)
     monkeypatch.setattr("app.services.http_client.random.random", lambda: 0.0)
 
@@ -245,7 +245,7 @@ def test_fetch_json_does_not_retry_http_400(monkeypatch) -> None:
         calls["count"] += 1
         return bad
 
-    monkeypatch.setattr("app.services.http_client.httpx.request", fake_request)
+    monkeypatch.setattr("app.services.http_client._send_http_request", fake_request)
     monkeypatch.setattr("app.services.http_client.time.sleep", lambda _s: None)
 
     with pytest.raises(HttpFetchError) as exc_info:
@@ -270,7 +270,7 @@ def test_fetch_json_does_not_retry_http_404(monkeypatch) -> None:
         calls["count"] += 1
         return missing
 
-    monkeypatch.setattr("app.services.http_client.httpx.request", fake_request)
+    monkeypatch.setattr("app.services.http_client._send_http_request", fake_request)
     monkeypatch.setattr("app.services.http_client.time.sleep", lambda _s: None)
 
     with pytest.raises(HttpFetchError) as exc_info:
@@ -295,7 +295,7 @@ def test_fetch_json_does_not_retry_http_403(monkeypatch) -> None:
         calls["count"] += 1
         return denied
 
-    monkeypatch.setattr("app.services.http_client.httpx.request", fake_request)
+    monkeypatch.setattr("app.services.http_client._send_http_request", fake_request)
     monkeypatch.setattr("app.services.http_client.time.sleep", lambda _s: None)
 
     with pytest.raises(HttpFetchError) as exc_info:
@@ -314,7 +314,7 @@ def test_fetch_json_raises_unexpected_content_for_html_body(monkeypatch) -> None
     response.json.side_effect = ValueError("not json")
 
     monkeypatch.setattr(
-        "app.services.http_client.httpx.request",
+        "app.services.http_client._send_http_request",
         lambda *args, **kwargs: response,
     )
 
@@ -337,7 +337,7 @@ def test_fetch_json_bad_json_does_not_retry_http(monkeypatch) -> None:
         calls["count"] += 1
         return response
 
-    monkeypatch.setattr("app.services.http_client.httpx.request", fake_request)
+    monkeypatch.setattr("app.services.http_client._send_http_request", fake_request)
     monkeypatch.setattr("app.services.http_client.time.sleep", lambda _s: None)
 
     with pytest.raises(HttpFetchError) as exc_info:
@@ -349,7 +349,7 @@ def test_fetch_json_bad_json_does_not_retry_http(monkeypatch) -> None:
 
 def test_fetch_json_raises_network_failure_for_timeout(monkeypatch) -> None:
     monkeypatch.setattr(
-        "app.services.http_client.httpx.request",
+        "app.services.http_client._send_http_request",
         lambda *args, **kwargs: (_ for _ in ()).throw(httpx.ConnectTimeout("timed out")),
     )
 
@@ -383,7 +383,7 @@ def test_fetch_json_does_not_retry_http_401(monkeypatch) -> None:
         if extra.get("event") == "external_http.request.failed":
             logged.append(extra)
 
-    monkeypatch.setattr("app.services.http_client.httpx.request", fake_request)
+    monkeypatch.setattr("app.services.http_client._send_http_request", fake_request)
     monkeypatch.setattr("app.services.http_client.time.sleep", lambda _seconds: None)
     monkeypatch.setattr("app.services.http_client.logger.warning", capture_warning)
 
@@ -405,7 +405,7 @@ def test_fetch_json_limits_remote_protocol_error_retries(monkeypatch) -> None:
         calls["count"] += 1
         raise httpx.RemoteProtocolError("Server disconnected without sending a response.")
 
-    monkeypatch.setattr("app.services.http_client.httpx.request", fake_request)
+    monkeypatch.setattr("app.services.http_client._send_http_request", fake_request)
     monkeypatch.setattr("app.services.http_client.time.sleep", lambda _seconds: None)
 
     with pytest.raises(HttpFetchError) as exc_info:
@@ -433,7 +433,7 @@ def test_fetch_json_does_not_reuse_prior_rate_limit_after_timeout(monkeypatch) -
             return rate_limited
         raise httpx.ConnectTimeout("timed out on a later request")
 
-    monkeypatch.setattr("app.services.http_client.httpx.request", fake_request)
+    monkeypatch.setattr("app.services.http_client._send_http_request", fake_request)
     monkeypatch.setattr("app.services.http_client.time.sleep", lambda _seconds: None)
 
     with pytest.raises(HttpFetchError) as exc_info:
@@ -456,7 +456,7 @@ def test_provider_spacing_hook_called_per_upstream_attempt(monkeypatch) -> None:
         calls["count"] += 1
         raise httpx.ConnectTimeout("timed out")
 
-    monkeypatch.setattr("app.services.http_client.httpx.request", fake_request)
+    monkeypatch.setattr("app.services.http_client._send_http_request", fake_request)
     monkeypatch.setattr("app.services.http_client.time.sleep", lambda _s: None)
     monkeypatch.setattr("app.services.http_client.random.random", lambda: 0.0)
 
@@ -487,7 +487,7 @@ def test_fetch_json_honors_custom_retryable_status_codes(monkeypatch) -> None:
         calls["count"] += 1
         return server_error
 
-    monkeypatch.setattr("app.services.http_client.httpx.request", fake_request)
+    monkeypatch.setattr("app.services.http_client._send_http_request", fake_request)
     monkeypatch.setattr("app.services.http_client.time.sleep", lambda _s: None)
 
     with pytest.raises(HttpFetchError):
@@ -515,7 +515,7 @@ def test_fetch_json_passes_json_body_to_httpx(monkeypatch) -> None:
         captured["data"] = kwargs.get("data")
         return response
 
-    monkeypatch.setattr("app.services.http_client.httpx.request", fake_request)
+    monkeypatch.setattr("app.services.http_client._send_http_request", fake_request)
 
     payload = {"model": "gpt-test"}
     assert fetch_json(
@@ -565,3 +565,27 @@ def test_remember_keeps_rate_limit_across_fallback_requests() -> None:
     http_client_module._remember_http_fetch_error(rate)
     http_client_module._remember_http_fetch_error(emptyish)
     assert http_client_module.get_last_http_fetch_error() is rate
+
+
+def test_shared_client_is_reused_across_requests(monkeypatch) -> None:
+    from app.services import http_client as http_client_module
+
+    calls: list[object] = []
+
+    class _Client:
+        is_closed = False
+
+        def request(self, method, url, **kwargs):
+            del kwargs
+            calls.append(self)
+            return httpx.Response(
+                200,
+                json={"ok": True},
+                request=httpx.Request(method, url),
+            )
+
+    client = _Client()
+    monkeypatch.setattr(http_client_module, "_shared_client", client)
+    http_client_module.fetch_json("https://example.test/a")
+    http_client_module.fetch_json("https://example.test/b")
+    assert calls == [client, client]

@@ -96,6 +96,7 @@ class _TaiwanDailyRepository(SessionBoundRepository, Generic[ModelT, RecordT]):
             records=records,
             build_row=build_row,
             apply_update=apply_update,
+            preserve_existing_when_null=preserve_existing_when_null,
         )
 
 

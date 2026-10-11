@@ -14,7 +14,7 @@ import { MarketSnapshot } from "../../components/market-snapshot/MarketSnapshot"
 import { StockSearch } from "../../components/search/StockSearch";
 import { WatchlistTable } from "../../components/watchlist/WatchlistTable";
 import { useWatchlist } from "../../hooks/useWatchlist";
-import { fetchMarketIndices, fetchMarkets, fetchQuotes, searchStocks } from "../../services/api/client";
+import { fetchMarketIndices, fetchMarkets, fetchQuotes, searchStocks, toApiError } from "../../services/api/client";
 import { resolveWarmingTimeoutState } from "../../services/market-data/quoteWarming";
 import { resolveWatchlistQuoteQueryTiming } from "./watchlistQuoteQuery";
 import { deriveWatchlistNoticeKind } from "./watchlistState";
@@ -140,6 +140,9 @@ export function HomePage() {
     return watchlist.ids.filter((stockId) => !hydratedIds.has(stockId));
   }, [watchlist.ids, watchlistItems]);
 
+  const watchlistNoticeDetail =
+    watchlist.mutationError != null ? toApiError(watchlist.mutationError).detail : null;
+
   const watchlistNoticeKind = useMemo(() => {
     return deriveWatchlistNoticeKind({
       hasLoaded: watchlist.hasLoaded,
@@ -226,6 +229,7 @@ export function HomePage() {
           isRefreshing={!!watchlistQuery.data && (watchlistQuery.isFetching || watchlist.isMutating)}
           isRetryingQuote={isRetryingQuotes}
           items={watchlistItems}
+          noticeDetail={watchlistNoticeDetail}
           noticeKind={watchlistNoticeKind}
           pendingIds={pendingWatchlistIds}
           trackedCount={watchlist.ids.length}

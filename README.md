@@ -199,8 +199,8 @@ infra/                      Optional Terraform: Azure SQL rankings archive, AWS 
 ## Known limitations
 
 - **Data is best-effort.** Free sources can be delayed (Yahoo is ~20 min behind for Taiwan), rate-limited, or change format without notice. The app flags stale or missing data instead of hiding it; see [docs/quote-refresh-design.md](docs/quote-refresh-design.md#current-limitations).
-- **Single-node deployment.** Background jobs run inside the API process, and the k8s manifests run one backend replica with in-cluster Postgres.
-- **Basic authentication.** Local username/password only: open self-registration, no rate limiting, and per-user AI keys stored unencrypted.
+- **Single-node deployment.** k8s runs one API replica plus one worker with in-cluster Postgres; not a high-availability setup.
+- **Basic authentication.** Local username/password (and optional Entra External ID): open self-registration for local accounts, and per-user AI keys stored unencrypted.
 - **Manual records.** No broker sync, automatic FX conversion, or tax-lot accounting; alerts are in-app only (no email/push).
 - **Partial localization.** Many API error messages stay in English, and portfolio AI does not follow the UI language.
 - **Testing gaps.** No coverage reporting, no automated frontend/backend contract check, no live-provider canaries (see [docs/testing-strategy.md](docs/testing-strategy.md#biggest-gaps)).
@@ -210,11 +210,10 @@ infra/                      Optional Terraform: Azure SQL rankings archive, AWS 
 Planned work tracked in GitHub issues:
 
 - **Cloud deployment** — production deployment contract (#59), AWS ECS Fargate (#60, #61) and Azure Container Apps (#62, #63), with cloud smoke tests and teardown runbooks (#64).
-- **Authentication** — Microsoft Entra External ID as an additional login provider (#240).
 - **Networking** — local DNS hostname and k3s Ingress (#241).
 - **Observability** — application metrics and dashboards (#28), on top of the existing workload monitoring.
 
-Candidate improvements from the design docs (not yet filed): coverage reporting in SonarCloud, a contract test between `packages/shared-contracts` and the API schemas, encrypted API-key storage, login rate limiting, and a leader lock for the alert evaluator.
+Candidate improvements from the design docs (not yet filed): coverage reporting in SonarCloud, a contract test between `packages/shared-contracts` and the API schemas, and encrypted API-key storage.
 
 ## Documentation
 
