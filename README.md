@@ -227,6 +227,7 @@ Candidate improvements from the design docs (not yet filed): coverage reporting 
 | Backend module map | [docs/backend-architecture.md](docs/backend-architecture.md) |
 | Local setup, features, env vars | [docs/local-development.md](docs/local-development.md) |
 | Kubernetes deploy, GHCR images, troubleshooting | [docs/kubernetes.md](docs/kubernetes.md) |
+| Post-deploy verification checklist | [docs/post-deploy-verification.md](docs/post-deploy-verification.md) |
 | Structured logging | [docs/backend-logging.md](docs/backend-logging.md) |
 | k8s workload monitoring | [docs/observability.md](docs/observability.md) |
 | Azure EOD rankings archive (optional) | [docs/azure-rankings-archive.md](docs/azure-rankings-archive.md) |

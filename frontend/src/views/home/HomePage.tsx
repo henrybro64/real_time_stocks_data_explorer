@@ -14,6 +14,7 @@ import { MarketSnapshot } from "../../components/market-snapshot/MarketSnapshot"
 import { StockSearch } from "../../components/search/StockSearch";
 import { WatchlistTable } from "../../components/watchlist/WatchlistTable";
 import { useWatchlist } from "../../hooks/useWatchlist";
+import { refetchIntervalWhileErroring } from "../../services/api/pollingInterval";
 import { fetchMarketIndices, fetchMarkets, fetchQuotes, searchStocks, toApiError } from "../../services/api/client";
 import { resolveWarmingTimeoutState } from "../../services/market-data/quoteWarming";
 import { resolveWatchlistQuoteQueryTiming } from "./watchlistQuoteQuery";
@@ -43,7 +44,7 @@ export function HomePage() {
   const marketsQuery = useQuery<MarketStatus[]>({
     queryKey: ["markets"],
     queryFn: fetchMarkets,
-    refetchInterval: 60_000,
+    refetchInterval: (query) => refetchIntervalWhileErroring(query.state.status, 60_000),
     staleTime: 60_000,
     refetchIntervalInBackground: false,
   });
@@ -55,10 +56,9 @@ export function HomePage() {
     refetchIntervalInBackground: false,
     refetchInterval: (query) => {
       const items = query.state.data;
-      if (!items || items.length === 0) {
-        return 60_000;
-      }
-      return items.some((item) => item.isMarketOpen) ? 30_000 : 120_000;
+      const intervalMs =
+        !items || items.length === 0 ? 60_000 : items.some((item) => item.isMarketOpen) ? 30_000 : 120_000;
+      return refetchIntervalWhileErroring(query.state.status, intervalMs);
     },
   });
 
@@ -79,16 +79,19 @@ export function HomePage() {
         ).allWarmingTimedOut,
       }).staleTime,
     refetchInterval: (query) =>
-      resolveWatchlistQuoteQueryTiming({
-        stockIds: watchlist.ids,
-        markets: marketsQuery.data,
-        quotes: query.state.data,
-        warmingTimedOut: resolveWarmingTimeoutState(
-          query.state.data ?? [],
-          warmingStartedAtByIdRef.current,
-          Date.now(),
-        ).allWarmingTimedOut,
-      }).refetchInterval,
+      refetchIntervalWhileErroring(
+        query.state.status,
+        resolveWatchlistQuoteQueryTiming({
+          stockIds: watchlist.ids,
+          markets: marketsQuery.data,
+          quotes: query.state.data,
+          warmingTimedOut: resolveWarmingTimeoutState(
+            query.state.data ?? [],
+            warmingStartedAtByIdRef.current,
+            Date.now(),
+          ).allWarmingTimedOut,
+        }).refetchInterval,
+      ),
     refetchIntervalInBackground: false,
     refetchOnMount: true,
     refetchOnWindowFocus: true,
@@ -159,6 +162,12 @@ export function HomePage() {
     watchlistQuery.data,
   ]);
 
+  const marketsFailed = marketsQuery.isError && marketsQuery.data == null;
+  const showSyncing =
+    !marketsFailed &&
+    ((marketsQuery.isFetching && !marketsQuery.isError) ||
+      (watchlistQuery.isFetching && !watchlistQuery.isError));
+
   const handleRetryQuotes = async () => {
     warmingStartedAtByIdRef.current.clear();
     setIsRetryingQuotes(true);
@@ -178,15 +187,16 @@ export function HomePage() {
             <p className="app-body-copy app-hero-description">{t("home.hero.description")}</p>
           </div>
           <div className="app-hero-kpis">
+            {/* The markets strip below carries the failure notice and Retry; avoid a second copy here. */}
             <span>
-              {t("home.summary.markets")}: {marketsQuery.data?.length ?? 0}
+              {t("home.summary.markets")}: {marketsFailed ? "—" : (marketsQuery.data?.length ?? 0)}
             </span>
             <span>
               {t("home.summary.tracked")}: {watchlist.ids.length}
             </span>
-            {(marketsQuery.isFetching || watchlistQuery.isFetching) && (
+            {showSyncing ? (
               <InlineLoading description={t("home.summary.loading")} status="active" />
-            )}
+            ) : null}
           </div>
         </Tile>
       </Column>
@@ -200,13 +210,23 @@ export function HomePage() {
         <MarketSnapshot />
       </Column>
       <Column className="app-column-spacing app-home-markets-column" id="markets" sm={4} md={8} lg={16}>
-        <MarketStatusStrip error={marketsQuery.error} isLoading={marketsQuery.isLoading} markets={marketsQuery.data ?? []} />
+        <MarketStatusStrip
+          error={marketsQuery.error}
+          isLoading={marketsQuery.isLoading}
+          markets={marketsQuery.data ?? []}
+          onRetry={() => {
+            void marketsQuery.refetch();
+          }}
+        />
       </Column>
       <Column className="app-column-spacing app-home-indices-column" sm={4} md={8} lg={16}>
         <MarketIndicesStrip
           error={marketIndicesQuery.error}
           isLoading={marketIndicesQuery.isLoading}
           items={marketIndicesQuery.data ?? []}
+          onRetry={() => {
+            void marketIndicesQuery.refetch();
+          }}
         />
       </Column>
       <Column className="app-column-spacing app-home-search-column" sm={4} md={8} lg={16}>

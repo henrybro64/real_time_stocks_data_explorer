@@ -10,6 +10,7 @@ type Props = {
   error?: unknown;
   isLoading?: boolean;
   items: MarketIndex[];
+  onRetry?: () => void;
 };
 
 function isUnavailable(item: MarketIndex): boolean {
@@ -81,7 +82,7 @@ export function resolveMarketIndexSlots(items: MarketIndex[]): MarketIndex[] {
   });
 }
 
-export function MarketIndicesStrip({ error, isLoading = false, items }: Props) {
+export function MarketIndicesStrip({ error, isLoading = false, items, onRetry }: Props) {
   const { language } = useLanguage();
   const copy =
     language === "zh-TW"
@@ -138,7 +139,7 @@ export function MarketIndicesStrip({ error, isLoading = false, items }: Props) {
       </div>
       {noticeKind ? (
         <div className="app-state-notice-wrap">
-          <RequestStateNotice kind={noticeKind} scopeLabel={copy.title} />
+          <RequestStateNotice kind={noticeKind} onRetry={onRetry} scopeLabel={copy.title} />
         </div>
       ) : null}
       {isLoading ? <InlineLoading description={copy.loading} status="active" /> : null}

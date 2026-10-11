@@ -7,7 +7,7 @@
 | Setting | Login | Requests act as | Startup behavior |
 | --- | --- | --- | --- |
 | `AUTH_ENABLED=false` (default) | None | `default-user` | `seed_default_user()` inserts `users.id = "default-user"` if missing (`backend/app/db/init_db.py`). |
-| `AUTH_ENABLED=true` + `LOCAL_AUTH_ENABLED=true` | Username/password, session cookie | The `users.id` stored in the session | Requires a non-placeholder `SESSION_SECRET` of 16+ characters. Placeholder bootstrap passwords and capture tokens are refused. If `LOCAL_AUTH_USERNAME` / `LOCAL_AUTH_PASSWORD` are set, creates that user or resets its password. |
+| `AUTH_ENABLED=true` + `LOCAL_AUTH_ENABLED=true` | Username/password, session cookie | The `users.id` stored in the session | Requires a non-placeholder `SESSION_SECRET` of 16+ characters. Placeholder bootstrap passwords are refused. Placeholder capture tokens are cleared (endpoint disabled) instead of crashing (#284). If `LOCAL_AUTH_USERNAME` / `LOCAL_AUTH_PASSWORD` are set, creates the user when missing; existing passwords are left alone unless `LOCAL_AUTH_RESET_PASSWORD=true` (#286). |
 | `AUTH_ENABLED=true` + Entra External ID | Microsoft OIDC → same session cookie | Linked `users.id` via `oauth_identities` | Requires `ENTRA_EXTERNAL_ID_ENABLED=true` plus tenant, client id, and redirect URI. May run with or without local auth (#240). |
 | `AUTH_ENABLED=true` with neither provider | — | — | Startup fails. |
 
@@ -105,6 +105,6 @@ Internal capture endpoints are the deliberate exception: they act for **all** us
 - **Open registration.** With local auth on, anyone who can reach the app can register. There are no roles, admin user, or invite flow.
 - **Plaintext AI API keys.** `user_api_keys.api_key` is stored as plain text; responses only expose the last four characters.
 - **Session cookie.** `SESSION_COOKIE_SECURE` defaults to false for HTTP; Starlette's default 14-day lifetime still applies. There is no server-side session store, so a single session cannot be revoked (rotating `SESSION_SECRET` logs everyone out).
-- **Bootstrap password reset.** When `LOCAL_AUTH_USERNAME` / `LOCAL_AUTH_PASSWORD` are set, that user's password is reset to the configured value on every startup.
+- **Bootstrap is create-only.** When `LOCAL_AUTH_USERNAME` / `LOCAL_AUTH_PASSWORD` are set, a missing user is created; an existing user's password is not changed unless `LOCAL_AUTH_RESET_PASSWORD=true` (#286).
 - **Switching modes does not migrate data.** Data created as `default-user` stays under that id after enabling auth, and `default-user` has no password, so nobody can log in as it.
 - Saved layouts and dashboard settings are not persisted per user. New user-owned features must follow the same `user_id` + `get_effective_user_id` pattern.

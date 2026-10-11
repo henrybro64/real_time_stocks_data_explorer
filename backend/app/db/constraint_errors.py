@@ -23,3 +23,18 @@ def is_user_stock_unique_violation(
     if constraint.lower() in message:
         return True
     return "unique" in message and table.lower() in message and "stock_id" in message
+
+
+def is_username_unique_violation(exc: BaseException) -> bool:
+    """True when ``users.username`` already exists, not for other constraint failures."""
+    if not isinstance(exc, IntegrityError):
+        return False
+    orig = getattr(exc, "orig", None)
+    diag = getattr(orig, "diag", None)
+    constraint_name = getattr(diag, "constraint_name", None) if diag is not None else None
+    if constraint_name == "users_username_key":
+        return True
+    message = " ".join(part for part in (str(orig or ""), str(exc)) if part).lower()
+    if "users_username_key" in message:
+        return True
+    return "unique" in message and "users" in message and "username" in message

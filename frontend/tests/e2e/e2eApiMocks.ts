@@ -382,6 +382,8 @@ type E2eAuthStatus = {
 
 type E2eMockState = {
   authStatus: E2eAuthStatus;
+  /** When true, /api/auth/status aborts so the UI shows the unreachable gate (#285). */
+  authStatusDown: boolean;
   watchlistIds: string[];
   alertRules: AlertRuleRow[];
   alertEvents: AlertEventRow[];
@@ -410,6 +412,7 @@ function getState(page: Page): E2eMockState {
   if (!state) {
     state = {
       authStatus: defaultAuthStatus(),
+      authStatusDown: false,
       watchlistIds: [],
       alertRules: [],
       alertEvents: [],
@@ -431,6 +434,11 @@ export function setE2eAuthenticatedUser(page: Page, user: E2eAuthUser) {
     ...defaultAuthStatus(),
     user: { ...user },
   };
+  state.authStatusDown = false;
+}
+
+export function setE2eAuthStatusDown(page: Page, down: boolean) {
+  getState(page).authStatusDown = down;
 }
 
 function apiPath(url: URL): string {
@@ -999,6 +1007,10 @@ export async function installE2eApiMocks(page: Page): Promise<void> {
     }
 
     if (path === "/api/auth/status" && request.method() === "GET") {
+      if (state.authStatusDown) {
+        await route.abort("failed");
+        return;
+      }
       await fulfillJson(route, state.authStatus);
       return;
     }

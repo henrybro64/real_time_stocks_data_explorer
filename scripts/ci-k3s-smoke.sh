@@ -13,12 +13,18 @@ mkdir -p "${ARTIFACT_DIR}"
 read -r -a KUBECTL_ARR <<< "${KUBECTL_CMD}"
 exec > >(tee "${LOG_FILE}") 2>&1
 
+PLACEHOLDER_POD=""
+
 cleanup() {
   if [[ -n "${BACKEND_PORT_FORWARD_PID:-}" ]]; then
     kill "${BACKEND_PORT_FORWARD_PID}" >/dev/null 2>&1 || true
   fi
   if [[ -n "${FRONTEND_PORT_FORWARD_PID:-}" ]]; then
     kill "${FRONTEND_PORT_FORWARD_PID}" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "${PLACEHOLDER_POD}" ]]; then
+    "${KUBECTL_ARR[@]}" -n "${NAMESPACE}" delete pod "${PLACEHOLDER_POD}" \
+      --ignore-not-found --wait=false >/dev/null 2>&1 || true
   fi
 }
 
@@ -264,5 +270,107 @@ redis_probe="$(
 grep -q '^True$' <<< "${redis_probe}"
 printf '%s\n' "${redis_probe}" > "${ARTIFACT_DIR}/redis-probe.txt"
 append_summary_section "Backend pod -> Redis probe" "${redis_probe}"
+
+smoke_placeholder_capture_token() {
+  # A placeholder archive token must boot and return 503, not CrashLoop (#284).
+  local pod_name="smoke-placeholder-capture"
+  local session_secret pull_policy
+  session_secret="$(openssl rand -hex 32)"
+  if [[ "${BACKEND_IMAGE}" == */* ]]; then
+    pull_policy="IfNotPresent"
+  else
+    pull_policy="Never"
+  fi
+  PLACEHOLDER_POD="${pod_name}"
+  run_kubectl -n "${NAMESPACE}" delete pod "${pod_name}" --ignore-not-found --wait=true >/dev/null 2>&1 || true
+  cat <<EOF | run_kubectl apply -f -
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ${pod_name}
+  namespace: ${NAMESPACE}
+spec:
+  restartPolicy: Never
+  containers:
+    - name: backend
+      image: ${BACKEND_IMAGE}
+      imagePullPolicy: ${pull_policy}
+      workingDir: /app/backend
+      command: ["python", "-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8000"]
+      env:
+        - name: AUTH_ENABLED
+          value: "true"
+        - name: LOCAL_AUTH_ENABLED
+          value: "true"
+        - name: RUN_BACKGROUND_JOBS
+          value: "false"
+        - name: DATABASE_URL
+          value: ""
+        - name: REDIS_URL
+          value: ""
+        - name: SESSION_SECRET
+          value: "${session_secret}"
+        - name: LOCAL_AUTH_USERNAME
+          value: ""
+        - name: LOCAL_AUTH_PASSWORD
+          value: ""
+        - name: RANKINGS_ARCHIVE_CAPTURE_TOKEN
+          value: "replace-with-long-random-token"
+EOF
+  if ! run_kubectl -n "${NAMESPACE}" wait --for=condition=Ready "pod/${pod_name}" --timeout=180s; then
+    run_kubectl -n "${NAMESPACE}" logs "${pod_name}" >"${ARTIFACT_DIR}/placeholder-capture.log" 2>&1 || true
+    echo "Placeholder-capture pod did not become Ready" >&2
+    exit 1
+  fi
+  local attempt probe_ok=0
+  for ((attempt = 1; attempt <= 15; attempt++)); do
+    if run_kubectl -n "${NAMESPACE}" exec -i "${pod_name}" -- python - <<'PY'
+import urllib.error
+import urllib.request
+
+health = urllib.request.urlopen("http://127.0.0.1:8000/health", timeout=10)
+if health.status != 200:
+    raise SystemExit(f"health {health.status}")
+request = urllib.request.Request(
+    "http://127.0.0.1:8000/api/rankings/archive/capture",
+    data=b"{}",
+    headers={
+        "Content-Type": "application/json",
+        "X-Rankings-Archive-Capture-Token": "replace-with-long-random-token",
+    },
+    method="POST",
+)
+try:
+    urllib.request.urlopen(request, timeout=10)
+except urllib.error.HTTPError as exc:
+    if exc.code != 503:
+        raise SystemExit(f"expected 503, got {exc.code}")
+else:
+    raise SystemExit("placeholder token was accepted")
+print("ok")
+PY
+    then
+      probe_ok=1
+      break
+    fi
+    sleep 2
+  done
+  run_kubectl -n "${NAMESPACE}" logs "${pod_name}" >"${ARTIFACT_DIR}/placeholder-capture.log" 2>&1 || true
+  if [[ "${probe_ok}" -ne 1 ]]; then
+    echo "Placeholder capture token did not boot with HTTP 503" >&2
+    exit 1
+  fi
+  if ! grep -q "auth.capture_token.placeholder_disabled" "${ARTIFACT_DIR}/placeholder-capture.log" \
+    && ! grep -q "Placeholder capture token disabled" "${ARTIFACT_DIR}/placeholder-capture.log"; then
+    echo "Placeholder capture token did not log that it was disabled" >&2
+    exit 1
+  fi
+  append_summary_section "Placeholder capture token" "API stayed up; archive capture returned 503"
+  run_kubectl -n "${NAMESPACE}" delete pod "${pod_name}" --wait=false >/dev/null 2>&1 || true
+  PLACEHOLDER_POD=""
+}
+
+echo "Checking a placeholder capture token does not crash the API"
+smoke_placeholder_capture_token
 
 echo "k3s smoke completed"

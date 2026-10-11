@@ -44,6 +44,12 @@ Optional env:
   DOCKER_PULL_MIRRORS  Comma-separated mirror hosts (default: mirror.gcr.io,docker.m.daocloud.io)
   DOCKER_PULL_SKIP_MIRRORS=1  Skip mirror fallbacks when Docker Hub works but mirrors do not
   STOCK_TICKER_HOSTNAME  Ingress host (default: stock-ticker.ai). Point LAN DNS at the node IP.
+  FORCE_AUTH_SECRET_APPLY=1
+                   Apply k8s/backend-auth-secret.yaml even when the live Secret
+                   differs. Default is to skip and print differing keys (#284).
+                   The preflight then validates that local file, so a broken
+                   live SESSION_SECRET can be repaired by a forced apply.
+                   Never use this to rotate LOCAL_AUTH_PASSWORD casually (#286).
 
 k3d one-time setup (before first deploy):
   k3d cluster create stock-ticker -p "80:80@loadbalancer"
@@ -434,9 +440,245 @@ EOF
   chmod 600 "${secret_path}"
 }
 
+# Placeholder rules mirror backend/app/core/auth_settings.py so the preflight
+# blocks exactly what the API rejects, no more (#284).
+_lowercase() {
+  printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]'
+}
+
+_has_placeholder_marker() {
+  local lowered
+  lowered="$(_lowercase "${1:-}")"
+  [[ "${lowered}" == *replace* || "${lowered}" == *change-me* || "${lowered}" == *changeme* ]]
+}
+
+_session_secret_is_placeholder() {
+  local value="${1:-}"
+  case "${value}" in
+    dev-session-secret-change-me|k8s-dev-replace-with-openssl-rand-hex-32-chars-minimum-16|change-me|secret|session-secret)
+      return 0
+      ;;
+  esac
+  _has_placeholder_marker "${value}"
+}
+
+_capture_token_is_placeholder() {
+  local value="${1:-}"
+  [[ -z "${value}" ]] && return 1
+  case "${value}" in
+    k8s-dev-replace-with-random-capture-token|change-me|capture-token|replace-with-long-random-token)
+      return 0
+      ;;
+  esac
+  _has_placeholder_marker "${value}"
+}
+
+_bootstrap_password_is_placeholder() {
+  # Backend compares the trimmed, casefolded value against an exact list only.
+  local trimmed
+  trimmed="$(printf '%s' "${1:-}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+  case "$(_lowercase "${trimmed}")" in
+    change-me-local-password|change-me|password|admin)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
+_live_secret_data_value() {
+  local secret_name="$1"
+  local key="$2"
+  local encoded
+  encoded="$(
+    ${KUBECTL_CMD} -n "${NAMESPACE}" get secret "${secret_name}" \
+      -o "jsonpath={.data.${key}}" 2>/dev/null || true
+  )"
+  if [[ -z "${encoded}" ]]; then
+    return 0
+  fi
+  # macOS base64 uses -D; GNU uses -d / --decode.
+  printf '%s' "${encoded}" | base64 -d 2>/dev/null \
+    || printf '%s' "${encoded}" | base64 -D 2>/dev/null \
+    || true
+}
+
+_preflight_auth_value() {
+  local key="$1"
+  if [[ "${PREFLIGHT_AUTH_SOURCE}" == "local" ]]; then
+    _local_auth_secret_value "${ROOT_DIR}/k8s/backend-auth-secret.yaml" "${key}"
+  else
+    _live_secret_data_value stock-ticker-backend-auth "${key}"
+  fi
+}
+
+preflight_live_auth_secrets() {
+  # Stop before rollout when the auth Secret the pods will see holds values the
+  # new image rejects (#284). Capture-token placeholders no longer crash the API,
+  # but SESSION_SECRET still does. This step never rewrites LOCAL_AUTH_*.
+  # With FORCE_AUTH_SECRET_APPLY=1 the local file replaces the live Secret, so
+  # check that file instead; otherwise a broken live Secret could never be repaired.
+  local problems=()
+  local session_secret portfolio_token archive_token local_password
+  local rankings_token taiwan_token local_user auth_label reset_password
+  local local_secret_path="${ROOT_DIR}/k8s/backend-auth-secret.yaml"
+
+  PREFLIGHT_AUTH_SOURCE=""
+  if [[ "${FORCE_AUTH_SECRET_APPLY:-0}" == "1" && -f "${local_secret_path}" ]]; then
+    PREFLIGHT_AUTH_SOURCE="local"
+    auth_label="${local_secret_path}"
+  elif ${KUBECTL_CMD} -n "${NAMESPACE}" get secret stock-ticker-backend-auth >/dev/null 2>&1; then
+    PREFLIGHT_AUTH_SOURCE="live"
+    auth_label="stock-ticker-backend-auth"
+  fi
+
+  if [[ -n "${PREFLIGHT_AUTH_SOURCE}" ]]; then
+    session_secret="$(_preflight_auth_value SESSION_SECRET)"
+    portfolio_token="$(_preflight_auth_value PORTFOLIO_HISTORY_CAPTURE_TOKEN)"
+    rankings_token="$(_preflight_auth_value RANKINGS_CAPTURE_TOKEN)"
+    taiwan_token="$(_preflight_auth_value TAIWAN_MARKET_DATA_CAPTURE_TOKEN)"
+    local_user="$(_preflight_auth_value LOCAL_AUTH_USERNAME)"
+    local_password="$(_preflight_auth_value LOCAL_AUTH_PASSWORD)"
+    # Backend strips SESSION_SECRET before checking length and placeholders.
+    session_secret="$(printf '%s' "${session_secret}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+    if [[ -z "${session_secret}" ]]; then
+      problems+=("${auth_label}/SESSION_SECRET is empty (API will refuse to start)")
+    elif [[ ${#session_secret} -lt 16 ]]; then
+      problems+=("${auth_label}/SESSION_SECRET is shorter than 16 characters (API will refuse to start)")
+    elif _session_secret_is_placeholder "${session_secret}"; then
+      problems+=("${auth_label}/SESSION_SECRET is a placeholder (API will refuse to start)")
+    fi
+    if [[ -n "${local_user}" && -z "${local_password}" ]] || [[ -z "${local_user}" && -n "${local_password}" ]]; then
+      problems+=("${auth_label} LOCAL_AUTH_USERNAME and LOCAL_AUTH_PASSWORD must both be set or both be empty")
+    elif [[ -n "${local_password}" && ${#local_password} -lt 8 ]]; then
+      problems+=("${auth_label}/LOCAL_AUTH_PASSWORD is shorter than 8 characters (API will refuse to start)")
+    fi
+    if _capture_token_is_placeholder "${portfolio_token}"; then
+      problems+=("${auth_label}/PORTFOLIO_HISTORY_CAPTURE_TOKEN is a placeholder (capture disabled until rotated)")
+    fi
+    if _capture_token_is_placeholder "${rankings_token}"; then
+      problems+=("${auth_label}/RANKINGS_CAPTURE_TOKEN is a placeholder (capture disabled until rotated)")
+    fi
+    if _capture_token_is_placeholder "${taiwan_token}"; then
+      problems+=("${auth_label}/TAIWAN_MARKET_DATA_CAPTURE_TOKEN is a placeholder (capture disabled until rotated)")
+    fi
+    reset_password="$(_lowercase "$(_preflight_auth_value LOCAL_AUTH_RESET_PASSWORD)")"
+    case "${reset_password}" in
+      1|true|yes|on)
+        problems+=("${auth_label}/LOCAL_AUTH_RESET_PASSWORD is on: every API restart resets the bootstrap account's password. Turn it off after a one-time reset (#286)")
+        ;;
+    esac
+    if [[ -n "${local_password}" ]] && _bootstrap_password_is_placeholder "${local_password}"; then
+      problems+=("${auth_label}/LOCAL_AUTH_PASSWORD is a placeholder — clear BOTH LOCAL_AUTH_USERNAME and LOCAL_AUTH_PASSWORD (do not set a new password; that can overwrite a stored account when LOCAL_AUTH_RESET_PASSWORD is enabled)")
+    fi
+  fi
+
+  if ${KUBECTL_CMD} -n "${NAMESPACE}" get secret stock-ticker-backend-rankings-archive >/dev/null 2>&1; then
+    archive_token="$(_live_secret_data_value stock-ticker-backend-rankings-archive RANKINGS_ARCHIVE_CAPTURE_TOKEN)"
+    if _capture_token_is_placeholder "${archive_token}"; then
+      problems+=("stock-ticker-backend-rankings-archive/RANKINGS_ARCHIVE_CAPTURE_TOKEN is a placeholder (capture disabled until rotated)")
+    fi
+  fi
+
+  if ((${#problems[@]} == 0)); then
+    return 0
+  fi
+
+  echo "Preflight failed: Secrets contain values the new image will reject or disable (#284):" >&2
+  local item
+  for item in "${problems[@]}"; do
+    echo "  - ${item}" >&2
+  done
+  cat <<'EOF' >&2
+
+Fix SESSION_SECRET (required) before redeploying, either by fixing
+k8s/backend-auth-secret.yaml and re-running with FORCE_AUTH_SECRET_APPLY=1, or live:
+  kubectl -n stock-ticker patch secret stock-ticker-backend-auth --type merge \
+    -p "{\"stringData\":{\"SESSION_SECRET\":\"$(openssl rand -hex 32)\"}}"
+
+For a placeholder archive capture token (optional; API still boots after #284):
+  kubectl -n stock-ticker patch secret stock-ticker-backend-rankings-archive --type merge \
+    -p "{\"stringData\":{\"RANKINGS_ARCHIVE_CAPTURE_TOKEN\":\"$(openssl rand -hex 32)\"}}"
+
+Do NOT set a new LOCAL_AUTH_PASSWORD to silence a placeholder check — clear both
+LOCAL_AUTH_USERNAME and LOCAL_AUTH_PASSWORD instead (#286).
+EOF
+  # Only hard-fail on SESSION_SECRET / LOCAL_AUTH_PASSWORD problems.
+  local hard=0
+  for item in "${problems[@]}"; do
+    if [[ "${item}" == *SESSION_SECRET* || "${item}" == *LOCAL_AUTH_PASSWORD* ]]; then
+      hard=1
+    fi
+  done
+  if [[ "${hard}" -eq 1 ]]; then
+    exit 1
+  fi
+  echo "Continuing: remaining findings are non-fatal warnings." >&2
+}
+
+_local_auth_secret_value() {
+  local secret_path="$1"
+  local key="$2"
+  python3 - <<'PY' "${secret_path}" "${key}"
+import sys
+from pathlib import Path
+
+text = Path(sys.argv[1]).read_text(encoding="utf-8")
+wanted = sys.argv[2]
+values = {}
+in_string_data = False
+for line in text.splitlines():
+    if line.strip() == "stringData:":
+        in_string_data = True
+        continue
+    if in_string_data and line and not line[0].isspace():
+        break
+    stripped = line.strip()
+    if in_string_data and stripped and not stripped.startswith("#") and ":" in stripped:
+        name, _, raw = stripped.partition(":")
+        raw = raw.strip()
+        if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "\"'":
+            raw = raw[1:-1]
+        values[name.strip()] = raw
+if wanted == "--keys":
+    print("\n".join(sorted(values)))
+else:
+    print(values.get(wanted, ""))
+PY
+}
+
+_live_secret_keys() {
+  ${KUBECTL_CMD} -n "${NAMESPACE}" get secret "$1" \
+    -o go-template='{{range $k, $v := .data}}{{$k}}{{"\n"}}{{end}}' 2>/dev/null || true
+}
+
 apply_backend_auth_secret() {
   ensure_backend_auth_secret
-  ${KUBECTL_CMD} apply -n "${NAMESPACE}" -f "${ROOT_DIR}/k8s/backend-auth-secret.yaml"
+  local secret_path="${ROOT_DIR}/k8s/backend-auth-secret.yaml"
+  if ${KUBECTL_CMD} -n "${NAMESPACE}" get secret stock-ticker-backend-auth >/dev/null 2>&1; then
+    # Compare every key in either Secret, not a hand-picked list, so a stale local
+    # value (for example LOCAL_AUTH_RESET_PASSWORD=true) cannot slip through (#286).
+    local differing=() key live_value local_value
+    while IFS= read -r key; do
+      [[ -z "${key}" ]] && continue
+      live_value="$(_live_secret_data_value stock-ticker-backend-auth "${key}")"
+      local_value="$(_local_auth_secret_value "${secret_path}" "${key}")"
+      if [[ "${live_value}" != "${local_value}" ]]; then
+        differing+=("${key}")
+      fi
+    done < <(
+      {
+        _live_secret_keys stock-ticker-backend-auth
+        _local_auth_secret_value "${secret_path}" --keys
+      } | sort -u
+    )
+
+    if ((${#differing[@]} > 0)) && [[ "${FORCE_AUTH_SECRET_APPLY:-0}" != "1" ]]; then
+      echo "Skipping apply of ${secret_path}: live Secret differs on: ${differing[*]}"
+      echo "Set FORCE_AUTH_SECRET_APPLY=1 to overwrite. Do not overwrite LOCAL_AUTH_* casually (#284/#286)."
+      return 0
+    fi
+  fi
+  ${KUBECTL_CMD} apply -n "${NAMESPACE}" -f "${secret_path}"
 }
 
 apply_frontend_ingress_host() {
@@ -454,6 +696,7 @@ deploy_manifests() {
   echo "Applying Kubernetes manifests"
   ensure_image_pull_secret
   ensure_namespace
+  preflight_live_auth_secrets
   apply_backend_auth_secret
   if uses_custom_app_images "${BACKEND_IMAGE}" "${FRONTEND_IMAGE}" || [[ -n "${IMAGE_PULL_SECRET}" ]]; then
     local overlay_dir

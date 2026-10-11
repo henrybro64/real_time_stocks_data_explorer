@@ -138,7 +138,19 @@ kubectl apply -k k8s
 kubectl -n stock-ticker rollout restart deployment/stock-ticker-backend deployment/stock-ticker-backend-worker deployment/stock-ticker-frontend
 ```
 
-Keep `AUTH_ENABLED=true` and `LOCAL_AUTH_ENABLED=true` in the backend ConfigMap. The backend refuses default/placeholder session secrets, bootstrap passwords, and capture tokens. Optional bootstrap: set both `LOCAL_AUTH_USERNAME` and `LOCAL_AUTH_PASSWORD` (8+ characters). Leave both empty to rely on self-registration.
+Keep `AUTH_ENABLED=true` and `LOCAL_AUTH_ENABLED=true` in the backend ConfigMap. The backend refuses a default/placeholder `SESSION_SECRET` or bootstrap password at startup. Placeholder **capture** tokens are cleared and logged instead of crashing the API; those capture endpoints then return 503 until you set a real token (#284). Optional bootstrap: set both `LOCAL_AUTH_USERNAME` and `LOCAL_AUTH_PASSWORD` (8+ characters). Bootstrap is **create-only** — an existing username keeps its stored password unless you set `LOCAL_AUTH_RESET_PASSWORD=true` (#286). Leave both empty to rely on self-registration.
+
+### Upgrade note: placeholder Secrets after #267 / #284
+
+Older example files shipped values such as `replace-with-long-random-token`. After #267 those values crash the API. After #284:
+
+| Value | Startup behaviour | How to rotate |
+| --- | --- | --- |
+| `SESSION_SECRET` empty, placeholder, or shorter than 16 characters | **Hard fail** (API and worker refuse to start) | `kubectl -n stock-ticker patch secret stock-ticker-backend-auth --type merge -p "{\"stringData\":{\"SESSION_SECRET\":\"$(openssl rand -hex 32)\"}}"` then restart. Rotating signs everyone out; usernames/passwords are unchanged. |
+| `LOCAL_AUTH_PASSWORD` placeholder, or only one of `LOCAL_AUTH_USERNAME` / `LOCAL_AUTH_PASSWORD` set | **Hard fail** | Set both, or clear both. Do **not** invent a new password to silence the check. An existing username keeps its stored password unless `LOCAL_AUTH_RESET_PASSWORD=true`. |
+| Capture tokens (`PORTFOLIO_HISTORY_*`, `RANKINGS_*`, `TAIWAN_*`, archive) | Soft: logged, treated as empty, capture returns 503 | Patch the Secret with `openssl rand -hex 32` (or leave empty). |
+
+`deploy-k3s.sh` preflights Secrets before rollout and will not silently overwrite a live `stock-ticker-backend-auth` that differs from the local file. Set `FORCE_AUTH_SECRET_APPLY=1` to apply the local file anyway; the preflight then checks that file instead of the live Secret, so a fixed local file can repair a broken live `SESSION_SECRET`. The preflight uses the same placeholder rules as the API. Prefer `kubectl patch` for repairs; do not re-apply a stale local auth Secret during an outage.
 
 Optional Microsoft Entra External ID (#240): set `ENTRA_EXTERNAL_ID_ENABLED=true` plus `ENTRA_TENANT_ID`, `ENTRA_CLIENT_ID`, `ENTRA_REDIRECT_URI`, and `ENTRA_AUTHORITY` (the customer tenant's `https://<tenant>.ciamlogin.com/<tenant-id>/v2.0` URL; `ENTRA_CLIENT_SECRET` when the app registration has one) on the backend ConfigMap or Secret. Redirect URI should be the public origin + `/api/auth/callback/entra`. Local auth and Entra can both be enabled.
 

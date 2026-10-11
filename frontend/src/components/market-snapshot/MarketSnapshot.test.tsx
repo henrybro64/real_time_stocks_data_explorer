@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -216,6 +217,39 @@ describe("MarketSnapshot", () => {
       expect(screen.getByTestId("market-snapshot-fx-value")).toHaveTextContent("31.24");
       expect(screen.getByText("過舊")).toBeInTheDocument();
       expect(screen.getByText("顯示較舊資料")).toBeInTheDocument();
+    });
+  });
+
+  it("offers Retry on a stale card after a failed refresh and recovers", async () => {
+    const user = userEvent.setup();
+    vi.mocked(fetchUsdTwdFxRate)
+      .mockResolvedValueOnce(fxOk)
+      .mockRejectedValueOnce(new ApiError("provider unavailable", { kind: "unavailable" }))
+      .mockResolvedValue({ ...fxOk, rate: 32.5 });
+    vi.mocked(fetchWtiCrudeOilQuote).mockResolvedValue(oilOk);
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={queryClient}>
+        <LanguageProvider>{children}</LanguageProvider>
+      </QueryClientProvider>
+    );
+    render(<MarketSnapshot />, { wrapper });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("market-snapshot-fx-value")).toHaveTextContent("31.24");
+    });
+    await queryClient.refetchQueries({ queryKey: ["usd-twd-fx-rate"] });
+
+    const fxCard = screen.getByTestId("market-snapshot-fx");
+    const retry = await within(fxCard).findByRole("button", { name: "重試" });
+    expect(within(screen.getByTestId("market-snapshot-wti")).queryByRole("button")).toBeNull();
+
+    await user.click(retry);
+    await waitFor(() => {
+      expect(screen.getByTestId("market-snapshot-fx-value")).toHaveTextContent("32.5");
     });
   });
 

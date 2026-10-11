@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import logging
 import secrets
 import uuid
 
 from app.repositories.user_repository import user_repository
+
+logger = logging.getLogger(__name__)
 
 
 def _hash_password(password: str, salt: bytes | None = None) -> str:
@@ -89,15 +92,63 @@ def register_local_user(username: str, password: str) -> str:
     return user.id
 
 
-def ensure_bootstrap_local_user(username: str, password: str) -> None:
-    """Create or reset a configured bootstrap local user account."""
+def ensure_bootstrap_local_user(
+    username: str,
+    password: str,
+    *,
+    reset_password: bool = False,
+) -> str:
+    """Create a bootstrap local user when missing; never overwrite by default (#286).
+
+    Returns ``created``, ``unchanged``, ``reset``, or ``skipped``.
+    """
     if not user_repository.is_available():
-        return
+        return "skipped"
     uname = username.strip()
     if not uname or not password:
-        return
-    user_repository.upsert_local_user_password(
-        user_id=f"u-{uuid.uuid4().hex[:16]}",
-        username=uname[:64],
-        password_hash=_hash_password(password),
+        return "skipped"
+    uname = uname[:64]
+    existing = user_repository.get_by_username(uname)
+    if existing is None:
+        from sqlalchemy.exc import IntegrityError
+
+        from app.db.constraint_errors import is_username_unique_violation
+
+        try:
+            user_repository.create_local_user(
+                user_id=f"u-{uuid.uuid4().hex[:16]}",
+                username=uname,
+                password_hash=_hash_password(password),
+            )
+        except IntegrityError as exc:
+            # Another process created the row. Leave its password alone (#286).
+            if not is_username_unique_violation(exc):
+                raise
+            if user_repository.get_by_username(uname) is None:
+                raise
+            logger.info(
+                "Bootstrap local-auth user already exists; left password unchanged",
+                extra={"event": "auth.bootstrap.unchanged", "username": uname},
+            )
+            return "unchanged"
+        logger.info(
+            "Created bootstrap local-auth user",
+            extra={"event": "auth.bootstrap.created", "username": uname},
+        )
+        return "created"
+    if reset_password:
+        user_repository.upsert_local_user_password(
+            user_id=existing.id,
+            username=uname,
+            password_hash=_hash_password(password),
+        )
+        logger.warning(
+            "Reset bootstrap local-auth password because LOCAL_AUTH_RESET_PASSWORD=true",
+            extra={"event": "auth.bootstrap.password_reset", "username": uname},
+        )
+        return "reset"
+    logger.info(
+        "Bootstrap local-auth user already exists; left password unchanged",
+        extra={"event": "auth.bootstrap.unchanged", "username": uname},
     )
+    return "unchanged"

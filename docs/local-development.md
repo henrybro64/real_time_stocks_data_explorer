@@ -113,7 +113,7 @@ User-scoped manual trade records in `realized_trades` (TWD or USD only, no FX co
 1. Bind Next to all interfaces: `npm run dev:lan` or `./scripts/dev-lan.sh` (`0.0.0.0:3000`).
 2. Backend: `--host 0.0.0.0` only if browsers call the API directly; default `127.0.0.1` is fine with the Next proxy.
 3. Open firewall port 3000 if `ufw` is enabled.
-4. With `AUTH_ENABLED=true`, set `LOCAL_AUTH_ENABLED=true` for local signup at `/login`. Optional Entra External ID: `ENTRA_EXTERNAL_ID_ENABLED=true` plus tenant/client/redirect URI (see [multi-user-design.md](multi-user-design.md)). Background jobs run in-process by default (`RUN_BACKGROUND_JOBS=true`); set `false` only when a separate `python -m app.worker` process owns them.
+4. With `AUTH_ENABLED=true`, set `LOCAL_AUTH_ENABLED=true` for local signup at `/login`. Optional Entra External ID: `ENTRA_EXTERNAL_ID_ENABLED=true` plus tenant/client/redirect URI (see [multi-user-design.md](multi-user-design.md)). Bootstrap `LOCAL_AUTH_*` creates a missing user only; set `LOCAL_AUTH_RESET_PASSWORD=true` to overwrite an existing password (#286). Background jobs run in-process by default (`RUN_BACKGROUND_JOBS=true`); set `false` only when a separate `python -m app.worker` process owns them. Frontend: with the API down the UI shows “Cannot reach the server”; set `NEXT_PUBLIC_ALLOW_OFFLINE_SHELL=true` only if you need the old fail-open shell for offline UI work (#285).
 5. **k8s:** use `http://<node-ip>:30080`, not `:3000` — see [kubernetes.md](kubernetes.md).
 
 Verify on the host: `curl -sI -o /dev/null -w "%{http_code}\n" http://127.0.0.1:3000` and the same with your LAN IP.

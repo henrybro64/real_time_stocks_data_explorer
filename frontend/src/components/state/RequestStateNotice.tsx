@@ -1,5 +1,6 @@
 "use client";
 
+import { Button } from "@carbon/react";
 import Link from "next/link";
 import { useLanguage } from "../../app/i18n";
 import { toApiError } from "../../services/api/client";
@@ -17,6 +18,7 @@ type Props = Readonly<{
   compact?: boolean;
   detail?: string | null;
   kind: RequestNoticeKind;
+  onRetry?: () => void;
   scopeLabel: string;
   status?: number | null;
 }>;
@@ -254,10 +256,11 @@ export function RequestStateNotice({
   compact = false,
   detail = null,
   kind,
+  onRetry,
   scopeLabel,
   status = null,
 }: Props) {
-  const { language } = useLanguage();
+  const { language, t } = useLanguage();
   const scope = language === "en" ? scopeLabel.toLowerCase() : scopeLabel;
   const detailText = detail?.trim() ? detail.trim() : null;
   const flags = providerFlagsFromDetail(detailText?.toLowerCase() ?? "", status);
@@ -281,6 +284,12 @@ export function RequestStateNotice({
         <Link className="app-state-notice-action" href="/login">
           {current.action}
         </Link>
+      ) : null}
+      {/* Stale data needs Retry too: it is what a dashboard shows after a mid-session outage (#285). */}
+      {onRetry && kind !== "auth" ? (
+        <Button kind="ghost" size="sm" onClick={onRetry}>
+          {t("auth.retry")}
+        </Button>
       ) : null}
     </div>
   );

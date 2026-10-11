@@ -5,6 +5,7 @@ import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import type { CommodityQuote, FxRate } from "@shared/api";
 import { useLanguage } from "../../app/i18n";
 import { fetchUsdTwdFxRate, fetchWtiCrudeOilQuote } from "../../services/api/client";
+import { refetchIntervalWhileErroring } from "../../services/api/pollingInterval";
 import { formatLastUpdated, formatPercent } from "../../services/format/quote";
 import { priceToneClass } from "../../services/market-data/priceTone";
 import { RequestStateNotice } from "../state/RequestStateNotice";
@@ -63,6 +64,7 @@ type SnapshotCardProps = {
   isLoading: boolean;
   isStale: boolean;
   isUnavailable: boolean;
+  onRetry?: () => void;
   signedNumberFormat: Intl.NumberFormat;
   dateLocale: string;
 };
@@ -79,6 +81,7 @@ function SnapshotCard({
   isLoading,
   isStale,
   isUnavailable,
+  onRetry,
   signedNumberFormat,
   dateLocale,
 }: SnapshotCardProps) {
@@ -104,7 +107,7 @@ function SnapshotCard({
         <>
           <p className="app-stock-card-price">—</p>
           <div className="app-state-notice-wrap">
-            <RequestStateNotice compact kind="unavailable" scopeLabel={label} />
+            <RequestStateNotice compact kind="unavailable" onRetry={onRetry} scopeLabel={label} />
           </div>
         </>
       ) : (
@@ -122,7 +125,7 @@ function SnapshotCard({
           ) : null}
           {isStale ? (
             <div className="app-state-notice-wrap">
-              <RequestStateNotice compact kind="stale" scopeLabel={label} />
+              <RequestStateNotice compact kind="stale" onRetry={onRetry} scopeLabel={label} />
             </div>
           ) : null}
           {timestamp ? (
@@ -148,7 +151,7 @@ export function MarketSnapshot() {
     queryKey: ["usd-twd-fx-rate"],
     queryFn: fetchUsdTwdFxRate,
     staleTime: STALE_MS,
-    refetchInterval: REFRESH_MS,
+    refetchInterval: (query) => refetchIntervalWhileErroring(query.state.status, REFRESH_MS),
     refetchIntervalInBackground: false,
     placeholderData: keepPreviousData,
   });
@@ -157,7 +160,7 @@ export function MarketSnapshot() {
     queryKey: ["wti-crude-oil"],
     queryFn: fetchWtiCrudeOilQuote,
     staleTime: STALE_MS,
-    refetchInterval: REFRESH_MS,
+    refetchInterval: (query) => refetchIntervalWhileErroring(query.state.status, REFRESH_MS),
     refetchIntervalInBackground: false,
     placeholderData: keepPreviousData,
   });
@@ -216,6 +219,7 @@ export function MarketSnapshot() {
           isLoading={fxQuery.isLoading}
           isStale={fxStale}
           isUnavailable={fxUnavailable}
+          onRetry={fxQuery.isError ? () => void fxQuery.refetch() : undefined}
           signedNumberFormat={signedNumberFormat}
           dateLocale={numberLocale}
         />
@@ -231,6 +235,7 @@ export function MarketSnapshot() {
           isLoading={oilQuery.isLoading}
           isStale={oilStale}
           isUnavailable={oilUnavailable}
+          onRetry={oilQuery.isError ? () => void oilQuery.refetch() : undefined}
           signedNumberFormat={signedNumberFormat}
           dateLocale={numberLocale}
         />
