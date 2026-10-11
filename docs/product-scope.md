@@ -68,9 +68,9 @@ Free or unofficial sources can be delayed, rate-limited, incomplete, or down. Ta
 
 ### Audience and data-source stance (#277)
 
-**Decision (recorded 2026-10-12): the app is self-hosted, for the owner and people the owner invites, and free.** It is not a public service and is not sold. A cloud deployment (#59) serves the same invite-only audience.
+**Decision (recorded 2026-10-12): the app is self-hosted, for the owner and people the owner invites, and free.** It is not a public service and is not sold. Whether a cloud deployment (#59) counts as self-hosted for this audience is not decided yet; record it in #59.
 
-Every market-data source below is free and unofficial or public-web. This project has not reviewed each source's terms of use for redistribution, and this page is not a legal opinion. The sources are kept on the basis that this is a personal, invite-only, non-commercial dashboard. Opening the app to the public, or charging for it, reopens #277: each source's terms then need checking, with proper advice for a paid product, and the "If public or paid" column becomes the work list.
+Every market-data source below is free: unofficial endpoints, scraped public pages, public files, or (Finnhub) a free-tier API. Many Yahoo, Yahoo Taiwan and TWSE requests (including MIS, which also warms a browser session cookie) send a web-browser `User-Agent` rather than identifying the app, which matters when reading those sites' terms. This project has not reviewed each source's terms of use for redistribution, and this page is not a legal opinion. The sources are kept on the basis that this is a personal, invite-only, non-commercial dashboard. Opening the app to the public, or charging for it, reopens #277: each source's terms then need checking, with proper advice for a paid product, and the "If public or paid" column becomes the work list.
 
 | Source | Used for | Code (under `backend/app/`) | Self-hosted, invite-only (this decision) | If public or paid |
 | --- | --- | --- | --- | --- |
@@ -84,9 +84,11 @@ Every market-data source below is free and unofficial or public-web. This projec
 | TDCC (`www`/`smart.tdcc.com.tw`) | 籌碼集中度 (400張以上 ownership concentration) | `tw_ownership_concentration_service.py` | Keep | Check terms, or drop the feature |
 | Stooq (`stooq.com`) | Price-only fallback for U.S. indices when Yahoo fails | `market_index_service.py` | Keep | Drop (fallback only) |
 | Google News RSS (`news.google.com`) | Headline metadata on stock detail and as AI context | `news_service.py` | Keep | Replace with a licensed news API, or drop |
-| SEC ticker list (`www.sec.gov`) | U.S. symbol catalog | `providers/us_provider.py` | Keep | Keep (public U.S. government data; follow SEC fair-access rules) |
+| SEC ticker list (`www.sec.gov`) | U.S. symbol catalog | `providers/us_provider.py` | Keep | Keep (public U.S. government data), but see the `User-Agent` note below |
 | Wikipedia | Index constituent lists (DJIA, S&P 500, NASDAQ-100), committed as JSON snapshots, not fetched at runtime | `data/*_constituents.json` | Keep | Replace with the index provider's list |
 | Finnhub (optional) | Key-statistics enrichment with the operator's own free API key | `key_stats_service.py` | Keep (operator's key, operator's terms) | Needs a plan that allows the new audience |
+
+**SEC `User-Agent`.** The SEC asks automated clients to identify themselves with a real contact in the `User-Agent` header. The code currently sends a placeholder, `stock-ticker-app/0.1 contact@example.com` (`providers/us_provider.py`). Making that contact configurable is a small follow-up.
 
 The AI providers (OpenAI, Perplexity) are not market-data sources: each user supplies their own key, under their own agreement with that provider.
 
@@ -96,7 +98,7 @@ The AI providers (OpenAI, Perplexity) are not market-data sources: each user sup
 
 - No licensed provider adapter is planned, so #277 creates no follow-up adapter issues. The provider boundary in `backend/app/services/providers/` keeps a later swap possible.
 - The #59 out-of-scope line ("do not add paid market-data providers") stands.
-- Hosting from a cloud IP is still allowed for this audience, but data centres are throttled more readily than a home connection (see #59).
+- If a cloud deployment is approved in #59, note that data centres are throttled by these sources more readily than a home connection.
 
 ## Refresh and delivery
 
