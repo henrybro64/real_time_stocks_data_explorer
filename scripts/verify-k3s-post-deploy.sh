@@ -161,7 +161,7 @@ PY
 
 echo
 echo "== Redis memory and evictions (#293) =="
-# allkeys-lru at maxmemory can drop leader locks and rate-limit counters, so any eviction fails.
+# noeviction should keep this at zero. A non-zero count means keys, including locks, were deleted.
 redis_info="$(
   ${KUBECTL_CMD} -n "${NAMESPACE}" exec deploy/stock-ticker-redis -c redis -- redis-cli INFO 2>&1 || true
 )"

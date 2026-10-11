@@ -96,6 +96,36 @@ def redis_enabled() -> bool:
     return _redis() is not None
 
 
+def probe_redis(*, connect_timeout: float, socket_timeout: float) -> bool:
+    """One ping whose connect and command timeouts cannot exceed the caller's budget.
+
+    Startup wait uses this instead of the shared client, which applies the
+    process-wide timeouts and may wait on another thread's reconnect (#293).
+    """
+    if not redis_configured():
+        return True
+    try:
+        import redis as redis_lib
+
+        client = redis_lib.from_url(
+            settings.redis_url,
+            socket_connect_timeout=connect_timeout,
+            socket_timeout=socket_timeout,
+        )
+    except Exception:
+        return False
+    try:
+        client.ping()
+        return True
+    except Exception:
+        return False
+    finally:
+        try:
+            client.close()
+        except Exception:
+            pass
+
+
 def soft_ttl_seconds() -> int:
     return max(int(settings.quote_cache_ttl_seconds), 1)
 
@@ -381,8 +411,9 @@ def _run_redis(
 def redis_evicted_keys() -> int | None:
     """Redis's cumulative ``evicted_keys`` counter, or None when unavailable (#293).
 
-    Eviction (``allkeys-lru`` at ``maxmemory``) can drop leader locks or rate-limit
-    counters as well as cache entries, so callers surface any increase.
+    The deployment uses ``noeviction``, so this counter should stay at zero. A rise
+    means the policy was changed and leader locks or rate-limit counters may have
+    been dropped.
     """
     stats = _run_redis("redis info stats", lambda client: client.info("stats"), kind="read")
     if not isinstance(stats, dict):

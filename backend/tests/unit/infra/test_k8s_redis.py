@@ -27,7 +27,7 @@ def _conf() -> dict[str, list[str]]:
 
 def test_redis_has_a_memory_cap_with_room_for_a_snapshot_fork() -> None:
     conf = _conf()
-    assert conf["maxmemory-policy"] == ["allkeys-lru"]
+    assert conf["maxmemory-policy"] == ["noeviction"]
     assert conf["maxmemory"] == ["128mb"]
     container = _docs()[("Deployment", "stock-ticker-redis")]["spec"]["template"]["spec"][
         "containers"

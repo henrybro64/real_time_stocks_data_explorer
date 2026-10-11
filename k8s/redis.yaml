@@ -1,6 +1,7 @@
 # Redis holds caches, rate-limit counters and leader locks. It persists RDB
 # snapshots to a small volume so quotes and stock-AI narratives survive a pod
-# restart, and has an explicit memory cap so it evicts instead of being OOM-killed (#293).
+# restart. When the memory cap is hit, new writes are refused (noeviction) so a
+# full cache cannot delete leader locks or rate-limit counters (#293).
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -19,8 +20,10 @@ data:
     # A failed snapshot (disk full) must not stop the cache accepting writes.
     stop-writes-on-bgsave-error no
     # Well under the 256Mi container limit: a snapshot forks, and copy-on-write needs headroom.
+    # noeviction keeps leader locks and rate-limit counters until their own TTL.
+    # A full Redis refuses new writes; expired keys are still removed.
     maxmemory 128mb
-    maxmemory-policy allkeys-lru
+    maxmemory-policy noeviction
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
