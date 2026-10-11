@@ -132,6 +132,8 @@ class Settings(BaseSettings):
     local_auth_enabled: bool = Field(default=False)
     local_auth_username: str = Field(default="")
     local_auth_password: str = Field(default="")
+    # When true, bootstrap may overwrite an existing user's password. Off by default (#286).
+    local_auth_reset_password: bool = Field(default=False)
     # Microsoft Entra External ID (OIDC) as an additional provider (#240).
     entra_external_id_enabled: bool = Field(default=False)
     entra_tenant_id: str = Field(default="")

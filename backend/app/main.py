@@ -74,24 +74,10 @@ install_request_context_middleware(app, logger=logger)
 
 @app.on_event("startup")
 def validate_auth_settings() -> None:
-    from app.core.auth_settings import validate_auth_runtime_settings
+    from app.core.auth_settings import apply_auth_runtime_settings
 
-    validate_auth_runtime_settings(
-        auth_enabled=settings.auth_enabled,
-        local_auth_enabled=settings.local_auth_enabled,
-        session_secret=settings.session_secret,
-        local_auth_username=settings.local_auth_username,
-        local_auth_password=settings.local_auth_password,
-        portfolio_history_capture_token=settings.portfolio_history_capture_token,
-        rankings_capture_token=settings.rankings_capture_token,
-        rankings_archive_capture_token=settings.rankings_archive_capture_token,
-        taiwan_market_data_capture_token=settings.taiwan_market_data_capture_token,
-        entra_external_id_enabled=settings.entra_external_id_enabled,
-        entra_tenant_id=settings.entra_tenant_id,
-        entra_client_id=settings.entra_client_id,
-        entra_redirect_uri=settings.entra_redirect_uri,
-        entra_authority=settings.entra_authority,
-    )
+    # Clears placeholder capture tokens (soft) and refuses bad SESSION_SECRET (#284).
+    apply_auth_runtime_settings(settings)
 
 
 @app.on_event("startup")
@@ -109,13 +95,18 @@ def bootstrap_single_user_principal() -> None:
 def bootstrap_local_auth_user() -> None:
     if not (settings.auth_enabled and settings.local_auth_enabled):
         return
-    ensure_bootstrap_local_user(
+    outcome = ensure_bootstrap_local_user(
         settings.local_auth_username,
         settings.local_auth_password,
+        reset_password=settings.local_auth_reset_password,
     )
     logger.info(
-        "Ensured bootstrap local-auth user",
-        extra={"event": "app.bootstrap.local_auth_user_ready"},
+        "Bootstrap local-auth finished",
+        extra={
+            "event": "app.bootstrap.local_auth_user_ready",
+            "outcome": outcome,
+            "reset_password": settings.local_auth_reset_password,
+        },
     )
 
 

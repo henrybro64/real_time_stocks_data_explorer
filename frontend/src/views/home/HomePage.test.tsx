@@ -562,4 +562,20 @@ describe("HomePage watchlist quote query", () => {
     });
     expect(screen.queryByTestId("watchlist-retrying-quote")).not.toBeInTheDocument();
   });
+
+  it("ends a failed market summary on a retry instead of a spinner", async () => {
+    const user = userEvent.setup();
+    vi.mocked(fetchMarkets).mockRejectedValue(new Error("backend down"));
+    const queryClient = createQueryClient();
+    renderHome(queryClient);
+
+    const retry = await screen.findByRole("button", { name: /Retry|重試/ });
+    expect(screen.queryByText(/Syncing market data|同步市場資料中/)).not.toBeInTheDocument();
+
+    vi.mocked(fetchMarkets).mockResolvedValue([TW_OPEN, US_CLOSED]);
+    await user.click(retry);
+    await waitFor(() => {
+      expect(screen.getByText(/Markets: 2|市場數: 2/)).toBeInTheDocument();
+    });
+  });
 });

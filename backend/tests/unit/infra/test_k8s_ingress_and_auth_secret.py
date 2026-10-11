@@ -33,6 +33,24 @@ def test_frontend_ingress_targets_clusterip_and_keeps_nodeport() -> None:
     assert "frontend-nodeport.yaml" in kustomization
 
 
+def test_rankings_archive_example_token_is_empty() -> None:
+    text = (_K8S / "backend-rankings-archive-secret.yaml.example").read_text(encoding="utf-8")
+    assert 'RANKINGS_ARCHIVE_CAPTURE_TOKEN: ""' in text
+    assert "replace-with-long-random-token" not in text
+
+
+def test_deploy_script_preflights_live_secrets() -> None:
+    script = (_ROOT / "scripts" / "deploy-k3s.sh").read_text(encoding="utf-8")
+    assert "preflight_live_auth_secrets" in script
+    assert "FORCE_AUTH_SECRET_APPLY" in script
+    assert "SESSION_SECRET is empty" in script
+    assert "must both be set or both be empty" in script
+    assert "RANKINGS_CAPTURE_TOKEN" in script
+    assert "TAIWAN_MARKET_DATA_CAPTURE_TOKEN" in script
+    smoke = (_ROOT / "scripts" / "ci-k3s-smoke.sh").read_text(encoding="utf-8")
+    assert "smoke_placeholder_capture_token" in smoke
+
+
 def test_backend_worker_deployment_is_wired() -> None:
     worker = (_K8S / "backend-worker.yaml").read_text(encoding="utf-8")
     assert "name: stock-ticker-backend-worker" in worker

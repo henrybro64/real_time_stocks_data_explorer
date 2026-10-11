@@ -45,6 +45,10 @@ async def worker_health(response: Response) -> dict:
 
 
 def main() -> None:
+    from app.core.auth_settings import apply_auth_runtime_settings
+
+    # Same validation as the API so both processes agree on secrets (#284).
+    apply_auth_runtime_settings(settings)
     logger.info(
         "Worker entrypoint runs background jobs in this process",
         extra={

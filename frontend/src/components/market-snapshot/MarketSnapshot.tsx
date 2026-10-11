@@ -63,6 +63,7 @@ type SnapshotCardProps = {
   isLoading: boolean;
   isStale: boolean;
   isUnavailable: boolean;
+  onRetry?: () => void;
   signedNumberFormat: Intl.NumberFormat;
   dateLocale: string;
 };
@@ -79,6 +80,7 @@ function SnapshotCard({
   isLoading,
   isStale,
   isUnavailable,
+  onRetry,
   signedNumberFormat,
   dateLocale,
 }: SnapshotCardProps) {
@@ -104,7 +106,7 @@ function SnapshotCard({
         <>
           <p className="app-stock-card-price">—</p>
           <div className="app-state-notice-wrap">
-            <RequestStateNotice compact kind="unavailable" scopeLabel={label} />
+            <RequestStateNotice compact kind="unavailable" onRetry={onRetry} scopeLabel={label} />
           </div>
         </>
       ) : (
@@ -148,7 +150,7 @@ export function MarketSnapshot() {
     queryKey: ["usd-twd-fx-rate"],
     queryFn: fetchUsdTwdFxRate,
     staleTime: STALE_MS,
-    refetchInterval: REFRESH_MS,
+    refetchInterval: (query) => (query.state.status === "error" ? false : REFRESH_MS),
     refetchIntervalInBackground: false,
     placeholderData: keepPreviousData,
   });
@@ -157,7 +159,7 @@ export function MarketSnapshot() {
     queryKey: ["wti-crude-oil"],
     queryFn: fetchWtiCrudeOilQuote,
     staleTime: STALE_MS,
-    refetchInterval: REFRESH_MS,
+    refetchInterval: (query) => (query.state.status === "error" ? false : REFRESH_MS),
     refetchIntervalInBackground: false,
     placeholderData: keepPreviousData,
   });
@@ -216,6 +218,7 @@ export function MarketSnapshot() {
           isLoading={fxQuery.isLoading}
           isStale={fxStale}
           isUnavailable={fxUnavailable}
+          onRetry={fxUnavailable ? () => void fxQuery.refetch() : undefined}
           signedNumberFormat={signedNumberFormat}
           dateLocale={numberLocale}
         />
@@ -231,6 +234,7 @@ export function MarketSnapshot() {
           isLoading={oilQuery.isLoading}
           isStale={oilStale}
           isUnavailable={oilUnavailable}
+          onRetry={oilUnavailable ? () => void oilQuery.refetch() : undefined}
           signedNumberFormat={signedNumberFormat}
           dateLocale={numberLocale}
         />

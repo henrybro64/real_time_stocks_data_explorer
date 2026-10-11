@@ -10,7 +10,18 @@ type Props = {
 };
 
 export function Providers({ children }: Props) {
-  const [queryClient] = useState(() => new QueryClient());
+  const [queryClient] = useState(
+    () =>
+      new QueryClient({
+        defaultOptions: {
+          queries: {
+            // Bound retries so a down backend ends in an error state, not an endless spinner (#285).
+            retry: 2,
+            retryDelay: (attempt) => Math.min(8_000, 1_000 * 2 ** attempt),
+          },
+        },
+      }),
+  );
 
   return (
     <QueryClientProvider client={queryClient}>

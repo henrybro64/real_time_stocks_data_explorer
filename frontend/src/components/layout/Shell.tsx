@@ -115,7 +115,7 @@ export function Shell({ children }: Props) {
                               }
                             }}
                           >
-                            Sign out
+                            {t("auth.signOut")}
                           </Button>
                         </>
                       ) : (
@@ -126,7 +126,7 @@ export function Shell({ children }: Props) {
                             router.push("/login");
                           }}
                         >
-                          Sign in
+                          {t("auth.signIn")}
                         </Button>
                       )}
                     </div>

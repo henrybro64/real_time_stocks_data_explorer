@@ -27,6 +27,12 @@ export type TranslationKey =
   | "header.notifications"
   | "header.userProfile"
   | "header.language"
+  | "auth.signIn"
+  | "auth.signOut"
+  | "auth.loading"
+  | "auth.serverUnreachableTitle"
+  | "auth.serverUnreachableBody"
+  | "auth.retry"
   | "language.english"
   | "language.traditionalChinese"
   | "home.hero.title"
@@ -572,6 +578,13 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "header.notifications": "Notifications",
     "header.userProfile": "User profile",
     "header.language": "Display language",
+    "auth.signIn": "Sign in",
+    "auth.signOut": "Sign out",
+    "auth.loading": "Loading…",
+    "auth.serverUnreachableTitle": "Cannot reach the server",
+    "auth.serverUnreachableBody":
+      "The API did not respond. Check that the backend is running, then retry. This page recovers automatically when the server returns.",
+    "auth.retry": "Retry",
     "language.english": "English",
     "language.traditionalChinese": "Traditional Chinese",
     "home.hero.title": "Stock Watch Dashboard",
@@ -1155,6 +1168,13 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "header.notifications": "通知",
     "header.userProfile": "使用者設定",
     "header.language": "顯示語言",
+    "auth.signIn": "登入",
+    "auth.signOut": "登出",
+    "auth.loading": "載入中…",
+    "auth.serverUnreachableTitle": "無法連線到伺服器",
+    "auth.serverUnreachableBody":
+      "後端 API 沒有回應。請確認服務已啟動後再重試；伺服器恢復後此頁會自動重新連線。",
+    "auth.retry": "重試",
     "language.english": "英文",
     "language.traditionalChinese": "繁體中文",
     "home.hero.title": "股票監看儀表板",

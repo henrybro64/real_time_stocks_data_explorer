@@ -22,3 +22,13 @@ def test_wrong_token_is_forbidden() -> None:
 
 def test_matching_token_passes() -> None:
     require_capture_token("secret-token", "secret-token", not_configured_detail="x")
+
+
+def test_placeholder_token_is_treated_as_not_configured() -> None:
+    with pytest.raises(HTTPException) as exc:
+        require_capture_token(
+            "replace-with-long-random-token",
+            "replace-with-long-random-token",
+            not_configured_detail="not configured",
+        )
+    assert exc.value.status_code == 503

@@ -8,9 +8,10 @@ type Props = {
   error?: unknown;
   isLoading?: boolean;
   markets: MarketStatus[];
+  onRetry?: () => void;
 };
 
-export function MarketStatusStrip({ error, isLoading = false, markets }: Props) {
+export function MarketStatusStrip({ error, isLoading = false, markets, onRetry }: Props) {
   const { t } = useLanguage();
   const noticeKind = error ? (markets.length > 0 ? "stale" : errorToNoticeKind(error)) : null;
 
@@ -25,7 +26,7 @@ export function MarketStatusStrip({ error, isLoading = false, markets }: Props) 
       </div>
       {noticeKind ? (
         <div className="app-state-notice-wrap">
-          <RequestStateNotice kind={noticeKind} scopeLabel={t("marketStatus.title")} />
+          <RequestStateNotice kind={noticeKind} onRetry={onRetry} scopeLabel={t("marketStatus.title")} />
         </div>
       ) : null}
       {isLoading ? <InlineLoading description={t("marketStatus.loading")} status="active" /> : null}

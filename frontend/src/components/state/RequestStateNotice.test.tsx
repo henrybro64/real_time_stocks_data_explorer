@@ -1,5 +1,6 @@
 import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import userEvent from "@testing-library/user-event";
+import { describe, expect, it, vi } from "vitest";
 
 import { LanguageProvider } from "../../app/i18n";
 import { RequestStateNotice, errorToNoticeKind } from "./RequestStateNotice";
@@ -17,6 +18,18 @@ describe("RequestStateNotice", () => {
     expect(screen.getByText("需要登入")).toBeInTheDocument();
     expect(screen.getByText("請先登入，才能讀取Watchlist。")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "前往登入" })).toHaveAttribute("href", "/login");
+  });
+
+  it("offers retry for a failed load", async () => {
+    const onRetry = vi.fn();
+    const user = userEvent.setup();
+    renderWithLanguage(
+      <RequestStateNotice kind="unavailable" scopeLabel="Markets" onRetry={onRetry} />,
+      "en",
+    );
+
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    expect(onRetry).toHaveBeenCalledOnce();
   });
 
   it("renders a stale-data warning", () => {
