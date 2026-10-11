@@ -96,6 +96,36 @@ def redis_enabled() -> bool:
     return _redis() is not None
 
 
+def probe_redis(*, connect_timeout: float, socket_timeout: float) -> bool:
+    """One ping whose connect and command timeouts cannot exceed the caller's budget.
+
+    Startup wait uses this instead of the shared client, which applies the
+    process-wide timeouts and may wait on another thread's reconnect (#293).
+    """
+    if not redis_configured():
+        return True
+    try:
+        import redis as redis_lib
+
+        client = redis_lib.from_url(
+            settings.redis_url,
+            socket_connect_timeout=connect_timeout,
+            socket_timeout=socket_timeout,
+        )
+    except Exception:
+        return False
+    try:
+        client.ping()
+        return True
+    except Exception:
+        return False
+    finally:
+        try:
+            client.close()
+        except Exception:
+            pass
+
+
 def soft_ttl_seconds() -> int:
     return max(int(settings.quote_cache_ttl_seconds), 1)
 
@@ -333,11 +363,15 @@ def _redis() -> Any:
     try:
         import redis as redis_lib
 
+        # Timeouts are settings; keepalive and health checks notice dead
+        # connections between calls instead of on the next request (#293).
         r = redis_lib.from_url(
             settings.redis_url,
             decode_responses=True,
-            socket_connect_timeout=2.0,
-            socket_timeout=2.0,
+            socket_connect_timeout=float(settings.redis_socket_connect_timeout_seconds),
+            socket_timeout=float(settings.redis_socket_timeout_seconds),
+            socket_keepalive=True,
+            health_check_interval=int(settings.redis_health_check_interval_seconds),
         )
         r.ping()
         with _client_lock:
@@ -371,6 +405,22 @@ def _run_redis(
             _note_redis_failure(exc, invalidate=True)
         else:
             logger.debug("Redis %s failed: %s", operation, exc)
+        return None
+
+
+def redis_evicted_keys() -> int | None:
+    """Redis's cumulative ``evicted_keys`` counter, or None when unavailable (#293).
+
+    The deployment uses ``noeviction``, so this counter should stay at zero. A rise
+    means the policy was changed and leader locks or rate-limit counters may have
+    been dropped.
+    """
+    stats = _run_redis("redis info stats", lambda client: client.info("stats"), kind="read")
+    if not isinstance(stats, dict):
+        return None
+    try:
+        return int(stats.get("evicted_keys", 0))
+    except (TypeError, ValueError):
         return None
 
 

@@ -28,7 +28,7 @@ curl -fsS http://127.0.0.1:8001/health   # via port-forward to the worker if nee
 - [ ] Worker `/health` and logs: any `Quote Redis cache failure` has a clear category and is not ongoing.
 - [ ] `alembic current` is at head; watchlist / portfolio row counts match the pre-upgrade backup after the canonical stock-id migration.
 
-Helper (read-only). It reports pod readiness, `/health`, `/api/auth/status`, whether alembic is at the image's own head, row counts, and whether the worker log still contains `Quote Redis cache failure`. It does not sign in or exercise the UI. Run it on the cluster after this image is deployed; leave the boxes below unticked until that pass.
+Helper (read-only). It reports pod readiness, `/health`, `/api/auth/status`, whether alembic is at the image's own head, row counts, Redis memory use with a failure on any key eviction, and whether the worker log still contains `Quote Redis cache failure`. It does not sign in or exercise the UI. Run it on the cluster after this image is deployed; leave the boxes below unticked until that pass.
 
 ```bash
 ./scripts/verify-k3s-post-deploy.sh

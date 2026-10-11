@@ -42,14 +42,17 @@ class ReferenceRefreshService:
 
     def _run(self, poll_seconds: int) -> None:
         from app.jobs.health import run_guarded_tick
+        from app.services.job_leader_lock import next_tick_wait_seconds, run_leader_tick
 
+        job_name = "reference-refresh"
         while not self._stop_event.is_set():
             run_guarded_tick(
-                "reference-refresh",
+                job_name,
                 event="reference_refresh.failed",
-                tick=self.run_once,
+                tick=lambda: run_leader_tick(job_name, self.run_once),
             )
-            if self._stop_event.wait(poll_seconds):
+            # A tick skipped for leadership retries soon, not after a full poll (#292).
+            if self._stop_event.wait(next_tick_wait_seconds(job_name, poll_seconds)):
                 return
 
     def run_once(self) -> None:

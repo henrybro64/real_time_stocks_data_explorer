@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
+from collections.abc import Callable
 
 import uvicorn
 from fastapi import FastAPI, Response
@@ -61,6 +63,64 @@ async def worker_liveness(response: Response) -> dict:
     }
 
 
+def wait_for_redis(
+    timeout_seconds: float,
+    *,
+    sleep: Callable[[float], None] = time.sleep,
+    monotonic: Callable[[], float] = time.monotonic,
+) -> bool:
+    """Wait up to ``timeout_seconds`` for Redis before starting jobs (#293).
+
+    After a node or k3s restart the worker can start before the Redis Service
+    answers. Starting jobs then would skip every leader-locked tick. Each
+    attempt's connect and command timeouts are capped so their sum fits in the
+    time still left, including ``WORKER_REDIS_WAIT_SECONDS=0``. Jobs retry
+    leadership on their own afterwards (#291, #292).
+    """
+    from app.services import quote_redis_cache
+
+    if not settings.redis_url.strip():
+        return True
+    budget = max(0.0, float(timeout_seconds))
+    if budget <= 0:
+        return False
+    configured_connect = float(settings.redis_socket_connect_timeout_seconds)
+    configured_socket = float(settings.redis_socket_timeout_seconds)
+    started = monotonic()
+    deadline = started + budget
+    while True:
+        remaining = deadline - monotonic()
+        if remaining <= 0:
+            logger.warning(
+                "Redis still unreachable; starting background jobs anyway",
+                extra={"event": "worker.redis.wait_timed_out", "timeout_seconds": budget},
+            )
+            return False
+        # Connect plus the following ping must both finish inside the budget.
+        connect_timeout = min(configured_connect, remaining / 2)
+        socket_timeout = min(configured_socket, remaining - connect_timeout)
+        if quote_redis_cache.probe_redis(
+            connect_timeout=connect_timeout,
+            socket_timeout=socket_timeout,
+        ):
+            logger.info(
+                "Redis reachable; starting background jobs",
+                extra={
+                    "event": "worker.redis.ready",
+                    "waited_seconds": round(monotonic() - started, 1),
+                },
+            )
+            return True
+        remaining = deadline - monotonic()
+        if remaining <= 0:
+            logger.warning(
+                "Redis still unreachable; starting background jobs anyway",
+                extra={"event": "worker.redis.wait_timed_out", "timeout_seconds": budget},
+            )
+            return False
+        sleep(min(2.0, remaining))
+
+
 def main() -> None:
     from app.core.auth_settings import apply_auth_runtime_settings
 
@@ -73,6 +133,7 @@ def main() -> None:
             "run_background_jobs": settings.run_background_jobs,
         },
     )
+    wait_for_redis(settings.worker_redis_wait_seconds)
     start_enabled_background_jobs()
     logger.info(
         "Background worker started",

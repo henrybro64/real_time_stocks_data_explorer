@@ -160,6 +160,27 @@ with engine.connect() as conn:
 PY
 
 echo
+echo "== Redis memory and evictions (#293) =="
+# noeviction should keep this at zero. A non-zero count means keys, including locks, were deleted.
+redis_info="$(
+  ${KUBECTL_CMD} -n "${NAMESPACE}" exec deploy/stock-ticker-redis -c redis -- redis-cli INFO 2>&1 || true
+)"
+redis_line() {
+  printf '%s\n' "${redis_info}" | tr -d '\r' | awk -F: -v key="$1" '$1 == key {print $2}'
+}
+used_memory="$(redis_line used_memory_human)"
+max_memory="$(redis_line maxmemory_human)"
+evicted_keys="$(redis_line evicted_keys)"
+note "used_memory=${used_memory:-unknown} maxmemory=${max_memory:-unknown} evicted_keys=${evicted_keys:-unknown}"
+if [[ -z "${evicted_keys}" ]]; then
+  fail "could not read Redis INFO"
+elif [[ "${evicted_keys}" == "0" ]]; then
+  pass "Redis has evicted no keys"
+else
+  fail "Redis evicted ${evicted_keys} keys; raise maxmemory or find what is filling Redis"
+fi
+
+echo
 echo "== Quote Redis cache failures in the last 200 worker lines =="
 worker_logs="$(${KUBECTL_CMD} -n "${NAMESPACE}" logs deploy/stock-ticker-backend-worker -c worker --tail=200 2>&1 || true)"
 if printf '%s\n' "${worker_logs}" | grep -q "Quote Redis cache failure"; then

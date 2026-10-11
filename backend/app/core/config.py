@@ -34,6 +34,12 @@ class Settings(BaseSettings):
     quote_redis_retry_max_seconds: float = Field(default=60.0, ge=5.0, le=600.0)
     # Random jitter added to Redis reconnect cooldown.
     quote_redis_retry_jitter_seconds: float = Field(default=2.0, ge=0.0, le=30.0)
+    # Redis client timeouts and idle-connection check (#293).
+    redis_socket_connect_timeout_seconds: float = Field(default=2.0, ge=0.5, le=30.0)
+    redis_socket_timeout_seconds: float = Field(default=2.0, ge=0.5, le=30.0)
+    redis_health_check_interval_seconds: int = Field(default=30, ge=0, le=600)
+    # Worker start waits this long for Redis before starting jobs anyway (#293).
+    worker_redis_wait_seconds: float = Field(default=30.0, ge=0.0, le=300.0)
     # Dedup window for async quote refresh locks.
     quote_refresh_lock_seconds: int = Field(default=30, ge=1, le=300)
     # Background refresher keeps watchlist/portfolio quotes warm in Redis.
@@ -60,6 +66,10 @@ class Settings(BaseSettings):
     quote_refresher_circuit_failure_threshold: int = Field(default=5, ge=2, le=50)
     # Circuit breaker open duration (seconds) after threshold is hit.
     quote_refresher_circuit_open_seconds: int = Field(default=120, ge=30, le=3600)
+    # Wait before retrying a cycle skipped for leadership, not a full poll (#291).
+    quote_refresher_leader_retry_seconds: float = Field(default=5.0, ge=1.0, le=60.0)
+    # Same for the other leader-locked background jobs (#292).
+    job_leader_retry_seconds: float = Field(default=10.0, ge=1.0, le=300.0)
     # Max ids accepted by GET /api/quotes and /api/stream (#272).
     quote_batch_ids_max: int = Field(default=100, ge=1, le=500)
     # TTL for Redis-cached stock AI narrative (metrics are always recomputed).

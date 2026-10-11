@@ -224,13 +224,18 @@ class AlertService:
 
     def _run_evaluator(self, poll_seconds: int) -> None:
         from app.jobs.health import run_guarded_tick
+        from app.services.job_leader_lock import next_tick_wait_seconds, run_leader_tick
 
-        while not self._stop_event.wait(poll_seconds):
+        job_name = "alert-rule-evaluator"
+        wait_seconds = float(poll_seconds)
+        while not self._stop_event.wait(wait_seconds):
             run_guarded_tick(
-                "alert-rule-evaluator",
+                job_name,
                 event="alerts.evaluator.failed",
-                tick=self.evaluate_rules_for_all_users,
+                tick=lambda: run_leader_tick(job_name, self.evaluate_rules_for_all_users),
             )
+            # A tick skipped for leadership retries soon, not after a full poll (#292).
+            wait_seconds = next_tick_wait_seconds(job_name, poll_seconds)
 
     def _evaluate_rules(
         self,
