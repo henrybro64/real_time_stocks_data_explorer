@@ -96,7 +96,7 @@ function buildPath(path: string): string {
 }
 
 /** Full URL for HTTP(S) requests (relative when same-origin). */
-function apiUrl(path: string): string {
+export function apiUrl(path: string): string {
   const p = buildPath(path);
   if (API_BASE_URL === "") {
     return p;

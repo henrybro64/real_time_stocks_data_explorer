@@ -31,6 +31,7 @@ from app.services.user_quota_service import (
     UserQuotaExceededError,
     consume_server_ai_budget,
     enforce_alert_rule_cap,
+    refund_server_ai_budget,
     enforce_portfolio_asset_cap,
     enforce_portfolio_position_cap,
     enforce_watchlist_cap,
@@ -102,6 +103,17 @@ def test_server_ai_budget_is_not_consumed_until_asked(monkeypatch) -> None:
     consume_server_ai_budget("u1")
     with pytest.raises(RateLimitExceededError, match="budget"):
         ensure_server_ai_budget_available("u1")
+
+
+def test_server_ai_budget_refund_returns_the_reserved_slot(monkeypatch) -> None:
+    from app.core import config
+
+    monkeypatch.setattr(config.settings, "user_ai_server_key_daily_limit", 1)
+    consume_server_ai_budget("u1")
+    with pytest.raises(RateLimitExceededError, match="budget"):
+        consume_server_ai_budget("u1")
+    refund_server_ai_budget("u1")
+    consume_server_ai_budget("u1")
 
 
 def test_login_ip_uses_the_proxy_appended_address() -> None:

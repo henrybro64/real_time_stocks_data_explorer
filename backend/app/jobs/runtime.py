@@ -140,6 +140,8 @@ def start_enabled_background_jobs() -> None:
             "rankings-archive-eod",
             enabled=True,
             thread=rankings_archive_service._thread,
+            # Backstop if the loop stops waking. Idle time until the next
+            # settle records success on each poll, so a weekend is healthy.
             max_stale_seconds=26 * 60 * 60,
         )
 

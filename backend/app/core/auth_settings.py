@@ -52,14 +52,14 @@ def validate_auth_runtime_settings(
         and entra_tenant_id.strip()
         and entra_client_id.strip()
         and entra_redirect_uri.strip()
-        and (entra_authority.strip() or entra_tenant_id.strip())
+        and entra_authority.strip()
     )
     if auth_enabled and not local_auth_enabled and not entra_ready:
         raise RuntimeError(
             "AUTH_ENABLED requires LOCAL_AUTH_ENABLED=true and/or a fully "
             "configured Entra External ID provider "
             "(ENTRA_EXTERNAL_ID_ENABLED, ENTRA_TENANT_ID, ENTRA_CLIENT_ID, "
-            "ENTRA_REDIRECT_URI).",
+            "ENTRA_REDIRECT_URI, and ENTRA_AUTHORITY).",
         )
     if bool(local_auth_username) ^ bool(local_auth_password):
         raise RuntimeError(
@@ -99,7 +99,8 @@ def validate_auth_runtime_settings(
     if entra_external_id_enabled and not entra_ready:
         raise RuntimeError(
             "ENTRA_EXTERNAL_ID_ENABLED requires ENTRA_TENANT_ID, ENTRA_CLIENT_ID, "
-            "and ENTRA_REDIRECT_URI (and optionally ENTRA_AUTHORITY).",
+            "ENTRA_REDIRECT_URI, and ENTRA_AUTHORITY "
+            "(the tenant's https://<tenant>.ciamlogin.com/<tenant-id>/v2.0 URL).",
         )
 
 

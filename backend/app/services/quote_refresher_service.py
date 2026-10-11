@@ -652,76 +652,85 @@ class QuoteRefresherService:
 
             for stock_id, token in locked_tokens.items():
                 self._hold_refresh_lock(stock_id, token)
+            still_held = set(unlocked)
             try:
-                raw = self._quote_source.fetch_quotes_for_refresh_batch(
-                    unlocked,
-                    before_chunk_for_market=self._before_chunk_for_market,
-                )
-            except Exception as exc:  # noqa: BLE001 - fall back per symbol
-                logger.debug(
-                    "Batch refresh unavailable; falling back per symbol: %s",
-                    exc,
-                )
-                for stock_id, token in locked_tokens.items():
-                    self._drop_refresh_lock(stock_id, token)
-                    release_refresh_lock(stock_id, token)
-                    remaining.append(stock_id)
-                continue
-
-            batch = raw if isinstance(raw, QuoteRefreshBatch) else QuoteRefreshBatch()
-            timed_out = set(batch.timed_out_ids)
-            deferred = set(batch.deferred_ids)
-            for stock_id in unlocked:
-                token = locked_tokens[stock_id]
                 try:
-                    if stock_id in timed_out:
-                        stats.timed_out += 1
-                        self._note_timed_out_priority(stock_id)
-                        continue
-                    if stock_id in deferred:
-                        continue
-                    attempt = batch.attempts.get(stock_id)
-                    if attempt is None:
+                    raw = self._quote_source.fetch_quotes_for_refresh_batch(
+                        unlocked,
+                        before_chunk_for_market=self._before_chunk_for_market,
+                    )
+                except Exception as exc:  # noqa: BLE001 - fall back per symbol
+                    logger.debug(
+                        "Batch refresh unavailable; falling back per symbol: %s",
+                        exc,
+                    )
+                    for stock_id in unlocked:
                         remaining.append(stock_id)
-                        continue
-                    if attempt.quote is not None:
-                        set_cached_quote(stock_id, attempt.quote)
-                        self._apply_refresh_outcome(stock_id, "refreshed", stats=stats)
-                        with self._priority_lock:
-                            if stock_id in self._priority_refresh:
-                                self._priority_refresh = [
-                                    item
-                                    for item in self._priority_refresh
-                                    if item != stock_id
-                                ]
-                        continue
-                    if attempt.error is not None:
-                        self._apply_refresh_exception(
-                            stock_id, attempt.error, stats=stats
-                        )
-                        continue
-                    remaining.append(stock_id)
-                finally:
+                    continue
+
+                batch = raw if isinstance(raw, QuoteRefreshBatch) else QuoteRefreshBatch()
+                timed_out = set(batch.timed_out_ids)
+                deferred = set(batch.deferred_ids)
+                for stock_id in unlocked:
+                    token = locked_tokens[stock_id]
+                    try:
+                        if stock_id in timed_out:
+                            stats.timed_out += 1
+                            self._note_timed_out_priority(stock_id)
+                            continue
+                        if stock_id in deferred:
+                            continue
+                        attempt = batch.attempts.get(stock_id)
+                        if attempt is None:
+                            remaining.append(stock_id)
+                            continue
+                        if attempt.quote is not None:
+                            set_cached_quote(stock_id, attempt.quote)
+                            self._apply_refresh_outcome(
+                                stock_id, "refreshed", stats=stats
+                            )
+                            with self._priority_lock:
+                                if stock_id in self._priority_refresh:
+                                    self._priority_refresh = [
+                                        item
+                                        for item in self._priority_refresh
+                                        if item != stock_id
+                                    ]
+                            continue
+                        if attempt.error is not None:
+                            self._apply_refresh_exception(
+                                stock_id, attempt.error, stats=stats
+                            )
+                            continue
+                        remaining.append(stock_id)
+                    finally:
+                        still_held.discard(stock_id)
+                        self._drop_refresh_lock(stock_id, token)
+                        release_refresh_lock(stock_id, token)
+                hard_stop = batch.hard_stops.get(market)
+                if hard_stop is not None:
+                    self._note_provider_failure(
+                        market,
+                        classification=_classification_from_exc(hard_stop),
+                        retry_after_seconds=_retry_after_from_exc(hard_stop),
+                    )
+                    stats.failed += 1
+                    stats.provider_requests[market] = (
+                        stats.provider_requests.get(market, 0) + 1
+                    )
+                    classification = _classification_from_exc(hard_stop)
+                    stats.failure_by_classification[classification] = (
+                        stats.failure_by_classification.get(classification, 0) + 1
+                    )
+                    stats.skipped_circuit += sum(
+                        1 for sid in unlocked if sid in deferred
+                    )
+            finally:
+                for stock_id in list(still_held):
+                    token = locked_tokens[stock_id]
+                    still_held.discard(stock_id)
                     self._drop_refresh_lock(stock_id, token)
                     release_refresh_lock(stock_id, token)
-            hard_stop = batch.hard_stops.get(market)
-            if hard_stop is not None:
-                self._note_provider_failure(
-                    market,
-                    classification=_classification_from_exc(hard_stop),
-                    retry_after_seconds=_retry_after_from_exc(hard_stop),
-                )
-                stats.failed += 1
-                stats.provider_requests[market] = (
-                    stats.provider_requests.get(market, 0) + 1
-                )
-                classification = _classification_from_exc(hard_stop)
-                stats.failure_by_classification[classification] = (
-                    stats.failure_by_classification.get(classification, 0) + 1
-                )
-                stats.skipped_circuit += sum(
-                    1 for sid in unlocked if sid in deferred
-                )
         pending = set(remaining)
         return [stock_id for stock_id in to_refresh if stock_id in pending]
 

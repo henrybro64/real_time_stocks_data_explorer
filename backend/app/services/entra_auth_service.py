@@ -51,13 +51,8 @@ def entra_is_configured() -> bool:
 
 
 def _authority() -> str:
-    configured = settings.entra_authority.strip().rstrip("/")
-    if configured:
-        return configured
-    tenant = settings.entra_tenant_id.strip()
-    if not tenant:
-        return ""
-    return f"https://login.microsoftonline.com/{tenant}/v2.0"
+    """External ID authority. Workforce login.microsoftonline.com is not valid here."""
+    return settings.entra_authority.strip().rstrip("/")
 
 
 def _metadata_url() -> str:

@@ -1377,15 +1377,18 @@ class RankingsArchiveService:
         idle — and the same-day retry spacing inside ``_SAME_DAY_RETRY_BUDGET``.
         It is not a fixed Azure wake interval outside an active capture window.
         """
+        from app.jobs.health import note_job_failure, note_job_success
+
         next_wake: datetime | None = None
+        idle_until: datetime | None = None
         while not self._stop_event.is_set():
             now = datetime.now(timezone.utc)
             if next_wake is not None and now < next_wake:
+                if idle_until is not None and now < idle_until:
+                    note_job_success("rankings-archive-eod")
                 remaining = (next_wake - now).total_seconds()
                 self._stop_event.wait(min(float(poll_seconds), max(1.0, remaining)))
                 continue
-            from app.jobs.health import note_job_failure, note_job_success
-
             try:
                 if not settings.rankings_archive_eod_enabled:
                     next_wake = now + timedelta(seconds=poll_seconds)
@@ -1400,11 +1403,15 @@ class RankingsArchiveService:
                         },
                     )
                     next_wake = now + timedelta(seconds=poll_seconds)
+                    idle_until = next_wake
+                    note_job_success("rankings-archive-eod")
                     continue
                 if not self.any_active_capture_window(now):
                     next_wake = self.next_sampler_wake_at(now)
                     if next_wake <= now:
                         next_wake = now + timedelta(seconds=poll_seconds)
+                    idle_until = next_wake
+                    note_job_success("rankings-archive-eod")
                     logger.info(
                         "Rankings archive sampler idle until next settle",
                         extra={
@@ -1424,6 +1431,7 @@ class RankingsArchiveService:
                     "rankings-archive-eod",
                     ttl_seconds=max(120, int(poll_seconds)),
                 )
+                idle_until = None
                 if leader_token is None:
                     next_wake = now + timedelta(seconds=poll_seconds)
                     continue
@@ -1441,6 +1449,8 @@ class RankingsArchiveService:
                     poll_seconds=poll_seconds,
                     result=result,
                 )
+                # Waiting for the next settle is healthy. Same-day retries are not.
+                idle_until = next_wake if reason == "next_settle" else None
                 logger.info(
                     "Rankings archive sampler sleeping after capture",
                     extra={

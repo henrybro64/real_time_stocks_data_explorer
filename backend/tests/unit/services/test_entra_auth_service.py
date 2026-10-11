@@ -44,6 +44,14 @@ def test_entra_is_configured(entra_settings) -> None:
     assert entra.entra_is_configured()
 
 
+def test_missing_authority_is_not_configured(entra_settings, monkeypatch) -> None:
+    from app.core import config
+
+    monkeypatch.setattr(config.settings, "entra_authority", "")
+    assert entra.entra_is_configured() is False
+    assert entra._authority() == ""
+
+
 def test_begin_login_builds_authorize_url(entra_settings) -> None:
     metadata = {
         "authorization_endpoint": "https://login.example/authorize",

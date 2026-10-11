@@ -74,7 +74,23 @@ def test_auth_enabled_allows_entra_without_local() -> None:
         entra_tenant_id="tenant",
         entra_client_id="client",
         entra_redirect_uri="http://localhost/api/auth/callback/entra",
+        entra_authority="https://contoso.ciamlogin.com/tenant/v2.0",
     )
+
+
+def test_auth_enabled_rejects_entra_without_authority() -> None:
+    with pytest.raises(RuntimeError, match="ENTRA_AUTHORITY"):
+        validate_auth_runtime_settings(
+            auth_enabled=True,
+            local_auth_enabled=False,
+            session_secret="9f" * 16,
+            local_auth_username="",
+            local_auth_password="",
+            entra_external_id_enabled=True,
+            entra_tenant_id="tenant",
+            entra_client_id="client",
+            entra_redirect_uri="http://localhost/api/auth/callback/entra",
+        )
 
 
 def test_auth_enabled_rejects_entra_half_configured() -> None:

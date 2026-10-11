@@ -137,11 +137,11 @@ def ensure_server_ai_budget_available(user_id: str) -> None:
 
 
 def consume_server_ai_budget(user_id: str) -> None:
-    """Count one server-key AI call against the user's daily budget.
+    """Reserve one server-key slot before the provider call.
 
     Raises ``RateLimitExceededError`` when the budget is exhausted. Calls that
-    use the user's own provider key must not call this. Call it only after the
-    provider returned an analysis.
+    use the user's own provider key must not call this. Refund with
+    ``refund_server_ai_budget`` when the provider returns no analysis.
     """
     key, limit = _server_ai_budget_key(user_id)
     if limit <= 0:
@@ -155,3 +155,13 @@ def consume_server_ai_budget(user_id: str) -> None:
         window_seconds=86_400,
         detail=_server_ai_budget_detail(limit),
     )
+
+
+def refund_server_ai_budget(user_id: str) -> None:
+    """Return a reserved server-key slot when the provider produced no analysis."""
+    from app.services.rate_limit_service import refund_rate_limit
+
+    key, limit = _server_ai_budget_key(user_id)
+    if limit <= 0:
+        return
+    refund_rate_limit(key)

@@ -57,8 +57,14 @@ def list_portfolio_positions(
     if not positions:
         return []
 
-    cached = quote_service.peek_cached_quotes([position.stock_id for position in positions])
-    quote_by_stock = {item.stock.id: item.quote for item in cached}
+    stock_ids = [position.stock_id for position in positions]
+    if quote_service.background_refresher_owns_upstream():
+        cached = quote_service.peek_cached_quotes(stock_ids)
+        quote_by_stock = {item.stock.id: item.quote for item in cached}
+    else:
+        quote_by_stock = {
+            stock.id: quote for stock, quote in quote_service.get_quotes(stock_ids)
+        }
 
     rows: list[PortfolioPositionResponse] = []
     for position in positions:

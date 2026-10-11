@@ -82,6 +82,13 @@ def clear_rate_limits_for_tests() -> None:
         _memory_hits.clear()
 
 
+def refund_rate_limit(key: str) -> None:
+    """Give back one previously consumed slot. No-op when the bucket is empty."""
+    if _refund_redis(key):
+        return
+    _refund_memory(key)
+
+
 def _check_redis(
     key: str,
     *,
@@ -126,6 +133,42 @@ def _check_redis(
     except Exception as exc:  # noqa: BLE001 - fall back to memory
         logger.debug("Rate limit Redis path failed: %s", exc)
         return None
+
+
+def _refund_redis(key: str) -> bool:
+    if not settings.redis_url.strip():
+        return False
+    try:
+        from app.services.quote_redis_cache import run_redis
+
+        redis_key = f"ratelimit:v1:{key}"
+
+        def _decr(client):
+            current = client.get(redis_key)
+            if current is None or int(current) <= 0:
+                return False
+            client.decr(redis_key)
+            return True
+
+        result = run_redis(f"rate limit refund {key}", _decr, kind="write")
+        if result is None:
+            return False
+        return True
+    except Exception as exc:  # noqa: BLE001 - fall back to memory
+        logger.debug("Rate limit Redis refund failed: %s", exc)
+        return False
+
+
+def _refund_memory(key: str) -> None:
+    with _memory_lock:
+        hits = _memory_hits.get(key)
+        if not hits:
+            return
+        hits.pop()
+        if hits:
+            _memory_hits[key] = hits
+        else:
+            _memory_hits.pop(key, None)
 
 
 def _check_memory(

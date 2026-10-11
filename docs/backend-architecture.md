@@ -40,7 +40,7 @@ Routes call services; services call adapters — not raw provider HTTP from hand
 
 Implementations live in service modules; only orchestration is centralized.
 
-**Quote refresher:** runs in the API process when `RUN_BACKGROUND_JOBS=true` (the local default) and in the worker Deployment when API replicas set the flag false. A Redis leader lock is held for the current poll interval when `replicas > 1`; it is not deleted at the end of a short cycle. With `QUOTE_REFRESHER_OWNS_UPSTREAM=true` and a live sampler, read paths prefer cache and request warm-up instead of per-request provider calls. Settings: `QUOTE_REFRESHER_*`, `QUOTE_REDIS_*`. Health exposes `quote_cache` diagnostics. Full design, freshness contract, and failure handling: [quote-refresh-design.md](quote-refresh-design.md).
+**Quote refresher:** runs in the API process when `RUN_BACKGROUND_JOBS=true` (the local default) and in the worker Deployment when API replicas set the flag false. A Redis leader lock is held for the current poll interval when `replicas > 1`; it is not deleted at the end of a short cycle. With `QUOTE_REFRESHER_OWNS_UPSTREAM=true`, read paths prefer cache when the sampler is running in this process, or when jobs run in the worker and Redis can take the immediate queue. Otherwise they still fetch from the provider. Settings: `QUOTE_REFRESHER_*`, `QUOTE_REDIS_*`. Health exposes `quote_cache` diagnostics. Full design, freshness contract, and failure handling: [quote-refresh-design.md](quote-refresh-design.md).
 
 ## Configuration
 

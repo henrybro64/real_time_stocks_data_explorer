@@ -12,25 +12,6 @@ spec:
       labels:
         app: stock-ticker-backend-worker
     spec:
-      initContainers:
-        - name: migrate-db
-          image: stock-ticker-backend:local
-          imagePullPolicy: Never
-          workingDir: /app/backend
-          command:
-            - sh
-            - -c
-            - alembic upgrade head
-          envFrom:
-            - configMapRef:
-                name: stock-ticker-backend-env
-            - secretRef:
-                name: stock-ticker-backend-database
-            - secretRef:
-                name: stock-ticker-backend-auth
-            - secretRef:
-                name: stock-ticker-backend-rankings-archive
-                optional: true
       containers:
         - name: worker
           image: stock-ticker-backend:local

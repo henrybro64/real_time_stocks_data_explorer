@@ -40,8 +40,9 @@ def test_backend_worker_deployment_is_wired() -> None:
     assert "app.worker" in worker
     assert 'value: "true"' in worker
     assert "WORKER_HEALTH_HOST" in worker
-    assert "alembic upgrade head" in worker
+    assert "alembic upgrade head" not in worker
     backend = (_K8S / "backend.yaml").read_text(encoding="utf-8")
+    assert "alembic upgrade head" in backend
     assert 'RUN_BACKGROUND_JOBS: "false"' in backend
     kustomization = (_K8S / "kustomization.yaml").read_text(encoding="utf-8")
     assert "backend-worker.yaml" in kustomization

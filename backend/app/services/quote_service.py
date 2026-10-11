@@ -614,7 +614,7 @@ class QuoteService:
         return self._refresh_status_after_enqueue(stock_id)
 
     @staticmethod
-    def _background_refresher_owns_upstream() -> bool:
+    def background_refresher_owns_upstream() -> bool:
         from app.core.config import settings
 
         if not (
@@ -624,10 +624,19 @@ class QuoteService:
         try:
             from app.services.quote_refresher_service import quote_refresher_service
 
-            # Only suppress request-path upstream when the sampler is actually alive.
-            return quote_refresher_service.is_sampler_running()
+            if quote_refresher_service.is_sampler_running():
+                return True
+            # API pods do not run the sampler. Redis is how they hand misses
+            # to the worker that does (#276).
+            return bool(
+                not settings.run_background_jobs and settings.redis_url.strip()
+            )
         except Exception:
             return False
+
+    @staticmethod
+    def _background_refresher_owns_upstream() -> bool:
+        return QuoteService.background_refresher_owns_upstream()
 
     def _refresh_status_after_enqueue(self, stock_id: str) -> RefreshStatus:
         """Queue a refresh when possible; report in-flight work when lock is held."""

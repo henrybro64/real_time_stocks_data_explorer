@@ -1,4 +1,4 @@
-import { requestJson, requestVoid } from "./client";
+import { apiUrl, requestJson, requestVoid } from "./client";
 
 export type AuthStatus = {
   authEnabled: boolean;
@@ -39,5 +39,5 @@ export async function registerLocal(username: string, password: string): Promise
 
 /** Browser navigates here; the API redirects to Entra then back via /auth/callback/entra. */
 export function entraLoginUrl(): string {
-  return "/api/auth/login/entra";
+  return apiUrl("/auth/login/entra");
 }

@@ -228,6 +228,36 @@ def test_run_cycle_continues_when_failure_finishes_first() -> None:
     assert set(stub.quote_calls) == {"US:AAPL", "US:MSFT"}
 
 
+def test_processing_error_releases_later_batch_locks(monkeypatch) -> None:
+    from app.services.quote_refresher_service import QuoteRefreshCycleStats
+    from app.services.quote_service import QuoteFetchAttempt, QuoteRefreshBatch
+
+    refresher, stub = _service(watchlist=["US:AAPL", "US:MSFT"])
+    quote = stub._quotes["US:AAPL"]
+    batch = QuoteRefreshBatch(
+        attempts={
+            "US:AAPL": QuoteFetchAttempt(quote=quote),
+            "US:MSFT": QuoteFetchAttempt(quote=quote),
+        }
+    )
+    monkeypatch.setattr(
+        refresher._quote_source,
+        "fetch_quotes_for_refresh_batch",
+        lambda _ids, **_kwargs: batch,
+    )
+
+    def boom(_stock_id: str, _outcome: str, stats=None) -> None:
+        raise RuntimeError("processing failed")
+
+    refresher._apply_refresh_outcome = boom  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError, match="processing failed"):
+        refresher._refresh_batched_markets(
+            ["US:AAPL", "US:MSFT"],
+            QuoteRefreshCycleStats(),
+        )
+    assert refresher._held_refresh_locks == {}
+
+
 def test_circuit_skip_does_not_count_as_failure(monkeypatch) -> None:
     monkeypatch.setattr(cache.settings, "quote_refresher_circuit_failure_threshold", 5)
     stub = StubUSProvider()
