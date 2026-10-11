@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
+from collections.abc import Callable
 
 import uvicorn
 from fastapi import FastAPI, Response
@@ -61,6 +63,45 @@ async def worker_liveness(response: Response) -> dict:
     }
 
 
+def wait_for_redis(
+    timeout_seconds: float,
+    *,
+    sleep: Callable[[float], None] = time.sleep,
+    monotonic: Callable[[], float] = time.monotonic,
+) -> bool:
+    """Wait up to ``timeout_seconds`` for Redis before starting jobs (#293).
+
+    After a node or k3s restart the worker can start before the Redis Service
+    answers. Starting jobs then would skip every leader-locked tick. Never blocks
+    past the bound; the jobs retry leadership on their own afterwards (#291, #292).
+    """
+    from app.services import quote_redis_cache
+
+    if not settings.redis_url.strip():
+        return True
+    deadline = monotonic() + max(0.0, float(timeout_seconds))
+    started = monotonic()
+    while True:
+        # During reconnect backoff this returns at once without connecting.
+        if quote_redis_cache.redis_enabled():
+            logger.info(
+                "Redis reachable; starting background jobs",
+                extra={
+                    "event": "worker.redis.ready",
+                    "waited_seconds": round(monotonic() - started, 1),
+                },
+            )
+            return True
+        remaining = deadline - monotonic()
+        if remaining <= 0:
+            logger.warning(
+                "Redis still unreachable; starting background jobs anyway",
+                extra={"event": "worker.redis.wait_timed_out", "timeout_seconds": timeout_seconds},
+            )
+            return False
+        sleep(min(2.0, remaining))
+
+
 def main() -> None:
     from app.core.auth_settings import apply_auth_runtime_settings
 
@@ -73,6 +114,7 @@ def main() -> None:
             "run_background_jobs": settings.run_background_jobs,
         },
     )
+    wait_for_redis(settings.worker_redis_wait_seconds)
     start_enabled_background_jobs()
     logger.info(
         "Background worker started",

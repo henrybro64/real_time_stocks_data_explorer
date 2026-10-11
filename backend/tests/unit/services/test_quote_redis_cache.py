@@ -652,3 +652,32 @@ def test_cached_tw_quote_read_does_not_fetch_holidays_under_the_cache_lock(monke
 
     assert locked_during_lookup == [False]
     assert entry.quote.id == "TW:2330"
+
+
+def test_redis_client_uses_configured_timeouts_and_keepalive(monkeypatch) -> None:
+    # Timeouts are settings, and dead idle connections are noticed early (#293).
+    monkeypatch.setattr(cache.settings, "redis_url", "redis://localhost:6379/0")
+    monkeypatch.setattr(cache.settings, "redis_socket_connect_timeout_seconds", 3.5)
+    monkeypatch.setattr(cache.settings, "redis_socket_timeout_seconds", 4.0)
+    monkeypatch.setattr(cache.settings, "redis_health_check_interval_seconds", 30)
+    monkeypatch.setattr(cache, "_client", None)
+    monkeypatch.setattr(cache, "_client_retry_after_monotonic", 0.0)
+    seen: dict[str, object] = {}
+
+    class FakeRedis:
+        def ping(self):
+            return True
+
+    def fake_from_url(_url, **kwargs):
+        seen.update(kwargs)
+        return FakeRedis()
+
+    fake_redis_lib = MagicMock()
+    fake_redis_lib.from_url = fake_from_url
+    monkeypatch.setitem(__import__("sys").modules, "redis", fake_redis_lib)
+
+    assert cache._redis() is not None
+    assert seen["socket_connect_timeout"] == 3.5
+    assert seen["socket_timeout"] == 4.0
+    assert seen["socket_keepalive"] is True
+    assert seen["health_check_interval"] == 30

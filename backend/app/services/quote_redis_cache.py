@@ -333,11 +333,15 @@ def _redis() -> Any:
     try:
         import redis as redis_lib
 
+        # Timeouts are settings; keepalive and health checks notice dead
+        # connections between calls instead of on the next request (#293).
         r = redis_lib.from_url(
             settings.redis_url,
             decode_responses=True,
-            socket_connect_timeout=2.0,
-            socket_timeout=2.0,
+            socket_connect_timeout=float(settings.redis_socket_connect_timeout_seconds),
+            socket_timeout=float(settings.redis_socket_timeout_seconds),
+            socket_keepalive=True,
+            health_check_interval=int(settings.redis_health_check_interval_seconds),
         )
         r.ping()
         with _client_lock:

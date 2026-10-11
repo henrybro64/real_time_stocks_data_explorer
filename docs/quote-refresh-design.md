@@ -126,5 +126,6 @@ Daily OHLCV bars live in Postgres (`daily_price_bars`, keyed by market/symbol/da
 
 - The alert evaluator uses whatever quote the cache returns, which may be up to the 1-hour hard TTL old; events record that quote's timestamp.
 - Without Redis and with more than one backend replica, each replica has its own memory cache and refresher.
-- With Redis configured but down, refresher cycles stop (fail closed). Reads then serve memory or stale data until Redis returns.
+- With Redis configured but down, refresher cycles stop (fail closed). Reads then serve memory or stale data until Redis returns. The refresher retries leadership every few seconds, so the first cycle runs within one short retry after Redis is back (#291).
+- In k8s, Redis keeps RDB snapshots on a volume, so a Redis pod restart keeps the quote cache (#293). Locally without the compose file's volume, a Redis restart empties it until the next cycle.
 - Market-snapshot tiles (indices, FX, commodities) use their own small cache helper rather than the quote freshness envelope.
