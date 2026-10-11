@@ -47,7 +47,7 @@ def test_auth_enabled_rejects_anonymous_access(monkeypatch: pytest.MonkeyPatch) 
     assert status.json() == {
         "authEnabled": True,
         "loggedIn": False,
-        "providers": {"local": True},
+        "providers": {"local": True, "entra": False},
         "user": None,
     }
     assert response.status_code == 401
@@ -76,7 +76,7 @@ def test_auth_enabled_rejects_stale_session_user(monkeypatch: pytest.MonkeyPatch
     assert status_response.json() == {
         "authEnabled": True,
         "loggedIn": False,
-        "providers": {"local": True},
+        "providers": {"local": True, "entra": False},
         "user": None,
     }
 

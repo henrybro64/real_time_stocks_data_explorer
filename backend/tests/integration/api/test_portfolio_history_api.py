@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -123,21 +124,25 @@ def test_capture_due_snapshots_upserts_current_hour(
         if stock_id == "US:AAPL"
         else None,
     )
-    monkeypatch.setattr(
-        quote_service,
-        "get_quote",
-        lambda stock_id: quote_record(
-            "US:AAPL",
-            last_price=quote_box["last_price"],
-            change=1.0,
-            change_percent=0.5,
-            previous_close=quote_box["last_price"] - 1.0,
-            timestamp="2026-05-05T11:45:00-04:00",
-            is_market_open=True,
-        )
-        if stock_id == "US:AAPL"
-        else None,
-    )
+    def peek_cached_quotes(stock_ids: list[str]):
+        return [
+            SimpleNamespace(
+                stock=SimpleNamespace(id=stock_id),
+                quote=quote_record(
+                    "US:AAPL",
+                    last_price=quote_box["last_price"],
+                    change=1.0,
+                    change_percent=0.5,
+                    previous_close=quote_box["last_price"] - 1.0,
+                    timestamp="2026-05-05T11:45:00-04:00",
+                    is_market_open=True,
+                ),
+            )
+            for stock_id in stock_ids
+            if stock_id == "US:AAPL"
+        ]
+
+    monkeypatch.setattr(quote_service, "peek_cached_quotes", peek_cached_quotes)
     monkeypatch.setattr(
         "app.services.portfolio_history_service.iter_open_snapshot_windows",
         lambda now=None: [("US", snapshot_hour)],

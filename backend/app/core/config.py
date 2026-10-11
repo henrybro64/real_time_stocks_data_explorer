@@ -122,6 +122,9 @@ class Settings(BaseSettings):
     # When false, FastAPI serves requests only; jobs run in the worker process (#276).
     # Default true keeps single-process local/k3s behaviour.
     run_background_jobs: bool = Field(default=True)
+    # Worker health bind address. Loopback unless WORKER_HEALTH_HOST is set.
+    # The worker Deployment sets that so kubelet can probe the pod.
+    worker_health_host: str = Field(default="127.0.0.1")
 
     # Multi-user auth. When false, API uses default-user only.
     auth_enabled: bool = Field(default=False)

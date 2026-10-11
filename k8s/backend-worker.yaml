@@ -46,6 +46,8 @@ spec:
           env:
             - name: RUN_BACKGROUND_JOBS
               value: "true"
+            - name: WORKER_HEALTH_HOST
+              value: "0.0.0.0"
           envFrom:
             - configMapRef:
                 name: stock-ticker-backend-env

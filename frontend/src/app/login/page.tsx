@@ -34,7 +34,7 @@ function LoginPageInner() {
 
   useEffect(() => {
     let cancelled = false;
-    (async () => {
+    void (async () => {
       try {
         const s = await fetchAuthStatus();
         if (cancelled) {

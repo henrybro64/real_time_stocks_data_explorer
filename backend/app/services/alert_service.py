@@ -288,7 +288,15 @@ class AlertService:
         return events
 
     def _load_quotes(self, stock_ids: set[str]) -> dict[str, QuoteRecord | None]:
-        if self._quote_loader is quote_service.get_quote and stock_ids:
+        # Peek only for the live quote service. A test that installs the same
+        # callable on both attributes must still be invoked (#274).
+        loader = self._quote_loader
+        production = quote_service.get_quote
+        uses_shared_cache = (
+            getattr(loader, "__func__", None) is getattr(production, "__func__", None)
+            and getattr(loader, "__self__", None) is quote_service
+        )
+        if uses_shared_cache and stock_ids:
             items = quote_service.peek_cached_quotes(list(stock_ids))
             return {item.stock.id: item.quote for item in items}
         quotes_by_stock: dict[str, QuoteRecord | None] = {}

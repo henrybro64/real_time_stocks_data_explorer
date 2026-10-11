@@ -60,7 +60,7 @@ def main() -> None:
     try:
         uvicorn.run(
             health_app,
-            host="0.0.0.0",
+            host=settings.worker_health_host,
             port=8001,
             log_level=settings.log_level.lower(),
         )
