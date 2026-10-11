@@ -44,6 +44,21 @@ async def worker_health(response: Response) -> dict:
     }
 
 
+@health_app.get("/livez")
+async def worker_liveness(response: Response) -> dict:
+    """Liveness: 503 only when a job thread died. Stale jobs stay on /health (#289)."""
+    from app.jobs.health import dead_job_names
+
+    dead = dead_job_names()
+    if dead:
+        response.status_code = 503
+    return {
+        "status": "ok" if not dead else "dead",
+        "role": "worker",
+        "dead_jobs": dead,
+    }
+
+
 def main() -> None:
     from app.core.auth_settings import apply_auth_runtime_settings
 

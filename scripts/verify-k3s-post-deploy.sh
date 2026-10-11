@@ -105,6 +105,16 @@ else
 fi
 
 echo
+echo "== Worker /livez (liveness probe, #289) =="
+if ${KUBECTL_CMD} -n "${NAMESPACE}" exec deploy/stock-ticker-backend-worker -c worker -- \
+  python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8001/livez', timeout=10).read().decode())"
+then
+  pass "worker /livez"
+else
+  fail "worker /livez"
+fi
+
+echo
 echo "== Alembic current =="
 # Compare against the image's own head so this check does not rot with each migration.
 alembic_out="$(

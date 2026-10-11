@@ -79,18 +79,22 @@ spec:
             - secretRef:
                 name: stock-ticker-backend-rankings-archive
                 optional: true
+          # Explicit timeouts: a CPU-starved node can push /health past the 1s default (#289).
           readinessProbe:
             httpGet:
               path: /health
               port: http
             initialDelaySeconds: 5
             periodSeconds: 5
+            timeoutSeconds: 5
           livenessProbe:
             httpGet:
               path: /health
               port: http
             initialDelaySeconds: 15
             periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
           resources:
             requests:
               cpu: 50m

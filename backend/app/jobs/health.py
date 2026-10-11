@@ -121,6 +121,21 @@ def get_background_jobs_health() -> dict[str, Any]:
     }
 
 
+def _thread_died(state: _JobState) -> bool:
+    return state.enabled and state.thread is not None and not state.thread.is_alive()
+
+
+def dead_job_names() -> list[str]:
+    """Enabled jobs whose thread has exited.
+
+    Liveness uses only this: a restart repairs a dead thread, but not a stale
+    job waiting on Postgres or a provider (#289).
+    """
+    with _lock:
+        snapshot = list(_jobs.items())
+    return [name for name, state in snapshot if _thread_died(state)]
+
+
 def unhealthy_job_names(now: datetime | None = None) -> list[str]:
     """Enabled jobs whose thread died or whose last success is past its budget.
 
@@ -134,7 +149,7 @@ def unhealthy_job_names(now: datetime | None = None) -> list[str]:
     for name, state in snapshot:
         if not state.enabled:
             continue
-        if state.thread is not None and not state.thread.is_alive():
+        if _thread_died(state):
             names.append(name)
             continue
         stale_after = state.max_stale_seconds
