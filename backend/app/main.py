@@ -1,4 +1,6 @@
 import logging
+import threading
+from collections.abc import Callable
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -85,9 +87,93 @@ def _unreachable_database_error(exc: BaseException) -> OperationalError | None:
     return None
 
 
-def _log_bootstrap_skipped(message: str, event: str, error: OperationalError) -> None:
-    # Log the type only: driver messages can carry the host and username.
-    logger.error(message, extra={"event": event, "error_type": type(error).__name__})
+# Retry spacing after an unreachable DB at startup; the last value repeats (#290).
+_BOOTSTRAP_RETRY_DELAYS_SECONDS: tuple[float, ...] = (5.0, 15.0, 30.0, 60.0)
+_bootstrap_stop = threading.Event()
+_bootstrap_retry_threads: list[threading.Thread] = []
+
+
+def _try_bootstrap(step: Callable[[], None], *, failed_event: str) -> bool:
+    """Run one bootstrap step. False when the DB is unreachable; other errors raise."""
+    try:
+        step()
+    except (OperationalError, RuntimeError) as exc:
+        error = _unreachable_database_error(exc)
+        if error is None:
+            raise
+        # Log the type only: driver messages can carry the host and username.
+        logger.error(
+            "Bootstrap step skipped; database unreachable",
+            extra={"event": failed_event, "error_type": type(error).__name__},
+        )
+        return False
+    return True
+
+
+def _retry_bootstrap(step: Callable[[], None], *, failed_event: str) -> None:
+    attempt = 0
+    while True:
+        delays = _BOOTSTRAP_RETRY_DELAYS_SECONDS
+        if _bootstrap_stop.wait(delays[min(attempt, len(delays) - 1)]):
+            return
+        attempt += 1
+        try:
+            if _try_bootstrap(step, failed_event=failed_event):
+                return
+        except Exception as exc:  # noqa: BLE001 - nothing to raise to in a daemon thread
+            logger.error(
+                "Bootstrap retry stopped after a non-connection error",
+                extra={
+                    "event": "app.bootstrap.retry_stopped",
+                    "failed_event": failed_event,
+                    "error_type": type(exc).__name__,
+                },
+            )
+            return
+
+
+def _bootstrap(name: str, step: Callable[[], None], *, failed_event: str) -> None:
+    """Run ``step`` now; if the DB is unreachable, keep serving and retry in the background.
+
+    Retrying matters: with auth off every request writes as ``default-user``, and
+    user-owned tables have a foreign key to it, so a skipped seed breaks writes (#290).
+    """
+    if _try_bootstrap(step, failed_event=failed_event):
+        return
+    _bootstrap_stop.clear()
+    thread = threading.Thread(
+        target=_retry_bootstrap,
+        args=(step,),
+        kwargs={"failed_event": failed_event},
+        name=f"bootstrap-retry-{name}",
+        daemon=True,
+    )
+    _bootstrap_retry_threads.append(thread)
+    thread.start()
+
+
+def _seed_default_user_step() -> None:
+    seed_default_user()
+    logger.info(
+        "Seeded default single-user principal",
+        extra={"event": "app.bootstrap.default_user_seeded"},
+    )
+
+
+def _local_auth_user_step() -> None:
+    outcome = ensure_bootstrap_local_user(
+        settings.local_auth_username,
+        settings.local_auth_password,
+        reset_password=settings.local_auth_reset_password,
+    )
+    logger.info(
+        "Bootstrap local-auth finished",
+        extra={
+            "event": "app.bootstrap.local_auth_user_ready",
+            "outcome": outcome,
+            "reset_password": settings.local_auth_reset_password,
+        },
+    )
 
 
 @app.on_event("startup")
@@ -102,22 +188,10 @@ def validate_auth_settings() -> None:
 def bootstrap_single_user_principal() -> None:
     if settings.auth_enabled or SessionLocal is None:
         return
-    try:
-        seed_default_user()
-    except RuntimeError as exc:
-        # Bootstrap is optional; an unreachable DB must not stop the API (#290).
-        error = _unreachable_database_error(exc)
-        if error is None:
-            raise
-        _log_bootstrap_skipped(
-            "Default user seed skipped; database unreachable",
-            "app.bootstrap.default_user_failed",
-            error,
-        )
-        return
-    logger.info(
-        "Seeded default single-user principal",
-        extra={"event": "app.bootstrap.default_user_seeded"},
+    _bootstrap(
+        "default-user",
+        _seed_default_user_step,
+        failed_event="app.bootstrap.default_user_failed",
     )
 
 
@@ -125,27 +199,10 @@ def bootstrap_single_user_principal() -> None:
 def bootstrap_local_auth_user() -> None:
     if not (settings.auth_enabled and settings.local_auth_enabled):
         return
-    try:
-        outcome = ensure_bootstrap_local_user(
-            settings.local_auth_username,
-            settings.local_auth_password,
-            reset_password=settings.local_auth_reset_password,
-        )
-    except OperationalError as exc:
-        # Same as the default user: keep serving; the next restart creates it (#290).
-        _log_bootstrap_skipped(
-            "Bootstrap local-auth skipped; database unreachable",
-            "app.bootstrap.local_auth_user_failed",
-            exc,
-        )
-        return
-    logger.info(
-        "Bootstrap local-auth finished",
-        extra={
-            "event": "app.bootstrap.local_auth_user_ready",
-            "outcome": outcome,
-            "reset_password": settings.local_auth_reset_password,
-        },
+    _bootstrap(
+        "local-auth-user",
+        _local_auth_user_step,
+        failed_event="app.bootstrap.local_auth_user_failed",
     )
 
 
@@ -159,6 +216,11 @@ def start_background_jobs() -> None:
         )
         return
     start_enabled_background_jobs()
+
+
+@app.on_event("shutdown")
+def stop_bootstrap_retries() -> None:
+    _bootstrap_stop.set()
 
 
 @app.on_event("shutdown")
