@@ -1,9 +1,10 @@
 from datetime import date
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Header, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from app.api.deps import get_effective_user_id
 from app.core.config import settings
 from app.schemas.rankings import (
     RankingResponse,
@@ -81,6 +82,7 @@ def get_rankings(
     limit: int = Query(default=50, ge=1, le=50),
     tw_board: Annotated[TwRankingBoard | None, Query(alias="twBoard")] = None,
     universe: Annotated[RankingUniverse | None, Query()] = None,
+    _user_id: str = Depends(get_effective_user_id),
 ) -> RankingResponse:
     if tw_board == "all":
         if market != "TW" or ranking_type not in {RankingType.limit_up, RankingType.limit_down}:
@@ -121,6 +123,7 @@ def get_rankings_history_dates(
     universe: RankingUniverse = Query(...),
     ranking_type: RankingType = Query(..., alias="type"),
     limit: int = Query(default=5, ge=1, le=30),
+    _user_id: str = Depends(get_effective_user_id),
 ) -> RankingsHistoryDatesResponse:
     """List archived trading dates for a market/universe/type, newest first (#168)."""
     _reject_live_only_price_limit(ranking_type)
@@ -168,6 +171,7 @@ def get_rankings_history(
     limit: int = Query(default=50, ge=1, le=50),
     tw_board: Annotated[TwBoard | None, Query(alias="twBoard")] = None,
     universe: Annotated[RankingUniverse | None, Query()] = None,
+    _user_id: str = Depends(get_effective_user_id),
 ) -> RankingResponse:
     """Return one archived EOD ranking list. Never falls back to current rankings (#168)."""
     _reject_live_only_price_limit(ranking_type)
@@ -198,7 +202,10 @@ def get_rankings_history(
 
 
 @router.post("/refresh")
-def refresh_rankings(payload: RankingsRefreshRequest) -> RankingResponse:
+def refresh_rankings(
+    payload: RankingsRefreshRequest,
+    _user_id: str = Depends(get_effective_user_id),
+) -> RankingResponse:
     try:
         tw_board: TwRankingBoard | None
         universe: RankingUniverse | None

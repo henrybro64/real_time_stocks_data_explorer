@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 import logging
 import math
 import re
@@ -15,7 +16,13 @@ from zoneinfo import ZoneInfo
 import httpx
 
 from app.core.diagnostics import elapsed_ms
-from app.services.http_client import HttpFetchError, fetch_json, fetch_text
+from app.services.http_client import (
+    HttpFetchError,
+    ProviderRequestAborted,
+    fetch_json,
+    fetch_text,
+)
+from app.services.quote_batch import QuoteBatchInterrupted
 from app.models.quote import CandleRecord, PriceLimitStatus, QuoteRecord
 from app.models.stock import StockRecord
 from app.services.market_clock import (
@@ -427,104 +434,87 @@ class TWProvider:
         _ingest_daily_rows(candles_by_time, rows, stock.timezone, volume_scale)
         return sorted(candles_by_time.values(), key=lambda item: item.time)
 
-    def _fetch_quote(self, stock: StockRecord) -> QuoteRecord | None:
-        if _mis_circuit_is_open():
-            return None
-        try:
-            payload = _load_json(
-                _REALTIME_URL,
-                {
-                    "ex_ch": f"{_quote_exchange_prefix(stock.exchange)}_{stock.symbol}.tw",
-                    "json": "1",
-                    "delay": "0",
-                },
-                referer="https://mis.twse.com.tw/stock/index.jsp",
-            )
-        except HttpFetchError as exc:
-            if exc.classification == "network_failure":
-                _note_mis_failure(classification=exc.classification)
-            return None
-        except (TimeoutError, ValueError):
-            _note_mis_failure(classification="network_failure")
-            return None
+    def get_quotes_batch(
+        self,
+        stocks: list[StockRecord],
+        *,
+        before_chunk: Callable[[], None] | None = None,
+    ) -> dict[str, QuoteRecord]:
+        """Fetch MIS quotes for many Taiwan stocks in a few batched HTTP calls (#271)."""
+        if not stocks or _mis_circuit_is_open():
+            return {}
+        by_symbol = {stock.symbol: stock for stock in stocks if stock.symbol}
+        if not by_symbol:
+            return {}
+        batch_size = 20
+        ordered = list(by_symbol.values())
+        out: dict[str, QuoteRecord] = {}
+        for start in range(0, len(ordered), batch_size):
+            chunk = ordered[start : start + batch_size]
+            ex_chs = [
+                f"{_quote_exchange_prefix(stock.exchange)}_{stock.symbol}.tw"
+                for stock in chunk
+            ]
+            try:
+                if before_chunk is not None:
+                    before_chunk()
+                payload = _load_json(
+                    _REALTIME_URL,
+                    {"ex_ch": "|".join(ex_chs), "json": "1", "delay": "0"},
+                    referer="https://mis.twse.com.tw/stock/index.jsp",
+                )
+            except ProviderRequestAborted as exc:
+                raise QuoteBatchInterrupted(
+                    quotes=out,
+                    deferred_ids=[stock.id for stock in ordered if stock.id not in out],
+                    timed_out=True,
+                ) from exc
+            except HttpFetchError as exc:
+                if exc.classification in {"rate_limited", "auth_denied"}:
+                    raise QuoteBatchInterrupted(
+                        quotes=out,
+                        deferred_ids=[
+                            stock.id for stock in ordered if stock.id not in out
+                        ],
+                        error=exc,
+                    ) from exc
+                if exc.classification == "network_failure":
+                    _note_mis_failure(classification=exc.classification)
+                continue
+            except (TimeoutError, ValueError):
+                _note_mis_failure(classification="network_failure")
+                continue
 
-        items = payload.get("msgArray") if isinstance(payload, dict) else None
-        if not items:
-            # Reachable but empty is not a disconnect storm signal.
+            items = payload.get("msgArray") if isinstance(payload, dict) else None
+            if not items:
+                _note_mis_success()
+                continue
             _note_mis_success()
-            return None
+            for index, item in enumerate(items):
+                if not isinstance(item, dict):
+                    continue
+                symbol = str(item.get("c") or "").strip()
+                stock = by_symbol.get(symbol)
+                # Single-symbol fixtures often omit ``c``; fall back by position.
+                if stock is None and len(chunk) == 1 and index == 0:
+                    stock = chunk[0]
+                if stock is None:
+                    continue
+                quote = _quote_from_mis_item(stock, item)
+                if quote is not None:
+                    out[stock.id] = quote
+        return out
 
-        item = items[0]
-        # Reachable MIS is a transport success even when the snapshot is unusable.
-        _note_mis_success()
-        # ``y`` is the reference/previous close only. It is never a current price (#258).
-        previous_close = _parse_float(item.get("y"))
-        open_price = _parse_float(item.get("o"))
-        high_price = _parse_float(item.get("h"))
-        low_price = _parse_float(item.get("l"))
-        volume_lots = _parse_int(item.get("v"))
-        volume = volume_lots * 1000 if volume_lots is not None else None
-        last_trade = mis_last_trade(item)
-        # The trade's own time, else the snapshot time when ``z`` is in this snapshot.
-        quote_timestamp = (
-            _parse_quote_timestamp(
-                raw_date=item.get("d"),
-                raw_time=last_trade.trade_time
-                or item.get("t")
-                or item.get("%")
-                or item.get("ot"),
-                timezone_name=stock.timezone,
-            )
-            if last_trade is not None
-            else None
-        )
-
-        if (
-            last_trade is None
-            or quote_timestamp is None
-            # A pre-open or post-session stamp is not a regular-session trade.
-            or not _within_trading_session(stock, quote_timestamp)
-            # Nor is a trade stamped in the future (e.g. yesterday's time on today's date).
-            or quote_timestamp > datetime.now(quote_timestamp.tzinfo) + _MIS_FUTURE_TOLERANCE
-            or previous_close in (None, 0)
-        ):
-            logger.debug(
-                "MIS snapshot has no trustworthy current price",
-                extra={
-                    "event": "tw.quote.mis_no_current_price",
-                    "stock_id": stock.id,
-                    "has_trade": last_trade is not None,
-                    "has_timestamp": quote_timestamp is not None,
-                    "has_reference": previous_close not in (None, 0),
-                },
-            )
-            return None
-
-        priced = coherent_price_change(float(last_trade.price), previous_close)
-        if priced is None:
-            return None
-        last_price, previous_close, change, change_percent = priced
-        price_limit_status, reference_price, limit_up_price, limit_down_price = (
-            _mis_price_limit_fields(item, stock.symbol, last_trade.price)
-        )
-
-        return QuoteRecord(
-            id=stock.id,
-            last_price=last_price,
-            change=change,
-            change_percent=change_percent,
-            previous_close=previous_close,
-            open=round(open_price, 2) if open_price is not None else None,
-            high=round(high_price, 2) if high_price is not None else None,
-            low=round(low_price, 2) if low_price is not None else None,
-            volume=volume,
-            timestamp=quote_timestamp.isoformat(),
-            is_market_open=quote_session_is_live(stock.market, quote_timestamp),
-            price_limit_status=price_limit_status,
-            reference_price=reference_price,
-            limit_up_price=limit_up_price,
-            limit_down_price=limit_down_price,
-        )
+    def _fetch_quote(self, stock: StockRecord) -> QuoteRecord | None:
+        try:
+            batched = self.get_quotes_batch([stock])
+        except QuoteBatchInterrupted as interrupted:
+            if interrupted.error is not None:
+                raise interrupted.error
+            if interrupted.timed_out:
+                raise ProviderRequestAborted()
+            return interrupted.quotes.get(stock.id)
+        return batched.get(stock.id)
 
     def _fetch_yahoo_listing_quote(self, stock: StockRecord) -> QuoteRecord | None:
         """Yahoo quote for this exchange only. Used to build today's candle."""
@@ -552,8 +542,14 @@ class TWProvider:
                     headers=headers,
                     timeout_seconds=_REQUEST_TIMEOUT_SECONDS,
                     retries=2,
+                    retry_rate_limits=False,
                 )
-            except (HttpFetchError, TimeoutError, ValueError):
+            except HttpFetchError as exc:
+                # One 429/403 must not walk every TW Yahoo suffix (#268).
+                if exc.classification in {"rate_limited", "auth_denied"}:
+                    raise
+                continue
+            except (TimeoutError, ValueError):
                 continue
 
             chart = payload.get("chart")
@@ -1072,6 +1068,7 @@ def _load_json(url: str, params: dict[str, str], referer: str | None = None) -> 
         retries=1 if is_mis else 2,
         allow_insecure_fallback_hosts={"mis.twse.com.tw", "www.twse.com.tw"},
         provider_name="twse" if is_mis else None,
+        retry_rate_limits=not is_mis,
     )
 
 
@@ -1167,6 +1164,75 @@ def _parse_quote_timestamp(
         )
     except ValueError:
         return None
+
+
+def _quote_from_mis_item(stock: StockRecord, item: dict) -> QuoteRecord | None:
+    """Build a quote from one MIS ``msgArray`` row, or None when unusable (#258)."""
+    # ``y`` is the reference/previous close only. It is never a current price (#258).
+    previous_close = _parse_float(item.get("y"))
+    open_price = _parse_float(item.get("o"))
+    high_price = _parse_float(item.get("h"))
+    low_price = _parse_float(item.get("l"))
+    volume_lots = _parse_int(item.get("v"))
+    volume = volume_lots * 1000 if volume_lots is not None else None
+    last_trade = mis_last_trade(item)
+    quote_timestamp = (
+        _parse_quote_timestamp(
+            raw_date=item.get("d"),
+            raw_time=last_trade.trade_time
+            or item.get("t")
+            or item.get("%")
+            or item.get("ot"),
+            timezone_name=stock.timezone,
+        )
+        if last_trade is not None
+        else None
+    )
+
+    if (
+        last_trade is None
+        or quote_timestamp is None
+        or not _within_trading_session(stock, quote_timestamp)
+        or quote_timestamp > datetime.now(quote_timestamp.tzinfo) + _MIS_FUTURE_TOLERANCE
+        or previous_close in (None, 0)
+    ):
+        logger.debug(
+            "MIS snapshot has no trustworthy current price",
+            extra={
+                "event": "tw.quote.mis_no_current_price",
+                "stock_id": stock.id,
+                "has_trade": last_trade is not None,
+                "has_timestamp": quote_timestamp is not None,
+                "has_reference": previous_close not in (None, 0),
+            },
+        )
+        return None
+
+    priced = coherent_price_change(float(last_trade.price), previous_close)
+    if priced is None:
+        return None
+    last_price, previous_close, change, change_percent = priced
+    price_limit_status, reference_price, limit_up_price, limit_down_price = (
+        _mis_price_limit_fields(item, stock.symbol, last_trade.price)
+    )
+
+    return QuoteRecord(
+        id=stock.id,
+        last_price=last_price,
+        change=change,
+        change_percent=change_percent,
+        previous_close=previous_close,
+        open=round(open_price, 2) if open_price is not None else None,
+        high=round(high_price, 2) if high_price is not None else None,
+        low=round(low_price, 2) if low_price is not None else None,
+        volume=volume,
+        timestamp=quote_timestamp.isoformat(),
+        is_market_open=quote_session_is_live(stock.market, quote_timestamp),
+        price_limit_status=price_limit_status,
+        reference_price=reference_price,
+        limit_up_price=limit_up_price,
+        limit_down_price=limit_down_price,
+    )
 
 
 def _quote_exchange_prefix(exchange: str) -> str:

@@ -109,55 +109,49 @@ def test_get_stock_fetches_us_etf_from_yahoo_when_catalog_misses_symbol(
 
 
 @pytest.mark.parametrize("query", ["IBAT", "US:IBAT"])
-def test_search_resolves_us_etf_symbol_when_catalog_misses_it(
+def test_search_stays_catalog_only_when_symbol_misses_catalog(
     monkeypatch,
     query: str,
 ) -> None:
+    """Search must not spend Yahoo budget on keystrokes (#272)."""
     monkeypatch.setattr(us_provider, "_load_catalog_payload", _empty_catalog_payload)
 
-    def fake_load_json_get(url: str, headers: dict[str, str]) -> dict[str, object]:
-        del headers
-        assert "/IBAT?" in url
-        return _chart_payload(
-            "IBAT",
-            name="iShares Energy Storage & Materials ETF",
-            exchange="NYSEArca",
-        )
+    def fail_yahoo(_stock_id: str):
+        raise AssertionError("search must not call Yahoo chart metadata")
 
-    monkeypatch.setattr(us_provider, "_load_json_get", fake_load_json_get)
-
+    monkeypatch.setattr(us_provider, "_fetch_yahoo_chart_stock", fail_yahoo)
     provider = us_provider.USProvider()
-    matches = provider.search(query)
-
-    assert [item.id for item in matches] == ["US:IBAT"]
-    assert matches[0].symbol == "IBAT"
-    assert matches[0].name == "iShares Energy Storage & Materials ETF"
+    assert provider.search(query) == []
 
 
-def test_search_resolves_ibat_when_unrelated_name_match_exists(monkeypatch) -> None:
-    monkeypatch.setattr(
-        us_provider,
-        "_load_catalog_payload",
-        _catalog_payload_with_ibat_name_collision,
-    )
-
-    def fake_load_json_get(url: str, headers: dict[str, str]) -> dict[str, object]:
-        del headers
-        assert "/IBAT?" in url
-        return _chart_payload(
-            "IBAT",
-            name="iShares Energy Storage & Materials ETF",
-            exchange="NYSEArca",
+def test_search_uses_catalog_name_match_without_yahoo(monkeypatch) -> None:
+    catalog = {
+        "US:NOPE": us_provider.StockRecord(
+            id="US:NOPE",
+            market="US",
+            symbol="NOPE",
+            name="Company with ibat in the name",
+            name_en="Company with ibat in the name",
+            exchange="NYSE",
+            currency="USD",
+            timezone="America/New_York",
         )
+    }
 
-    monkeypatch.setattr(us_provider, "_load_json_get", fake_load_json_get)
+    def fail_yahoo(_stock_id: str):
+        raise AssertionError("search must not call Yahoo chart metadata")
 
+    monkeypatch.setattr(
+        us_provider.USProvider,
+        "_stock_catalog",
+        lambda self: catalog,
+    )
+    monkeypatch.setattr(us_provider, "_fetch_yahoo_chart_stock", fail_yahoo)
     provider = us_provider.USProvider()
     matches = provider.search("IBAT")
 
-    assert matches[0].id == "US:IBAT"
-    assert matches[0].symbol == "IBAT"
-    assert len(matches) == 1
+    assert [item.id for item in matches] == ["US:NOPE"]
+    assert "ibat" in matches[0].name.lower()
 
 
 def test_get_live_quote_works_after_dynamic_stock_lookup(monkeypatch) -> None:
@@ -281,7 +275,9 @@ def test_get_stock_accepts_instrument_type_when_quote_type_empty(monkeypatch) ->
     assert provider.get_stock("US:ITA") is not None
 
 
-def test_search_prefers_live_ita_over_name_substring_catalog_hits(monkeypatch) -> None:
+def test_search_returns_catalog_name_hits_without_yahoo_live_symbol(
+    monkeypatch,
+) -> None:
     monkeypatch.setattr(us_provider, "_load_catalog_payload", _empty_catalog_payload)
 
     def fake_catalog() -> dict[str, us_provider.StockRecord]:
@@ -299,35 +295,22 @@ def test_search_prefers_live_ita_over_name_substring_catalog_hits(monkeypatch) -
             for i in range(50)
         }
 
-    def fake_load_json_get(url: str, headers: dict[str, str]) -> dict[str, object]:
-        del headers
-        return _chart_payload_from_meta(
-            {
-                "symbol": "ITA",
-                "longName": "iShares U.S. Aerospace & Defense ETF",
-                "fullExchangeName": "Cboe US",
-                "exchangeName": "BTS",
-                "exchangeTimezoneName": "America/New_York",
-                "currency": "USD",
-                "instrumentType": "ETF",
-                "regularMarketPrice": 91.23,
-                "chartPreviousClose": 90.0,
-                "regularMarketTime": 1_712_000_000,
-            },
-        )
+    def fail_yahoo(_stock_id: str):
+        raise AssertionError("search must not call Yahoo chart metadata")
 
     monkeypatch.setattr(
         us_provider.USProvider,
         "_stock_catalog",
         lambda self: fake_catalog(),
     )
-    monkeypatch.setattr(us_provider, "_load_json_get", fake_load_json_get)
+    monkeypatch.setattr(us_provider, "_fetch_yahoo_chart_stock", fail_yahoo)
 
     provider = us_provider.USProvider()
     matches = provider.search("ITA")
 
-    assert matches[0].id == "US:ITA"
-    assert len(matches) == 1
+    assert matches
+    assert all(item.id.startswith("US:CO") for item in matches)
+    assert provider.get_catalog_stock("US:ITA") is None
 
 
 def test_get_stock_accepts_cboe_us_venue_via_bts_exchange_code(monkeypatch) -> None:
@@ -394,7 +377,7 @@ def _catalog_payload_with_ita_prefix_collision() -> dict[str, object]:
     }
 
 
-def test_search_resolves_ita_when_prefix_matches_exist_without_exact_symbol(
+def test_search_returns_prefix_catalog_matches_without_yahoo(
     monkeypatch,
 ) -> None:
     monkeypatch.setattr(
@@ -403,24 +386,17 @@ def test_search_resolves_ita_when_prefix_matches_exist_without_exact_symbol(
         _catalog_payload_with_ita_prefix_collision,
     )
 
-    def fake_load_json_get(url: str, headers: dict[str, str]) -> dict[str, object]:
-        del headers
-        assert "/ITA?" in url
-        return _chart_payload(
-            "ITA",
-            name="iShares U.S. Aerospace & Defense ETF",
-            exchange="Cboe US",
-        )
+    def fail_yahoo(_stock_id: str):
+        raise AssertionError("search must not call Yahoo chart metadata")
 
-    monkeypatch.setattr(us_provider, "_load_json_get", fake_load_json_get)
+    monkeypatch.setattr(us_provider, "_fetch_yahoo_chart_stock", fail_yahoo)
 
     provider = us_provider.USProvider()
     provider.refresh_catalog()
     matches = provider.search("ITA")
 
-    assert matches[0].id == "US:ITA"
-    assert matches[0].symbol == "ITA"
-    assert any(item.id == "US:ITAP" for item in matches)
+    assert [item.id for item in matches] == ["US:ITAP"]
+    assert provider.get_catalog_stock("US:ITA") is None
 
 
 def test_get_stock_accepts_class_share_symbols_with_hyphen(monkeypatch) -> None:
@@ -484,6 +460,7 @@ def test_get_catalog_stock_does_not_fetch_yahoo_chart(monkeypatch) -> None:
 def test_yahoo_v7_quotes_batch_aborts_remaining_chunks_on_auth_denied(monkeypatch) -> None:
     from app.models.stock import StockRecord
     from app.services.http_client import HttpFetchError
+    from app.services.quote_batch import QuoteBatchInterrupted
 
     stocks = [
         StockRecord(
@@ -508,8 +485,50 @@ def test_yahoo_v7_quotes_batch_aborts_remaining_chunks_on_auth_denied(monkeypatc
         )
 
     monkeypatch.setattr(us_provider, "_load_json_with_headers", fake_load)
-    assert us_provider.yahoo_v7_quotes_batch(stocks) == {}
+    with pytest.raises(QuoteBatchInterrupted) as exc_info:
+        us_provider.yahoo_v7_quotes_batch(stocks)
     assert calls["count"] == 1
+    assert exc_info.value.quotes == {}
+    assert exc_info.value.error is not None
+    assert exc_info.value.error.classification == "auth_denied"
+    assert len(exc_info.value.deferred_ids) == len(stocks)
+
+
+def test_yahoo_v7_quotes_batch_aborts_on_rate_limited(monkeypatch) -> None:
+    from app.models.stock import StockRecord
+    from app.services.http_client import HttpFetchError
+    from app.services.quote_batch import QuoteBatchInterrupted
+
+    stocks = [
+        StockRecord(
+            id=f"US:S{i:02d}",
+            market="US",
+            symbol=f"S{i:02d}",
+            name=f"Stock {i}",
+            exchange="NYSE",
+            currency="USD",
+            timezone="America/New_York",
+        )
+        for i in range(45)
+    ]
+    calls = {"count": 0}
+
+    def fake_load(_url, _params, _headers, *, retries=2):
+        calls["count"] += 1
+        raise HttpFetchError(
+            "rate limited",
+            status_code=429,
+            classification="rate_limited",
+        )
+
+    monkeypatch.setattr(us_provider, "_load_json_with_headers", fake_load)
+    with pytest.raises(QuoteBatchInterrupted) as exc_info:
+        us_provider.yahoo_v7_quotes_batch(stocks)
+    assert calls["count"] == 1
+    assert exc_info.value.quotes == {}
+    assert exc_info.value.error is not None
+    assert exc_info.value.error.classification == "rate_limited"
+    assert len(exc_info.value.deferred_ids) == len(stocks)
 
 
 # --- Previous close and market time (#258 follow-up) -----------------------------
@@ -525,6 +544,28 @@ def _aapl() -> "us_provider.StockRecord":
         currency="USD",
         timezone="America/New_York",
     )
+
+
+def test_yahoo_chart_quote_aborts_candidate_chain_on_rate_limited(monkeypatch) -> None:
+    from app.services.http_client import HttpFetchError
+
+    calls: list[str] = []
+
+    def fake_load(url, _headers):
+        calls.append(url)
+        raise HttpFetchError(
+            "rate limited",
+            status_code=429,
+            classification="rate_limited",
+            retry_after_seconds=5.0,
+        )
+
+    monkeypatch.setattr(us_provider, "_load_json_get", fake_load)
+    with pytest.raises(HttpFetchError) as exc_info:
+        us_provider._fetch_yahoo_chart_quote(_aapl())
+    assert exc_info.value.classification == "rate_limited"
+    assert len(calls) == 1
+    assert "AAPL.US" not in calls[0]
 
 
 def _ny_ts(month: int, day: int, hour: int = 9, minute: int = 30) -> int:

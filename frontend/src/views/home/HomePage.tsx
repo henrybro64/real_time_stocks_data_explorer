@@ -2,11 +2,12 @@
 
 import { Column, Grid, InlineLoading, Tile } from "@carbon/react";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
-import { useDeferredValue, useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import type { MarketIndex, MarketStatus, QuoteResponse } from "@shared/api";
 import type { QuoteFreshnessMeta } from "@shared/quote";
 import type { Stock } from "@shared/stock";
 import { useLanguage } from "../../app/i18n";
+import { useDebouncedValue } from "../../hooks/useDebouncedValue";
 import { MarketIndicesStrip } from "../../components/market-status/MarketIndicesStrip";
 import { MarketStatusStrip } from "../../components/market-status/MarketStatusStrip";
 import { MarketSnapshot } from "../../components/market-snapshot/MarketSnapshot";
@@ -34,7 +35,7 @@ const PENDING_BATCH_UNAVAILABLE: QuoteFreshnessMeta = {
 export function HomePage() {
   const { t } = useLanguage();
   const [query, setQuery] = useState("");
-  const deferredQuery = useDeferredValue(query);
+  const deferredQuery = useDebouncedValue(query, 300);
   const watchlist = useWatchlist();
   const warmingStartedAtByIdRef = useRef<Map<string, number>>(new Map());
   const [isRetryingQuotes, setIsRetryingQuotes] = useState(false);
@@ -97,7 +98,7 @@ export function HomePage() {
   const searchQuery = useQuery<Stock[]>({
     queryKey: ["search", deferredQuery],
     queryFn: () => searchStocks(deferredQuery),
-    enabled: deferredQuery.trim().length > 0,
+    enabled: deferredQuery.trim().length >= 2,
   });
 
   const watchlistItems = useMemo(() => {

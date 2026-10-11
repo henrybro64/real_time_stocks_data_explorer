@@ -46,7 +46,11 @@ from app.services.us_insights_service import get_us_stock_insights
 from app.services.user_ai_provider_service import resolve_user_ai_provider
 
 
-router = APIRouter(prefix="/stocks", tags=["history"])
+router = APIRouter(
+    prefix="/stocks",
+    tags=["history"],
+    dependencies=[Depends(get_effective_user_id)],
+)
 
 
 @router.get("/sparklines")

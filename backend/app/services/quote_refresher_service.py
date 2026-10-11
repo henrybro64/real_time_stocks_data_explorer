@@ -22,10 +22,8 @@ from app.core.diagnostics import elapsed_ms
 from app.repositories.alert_repository import alert_repository
 from app.repositories.portfolio_repository import portfolio_repository
 from app.repositories.watchlist_repository import watchlist_repository
-from app.services.http_client import (
-    HttpFetchError,
-    set_provider_request_spacing,
-)
+from app.services.http_client import HttpFetchError, ProviderRequestAborted
+from app.services.quote_service import QuoteRefreshBatch
 from app.services.market_clock import (
     is_market_open,
     is_within_hour_before_market_open,
@@ -51,13 +49,6 @@ logger = logging.getLogger(__name__)
 
 _LEADER_KEY = "quote:refresher:v1:leader"
 _MARKETS = ("US", "TW")
-_HTTP_PROVIDER_TO_MARKET = {
-    "yahoo_finance": "US",
-    "stooq": "US",
-    "twse": "TW",
-    "twse_openapi": "TW",
-    "tpex": "TW",
-}
 _RELEASE_LEADER_SCRIPT = """
 if redis.call("get", KEYS[1]) == ARGV[1] then
   return redis.call("del", KEYS[1])
@@ -122,6 +113,7 @@ class QuoteRefresherService:
         self._thread: threading.Thread | None = None
         self._immediate: set[str] = set()
         self._immediate_lock = threading.Lock()
+        self._immediate_dropped = 0
         self._circuits: dict[str, ProviderCircuitState] = {
             market: ProviderCircuitState() for market in _MARKETS
         }
@@ -133,12 +125,20 @@ class QuoteRefresherService:
             max_workers=max_workers,
             thread_name_prefix="quote-refresher",
         )
+        immediate_workers = max(int(settings.quote_refresher_immediate_concurrency), 1)
+        self._immediate_pool = ThreadPoolExecutor(
+            max_workers=immediate_workers,
+            thread_name_prefix="quote-immediate",
+        )
         self._in_flight = 0
         self._in_flight_lock = threading.Lock()
         self._in_flight_peak = 0
         self._cycle_cursor = 0
         self._priority_refresh: list[str] = []
         self._priority_lock = threading.Lock()
+        self._alert_ids: set[str] = set()
+        self._alert_ids_lock = threading.Lock()
+        self._deadline_local = threading.local()
 
     def is_sampler_running(self) -> bool:
         with self._lock:
@@ -194,12 +194,14 @@ class QuoteRefresherService:
         )
 
     def request_immediate_refresh(self, stock_id: str) -> None:
-        """Queue a newly tracked symbol onto the bounded refresher pool.
+        """Queue a newly tracked symbol onto the bounded immediate pool (#271).
 
         Closed-market symbols that already hold the session's closing print are
         skipped so UI polling cannot defeat the closed-market cycle (#270).
         An intraday print cached before the close is still refreshed. Failure
-        backoff is honoured the same way as cache-first read paths.
+        backoff is honoured the same way as cache-first read paths. The
+        immediate pool is separate from the scheduled cycle so a burst of
+        cache-miss reads cannot starve the cycle deadline.
         """
         normalized = stock_id.strip()
         if not normalized:
@@ -210,12 +212,25 @@ class QuoteRefresherService:
             return
         if self._should_skip_closed_market_immediate(normalized):
             return
+        queue_max = max(int(settings.quote_refresher_immediate_queue_max), 1)
         with self._immediate_lock:
             already_queued = normalized in self._immediate
+            if already_queued:
+                return
+            if len(self._immediate) >= queue_max:
+                self._immediate_dropped += 1
+                logger.warning(
+                    "Immediate quote refresh queue full; dropping request",
+                    extra={
+                        "event": "quote_refresher.immediate.dropped",
+                        "stock_id": normalized,
+                        "queue_size": len(self._immediate),
+                        "queue_max": queue_max,
+                    },
+                )
+                return
             self._immediate.add(normalized)
-        if already_queued:
-            return
-        self._pool.submit(self._safe_immediate_refresh, normalized)
+        self._immediate_pool.submit(self._safe_immediate_refresh, normalized)
 
     def _should_skip_closed_market_immediate(self, stock_id: str) -> bool:
         market = stock_id.split(":", 1)[0]
@@ -307,7 +322,11 @@ class QuoteRefresherService:
         )
 
     def collect_tracked_stock_ids(self) -> tuple[list[str], int]:
-        """Return unique IDs and how many duplicate rows were collapsed."""
+        """Return unique IDs tiered by demand and how many duplicates collapsed.
+
+        Order: currently viewed (immediate) → alerted → watchlisted/portfolio
+        so active use is refreshed first when a cycle cannot finish everyone (#271).
+        """
         watchlist_ids = self._watchlist_repo.list_distinct_stock_ids()
         portfolio_ids = self._portfolio_repo.list_distinct_position_stock_ids()
         alert_ids: list[str] = []
@@ -322,12 +341,13 @@ class QuoteRefresherService:
                 alert_ids = []
         with self._immediate_lock:
             immediate = sorted(self._immediate)
-            # Immediate IDs stay listed only while an attempt is in flight.
+        with self._alert_ids_lock:
+            self._alert_ids = set(alert_ids)
         raw_count = (
             len(watchlist_ids) + len(portfolio_ids) + len(alert_ids) + len(immediate)
         )
         unique = list(
-            dict.fromkeys([*watchlist_ids, *portfolio_ids, *alert_ids, *immediate])
+            dict.fromkeys([*immediate, *alert_ids, *watchlist_ids, *portfolio_ids])
         )
         return unique, max(0, raw_count - len(unique))
 
@@ -371,6 +391,10 @@ class QuoteRefresherService:
                 self._log_cycle(stats)
                 return stats
 
+            # One jitter per cycle, not per symbol (#271).
+            delay = self.jitter_seconds()
+            if delay > 0:
+                self._sleep(delay)
             self._run_refresh_batch(to_refresh, stats)
             stats.duration_ms = elapsed_ms(started_at)
             self._log_cycle(stats)
@@ -417,12 +441,20 @@ class QuoteRefresherService:
         with self._priority_lock:
             priority = [sid for sid in self._priority_refresh if sid in id_set]
             self._priority_refresh = [sid for sid in self._priority_refresh if sid in id_set]
-        remaining = [sid for sid in stock_ids if sid not in set(priority)]
-        if remaining:
-            offset = self._cycle_cursor % len(remaining)
-            remaining = remaining[offset:] + remaining[:offset]
-            self._cycle_cursor = (self._cycle_cursor + 1) % len(remaining)
-        return [*priority, *remaining]
+        priority_set = set(priority)
+        with self._immediate_lock:
+            hot = set(self._immediate)
+        with self._alert_ids_lock:
+            hot |= set(self._alert_ids)
+        demand = [sid for sid in stock_ids if sid not in priority_set]
+        # Viewed and alerted symbols stay ahead of the rotating tail (#271).
+        hot_ids = [sid for sid in demand if sid in hot]
+        cold = [sid for sid in demand if sid not in hot]
+        if cold:
+            offset = self._cycle_cursor % len(cold)
+            cold = cold[offset:] + cold[:offset]
+            self._cycle_cursor = (self._cycle_cursor + 1) % len(cold)
+        return [*priority, *hot_ids, *cold]
 
     def _note_timed_out_priority(self, stock_id: str) -> None:
         with self._priority_lock:
@@ -434,28 +466,141 @@ class QuoteRefresherService:
         to_refresh: list[str],
         stats: QuoteRefreshCycleStats,
     ) -> None:
-        futures: dict[Future[str], str] = {
-            self._pool.submit(self._refresh_one, stock_id): stock_id
-            for stock_id in to_refresh
-        }
-        timeout = float(settings.quote_refresher_cycle_timeout_seconds)
-        recorded: set[str] = set()
+        """Refresh via provider batches first, then per-symbol fallback (#271)."""
         with self._in_flight_lock:
             self._in_flight_peak = 0
+        self._arm_cycle_deadline()
         try:
-            for future in as_completed(futures, timeout=timeout):
-                stock_id = futures[future]
-                recorded.add(stock_id)
-                self._record_future_outcome(future, stock_id, stats)
-                with self._priority_lock:
-                    if stock_id in self._priority_refresh:
-                        self._priority_refresh = [
-                            item for item in self._priority_refresh if item != stock_id
-                        ]
-        except FuturesTimeout:
-            self._finalize_timed_out_futures(futures, recorded, stats)
-        with self._in_flight_lock:
-            stats.in_flight_peak = self._in_flight_peak
+            remaining = self._refresh_batched_markets(to_refresh, stats)
+            if not remaining:
+                with self._in_flight_lock:
+                    stats.in_flight_peak = max(stats.in_flight_peak, self._in_flight_peak)
+                return
+
+            futures: dict[Future[str], str] = {
+                self._pool.submit(
+                    lambda sid=stock_id: self._refresh_one(sid, apply_jitter=False)
+                ): stock_id
+                for stock_id in remaining
+            }
+            timeout = self._cycle_timeout_remaining()
+            recorded: set[str] = set()
+            try:
+                for future in as_completed(futures, timeout=timeout):
+                    stock_id = futures[future]
+                    recorded.add(stock_id)
+                    self._record_future_outcome(future, stock_id, stats)
+                    with self._priority_lock:
+                        if stock_id in self._priority_refresh:
+                            self._priority_refresh = [
+                                item
+                                for item in self._priority_refresh
+                                if item != stock_id
+                            ]
+            except FuturesTimeout:
+                self._finalize_timed_out_futures(futures, recorded, stats)
+            with self._in_flight_lock:
+                stats.in_flight_peak = max(stats.in_flight_peak, self._in_flight_peak)
+        finally:
+            self._clear_cycle_deadline()
+
+    def _refresh_batched_markets(
+        self,
+        to_refresh: list[str],
+        stats: QuoteRefreshCycleStats,
+    ) -> list[str]:
+        """Apply provider batch fetches; return ids that still need per-symbol work."""
+        by_market: dict[str, list[str]] = {}
+        for stock_id in to_refresh:
+            market = stock_id.split(":", 1)[0]
+            by_market.setdefault(market, []).append(stock_id)
+
+        remaining: list[str] = []
+        for market, ids in by_market.items():
+            if self._hard_circuit_is_open(market) or self._circuit_is_open(market):
+                stats.skipped_circuit += len(ids)
+                continue
+
+            locked_tokens: dict[str, str] = {}
+            unlocked: list[str] = []
+            for stock_id in ids:
+                token = try_acquire_refresh_lock(stock_id)
+                if token is None:
+                    stats.skipped_locked += 1
+                    continue
+                locked_tokens[stock_id] = token
+                unlocked.append(stock_id)
+            if not unlocked:
+                continue
+
+            try:
+                raw = self._quote_source.fetch_quotes_for_refresh_batch(
+                    unlocked,
+                    before_chunk_for_market=self._before_chunk_for_market,
+                )
+            except Exception as exc:  # noqa: BLE001 - fall back per symbol
+                logger.debug(
+                    "Batch refresh unavailable; falling back per symbol: %s",
+                    exc,
+                )
+                for stock_id, token in locked_tokens.items():
+                    release_refresh_lock(stock_id, token)
+                    remaining.append(stock_id)
+                continue
+
+            batch = raw if isinstance(raw, QuoteRefreshBatch) else QuoteRefreshBatch()
+            timed_out = set(batch.timed_out_ids)
+            deferred = set(batch.deferred_ids)
+            for stock_id in unlocked:
+                token = locked_tokens[stock_id]
+                try:
+                    if stock_id in timed_out:
+                        stats.timed_out += 1
+                        self._note_timed_out_priority(stock_id)
+                        continue
+                    if stock_id in deferred:
+                        continue
+                    attempt = batch.attempts.get(stock_id)
+                    if attempt is None:
+                        remaining.append(stock_id)
+                        continue
+                    if attempt.quote is not None:
+                        set_cached_quote(stock_id, attempt.quote)
+                        self._apply_refresh_outcome(stock_id, "refreshed", stats=stats)
+                        with self._priority_lock:
+                            if stock_id in self._priority_refresh:
+                                self._priority_refresh = [
+                                    item
+                                    for item in self._priority_refresh
+                                    if item != stock_id
+                                ]
+                        continue
+                    if attempt.error is not None:
+                        self._apply_refresh_exception(
+                            stock_id, attempt.error, stats=stats
+                        )
+                        continue
+                    remaining.append(stock_id)
+                finally:
+                    release_refresh_lock(stock_id, token)
+            hard_stop = batch.hard_stops.get(market)
+            if hard_stop is not None:
+                self._note_provider_failure(
+                    market,
+                    classification=_classification_from_exc(hard_stop),
+                    retry_after_seconds=_retry_after_from_exc(hard_stop),
+                )
+                stats.failed += 1
+                stats.provider_requests[market] = (
+                    stats.provider_requests.get(market, 0) + 1
+                )
+                classification = _classification_from_exc(hard_stop)
+                stats.failure_by_classification[classification] = (
+                    stats.failure_by_classification.get(classification, 0) + 1
+                )
+                stats.skipped_circuit += sum(1 for sid in unlocked if sid in deferred)
+        pending = set(remaining)
+        return [stock_id for stock_id in to_refresh if stock_id in pending]
 
     def _finalize_timed_out_futures(
         self,
@@ -516,16 +661,26 @@ class QuoteRefresherService:
         from app.jobs.health import run_guarded_tick
 
         while not self._stop_event.is_set():
+            # Fixed period measured start-to-start so cycles stay inside soft TTL (#271).
+            cycle_started = time.monotonic()
             run_guarded_tick(
                 "quote-refresher",
                 event="quote_refresher.cycle.failed",
                 tick=self.run_cycle,
             )
-            poll_seconds = self.select_poll_seconds()
-            if self._stop_event.wait(poll_seconds):
+            poll_seconds = float(self.select_poll_seconds())
+            elapsed = time.monotonic() - cycle_started
+            wait_seconds = max(0.0, poll_seconds - elapsed)
+            if self._stop_event.wait(wait_seconds):
                 return
 
-    def _refresh_one(self, stock_id: str, *, respect_soft_backoff: bool = False) -> str:
+    def _refresh_one(
+        self,
+        stock_id: str,
+        *,
+        respect_soft_backoff: bool = False,
+        apply_jitter: bool = True,
+    ) -> str:
         market = stock_id.split(":", 1)[0]
         # Soft backoff is evaluated at cycle planning time for batch cycles so one
         # failure cannot abort sibling symbols already submitted. Immediate
@@ -534,9 +689,11 @@ class QuoteRefresherService:
             return "circuit"
         if respect_soft_backoff and self._circuit_is_open(market):
             return "circuit"
-        delay = self.jitter_seconds()
-        if delay > 0:
-            self._sleep(delay)
+        # Cycle path jitters once at the start; immediate may still jitter lightly.
+        if apply_jitter:
+            delay = self.jitter_seconds()
+            if delay > 0:
+                self._sleep(delay)
         self._wait_for_provider_slot(market)
         token = try_acquire_refresh_lock(stock_id)
         if token is None:
@@ -554,12 +711,9 @@ class QuoteRefresherService:
         with self._in_flight_lock:
             self._in_flight += 1
             self._in_flight_peak = max(self._in_flight_peak, self._in_flight)
-        previous_spacing = None
         try:
-            from app.services.http_client import get_provider_request_spacing
-
-            previous_spacing = get_provider_request_spacing()
-            set_provider_request_spacing(self._spacing_for_http_provider)
+            # One slot before the fetch. The HTTP hook is not installed here, so
+            # a symbol is not spaced a second time inside the client (#271).
             attempt = self._quote_source.fetch_quote_for_refresh(stock_id)
             if attempt.quote is not None:
                 set_cached_quote(stock_id, attempt.quote)
@@ -568,7 +722,6 @@ class QuoteRefresherService:
                 raise attempt.error
             return "empty"
         finally:
-            set_provider_request_spacing(previous_spacing)
             stop_heartbeat.set()
             heartbeat.join(timeout=1.0)
             with self._in_flight_lock:
@@ -586,11 +739,30 @@ class QuoteRefresherService:
             if not renew_refresh_lock(stock_id, token):
                 return
 
-    def _spacing_for_http_provider(self, provider_name: str) -> None:
-        market = _HTTP_PROVIDER_TO_MARKET.get(provider_name)
-        if market is None:
-            return
-        self._wait_for_provider_slot(market)
+    def _before_chunk_for_market(self, market: str) -> Callable[[], None]:
+        def _before() -> None:
+            self._abort_batch_if_deadline()
+            self._wait_for_provider_slot(market)
+
+        return _before
+
+    def _arm_cycle_deadline(self) -> None:
+        timeout = float(settings.quote_refresher_cycle_timeout_seconds)
+        self._deadline_local.deadline = time.monotonic() + timeout
+
+    def _clear_cycle_deadline(self) -> None:
+        self._deadline_local.deadline = None
+
+    def _abort_batch_if_deadline(self) -> None:
+        deadline = getattr(self._deadline_local, "deadline", None)
+        if deadline is not None and time.monotonic() >= deadline:
+            raise ProviderRequestAborted()
+
+    def _cycle_timeout_remaining(self) -> float:
+        deadline = getattr(self._deadline_local, "deadline", None)
+        if deadline is None:
+            return float(settings.quote_refresher_cycle_timeout_seconds)
+        return max(0.0, deadline - time.monotonic())
 
     def _wait_for_provider_slot(self, market: str) -> None:
         interval = float(settings.quote_refresher_min_interval_seconds)
@@ -678,6 +850,13 @@ class QuoteRefresherService:
             state.backoff_until_monotonic = 0.0
             state.open_until_monotonic = 0.0
             state.last_classification = None
+
+    def _note_symbol_empty(self, stock_id: str) -> None:
+        """Backoff one symbol without opening the market circuit (#268)."""
+        record_refresh_failure(
+            stock_id,
+            backoff_seconds=float(refresh_failure_backoff_seconds()),
+        )
 
     def _note_provider_failure(
         self,
@@ -778,7 +957,19 @@ class QuoteRefresherService:
             if stats is not None:
                 stats.skipped_circuit += 1
             return
-        classification = "empty" if outcome == "empty" else "http_error"
+        # Empty / unusable symbol data is per-symbol, not a market outage (#268).
+        if outcome == "empty":
+            if stats is not None:
+                stats.failed += 1
+                stats.provider_requests[market] = (
+                    stats.provider_requests.get(market, 0) + 1
+                )
+                stats.failure_by_classification["empty"] = (
+                    stats.failure_by_classification.get("empty", 0) + 1
+                )
+            self._note_symbol_empty(stock_id)
+            return
+        classification = "http_error"
         if stats is not None:
             stats.failed += 1
             stats.provider_requests[market] = stats.provider_requests.get(market, 0) + 1

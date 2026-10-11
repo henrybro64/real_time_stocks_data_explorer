@@ -48,14 +48,20 @@ class Settings(BaseSettings):
     quote_refresher_min_interval_seconds: float = Field(default=0.35, ge=0.0, le=5.0)
     # Hard deadline for one refresher cycle (seconds).
     quote_refresher_cycle_timeout_seconds: int = Field(default=40, ge=10, le=300)
-    # Random jitter applied before each symbol fetch (seconds).
+    # Random jitter applied once at the start of each refresher cycle (seconds).
     quote_refresher_jitter_seconds: float = Field(default=2.0, ge=0.0, le=30.0)
+    # Cap on queued immediate (read-triggered) refreshes; extras are dropped (#271).
+    quote_refresher_immediate_queue_max: int = Field(default=64, ge=8, le=500)
+    # Separate small pool so immediate work cannot starve the scheduled cycle (#271).
+    quote_refresher_immediate_concurrency: int = Field(default=1, ge=1, le=4)
     # When true, UI read paths do not call providers while the sampler is alive.
     quote_refresher_owns_upstream: bool = Field(default=True)
     # Circuit breaker: consecutive provider failures before pausing that market.
     quote_refresher_circuit_failure_threshold: int = Field(default=5, ge=2, le=50)
     # Circuit breaker open duration (seconds) after threshold is hit.
     quote_refresher_circuit_open_seconds: int = Field(default=120, ge=30, le=3600)
+    # Max ids accepted by GET /api/quotes and /api/stream (#272).
+    quote_batch_ids_max: int = Field(default=100, ge=1, le=500)
     # TTL for Redis-cached stock AI narrative (metrics are always recomputed).
     stock_analysis_cache_ttl_seconds: int = Field(default=1_209_600, ge=60, le=3_153_600)
     # TTL for Yahoo / TW pre-ranked rank pages (Redis + in-memory).

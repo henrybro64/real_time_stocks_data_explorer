@@ -97,7 +97,8 @@ def test_collect_tracked_stock_ids_deduplicates_across_users_and_portfolios() ->
     )
 
     ids, duplicates = refresher.collect_tracked_stock_ids()
-    assert ids == ["US:AAPL", "US:MSFT", "US:GOOG"]
+    # Tiered: alerts before watchlist/portfolio (#271).
+    assert ids == ["US:AAPL", "US:GOOG", "US:MSFT"]
     assert duplicates == 4
 
 
@@ -147,7 +148,7 @@ def test_request_immediate_refresh_still_runs_for_an_intraday_print_after_close(
     )
     submitted: list[str] = []
     monkeypatch.setattr(
-        refresher._pool,
+        refresher._immediate_pool,
         "submit",
         lambda fn, stock_id: submitted.append(stock_id),
     )
@@ -232,12 +233,18 @@ def test_circuit_skip_does_not_count_as_failure(monkeypatch) -> None:
     stub = StubUSProvider()
     stub.fail_ids.add("US:AAPL")
     refresher, _ = _service(watchlist=["US:AAPL", "US:MSFT"], provider=stub)
+    # Exercise the per-symbol path so injected circuit outcomes are visible.
+    monkeypatch.setattr(
+        refresher._quote_source,
+        "fetch_quotes_for_refresh_batch",
+        lambda _ids, **_kwargs: {},
+    )
     original = refresher._refresh_one
 
-    def refresh_with_injected_circuit(stock_id: str) -> str:
+    def refresh_with_injected_circuit(stock_id: str, **kwargs) -> str:
         if stock_id == "US:MSFT":
             return "circuit"
-        return original(stock_id)
+        return original(stock_id, **kwargs)
 
     refresher._refresh_one = refresh_with_injected_circuit  # type: ignore[method-assign]
 
@@ -304,6 +311,12 @@ def test_provider_min_interval_spaces_requests(monkeypatch) -> None:
     monkeypatch.setattr(cache.settings, "quote_refresher_min_interval_seconds", 0.5)
     sleeps: list[float] = []
     refresher, stub = _service(watchlist=["US:AAPL", "US:MSFT"])
+    # Per-symbol fallback still spaces host requests once each (#271).
+    monkeypatch.setattr(
+        refresher._quote_source,
+        "fetch_quotes_for_refresh_batch",
+        lambda _ids, **_kwargs: {},
+    )
     refresher._sleep = lambda seconds: sleeps.append(seconds)
     refresher.run_cycle()
     assert stub.quote_calls
@@ -438,14 +451,14 @@ def test_leader_lock_fail_closed_when_redis_configured_but_down(monkeypatch) -> 
     assert stub.quote_calls == []
 
 
-def test_request_immediate_refresh_uses_shared_pool() -> None:
+def test_request_immediate_refresh_uses_immediate_pool() -> None:
     refresher, stub = _service(watchlist=[])
     done = time.monotonic() + 2.0
     refresher.request_immediate_refresh("US:AAPL")
-    while time.monotonic() < done and not stub.quote_calls:
+    while time.monotonic() < done and cache.get_cached_quote("US:AAPL") is None:
         time.sleep(0.01)
-    assert stub.quote_calls == ["US:AAPL"]
     assert cache.get_cached_quote("US:AAPL") is not None
+    assert stub.quote_calls == ["US:AAPL"]
 
 
 def test_closed_market_symbols_refresh_on_closed_cadence(monkeypatch) -> None:
@@ -495,7 +508,7 @@ def test_request_immediate_refresh_dedupes_inflight_symbol(monkeypatch) -> None:
     refresher, stub = _service(watchlist=[])
     submitted: list[str] = []
     monkeypatch.setattr(
-        refresher._pool,
+        refresher._immediate_pool,
         "submit",
         lambda fn, stock_id: submitted.append(stock_id),
     )
@@ -503,6 +516,54 @@ def test_request_immediate_refresh_dedupes_inflight_symbol(monkeypatch) -> None:
     refresher.request_immediate_refresh("US:AAPL")
     assert submitted == ["US:AAPL"]
     assert "US:AAPL" in refresher._immediate
+
+
+def test_immediate_refresh_queue_is_bounded(monkeypatch) -> None:
+    monkeypatch.setattr(cache.settings, "quote_refresher_immediate_queue_max", 2)
+    refresher, _ = _service(watchlist=[])
+    submitted: list[str] = []
+    monkeypatch.setattr(
+        refresher._immediate_pool,
+        "submit",
+        lambda fn, stock_id: submitted.append(stock_id),
+    )
+    refresher.request_immediate_refresh("US:AAPL")
+    refresher.request_immediate_refresh("US:MSFT")
+    refresher.request_immediate_refresh("US:GOOG")
+    assert submitted == ["US:AAPL", "US:MSFT"]
+    assert "US:GOOG" not in refresher._immediate
+
+
+def test_cycle_500_symbols_completes_within_open_poll_interval(monkeypatch) -> None:
+    monkeypatch.setattr(cache.settings, "quote_refresher_cycle_timeout_seconds", 45)
+    ids = [f"US:S{i:04d}" for i in range(500)]
+    stub = StubUSProvider()
+    for stock_id in ids:
+        symbol = stock_id.split(":", 1)[1]
+        stub._stocks[stock_id] = stock_record(
+            stock_id,
+            market="US",
+            symbol=symbol,
+            name=symbol,
+            exchange="NASDAQ",
+            currency="USD",
+            timezone="America/New_York",
+        )
+        stub._quotes[stock_id] = quote_record(
+            stock_id,
+            last_price=10.0,
+            change=0.1,
+            change_percent=1.0,
+            previous_close=9.9,
+            timestamp="2026-05-12T10:00:00-04:00",
+            is_market_open=True,
+        )
+    refresher, _ = _service(watchlist=ids, provider=stub)
+    started = time.perf_counter()
+    stats = refresher.run_cycle()
+    elapsed = time.perf_counter() - started
+    assert elapsed < 45
+    assert stats.refreshed == 500
 
 
 def test_retry_after_backoff_is_capped_by_circuit_open_window(monkeypatch) -> None:
@@ -524,11 +585,16 @@ def test_cycle_timeout_counts_stragglers(monkeypatch) -> None:
     gate = threading.Event()
 
     refresher, _ = _service(watchlist=["US:AAPL", "US:MSFT"])
-    # Block the single worker so the cycle deadline expires with work outstanding.
+    # Force the per-symbol path so the cycle deadline can expire mid-flight.
+    monkeypatch.setattr(
+        refresher._quote_source,
+        "fetch_quotes_for_refresh_batch",
+        lambda _ids, **_kwargs: {},
+    )
     monkeypatch.setattr(
         refresher,
         "_refresh_one",
-        lambda _stock_id: (gate.wait(timeout=2.0), "refreshed")[1],
+        lambda _stock_id, **_kwargs: (gate.wait(timeout=2.0), "refreshed")[1],
     )
     stats = refresher.run_cycle()
     gate.set()
@@ -561,21 +627,39 @@ def test_priority_rotation_puts_timed_out_symbols_first() -> None:
     assert ordered[0] == "US:MSFT"
 
 
-def test_immediate_refresh_empty_outcome_notes_circuit_failure() -> None:
+def test_immediate_refresh_empty_outcome_backs_off_symbol_not_market() -> None:
     refresher, stub = _service(watchlist=[])
     stub.get_quote = lambda _stock_id: None  # type: ignore[method-assign]
     refresher._immediate.add("US:AAPL")
     refresher._safe_immediate_refresh("US:AAPL")
-    assert refresher._circuits["US"].consecutive_failures >= 1
+    # Empty is per-symbol; five empties must not open the market circuit (#268).
+    assert refresher._circuits["US"].consecutive_failures == 0
+    assert not refresher._hard_circuit_is_open("US")
     assert "US:AAPL" not in refresher._immediate
     assert cache.refresh_failure_active("US:AAPL")
+
+
+def test_five_empty_symbols_do_not_open_market_circuit() -> None:
+    refresher, stub = _service(
+        watchlist=["US:AAPL", "US:MSFT", "US:NVDA", "US:GOOG", "US:AMZN"]
+    )
+    stub.get_quote = lambda _stock_id: None  # type: ignore[method-assign]
+    for stock_id in ["US:AAPL", "US:MSFT", "US:NVDA", "US:GOOG", "US:AMZN"]:
+        outcome = refresher._refresh_one(stock_id)
+        refresher._apply_refresh_outcome(stock_id, outcome)
+    assert refresher._circuits["US"].consecutive_failures == 0
+    assert not refresher._hard_circuit_is_open("US")
+    assert all(
+        cache.refresh_failure_active(sid)
+        for sid in ["US:AAPL", "US:MSFT", "US:NVDA", "US:GOOG", "US:AMZN"]
+    )
 
 
 def test_immediate_refresh_failure_clears_queue_and_honours_backoff() -> None:
     refresher, stub = _service(watchlist=[])
     stub.get_quote = lambda _stock_id: None  # type: ignore[method-assign]
     submitted: list[str] = []
-    refresher._pool.submit = (  # type: ignore[method-assign]
+    refresher._immediate_pool.submit = (  # type: ignore[method-assign]
         lambda fn, stock_id: submitted.append(stock_id)
     )
 
@@ -682,8 +766,8 @@ def test_immediate_refresh_circuit_outcome_clears_queue_and_records_failure() ->
     assert cache.refresh_failure_active("US:AAPL")
 
 
-def test_taiwan_provider_miss_does_not_refresh_cache_or_reset_circuit() -> None:
-    """MIS+Yahoo miss must not re-cache last-good as fresh (#263)."""
+def test_taiwan_provider_miss_does_not_refresh_cache_or_open_market_circuit() -> None:
+    """MIS+Yahoo miss must not re-cache last-good as fresh (#263) or pause TW (#268)."""
     tw = stock_record(
         "TW:2330",
         market="TW",
@@ -725,10 +809,11 @@ def test_taiwan_provider_miss_does_not_refresh_cache_or_reset_circuit() -> None:
         now_provider=lambda: datetime(2026, 5, 12, 14, 0, tzinfo=UTC),
         sleep_fn=lambda _seconds: None,
     )
-    monkeypatch_threshold = 3
     refresher._circuits["TW"] = ProviderCircuitState(consecutive_failures=0)
 
-    for _ in range(monkeypatch_threshold):
+    for _ in range(5):
+        # Clear per-symbol backoff so each cycle attempt can run.
+        cache.clear_refresh_failure("TW:2330")
         outcome = refresher._refresh_one("TW:2330")
         refresher._apply_refresh_outcome("TW:2330", outcome)
 
@@ -737,5 +822,86 @@ def test_taiwan_provider_miss_does_not_refresh_cache_or_reset_circuit() -> None:
     assert after.cached_at == prior_cached_at
     assert after.stale is True
     assert after.quote.last_price == pytest.approx(500.0)
-    assert refresher._circuits["TW"].consecutive_failures >= monkeypatch_threshold
-    assert refresher._hard_circuit_is_open("TW")
+    assert refresher._circuits["TW"].consecutive_failures == 0
+    assert not refresher._hard_circuit_is_open("TW")
+    assert cache.refresh_failure_active("TW:2330")
+
+
+def test_batch_rate_limit_keeps_parsed_quotes_and_does_not_fall_back() -> None:
+    from app.services.quote_batch import QuoteBatchInterrupted
+
+    ids = ["US:AAPL", "US:MSFT", "US:NVDA", "US:GOOG", "US:AMZN"]
+    refresher, stub = _service(watchlist=ids)
+    for stock_id in ids:
+        if stock_id in stub._stocks:
+            continue
+        symbol = stock_id.split(":", 1)[1]
+        stub._stocks[stock_id] = stock_record(
+            stock_id,
+            market="US",
+            symbol=symbol,
+            name=symbol,
+            exchange="NASDAQ",
+            currency="USD",
+            timezone="America/New_York",
+        )
+    fallback: list[str] = []
+    stub.get_quote = lambda stock_id: fallback.append(stock_id)  # type: ignore[method-assign]
+
+    def batch(_stocks, *, before_chunk=None):
+        raise QuoteBatchInterrupted(
+            quotes={"US:AAPL": stub._quotes["US:AAPL"]},
+            deferred_ids=ids[1:],
+            error=HttpFetchError(
+                "rate limited",
+                status_code=429,
+                classification="rate_limited",
+                retry_after_seconds=8,
+            ),
+        )
+
+    stub.get_quotes_batch = batch  # type: ignore[method-assign]
+    stats = refresher.run_cycle()
+
+    assert fallback == []
+    assert cache.get_cached_quote("US:AAPL") is not None
+    assert cache.get_cached_quote("US:MSFT") is None
+    assert stats.refreshed == 1
+    assert stats.failed == 1
+    assert stats.skipped_circuit == 4
+    assert refresher._circuits["US"].consecutive_failures == 1
+
+
+def test_batch_deadline_does_not_fall_back_per_symbol(monkeypatch) -> None:
+    monkeypatch.setattr(cache.settings, "quote_refresher_cycle_timeout_seconds", 0)
+    refresher, stub = _service(watchlist=["US:AAPL", "US:MSFT"])
+    fallback: list[str] = []
+    stub.get_quote = lambda stock_id: fallback.append(stock_id)  # type: ignore[method-assign]
+
+    def batch(_stocks, *, before_chunk=None):
+        if before_chunk is not None:
+            before_chunk()
+        raise AssertionError("chunk should not run past the deadline")
+
+    stub.get_quotes_batch = batch  # type: ignore[method-assign]
+    stats = refresher.run_cycle()
+
+    assert fallback == []
+    assert stats.timed_out == 2
+    assert "US:AAPL" in refresher._priority_refresh
+    assert "US:MSFT" in refresher._priority_refresh
+
+
+def test_viewed_and_alerted_symbols_stay_ahead_of_rotation() -> None:
+    refresher, _ = _service(watchlist=[])
+    refresher._immediate.add("US:NVDA")
+    refresher._alert_ids.add("US:MSFT")
+    ids = ["US:NVDA", "US:MSFT", "US:AAPL", "US:GOOG"]
+
+    first = refresher._order_symbols_for_cycle(ids)
+    second = refresher._order_symbols_for_cycle(ids)
+
+    assert first[:2] == ["US:NVDA", "US:MSFT"]
+    assert second[:2] == ["US:NVDA", "US:MSFT"]
+    assert first[2:] == ["US:AAPL", "US:GOOG"]
+    assert second[2:] == ["US:GOOG", "US:AAPL"]

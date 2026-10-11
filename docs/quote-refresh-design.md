@@ -43,9 +43,13 @@ How market data is fetched, cached, and exposed, and what the app does when it i
 
 **Refresher** (`quote_refresher_service.py`), on by default:
 
-- **Cadence:** every 45 s while any market is open or within an hour of opening; every 15 min otherwise. Symbols already refreshed within that window are skipped.
-- **Throttling:** at most 3 concurrent fetches, 0.35 s minimum spacing per provider, up to 2 s jitter, and a 40 s deadline per cycle. Timed-out symbols are prioritized next cycle.
-- **Circuit breaker per market:** after 5 consecutive provider failures, that market pauses for 120 s. Provider `Retry-After` hints extend the backoff.
+- **Cadence:** fixed period measured **start to start** — 45 s while any market is open or within an hour of opening; 15 min otherwise. Wait time is `max(0, period − cycle_duration)` so a slow cycle does not push the next start past the soft TTL (#271). Symbols already refreshed within that window are skipped.
+- **Batching:** each cycle prefers provider batches (Yahoo v7 chunks for US, MIS multi-symbol for TW) and falls back to per-symbol chart/Yahoo only for misses. A `429` / `401` / `403` keeps quotes already parsed from earlier chunks, records **one** market failure, and does not per-symbol-fetch the rest of that market (#268, #271).
+- **Throttling:** at most 3 concurrent per-symbol fallbacks. Each per-symbol fetch waits for one provider slot, and the HTTP client does not wait again. Each batch chunk waits for one slot before its request. Up to 2 s jitter runs **once per cycle**. The 40 s deadline covers the batch and the fallback; further chunks stop and those symbols are prioritized next cycle.
+- **Tracked-set tiers:** currently viewed (immediate) and alerted symbols stay ahead of the watchlist/portfolio tail. Only that tail rotates, so active demand is refreshed first when a cycle cannot finish everyone.
+- **Immediate refreshes:** separate 1-worker pool with a bounded queue (`QUOTE_REFRESHER_IMMEDIATE_QUEUE_MAX`, default 64). Overflow is dropped so a burst of cache-miss reads cannot starve the scheduled cycle.
+- **Capacity (stubbed providers):** a cycle over ~500 tracked symbols completes within the open-market poll interval when batching is used; with live upstreams, capacity is roughly `batch_size / spacing` requests per market inside the 40 s deadline.
+- **Circuit breaker per market:** after 5 consecutive **transport** failures, that market pauses for 120 s. Empty / unusable symbol results back off that symbol only (#268). Provider `Retry-After` hints extend the backoff.
 - **Multiple replicas:** a Redis leader lock (`SET NX`) lets one replica run each cycle. If Redis is configured but unreachable, cycles are skipped (fail closed) instead of every replica hitting providers.
 - **`QUOTE_REFRESHER_OWNS_UPSTREAM=true`:** while the sampler thread is alive, UI read paths never call providers; they serve cache and enqueue refreshes.
 
@@ -53,7 +57,8 @@ How market data is fetched, cached, and exposed, and what the app does when it i
 
 - TWSE MIS has its own circuit (3 network failures → 45 s pause).
 - After MIS has no trustworthy price **and** Yahoo also fails, Yahoo is skipped for that Taiwan stock for 60 s.
-- After MIS and Yahoo both miss, `TWProvider.get_quote` returns no quote. The shared quote cache (soft/hard TTL) serves last-known data as stale; the refresher treats the miss as a failure for the market circuit (#263).
+- After MIS and Yahoo both miss, `TWProvider.get_quote` returns no quote. The shared quote cache (soft/hard TTL) serves last-known data as stale. The refresher backs off that symbol only; empty results do not open the market circuit (#263, #268).
+- A Yahoo `429` / `401` / `403` is not retried inside the HTTP client. It aborts the remaining symbol-suffix and chart→v7 chain, and a batched cycle does not fall back to per-symbol fetches for the symbols still waiting. `Retry-After` is applied as refresher backoff (#268).
 
 ## Freshness contract
 

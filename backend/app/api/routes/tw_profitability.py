@@ -3,8 +3,9 @@ from __future__ import annotations
 from enum import IntEnum
 from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
+from app.api.deps import get_effective_user_id
 from app.schemas.tw_profitability import (
     TaiwanProfitabilityPointResponse,
     TaiwanProfitabilityResponse,
@@ -15,7 +16,11 @@ from app.services.tw_profitability_service import (
     tw_profitability_service,
 )
 
-router = APIRouter(prefix="/stocks", tags=["tw-profitability"])
+router = APIRouter(
+    prefix="/stocks",
+    tags=["tw-profitability"],
+    dependencies=[Depends(get_effective_user_id)],
+)
 
 
 class TwProfitabilityQuarters(IntEnum):

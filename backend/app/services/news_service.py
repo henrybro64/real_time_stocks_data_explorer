@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
+import time
 import xml.etree.ElementTree as ET
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -16,6 +18,9 @@ from app.services.http_client import HttpFetchError, fetch_text
 _REQUEST_TIMEOUT_SECONDS = 8
 _GOOGLE_NEWS_RSS_URL = "https://news.google.com/rss/search"
 _MAX_ITEMS = 12
+_NEWS_CACHE_TTL_SECONDS = 180.0
+_news_cache_lock = threading.Lock()
+_news_cache: dict[str, tuple[float, list]] = {}
 _ANALYSIS_MAX_FETCH = 40
 _ANALYSIS_MAX_SELECTED = 5
 _ANALYSIS_PRIMARY_WINDOW_DAYS = 7
@@ -124,6 +129,10 @@ class AnalysisNewsContext:
 
 class NewsService:
     def get_recent_news(self, stock: StockRecord) -> list[NewsItem]:
+        cached = _get_cached_news(stock.id)
+        if cached is not None:
+            return cached
+
         queries = _build_queries(stock)
         profile = _market_news_profile(stock)
         for query in queries:
@@ -135,6 +144,7 @@ class NewsService:
                 window_days=1,
             )
             if items:
+                _set_cached_news(stock.id, items)
                 return items
         logger.info(
             "No recent news items were found",
@@ -145,7 +155,33 @@ class NewsService:
                 "query_count": len(queries),
             },
         )
+        _set_cached_news(stock.id, [])
         return []
+
+
+def _get_cached_news(stock_id: str) -> list[NewsItem] | None:
+    with _news_cache_lock:
+        entry = _news_cache.get(stock_id)
+        if entry is None:
+            return None
+        expires_at, items = entry
+        if time.monotonic() >= expires_at:
+            _news_cache.pop(stock_id, None)
+            return None
+        return list(items)
+
+
+def _set_cached_news(stock_id: str, items: list[NewsItem]) -> None:
+    with _news_cache_lock:
+        _news_cache[stock_id] = (
+            time.monotonic() + _NEWS_CACHE_TTL_SECONDS,
+            list(items),
+        )
+
+
+def clear_news_cache_for_tests() -> None:
+    with _news_cache_lock:
+        _news_cache.clear()
 
 
 news_service = NewsService()

@@ -21,6 +21,10 @@ HttpFailureClassification = Literal[
 ]
 
 
+class ProviderRequestAborted(Exception):
+    """Spacing or a cycle deadline stopped a request before it was sent."""
+
+
 class HttpFetchError(RuntimeError):
     """Raised when an upstream HTTP fetch fails after retries."""
 
@@ -197,6 +201,7 @@ def _should_retry_http_failure(
     attempts: int,
     remote_protocol_failures: int,
     retryable_status_codes: frozenset[int],
+    retry_rate_limits: bool = True,
 ) -> bool:
     """Decide whether another attempt is useful before falling back/raising.
 
@@ -209,6 +214,13 @@ def _should_retry_http_failure(
     if status_code in _NON_RETRYABLE_STATUS_CODES:
         return False
     if isinstance(exc, HttpFetchError) and exc.classification == "auth_denied":
+        return False
+    if (
+        isinstance(exc, HttpFetchError)
+        and exc.classification == "rate_limited"
+        and not retry_rate_limits
+    ):
+        # Quote fetches surface Retry-After instead of sending another request (#268).
         return False
     if isinstance(exc, HttpFetchError) and exc.classification == "unexpected_content":
         # Malformed/unexpected bodies are not cured by another HTTP attempt.
@@ -256,6 +268,7 @@ def fetch_json(
     operation_name: str | None = None,
     resource_id: str | None = None,
     retryable_status_codes: frozenset[int] | None = None,
+    retry_rate_limits: bool = True,
 ) -> object:
     response = _request_with_retries(
         url,
@@ -271,6 +284,7 @@ def fetch_json(
         operation_name=operation_name,
         resource_id=resource_id,
         retryable_status_codes=retryable_status_codes,
+        retry_rate_limits=retry_rate_limits,
     )
     content_type = response.headers.get("content-type")
     try:
@@ -304,6 +318,7 @@ def fetch_text(
     operation_name: str | None = None,
     resource_id: str | None = None,
     retryable_status_codes: frozenset[int] | None = None,
+    retry_rate_limits: bool = True,
 ) -> str:
     response = _request_with_retries(
         url,
@@ -319,6 +334,7 @@ def fetch_text(
         operation_name=operation_name,
         resource_id=resource_id,
         retryable_status_codes=retryable_status_codes,
+        retry_rate_limits=retry_rate_limits,
     )
     if encoding:
         response.encoding = encoding
@@ -340,6 +356,7 @@ def _request_with_retries(
     operation_name: str | None,
     resource_id: str | None,
     retryable_status_codes: frozenset[int] | None = None,
+    retry_rate_limits: bool = True,
     jitter_random: Callable[[], float] | None = None,
 ) -> httpx.Response:
     if data is not None and json_body is not None:
@@ -375,6 +392,8 @@ def _request_with_retries(
         if spacing_hook is not None:
             try:
                 spacing_hook(effective_provider)
+            except ProviderRequestAborted:
+                raise
             except Exception as spacing_exc:  # noqa: BLE001 - never block HTTP
                 logger.debug("Provider spacing hook failed: %s", spacing_exc)
         try:
@@ -443,6 +462,7 @@ def _request_with_retries(
                 attempts=attempts,
                 remote_protocol_failures=remote_protocol_failures,
                 retryable_status_codes=effective_retryable,
+                retry_rate_limits=retry_rate_limits,
             ):
                 break
             retry_after = None

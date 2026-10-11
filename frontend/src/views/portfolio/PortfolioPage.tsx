@@ -27,6 +27,7 @@ import { HistoricalValueChart } from "../../components/chart/HistoricalValueChar
 import { getHistoryZoomState, stepHistoryRange } from "../../components/chart/historyRange";
 import { StockSearch } from "../../components/search/StockSearch";
 import { RequestStateNotice, errorToNoticeKind } from "../../components/state/RequestStateNotice";
+import { useDebouncedValue } from "../../hooks/useDebouncedValue";
 import { usePortfolioPositions } from "../../hooks/usePortfolioPositions";
 import { useQuoteDerivedRefetchInterval } from "../../hooks/useQuoteDerivedRefetchInterval";
 import {
@@ -68,11 +69,12 @@ export function PortfolioPage() {
     retry: false,
   });
 
-  const trimmedSearch = query.trim();
+  const debouncedSearch = useDebouncedValue(query, 300);
+  const trimmedSearch = debouncedSearch.trim();
   const searchQuery = useQuery<Stock[]>({
     queryKey: ["portfolio-search", trimmedSearch],
     queryFn: () => searchStocks(trimmedSearch),
-    enabled: trimmedSearch.length > 0,
+    enabled: trimmedSearch.length >= 2,
   });
   const summaryQuery = useQuery({
     queryKey: ["portfolio-summary"],
