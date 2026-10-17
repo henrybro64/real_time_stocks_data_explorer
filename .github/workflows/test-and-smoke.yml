@@ -74,6 +74,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: backend-allure-results
+          retention-days: 1
           path: allure-results/backend
           if-no-files-found: warn
 
@@ -159,6 +160,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: frontend-unit-allure-results
+          retention-days: 1
           path: allure-results/frontend-unit
           if-no-files-found: warn
       - name: Upload frontend e2e Allure results
@@ -167,6 +169,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: frontend-e2e-allure-results
+          retention-days: 1
           path: allure-results/frontend-e2e
           if-no-files-found: warn
       - name: Upload Playwright HTML report
@@ -175,6 +178,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: playwright-report
+          retention-days: 14
           path: frontend/playwright-report
           if-no-files-found: warn
       - name: Fail job when any frontend suite fails
@@ -252,6 +256,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: k3s-smoke-allure-results
+          retention-days: 1
           path: allure-results/k3s-smoke
           if-no-files-found: warn
       - name: Upload k3s smoke evidence artifacts
@@ -262,6 +267,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: k3s-smoke-artifacts
+          retention-days: 7
           path: artifacts/k3s-smoke
           if-no-files-found: error
 
@@ -507,6 +513,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: merged-allure-results
+          retention-days: 1
           path: allure-results/merged
           if-no-files-found: warn
       - name: Upload Allure HTML report
@@ -515,6 +522,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: allure-report
+          retention-days: 7
           path: allure-report
           if-no-files-found: warn
       - name: Upload GitHub Pages artifact
@@ -524,6 +532,7 @@ jobs:
         uses: actions/upload-pages-artifact@v4
         with:
           path: allure-report
+          retention-days: 1
       - name: Note when Allure packaging was skipped
         if: always() && (steps.merge_allure.outcome != 'success' || steps.generate_allure.outcome != 'success')
         run: |
