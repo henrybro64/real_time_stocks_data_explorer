@@ -15,6 +15,10 @@ on:
       - "v*.*.*"
   workflow_dispatch:
 
+env:
+  # Build records are Actions artifacts; keep registry images and cache unchanged.
+  DOCKER_BUILD_RECORD_RETENTION_DAYS: 3
+
 permissions:
   contents: read
   packages: write
