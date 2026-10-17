@@ -468,7 +468,6 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           name: backend-allure-results
-          retention-days: 1
           path: allure-results/backend
       - name: Download frontend unit Allure results
         id: download_frontend_unit_allure
@@ -476,7 +475,6 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           name: frontend-unit-allure-results
-          retention-days: 1
           path: allure-results/frontend-unit
       - name: Download frontend e2e Allure results
         id: download_frontend_e2e_allure
@@ -484,7 +482,6 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           name: frontend-e2e-allure-results
-          retention-days: 1
           path: allure-results/frontend-e2e
       - name: Download k3s smoke Allure results
         id: download_k3s_smoke_allure
@@ -492,7 +489,6 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           name: k3s-smoke-allure-results
-          retention-days: 1
           path: allure-results/k3s-smoke
       # Require the three core suite artifacts before publishing a report so a
       # missing download cannot replace the last complete Allure/Pages report.
