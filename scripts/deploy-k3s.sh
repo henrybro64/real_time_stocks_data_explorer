@@ -44,6 +44,11 @@ Optional env:
   DOCKER_PULL_MIRRORS  Comma-separated mirror hosts (default: mirror.gcr.io,docker.m.daocloud.io)
   DOCKER_PULL_SKIP_MIRRORS=1  Skip mirror fallbacks when Docker Hub works but mirrors do not
   STOCK_TICKER_HOSTNAME  Ingress host (default: stock-ticker.ai). Point LAN DNS at the node IP.
+  STOCK_TICKER_PUBLIC_SCHEME
+                   http or https. Default is http for stock-ticker.ai and https
+                   for any other host (including stock.cloudforge64.com).
+                   SESSION_COOKIE_SECURE follows this scheme in both directions
+                   (#299). The Entra redirect URI stays as committed.
   FORCE_AUTH_SECRET_APPLY=1
                    Apply k8s/backend-auth-secret.yaml even when the live Secret
                    differs. Default is to skip and print differing keys (#284).
@@ -409,8 +414,42 @@ EOF
   exit 1
 }
 
+public_scheme() {
+  local host="${STOCK_TICKER_HOSTNAME:-stock-ticker.ai}"
+  local scheme="${STOCK_TICKER_PUBLIC_SCHEME:-}"
+  if [[ -z "${scheme}" ]]; then
+    if [[ "${host}" == "stock-ticker.ai" ]]; then
+      scheme="http"
+    else
+      scheme="https"
+    fi
+  fi
+  case "${scheme}" in
+    http|https) printf '%s' "${scheme}" ;;
+    *)
+      echo "STOCK_TICKER_PUBLIC_SCHEME must be http or https" >&2
+      exit 1
+      ;;
+  esac
+}
+
+public_origin() {
+  local host="${STOCK_TICKER_HOSTNAME:-stock-ticker.ai}"
+  case "${host}" in
+    *[!A-Za-z0-9.-]*)
+      echo "STOCK_TICKER_HOSTNAME must be a hostname" >&2
+      exit 1
+      ;;
+  esac
+  printf '%s://%s' "$(public_scheme)" "${host}"
+}
+
 ensure_backend_auth_secret() {
   local secret_path="${ROOT_DIR}/k8s/backend-auth-secret.yaml"
+  local cookie_secure="false"
+  if [[ "$(public_scheme)" == "https" ]]; then
+    cookie_secure="true"
+  fi
   if [[ ! -f "${secret_path}" ]]; then
     require_cmd openssl
     local session_secret capture_token
@@ -430,14 +469,42 @@ stringData:
   LOCAL_AUTH_USERNAME: ""
   LOCAL_AUTH_PASSWORD: ""
   PORTFOLIO_HISTORY_CAPTURE_TOKEN: "${capture_token}"
-  SESSION_COOKIE_SECURE: "false"
+  SESSION_COOKIE_SECURE: "${cookie_secure}"
 EOF
     )
     echo "Generated ${secret_path} (gitignored). Register a user after login, or set LOCAL_AUTH_* locally."
   else
     echo "Using existing ${secret_path}"
+    _set_local_secret_key "${secret_path}" SESSION_COOKIE_SECURE "${cookie_secure}"
   fi
   chmod 600 "${secret_path}"
+}
+
+_set_local_secret_key() {
+  SECRET_EDIT_PATH="$1" SECRET_EDIT_KEY="$2" SECRET_EDIT_VALUE="$3" python3 - <<'PY'
+import os
+from pathlib import Path
+
+path = Path(os.environ["SECRET_EDIT_PATH"])
+key = os.environ["SECRET_EDIT_KEY"]
+value = os.environ["SECRET_EDIT_VALUE"]
+prefix = f"  {key}:"
+lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+found = False
+out = []
+for line in lines:
+    if line.startswith(prefix):
+        out.append(f'{prefix} "{value}"\n')
+        found = True
+    else:
+        out.append(line)
+if not found:
+    if out and not out[-1].endswith("\n"):
+        out.append("\n")
+    out.append(f'{prefix} "{value}"\n')
+path.write_text("".join(out), encoding="utf-8")
+PY
+  unset SECRET_EDIT_PATH SECRET_EDIT_KEY SECRET_EDIT_VALUE
 }
 
 # Placeholder rules mirror backend/app/core/auth_settings.py so the preflight
@@ -675,10 +742,109 @@ apply_backend_auth_secret() {
     if ((${#differing[@]} > 0)) && [[ "${FORCE_AUTH_SECRET_APPLY:-0}" != "1" ]]; then
       echo "Skipping apply of ${secret_path}: live Secret differs on: ${differing[*]}"
       echo "Set FORCE_AUTH_SECRET_APPLY=1 to overwrite. Do not overwrite LOCAL_AUTH_* casually (#284/#286)."
+      _sync_session_cookie_secure
       return 0
     fi
   fi
   ${KUBECTL_CMD} apply -n "${NAMESPACE}" -f "${secret_path}"
+  _sync_session_cookie_secure
+}
+
+_sync_session_cookie_secure() {
+  # Match the selected public scheme in both directions. Leaving Secure=true
+  # after a switch back to HTTP makes browsers drop the session cookie (#299).
+  local desired="false"
+  if [[ "$(public_scheme)" == "https" ]]; then
+    desired="true"
+  fi
+  local live_cookie
+  live_cookie="$(_live_secret_data_value stock-ticker-backend-auth SESSION_COOKIE_SECURE)"
+  if [[ "${live_cookie}" == "${desired}" ]]; then
+    return 0
+  fi
+  echo "Setting SESSION_COOKIE_SECURE=${desired} for $(public_origin) (#299)"
+  ${KUBECTL_CMD} -n "${NAMESPACE}" patch secret stock-ticker-backend-auth --type merge \
+    -p "{\"stringData\":{\"SESSION_COOKIE_SECURE\":\"${desired}\"}}"
+}
+
+apply_backend_entra_secret() {
+  # The live cluster already has Secret stock-ticker-entra. Never replace it
+  # from this script: that would risk overwriting ENTRA_CLIENT_SECRET (#299).
+  # The client id is public and lives in the ConfigMap.
+  if ${KUBECTL_CMD} -n "${NAMESPACE}" get secret stock-ticker-entra >/dev/null 2>&1; then
+    local live_secret
+    live_secret="$(_live_secret_data_value stock-ticker-entra ENTRA_CLIENT_SECRET)"
+    if [[ -n "${live_secret}" ]]; then
+      echo "Keeping existing Secret stock-ticker-entra (ENTRA_CLIENT_SECRET is set; value not printed)"
+    else
+      echo "Secret stock-ticker-entra exists but ENTRA_CLIENT_SECRET is empty. Leaving it unchanged."
+    fi
+    return 0
+  fi
+  local secret_path="${ROOT_DIR}/k8s/backend-entra-secret.yaml"
+  if [[ -f "${secret_path}" ]]; then
+    local local_secret
+    local_secret="$(_local_auth_secret_value "${secret_path}" ENTRA_CLIENT_SECRET)"
+    if [[ -n "${local_secret}" ]]; then
+      echo "Applying ${secret_path} (Secret stock-ticker-entra was absent)"
+      ${KUBECTL_CMD} apply -n "${NAMESPACE}" -f "${secret_path}"
+      return 0
+    fi
+  fi
+  echo "Secret stock-ticker-entra was not found. Microsoft token exchange has no client secret until you create it."
+  echo "Do not print the value. Example:"
+  echo "  kubectl -n ${NAMESPACE} create secret generic stock-ticker-entra --from-literal=ENTRA_CLIENT_SECRET=..."
+}
+
+warn_if_entra_redirect_host_differs() {
+  local redirect_host host
+  host="${STOCK_TICKER_HOSTNAME:-stock-ticker.ai}"
+  redirect_host="$(
+    python3 - "${ROOT_DIR}/k8s/backend.yaml" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+text = Path(sys.argv[1]).read_text(encoding="utf-8")
+match = re.search(r'ENTRA_REDIRECT_URI:\s*"https?://([^"/]+)', text)
+print(match.group(1) if match else "")
+PY
+  )"
+  if [[ -n "${redirect_host}" && "${redirect_host}" != "${host}" ]]; then
+    echo "Warning: ENTRA_REDIRECT_URI host is ${redirect_host} but Ingress host is ${host}." >&2
+    echo "Deploy with STOCK_TICKER_HOSTNAME=${redirect_host} so the browser origin matches Entra (#299)." >&2
+  fi
+}
+
+render_public_origin_manifests() {
+  local dest="$1"
+  rm -rf "${dest}"
+  mkdir -p "${dest}"
+  cp -R "${ROOT_DIR}/k8s/." "${dest}/"
+  # Leave Entra redirect URIs as committed. Rewriting them would drop
+  # https://stock.cloudforge64.com on a default stock-ticker.ai deploy (#299).
+  PUBLIC_RENDER_DEST="${dest}" \
+    PUBLIC_RENDER_HOST="${STOCK_TICKER_HOSTNAME}" \
+    python3 - <<'PY'
+import os
+import re
+from pathlib import Path
+
+dest = Path(os.environ["PUBLIC_RENDER_DEST"])
+host = os.environ["PUBLIC_RENDER_HOST"]
+ingress = dest / "frontend-ingress.yaml"
+ingress_text = ingress.read_text(encoding="utf-8")
+ingress_text, host_count = re.subn(
+    r"host: stock-ticker\.ai",
+    f"host: {host}",
+    ingress_text,
+    count=1,
+)
+if host_count != 1:
+    raise SystemExit("frontend-ingress.yaml is missing the stock-ticker.ai host")
+ingress.write_text(ingress_text, encoding="utf-8")
+PY
+  unset PUBLIC_RENDER_DEST PUBLIC_RENDER_ORIGIN PUBLIC_RENDER_HOST
 }
 
 apply_frontend_ingress_host() {
@@ -698,22 +864,29 @@ deploy_manifests() {
   ensure_namespace
   preflight_live_auth_secrets
   apply_backend_auth_secret
+  apply_backend_entra_secret
+  local rendered_k8s
+  rendered_k8s="$(mktemp -d)"
+  # shellcheck disable=SC2064
+  trap "rm -rf '${rendered_k8s}'" RETURN
+  render_public_origin_manifests "${rendered_k8s}"
+  warn_if_entra_redirect_host_differs
   if uses_custom_app_images "${BACKEND_IMAGE}" "${FRONTEND_IMAGE}" || [[ -n "${IMAGE_PULL_SECRET}" ]]; then
     local overlay_dir
     overlay_dir="$(mktemp -d)"
     # Expand the path now; RETURN must not read a function-local after it goes out of scope.
     # shellcheck disable=SC2064
-    trap "rm -rf '${overlay_dir}'" RETURN
+    trap "rm -rf '${overlay_dir}' '${rendered_k8s}'" RETURN
     write_k8s_image_overlay \
       "${overlay_dir}" \
       "${BACKEND_IMAGE}" \
       "${FRONTEND_IMAGE}" \
       "${IMAGE_PULL_SECRET}" \
-      "${ROOT_DIR}/k8s"
+      "${rendered_k8s}"
     echo "Using image overlay: backend=${BACKEND_IMAGE} frontend=${FRONTEND_IMAGE}"
     ${KUBECTL_CMD} apply -k "${overlay_dir}"
   else
-    ${KUBECTL_CMD} apply -k "${ROOT_DIR}/k8s"
+    ${KUBECTL_CMD} apply -k "${rendered_k8s}"
   fi
   apply_frontend_ingress_host
 

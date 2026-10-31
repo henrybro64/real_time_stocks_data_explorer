@@ -125,7 +125,7 @@ def test_auth_enabled_rejects_entra_half_configured() -> None:
     with pytest.raises(RuntimeError, match="ENTRA_EXTERNAL_ID_ENABLED"):
         validate_auth_runtime_settings(
             auth_enabled=True,
-            local_auth_enabled=True,
+            local_auth_enabled=False,
             session_secret="9f" * 16,
             local_auth_username="",
             local_auth_password="",
@@ -134,6 +134,79 @@ def test_auth_enabled_rejects_entra_half_configured() -> None:
             entra_client_id="",
             entra_redirect_uri="",
         )
+
+
+def test_incomplete_entra_does_not_crash_when_local_auth_enabled() -> None:
+    """Local login must keep working if Entra client id/secret are not loaded (#299)."""
+    soft = validate_auth_runtime_settings(
+        auth_enabled=True,
+        local_auth_enabled=True,
+        session_secret="9f" * 16,
+        local_auth_username="",
+        local_auth_password="",
+        entra_external_id_enabled=True,
+        entra_tenant_id="tenant",
+        entra_client_id="",
+        entra_redirect_uri="https://stock.cloudforge64.com/api/auth/callback/entra",
+        entra_authority="https://stockticker.ciamlogin.com/tenant/v2.0",
+    )
+    assert soft == []
+
+
+def test_apply_logs_incomplete_entra_without_secrets(caplog) -> None:
+    import logging
+
+    settings = SimpleNamespace(
+        auth_enabled=True,
+        local_auth_enabled=True,
+        session_secret="9f" * 16,
+        local_auth_username="",
+        local_auth_password="",
+        portfolio_history_capture_token="",
+        rankings_capture_token="",
+        rankings_archive_capture_token="",
+        taiwan_market_data_capture_token="",
+        entra_external_id_enabled=True,
+        entra_tenant_id="tenant",
+        entra_client_id="",
+        entra_redirect_uri="https://example.com/api/auth/callback/entra",
+        entra_authority="https://example.ciamlogin.com/tenant/v2.0",
+    )
+    caplog.set_level(logging.ERROR)
+    apply_auth_runtime_settings(settings)
+    blob = "\n".join(record.getMessage() for record in caplog.records)
+    assert "Microsoft login stays disabled" in blob
+    assert "example.com" not in blob
+
+
+def test_apply_logs_missing_entra_secret_without_printing_it(caplog) -> None:
+    import logging
+
+    settings = SimpleNamespace(
+        auth_enabled=True,
+        local_auth_enabled=True,
+        session_secret="9f" * 16,
+        local_auth_username="",
+        local_auth_password="",
+        portfolio_history_capture_token="",
+        rankings_capture_token="",
+        rankings_archive_capture_token="",
+        taiwan_market_data_capture_token="",
+        entra_external_id_enabled=True,
+        entra_tenant_id="4661e227-6bc3-4ff3-b9c2-df41f6420014",
+        entra_client_id="feeaf879-3149-48da-b4c6-485dfa8e5ba0",
+        entra_client_secret="",
+        entra_redirect_uri="https://stock.cloudforge64.com/api/auth/callback/entra",
+        entra_authority="https://stockticker.ciamlogin.com/4661e227-6bc3-4ff3-b9c2-df41f6420014/v2.0",
+    )
+    caplog.set_level(logging.ERROR)
+    apply_auth_runtime_settings(settings)
+    records = [record for record in caplog.records if getattr(record, "event", "") == "auth.entra.secret_missing"]
+    assert records
+    assert records[-1].client_secret_configured is False
+    assert records[-1].entra_client_id == "feeaf879-3149-48da-b4c6-485dfa8e5ba0"
+    blob = "\n".join(record.getMessage() for record in caplog.records)
+    assert "ENTRA_CLIENT_SECRET is empty" in blob
 
 
 def test_auth_enabled_rejects_no_providers() -> None:

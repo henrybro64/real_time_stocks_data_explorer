@@ -142,7 +142,7 @@ def validate_auth_runtime_settings(
                 "Choose a unique bootstrap password or leave both username and "
                 "password empty (existing accounts keep their stored password)."
             )
-        if entra_external_id_enabled and not entra_ready:
+        if entra_external_id_enabled and not entra_ready and not local_auth_enabled:
             hard.append(
                 "ENTRA_EXTERNAL_ID_ENABLED requires ENTRA_TENANT_ID, ENTRA_CLIENT_ID, "
                 "ENTRA_REDIRECT_URI, and ENTRA_AUTHORITY "
@@ -191,6 +191,37 @@ def apply_auth_runtime_settings(settings: Any) -> list[str]:
                     "token_name": label,
                 },
             )
+    entra_ready = bool(
+        settings.entra_external_id_enabled
+        and str(settings.entra_tenant_id).strip()
+        and str(settings.entra_client_id).strip()
+        and str(settings.entra_redirect_uri).strip()
+        and str(settings.entra_authority).strip()
+    )
+    if settings.auth_enabled and settings.entra_external_id_enabled and not entra_ready:
+        logger.error(
+            "ENTRA_EXTERNAL_ID_ENABLED is set but Entra is incomplete; "
+            "Microsoft login stays disabled",
+            extra={
+                "event": "auth.entra.incomplete_config",
+                "tenant_configured": bool(str(settings.entra_tenant_id).strip()),
+                "client_id_configured": bool(str(settings.entra_client_id).strip()),
+                "redirect_configured": bool(str(settings.entra_redirect_uri).strip()),
+                "authority_configured": bool(str(settings.entra_authority).strip()),
+                "local_auth_enabled": bool(settings.local_auth_enabled),
+            },
+        )
+    elif settings.auth_enabled and entra_ready and not str(settings.entra_client_secret).strip():
+        # Visible at startup. A missing secret makes the token endpoint return
+        # 401; this log does not claim a present secret is wrong (#299).
+        logger.error(
+            "ENTRA_CLIENT_SECRET is empty; Microsoft token exchange has no client secret",
+            extra={
+                "event": "auth.entra.secret_missing",
+                "client_secret_configured": False,
+                "entra_client_id": str(settings.entra_client_id).strip(),
+            },
+        )
     return soft
 
 
