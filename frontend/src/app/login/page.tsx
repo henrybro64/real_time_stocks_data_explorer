@@ -140,6 +140,7 @@ function LoginPageInner() {
                   <Button
                     kind="tertiary"
                     size="lg"
+                    disabled
                     onClick={async () => {
                       setLocalError(null);
                       const uname = localUsername.trim();
