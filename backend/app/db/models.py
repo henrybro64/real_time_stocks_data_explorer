@@ -17,7 +17,7 @@ from sqlalchemy import (
     func,
     text,
 )
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 from app.db.row_mixins import CreatedAtMixin, TimestampedRowMixin, UserOwnedRowMixin
 
@@ -40,6 +40,9 @@ class User(Base):
         DateTime(timezone=True),
         server_default=func.now(),
         nullable=False,
+    )
+    oauth_identities: Mapped[list["OAuthIdentity"]] = relationship(
+        back_populates="user",
     )
 
 
@@ -396,6 +399,7 @@ class OAuthIdentity(Base):
     )
     provider: Mapped[str] = mapped_column(String(32), nullable=False)
     subject: Mapped[str] = mapped_column(String(255), nullable=False)
+    user: Mapped["User"] = relationship(back_populates="oauth_identities")
 
 
 class UserAiPreference(Base):

@@ -364,6 +364,73 @@ def test_matching_local_username_does_not_reuse_that_user(entra_settings, monkey
     assert created["subject"] == "oid-subject-collision"
 
 
+def test_complete_login_maps_persist_error_to_generic_signin_failure(
+    entra_settings, monkeypatch
+) -> None:
+    from app.repositories.oauth_identity_repository import OAuthIdentityPersistError
+
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    public_key = private_key.public_key()
+    issuer = "https://login.example/tenant-1/v2.0"
+    nonce = "nonce-persist"
+    id_token = jwt.encode(
+        {
+            "sub": "oid-persist",
+            "aud": "client-1",
+            "iss": issuer,
+            "exp": 4_000_000_000,
+            "iat": 1_700_000_000,
+            "nonce": nonce,
+            "preferred_username": "persist@example.com",
+        },
+        private_key,
+        algorithm="RS256",
+        headers={"kid": "k1"},
+    )
+
+    class _Key:
+        def __init__(self):
+            self.key = public_key
+
+    class _Jwks:
+        def __init__(self, uri):
+            self.uri = uri
+
+        def get_signing_key_from_jwt(self, token):
+            return _Key()
+
+    monkeypatch.setattr(entra.oauth_identity_repository, "is_available", lambda: True)
+    monkeypatch.setattr(entra.oauth_identity_repository, "get_user_id", lambda **kwargs: None)
+    monkeypatch.setattr(
+        entra.oauth_identity_repository,
+        "create_user_with_identity",
+        lambda **kwargs: (_ for _ in ()).throw(
+            OAuthIdentityPersistError("IntegrityError secret details")
+        ),
+    )
+    monkeypatch.setattr(
+        "app.repositories.user_repository.user_repository.get_by_username",
+        lambda _username: None,
+    )
+
+    with pytest.raises(entra.EntraAuthError, match="Entra sign-in failed") as exc:
+        entra.complete_login(
+            code="auth-code",
+            state="state-1",
+            expected_state="state-1",
+            expected_nonce=nonce,
+            code_verifier="pkce-verifier-1",
+            client_ip="127.0.0.1",
+            http_get=_fake_get,
+            http_post=lambda url, data=None, timeout=15.0, **kwargs: _FakeResponse(
+                {"id_token": id_token}
+            ),
+            jwks_client_factory=_Jwks,
+        )
+    assert "IntegrityError" not in str(exc.value)
+    assert "secret details" not in str(exc.value)
+
+
 def test_complete_login_rejects_bad_state(entra_settings) -> None:
     with pytest.raises(entra.EntraAuthError, match="Invalid OAuth state"):
         entra.complete_login(
