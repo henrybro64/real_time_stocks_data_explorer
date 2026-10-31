@@ -39,6 +39,9 @@ spec:
             - secretRef:
                 name: stock-ticker-backend-rankings-archive
                 optional: true
+            - secretRef:
+                name: stock-ticker-backend-entra
+                optional: true
           # /health is 503 for stale or dead jobs and only removes the pod from Ready.
           # /livez is 503 only for a dead or stuck job thread, the cases a restart fixes (#289).
           readinessProbe:

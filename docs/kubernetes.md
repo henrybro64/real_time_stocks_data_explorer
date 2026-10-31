@@ -153,9 +153,28 @@ Older example files shipped values such as `replace-with-long-random-token`. Aft
 
 `deploy-k3s.sh` preflights Secrets before rollout and will not silently overwrite a live `stock-ticker-backend-auth` that differs from the local file. Set `FORCE_AUTH_SECRET_APPLY=1` to apply the local file anyway; the preflight then checks that file instead of the live Secret, so a fixed local file can repair a broken live `SESSION_SECRET`. The preflight uses the same placeholder rules as the API. Prefer `kubectl patch` for repairs; do not re-apply a stale local auth Secret during an outage.
 
-Optional Microsoft Entra External ID (#240): set `ENTRA_EXTERNAL_ID_ENABLED=true` plus `ENTRA_TENANT_ID`, `ENTRA_CLIENT_ID`, `ENTRA_REDIRECT_URI`, and `ENTRA_AUTHORITY` (the customer tenant's `https://<tenant>.ciamlogin.com/<tenant-id>/v2.0` URL; `ENTRA_CLIENT_SECRET` when the app registration has one) on the backend ConfigMap or Secret. Redirect URI should be the public origin + `/api/auth/callback/entra`. Local auth and Entra can both be enabled.
+Microsoft Entra External ID (#240, #299): nonsecret settings live in `k8s/backend.yaml` (`ENTRA_EXTERNAL_ID_ENABLED`, tenant, authority, redirect URI). Put `ENTRA_CLIENT_ID` and `ENTRA_CLIENT_SECRET` in the optional Secret `stock-ticker-backend-entra` (copy `k8s/backend-entra-secret.yaml.example`; gitignored; last `envFrom` so it overrides the empty ConfigMap client id). Local auth stays on (`LOCAL_AUTH_ENABLED=true`). Incomplete Entra config no longer crashes the API when local auth is enabled; Microsoft login stays off until client id/secret are present.
 
-`SESSION_COOKIE_SECURE` defaults to `false` for plain HTTP Ingress/NodePort. Set it to `true` only after HTTPS is enabled.
+`deploy-k3s.sh` applies that Secret before the ConfigMap. If the Secret is missing, the script copies a live `ENTRA_CLIENT_ID` / `ENTRA_CLIENT_SECRET` off `stock-ticker-backend-env` (or the auth Secret) into `k8s/backend-entra-secret.yaml` and applies it, so the empty client id in git does not erase the one already on the cluster. It does not print the values.
+
+The same script rewrites `ENTRA_REDIRECT_URI` and `ENTRA_POST_LOGOUT_REDIRECT_URI` to the Ingress origin. `stock-ticker.ai` stays `http`. Any other `STOCK_TICKER_HOSTNAME`, including `stock.cloudforge64.com`, uses `https` unless `STOCK_TICKER_PUBLIC_SCHEME` is set. The app registration redirect URI has to be that exact origin plus `/api/auth/callback/entra`. For this site:
+
+```bash
+STOCK_TICKER_HOSTNAME=stock.cloudforge64.com ./scripts/deploy-k3s.sh k3s
+```
+
+Failed token exchange and a failed authorize redirect log HTTP status or the allowlisted OAuth `error`, the AADSTS numeric code, and correlation/trace/request IDs when Microsoft sends them. They never log `error_description`, codes, secrets, or tokens. HTTP 401 from Microsoft is usually `invalid_client` (wrong or unloaded secret); a bad authorization code is HTTP 400 `invalid_grant`.
+
+`https` origins set `SESSION_COOKIE_SECURE=true` on `stock-ticker-backend-auth` during deploy. The plain HTTP Ingress keeps it `false`.
+
+### Entra login verification (#299)
+
+1. Confirm OIDC discovery: `curl -fsS https://stockticker.ciamlogin.com/4661e227-6bc3-4ff3-b9c2-df41f6420014/v2.0/.well-known/openid-configuration` returns 200.
+2. Confirm the app registration redirect URI is exactly the deployed origin plus `/api/auth/callback/entra` (`https://stock.cloudforge64.com/api/auth/callback/entra` when `STOCK_TICKER_HOSTNAME=stock.cloudforge64.com`).
+3. Confirm the pod has the intended secret (presence only): `kubectl -n stock-ticker exec deploy/stock-ticker-backend -- sh -c 'test -n "$ENTRA_CLIENT_SECRET" && echo secret_present'`. Do not print the value.
+4. Sign in with Microsoft once. Success redirects to `/` and `/api/auth/status` shows `loggedIn: true` after a refresh. The first Entra identity creates a **new** `users.id` via `oauth_identities`; it does not merge onto an existing local username/portfolio.
+5. Sign out, then sign in with local username/password. Existing local data is unchanged.
+6. If Microsoft login still fails, inspect backend logs for `auth.entra.token_exchange_failed` (`http_status`, `oauth_error`, `aadsts_code`). Rotate the app-registration secret and patch `stock-ticker-backend-entra` when you see `invalid_client` / `AADSTS7000215`.
 
 Do not commit real secrets.
 

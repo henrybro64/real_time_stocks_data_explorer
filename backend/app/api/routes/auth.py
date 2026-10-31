@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse
 
@@ -14,9 +16,11 @@ from app.schemas.auth import (
     LocalRegisterRequest,
 )
 from app.services.entra_auth_service import (
+    PUBLIC_SIGNIN_FAILED,
     EntraAuthError,
     begin_login as begin_entra_login,
     complete_login as complete_entra_login,
+    diagnose_authorize_error,
     entra_is_configured,
 )
 from app.services.local_auth_service import (
@@ -27,9 +31,11 @@ from app.services.local_auth_service import (
 from app.services.rate_limit_service import RateLimitExceededError
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+logger = logging.getLogger(__name__)
 
 _ENTRA_STATE_KEY = "entra_oauth_state"
 _ENTRA_NONCE_KEY = "entra_oauth_nonce"
+_ENTRA_VERIFIER_KEY = "entra_oauth_code_verifier"
 
 
 def _provider_flags() -> dict[str, bool]:
@@ -160,6 +166,7 @@ def login_entra(request: Request) -> RedirectResponse:
         raise HTTPException(status_code=502, detail=exc.detail) from exc
     request.session[_ENTRA_STATE_KEY] = start.state
     request.session[_ENTRA_NONCE_KEY] = start.nonce
+    request.session[_ENTRA_VERIFIER_KEY] = start.code_verifier
     return RedirectResponse(url=start.authorization_url, status_code=302)
 
 
@@ -176,19 +183,29 @@ def callback_entra(
     if not entra_is_configured():
         raise HTTPException(status_code=404, detail="Entra External ID is not configured")
     if error:
-        detail = error_description or error
-        raise HTTPException(status_code=401, detail=f"Entra sign-in failed: {detail}")
+        # Read AADSTS and correlation ids out of error_description, then drop it (#299).
+        diagnostic = diagnose_authorize_error(error=error, error_description=error_description)
+        logger.info(
+            PUBLIC_SIGNIN_FAILED,
+            extra={
+                "event": "auth.entra.authorize_callback_error",
+                **diagnostic,
+            },
+        )
+        raise HTTPException(status_code=401, detail=PUBLIC_SIGNIN_FAILED)
     if not code or not state:
         raise HTTPException(status_code=400, detail="Missing Entra authorization code or state")
 
     expected_state = request.session.pop(_ENTRA_STATE_KEY, None)
     expected_nonce = request.session.pop(_ENTRA_NONCE_KEY, None)
+    code_verifier = request.session.pop(_ENTRA_VERIFIER_KEY, None)
     try:
         uid = complete_entra_login(
             code=code,
             state=state,
             expected_state=expected_state if isinstance(expected_state, str) else None,
             expected_nonce=expected_nonce if isinstance(expected_nonce, str) else None,
+            code_verifier=code_verifier if isinstance(code_verifier, str) else None,
             client_ip=_client_ip(request),
         )
     except RateLimitExceededError as exc:

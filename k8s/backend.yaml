@@ -10,6 +10,16 @@ data:
   # Local auth: when enabled, users must sign in with LOCAL_AUTH_USERNAME / LOCAL_AUTH_PASSWORD.
   AUTH_ENABLED: "true"
   LOCAL_AUTH_ENABLED: "true"
+  # Nonsecret Entra External ID (#299). Client ID and client secret live in
+  # optional Secret stock-ticker-backend-entra (last envFrom wins). An empty
+  # client ID here does not take the API down while local auth is enabled.
+  # deploy-k3s.sh rewrites the redirect URIs to match the Ingress host.
+  ENTRA_EXTERNAL_ID_ENABLED: "true"
+  ENTRA_TENANT_ID: "4661e227-6bc3-4ff3-b9c2-df41f6420014"
+  ENTRA_CLIENT_ID: ""
+  ENTRA_AUTHORITY: "https://stockticker.ciamlogin.com/4661e227-6bc3-4ff3-b9c2-df41f6420014/v2.0"
+  ENTRA_REDIRECT_URI: "https://stock.cloudforge64.com/api/auth/callback/entra"
+  ENTRA_POST_LOGOUT_REDIRECT_URI: "https://stock.cloudforge64.com/"
   # API pods serve requests only; stock-ticker-backend-worker runs jobs (#276).
   RUN_BACKGROUND_JOBS: "false"
   # Traefik appends the client. Next forwards that header. One trusted hop (#273).
@@ -62,6 +72,9 @@ spec:
             - secretRef:
                 name: stock-ticker-backend-rankings-archive
                 optional: true
+            - secretRef:
+                name: stock-ticker-backend-entra
+                optional: true
       containers:
         - name: backend
           image: stock-ticker-backend:local
@@ -78,6 +91,9 @@ spec:
                 name: stock-ticker-backend-auth
             - secretRef:
                 name: stock-ticker-backend-rankings-archive
+                optional: true
+            - secretRef:
+                name: stock-ticker-backend-entra
                 optional: true
           # Explicit timeouts: a CPU-starved node can push /health past the 1s default (#289).
           readinessProbe:

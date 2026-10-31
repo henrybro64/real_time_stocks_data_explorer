@@ -31,8 +31,8 @@ Login endpoints (`backend/app/api/routes/auth.py`, under `/api/auth`):
 | `GET /status` | `authEnabled`, `loggedIn`, the user, and enabled providers (`local`, `entra`). The UI uses it to decide whether to redirect to `/login`. |
 | `POST /login/local` | Verifies a PBKDF2-SHA256 hash (120,000 iterations) and sets `session["user_id"]`. Rate-limited per IP. |
 | `POST /register/local` | Creates a user and logs them in. Username 1–64 characters; password at least 8 characters. Duplicate usernames return 400. Rate-limited per IP. |
-| `GET /login/entra` | Starts the Entra External ID authorization-code flow (stores `state`/`nonce` in the session). |
-| `GET /callback/entra` | Exchanges the code, validates the ID token (PyJWT + JWKS), links or creates `users.id` via `oauth_identities`, sets the session. |
+| `GET /login/entra` | Starts the Entra External ID authorization-code + PKCE flow (stores `state`/`nonce`/`code_verifier` in the session). |
+| `GET /callback/entra` | Exchanges the code, validates the ID token (PyJWT + JWKS), links or creates `users.id` via `oauth_identities`, sets the session. Browser errors stay generic; Microsoft diagnostics stay in server logs (#299). First-time Entra sign-in creates a new user and does not merge onto an existing local account. |
 | `POST /logout` | Clears the session. |
 
 The session is Starlette's signed cookie (`SessionMiddleware`, `same_site="lax"`). `SESSION_COOKIE_SECURE` controls the Secure flag (default false for plain HTTP; set true behind HTTPS).

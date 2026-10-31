@@ -44,6 +44,11 @@ Optional env:
   DOCKER_PULL_MIRRORS  Comma-separated mirror hosts (default: mirror.gcr.io,docker.m.daocloud.io)
   DOCKER_PULL_SKIP_MIRRORS=1  Skip mirror fallbacks when Docker Hub works but mirrors do not
   STOCK_TICKER_HOSTNAME  Ingress host (default: stock-ticker.ai). Point LAN DNS at the node IP.
+  STOCK_TICKER_PUBLIC_SCHEME
+                   http or https. Default is http for stock-ticker.ai and https
+                   for any other host (including stock.cloudforge64.com). The
+                   Entra redirect URI uses this scheme and the Ingress host.
+                   https also sets SESSION_COOKIE_SECURE=true (#299).
   FORCE_AUTH_SECRET_APPLY=1
                    Apply k8s/backend-auth-secret.yaml even when the live Secret
                    differs. Default is to skip and print differing keys (#284).
@@ -409,8 +414,42 @@ EOF
   exit 1
 }
 
+public_scheme() {
+  local host="${STOCK_TICKER_HOSTNAME:-stock-ticker.ai}"
+  local scheme="${STOCK_TICKER_PUBLIC_SCHEME:-}"
+  if [[ -z "${scheme}" ]]; then
+    if [[ "${host}" == "stock-ticker.ai" ]]; then
+      scheme="http"
+    else
+      scheme="https"
+    fi
+  fi
+  case "${scheme}" in
+    http|https) printf '%s' "${scheme}" ;;
+    *)
+      echo "STOCK_TICKER_PUBLIC_SCHEME must be http or https" >&2
+      exit 1
+      ;;
+  esac
+}
+
+public_origin() {
+  local host="${STOCK_TICKER_HOSTNAME:-stock-ticker.ai}"
+  case "${host}" in
+    *[!A-Za-z0-9.-]*)
+      echo "STOCK_TICKER_HOSTNAME must be a hostname" >&2
+      exit 1
+      ;;
+  esac
+  printf '%s://%s' "$(public_scheme)" "${host}"
+}
+
 ensure_backend_auth_secret() {
   local secret_path="${ROOT_DIR}/k8s/backend-auth-secret.yaml"
+  local cookie_secure="false"
+  if [[ "$(public_scheme)" == "https" ]]; then
+    cookie_secure="true"
+  fi
   if [[ ! -f "${secret_path}" ]]; then
     require_cmd openssl
     local session_secret capture_token
@@ -430,14 +469,42 @@ stringData:
   LOCAL_AUTH_USERNAME: ""
   LOCAL_AUTH_PASSWORD: ""
   PORTFOLIO_HISTORY_CAPTURE_TOKEN: "${capture_token}"
-  SESSION_COOKIE_SECURE: "false"
+  SESSION_COOKIE_SECURE: "${cookie_secure}"
 EOF
     )
     echo "Generated ${secret_path} (gitignored). Register a user after login, or set LOCAL_AUTH_* locally."
   else
     echo "Using existing ${secret_path}"
+    if [[ "${cookie_secure}" == "true" ]]; then
+      _set_local_secret_key "${secret_path}" SESSION_COOKIE_SECURE true
+    fi
   fi
   chmod 600 "${secret_path}"
+}
+
+_set_local_secret_key() {
+  SECRET_EDIT_PATH="$1" SECRET_EDIT_KEY="$2" SECRET_EDIT_VALUE="$3" python3 - <<'PY'
+import os
+from pathlib import Path
+
+path = Path(os.environ["SECRET_EDIT_PATH"])
+key = os.environ["SECRET_EDIT_KEY"]
+value = os.environ["SECRET_EDIT_VALUE"]
+prefix = f"  {key}:"
+lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+found = False
+out = []
+for line in lines:
+    if line.startswith(prefix):
+        out.append(f'{prefix} "{value}"\n')
+        found = True
+    else:
+        out.append(line)
+if not found:
+    raise SystemExit(f"missing {key}")
+path.write_text("".join(out), encoding="utf-8")
+PY
+  unset SECRET_EDIT_PATH SECRET_EDIT_KEY SECRET_EDIT_VALUE
 }
 
 # Placeholder rules mirror backend/app/core/auth_settings.py so the preflight
@@ -675,10 +742,162 @@ apply_backend_auth_secret() {
     if ((${#differing[@]} > 0)) && [[ "${FORCE_AUTH_SECRET_APPLY:-0}" != "1" ]]; then
       echo "Skipping apply of ${secret_path}: live Secret differs on: ${differing[*]}"
       echo "Set FORCE_AUTH_SECRET_APPLY=1 to overwrite. Do not overwrite LOCAL_AUTH_* casually (#284/#286)."
+      _ensure_https_session_cookie
       return 0
     fi
   fi
   ${KUBECTL_CMD} apply -n "${NAMESPACE}" -f "${secret_path}"
+  _ensure_https_session_cookie
+}
+
+_ensure_https_session_cookie() {
+  if [[ "$(public_scheme)" != "https" ]]; then
+    return 0
+  fi
+  local live_cookie
+  live_cookie="$(_live_secret_data_value stock-ticker-backend-auth SESSION_COOKIE_SECURE)"
+  if [[ "${live_cookie}" == "true" ]]; then
+    return 0
+  fi
+  echo "Setting SESSION_COOKIE_SECURE=true for $(public_origin) (#299)"
+  ${KUBECTL_CMD} -n "${NAMESPACE}" patch secret stock-ticker-backend-auth --type merge \
+    -p '{"stringData":{"SESSION_COOKIE_SECURE":"true"}}'
+}
+
+_live_configmap_value() {
+  ${KUBECTL_CMD} -n "${NAMESPACE}" get configmap "$1" \
+    -o "jsonpath={.data.$2}" 2>/dev/null || true
+}
+
+_write_entra_secret_file() {
+  # stdin is client_id, NUL, client_secret. Nothing is printed.
+  local path="$1"
+  local client_id="" client_secret=""
+  IFS= read -r -d '' client_id || true
+  IFS= read -r -d '' client_secret || true
+  ENTRA_SECRET_PATH="${path}" \
+    ENTRA_PRESERVE_CLIENT_ID="${client_id}" \
+    ENTRA_PRESERVE_CLIENT_SECRET="${client_secret}" \
+    python3 - <<'PY'
+import os
+from pathlib import Path
+
+def quote(value: str) -> str:
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+    return f'"{escaped}"'
+
+path = Path(os.environ["ENTRA_SECRET_PATH"])
+client_id = os.environ.get("ENTRA_PRESERVE_CLIENT_ID", "")
+client_secret = os.environ.get("ENTRA_PRESERVE_CLIENT_SECRET", "")
+path.write_text(
+    "\n".join(
+        [
+            "# Preserved by deploy-k3s.sh. Gitignored. Do not commit (#299).",
+            "apiVersion: v1",
+            "kind: Secret",
+            "metadata:",
+            "  name: stock-ticker-backend-entra",
+            "type: Opaque",
+            "stringData:",
+            f"  ENTRA_CLIENT_ID: {quote(client_id)}",
+            f"  ENTRA_CLIENT_SECRET: {quote(client_secret)}",
+            "",
+        ]
+    ),
+    encoding="utf-8",
+)
+PY
+  unset ENTRA_SECRET_PATH ENTRA_PRESERVE_CLIENT_ID ENTRA_PRESERVE_CLIENT_SECRET
+  unset client_id client_secret
+  chmod 600 "${path}"
+}
+
+apply_backend_entra_secret() {
+  # Apply before the ConfigMap. An empty ENTRA_CLIENT_ID in git would otherwise
+  # replace a client id that still lives only on stock-ticker-backend-env (#299).
+  local secret_path="${ROOT_DIR}/k8s/backend-entra-secret.yaml"
+  if ${KUBECTL_CMD} -n "${NAMESPACE}" get secret stock-ticker-backend-entra >/dev/null 2>&1; then
+    local live_entra_id
+    live_entra_id="$(_live_secret_data_value stock-ticker-backend-entra ENTRA_CLIENT_ID)"
+    if [[ -n "${live_entra_id}" ]]; then
+      echo "Keeping existing Secret stock-ticker-backend-entra"
+      return 0
+    fi
+  fi
+  if [[ -f "${secret_path}" ]]; then
+    local local_id
+    local_id="$(_local_auth_secret_value "${secret_path}" ENTRA_CLIENT_ID)"
+    if [[ -n "${local_id}" ]]; then
+      echo "Applying ${secret_path}"
+      ${KUBECTL_CMD} apply -n "${NAMESPACE}" -f "${secret_path}"
+      return 0
+    fi
+  fi
+  local live_id live_secret
+  live_id="$(_live_configmap_value stock-ticker-backend-env ENTRA_CLIENT_ID)"
+  live_secret="$(_live_configmap_value stock-ticker-backend-env ENTRA_CLIENT_SECRET)"
+  if [[ -z "${live_id}" ]]; then
+    live_id="$(_live_secret_data_value stock-ticker-backend-auth ENTRA_CLIENT_ID)"
+  fi
+  if [[ -z "${live_secret}" ]]; then
+    live_secret="$(_live_secret_data_value stock-ticker-backend-auth ENTRA_CLIENT_SECRET)"
+  fi
+  if [[ -z "${live_id}" && -z "${live_secret}" ]]; then
+    echo "No Entra client id on the cluster yet. Microsoft login stays off until ${secret_path} is filled (#299)."
+    return 0
+  fi
+  echo "Preserving Entra client credentials into stock-ticker-backend-entra before ConfigMap apply (#299)"
+  printf '%s\0%s' "${live_id}" "${live_secret}" | _write_entra_secret_file "${secret_path}"
+  unset live_id live_secret
+  ${KUBECTL_CMD} apply -n "${NAMESPACE}" -f "${secret_path}"
+}
+
+render_public_origin_manifests() {
+  local dest="$1"
+  rm -rf "${dest}"
+  mkdir -p "${dest}"
+  cp -R "${ROOT_DIR}/k8s/." "${dest}/"
+  PUBLIC_RENDER_DEST="${dest}" \
+    PUBLIC_RENDER_ORIGIN="$(public_origin)" \
+    PUBLIC_RENDER_HOST="${STOCK_TICKER_HOSTNAME}" \
+    python3 - <<'PY'
+import os
+import re
+from pathlib import Path
+
+dest = Path(os.environ["PUBLIC_RENDER_DEST"])
+origin = os.environ["PUBLIC_RENDER_ORIGIN"]
+host = os.environ["PUBLIC_RENDER_HOST"]
+backend = dest / "backend.yaml"
+text = backend.read_text(encoding="utf-8")
+text, redirect_count = re.subn(
+    r'ENTRA_REDIRECT_URI:\s*".*"',
+    f'ENTRA_REDIRECT_URI: "{origin}/api/auth/callback/entra"',
+    text,
+    count=1,
+)
+text, logout_count = re.subn(
+    r'ENTRA_POST_LOGOUT_REDIRECT_URI:\s*".*"',
+    f'ENTRA_POST_LOGOUT_REDIRECT_URI: "{origin}/"',
+    text,
+    count=1,
+)
+if redirect_count != 1 or logout_count != 1:
+    raise SystemExit("backend.yaml is missing Entra redirect settings")
+backend.write_text(text, encoding="utf-8")
+ingress = dest / "frontend-ingress.yaml"
+ingress_text = ingress.read_text(encoding="utf-8")
+ingress_text, host_count = re.subn(
+    r"host: stock-ticker\.ai",
+    f"host: {host}",
+    ingress_text,
+    count=1,
+)
+if host_count != 1:
+    raise SystemExit("frontend-ingress.yaml is missing the stock-ticker.ai host")
+ingress.write_text(ingress_text, encoding="utf-8")
+PY
+  unset PUBLIC_RENDER_DEST PUBLIC_RENDER_ORIGIN PUBLIC_RENDER_HOST
 }
 
 apply_frontend_ingress_host() {
@@ -698,22 +917,29 @@ deploy_manifests() {
   ensure_namespace
   preflight_live_auth_secrets
   apply_backend_auth_secret
+  apply_backend_entra_secret
+  local rendered_k8s
+  rendered_k8s="$(mktemp -d)"
+  # shellcheck disable=SC2064
+  trap "rm -rf '${rendered_k8s}'" RETURN
+  render_public_origin_manifests "${rendered_k8s}"
+  echo "Entra redirect origin: $(public_origin)"
   if uses_custom_app_images "${BACKEND_IMAGE}" "${FRONTEND_IMAGE}" || [[ -n "${IMAGE_PULL_SECRET}" ]]; then
     local overlay_dir
     overlay_dir="$(mktemp -d)"
     # Expand the path now; RETURN must not read a function-local after it goes out of scope.
     # shellcheck disable=SC2064
-    trap "rm -rf '${overlay_dir}'" RETURN
+    trap "rm -rf '${overlay_dir}' '${rendered_k8s}'" RETURN
     write_k8s_image_overlay \
       "${overlay_dir}" \
       "${BACKEND_IMAGE}" \
       "${FRONTEND_IMAGE}" \
       "${IMAGE_PULL_SECRET}" \
-      "${ROOT_DIR}/k8s"
+      "${rendered_k8s}"
     echo "Using image overlay: backend=${BACKEND_IMAGE} frontend=${FRONTEND_IMAGE}"
     ${KUBECTL_CMD} apply -k "${overlay_dir}"
   else
-    ${KUBECTL_CMD} apply -k "${ROOT_DIR}/k8s"
+    ${KUBECTL_CMD} apply -k "${rendered_k8s}"
   fi
   apply_frontend_ingress_host
 
