@@ -23,7 +23,10 @@ import jwt
 from jwt import PyJWKClient
 
 from app.core.config import settings
-from app.repositories.oauth_identity_repository import oauth_identity_repository
+from app.repositories.oauth_identity_repository import (
+    OAuthIdentityPersistError,
+    oauth_identity_repository,
+)
 from app.services.rate_limit_service import require_rate_limit
 
 logger = logging.getLogger(__name__)
@@ -336,12 +339,15 @@ def complete_login(
     preferred = claims.get("preferred_username") or claims.get("email") or subject
     username = _unique_username(str(preferred))
     user_id = f"u-{uuid.uuid4().hex[:16]}"
-    return oauth_identity_repository.create_user_with_identity(
-        user_id=user_id,
-        username=username,
-        provider=ENTRA_PROVIDER,
-        subject=subject,
-    )
+    try:
+        return oauth_identity_repository.create_user_with_identity(
+            user_id=user_id,
+            username=username,
+            provider=ENTRA_PROVIDER,
+            subject=subject,
+        )
+    except OAuthIdentityPersistError:
+        raise EntraAuthError(PUBLIC_SIGNIN_FAILED) from None
 
 
 def diagnose_token_error_response(response: object) -> dict[str, str | int | bool | None]:
