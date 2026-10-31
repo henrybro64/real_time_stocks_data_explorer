@@ -4,7 +4,7 @@ Checklist after deploying #278–#302 on the home k3s cluster. Tick every item, 
 
 **Target:** `main` at `589878f` or later. Read-only helper: `scripts/verify-k3s-post-deploy.sh`.
 
-Related: #284, #285, #286, #288, #293, #301, #303 (deploy leaves stale pods), #304 (planned: disable the Create account button; if it merges before this pass, treat it as an intended change).
+Related: #284, #285, #286, #288, #293, #301, #303 (deploy restarts app pods after a local image import), #304 (login Create account button disabled in the UI).
 
 ## What is included
 
@@ -34,17 +34,15 @@ No migrations have been added since `0020`, so the schema head is still `2026101
 
 ## Cluster
 
-Images are tagged `:local` and carry no commit label. `deploy-k3s.sh` can report success while the old pods keep running (#303). Until #303 is fixed, run this after each deploy, then confirm pod image IDs changed (the helper prints them):
+Images are tagged `:local` and carry no commit label. `deploy-k3s.sh` restarts backend, worker, and frontend after a local image import so the new code is what runs (#303). Confirm image IDs from the helper (or inspect the running code):
 
 ```bash
-kubectl -n stock-ticker rollout restart \
-  deploy/stock-ticker-backend deploy/stock-ticker-backend-worker deploy/stock-ticker-frontend
 ./scripts/verify-k3s-post-deploy.sh
 ```
 
 The helper is read-only. It checks pods, `/health`, worker `/livez`, alembic head, row counts (including `oauth_identities`), Redis PVC/policy/evictions, and recent `Quote Redis cache failure` lines. It does **not** prove the running image is `589878f`, sign in, or exercise the UI.
 
-- [ ] Backend, worker **and frontend** pods run code from `589878f` or later. Until #303 is fixed, confirm image IDs changed after the rollout restart, or inspect the running code.
+- [ ] Backend, worker **and frontend** pods run code from `589878f` or later. After `deploy-k3s.sh`, confirm image IDs changed or inspect the running code (#303).
 - [ ] `./scripts/verify-k3s-post-deploy.sh` passes. Paste the output on issue #287.
 - [ ] `kubectl -n stock-ticker get pods`: backend, worker, frontend, postgres and redis are all `Running` and ready, and restart counts are not climbing.
 - [ ] `stock-ticker-aws-health-heartbeat` CronJob: it was in `Error` during the 10-11 outage. Confirm that recent runs succeed. If they don't, open a separate issue (see [aws-health-monitor.md](aws-health-monitor.md)).

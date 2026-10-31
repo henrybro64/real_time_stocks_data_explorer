@@ -108,7 +108,15 @@ Portfolio history: the worker sampler (every 5 minutes) is the sole scheduler. T
 | `ci-k3s-smoke.sh` | Local k3s smoke entrypoint |
 | `verify-k3s-post-deploy.sh` | Read-only #287 cluster report (pods, health, alembic, Redis PVC/policy) |
 
-**Deploy script steps:** build backend/frontend `:local` images; import into k3d/k3s; pre-pull `postgres:16-alpine` and `redis:7-alpine`; apply manifests; wait for Redis, Postgres, backend, frontend. Registry images skip the local build/import and are pulled by the cluster instead — see [GitHub Container Registry](#github-container-registry).
+**Deploy script steps:** build backend/frontend `:local` images; import into k3d/k3s; pre-pull `postgres:16-alpine` and `redis:7-alpine`; apply manifests; **restart** `stock-ticker-backend`, `stock-ticker-backend-worker`, and `stock-ticker-frontend` when a local app image was imported and that Deployment was already Ready, so running pods are not left on a stale `:local` tag (#303). A first install has no Ready pods yet, so those Deployments are left to start once. The script then waits for Redis, Postgres, backend, worker, and frontend. A failed restart or frontend rollout prints the pod list (and frontend logs) and exits before `Deployment complete`. Postgres, Redis, and PVCs are not restarted for an image refresh. CronJobs (`stock-ticker-aws-health-heartbeat`) are not interrupted; the next Job uses the imported image. Registry images and `SKIP_IMAGE_IMPORT=1` skip that app Deployment restart and are pulled by the cluster instead — see [GitHub Container Registry](#github-container-registry).
+
+Confirm the new image is running:
+
+```bash
+kubectl -n stock-ticker get pods -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.status.containerStatuses[0].imageID}{"\n"}{end}'
+kubectl -n stock-ticker exec deploy/stock-ticker-backend -c backend -- \
+  python -c "from app.repositories import oauth_identity_repository as m; print('flush' in open(m.__file__).read())"
+```
 
 ## Postgres backup and restore
 
@@ -137,10 +145,11 @@ A **full** dump is for disaster recovery into an **empty** database (wipe the PV
 ```bash
 kubectl apply -n stock-ticker -f k8s/backend-auth-secret.yaml
 kubectl apply -k k8s
+# Hand-apply only. Prefer ./scripts/deploy-k3s.sh, which restarts these after a local import (#303).
 kubectl -n stock-ticker rollout restart deployment/stock-ticker-backend deployment/stock-ticker-backend-worker deployment/stock-ticker-frontend
 ```
 
-Keep `AUTH_ENABLED=true` and `LOCAL_AUTH_ENABLED=true` in the backend ConfigMap. The backend refuses a default/placeholder `SESSION_SECRET` or bootstrap password at startup. Placeholder **capture** tokens are cleared and logged instead of crashing the API; those capture endpoints then return 503 until you set a real token (#284). Optional bootstrap: set both `LOCAL_AUTH_USERNAME` and `LOCAL_AUTH_PASSWORD` (8+ characters). Bootstrap is **create-only** — an existing username keeps its stored password unless you set `LOCAL_AUTH_RESET_PASSWORD=true` (#286). Leave both empty to rely on self-registration.
+Keep `AUTH_ENABLED=true` and `LOCAL_AUTH_ENABLED=true` in the backend ConfigMap. The backend refuses a default/placeholder `SESSION_SECRET` or bootstrap password at startup. Placeholder **capture** tokens are cleared and logged instead of crashing the API; those capture endpoints then return 503 until you set a real token (#284). Optional bootstrap: set both `LOCAL_AUTH_USERNAME` and `LOCAL_AUTH_PASSWORD` (8+ characters). Bootstrap is **create-only** — an existing username keeps its stored password unless you set `LOCAL_AUTH_RESET_PASSWORD=true` (#286). The login-page **Create account** button is disabled in the UI (`CREATE_ACCOUNT_BUTTON_ENABLED` in `frontend/src/app/login/createAccountUi.ts`, #304); `POST /auth/register/local` is unchanged. Leave both bootstrap values empty to rely on that API or Entra.
 
 ### Upgrade note: placeholder Secrets after #267 / #284
 
@@ -366,7 +375,7 @@ Run `./scripts/k8s-diagnose.sh k3s` (or `k3d`) first and share the output when a
 - **Postgres slow first boot:** `initdb` on new volume can take several minutes — normal.
 - **Postgres Recreate strategy:** manifest uses `Recreate` so ReadWriteOnce volume is not attached by two pods during rollout.
 - **Backend Init:CrashLoopBackOff:** check `kubectl logs … -c migrate-db`; ensure Postgres is Ready and `DATABASE_URL` matches in-cluster or host Postgres setup.
-- **Stale `:local` image after rebuild:** `kubectl rollout restart deployment/stock-ticker-backend`.
+- **Stale `:local` image after rebuild:** `./scripts/deploy-k3s.sh k3s` (or `k3d`) now restarts the backend, worker, and frontend Deployments after a local import (#303). If you applied manifests by hand, restart those three Deployments yourself.
 - **buildx too old (macOS):** `brew install docker-buildx` and configure `cliPluginsExtraDirs` in `~/.docker/config.json`.
 
 **Stuck namespace Terminating**

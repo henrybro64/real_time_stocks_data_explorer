@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Read-only cluster report for #287. Does not mutate Secrets, Deployments, or rows.
 # Account sign-in and feature checks stay in docs/post-deploy-verification.md.
-# Does not prove the running :local image is a given git SHA (#303).
+# Does not prove the running :local image is a given git SHA. deploy-k3s.sh
+# restarts app Deployments after a local import (#303).
 set -u
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -60,8 +61,8 @@ do
 done
 
 echo
-echo "== Running image IDs (informational; :local tags do not carry a git SHA, #303) =="
-note "Until #303, run: kubectl -n ${NAMESPACE} rollout restart deploy/stock-ticker-backend deploy/stock-ticker-backend-worker deploy/stock-ticker-frontend"
+echo "== Running image IDs (informational; :local tags do not carry a git SHA) =="
+note "deploy-k3s.sh restarts backend/worker/frontend after a local import (#303)."
 for deploy in stock-ticker-backend stock-ticker-backend-worker stock-ticker-frontend; do
   image_id="$(
     ${KUBECTL_CMD} -n "${NAMESPACE}" get pods -l "app=${deploy}" \

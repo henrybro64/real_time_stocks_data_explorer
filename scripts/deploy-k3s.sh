@@ -38,6 +38,9 @@ Optional env:
                    Do not commit the PAT.
   SKIP_IMAGE_BUILD=1   Skip docker build (default when both images are registry references).
   SKIP_IMAGE_IMPORT=1  Skip importing app images into k3d/k3s (default for registry images).
+                   After a successful local app-image import, backend/worker/frontend
+                   Deployments are restarted so :local tags replace running pods (#303).
+                   Registry and skip-import deploys do not restart those Deployments.
   BACKEND_BASE_IMAGE   Docker base for backend (default: python:3.11-slim-bookworm)
   FRONTEND_BASE_IMAGE  Docker base for frontend (default: node:20-bookworm-slim)
   DOCKER_PULL_RETRIES / DOCKER_PULL_RETRY_DELAY_SEC  Pre-pull retry tuning (default: 3 / 15)
@@ -84,6 +87,65 @@ should_skip_app_image_import() {
     return 0
   fi
   is_registry_image "${BACKEND_IMAGE}" && is_registry_image "${FRONTEND_IMAGE}"
+}
+
+# Set when a non-registry app image is imported into k3d/k3s this run (#303).
+REFRESHED_LOCAL_BACKEND=0
+REFRESHED_LOCAL_FRONTEND=0
+# Ready replica counts sampled before apply. A first install is 0, so we do not
+# restart pods that this same apply is about to create (#303, k3s smoke).
+BACKEND_READY_BEFORE=0
+WORKER_READY_BEFORE=0
+FRONTEND_READY_BEFORE=0
+
+mark_local_image_refreshed() {
+  local image="$1"
+  if is_registry_image "${image}"; then
+    return 0
+  fi
+  if [[ "${image}" == "${BACKEND_IMAGE}" ]]; then
+    REFRESHED_LOCAL_BACKEND=1
+  fi
+  if [[ "${image}" == "${FRONTEND_IMAGE}" ]]; then
+    REFRESHED_LOCAL_FRONTEND=1
+  fi
+}
+
+deployment_was_ready() {
+  [[ "${1:-0}" =~ ^[1-9][0-9]*$ ]]
+}
+
+restart_local_app_workloads_if_imported() {
+  local -a deploys=()
+  # Restart only workloads that were already Ready. Fresh pods from this apply
+  # resolve :local at start; restarting them leaves a terminating pod that
+  # makes kubectl wait time out (k3s smoke).
+  if [[ "${REFRESHED_LOCAL_BACKEND}" == "1" ]] && deployment_was_ready "${BACKEND_READY_BEFORE:-0}"; then
+    deploys+=(stock-ticker-backend)
+  fi
+  if [[ "${REFRESHED_LOCAL_BACKEND}" == "1" ]] && deployment_was_ready "${WORKER_READY_BEFORE:-0}"; then
+    deploys+=(stock-ticker-backend-worker)
+  fi
+  if [[ "${REFRESHED_LOCAL_FRONTEND}" == "1" ]] && deployment_was_ready "${FRONTEND_READY_BEFORE:-0}"; then
+    deploys+=(stock-ticker-frontend)
+  fi
+  if [[ ${#deploys[@]} -eq 0 ]]; then
+    if [[ "${REFRESHED_LOCAL_BACKEND}" != "1" && "${REFRESHED_LOCAL_FRONTEND}" != "1" ]]; then
+      echo "Skipping app Deployment restart (no local app image was imported)"
+    else
+      echo "Skipping app Deployment restart (no previously ready app pods; fresh pods use the imported image)"
+    fi
+    return 0
+  fi
+  echo "Restarting ${deploys[*]} so imported :local images replace running pods (#303)"
+  local deploy
+  for deploy in "${deploys[@]}"; do
+    if ! ${KUBECTL_CMD} -n "${NAMESPACE}" rollout restart "deployment/${deploy}"; then
+      echo "Failed to restart deployment/${deploy} after importing a local image (#303)." >&2
+      ${KUBECTL_CMD} -n "${NAMESPACE}" get pods -l "app=${deploy}" || true
+      exit 1
+    fi
+  done
 }
 
 build_images() {
@@ -303,6 +365,15 @@ import_into_k3d() {
     fi
   fi
   k3d image import "${import_args[@]}" -c "${K3D_CLUSTER_NAME}"
+  if should_skip_app_image_import; then
+    return 0
+  fi
+  if ! is_registry_image "${BACKEND_IMAGE}"; then
+    mark_local_image_refreshed "${BACKEND_IMAGE}"
+  fi
+  if ! is_registry_image "${FRONTEND_IMAGE}"; then
+    mark_local_image_refreshed "${FRONTEND_IMAGE}"
+  fi
 }
 
 import_into_k3s() {
@@ -323,11 +394,13 @@ import_into_k3s() {
       docker save -o "${tmp_dir}/backend.tar" "${BACKEND_IMAGE}"
       echo "Importing backend image into native k3s containerd"
       sudo k3s ctr -n k8s.io images import "${tmp_dir}/backend.tar"
+      mark_local_image_refreshed "${BACKEND_IMAGE}"
     fi
     if ! is_registry_image "${FRONTEND_IMAGE}"; then
       docker save -o "${tmp_dir}/frontend.tar" "${FRONTEND_IMAGE}"
       echo "Importing frontend image into native k3s containerd"
       sudo k3s ctr -n k8s.io images import "${tmp_dir}/frontend.tar"
+      mark_local_image_refreshed "${FRONTEND_IMAGE}"
     fi
   fi
 
@@ -860,6 +933,9 @@ apply_frontend_ingress_host() {
 
 deploy_manifests() {
   echo "Applying Kubernetes manifests"
+  BACKEND_READY_BEFORE="$(${KUBECTL_CMD} -n "${NAMESPACE}" get deploy stock-ticker-backend -o jsonpath='{.status.readyReplicas}' 2>/dev/null || true)"
+  WORKER_READY_BEFORE="$(${KUBECTL_CMD} -n "${NAMESPACE}" get deploy stock-ticker-backend-worker -o jsonpath='{.status.readyReplicas}' 2>/dev/null || true)"
+  FRONTEND_READY_BEFORE="$(${KUBECTL_CMD} -n "${NAMESPACE}" get deploy stock-ticker-frontend -o jsonpath='{.status.readyReplicas}' 2>/dev/null || true)"
   ensure_image_pull_secret
   ensure_namespace
   preflight_live_auth_secrets
@@ -889,6 +965,7 @@ deploy_manifests() {
     ${KUBECTL_CMD} apply -k "${rendered_k8s}"
   fi
   apply_frontend_ingress_host
+  restart_local_app_workloads_if_imported
 
   echo "Waiting for Redis"
   ${KUBECTL_CMD} -n "${NAMESPACE}" rollout status deployment/stock-ticker-redis --timeout=180s
@@ -916,7 +993,12 @@ deploy_manifests() {
   fi
 
   echo "Waiting for frontend"
-  ${KUBECTL_CMD} -n "${NAMESPACE}" rollout status deployment/stock-ticker-frontend --timeout=180s
+  if ! ${KUBECTL_CMD} -n "${NAMESPACE}" rollout status deployment/stock-ticker-frontend --timeout=180s; then
+    echo "Frontend rollout failed." >&2
+    ${KUBECTL_CMD} -n "${NAMESPACE}" get pods -l app=stock-ticker-frontend || true
+    ${KUBECTL_CMD} -n "${NAMESPACE}" logs deployment/stock-ticker-frontend --tail=80 || true
+    exit 1
+  fi
 
   if [[ "${OBSERVABILITY:-0}" == "1" ]]; then
     echo "Applying observability stack (Prometheus / Grafana / kube-state-metrics)"
