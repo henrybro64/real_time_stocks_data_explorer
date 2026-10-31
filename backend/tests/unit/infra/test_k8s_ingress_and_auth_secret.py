@@ -104,11 +104,11 @@ def test_deploy_script_preflights_live_secrets() -> None:
 _FAKE_KUBECTL = """#!/usr/bin/env bash
 args="$*"
 [[ "$args" == *"apply "* ]] && { echo APPLIED; exit 0; }
-[[ "$args" == *"patch secret stock-ticker-backend-auth"* ]] && { echo PATCHED_COOKIE; exit 0; }
+[[ "$args" == *"patch secret stock-ticker-backend-auth"* ]] && { echo "PATCHED_COOKIE $args"; exit 0; }
 if [[ "$args" == *"get secret stock-ticker-backend-auth"* ]]; then
   if [[ "$args" == *go-template* ]]; then printf '%s\\n' SESSION_SECRET LOCAL_AUTH_USERNAME LOCAL_AUTH_PASSWORD SESSION_COOKIE_SECURE; exit 0; fi
   [[ "$args" == *"{.data.SESSION_SECRET}"* ]] && printf '%s' "$LIVE_SESSION" | base64 && exit 0
-  [[ "$args" == *SESSION_COOKIE_SECURE* ]] && printf '%s' "false" | base64 && exit 0
+  [[ "$args" == *SESSION_COOKIE_SECURE* ]] && printf '%s' "${LIVE_COOKIE:-false}" | base64 && exit 0
   exit 0
 fi
 exit 1
@@ -116,14 +116,19 @@ exit 1
 
 
 def _run_apply_backend_auth_secret(
-    tmp_path, *, force: bool, hostname: str = "stock-ticker.ai"
+    tmp_path,
+    *,
+    force: bool,
+    hostname: str = "stock-ticker.ai",
+    public_scheme: str | None = None,
+    live_cookie: str = "false",
 ) -> str:
     tmp_path.mkdir(parents=True, exist_ok=True)
     script = (_ROOT / "scripts" / "deploy-k3s.sh").read_text(encoding="utf-8")
     names = (
         "public_scheme",
         "public_origin",
-        "_ensure_https_session_cookie",
+        "_sync_session_cookie_secure",
         "_live_secret_data_value",
         "_local_auth_secret_value",
         "_live_secret_keys",
@@ -163,8 +168,12 @@ def _run_apply_backend_auth_secret(
         "LIVE_SESSION": session,
         "FORCE_AUTH_SECRET_APPLY": "1" if force else "0",
         "STOCK_TICKER_HOSTNAME": hostname,
+        "LIVE_COOKIE": live_cookie,
     }
-    env.pop("STOCK_TICKER_PUBLIC_SCHEME", None)
+    if public_scheme is None:
+        env.pop("STOCK_TICKER_PUBLIC_SCHEME", None)
+    else:
+        env["STOCK_TICKER_PUBLIC_SCHEME"] = public_scheme
     result = subprocess.run(
         ["bash", str(harness)], env=env, capture_output=True, text=True, check=True
     )
@@ -187,7 +196,49 @@ def test_https_cookie_is_patched_when_auth_secret_apply_is_skipped(tmp_path) -> 
     )
     assert "Skipping apply" in out
     assert "PATCHED_COOKIE" in out
+    assert 'SESSION_COOKIE_SECURE":"true"' in out
     assert "APPLIED" not in out
+
+
+@pytest.mark.skipif(shutil.which("bash") is None or shutil.which("base64") is None, reason="needs bash")
+def test_http_scheme_clears_a_secure_session_cookie(tmp_path) -> None:
+    out = _run_apply_backend_auth_secret(
+        tmp_path,
+        force=False,
+        hostname="stock.cloudforge64.com",
+        public_scheme="http",
+        live_cookie="true",
+    )
+    assert "Skipping apply" in out
+    assert "PATCHED_COOKIE" in out
+    assert 'SESSION_COOKIE_SECURE":"false"' in out
+    assert "APPLIED" not in out
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
+def test_local_auth_file_cookie_follows_public_scheme(tmp_path) -> None:
+    (tmp_path / "k8s").mkdir()
+    secret = tmp_path / "k8s" / "backend-auth-secret.yaml"
+    secret.write_text(
+        'stringData:\n  SESSION_SECRET: "aaaaaaaaaaaaaaaa"\n  SESSION_COOKIE_SECURE: "true"\n',
+        encoding="utf-8",
+    )
+    harness = tmp_path / "harness.sh"
+    harness.write_text(
+        "set -euo pipefail\n"
+        + _extract_deploy_funcs("public_scheme", "_set_local_secret_key", "ensure_backend_auth_secret")
+        + "\nensure_backend_auth_secret\n",
+        encoding="utf-8",
+    )
+    env = {
+        **os.environ,
+        "ROOT_DIR": str(tmp_path),
+        "STOCK_TICKER_HOSTNAME": "stock.cloudforge64.com",
+        "STOCK_TICKER_PUBLIC_SCHEME": "http",
+    }
+    subprocess.run(["bash", str(harness)], env=env, check=True, capture_output=True, text=True)
+    assert 'SESSION_COOKIE_SECURE: "false"' in secret.read_text(encoding="utf-8")
+    assert 'SESSION_SECRET: "aaaaaaaaaaaaaaaa"' in secret.read_text(encoding="utf-8")
 
 
 def test_backend_worker_deployment_is_wired() -> None:

@@ -163,7 +163,7 @@ Deploy this site so the Ingress host matches the redirect:
 STOCK_TICKER_HOSTNAME=stock.cloudforge64.com ./scripts/deploy-k3s.sh k3s
 ```
 
-`stock-ticker.ai` stays `http`. Any other hostname uses `https` unless `STOCK_TICKER_PUBLIC_SCHEME` is set, and `https` sets `SESSION_COOKIE_SECURE=true` on `stock-ticker-backend-auth` without replacing the rest of that Secret. The plain HTTP Ingress keeps the cookie flag `false`.
+`stock-ticker.ai` stays `http`. Any other hostname uses `https` unless `STOCK_TICKER_PUBLIC_SCHEME` is set. That scheme sets `SESSION_COOKIE_SECURE` on `stock-ticker-backend-auth` without replacing the rest of the Secret: `true` for https, and back to `false` for http.
 
 The browser calls `/api` on the public origin. Next.js rewrites that to the backend, so the Entra callback `https://stock.cloudforge64.com/api/auth/callback/entra` hits FastAPI with the session cookie. `SameSite=Lax` is sent on Microsoft's top-level redirect back. `SESSION_COOKIE_SECURE=true` matches that HTTPS origin.
 

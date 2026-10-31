@@ -46,9 +46,9 @@ Optional env:
   STOCK_TICKER_HOSTNAME  Ingress host (default: stock-ticker.ai). Point LAN DNS at the node IP.
   STOCK_TICKER_PUBLIC_SCHEME
                    http or https. Default is http for stock-ticker.ai and https
-                   for any other host (including stock.cloudforge64.com). The
-                   Entra redirect URI uses this scheme and the Ingress host.
-                   https also sets SESSION_COOKIE_SECURE=true (#299).
+                   for any other host (including stock.cloudforge64.com).
+                   SESSION_COOKIE_SECURE follows this scheme in both directions
+                   (#299). The Entra redirect URI stays as committed.
   FORCE_AUTH_SECRET_APPLY=1
                    Apply k8s/backend-auth-secret.yaml even when the live Secret
                    differs. Default is to skip and print differing keys (#284).
@@ -475,9 +475,7 @@ EOF
     echo "Generated ${secret_path} (gitignored). Register a user after login, or set LOCAL_AUTH_* locally."
   else
     echo "Using existing ${secret_path}"
-    if [[ "${cookie_secure}" == "true" ]]; then
-      _set_local_secret_key "${secret_path}" SESSION_COOKIE_SECURE true
-    fi
+    _set_local_secret_key "${secret_path}" SESSION_COOKIE_SECURE "${cookie_secure}"
   fi
   chmod 600 "${secret_path}"
 }
@@ -501,7 +499,9 @@ for line in lines:
     else:
         out.append(line)
 if not found:
-    raise SystemExit(f"missing {key}")
+    if out and not out[-1].endswith("\n"):
+        out.append("\n")
+    out.append(f'{prefix} "{value}"\n')
 path.write_text("".join(out), encoding="utf-8")
 PY
   unset SECRET_EDIT_PATH SECRET_EDIT_KEY SECRET_EDIT_VALUE
@@ -742,26 +742,29 @@ apply_backend_auth_secret() {
     if ((${#differing[@]} > 0)) && [[ "${FORCE_AUTH_SECRET_APPLY:-0}" != "1" ]]; then
       echo "Skipping apply of ${secret_path}: live Secret differs on: ${differing[*]}"
       echo "Set FORCE_AUTH_SECRET_APPLY=1 to overwrite. Do not overwrite LOCAL_AUTH_* casually (#284/#286)."
-      _ensure_https_session_cookie
+      _sync_session_cookie_secure
       return 0
     fi
   fi
   ${KUBECTL_CMD} apply -n "${NAMESPACE}" -f "${secret_path}"
-  _ensure_https_session_cookie
+  _sync_session_cookie_secure
 }
 
-_ensure_https_session_cookie() {
-  if [[ "$(public_scheme)" != "https" ]]; then
-    return 0
+_sync_session_cookie_secure() {
+  # Match the selected public scheme in both directions. Leaving Secure=true
+  # after a switch back to HTTP makes browsers drop the session cookie (#299).
+  local desired="false"
+  if [[ "$(public_scheme)" == "https" ]]; then
+    desired="true"
   fi
   local live_cookie
   live_cookie="$(_live_secret_data_value stock-ticker-backend-auth SESSION_COOKIE_SECURE)"
-  if [[ "${live_cookie}" == "true" ]]; then
+  if [[ "${live_cookie}" == "${desired}" ]]; then
     return 0
   fi
-  echo "Setting SESSION_COOKIE_SECURE=true for $(public_origin) (#299)"
+  echo "Setting SESSION_COOKIE_SECURE=${desired} for $(public_origin) (#299)"
   ${KUBECTL_CMD} -n "${NAMESPACE}" patch secret stock-ticker-backend-auth --type merge \
-    -p '{"stringData":{"SESSION_COOKIE_SECURE":"true"}}'
+    -p "{\"stringData\":{\"SESSION_COOKIE_SECURE\":\"${desired}\"}}"
 }
 
 apply_backend_entra_secret() {
