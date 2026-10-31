@@ -18,8 +18,10 @@ def test_entra_secret_is_example_only_and_gitignored() -> None:
     assert (_K8S / "backend-entra-secret.yaml.example").is_file()
     assert not (_K8S / "backend-entra-secret.yaml").exists()
     example = (_K8S / "backend-entra-secret.yaml.example").read_text(encoding="utf-8")
-    assert "stock-ticker-backend-entra" in example
+    assert "name: stock-ticker-entra" in example
+    assert "stock-ticker-backend-entra" not in example
     assert "ENTRA_CLIENT_SECRET:" in example
+    assert "ENTRA_CLIENT_ID:" not in example
     assert "sk-" not in example
     kustomization = (_K8S / "kustomization.yaml").read_text(encoding="utf-8")
     assert "backend-entra-secret.yaml" not in [
@@ -41,13 +43,17 @@ def test_backend_configmap_persists_nonsecret_entra() -> None:
     assert "ciamlogin.com" in backend
     assert "ENTRA_REDIRECT_URI:" in backend
     assert "callback/entra" in backend
-    assert "ENTRA_CLIENT_SECRET" not in backend
-    assert "stock-ticker-backend-entra" in backend
+    assert 'ENTRA_CLIENT_ID: "feeaf879-3149-48da-b4c6-485dfa8e5ba0"' in backend
+    assert "ENTRA_CLIENT_SECRET:" not in backend
+    assert "stock-ticker-entra" in backend
+    assert "stock-ticker-backend-entra" not in backend
     assert "optional: true" in backend
-    assert "stock-ticker-backend-entra" in worker
-    # Secret is last envFrom so it can override an empty ConfigMap client id.
+    assert "name: stock-ticker-entra" in worker
+    assert "stock-ticker-backend-entra" not in worker
+    # Secret is last envFrom. It must not contain ENTRA_CLIENT_ID or it would
+    # override the public client id in the ConfigMap.
     backend_envfrom_tail = backend.split("envFrom:")[-1]
-    assert backend_envfrom_tail.index("stock-ticker-backend-entra") > backend_envfrom_tail.index(
+    assert backend_envfrom_tail.index("stock-ticker-entra") > backend_envfrom_tail.index(
         "stock-ticker-backend-auth"
     )
 
@@ -263,27 +269,21 @@ def test_public_origin_matches_ingress_host(tmp_path) -> None:
     )
     assert lan_result.stdout.strip() == "http://stock-ticker.ai"
     lan_backend = (lan / "backend.yaml").read_text(encoding="utf-8")
-    assert 'ENTRA_REDIRECT_URI: "http://stock-ticker.ai/api/auth/callback/entra"' in lan_backend
+    assert 'ENTRA_REDIRECT_URI: "https://stock.cloudforge64.com/api/auth/callback/entra"' in lan_backend
+    assert 'ENTRA_CLIENT_ID: "feeaf879-3149-48da-b4c6-485dfa8e5ba0"' in lan_backend
+    assert "http://stock-ticker.ai/api/auth/callback/entra" not in lan_backend
 
 
 _ENTRA_KUBECTL = """#!/usr/bin/env bash
 args="$*"
-if [[ "$args" == *"get secret stock-ticker-backend-entra"* ]]; then
+if [[ "$args" == *"get secret stock-ticker-entra"* ]]; then
   if [[ "${ENTRA_SECRET_PRESENT:-}" != "1" ]]; then
     exit 1
   fi
-  if [[ "$args" == *ENTRA_CLIENT_ID* ]]; then
-    printf '%s' "${LIVE_ENTRA_ID:-}" | base64
+  if [[ "$args" == *ENTRA_CLIENT_SECRET* ]]; then
+    printf '%s' "${LIVE_ENTRA_SECRET:-}" | base64
     exit 0
   fi
-  exit 0
-fi
-if [[ "$args" == *"get configmap stock-ticker-backend-env"* ]]; then
-  if [[ "$args" == *ENTRA_CLIENT_ID* ]]; then printf '%s' "$LIVE_CLIENT_ID"; exit 0; fi
-  if [[ "$args" == *ENTRA_CLIENT_SECRET* ]]; then printf '%s' "$LIVE_CLIENT_SECRET"; exit 0; fi
-  exit 0
-fi
-if [[ "$args" == *"get secret stock-ticker-backend-auth"* ]]; then
   exit 0
 fi
 if [[ "$args" == *"apply "* ]]; then
@@ -294,8 +294,7 @@ exit 1
 """
 
 
-@pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
-def test_deploy_preserves_entra_client_id_before_configmap_apply(tmp_path) -> None:
+def _entra_apply_harness(tmp_path) -> Path:
     kubectl = tmp_path / "kubectl"
     kubectl.write_text(_ENTRA_KUBECTL, encoding="utf-8")
     kubectl.chmod(0o755)
@@ -304,24 +303,27 @@ def test_deploy_preserves_entra_client_id_before_configmap_apply(tmp_path) -> No
     harness.write_text(
         "set -euo pipefail\n"
         + _extract_deploy_funcs(
-            "_live_configmap_value",
             "_live_secret_data_value",
             "_local_auth_secret_value",
-            "_write_entra_secret_file",
             "apply_backend_entra_secret",
         )
         + "\napply_backend_entra_secret\n",
         encoding="utf-8",
     )
-    client_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    return harness
+
+
+@pytest.mark.skipif(shutil.which("bash") is None or shutil.which("base64") is None, reason="needs bash")
+def test_deploy_keeps_existing_entra_secret_without_printing_it(tmp_path) -> None:
+    harness = _entra_apply_harness(tmp_path)
     client_secret = "entra-secret-value-do-not-print"
     env = {
         **os.environ,
         "ROOT_DIR": str(tmp_path),
         "NAMESPACE": "stock-ticker",
-        "KUBECTL_CMD": str(kubectl),
-        "LIVE_CLIENT_ID": client_id,
-        "LIVE_CLIENT_SECRET": client_secret,
+        "KUBECTL_CMD": str(tmp_path / "kubectl"),
+        "ENTRA_SECRET_PRESENT": "1",
+        "LIVE_ENTRA_SECRET": client_secret,
     }
     result = subprocess.run(
         ["bash", str(harness)],
@@ -330,49 +332,86 @@ def test_deploy_preserves_entra_client_id_before_configmap_apply(tmp_path) -> No
         text=True,
         check=True,
     )
-    assert "APPLIED" in result.stdout
-    assert client_id not in result.stdout
+    assert "Keeping existing Secret stock-ticker-entra" in result.stdout
+    assert "APPLIED" not in result.stdout
     assert client_secret not in result.stdout
     assert client_secret not in result.stderr
-    written = (tmp_path / "k8s" / "backend-entra-secret.yaml").read_text(encoding="utf-8")
-    assert client_id in written
-    assert client_secret in written
-    assert (tmp_path / "k8s" / "backend-entra-secret.yaml").stat().st_mode & 0o077 == 0
+    assert not (tmp_path / "k8s" / "backend-entra-secret.yaml").exists()
 
 
-@pytest.mark.skipif(shutil.which("bash") is None or shutil.which("base64") is None, reason="needs bash")
-def test_empty_entra_secret_does_not_block_preserving_the_configmap_client_id(tmp_path) -> None:
-    kubectl = tmp_path / "kubectl"
-    kubectl.write_text(_ENTRA_KUBECTL, encoding="utf-8")
-    kubectl.chmod(0o755)
-    (tmp_path / "k8s").mkdir()
-    harness = tmp_path / "harness.sh"
-    harness.write_text(
-        "set -euo pipefail\n"
-        + _extract_deploy_funcs(
-            "_live_configmap_value",
-            "_live_secret_data_value",
-            "_local_auth_secret_value",
-            "_write_entra_secret_file",
-            "apply_backend_entra_secret",
-        )
-        + "\napply_backend_entra_secret\n",
-        encoding="utf-8",
-    )
-    client_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+@pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
+def test_deploy_does_not_overwrite_an_empty_entra_secret_or_harvest_configmap(tmp_path) -> None:
+    harness = _entra_apply_harness(tmp_path)
     env = {
         **os.environ,
         "ROOT_DIR": str(tmp_path),
         "NAMESPACE": "stock-ticker",
-        "KUBECTL_CMD": str(kubectl),
+        "KUBECTL_CMD": str(tmp_path / "kubectl"),
         "ENTRA_SECRET_PRESENT": "1",
-        "LIVE_ENTRA_ID": "",
-        "LIVE_CLIENT_ID": client_id,
-        "LIVE_CLIENT_SECRET": "secret-value",
+        "LIVE_ENTRA_SECRET": "",
+        "LIVE_CLIENT_ID": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+        "LIVE_CLIENT_SECRET": "harvested-secret-do-not-write",
     }
     result = subprocess.run(
         ["bash", str(harness)], env=env, capture_output=True, text=True, check=True
     )
-    assert "Keeping existing Secret" not in result.stdout
+    assert "Leaving it unchanged" in result.stdout
+    assert "APPLIED" not in result.stdout
+    assert "harvested-secret-do-not-write" not in result.stdout
+    assert not (tmp_path / "k8s" / "backend-entra-secret.yaml").exists()
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
+def test_deploy_applies_local_entra_file_only_when_the_secret_is_absent(tmp_path) -> None:
+    harness = _entra_apply_harness(tmp_path)
+    secret_value = "local-file-secret-do-not-print"
+    (tmp_path / "k8s" / "backend-entra-secret.yaml").write_text(
+        "apiVersion: v1\nkind: Secret\nmetadata:\n  name: stock-ticker-entra\n"
+        "stringData:\n  ENTRA_CLIENT_SECRET: \"" + secret_value + "\"\n",
+        encoding="utf-8",
+    )
+    env = {
+        **os.environ,
+        "ROOT_DIR": str(tmp_path),
+        "NAMESPACE": "stock-ticker",
+        "KUBECTL_CMD": str(tmp_path / "kubectl"),
+    }
+    result = subprocess.run(
+        ["bash", str(harness)], env=env, capture_output=True, text=True, check=True
+    )
     assert "APPLIED" in result.stdout
-    assert client_id in (tmp_path / "k8s" / "backend-entra-secret.yaml").read_text(encoding="utf-8")
+    assert secret_value not in result.stdout
+    assert secret_value not in result.stderr
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
+def test_deploy_warns_when_ingress_host_differs_from_entra_redirect(tmp_path) -> None:
+    harness = tmp_path / "warn.sh"
+    harness.write_text(
+        "set -euo pipefail\n"
+        + _extract_deploy_funcs("warn_if_entra_redirect_host_differs")
+        + "\nwarn_if_entra_redirect_host_differs\n",
+        encoding="utf-8",
+    )
+    mismatch = subprocess.run(
+        ["bash", str(harness)],
+        env={**os.environ, "ROOT_DIR": str(_ROOT), "STOCK_TICKER_HOSTNAME": "stock-ticker.ai"},
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert "stock.cloudforge64.com" in mismatch.stderr
+    assert "stock-ticker.ai" in mismatch.stderr
+
+    match = subprocess.run(
+        ["bash", str(harness)],
+        env={
+            **os.environ,
+            "ROOT_DIR": str(_ROOT),
+            "STOCK_TICKER_HOSTNAME": "stock.cloudforge64.com",
+        },
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert match.stderr == ""

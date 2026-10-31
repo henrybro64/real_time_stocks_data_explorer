@@ -12,7 +12,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi import HTTPException
 from starlette.requests import Request
 
-from app.core.logging import JsonLogFormatter
+from app.core.logging import ConsoleLogFormatter, JsonLogFormatter
 from app.services import entra_auth_service as entra
 
 
@@ -87,11 +87,13 @@ def _fake_get(_url, timeout=10.0, **_kwargs):
 
 
 def _log_blob(caplog: pytest.LogCaptureFixture) -> str:
-    formatter = JsonLogFormatter()
+    json_formatter = JsonLogFormatter()
+    console_formatter = ConsoleLogFormatter()
     parts: list[str] = []
     for record in caplog.records:
         parts.append(record.getMessage())
-        parts.append(formatter.format(record))
+        parts.append(json_formatter.format(record))
+        parts.append(console_formatter.format(record))
         parts.append(repr(record.__dict__))
     return "\n".join(parts)
 
@@ -289,6 +291,79 @@ def test_complete_login_creates_new_user_for_unknown_subject(entra_settings, mon
     assert created["user_id"].startswith("u-")
 
 
+def test_matching_local_username_does_not_reuse_that_user(entra_settings, monkeypatch) -> None:
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    public_key = private_key.public_key()
+    issuer = "https://login.example/tenant-1/v2.0"
+    nonce = "nonce-collision"
+    id_token = jwt.encode(
+        {
+            "sub": "oid-subject-collision",
+            "aud": "client-1",
+            "iss": issuer,
+            "exp": 4_000_000_000,
+            "iat": 1_700_000_000,
+            "nonce": nonce,
+            "preferred_username": "local-user@example.com",
+            "email": "local-user@example.com",
+        },
+        private_key,
+        algorithm="RS256",
+        headers={"kid": "k1"},
+    )
+
+    class _Key:
+        def __init__(self):
+            self.key = public_key
+
+    class _Jwks:
+        def __init__(self, uri):
+            self.uri = uri
+
+        def get_signing_key_from_jwt(self, token):
+            return _Key()
+
+    created: dict = {}
+    monkeypatch.setattr(entra.oauth_identity_repository, "is_available", lambda: True)
+    monkeypatch.setattr(entra.oauth_identity_repository, "get_user_id", lambda **kwargs: None)
+
+    def fake_create(**kwargs):
+        created.update(kwargs)
+        return kwargs["user_id"]
+
+    monkeypatch.setattr(
+        entra.oauth_identity_repository,
+        "create_user_with_identity",
+        fake_create,
+    )
+
+    def existing_local_user(username: str):
+        if username == "local-userexample.com":
+            return {"id": "u-local-existing", "username": username}
+        return None
+
+    monkeypatch.setattr(
+        "app.repositories.user_repository.user_repository.get_by_username",
+        existing_local_user,
+    )
+
+    uid = entra.complete_login(
+        code="auth-code",
+        state="state-1",
+        expected_state="state-1",
+        expected_nonce=nonce,
+        code_verifier="pkce-verifier-1",
+        client_ip="127.0.0.1",
+        http_get=_fake_get,
+        http_post=lambda url, data=None, timeout=15.0, **kwargs: _FakeResponse({"id_token": id_token}),
+        jwks_client_factory=_Jwks,
+    )
+    assert uid != "u-local-existing"
+    assert uid.startswith("u-")
+    assert created["username"] == "local-userexample.com-1"
+    assert created["subject"] == "oid-subject-collision"
+
+
 def test_complete_login_rejects_bad_state(entra_settings) -> None:
     with pytest.raises(entra.EntraAuthError, match="Invalid OAuth state"):
         entra.complete_login(
@@ -362,11 +437,17 @@ def test_token_invalid_client_logs_aadsts_without_secrets(
     assert record.entra_trace_id == _TRACE
     assert record.entra_request_id == _MS_REQUEST
     assert record.client_secret_configured is True
+    assert record.entra_client_id == "client-1"
     blob = _log_blob(caplog)
     _assert_no_secrets(blob)
     payload = json.loads(JsonLogFormatter().format(record))
     assert "error_description" not in payload
     assert payload["aadsts_code"] == "AADSTS7000215"
+    console = ConsoleLogFormatter().format(record)
+    assert "aadsts_code=AADSTS7000215" in console
+    assert "oauth_error=invalid_client" in console
+    assert "client_secret_configured=True" in console
+    assert "http_status=401" in console
 
 
 def test_token_invalid_grant_extracts_aadsts_from_description(
@@ -391,6 +472,28 @@ def test_token_invalid_grant_extracts_aadsts_from_description(
     assert record.http_status == 400
     assert record.oauth_error == "invalid_grant"
     assert record.aadsts_code == "AADSTS9002313"
+    _assert_no_secrets(_log_blob(caplog))
+
+
+def test_token_error_description_ids_are_logged_without_the_description(
+    entra_settings, monkeypatch, caplog
+) -> None:
+    caplog.set_level(logging.ERROR, logger="app.services.entra_auth_service")
+    description = (
+        "AADSTS7000215: Invalid client secret provided. "
+        f"Trace ID: {_TRACE} Correlation ID: {_CORR} {_SECRET} {_AUTH_CODE}"
+    )
+    response = _FakeResponse(
+        {"error": "invalid_client", "error_description": description},
+        status_code=401,
+    )
+    with pytest.raises(entra.EntraAuthError, match="Entra token exchange failed"):
+        _failing_token_login(entra_settings, monkeypatch, response)
+    record = caplog.records[-1]
+    assert record.aadsts_code == "AADSTS7000215"
+    assert record.entra_trace_id == _TRACE
+    assert record.entra_correlation_id == _CORR
+    assert record.client_secret_configured is False
     _assert_no_secrets(_log_blob(caplog))
 
 

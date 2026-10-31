@@ -7,8 +7,9 @@ resources:
   - postgres.yaml
   - backend-database-secret.yaml
   # backend-auth-secret.yaml and backend-entra-secret.yaml are not in this
-  # kustomization. Apply them separately (see docs/kubernetes.md). Never
-  # commit client secrets (#299).
+  # kustomization. The live client secret is Secret stock-ticker-entra
+  # (key ENTRA_CLIENT_SECRET). deploy-k3s.sh does not overwrite it.
+  # Never commit client secrets (#299).
   - backend.yaml
   - backend-worker.yaml
   - backend-history-capture-cronjob.yaml

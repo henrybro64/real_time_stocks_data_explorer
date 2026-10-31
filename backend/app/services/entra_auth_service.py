@@ -360,23 +360,35 @@ def diagnose_token_error_response(response: object) -> dict[str, str | int | boo
     if oauth_error is None and payload is None:
         oauth_error = "malformed_response"
 
+    description = ""
+    if payload is not None and isinstance(payload.get("error_description"), str):
+        description = payload["error_description"]
     aadsts = extract_aadsts_code(
         (payload or {}).get("error_codes"),
         (payload or {}).get("error"),
     )
-    # Parse AADSTS out of error_description in memory; never log the description.
-    if aadsts is None and payload is not None:
-        aadsts = extract_aadsts_code(payload.get("error_description"))
+    # Parse AADSTS and ids out of error_description in memory; never log it.
+    if aadsts is None:
+        aadsts = extract_aadsts_code(description)
+    correlation = _safe_correlation_id((payload or {}).get("correlation_id"))
+    trace = _safe_correlation_id((payload or {}).get("trace_id"))
+    if correlation is None:
+        match = _CORRELATION_ID_RE.search(description)
+        correlation = _safe_correlation_id(match.group(1)) if match else None
+    if trace is None:
+        match = _TRACE_ID_RE.search(description)
+        trace = _safe_correlation_id(match.group(1)) if match else None
 
     return {
         "http_status": http_status,
         "oauth_error": oauth_error,
         "aadsts_code": aadsts,
-        "entra_correlation_id": _safe_correlation_id((payload or {}).get("correlation_id")),
-        "entra_trace_id": _safe_correlation_id((payload or {}).get("trace_id")),
+        "entra_correlation_id": correlation,
+        "entra_trace_id": trace,
         "entra_request_id": _header_id(response, "x-ms-request-id")
         or _safe_correlation_id((payload or {}).get("request_id")),
         "redirect_uri_host": _redirect_uri_host(),
+        "entra_client_id": settings.entra_client_id.strip(),
         "client_secret_configured": bool(settings.entra_client_secret.strip()),
     }
 
@@ -413,6 +425,7 @@ def _log_token_exchange_failure(
             "entra_trace_id": entra_trace_id,
             "entra_request_id": entra_request_id,
             "redirect_uri_host": _redirect_uri_host(),
+            "entra_client_id": settings.entra_client_id.strip(),
             "client_secret_configured": client_secret_configured,
         },
     )

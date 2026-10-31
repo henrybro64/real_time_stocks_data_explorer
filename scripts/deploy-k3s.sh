@@ -764,92 +764,53 @@ _ensure_https_session_cookie() {
     -p '{"stringData":{"SESSION_COOKIE_SECURE":"true"}}'
 }
 
-_live_configmap_value() {
-  ${KUBECTL_CMD} -n "${NAMESPACE}" get configmap "$1" \
-    -o "jsonpath={.data.$2}" 2>/dev/null || true
-}
-
-_write_entra_secret_file() {
-  # stdin is client_id, NUL, client_secret. Nothing is printed.
-  local path="$1"
-  local client_id="" client_secret=""
-  IFS= read -r -d '' client_id || true
-  IFS= read -r -d '' client_secret || true
-  ENTRA_SECRET_PATH="${path}" \
-    ENTRA_PRESERVE_CLIENT_ID="${client_id}" \
-    ENTRA_PRESERVE_CLIENT_SECRET="${client_secret}" \
-    python3 - <<'PY'
-import os
-from pathlib import Path
-
-def quote(value: str) -> str:
-    escaped = value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
-    return f'"{escaped}"'
-
-path = Path(os.environ["ENTRA_SECRET_PATH"])
-client_id = os.environ.get("ENTRA_PRESERVE_CLIENT_ID", "")
-client_secret = os.environ.get("ENTRA_PRESERVE_CLIENT_SECRET", "")
-path.write_text(
-    "\n".join(
-        [
-            "# Preserved by deploy-k3s.sh. Gitignored. Do not commit (#299).",
-            "apiVersion: v1",
-            "kind: Secret",
-            "metadata:",
-            "  name: stock-ticker-backend-entra",
-            "type: Opaque",
-            "stringData:",
-            f"  ENTRA_CLIENT_ID: {quote(client_id)}",
-            f"  ENTRA_CLIENT_SECRET: {quote(client_secret)}",
-            "",
-        ]
-    ),
-    encoding="utf-8",
-)
-PY
-  unset ENTRA_SECRET_PATH ENTRA_PRESERVE_CLIENT_ID ENTRA_PRESERVE_CLIENT_SECRET
-  unset client_id client_secret
-  chmod 600 "${path}"
-}
-
 apply_backend_entra_secret() {
-  # Apply before the ConfigMap. An empty ENTRA_CLIENT_ID in git would otherwise
-  # replace a client id that still lives only on stock-ticker-backend-env (#299).
-  local secret_path="${ROOT_DIR}/k8s/backend-entra-secret.yaml"
-  if ${KUBECTL_CMD} -n "${NAMESPACE}" get secret stock-ticker-backend-entra >/dev/null 2>&1; then
-    local live_entra_id
-    live_entra_id="$(_live_secret_data_value stock-ticker-backend-entra ENTRA_CLIENT_ID)"
-    if [[ -n "${live_entra_id}" ]]; then
-      echo "Keeping existing Secret stock-ticker-backend-entra"
-      return 0
+  # The live cluster already has Secret stock-ticker-entra. Never replace it
+  # from this script: that would risk overwriting ENTRA_CLIENT_SECRET (#299).
+  # The client id is public and lives in the ConfigMap.
+  if ${KUBECTL_CMD} -n "${NAMESPACE}" get secret stock-ticker-entra >/dev/null 2>&1; then
+    local live_secret
+    live_secret="$(_live_secret_data_value stock-ticker-entra ENTRA_CLIENT_SECRET)"
+    if [[ -n "${live_secret}" ]]; then
+      echo "Keeping existing Secret stock-ticker-entra (ENTRA_CLIENT_SECRET is set; value not printed)"
+    else
+      echo "Secret stock-ticker-entra exists but ENTRA_CLIENT_SECRET is empty. Leaving it unchanged."
     fi
+    return 0
   fi
+  local secret_path="${ROOT_DIR}/k8s/backend-entra-secret.yaml"
   if [[ -f "${secret_path}" ]]; then
-    local local_id
-    local_id="$(_local_auth_secret_value "${secret_path}" ENTRA_CLIENT_ID)"
-    if [[ -n "${local_id}" ]]; then
-      echo "Applying ${secret_path}"
+    local local_secret
+    local_secret="$(_local_auth_secret_value "${secret_path}" ENTRA_CLIENT_SECRET)"
+    if [[ -n "${local_secret}" ]]; then
+      echo "Applying ${secret_path} (Secret stock-ticker-entra was absent)"
       ${KUBECTL_CMD} apply -n "${NAMESPACE}" -f "${secret_path}"
       return 0
     fi
   fi
-  local live_id live_secret
-  live_id="$(_live_configmap_value stock-ticker-backend-env ENTRA_CLIENT_ID)"
-  live_secret="$(_live_configmap_value stock-ticker-backend-env ENTRA_CLIENT_SECRET)"
-  if [[ -z "${live_id}" ]]; then
-    live_id="$(_live_secret_data_value stock-ticker-backend-auth ENTRA_CLIENT_ID)"
+  echo "Secret stock-ticker-entra was not found. Microsoft token exchange has no client secret until you create it."
+  echo "Do not print the value. Example:"
+  echo "  kubectl -n ${NAMESPACE} create secret generic stock-ticker-entra --from-literal=ENTRA_CLIENT_SECRET=..."
+}
+
+warn_if_entra_redirect_host_differs() {
+  local redirect_host host
+  host="${STOCK_TICKER_HOSTNAME:-stock-ticker.ai}"
+  redirect_host="$(
+    python3 - "${ROOT_DIR}/k8s/backend.yaml" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+text = Path(sys.argv[1]).read_text(encoding="utf-8")
+match = re.search(r'ENTRA_REDIRECT_URI:\s*"https?://([^"/]+)', text)
+print(match.group(1) if match else "")
+PY
+  )"
+  if [[ -n "${redirect_host}" && "${redirect_host}" != "${host}" ]]; then
+    echo "Warning: ENTRA_REDIRECT_URI host is ${redirect_host} but Ingress host is ${host}." >&2
+    echo "Deploy with STOCK_TICKER_HOSTNAME=${redirect_host} so the browser origin matches Entra (#299)." >&2
   fi
-  if [[ -z "${live_secret}" ]]; then
-    live_secret="$(_live_secret_data_value stock-ticker-backend-auth ENTRA_CLIENT_SECRET)"
-  fi
-  if [[ -z "${live_id}" && -z "${live_secret}" ]]; then
-    echo "No Entra client id on the cluster yet. Microsoft login stays off until ${secret_path} is filled (#299)."
-    return 0
-  fi
-  echo "Preserving Entra client credentials into stock-ticker-backend-entra before ConfigMap apply (#299)"
-  printf '%s\0%s' "${live_id}" "${live_secret}" | _write_entra_secret_file "${secret_path}"
-  unset live_id live_secret
-  ${KUBECTL_CMD} apply -n "${NAMESPACE}" -f "${secret_path}"
 }
 
 render_public_origin_manifests() {
@@ -857,8 +818,9 @@ render_public_origin_manifests() {
   rm -rf "${dest}"
   mkdir -p "${dest}"
   cp -R "${ROOT_DIR}/k8s/." "${dest}/"
+  # Leave Entra redirect URIs as committed. Rewriting them would drop
+  # https://stock.cloudforge64.com on a default stock-ticker.ai deploy (#299).
   PUBLIC_RENDER_DEST="${dest}" \
-    PUBLIC_RENDER_ORIGIN="$(public_origin)" \
     PUBLIC_RENDER_HOST="${STOCK_TICKER_HOSTNAME}" \
     python3 - <<'PY'
 import os
@@ -866,25 +828,7 @@ import re
 from pathlib import Path
 
 dest = Path(os.environ["PUBLIC_RENDER_DEST"])
-origin = os.environ["PUBLIC_RENDER_ORIGIN"]
 host = os.environ["PUBLIC_RENDER_HOST"]
-backend = dest / "backend.yaml"
-text = backend.read_text(encoding="utf-8")
-text, redirect_count = re.subn(
-    r'ENTRA_REDIRECT_URI:\s*".*"',
-    f'ENTRA_REDIRECT_URI: "{origin}/api/auth/callback/entra"',
-    text,
-    count=1,
-)
-text, logout_count = re.subn(
-    r'ENTRA_POST_LOGOUT_REDIRECT_URI:\s*".*"',
-    f'ENTRA_POST_LOGOUT_REDIRECT_URI: "{origin}/"',
-    text,
-    count=1,
-)
-if redirect_count != 1 or logout_count != 1:
-    raise SystemExit("backend.yaml is missing Entra redirect settings")
-backend.write_text(text, encoding="utf-8")
 ingress = dest / "frontend-ingress.yaml"
 ingress_text = ingress.read_text(encoding="utf-8")
 ingress_text, host_count = re.subn(
@@ -923,7 +867,7 @@ deploy_manifests() {
   # shellcheck disable=SC2064
   trap "rm -rf '${rendered_k8s}'" RETURN
   render_public_origin_manifests "${rendered_k8s}"
-  echo "Entra redirect origin: $(public_origin)"
+  warn_if_entra_redirect_host_differs
   if uses_custom_app_images "${BACKEND_IMAGE}" "${FRONTEND_IMAGE}" || [[ -n "${IMAGE_PULL_SECRET}" ]]; then
     local overlay_dir
     overlay_dir="$(mktemp -d)"
