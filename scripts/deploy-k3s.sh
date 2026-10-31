@@ -38,6 +38,9 @@ Optional env:
                    Do not commit the PAT.
   SKIP_IMAGE_BUILD=1   Skip docker build (default when both images are registry references).
   SKIP_IMAGE_IMPORT=1  Skip importing app images into k3d/k3s (default for registry images).
+                   After a successful local app-image import, backend/worker/frontend
+                   Deployments are restarted so :local tags replace running pods (#303).
+                   Registry and skip-import deploys do not restart those Deployments.
   BACKEND_BASE_IMAGE   Docker base for backend (default: python:3.11-slim-bookworm)
   FRONTEND_BASE_IMAGE  Docker base for frontend (default: node:20-bookworm-slim)
   DOCKER_PULL_RETRIES / DOCKER_PULL_RETRY_DELAY_SEC  Pre-pull retry tuning (default: 3 / 15)
@@ -84,6 +87,46 @@ should_skip_app_image_import() {
     return 0
   fi
   is_registry_image "${BACKEND_IMAGE}" && is_registry_image "${FRONTEND_IMAGE}"
+}
+
+# Set when a non-registry app image is imported into k3d/k3s this run (#303).
+REFRESHED_LOCAL_BACKEND=0
+REFRESHED_LOCAL_FRONTEND=0
+
+mark_local_image_refreshed() {
+  local image="$1"
+  if is_registry_image "${image}"; then
+    return 0
+  fi
+  if [[ "${image}" == "${BACKEND_IMAGE}" ]]; then
+    REFRESHED_LOCAL_BACKEND=1
+  fi
+  if [[ "${image}" == "${FRONTEND_IMAGE}" ]]; then
+    REFRESHED_LOCAL_FRONTEND=1
+  fi
+}
+
+restart_local_app_workloads_if_imported() {
+  local -a deploys=()
+  if [[ "${REFRESHED_LOCAL_BACKEND}" == "1" ]]; then
+    deploys+=(stock-ticker-backend stock-ticker-backend-worker)
+  fi
+  if [[ "${REFRESHED_LOCAL_FRONTEND}" == "1" ]]; then
+    deploys+=(stock-ticker-frontend)
+  fi
+  if [[ ${#deploys[@]} -eq 0 ]]; then
+    echo "Skipping app Deployment restart (no local app image was imported)"
+    return 0
+  fi
+  echo "Restarting ${deploys[*]} so imported :local images replace running pods (#303)"
+  local deploy
+  for deploy in "${deploys[@]}"; do
+    if ! ${KUBECTL_CMD} -n "${NAMESPACE}" rollout restart "deployment/${deploy}"; then
+      echo "Failed to restart deployment/${deploy} after importing a local image (#303)." >&2
+      ${KUBECTL_CMD} -n "${NAMESPACE}" get pods -l "app=${deploy}" || true
+      exit 1
+    fi
+  done
 }
 
 build_images() {
@@ -303,6 +346,15 @@ import_into_k3d() {
     fi
   fi
   k3d image import "${import_args[@]}" -c "${K3D_CLUSTER_NAME}"
+  if should_skip_app_image_import; then
+    return 0
+  fi
+  if ! is_registry_image "${BACKEND_IMAGE}"; then
+    mark_local_image_refreshed "${BACKEND_IMAGE}"
+  fi
+  if ! is_registry_image "${FRONTEND_IMAGE}"; then
+    mark_local_image_refreshed "${FRONTEND_IMAGE}"
+  fi
 }
 
 import_into_k3s() {
@@ -323,11 +375,13 @@ import_into_k3s() {
       docker save -o "${tmp_dir}/backend.tar" "${BACKEND_IMAGE}"
       echo "Importing backend image into native k3s containerd"
       sudo k3s ctr -n k8s.io images import "${tmp_dir}/backend.tar"
+      mark_local_image_refreshed "${BACKEND_IMAGE}"
     fi
     if ! is_registry_image "${FRONTEND_IMAGE}"; then
       docker save -o "${tmp_dir}/frontend.tar" "${FRONTEND_IMAGE}"
       echo "Importing frontend image into native k3s containerd"
       sudo k3s ctr -n k8s.io images import "${tmp_dir}/frontend.tar"
+      mark_local_image_refreshed "${FRONTEND_IMAGE}"
     fi
   fi
 
@@ -889,6 +943,7 @@ deploy_manifests() {
     ${KUBECTL_CMD} apply -k "${rendered_k8s}"
   fi
   apply_frontend_ingress_host
+  restart_local_app_workloads_if_imported
 
   echo "Waiting for Redis"
   ${KUBECTL_CMD} -n "${NAMESPACE}" rollout status deployment/stock-ticker-redis --timeout=180s
@@ -916,7 +971,12 @@ deploy_manifests() {
   fi
 
   echo "Waiting for frontend"
-  ${KUBECTL_CMD} -n "${NAMESPACE}" rollout status deployment/stock-ticker-frontend --timeout=180s
+  if ! ${KUBECTL_CMD} -n "${NAMESPACE}" rollout status deployment/stock-ticker-frontend --timeout=180s; then
+    echo "Frontend rollout failed." >&2
+    ${KUBECTL_CMD} -n "${NAMESPACE}" get pods -l app=stock-ticker-frontend || true
+    ${KUBECTL_CMD} -n "${NAMESPACE}" logs deployment/stock-ticker-frontend --tail=80 || true
+    exit 1
+  fi
 
   if [[ "${OBSERVABILITY:-0}" == "1" ]]; then
     echo "Applying observability stack (Prometheus / Grafana / kube-state-metrics)"

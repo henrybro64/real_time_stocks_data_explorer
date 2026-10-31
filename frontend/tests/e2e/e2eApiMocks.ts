@@ -376,6 +376,7 @@ type E2eAuthStatus = {
     local: boolean;
     google: boolean;
     github: boolean;
+    entra?: boolean;
   };
   user: E2eAuthUser | null;
 };
@@ -426,6 +427,17 @@ function getState(page: Page): E2eMockState {
     pageStates.set(page, state);
   }
   return state;
+}
+
+export function setE2eSignedOut(page: Page) {
+  const state = getState(page);
+  state.authStatus = {
+    authEnabled: true,
+    loggedIn: false,
+    providers: { local: true, google: false, github: false, entra: true },
+    user: null,
+  };
+  state.authStatusDown = false;
 }
 
 export function setE2eAuthenticatedUser(page: Page, user: E2eAuthUser) {

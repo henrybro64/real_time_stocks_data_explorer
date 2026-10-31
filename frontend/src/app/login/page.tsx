@@ -14,6 +14,7 @@ import { useRouter } from "next/navigation";
 import { Suspense, useEffect, useState } from "react";
 import { entraLoginUrl, fetchAuthStatus, loginLocal, registerLocal } from "../../services/api/auth";
 import { toApiError } from "../../services/api/client";
+import { CREATE_ACCOUNT_BUTTON_ENABLED } from "./createAccountUi";
 
 function LoginFallback() {
   return (
@@ -83,7 +84,9 @@ function LoginPageInner() {
               <p className="cds--label-01 app-login-eyebrow">Stock Ticker</p>
               <Heading className="app-login-title">Sign in</Heading>
               <p className="cds--body-compact-01 app-login-subtitle">
-                Sign in with your account. New here? Create one in one click.
+                {CREATE_ACCOUNT_BUTTON_ENABLED
+                  ? "Sign in with your account. New here? Create one in one click."
+                  : "Sign in with your account."}
               </p>
             </div>
             {localError ? (
@@ -140,7 +143,12 @@ function LoginPageInner() {
                   <Button
                     kind="tertiary"
                     size="lg"
+                    type="button"
+                    disabled={!CREATE_ACCOUNT_BUTTON_ENABLED}
                     onClick={async () => {
+                      if (!CREATE_ACCOUNT_BUTTON_ENABLED) {
+                        return;
+                      }
                       setLocalError(null);
                       const uname = localUsername.trim();
                       if (!uname || localPassword.length < 8) {
