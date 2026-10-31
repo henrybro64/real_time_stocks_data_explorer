@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Read-only cluster report for #287. Does not mutate Secrets, Deployments, or rows.
 # Account sign-in and feature checks stay in docs/post-deploy-verification.md.
+# Does not prove the running :local image is a given git SHA (#303).
 set -u
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -59,17 +60,52 @@ do
 done
 
 echo
+echo "== Running image IDs (informational; :local tags do not carry a git SHA, #303) =="
+note "Until #303, run: kubectl -n ${NAMESPACE} rollout restart deploy/stock-ticker-backend deploy/stock-ticker-backend-worker deploy/stock-ticker-frontend"
+for deploy in stock-ticker-backend stock-ticker-backend-worker stock-ticker-frontend; do
+  image_id="$(
+    ${KUBECTL_CMD} -n "${NAMESPACE}" get pods -l "app=${deploy}" \
+      -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.status.containerStatuses[0].imageID}{"\n"}{end}' \
+      2>/dev/null || true
+  )"
+  if [[ -n "${image_id}" ]]; then
+    note "${image_id}"
+  else
+    fail "could not read imageID for ${deploy}"
+  fi
+done
+
+echo
 echo "== Heartbeat job =="
 if ${KUBECTL_CMD} -n "${NAMESPACE}" get cronjob stock-ticker-aws-health-heartbeat >/dev/null 2>&1; then
-  ${KUBECTL_CMD} -n "${NAMESPACE}" get jobs -l job-name --sort-by=.metadata.creationTimestamp 2>/dev/null \
+  ${KUBECTL_CMD} -n "${NAMESPACE}" get jobs --sort-by=.metadata.creationTimestamp 2>/dev/null \
     | awk 'NR==1 || /aws-health-heartbeat/' || true
+  # Pipe-separated fields keep a missing .status.succeeded from sliding into
+  # the failed count. --sort-by is ascending, so the last heartbeat row is newest.
+  # A failed Job often omits succeeded; that must count as 0, not as success.
   last_job="$(
-    ${KUBECTL_CMD} -n "${NAMESPACE}" get jobs \
-      -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.status.succeeded}{" "}{.status.failed}{"\n"}{end}' \
-      2>/dev/null | awk '/aws-health-heartbeat/ {name=$1; ok=$2; bad=$3} END {print name, ok, bad}'
+    ${KUBECTL_CMD} -n "${NAMESPACE}" get jobs --sort-by=.metadata.creationTimestamp \
+      -o jsonpath='{range .items[*]}{.metadata.name}{"|"}{.metadata.creationTimestamp}{"|"}{.status.succeeded}{"|"}{.status.failed}{"\n"}{end}' \
+      2>/dev/null | awk -F'|' '
+        /aws-health-heartbeat/ { name=$1; ok=$3; bad=$4 }
+        END {
+          if (name == "") exit
+          if (ok == "") ok = 0
+          if (bad == "") bad = 0
+          print name, ok, bad
+        }
+      '
   )"
   note "latest heartbeat job fields: ${last_job:-none}"
-  note "Confirm an Error job is from the outage window or a separate AWS credential issue."
+  last_ok="$(printf '%s\n' "${last_job}" | awk '{print $2}')"
+  last_bad="$(printf '%s\n' "${last_job}" | awk '{print $3}')"
+  if [[ -z "${last_job}" || "${last_job}" == "none" ]]; then
+    note "No heartbeat Job found yet; confirm the CronJob has run."
+  elif [[ "${last_ok}" == "1" ]]; then
+    pass "latest aws-health-heartbeat Job succeeded"
+  else
+    fail "latest aws-health-heartbeat Job did not succeed (succeeded=${last_ok:-?} failed=${last_bad:-?}); see docs/aws-health-monitor.md"
+  fi
 else
   note "CronJob stock-ticker-aws-health-heartbeat is not installed"
 fi
@@ -143,6 +179,7 @@ from app.db.session import engine
 
 tables = (
     "users",
+    "oauth_identities",
     "watchlist_items",
     "portfolio_positions",
     "portfolio_assets",
@@ -160,7 +197,19 @@ with engine.connect() as conn:
 PY
 
 echo
-echo "== Redis memory and evictions (#293) =="
+echo "== Redis PVC (#293) =="
+pvc_phase="$(
+  ${KUBECTL_CMD} -n "${NAMESPACE}" get pvc stock-ticker-redis-data \
+    -o jsonpath='{.status.phase}' 2>/dev/null || true
+)"
+if [[ "${pvc_phase}" == "Bound" ]]; then
+  pass "PVC stock-ticker-redis-data is Bound"
+else
+  fail "PVC stock-ticker-redis-data phase '${pvc_phase:-missing}' (want Bound)"
+fi
+
+echo
+echo "== Redis memory, policy, and evictions (#293) =="
 # noeviction should keep this at zero. A non-zero count means keys, including locks, were deleted.
 redis_info="$(
   ${KUBECTL_CMD} -n "${NAMESPACE}" exec deploy/stock-ticker-redis -c redis -- redis-cli INFO 2>&1 || true
@@ -178,6 +227,25 @@ elif [[ "${evicted_keys}" == "0" ]]; then
   pass "Redis has evicted no keys"
 else
   fail "Redis evicted ${evicted_keys} keys; raise maxmemory or find what is filling Redis"
+fi
+redis_policy="$(
+  ${KUBECTL_CMD} -n "${NAMESPACE}" exec deploy/stock-ticker-redis -c redis -- \
+    redis-cli CONFIG GET maxmemory-policy 2>/dev/null | tr -d '\r' | awk 'NR==2 {print $1}'
+)"
+redis_maxbytes="$(
+  ${KUBECTL_CMD} -n "${NAMESPACE}" exec deploy/stock-ticker-redis -c redis -- \
+    redis-cli CONFIG GET maxmemory 2>/dev/null | tr -d '\r' | awk 'NR==2 {print $1}'
+)"
+if [[ "${redis_policy}" == "noeviction" ]]; then
+  pass "Redis maxmemory-policy is noeviction"
+else
+  fail "Redis maxmemory-policy is '${redis_policy:-missing}' (want noeviction)"
+fi
+# 128mb from redis.conf is 134217728 bytes.
+if [[ "${redis_maxbytes}" == "134217728" ]]; then
+  pass "Redis maxmemory is 128mb"
+else
+  fail "Redis maxmemory is '${redis_maxbytes:-missing}' bytes (want 134217728)"
 fi
 
 echo

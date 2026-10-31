@@ -121,6 +121,9 @@ awscli-bundle.zip
 .cursor/*
 !.cursor/rules/
 
+# Local AI session notes; keep them off GitHub
+docs/AI_HANDOFF.md
+
 # Local Playwright MCP workspace state
 .playwright-mcp/
 

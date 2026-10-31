@@ -106,6 +106,7 @@ Portfolio history: the worker sampler (every 5 minutes) is the sole scheduler. T
 | `k8s-unstick-namespace.sh` | Clear stuck `Terminating` namespace |
 | `k8s-test-host-postgres.sh` | Test host Postgres reachability from cluster |
 | `ci-k3s-smoke.sh` | Local k3s smoke entrypoint |
+| `verify-k3s-post-deploy.sh` | Read-only #287 cluster report (pods, health, alembic, Redis PVC/policy) |
 
 **Deploy script steps:** build backend/frontend `:local` images; import into k3d/k3s; pre-pull `postgres:16-alpine` and `redis:7-alpine`; apply manifests; wait for Redis, Postgres, backend, frontend. Registry images skip the local build/import and are pulled by the cluster instead — see [GitHub Container Registry](#github-container-registry).
 

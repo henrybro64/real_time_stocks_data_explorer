@@ -1,57 +1,84 @@
 # Post-deploy verification (#287)
 
-Checklist after deploying #278–#283 (and the #284–#286 outage fixes) on the home k3s cluster. Tick every item, or open a follow-up issue and link it here.
+Checklist after deploying #278–#302 on the home k3s cluster. Tick every item, or open a follow-up issue and link it here.
+
+**Target:** `main` at `589878f` or later. Read-only helper: `scripts/verify-k3s-post-deploy.sh`.
+
+Related: #284, #285, #286, #288, #293, #301, #303 (deploy leaves stale pods), #304 (planned: disable the Create account button; if it merges before this pass, treat it as an intended change).
+
+## What is included
+
+| Area | PRs | Issues fixed |
+| --- | --- | --- |
+| Review fixes | #278–#283 | #262–#276, #240 |
+| Outage fixes | #288 | #284, #285, #286 |
+| Worker and startup resilience, data-source stance | #294 | #277, #289, #290 |
+| Leader-locked job retries, Redis persistence | #295 | #291, #292, #293 |
+| Entra token exchange, first sign-in | #300, #302 | #299, #301 |
+| Dependency and CI | #296, #297, #298 | — |
+
+No migrations have been added since `0020`, so the schema head is still `20261011_0020_canonicalize_user_stock_ids`.
 
 ## Intended changes (not regressions)
 
 - Market-data routes require a signed-in session (#272).
-- Background jobs run in `stock-ticker-backend-worker` (health on `:8001`) (#276).
+- Background jobs run in a separate worker pod, `stock-ticker-backend-worker`, with health on port 8001 (#276).
+- The worker's liveness probe no longer restarts it just because a job is behind; only dead or stuck jobs count (#289).
 - Per-user caps and rate limits exist (#273).
-- Default / placeholder `SESSION_SECRET` still refuses to start; placeholder capture tokens disable capture only (#267 / #284).
-- Bootstrap passwords are create-only unless `LOCAL_AUTH_RESET_PASSWORD=true` (#286).
-- Daily price history and related migrations through head have run (#269 / #264 / #275).
+- A placeholder `SESSION_SECRET` still stops startup. A placeholder capture token only disables capture, which returns 503 (#267, #284).
+- The bootstrap local account is create-only. Its password is reset only when `LOCAL_AUTH_RESET_PASSWORD=true` (#286).
+- When the backend cannot be reached, the UI shows "Cannot reach the server" (#285).
+- Redis has persistence and an explicit `maxmemory` (#293).
+- Microsoft Entra External ID is available as a sign-in option (#240).
+- Daily price history is stored in Postgres, and migrations `0016`–`0020` have run (#269, #264, #275).
 
 ## Cluster
 
-```bash
-kubectl -n stock-ticker get pods
-kubectl -n stock-ticker get deploy
-kubectl -n stock-ticker logs deploy/stock-ticker-backend -c backend --tail=80
-kubectl -n stock-ticker logs deploy/stock-ticker-backend-worker -c worker --tail=80
-kubectl -n stock-ticker exec deploy/stock-ticker-backend -c backend -- \
-  alembic current
-curl -fsS http://127.0.0.1:8001/health   # via port-forward to the worker if needed
-```
-
-- [ ] Pods `stock-ticker-backend`, `stock-ticker-backend-worker`, `stock-ticker-frontend`, `stock-ticker-postgres`, `stock-ticker-redis` are `Running` and Ready; restart counts are not climbing.
-- [ ] `stock-ticker-aws-health-heartbeat` CronJob: confirm whether any `Error` job is from the outage window or a separate AWS/credentials issue ([aws-health-monitor.md](aws-health-monitor.md)).
-- [ ] Worker `/health` and logs: any `Quote Redis cache failure` has a clear category and is not ongoing.
-- [ ] `alembic current` is at head; watchlist / portfolio row counts match the pre-upgrade backup after the canonical stock-id migration.
-
-Helper (read-only). It reports pod readiness, `/health`, `/api/auth/status`, whether alembic is at the image's own head, row counts, Redis memory use with a failure on any key eviction, and whether the worker log still contains `Quote Redis cache failure`. It does not sign in or exercise the UI. Run it on the cluster after this image is deployed; leave the boxes below unticked until that pass.
+Images are tagged `:local` and carry no commit label. `deploy-k3s.sh` can report success while the old pods keep running (#303). Until #303 is fixed, run this after each deploy, then confirm pod image IDs changed (the helper prints them):
 
 ```bash
+kubectl -n stock-ticker rollout restart \
+  deploy/stock-ticker-backend deploy/stock-ticker-backend-worker deploy/stock-ticker-frontend
 ./scripts/verify-k3s-post-deploy.sh
 ```
 
+The helper is read-only. It checks pods, `/health`, worker `/livez`, alembic head, row counts (including `oauth_identities`), Redis PVC/policy/evictions, and recent `Quote Redis cache failure` lines. It does **not** prove the running image is `589878f`, sign in, or exercise the UI.
+
+- [ ] Backend, worker **and frontend** pods run code from `589878f` or later. Until #303 is fixed, confirm image IDs changed after the rollout restart, or inspect the running code.
+- [ ] `./scripts/verify-k3s-post-deploy.sh` passes. Paste the output on issue #287.
+- [ ] `kubectl -n stock-ticker get pods`: backend, worker, frontend, postgres and redis are all `Running` and ready, and restart counts are not climbing.
+- [ ] `stock-ticker-aws-health-heartbeat` CronJob: it was in `Error` during the 10-11 outage. Confirm that recent runs succeed. If they don't, open a separate issue (see [aws-health-monitor.md](aws-health-monitor.md)).
+- [ ] `alembic current` in the backend pod is at head (`0020`). Watchlist and portfolio row counts match the pre-upgrade backup after the canonical stock-id migration.
+
+## Confirm earlier fixes hold
+
+These items were open questions when this issue was filed. They now have fixes, so this step only confirms them on the cluster.
+
+- [ ] No ongoing `Quote Redis cache failure` in the worker log or worker `/health` (#293). PVC `stock-ticker-redis-data` is bound, and the quote cache survives a Redis pod restart. Redis runs `maxmemory 128mb` with `noeviction`, so the script's zero-evictions check matters.
+- [ ] After a worker restart, quotes refresh within seconds, not after a full poll interval (#291, #292).
+- [ ] A brief Postgres restart does not crash-loop the API (#290) or make the worker restart (#289).
+
 ## Accounts and data
 
+> Entra sign-in creates a **separate** user. Nothing links it to an existing local account, so a Microsoft login starts with an empty watchlist and portfolio. Run the data checks below while signed in with the existing **local** account.
+
 - [ ] Existing users can sign in with their existing passwords.
-- [ ] Sign out appears in the header and works.
-- [ ] Watchlist, portfolio positions, assets, realized trades, alert rules, and alert history match the pre-upgrade contents.
-- [ ] Portfolio history chart still shows earlier points.
+- [x] **Entra:** a first-time Microsoft sign-in creates the user and lands signed in (#301, verified 2026-10-31). Signing in again with the same account reuses that user (**repeat reuse still unverified**).
+- [ ] Sign out appears in the header and works, for both local and Entra sessions. `/api/auth/logout` clears only the app session. Microsoft's own session stays signed in, so the next "Sign in with Microsoft" may complete without a password prompt. That is expected.
+- [ ] Watchlist, portfolio positions, assets, realized trades, alert rules and alert history all have the same contents as before.
+- [ ] The portfolio history chart still shows earlier points, and new points keep being added. The worker's sampler records them every 5 minutes; the `stock-ticker-history-capture` CronJob is suspended on purpose (#275).
 
 ## Features
 
 - [ ] Dashboard: market snapshot tiles, market status, watchlist quotes and sparklines load.
-- [ ] Stock detail for one Taiwan and one U.S. stock: quote, chart ranges, key statistics, news, Taiwan tabs.
-- [ ] Rankings for both markets, and manual refresh.
-- [ ] Alerts evaluate (create a rule that should fire).
-- [ ] Per-user caps do not block existing watchlists/portfolios that exceed new defaults.
-- [ ] After a U.S. close, quotes show closed (#262).
-- [ ] With the backend stopped, the UI shows “Cannot reach the server” (not an empty dashboard) (#285).
+- [ ] Stock detail for one Taiwan and one U.S. stock: quote, each chart range, key statistics, news, and the Taiwan tabs.
+- [ ] Rankings for both markets, and the manual refresh.
+- [ ] Alerts are evaluated (create a rule that should fire).
+- [ ] Per-user caps do not block existing watchlists or portfolios, which may already be larger than the new defaults.
+- [ ] After a U.S. close, quotes show "closed" (#262).
+- [ ] With the backend stopped, the UI shows "Cannot reach the server" rather than an empty dashboard (#285).
 
 ## Outcome
 
-- [ ] Every item is ticked, or has its own issue linked from here.
-- [ ] If a forward fix is not quick, record the rollback decision to `1f39bee`, including whether that image can run against migrations `0016`–head.
+- [ ] Every item is ticked, or has its own issue linked here.
+- [ ] Rollback: going back to `1f39bee` would now discard every change listed above, and that image has not been tested against schema `0020`. The default is to fix forward. If a rollback is still considered, record the decision here and include the schema check.
