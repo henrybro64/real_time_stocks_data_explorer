@@ -92,6 +92,11 @@ should_skip_app_image_import() {
 # Set when a non-registry app image is imported into k3d/k3s this run (#303).
 REFRESHED_LOCAL_BACKEND=0
 REFRESHED_LOCAL_FRONTEND=0
+# Ready replica counts sampled before apply. A first install is 0, so we do not
+# restart pods that this same apply is about to create (#303, k3s smoke).
+BACKEND_READY_BEFORE=0
+WORKER_READY_BEFORE=0
+FRONTEND_READY_BEFORE=0
 
 mark_local_image_refreshed() {
   local image="$1"
@@ -106,16 +111,30 @@ mark_local_image_refreshed() {
   fi
 }
 
+deployment_was_ready() {
+  [[ "${1:-0}" =~ ^[1-9][0-9]*$ ]]
+}
+
 restart_local_app_workloads_if_imported() {
   local -a deploys=()
-  if [[ "${REFRESHED_LOCAL_BACKEND}" == "1" ]]; then
-    deploys+=(stock-ticker-backend stock-ticker-backend-worker)
+  # Restart only workloads that were already Ready. Fresh pods from this apply
+  # resolve :local at start; restarting them leaves a terminating pod that
+  # makes kubectl wait time out (k3s smoke).
+  if [[ "${REFRESHED_LOCAL_BACKEND}" == "1" ]] && deployment_was_ready "${BACKEND_READY_BEFORE:-0}"; then
+    deploys+=(stock-ticker-backend)
   fi
-  if [[ "${REFRESHED_LOCAL_FRONTEND}" == "1" ]]; then
+  if [[ "${REFRESHED_LOCAL_BACKEND}" == "1" ]] && deployment_was_ready "${WORKER_READY_BEFORE:-0}"; then
+    deploys+=(stock-ticker-backend-worker)
+  fi
+  if [[ "${REFRESHED_LOCAL_FRONTEND}" == "1" ]] && deployment_was_ready "${FRONTEND_READY_BEFORE:-0}"; then
     deploys+=(stock-ticker-frontend)
   fi
   if [[ ${#deploys[@]} -eq 0 ]]; then
-    echo "Skipping app Deployment restart (no local app image was imported)"
+    if [[ "${REFRESHED_LOCAL_BACKEND}" != "1" && "${REFRESHED_LOCAL_FRONTEND}" != "1" ]]; then
+      echo "Skipping app Deployment restart (no local app image was imported)"
+    else
+      echo "Skipping app Deployment restart (no previously ready app pods; fresh pods use the imported image)"
+    fi
     return 0
   fi
   echo "Restarting ${deploys[*]} so imported :local images replace running pods (#303)"
@@ -914,6 +933,9 @@ apply_frontend_ingress_host() {
 
 deploy_manifests() {
   echo "Applying Kubernetes manifests"
+  BACKEND_READY_BEFORE="$(${KUBECTL_CMD} -n "${NAMESPACE}" get deploy stock-ticker-backend -o jsonpath='{.status.readyReplicas}' 2>/dev/null || true)"
+  WORKER_READY_BEFORE="$(${KUBECTL_CMD} -n "${NAMESPACE}" get deploy stock-ticker-backend-worker -o jsonpath='{.status.readyReplicas}' 2>/dev/null || true)"
+  FRONTEND_READY_BEFORE="$(${KUBECTL_CMD} -n "${NAMESPACE}" get deploy stock-ticker-frontend -o jsonpath='{.status.readyReplicas}' 2>/dev/null || true)"
   ensure_image_pull_secret
   ensure_namespace
   preflight_live_auth_secrets

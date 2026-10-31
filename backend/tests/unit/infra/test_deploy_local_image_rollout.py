@@ -82,6 +82,10 @@ def _run_restart(tmp_path: Path, *, backend: str, frontend: str) -> str:
         "NAMESPACE=stock-ticker\n"
         f'REFRESHED_LOCAL_BACKEND={backend}\n'
         f'REFRESHED_LOCAL_FRONTEND={frontend}\n'
+        "BACKEND_READY_BEFORE=1\n"
+        "WORKER_READY_BEFORE=1\n"
+        "FRONTEND_READY_BEFORE=1\n"
+        + _extract_func(script, "deployment_was_ready")
         + _extract_func(script, "restart_local_app_workloads_if_imported")
         + "\nrestart_local_app_workloads_if_imported\n",
         encoding="utf-8",
@@ -207,9 +211,10 @@ def _run_import_then_restart(
     backend_image: str = "stock-ticker-backend:local",
     frontend_image: str = "stock-ticker-frontend:local",
     namespace: str = "stock-ticker",
-    skip_import: bool = False,
-    pods: str = _OLD_PODS,
-) -> tuple[str, str, str, str]:
+        skip_import: bool = False,
+        previously_ready: bool = True,
+        pods: str = _OLD_PODS,
+    ) -> tuple[str, str, str, str]:
     bindir = tmp_path / "bin"
     bindir.mkdir()
     _write_exe(bindir / "docker", _FAKE_DOCKER)
@@ -230,6 +235,7 @@ def _run_import_then_restart(
         + _extract_func(script, "require_cmd")
         + _extract_func(script, "should_skip_app_image_import")
         + _extract_func(script, "mark_local_image_refreshed")
+        + _extract_func(script, "deployment_was_ready")
         + _extract_func(script, "restart_local_app_workloads_if_imported")
         + _extract_func(script, importer)
         + "BACKEND_IMAGE="
@@ -240,6 +246,9 @@ def _run_import_then_restart(
         + sh_quote(namespace)
         + "\nK3D_CLUSTER_NAME=stock-ticker\n"
         + "REFRESHED_LOCAL_BACKEND=0\nREFRESHED_LOCAL_FRONTEND=0\n"
+        + f"BACKEND_READY_BEFORE={'1' if previously_ready else '0'}\n"
+        + f"WORKER_READY_BEFORE={'1' if previously_ready else '0'}\n"
+        + f"FRONTEND_READY_BEFORE={'1' if previously_ready else '0'}\n"
         + skip_line
         + f"{importer}\n"
         + 'printf "FLAGS backend=%s frontend=%s\\n" '
@@ -289,6 +298,20 @@ def test_local_import_replaces_running_pods_and_keeps_local_tag(tmp_path: Path, 
     assert "redis" not in kubectl_log
     if mode == "k3s":
         assert "images import" in cmd_log
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
+def test_fresh_install_import_does_not_restart_unready_pods(tmp_path: Path) -> None:
+    stdout, kubectl_log, pods, _cmd_log = _run_import_then_restart(
+        tmp_path,
+        mode="k3s",
+        previously_ready=False,
+    )
+    assert "FLAGS backend=1 frontend=1" in stdout
+    assert "no previously ready app pods" in stdout
+    assert "rollout restart" not in kubectl_log
+    assert "stock-ticker-backend-old" in pods
+    assert "sha256:new" not in pods
 
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
