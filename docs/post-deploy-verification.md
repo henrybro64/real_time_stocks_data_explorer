@@ -4,7 +4,7 @@ Checklist after deploying #278–#302 on the home k3s cluster. Tick every item, 
 
 **Target:** `main` at `589878f` or later. Read-only helper: `scripts/verify-k3s-post-deploy.sh`.
 
-Related: #284, #285, #286, #288, #293, #301, #303 (deploy restarts app pods after a local image import), #304 (login Create account button disabled in the UI).
+Related: #284, #285, #286, #288, #293, #301, #303 (deploy restarts app pods after a local image import), #304 (login Create account button disabled in the UI), #308 (Postgres AppArmor workaround and startup checks, see [postgres-apparmor.md](postgres-apparmor.md)).
 
 ## What is included
 
@@ -55,6 +55,7 @@ These items were open questions when this issue was filed. They now have fixes, 
 - [ ] No ongoing `Quote Redis cache failure` in the worker log or worker `/health` (#293). PVC `stock-ticker-redis-data` is bound, and the quote cache survives a Redis pod restart. Redis runs `maxmemory 128mb` with `noeviction`, so the script's zero-evictions check matters.
 - [ ] After a worker restart, quotes refresh within seconds, not after a full poll interval (#291, #292).
 - [ ] A brief Postgres restart does not crash-loop the API (#290) or make the worker restart (#289).
+- [ ] After a node or k3s restart, Postgres starts without `initdb`, keeps `appArmorProfile: Unconfined`, and the backend `migrate-db` logs `db.wait.ready` (#308). Steps and rollback: [postgres-apparmor.md](postgres-apparmor.md).
 
 ## Accounts and data
 

@@ -21,6 +21,8 @@ class Settings(BaseSettings):
 
     # Postgres (required in cluster / local DB mode). Maps env DATABASE_URL.
     database_url: str = Field(default="")
+    # migrate-db init container waits this long for Postgres before Alembic (#308).
+    database_wait_seconds: float = Field(default=300.0, ge=0.0, le=1800.0)
     # Redis for optional quote caching. Maps env REDIS_URL.
     redis_url: str = Field(default="")
     # Soft TTL: cached quotes younger than this are considered fresh.

@@ -416,17 +416,26 @@ print_postgres_debug_help() {
   cat <<'EOF' >&2
 
 Postgres rollout failed. Common causes on k3s:
+
+DATA SAFETY: if this cluster already holds data, do NOT delete or recreate the PVC, the PV, or PGDATA,
+and do not reinstall k3s. Back up first (scripts/k8s-backup-postgres.sh) and read docs/postgres-apparmor.md#recovery.
+
+- Pod Running but never Ready, PID 1 stuck in "gosu postgres", nothing on 5432, or logs show
+  "could not signal" / "Permission denied": AppArmor signal denial on Ubuntu 26.04 (#308).
+  k8s/postgres.yaml sets appArmorProfile Unconfined on the postgres container; confirm the live Deployment has it.
+  See docs/postgres-apparmor.md#diagnose.
 - PVC Pending + pod Node=<none> + Event "VolumeBinding: context deadline exceeded": local-path provisioner
   cannot bind storage in time — NOT initdb. Check: df -h; kubectl -n kube-system logs deployment/local-path-provisioner --tail=80;
-  kubectl -n kube-system rollout restart deployment/local-path-provisioner; then delete pvc and re-apply if needed.
+  kubectl -n kube-system rollout restart deployment/local-path-provisioner.
+  Deleting the PVC is only safe on a first install that never held data.
 - PVC stuck Pending: no StorageClass or wrong name. Run: kubectl get storageclass && kubectl get pvc -n stock-ticker
   k3s usually expects storageClassName: local-path (see k8s/postgres.yaml).
 - ext4 PVC root contains lost+found: Postgres must use PGDATA under a subdir (manifest sets /var/lib/postgresql/data/pgdata).
-  If you deployed before that fix, delete the PVC and re-apply so the volume initializes cleanly.
 - postgres:16-alpine still pulling (first boot needs network). Check: kubectl describe pod -n stock-ticker -l app=stock-ticker-postgres
 - Volume permissions: see pod Events.
 - RWO PVC + RollingUpdate: use strategy Recreate on stock-ticker-postgres (see k8s/postgres.yaml) so only one pod mounts the volume.
-- Corrupt or half-initialized data on the PVC: delete deployment + PVC, re-apply (see docs/kubernetes.md).
+- Corrupt or half-initialized data on the PVC: stop and restore from a backup (scripts/k8s-restore-postgres.sh,
+  docs/kubernetes.md). Never run initdb against existing data.
 
 Debug:
   kubectl -n stock-ticker get pvc

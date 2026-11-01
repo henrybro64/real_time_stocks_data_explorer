@@ -5,6 +5,7 @@ resources:
   - namespace.yaml
   - redis.yaml
   - postgres.yaml
+  - postgres-networkpolicy.yaml
   - backend-database-secret.yaml
   # backend-auth-secret.yaml and backend-entra-secret.yaml are not in this
   # kustomization. The live client secret is Secret stock-ticker-entra

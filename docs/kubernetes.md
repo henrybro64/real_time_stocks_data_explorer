@@ -79,11 +79,11 @@ Remove app: `./scripts/k8s-teardown.sh k3s`. Uninstall k3s: `sudo /usr/local/bin
 
 ## What gets deployed
 
-- `postgres:16-alpine` + **2Gi PVC** (durable while cluster exists)
+- `postgres:16-alpine` + **2Gi PVC** (durable while cluster exists); the container runs with `appArmorProfile: Unconfined` (Ubuntu 26.04 workaround), a `pg_isready` readiness probe, and NetworkPolicy `stock-ticker-postgres-ingress` that admits only the backend and worker on 5432 (#308, [postgres-apparmor.md](postgres-apparmor.md))
 - `redis:7-alpine` + **1Gi PVC** and the `stock-ticker-redis-config` ConfigMap (#293). Redis saves RDB snapshots to the volume, so the quote, rankings and Taiwan-signal caches, stock-AI narratives and rate-limit counters survive a pod restart. A rollout or graceful restart loses nothing, because Redis saves on SIGTERM; a crash or OOM kill loses up to about 5 minutes, since normal write rates trigger the `save 300 10` snapshot rather than `save 60 1000`. `maxmemory 128mb` with `noeviction` stays under the 256Mi limit so a snapshot fork has headroom. A full Redis refuses new writes instead of deleting keys, so leader locks, refresh locks, daily markers and rate-limit counters stay until their own TTL. A refused cache write is a cache miss; a refused lease write is treated as Redis unavailable and that tick waits until expirations free memory. Expected use is far below the cap (roughly one entry per tracked symbol plus stock-AI narratives; the post-deploy script prints `used_memory`). If `evicted_keys` ever rises, the quote refresher logs `redis.keys_evicted` and `scripts/verify-k3s-post-deploy.sh` fails. The Deployment uses `Recreate` because the volume is ReadWriteOnce. The first rollout with the volume starts from an empty cache once. Editing the ConfigMap does not restart Redis: run `kubectl -n stock-ticker rollout restart deployment/stock-ticker-redis`.
 - At start the worker waits up to `WORKER_REDIS_WAIT_SECONDS` (default 30) for Redis before starting jobs, so a worker that comes up a moment before the Redis Service after a node or k3s restart does not begin with every job skipped (#293). Redis client timeouts are settings (`REDIS_SOCKET_CONNECT_TIMEOUT_SECONDS`, `REDIS_SOCKET_TIMEOUT_SECONDS`, both 2 s), with TCP keepalive and a 30 s idle health check.
 - `stock-ticker-backend:local`, `stock-ticker-frontend:local`
-- Backend API Deployment (`RUN_BACKGROUND_JOBS=false`) with init container `alembic upgrade head`
+- Backend API Deployment (`RUN_BACKGROUND_JOBS=false`) with init container `migrate-db`: waits for Postgres, then `alembic upgrade head` (#308)
 - Backend worker Deployment (`python -m app.worker`, `RUN_BACKGROUND_JOBS=true`) for quote refresher, alerts, samplers (#276). Schema upgrades stay on the API Deployment's `migrate-db` init container so two pods do not run Alembic at once. `/health` on port 8001 returns 503 when an enabled job has stopped succeeding or its thread has died; readiness uses it, so the pod leaves Ready. Liveness uses `/livez`, which returns 503 only when a job thread has died or is stuck (no completed loop pass for 3 poll intervals, at least an hour), so a Postgres or provider outage does not restart the worker (#289). Both Deployments set probe `timeoutSeconds: 5`. Replica count stays 1; the Redis locks still keep a second replica from repeating the same interval. A job tick or quote cycle skipped for leadership retries within seconds, and the worker releases the locks it owns when it stops (only for jobs whose thread has exited, so a still-running tick is never overlapped), so a restart does not leave jobs idle for a whole interval (#291, #292). A second replica that never wins leadership reports its jobs as stale on `/health` and stays not-ready; it is not restarted.
 - NodePort frontend on **30080** for LAN access
 - HTTP Ingress (`k8s/frontend-ingress.yaml`) for a LAN hostname (default `stock-ticker.ai`)
@@ -98,15 +98,15 @@ Portfolio history: the worker sampler (every 5 minutes) is the sole scheduler. T
 | Script | Purpose |
 | --- | --- |
 | `deploy-k3s.sh` | Build/import images, `kubectl apply -k k8s`, wait for rollouts |
-| `k8s-teardown.sh` | Delete all `k8s/` resources + Postgres PVC |
-| `k8s-redeploy.sh` | Teardown then deploy |
+| `k8s-teardown.sh` | **Destroys data.** Delete all `k8s/` resources + Postgres PVC. Never run on a cluster with data you need (#308) |
+| `k8s-redeploy.sh` | **Destroys data.** Teardown then deploy |
 | `k8s-backup-postgres.sh` | Logical `pg_dump` to `stocks-YYYYMMDD-HHMMSS.sql` |
 | `k8s-restore-postgres.sh` | Restore from SQL dump |
 | `k8s-diagnose.sh` | Collect deploy/PVC/pod state for troubleshooting |
 | `k8s-unstick-namespace.sh` | Clear stuck `Terminating` namespace |
 | `k8s-test-host-postgres.sh` | Test host Postgres reachability from cluster |
 | `ci-k3s-smoke.sh` | Local k3s smoke entrypoint |
-| `verify-k3s-post-deploy.sh` | Read-only #287 cluster report (pods, health, alembic, Redis PVC/policy) |
+| `verify-k3s-post-deploy.sh` | Read-only #287 cluster report (pods, health, alembic, Redis PVC/policy; Postgres AppArmor, pod count, PVC, `pg_isready`, EndpointSlices, frontend Service for #308) |
 
 **Deploy script steps:** build backend/frontend `:local` images; import into k3d/k3s; pre-pull `postgres:16-alpine` and `redis:7-alpine`; apply manifests; **restart** `stock-ticker-backend`, `stock-ticker-backend-worker`, and `stock-ticker-frontend` when a local app image was imported and that Deployment was already Ready, so running pods are not left on a stale `:local` tag (#303). A first install has no Ready pods yet, so those Deployments are left to start once. The script then waits for Redis, Postgres, backend, worker, and frontend. A failed restart or frontend rollout prints the pod list (and frontend logs) and exits before `Deployment complete`. Postgres, Redis, and PVCs are not restarted for an image refresh. CronJobs (`stock-ticker-aws-health-heartbeat`) are not interrupted; the next Job uses the imported image. Registry images and `SKIP_IMAGE_IMPORT=1` skip that app Deployment restart and are pulled by the cluster instead — see [GitHub Container Registry](#github-container-registry).
 
@@ -371,10 +371,11 @@ Run `./scripts/k8s-diagnose.sh k3s` (or `k3d`) first and share the output when a
 
 - **Wrong cluster / namespace not found:** `kubectl config current-context`; create k3d cluster if missing.
 - **k3s kubeconfig permission denied:** use `sudo k3s kubectl` or copy config to `~/.kube/config`.
-- **Postgres PVC Pending / VolumeBinding timeout:** check disk space; restart `local-path-provisioner` in `kube-system`; delete stuck PVC and re-apply.
+- **Postgres PVC Pending / VolumeBinding timeout:** check disk space; restart `local-path-provisioner` in `kube-system`. Delete and re-apply the PVC only on a first install that never held data.
+- **Postgres Running but never Ready after a node or k3s restart (Ubuntu 26.04):** PID 1 stuck in `gosu`, nothing on 5432, or `could not signal` in the log. This is the AppArmor signal denial in [postgres-apparmor.md](postgres-apparmor.md) (#308). Do not delete the PVC or reinstall k3s.
 - **Postgres slow first boot:** `initdb` on new volume can take several minutes — normal.
 - **Postgres Recreate strategy:** manifest uses `Recreate` so ReadWriteOnce volume is not attached by two pods during rollout.
-- **Backend Init:CrashLoopBackOff:** check `kubectl logs … -c migrate-db`; ensure Postgres is Ready and `DATABASE_URL` matches in-cluster or host Postgres setup.
+- **Backend Init:CrashLoopBackOff:** check `kubectl logs … -c migrate-db`; ensure Postgres is Ready and `DATABASE_URL` matches in-cluster or host Postgres setup. `migrate-db` waits up to `DATABASE_WAIT_SECONDS` (default 300) for Postgres and logs `db.wait.retry` with the target and error before Alembic runs (#308).
 - **Stale `:local` image after rebuild:** `./scripts/deploy-k3s.sh k3s` (or `k3d`) now restarts the backend, worker, and frontend Deployments after a local import (#303). If you applied manifests by hand, restart those three Deployments yourself.
 - **buildx too old (macOS):** `brew install docker-buildx` and configure `cliPluginsExtraDirs` in `~/.docker/config.json`.
 
@@ -385,7 +386,9 @@ Run `./scripts/k8s-diagnose.sh k3s` (or `k3d`) first and share the output when a
 # k3s: KUBECTL_CMD="sudo k3s kubectl" ./scripts/k8s-unstick-namespace.sh stock-ticker --force
 ```
 
-**Force-delete hanging pods:** `kubectl -n stock-ticker delete pod --all --grace-period=0 --force`
+**Force-delete hanging pods:** `kubectl -n stock-ticker delete pod -l 'app!=stock-ticker-postgres' --grace-period=0 --force`
+
+Never force-delete the Postgres pod. A forced delete removes the API object without waiting for the container to stop, so a replacement can start against the same PGDATA while the old one still runs. Use a normal delete, or scale the Deployment to 0 and wait for the pod to be gone (#308).
 
 ## kubectl as your user (k3s)
 

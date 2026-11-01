@@ -1,0 +1,31 @@
+# Only the API pod (including its migrate-db init container) and the worker may
+# open connections to Postgres (#308). Postgres runs without AppArmor while the
+# Ubuntu 26.04 workaround is in place, so limit who can reach it.
+#
+# Not affected: kubectl exec/port-forward (k8s-backup-postgres.sh and
+# k8s-restore-postgres.sh connect over loopback inside the Postgres pod) and
+# kubelet probes from the node.
+# Rollback: kubectl -n stock-ticker delete networkpolicy stock-ticker-postgres-ingress
+# A new Postgres client needs its pod label added here.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: stock-ticker-postgres-ingress
+spec:
+  podSelector:
+    matchLabels:
+      app: stock-ticker-postgres
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: app
+                operator: In
+                values:
+                  - stock-ticker-backend
+                  - stock-ticker-backend-worker
+      ports:
+        - protocol: TCP
+          port: 5432
