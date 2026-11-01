@@ -58,10 +58,12 @@ spec:
           image: stock-ticker-backend:local
           imagePullPolicy: Never
           workingDir: /app/backend
+          # Wait for Postgres with a bounded backoff first, so a slow Postgres
+          # after a node restart does not push kubelet's init backoff to 5m (#308).
           command:
             - sh
             - -c
-            - alembic upgrade head
+            - python -m scripts.wait_for_database && alembic upgrade head
           envFrom:
             - configMapRef:
                 name: stock-ticker-backend-env

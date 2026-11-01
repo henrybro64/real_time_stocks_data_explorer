@@ -52,6 +52,17 @@ spec:
         - name: postgres
           image: postgres:16-alpine
           imagePullPolicy: IfNotPresent
+          # appArmorProfile is temporary and on this container only (#308). On
+          # Ubuntu 26.04 the containerd default profile denies signals between
+          # processes in the same container (containerd#14485), so gosu and
+          # Postgres hang. Removal criteria: docs/postgres-apparmor.md. Do not
+          # replace it with an explicit RuntimeDefault; delete it instead.
+          # allowPrivilegeEscalation: gosu only drops root to postgres, which
+          # no_new_privs still allows.
+          securityContext:
+            allowPrivilegeEscalation: false
+            appArmorProfile:
+              type: Unconfined
           ports:
             - containerPort: 5432
               name: postgres
@@ -66,19 +77,25 @@ spec:
           volumeMounts:
             - mountPath: /var/lib/postgresql/data
               name: data
-          # TCP on 5432: postgres accepts connections after initdb; avoids exec probe default
-          # 1s timeout and env expansion issues with pg_isready on some nodes.
+          # Startup and liveness stay on TCP: a liveness restart in the middle of a
+          # long crash recovery would make it worse.
           startupProbe:
             tcpSocket:
               port: postgres
             periodSeconds: 5
             failureThreshold: 360
             timeoutSeconds: 3
+          # Readiness asks Postgres itself (#308). TCP accepts while Postgres is
+          # still starting or stuck in recovery, e.g. when checkpoint signals are
+          # denied. Fixed arguments, no shell: no env expansion. Local socket as
+          # postgres (trust inside the pod), so no password and no role-missing
+          # log lines. Explicit timeout instead of the 1s default.
           readinessProbe:
-            tcpSocket:
-              port: postgres
-            periodSeconds: 5
-            timeoutSeconds: 3
+            exec:
+              command: ["pg_isready", "-q", "-U", "postgres", "-d", "postgres"]
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
           livenessProbe:
             tcpSocket:
               port: postgres

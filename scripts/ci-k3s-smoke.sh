@@ -218,6 +218,27 @@ if [[ "${init_reason}" != "Completed" ]]; then
 fi
 append_summary_section "Backend init container" "migrate-db terminated reason: ${init_reason}"
 
+echo "Verifying migrate-db waited for Postgres before Alembic (#308)"
+migrate_log="$(run_kubectl -n "${NAMESPACE}" logs deploy/stock-ticker-backend -c migrate-db)"
+printf '%s\n' "${migrate_log}" > "${ARTIFACT_DIR}/migrate-db.log"
+if ! grep -q 'db.wait.ready' <<< "${migrate_log}"; then
+  echo "migrate-db log has no db.wait.ready line; see ${ARTIFACT_DIR}/migrate-db.log" >&2
+  exit 1
+fi
+append_summary_section "migrate-db Postgres wait" "$(grep 'db.wait' <<< "${migrate_log}")"
+
+echo "Verifying the Postgres AppArmor setting reached the cluster (#308)"
+# The API server drops fields it does not know; this proves the field was kept.
+pg_apparmor="$(
+  run_kubectl -n "${NAMESPACE}" get deploy stock-ticker-postgres \
+    -o jsonpath='{.spec.template.spec.containers[?(@.name=="postgres")].securityContext.appArmorProfile.type}'
+)"
+if [[ "${pg_apparmor}" != "Unconfined" ]]; then
+  echo "Expected Postgres appArmorProfile Unconfined, got: ${pg_apparmor:-<empty>}" >&2
+  exit 1
+fi
+append_summary_section "Postgres AppArmor profile (#308)" "${pg_apparmor}"
+
 echo "Checking backend /health through service port-forward"
 run_kubectl -n "${NAMESPACE}" port-forward svc/stock-ticker-backend 8000:8000 >"${ARTIFACT_DIR}/backend-port-forward.log" 2>&1 &
 BACKEND_PORT_FORWARD_PID=$!
@@ -261,6 +282,28 @@ postgres_probe="$(
 grep -q '^1$' <<< "${postgres_probe}"
 printf '%s\n' "${postgres_probe}" > "${ARTIFACT_DIR}/postgres-probe.txt"
 append_summary_section "Backend pod -> Postgres probe" "${postgres_probe}"
+
+echo "Checking a pod without an allowed label cannot reach Postgres (#308 NetworkPolicy)"
+if [[ "${BACKEND_IMAGE}" == */* ]]; then np_pull_policy="IfNotPresent"; else np_pull_policy="Never"; fi
+np_check="$(
+  run_kubectl -n "${NAMESPACE}" run smoke-postgres-denied --rm -i --restart=Never \
+    --image="${BACKEND_IMAGE}" --image-pull-policy="${np_pull_policy}" --labels=app=smoke-postgres-denied \
+    --command -- python -c \
+    "import socket
+# Resolve outside the try: a DNS failure must not pass as BLOCKED.
+address = socket.gethostbyname('stock-ticker-postgres')
+try:
+    socket.create_connection((address, 5432), timeout=5).close()
+    print('REACHED')
+except OSError as exc:
+    print('BLOCKED', type(exc).__name__)" 2>&1 || true
+)"
+printf '%s\n' "${np_check}" > "${ARTIFACT_DIR}/postgres-networkpolicy.txt"
+if ! grep -q '^BLOCKED' <<< "${np_check}"; then
+  echo "Expected the NetworkPolicy to block an unlabeled pod from Postgres, got: ${np_check}" >&2
+  exit 1
+fi
+append_summary_section "Unlabeled pod -> Postgres (expect BLOCKED)" "$(grep '^BLOCKED' <<< "${np_check}")"
 
 echo "Checking backend container can reach Redis"
 redis_probe="$(

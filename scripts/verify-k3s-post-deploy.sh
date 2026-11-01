@@ -61,6 +61,122 @@ do
 done
 
 echo
+echo "== Postgres startup and data volume (#308) =="
+# Must match k8s/postgres.yaml. See docs/postgres-apparmor.md before changing it.
+EXPECTED_POSTGRES_APPARMOR="Unconfined"
+pg_apparmor="$(
+  ${KUBECTL_CMD} -n "${NAMESPACE}" get deploy stock-ticker-postgres \
+    -o jsonpath='{.spec.template.spec.containers[?(@.name=="postgres")].securityContext.appArmorProfile.type}' \
+    2>/dev/null || true
+)"
+if [[ "${pg_apparmor}" == "${EXPECTED_POSTGRES_APPARMOR}" ]]; then
+  pass "Postgres container AppArmor profile is ${pg_apparmor} (scoped workaround, #308)"
+else
+  fail "Postgres container AppArmor profile is '${pg_apparmor:-runtime default}' (repo expects ${EXPECTED_POSTGRES_APPARMOR}); see docs/postgres-apparmor.md"
+fi
+# Evicted or finished pods are not running Postgres. Terminating pods still count.
+pg_pods="$(
+  ${KUBECTL_CMD} -n "${NAMESPACE}" get pods -l app=stock-ticker-postgres \
+    -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.status.phase}{"\n"}{end}' 2>/dev/null \
+    | awk 'NF && $2 != "Succeeded" && $2 != "Failed" {print $1}' || true
+)"
+pg_pod_count="$(printf '%s\n' "${pg_pods}" | awk 'NF' | wc -l | tr -d ' ')"
+if [[ "${pg_pod_count}" == "1" ]]; then
+  pass "exactly one Postgres pod (${pg_pods})"
+else
+  fail "found ${pg_pod_count} Postgres pods; only one may use stock-ticker-postgres-data"
+fi
+pg_pvc_phase="$(
+  ${KUBECTL_CMD} -n "${NAMESPACE}" get pvc stock-ticker-postgres-data \
+    -o jsonpath='{.status.phase}' 2>/dev/null || true
+)"
+if [[ "${pg_pvc_phase}" == "Bound" ]]; then
+  pass "PVC stock-ticker-postgres-data is Bound"
+else
+  fail "PVC stock-ticker-postgres-data phase '${pg_pvc_phase:-missing}' (want Bound). Do not delete or recreate it."
+fi
+if ${KUBECTL_CMD} -n "${NAMESPACE}" exec deploy/stock-ticker-postgres -c postgres -- \
+  sh -c 'pg_isready -h 127.0.0.1 -U "${POSTGRES_USER:-postgres}" -d "${POSTGRES_DB:-stocks}"'
+then
+  pass "Postgres pg_isready"
+else
+  fail "Postgres pg_isready; see docs/postgres-apparmor.md#diagnose"
+fi
+pg_logs="$(${KUBECTL_CMD} -n "${NAMESPACE}" logs deploy/stock-ticker-postgres -c postgres --tail=200 2>&1 || true)"
+# These are the AppArmor signal denials seen on Ubuntu 26.04 (#308, containerd#14485).
+if printf '%s\n' "${pg_logs}" | grep -E -q 'could not signal|could not send stop signal|Permission denied'; then
+  printf '%s\n' "${pg_logs}" | grep -E 'could not signal|could not send stop signal|Permission denied' || true
+  fail "Postgres log shows signal or permission errors; see docs/postgres-apparmor.md"
+else
+  pass "no signal or permission errors in the last 200 Postgres lines"
+fi
+if printf '%s\n' "${pg_logs}" | grep -q 'The files belonging to this database system'; then
+  note "WARNING: Postgres ran initdb in this pod. Expected only on a first install. If this cluster had data, stop and check the PVC (docs/postgres-apparmor.md#recovery)."
+fi
+# One line per backend pod. A pod whose migrate-db has not finished has no
+# terminated reason; report it instead of dropping it.
+migrate_reason="$(
+  ${KUBECTL_CMD} -n "${NAMESPACE}" get pods -l app=stock-ticker-backend \
+    -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.status.initContainerStatuses[?(@.name=="migrate-db")].state.terminated.reason}{"\n"}{end}' \
+    2>/dev/null | awk 'NF { print ($2 == "" ? "not-finished" : $2) }' | sort -u || true
+)"
+migrate_reason="${migrate_reason:-no backend pods}"
+if [[ "${migrate_reason}" == "Completed" ]]; then
+  pass "backend migrate-db init container Completed"
+else
+  fail "backend migrate-db init container state '${migrate_reason//$'\n'/ }'; check: ${KUBECTL_CMD} -n ${NAMESPACE} logs deploy/stock-ticker-backend -c migrate-db"
+fi
+if ${KUBECTL_CMD} -n "${NAMESPACE}" get networkpolicy stock-ticker-postgres-ingress >/dev/null 2>&1; then
+  pass "NetworkPolicy stock-ticker-postgres-ingress limits Postgres to backend and worker"
+else
+  fail "NetworkPolicy stock-ticker-postgres-ingress is missing; re-run deploy-k3s.sh"
+fi
+
+echo
+echo "== Service EndpointSlices (#308) =="
+# Traefik answers "no available server" when the frontend has no ready endpoint.
+for svc in stock-ticker-postgres stock-ticker-redis stock-ticker-backend stock-ticker-frontend; do
+  ready_flags="$(
+    ${KUBECTL_CMD} -n "${NAMESPACE}" get endpointslices -l "kubernetes.io/service-name=${svc}" \
+      -o jsonpath='{range .items[*].endpoints[*]}{.conditions.ready}{" "}{end}' 2>/dev/null || true
+  )"
+  if [[ " ${ready_flags} " == *" true "* ]]; then
+    pass "${svc} has a ready endpoint"
+  else
+    fail "${svc} has no ready endpoint (ready flags: '${ready_flags:-none}')"
+  fi
+done
+
+echo
+echo "== Web through the frontend Service (#308) =="
+# Same rule as the frontend probes: 2xx or 3xx passes. Redirects are not
+# followed, since one may point at the public hostname outside the cluster.
+if ${KUBECTL_CMD} -n "${NAMESPACE}" exec -i deploy/stock-ticker-backend -c backend -- \
+  python - http://stock-ticker-frontend:3000/ <<'PY'
+import sys
+import urllib.error
+import urllib.request
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
+try:
+    status = urllib.request.build_opener(_NoRedirect).open(sys.argv[1], timeout=10).status
+except urllib.error.HTTPError as exc:
+    status = exc.code
+print(f"HTTP {status}")
+sys.exit(0 if 200 <= status < 400 else 1)
+PY
+then
+  pass "frontend Service answered"
+else
+  fail "frontend Service did not answer"
+fi
+
+echo
 echo "== Running image IDs (informational; :local tags do not carry a git SHA) =="
 note "deploy-k3s.sh restarts backend/worker/frontend after a local import (#303)."
 for deploy in stock-ticker-backend stock-ticker-backend-worker stock-ticker-frontend; do
