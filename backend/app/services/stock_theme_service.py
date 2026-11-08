@@ -6,21 +6,23 @@ import re
 
 from app.models.stock import StockRecord
 from app.services.quote_service import quote_service
+from app.services.stock_theme_models import ThemeAssignment, ThemeDefinition
+
+# Re-export for existing imports (`from app.services.stock_theme_service import ThemeDefinition`).
+__all__ = [
+    "DEFAULT_THEME_ASSIGNMENTS",
+    "DEFAULT_THEME_DEFINITIONS",
+    "StockThemeService",
+    "ThemeAssignment",
+    "ThemeDefinition",
+    "ThemeStockGroup",
+    "US_THEME_ASSIGNMENTS",
+    "US_THEME_DEFINITIONS",
+    "stock_theme_service",
+]
 
 
 StockLoader = Callable[[str], StockRecord | None]
-
-
-@dataclass(frozen=True)
-class ThemeDefinition:
-    key: str
-    label: str
-
-
-@dataclass(frozen=True)
-class ThemeAssignment:
-    stock_id: str
-    theme_keys: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -29,7 +31,7 @@ class ThemeStockGroup:
     stocks: tuple[StockRecord, ...]
 
 
-DEFAULT_THEME_DEFINITIONS = (
+US_THEME_DEFINITIONS = (
     ThemeDefinition(key="ai-infrastructure", label="AI Infrastructure"),
     ThemeDefinition(key="gpu", label="GPU"),
     ThemeDefinition(key="networking", label="Networking"),
@@ -40,7 +42,7 @@ DEFAULT_THEME_DEFINITIONS = (
     ThemeDefinition(key="power", label="Power"),
 )
 
-DEFAULT_THEME_ASSIGNMENTS = (
+US_THEME_ASSIGNMENTS = (
     ThemeAssignment(stock_id="US:NVDA", theme_keys=("ai-infrastructure", "gpu")),
     ThemeAssignment(stock_id="US:AMD", theme_keys=("ai-infrastructure", "gpu")),
     ThemeAssignment(stock_id="US:ANET", theme_keys=("ai-infrastructure", "networking")),
@@ -51,6 +53,25 @@ DEFAULT_THEME_ASSIGNMENTS = (
     ThemeAssignment(stock_id="US:VRT", theme_keys=("cooling", "power")),
     ThemeAssignment(stock_id="US:ETN", theme_keys=("power",)),
 )
+
+
+def _combined_default_themes() -> tuple[ThemeDefinition, ...]:
+    # Lazy import avoids a circular import with the TW research preset module.
+    from app.services.tw_research.preset import TW_RESEARCH_THEME_DEFINITIONS
+
+    return US_THEME_DEFINITIONS + TW_RESEARCH_THEME_DEFINITIONS
+
+
+def _combined_default_assignments() -> tuple[ThemeAssignment, ...]:
+    from app.services.tw_research.preset import TW_RESEARCH_THEME_ASSIGNMENTS
+
+    return US_THEME_ASSIGNMENTS + TW_RESEARCH_THEME_ASSIGNMENTS
+
+
+# Public names kept for existing imports/tests. Includes optional TW research
+# sector themes (#310) without replacing US theme behaviour.
+DEFAULT_THEME_DEFINITIONS = _combined_default_themes()
+DEFAULT_THEME_ASSIGNMENTS = _combined_default_assignments()
 
 _SEPARATOR_PATTERN = re.compile(r"[\s_]+")
 
