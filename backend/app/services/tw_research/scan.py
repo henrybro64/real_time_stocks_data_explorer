@@ -397,7 +397,8 @@ class TwResearchScanService:
                         state.notes.append("Batch stopped: run timeout.")
                         state.updated_at = datetime.now(TAIPEI).isoformat()
                         self._persist_scan(state)
-                        self._rewind_durable_cursor(state)
+                    # Rewind/hydrate acquire self._lock — must run outside it.
+                    self._rewind_durable_cursor(state)
                     return state
                 try:
                     self._process_symbol(state, stock_id, now=calculation_now)
@@ -691,16 +692,18 @@ class TwResearchScanService:
             "source_incomplete",
             "processed",
         }
-        if state.status == "verified_ready" and allow_verified_refresh:
-            pass
-        elif state.status not in publishable_status:
-            return
-        elif state.quality_status not in publishable_quality:
-            return
+        refreshing_verified = (
+            state.status == "verified_ready" and allow_verified_refresh
+        )
+        if not refreshing_verified:
+            if state.status not in publishable_status:
+                return
+            if state.quality_status not in publishable_quality:
+                return
         from app.services.tw_research.persistence import finalize_verified_snapshot
 
         # Refresh path: keep verified status so finalize accepts the ledger.
-        if allow_verified_refresh and state.status == "verified_ready":
+        if refreshing_verified:
             state.quality_status = "verified_ready"
 
         finalized = finalize_verified_snapshot(state, user_id=state.user_id)
@@ -722,6 +725,34 @@ class TwResearchScanService:
             )
         return tw_research_repository
 
+    def _run_durable(
+        self,
+        *,
+        scan_id: str,
+        operation: str,
+        action: Callable[[], Any],
+        failure_note: str | None = None,
+        state: ScanState | None = None,
+    ) -> Any:
+        """Execute a durable repository call; never fall back to memory on error."""
+        try:
+            return action()
+        except Exception as exc:  # noqa: BLE001 — surface as retryable durable failure
+            logger.exception(
+                "tw_research durable %s failed scan_id=%s",
+                operation,
+                scan_id,
+            )
+            if failure_note is not None and state is not None:
+                from app.services.tw_research.persistence import mark_persist_failure
+
+                mark_persist_failure(state, f"{failure_note}:{type(exc).__name__}")
+            raise TwResearchDurableStoreError(
+                f"Durable {operation} failed ({type(exc).__name__}).",
+                scan_id=scan_id,
+                operation=operation,
+            ) from exc
+
     def _claim_batch_ids(self, state: ScanState, *, batch_size: int) -> list[str] | None:
         """Reserve next symbol slice; None means already complete.
 
@@ -729,115 +760,98 @@ class TwResearchScanService:
         raise ``TwResearchDurableStoreError`` and never fall back to memory.
         """
         terminal = {"completed_processing", "verified_ready", "budget_exhausted"}
-        if self._persist:
-            repo = self._require_durable_repository(
-                scan_id=state.scan_id, operation="claim_scan_batch"
-            )
-            try:
-                claimed = repo.claim_scan_batch(
-                    state.scan_id,
-                    batch_size=batch_size,
-                    terminal_statuses=terminal,
-                )
-            except TwResearchDurableStoreError:
-                raise
-            except Exception as exc:  # noqa: BLE001
-                logger.exception(
-                    "tw_research durable claim_scan_batch failed scan_id=%s",
-                    state.scan_id,
-                )
-                raise TwResearchDurableStoreError(
-                    f"Durable scan claim failed ({type(exc).__name__}).",
-                    scan_id=state.scan_id,
-                    operation="claim_scan_batch",
-                ) from exc
-            if claimed is None:
-                raise TwResearchDurableStoreError(
-                    "Durable scan row missing for claim.",
-                    scan_id=state.scan_id,
-                    operation="claim_scan_batch",
-                )
-            # Pull peer-worker symbol results / counters before processing.
-            self._hydrate_state_from_durable(state)
+        if not self._persist:
             with self._lock:
-                reserved_from = int(claimed.get("reserved_from", state.cursor))
-                batch_ids = list(claimed.get("batch_ids") or [])
-                # In-memory cursor tracks the reservation end for timeout rewind.
-                state.cursor = reserved_from + len(batch_ids)
-                state.status = claimed["scan"]["status"]  # type: ignore[assignment]
-                state.updated_at = datetime.now(TAIPEI).isoformat()
-            if claimed.get("already_complete"):
-                return None
-            if claimed.get("lease_held"):
-                return []
-            return batch_ids
+                if state.status in terminal and state.cursor >= len(state.stock_ids):
+                    return None
+                if state.status == "queued":
+                    state.status = "running"
+                cursor = state.cursor
+                batch_ids = list(state.stock_ids[cursor : cursor + batch_size])
+                state.cursor = cursor + len(batch_ids)
+                self._persist_scan(state)
+                return batch_ids
 
+        repo = self._require_durable_repository(
+            scan_id=state.scan_id, operation="claim_scan_batch"
+        )
+        claimed = self._run_durable(
+            scan_id=state.scan_id,
+            operation="claim_scan_batch",
+            action=lambda: repo.claim_scan_batch(
+                state.scan_id,
+                batch_size=batch_size,
+                terminal_statuses=terminal,
+            ),
+        )
+        if claimed is None:
+            raise TwResearchDurableStoreError(
+                "Durable scan row missing for claim.",
+                scan_id=state.scan_id,
+                operation="claim_scan_batch",
+            )
+        # Pull peer-worker symbol results / counters before processing.
+        self._hydrate_state_from_durable(state)
         with self._lock:
-            if state.status in terminal and state.cursor >= len(state.stock_ids):
-                return None
-            if state.status == "queued":
-                state.status = "running"
-            cursor = state.cursor
-            batch_ids = list(state.stock_ids[cursor : cursor + batch_size])
-            state.cursor = cursor + len(batch_ids)
-            self._persist_scan(state)
-            return batch_ids
+            reserved_from = int(claimed.get("reserved_from", state.cursor))
+            batch_ids = list(claimed.get("batch_ids") or [])
+            # In-memory cursor tracks the reservation end for timeout rewind.
+            state.cursor = reserved_from + len(batch_ids)
+            state.status = claimed["scan"]["status"]  # type: ignore[assignment]
+            state.updated_at = datetime.now(TAIPEI).isoformat()
+        if claimed.get("already_complete"):
+            return None
+        if claimed.get("lease_held"):
+            return []
+        return batch_ids
 
     def _claim_enrichment_ids(
         self, state: ScanState, *, batch_size: int
     ) -> tuple[list[str], int]:
-        if self._persist:
-            repo = self._require_durable_repository(
-                scan_id=state.scan_id, operation="claim_enrichment_batch"
-            )
-            try:
-                claimed = repo.claim_enrichment_batch(
-                    state.scan_id, batch_size=batch_size
-                )
-            except TwResearchDurableStoreError:
-                raise
-            except Exception as exc:  # noqa: BLE001
-                logger.exception(
-                    "tw_research durable claim_enrichment_batch failed scan_id=%s",
-                    state.scan_id,
-                )
-                raise TwResearchDurableStoreError(
-                    f"Durable enrichment claim failed ({type(exc).__name__}).",
-                    scan_id=state.scan_id,
-                    operation="claim_enrichment_batch",
-                ) from exc
-            if claimed is None:
-                raise TwResearchDurableStoreError(
-                    "Durable scan row missing for enrichment claim.",
-                    scan_id=state.scan_id,
-                    operation="claim_enrichment_batch",
-                )
-            self._hydrate_state_from_durable(state)
+        if not self._persist:
             with self._lock:
-                state.enrich_cursor = int(claimed["scan"]["enrich_cursor"])
-                state.enrichments_run = int(
-                    claimed["scan"].get("enrichments_run", state.enrichments_run)
-                )
-                state.enrich_lease_generation = int(
-                    claimed.get("lease_generation")
-                    or claimed["scan"].get("enrich_lease_generation")
-                    or 0
-                )
-                remaining = int(claimed["remaining_budget"])
-                if claimed.get("lease_held"):
-                    return [], remaining
-                pending = list(claimed.get("batch_ids") or [])
-            return pending, remaining
+                pending = [
+                    stock_id
+                    for stock_id in state.qualified_ids
+                    if stock_id in state.records
+                    and state.records[stock_id].enrichment is None
+                ]
+                remaining_budget = state.max_enrichments_per_run - state.enrichments_run
+                batch_ids = pending[: min(batch_size, max(0, remaining_budget))]
+                return batch_ids, remaining_budget
 
+        repo = self._require_durable_repository(
+            scan_id=state.scan_id, operation="claim_enrichment_batch"
+        )
+        claimed = self._run_durable(
+            scan_id=state.scan_id,
+            operation="claim_enrichment_batch",
+            action=lambda: repo.claim_enrichment_batch(
+                state.scan_id, batch_size=batch_size
+            ),
+        )
+        if claimed is None:
+            raise TwResearchDurableStoreError(
+                "Durable scan row missing for enrichment claim.",
+                scan_id=state.scan_id,
+                operation="claim_enrichment_batch",
+            )
+        self._hydrate_state_from_durable(state)
         with self._lock:
-            pending = [
-                stock_id
-                for stock_id in state.qualified_ids
-                if stock_id in state.records and state.records[stock_id].enrichment is None
-            ]
-            remaining_budget = state.max_enrichments_per_run - state.enrichments_run
-            batch_ids = pending[: min(batch_size, max(0, remaining_budget))]
-            return batch_ids, remaining_budget
+            state.enrich_cursor = int(claimed["scan"]["enrich_cursor"])
+            state.enrichments_run = int(
+                claimed["scan"].get("enrichments_run", state.enrichments_run)
+            )
+            state.enrich_lease_generation = int(
+                claimed.get("lease_generation")
+                or claimed["scan"].get("enrich_lease_generation")
+                or 0
+            )
+            remaining = int(claimed["remaining_budget"])
+            if claimed.get("lease_held"):
+                return [], remaining
+            pending = list(claimed.get("batch_ids") or [])
+        return pending, remaining
 
     def _complete_durable_enrichment(self, state: ScanState) -> None:
         if not self._persist:
@@ -853,26 +867,16 @@ class TwResearchScanService:
             scan_id=state.scan_id, operation="complete_enrichment_batch"
         )
         lease_generation = int(getattr(state, "enrich_lease_generation", 0) or 0) or None
-        try:
-            completed = repo.complete_enrichment_batch(
+        completed = self._run_durable(
+            scan_id=state.scan_id,
+            operation="complete_enrichment_batch",
+            action=lambda: repo.complete_enrichment_batch(
                 state.scan_id,
                 lease_generation=lease_generation,
-            )
-        except TwResearchDurableStoreError:
-            raise
-        except Exception as exc:  # noqa: BLE001
-            logger.exception(
-                "tw_research durable complete_enrichment_batch failed scan_id=%s",
-                state.scan_id,
-            )
-            from app.services.tw_research.persistence import mark_persist_failure
-
-            mark_persist_failure(state, f"complete_enrichment:{type(exc).__name__}")
-            raise TwResearchDurableStoreError(
-                f"Durable enrichment complete failed ({type(exc).__name__}).",
-                scan_id=state.scan_id,
-                operation="complete_enrichment_batch",
-            ) from exc
+            ),
+            failure_note="complete_enrichment",
+            state=state,
+        )
         if completed is None:
             return
         with self._lock:
@@ -887,26 +891,16 @@ class TwResearchScanService:
         repo = self._require_durable_repository(
             scan_id=state.scan_id, operation="rewind_scan_cursor"
         )
-        try:
-            repo.rewind_scan_cursor(
+        self._run_durable(
+            scan_id=state.scan_id,
+            operation="rewind_scan_cursor",
+            action=lambda: repo.rewind_scan_cursor(
                 state.scan_id, new_cursor=state.cursor, status=state.status
-            )
-            self._hydrate_state_from_durable(state)
-        except TwResearchDurableStoreError:
-            raise
-        except Exception as exc:  # noqa: BLE001
-            logger.exception(
-                "tw_research durable rewind_scan_cursor failed scan_id=%s",
-                state.scan_id,
-            )
-            from app.services.tw_research.persistence import mark_persist_failure
-
-            mark_persist_failure(state, f"rewind_cursor:{type(exc).__name__}")
-            raise TwResearchDurableStoreError(
-                f"Durable cursor rewind failed ({type(exc).__name__}).",
-                scan_id=state.scan_id,
-                operation="rewind_scan_cursor",
-            ) from exc
+            ),
+            failure_note="rewind_cursor",
+            state=state,
+        )
+        self._hydrate_state_from_durable(state)
 
     def _complete_durable_batch(self, state: ScanState) -> None:
         if not self._persist:
@@ -914,25 +908,15 @@ class TwResearchScanService:
         repo = self._require_durable_repository(
             scan_id=state.scan_id, operation="complete_scan_batch"
         )
-        try:
-            completed = repo.complete_scan_batch(
+        completed = self._run_durable(
+            scan_id=state.scan_id,
+            operation="complete_scan_batch",
+            action=lambda: repo.complete_scan_batch(
                 state.scan_id, status=state.status
-            )
-        except TwResearchDurableStoreError:
-            raise
-        except Exception as exc:  # noqa: BLE001
-            logger.exception(
-                "tw_research durable complete_scan_batch failed scan_id=%s",
-                state.scan_id,
-            )
-            from app.services.tw_research.persistence import mark_persist_failure
-
-            mark_persist_failure(state, f"complete_batch:{type(exc).__name__}")
-            raise TwResearchDurableStoreError(
-                f"Durable scan complete failed ({type(exc).__name__}).",
-                scan_id=state.scan_id,
-                operation="complete_scan_batch",
-            ) from exc
+            ),
+            failure_note="complete_batch",
+            state=state,
+        )
         if completed is None:
             return
         with self._lock:

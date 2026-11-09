@@ -601,8 +601,10 @@ def test_postgres_persistence_round_trip_and_atomic_finalize(monkeypatch) -> Non
     from app.repositories import tw_research_repository as repo_module
     from app.services.tw_research import persistence as persistence_module
 
-    repo_module.tw_research_repository.set_session_factory_override(factory)
-    persistence_module.tw_research_repository.set_session_factory_override(factory)
+    # Replace singletons via monkeypatch so the override cannot leak into later
+    # Postgres integration tests in the same pytest process.
+    monkeypatch.setattr(repo_module, "tw_research_repository", repo)
+    monkeypatch.setattr(persistence_module, "tw_research_repository", repo)
 
     service = TwResearchScanService(
         history_loader=lambda stock, limit, *, max_month_fetches: ([], 0),
