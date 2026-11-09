@@ -17,6 +17,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime, time
+from inspect import Parameter, signature
 from threading import Lock
 from typing import Any, Literal, Protocol
 from uuid import uuid4
@@ -419,34 +420,12 @@ class TwResearchScanService:
                     prior_week52 = (
                         prior_record.week52_position if prior_record is not None else None
                     )
-                try:
-                    enriched = enrich_fn(
-                        stock_id,
-                        now=calculation_now,
-                        prior_week52_position=prior_week52,
-                    )
-                    payload = enriched.as_dict() if hasattr(enriched, "as_dict") else enriched
-                except TypeError:
-                    # Test doubles may not accept prior_week52_position.
-                    try:
-                        enriched = enrich_fn(stock_id, now=calculation_now)
-                        payload = (
-                            enriched.as_dict() if hasattr(enriched, "as_dict") else enriched
-                        )
-                    except Exception as exc:  # noqa: BLE001 — isolate per symbol
-                        payload = {
-                            "stockId": stock_id,
-                            "qualified": True,
-                            "error": f"symbol_error:{type(exc).__name__}",
-                            "fields": {},
-                        }
-                except Exception as exc:  # noqa: BLE001 — isolate per symbol
-                    payload = {
-                        "stockId": stock_id,
-                        "qualified": True,
-                        "error": f"symbol_error:{type(exc).__name__}",
-                        "fields": {},
-                    }
+                payload = _invoke_enricher(
+                    enrich_fn,
+                    stock_id,
+                    calculation_now=calculation_now,
+                    prior_week52=prior_week52,
+                )
                 with self._lock:
                     record = state.records.get(stock_id)
                     if record is not None:
@@ -465,6 +444,36 @@ class TwResearchScanService:
                     "it does not convert a technical pass into a fail."
                 )
                 return state
+
+
+def _invoke_enricher(
+    enrich_fn: Callable[..., Any],
+    stock_id: str,
+    *,
+    calculation_now: datetime,
+    prior_week52: float | None,
+) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {"now": calculation_now}
+    try:
+        parameters = signature(enrich_fn).parameters
+    except (TypeError, ValueError):
+        parameters = {}
+    accepts_var_kw = any(
+        parameter.kind == Parameter.VAR_KEYWORD for parameter in parameters.values()
+    )
+    if accepts_var_kw or "prior_week52_position" in parameters:
+        kwargs["prior_week52_position"] = prior_week52
+    try:
+        enriched = enrich_fn(stock_id, **kwargs)
+        payload = enriched.as_dict() if hasattr(enriched, "as_dict") else enriched
+        return payload if isinstance(payload, dict) else {"stockId": stock_id, "fields": {}}
+    except Exception as exc:  # noqa: BLE001 — isolate per symbol
+        return {
+            "stockId": stock_id,
+            "qualified": True,
+            "error": f"symbol_error:{type(exc).__name__}",
+            "fields": {},
+        }
 
 
 def _theme_keys_for(stock_id: str) -> tuple[str, ...]:

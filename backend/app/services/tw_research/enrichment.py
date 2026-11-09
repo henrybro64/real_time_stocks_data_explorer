@@ -38,6 +38,7 @@ from app.services.tw_research.constants import (
 )
 from app.services.tw_research.indicators import fifty_two_week_position
 
+EnrichmentStep = Callable[[], None]
 FieldStatus = Literal["ok", "unavailable", "partial"]
 
 
@@ -119,112 +120,134 @@ def enrich_qualified_symbol(
         result.error = "not_in_catalog"
         return result
 
-    try:
-        _enrich_institutional(
+    _run_enrichment_step(
+        result,
+        field="institutional_5d",
+        source="tw_institutional_service",
+        captured_at=captured_at,
+        action=lambda: _enrich_institutional(
             result,
             stock_id,
             loader=institutional_loader or _default_institutional,
             captured_at=captured_at,
             symbol=stock.symbol,
-        )
-    except Exception as exc:  # noqa: BLE001
-        result.fields["institutional_5d"] = ProvenanceField(
-            field="institutional_5d",
-            status="unavailable",
-            source="tw_institutional_service",
-            captured_at=captured_at,
-            reason=f"symbol_error:{type(exc).__name__}",
-        )
-
-    try:
-        _enrich_margin(
+        ),
+    )
+    _run_enrichment_step(
+        result,
+        field="margin",
+        source="tw_margin_short_service",
+        captured_at=captured_at,
+        action=lambda: _enrich_margin(
             result,
             stock_id,
             loader=margin_loader or _default_margin,
             captured_at=captured_at,
-        )
-    except Exception as exc:  # noqa: BLE001
-        result.fields["margin"] = ProvenanceField(
-            field="margin",
-            status="unavailable",
-            source="tw_margin_short_service",
-            captured_at=captured_at,
-            reason=f"symbol_error:{type(exc).__name__}",
-        )
-
-    try:
-        _enrich_ownership(
+        ),
+    )
+    _run_enrichment_step(
+        result,
+        field="tdcc_holders_ge_400_lots",
+        source="tw_ownership_concentration_service",
+        captured_at=captured_at,
+        freshness_class="tdcc_weekly",
+        action=lambda: _enrich_ownership(
             result,
             stock_id,
             loader=ownership_loader or _default_ownership,
             captured_at=captured_at,
-        )
-    except Exception as exc:  # noqa: BLE001
-        result.fields["tdcc_holders_ge_400_lots"] = ProvenanceField(
-            field="tdcc_holders_ge_400_lots",
-            status="unavailable",
-            source="tw_ownership_concentration_service",
-            captured_at=captured_at,
-            freshness_class="tdcc_weekly",
-            reason=f"symbol_error:{type(exc).__name__}",
-        )
-
-    try:
-        _enrich_valuation(
+        ),
+    )
+    _run_enrichment_step(
+        result,
+        field="official_pe",
+        source="key_stats_service",
+        captured_at=captured_at,
+        action=lambda: _enrich_valuation(
             result,
             stock_id,
             loader=key_stats_loader or _default_key_stats,
             captured_at=captured_at,
-        )
-    except Exception as exc:  # noqa: BLE001
-        result.fields["official_pe"] = ProvenanceField(
-            field="official_pe",
-            status="unavailable",
-            source="key_stats_service",
-            captured_at=captured_at,
-            reason=f"symbol_error:{type(exc).__name__}",
-        )
-
-    try:
-        _enrich_levels(
+        ),
+    )
+    _run_enrichment_step(
+        result,
+        field="reference_levels",
+        source="stock_analysis_key_price_levels",
+        captured_at=captured_at,
+        freshness_class="computed",
+        action=lambda: _enrich_levels(
             result,
             stock,
             loader=candles_loader or _default_stored_candles_loader,
             prior_week52_position=prior_week52_position,
             captured_at=captured_at,
             now=calculation_now,
-        )
-    except Exception as exc:  # noqa: BLE001
-        result.fields["reference_levels"] = ProvenanceField(
-            field="reference_levels",
+        ),
+    )
+
+    # PEG is never reverse-engineered from a mismatched PE period.
+    _ensure_unavailable_field(
+        result,
+        field="peg",
+        source="none",
+        captured_at=captured_at,
+        freshness_class="earnings_quarterly",
+        reason="verified_eps_growth_denominator_unavailable",
+    )
+    _ensure_unavailable_field(
+        result,
+        field="ttm_eps",
+        source="key_stats_service",
+        captured_at=captured_at,
+        freshness_class="earnings_quarterly",
+        reason="ttm_eps_not_verified_for_taiwan_official_pe_path",
+    )
+
+    return result
+
+
+def _run_enrichment_step(
+    result: EnrichmentResult,
+    *,
+    field: str,
+    source: str,
+    captured_at: str,
+    action: EnrichmentStep,
+    freshness_class: str = "quote_or_eod_day",
+) -> None:
+    try:
+        action()
+    except Exception as exc:  # noqa: BLE001 — isolate per enrichment source
+        result.fields[field] = ProvenanceField(
+            field=field,
             status="unavailable",
-            source="stock_analysis_key_price_levels",
+            source=source,
             captured_at=captured_at,
-            freshness_class="computed",
+            freshness_class=freshness_class,
             reason=f"symbol_error:{type(exc).__name__}",
         )
 
-    # PEG is never reverse-engineered from a mismatched PE period.
-    if "peg" not in result.fields:
-        result.fields["peg"] = ProvenanceField(
-            field="peg",
-            status="unavailable",
-            source="none",
-            captured_at=captured_at,
-            freshness_class="earnings_quarterly",
-            reason="verified_eps_growth_denominator_unavailable",
-        )
-    if "ttm_eps" not in result.fields:
-        result.fields["ttm_eps"] = ProvenanceField(
-            field="ttm_eps",
-            status="unavailable",
-            source="key_stats_service",
-            captured_at=captured_at,
-            freshness_class="earnings_quarterly",
-            reason="ttm_eps_not_verified_for_taiwan_official_pe_path",
-        )
 
-    return result
+def _ensure_unavailable_field(
+    result: EnrichmentResult,
+    *,
+    field: str,
+    source: str,
+    captured_at: str,
+    freshness_class: str,
+    reason: str,
+) -> None:
+    if field in result.fields:
+        return
+    result.fields[field] = ProvenanceField(
+        field=field,
+        status="unavailable",
+        source=source,
+        captured_at=captured_at,
+        freshness_class=freshness_class,
+        reason=reason,
+    )
 
 
 def _default_institutional(stock_id: str, days: int) -> TaiwanInstitutionalInvestorsResult:

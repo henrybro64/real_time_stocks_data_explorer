@@ -71,6 +71,18 @@ export function TwResearchPage() {
     void queryClient.invalidateQueries({ queryKey: ["tw-research-manifest", id] });
   };
 
+  const requireScanId = () => {
+    if (!scanId) {
+      throw new Error("missing scan");
+    }
+    return scanId;
+  };
+
+  const applyScanSnapshot = (next: TwResearchScanSnapshot) => {
+    setScan(next);
+    refreshManifest(next.scanId);
+  };
+
   const explicitIds = useMemo(() => splitLines(stockIdsText), [stockIdsText]);
   const themeKeys = useMemo(() => splitLines(themeKeysText), [themeKeysText]);
 
@@ -118,51 +130,23 @@ export function TwResearchPage() {
   });
 
   const batchMutation = useMutation({
-    mutationFn: async () => {
-      if (!scanId) {
-        throw new Error("missing scan");
-      }
-      return runTwResearchBatch(scanId, 10);
-    },
-    onSuccess: (next) => {
-      setScan(next);
-      refreshManifest(next.scanId);
-    },
+    mutationFn: async () => runTwResearchBatch(requireScanId(), 10),
+    onSuccess: applyScanSnapshot,
   });
 
   const enrichMutation = useMutation({
-    mutationFn: async () => {
-      if (!scanId) {
-        throw new Error("missing scan");
-      }
-      return runTwResearchEnrichmentBatch(scanId, 10);
-    },
-    onSuccess: (next) => {
-      setScan(next);
-      refreshManifest(next.scanId);
-    },
+    mutationFn: async () => runTwResearchEnrichmentBatch(requireScanId(), 10),
+    onSuccess: applyScanSnapshot,
   });
 
   const refreshMutation = useMutation({
-    mutationFn: async () => {
-      if (!scanId) {
-        throw new Error("missing scan");
-      }
-      return fetchTwResearchScan(scanId);
-    },
-    onSuccess: (next) => {
-      setScan(next);
-      refreshManifest(next.scanId);
-    },
+    mutationFn: async () => fetchTwResearchScan(requireScanId()),
+    onSuccess: applyScanSnapshot,
   });
 
   const agentMutation = useMutation({
-    mutationFn: async (chunkIndex: number) => {
-      if (!scanId) {
-        throw new Error("missing scan");
-      }
-      return fetchTwResearchBrowserText(scanId, chunkIndex);
-    },
+    mutationFn: async (chunkIndex: number) =>
+      fetchTwResearchBrowserText(requireScanId(), chunkIndex),
     onSuccess: (payload, chunkIndex) => {
       setAgentChunkIndex(chunkIndex);
       const continuation = payload.continuation as
