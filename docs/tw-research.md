@@ -46,6 +46,8 @@ Confirm and reuse — do not reimplement:
 
 - Stage A: daily MACD/KD for each symbol in the batch.
 - Stage B: monthly + SMA20/60/120/240 + 52-week position for **day-pass** symbols only.
+- Upstream month budget is enforced **before** history backfill via `get_daily_history_within_budget`; counters track actual month fetches, not Stage B local math.
+- Indicator `now` is anchored to the scan `tradingDay` (after TW cash close). Overlapping batch POSTs for one scan are serialized with a per-scan lock and atomic cursor reservation.
 - Checkpoint key: `(trading_day, universe_version, calculation_version, symbol)`.
 - Checkpoints are **ephemeral (in-memory)**. They do **not** survive process restart. Do not claim restart-safe resume without a Postgres store.
 

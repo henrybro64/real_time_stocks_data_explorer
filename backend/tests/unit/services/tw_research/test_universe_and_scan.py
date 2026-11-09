@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
+from threading import Lock
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -149,9 +151,9 @@ def test_scan_batches_paginate_and_never_reject_for_missing_theme() -> None:
     }
     history = _rising_history(80)
 
-    def loader(stock, limit):  # noqa: ANN001
-        del limit
-        return list(history)
+    def loader(stock, limit, *, max_month_fetches):  # noqa: ANN001
+        del stock, limit, max_month_fetches
+        return list(history), 0
 
     service = TwResearchScanService(
         history_loader=loader,
@@ -195,7 +197,7 @@ def test_scan_batches_paginate_and_never_reject_for_missing_theme() -> None:
 
 def test_scan_batch_size_cap_and_target_count_validation() -> None:
     service = TwResearchScanService(
-        history_loader=lambda stock, limit: [],
+        history_loader=lambda stock, limit, *, max_month_fetches: ([], 0),
         stock_loader=lambda stock_id: _tw(stock_id),
     )
     with pytest.raises(ValueError, match="target_count"):
@@ -219,12 +221,12 @@ def test_scan_multi_batch_over_eighty_symbols_without_loading_all_at_once() -> N
     history = _rising_history(5)
     fetch_counts: list[int] = []
 
-    def loader(stock, limit):  # noqa: ANN001
-        del stock, limit
+    def loader(stock, limit, *, max_month_fetches):  # noqa: ANN001
+        del stock, limit, max_month_fetches
         fetch_counts.append(1)
         # Each batch POST must not pull every symbol's history in one go.
         assert len(fetch_counts) <= SCAN_BATCH_SIZE
-        return list(history)
+        return list(history), 0
 
     service = TwResearchScanService(
         history_loader=loader,
@@ -256,3 +258,119 @@ def test_scan_multi_batch_over_eighty_symbols_without_loading_all_at_once() -> N
     assert state.status == "completed"
     assert len(state.records) == 81
     assert state.day_pass_ids == []
+
+
+def test_scan_enforces_upstream_budget_before_history_fetch() -> None:
+    catalog = {
+        "TW:2330": _tw("TW:2330"),
+        "TW:2454": _tw("TW:2454"),
+        "TW:2303": _tw("TW:2303"),
+    }
+    observed_budgets: list[int] = []
+
+    def loader(stock, limit, *, max_month_fetches):  # noqa: ANN001
+        del stock, limit
+        observed_budgets.append(max_month_fetches)
+        if max_month_fetches <= 0:
+            return [], 0
+        return _rising_history(80), min(3, max_month_fetches)
+
+    service = TwResearchScanService(
+        history_loader=loader,
+        stock_loader=lambda stock_id: catalog.get(stock_id),
+    )
+    state = service.create_scan(
+        UniverseSelector(
+            mode="stock_ids",
+            stock_ids=("TW:2330", "TW:2454", "TW:2303"),
+        ),
+        trading_day="2024-06-28",
+        max_upstream_month_fetches=3,
+        now=datetime(2024, 6, 28, 16, 0, tzinfo=TZ),
+    )
+    state = service.run_batch(
+        state.scan_id,
+        batch_size=2,
+        now=datetime(2024, 6, 28, 16, 0, tzinfo=TZ),
+    )
+    assert observed_budgets[0] == 3
+    assert observed_budgets[1] == 0
+    assert state.upstream_month_fetches == 3
+    assert state.cursor == 2
+    assert state.status == "budget_exhausted"
+    assert state.records["TW:2454"].rejection_reason == "history_budget_exhausted"
+
+
+def test_scan_indicators_anchor_to_trading_day_not_wall_clock() -> None:
+    catalog = {"TW:2330": _tw("TW:2330")}
+    history = _rising_history(80)
+
+    def loader(stock, limit, *, max_month_fetches):  # noqa: ANN001
+        del stock, limit, max_month_fetches
+        return list(history), 0
+
+    service = TwResearchScanService(
+        history_loader=loader,
+        stock_loader=lambda stock_id: catalog.get(stock_id),
+    )
+    state = service.create_scan(
+        UniverseSelector(mode="stock_ids", stock_ids=("TW:2330",)),
+        trading_day="2024-06-28",
+    )
+    # Wall-clock "now" is a later session; indicators must stay on trading_day.
+    state = service.run_batch(
+        state.scan_id,
+        batch_size=1,
+        now=datetime(2024, 7, 15, 16, 0, tzinfo=TZ),
+    )
+    daily = state.records["TW:2330"].daily
+    assert daily is not None
+    assert daily["asOf"] == "2024-06-28"
+
+
+def test_scan_serializes_overlapping_batches_for_same_scan() -> None:
+    catalog = {f"TW:{1000 + i:04d}": _tw(f"TW:{1000 + i:04d}") for i in range(4)}
+    history = _rising_history(5)
+    started: list[str] = []
+    release = Lock()
+    release.acquire()
+
+    def loader(stock, limit, *, max_month_fetches):  # noqa: ANN001
+        del limit, max_month_fetches
+        started.append(stock.id)
+        if len(started) == 1:
+            # Hold the first symbol until the second batch attempt is waiting.
+            release.acquire(timeout=2)
+        return list(history), 0
+
+    service = TwResearchScanService(
+        history_loader=loader,
+        stock_loader=lambda stock_id: catalog.get(stock_id),
+    )
+    state = service.create_scan(
+        UniverseSelector(
+            mode="stock_ids",
+            stock_ids=tuple(catalog.keys()),
+        ),
+        trading_day="2024-06-28",
+    )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(service.run_batch, state.scan_id, batch_size=2)
+        # Wait until first batch is inside history load, then start second.
+        for _ in range(50):
+            if started:
+                break
+            import time as time_mod
+
+            time_mod.sleep(0.02)
+        second = pool.submit(service.run_batch, state.scan_id, batch_size=2)
+        release.release()
+        first_state = first.result(timeout=5)
+        second_state = second.result(timeout=5)
+
+    assert first_state.scan_id == second_state.scan_id
+    assert len(started) == 4
+    assert len(set(started)) == 4
+    assert state.cursor == 4
+    assert len(state.records) == 4

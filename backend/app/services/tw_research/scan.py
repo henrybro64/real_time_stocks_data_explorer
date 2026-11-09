@@ -16,9 +16,9 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
-from datetime import datetime
+from datetime import date, datetime, time
 from threading import Lock
-from typing import Any, Literal
+from typing import Any, Literal, Protocol
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
@@ -47,9 +47,22 @@ from app.services.tw_research.universe import (
     resolve_universe,
 )
 
-HistoryLoader = Callable[[StockRecord, int], list[CandleRecord]]
-StockLoader = Callable[[str], StockRecord | None]
+TAIPEI = ZoneInfo("Asia/Taipei")
 ScanStatus = Literal["running", "completed", "incomplete", "budget_exhausted"]
+
+
+class HistoryLoader(Protocol):
+    def __call__(
+        self,
+        stock: StockRecord,
+        limit: int,
+        *,
+        max_month_fetches: int,
+    ) -> tuple[list[CandleRecord], int]:
+        """Return ``(candles, upstream_month_fetches_used)`` within the budget."""
+
+
+StockLoader = Callable[[str], StockRecord | None]
 
 
 @dataclass(frozen=True)
@@ -101,6 +114,7 @@ class ScanState:
     created_at: str = ""
     updated_at: str = ""
     notes: list[str] = field(default_factory=list)
+    run_lock: Lock = field(default_factory=Lock, repr=False, compare=False)
 
     def snapshot(self) -> dict[str, Any]:
         return {
@@ -165,7 +179,7 @@ class TwResearchScanService:
             # Output target only; never changes pass rules.
             raise ValueError("target_count must be 10 or 20")
         resolved = resolve_universe(selector, stock_resolver=self._stock_loader)
-        current = now or datetime.now(ZoneInfo("Asia/Taipei"))
+        current = now or datetime.now(TAIPEI)
         day = trading_day or current.date().isoformat()
         stamp = current.isoformat()
         state = ScanState(
@@ -206,60 +220,66 @@ class TwResearchScanService:
         """Process up to ``batch_size`` not-yet-scanned symbols (Stage A, then B)."""
         if batch_size <= 0 or batch_size > SCAN_BATCH_SIZE:
             raise ValueError(f"batch_size must be 1..{SCAN_BATCH_SIZE}")
-        started = datetime.now(ZoneInfo("Asia/Taipei"))
-        current = now or started
+        started = datetime.now(TAIPEI)
 
         with self._lock:
             state = self._scans.get(scan_id)
             if state is None:
                 raise KeyError(f"Unknown scan_id: {scan_id}")
-            if state.status in {"completed", "budget_exhausted"} and state.cursor >= len(
-                state.stock_ids
-            ):
-                return state
-            # Copy references under lock; mutate carefully.
-            stock_ids = state.stock_ids
-            cursor = state.cursor
 
-        batch_ids = list(stock_ids[cursor : cursor + batch_size])
-        for stock_id in batch_ids:
-            if (datetime.now(ZoneInfo("Asia/Taipei")) - started).total_seconds() > timeout_seconds:
-                with self._lock:
-                    state.status = "incomplete"
-                    state.notes.append("Batch stopped: run timeout.")
-                    state.updated_at = datetime.now(ZoneInfo("Asia/Taipei")).isoformat()
-                return state
-            try:
-                self._process_symbol(state, stock_id, now=current)
-            except Exception as exc:  # noqa: BLE001 — isolate per symbol
-                record = SymbolScanRecord(
-                    stock_id=stock_id,
-                    stage="A",
-                    rejection_reason=f"symbol_error:{type(exc).__name__}",
-                    checkpoint=CheckpointKey(
-                        trading_day=state.trading_day,
-                        universe_version=state.universe_version,
-                        calculation_version=state.calculation_version,
-                        symbol=stock_id,
-                    ).as_tuple(),
+        # Serialize overlapping batch POSTs for the same scan.
+        with state.run_lock:
+            with self._lock:
+                if state.status in {"completed", "budget_exhausted"} and state.cursor >= len(
+                    state.stock_ids
+                ):
+                    return state
+                cursor = state.cursor
+                batch_ids = list(state.stock_ids[cursor : cursor + batch_size])
+                # Reserve the slice so a concurrent waiter sees an advanced cursor.
+                state.cursor = cursor + len(batch_ids)
+
+            calculation_now = _calculation_now(state.trading_day, override=now)
+            for stock_id in batch_ids:
+                if (datetime.now(TAIPEI) - started).total_seconds() > timeout_seconds:
+                    with self._lock:
+                        # Rewind unprocessed reserved ids so a later batch can retry.
+                        remaining = batch_ids[batch_ids.index(stock_id) :]
+                        state.cursor = max(0, state.cursor - len(remaining))
+                        state.status = "incomplete"
+                        state.notes.append("Batch stopped: run timeout.")
+                        state.updated_at = datetime.now(TAIPEI).isoformat()
+                    return state
+                try:
+                    self._process_symbol(state, stock_id, now=calculation_now)
+                except Exception as exc:  # noqa: BLE001 — isolate per symbol
+                    record = SymbolScanRecord(
+                        stock_id=stock_id,
+                        stage="A",
+                        rejection_reason=f"symbol_error:{type(exc).__name__}",
+                        checkpoint=CheckpointKey(
+                            trading_day=state.trading_day,
+                            universe_version=state.universe_version,
+                            calculation_version=state.calculation_version,
+                            symbol=stock_id,
+                        ).as_tuple(),
+                    )
+                    with self._lock:
+                        state.records[stock_id] = record
+                        self._checkpoints.add(record.checkpoint)  # type: ignore[arg-type]
+
+            with self._lock:
+                if state.cursor >= len(state.stock_ids):
+                    state.status = "completed"
+                elif state.upstream_month_fetches >= state.max_upstream_month_fetches:
+                    state.status = "budget_exhausted"
+                else:
+                    state.status = "running"
+                state.updated_at = datetime.now(TAIPEI).isoformat()
+                state.notes.append(
+                    "target_count is an output target only and does not relax pass rules."
                 )
-                with self._lock:
-                    state.records[stock_id] = record
-                    self._checkpoints.add(record.checkpoint)  # type: ignore[arg-type]
-
-        with self._lock:
-            state.cursor = cursor + len(batch_ids)
-            if state.cursor >= len(state.stock_ids):
-                state.status = "completed"
-            elif state.upstream_month_fetches >= state.max_upstream_month_fetches:
-                state.status = "budget_exhausted"
-            else:
-                state.status = "running"
-            state.updated_at = datetime.now(ZoneInfo("Asia/Taipei")).isoformat()
-            state.notes.append(
-                "target_count is an output target only and does not relax pass rules."
-            )
-            return state
+                return state
 
     def _process_symbol(self, state: ScanState, stock_id: str, *, now: datetime) -> None:
         checkpoint = CheckpointKey(
@@ -268,8 +288,11 @@ class TwResearchScanService:
             calculation_version=state.calculation_version,
             symbol=stock_id,
         )
-        if checkpoint.as_tuple() in self._checkpoints and stock_id in state.records:
-            return
+        with self._lock:
+            if checkpoint.as_tuple() in self._checkpoints and stock_id in state.records:
+                return
+            # Reserve checkpoint before any upstream work so concurrent batches skip.
+            self._checkpoints.add(checkpoint.as_tuple())
 
         stock = self._stock_loader(stock_id)
         if stock is None:
@@ -281,10 +304,24 @@ class TwResearchScanService:
             )
             with self._lock:
                 state.records[stock_id] = record
-                self._checkpoints.add(checkpoint.as_tuple())
             return
 
-        candles = self._history_loader(stock, PREFERRED_DAILY_HISTORY_LIMIT)
+        with self._lock:
+            remaining_budget = max(
+                0, state.max_upstream_month_fetches - state.upstream_month_fetches
+            )
+
+        candles, months_used = self._history_loader(
+            stock,
+            PREFERRED_DAILY_HISTORY_LIMIT,
+            max_month_fetches=remaining_budget,
+        )
+        with self._lock:
+            state.upstream_month_fetches += months_used
+            remaining_after = max(
+                0, state.max_upstream_month_fetches - state.upstream_month_fetches
+            )
+
         daily = daily_macd_kd_snapshot(candles, market="TW", now=now)
         record = SymbolScanRecord(
             stock_id=stock_id,
@@ -294,11 +331,11 @@ class TwResearchScanService:
         )
 
         if daily.pass_status == "pass":
-            if state.upstream_month_fetches >= state.max_upstream_month_fetches:
-                record.rejection_reason = "monthly_budget_exhausted"
+            # Stage B is local computation over already-loaded candles. History
+            # budget was enforced before the fetch above.
+            if not candles and remaining_after <= 0 and months_used == 0:
+                record.rejection_reason = "history_budget_exhausted"
             else:
-                # History loader may trigger bounded cold backfill; count one attempt.
-                state.upstream_month_fetches += 1
                 monthly = monthly_macd_kd_snapshot(candles, market="TW", now=now)
                 completed = completed_daily_candles(candles, "TW", now=now)
                 record.stage = "B"
@@ -308,11 +345,26 @@ class TwResearchScanService:
                 record.sma120 = latest_sma(completed, 120)
                 record.sma240 = latest_sma(completed, 240)
                 record.week52_position = fifty_two_week_position(completed)
-                state.day_pass_ids.append(stock_id)
+                with self._lock:
+                    state.day_pass_ids.append(stock_id)
+        elif months_used == 0 and remaining_budget <= 0 and not candles:
+            record.rejection_reason = "history_budget_exhausted"
 
         with self._lock:
             state.records[stock_id] = record
-            self._checkpoints.add(checkpoint.as_tuple())
+
+
+def _calculation_now(trading_day: str, *, override: datetime | None) -> datetime:
+    """Anchor indicators to the scan trading day (after TW cash close).
+
+    An explicit ``override`` is honored only when its calendar date matches
+    ``trading_day`` (unit tests). Cross-day overrides are ignored so resumed
+    batches cannot mix sessions under one trading-day key.
+    """
+    day = date.fromisoformat(trading_day)
+    if override is not None and override.astimezone(TAIPEI).date() == day:
+        return override.astimezone(TAIPEI)
+    return datetime.combine(day, time(14, 0), tzinfo=TAIPEI)
 
 
 def _snapshot_dict(snapshot: MacdKdSnapshot) -> dict[str, Any]:
@@ -332,15 +384,21 @@ def _snapshot_dict(snapshot: MacdKdSnapshot) -> dict[str, Any]:
     }
 
 
-def _default_history_loader(stock: StockRecord, limit: int) -> list[CandleRecord]:
+def _default_history_loader(
+    stock: StockRecord,
+    limit: int,
+    *,
+    max_month_fetches: int,
+) -> tuple[list[CandleRecord], int]:
     from app.services.providers.tw_provider import TWProvider
 
     provider = quote_service.providers.get("TW") or TWProvider()
-    return daily_price_history_service.get_daily_history(
+    return daily_price_history_service.get_daily_history_within_budget(
         stock,
         "MAX",
         limit=limit,
         provider=provider,
+        max_month_fetches=max_month_fetches,
     )
 
 

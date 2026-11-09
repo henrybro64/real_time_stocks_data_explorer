@@ -42,7 +42,7 @@ def test_create_and_get_scan_round_trip_with_explicit_ids(monkeypatch) -> None:
     }
 
     service = scan_module.TwResearchScanService(
-        history_loader=lambda stock, limit: [],
+        history_loader=lambda stock, limit, *, max_month_fetches: ([], 0),
         stock_loader=lambda stock_id: catalog.get(stock_id),
     )
     monkeypatch.setattr(
