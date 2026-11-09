@@ -94,6 +94,7 @@ def test_postgres_latest_manifest_and_chunk_handoff_without_upstream() -> None:
     )
     assert unchanged.action == "skip_all"
     assert unchanged.verification == "unchanged_skip"
+    assert unchanged.removed_chunk_indexes == ()
 
     snapshot = repo.get_export_snapshot(finalized["snapshotId"])
     assert snapshot is not None

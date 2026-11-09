@@ -14,6 +14,7 @@
     "chunkIndexes": [
       0
     ],
+    "removedChunkIndexes": [],
     "verification": "stock_ticker_export_verified"
   },
   "manifest": {
@@ -115,9 +116,16 @@
     "expectedAction": "skip_all",
     "expectedVerification": "unchanged_skip"
   },
+  "manifestOnlyRead": {
+    "instruction": "If contentDigest changes while every chunkDigests entry is unchanged, action=manifest_only. Update the stored snapshot pointer and metadata. Do not re-GET chunks. Drop removedChunkIndexes locally; never request them.",
+    "expectedAction": "manifest_only",
+    "expectedChunkIndexes": [],
+    "expectedRemovedChunkIndexes": []
+  },
   "retry": {
     "onDigestMismatch": "Re-GET the single chunkIndex; abort that chunk if still wrong",
     "onAuthRequired": "Re-authenticate the browser session; do not fall back to SSH/DB",
-    "onIncompleteSnapshot": "Wait for verified_ready; never publish partial ledgers"
+    "onIncompleteSnapshot": "Wait for verified_ready; never publish partial ledgers",
+    "onTemporaryReadFailure": "Retry that chunk GET. Do not replace a previously verified chunk until the new checksum matches."
   }
 }

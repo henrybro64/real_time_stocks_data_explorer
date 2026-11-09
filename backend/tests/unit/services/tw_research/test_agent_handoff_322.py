@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.core.config import settings
@@ -30,11 +31,12 @@ FIXTURE = (
 def test_fixture_matches_deterministic_example_builder() -> None:
     example = build_agent_transfer_example()
     on_disk = json.loads(FIXTURE.read_text())
-    assert on_disk["manifest"]["contentDigest"] == example["manifest"]["contentDigest"]
-    assert on_disk["chunks"]["0"]["checksumSha256"] == example["chunks"]["0"]["checksumSha256"]
+    assert on_disk == example
     assert on_disk["notionPublishedVerified"] is False
     assert on_disk["notionPublishNotPerformed"] is True
     assert on_disk["stockTickerExportVerified"] is True
+    assert on_disk["transferPlan"]["removedChunkIndexes"] == []
+    assert on_disk["manifestOnlyRead"]["expectedAction"] == "manifest_only"
 
 
 def test_unchanged_second_read_skips_all_chunks() -> None:
@@ -47,6 +49,7 @@ def test_unchanged_second_read_skips_all_chunks() -> None:
     assert plan.action == "skip_all"
     assert plan.verification == "unchanged_skip"
     assert plan.chunk_indexes == ()
+    assert plan.removed_chunk_indexes == ()
 
 
 def test_changed_chunk_digest_fetches_only_that_index() -> None:
@@ -59,6 +62,241 @@ def test_changed_chunk_digest_fetches_only_that_index() -> None:
     plan = plan_chunk_transfer(previous_manifest=previous, current_manifest=current)
     assert plan.action == "fetch_changed"
     assert plan.chunk_indexes == (0,)
+    assert plan.removed_chunk_indexes == ()
+
+
+def _ready_manifest(
+    *,
+    snapshot_id: str,
+    content_digest: str,
+    chunk_digests: dict[str, str] | None,
+) -> dict:
+    manifest = {
+        "snapshotId": snapshot_id,
+        "contentDigest": content_digest,
+        "qualityStatus": "verified_ready",
+        "schemaVersion": "2026-11-09.1",
+        "tradingDay": "2024-06-28",
+    }
+    if chunk_digests is not None:
+        manifest["chunkDigests"] = chunk_digests
+    return manifest
+
+
+DIGEST_A = "a" * 64
+DIGEST_B = "b" * 64
+
+
+@pytest.mark.parametrize(
+    ("case", "previous", "current", "action", "chunk_indexes", "removed"),
+    [
+        (
+            "same_overall_digest",
+            _ready_manifest(
+                snapshot_id="snap-1",
+                content_digest=DIGEST_A,
+                chunk_digests={"0": "aaa", "1": "bbb"},
+            ),
+            _ready_manifest(
+                snapshot_id="snap-1",
+                content_digest=DIGEST_A,
+                chunk_digests={"0": "aaa", "1": "bbb"},
+            ),
+            "skip_all",
+            (),
+            (),
+        ),
+        (
+            "same_digest_is_authoritative_even_if_chunk_map_differs",
+            _ready_manifest(
+                snapshot_id="snap-1",
+                content_digest=DIGEST_A,
+                chunk_digests={"0": "aaa", "1": "bbb", "2": "ccc"},
+            ),
+            _ready_manifest(
+                snapshot_id="snap-1",
+                content_digest=DIGEST_A,
+                chunk_digests={"0": "zzz"},
+            ),
+            "skip_all",
+            (),
+            (),
+        ),
+        (
+            "new_overall_digest_same_chunks",
+            _ready_manifest(
+                snapshot_id="snap-1",
+                content_digest=DIGEST_A,
+                chunk_digests={"0": "aaa", "1": "bbb"},
+            ),
+            _ready_manifest(
+                snapshot_id="snap-2",
+                content_digest=DIGEST_B,
+                chunk_digests={"0": "aaa", "1": "bbb"},
+            ),
+            "manifest_only",
+            (),
+            (),
+        ),
+        (
+            "one_changed_chunk",
+            _ready_manifest(
+                snapshot_id="snap-1",
+                content_digest=DIGEST_A,
+                chunk_digests={"0": "aaa", "1": "bbb"},
+            ),
+            _ready_manifest(
+                snapshot_id="snap-2",
+                content_digest=DIGEST_B,
+                chunk_digests={"0": "aaa", "1": "ddd"},
+            ),
+            "fetch_changed",
+            (1,),
+            (),
+        ),
+        (
+            "new_chunk",
+            _ready_manifest(
+                snapshot_id="snap-1",
+                content_digest=DIGEST_A,
+                chunk_digests={"0": "aaa"},
+            ),
+            _ready_manifest(
+                snapshot_id="snap-2",
+                content_digest=DIGEST_B,
+                chunk_digests={"0": "aaa", "1": "eee"},
+            ),
+            "fetch_changed",
+            (1,),
+            (),
+        ),
+        (
+            "changed_chunk_and_removed_chunk",
+            _ready_manifest(
+                snapshot_id="snap-1",
+                content_digest=DIGEST_A,
+                chunk_digests={"0": "aaa", "1": "bbb", "2": "ccc"},
+            ),
+            _ready_manifest(
+                snapshot_id="snap-2",
+                content_digest=DIGEST_B,
+                chunk_digests={"0": "aaa", "1": "ddd"},
+            ),
+            "fetch_changed",
+            (1,),
+            (2,),
+        ),
+        (
+            "removed_chunk_only",
+            _ready_manifest(
+                snapshot_id="snap-1",
+                content_digest=DIGEST_A,
+                chunk_digests={"0": "aaa", "1": "bbb", "2": "ccc"},
+            ),
+            _ready_manifest(
+                snapshot_id="snap-2",
+                content_digest=DIGEST_B,
+                chunk_digests={"0": "aaa", "1": "bbb"},
+            ),
+            "fetch_changed",
+            (),
+            (2,),
+        ),
+        (
+            "empty_current_dataset",
+            _ready_manifest(
+                snapshot_id="snap-1",
+                content_digest=DIGEST_A,
+                chunk_digests={"0": "aaa", "1": "bbb"},
+            ),
+            _ready_manifest(
+                snapshot_id="snap-2",
+                content_digest=DIGEST_B,
+                chunk_digests={},
+            ),
+            "fetch_changed",
+            (),
+            (0, 1),
+        ),
+        (
+            "empty_to_empty_new_digest",
+            _ready_manifest(
+                snapshot_id="snap-1",
+                content_digest=DIGEST_A,
+                chunk_digests={},
+            ),
+            _ready_manifest(
+                snapshot_id="snap-2",
+                content_digest=DIGEST_B,
+                chunk_digests={},
+            ),
+            "manifest_only",
+            (),
+            (),
+        ),
+        (
+            "no_previous_manifest",
+            None,
+            _ready_manifest(
+                snapshot_id="snap-2",
+                content_digest=DIGEST_B,
+                chunk_digests={"0": "aaa", "1": "bbb"},
+            ),
+            "fetch_all",
+            (0, 1),
+            (),
+        ),
+        (
+            "previous_without_chunk_map",
+            _ready_manifest(
+                snapshot_id="snap-1",
+                content_digest=DIGEST_A,
+                chunk_digests=None,
+            ),
+            _ready_manifest(
+                snapshot_id="snap-2",
+                content_digest=DIGEST_B,
+                chunk_digests={"0": "aaa"},
+            ),
+            "fetch_all",
+            (0,),
+            (),
+        ),
+        (
+            "no_previous_empty_dataset",
+            None,
+            _ready_manifest(
+                snapshot_id="snap-2",
+                content_digest=DIGEST_B,
+                chunk_digests={},
+            ),
+            "fetch_all",
+            (),
+            (),
+        ),
+    ],
+)
+def test_transfer_plan_matrix(
+    case: str,
+    previous: dict | None,
+    current: dict,
+    action: str,
+    chunk_indexes: tuple[int, ...],
+    removed: tuple[int, ...],
+) -> None:
+    plan = plan_chunk_transfer(previous_manifest=previous, current_manifest=current)
+    assert plan.action == action, case
+    assert plan.chunk_indexes == chunk_indexes, case
+    assert plan.removed_chunk_indexes == removed, case
+    assert plan.snapshot_id == current["snapshotId"]
+    assert plan.content_digest == current["contentDigest"]
+    if action == "manifest_only":
+        assert plan.reason == "content_digest_changed_chunks_unchanged"
+        assert plan.verification == "stock_ticker_export_verified"
+    if action == "skip_all":
+        assert plan.verification == "unchanged_skip"
+    if action == "fetch_changed" and not chunk_indexes and removed:
+        assert plan.reason == "chunks_removed"
 
 
 def test_incomplete_quality_aborts() -> None:

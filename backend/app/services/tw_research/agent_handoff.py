@@ -40,11 +40,19 @@ STOCK_TICKER_OWNED_STATUSES = frozenset(
 
 @dataclass(frozen=True)
 class ChunkTransferPlan:
-    action: Literal["skip_all", "fetch_all", "fetch_changed", "abort"]
+    """Pure description of what an external consumer should transfer.
+
+    ``removed_chunk_indexes`` are absent from the current snapshot. The consumer
+    drops them locally. Stock Ticker must not be asked to serve them, and this
+    plan does not persist the consumer's checkpoint.
+    """
+
+    action: Literal["skip_all", "manifest_only", "fetch_all", "fetch_changed", "abort"]
     reason: str
     snapshot_id: str | None
     content_digest: str | None
     chunk_indexes: tuple[int, ...]
+    removed_chunk_indexes: tuple[int, ...]
     verification: HandoffVerification
 
 
@@ -63,9 +71,16 @@ def plan_chunk_transfer(
 ) -> ChunkTransferPlan:
     """Manifest-first transfer plan for a browser-only Agent.
 
-    Unchanged ``contentDigest`` → skip all chunk GETs (zero Notion rewrites needed
-    for the Stock Ticker side). Changed digests → fetch only differing chunk indexes
-    when both manifests expose ``chunkDigests``; otherwise fetch all ledger chunks.
+    * Unchanged ``contentDigest`` → ``skip_all`` (zero chunk GETs).
+    * Changed digest with an identical ``chunkDigests`` map → ``manifest_only``.
+      The consumer updates its snapshot pointer and does not re-download chunks.
+    * Added or modified chunk digests → ``fetch_changed`` for those indexes only.
+      Indexes that exist only in the previous map are ``removed_chunk_indexes``
+      and are never requested.
+    * No usable previous manifest or chunk map → ``fetch_all``.
+
+    The function is pure: it does not record whether any Agent has read the
+    snapshot, and it does not store Notion or checkpoint state.
     """
     if current_manifest is None:
         return ChunkTransferPlan(
@@ -74,6 +89,7 @@ def plan_chunk_transfer(
             snapshot_id=None,
             content_digest=None,
             chunk_indexes=(),
+            removed_chunk_indexes=(),
             verification="incomplete_snapshot",
         )
 
@@ -86,6 +102,7 @@ def plan_chunk_transfer(
             snapshot_id=snapshot_id,
             content_digest=content_digest_value,
             chunk_indexes=(),
+            removed_chunk_indexes=(),
             verification="incomplete_snapshot",
         )
     if not snapshot_id or not content_digest_value:
@@ -95,6 +112,7 @@ def plan_chunk_transfer(
             snapshot_id=snapshot_id,
             content_digest=content_digest_value,
             chunk_indexes=(),
+            removed_chunk_indexes=(),
             verification="incomplete_snapshot",
         )
 
@@ -108,17 +126,30 @@ def plan_chunk_transfer(
                 snapshot_id=snapshot_id,
                 content_digest=content_digest_value,
                 chunk_indexes=(),
+                removed_chunk_indexes=(),
                 verification="unchanged_skip",
             )
 
-        changed = _changed_chunk_indexes(previous_manifest, current_manifest)
-        if changed is not None:
+        delta = _chunk_digest_delta(previous_manifest, current_manifest)
+        if delta is not None:
+            fetch_indexes, removed_indexes = delta
+            if not fetch_indexes and not removed_indexes:
+                return ChunkTransferPlan(
+                    action="manifest_only",
+                    reason="content_digest_changed_chunks_unchanged",
+                    snapshot_id=snapshot_id,
+                    content_digest=content_digest_value,
+                    chunk_indexes=(),
+                    removed_chunk_indexes=(),
+                    verification="stock_ticker_export_verified",
+                )
             return ChunkTransferPlan(
-                action="fetch_changed" if changed else "skip_all",
-                reason="chunk_digests_diff" if changed else "chunk_digests_identical",
+                action="fetch_changed",
+                reason="chunk_digests_diff" if fetch_indexes else "chunks_removed",
                 snapshot_id=snapshot_id,
                 content_digest=content_digest_value,
-                chunk_indexes=tuple(changed),
+                chunk_indexes=tuple(fetch_indexes),
+                removed_chunk_indexes=tuple(removed_indexes),
                 verification="stock_ticker_export_verified",
             )
 
@@ -129,6 +160,7 @@ def plan_chunk_transfer(
         snapshot_id=snapshot_id,
         content_digest=content_digest_value,
         chunk_indexes=indexes,
+        removed_chunk_indexes=(),
         verification="stock_ticker_export_verified",
     )
 
@@ -264,6 +296,7 @@ def build_agent_transfer_example() -> dict[str, Any]:
             "action": plan.action,
             "reason": plan.reason,
             "chunkIndexes": list(plan.chunk_indexes),
+            "removedChunkIndexes": list(plan.removed_chunk_indexes),
             "verification": plan.verification,
         },
         "manifest": manifest,
@@ -276,10 +309,24 @@ def build_agent_transfer_example() -> dict[str, Any]:
             "expectedAction": "skip_all",
             "expectedVerification": "unchanged_skip",
         },
+        "manifestOnlyRead": {
+            "instruction": (
+                "If contentDigest changes while every chunkDigests entry is unchanged, "
+                "action=manifest_only. Update the stored snapshot pointer and metadata. "
+                "Do not re-GET chunks. Drop removedChunkIndexes locally; never request them."
+            ),
+            "expectedAction": "manifest_only",
+            "expectedChunkIndexes": [],
+            "expectedRemovedChunkIndexes": [],
+        },
         "retry": {
             "onDigestMismatch": "Re-GET the single chunkIndex; abort that chunk if still wrong",
             "onAuthRequired": "Re-authenticate the browser session; do not fall back to SSH/DB",
             "onIncompleteSnapshot": "Wait for verified_ready; never publish partial ledgers",
+            "onTemporaryReadFailure": (
+                "Retry that chunk GET. Do not replace a previously verified chunk "
+                "until the new checksum matches."
+            ),
         },
     }
 
@@ -294,29 +341,45 @@ def classify_session_error(status_code: int) -> HandoffVerification:
     return "incomplete_snapshot"
 
 
-def _changed_chunk_indexes(
+def _chunk_digest_delta(
     previous: dict[str, Any],
     current: dict[str, Any],
-) -> list[int] | None:
+) -> tuple[list[int], list[int]] | None:
+    """Return ``(fetch_indexes, removed_indexes)``.
+
+    ``None`` means either manifest has no usable ``chunkDigests`` map, so the
+    caller must fetch every current chunk. Removed indexes are previous keys
+    that the current snapshot no longer publishes.
+    """
     prev_map = previous.get("chunkDigests")
     curr_map = current.get("chunkDigests")
     if not isinstance(prev_map, dict) or not isinstance(curr_map, dict):
         return None
-    keys = sorted({*prev_map.keys(), *curr_map.keys()}, key=lambda value: int(value))
-    changed: list[int] = []
-    for key in keys:
-        if prev_map.get(key) != curr_map.get(key):
-            changed.append(int(key))
-    return changed
+    try:
+        current_keys = sorted(curr_map.keys(), key=lambda value: int(value))
+        previous_keys = sorted(prev_map.keys(), key=lambda value: int(value))
+    except (TypeError, ValueError):
+        return None
+    fetch_indexes = [
+        int(key) for key in current_keys if prev_map.get(key) != curr_map.get(key)
+    ]
+    removed_indexes = [int(key) for key in previous_keys if key not in curr_map]
+    return fetch_indexes, removed_indexes
 
 
 def _all_chunk_indexes(manifest: dict[str, Any]) -> tuple[int, ...]:
     digests = manifest.get("chunkDigests")
-    if isinstance(digests, dict) and digests:
-        return tuple(sorted(int(key) for key in digests.keys()))
+    if isinstance(digests, dict):
+        try:
+            return tuple(sorted(int(key) for key in digests.keys()))
+        except (TypeError, ValueError):
+            return ()
     ids = manifest.get("chunkIds")
     if isinstance(ids, list) and ids:
-        return tuple(sorted(int(item) for item in ids))
+        try:
+            return tuple(sorted(int(item) for item in ids))
+        except (TypeError, ValueError):
+            return (0,)
     return (0,)
 
 

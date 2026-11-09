@@ -19,24 +19,43 @@ Browser-only, low-token transfer contract for an **external** Agent that may opt
 1. Authenticated browser session (same user as `/research/tw`).
 2. `GET /api/tw-research/exports/latest/manifest?universeVersion={uv}&tradingDay={day}`
 3. Compare `contentDigest` to the Agent’s last stored digest for that `(user, universeVersion, tradingDay)`.
-4. If equal → `unchanged_skip`. Stop. Do **not** GET chunks. Do **not** rewrite Notion.
-5. If missing / unequal → for each needed `chunkIndex` in the plan:
-   - `GET /api/tw-research/exports/snapshots/{snapshotId}/chunk?chunkIndex={i}&kind=ledger`
+4. If equal → `skip_all` / `unchanged_skip`. Stop. Do **not** GET chunks. Do **not** rewrite Notion.
+5. If `contentDigest` changed but every `chunkDigests` entry is unchanged → `manifest_only`. Update the consumer's snapshot pointer and metadata. Do **not** GET chunks.
+6. If chunk digests differ → `fetch_changed`:
+   - `GET /api/tw-research/exports/snapshots/{snapshotId}/chunk?chunkIndex={i}&kind=ledger` only for indexes in `chunkIndexes` (added or modified).
+   - Drop `removedChunkIndexes` from the consumer's staged dataset. Do **not** GET those indexes; the new snapshot does not publish them.
    - Recalculate with `stable_chunk_checksum` (rows + paging fields only; excludes `scanId` / `generatedAt`) and match `manifest.chunkDigests[i]` and `chunk.checksumSha256`.
-6. Optionally repeat for `kind=qualified` / `kind=enriched` if the consumer needs those views (ledger is enough for full rows).
-7. Mark `stock_ticker_export_verified`. Notion remains `notion_publish_not_performed` unless the external Agent separately verifies Notion.
+7. If there is no previous manifest, or either side lacks a usable `chunkDigests` map → `fetch_all` for the current indexes. An empty `chunkDigests` map means zero chunks.
+8. Optionally repeat for `kind=qualified` / `kind=enriched` if the consumer needs those views (ledger is enough for full rows).
+9. Mark `stock_ticker_export_verified` when the manifest and any fetched chunks check out. Notion remains `notion_publish_not_performed` unless the external Agent separately verifies Notion.
+
+`plan_chunk_transfer` is a pure function. It does not record Agent reads, acknowledgements, checkpoints, or Notion delivery. The external Agent keeps its own previous manifest.
 
 Helpers: `backend/app/services/tw_research/agent_handoff.py` (`plan_chunk_transfer`, `verify_ledger_chunk`, `build_agent_transfer_example`).
+
+### Transfer-plan matrix
+
+| Previous vs current | Action | Chunk GETs | Consumer follow-up |
+| --- | --- | --- | --- |
+| Same overall `contentDigest` | `skip_all` | none | Keep the existing snapshot |
+| New overall digest, identical `chunkDigests` | `manifest_only` | none | Update snapshot pointer / metadata |
+| One changed chunk | `fetch_changed` | that index | Verify its checksum |
+| New chunk index | `fetch_changed` | the new index | Verify its checksum |
+| Removed chunk index | `fetch_changed` with `removedChunkIndexes` | none for the removed index | Delete it locally |
+| Changed chunk and a removed index | `fetch_changed` | changed indexes only | Verify fetches; delete removed indexes |
+| Current `chunkDigests` empty | `fetch_changed` or `fetch_all` | none | Drop every previous index |
+| No usable previous manifest | `fetch_all` | every current index | Replace staged chunks |
 
 ## Auth / retry
 
 | HTTP | Action |
 | --- | --- |
-| 401 / 403 | `auth_required` — user must sign in again; never SSH/DB/bypass |
-| 404 | `incomplete_snapshot` — wait until a verified snapshot exists |
-| 409 | `digest_mismatch` — re-GET that chunk once; abort if still wrong |
+| 401 / 403 | `auth_required` — user must sign in again; never SSH/DB/bypass. Keep the last verified consumer state. |
+| 404 | `incomplete_snapshot` — wait until a verified snapshot exists. Do not clear staged chunks. |
+| 409 | `digest_mismatch` — re-GET that chunk once; abort if still wrong. Do not replace a previously verified chunk. |
+| 5xx / failed read | Retry that GET. Keep the last verified chunk until a replacement checksum matches. |
 
-Partial transfer: persist successfully verified chunk indexes; resume remaining indexes only.
+Partial transfer: the external Agent persists successfully verified chunk indexes and resumes remaining indexes only. Stock Ticker does not store that progress.
 
 ## Browser-only constraints
 
