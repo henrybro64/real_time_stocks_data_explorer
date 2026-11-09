@@ -17,6 +17,7 @@ from app.services.tw_research.export import (
 )
 
 HandoffVerification = Literal[
+    "verification_required",
     "stock_ticker_export_verified",
     "notion_published_verified",
     "notion_publish_not_performed",
@@ -26,9 +27,10 @@ HandoffVerification = Literal[
     "unchanged_skip",
 ]
 
-# Stock Ticker owns only the first status. Notion outcomes are external.
+# Planner and checksum helpers. Notion outcomes are external and are not listed.
 STOCK_TICKER_OWNED_STATUSES = frozenset(
     {
+        "verification_required",
         "stock_ticker_export_verified",
         "auth_required",
         "incomplete_snapshot",
@@ -36,6 +38,8 @@ STOCK_TICKER_OWNED_STATUSES = frozenset(
         "unchanged_skip",
     }
 )
+
+_VERIFIED_QUALITY = "verified_ready"
 
 
 @dataclass(frozen=True)
@@ -45,6 +49,11 @@ class ChunkTransferPlan:
     ``removed_chunk_indexes`` are absent from the current snapshot. The consumer
     drops them locally. Stock Ticker must not be asked to serve them, and this
     plan does not persist the consumer's checkpoint.
+
+    ``verification`` is the plan-time status. Pending transfers use
+    ``verification_required``. ``stock_ticker_export_verified`` is not a plan
+    result; the consumer records it only after ``verify_ledger_chunk`` or
+    ``verify_cached_chunk_digests`` succeeds.
     """
 
     action: Literal["skip_all", "manifest_only", "fetch_all", "fetch_changed", "abort"]
@@ -71,13 +80,28 @@ def plan_chunk_transfer(
 ) -> ChunkTransferPlan:
     """Manifest-first transfer plan for a browser-only Agent.
 
-    * Unchanged ``contentDigest`` → ``skip_all`` (zero chunk GETs).
+    The result describes work. It does not mean the consumer has finished it.
+    ``fetch_all``, ``fetch_changed``, and ``manifest_only`` use
+    ``verification_required``. ``stock_ticker_export_verified`` is returned only
+    by ``verify_ledger_chunk`` or ``verify_cached_chunk_digests``.
+
+    * Unchanged ``contentDigest`` → ``skip_all``. This assumes the consumer
+      still holds the previous snapshot from a successful verification. It does
+      not re-check chunks.
     * Changed digest with an identical ``chunkDigests`` map → ``manifest_only``.
-      The consumer updates its snapshot pointer and does not re-download chunks.
+      Before advancing its snapshot pointer, the consumer must confirm every
+      retained chunk checksum still matches that map.
     * Added or modified chunk digests → ``fetch_changed`` for those indexes only.
       Indexes that exist only in the previous map are ``removed_chunk_indexes``
       and are never requested.
     * No usable previous manifest or chunk map → ``fetch_all``.
+
+    ``quality_status`` is optional caller context, such as the snapshot row
+    column. A blank value is omitted. It does not replace ``qualityStatus`` on
+    the manifest. When both are present they must be identical, or the plan
+    aborts with ``quality_status_conflict``. A snapshot is accepted only when
+    the effective status is exactly ``verified_ready``. Ids and digests do not
+    imply that status. A verified snapshot with an empty chunk map is valid.
 
     The function is pure: it does not record whether any Agent has read the
     snapshot, and it does not store Notion or checkpoint state.
@@ -93,12 +117,12 @@ def plan_chunk_transfer(
             verification="incomplete_snapshot",
         )
 
-    quality = quality_status or str(current_manifest.get("qualityStatus") or "")
+    quality_reason = _verified_quality_reason(current_manifest, quality_status)
     snapshot_id, content_digest_value = manifest_identity(current_manifest)
-    if quality and quality != "verified_ready":
+    if quality_reason is not None:
         return ChunkTransferPlan(
             action="abort",
-            reason=f"quality_status={quality}",
+            reason=quality_reason,
             snapshot_id=snapshot_id,
             content_digest=content_digest_value,
             chunk_indexes=(),
@@ -141,7 +165,7 @@ def plan_chunk_transfer(
                     content_digest=content_digest_value,
                     chunk_indexes=(),
                     removed_chunk_indexes=(),
-                    verification="stock_ticker_export_verified",
+                    verification="verification_required",
                 )
             return ChunkTransferPlan(
                 action="fetch_changed",
@@ -150,7 +174,7 @@ def plan_chunk_transfer(
                 content_digest=content_digest_value,
                 chunk_indexes=tuple(fetch_indexes),
                 removed_chunk_indexes=tuple(removed_indexes),
-                verification="stock_ticker_export_verified",
+                verification="verification_required",
             )
 
     indexes = _all_chunk_indexes(current_manifest)
@@ -161,7 +185,7 @@ def plan_chunk_transfer(
         content_digest=content_digest_value,
         chunk_indexes=indexes,
         removed_chunk_indexes=(),
-        verification="stock_ticker_export_verified",
+        verification="verification_required",
     )
 
 
@@ -175,6 +199,8 @@ def verify_ledger_chunk(
     Matches ``stable_chunk_checksum``: research rows + paging fields only
     (excludes ``scanId`` / ``generatedAt`` so Agent re-reads stay comparable).
     """
+    if _verified_quality_reason(manifest, None) is not None:
+        return "incomplete_snapshot"
     index = chunk.get("chunkIndex")
     if index is None:
         return "digest_mismatch"
@@ -196,6 +222,29 @@ def verify_ledger_chunk(
     if expected is None or expected != actual:
         return "digest_mismatch"
     if chunk.get("checksumSha256") != actual:
+        return "digest_mismatch"
+    return "stock_ticker_export_verified"
+
+
+def verify_cached_chunk_digests(
+    *,
+    manifest: dict[str, Any],
+    cached_checksums: dict[Any, Any],
+) -> HandoffVerification:
+    """Confirm retained chunk checksums match an unchanged digest map.
+
+    ``manifest_only`` stays ``verification_required`` until this returns
+    ``stock_ticker_export_verified``. The consumer may then advance its snapshot
+    pointer. This does not fetch chunks and does not store consumer state.
+    """
+    if _verified_quality_reason(manifest, None) is not None:
+        return "incomplete_snapshot"
+    snapshot_id, content_digest_value = manifest_identity(manifest)
+    if not snapshot_id or not content_digest_value:
+        return "incomplete_snapshot"
+    expected = _checksum_map(manifest.get("chunkDigests"))
+    cached = _checksum_map(cached_checksums)
+    if expected is None or cached is None or expected != cached:
         return "digest_mismatch"
     return "stock_ticker_export_verified"
 
@@ -284,11 +333,16 @@ def build_agent_transfer_example() -> dict[str, Any]:
     plan = plan_chunk_transfer(previous_manifest=None, current_manifest=manifest)
     return {
         "contractVersion": "agent-handoff-v1",
-        "stockTickerExportVerified": True,
+        "stockTickerExportVerified": False,
         "notionPublishedVerified": False,
         "notionPublishNotPerformed": True,
         "statuses": {
-            "stock_ticker_export_verified": "Owned by Stock Ticker after digest checks pass",
+            "verification_required": (
+                "Transfer plan only. The consumer has not finished checksum checks"
+            ),
+            "stock_ticker_export_verified": (
+                "Recorded by the consumer after manifest and chunk checksum checks pass"
+            ),
             "notion_published_verified": "Owned only by an external Agent after Notion read-back",
             "notion_publish_not_performed": "Default when Stock Ticker handoff completes",
         },
@@ -298,13 +352,15 @@ def build_agent_transfer_example() -> dict[str, Any]:
             "chunkIndexes": list(plan.chunk_indexes),
             "removedChunkIndexes": list(plan.removed_chunk_indexes),
             "verification": plan.verification,
+            "completedVerification": None,
         },
         "manifest": manifest,
         "chunks": {"0": chunk0},
         "unchangedSecondRead": {
             "instruction": (
-                "GET latest manifest again. If contentDigest matches, action=skip_all; "
-                "do not re-GET chunks; do not rewrite Notion."
+                "GET latest manifest again. If contentDigest matches, action=skip_all. "
+                "This assumes the consumer retained the previous snapshot after a "
+                "successful verification. Do not re-GET chunks. Do not rewrite Notion."
             ),
             "expectedAction": "skip_all",
             "expectedVerification": "unchanged_skip",
@@ -312,8 +368,9 @@ def build_agent_transfer_example() -> dict[str, Any]:
         "manifestOnlyRead": {
             "instruction": (
                 "If contentDigest changes while every chunkDigests entry is unchanged, "
-                "action=manifest_only. Update the stored snapshot pointer and metadata. "
-                "Do not re-GET chunks. Drop removedChunkIndexes locally; never request them."
+                "action=manifest_only and verification=verification_required. Confirm "
+                "retained chunk checksums match chunkDigests, then update the snapshot "
+                "pointer. Do not re-GET chunks. Drop removedChunkIndexes locally."
             ),
             "expectedAction": "manifest_only",
             "expectedChunkIndexes": [],
@@ -329,6 +386,41 @@ def build_agent_transfer_example() -> dict[str, Any]:
             ),
         },
     }
+
+
+def _verified_quality_reason(
+    manifest: dict[str, Any],
+    quality_status: str | None,
+) -> str | None:
+    """Abort reason when the snapshot is not explicitly ``verified_ready``.
+
+    Returns None only when the effective status is exactly ``verified_ready``.
+    """
+    manifest_quality = _as_optional_str(manifest.get("qualityStatus"))
+    argument_quality = _as_optional_str(quality_status)
+    if (
+        manifest_quality is not None
+        and argument_quality is not None
+        and manifest_quality != argument_quality
+    ):
+        return "quality_status_conflict"
+    effective = argument_quality if argument_quality is not None else manifest_quality
+    if effective != _VERIFIED_QUALITY:
+        return f"quality_status={effective or 'missing'}"
+    return None
+
+
+def _checksum_map(value: Any) -> dict[str, str] | None:
+    if not isinstance(value, dict):
+        return None
+    mapped: dict[str, str] = {}
+    for key, digest in value.items():
+        index = _as_optional_str(key)
+        checksum = _as_optional_str(digest)
+        if index is None or checksum is None:
+            return None
+        mapped[index] = checksum
+    return mapped
 
 
 def classify_session_error(status_code: int) -> HandoffVerification:

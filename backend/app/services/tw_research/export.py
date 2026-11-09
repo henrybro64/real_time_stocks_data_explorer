@@ -575,7 +575,8 @@ def build_browser_text_view(
             "note": (
                 "Stock Ticker publishes immutable research snapshots independently. "
                 "Prefer latest verified manifest → changed chunks only (#322). "
-                "stock_ticker_export_verified is owned here after digest checks; "
+                "A transfer plan is verification_required until the consumer's "
+                "checksum checks pass; stock_ticker_export_verified is that result; "
                 "notion_published_verified is external-only; never writes to Notion."
             ),
         },

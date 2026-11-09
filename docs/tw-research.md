@@ -112,7 +112,7 @@ Suggested pilot thresholds to record on the home node:
 
 ## Agent handoff (#322)
 
-Manifest-first, changed-chunks-only transfer: [tw-research-agent-handoff.md](tw-research-agent-handoff.md). Distinguish `stock_ticker_export_verified` (this repo) from `notion_published_verified` (external Agent only).
+Manifest-first, changed-chunks-only transfer: [tw-research-agent-handoff.md](tw-research-agent-handoff.md). A plan is `verification_required` until checksum checks return `stock_ticker_export_verified`. `notion_published_verified` stays with the external Agent.
 
 ## Extensibility acceptance
 

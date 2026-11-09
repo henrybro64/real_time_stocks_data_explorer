@@ -1,10 +1,11 @@
 {
   "contractVersion": "agent-handoff-v1",
-  "stockTickerExportVerified": true,
+  "stockTickerExportVerified": false,
   "notionPublishedVerified": false,
   "notionPublishNotPerformed": true,
   "statuses": {
-    "stock_ticker_export_verified": "Owned by Stock Ticker after digest checks pass",
+    "verification_required": "Transfer plan only. The consumer has not finished checksum checks",
+    "stock_ticker_export_verified": "Recorded by the consumer after manifest and chunk checksum checks pass",
     "notion_published_verified": "Owned only by an external Agent after Notion read-back",
     "notion_publish_not_performed": "Default when Stock Ticker handoff completes"
   },
@@ -15,7 +16,8 @@
       0
     ],
     "removedChunkIndexes": [],
-    "verification": "stock_ticker_export_verified"
+    "verification": "verification_required",
+    "completedVerification": null
   },
   "manifest": {
     "schemaVersion": "2026-11-09.1",
@@ -112,12 +114,12 @@
     }
   },
   "unchangedSecondRead": {
-    "instruction": "GET latest manifest again. If contentDigest matches, action=skip_all; do not re-GET chunks; do not rewrite Notion.",
+    "instruction": "GET latest manifest again. If contentDigest matches, action=skip_all. This assumes the consumer retained the previous snapshot after a successful verification. Do not re-GET chunks. Do not rewrite Notion.",
     "expectedAction": "skip_all",
     "expectedVerification": "unchanged_skip"
   },
   "manifestOnlyRead": {
-    "instruction": "If contentDigest changes while every chunkDigests entry is unchanged, action=manifest_only. Update the stored snapshot pointer and metadata. Do not re-GET chunks. Drop removedChunkIndexes locally; never request them.",
+    "instruction": "If contentDigest changes while every chunkDigests entry is unchanged, action=manifest_only and verification=verification_required. Confirm retained chunk checksums match chunkDigests, then update the snapshot pointer. Do not re-GET chunks. Drop removedChunkIndexes locally.",
     "expectedAction": "manifest_only",
     "expectedChunkIndexes": [],
     "expectedRemovedChunkIndexes": []

@@ -86,7 +86,7 @@ def test_postgres_latest_manifest_and_chunk_handoff_without_upstream() -> None:
 
     plan = plan_chunk_transfer(previous_manifest=None, current_manifest=manifest)
     assert plan.action == "fetch_all"
-    assert plan.verification == "stock_ticker_export_verified"
+    assert plan.verification == "verification_required"
 
     unchanged = plan_chunk_transfer(
         previous_manifest=manifest,

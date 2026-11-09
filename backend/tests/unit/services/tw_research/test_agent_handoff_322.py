@@ -14,6 +14,7 @@ from app.services.tw_research.agent_handoff import (
     build_agent_transfer_example,
     classify_session_error,
     plan_chunk_transfer,
+    verify_cached_chunk_digests,
     verify_ledger_chunk,
 )
 from app.services.tw_research.export import content_digest
@@ -34,9 +35,15 @@ def test_fixture_matches_deterministic_example_builder() -> None:
     assert on_disk == example
     assert on_disk["notionPublishedVerified"] is False
     assert on_disk["notionPublishNotPerformed"] is True
-    assert on_disk["stockTickerExportVerified"] is True
+    assert on_disk["stockTickerExportVerified"] is False
+    assert on_disk["transferPlan"]["verification"] == "verification_required"
+    assert on_disk["transferPlan"]["completedVerification"] is None
     assert on_disk["transferPlan"]["removedChunkIndexes"] == []
     assert on_disk["manifestOnlyRead"]["expectedAction"] == "manifest_only"
+    assert (
+        verify_ledger_chunk(manifest=on_disk["manifest"], chunk=on_disk["chunks"]["0"])
+        == "stock_ticker_export_verified"
+    )
 
 
 def test_unchanged_second_read_skips_all_chunks() -> None:
@@ -292,7 +299,8 @@ def test_transfer_plan_matrix(
     assert plan.content_digest == current["contentDigest"]
     if action == "manifest_only":
         assert plan.reason == "content_digest_changed_chunks_unchanged"
-        assert plan.verification == "stock_ticker_export_verified"
+    if action in {"manifest_only", "fetch_changed", "fetch_all"}:
+        assert plan.verification == "verification_required"
     if action == "skip_all":
         assert plan.verification == "unchanged_skip"
     if action == "fetch_changed" and not chunk_indexes and removed:
@@ -312,6 +320,143 @@ def test_incomplete_quality_aborts() -> None:
     assert plan.verification == "incomplete_snapshot"
 
 
+def _identified_manifest(quality_status: str | None) -> dict:
+    manifest = {
+        "snapshotId": "snap",
+        "contentDigest": DIGEST_A,
+        "chunkDigests": {"0": "aaa"},
+        "tradingDay": "2024-06-28",
+    }
+    if quality_status is not None:
+        manifest["qualityStatus"] = quality_status
+    return manifest
+
+
+@pytest.mark.parametrize(
+    ("case", "manifest_status", "argument", "reason"),
+    [
+        ("missing", None, None, "quality_status=missing"),
+        ("empty", "", None, "quality_status=missing"),
+        ("blank", "   ", None, "quality_status=missing"),
+        ("unknown", "not_a_status", None, "quality_status=not_a_status"),
+        ("partial", "source_incomplete", None, "quality_status=source_incomplete"),
+        ("failed", "failed", None, "quality_status=failed"),
+        (
+            "argument_does_not_upgrade_unverified_manifest",
+            "processed",
+            "verified_ready",
+            "quality_status_conflict",
+        ),
+        (
+            "argument_does_not_downgrade_verified_manifest",
+            "verified_ready",
+            "processed",
+            "quality_status_conflict",
+        ),
+    ],
+)
+def test_quality_status_must_be_explicitly_verified(
+    case: str,
+    manifest_status: str | None,
+    argument: str | None,
+    reason: str,
+) -> None:
+    plan = plan_chunk_transfer(
+        previous_manifest=None,
+        current_manifest=_identified_manifest(manifest_status),
+        quality_status=argument,
+    )
+    assert plan.action == "abort", case
+    assert plan.verification == "incomplete_snapshot", case
+    assert plan.reason == reason, case
+    assert plan.chunk_indexes == (), case
+
+
+def test_blank_quality_argument_does_not_hide_verified_manifest() -> None:
+    plan = plan_chunk_transfer(
+        previous_manifest=None,
+        current_manifest=_identified_manifest("verified_ready"),
+        quality_status="  ",
+    )
+    assert plan.action == "fetch_all"
+    assert plan.verification == "verification_required"
+
+
+def test_quality_argument_may_supply_an_omitted_manifest_status() -> None:
+    plan = plan_chunk_transfer(
+        previous_manifest=None,
+        current_manifest=_identified_manifest(None),
+        quality_status="verified_ready",
+    )
+    assert plan.action == "fetch_all"
+    assert plan.verification == "verification_required"
+
+
+def test_agreeing_verified_statuses_plan_a_transfer() -> None:
+    plan = plan_chunk_transfer(
+        previous_manifest=None,
+        current_manifest=_identified_manifest("verified_ready"),
+        quality_status="verified_ready",
+    )
+    assert plan.action == "fetch_all"
+    assert plan.verification == "verification_required"
+
+
+def test_zero_qualifier_verified_snapshot_still_plans() -> None:
+    manifest = _ready_manifest(
+        snapshot_id="snap-empty",
+        content_digest=DIGEST_B,
+        chunk_digests={},
+    )
+    manifest["counts"] = {
+        "attempted": 4,
+        "technicallyQualified": 0,
+        "verifiedReady": 0,
+        "enriched": 0,
+    }
+    plan = plan_chunk_transfer(previous_manifest=None, current_manifest=manifest)
+    assert plan.action == "fetch_all"
+    assert plan.chunk_indexes == ()
+    assert plan.verification == "verification_required"
+
+
+def test_manifest_only_requires_cached_digest_confirmation() -> None:
+    previous = _ready_manifest(
+        snapshot_id="snap-1",
+        content_digest=DIGEST_A,
+        chunk_digests={"0": "aaa", "1": "bbb"},
+    )
+    current = _ready_manifest(
+        snapshot_id="snap-2",
+        content_digest=DIGEST_B,
+        chunk_digests={"0": "aaa", "1": "bbb"},
+    )
+    plan = plan_chunk_transfer(previous_manifest=previous, current_manifest=current)
+    assert plan.action == "manifest_only"
+    assert plan.verification == "verification_required"
+    assert (
+        verify_cached_chunk_digests(
+            manifest=current,
+            cached_checksums={"0": "aaa", "1": "bbb"},
+        )
+        == "stock_ticker_export_verified"
+    )
+    assert (
+        verify_cached_chunk_digests(
+            manifest=current,
+            cached_checksums={"0": "aaa"},
+        )
+        == "digest_mismatch"
+    )
+    assert (
+        verify_cached_chunk_digests(
+            manifest=current,
+            cached_checksums={"0": "aaa", "1": "stale"},
+        )
+        == "digest_mismatch"
+    )
+
+
 def test_verify_ledger_chunk_accepts_fixture_and_rejects_tamper() -> None:
     example = build_agent_transfer_example()
     manifest = example["manifest"]
@@ -325,6 +470,10 @@ def test_verify_ledger_chunk_accepts_fixture_and_rejects_tamper() -> None:
     missing_map = dict(manifest)
     missing_map["chunkDigests"] = {}
     assert verify_ledger_chunk(manifest=missing_map, chunk=chunk) == "digest_mismatch"
+
+    unverified = dict(manifest)
+    unverified["qualityStatus"] = "processed"
+    assert verify_ledger_chunk(manifest=unverified, chunk=chunk) == "incomplete_snapshot"
 
 
 def test_classify_session_errors() -> None:
