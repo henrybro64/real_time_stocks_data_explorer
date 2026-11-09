@@ -465,6 +465,12 @@ class TwResearchScan(Base):
         nullable=True,
     )
     enrich_cursor: Mapped[int] = mapped_column(nullable=False, server_default=text("0"))
+    # In-flight enrichment reservation (stock ids) + lease expiry (#318).
+    enrich_reserve_ids_json: Mapped[list] = mapped_column(JSON, nullable=False)
+    enrich_reserve_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
     target_count: Mapped[int] = mapped_column(nullable=False)
     upstream_month_fetches: Mapped[int] = mapped_column(nullable=False, server_default=text("0"))
     max_upstream_month_fetches: Mapped[int] = mapped_column(nullable=False)

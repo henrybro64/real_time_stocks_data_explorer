@@ -25,6 +25,14 @@ from app.services.tw_research.constants import (
     PRICE_BASIS,
 )
 
+
+def required_tw_calendar_years(trading_day: str) -> list[int]:
+    """Calendar years needed for monthly MACD/KD warm-up through ``trading_day``."""
+    day = date.fromisoformat(trading_day)
+    # 35 closed months ≈ 3 years; +1 year buffer and include the trading-day year.
+    years_back = (MIN_MONTHLY_BARS_FOR_MACD_KD // 12) + 2
+    return list(range(day.year - years_back, day.year + 1))
+
 _MARKET_TZ = {
     "TW": ZoneInfo("Asia/Taipei"),
     "US": ZoneInfo("America/New_York"),
@@ -310,18 +318,24 @@ def derive_readiness(
 def preflight_tw_trading_calendars(
     *,
     trading_day: str,
-    history_years: int = 4,
+    history_years: int | None = None,
     allow_network: bool = True,
-    max_fetches: int = 4,
+    max_fetches: int | None = None,
 ) -> dict[str, object]:
     """Bounded calendar preflight for a research trading day (#320).
 
-    Loads disk-backed calendars first, then optionally fetches a small number of
-    still-missing years. Missing years remain explicit so coverage can fail closed
-    as ``trading_calendar_unavailable`` instead of inventing weekday sessions.
+    Loads disk-backed calendars first, then optionally fetches still-missing years
+    within ``max_fetches``. Subsequent runs continue preparation for remaining
+    gaps. Missing years stay explicit so coverage fails closed as
+    ``trading_calendar_unavailable`` (never invent weekday sessions). GET/export
+    paths must call with ``allow_network=False``.
     """
     try:
-        day = date.fromisoformat(trading_day)
+        if history_years is None:
+            years = required_tw_calendar_years(trading_day)
+        else:
+            day = date.fromisoformat(trading_day)
+            years = list(range(day.year - max(0, int(history_years)), day.year + 1))
     except ValueError:
         return {
             "ok": False,
@@ -330,11 +344,11 @@ def preflight_tw_trading_calendars(
             "fetched": 0,
             "error": "invalid_trading_day",
         }
-    years = set(range(day.year - max(0, int(history_years)), day.year + 1))
+    fetch_budget = len(years) if max_fetches is None else max(0, int(max_fetches))
     return preload_tw_holiday_calendars(
         years,
         allow_network=allow_network,
-        max_fetches=max_fetches,
+        max_fetches=fetch_budget,
     )
 
 

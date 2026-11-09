@@ -147,6 +147,51 @@ def test_postgres_restart_reloads_scan_and_finalizes_zero_qualifiers() -> None:
     assert finalized["manifest"]["counts"]["verifiedReady"] == 0
 
 
+def test_postgres_enrichment_lease_recovers_and_avoids_overlap() -> None:
+    repo = TwResearchRepository()
+    service = TwResearchScanService(
+        history_loader=lambda stock, limit, *, max_month_fetches: ([], 0),
+        stock_loader=lambda stock_id: _tw(stock_id),
+        persist=True,
+    )
+    state = service.create_scan(
+        UniverseSelector(mode="stock_ids", stock_ids=("TW:2330", "TW:2454", "TW:2303")),
+        trading_day="2024-06-28",
+        user_id=DEFAULT_USER_ID,
+    )
+    for stock_id in state.stock_ids:
+        record = SymbolScanRecord(
+            stock_id=stock_id,
+            stage="B",
+            readiness="verified_ready",
+            daily={"passStatus": "pass"},
+            monthly={"passStatus": "pass"},
+        )
+        state.records[stock_id] = record
+        persist_symbol(state, record, repository=repo)
+    state.qualified_ids = list(state.stock_ids)
+    persist_scan(state, repository=repo, user_id=DEFAULT_USER_ID)
+
+    first = repo.claim_enrichment_batch(state.scan_id, batch_size=2, lease_seconds=120)
+    assert first is not None
+    assert len(first["batch_ids"]) == 2
+    blocked = repo.claim_enrichment_batch(state.scan_id, batch_size=2)
+    assert blocked is not None
+    assert blocked["lease_held"] is True
+
+    for stock_id in first["batch_ids"]:
+        record = state.records[stock_id]
+        record.enrichment = {"qualified": True, "fields": {}}
+        persist_symbol(state, record, repository=repo)
+    completed = repo.complete_enrichment_batch(state.scan_id)
+    assert completed is not None
+    assert completed["enrichments_run"] == 2
+
+    second = repo.claim_enrichment_batch(state.scan_id, batch_size=2)
+    assert second is not None
+    assert second["batch_ids"] == ["TW:2303"]
+
+
 def test_postgres_concurrent_claims_do_not_overlap() -> None:
     repo = TwResearchRepository()
     service = TwResearchScanService(

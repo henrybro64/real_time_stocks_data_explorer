@@ -34,8 +34,62 @@ def content_digest(payload: Any) -> str:
     return hashlib.sha256(canonical_json_dumps(payload).encode("utf-8")).hexdigest()
 
 
-def build_export_manifest(state: ScanState, *, generated_at: str) -> dict[str, Any]:
-    ledger = list(state.records.values())
+def _publication_statuses(state: ScanState, ledger: list[Any]) -> dict[str, str]:
+    """Derive consumer-facing completeness labels (independent of any Agent)."""
+    total = len(state.stock_ids)
+    processed = min(int(state.cursor), total) if total else 0
+    incomplete = sum(
+        1
+        for record in ledger
+        if getattr(record, "readiness", None) == "source_incomplete"
+    )
+    qualified = [
+        record
+        for record in ledger
+        if is_technically_qualified(record)
+        or getattr(record, "readiness", None) in {"technically_qualified", "verified_ready"}
+    ]
+    enriched = [
+        record for record in qualified if getattr(record, "enrichment", None) is not None
+    ]
+
+    if state.status == "failed":
+        technical = "unavailable"
+    elif state.status in {"completed_processing", "verified_ready", "budget_exhausted"}:
+        technical = "complete"
+    elif state.status in {"running", "partial"} and processed > 0:
+        technical = "in_progress" if processed < total else "partial"
+    elif processed == 0:
+        technical = "not_started"
+    else:
+        technical = "partial"
+
+    if not qualified:
+        enrichment = "unavailable" if technical == "complete" else "not_started"
+    elif len(enriched) == 0:
+        enrichment = "not_started" if state.enrichments_run == 0 else "in_progress"
+    elif len(enriched) < len(qualified):
+        enrichment = "partial"
+    else:
+        enrichment = "complete"
+
+    if incomplete:
+        source = "partial"
+    elif technical == "complete":
+        source = "complete"
+    elif technical == "unavailable":
+        source = "unavailable"
+    else:
+        source = "partial"
+
+    return {
+        "technicalStatus": technical,
+        "enrichmentStatus": enrichment,
+        "sourceCompleteness": source,
+    }
+
+
+def _manifest_counts(state: ScanState, ledger: list[Any]) -> dict[str, int]:
     qualified = [record for record in ledger if is_technically_qualified(record)]
     verified = [
         record
@@ -47,8 +101,54 @@ def build_export_manifest(state: ScanState, *, generated_at: str) -> dict[str, A
         for record in qualified
         if getattr(record, "enrichment", None) is not None
     ]
+    insufficient = 0
+    for record in ledger:
+        coverage = getattr(record, "coverage", None) or {}
+        daily = coverage.get("daily") or {}
+        monthly = coverage.get("monthly") or {}
+        reasons = {daily.get("reason"), monthly.get("reason")}
+        if "insufficient_history" in reasons or "insufficient_monthly_history" in reasons:
+            insufficient += 1
+    rejected = sum(1 for record in ledger if record.stage == "rejected")
+    fully_evaluated = sum(
+        1
+        for record in ledger
+        if getattr(record, "readiness", None)
+        in {"processed", "technically_qualified", "verified_ready", "source_incomplete", "rejected"}
+    )
+    return {
+        "requested": len(state.stock_ids) + rejected,
+        "accepted": len(state.stock_ids),
+        "processed": min(int(state.cursor), len(state.stock_ids)),
+        "fullyEvaluated": fully_evaluated,
+        "attempted": len(ledger),
+        "dayPass": len(state.day_pass_ids),
+        "technicallyQualified": len(qualified),
+        "qualifiedCount": len(qualified),
+        "verifiedReady": len(verified),
+        "sourceIncomplete": sum(
+            1
+            for record in ledger
+            if getattr(record, "readiness", None) == "source_incomplete"
+        ),
+        "insufficientHistory": insufficient,
+        "enriched": len(enriched),
+        "enrichedCount": len(enriched),
+        "rejected": rejected,
+        "unknownDaily": sum(
+            1
+            for record in ledger
+            if (record.daily or {}).get("passStatus") == "unknown"
+        ),
+    }
+
+
+def build_export_manifest(state: ScanState, *, generated_at: str) -> dict[str, Any]:
+    ledger = list(state.records.values())
     theme_summary = _theme_summary(state.selector, ledger)
     quality = getattr(state, "quality_status", state.status)
+    publication = _publication_statuses(state, ledger)
+    counts = _manifest_counts(state, ledger)
     return {
         "schemaVersion": RESEARCH_SCHEMA_VERSION,
         "contractVersion": CONTRACT_VERSION,
@@ -61,6 +161,11 @@ def build_export_manifest(state: ScanState, *, generated_at: str) -> dict[str, A
         "lastCompleteMonth": _last_complete_month(state.trading_day),
         "status": state.status,
         "qualityStatus": quality,
+        "technicalStatus": publication["technicalStatus"],
+        "enrichmentStatus": publication["enrichmentStatus"],
+        "sourceCompleteness": publication["sourceCompleteness"],
+        "qualifiedCount": counts["qualifiedCount"],
+        "enrichedCount": counts["enrichedCount"],
         "universe": {
             "mode": state.selector.mode,
             "universeVersion": state.universe_version,
@@ -72,32 +177,16 @@ def build_export_manifest(state: ScanState, *, generated_at: str) -> dict[str, A
             "continuationCursor": state.cursor,
         },
         "targetCount": state.target_count,
-        "counts": {
-            "attempted": len(ledger),
-            "dayPass": len(state.day_pass_ids),
-            "technicallyQualified": len(qualified),
-            "verifiedReady": len(verified),
-            "sourceIncomplete": sum(
-                1
-                for record in ledger
-                if getattr(record, "readiness", None) == "source_incomplete"
-            ),
-            "enriched": len(enriched),
-            "rejected": sum(1 for record in ledger if record.stage == "rejected"),
-            "unknownDaily": sum(
-                1
-                for record in ledger
-                if (record.daily or {}).get("passStatus") == "unknown"
-            ),
-        },
+        "counts": counts,
         "themeSummary": theme_summary,
         "notes": [
             "target_count is an output selection parameter only; actual pass count is not padded.",
             "Starter 14-sector labels are optional filters, not an allowlist.",
-            "completed_processing means batches finished; scan quality verified_ready means an immutable snapshot was finalized (#318/#320).",
-            "Scan-scoped export GETs may return a live in-progress ledger for the UI; Agents should prefer /exports/latest/manifest.",
-            "frontend_export_ready; external_notion_published is owned by an outside Agent (#315).",
-            "No Notion SDK or credentials in Stock Ticker.",
+            "technicalStatus describes indicator/coverage evaluation; enrichmentStatus is independent.",
+            "Missing chip/valuation fields never convert a technical pass into a fail.",
+            "completed_processing means batches finished; quality verified_ready means an immutable snapshot was published.",
+            "GET/export routes are read-only over persisted state and never fetch market data.",
+            "Stock Ticker does not track consumer acknowledgment and does not write to Notion.",
         ],
         "checkpointsDurable": True,
         "checkpointsEphemeral": False,
@@ -313,10 +402,10 @@ def build_browser_text_view(
     chunk_index: int = 0,
     kind: str = "ledger",
 ) -> str:
-    """Compact authenticated JSON text for a browser-only Agent to copy.
+    """Compact authenticated JSON for a browser client to copy.
 
-    Returns one export chunk plus continuation metadata so Agents can walk the
-    full ledger without loading every row in a single payload.
+    Returns one export chunk plus continuation metadata so any authorized
+    consumer can walk the ledger without loading every row at once.
     """
     manifest = build_export_manifest(state, generated_at=generated_at)
     chunk = build_export_chunk(
@@ -349,12 +438,12 @@ def build_browser_text_view(
                 "Rows are sorted by stockId; enrichment is included in ledger rows."
             ),
         },
-        "handoff": {
+        "producer": {
             "frontendExportReady": True,
-            "externalNotionPublished": "not_performed_in_stock_ticker",
-            "instruction": (
-                "External Agent may copy this JSON (and remaining chunks) and "
-                "optionally publish to Notion. Stock Ticker never writes Notion."
+            "independentPublisher": True,
+            "note": (
+                "Stock Ticker publishes immutable research snapshots independently. "
+                "It does not track consumer acknowledgment and never writes to Notion."
             ),
         },
     }

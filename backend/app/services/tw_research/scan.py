@@ -338,11 +338,11 @@ class TwResearchScanService:
                 # Active lease held by another worker, or empty reservation.
                 return state
 
-            # Bounded TW calendar preflight; missing years fail closed in coverage.
+            # Bounded TW calendar preflight for indicator warm-up years; missing
+            # years fail closed in coverage and can continue on later batches.
             calendar_preflight = preflight_tw_trading_calendars(
                 trading_day=state.trading_day,
                 allow_network=True,
-                max_fetches=4,
             )
             if not calendar_preflight.get("ok"):
                 missing = ",".join(str(year) for year in calendar_preflight.get("missing") or [])
@@ -566,6 +566,9 @@ class TwResearchScanService:
                     state.updated_at = datetime.now(TAIPEI).isoformat()
                     self._persist_scan(state)
                 return state
+            if not batch_ids:
+                # Active enrichment lease held by another worker.
+                return state
 
             calculation_now = _calculation_now(state.trading_day, override=now)
             for stock_id in batch_ids:
@@ -585,8 +588,8 @@ class TwResearchScanService:
                     if record is not None:
                         record.enrichment = payload
                         self._persist_symbol(state, record)
-                    state.enrichments_run += 1
 
+            self._complete_durable_enrichment(state)
             with self._lock:
                 state.updated_at = datetime.now(TAIPEI).isoformat()
                 state.notes.append(
@@ -594,8 +597,7 @@ class TwResearchScanService:
                     "it does not convert a technical pass into a fail."
                 )
                 self._persist_scan(state)
-            # Publish a replacement immutable snapshot so /exports/latest includes
-            # enrichment while preserving prior snapshots (#319).
+            # Newer immutable snapshot; prior finalized snapshots remain unchanged.
             self._maybe_finalize(state, allow_verified_refresh=True)
             return state
 
@@ -626,11 +628,13 @@ class TwResearchScanService:
         # Scan-level verified_ready is reserved for successful immutable finalize.
         if state.active_snapshot_id and state.status == "verified_ready":
             state.quality_status = "verified_ready"
+        elif state.status in {"completed_processing", "budget_exhausted"}:
+            # Finalize-eligible; incompletes are labeled via sourceCompleteness.
+            state.quality_status = (
+                "source_incomplete" if incomplete else "technically_qualified"
+            )
         elif incomplete:
             state.quality_status = "source_incomplete"
-        elif state.status == "completed_processing" and incomplete == 0:
-            # Zero qualifiers is still finalize-eligible when coverage is clean.
-            state.quality_status = "technically_qualified"
         elif qualified or verified:
             state.quality_status = "technically_qualified"
         else:
@@ -641,16 +645,22 @@ class TwResearchScanService:
     ) -> None:
         if not self._persist:
             return
-        if state.status == "verified_ready" and allow_verified_refresh:
-            pass
-        elif state.quality_status != "technically_qualified":
-            return
-        elif state.status != "completed_processing":
-            return
-        if state.status == "verified_ready" and state.quality_status not in {
+        publishable_status = {
+            "completed_processing",
+            "verified_ready",
+            "budget_exhausted",
+        }
+        publishable_quality = {
             "technically_qualified",
             "verified_ready",
-        }:
+            "source_incomplete",
+            "processed",
+        }
+        if state.status == "verified_ready" and allow_verified_refresh:
+            pass
+        elif state.status not in publishable_status:
+            return
+        elif state.quality_status not in publishable_quality:
             return
         from app.services.tw_research.persistence import finalize_verified_snapshot
 
@@ -660,7 +670,7 @@ class TwResearchScanService:
 
         finalized = finalize_verified_snapshot(state, user_id=state.user_id)
         if finalized is None and state.status != "failed":
-            # Keep technically_qualified; never advertise verified without a snapshot.
+            # Never advertise verified without a snapshot row.
             note = "finalize_deferred_or_failed"
             if note not in state.notes:
                 state.notes.append(note)
@@ -725,28 +735,50 @@ class TwResearchScanService:
                     self._hydrate_state_from_durable(state)
                     with self._lock:
                         state.enrich_cursor = int(claimed["scan"]["enrich_cursor"])
+                        state.enrichments_run = int(
+                            claimed["scan"].get("enrichments_run", state.enrichments_run)
+                        )
                         remaining = int(claimed["remaining_budget"])
-                        pending = [
-                            stock_id
-                            for stock_id in claimed.get("batch_ids") or []
-                            if stock_id in state.records
-                            and state.records[stock_id].enrichment is None
-                        ]
+                        if claimed.get("lease_held"):
+                            return [], remaining
+                        pending = list(claimed.get("batch_ids") or [])
                     return pending, remaining
 
         with self._lock:
             pending = [
                 stock_id
-                for stock_id in state.qualified_ids[state.enrich_cursor :]
+                for stock_id in state.qualified_ids
                 if stock_id in state.records and state.records[stock_id].enrichment is None
             ]
             remaining_budget = state.max_enrichments_per_run - state.enrichments_run
             batch_ids = pending[: min(batch_size, max(0, remaining_budget))]
-            if batch_ids:
-                last = batch_ids[-1]
-                if last in state.qualified_ids:
-                    state.enrich_cursor = state.qualified_ids.index(last) + 1
             return batch_ids, remaining_budget
+
+    def _complete_durable_enrichment(self, state: ScanState) -> None:
+        if not self._persist:
+            with self._lock:
+                state.enrichments_run = sum(
+                    1
+                    for stock_id in state.qualified_ids
+                    if stock_id in state.records
+                    and state.records[stock_id].enrichment is not None
+                )
+            return
+        from app.repositories.tw_research_repository import tw_research_repository
+
+        if not tw_research_repository.is_available():
+            return
+        try:
+            completed = tw_research_repository.complete_enrichment_batch(state.scan_id)
+        except Exception:  # noqa: BLE001
+            state.notes.append("complete_enrichment_persist_failed")
+            return
+        if completed is None:
+            return
+        with self._lock:
+            state.enrich_cursor = int(completed["enrich_cursor"])
+            state.enrichments_run = int(completed["enrichments_run"])
+            self._hydrate_state_from_durable(state)
 
     def _rewind_durable_cursor(self, state: ScanState) -> None:
         if not self._persist:

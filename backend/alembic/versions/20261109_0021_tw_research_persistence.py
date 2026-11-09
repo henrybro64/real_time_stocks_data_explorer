@@ -32,6 +32,8 @@ def upgrade() -> None:
         sa.Column("reserve_cursor", sa.Integer(), nullable=False, server_default="0"),
         sa.Column("reserve_expires_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("enrich_cursor", sa.Integer(), nullable=False, server_default="0"),
+        sa.Column("enrich_reserve_ids_json", sa.JSON(), nullable=False),
+        sa.Column("enrich_reserve_expires_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("target_count", sa.Integer(), nullable=False),
         sa.Column("upstream_month_fetches", sa.Integer(), nullable=False, server_default="0"),
         sa.Column("max_upstream_month_fetches", sa.Integer(), nullable=False),

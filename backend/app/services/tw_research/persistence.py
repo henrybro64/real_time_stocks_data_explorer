@@ -49,6 +49,7 @@ def scan_row_payload(state: ScanState, *, user_id: str | None = None) -> dict[st
         "quality_status": getattr(state, "quality_status", "processed"),
         "cursor": state.cursor,
         "enrich_cursor": state.enrich_cursor,
+        "enrich_reserve_ids_json": [],
         "target_count": state.target_count,
         "upstream_month_fetches": state.upstream_month_fetches,
         "max_upstream_month_fetches": state.max_upstream_month_fetches,
@@ -209,21 +210,21 @@ def finalize_verified_snapshot(
     if not repo.is_available():
         return None
 
-    if state.status not in {"completed_processing", "verified_ready"}:
+    if state.status not in {
+        "completed_processing",
+        "verified_ready",
+        "budget_exhausted",
+    }:
         return None
     if getattr(state, "quality_status", None) not in {
         "technically_qualified",
         "verified_ready",
+        "source_incomplete",
+        "processed",
     }:
         return None
-    incomplete = any(
-        record.readiness == "source_incomplete" for record in state.records.values()
-    )
-    if incomplete:
-        # Dual-pass symbols with coverage gaps must not publish as verified.
-        return None
-    # Zero qualifying stocks is a valid verified outcome when the scan completed
-    # cleanly (no source_incomplete rows).
+    # Partial ledgers (some source_incomplete / insufficient history) may publish
+    # when labeled via sourceCompleteness; zero qualifiers are also valid.
 
     stamp = finalized_at or datetime.now(timezone.utc)
     rows = [_export_row(record) for record in state.records.values()]

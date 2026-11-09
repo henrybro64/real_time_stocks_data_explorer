@@ -128,24 +128,193 @@ def test_missing_trading_day_blocks_verified_coverage(monkeypatch) -> None:
 
 
 def test_calendar_preflight_reports_missing_years(monkeypatch) -> None:
-    from app.services.tw_research.coverage import preflight_tw_trading_calendars
+    from app.services.tw_research.coverage import (
+        preflight_tw_trading_calendars,
+        required_tw_calendar_years,
+    )
 
-    monkeypatch.setattr(
-        "app.services.tw_research.coverage.preload_tw_holiday_calendars",
-        lambda years, allow_network=True, max_fetches=4: {
+    years = required_tw_calendar_years("2024-06-28")
+    assert years[0] <= 2020
+    assert years[-1] == 2024
+
+    captured: dict[str, object] = {}
+
+    def _fake_preload(requested, allow_network=True, max_fetches=4):
+        captured["years"] = list(requested)
+        captured["max_fetches"] = max_fetches
+        return {
             "ok": False,
             "loaded": [2023],
             "missing": [2024],
             "fetched": 1,
-        },
+        }
+
+    monkeypatch.setattr(
+        "app.services.tw_research.coverage.preload_tw_holiday_calendars",
+        _fake_preload,
     )
     result = preflight_tw_trading_calendars(
         trading_day="2024-06-28",
         allow_network=True,
-        max_fetches=1,
     )
     assert result["ok"] is False
     assert 2024 in result["missing"]
+    assert captured["max_fetches"] == len(years)
+
+
+def test_technical_snapshot_then_enriched_snapshot_preserves_prior(monkeypatch) -> None:
+    factory = install_in_memory_sessionlocal(monkeypatch)
+    repo = TwResearchRepository()
+    repo.set_session_factory_override(factory)
+    service = TwResearchScanService(
+        history_loader=lambda stock, limit, *, max_month_fetches: ([], 0),
+        stock_loader=lambda stock_id: _tw(stock_id),
+        persist=True,
+    )
+    state = service.create_scan(
+        UniverseSelector(mode="stock_ids", stock_ids=("TW:2727",)),
+        trading_day="2024-06-28",
+        user_id="user-1",
+    )
+    record = SymbolScanRecord(
+        stock_id="TW:2727",
+        stage="B",
+        readiness="verified_ready",
+        daily={"passStatus": "pass"},
+        monthly={"passStatus": "pass"},
+    )
+    state.records["TW:2727"] = record
+    state.qualified_ids = ["TW:2727"]
+    state.cursor = 1
+    state.status = "completed_processing"
+    state.quality_status = "technically_qualified"
+    persist_scan(state, repository=repo, user_id="user-1")
+    persist_symbol(state, record, repository=repo)
+    repo.complete_scan_batch(state.scan_id, status="completed_processing")
+
+    first = finalize_verified_snapshot(
+        state,
+        repository=repo,
+        user_id="user-1",
+        finalized_at=datetime(2024, 6, 28, 17, 0, tzinfo=TZ),
+    )
+    assert first is not None
+    assert first["manifest"]["technicalStatus"] == "complete"
+    assert first["manifest"]["enrichmentStatus"] == "not_started"
+    first_digest = first["contentDigest"]
+    first_snapshot = repo.get_export_snapshot(first["snapshotId"])
+    assert first_snapshot is not None
+
+    record.enrichment = {"qualified": True, "fields": {"peg": {"value": 1.2}}}
+    persist_symbol(state, record, repository=repo)
+    second = finalize_verified_snapshot(
+        state,
+        repository=repo,
+        user_id="user-1",
+        finalized_at=datetime(2024, 6, 28, 18, 0, tzinfo=TZ),
+    )
+    assert second is not None
+    assert second["snapshotId"] != first["snapshotId"]
+    assert second["contentDigest"] != first_digest
+    assert second["manifest"]["enrichmentStatus"] == "complete"
+    # Prior immutable snapshot bytes stay unchanged.
+    still_first = repo.get_export_snapshot(first["snapshotId"])
+    assert still_first is not None
+    assert still_first["content_digest"] == first_digest
+    assert still_first["ledger_json"] == first_snapshot["ledger_json"]
+    latest = repo.latest_verified_snapshot(
+        universe_version=state.universe_version,
+        trading_day="2024-06-28",
+        user_id="user-1",
+    )
+    assert latest is not None
+    assert latest["snapshot_id"] == second["snapshotId"]
+
+
+def test_enrichment_lease_recovers_after_abandonment(monkeypatch) -> None:
+    from datetime import timezone as tz
+
+    factory = install_in_memory_sessionlocal(monkeypatch)
+    repo = TwResearchRepository()
+    repo.set_session_factory_override(factory)
+    service = TwResearchScanService(
+        history_loader=lambda stock, limit, *, max_month_fetches: ([], 0),
+        stock_loader=lambda stock_id: _tw(stock_id),
+        persist=True,
+    )
+    state = service.create_scan(
+        UniverseSelector(mode="stock_ids", stock_ids=("TW:2330", "TW:2454")),
+        trading_day="2024-06-28",
+        user_id="user-1",
+    )
+    for stock_id in ("TW:2330", "TW:2454"):
+        record = SymbolScanRecord(
+            stock_id=stock_id,
+            stage="B",
+            readiness="verified_ready",
+            daily={"passStatus": "pass"},
+            monthly={"passStatus": "pass"},
+        )
+        state.records[stock_id] = record
+        persist_symbol(state, record, repository=repo)
+    state.qualified_ids = ["TW:2330", "TW:2454"]
+    persist_scan(state, repository=repo, user_id="user-1")
+
+    claimed = repo.claim_enrichment_batch(state.scan_id, batch_size=2, lease_seconds=60)
+    assert claimed is not None
+    assert claimed["batch_ids"] == ["TW:2330", "TW:2454"]
+    blocked = repo.claim_enrichment_batch(state.scan_id, batch_size=2)
+    assert blocked is not None
+    assert blocked["lease_held"] is True
+
+    from app.db.models import TwResearchScan
+
+    with factory() as session:
+        row = session.get(TwResearchScan, state.scan_id)
+        assert row is not None
+        row.enrich_reserve_expires_at = datetime(2020, 1, 1, tzinfo=tz.utc)
+        session.commit()
+
+    recovered = repo.claim_enrichment_batch(state.scan_id, batch_size=2)
+    assert recovered is not None
+    assert recovered["batch_ids"] == ["TW:2330", "TW:2454"]
+
+
+def test_insufficient_history_counted_separately_from_technical_fail() -> None:
+    from app.services.tw_research.export import build_export_manifest
+    from app.services.tw_research.scan import ScanState
+
+    state = ScanState(
+        scan_id="scan-counts",
+        trading_day="2024-06-28",
+        universe_version="explicit:2:abc",
+        calculation_version="macd12-26-9_kd9-3-3_v1",
+        selector=UniverseSelector(mode="stock_ids", stock_ids=("TW:2330", "TW:2454")),
+        stock_ids=("TW:2330", "TW:2454"),
+        cursor=2,
+        status="completed_processing",
+        quality_status="source_incomplete",
+    )
+    state.records["TW:2330"] = SymbolScanRecord(
+        stock_id="TW:2330",
+        stage="A",
+        readiness="processed",
+        daily={"passStatus": "fail"},
+    )
+    state.records["TW:2454"] = SymbolScanRecord(
+        stock_id="TW:2454",
+        stage="A",
+        readiness="source_incomplete",
+        daily={"passStatus": "unknown"},
+        coverage={"daily": {"ok": False, "reason": "insufficient_history"}},
+    )
+    manifest = build_export_manifest(state, generated_at="2024-06-28T17:00:00+00:00")
+    assert manifest["counts"]["insufficientHistory"] == 1
+    assert manifest["counts"]["sourceIncomplete"] == 1
+    assert manifest["counts"]["qualifiedCount"] == 0
+    assert manifest["technicalStatus"] == "complete"
+    assert manifest["sourceCompleteness"] == "partial"
+    assert manifest["enrichmentStatus"] == "unavailable"
 
 
 def test_unknown_trading_calendar_fails_closed(monkeypatch) -> None:
@@ -498,15 +667,21 @@ def test_postgres_persistence_round_trip_and_atomic_finalize(monkeypatch) -> Non
     assert reloaded.quality_status == "verified_ready"
     assert reloaded.active_snapshot_id == finalized["snapshotId"]
 
-    # Incomplete ledger must not finalize as verified.
+    # Incomplete coverage may still publish when labeled partial.
     incomplete = load_scan_state(state.scan_id, repository=repo)
     assert incomplete is not None
     incomplete.records["TW:2727"].readiness = "source_incomplete"
     incomplete.status = "completed_processing"
     incomplete.quality_status = "source_incomplete"
-    assert (
-        finalize_verified_snapshot(incomplete, repository=repo, user_id="user-1") is None
+    partial = finalize_verified_snapshot(
+        incomplete,
+        repository=repo,
+        user_id="user-1",
+        finalized_at=datetime(2024, 6, 28, 18, 0, tzinfo=TZ),
     )
+    assert partial is not None
+    assert partial["manifest"]["sourceCompleteness"] == "partial"
+    assert partial["snapshotId"] != finalized["snapshotId"]
 
     latest = repo.latest_verified_snapshot(
         universe_version=state.universe_version,
@@ -514,7 +689,7 @@ def test_postgres_persistence_round_trip_and_atomic_finalize(monkeypatch) -> Non
         user_id="user-1",
     )
     assert latest is not None
-    assert latest["snapshot_id"] == finalized["snapshotId"]
+    assert latest["snapshot_id"] == partial["snapshotId"]
     assert latest["quality_status"] == "verified_ready"
 
     # Durable batch claim reports complete once cursor is exhausted.

@@ -409,7 +409,8 @@ def test_export_paginates_more_than_eighty_rows_and_supports_unclassified() -> N
 
     text = build_browser_text_view(state, generated_at="2024-06-28T16:00:00+08:00")
     assert "frontendExportReady" in text
-    assert "not_performed_in_stock_ticker" in text
+    assert "independentPublisher" in text
+    assert "never writes to Notion" in text
     assert '"chunkIndex": 0' in text
     assert '"totalChunks": 4' in text
     assert "nextChunkIndex" in text

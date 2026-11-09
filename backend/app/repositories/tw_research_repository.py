@@ -41,6 +41,38 @@ def _first_missing_symbol_index(session: Session, scan_id: str, stock_ids: list[
     return len(stock_ids)
 
 
+def _symbol_enrichment_map(session: Session, scan_id: str) -> dict[str, bool]:
+    rows = session.execute(
+        select(TwResearchSymbolResult).where(TwResearchSymbolResult.scan_id == scan_id)
+    ).scalars()
+    return {
+        row.stock_id: bool((row.payload_json or {}).get("enrichment"))
+        for row in rows
+    }
+
+
+def _unenriched_qualified_ids(session: Session, row: TwResearchScan) -> list[str]:
+    qualified = list(row.qualified_ids_json or [])
+    enriched = _symbol_enrichment_map(session, row.scan_id)
+    return [stock_id for stock_id in qualified if not enriched.get(stock_id)]
+
+
+def _enrichment_completed_cursor(session: Session, row: TwResearchScan) -> int:
+    """Index of first qualified id still missing enrichment (completed watermark)."""
+    qualified = list(row.qualified_ids_json or [])
+    enriched = _symbol_enrichment_map(session, row.scan_id)
+    for index, stock_id in enumerate(qualified):
+        if not enriched.get(stock_id):
+            return index
+    return len(qualified)
+
+
+def _enriched_qualified_count(session: Session, row: TwResearchScan) -> int:
+    qualified = list(row.qualified_ids_json or [])
+    enriched = _symbol_enrichment_map(session, row.scan_id)
+    return sum(1 for stock_id in qualified if enriched.get(stock_id))
+
+
 def _scan_to_dict(row: TwResearchScan) -> dict[str, Any]:
     return {
         "scan_id": row.scan_id,
@@ -57,6 +89,8 @@ def _scan_to_dict(row: TwResearchScan) -> dict[str, Any]:
         "reserve_cursor": int(getattr(row, "reserve_cursor", 0) or 0),
         "reserve_expires_at": getattr(row, "reserve_expires_at", None),
         "enrich_cursor": int(row.enrich_cursor),
+        "enrich_reserve_ids_json": list(getattr(row, "enrich_reserve_ids_json", None) or []),
+        "enrich_reserve_expires_at": getattr(row, "enrich_reserve_expires_at", None),
         "target_count": int(row.target_count),
         "upstream_month_fetches": int(row.upstream_month_fetches),
         "max_upstream_month_fetches": int(row.max_upstream_month_fetches),
@@ -112,6 +146,8 @@ _SCAN_PROGRESS_KEYS = frozenset(
         "reserve_cursor",
         "reserve_expires_at",
         "enrich_cursor",
+        "enrich_reserve_ids_json",
+        "enrich_reserve_expires_at",
     }
 )
 _SCAN_COUNTER_MAX_KEYS = frozenset(
@@ -154,6 +190,8 @@ class TwResearchRepository(SessionBoundRepository):
                 }
                 insert_payload.setdefault("reserve_cursor", int(payload.get("cursor") or 0))
                 insert_payload.setdefault("reserve_expires_at", None)
+                insert_payload.setdefault("enrich_reserve_ids_json", [])
+                insert_payload.setdefault("enrich_reserve_expires_at", None)
                 session.add(
                     TwResearchScan(
                         **insert_payload,
@@ -339,8 +377,13 @@ class TwResearchRepository(SessionBoundRepository):
         scan_id: str,
         *,
         batch_size: int,
+        lease_seconds: int = BATCH_LEASE_SECONDS,
     ) -> dict[str, Any] | None:
-        """Atomically reserve enrichment slots (cursor + budget) (#318)."""
+        """Reserve enrichment work under a recoverable lease (#318).
+
+        Pending IDs are derived from persisted symbol payloads (qualified and still
+        missing enrichment). Cursor advances only after ``complete_enrichment_batch``.
+        """
         session_factory = self._session_factory()
         with session_factory() as session:
             row = session.execute(
@@ -350,24 +393,66 @@ class TwResearchRepository(SessionBoundRepository):
             ).scalar_one_or_none()
             if row is None:
                 return None
-            qualified = list(row.qualified_ids_json or [])
-            enrich_cursor = int(row.enrich_cursor)
+            now = datetime.now(timezone.utc)
+            lease_until = _as_utc(getattr(row, "enrich_reserve_expires_at", None))
+            reserved = list(getattr(row, "enrich_reserve_ids_json", None) or [])
+
+            if lease_until is not None and lease_until <= now:
+                row.enrich_reserve_ids_json = []
+                row.enrich_reserve_expires_at = None
+                reserved = []
+                lease_until = None
+
+            if lease_until is not None and lease_until > now and reserved:
+                session.commit()
+                return {
+                    "batch_ids": [],
+                    "remaining_budget": max(
+                        0, int(row.max_enrichments_per_run) - int(row.enrichments_run)
+                    ),
+                    "scan": _scan_to_dict(row),
+                    "lease_held": True,
+                }
+
+            pending = _unenriched_qualified_ids(session, row)
             remaining_budget = max(
                 0, int(row.max_enrichments_per_run) - int(row.enrichments_run)
             )
-            pending = qualified[enrich_cursor:]
             batch_ids = pending[: min(batch_size, remaining_budget)]
-            if batch_ids:
-                last = batch_ids[-1]
-                if last in qualified:
-                    row.enrich_cursor = qualified.index(last) + 1
-            row.updated_at = datetime.now(timezone.utc)
+            row.enrich_reserve_ids_json = list(batch_ids)
+            row.enrich_reserve_expires_at = (
+                now + timedelta(seconds=max(1, int(lease_seconds))) if batch_ids else None
+            )
+            # Watermark tracks how far into qualified_ids we have durable enrichment.
+            row.enrich_cursor = _enrichment_completed_cursor(session, row)
+            row.updated_at = now
             session.commit()
             return {
                 "batch_ids": batch_ids,
                 "remaining_budget": remaining_budget,
                 "scan": _scan_to_dict(row),
+                "lease_held": False,
             }
+
+    def complete_enrichment_batch(self, scan_id: str) -> dict[str, Any] | None:
+        """Clear enrichment lease and reconcile cursor/budget from durable rows."""
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            row = session.execute(
+                select(TwResearchScan)
+                .where(TwResearchScan.scan_id == scan_id)
+                .with_for_update()
+            ).scalar_one_or_none()
+            if row is None:
+                return None
+            enriched_count = _enriched_qualified_count(session, row)
+            row.enrichments_run = max(int(row.enrichments_run or 0), enriched_count)
+            row.enrich_cursor = _enrichment_completed_cursor(session, row)
+            row.enrich_reserve_ids_json = []
+            row.enrich_reserve_expires_at = None
+            row.updated_at = datetime.now(timezone.utc)
+            session.commit()
+            return _scan_to_dict(row)
 
     def upsert_symbol_result(self, payload: dict[str, Any]) -> None:
         session_factory = self._session_factory()
@@ -382,6 +467,14 @@ class TwResearchRepository(SessionBoundRepository):
             if existing is None:
                 session.add(TwResearchSymbolResult(**payload, updated_at=now))
             else:
+                incoming_payload = dict(payload.get("payload_json") or {})
+                existing_payload = dict(existing.payload_json or {})
+                # Never let a stale worker wipe a newer enrichment payload.
+                if existing_payload.get("enrichment") and not incoming_payload.get(
+                    "enrichment"
+                ):
+                    incoming_payload["enrichment"] = existing_payload["enrichment"]
+                    payload = {**payload, "payload_json": incoming_payload}
                 for key, value in payload.items():
                     if key in {"scan_id", "stock_id"}:
                         continue

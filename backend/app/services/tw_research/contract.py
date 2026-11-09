@@ -40,7 +40,8 @@ def build_research_contract() -> ResearchContractResponse:
             "route auth, and related optimizations — reuse them; do not reimplement.",
             "Enrichment (#313) runs only for day+month technical passers; missing chip data is "
             "per-field unavailable and never flips a technical pass to fail.",
-            "Export/UI (#314) reads precomputed state only. External Notion publish is #315 Agent-owned.",
+            "Export/UI (#314) reads precomputed state only and never initiates market-data fetches.",
+            "Stock Ticker publishes independently; it does not track consumer acknowledgment or write Notion.",
             "Home-node CPU/RSS/disk measurements belong to the manual pilot (#315); code ships "
             "provisional unit benchmarks and a measurement worksheet only.",
         ],
