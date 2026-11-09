@@ -527,6 +527,29 @@ def _clear_tw_market_holiday_cache() -> None:
         _tw_holiday_refreshing.clear()
 
 
+def tw_holiday_calendar_known(year: int) -> bool:
+    """True when a TW holiday calendar for ``year`` is in memory or on disk."""
+    if year in _tw_holiday_success:
+        return True
+    return _load_persisted_holidays(year) is not None
+
+
+def ensure_tw_holiday_calendars_loaded(years: list[int] | tuple[int, ...] | set[int]) -> bool:
+    """Load persisted TW calendars into memory without network I/O.
+
+    Returns True only when every requested year is known. Callers that must not
+    invent weekday trading sessions should fail closed when this returns False
+    (see tw_research coverage #320).
+    """
+    ok = True
+    for year in sorted({int(value) for value in years}):
+        # Populate in-memory cache from disk when present.
+        _tw_market_holidays(year)
+        if not tw_holiday_calendar_known(year):
+            ok = False
+    return ok
+
+
 def _tw_market_holidays(year: int) -> frozenset[date]:
     """Return the cached or persisted calendar. This path does not call TWSE."""
     cached = _tw_holiday_success.get(year)

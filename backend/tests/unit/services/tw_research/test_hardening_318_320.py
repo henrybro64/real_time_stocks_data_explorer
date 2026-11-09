@@ -1,0 +1,416 @@
+"""Hardening coverage for #318 / #319 / #320."""
+
+from __future__ import annotations
+
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
+
+from app.models.quote import CandleRecord
+from app.repositories.tw_research_repository import TwResearchRepository
+from app.services.tw_research.coverage import (
+    derive_readiness,
+    validate_closed_month_coverage,
+    validate_ohlcv_series,
+)
+from app.services.tw_research.export import (
+    build_export_chunk_from_rows,
+    build_immutable_manifest,
+    content_digest,
+)
+from app.services.tw_research.persistence import (
+    finalize_verified_snapshot,
+    load_scan_state,
+    persist_scan,
+    persist_symbol,
+)
+from app.services.tw_research.scan import SymbolScanRecord, TwResearchScanService
+from app.services.tw_research.universe import (
+    UniverseSelector,
+    deterministic_universe_digest,
+    resolve_universe,
+)
+from tests.support import install_in_memory_sessionlocal, stock_record
+
+
+TZ = ZoneInfo("Asia/Taipei")
+
+
+def _tw(stock_id: str):
+    symbol = stock_id.split(":", 1)[1]
+    return stock_record(
+        stock_id,
+        market="TW",
+        symbol=symbol,
+        name=symbol,
+        exchange="TWSE",
+        currency="TWD",
+        timezone="Asia/Taipei",
+        name_zh_tw=symbol,
+    )
+
+
+def _candle(day: date, close: float = 100.0) -> CandleRecord:
+    stamp = datetime(day.year, day.month, day.day, 13, 30, tzinfo=TZ)
+    return CandleRecord(
+        time=stamp.isoformat(),
+        open=close - 0.5,
+        high=close + 1.0,
+        low=close - 1.0,
+        close=close,
+        volume=1000,
+    )
+
+
+def test_deterministic_universe_digest_stable_across_reorder_and_duplicates() -> None:
+    a = deterministic_universe_digest(
+        mode="stock_ids",
+        stock_ids=("TW:2618", "2727", "TW:2330", "TW:2618"),
+    )
+    b = deterministic_universe_digest(
+        mode="stock_ids",
+        stock_ids=("TW:2330", "TW:2727", "TW:2618"),
+    )
+    assert a == b
+    assert len(a) == 64
+
+    catalog = {
+        "TW:2727": _tw("TW:2727"),
+        "TW:2618": _tw("TW:2618"),
+        "TW:2330": _tw("TW:2330"),
+    }
+    first = resolve_universe(
+        UniverseSelector(
+            mode="stock_ids",
+            stock_ids=("TW:2618", "TW:2727", "TW:2330", "TW:2618"),
+        ),
+        stock_resolver=catalog.get,
+    )
+    second = resolve_universe(
+        UniverseSelector(
+            mode="stock_ids",
+            stock_ids=("TW:2330", "TW:2727", "TW:2618"),
+        ),
+        stock_resolver=catalog.get,
+    )
+    assert first.universe_version == second.universe_version
+    assert first.universe_version.startswith("explicit:3:")
+
+
+def test_missing_trading_day_blocks_verified_coverage(monkeypatch) -> None:
+    # Build Mon–Fri series for a short window, then drop one real weekday.
+    days = [
+        date(2024, 6, 3),
+        date(2024, 6, 4),
+        date(2024, 6, 5),
+        date(2024, 6, 6),
+        date(2024, 6, 7),
+    ]
+    candles = [_candle(day, close=100 + index) for index, day in enumerate(days)]
+    # Remove Wednesday.
+    candles = [candle for candle in candles if not candle.time.startswith("2024-06-05")]
+
+    monkeypatch.setattr(
+        "app.services.tw_research.coverage.ensure_tw_holiday_calendars_loaded",
+        lambda years: True,
+    )
+    monkeypatch.setattr(
+        "app.services.tw_research.coverage.is_trading_day",
+        lambda market, day, allow_holiday_fetch=False: day.weekday() < 5,
+    )
+    report = validate_ohlcv_series(
+        candles,
+        market="TW",
+        require_min_bars=3,
+        check_calendar_gaps=True,
+    )
+    assert report.ok is False
+    assert report.reason == "missing_trading_sessions"
+    assert "2024-06-05" in report.missing_trading_days
+
+
+def test_unknown_trading_calendar_fails_closed(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.services.tw_research.coverage.ensure_tw_holiday_calendars_loaded",
+        lambda years: False,
+    )
+    candles = [_candle(date(2024, 6, day), close=100 + day) for day in range(3, 8)]
+    report = validate_ohlcv_series(
+        candles,
+        market="TW",
+        require_min_bars=3,
+        check_calendar_gaps=True,
+    )
+    assert report.ok is False
+    assert report.reason == "trading_calendar_unavailable"
+
+
+def test_incomplete_closed_month_cannot_verify(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.services.tw_research.coverage.ensure_tw_holiday_calendars_loaded",
+        lambda years: True,
+    )
+    monkeypatch.setattr(
+        "app.services.tw_research.coverage.is_trading_day",
+        lambda market, day, allow_holiday_fetch=False: day.weekday() < 5,
+    )
+    # May 2024 weekdays minus one day → incomplete closed month.
+    days = []
+    probe = date(2024, 5, 1)
+    while probe.month == 5:
+        if probe.weekday() < 5:
+            days.append(probe)
+        probe += timedelta(days=1)
+    days = days[:-1]
+    candles = [_candle(day, close=90 + index) for index, day in enumerate(days)]
+    report = validate_closed_month_coverage(
+        candles,
+        year=2024,
+        month=5,
+        market="TW",
+    )
+    assert report.ok is False
+    assert report.reason == "incomplete_closed_month"
+    assert report.missing_trading_days
+
+
+def test_derive_readiness_distinguishes_coverage_from_signals() -> None:
+    assert (
+        derive_readiness(
+            stage="B",
+            daily_pass="pass",
+            monthly_pass="pass",
+            daily_coverage_ok=True,
+            monthly_coverage_ok=True,
+        )
+        == "verified_ready"
+    )
+    assert (
+        derive_readiness(
+            stage="B",
+            daily_pass="pass",
+            monthly_pass="pass",
+            daily_coverage_ok=True,
+            monthly_coverage_ok=False,
+        )
+        == "source_incomplete"
+    )
+    assert (
+        derive_readiness(
+            stage="B",
+            daily_pass="pass",
+            monthly_pass="pass",
+            daily_coverage_ok=True,
+            monthly_coverage_ok=True,
+            coverage_checked=False,
+        )
+        == "technically_qualified"
+    )
+    assert (
+        derive_readiness(
+            stage="A",
+            daily_pass="fail",
+            monthly_pass=None,
+            daily_coverage_ok=True,
+            monthly_coverage_ok=True,
+        )
+        == "processed"
+    )
+
+
+def test_immutable_chunk_digests_are_stable_for_frozen_timestamp() -> None:
+    rows = [
+        {"stockId": "TW:2330", "stage": "B", "readiness": "verified_ready"},
+        {"stockId": "TW:2454", "stage": "A", "readiness": "processed"},
+    ]
+    frozen = "2024-06-28T16:00:00+08:00"
+    first = build_export_chunk_from_rows(
+        rows,
+        chunk_index=0,
+        chunk_size=25,
+        kind="ledger",
+        scan_id="scan-1",
+        trading_day="2024-06-28",
+        frozen_at=frozen,
+    )
+    second = build_export_chunk_from_rows(
+        rows,
+        chunk_index=0,
+        chunk_size=25,
+        kind="ledger",
+        scan_id="scan-1",
+        trading_day="2024-06-28",
+        frozen_at=frozen,
+    )
+    assert first["checksumSha256"] == second["checksumSha256"]
+    assert first["checksumSha256"] == content_digest(
+        {key: value for key, value in first.items() if key != "checksumSha256"}
+    )
+
+
+def test_postgres_persistence_round_trip_and_atomic_finalize(monkeypatch) -> None:
+    factory = install_in_memory_sessionlocal(monkeypatch)
+    repo = TwResearchRepository()
+    repo.set_session_factory_override(factory)
+
+    from app.repositories import tw_research_repository as repo_module
+    from app.services.tw_research import persistence as persistence_module
+
+    repo_module.tw_research_repository.set_session_factory_override(factory)
+    persistence_module.tw_research_repository.set_session_factory_override(factory)
+
+    service = TwResearchScanService(
+        history_loader=lambda stock, limit, *, max_month_fetches: ([], 0),
+        stock_loader=lambda stock_id: _tw(stock_id),
+        persist=True,
+    )
+    state = service.create_scan(
+        UniverseSelector(mode="stock_ids", stock_ids=("TW:2727", "TW:2618")),
+        trading_day="2024-06-28",
+        now=datetime(2024, 6, 28, 16, 0, tzinfo=TZ),
+        user_id="user-1",
+    )
+
+    persist_scan(state, repository=repo, user_id="user-1")
+    record = SymbolScanRecord(
+        stock_id="TW:2727",
+        stage="B",
+        readiness="verified_ready",
+        daily={"passStatus": "pass"},
+        monthly={"passStatus": "pass"},
+        checkpoint=(
+            state.trading_day,
+            state.universe_version,
+            state.calculation_version,
+            "TW:2727",
+        ),
+    )
+    state.records["TW:2727"] = record
+    state.records["TW:2618"] = SymbolScanRecord(
+        stock_id="TW:2618",
+        stage="A",
+        readiness="processed",
+        daily={"passStatus": "fail"},
+    )
+    state.cursor = 2
+    state.status = "completed_processing"
+    state.quality_status = "technically_qualified"
+    persist_scan(state, repository=repo, user_id="user-1")
+    persist_symbol(state, record, repository=repo)
+    persist_symbol(state, state.records["TW:2618"], repository=repo)
+
+    reloaded = load_scan_state(state.scan_id, repository=repo)
+    assert reloaded is not None
+    assert reloaded.cursor == 2
+    assert reloaded.records["TW:2727"].readiness == "verified_ready"
+    assert reloaded.quality_status == "technically_qualified"
+
+    # Not verified at scan level until finalize succeeds.
+    assert reloaded.status != "verified_ready" or reloaded.active_snapshot_id is None
+
+    finalized = finalize_verified_snapshot(
+        reloaded,
+        repository=repo,
+        user_id="user-1",
+        finalized_at=datetime(2024, 6, 28, 17, 0, tzinfo=TZ),
+    )
+    assert finalized is not None
+    assert finalized["contentDigest"]
+    assert reloaded.status == "verified_ready"
+    assert reloaded.quality_status == "verified_ready"
+    assert reloaded.active_snapshot_id == finalized["snapshotId"]
+
+    # Incomplete ledger must not finalize as verified.
+    incomplete = load_scan_state(state.scan_id, repository=repo)
+    assert incomplete is not None
+    incomplete.records["TW:2727"].readiness = "source_incomplete"
+    incomplete.status = "completed_processing"
+    incomplete.quality_status = "source_incomplete"
+    assert (
+        finalize_verified_snapshot(incomplete, repository=repo, user_id="user-1") is None
+    )
+
+    latest = repo.latest_verified_snapshot(
+        universe_version=state.universe_version,
+        trading_day="2024-06-28",
+        user_id="user-1",
+    )
+    assert latest is not None
+    assert latest["snapshot_id"] == finalized["snapshotId"]
+    assert latest["quality_status"] == "verified_ready"
+
+    # Durable batch claim reports complete once cursor is exhausted.
+    claimed = repo.claim_scan_batch(
+        state.scan_id,
+        batch_size=1,
+        terminal_statuses={"completed_processing", "verified_ready", "budget_exhausted"},
+    )
+    assert claimed is not None
+    assert claimed["already_complete"] is True
+
+    # Deleting the scan must not cascade-delete the immutable snapshot.
+    assert repo.delete_scans_older_than(datetime(2099, 1, 1, tzinfo=TZ)) >= 1
+    assert repo.get_export_snapshot(finalized["snapshotId"]) is not None
+
+    # Restart simulation: clear in-memory cache; scan row is gone after delete.
+    service._scans.clear()
+    assert service.get_scan(state.scan_id) is None
+
+
+def test_persist_failure_marks_scan_failed(monkeypatch) -> None:
+    from app.services.tw_research.persistence import persist_scan as persist_scan_fn
+    from app.services.tw_research.scan import ScanState
+
+    state = ScanState(
+        scan_id="scan-persist-fail",
+        trading_day="2024-06-28",
+        universe_version="explicit:1:abc",
+        calculation_version="macd12-26-9_kd9-3-3_v1",
+        selector=UniverseSelector(mode="stock_ids", stock_ids=("TW:2330",)),
+        stock_ids=("TW:2330",),
+        status="running",
+        quality_status="processed",
+    )
+
+    class BrokenRepo:
+        def is_available(self) -> bool:
+            return True
+
+        def upsert_scan(self, payload):  # noqa: ANN001
+            raise RuntimeError("disk full")
+
+    assert persist_scan_fn(state, repository=BrokenRepo()) is False  # type: ignore[arg-type]
+    assert state.status == "failed"
+    assert any(note.startswith("persist_failed:") for note in state.notes)
+
+
+def test_immutable_manifest_content_digest_stable() -> None:
+    from app.services.tw_research.scan import ScanState
+    from app.services.tw_research.universe import UniverseSelector
+
+    state = ScanState(
+        scan_id="scan-stable",
+        trading_day="2024-06-28",
+        universe_version="explicit:1:abc",
+        calculation_version="macd12-26-9_kd9-3-3_v1",
+        selector=UniverseSelector(mode="stock_ids", stock_ids=("TW:2330",)),
+        stock_ids=("TW:2330",),
+        status="verified_ready",
+        quality_status="verified_ready",
+    )
+    rows = [{"stockId": "TW:2330", "stage": "B", "readiness": "verified_ready"}]
+    digests = {"0": "deadbeef"}
+    first = build_immutable_manifest(
+        state,
+        rows=rows,
+        chunk_digests=digests,
+        frozen_at="2024-06-28T17:00:00+00:00",
+        quality_status="verified_ready",
+    )
+    second = build_immutable_manifest(
+        state,
+        rows=rows,
+        chunk_digests=digests,
+        frozen_at="2024-06-28T17:00:00+00:00",
+        quality_status="verified_ready",
+    )
+    assert first["contentDigest"] == second["contentDigest"]

@@ -1,6 +1,6 @@
-# Taiwan equity research (#310–#315)
+# Taiwan equity research (#310–#320)
 
-Industry-agnostic Taiwan stock research on the **existing** monorepo. No new service, database, Notion SDK, schedule, or production deploy in this slice.
+Industry-agnostic Taiwan stock research on the **existing** monorepo. No new service, Notion SDK, schedule, or production deploy in this slice. Persistence reuses the **existing** Stock Ticker PostgreSQL (#318).
 
 ## Status of related closed work
 
@@ -29,12 +29,16 @@ Confirm and reuse — do not reimplement:
 | `backend/app/services/tw_research/universe.py` | Universe selector: starter preset / theme keys / explicit IDs |
 | `backend/app/services/tw_research/contract.py` | Versioned field/source map |
 | `backend/app/services/tw_research/indicators.py` | Daily + monthly MACD(12,26,9) and KD(9,3,3) |
-| `backend/app/services/tw_research/scan.py` | Bounded Stage A/B scan + enrichment batches + ephemeral checkpoints |
+| `backend/app/services/tw_research/scan.py` | Bounded Stage A/B scan + enrichment batches + durable checkpoints |
+| `backend/app/services/tw_research/coverage.py` | OHLCV + TW calendar coverage / readiness (#320) |
+| `backend/app/services/tw_research/persistence.py` | Scan/symbol/snapshot helpers over Postgres (#318/#319) |
+| `backend/app/repositories/tw_research_repository.py` | SQLAlchemy repository for scans / symbols / snapshots |
 | `backend/app/services/tw_research/enrichment.py` | Day+month qualifier enrichment with per-field provenance (#313) |
-| `backend/app/services/tw_research/export.py` | Manifest / chunked JSON / CSV / browser text (#314) |
+| `backend/app/services/tw_research/export.py` | Manifest / chunked JSON / CSV / browser text / digests (#314/#319) |
 | `backend/app/api/routes/tw_research.py` | Authenticated contract / universe / scan / enrich / export APIs |
 | `frontend/src/app/research/tw/page.tsx` | Private research UI (`/research/tw`) |
 | `docs/tw-research-pilot.md` | #315 measurement + Agent handoff worksheet |
+| Alembic `20261109_0021` | `tw_research_scans`, `tw_research_symbol_results`, `tw_research_export_snapshots` |
 
 ## Indicator conventions (#311)
 
@@ -46,15 +50,27 @@ Confirm and reuse — do not reimplement:
 - `daily_price_history_service` `MAX=800` is **not** silently treated as enough for long monthly MACD warm-up; insufficient history returns `unknown` / `insufficient_history`.
 - Pass (day or month independently): `DIF > 0 AND OSC > 0 AND K > 50 AND D > 50`.
 
-## Scan and checkpoints (#312)
+## Scan, checkpoints, and readiness (#312 / #318 / #320)
 
 - Stage A: daily MACD/KD for each symbol in the batch.
 - Stage B: monthly + SMA20/60/120/240 + 52-week position for **day-pass** symbols only.
 - Upstream month budget is enforced **before** history backfill via `get_daily_history_within_budget`; counters track actual month fetches, not Stage B local math.
 - Enrichment levels use **stored-only** `peek_daily_history` by default (no cold backfill). Stage B `week52_position` is reused when the store peek is empty.
-- Indicator `now` is anchored to the scan `tradingDay` (after TW cash close). Overlapping batch POSTs for one scan are serialized with a per-scan lock and atomic cursor reservation.
-- Checkpoint key: `(trading_day, universe_version, calculation_version, symbol)`.
-- Checkpoints are **ephemeral (in-memory)**. They do **not** survive process restart. Do not claim restart-safe resume without a Postgres store.
+- Indicator `now` is anchored to the scan `tradingDay` (after TW cash close). Overlapping batch POSTs use a per-scan lock **and** durable `SELECT … FOR UPDATE` cursor claims when Postgres is available (multi-worker safe).
+- Checkpoint key: `(trading_day, universe_version, calculation_version, symbol, scan_id)`.
+- Checkpoints and ledgers are **durable in PostgreSQL** when `DATABASE_URL` is configured (Alembic `20261109_0021`). In-memory maps are a process cache; `get_scan` reloads from Postgres after restart. Persist failures mark the scan `failed` when DB is configured.
+- Scan lifecycle: `queued` → `running` → `partial` | `budget_exhausted` | `completed_processing` → `verified_ready` | `failed`.
+- Per-symbol readiness: `processed` | `technically_qualified` | `source_incomplete` | `verified_ready` | `rejected`.
+- OHLCV validation uses the Taiwan trading calendar with persisted calendars preloaded. Unknown holiday calendars fail closed as `trading_calendar_unavailable` (never invent weekday sessions). Missing a real session or an incomplete closed month cannot become symbol `verified_ready`.
+- `completed_processing` means batches finished. Scan `quality_status=technically_qualified` means dual-pass + coverage are clean enough to finalize. Scan `verified_ready` is set **only after** a successful immutable snapshot finalize.
+- Scan-scoped export GETs may serve a **live** ledger for the private UI. Agents should use `GET /exports/latest/manifest` (and snapshot chunk routes) for verified, digest-stable data.
+- Retention helper: `persistence.retention_cleanup(retention_days=30)` deletes aged snapshots first, then aged scans. Snapshot `scan_id` uses `ON DELETE SET NULL` so verified exports survive scan cleanup. Rough storage: one scan row + N symbol JSON payloads + optional finalized snapshot (~tens of KB to a few MB per verified export depending on universe size).
+
+## Deterministic universe + immutable exports (#319)
+
+- Explicit / theme universes use SHA-256 digests of canonical sorted IDs (no Python `hash()`).
+- Finalized snapshots store `content_digest`, per-chunk digests, and a frozen `finalized_at`. Re-reads must not change digests.
+- Latest verified manifest: `GET /api/tw-research/exports/latest/manifest?universeVersion=&tradingDay=` (authenticated; explicit filters avoid mixing universes).
 
 ### API
 
@@ -73,6 +89,8 @@ All routes use `Depends(get_effective_user_id)`.
 | GET | `/api/tw-research/scans/{scan_id}/export/chunk` | No |
 | GET | `/api/tw-research/scans/{scan_id}/export/csv` | No |
 | GET | `/api/tw-research/scans/{scan_id}/export/browser-text` | No |
+| GET | `/api/tw-research/exports/latest/manifest` | No (#319) |
+| GET | `/api/tw-research/exports/snapshots/{snapshot_id}/chunk` | No (#319) |
 
 ## Baseline / instrumentation plan (#310 → #315)
 

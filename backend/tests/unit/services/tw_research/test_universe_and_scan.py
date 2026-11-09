@@ -158,6 +158,7 @@ def test_scan_batches_paginate_and_never_reject_for_missing_theme() -> None:
     service = TwResearchScanService(
         history_loader=loader,
         stock_loader=lambda stock_id: catalog.get(stock_id),
+        persist=False,
     )
     state = service.create_scan(
         UniverseSelector(
@@ -181,6 +182,13 @@ def test_scan_batches_paginate_and_never_reject_for_missing_theme() -> None:
     for record in first.records.values():
         assert record.rejection_reason != "out_of_sector"
         assert record.daily is not None
+        assert record.readiness in {
+            "processed",
+            "technically_qualified",
+            "source_incomplete",
+            "verified_ready",
+            "rejected",
+        }
 
     second = service.run_batch(
         state.scan_id,
@@ -188,10 +196,11 @@ def test_scan_batches_paginate_and_never_reject_for_missing_theme() -> None:
         now=datetime(2024, 6, 28, 16, 0, tzinfo=TZ),
     )
     assert second.cursor == 4
-    assert second.status == "completed"
+    assert second.status == "completed_processing"
     snap = second.snapshot()
-    assert snap["checkpointsEphemeral"] is True
-    assert snap["checkpointContract"]["durable"] is False
+    assert snap["checkpointsEphemeral"] is False
+    assert snap["checkpointsDurable"] is True
+    assert snap["checkpointContract"]["durable"] is True
     assert "target_count is an output target only" in " ".join(second.notes)
 
 
@@ -199,6 +208,7 @@ def test_scan_batch_size_cap_and_target_count_validation() -> None:
     service = TwResearchScanService(
         history_loader=lambda stock, limit, *, max_month_fetches: ([], 0),
         stock_loader=lambda stock_id: _tw(stock_id),
+        persist=False,
     )
     with pytest.raises(ValueError, match="target_count"):
         service.create_scan(
@@ -231,6 +241,7 @@ def test_scan_multi_batch_over_eighty_symbols_without_loading_all_at_once() -> N
     service = TwResearchScanService(
         history_loader=loader,
         stock_loader=lambda stock_id: catalog.get(stock_id),
+        persist=False,
     )
     state = service.create_scan(
         UniverseSelector(mode="stock_ids", stock_ids=stock_ids),
@@ -239,7 +250,7 @@ def test_scan_multi_batch_over_eighty_symbols_without_loading_all_at_once() -> N
         now=datetime(2024, 6, 28, 16, 0, tzinfo=TZ),
     )
     assert len(state.stock_ids) == 81
-    assert state.status == "running"
+    assert state.status == "queued"
 
     batches = 0
     while state.cursor < len(state.stock_ids):
@@ -255,7 +266,7 @@ def test_scan_multi_batch_over_eighty_symbols_without_loading_all_at_once() -> N
 
     assert batches == 9
     assert state.cursor == 81
-    assert state.status == "completed"
+    assert state.status == "completed_processing"
     assert len(state.records) == 81
     assert state.day_pass_ids == []
 
@@ -278,6 +289,7 @@ def test_scan_enforces_upstream_budget_before_history_fetch() -> None:
     service = TwResearchScanService(
         history_loader=loader,
         stock_loader=lambda stock_id: catalog.get(stock_id),
+        persist=False,
     )
     state = service.create_scan(
         UniverseSelector(
@@ -312,6 +324,7 @@ def test_scan_indicators_anchor_to_trading_day_not_wall_clock() -> None:
     service = TwResearchScanService(
         history_loader=loader,
         stock_loader=lambda stock_id: catalog.get(stock_id),
+        persist=False,
     )
     state = service.create_scan(
         UniverseSelector(mode="stock_ids", stock_ids=("TW:2330",)),
@@ -346,6 +359,7 @@ def test_scan_serializes_overlapping_batches_for_same_scan() -> None:
     service = TwResearchScanService(
         history_loader=loader,
         stock_loader=lambda stock_id: catalog.get(stock_id),
+        persist=False,
     )
     state = service.create_scan(
         UniverseSelector(

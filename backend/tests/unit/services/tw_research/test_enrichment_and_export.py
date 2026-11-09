@@ -355,6 +355,7 @@ def test_export_paginates_more_than_eighty_rows_and_supports_unclassified() -> N
             currency="TWD",
             timezone="Asia/Taipei",
         ),
+        persist=False,
     )
     ids = tuple(f"TW:{1000 + index:04d}" for index in range(85))
     state = service.create_scan(
@@ -441,6 +442,7 @@ def test_enrichment_batch_budget_and_restaurant_airline_unclassified(monkeypatch
     service = TwResearchScanService(
         history_loader=lambda stock, limit, max_month_fetches=0: ([], 0),
         stock_loader=lambda stock_id: catalog.get(stock_id),
+        persist=False,
     )
     state = service.create_scan(
         UniverseSelector(mode="stock_ids", stock_ids=("TW:2727", "TW:2618", "TW:2330")),

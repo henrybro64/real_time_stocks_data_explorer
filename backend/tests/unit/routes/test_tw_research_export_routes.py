@@ -27,6 +27,7 @@ def test_export_and_enrichment_routes_are_read_or_bounded(monkeypatch) -> None:
     service = TwResearchScanService(
         history_loader=lambda stock, limit, max_month_fetches=0: ([], 0),
         stock_loader=lambda stock_id: catalog.get(stock_id),
+        persist=False,
     )
     monkeypatch.setattr(
         "app.api.routes.tw_research.tw_research_scan_service",
@@ -101,3 +102,102 @@ def test_export_and_enrichment_routes_are_read_or_bounded(monkeypatch) -> None:
     )
     assert chunked.status_code == 200
     assert b'"chunkIndex": 0' in chunked.content
+
+
+def test_latest_verified_manifest_and_snapshot_chunk(monkeypatch) -> None:
+    from datetime import datetime, timezone
+
+    import app.api.routes.tw_research as tw_routes
+    from app.repositories.tw_research_repository import TwResearchRepository
+    from app.services.tw_research.persistence import finalize_verified_snapshot, persist_scan
+    from app.services.tw_research.scan import SymbolScanRecord, TwResearchScanService
+    from app.services.tw_research.universe import UniverseSelector
+    from tests.support import install_in_memory_sessionlocal, stock_record
+
+    factory = install_in_memory_sessionlocal(monkeypatch)
+    repo = TwResearchRepository()
+    repo.set_session_factory_override(factory)
+    monkeypatch.setattr(
+        "app.repositories.tw_research_repository.tw_research_repository",
+        repo,
+    )
+    monkeypatch.setattr(
+        "app.services.tw_research.persistence.tw_research_repository",
+        repo,
+    )
+
+    catalog = {
+        "TW:2727": stock_record(
+            "TW:2727",
+            market="TW",
+            symbol="2727",
+            name="王品",
+            exchange="TWSE",
+            currency="TWD",
+            timezone="Asia/Taipei",
+        )
+    }
+    service = TwResearchScanService(
+        history_loader=lambda stock, limit, max_month_fetches=0: ([], 0),
+        stock_loader=lambda stock_id: catalog.get(stock_id),
+        persist=True,
+    )
+    monkeypatch.setattr(tw_routes, "tw_research_scan_service", service)
+
+    state = service.create_scan(
+        UniverseSelector(mode="stock_ids", stock_ids=("TW:2727",)),
+        trading_day="2024-06-28",
+        user_id="user-1",
+    )
+    state.records["TW:2727"] = SymbolScanRecord(
+        stock_id="TW:2727",
+        stage="B",
+        readiness="verified_ready",
+        daily={"passStatus": "pass"},
+        monthly={"passStatus": "pass"},
+    )
+    state.cursor = 1
+    state.status = "completed_processing"
+    state.quality_status = "technically_qualified"
+    assert persist_scan(state, repository=repo, user_id="user-1") is True
+
+    # Empty DB → explicit no-snapshot response (before finalize).
+    assert (
+        tw_routes._latest_verified_snapshot(
+            universe_version=state.universe_version,
+            trading_day="2024-06-28",
+            user_id="user-1",
+        )
+        is None
+    )
+
+    finalized = finalize_verified_snapshot(
+        state,
+        repository=repo,
+        user_id="user-1",
+        finalized_at=datetime(2024, 6, 28, 17, 0, tzinfo=timezone.utc),
+    )
+    assert finalized is not None
+
+    assert (
+        tw_routes._latest_verified_snapshot(
+            universe_version="explicit:99:deadbeef",
+            trading_day="2024-06-28",
+            user_id="user-1",
+        )
+        is None
+    )
+
+    latest = tw_routes._latest_verified_snapshot(
+        universe_version=state.universe_version,
+        trading_day="2024-06-28",
+        user_id="user-1",
+    )
+    assert latest is not None
+    assert latest["content_digest"] == finalized["contentDigest"]
+    assert latest["snapshot_id"] == finalized["snapshotId"]
+
+    chunk = tw_routes.get_verified_snapshot_chunk(
+        finalized["snapshotId"], chunkIndex=0, kind="ledger"
+    )
+    assert chunk.chunk["checksumSha256"]

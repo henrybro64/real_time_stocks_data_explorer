@@ -1,7 +1,8 @@
-"""Browser-readable research export payloads (#314).
+"""Browser-readable research export payloads (#314/#319).
 
-Reads precomputed scan/enrichment state only. Does not trigger upstream fetches.
-Exports never include portfolio holdings, API keys, or session secrets.
+Reads precomputed scan/enrichment state or immutable verified snapshots only.
+Does not trigger upstream fetches. Exports never include portfolio holdings,
+API keys, or session secrets.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ import json
 from typing import Any
 
 from app.services.tw_research.constants import (
+    CALCULATION_VERSION,
     CONTRACT_VERSION,
     ENRICHMENT_VERSION,
     EXPORT_CHUNK_SIZE,
@@ -24,24 +26,41 @@ from app.services.tw_research.scan import ScanState
 from app.services.tw_research.universe import UniverseSelector
 
 
+def canonical_json_dumps(payload: Any) -> str:
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True, default=str)
+
+
+def content_digest(payload: Any) -> str:
+    return hashlib.sha256(canonical_json_dumps(payload).encode("utf-8")).hexdigest()
+
+
 def build_export_manifest(state: ScanState, *, generated_at: str) -> dict[str, Any]:
     ledger = list(state.records.values())
     qualified = [record for record in ledger if is_technically_qualified(record)]
+    verified = [
+        record
+        for record in ledger
+        if getattr(record, "readiness", None) == "verified_ready"
+    ]
     enriched = [
         record
         for record in qualified
         if getattr(record, "enrichment", None) is not None
     ]
     theme_summary = _theme_summary(state.selector, ledger)
+    quality = getattr(state, "quality_status", state.status)
     return {
         "schemaVersion": RESEARCH_SCHEMA_VERSION,
         "contractVersion": CONTRACT_VERSION,
+        "calculationVersion": CALCULATION_VERSION,
         "enrichmentVersion": ENRICHMENT_VERSION,
         "generatedAt": generated_at,
         "scanId": state.scan_id,
+        "snapshotId": getattr(state, "active_snapshot_id", None),
         "tradingDay": state.trading_day,
         "lastCompleteMonth": _last_complete_month(state.trading_day),
         "status": state.status,
+        "qualityStatus": quality,
         "universe": {
             "mode": state.selector.mode,
             "universeVersion": state.universe_version,
@@ -57,6 +76,12 @@ def build_export_manifest(state: ScanState, *, generated_at: str) -> dict[str, A
             "attempted": len(ledger),
             "dayPass": len(state.day_pass_ids),
             "technicallyQualified": len(qualified),
+            "verifiedReady": len(verified),
+            "sourceIncomplete": sum(
+                1
+                for record in ledger
+                if getattr(record, "readiness", None) == "source_incomplete"
+            ),
             "enriched": len(enriched),
             "rejected": sum(1 for record in ledger if record.stage == "rejected"),
             "unknownDaily": sum(
@@ -69,12 +94,86 @@ def build_export_manifest(state: ScanState, *, generated_at: str) -> dict[str, A
         "notes": [
             "target_count is an output selection parameter only; actual pass count is not padded.",
             "Starter 14-sector labels are optional filters, not an allowlist.",
+            "completed_processing means batches finished; scan quality verified_ready means an immutable snapshot was finalized (#318/#320).",
+            "Scan-scoped export GETs may return a live in-progress ledger for the UI; Agents should prefer /exports/latest/manifest.",
             "frontend_export_ready; external_notion_published is owned by an outside Agent (#315).",
             "No Notion SDK or credentials in Stock Ticker.",
         ],
-        "checkpointsEphemeral": True,
+        "checkpointsDurable": True,
+        "checkpointsEphemeral": False,
+        "checkpointContract": {
+            "key": [
+                "trading_day",
+                "universe_version",
+                "calculation_version",
+                "symbol",
+                "scan_id",
+            ],
+            "durable": True,
+        },
         "exportChunkSize": EXPORT_CHUNK_SIZE,
     }
+
+
+def build_immutable_manifest(
+    state: ScanState,
+    *,
+    rows: list[dict[str, Any]],
+    chunk_digests: dict[str, str],
+    frozen_at: str,
+    quality_status: str,
+) -> dict[str, Any]:
+    """Manifest frozen at finalize time; re-reads must not change digests (#319)."""
+    base = build_export_manifest(state, generated_at=frozen_at)
+    base["qualityStatus"] = quality_status
+    base["finalizedAt"] = frozen_at
+    base["generatedAt"] = frozen_at
+    base["chunkDigests"] = chunk_digests
+    base["chunkIds"] = sorted(chunk_digests.keys(), key=lambda value: int(value))
+    base["ledgerRowCount"] = len(rows)
+    base["contentDigest"] = content_digest(
+        {
+            "schemaVersion": RESEARCH_SCHEMA_VERSION,
+            "calculationVersion": CALCULATION_VERSION,
+            "enrichmentVersion": ENRICHMENT_VERSION,
+            "universeVersion": state.universe_version,
+            "tradingDay": state.trading_day,
+            "qualityStatus": quality_status,
+            "rows": rows,
+            "chunkDigests": chunk_digests,
+            "finalizedAt": frozen_at,
+        }
+    )
+    return base
+
+
+def build_export_chunk_from_rows(
+    rows: list[dict[str, Any]],
+    *,
+    chunk_index: int,
+    chunk_size: int,
+    kind: str,
+    scan_id: str,
+    trading_day: str,
+    frozen_at: str,
+) -> dict[str, Any]:
+    total = len(rows)
+    start = chunk_index * chunk_size
+    slice_rows = rows[start : start + chunk_size]
+    payload = {
+        "schemaVersion": RESEARCH_SCHEMA_VERSION,
+        "generatedAt": frozen_at,
+        "scanId": scan_id,
+        "tradingDay": trading_day,
+        "kind": kind,
+        "chunkIndex": chunk_index,
+        "chunkSize": chunk_size,
+        "totalRows": total,
+        "totalChunks": (total + chunk_size - 1) // chunk_size if total else 0,
+        "rows": slice_rows,
+    }
+    payload["checksumSha256"] = content_digest(payload)
+    return payload
 
 
 def build_export_chunk(
@@ -106,24 +205,15 @@ def build_export_chunk(
         rows = [_record_export(record) for record in state.records.values()]
 
     rows.sort(key=lambda item: item["stockId"])
-    total = len(rows)
-    start = chunk_index * chunk_size
-    slice_rows = rows[start : start + chunk_size]
-    payload = {
-        "schemaVersion": RESEARCH_SCHEMA_VERSION,
-        "generatedAt": generated_at,
-        "scanId": state.scan_id,
-        "tradingDay": state.trading_day,
-        "kind": kind,
-        "chunkIndex": chunk_index,
-        "chunkSize": chunk_size,
-        "totalRows": total,
-        "totalChunks": (total + chunk_size - 1) // chunk_size if total else 0,
-        "rows": slice_rows,
-    }
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
-    payload["checksumSha256"] = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
-    return payload
+    return build_export_chunk_from_rows(
+        rows,
+        chunk_index=chunk_index,
+        chunk_size=chunk_size,
+        kind=kind,
+        scan_id=state.scan_id,
+        trading_day=state.trading_day,
+        frozen_at=generated_at,
+    )
 
 
 def build_export_csv(state: ScanState, *, kind: str = "ledger") -> str:
@@ -227,6 +317,7 @@ def _record_export(record: Any) -> dict[str, Any]:
     return {
         "stockId": record.stock_id,
         "stage": record.stage,
+        "readiness": getattr(record, "readiness", "processed"),
         "rejectionReason": record.rejection_reason,
         "daily": record.daily,
         "monthly": record.monthly,
@@ -237,6 +328,7 @@ def _record_export(record: Any) -> dict[str, Any]:
         "week52Position": record.week52_position,
         "enrichment": enrichment,
         "themeKeys": list(getattr(record, "theme_keys", ()) or ()),
+        "coverage": getattr(record, "coverage", None),
     }
 
 
