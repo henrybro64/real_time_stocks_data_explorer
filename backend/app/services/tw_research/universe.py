@@ -93,8 +93,8 @@ def resolve_universe(
             stock_ids=accepted,
             theme_keys=theme_keys_applied,
         )[:16]
-        keys = ",".join(sorted(theme_keys_applied))
-        version = f"themes:{keys or 'none'}:{digest}"
+        # Keep within String(128) persistence limit; theme keys stay in selector_json.
+        version = f"themes:{len(theme_keys_applied)}:{digest}"
 
     return ResolvedUniverse(
         universe_version=version,

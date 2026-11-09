@@ -356,6 +356,142 @@ def test_postgres_persistence_round_trip_and_atomic_finalize(monkeypatch) -> Non
     assert service.get_scan(state.scan_id) is None
 
 
+def test_theme_universe_version_stays_within_column_limit() -> None:
+    from dataclasses import dataclass
+
+    keys = tuple(f"tw-theme-{index:02d}-long-name-for-column-pressure" for index in range(14))
+
+    @dataclass
+    class _Theme:
+        key: str
+
+    @dataclass
+    class _Group:
+        theme: _Theme
+        stocks: tuple = ()
+
+    class FakeThemes:
+        def get_stocks_for_theme(self, theme_key: str):
+            return _Group(theme=_Theme(key=theme_key), stocks=())
+
+    resolved = resolve_universe(
+        UniverseSelector(mode="theme_keys", theme_keys=keys),
+        stock_resolver=lambda stock_id: None,
+        theme_service=FakeThemes(),  # type: ignore[arg-type]
+    )
+    assert resolved.universe_version.startswith("themes:14:")
+    assert len(resolved.universe_version) <= 128
+    # Old concatenated form would exceed the persisted String(128) column.
+    assert len("themes:" + ",".join(keys) + ":deadbeefdeadbeef") > 128
+
+
+def test_expect_through_flags_trailing_history_gap(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.services.tw_research.coverage.ensure_tw_holiday_calendars_loaded",
+        lambda years: True,
+    )
+    monkeypatch.setattr(
+        "app.services.tw_research.coverage.is_trading_day",
+        lambda market, day, allow_holiday_fetch=False: day.weekday() < 5,
+    )
+    candles = [_candle(date(2024, 5, day), close=100 + day) for day in range(2, 32) if date(2024, 5, day).weekday() < 5]
+    report = validate_ohlcv_series(
+        candles,
+        market="TW",
+        require_min_bars=3,
+        check_calendar_gaps=True,
+        expect_through=date(2024, 6, 28),
+    )
+    assert report.ok is False
+    assert report.reason == "missing_trading_sessions"
+    assert any(day.startswith("2024-06-") for day in report.missing_trading_days)
+
+
+def test_truncated_leading_month_is_trimmed_for_coverage(monkeypatch) -> None:
+    from app.services.tw_research.coverage import trim_truncated_leading_months
+    from app.services.tw_research.indicators import assemble_monthly_candles
+
+    monkeypatch.setattr(
+        "app.services.tw_research.coverage.ensure_tw_holiday_calendars_loaded",
+        lambda years: True,
+    )
+    monkeypatch.setattr(
+        "app.services.tw_research.coverage.is_trading_day",
+        lambda market, day, allow_holiday_fetch=False: day.weekday() < 5,
+    )
+    # Start mid-April, then complete May weekdays.
+    days = [date(2024, 4, day) for day in range(15, 31) if date(2024, 4, day).weekday() < 5]
+    probe = date(2024, 5, 1)
+    while probe.month == 5:
+        if probe.weekday() < 5:
+            days.append(probe)
+        probe += timedelta(days=1)
+    candles = [_candle(day, close=90 + index) for index, day in enumerate(days)]
+    monthly = assemble_monthly_candles(
+        candles, now=datetime(2024, 6, 28, 16, 0, tzinfo=TZ)
+    )
+    trimmed = trim_truncated_leading_months(candles, monthly, market="TW")
+    assert trimmed
+    assert not any(bar.time.startswith("2024-04") for bar in trimmed)
+
+
+def test_abandoned_batch_lease_is_reclaimed(monkeypatch) -> None:
+    from datetime import timezone as tz
+
+    factory = install_in_memory_sessionlocal(monkeypatch)
+    repo = TwResearchRepository()
+    repo.set_session_factory_override(factory)
+
+    service = TwResearchScanService(
+        history_loader=lambda stock, limit, *, max_month_fetches: ([], 0),
+        stock_loader=lambda stock_id: _tw(stock_id),
+        persist=True,
+    )
+    state = service.create_scan(
+        UniverseSelector(mode="stock_ids", stock_ids=("TW:2330", "TW:2454", "TW:2303")),
+        trading_day="2024-06-28",
+        user_id="user-1",
+    )
+    persist_scan(state, repository=repo, user_id="user-1")
+
+    first = repo.claim_scan_batch(
+        state.scan_id,
+        batch_size=2,
+        terminal_statuses={"completed_processing", "verified_ready", "budget_exhausted"},
+        lease_seconds=60,
+    )
+    assert first is not None
+    assert first["batch_ids"] == ["TW:2330", "TW:2454"]
+    assert first["scan"]["cursor"] == 0  # completed watermark unchanged
+
+    # Lease still held → peer cannot claim overlapping work.
+    blocked = repo.claim_scan_batch(
+        state.scan_id,
+        batch_size=2,
+        terminal_statuses={"completed_processing", "verified_ready", "budget_exhausted"},
+    )
+    assert blocked is not None
+    assert blocked["lease_held"] is True
+    assert blocked["batch_ids"] == []
+
+    # Expire the lease without persisting symbol results → reclaim from the gap.
+    from app.db.models import TwResearchScan
+
+    with factory() as session:
+        row = session.get(TwResearchScan, state.scan_id)
+        assert row is not None
+        row.reserve_expires_at = datetime(2020, 1, 1, tzinfo=tz.utc)
+        session.commit()
+
+    reclaimed = repo.claim_scan_batch(
+        state.scan_id,
+        batch_size=2,
+        terminal_statuses={"completed_processing", "verified_ready", "budget_exhausted"},
+    )
+    assert reclaimed is not None
+    assert reclaimed["batch_ids"] == ["TW:2330", "TW:2454"]
+
+
 def test_persist_failure_marks_scan_failed(monkeypatch) -> None:
     from app.services.tw_research.persistence import persist_scan as persist_scan_fn
     from app.services.tw_research.scan import ScanState

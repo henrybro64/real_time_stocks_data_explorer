@@ -162,8 +162,9 @@ def get_latest_verified_manifest(
             detail="No verified_ready export snapshot matches the selection.",
         )
     manifest = dict(snapshot["manifest_json"] or {})
-    manifest.setdefault("snapshotId", snapshot["snapshot_id"])
-    manifest.setdefault("contentDigest", snapshot["content_digest"])
+    # Explicit assign: first finalize freezes snapshotId=null before insert.
+    manifest["snapshotId"] = snapshot["snapshot_id"]
+    manifest["contentDigest"] = snapshot["content_digest"]
     manifest.setdefault(
         "chunkPathTemplate",
         f"/api/tw-research/exports/snapshots/{snapshot['snapshot_id']}/chunk"
@@ -195,8 +196,8 @@ def get_verified_snapshot_chunk(
         rows = [
             row
             for row in rows
-            if row.get("daily", {}).get("passStatus") == "pass"
-            and row.get("monthly", {}).get("passStatus") == "pass"
+            if (row.get("daily") or {}).get("passStatus") == "pass"
+            and (row.get("monthly") or {}).get("passStatus") == "pass"
         ]
     elif kind == "enriched":
         rows = [row for row in rows if row.get("enrichment")]
@@ -209,13 +210,17 @@ def get_verified_snapshot_chunk(
         frozen = (
             frozen_at.isoformat() if hasattr(frozen_at, "isoformat") else str(frozen_at)
         )
+    # After scan retention, FK scan_id may be NULL; use the frozen manifest id.
+    frozen_scan_id = (
+        manifest.get("scanId") or snapshot.get("scan_id") or ""
+    )
     chunk = _call_or_http(
         lambda: build_export_chunk_from_rows(
             rows,
             chunk_index=chunkIndex,
             chunk_size=EXPORT_CHUNK_SIZE,
             kind=kind,
-            scan_id=snapshot["scan_id"] or "",
+            scan_id=str(frozen_scan_id),
             trading_day=snapshot["trading_day"],
             frozen_at=str(frozen),
         )

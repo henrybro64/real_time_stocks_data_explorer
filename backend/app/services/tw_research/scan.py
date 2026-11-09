@@ -333,6 +333,9 @@ class TwResearchScanService:
             batch_ids = self._claim_batch_ids(state, batch_size=batch_size)
             if batch_ids is None:
                 return state
+            if not batch_ids:
+                # Active lease held by another worker, or empty reservation.
+                return state
 
             calculation_now = _calculation_now(state.trading_day, override=now)
             for stock_id in batch_ids:
@@ -369,12 +372,14 @@ class TwResearchScanService:
                     self._persist_symbol(state, record)
 
             with self._lock:
+                self._rebuild_aggregates_locked(state)
                 self._refresh_status_locked(state)
                 state.updated_at = datetime.now(TAIPEI).isoformat()
                 state.notes.append(
                     "target_count is an output target only and does not relax pass rules."
                 )
                 self._persist_scan(state)
+            self._complete_durable_batch(state)
             self._maybe_finalize(state)
             return state
 
@@ -423,11 +428,16 @@ class TwResearchScanService:
             )
 
         completed = completed_daily_candles(candles, "TW", now=now)
+        try:
+            expect_through = date.fromisoformat(state.trading_day)
+        except ValueError:
+            expect_through = None
         daily_coverage = validate_ohlcv_series(
             completed,
             market="TW",
             check_calendar_gaps=True,
             allow_holiday_fetch=False,
+            expect_through=expect_through,
         )
         daily = daily_macd_kd_snapshot(candles, market="TW", now=now)
         record = SymbolScanRecord(
@@ -568,7 +578,10 @@ class TwResearchScanService:
                     "it does not convert a technical pass into a fail."
                 )
                 self._persist_scan(state)
-                return state
+            # Publish a replacement immutable snapshot so /exports/latest includes
+            # enrichment while preserving prior snapshots (#319).
+            self._maybe_finalize(state, allow_verified_refresh=True)
+            return state
 
     def _refresh_status_locked(self, state: ScanState) -> None:
         if state.status == "failed":
@@ -606,14 +619,27 @@ class TwResearchScanService:
         else:
             state.quality_status = "processed"
 
-    def _maybe_finalize(self, state: ScanState) -> None:
+    def _maybe_finalize(
+        self, state: ScanState, *, allow_verified_refresh: bool = False
+    ) -> None:
         if not self._persist:
             return
-        if state.quality_status != "technically_qualified":
+        if state.status == "verified_ready" and allow_verified_refresh:
+            pass
+        elif state.quality_status != "technically_qualified":
             return
-        if state.status != "completed_processing":
+        elif state.status != "completed_processing":
+            return
+        if state.status == "verified_ready" and state.quality_status not in {
+            "technically_qualified",
+            "verified_ready",
+        }:
             return
         from app.services.tw_research.persistence import finalize_verified_snapshot
+
+        # Refresh path: keep verified status so finalize accepts the ledger.
+        if allow_verified_refresh and state.status == "verified_ready":
+            state.quality_status = "verified_ready"
 
         finalized = finalize_verified_snapshot(state, user_id=state.user_id)
         if finalized is None and state.status != "failed":
@@ -639,13 +665,20 @@ class TwResearchScanService:
                 except Exception:  # noqa: BLE001
                     claimed = None
                 if claimed is not None:
+                    # Pull peer-worker symbol results / counters before processing.
+                    self._hydrate_state_from_durable(state)
                     with self._lock:
-                        state.cursor = int(claimed["scan"]["cursor"])
+                        reserved_from = int(claimed.get("reserved_from", state.cursor))
+                        batch_ids = list(claimed.get("batch_ids") or [])
+                        # In-memory cursor tracks the reservation end for timeout rewind.
+                        state.cursor = reserved_from + len(batch_ids)
                         state.status = claimed["scan"]["status"]  # type: ignore[assignment]
                         state.updated_at = datetime.now(TAIPEI).isoformat()
                     if claimed.get("already_complete"):
                         return None
-                    return list(claimed.get("batch_ids") or [])
+                    if claimed.get("lease_held"):
+                        return []
+                    return batch_ids
 
         with self._lock:
             if state.status in terminal and state.cursor >= len(state.stock_ids):
@@ -672,6 +705,7 @@ class TwResearchScanService:
                 except Exception:  # noqa: BLE001
                     claimed = None
                 if claimed is not None:
+                    self._hydrate_state_from_durable(state)
                     with self._lock:
                         state.enrich_cursor = int(claimed["scan"]["enrich_cursor"])
                         remaining = int(claimed["remaining_budget"])
@@ -708,8 +742,70 @@ class TwResearchScanService:
             tw_research_repository.rewind_scan_cursor(
                 state.scan_id, new_cursor=state.cursor, status=state.status
             )
+            self._hydrate_state_from_durable(state)
         except Exception:  # noqa: BLE001
             state.notes.append("rewind_cursor_persist_failed")
+
+    def _complete_durable_batch(self, state: ScanState) -> None:
+        if not self._persist:
+            return
+        from app.repositories.tw_research_repository import tw_research_repository
+
+        if not tw_research_repository.is_available():
+            return
+        try:
+            completed = tw_research_repository.complete_scan_batch(
+                state.scan_id, status=state.status
+            )
+        except Exception:  # noqa: BLE001
+            state.notes.append("complete_batch_persist_failed")
+            return
+        if completed is None:
+            return
+        with self._lock:
+            state.cursor = int(completed["cursor"])
+            state.status = completed["status"]  # type: ignore[assignment]
+
+    def _hydrate_state_from_durable(self, state: ScanState) -> None:
+        """Merge durable scan/symbol rows into the in-memory cache (multi-worker)."""
+        if not self._persist:
+            return
+        from app.services.tw_research.persistence import load_scan_state
+
+        loaded = load_scan_state(state.scan_id)
+        if loaded is None:
+            return
+        with self._lock:
+            state.cursor = loaded.cursor
+            state.enrich_cursor = loaded.enrich_cursor
+            state.status = loaded.status
+            state.quality_status = loaded.quality_status
+            state.upstream_month_fetches = loaded.upstream_month_fetches
+            state.enrichments_run = loaded.enrichments_run
+            state.active_snapshot_id = loaded.active_snapshot_id
+            state.notes = list(loaded.notes)
+            for stock_id, record in loaded.records.items():
+                state.records[stock_id] = record
+                if record.checkpoint is not None:
+                    self._checkpoints.add(record.checkpoint)
+            self._rebuild_aggregates_locked(state)
+
+    def _rebuild_aggregates_locked(self, state: ScanState) -> None:
+        state.day_pass_ids = [
+            stock_id
+            for stock_id in state.stock_ids
+            if (state.records.get(stock_id) is not None)
+            and (state.records[stock_id].daily or {}).get("passStatus") == "pass"
+        ]
+        state.qualified_ids = [
+            stock_id
+            for stock_id in state.stock_ids
+            if (record := state.records.get(stock_id)) is not None
+            and (
+                record.readiness in {"technically_qualified", "verified_ready"}
+                or is_technically_qualified(record)
+            )
+        ]
 
     def _persist_scan(self, state: ScanState) -> None:
         if not self._persist:

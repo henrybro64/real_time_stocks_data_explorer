@@ -2,13 +2,43 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from app.db.models import TwResearchExportSnapshot, TwResearchScan, TwResearchSymbolResult
 from app.repositories.session import SessionBoundRepository
+
+# How long a claimed batch may remain unfinished before another worker can reclaim.
+BATCH_LEASE_SECONDS = 300
+
+
+def _as_utc(value: datetime | None) -> datetime | None:
+    """Normalize SQLite/Postgres timestamps for lease comparisons."""
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _first_missing_symbol_index(session: Session, scan_id: str, stock_ids: list[str]) -> int:
+    """Return the first index in ``stock_ids`` without a persisted symbol result."""
+    if not stock_ids:
+        return 0
+    existing = set(
+        session.scalars(
+            select(TwResearchSymbolResult.stock_id).where(
+                TwResearchSymbolResult.scan_id == scan_id
+            )
+        ).all()
+    )
+    for index, stock_id in enumerate(stock_ids):
+        if stock_id not in existing:
+            return index
+    return len(stock_ids)
 
 
 def _scan_to_dict(row: TwResearchScan) -> dict[str, Any]:
@@ -24,6 +54,8 @@ def _scan_to_dict(row: TwResearchScan) -> dict[str, Any]:
         "status": row.status,
         "quality_status": row.quality_status,
         "cursor": int(row.cursor),
+        "reserve_cursor": int(getattr(row, "reserve_cursor", 0) or 0),
+        "reserve_expires_at": getattr(row, "reserve_expires_at", None),
         "enrich_cursor": int(row.enrich_cursor),
         "target_count": int(row.target_count),
         "upstream_month_fetches": int(row.upstream_month_fetches),
@@ -109,11 +141,14 @@ class TwResearchRepository(SessionBoundRepository):
         *,
         batch_size: int,
         terminal_statuses: set[str],
+        lease_seconds: int = BATCH_LEASE_SECONDS,
     ) -> dict[str, Any] | None:
         """Atomically reserve the next ``batch_size`` stock IDs (#318).
 
-        Uses ``SELECT ... FOR UPDATE`` so concurrent API/worker processes cannot
-        claim overlapping slices. Returns ``None`` when the scan is missing.
+        ``cursor`` is the completed watermark (symbols with persisted results).
+        Reservations advance ``reserve_cursor`` under a short lease so a crashed
+        worker does not permanently skip unfinished symbols. Uses
+        ``SELECT ... FOR UPDATE``.
         """
         session_factory = self._session_factory()
         with session_factory() as session:
@@ -124,29 +159,91 @@ class TwResearchRepository(SessionBoundRepository):
             ).scalar_one_or_none()
             if row is None:
                 return None
+            now = datetime.now(timezone.utc)
             stock_ids = list(row.stock_ids_json or [])
+            lease_until = _as_utc(getattr(row, "reserve_expires_at", None))
+            reserve_cursor = int(getattr(row, "reserve_cursor", 0) or 0)
             cursor = int(row.cursor)
+
+            if lease_until is not None and lease_until <= now:
+                # Abandoned reservation: rewind completed watermark to first gap.
+                cursor = _first_missing_symbol_index(session, scan_id, stock_ids)
+                row.cursor = cursor
+                row.reserve_cursor = cursor
+                row.reserve_expires_at = None
+                reserve_cursor = cursor
+                lease_until = None
+
+            if (
+                lease_until is not None
+                and lease_until > now
+                and reserve_cursor > cursor
+            ):
+                session.commit()
+                return {
+                    "batch_ids": [],
+                    "scan": _scan_to_dict(row),
+                    "already_complete": False,
+                    "lease_held": True,
+                    "reserved_from": cursor,
+                }
+
+            cursor = _first_missing_symbol_index(session, scan_id, stock_ids)
+            row.cursor = cursor
             if row.status in terminal_statuses and cursor >= len(stock_ids):
+                row.reserve_cursor = cursor
+                row.reserve_expires_at = None
                 session.commit()
                 return {
                     "batch_ids": [],
                     "scan": _scan_to_dict(row),
                     "already_complete": True,
+                    "lease_held": False,
+                    "reserved_from": cursor,
                 }
             if row.status == "queued":
                 row.status = "running"
             batch_ids = stock_ids[cursor : cursor + batch_size]
-            row.cursor = cursor + len(batch_ids)
-            row.updated_at = datetime.now(timezone.utc)
+            row.reserve_cursor = cursor + len(batch_ids)
+            row.reserve_expires_at = now + timedelta(seconds=max(1, int(lease_seconds)))
+            row.updated_at = now
             session.commit()
             return {
                 "batch_ids": batch_ids,
                 "scan": _scan_to_dict(row),
                 "already_complete": False,
+                "lease_held": False,
                 "reserved_from": cursor,
             }
 
+    def complete_scan_batch(self, scan_id: str, *, status: str) -> dict[str, Any] | None:
+        """Advance the completed watermark from persisted symbol results and clear the lease."""
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            row = session.execute(
+                select(TwResearchScan)
+                .where(TwResearchScan.scan_id == scan_id)
+                .with_for_update()
+            ).scalar_one_or_none()
+            if row is None:
+                return None
+            stock_ids = list(row.stock_ids_json or [])
+            completed = _first_missing_symbol_index(session, scan_id, stock_ids)
+            row.cursor = completed
+            row.reserve_cursor = completed
+            row.reserve_expires_at = None
+            row.status = status
+            row.updated_at = datetime.now(timezone.utc)
+            session.commit()
+            return _scan_to_dict(row)
+
     def rewind_scan_cursor(self, scan_id: str, *, new_cursor: int, status: str) -> None:
+        """Clear the lease and set the completed watermark from durable results.
+
+        ``new_cursor`` is advisory (in-memory estimate); the durable cursor is the
+        first stock_id without a persisted symbol result so abandoned work retries.
+        """
+        del new_cursor  # durable reconciliation wins over the in-memory estimate
         session_factory = self._session_factory()
         with session_factory() as session:
             row = session.execute(
@@ -156,7 +253,11 @@ class TwResearchRepository(SessionBoundRepository):
             ).scalar_one_or_none()
             if row is None:
                 return
-            row.cursor = max(0, int(new_cursor))
+            stock_ids = list(row.stock_ids_json or [])
+            completed = _first_missing_symbol_index(session, scan_id, stock_ids)
+            row.cursor = completed
+            row.reserve_cursor = completed
+            row.reserve_expires_at = None
             row.status = status
             row.updated_at = datetime.now(timezone.utc)
             session.commit()

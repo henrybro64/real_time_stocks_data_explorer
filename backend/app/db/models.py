@@ -457,6 +457,13 @@ class TwResearchScan(Base):
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     quality_status: Mapped[str] = mapped_column(String(32), nullable=False)
     cursor: Mapped[int] = mapped_column(nullable=False, server_default=text("0"))
+    # Exclusive end of the in-flight batch reservation; cursor stays at the
+    # completed watermark until the batch finishes or the lease expires (#318).
+    reserve_cursor: Mapped[int] = mapped_column(nullable=False, server_default=text("0"))
+    reserve_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
     enrich_cursor: Mapped[int] = mapped_column(nullable=False, server_default=text("0"))
     target_count: Mapped[int] = mapped_column(nullable=False)
     upstream_month_fetches: Mapped[int] = mapped_column(nullable=False, server_default=text("0"))

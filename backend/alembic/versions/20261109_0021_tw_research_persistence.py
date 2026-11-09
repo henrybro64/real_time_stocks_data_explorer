@@ -29,6 +29,8 @@ def upgrade() -> None:
         sa.Column("status", sa.String(length=32), nullable=False),
         sa.Column("quality_status", sa.String(length=32), nullable=False),
         sa.Column("cursor", sa.Integer(), nullable=False, server_default="0"),
+        sa.Column("reserve_cursor", sa.Integer(), nullable=False, server_default="0"),
+        sa.Column("reserve_expires_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("enrich_cursor", sa.Integer(), nullable=False, server_default="0"),
         sa.Column("target_count", sa.Integer(), nullable=False),
         sa.Column("upstream_month_fetches", sa.Integer(), nullable=False, server_default="0"),

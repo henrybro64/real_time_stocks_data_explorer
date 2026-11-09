@@ -250,6 +250,7 @@ def finalize_verified_snapshot(
         )
         chunk_digests[str(index)] = chunk["checksumSha256"]
 
+    snapshot_id = str(uuid4())
     manifest = build_immutable_manifest(
         state,
         rows=rows,
@@ -257,13 +258,14 @@ def finalize_verified_snapshot(
         frozen_at=stamp.isoformat(),
         quality_status="verified_ready",
     )
+    # Populate before freeze/store so latest-manifest clients see a real id.
+    manifest["snapshotId"] = snapshot_id
     content = {
         "manifest": manifest,
         "ledger": rows,
         "chunkDigests": chunk_digests,
     }
     digest = hashlib.sha256(canonical_json_dumps(content).encode("utf-8")).hexdigest()
-    snapshot_id = str(uuid4())
     payload = {
         "snapshot_id": snapshot_id,
         "scan_id": state.scan_id,

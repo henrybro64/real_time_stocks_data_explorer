@@ -60,8 +60,14 @@ def validate_ohlcv_series(
     require_min_bars: int | None = None,
     check_calendar_gaps: bool = True,
     allow_holiday_fetch: bool = False,
+    expect_through: date | None = None,
 ) -> CoverageReport:
-    """Validate order, uniqueness, finite OHLC consistency, and optional gaps."""
+    """Validate order, uniqueness, finite OHLC consistency, and optional gaps.
+
+    When ``expect_through`` is set, history must cover trading sessions through
+    that date (typically the scan's trading day). Trailing gaps are otherwise
+    invisible if the series simply ends early.
+    """
     if not candles:
         return CoverageReport(ok=False, reason="no_candles", bar_count=0)
 
@@ -121,8 +127,13 @@ def validate_ohlcv_series(
         )
 
     missing: list[str] = []
-    if check_calendar_gaps and len(dates) >= 2:
-        if not _calendar_ready(dates[0], dates[-1], market=market):
+    range_end = dates[-1]
+    if expect_through is not None and expect_through > range_end:
+        range_end = expect_through
+    if check_calendar_gaps and len(dates) >= 1 and (
+        len(dates) >= 2 or expect_through is not None
+    ):
+        if not _calendar_ready(dates[0], range_end, market=market):
             return CoverageReport(
                 ok=False,
                 reason="trading_calendar_unavailable",
@@ -130,7 +141,7 @@ def validate_ohlcv_series(
             )
         missing = _missing_trading_days(
             dates[0],
-            dates[-1],
+            range_end,
             present=set(dates),
             market=market,
             allow_holiday_fetch=allow_holiday_fetch,
@@ -193,6 +204,42 @@ def validate_closed_month_coverage(
     return CoverageReport(ok=True, reason=None, bar_count=len(month_days))
 
 
+def trim_truncated_leading_months(
+    daily_candles: list[CandleRecord],
+    monthly_bars: list[CandleRecord],
+    *,
+    market: str = "TW",
+    allow_holiday_fetch: bool = False,
+) -> list[CandleRecord]:
+    """Drop leading months that are incomplete solely because history is sliced mid-month.
+
+    The preferred daily history limit often starts partway through a month; that
+    truncated boundary must not poison monthly MACD/KD or coverage (#320).
+    """
+    if not daily_candles or not monthly_bars:
+        return list(monthly_bars)
+    trimmed = list(monthly_bars)
+    first_day = candle_date(daily_candles[0])
+    while trimmed:
+        lead = candle_date(trimmed[0])
+        if (lead.year, lead.month) != (first_day.year, first_day.month):
+            break
+        report = validate_closed_month_coverage(
+            daily_candles,
+            year=lead.year,
+            month=lead.month,
+            market=market,
+            allow_holiday_fetch=allow_holiday_fetch,
+        )
+        if report.ok:
+            break
+        if report.reason == "trading_calendar_unavailable" and first_day.day <= 1:
+            break
+        trimmed = trimmed[1:]
+        break  # only the leading boundary month is eligible for this trim
+    return trimmed
+
+
 def monthly_series_verified(
     daily_candles: list[CandleRecord],
     monthly_bars: list[CandleRecord],
@@ -200,13 +247,19 @@ def monthly_series_verified(
     market: str = "TW",
     allow_holiday_fetch: bool = False,
 ) -> CoverageReport:
-    if len(monthly_bars) < MIN_MONTHLY_BARS_FOR_MACD_KD:
+    bars = trim_truncated_leading_months(
+        daily_candles,
+        monthly_bars,
+        market=market,
+        allow_holiday_fetch=allow_holiday_fetch,
+    )
+    if len(bars) < MIN_MONTHLY_BARS_FOR_MACD_KD:
         return CoverageReport(
             ok=False,
             reason="insufficient_monthly_history",
-            bar_count=len(monthly_bars),
+            bar_count=len(bars),
         )
-    for bar in monthly_bars:
+    for bar in bars:
         day = candle_date(bar)
         report = validate_closed_month_coverage(
             daily_candles,
@@ -217,7 +270,7 @@ def monthly_series_verified(
         )
         if not report.ok:
             return report
-    return CoverageReport(ok=True, reason=None, bar_count=len(monthly_bars))
+    return CoverageReport(ok=True, reason=None, bar_count=len(bars))
 
 
 def derive_readiness(

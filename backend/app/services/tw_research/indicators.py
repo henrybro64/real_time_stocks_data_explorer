@@ -292,6 +292,15 @@ def monthly_macd_kd_snapshot(
 ) -> MacdKdSnapshot:
     completed = completed_daily_candles(daily_candles, market, now=now)
     monthly = assemble_monthly_candles(completed, now=now)
+    # Align with coverage: drop a mid-month history-slice boundary month.
+    from app.services.tw_research.coverage import trim_truncated_leading_months
+
+    monthly = trim_truncated_leading_months(
+        completed,
+        monthly,
+        market=market,
+        allow_holiday_fetch=False,
+    )
     return snapshot_from_candles(
         monthly,
         timeframe="monthly",

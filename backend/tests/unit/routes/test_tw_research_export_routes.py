@@ -201,3 +201,46 @@ def test_latest_verified_manifest_and_snapshot_chunk(monkeypatch) -> None:
         finalized["snapshotId"], chunkIndex=0, kind="ledger"
     )
     assert chunk.chunk["checksumSha256"]
+
+    latest_manifest = tw_routes.get_latest_verified_manifest(
+        universeVersion=state.universe_version,
+        tradingDay="2024-06-28",
+        user_id="user-1",
+    )
+    assert latest_manifest.manifest["snapshotId"] == finalized["snapshotId"]
+    assert latest_manifest.manifest["snapshotId"] is not None
+
+    # Null daily/monthly payloads must not 500 on kind=qualified.
+    snap = repo.get_export_snapshot(finalized["snapshotId"])
+    assert snap is not None
+    original_ledger = list(snap["ledger_json"])
+    with factory() as session:
+        from app.db.models import TwResearchExportSnapshot
+
+        row = session.get(TwResearchExportSnapshot, finalized["snapshotId"])
+        assert row is not None
+        row.ledger_json = original_ledger + [
+            {"stockId": "TW:ERR", "stage": "A", "readiness": "processed", "daily": None}
+        ]
+        session.commit()
+    qualified = tw_routes.get_verified_snapshot_chunk(
+        finalized["snapshotId"], chunkIndex=0, kind="qualified"
+    )
+    assert all(row.get("stockId") != "TW:ERR" for row in qualified.chunk["rows"])
+    with factory() as session:
+        from app.db.models import TwResearchExportSnapshot
+
+        row = session.get(TwResearchExportSnapshot, finalized["snapshotId"])
+        assert row is not None
+        row.ledger_json = original_ledger
+        session.commit()
+
+    # After scan retention nulls the FK, chunk digests must still match via manifest scanId.
+    assert repo.delete_scans_older_than(datetime(2099, 1, 1, tzinfo=timezone.utc)) >= 1
+    retained = repo.get_export_snapshot(finalized["snapshotId"])
+    assert retained is not None
+    assert retained["scan_id"] is None
+    still = tw_routes.get_verified_snapshot_chunk(
+        finalized["snapshotId"], chunkIndex=0, kind="ledger"
+    )
+    assert still.chunk["checksumSha256"] == chunk.chunk["checksumSha256"]
