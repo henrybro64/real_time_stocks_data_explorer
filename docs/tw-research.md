@@ -56,21 +56,22 @@ Confirm and reuse — do not reimplement:
 - Stage B: monthly + SMA20/60/120/240 + 52-week position for **day-pass** symbols only.
 - Upstream month budget is enforced **before** history backfill via `get_daily_history_within_budget`; counters track actual month fetches, not Stage B local math.
 - Enrichment levels use **stored-only** `peek_daily_history` by default (no cold backfill). Stage B `week52_position` is reused when the store peek is empty.
-- Indicator `now` is anchored to the scan `tradingDay` (after TW cash close). Overlapping batch POSTs use a per-scan lock **and** durable `SELECT … FOR UPDATE` cursor claims when Postgres is available (multi-worker safe).
+- Indicator `now` is anchored to the scan `tradingDay` (after TW cash close). Overlapping batch POSTs use a per-scan lock **and** durable leased reservations (`cursor` completed watermark + `reserve_cursor` / `reserve_expires_at`) under `SELECT … FOR UPDATE`. Stale `upsert_scan` writes never regress cursor/lease/progress counters.
 - Checkpoint key: `(trading_day, universe_version, calculation_version, symbol, scan_id)`.
-- Checkpoints and ledgers are **durable in PostgreSQL** when `DATABASE_URL` is configured (Alembic `20261109_0021`). In-memory maps are a process cache; `get_scan` reloads from Postgres after restart. Persist failures mark the scan `failed` when DB is configured.
+- Checkpoints and ledgers are **durable in PostgreSQL** when `DATABASE_URL` is configured (Alembic `20261109_0021`). In-memory maps are a process cache; workers hydrate from Postgres before each batch. Persist failures mark the scan `failed` when DB is configured.
 - Scan lifecycle: `queued` → `running` → `partial` | `budget_exhausted` | `completed_processing` → `verified_ready` | `failed`.
 - Per-symbol readiness: `processed` | `technically_qualified` | `source_incomplete` | `verified_ready` | `rejected`.
-- OHLCV validation uses the Taiwan trading calendar with persisted calendars preloaded. Unknown holiday calendars fail closed as `trading_calendar_unavailable` (never invent weekday sessions). Missing a real session or an incomplete closed month cannot become symbol `verified_ready`.
-- `completed_processing` means batches finished. Scan `quality_status=technically_qualified` means dual-pass + coverage are clean enough to finalize. Scan `verified_ready` is set **only after** a successful immutable snapshot finalize.
+- OHLCV validation uses the Taiwan trading calendar. Each batch runs a bounded calendar preflight (`preload_tw_holiday_calendars`); unknown years fail closed as `trading_calendar_unavailable` (never invent weekday sessions). History must reach the scan trading day (`expect_through`).
+- `completed_processing` means batches finished. Scan `quality_status=technically_qualified` means the ledger is clean enough to finalize (including **zero** qualifying stocks). Scan `verified_ready` is set **only after** a successful immutable snapshot finalize.
+- All scan and snapshot routes are **user-scoped** (no global latest-manifest fallback).
 - Scan-scoped export GETs may serve a **live** ledger for the private UI. Agents should use `GET /exports/latest/manifest` (and snapshot chunk routes) for verified, digest-stable data.
 - Retention helper: `persistence.retention_cleanup(retention_days=30)` deletes aged snapshots first, then aged scans. Snapshot `scan_id` uses `ON DELETE SET NULL` so verified exports survive scan cleanup. Rough storage: one scan row + N symbol JSON payloads + optional finalized snapshot (~tens of KB to a few MB per verified export depending on universe size).
 
 ## Deterministic universe + immutable exports (#319)
 
-- Explicit / theme universes use SHA-256 digests of canonical sorted IDs (no Python `hash()`).
-- Finalized snapshots store `content_digest`, per-chunk digests, and a frozen `finalized_at`. Re-reads must not change digests.
-- Latest verified manifest: `GET /api/tw-research/exports/latest/manifest?universeVersion=&tradingDay=` (authenticated; explicit filters avoid mixing universes).
+- Explicit / theme universes use SHA-256 digests of canonical sorted IDs (no Python `hash()`). Theme versions stay within `String(128)` as `themes:{count}:{digest16}`.
+- Finalized `content_digest` and chunk checksums hash research content only (no timestamps or scan/snapshot UUIDs). Identical content → identical digests across reruns; uniqueness is per `(user_id, content_digest)`.
+- Latest verified manifest: `GET /api/tw-research/exports/latest/manifest?universeVersion=&tradingDay=` (authenticated; **this user’s** snapshots only).
 
 ### API
 

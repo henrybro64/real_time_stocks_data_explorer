@@ -198,7 +198,7 @@ def test_latest_verified_manifest_and_snapshot_chunk(monkeypatch) -> None:
     assert latest["snapshot_id"] == finalized["snapshotId"]
 
     chunk = tw_routes.get_verified_snapshot_chunk(
-        finalized["snapshotId"], chunkIndex=0, kind="ledger"
+        finalized["snapshotId"], chunkIndex=0, kind="ledger", user_id="user-1"
     )
     assert chunk.chunk["checksumSha256"]
 
@@ -209,6 +209,24 @@ def test_latest_verified_manifest_and_snapshot_chunk(monkeypatch) -> None:
     )
     assert latest_manifest.manifest["snapshotId"] == finalized["snapshotId"]
     assert latest_manifest.manifest["snapshotId"] is not None
+
+    # Other users must not read this snapshot or fall back to a global latest.
+    from fastapi import HTTPException
+    import pytest
+
+    with pytest.raises(HTTPException) as denied:
+        tw_routes.get_verified_snapshot_chunk(
+            finalized["snapshotId"], chunkIndex=0, kind="ledger", user_id="user-2"
+        )
+    assert denied.value.status_code == 404
+    assert (
+        tw_routes._latest_verified_snapshot(
+            universe_version=state.universe_version,
+            trading_day="2024-06-28",
+            user_id="user-2",
+        )
+        is None
+    )
 
     # Null daily/monthly payloads must not 500 on kind=qualified.
     snap = repo.get_export_snapshot(finalized["snapshotId"])
@@ -224,7 +242,7 @@ def test_latest_verified_manifest_and_snapshot_chunk(monkeypatch) -> None:
         ]
         session.commit()
     qualified = tw_routes.get_verified_snapshot_chunk(
-        finalized["snapshotId"], chunkIndex=0, kind="qualified"
+        finalized["snapshotId"], chunkIndex=0, kind="qualified", user_id="user-1"
     )
     assert all(row.get("stockId") != "TW:ERR" for row in qualified.chunk["rows"])
     with factory() as session:
@@ -241,6 +259,6 @@ def test_latest_verified_manifest_and_snapshot_chunk(monkeypatch) -> None:
     assert retained is not None
     assert retained["scan_id"] is None
     still = tw_routes.get_verified_snapshot_chunk(
-        finalized["snapshotId"], chunkIndex=0, kind="ledger"
+        finalized["snapshotId"], chunkIndex=0, kind="ledger", user_id="user-1"
     )
     assert still.chunk["checksumSha256"] == chunk.chunk["checksumSha256"]

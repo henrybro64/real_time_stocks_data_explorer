@@ -109,7 +109,11 @@ def create_scan(
 
 
 @router.post("/scans/batches", response_model=ScanSnapshotResponse)
-def run_scan_batch(body: RunBatchRequest) -> ScanSnapshotResponse:
+def run_scan_batch(
+    body: RunBatchRequest,
+    user_id: str = Depends(get_effective_user_id),
+) -> ScanSnapshotResponse:
+    _require_owned_scan(body.scanId, user_id)
     state = _call_or_http(
         lambda: tw_research_scan_service.run_batch(
             body.scanId,
@@ -121,8 +125,12 @@ def run_scan_batch(body: RunBatchRequest) -> ScanSnapshotResponse:
 
 
 @router.post("/scans/enrichment-batches", response_model=ScanSnapshotResponse)
-def run_enrichment_batch(body: RunEnrichmentBatchRequest) -> ScanSnapshotResponse:
+def run_enrichment_batch(
+    body: RunEnrichmentBatchRequest,
+    user_id: str = Depends(get_effective_user_id),
+) -> ScanSnapshotResponse:
     """Bounded enrichment for dual-pass symbols only (#313)."""
+    _require_owned_scan(body.scanId, user_id)
     state = _call_or_http(
         lambda: tw_research_scan_service.run_enrichment_batch(
             body.scanId,
@@ -133,9 +141,12 @@ def run_enrichment_batch(body: RunEnrichmentBatchRequest) -> ScanSnapshotRespons
 
 
 @router.get("/scans/{scan_id}", response_model=ScanSnapshotResponse)
-def get_scan(scan_id: str) -> ScanSnapshotResponse:
+def get_scan(
+    scan_id: str,
+    user_id: str = Depends(get_effective_user_id),
+) -> ScanSnapshotResponse:
     """Read-only snapshot. Does not trigger upstream fetches (#312/#318)."""
-    return _snapshot(_require_scan(scan_id))
+    return _snapshot(_require_owned_scan(scan_id, user_id))
 
 
 @router.get("/exports/latest/manifest", response_model=ExportManifestResponse)
@@ -144,12 +155,10 @@ def get_latest_verified_manifest(
     tradingDay: str | None = Query(default=None),
     user_id: str = Depends(get_effective_user_id),
 ) -> ExportManifestResponse:
-    """Authenticated latest verified snapshot manifest (#319).
+    """Authenticated latest verified snapshot manifest for this user (#319).
 
-    Selection is explicit by universeVersion and/or tradingDay. Without filters,
-    returns the newest verified snapshot for this user when user-scoped rows
-    exist; otherwise the newest global verified snapshot. Never mixes unrelated
-    universes when universeVersion is supplied.
+    Selection is explicit by universeVersion and/or tradingDay. Results are
+    always user-scoped — there is no global fallback across owners.
     """
     snapshot = _latest_verified_snapshot(
         universe_version=universeVersion,
@@ -181,6 +190,7 @@ def get_verified_snapshot_chunk(
     snapshot_id: str,
     chunkIndex: int = Query(default=0, ge=0),
     kind: str = Query(default="ledger", pattern=_EXPORT_KIND_PATTERN),
+    user_id: str = Depends(get_effective_user_id),
 ) -> ExportChunkResponse:
     """Read-only chunk from an immutable verified snapshot. No upstream fetches."""
     from app.repositories.tw_research_repository import tw_research_repository
@@ -189,7 +199,11 @@ def get_verified_snapshot_chunk(
     if not tw_research_repository.is_available():
         raise HTTPException(status_code=404, detail=f"Unknown snapshot_id: {snapshot_id}")
     snapshot = tw_research_repository.get_export_snapshot(snapshot_id)
-    if snapshot is None or snapshot.get("quality_status") != "verified_ready":
+    if (
+        snapshot is None
+        or snapshot.get("quality_status") != "verified_ready"
+        or snapshot.get("user_id") != user_id
+    ):
         raise HTTPException(status_code=404, detail=f"Unknown snapshot_id: {snapshot_id}")
     rows = list(snapshot.get("ledger_json") or [])
     if kind == "qualified":
@@ -235,14 +249,21 @@ def get_verified_snapshot_chunk(
 
 
 @router.get("/scans/{scan_id}/export/manifest", response_model=ExportManifestResponse)
-def get_export_manifest(scan_id: str) -> ExportManifestResponse:
-    state, generated_at = _export_context(scan_id)
+def get_export_manifest(
+    scan_id: str,
+    user_id: str = Depends(get_effective_user_id),
+) -> ExportManifestResponse:
+    state, generated_at = _export_context(scan_id, user_id)
     if state.active_snapshot_id:
         from app.repositories.tw_research_repository import tw_research_repository
 
         if tw_research_repository.is_available():
             snapshot = tw_research_repository.get_export_snapshot(state.active_snapshot_id)
-            if snapshot and snapshot.get("quality_status") == "verified_ready":
+            if (
+                snapshot
+                and snapshot.get("quality_status") == "verified_ready"
+                and snapshot.get("user_id") == user_id
+            ):
                 return ExportManifestResponse(manifest=dict(snapshot["manifest_json"] or {}))
     return ExportManifestResponse(
         manifest=build_export_manifest(state, generated_at=generated_at)
@@ -254,8 +275,9 @@ def get_export_chunk(
     scan_id: str,
     chunkIndex: int = Query(default=0, ge=0),
     kind: str = Query(default="ledger", pattern=_EXPORT_KIND_PATTERN),
+    user_id: str = Depends(get_effective_user_id),
 ) -> ExportChunkResponse:
-    state, generated_at = _export_context(scan_id)
+    state, generated_at = _export_context(scan_id, user_id)
     chunk = _call_or_http(
         lambda: build_export_chunk(
             state,
@@ -271,8 +293,9 @@ def get_export_chunk(
 def get_export_csv(
     scan_id: str,
     kind: str = Query(default="ledger", pattern=_EXPORT_KIND_PATTERN),
+    user_id: str = Depends(get_effective_user_id),
 ) -> Response:
-    state = _require_scan(scan_id)
+    state = _require_owned_scan(scan_id, user_id)
     body = build_export_csv(state, kind=kind)
     return Response(
         content=body,
@@ -288,9 +311,10 @@ def get_export_browser_text(
     scan_id: str,
     chunkIndex: int = Query(default=0, ge=0),
     kind: str = Query(default="ledger", pattern=_EXPORT_KIND_PATTERN),
+    user_id: str = Depends(get_effective_user_id),
 ) -> Response:
     """Authenticated copyable JSON text for a browser-only Agent (#314/#315)."""
-    state, generated_at = _export_context(scan_id)
+    state, generated_at = _export_context(scan_id, user_id)
     body = _call_or_http(
         lambda: build_browser_text_view(
             state,
@@ -306,22 +330,27 @@ def _snapshot(state: ScanState) -> ScanSnapshotResponse:
     return ScanSnapshotResponse(scan=state.snapshot())
 
 
-def _require_scan(scan_id: str) -> ScanState:
+def _require_owned_scan(scan_id: str, user_id: str) -> ScanState:
+    """Return the scan only when it belongs to ``user_id`` (404 otherwise)."""
     state = tw_research_scan_service.get_scan(scan_id)
-    if state is None:
+    if state is None or state.user_id != user_id:
         raise HTTPException(status_code=404, detail=f"Unknown scan_id: {scan_id}")
     return state
 
 
-def _export_context(scan_id: str) -> tuple[ScanState, str]:
-    state = _require_scan(scan_id)
+def _export_context(scan_id: str, user_id: str) -> tuple[ScanState, str]:
+    state = _require_owned_scan(scan_id, user_id)
     # Prefer frozen finalize time so Agent re-reads stay byte-stable (#319).
     if state.active_snapshot_id:
         from app.repositories.tw_research_repository import tw_research_repository
 
         if tw_research_repository.is_available():
             snapshot = tw_research_repository.get_export_snapshot(state.active_snapshot_id)
-            if snapshot and snapshot.get("finalized_at") is not None:
+            if (
+                snapshot
+                and snapshot.get("user_id") == user_id
+                and snapshot.get("finalized_at") is not None
+            ):
                 frozen = snapshot["finalized_at"]
                 generated = (
                     frozen.isoformat() if hasattr(frozen, "isoformat") else str(frozen)
@@ -334,30 +363,20 @@ def _latest_verified_snapshot(
     *,
     universe_version: str | None,
     trading_day: str | None,
-    user_id: str | None,
+    user_id: str,
 ) -> dict[str, Any] | None:
     from app.repositories.tw_research_repository import tw_research_repository
 
     if not tw_research_repository.is_available():
         return None
     try:
-        # Prefer user-scoped latest when available; fall back to global for shared DBs.
-        snapshot = tw_research_repository.latest_verified_snapshot(
+        return tw_research_repository.latest_verified_snapshot(
             universe_version=universe_version,
             trading_day=trading_day,
             user_id=user_id,
         )
-        if snapshot is not None:
-            return snapshot
-        if user_id:
-            return tw_research_repository.latest_verified_snapshot(
-                universe_version=universe_version,
-                trading_day=trading_day,
-                user_id=None,
-            )
     except Exception:  # noqa: BLE001 — missing migration / misconfigured DB → no snapshot
         return None
-    return None
 
 
 def _call_or_http(action: Callable[[], T]) -> T:

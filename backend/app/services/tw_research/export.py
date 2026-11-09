@@ -115,6 +115,54 @@ def build_export_manifest(state: ScanState, *, generated_at: str) -> dict[str, A
     }
 
 
+def stable_export_content_digest(
+    *,
+    rows: list[dict[str, Any]],
+    chunk_digests: dict[str, str],
+    universe_version: str,
+    trading_day: str,
+    quality_status: str,
+) -> str:
+    """Hash research content only — no timestamps or scan/snapshot UUIDs (#319)."""
+    return content_digest(
+        {
+            "schemaVersion": RESEARCH_SCHEMA_VERSION,
+            "calculationVersion": CALCULATION_VERSION,
+            "enrichmentVersion": ENRICHMENT_VERSION,
+            "universeVersion": universe_version,
+            "tradingDay": trading_day,
+            "qualityStatus": quality_status,
+            "rows": rows,
+            "chunkDigests": chunk_digests,
+        }
+    )
+
+
+def stable_chunk_checksum(
+    *,
+    rows: list[dict[str, Any]],
+    chunk_index: int,
+    chunk_size: int,
+    kind: str,
+    trading_day: str,
+    total_rows: int,
+) -> str:
+    """Checksum over chunk research payload; excludes scanId / generatedAt."""
+    total_chunks = (total_rows + chunk_size - 1) // chunk_size if total_rows else 0
+    return content_digest(
+        {
+            "schemaVersion": RESEARCH_SCHEMA_VERSION,
+            "tradingDay": trading_day,
+            "kind": kind,
+            "chunkIndex": chunk_index,
+            "chunkSize": chunk_size,
+            "totalRows": total_rows,
+            "totalChunks": total_chunks,
+            "rows": rows,
+        }
+    )
+
+
 def build_immutable_manifest(
     state: ScanState,
     *,
@@ -123,7 +171,7 @@ def build_immutable_manifest(
     frozen_at: str,
     quality_status: str,
 ) -> dict[str, Any]:
-    """Manifest frozen at finalize time; re-reads must not change digests (#319)."""
+    """Manifest frozen at finalize time; content digests stay UUID/time-stable (#319)."""
     base = build_export_manifest(state, generated_at=frozen_at)
     base["qualityStatus"] = quality_status
     base["finalizedAt"] = frozen_at
@@ -131,18 +179,12 @@ def build_immutable_manifest(
     base["chunkDigests"] = chunk_digests
     base["chunkIds"] = sorted(chunk_digests.keys(), key=lambda value: int(value))
     base["ledgerRowCount"] = len(rows)
-    base["contentDigest"] = content_digest(
-        {
-            "schemaVersion": RESEARCH_SCHEMA_VERSION,
-            "calculationVersion": CALCULATION_VERSION,
-            "enrichmentVersion": ENRICHMENT_VERSION,
-            "universeVersion": state.universe_version,
-            "tradingDay": state.trading_day,
-            "qualityStatus": quality_status,
-            "rows": rows,
-            "chunkDigests": chunk_digests,
-            "finalizedAt": frozen_at,
-        }
+    base["contentDigest"] = stable_export_content_digest(
+        rows=rows,
+        chunk_digests=chunk_digests,
+        universe_version=state.universe_version,
+        trading_day=state.trading_day,
+        quality_status=quality_status,
     )
     return base
 
@@ -172,7 +214,14 @@ def build_export_chunk_from_rows(
         "totalChunks": (total + chunk_size - 1) // chunk_size if total else 0,
         "rows": slice_rows,
     }
-    payload["checksumSha256"] = content_digest(payload)
+    payload["checksumSha256"] = stable_chunk_checksum(
+        rows=slice_rows,
+        chunk_index=chunk_index,
+        chunk_size=chunk_size,
+        kind=kind,
+        trading_day=trading_day,
+        total_rows=total,
+    )
     return payload
 
 

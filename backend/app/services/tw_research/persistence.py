@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -23,7 +22,7 @@ from app.services.tw_research.constants import (
 from app.services.tw_research.export import (
     build_export_chunk_from_rows,
     build_immutable_manifest,
-    canonical_json_dumps,
+    stable_export_content_digest,
 )
 from app.services.tw_research.scan import ScanState, SymbolScanRecord
 from app.services.tw_research.universe import UniverseSelector
@@ -217,19 +216,14 @@ def finalize_verified_snapshot(
         "verified_ready",
     }:
         return None
-    verified_ids = [
-        stock_id
-        for stock_id, record in state.records.items()
-        if record.readiness == "verified_ready"
-    ]
-    if not verified_ids:
-        return None
     incomplete = any(
         record.readiness == "source_incomplete" for record in state.records.values()
     )
     if incomplete:
         # Dual-pass symbols with coverage gaps must not publish as verified.
         return None
+    # Zero qualifying stocks is a valid verified outcome when the scan completed
+    # cleanly (no source_incomplete rows).
 
     stamp = finalized_at or datetime.now(timezone.utc)
     rows = [_export_row(record) for record in state.records.values()]
@@ -250,6 +244,13 @@ def finalize_verified_snapshot(
         )
         chunk_digests[str(index)] = chunk["checksumSha256"]
 
+    digest = stable_export_content_digest(
+        rows=rows,
+        chunk_digests=chunk_digests,
+        universe_version=state.universe_version,
+        trading_day=state.trading_day,
+        quality_status="verified_ready",
+    )
     snapshot_id = str(uuid4())
     manifest = build_immutable_manifest(
         state,
@@ -259,13 +260,9 @@ def finalize_verified_snapshot(
         quality_status="verified_ready",
     )
     # Populate before freeze/store so latest-manifest clients see a real id.
+    # snapshotId is metadata only; content_digest stays UUID-independent.
     manifest["snapshotId"] = snapshot_id
-    content = {
-        "manifest": manifest,
-        "ledger": rows,
-        "chunkDigests": chunk_digests,
-    }
-    digest = hashlib.sha256(canonical_json_dumps(content).encode("utf-8")).hexdigest()
+    manifest["contentDigest"] = digest
     payload = {
         "snapshot_id": snapshot_id,
         "scan_id": state.scan_id,

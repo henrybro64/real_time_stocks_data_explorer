@@ -132,7 +132,11 @@ def upgrade() -> None:
             ondelete="SET NULL",
         ),
         sa.PrimaryKeyConstraint("snapshot_id"),
-        sa.UniqueConstraint("content_digest", name="uq_tw_research_export_content_digest"),
+        sa.UniqueConstraint(
+            "user_id",
+            "content_digest",
+            name="uq_tw_research_export_user_content_digest",
+        ),
     )
     op.create_index(
         "ix_tw_research_export_latest",

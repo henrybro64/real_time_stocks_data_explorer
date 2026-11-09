@@ -17,6 +17,7 @@ from app.models.quote import CandleRecord
 from app.services.market_clock import (
     ensure_tw_holiday_calendars_loaded,
     is_trading_day,
+    preload_tw_holiday_calendars,
 )
 from app.services.tw_research.constants import (
     MIN_DAILY_BARS_FOR_MACD_KD,
@@ -304,6 +305,37 @@ def derive_readiness(
     if not daily_coverage_ok or not monthly_coverage_ok:
         return "source_incomplete"
     return "verified_ready"
+
+
+def preflight_tw_trading_calendars(
+    *,
+    trading_day: str,
+    history_years: int = 4,
+    allow_network: bool = True,
+    max_fetches: int = 4,
+) -> dict[str, object]:
+    """Bounded calendar preflight for a research trading day (#320).
+
+    Loads disk-backed calendars first, then optionally fetches a small number of
+    still-missing years. Missing years remain explicit so coverage can fail closed
+    as ``trading_calendar_unavailable`` instead of inventing weekday sessions.
+    """
+    try:
+        day = date.fromisoformat(trading_day)
+    except ValueError:
+        return {
+            "ok": False,
+            "loaded": [],
+            "missing": [],
+            "fetched": 0,
+            "error": "invalid_trading_day",
+        }
+    years = set(range(day.year - max(0, int(history_years)), day.year + 1))
+    return preload_tw_holiday_calendars(
+        years,
+        allow_network=allow_network,
+        max_fetches=max_fetches,
+    )
 
 
 def _calendar_ready(start: date, end: date, *, market: str) -> bool:

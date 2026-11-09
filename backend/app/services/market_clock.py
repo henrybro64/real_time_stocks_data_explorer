@@ -550,6 +550,43 @@ def ensure_tw_holiday_calendars_loaded(years: list[int] | tuple[int, ...] | set[
     return ok
 
 
+def preload_tw_holiday_calendars(
+    years: list[int] | tuple[int, ...] | set[int],
+    *,
+    allow_network: bool = True,
+    max_fetches: int = 4,
+) -> dict[str, object]:
+    """Bounded preflight for TW holiday calendars used by research coverage (#320).
+
+    1. Load any persisted calendars into memory.
+    2. Optionally fetch a bounded number of still-missing years from TWSE.
+    3. Return which years are ready vs still missing so callers can fail closed
+       transparently (``trading_calendar_unavailable``) without inventing sessions.
+    """
+    unique_years = sorted({int(value) for value in years})
+    loaded: list[int] = []
+    missing: list[int] = []
+    fetched = 0
+    for year in unique_years:
+        _tw_market_holidays(year)
+        if tw_holiday_calendar_known(year):
+            loaded.append(year)
+            continue
+        if allow_network and fetched < max(0, int(max_fetches)):
+            refresh_tw_market_holidays(year)
+            fetched += 1
+            if tw_holiday_calendar_known(year):
+                loaded.append(year)
+                continue
+        missing.append(year)
+    return {
+        "ok": not missing,
+        "loaded": loaded,
+        "missing": missing,
+        "fetched": fetched,
+    }
+
+
 def _tw_market_holidays(year: int) -> frozenset[date]:
     """Return the cached or persisted calendar. This path does not call TWSE."""
     cached = _tw_holiday_success.get(year)

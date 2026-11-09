@@ -534,7 +534,13 @@ class TwResearchExportSnapshot(Base):
 
     __tablename__ = "tw_research_export_snapshots"
     __table_args__ = (
-        UniqueConstraint("content_digest", name="uq_tw_research_export_content_digest"),
+        # Same research content → same digest; uniqueness is per owner so users
+        # never share snapshot rows across authorization boundaries (#319).
+        UniqueConstraint(
+            "user_id",
+            "content_digest",
+            name="uq_tw_research_export_user_content_digest",
+        ),
         Index(
             "ix_tw_research_export_latest",
             "universe_version",

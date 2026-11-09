@@ -15,7 +15,6 @@ from app.services.tw_research.coverage import (
 from app.services.tw_research.export import (
     build_export_chunk_from_rows,
     build_immutable_manifest,
-    content_digest,
 )
 from app.services.tw_research.persistence import (
     finalize_verified_snapshot,
@@ -128,6 +127,27 @@ def test_missing_trading_day_blocks_verified_coverage(monkeypatch) -> None:
     assert "2024-06-05" in report.missing_trading_days
 
 
+def test_calendar_preflight_reports_missing_years(monkeypatch) -> None:
+    from app.services.tw_research.coverage import preflight_tw_trading_calendars
+
+    monkeypatch.setattr(
+        "app.services.tw_research.coverage.preload_tw_holiday_calendars",
+        lambda years, allow_network=True, max_fetches=4: {
+            "ok": False,
+            "loaded": [2023],
+            "missing": [2024],
+            "fetched": 1,
+        },
+    )
+    result = preflight_tw_trading_calendars(
+        trading_day="2024-06-28",
+        allow_network=True,
+        max_fetches=1,
+    )
+    assert result["ok"] is False
+    assert 2024 in result["missing"]
+
+
 def test_unknown_trading_calendar_fails_closed(monkeypatch) -> None:
     monkeypatch.setattr(
         "app.services.tw_research.coverage.ensure_tw_holiday_calendars_loaded",
@@ -218,6 +238,8 @@ def test_derive_readiness_distinguishes_coverage_from_signals() -> None:
 
 
 def test_immutable_chunk_digests_are_stable_for_frozen_timestamp() -> None:
+    from app.services.tw_research.export import stable_chunk_checksum
+
     rows = [
         {"stockId": "TW:2330", "stage": "B", "readiness": "verified_ready"},
         {"stockId": "TW:2454", "stage": "A", "readiness": "processed"},
@@ -237,14 +259,168 @@ def test_immutable_chunk_digests_are_stable_for_frozen_timestamp() -> None:
         chunk_index=0,
         chunk_size=25,
         kind="ledger",
-        scan_id="scan-1",
+        scan_id="scan-DIFFERENT",
         trading_day="2024-06-28",
-        frozen_at=frozen,
+        frozen_at="2099-01-01T00:00:00+00:00",
     )
     assert first["checksumSha256"] == second["checksumSha256"]
-    assert first["checksumSha256"] == content_digest(
-        {key: value for key, value in first.items() if key != "checksumSha256"}
+    assert first["checksumSha256"] == stable_chunk_checksum(
+        rows=rows,
+        chunk_index=0,
+        chunk_size=25,
+        kind="ledger",
+        trading_day="2024-06-28",
+        total_rows=len(rows),
     )
+
+
+def test_content_digest_ignores_timestamps_and_scan_uuids(monkeypatch) -> None:
+    from app.services.tw_research.export import stable_export_content_digest
+
+    rows = [{"stockId": "TW:2330", "stage": "A", "readiness": "processed", "daily": None}]
+    digests = {"0": "abc"}
+    first = stable_export_content_digest(
+        rows=rows,
+        chunk_digests=digests,
+        universe_version="explicit:1:deadbeef",
+        trading_day="2024-06-28",
+        quality_status="verified_ready",
+    )
+    second = stable_export_content_digest(
+        rows=rows,
+        chunk_digests=digests,
+        universe_version="explicit:1:deadbeef",
+        trading_day="2024-06-28",
+        quality_status="verified_ready",
+    )
+    assert first == second
+
+    factory = install_in_memory_sessionlocal(monkeypatch)
+    repo = TwResearchRepository()
+    repo.set_session_factory_override(factory)
+    service = TwResearchScanService(
+        history_loader=lambda stock, limit, *, max_month_fetches: ([], 0),
+        stock_loader=lambda stock_id: _tw(stock_id),
+        persist=True,
+    )
+    state_a = service.create_scan(
+        UniverseSelector(mode="stock_ids", stock_ids=("TW:2330",)),
+        trading_day="2024-06-28",
+        user_id="user-a",
+    )
+    state_b = service.create_scan(
+        UniverseSelector(mode="stock_ids", stock_ids=("TW:2330",)),
+        trading_day="2024-06-28",
+        user_id="user-b",
+    )
+    for state in (state_a, state_b):
+        state.records["TW:2330"] = SymbolScanRecord(
+            stock_id="TW:2330",
+            stage="A",
+            readiness="processed",
+            daily={"passStatus": "fail"},
+        )
+        state.cursor = 1
+        state.status = "completed_processing"
+        state.quality_status = "technically_qualified"
+        persist_scan(state, repository=repo, user_id=state.user_id)
+        persist_symbol(state, state.records["TW:2330"], repository=repo)
+
+    finalized_a = finalize_verified_snapshot(
+        state_a,
+        repository=repo,
+        user_id="user-a",
+        finalized_at=datetime(2024, 6, 28, 17, 0, tzinfo=TZ),
+    )
+    finalized_b = finalize_verified_snapshot(
+        state_b,
+        repository=repo,
+        user_id="user-b",
+        finalized_at=datetime(2024, 6, 29, 9, 0, tzinfo=TZ),
+    )
+    assert finalized_a is not None and finalized_b is not None
+    assert finalized_a["contentDigest"] == finalized_b["contentDigest"]
+    # Same digest, but per-owner snapshot rows stay authorization-isolated.
+    assert finalized_a["snapshotId"] != finalized_b["snapshotId"]
+
+
+def test_zero_qualifier_scan_can_finalize(monkeypatch) -> None:
+    factory = install_in_memory_sessionlocal(monkeypatch)
+    repo = TwResearchRepository()
+    repo.set_session_factory_override(factory)
+    service = TwResearchScanService(
+        history_loader=lambda stock, limit, *, max_month_fetches: ([], 0),
+        stock_loader=lambda stock_id: _tw(stock_id),
+        persist=True,
+    )
+    state = service.create_scan(
+        UniverseSelector(mode="stock_ids", stock_ids=("TW:2330",)),
+        trading_day="2024-06-28",
+        user_id="user-1",
+    )
+    state.records["TW:2330"] = SymbolScanRecord(
+        stock_id="TW:2330",
+        stage="A",
+        readiness="processed",
+        daily={"passStatus": "fail"},
+    )
+    state.cursor = 1
+    state.status = "completed_processing"
+    state.quality_status = "technically_qualified"
+    persist_scan(state, repository=repo, user_id="user-1")
+    persist_symbol(state, state.records["TW:2330"], repository=repo)
+    finalized = finalize_verified_snapshot(
+        state,
+        repository=repo,
+        user_id="user-1",
+        finalized_at=datetime(2024, 6, 28, 17, 0, tzinfo=TZ),
+    )
+    assert finalized is not None
+    assert state.status == "verified_ready"
+    assert finalized["manifest"]["counts"]["verifiedReady"] == 0
+
+
+def test_stale_upsert_does_not_regress_cursor(monkeypatch) -> None:
+    factory = install_in_memory_sessionlocal(monkeypatch)
+    repo = TwResearchRepository()
+    repo.set_session_factory_override(factory)
+    service = TwResearchScanService(
+        history_loader=lambda stock, limit, *, max_month_fetches: ([], 0),
+        stock_loader=lambda stock_id: _tw(stock_id),
+        persist=True,
+    )
+    state = service.create_scan(
+        UniverseSelector(mode="stock_ids", stock_ids=("TW:2330", "TW:2454", "TW:2303")),
+        trading_day="2024-06-28",
+        user_id="user-1",
+    )
+    persist_scan(state, repository=repo, user_id="user-1")
+    claimed = repo.claim_scan_batch(
+        state.scan_id,
+        batch_size=2,
+        terminal_statuses={"completed_processing", "verified_ready", "budget_exhausted"},
+    )
+    assert claimed is not None
+    # Persist symbol results for the reserved slice, then complete.
+    for stock_id in claimed["batch_ids"]:
+        record = SymbolScanRecord(stock_id=stock_id, stage="A", readiness="processed")
+        persist_symbol(state, record, repository=repo)
+    completed = repo.complete_scan_batch(state.scan_id, status="running")
+    assert completed is not None
+    assert completed["cursor"] == 2
+
+    # Stale worker still thinks cursor is 0 — upsert must not rewind progress.
+    from app.services.tw_research.persistence import scan_row_payload
+
+    state.cursor = 0
+    stale = scan_row_payload(state, user_id="user-1")
+    stale["status"] = "running"
+    stale["upstream_month_fetches"] = 0
+    repo.upsert_scan(stale)
+    row = repo.get_scan(state.scan_id)
+    assert row is not None
+    assert row["cursor"] == 2
+
 
 
 def test_postgres_persistence_round_trip_and_atomic_finalize(monkeypatch) -> None:
@@ -291,12 +467,15 @@ def test_postgres_persistence_round_trip_and_atomic_finalize(monkeypatch) -> Non
         readiness="processed",
         daily={"passStatus": "fail"},
     )
-    state.cursor = 2
     state.status = "completed_processing"
     state.quality_status = "technically_qualified"
     persist_scan(state, repository=repo, user_id="user-1")
     persist_symbol(state, record, repository=repo)
     persist_symbol(state, state.records["TW:2618"], repository=repo)
+    # Cursor is owned by claim/complete — not by blind upsert.
+    completed = repo.complete_scan_batch(state.scan_id, status="completed_processing")
+    assert completed is not None
+    assert completed["cursor"] == 2
 
     reloaded = load_scan_state(state.scan_id, repository=repo)
     assert reloaded is not None

@@ -40,6 +40,7 @@ from app.services.tw_research.constants import (
 )
 from app.services.tw_research.coverage import (
     derive_readiness,
+    preflight_tw_trading_calendars,
     validate_ohlcv_series,
 )
 from app.services.tw_research.enrichment import (
@@ -337,6 +338,21 @@ class TwResearchScanService:
                 # Active lease held by another worker, or empty reservation.
                 return state
 
+            # Bounded TW calendar preflight; missing years fail closed in coverage.
+            calendar_preflight = preflight_tw_trading_calendars(
+                trading_day=state.trading_day,
+                allow_network=True,
+                max_fetches=4,
+            )
+            if not calendar_preflight.get("ok"):
+                missing = ",".join(str(year) for year in calendar_preflight.get("missing") or [])
+                note = f"trading_calendar_preflight_missing:{missing or 'unknown'}"
+                with self._lock:
+                    if note not in state.notes:
+                        state.notes.append(note)
+                    state.updated_at = datetime.now(TAIPEI).isoformat()
+                    self._persist_scan(state)
+
             calculation_now = _calculation_now(state.trading_day, override=now)
             for stock_id in batch_ids:
                 if (datetime.now(TAIPEI) - started).total_seconds() > timeout_seconds:
@@ -612,9 +628,10 @@ class TwResearchScanService:
             state.quality_status = "verified_ready"
         elif incomplete:
             state.quality_status = "source_incomplete"
-        elif state.status == "completed_processing" and verified and incomplete == 0:
+        elif state.status == "completed_processing" and incomplete == 0:
+            # Zero qualifiers is still finalize-eligible when coverage is clean.
             state.quality_status = "technically_qualified"
-        elif qualified:
+        elif qualified or verified:
             state.quality_status = "technically_qualified"
         else:
             state.quality_status = "processed"

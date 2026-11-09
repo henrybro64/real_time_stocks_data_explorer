@@ -105,23 +105,95 @@ def _snapshot_to_dict(row: TwResearchExportSnapshot) -> dict[str, Any]:
     }
 
 
+# Claim/complete/rewind own these; blind upsert must never regress them.
+_SCAN_PROGRESS_KEYS = frozenset(
+    {
+        "cursor",
+        "reserve_cursor",
+        "reserve_expires_at",
+        "enrich_cursor",
+    }
+)
+_SCAN_COUNTER_MAX_KEYS = frozenset(
+    {
+        "upstream_month_fetches",
+        "enrichments_run",
+    }
+)
+_SCAN_STATUS_RANK = {
+    "queued": 0,
+    "running": 1,
+    "partial": 2,
+    "budget_exhausted": 3,
+    "completed_processing": 4,
+    "verified_ready": 5,
+    "failed": 6,
+}
+
+
 class TwResearchRepository(SessionBoundRepository):
     def upsert_scan(self, payload: dict[str, Any]) -> None:
+        """Upsert scan metadata without regressing durable progress (#318).
+
+        Cursor / lease fields are owned by claim/complete/rewind. Counters only
+        move forward. Status never moves backward (except sticky ``failed``).
+        """
         session_factory = self._session_factory()
         with session_factory() as session:
-            row = session.get(TwResearchScan, payload["scan_id"])
+            row = session.execute(
+                select(TwResearchScan)
+                .where(TwResearchScan.scan_id == payload["scan_id"])
+                .with_for_update()
+            ).scalar_one_or_none()
             now = datetime.now(timezone.utc)
             if row is None:
+                insert_payload = {
+                    key: value
+                    for key, value in payload.items()
+                    if key not in {"reserve_cursor", "reserve_expires_at"}
+                }
+                insert_payload.setdefault("reserve_cursor", int(payload.get("cursor") or 0))
+                insert_payload.setdefault("reserve_expires_at", None)
                 session.add(
                     TwResearchScan(
-                        **payload,
+                        **insert_payload,
                         created_at=now,
                         updated_at=now,
                     )
                 )
             else:
                 for key, value in payload.items():
-                    if key == "scan_id":
+                    if key == "scan_id" or key in _SCAN_PROGRESS_KEYS:
+                        continue
+                    if key in _SCAN_COUNTER_MAX_KEYS:
+                        setattr(row, key, max(int(getattr(row, key) or 0), int(value or 0)))
+                        continue
+                    if key == "status":
+                        current = str(row.status)
+                        incoming = str(value)
+                        if current == "failed":
+                            continue
+                        if _SCAN_STATUS_RANK.get(incoming, -1) >= _SCAN_STATUS_RANK.get(
+                            current, -1
+                        ):
+                            row.status = incoming
+                        continue
+                    if key == "quality_status":
+                        # Never demote a finalized scan via a stale worker write.
+                        if (
+                            str(row.quality_status) == "verified_ready"
+                            and str(value) != "verified_ready"
+                        ):
+                            continue
+                        row.quality_status = value
+                        continue
+                    if key in {"day_pass_ids_json", "qualified_ids_json"}:
+                        merged = list(dict.fromkeys([*(getattr(row, key) or []), *(value or [])]))
+                        setattr(row, key, merged)
+                        continue
+                    if key == "notes_json":
+                        merged = list(dict.fromkeys([*(getattr(row, key) or []), *(value or [])]))
+                        setattr(row, key, merged[-50:])
                         continue
                     setattr(row, key, value)
                 row.updated_at = now
@@ -330,11 +402,16 @@ class TwResearchRepository(SessionBoundRepository):
     def insert_export_snapshot(self, payload: dict[str, Any]) -> dict[str, Any]:
         session_factory = self._session_factory()
         with session_factory() as session:
-            existing = session.execute(
-                select(TwResearchExportSnapshot).where(
-                    TwResearchExportSnapshot.content_digest == payload["content_digest"]
+            existing_stmt = select(TwResearchExportSnapshot).where(
+                TwResearchExportSnapshot.content_digest == payload["content_digest"]
+            )
+            if payload.get("user_id") is None:
+                existing_stmt = existing_stmt.where(TwResearchExportSnapshot.user_id.is_(None))
+            else:
+                existing_stmt = existing_stmt.where(
+                    TwResearchExportSnapshot.user_id == payload["user_id"]
                 )
-            ).scalar_one_or_none()
+            existing = session.execute(existing_stmt).scalar_one_or_none()
             if existing is not None:
                 return _snapshot_to_dict(existing)
             row = TwResearchExportSnapshot(**payload)
