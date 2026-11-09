@@ -24,7 +24,7 @@ Shared TypeScript contracts: `packages/shared-contracts/`. Deploy manifests: `k8
 | AI analysis | `services/ai_providers/` |
 | Stock analysis metrics | `stock_analysis_*` (technicals, key price levels, prompts) |
 | TW ownership / profitability | `tw_ownership_concentration_service`, `tdcc_shareholding`, `tw_profitability_service` |
-| TW research (#310–#315) | `services/tw_research/` (universe, MACD/KD, scan, enrichment, export); routes in `api/routes/tw_research.py`; UI `/research/tw`; runbooks [tw-research.md](tw-research.md), [tw-research-pilot.md](tw-research-pilot.md) |
+| TW research (#310–#322) | `services/tw_research/` (universe, MACD/KD, scan, enrichment, export, agent_handoff); routes in `api/routes/tw_research.py`; UI `/research/tw`; runbooks [tw-research.md](tw-research.md), [tw-research-pilot.md](tw-research-pilot.md), [tw-research-agent-handoff.md](tw-research-agent-handoff.md) |
 | Rankings adapters | `services/ranking_data_providers.py`; Taiwan limit-up/limit-down in `tw_price_limits.py` and `tw_price_limit_rankings.py` |
 
 Routes call services; services call adapters — not raw provider HTTP from handlers.

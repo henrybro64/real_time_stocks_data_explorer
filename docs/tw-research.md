@@ -37,7 +37,9 @@ Confirm and reuse — do not reimplement:
 | `backend/app/services/tw_research/export.py` | Manifest / chunked JSON / CSV / browser text / digests (#314/#319) |
 | `backend/app/api/routes/tw_research.py` | Authenticated contract / universe / scan / enrich / export APIs |
 | `frontend/src/app/research/tw/page.tsx` | Private research UI (`/research/tw`) |
-| `docs/tw-research-pilot.md` | #315 measurement + Agent handoff worksheet |
+| `docs/tw-research-pilot.md` | #315/#321 measurement worksheet (`ubuntu_measurement_pending` until node run) |
+| `docs/tw-research-agent-handoff.md` | #322 browser-only Agent transfer runbook |
+| `backend/app/services/tw_research/agent_handoff.py` | Manifest-first chunk plan + digest verify helpers (#322) |
 | Alembic `20261109_0021` | `tw_research_scans`, `tw_research_symbol_results`, `tw_research_export_snapshots` |
 
 ## Indicator conventions (#311)
@@ -95,17 +97,22 @@ All routes use `Depends(get_effective_user_id)`.
 | GET | `/api/tw-research/exports/latest/manifest` | No (#319) |
 | GET | `/api/tw-research/exports/snapshots/{snapshot_id}/chunk` | No (#319) |
 
-## Baseline / instrumentation plan (#310 → #315)
+## Baseline / instrumentation plan (#310 → #321)
 
-Code establishes the contract and budgets. **Actual Ubuntu/k3s headroom** (CPU, RSS, disk, DB/Redis, HTTP counts, latency) is measured during the manual pilot (#315), not blocked on unavailable host metrics here.
+Code establishes the contract and budgets. **Actual Ubuntu/k3s headroom** (CPU, RSS, disk, DB/Redis, HTTP counts, latency) is measured on the home node per [tw-research-pilot.md](tw-research-pilot.md). Coding sessions without cluster access must keep status **`ubuntu_measurement_pending`** and must not invent node metrics (#321).
 
 Suggested pilot thresholds to record on the home node:
 
 1. Cold resolve of starter preset (unique count, rejected reasons).
 2. Manual scan batches of 10 → 20 → 40 symbols, then full preset across multiple batches.
 3. Peak RSS, wall time, upstream month fetches, UI responsiveness during batch POST.
-4. Confirm GET snapshot does not increase upstream HTTP counts.
+4. Confirm GET snapshot / latest manifest does not increase upstream HTTP counts.
 5. Include out-of-preset symbols: e.g. 餐飲 `TW:2727`, 航空 `TW:2618`, unclassified `TW:2330` (if not in preset).
+6. Same-universe `targetCount=10` vs `20` cost delta (scan similar; enrichment/export incremental).
+
+## Agent handoff (#322)
+
+Manifest-first, changed-chunks-only transfer: [tw-research-agent-handoff.md](tw-research-agent-handoff.md). A plan is `verification_required` until checksum checks return `stock_ticker_export_verified`. `notion_published_verified` stays with the external Agent.
 
 ## Extensibility acceptance
 

@@ -1,0 +1,133 @@
+{
+  "contractVersion": "agent-handoff-v1",
+  "stockTickerExportVerified": false,
+  "notionPublishedVerified": false,
+  "notionPublishNotPerformed": true,
+  "statuses": {
+    "verification_required": "Transfer plan only. The consumer has not finished checksum checks",
+    "stock_ticker_export_verified": "Recorded by the consumer after manifest and chunk checksum checks pass",
+    "notion_published_verified": "Owned only by an external Agent after Notion read-back",
+    "notion_publish_not_performed": "Default when Stock Ticker handoff completes"
+  },
+  "transferPlan": {
+    "action": "fetch_all",
+    "reason": "no_previous_manifest_or_chunk_map",
+    "chunkIndexes": [
+      0
+    ],
+    "removedChunkIndexes": [],
+    "verification": "verification_required",
+    "completedVerification": null
+  },
+  "manifest": {
+    "schemaVersion": "2026-11-09.1",
+    "calculationVersion": "macd12-26-9_kd9-3-3_v1",
+    "enrichmentVersion": "enrich-v1",
+    "snapshotId": "example-snapshot",
+    "scanId": "example-scan",
+    "tradingDay": "2024-06-28",
+    "lastCompleteMonth": "2024-05",
+    "universeVersion": "explicit:3:example",
+    "qualityStatus": "verified_ready",
+    "finalizedAt": "2024-06-28T09:00:00+00:00",
+    "generatedAt": "2024-06-28T09:00:00+00:00",
+    "chunkDigests": {
+      "0": "4a30322c446f8b4bdcd0d8d189be6368ab884226733c73f92c208cb8d2aca88a"
+    },
+    "chunkIds": [
+      "0"
+    ],
+    "counts": {
+      "attempted": 3,
+      "technicallyQualified": 2,
+      "verifiedReady": 2,
+      "enriched": 1
+    },
+    "chunkPathTemplate": "/api/tw-research/exports/snapshots/example-snapshot/chunk?chunkIndex={chunkIndex}&kind=ledger",
+    "notes": [
+      "Deterministic fixture for Agent transfer tests (#322).",
+      "Stock Ticker never writes Notion."
+    ],
+    "contentDigest": "44fa3557e895322a9672d8e1310ce24654fbfa4244b6a9c2a8ed59fb5d7e4f00"
+  },
+  "chunks": {
+    "0": {
+      "schemaVersion": "2026-11-09.1",
+      "generatedAt": "2024-06-28T09:00:00+00:00",
+      "scanId": "example-scan",
+      "tradingDay": "2024-06-28",
+      "kind": "ledger",
+      "chunkIndex": 0,
+      "chunkSize": 25,
+      "totalRows": 3,
+      "totalChunks": 1,
+      "rows": [
+        {
+          "stockId": "TW:2330",
+          "stage": "B",
+          "readiness": "verified_ready",
+          "daily": {
+            "passStatus": "pass",
+            "asOf": "2024-06-28"
+          },
+          "monthly": {
+            "passStatus": "pass",
+            "asOf": "2024-05"
+          },
+          "themeKeys": [
+            "tw-foundry"
+          ],
+          "enrichment": {
+            "qualified": true,
+            "fields": {}
+          }
+        },
+        {
+          "stockId": "TW:2618",
+          "stage": "B",
+          "readiness": "verified_ready",
+          "daily": {
+            "passStatus": "pass",
+            "asOf": "2024-06-28"
+          },
+          "monthly": {
+            "passStatus": "pass",
+            "asOf": "2024-05"
+          },
+          "themeKeys": [],
+          "enrichment": null
+        },
+        {
+          "stockId": "TW:2727",
+          "stage": "A",
+          "readiness": "processed",
+          "daily": {
+            "passStatus": "fail",
+            "asOf": "2024-06-28"
+          },
+          "monthly": null,
+          "themeKeys": [],
+          "enrichment": null
+        }
+      ],
+      "checksumSha256": "4a30322c446f8b4bdcd0d8d189be6368ab884226733c73f92c208cb8d2aca88a"
+    }
+  },
+  "unchangedSecondRead": {
+    "instruction": "GET latest manifest again. If contentDigest matches, action=skip_all. This assumes the consumer retained the previous snapshot after a successful verification. Do not re-GET chunks. Do not rewrite Notion.",
+    "expectedAction": "skip_all",
+    "expectedVerification": "unchanged_skip"
+  },
+  "manifestOnlyRead": {
+    "instruction": "If contentDigest changes while every chunkDigests entry is unchanged, action=manifest_only and verification=verification_required. Confirm retained chunk checksums match chunkDigests, then update the snapshot pointer. Do not re-GET chunks. Drop removedChunkIndexes locally.",
+    "expectedAction": "manifest_only",
+    "expectedChunkIndexes": [],
+    "expectedRemovedChunkIndexes": []
+  },
+  "retry": {
+    "onDigestMismatch": "Re-GET the single chunkIndex; abort that chunk if still wrong",
+    "onAuthRequired": "Re-authenticate the browser session; do not fall back to SSH/DB",
+    "onIncompleteSnapshot": "Wait for verified_ready; never publish partial ledgers",
+    "onTemporaryReadFailure": "Retry that chunk GET. Do not replace a previously verified chunk until the new checksum matches."
+  }
+}

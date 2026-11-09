@@ -125,6 +125,34 @@ export async function fetchTwResearchBrowserText(scanId: string, chunkIndex = 0)
   );
 }
 
+/** Latest verified immutable manifest for this user (#319 / #322). */
+export async function fetchTwResearchLatestManifest(params?: {
+  universeVersion?: string;
+  tradingDay?: string;
+}) {
+  const query = new URLSearchParams();
+  if (params?.universeVersion) query.set("universeVersion", params.universeVersion);
+  if (params?.tradingDay) query.set("tradingDay", params.tradingDay);
+  const suffix = query.size ? `?${query.toString()}` : "";
+  const response = await requestJson<{ manifest: Record<string, unknown> }>(
+    `/tw-research/exports/latest/manifest${suffix}`,
+  );
+  return response.manifest;
+}
+
+/** Immutable verified snapshot chunk (#319 / #322). */
+export async function fetchTwResearchSnapshotChunk(
+  snapshotId: string,
+  chunkIndex = 0,
+  kind: "ledger" | "qualified" | "enriched" = "ledger",
+) {
+  const response = await requestJson<{ chunk: Record<string, unknown> }>(
+    `/tw-research/exports/snapshots/${encodeURIComponent(snapshotId)}/chunk`
+      + `?chunkIndex=${chunkIndex}&kind=${kind}`,
+  );
+  return response.chunk;
+}
+
 /** Browser navigation / download URL (includes `/api` prefix via apiUrl). */
 export function twResearchCsvUrl(scanId: string) {
   return apiUrl(scanPath(scanId, "/export/csv"));
