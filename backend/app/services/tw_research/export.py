@@ -567,9 +567,16 @@ def build_browser_text_view(
         "producer": {
             "frontendExportReady": True,
             "independentPublisher": True,
+            "stockTickerExportVerified": None,
+            "notionPublishedVerified": False,
+            "notionPublishNotPerformed": True,
+            "handoffRunbook": "docs/tw-research-agent-handoff.md",
+            "latestManifestPath": "/api/tw-research/exports/latest/manifest",
             "note": (
                 "Stock Ticker publishes immutable research snapshots independently. "
-                "It does not track consumer acknowledgment and never writes to Notion."
+                "Prefer latest verified manifest → changed chunks only (#322). "
+                "stock_ticker_export_verified is owned here after digest checks; "
+                "notion_published_verified is external-only; never writes to Notion."
             ),
         },
     }

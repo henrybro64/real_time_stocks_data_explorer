@@ -1027,6 +1027,50 @@ export async function installE2eApiMocks(page: Page): Promise<void> {
       return;
     }
 
+    // Taiwan research Agent handoff (#322): browser-readable verified JSON only.
+    if (path === "/api/tw-research/exports/latest/manifest" && request.method() === "GET") {
+      await fulfillJson(route, {
+        manifest: {
+          snapshotId: "e2e-snapshot",
+          contentDigest: "c".repeat(64),
+          qualityStatus: "verified_ready",
+          tradingDay: "2024-06-28",
+          universeVersion: "explicit:1:e2e",
+          chunkDigests: { "0": "d".repeat(64) },
+          chunkIds: ["0"],
+          notes: ["E2E fixture; Stock Ticker never writes Notion."],
+        },
+      });
+      return;
+    }
+    if (
+      path.startsWith("/api/tw-research/exports/snapshots/") &&
+      path.endsWith("/chunk") &&
+      request.method() === "GET"
+    ) {
+      await fulfillJson(route, {
+        chunk: {
+          chunkIndex: 0,
+          kind: "ledger",
+          checksumSha256: "d".repeat(64),
+          tradingDay: "2024-06-28",
+          rows: [{ stockId: "TW:2330", stage: "B", readiness: "verified_ready" }],
+        },
+      });
+      return;
+    }
+    if (path === "/api/tw-research/contract" && request.method() === "GET") {
+      await fulfillJson(route, {
+        contractVersion: "e2e",
+        notes: ["E2E stub"],
+      });
+      return;
+    }
+    if (path === "/api/themes" && request.method() === "GET") {
+      await fulfillJson(route, []);
+      return;
+    }
+
     if (path === "/api/markets" && request.method() === "GET") {
       await fulfillJson(route, E2E_MARKETS);
       return;

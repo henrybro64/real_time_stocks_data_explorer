@@ -32,7 +32,9 @@ import {
   fetchTwResearchBrowserText,
   fetchTwResearchExportChunk,
   fetchTwResearchExportManifest,
+  fetchTwResearchLatestManifest,
   fetchTwResearchScan,
+  fetchTwResearchSnapshotChunk,
   resolveTwResearchUniverse,
   runTwResearchBatch,
   runTwResearchEnrichmentBatch,
@@ -63,6 +65,8 @@ export function TwResearchPage() {
   const [agentText, setAgentText] = useState("");
   const [agentChunkIndex, setAgentChunkIndex] = useState(0);
   const [agentTotalChunks, setAgentTotalChunks] = useState(0);
+  const [latestManifestText, setLatestManifestText] = useState("");
+  const [latestSnapshotId, setLatestSnapshotId] = useState<string | null>(null);
 
   const refreshManifest = (id: string | null) => {
     if (!id) {
@@ -157,6 +161,32 @@ export function TwResearchPage() {
     },
   });
 
+  const latestManifestMutation = useMutation({
+    mutationFn: async () =>
+      fetchTwResearchLatestManifest({
+        universeVersion: scan?.universeVersion,
+        tradingDay: scan?.tradingDay,
+      }),
+    onSuccess: (manifest) => {
+      setLatestManifestText(JSON.stringify(manifest, null, 2));
+      setLatestSnapshotId(
+        typeof manifest.snapshotId === "string" ? manifest.snapshotId : null,
+      );
+    },
+  });
+
+  const latestChunkMutation = useMutation({
+    mutationFn: async () => {
+      if (!latestSnapshotId) {
+        throw new Error("missing snapshot");
+      }
+      return fetchTwResearchSnapshotChunk(latestSnapshotId, 0, "ledger");
+    },
+    onSuccess: (chunk) => {
+      setLatestManifestText(JSON.stringify(chunk, null, 2));
+    },
+  });
+
   const ledger = (scan?.ledger ?? []) as Array<Record<string, unknown>>;
   const pageRows = ledger.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
   const busy =
@@ -164,13 +194,17 @@ export function TwResearchPage() {
     batchMutation.isPending ||
     enrichMutation.isPending ||
     refreshMutation.isPending ||
-    agentMutation.isPending;
+    agentMutation.isPending ||
+    latestManifestMutation.isPending ||
+    latestChunkMutation.isPending;
   const error =
     createMutation.error ||
     batchMutation.error ||
     enrichMutation.error ||
     refreshMutation.error ||
     agentMutation.error ||
+    latestManifestMutation.error ||
+    latestChunkMutation.error ||
     manifestQuery.error;
 
   return (
@@ -355,6 +389,45 @@ export function TwResearchPage() {
               />
             </TableContainer>
           ) : null}
+
+          <Tile data-testid="tw-research-latest-verified">
+            <Stack gap={4}>
+              <div>
+                <h2 className="cds--productive-heading-02">
+                  {t("research.tw.latestVerifiedTitle")}
+                </h2>
+                <p className="cds--helper-text-01">{t("research.tw.latestVerifiedNote")}</p>
+              </div>
+              <Stack gap={3} orientation="horizontal">
+                <Button
+                  size="md"
+                  kind="secondary"
+                  disabled={busy}
+                  data-testid="tw-research-load-latest-manifest"
+                  onClick={() => latestManifestMutation.mutate()}
+                >
+                  {t("research.tw.loadLatestManifest")}
+                </Button>
+                <Button
+                  size="md"
+                  kind="tertiary"
+                  disabled={busy || !latestSnapshotId}
+                  data-testid="tw-research-load-latest-chunk"
+                  onClick={() => latestChunkMutation.mutate()}
+                >
+                  {t("research.tw.loadLatestChunk")}
+                </Button>
+              </Stack>
+              <TextArea
+                id="tw-research-latest-manifest-json"
+                data-testid="tw-research-latest-manifest-json"
+                labelText={t("research.tw.latestManifestJson")}
+                value={latestManifestText}
+                readOnly
+                rows={12}
+              />
+            </Stack>
+          </Tile>
 
           {scanId ? (
             <Tile>

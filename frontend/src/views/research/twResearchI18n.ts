@@ -66,10 +66,23 @@ const TW_RESEARCH_ROWS = [
   ["research.tw.downloadCsv", "Download CSV", "下載 CSV"],
   [
     "research.tw.agentHandoffNote",
-    "frontend_export_ready. External Notion publish is Agent-owned and optional (#315). Walk every chunk for full ledger coverage.",
-    "frontend_export_ready。外部 Notion 發佈由 Agent 負責，且為選用（#315）。請走完每個 chunk 以取得完整帳本。",
+    "Prefer latest verified manifest → changed chunks only (#322). stock_ticker_export_verified is owned here; Notion publish is external-only. Walk every chunk for full ledger coverage.",
+    "優先使用最新 verified manifest → 只取變更 chunk（#322）。stock_ticker_export_verified 由本系統負責；Notion 發佈僅外部 Agent。請走完每個 chunk 以取得完整帳本。",
   ],
   ["research.tw.agentJson", "Browser-readable export JSON", "瀏覽器可讀匯出 JSON"],
+  [
+    "research.tw.latestVerifiedTitle",
+    "Latest verified snapshot (Agent handoff)",
+    "最新已驗證快照（Agent 交接）",
+  ],
+  [
+    "research.tw.latestVerifiedNote",
+    "Reads immutable HTTPS JSON only — no upstream provider calls. Use for manifest-first transfer.",
+    "只讀不可變 HTTPS JSON，不會觸發上游資料源。用於 manifest-first 交接。",
+  ],
+  ["research.tw.loadLatestManifest", "Load latest verified manifest", "載入最新 verified manifest"],
+  ["research.tw.loadLatestChunk", "Load snapshot chunk 0", "載入快照 chunk 0"],
+  ["research.tw.latestManifestJson", "Latest verified manifest JSON", "最新 verified manifest JSON"],
   ["research.tw.errorTitle", "Taiwan research request failed", "台股研究請求失敗"],
 ] as const satisfies ReadonlyArray<readonly [string, string, string]>;
 
