@@ -232,6 +232,52 @@ def test_default_enrichment_uses_stored_only_candles_for_levels(monkeypatch) -> 
     assert result.fields["price_basis"].status == "ok"
 
 
+def test_enrichment_captured_at_is_wall_clock_not_calculation_day(monkeypatch) -> None:
+    catalog = {
+        "TW:2330": stock_record(
+            "TW:2330",
+            market="TW",
+            symbol="2330",
+            name="TSMC",
+            exchange="TWSE",
+            currency="TWD",
+            timezone="Asia/Taipei",
+        )
+    }
+    fixed_now = datetime(2024, 7, 15, 9, 30, tzinfo=TZ)
+
+    class _FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):  # noqa: ANN001
+            if tz is None:
+                return fixed_now.replace(tzinfo=None)
+            return fixed_now.astimezone(tz)
+
+    monkeypatch.setattr(
+        "app.services.tw_research.enrichment.datetime",
+        _FixedDateTime,
+    )
+
+    result = enrich_qualified_symbol(
+        "TW:2330",
+        stock_loader=lambda stock_id: catalog.get(stock_id),
+        institutional_loader=lambda stock_id, days: _InstResult(
+            history=(), latest_date=None, source="store"
+        ),
+        margin_loader=lambda stock_id, days: _MarginResult(
+            history=(), summary=None, latest_date=None, source="store"
+        ),
+        ownership_loader=lambda stock_id: _OwnResult(points=(), as_of=None, source="tdcc"),
+        key_stats_loader=lambda stock_id: {},
+        candles_loader=lambda stock: [],
+        # Scan trading-day anchor for candle math — must not become captured_at.
+        now=datetime(2024, 6, 28, 14, 0, tzinfo=TZ),
+    )
+    captured = result.fields["institutional_5d"].captured_at or ""
+    assert captured.startswith("2024-07-15")
+    assert "2024-06-28" not in captured
+
+
 def test_prior_week52_from_stage_b_used_when_store_empty() -> None:
     catalog = {
         "TW:2727": stock_record(
@@ -363,6 +409,18 @@ def test_export_paginates_more_than_eighty_rows_and_supports_unclassified() -> N
     text = build_browser_text_view(state, generated_at="2024-06-28T16:00:00+08:00")
     assert "frontendExportReady" in text
     assert "not_performed_in_stock_ticker" in text
+    assert '"chunkIndex": 0' in text
+    assert '"totalChunks": 4' in text
+    assert "nextChunkIndex" in text
+    assert "browserTextPathTemplate" in text
+
+    last = build_browser_text_view(
+        state,
+        generated_at="2024-06-28T16:00:00+08:00",
+        chunk_index=3,
+    )
+    assert '"chunkIndex": 3' in last
+    assert '"nextChunkIndex": null' in last
 
 
 def test_enrichment_batch_budget_and_restaurant_airline_unclassified(monkeypatch) -> None:

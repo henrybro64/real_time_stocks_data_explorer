@@ -188,11 +188,23 @@ def get_export_csv(
 
 
 @router.get("/scans/{scan_id}/export/browser-text")
-def get_export_browser_text(scan_id: str) -> Response:
+def get_export_browser_text(
+    scan_id: str,
+    chunkIndex: int = Query(default=0, ge=0),
+    kind: str = Query(default="ledger", pattern="^(ledger|qualified|enriched)$"),
+) -> Response:
     """Authenticated copyable JSON text for a browser-only Agent (#314/#315)."""
     state = _require_scan(scan_id)
     generated_at = datetime.now(TAIPEI).isoformat()
-    body = build_browser_text_view(state, generated_at=generated_at)
+    try:
+        body = build_browser_text_view(
+            state,
+            generated_at=generated_at,
+            chunk_index=chunkIndex,
+            kind=kind,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return Response(content=body, media_type="application/json; charset=utf-8")
 
 

@@ -1,4 +1,4 @@
-import { requestJson, requestJsonWithBody } from "./client";
+import { apiUrl, requestJson, requestJsonWithBody } from "./client";
 
 export type TwResearchUniverseMode = "starter_preset" | "theme_keys" | "stock_ids";
 
@@ -29,11 +29,11 @@ export type TwResearchScanSnapshot = {
 };
 
 export async function fetchTwResearchContract() {
-  return requestJson<Record<string, unknown>>("/api/tw-research/contract");
+  return requestJson<Record<string, unknown>>("/tw-research/contract");
 }
 
 export async function fetchThemeOptions() {
-  return requestJson<ThemeOption[]>("/api/themes");
+  return requestJson<ThemeOption[]>("/themes");
 }
 
 export async function resolveTwResearchUniverse(body: {
@@ -49,7 +49,7 @@ export async function resolveTwResearchUniverse(body: {
     rejected: Array<{ stockId: string; reason: string }>;
     themeKeysApplied: string[];
     notes: string[];
-  }>("/api/tw-research/universe/resolve", "POST", {
+  }>("/tw-research/universe/resolve", "POST", {
     mode: body.mode,
     themeKeys: body.themeKeys ?? [],
     stockIds: body.stockIds ?? [],
@@ -64,7 +64,7 @@ export async function createTwResearchScan(body: {
   tradingDay?: string;
 }) {
   const response = await requestJsonWithBody<{ scan: TwResearchScanSnapshot }>(
-    "/api/tw-research/scans",
+    "/tw-research/scans",
     "POST",
     {
       universe: {
@@ -81,7 +81,7 @@ export async function createTwResearchScan(body: {
 
 export async function runTwResearchBatch(scanId: string, batchSize = 10) {
   const response = await requestJsonWithBody<{ scan: TwResearchScanSnapshot }>(
-    "/api/tw-research/scans/batches",
+    "/tw-research/scans/batches",
     "POST",
     { scanId, batchSize },
   );
@@ -90,7 +90,7 @@ export async function runTwResearchBatch(scanId: string, batchSize = 10) {
 
 export async function runTwResearchEnrichmentBatch(scanId: string, batchSize = 10) {
   const response = await requestJsonWithBody<{ scan: TwResearchScanSnapshot }>(
-    "/api/tw-research/scans/enrichment-batches",
+    "/tw-research/scans/enrichment-batches",
     "POST",
     { scanId, batchSize },
   );
@@ -99,14 +99,14 @@ export async function runTwResearchEnrichmentBatch(scanId: string, batchSize = 1
 
 export async function fetchTwResearchScan(scanId: string) {
   const response = await requestJson<{ scan: TwResearchScanSnapshot }>(
-    `/api/tw-research/scans/${encodeURIComponent(scanId)}`,
+    `/tw-research/scans/${encodeURIComponent(scanId)}`,
   );
   return response.scan;
 }
 
 export async function fetchTwResearchExportManifest(scanId: string) {
   const response = await requestJson<{ manifest: Record<string, unknown> }>(
-    `/api/tw-research/scans/${encodeURIComponent(scanId)}/export/manifest`,
+    `/tw-research/scans/${encodeURIComponent(scanId)}/export/manifest`,
   );
   return response.manifest;
 }
@@ -117,18 +117,19 @@ export async function fetchTwResearchExportChunk(
   kind: "ledger" | "qualified" | "enriched" = "ledger",
 ) {
   const response = await requestJson<{ chunk: Record<string, unknown> }>(
-    `/api/tw-research/scans/${encodeURIComponent(scanId)}/export/chunk?chunkIndex=${chunkIndex}&kind=${kind}`,
+    `/tw-research/scans/${encodeURIComponent(scanId)}/export/chunk?chunkIndex=${chunkIndex}&kind=${kind}`,
   );
   return response.chunk;
 }
 
-export async function fetchTwResearchBrowserText(scanId: string) {
+export async function fetchTwResearchBrowserText(scanId: string, chunkIndex = 0) {
   const response = await requestJson<Record<string, unknown>>(
-    `/api/tw-research/scans/${encodeURIComponent(scanId)}/export/browser-text`,
+    `/tw-research/scans/${encodeURIComponent(scanId)}/export/browser-text?chunkIndex=${chunkIndex}`,
   );
   return response;
 }
 
+/** Browser navigation / download URL (includes `/api` prefix via apiUrl). */
 export function twResearchCsvUrl(scanId: string) {
-  return `/api/tw-research/scans/${encodeURIComponent(scanId)}/export/csv`;
+  return apiUrl(`/tw-research/scans/${encodeURIComponent(scanId)}/export/csv`);
 }

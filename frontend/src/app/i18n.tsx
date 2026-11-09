@@ -51,6 +51,10 @@ export type TranslationKey =
   | "research.tw.colReason"
   | "research.tw.unclassified"
   | "research.tw.loadAgentJson"
+  | "research.tw.prevChunk"
+  | "research.tw.nextChunk"
+  | "research.tw.loadChunkOnly"
+  | "research.tw.agentChunkStatus"
   | "research.tw.downloadCsv"
   | "research.tw.agentHandoffNote"
   | "research.tw.agentJson"
@@ -640,9 +644,13 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "research.tw.colReason": "Reason",
     "research.tw.unclassified": "Unclassified",
     "research.tw.loadAgentJson": "Load Agent JSON",
+    "research.tw.prevChunk": "Previous chunk",
+    "research.tw.nextChunk": "Next chunk",
+    "research.tw.loadChunkOnly": "Load chunk JSON only",
+    "research.tw.agentChunkStatus": "Agent handoff chunk {index} of {total}",
     "research.tw.downloadCsv": "Download CSV",
     "research.tw.agentHandoffNote":
-      "frontend_export_ready. External Notion publish is Agent-owned and optional (#315).",
+      "frontend_export_ready. External Notion publish is Agent-owned and optional (#315). Walk every chunk for full ledger coverage.",
     "research.tw.agentJson": "Browser-readable export JSON",
     "research.tw.errorTitle": "Taiwan research request failed",
     "nav.menu.open": "Open navigation menu",
@@ -1269,9 +1277,13 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "research.tw.colReason": "原因",
     "research.tw.unclassified": "未分類",
     "research.tw.loadAgentJson": "載入 Agent JSON",
+    "research.tw.prevChunk": "上一塊",
+    "research.tw.nextChunk": "下一塊",
+    "research.tw.loadChunkOnly": "只載入 chunk JSON",
+    "research.tw.agentChunkStatus": "Agent 交接 chunk {index}／{total}",
     "research.tw.downloadCsv": "下載 CSV",
     "research.tw.agentHandoffNote":
-      "frontend_export_ready。外部 Notion 發佈由 Agent 負責，且為選用（#315）。",
+      "frontend_export_ready。外部 Notion 發佈由 Agent 負責，且為選用（#315）。請走完每個 chunk 以取得完整帳本。",
     "research.tw.agentJson": "瀏覽器可讀匯出 JSON",
     "research.tw.errorTitle": "台股研究請求失敗",
     "nav.menu.open": "開啟導覽選單",

@@ -167,24 +167,55 @@ def build_export_csv(state: ScanState, *, kind: str = "ledger") -> str:
     return buffer.getvalue()
 
 
-def build_browser_text_view(state: ScanState, *, generated_at: str) -> str:
-    """Compact authenticated JSON text for a browser-only Agent to copy."""
+def build_browser_text_view(
+    state: ScanState,
+    *,
+    generated_at: str,
+    chunk_index: int = 0,
+    kind: str = "ledger",
+) -> str:
+    """Compact authenticated JSON text for a browser-only Agent to copy.
+
+    Returns one export chunk plus continuation metadata so Agents can walk the
+    full ledger without loading every row in a single payload.
+    """
     manifest = build_export_manifest(state, generated_at=generated_at)
-    first = build_export_chunk(
+    chunk = build_export_chunk(
         state,
-        chunk_index=0,
-        kind="ledger",
+        chunk_index=chunk_index,
+        kind=kind,
         generated_at=generated_at,
     )
+    total_chunks = int(chunk.get("totalChunks") or 0)
+    next_index = chunk_index + 1 if chunk_index + 1 < total_chunks else None
     package = {
         "manifest": manifest,
-        "firstChunk": first,
+        "chunk": chunk,
+        "continuation": {
+            "kind": kind,
+            "chunkIndex": chunk_index,
+            "nextChunkIndex": next_index,
+            "totalChunks": total_chunks,
+            "chunkIndexes": list(range(total_chunks)),
+            "chunkPathTemplate": (
+                f"/api/tw-research/scans/{state.scan_id}/export/chunk"
+                "?chunkIndex={chunkIndex}&kind={kind}"
+            ),
+            "browserTextPathTemplate": (
+                f"/api/tw-research/scans/{state.scan_id}/export/browser-text"
+                "?chunkIndex={chunkIndex}&kind={kind}"
+            ),
+            "note": (
+                "Copy each chunkIndex from 0..totalChunks-1. "
+                "Rows are sorted by stockId; enrichment is included in ledger rows."
+            ),
+        },
         "handoff": {
             "frontendExportReady": True,
             "externalNotionPublished": "not_performed_in_stock_ticker",
             "instruction": (
-                "External Agent may copy this JSON and optionally publish to Notion. "
-                "Stock Ticker never writes Notion."
+                "External Agent may copy this JSON (and remaining chunks) and "
+                "optionally publish to Notion. Stock Ticker never writes Notion."
             ),
         },
     }

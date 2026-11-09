@@ -92,3 +92,12 @@ def test_export_and_enrichment_routes_are_read_or_bounded(monkeypatch) -> None:
     text = client.get(f"/api/tw-research/scans/{scan_id}/export/browser-text")
     assert text.status_code == 200
     assert b"frontendExportReady" in text.content
+    assert b"continuation" in text.content
+    assert b"chunkPathTemplate" in text.content
+
+    chunked = client.get(
+        f"/api/tw-research/scans/{scan_id}/export/browser-text",
+        params={"chunkIndex": 0, "kind": "ledger"},
+    )
+    assert chunked.status_code == 200
+    assert b'"chunkIndex": 0' in chunked.content

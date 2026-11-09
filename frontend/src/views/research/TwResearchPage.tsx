@@ -20,7 +20,7 @@ import {
   TextInput,
   Tile,
 } from "@carbon/react";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 
 import { useLanguage } from "../../app/i18n";
@@ -30,6 +30,7 @@ import {
   createTwResearchScan,
   fetchThemeOptions,
   fetchTwResearchBrowserText,
+  fetchTwResearchExportChunk,
   fetchTwResearchExportManifest,
   fetchTwResearchScan,
   resolveTwResearchUniverse,
@@ -51,6 +52,7 @@ function splitLines(text: string): string[] {
 
 export function TwResearchPage() {
   const { t } = useLanguage();
+  const queryClient = useQueryClient();
   const [mode, setMode] = useState<TwResearchUniverseMode>("starter_preset");
   const [stockIdsText, setStockIdsText] = useState("TW:2727\nTW:2618\nTW:2330");
   const [themeKeysText, setThemeKeysText] = useState("tw-pcb\ntw-ccl");
@@ -59,6 +61,15 @@ export function TwResearchPage() {
   const [scan, setScan] = useState<TwResearchScanSnapshot | null>(null);
   const [page, setPage] = useState(1);
   const [agentText, setAgentText] = useState("");
+  const [agentChunkIndex, setAgentChunkIndex] = useState(0);
+  const [agentTotalChunks, setAgentTotalChunks] = useState(0);
+
+  const refreshManifest = (id: string | null) => {
+    if (!id) {
+      return;
+    }
+    void queryClient.invalidateQueries({ queryKey: ["tw-research-manifest", id] });
+  };
 
   const explicitIds = useMemo(() => splitLines(stockIdsText), [stockIdsText]);
   const themeKeys = useMemo(() => splitLines(themeKeysText), [themeKeysText]);
@@ -100,6 +111,9 @@ export function TwResearchPage() {
       setScan(created);
       setPage(1);
       setAgentText("");
+      setAgentChunkIndex(0);
+      setAgentTotalChunks(0);
+      refreshManifest(created.scanId);
     },
   });
 
@@ -110,7 +124,10 @@ export function TwResearchPage() {
       }
       return runTwResearchBatch(scanId, 10);
     },
-    onSuccess: setScan,
+    onSuccess: (next) => {
+      setScan(next);
+      refreshManifest(next.scanId);
+    },
   });
 
   const enrichMutation = useMutation({
@@ -120,7 +137,10 @@ export function TwResearchPage() {
       }
       return runTwResearchEnrichmentBatch(scanId, 10);
     },
-    onSuccess: setScan,
+    onSuccess: (next) => {
+      setScan(next);
+      refreshManifest(next.scanId);
+    },
   });
 
   const refreshMutation = useMutation({
@@ -130,17 +150,25 @@ export function TwResearchPage() {
       }
       return fetchTwResearchScan(scanId);
     },
-    onSuccess: setScan,
+    onSuccess: (next) => {
+      setScan(next);
+      refreshManifest(next.scanId);
+    },
   });
 
   const agentMutation = useMutation({
-    mutationFn: async () => {
+    mutationFn: async (chunkIndex: number) => {
       if (!scanId) {
         throw new Error("missing scan");
       }
-      return fetchTwResearchBrowserText(scanId);
+      return fetchTwResearchBrowserText(scanId, chunkIndex);
     },
-    onSuccess: (payload) => {
+    onSuccess: (payload, chunkIndex) => {
+      setAgentChunkIndex(chunkIndex);
+      const continuation = payload.continuation as
+        | { totalChunks?: number; nextChunkIndex?: number | null }
+        | undefined;
+      setAgentTotalChunks(Number(continuation?.totalChunks ?? 0));
       setAgentText(JSON.stringify(payload, null, 2));
     },
   });
@@ -333,13 +361,58 @@ export function TwResearchPage() {
             <Tile>
               <Stack gap={4}>
                 <Stack gap={3} orientation="horizontal">
-                  <Button size="md" kind="secondary" disabled={busy} onClick={() => agentMutation.mutate()}>
+                  <Button
+                    size="md"
+                    kind="secondary"
+                    disabled={busy}
+                    onClick={() => agentMutation.mutate(0)}
+                  >
                     {t("research.tw.loadAgentJson")}
+                  </Button>
+                  <Button
+                    size="md"
+                    kind="ghost"
+                    disabled={busy || agentTotalChunks <= 0 || agentChunkIndex <= 0}
+                    onClick={() => agentMutation.mutate(Math.max(0, agentChunkIndex - 1))}
+                  >
+                    {t("research.tw.prevChunk")}
+                  </Button>
+                  <Button
+                    size="md"
+                    kind="ghost"
+                    disabled={
+                      busy ||
+                      agentTotalChunks <= 0 ||
+                      agentChunkIndex + 1 >= agentTotalChunks
+                    }
+                    onClick={() => agentMutation.mutate(agentChunkIndex + 1)}
+                  >
+                    {t("research.tw.nextChunk")}
+                  </Button>
+                  <Button
+                    size="md"
+                    kind="tertiary"
+                    disabled={busy}
+                    onClick={async () => {
+                      if (!scanId) {
+                        return;
+                      }
+                      const chunk = await fetchTwResearchExportChunk(scanId, agentChunkIndex);
+                      setAgentText(JSON.stringify(chunk, null, 2));
+                    }}
+                  >
+                    {t("research.tw.loadChunkOnly")}
                   </Button>
                   <Button size="md" kind="tertiary" disabled={busy}>
                     <a href={twResearchCsvUrl(scanId)}>{t("research.tw.downloadCsv")}</a>
                   </Button>
                 </Stack>
+                <p className="cds--helper-text-01">
+                  {t("research.tw.agentChunkStatus", {
+                    index: agentChunkIndex,
+                    total: agentTotalChunks || "—",
+                  })}
+                </p>
                 <p className="cds--helper-text-01">{t("research.tw.agentHandoffNote")}</p>
                 <TextArea
                   id="tw-research-agent-json"

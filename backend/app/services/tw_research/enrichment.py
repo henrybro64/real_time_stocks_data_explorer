@@ -104,8 +104,13 @@ def enrich_qualified_symbol(
 
     When ``candles_loader`` is omitted, levels use **stored-only** daily history
     (``peek_daily_history`` / no upstream month backfill).
+
+    ``now`` anchors completed-candle / indicator cutoffs (typically the scan
+    trading day). ``captured_at`` is always the real wall-clock fetch time so
+    enrichment provenance is not stamped with an artificial historical capture.
     """
-    captured_at = (now or datetime.now(UTC)).isoformat()
+    captured_at = datetime.now(UTC).isoformat()
+    calculation_now = now
     result = EnrichmentResult(stock_id=stock_id, qualified=True)
     loader = stock_loader or quote_service.get_catalog_stock
     stock = loader(stock_id)
@@ -187,7 +192,7 @@ def enrich_qualified_symbol(
             loader=candles_loader or _default_stored_candles_loader,
             prior_week52_position=prior_week52_position,
             captured_at=captured_at,
-            now=now,
+            now=calculation_now,
         )
     except Exception as exc:  # noqa: BLE001
         result.fields["reference_levels"] = ProvenanceField(
