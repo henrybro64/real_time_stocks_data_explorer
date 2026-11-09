@@ -65,14 +65,11 @@ def _reset_shared_limiters() -> None:
 
 
 @pytest.fixture(autouse=True)
-def _reset_tw_research_repository_overrides() -> Iterator[None]:
+def _reset_tw_research_repository_overrides() -> None:
     """Keep TW research repositories on the real Postgres SessionLocal in CI."""
     from app.repositories.tw_research_repository import tw_research_repository
     from app.services.tw_research import persistence as persistence_module
 
-    tw_research_repository.clear_session_factory_override()
-    persistence_module.tw_research_repository.clear_session_factory_override()
-    yield
     tw_research_repository.clear_session_factory_override()
     persistence_module.tw_research_repository.clear_session_factory_override()
 

@@ -229,10 +229,9 @@ def trim_truncated_leading_months(
         return list(monthly_bars)
     trimmed = list(monthly_bars)
     first_day = candle_date(daily_candles[0])
-    while trimmed:
-        lead = candle_date(trimmed[0])
-        if (lead.year, lead.month) != (first_day.year, first_day.month):
-            break
+    lead = candle_date(trimmed[0])
+    # Only the leading boundary month is eligible for this trim.
+    if (lead.year, lead.month) == (first_day.year, first_day.month):
         report = validate_closed_month_coverage(
             daily_candles,
             year=lead.year,
@@ -240,12 +239,13 @@ def trim_truncated_leading_months(
             market=market,
             allow_holiday_fetch=allow_holiday_fetch,
         )
-        if report.ok:
-            break
-        if report.reason == "trading_calendar_unavailable" and first_day.day <= 1:
-            break
-        trimmed = trimmed[1:]
-        break  # only the leading boundary month is eligible for this trim
+        if (
+            not report.ok
+            and not (
+                report.reason == "trading_calendar_unavailable" and first_day.day <= 1
+            )
+        ):
+            trimmed = trimmed[1:]
     return trimmed
 
 
