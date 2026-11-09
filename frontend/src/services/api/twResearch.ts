@@ -79,34 +79,31 @@ export async function createTwResearchScan(body: {
   return response.scan;
 }
 
-export async function runTwResearchBatch(scanId: string, batchSize = 10) {
-  const response = await requestJsonWithBody<{ scan: TwResearchScanSnapshot }>(
-    "/tw-research/scans/batches",
-    "POST",
-    { scanId, batchSize },
-  );
+function scanPath(scanId: string, suffix = "") {
+  return `/tw-research/scans/${encodeURIComponent(scanId)}${suffix}`;
+}
+
+async function postScanMutation(path: string, body: Record<string, unknown>) {
+  const response = await requestJsonWithBody<{ scan: TwResearchScanSnapshot }>(path, "POST", body);
   return response.scan;
+}
+
+export async function runTwResearchBatch(scanId: string, batchSize = 10) {
+  return postScanMutation("/tw-research/scans/batches", { scanId, batchSize });
 }
 
 export async function runTwResearchEnrichmentBatch(scanId: string, batchSize = 10) {
-  const response = await requestJsonWithBody<{ scan: TwResearchScanSnapshot }>(
-    "/tw-research/scans/enrichment-batches",
-    "POST",
-    { scanId, batchSize },
-  );
-  return response.scan;
+  return postScanMutation("/tw-research/scans/enrichment-batches", { scanId, batchSize });
 }
 
 export async function fetchTwResearchScan(scanId: string) {
-  const response = await requestJson<{ scan: TwResearchScanSnapshot }>(
-    `/tw-research/scans/${encodeURIComponent(scanId)}`,
-  );
+  const response = await requestJson<{ scan: TwResearchScanSnapshot }>(scanPath(scanId));
   return response.scan;
 }
 
 export async function fetchTwResearchExportManifest(scanId: string) {
   const response = await requestJson<{ manifest: Record<string, unknown> }>(
-    `/tw-research/scans/${encodeURIComponent(scanId)}/export/manifest`,
+    scanPath(scanId, "/export/manifest"),
   );
   return response.manifest;
 }
@@ -117,19 +114,18 @@ export async function fetchTwResearchExportChunk(
   kind: "ledger" | "qualified" | "enriched" = "ledger",
 ) {
   const response = await requestJson<{ chunk: Record<string, unknown> }>(
-    `/tw-research/scans/${encodeURIComponent(scanId)}/export/chunk?chunkIndex=${chunkIndex}&kind=${kind}`,
+    `${scanPath(scanId, "/export/chunk")}?chunkIndex=${chunkIndex}&kind=${kind}`,
   );
   return response.chunk;
 }
 
 export async function fetchTwResearchBrowserText(scanId: string, chunkIndex = 0) {
-  const response = await requestJson<Record<string, unknown>>(
-    `/tw-research/scans/${encodeURIComponent(scanId)}/export/browser-text?chunkIndex=${chunkIndex}`,
+  return requestJson<Record<string, unknown>>(
+    `${scanPath(scanId, "/export/browser-text")}?chunkIndex=${chunkIndex}`,
   );
-  return response;
 }
 
 /** Browser navigation / download URL (includes `/api` prefix via apiUrl). */
 export function twResearchCsvUrl(scanId: string) {
-  return apiUrl(`/tw-research/scans/${encodeURIComponent(scanId)}/export/csv`);
+  return apiUrl(scanPath(scanId, "/export/csv"));
 }

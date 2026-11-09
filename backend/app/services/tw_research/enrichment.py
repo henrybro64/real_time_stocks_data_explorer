@@ -120,133 +120,121 @@ def enrich_qualified_symbol(
         result.error = "not_in_catalog"
         return result
 
-    _run_enrichment_step(
-        result,
-        field="institutional_5d",
-        source="tw_institutional_service",
-        captured_at=captured_at,
-        action=lambda: _enrich_institutional(
-            result,
-            stock_id,
-            loader=institutional_loader or _default_institutional,
-            captured_at=captured_at,
-            symbol=stock.symbol,
+    steps: list[tuple[str, str, str, EnrichmentStep]] = [
+        (
+            "institutional_5d",
+            "tw_institutional_service",
+            "quote_or_eod_day",
+            lambda: _enrich_institutional(
+                result,
+                stock_id,
+                loader=institutional_loader or _default_institutional,
+                captured_at=captured_at,
+                symbol=stock.symbol,
+            ),
         ),
-    )
-    _run_enrichment_step(
-        result,
-        field="margin",
-        source="tw_margin_short_service",
-        captured_at=captured_at,
-        action=lambda: _enrich_margin(
-            result,
-            stock_id,
-            loader=margin_loader or _default_margin,
-            captured_at=captured_at,
+        (
+            "margin",
+            "tw_margin_short_service",
+            "quote_or_eod_day",
+            lambda: _enrich_margin(
+                result,
+                stock_id,
+                loader=margin_loader or _default_margin,
+                captured_at=captured_at,
+            ),
         ),
-    )
-    _run_enrichment_step(
-        result,
-        field="tdcc_holders_ge_400_lots",
-        source="tw_ownership_concentration_service",
-        captured_at=captured_at,
-        freshness_class="tdcc_weekly",
-        action=lambda: _enrich_ownership(
-            result,
-            stock_id,
-            loader=ownership_loader or _default_ownership,
-            captured_at=captured_at,
+        (
+            "tdcc_holders_ge_400_lots",
+            "tw_ownership_concentration_service",
+            "tdcc_weekly",
+            lambda: _enrich_ownership(
+                result,
+                stock_id,
+                loader=ownership_loader or _default_ownership,
+                captured_at=captured_at,
+            ),
         ),
-    )
-    _run_enrichment_step(
-        result,
-        field="official_pe",
-        source="key_stats_service",
-        captured_at=captured_at,
-        action=lambda: _enrich_valuation(
-            result,
-            stock_id,
-            loader=key_stats_loader or _default_key_stats,
-            captured_at=captured_at,
+        (
+            "official_pe",
+            "key_stats_service",
+            "quote_or_eod_day",
+            lambda: _enrich_valuation(
+                result,
+                stock_id,
+                loader=key_stats_loader or _default_key_stats,
+                captured_at=captured_at,
+            ),
         ),
-    )
-    _run_enrichment_step(
-        result,
-        field="reference_levels",
-        source="stock_analysis_key_price_levels",
-        captured_at=captured_at,
-        freshness_class="computed",
-        action=lambda: _enrich_levels(
-            result,
-            stock,
-            loader=candles_loader or _default_stored_candles_loader,
-            prior_week52_position=prior_week52_position,
-            captured_at=captured_at,
-            now=calculation_now,
+        (
+            "reference_levels",
+            "stock_analysis_key_price_levels",
+            "computed",
+            lambda: _enrich_levels(
+                result,
+                stock,
+                loader=candles_loader or _default_stored_candles_loader,
+                prior_week52_position=prior_week52_position,
+                captured_at=captured_at,
+                now=calculation_now,
+            ),
         ),
-    )
+    ]
+    for field_name, source, freshness_class, action in steps:
+        try:
+            action()
+        except Exception as exc:  # noqa: BLE001 — isolate per enrichment source
+            _set_field(
+                result,
+                field=field_name,
+                status="unavailable",
+                source=source,
+                captured_at=captured_at,
+                freshness_class=freshness_class,
+                reason=f"symbol_error:{type(exc).__name__}",
+            )
 
     # PEG is never reverse-engineered from a mismatched PE period.
-    _ensure_unavailable_field(
-        result,
-        field="peg",
-        source="none",
-        captured_at=captured_at,
-        freshness_class="earnings_quarterly",
-        reason="verified_eps_growth_denominator_unavailable",
-    )
-    _ensure_unavailable_field(
-        result,
-        field="ttm_eps",
-        source="key_stats_service",
-        captured_at=captured_at,
-        freshness_class="earnings_quarterly",
-        reason="ttm_eps_not_verified_for_taiwan_official_pe_path",
-    )
+    for field_name, source, reason in (
+        ("peg", "none", "verified_eps_growth_denominator_unavailable"),
+        ("ttm_eps", "key_stats_service", "ttm_eps_not_verified_for_taiwan_official_pe_path"),
+    ):
+        if field_name in result.fields:
+            continue
+        _set_field(
+            result,
+            field=field_name,
+            status="unavailable",
+            source=source,
+            captured_at=captured_at,
+            freshness_class="earnings_quarterly",
+            reason=reason,
+        )
 
     return result
 
 
-def _run_enrichment_step(
+def _set_field(
     result: EnrichmentResult,
     *,
     field: str,
+    status: FieldStatus,
     source: str,
-    captured_at: str,
-    action: EnrichmentStep,
+    captured_at: str | None = None,
+    source_as_of: str | None = None,
     freshness_class: str = "quote_or_eod_day",
+    reason: str | None = None,
+    value: Any = None,
 ) -> None:
-    try:
-        action()
-    except Exception as exc:  # noqa: BLE001 — isolate per enrichment source
-        result.fields[field] = ProvenanceField(
-            field=field,
-            status="unavailable",
-            source=source,
-            captured_at=captured_at,
-            freshness_class=freshness_class,
-            reason=f"symbol_error:{type(exc).__name__}",
-        )
-
-
-def _ensure_unavailable_field(
-    result: EnrichmentResult,
-    *,
-    field: str,
-    source: str,
-    captured_at: str,
-    freshness_class: str,
-    reason: str,
-) -> None:
-    if field in result.fields:
-        return
     result.fields[field] = ProvenanceField(
         field=field,
-        status="unavailable",
+        status=status,
         source=source,
+        source_as_of=source_as_of,
         captured_at=captured_at,
         freshness_class=freshness_class,
         reason=reason,
+        value=value,
     )
 
 
@@ -288,24 +276,27 @@ def _enrich_institutional(
 ) -> None:
     payload = loader(stock_id, 12)
     history = list(payload.history[-5:]) if payload.history else []
+    points = [_institutional_point(row, symbol) for row in history]
     if len(history) < 5:
-        result.fields["institutional_5d"] = ProvenanceField(
+        _set_field(
+            result,
             field="institutional_5d",
             status="unavailable" if not history else "partial",
             source=payload.source,
             source_as_of=payload.latest_date,
             captured_at=captured_at,
             reason="fewer_than_5_completed_sessions_in_store",
-            value=[_institutional_point(row, symbol) for row in history] or None,
+            value=points or None,
         )
         return
-    result.fields["institutional_5d"] = ProvenanceField(
+    _set_field(
+        result,
         field="institutional_5d",
         status="ok",
         source=payload.source,
         source_as_of=payload.latest_date,
         captured_at=captured_at,
-        value=[_institutional_point(row, symbol) for row in history],
+        value=points,
     )
 
 
@@ -336,7 +327,8 @@ def _enrich_margin(
         if prior is not None and current is not None:
             delta = current - prior
 
-    utilization = ProvenanceField(
+    _set_field(
+        result,
         field="margin_utilization",
         status="unavailable",
         source=payload.source,
@@ -344,10 +336,10 @@ def _enrich_margin(
         captured_at=captured_at,
         reason="numerator_and_denominator_not_both_verified_in_margin_short_payload",
     )
-    result.fields["margin_utilization"] = utilization
 
     if latest is None or latest.margin_balance_lots is None:
-        result.fields["margin"] = ProvenanceField(
+        _set_field(
+            result,
             field="margin",
             status="unavailable",
             source=payload.source,
@@ -357,7 +349,8 @@ def _enrich_margin(
         )
         return
 
-    result.fields["margin"] = ProvenanceField(
+    _set_field(
+        result,
         field="margin",
         status="ok" if delta is not None else "partial",
         source=payload.source,
@@ -382,7 +375,8 @@ def _enrich_ownership(
     payload = loader(stock_id)
     points = list(payload.points)
     if not points:
-        result.fields["tdcc_holders_ge_400_lots"] = ProvenanceField(
+        _set_field(
+            result,
             field="tdcc_holders_ge_400_lots",
             status="unavailable",
             source=payload.source,
@@ -390,7 +384,6 @@ def _enrich_ownership(
             captured_at=captured_at,
             freshness_class="tdcc_weekly",
             reason="tdcc_weekly_points_missing",
-            value=None,
         )
         return
 
@@ -413,7 +406,8 @@ def _enrich_ownership(
         status = "partial"
         reason = "prior_weekly_point_missing_for_change"
 
-    result.fields["tdcc_holders_ge_400_lots"] = ProvenanceField(
+    _set_field(
+        result,
         field="tdcc_holders_ge_400_lots",
         status=status,
         source=payload.source,
@@ -445,28 +439,33 @@ def _enrich_valuation(
     valuation_as_of = stats.get("valuationAsOf")
     warning = stats.get("valuationWarning")
 
+    pe_source_label = str(pe_source or "key_stats_service")
+    pe_as_of = str(valuation_as_of) if valuation_as_of else None
     if pe is None:
-        result.fields["official_pe"] = ProvenanceField(
+        _set_field(
+            result,
             field="official_pe",
             status="unavailable",
-            source=str(pe_source or "key_stats_service"),
-            source_as_of=str(valuation_as_of) if valuation_as_of else None,
+            source=pe_source_label,
+            source_as_of=pe_as_of,
             captured_at=captured_at,
             reason=str(warning or "official_pe_unavailable"),
         )
     else:
-        result.fields["official_pe"] = ProvenanceField(
+        _set_field(
+            result,
             field="official_pe",
             status="ok",
-            source=str(pe_source or "key_stats_service"),
-            source_as_of=str(valuation_as_of) if valuation_as_of else None,
+            source=pe_source_label,
+            source_as_of=pe_as_of,
             captured_at=captured_at,
             value={"peRatio": pe, "peRatioType": pe_type},
         )
 
     eps = stats.get("epsTtm")
     if eps is None:
-        result.fields["ttm_eps"] = ProvenanceField(
+        _set_field(
+            result,
             field="ttm_eps",
             status="unavailable",
             source="key_stats_service",
@@ -474,41 +473,32 @@ def _enrich_valuation(
             freshness_class="earnings_quarterly",
             reason="ttm_eps_not_verified_for_taiwan_official_pe_path",
         )
-    elif isinstance(eps, (int, float)) and float(eps) < 0:
-        result.fields["ttm_eps"] = ProvenanceField(
-            field="ttm_eps",
-            status="partial",
-            source="key_stats_service",
-            captured_at=captured_at,
-            freshness_class="earnings_quarterly",
-            reason="negative_eps",
-            value=float(eps),
-        )
-        result.fields["peg"] = ProvenanceField(
-            field="peg",
-            status="unavailable",
-            source="none",
-            captured_at=captured_at,
-            freshness_class="earnings_quarterly",
-            reason="peg_invalid_with_negative_eps",
-        )
-    else:
-        result.fields["ttm_eps"] = ProvenanceField(
-            field="ttm_eps",
-            status="ok",
-            source="key_stats_service",
-            captured_at=captured_at,
-            freshness_class="earnings_quarterly",
-            value=float(eps),
-        )
-        result.fields["peg"] = ProvenanceField(
-            field="peg",
-            status="unavailable",
-            source="none",
-            captured_at=captured_at,
-            freshness_class="earnings_quarterly",
-            reason="verified_eps_growth_denominator_unavailable",
-        )
+        return
+
+    negative = isinstance(eps, (int, float)) and float(eps) < 0
+    _set_field(
+        result,
+        field="ttm_eps",
+        status="partial" if negative else "ok",
+        source="key_stats_service",
+        captured_at=captured_at,
+        freshness_class="earnings_quarterly",
+        reason="negative_eps" if negative else None,
+        value=float(eps),
+    )
+    _set_field(
+        result,
+        field="peg",
+        status="unavailable",
+        source="none",
+        captured_at=captured_at,
+        freshness_class="earnings_quarterly",
+        reason=(
+            "peg_invalid_with_negative_eps"
+            if negative
+            else "verified_eps_growth_denominator_unavailable"
+        ),
+    )
 
 
 def _enrich_levels(
@@ -536,7 +526,8 @@ def _enrich_levels(
             if not completed
             else "insufficient_completed_sessions"
         )
-    result.fields["week52_position"] = ProvenanceField(
+    _set_field(
+        result,
         field="week52_position",
         status="ok" if week52 is not None else "unavailable",
         source=week52_source,
@@ -545,16 +536,10 @@ def _enrich_levels(
         reason=week52_reason,
         value=week52,
     )
-    if not completed:
-        result.fields["reference_levels"] = ProvenanceField(
-            field="reference_levels",
-            status="unavailable",
-            source="stock_analysis_key_price_levels",
-            captured_at=captured_at,
-            freshness_class="computed",
-            reason="stored_history_empty_or_incomplete",
-        )
-        result.fields["price_basis"] = ProvenanceField(
+
+    def _set_price_basis() -> None:
+        _set_field(
+            result,
             field="price_basis",
             status="ok",
             source="config",
@@ -562,6 +547,18 @@ def _enrich_levels(
             freshness_class="config",
             value=PRICE_BASIS,
         )
+
+    if not completed:
+        _set_field(
+            result,
+            field="reference_levels",
+            status="unavailable",
+            source="stock_analysis_key_price_levels",
+            captured_at=captured_at,
+            freshness_class="computed",
+            reason="stored_history_empty_or_incomplete",
+        )
+        _set_price_basis()
         return
     as_of = datetime.fromisoformat(completed[-1].time).date().isoformat()
     levels = build_key_price_levels(
@@ -571,7 +568,8 @@ def _enrich_levels(
         reference_price=float(completed[-1].close),
     )
     availability = levels.get("availability")
-    result.fields["reference_levels"] = ProvenanceField(
+    _set_field(
+        result,
         field="reference_levels",
         status="ok" if availability == "ok" else "unavailable",
         source="stock_analysis_key_price_levels",
@@ -581,11 +579,4 @@ def _enrich_levels(
         reason=None if availability == "ok" else f"levels_{availability}",
         value=levels if availability == "ok" else None,
     )
-    result.fields["price_basis"] = ProvenanceField(
-        field="price_basis",
-        status="ok",
-        source="config",
-        captured_at=captured_at,
-        freshness_class="config",
-        value=PRICE_BASIS,
-    )
+    _set_price_basis()

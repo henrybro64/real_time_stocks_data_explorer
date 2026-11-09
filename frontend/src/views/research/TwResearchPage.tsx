@@ -236,33 +236,48 @@ export function TwResearchPage() {
                 <SelectItem value="20" text="20" />
               </Select>
               <Stack gap={3} orientation="horizontal">
-                <Button size="md" disabled={busy} onClick={() => createMutation.mutate()}>
-                  {t("research.tw.createScan")}
-                </Button>
-                <Button
-                  size="md"
-                  kind="secondary"
-                  disabled={busy || !scanId}
-                  onClick={() => batchMutation.mutate()}
-                >
-                  {t("research.tw.runBatch")}
-                </Button>
-                <Button
-                  size="md"
-                  kind="tertiary"
-                  disabled={busy || !scanId}
-                  onClick={() => enrichMutation.mutate()}
-                >
-                  {t("research.tw.runEnrichment")}
-                </Button>
-                <Button
-                  size="md"
-                  kind="ghost"
-                  disabled={busy || !scanId}
-                  onClick={() => refreshMutation.mutate()}
-                >
-                  {t("research.tw.refresh")}
-                </Button>
+                {(
+                  [
+                    {
+                      key: "create",
+                      kind: "primary" as const,
+                      label: "research.tw.createScan" as const,
+                      disabled: busy,
+                      onClick: () => createMutation.mutate(),
+                    },
+                    {
+                      key: "batch",
+                      kind: "secondary" as const,
+                      label: "research.tw.runBatch" as const,
+                      disabled: busy || !scanId,
+                      onClick: () => batchMutation.mutate(),
+                    },
+                    {
+                      key: "enrich",
+                      kind: "tertiary" as const,
+                      label: "research.tw.runEnrichment" as const,
+                      disabled: busy || !scanId,
+                      onClick: () => enrichMutation.mutate(),
+                    },
+                    {
+                      key: "refresh",
+                      kind: "ghost" as const,
+                      label: "research.tw.refresh" as const,
+                      disabled: busy || !scanId,
+                      onClick: () => refreshMutation.mutate(),
+                    },
+                  ]
+                ).map((action) => (
+                  <Button
+                    key={action.key}
+                    size="md"
+                    kind={action.kind}
+                    disabled={action.disabled}
+                    onClick={action.onClick}
+                  >
+                    {t(action.label)}
+                  </Button>
+                ))}
               </Stack>
               {busy ? <InlineLoading description={t("research.tw.working")} /> : null}
             </Stack>

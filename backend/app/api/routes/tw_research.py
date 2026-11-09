@@ -7,7 +7,9 @@ and /scans/enrichment-batches may compute within explicit budgets.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime
+from typing import TypeVar
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
@@ -33,16 +35,19 @@ from app.services.tw_research.export import (
     build_export_manifest,
 )
 from app.services.tw_research.preset import starter_preset_stock_ids, starter_preset_theme_keys
-from app.services.tw_research.scan import tw_research_scan_service
+from app.services.tw_research.scan import ScanState, tw_research_scan_service
 from app.services.tw_research.universe import UniverseSelector, resolve_universe
 
 TAIPEI = ZoneInfo("Asia/Taipei")
+T = TypeVar("T")
 
 router = APIRouter(
     prefix="/tw-research",
     tags=["tw-research"],
     dependencies=[Depends(get_effective_user_id)],
 )
+
+_EXPORT_KIND_PATTERN = "^(ledger|qualified|enriched)$"
 
 
 @router.get("/contract", response_model=ResearchContractResponse)
@@ -68,11 +73,7 @@ def get_starter_preset() -> dict[str, object]:
 
 @router.post("/universe/resolve", response_model=ResolvedUniverseResponse)
 def post_resolve_universe(body: UniverseSelectorRequest) -> ResolvedUniverseResponse:
-    selector = _selector_from_request(body)
-    try:
-        resolved = resolve_universe(selector)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    resolved = _call_or_http(lambda: resolve_universe(_selector_from_request(body)))
     return ResolvedUniverseResponse(
         universeVersion=resolved.universe_version,
         mode=resolved.selector.mode,
@@ -89,63 +90,51 @@ def post_resolve_universe(body: UniverseSelectorRequest) -> ResolvedUniverseResp
 
 @router.post("/scans", response_model=ScanSnapshotResponse)
 def create_scan(body: CreateScanRequest) -> ScanSnapshotResponse:
-    selector = _selector_from_request(body.universe)
-    try:
-        state = tw_research_scan_service.create_scan(
-            selector,
+    state = _call_or_http(
+        lambda: tw_research_scan_service.create_scan(
+            _selector_from_request(body.universe),
             target_count=body.targetCount,
             trading_day=body.tradingDay,
             max_upstream_month_fetches=body.maxUpstreamMonthFetches,
             max_enrichments_per_run=body.maxEnrichmentsPerRun,
         )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return ScanSnapshotResponse(scan=state.snapshot())
+    )
+    return _snapshot(state)
 
 
 @router.post("/scans/batches", response_model=ScanSnapshotResponse)
 def run_scan_batch(body: RunBatchRequest) -> ScanSnapshotResponse:
-    try:
-        state = tw_research_scan_service.run_batch(
+    state = _call_or_http(
+        lambda: tw_research_scan_service.run_batch(
             body.scanId,
             batch_size=body.batchSize,
             timeout_seconds=body.timeoutSeconds,
         )
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return ScanSnapshotResponse(scan=state.snapshot())
+    )
+    return _snapshot(state)
 
 
 @router.post("/scans/enrichment-batches", response_model=ScanSnapshotResponse)
 def run_enrichment_batch(body: RunEnrichmentBatchRequest) -> ScanSnapshotResponse:
     """Bounded enrichment for dual-pass symbols only (#313)."""
-    try:
-        state = tw_research_scan_service.run_enrichment_batch(
+    state = _call_or_http(
+        lambda: tw_research_scan_service.run_enrichment_batch(
             body.scanId,
             batch_size=body.batchSize,
         )
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return ScanSnapshotResponse(scan=state.snapshot())
+    )
+    return _snapshot(state)
 
 
 @router.get("/scans/{scan_id}", response_model=ScanSnapshotResponse)
 def get_scan(scan_id: str) -> ScanSnapshotResponse:
     """Read-only snapshot. Does not trigger upstream fetches (#312)."""
-    state = tw_research_scan_service.get_scan(scan_id)
-    if state is None:
-        raise HTTPException(status_code=404, detail=f"Unknown scan_id: {scan_id}")
-    return ScanSnapshotResponse(scan=state.snapshot())
+    return _snapshot(_require_scan(scan_id))
 
 
 @router.get("/scans/{scan_id}/export/manifest", response_model=ExportManifestResponse)
 def get_export_manifest(scan_id: str) -> ExportManifestResponse:
-    state = _require_scan(scan_id)
-    generated_at = datetime.now(TAIPEI).isoformat()
+    state, generated_at = _export_context(scan_id)
     return ExportManifestResponse(
         manifest=build_export_manifest(state, generated_at=generated_at)
     )
@@ -155,26 +144,24 @@ def get_export_manifest(scan_id: str) -> ExportManifestResponse:
 def get_export_chunk(
     scan_id: str,
     chunkIndex: int = Query(default=0, ge=0),
-    kind: str = Query(default="ledger", pattern="^(ledger|qualified|enriched)$"),
+    kind: str = Query(default="ledger", pattern=_EXPORT_KIND_PATTERN),
 ) -> ExportChunkResponse:
-    state = _require_scan(scan_id)
-    generated_at = datetime.now(TAIPEI).isoformat()
-    try:
-        chunk = build_export_chunk(
+    state, generated_at = _export_context(scan_id)
+    chunk = _call_or_http(
+        lambda: build_export_chunk(
             state,
             chunk_index=chunkIndex,
             kind=kind,
             generated_at=generated_at,
         )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    )
     return ExportChunkResponse(chunk=chunk)
 
 
 @router.get("/scans/{scan_id}/export/csv")
 def get_export_csv(
     scan_id: str,
-    kind: str = Query(default="ledger", pattern="^(ledger|qualified|enriched)$"),
+    kind: str = Query(default="ledger", pattern=_EXPORT_KIND_PATTERN),
 ) -> Response:
     state = _require_scan(scan_id)
     body = build_export_csv(state, kind=kind)
@@ -191,28 +178,43 @@ def get_export_csv(
 def get_export_browser_text(
     scan_id: str,
     chunkIndex: int = Query(default=0, ge=0),
-    kind: str = Query(default="ledger", pattern="^(ledger|qualified|enriched)$"),
+    kind: str = Query(default="ledger", pattern=_EXPORT_KIND_PATTERN),
 ) -> Response:
     """Authenticated copyable JSON text for a browser-only Agent (#314/#315)."""
-    state = _require_scan(scan_id)
-    generated_at = datetime.now(TAIPEI).isoformat()
-    try:
-        body = build_browser_text_view(
+    state, generated_at = _export_context(scan_id)
+    body = _call_or_http(
+        lambda: build_browser_text_view(
             state,
             generated_at=generated_at,
             chunk_index=chunkIndex,
             kind=kind,
         )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    )
     return Response(content=body, media_type="application/json; charset=utf-8")
 
 
-def _require_scan(scan_id: str):
+def _snapshot(state: ScanState) -> ScanSnapshotResponse:
+    return ScanSnapshotResponse(scan=state.snapshot())
+
+
+def _require_scan(scan_id: str) -> ScanState:
     state = tw_research_scan_service.get_scan(scan_id)
     if state is None:
         raise HTTPException(status_code=404, detail=f"Unknown scan_id: {scan_id}")
     return state
+
+
+def _export_context(scan_id: str) -> tuple[ScanState, str]:
+    return _require_scan(scan_id), datetime.now(TAIPEI).isoformat()
+
+
+def _call_or_http(action: Callable[[], T]) -> T:
+    try:
+        return action()
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def _selector_from_request(body: UniverseSelectorRequest) -> UniverseSelector:
