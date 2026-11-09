@@ -17,6 +17,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime, time
+from inspect import Parameter, signature
 from threading import Lock
 from typing import Any, Literal, Protocol
 from uuid import uuid4
@@ -29,11 +30,17 @@ from app.services.moving_average import completed_daily_candles
 from app.services.quote_service import quote_service
 from app.services.tw_research.constants import (
     CALCULATION_VERSION,
+    DEFAULT_MAX_ENRICHMENTS_PER_RUN,
     DEFAULT_MAX_UPSTREAM_MONTH_FETCHES,
     DEFAULT_RUN_TIMEOUT_SECONDS,
     DEFAULT_TARGET_COUNT,
+    ENRICH_BATCH_SIZE,
     PREFERRED_DAILY_HISTORY_LIMIT,
     SCAN_BATCH_SIZE,
+)
+from app.services.tw_research.enrichment import (
+    enrich_qualified_symbol,
+    is_technically_qualified,
 )
 from app.services.tw_research.indicators import (
     MacdKdSnapshot,
@@ -94,6 +101,8 @@ class SymbolScanRecord:
     week52_position: float | None = None
     rejection_reason: str | None = None
     checkpoint: tuple[str, str, str, str] | None = None
+    theme_keys: tuple[str, ...] = ()
+    enrichment: dict[str, Any] | None = None
 
 
 @dataclass
@@ -105,12 +114,16 @@ class ScanState:
     selector: UniverseSelector
     stock_ids: tuple[str, ...]
     cursor: int = 0
+    enrich_cursor: int = 0
     target_count: int = DEFAULT_TARGET_COUNT
     status: ScanStatus = "running"
     records: dict[str, SymbolScanRecord] = field(default_factory=dict)
     day_pass_ids: list[str] = field(default_factory=list)
+    qualified_ids: list[str] = field(default_factory=list)
     upstream_month_fetches: int = 0
     max_upstream_month_fetches: int = DEFAULT_MAX_UPSTREAM_MONTH_FETCHES
+    enrichments_run: int = 0
+    max_enrichments_per_run: int = DEFAULT_MAX_ENRICHMENTS_PER_RUN
     created_at: str = ""
     updated_at: str = ""
     notes: list[str] = field(default_factory=list)
@@ -124,12 +137,17 @@ class ScanState:
             "calculationVersion": self.calculation_version,
             "status": self.status,
             "cursor": self.cursor,
+            "enrichCursor": self.enrich_cursor,
             "universeSize": len(self.stock_ids),
             "processedCount": len(self.records),
             "remainingCount": max(0, len(self.stock_ids) - self.cursor),
             "targetCount": self.target_count,
             "dayPassCount": len(self.day_pass_ids),
             "dayPassIds": list(self.day_pass_ids),
+            "qualifiedCount": len(self.qualified_ids),
+            "qualifiedIds": list(self.qualified_ids),
+            "enrichmentsRun": self.enrichments_run,
+            "maxEnrichmentsPerRun": self.max_enrichments_per_run,
             "upstreamMonthFetches": self.upstream_month_fetches,
             "maxUpstreamMonthFetches": self.max_upstream_month_fetches,
             "createdAt": self.created_at,
@@ -173,11 +191,14 @@ class TwResearchScanService:
         target_count: int = DEFAULT_TARGET_COUNT,
         trading_day: str | None = None,
         max_upstream_month_fetches: int = DEFAULT_MAX_UPSTREAM_MONTH_FETCHES,
+        max_enrichments_per_run: int = DEFAULT_MAX_ENRICHMENTS_PER_RUN,
         now: datetime | None = None,
     ) -> ScanState:
         if target_count not in {10, 20}:
             # Output target only; never changes pass rules.
             raise ValueError("target_count must be 10 or 20")
+        if max_enrichments_per_run < 0:
+            raise ValueError("max_enrichments_per_run must be >= 0")
         resolved = resolve_universe(selector, stock_resolver=self._stock_loader)
         current = now or datetime.now(TAIPEI)
         day = trading_day or current.date().isoformat()
@@ -191,6 +212,7 @@ class TwResearchScanService:
             stock_ids=resolved.stock_ids,
             target_count=target_count,
             max_upstream_month_fetches=max_upstream_month_fetches,
+            max_enrichments_per_run=max_enrichments_per_run,
             created_at=stamp,
             updated_at=stamp,
             notes=list(resolved.notes),
@@ -347,11 +369,123 @@ class TwResearchScanService:
                 record.week52_position = fifty_two_week_position(completed)
                 with self._lock:
                     state.day_pass_ids.append(stock_id)
+                    if is_technically_qualified(record):
+                        state.qualified_ids.append(stock_id)
         elif months_used == 0 and remaining_budget <= 0 and not candles:
             record.rejection_reason = "history_budget_exhausted"
 
+        record.theme_keys = _theme_keys_for(stock_id)
         with self._lock:
             state.records[stock_id] = record
+
+    def run_enrichment_batch(
+        self,
+        scan_id: str,
+        *,
+        batch_size: int = ENRICH_BATCH_SIZE,
+        now: datetime | None = None,
+        enricher: Callable[..., Any] | None = None,
+    ) -> ScanState:
+        """Enrich up to ``batch_size`` dual-pass symbols that still lack enrichment (#313)."""
+        if batch_size <= 0 or batch_size > ENRICH_BATCH_SIZE:
+            raise ValueError(f"batch_size must be 1..{ENRICH_BATCH_SIZE}")
+        enrich_fn = enricher or enrich_qualified_symbol
+
+        with self._lock:
+            state = self._scans.get(scan_id)
+            if state is None:
+                raise KeyError(f"Unknown scan_id: {scan_id}")
+
+        with state.run_lock:
+            with self._lock:
+                pending = [
+                    stock_id
+                    for stock_id in state.qualified_ids[state.enrich_cursor :]
+                    if stock_id in state.records
+                    and state.records[stock_id].enrichment is None
+                ]
+                if state.enrichments_run >= state.max_enrichments_per_run:
+                    state.notes.append(
+                        "Enrichment stopped: max_enrichments_per_run budget exhausted."
+                    )
+                    state.updated_at = datetime.now(TAIPEI).isoformat()
+                    return state
+                remaining_budget = state.max_enrichments_per_run - state.enrichments_run
+                batch_ids = pending[: min(batch_size, remaining_budget)]
+
+            calculation_now = _calculation_now(state.trading_day, override=now)
+            for stock_id in batch_ids:
+                with self._lock:
+                    prior_record = state.records.get(stock_id)
+                    prior_week52 = (
+                        prior_record.week52_position if prior_record is not None else None
+                    )
+                payload = _invoke_enricher(
+                    enrich_fn,
+                    stock_id,
+                    calculation_now=calculation_now,
+                    prior_week52=prior_week52,
+                )
+                with self._lock:
+                    record = state.records.get(stock_id)
+                    if record is not None:
+                        record.enrichment = payload
+                    state.enrichments_run += 1
+
+            with self._lock:
+                # Advance enrich_cursor past every dual-pass id considered so far.
+                if batch_ids:
+                    last = batch_ids[-1]
+                    if last in state.qualified_ids:
+                        state.enrich_cursor = state.qualified_ids.index(last) + 1
+                state.updated_at = datetime.now(TAIPEI).isoformat()
+                state.notes.append(
+                    "Missing chip/valuation data is per-field unavailable; "
+                    "it does not convert a technical pass into a fail."
+                )
+                return state
+
+
+def _invoke_enricher(
+    enrich_fn: Callable[..., Any],
+    stock_id: str,
+    *,
+    calculation_now: datetime,
+    prior_week52: float | None,
+) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {"now": calculation_now}
+    try:
+        parameters = signature(enrich_fn).parameters
+    except (TypeError, ValueError):
+        parameters = {}
+    accepts_var_kw = any(
+        parameter.kind == Parameter.VAR_KEYWORD for parameter in parameters.values()
+    )
+    if accepts_var_kw or "prior_week52_position" in parameters:
+        kwargs["prior_week52_position"] = prior_week52
+    try:
+        enriched = enrich_fn(stock_id, **kwargs)
+        payload = enriched.as_dict() if hasattr(enriched, "as_dict") else enriched
+        return payload if isinstance(payload, dict) else {"stockId": stock_id, "fields": {}}
+    except Exception as exc:  # noqa: BLE001 — isolate per symbol
+        return {
+            "stockId": stock_id,
+            "qualified": True,
+            "error": f"symbol_error:{type(exc).__name__}",
+            "fields": {},
+        }
+
+
+def _theme_keys_for(stock_id: str) -> tuple[str, ...]:
+    try:
+        from app.services.stock_theme_service import DEFAULT_THEME_ASSIGNMENTS
+
+        for assignment in DEFAULT_THEME_ASSIGNMENTS:
+            if assignment.stock_id == stock_id:
+                return tuple(assignment.theme_keys)
+    except Exception:  # noqa: BLE001 — themes are optional metadata
+        return ()
+    return ()
 
 
 def _calculation_now(trading_day: str, *, override: datetime | None) -> datetime:

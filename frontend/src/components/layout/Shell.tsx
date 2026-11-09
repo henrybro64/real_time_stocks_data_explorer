@@ -164,6 +164,11 @@ export function Shell({ children }: Props) {
                           </a>
                           <LeftNavLink href="/alerts" label={t("nav.alerts")} pathname={pathname} />
                           <LeftNavLink href="/rankings" label={t("nav.rankings")} pathname={pathname} />
+                          <LeftNavLink
+                            href="/research/tw"
+                            label={t("nav.twResearch")}
+                            pathname={pathname}
+                          />
                           <a className="app-left-nav-link" href="/#watchlist">
                             {t("nav.watchlist")}
                           </a>

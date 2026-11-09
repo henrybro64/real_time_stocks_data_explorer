@@ -10,6 +10,10 @@ import {
   realizedGainsMessages,
   type RealizedGainsTranslationKey,
 } from "../views/realized-gains/realizedGainsI18n";
+import {
+  twResearchMessages,
+  type TwResearchTranslationKey,
+} from "../views/research/twResearchI18n";
 
 export type AppLanguage = "en" | "zh-TW";
 
@@ -123,6 +127,7 @@ export type TranslationKey =
   | "alerts.column.triggeredAt"
   | "alerts.column.message"
   | RealizedGainsTranslationKey
+  | TwResearchTranslationKey
   | "stock.market"
   | "stock.updatedAt"
   | "stock.prevClose"
@@ -683,6 +688,7 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "alerts.column.triggeredAt": "Triggered",
     "alerts.column.message": "Message",
     ...realizedGainsMessages("en"),
+    ...twResearchMessages("en"),
     "stock.market": "Market",
     "stock.updatedAt": "Updated",
     "stock.prevClose": "Prev close",
@@ -1273,6 +1279,7 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "alerts.column.triggeredAt": "觸發時間",
     "alerts.column.message": "訊息",
     ...realizedGainsMessages("zh-TW"),
+    ...twResearchMessages("zh-TW"),
     "stock.market": "市場",
     "stock.updatedAt": "更新時間",
     "stock.prevClose": "前收",

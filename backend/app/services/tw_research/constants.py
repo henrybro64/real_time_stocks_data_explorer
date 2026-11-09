@@ -3,11 +3,19 @@
 from __future__ import annotations
 
 # Bump when the research field contract or provenance rules change.
-CONTRACT_VERSION = "2026-11-08.1"
+CONTRACT_VERSION = "2026-11-09.1"
 RESEARCH_SCHEMA_VERSION = CONTRACT_VERSION
 
 # Bump when MACD/KD/pass rules or monthly assembly change.
 CALCULATION_VERSION = "macd12-26-9_kd9-3-3_v1"
+
+# Bump when enrichment field provenance rules change (#313).
+ENRICHMENT_VERSION = "enrich-v1"
+
+# Enrichment operational budgets — not a global researchable-stock cap.
+ENRICH_BATCH_SIZE = 10
+DEFAULT_MAX_ENRICHMENTS_PER_RUN = 20
+EXPORT_CHUNK_SIZE = 25
 
 # Bump when the optional starter membership list changes.
 UNIVERSE_PRESET_VERSION = "tw-starter-14-sectors-v1"

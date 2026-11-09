@@ -65,6 +65,7 @@ class CreateScanRequest(BaseModel):
     targetCount: Literal[10, 20] = 10
     tradingDay: str | None = None
     maxUpstreamMonthFetches: int = Field(default=40, ge=0, le=200)
+    maxEnrichmentsPerRun: int = Field(default=20, ge=0, le=200)
 
 
 class RunBatchRequest(BaseModel):
@@ -73,5 +74,18 @@ class RunBatchRequest(BaseModel):
     timeoutSeconds: int = Field(default=120, ge=1, le=600)
 
 
+class RunEnrichmentBatchRequest(BaseModel):
+    scanId: str
+    batchSize: int = Field(default=10, ge=1, le=10)
+
+
 class ScanSnapshotResponse(BaseModel):
     scan: dict[str, Any]
+
+
+class ExportManifestResponse(BaseModel):
+    manifest: dict[str, Any]
+
+
+class ExportChunkResponse(BaseModel):
+    chunk: dict[str, Any]
