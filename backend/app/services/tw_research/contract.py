@@ -11,106 +11,121 @@ from app.services.tw_research.constants import (
     UNIVERSE_PRESET_VERSION,
 )
 
+# Compact rows keep the audited map readable without repeating FieldProvenance boilerplate.
+# Columns: field, source, freshness_class, validation, missing.
+_FIELD_ROWS: tuple[tuple[str, str, str, str, bool], ...] = (
+    (
+        "stock_id",
+        "catalog",
+        "config",
+        "canonical TW:NNNN via quote_service.get_catalog_stock",
+        False,
+    ),
+    ("exchange", "catalog", "config", "TWSE|TPEx", False),
+    (
+        "sector_theme_tags",
+        "stock_theme_service",
+        "config",
+        "optional metadata; not an eligibility whitelist",
+        False,
+    ),
+    (
+        "ohlcv_daily",
+        "daily_price_history_service / TWSE|TPEx month APIs",
+        "quote_or_eod_day",
+        "completed trading day only; source_as_of is session date",
+        False,
+    ),
+    (
+        "macd_kd_daily",
+        "tw_research.indicators",
+        "computed",
+        "MACD(12,26,9) KD(9,3,3); pass=DIF>0 & OSC>0 & K>50 & D>50",
+        False,
+    ),
+    (
+        "macd_kd_monthly",
+        "tw_research.indicators",
+        "monthly_closed_month",
+        "fully closed calendar months only; never current month",
+        False,
+    ),
+    (
+        "sma_20_60_120_240",
+        "tw_research.indicators",
+        "computed",
+        "completed daily closes; unadjusted",
+        False,
+    ),
+    (
+        "week52_position",
+        "tw_research.indicators",
+        "computed",
+        "trailing up to 252 completed sessions",
+        False,
+    ),
+    (
+        "institutional_net_buys_5d",
+        "tw_institutional_service (prefer persisted daily store)",
+        "quote_or_eod_day",
+        "five completed sessions; lots via net_shares_to_lots; #313",
+        False,
+    ),
+    (
+        "tdcc_holders_ge_400_lots",
+        "tw_ownership_concentration_service",
+        "tdcc_weekly",
+        "weekly publication date + prior-week change; never same-day stamp; #313",
+        False,
+    ),
+    (
+        "margin_balance_and_delta",
+        "tw_margin_short_service",
+        "quote_or_eod_day",
+        "balance + approx 5-session delta; utilization only when both sides verified",
+        False,
+    ),
+    (
+        "margin_utilization",
+        "tw_margin_short_service",
+        "quote_or_eod_day",
+        "unavailable unless numerator+denominator both verified",
+        True,
+    ),
+    (
+        "official_pe",
+        "key_stats_service official TWSE/TPEx daily P/E",
+        "quote_or_eod_day",
+        "official_daily type; do not reverse-engineer EPS from PE",
+        False,
+    ),
+    (
+        "ttm_eps_pe_peg",
+        "key_stats_service / none",
+        "earnings_quarterly",
+        "TTM EPS often unavailable on TW official PE path; PEG null without growth denom",
+        True,
+    ),
+    (
+        "reference_levels",
+        "stock_analysis_key_price_levels",
+        "computed",
+        "only when computable; final trade judgments belong outside Stock Ticker",
+        False,
+    ),
+)
+
 
 def build_research_contract() -> ResearchContractResponse:
     fields = [
         FieldProvenance(
-            field="stock_id",
-            source="catalog",
-            freshness_class="config",
-            validation="canonical TW:NNNN via quote_service.get_catalog_stock",
-        ),
-        FieldProvenance(
-            field="exchange",
-            source="catalog",
-            freshness_class="config",
-            validation="TWSE|TPEx",
-        ),
-        FieldProvenance(
-            field="sector_theme_tags",
-            source="stock_theme_service",
-            freshness_class="config",
-            validation="optional metadata; not an eligibility whitelist",
-        ),
-        FieldProvenance(
-            field="ohlcv_daily",
-            source="daily_price_history_service / TWSE|TPEx month APIs",
-            freshness_class="quote_or_eod_day",
-            validation="completed trading day only; source_as_of is session date",
-        ),
-        FieldProvenance(
-            field="macd_kd_daily",
-            source="tw_research.indicators",
-            freshness_class="computed",
-            validation="MACD(12,26,9) KD(9,3,3); pass=DIF>0 & OSC>0 & K>50 & D>50",
-        ),
-        FieldProvenance(
-            field="macd_kd_monthly",
-            source="tw_research.indicators",
-            freshness_class="monthly_closed_month",
-            validation="fully closed calendar months only; never current month",
-        ),
-        FieldProvenance(
-            field="sma_20_60_120_240",
-            source="tw_research.indicators",
-            freshness_class="computed",
-            validation="completed daily closes; unadjusted",
-        ),
-        FieldProvenance(
-            field="week52_position",
-            source="tw_research.indicators",
-            freshness_class="computed",
-            validation="trailing up to 252 completed sessions",
-        ),
-        FieldProvenance(
-            field="institutional_net_buys_5d",
-            source="tw_institutional_service (prefer persisted daily store)",
-            freshness_class="quote_or_eod_day",
-            missing=False,
-            validation="five completed sessions; lots via net_shares_to_lots; #313",
-        ),
-        FieldProvenance(
-            field="tdcc_holders_ge_400_lots",
-            source="tw_ownership_concentration_service",
-            freshness_class="tdcc_weekly",
-            missing=False,
-            validation="weekly publication date + prior-week change; never same-day stamp; #313",
-        ),
-        FieldProvenance(
-            field="margin_balance_and_delta",
-            source="tw_margin_short_service",
-            freshness_class="quote_or_eod_day",
-            missing=False,
-            validation="balance + approx 5-session delta; utilization only when both sides verified",
-        ),
-        FieldProvenance(
-            field="margin_utilization",
-            source="tw_margin_short_service",
-            freshness_class="quote_or_eod_day",
-            missing=True,
-            validation="unavailable unless numerator+denominator both verified",
-        ),
-        FieldProvenance(
-            field="official_pe",
-            source="key_stats_service official TWSE/TPEx daily P/E",
-            freshness_class="quote_or_eod_day",
-            missing=False,
-            validation="official_daily type; do not reverse-engineer EPS from PE",
-        ),
-        FieldProvenance(
-            field="ttm_eps_pe_peg",
-            source="key_stats_service / none",
-            freshness_class="earnings_quarterly",
-            missing=True,
-            validation="TTM EPS often unavailable on TW official PE path; PEG null without growth denom",
-        ),
-        FieldProvenance(
-            field="reference_levels",
-            source="stock_analysis_key_price_levels",
-            freshness_class="computed",
-            missing=False,
-            validation="only when computable; final trade judgments belong outside Stock Ticker",
-        ),
+            field=field,
+            source=source,
+            freshness_class=freshness,
+            validation=validation,
+            missing=missing,
+        )
+        for field, source, freshness, validation, missing in _FIELD_ROWS
     ]
     return ResearchContractResponse(
         contractVersion=CONTRACT_VERSION,
