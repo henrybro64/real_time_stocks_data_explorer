@@ -91,6 +91,7 @@ def _scan_to_dict(row: TwResearchScan) -> dict[str, Any]:
         "enrich_cursor": int(row.enrich_cursor),
         "enrich_reserve_ids_json": list(getattr(row, "enrich_reserve_ids_json", None) or []),
         "enrich_reserve_expires_at": getattr(row, "enrich_reserve_expires_at", None),
+        "enrich_lease_generation": int(getattr(row, "enrich_lease_generation", 0) or 0),
         "target_count": int(row.target_count),
         "upstream_month_fetches": int(row.upstream_month_fetches),
         "max_upstream_month_fetches": int(row.max_upstream_month_fetches),
@@ -148,6 +149,7 @@ _SCAN_PROGRESS_KEYS = frozenset(
         "enrich_cursor",
         "enrich_reserve_ids_json",
         "enrich_reserve_expires_at",
+        "enrich_lease_generation",
     }
 )
 _SCAN_COUNTER_MAX_KEYS = frozenset(
@@ -192,6 +194,7 @@ class TwResearchRepository(SessionBoundRepository):
                 insert_payload.setdefault("reserve_expires_at", None)
                 insert_payload.setdefault("enrich_reserve_ids_json", [])
                 insert_payload.setdefault("enrich_reserve_expires_at", None)
+                insert_payload.setdefault("enrich_lease_generation", 0)
                 session.add(
                     TwResearchScan(
                         **insert_payload,
@@ -412,6 +415,7 @@ class TwResearchRepository(SessionBoundRepository):
                     ),
                     "scan": _scan_to_dict(row),
                     "lease_held": True,
+                    "lease_generation": int(getattr(row, "enrich_lease_generation", 0) or 0),
                 }
 
             pending = _unenriched_qualified_ids(session, row)
@@ -419,10 +423,17 @@ class TwResearchRepository(SessionBoundRepository):
                 0, int(row.max_enrichments_per_run) - int(row.enrichments_run)
             )
             batch_ids = pending[: min(batch_size, remaining_budget)]
-            row.enrich_reserve_ids_json = list(batch_ids)
-            row.enrich_reserve_expires_at = (
-                now + timedelta(seconds=max(1, int(lease_seconds))) if batch_ids else None
-            )
+            generation = int(getattr(row, "enrich_lease_generation", 0) or 0)
+            if batch_ids:
+                generation += 1
+                row.enrich_lease_generation = generation
+                row.enrich_reserve_ids_json = list(batch_ids)
+                row.enrich_reserve_expires_at = now + timedelta(
+                    seconds=max(1, int(lease_seconds))
+                )
+            else:
+                row.enrich_reserve_ids_json = []
+                row.enrich_reserve_expires_at = None
             # Watermark tracks how far into qualified_ids we have durable enrichment.
             row.enrich_cursor = _enrichment_completed_cursor(session, row)
             row.updated_at = now
@@ -432,10 +443,20 @@ class TwResearchRepository(SessionBoundRepository):
                 "remaining_budget": remaining_budget,
                 "scan": _scan_to_dict(row),
                 "lease_held": False,
+                "lease_generation": generation,
             }
 
-    def complete_enrichment_batch(self, scan_id: str) -> dict[str, Any] | None:
-        """Clear enrichment lease and reconcile cursor/budget from durable rows."""
+    def complete_enrichment_batch(
+        self,
+        scan_id: str,
+        *,
+        lease_generation: int | None = None,
+    ) -> dict[str, Any] | None:
+        """Clear enrichment lease and reconcile cursor/budget from durable rows.
+
+        When ``lease_generation`` is supplied and no longer matches, this is a
+        no-op on the lease (another worker already reclaimed).
+        """
         session_factory = self._session_factory()
         with session_factory() as session:
             row = session.execute(
@@ -445,16 +466,35 @@ class TwResearchRepository(SessionBoundRepository):
             ).scalar_one_or_none()
             if row is None:
                 return None
+            current_generation = int(getattr(row, "enrich_lease_generation", 0) or 0)
+            stale = (
+                lease_generation is not None
+                and int(lease_generation) != current_generation
+            )
             enriched_count = _enriched_qualified_count(session, row)
             row.enrichments_run = max(int(row.enrichments_run or 0), enriched_count)
             row.enrich_cursor = _enrichment_completed_cursor(session, row)
-            row.enrich_reserve_ids_json = []
-            row.enrich_reserve_expires_at = None
+            if not stale:
+                row.enrich_reserve_ids_json = []
+                row.enrich_reserve_expires_at = None
             row.updated_at = datetime.now(timezone.utc)
             session.commit()
-            return _scan_to_dict(row)
+            result = _scan_to_dict(row)
+            result["stale_lease"] = stale
+            return result
 
-    def upsert_symbol_result(self, payload: dict[str, Any]) -> None:
+    def upsert_symbol_result(
+        self,
+        payload: dict[str, Any],
+        *,
+        enrich_lease_generation: int | None = None,
+    ) -> dict[str, Any]:
+        """Upsert a symbol row.
+
+        Returns ``{"applied": bool, "enrichment_rejected": bool}``. Enrichment
+        updates require a matching ``enrich_lease_generation`` when provided so
+        a reclaimed lease cannot be overwritten by a stale worker.
+        """
         session_factory = self._session_factory()
         with session_factory() as session:
             existing = session.execute(
@@ -464,10 +504,34 @@ class TwResearchRepository(SessionBoundRepository):
                 )
             ).scalar_one_or_none()
             now = datetime.now(timezone.utc)
+            incoming_payload = dict(payload.get("payload_json") or {})
+            enrichment_rejected = False
+            if enrich_lease_generation is not None and incoming_payload.get("enrichment"):
+                scan_row = session.execute(
+                    select(TwResearchScan)
+                    .where(TwResearchScan.scan_id == payload["scan_id"])
+                    .with_for_update()
+                ).scalar_one_or_none()
+                current_generation = (
+                    int(getattr(scan_row, "enrich_lease_generation", 0) or 0)
+                    if scan_row is not None
+                    else -1
+                )
+                if current_generation != int(enrich_lease_generation):
+                    enrichment_rejected = True
+                    incoming_payload = {
+                        key: value
+                        for key, value in incoming_payload.items()
+                        if key != "enrichment"
+                    }
+                    if existing is not None:
+                        existing_payload = dict(existing.payload_json or {})
+                        if existing_payload.get("enrichment") is not None:
+                            incoming_payload["enrichment"] = existing_payload["enrichment"]
+                    payload = {**payload, "payload_json": incoming_payload}
             if existing is None:
                 session.add(TwResearchSymbolResult(**payload, updated_at=now))
             else:
-                incoming_payload = dict(payload.get("payload_json") or {})
                 existing_payload = dict(existing.payload_json or {})
                 # Never let a stale worker wipe a newer enrichment payload.
                 if existing_payload.get("enrichment") and not incoming_payload.get(
@@ -481,6 +545,10 @@ class TwResearchRepository(SessionBoundRepository):
                     setattr(existing, key, value)
                 existing.updated_at = now
             session.commit()
+            return {
+                "applied": True,
+                "enrichment_rejected": enrichment_rejected,
+            }
 
     def list_symbol_results(self, scan_id: str) -> list[dict[str, Any]]:
         session_factory = self._session_factory()

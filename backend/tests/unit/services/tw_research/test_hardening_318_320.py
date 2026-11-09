@@ -278,6 +278,7 @@ def test_enrichment_lease_recovers_after_abandonment(monkeypatch) -> None:
     recovered = repo.claim_enrichment_batch(state.scan_id, batch_size=2)
     assert recovered is not None
     assert recovered["batch_ids"] == ["TW:2330", "TW:2454"]
+    assert recovered["lease_generation"] == claimed["lease_generation"] + 1
 
 
 def test_insufficient_history_counted_separately_from_technical_fail() -> None:
@@ -904,3 +905,271 @@ def test_immutable_manifest_content_digest_stable() -> None:
         quality_status="verified_ready",
     )
     assert first["contentDigest"] == second["contentDigest"]
+
+
+def test_budget_exhausted_with_remaining_is_technical_partial() -> None:
+    from app.services.tw_research.export import build_export_manifest
+    from app.services.tw_research.scan import ScanState
+
+    state = ScanState(
+        scan_id="scan-budget",
+        trading_day="2024-06-28",
+        universe_version="explicit:3:abc",
+        calculation_version="macd12-26-9_kd9-3-3_v1",
+        selector=UniverseSelector(
+            mode="stock_ids", stock_ids=("TW:2330", "TW:2454", "TW:2303")
+        ),
+        stock_ids=("TW:2330", "TW:2454", "TW:2303"),
+        cursor=2,
+        status="budget_exhausted",
+        quality_status="technically_qualified",
+    )
+    state.records["TW:2330"] = SymbolScanRecord(
+        stock_id="TW:2330",
+        stage="B",
+        readiness="technically_qualified",
+        daily={"passStatus": "pass"},
+        monthly={"passStatus": "pass"},
+    )
+    state.records["TW:2454"] = SymbolScanRecord(
+        stock_id="TW:2454",
+        stage="A",
+        readiness="processed",
+        daily={"passStatus": "fail"},
+    )
+    manifest = build_export_manifest(state, generated_at="2024-06-28T17:00:00+00:00")
+    assert manifest["technicalStatus"] == "partial"
+    assert manifest["sourceCompleteness"] == "partial"
+    assert manifest["counts"]["remaining"] == 1
+    assert manifest["counts"]["unprocessed"] == 1
+
+
+def test_source_completeness_requires_full_universe_evaluation() -> None:
+    from app.services.tw_research.export import build_export_manifest
+    from app.services.tw_research.scan import ScanState
+
+    state = ScanState(
+        scan_id="scan-source",
+        trading_day="2024-06-28",
+        universe_version="explicit:2:abc",
+        calculation_version="macd12-26-9_kd9-3-3_v1",
+        selector=UniverseSelector(mode="stock_ids", stock_ids=("TW:2330", "TW:2454")),
+        stock_ids=("TW:2330", "TW:2454"),
+        cursor=2,
+        status="completed_processing",
+        quality_status="technically_qualified",
+    )
+    state.records["TW:2330"] = SymbolScanRecord(
+        stock_id="TW:2330",
+        stage="A",
+        readiness="processed",
+        daily={"passStatus": "fail"},
+    )
+    state.records["TW:2454"] = SymbolScanRecord(
+        stock_id="TW:2454",
+        stage="A",
+        readiness="processed",
+        daily={"passStatus": "unknown"},
+        coverage={"daily": {"ok": False, "reason": "missing_trading_sessions"}},
+        rejection_reason=None,
+    )
+    # Coverage gap keeps sourceCompleteness partial even when technical finished.
+    state.records["TW:2454"].readiness = "source_incomplete"
+    manifest = build_export_manifest(state, generated_at="2024-06-28T17:00:00+00:00")
+    assert manifest["technicalStatus"] == "complete"
+    assert manifest["sourceCompleteness"] == "partial"
+    assert manifest["counts"]["missingTradingSessions"] == 1
+    assert manifest["counts"]["unknownDaily"] == 1
+
+    # Clean evaluation of the full universe → complete.
+    state.records["TW:2454"] = SymbolScanRecord(
+        stock_id="TW:2454",
+        stage="A",
+        readiness="processed",
+        daily={"passStatus": "fail"},
+    )
+    clean = build_export_manifest(state, generated_at="2024-06-28T17:00:00+00:00")
+    assert clean["technicalStatus"] == "complete"
+    assert clean["sourceCompleteness"] == "complete"
+
+
+def test_complete_durable_enrichment_does_not_deadlock(monkeypatch) -> None:
+    """Regression: hydrate must not nest under the same non-reentrant service lock."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from sqlalchemy import create_engine, event
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+
+    from app.db.models import Base
+
+    # StaticPool so the worker thread shares the same :memory: SQLite DB.
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+
+    @event.listens_for(engine, "connect")
+    def _enable_sqlite_foreign_keys(dbapi_connection, _connection_record) -> None:
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
+
+    factory = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    Base.metadata.create_all(bind=engine)
+    monkeypatch.setattr("app.repositories.session.SessionLocal", factory)
+
+    repo = TwResearchRepository()
+    repo.set_session_factory_override(factory)
+    monkeypatch.setattr(
+        "app.repositories.tw_research_repository.tw_research_repository",
+        repo,
+    )
+    monkeypatch.setattr(
+        "app.services.tw_research.persistence.tw_research_repository",
+        repo,
+    )
+    service = TwResearchScanService(
+        history_loader=lambda stock, limit, *, max_month_fetches: ([], 0),
+        stock_loader=lambda stock_id: _tw(stock_id),
+        persist=True,
+    )
+    state = service.create_scan(
+        UniverseSelector(mode="stock_ids", stock_ids=("TW:2330",)),
+        trading_day="2024-06-28",
+        user_id="user-1",
+    )
+    record = SymbolScanRecord(
+        stock_id="TW:2330",
+        stage="B",
+        readiness="verified_ready",
+        daily={"passStatus": "pass"},
+        monthly={"passStatus": "pass"},
+    )
+    state.records["TW:2330"] = record
+    state.qualified_ids = ["TW:2330"]
+    assert persist_scan(state, repository=repo, user_id="user-1") is True
+    assert persist_symbol(state, record, repository=repo) is True
+
+    def _enricher(stock_id: str, **kwargs):  # noqa: ANN001
+        del kwargs
+        return {"qualified": True, "stockId": stock_id, "fields": {}}
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(
+            service.run_enrichment_batch,
+            state.scan_id,
+            batch_size=1,
+            enricher=_enricher,
+        )
+        result = future.result(timeout=5)
+    assert result.records["TW:2330"].enrichment is not None
+    reloaded = load_scan_state(state.scan_id, repository=repo)
+    assert reloaded is not None
+    assert reloaded.records["TW:2330"].enrichment is not None
+
+
+def test_stale_enrichment_lease_cannot_overwrite_after_reclaim(monkeypatch) -> None:
+    from datetime import timezone as tz
+
+    from app.db.models import TwResearchScan
+
+    factory = install_in_memory_sessionlocal(monkeypatch)
+    repo = TwResearchRepository()
+    repo.set_session_factory_override(factory)
+    service = TwResearchScanService(
+        history_loader=lambda stock, limit, *, max_month_fetches: ([], 0),
+        stock_loader=lambda stock_id: _tw(stock_id),
+        persist=True,
+    )
+    state = service.create_scan(
+        UniverseSelector(mode="stock_ids", stock_ids=("TW:2330",)),
+        trading_day="2024-06-28",
+        user_id="user-1",
+    )
+    record = SymbolScanRecord(
+        stock_id="TW:2330",
+        stage="B",
+        readiness="verified_ready",
+        daily={"passStatus": "pass"},
+        monthly={"passStatus": "pass"},
+    )
+    state.records["TW:2330"] = record
+    state.qualified_ids = ["TW:2330"]
+    persist_scan(state, repository=repo, user_id="user-1")
+    persist_symbol(state, record, repository=repo)
+
+    first = repo.claim_enrichment_batch(state.scan_id, batch_size=1, lease_seconds=60)
+    assert first is not None
+    stale_generation = int(first["lease_generation"])
+    assert stale_generation == 1
+
+    with factory() as session:
+        row = session.get(TwResearchScan, state.scan_id)
+        assert row is not None
+        row.enrich_reserve_expires_at = datetime(2020, 1, 1, tzinfo=tz.utc)
+        session.commit()
+
+    second = repo.claim_enrichment_batch(state.scan_id, batch_size=1, lease_seconds=60)
+    assert second is not None
+    assert second["lease_generation"] == 2
+    assert second["batch_ids"] == ["TW:2330"]
+
+    # Current lease writes winner enrichment.
+    winner = SymbolScanRecord(
+        stock_id="TW:2330",
+        stage="B",
+        readiness="verified_ready",
+        daily={"passStatus": "pass"},
+        monthly={"passStatus": "pass"},
+        enrichment={"qualified": True, "source": "winner"},
+    )
+    assert (
+        persist_symbol(
+            state,
+            winner,
+            repository=repo,
+            enrich_lease_generation=2,
+        )
+        is True
+    )
+
+    # Stale worker tries to complete and overwrite with loser payload.
+    loser = SymbolScanRecord(
+        stock_id="TW:2330",
+        stage="B",
+        readiness="verified_ready",
+        daily={"passStatus": "pass"},
+        monthly={"passStatus": "pass"},
+        enrichment={"qualified": True, "source": "loser"},
+    )
+    assert (
+        persist_symbol(
+            state,
+            loser,
+            repository=repo,
+            enrich_lease_generation=stale_generation,
+        )
+        is True
+    )
+    assert loser.enrichment is None
+    assert "enrichment_lease_stale_write_rejected" in state.notes
+
+    completed = repo.complete_enrichment_batch(
+        state.scan_id, lease_generation=stale_generation
+    )
+    assert completed is not None
+    assert completed["stale_lease"] is True
+    # Active lease must still be held by generation 2.
+    scan = repo.get_scan(state.scan_id)
+    assert scan is not None
+    assert scan["enrich_lease_generation"] == 2
+    assert scan["enrich_reserve_ids_json"] == ["TW:2330"]
+
+    durable = load_scan_state(state.scan_id, repository=repo)
+    assert durable is not None
+    assert durable.records["TW:2330"].enrichment == {
+        "qualified": True,
+        "source": "winner",
+    }

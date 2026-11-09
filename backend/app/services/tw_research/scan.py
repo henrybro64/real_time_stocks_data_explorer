@@ -157,6 +157,8 @@ class ScanState:
     max_upstream_month_fetches: int = DEFAULT_MAX_UPSTREAM_MONTH_FETCHES
     enrichments_run: int = 0
     max_enrichments_per_run: int = DEFAULT_MAX_ENRICHMENTS_PER_RUN
+    # Active enrichment lease generation; bumped by durable claim_enrichment_batch.
+    enrich_lease_generation: int = 0
     created_at: str = ""
     updated_at: str = ""
     notes: list[str] = field(default_factory=list)
@@ -738,6 +740,11 @@ class TwResearchScanService:
                         state.enrichments_run = int(
                             claimed["scan"].get("enrichments_run", state.enrichments_run)
                         )
+                        state.enrich_lease_generation = int(
+                            claimed.get("lease_generation")
+                            or claimed["scan"].get("enrich_lease_generation")
+                            or 0
+                        )
                         remaining = int(claimed["remaining_budget"])
                         if claimed.get("lease_held"):
                             return [], remaining
@@ -768,8 +775,12 @@ class TwResearchScanService:
 
         if not tw_research_repository.is_available():
             return
+        lease_generation = int(getattr(state, "enrich_lease_generation", 0) or 0) or None
         try:
-            completed = tw_research_repository.complete_enrichment_batch(state.scan_id)
+            completed = tw_research_repository.complete_enrichment_batch(
+                state.scan_id,
+                lease_generation=lease_generation,
+            )
         except Exception:  # noqa: BLE001
             state.notes.append("complete_enrichment_persist_failed")
             return
@@ -778,7 +789,8 @@ class TwResearchScanService:
         with self._lock:
             state.enrich_cursor = int(completed["enrich_cursor"])
             state.enrichments_run = int(completed["enrichments_run"])
-            self._hydrate_state_from_durable(state)
+        # Hydrate outside self._lock: hydrate acquires the same non-reentrant lock.
+        self._hydrate_state_from_durable(state)
 
     def _rewind_durable_cursor(self, state: ScanState) -> None:
         if not self._persist:
@@ -831,6 +843,9 @@ class TwResearchScanService:
             state.quality_status = loaded.quality_status
             state.upstream_month_fetches = loaded.upstream_month_fetches
             state.enrichments_run = loaded.enrichments_run
+            state.enrich_lease_generation = int(
+                getattr(loaded, "enrich_lease_generation", 0) or 0
+            )
             state.active_snapshot_id = loaded.active_snapshot_id
             state.notes = list(loaded.notes)
             for stock_id, record in loaded.records.items():
@@ -868,7 +883,14 @@ class TwResearchScanService:
             return
         from app.services.tw_research.persistence import persist_symbol
 
-        persist_symbol(state, record)
+        lease_generation = None
+        if record.enrichment is not None:
+            lease_generation = int(getattr(state, "enrich_lease_generation", 0) or 0) or None
+        persist_symbol(
+            state,
+            record,
+            enrich_lease_generation=lease_generation,
+        )
 
 
 def _invoke_enricher(

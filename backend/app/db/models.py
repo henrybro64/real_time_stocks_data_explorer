@@ -471,6 +471,10 @@ class TwResearchScan(Base):
         DateTime(timezone=True),
         nullable=True,
     )
+    # Bumped on every enrichment claim so stale workers cannot write after reclaim.
+    enrich_lease_generation: Mapped[int] = mapped_column(
+        nullable=False, server_default=text("0")
+    )
     target_count: Mapped[int] = mapped_column(nullable=False)
     upstream_month_fetches: Mapped[int] = mapped_column(nullable=False, server_default=text("0"))
     max_upstream_month_fetches: Mapped[int] = mapped_column(nullable=False)

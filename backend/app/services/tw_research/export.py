@@ -34,14 +34,39 @@ def content_digest(payload: Any) -> str:
     return hashlib.sha256(canonical_json_dumps(payload).encode("utf-8")).hexdigest()
 
 
+def _coverage_reason(record: Any) -> set[str]:
+    coverage = getattr(record, "coverage", None) or {}
+    reasons: set[str] = set()
+    for bucket in (coverage.get("daily") or {}, coverage.get("monthly") or {}):
+        reason = bucket.get("reason")
+        if reason:
+            reasons.add(str(reason))
+    return reasons
+
+
 def _publication_statuses(state: ScanState, ledger: list[Any]) -> dict[str, str]:
     """Derive consumer-facing completeness labels (independent of any Agent)."""
     total = len(state.stock_ids)
     processed = min(int(state.cursor), total) if total else 0
+    remaining = max(0, total - processed)
+    ledger_ids = {getattr(record, "stock_id", None) for record in ledger}
+    unprocessed = remaining or sum(1 for stock_id in state.stock_ids if stock_id not in ledger_ids)
     incomplete = sum(
         1
         for record in ledger
         if getattr(record, "readiness", None) == "source_incomplete"
+    )
+    coverage_gaps = sum(
+        1
+        for record in ledger
+        if _coverage_reason(record)
+        & {
+            "insufficient_history",
+            "insufficient_monthly_history",
+            "missing_trading_sessions",
+            "trading_calendar_unavailable",
+            "incomplete_closed_month",
+        }
     )
     qualified = [
         record
@@ -52,15 +77,23 @@ def _publication_statuses(state: ScanState, ledger: list[Any]) -> dict[str, str]
     enriched = [
         record for record in qualified if getattr(record, "enrichment", None) is not None
     ]
+    universe_fully_processed = total == 0 or (processed >= total and unprocessed == 0)
 
     if state.status == "failed":
         technical = "unavailable"
+    elif not universe_fully_processed:
+        # Unprocessed symbols remain — never advertise technical complete
+        # (including budget_exhausted mid-universe).
+        if processed == 0:
+            technical = "not_started"
+        elif state.status in {"running"} and remaining > 0:
+            technical = "in_progress"
+        else:
+            technical = "partial"
     elif state.status in {"completed_processing", "verified_ready", "budget_exhausted"}:
         technical = "complete"
-    elif state.status in {"running", "partial"} and processed > 0:
-        technical = "in_progress" if processed < total else "partial"
-    elif processed == 0:
-        technical = "not_started"
+    elif state.status in {"running", "partial"}:
+        technical = "partial"
     else:
         technical = "partial"
 
@@ -73,12 +106,16 @@ def _publication_statuses(state: ScanState, ledger: list[Any]) -> dict[str, str]
     else:
         enrichment = "complete"
 
-    if incomplete:
-        source = "partial"
-    elif technical == "complete":
-        source = "complete"
-    elif technical == "unavailable":
+    # complete ⇒ entire requested eligible universe was properly evaluated.
+    if technical == "unavailable":
         source = "unavailable"
+    elif (
+        technical == "complete"
+        and incomplete == 0
+        and coverage_gaps == 0
+        and unprocessed == 0
+    ):
+        source = "complete"
     else:
         source = "partial"
 
@@ -102,14 +139,25 @@ def _manifest_counts(state: ScanState, ledger: list[Any]) -> dict[str, int]:
         if getattr(record, "enrichment", None) is not None
     ]
     insufficient = 0
+    missing_sessions = 0
     for record in ledger:
-        coverage = getattr(record, "coverage", None) or {}
-        daily = coverage.get("daily") or {}
-        monthly = coverage.get("monthly") or {}
-        reasons = {daily.get("reason"), monthly.get("reason")}
+        reasons = _coverage_reason(record)
         if "insufficient_history" in reasons or "insufficient_monthly_history" in reasons:
             insufficient += 1
+        if "missing_trading_sessions" in reasons:
+            missing_sessions += 1
     rejected = sum(1 for record in ledger if record.stage == "rejected")
+    symbol_errors = sum(
+        1
+        for record in ledger
+        if str(getattr(record, "rejection_reason", "") or "").startswith("symbol_error")
+    )
+    ledger_ids = {getattr(record, "stock_id", None) for record in ledger}
+    processed = min(int(state.cursor), len(state.stock_ids))
+    unprocessed = max(
+        0,
+        max(len(state.stock_ids) - processed, sum(1 for sid in state.stock_ids if sid not in ledger_ids)),
+    )
     fully_evaluated = sum(
         1
         for record in ledger
@@ -119,7 +167,9 @@ def _manifest_counts(state: ScanState, ledger: list[Any]) -> dict[str, int]:
     return {
         "requested": len(state.stock_ids) + rejected,
         "accepted": len(state.stock_ids),
-        "processed": min(int(state.cursor), len(state.stock_ids)),
+        "processed": processed,
+        "remaining": max(0, len(state.stock_ids) - processed),
+        "unprocessed": unprocessed,
         "fullyEvaluated": fully_evaluated,
         "attempted": len(ledger),
         "dayPass": len(state.day_pass_ids),
@@ -132,6 +182,8 @@ def _manifest_counts(state: ScanState, ledger: list[Any]) -> dict[str, int]:
             if getattr(record, "readiness", None) == "source_incomplete"
         ),
         "insufficientHistory": insufficient,
+        "missingTradingSessions": missing_sessions,
+        "symbolErrors": symbol_errors,
         "enriched": len(enriched),
         "enrichedCount": len(enriched),
         "rejected": rejected,
@@ -139,6 +191,11 @@ def _manifest_counts(state: ScanState, ledger: list[Any]) -> dict[str, int]:
             1
             for record in ledger
             if (record.daily or {}).get("passStatus") == "unknown"
+        ),
+        "unknownMonthly": sum(
+            1
+            for record in ledger
+            if (record.monthly or {}).get("passStatus") == "unknown"
         ),
     }
 
@@ -183,6 +240,8 @@ def build_export_manifest(state: ScanState, *, generated_at: str) -> dict[str, A
             "target_count is an output selection parameter only; actual pass count is not padded.",
             "Starter 14-sector labels are optional filters, not an allowlist.",
             "technicalStatus describes indicator/coverage evaluation; enrichmentStatus is independent.",
+            "technicalStatus=complete only when every accepted symbol was processed; budget_exhausted with remaining work is partial.",
+            "sourceCompleteness=complete only when the entire requested eligible universe was properly evaluated with no coverage gaps.",
             "Missing chip/valuation fields never convert a technical pass into a fail.",
             "completed_processing means batches finished; quality verified_ready means an immutable snapshot was published.",
             "GET/export routes are read-only over persisted state and never fetch market data.",

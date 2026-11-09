@@ -101,12 +101,23 @@ def persist_symbol(
     record: SymbolScanRecord,
     *,
     repository: TwResearchRepository | None = None,
+    enrich_lease_generation: int | None = None,
 ) -> bool:
     repo = repository or tw_research_repository
     if not repo.is_available():
         return True
     try:
-        repo.upsert_symbol_result(symbol_row_payload(state, record))
+        result = repo.upsert_symbol_result(
+            symbol_row_payload(state, record),
+            enrich_lease_generation=enrich_lease_generation,
+        )
+        if result.get("enrichment_rejected"):
+            # Keep in-memory enrichment for this worker, but durable store refused
+            # a stale lease write. Drop local enrichment so consumers hydrate truth.
+            record.enrichment = None
+            note = "enrichment_lease_stale_write_rejected"
+            if note not in state.notes:
+                state.notes.append(note)
         return True
     except Exception as exc:  # noqa: BLE001
         logger.warning(
@@ -159,6 +170,7 @@ def load_scan_state(
         max_upstream_month_fetches=int(row["max_upstream_month_fetches"]),
         enrichments_run=int(row["enrichments_run"]),
         max_enrichments_per_run=int(row["max_enrichments_per_run"]),
+        enrich_lease_generation=int(row.get("enrich_lease_generation") or 0),
         created_at=created.isoformat() if hasattr(created, "isoformat") else str(created),
         updated_at=updated.isoformat() if hasattr(updated, "isoformat") else str(updated),
         notes=list(row.get("notes_json") or []),

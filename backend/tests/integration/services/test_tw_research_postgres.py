@@ -175,21 +175,119 @@ def test_postgres_enrichment_lease_recovers_and_avoids_overlap() -> None:
     first = repo.claim_enrichment_batch(state.scan_id, batch_size=2, lease_seconds=120)
     assert first is not None
     assert len(first["batch_ids"]) == 2
+    assert first["lease_generation"] == 1
     blocked = repo.claim_enrichment_batch(state.scan_id, batch_size=2)
     assert blocked is not None
     assert blocked["lease_held"] is True
+    assert blocked["lease_generation"] == 1
 
     for stock_id in first["batch_ids"]:
         record = state.records[stock_id]
         record.enrichment = {"qualified": True, "fields": {}}
-        persist_symbol(state, record, repository=repo)
-    completed = repo.complete_enrichment_batch(state.scan_id)
+        persist_symbol(
+            state,
+            record,
+            repository=repo,
+            enrich_lease_generation=first["lease_generation"],
+        )
+    completed = repo.complete_enrichment_batch(
+        state.scan_id, lease_generation=first["lease_generation"]
+    )
     assert completed is not None
     assert completed["enrichments_run"] == 2
+    assert completed["stale_lease"] is False
 
     second = repo.claim_enrichment_batch(state.scan_id, batch_size=2)
     assert second is not None
     assert second["batch_ids"] == ["TW:2303"]
+    assert second["lease_generation"] == 2
+
+
+def test_postgres_stale_enrichment_lease_cannot_overwrite() -> None:
+    from app.db.models import TwResearchScan
+
+    repo = TwResearchRepository()
+    service = TwResearchScanService(
+        history_loader=lambda stock, limit, *, max_month_fetches: ([], 0),
+        stock_loader=lambda stock_id: _tw(stock_id),
+        persist=True,
+    )
+    state = service.create_scan(
+        UniverseSelector(mode="stock_ids", stock_ids=("TW:2330",)),
+        trading_day="2024-06-28",
+        user_id=DEFAULT_USER_ID,
+    )
+    record = SymbolScanRecord(
+        stock_id="TW:2330",
+        stage="B",
+        readiness="verified_ready",
+        daily={"passStatus": "pass"},
+        monthly={"passStatus": "pass"},
+    )
+    state.records["TW:2330"] = record
+    state.qualified_ids = ["TW:2330"]
+    persist_scan(state, repository=repo, user_id=DEFAULT_USER_ID)
+    persist_symbol(state, record, repository=repo)
+
+    first = repo.claim_enrichment_batch(state.scan_id, batch_size=1, lease_seconds=120)
+    assert first is not None
+    stale_generation = int(first["lease_generation"])
+
+    with repo._session_factory()() as session:
+        row = session.get(TwResearchScan, state.scan_id)
+        assert row is not None
+        row.enrich_reserve_expires_at = datetime(2020, 1, 1, tzinfo=timezone.utc)
+        session.commit()
+
+    reclaimed = repo.claim_enrichment_batch(state.scan_id, batch_size=1, lease_seconds=120)
+    assert reclaimed is not None
+    assert reclaimed["lease_generation"] == stale_generation + 1
+
+    winner = SymbolScanRecord(
+        stock_id="TW:2330",
+        stage="B",
+        readiness="verified_ready",
+        daily={"passStatus": "pass"},
+        monthly={"passStatus": "pass"},
+        enrichment={"qualified": True, "source": "winner"},
+    )
+    persist_symbol(
+        state,
+        winner,
+        repository=repo,
+        enrich_lease_generation=reclaimed["lease_generation"],
+    )
+    loser = SymbolScanRecord(
+        stock_id="TW:2330",
+        stage="B",
+        readiness="verified_ready",
+        daily={"passStatus": "pass"},
+        monthly={"passStatus": "pass"},
+        enrichment={"qualified": True, "source": "loser"},
+    )
+    persist_symbol(
+        state,
+        loser,
+        repository=repo,
+        enrich_lease_generation=stale_generation,
+    )
+    assert loser.enrichment is None
+
+    stale_complete = repo.complete_enrichment_batch(
+        state.scan_id, lease_generation=stale_generation
+    )
+    assert stale_complete is not None
+    assert stale_complete["stale_lease"] is True
+    scan = repo.get_scan(state.scan_id)
+    assert scan is not None
+    assert scan["enrich_reserve_ids_json"] == ["TW:2330"]
+
+    durable = load_scan_state(state.scan_id, repository=repo)
+    assert durable is not None
+    assert durable.records["TW:2330"].enrichment == {
+        "qualified": True,
+        "source": "winner",
+    }
 
 
 def test_postgres_concurrent_claims_do_not_overlap() -> None:
