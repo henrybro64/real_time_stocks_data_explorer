@@ -64,38 +64,52 @@ def build_research_contract() -> ResearchContractResponse:
         ),
         FieldProvenance(
             field="institutional_net_buys_5d",
-            source="existing tw institutional routes/services",
+            source="tw_institutional_service (prefer persisted daily store)",
             freshness_class="quote_or_eod_day",
-            missing=True,
-            validation="wired in later enrichment issue; contract reserved",
+            missing=False,
+            validation="five completed sessions; lots via net_shares_to_lots; #313",
         ),
         FieldProvenance(
             field="tdcc_holders_ge_400_lots",
-            source="existing ownership concentration services",
+            source="tw_ownership_concentration_service",
             freshness_class="tdcc_weekly",
-            missing=True,
-            validation="wired in later enrichment issue; contract reserved",
+            missing=False,
+            validation="weekly publication date + prior-week change; never same-day stamp; #313",
+        ),
+        FieldProvenance(
+            field="margin_balance_and_delta",
+            source="tw_margin_short_service",
+            freshness_class="quote_or_eod_day",
+            missing=False,
+            validation="balance + approx 5-session delta; utilization only when both sides verified",
         ),
         FieldProvenance(
             field="margin_utilization",
-            source="existing tw margin-short services",
+            source="tw_margin_short_service",
             freshness_class="quote_or_eod_day",
             missing=True,
-            validation="wired in later enrichment issue; contract reserved",
+            validation="unavailable unless numerator+denominator both verified",
+        ),
+        FieldProvenance(
+            field="official_pe",
+            source="key_stats_service official TWSE/TPEx daily P/E",
+            freshness_class="quote_or_eod_day",
+            missing=False,
+            validation="official_daily type; do not reverse-engineer EPS from PE",
         ),
         FieldProvenance(
             field="ttm_eps_pe_peg",
-            source="existing profitability / fundamental helpers",
+            source="key_stats_service / none",
             freshness_class="earnings_quarterly",
             missing=True,
-            validation="PEG only when growth input defensible; later enrichment",
+            validation="TTM EPS often unavailable on TW official PE path; PEG null without growth denom",
         ),
         FieldProvenance(
             field="reference_levels",
             source="stock_analysis_key_price_levels",
             freshness_class="computed",
-            missing=True,
-            validation="only when computable inputs exist; later enrichment",
+            missing=False,
+            validation="only when computable; final trade judgments belong outside Stock Ticker",
         ),
     ]
     return ResearchContractResponse(
@@ -111,7 +125,10 @@ def build_research_contract() -> ResearchContractResponse:
             "Starter 14-sector ~80-stock list is an optional preset, not a hard universe cap.",
             "Closed issues #269/#271/#272/#274 already provide persisted candles, MIS batching, "
             "route auth, and related optimizations — reuse them; do not reimplement.",
-            "Home-node CPU/RSS/disk measurements belong to the manual pilot (#315); this "
-            "contract establishes the instrumentation plan only.",
+            "Enrichment (#313) runs only for day+month technical passers; missing chip data is "
+            "per-field unavailable and never flips a technical pass to fail.",
+            "Export/UI (#314) reads precomputed state only. External Notion publish is #315 Agent-owned.",
+            "Home-node CPU/RSS/disk measurements belong to the manual pilot (#315); code ships "
+            "provisional unit benchmarks and a measurement worksheet only.",
         ],
     )

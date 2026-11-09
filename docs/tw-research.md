@@ -1,6 +1,6 @@
-# Taiwan equity research (#310–#312)
+# Taiwan equity research (#310–#315)
 
-Industry-agnostic Taiwan stock research on the **existing** monorepo. No new service, database, Notion integration, schedule, or production deploy in this slice.
+Industry-agnostic Taiwan stock research on the **existing** monorepo. No new service, database, Notion SDK, schedule, or production deploy in this slice.
 
 ## Status of related closed work
 
@@ -29,8 +29,12 @@ Confirm and reuse — do not reimplement:
 | `backend/app/services/tw_research/universe.py` | Universe selector: starter preset / theme keys / explicit IDs |
 | `backend/app/services/tw_research/contract.py` | Versioned field/source map |
 | `backend/app/services/tw_research/indicators.py` | Daily + monthly MACD(12,26,9) and KD(9,3,3) |
-| `backend/app/services/tw_research/scan.py` | Bounded Stage A/B scan + ephemeral checkpoints |
-| `backend/app/api/routes/tw_research.py` | Authenticated contract / universe / scan APIs |
+| `backend/app/services/tw_research/scan.py` | Bounded Stage A/B scan + enrichment batches + ephemeral checkpoints |
+| `backend/app/services/tw_research/enrichment.py` | Day+month qualifier enrichment with per-field provenance (#313) |
+| `backend/app/services/tw_research/export.py` | Manifest / chunked JSON / CSV / browser text (#314) |
+| `backend/app/api/routes/tw_research.py` | Authenticated contract / universe / scan / enrich / export APIs |
+| `frontend/src/app/research/tw/page.tsx` | Private research UI (`/research/tw`) |
+| `docs/tw-research-pilot.md` | #315 measurement + Agent handoff worksheet |
 
 ## Indicator conventions (#311)
 
@@ -47,6 +51,7 @@ Confirm and reuse — do not reimplement:
 - Stage A: daily MACD/KD for each symbol in the batch.
 - Stage B: monthly + SMA20/60/120/240 + 52-week position for **day-pass** symbols only.
 - Upstream month budget is enforced **before** history backfill via `get_daily_history_within_budget`; counters track actual month fetches, not Stage B local math.
+- Enrichment levels use **stored-only** `peek_daily_history` by default (no cold backfill). Stage B `week52_position` is reused when the store peek is empty.
 - Indicator `now` is anchored to the scan `tradingDay` (after TW cash close). Overlapping batch POSTs for one scan are serialized with a per-scan lock and atomic cursor reservation.
 - Checkpoint key: `(trading_day, universe_version, calculation_version, symbol)`.
 - Checkpoints are **ephemeral (in-memory)**. They do **not** survive process restart. Do not claim restart-safe resume without a Postgres store.
@@ -62,7 +67,12 @@ All routes use `Depends(get_effective_user_id)`.
 | POST | `/api/tw-research/universe/resolve` | Catalog only |
 | POST | `/api/tw-research/scans` | No (creates ledger) |
 | POST | `/api/tw-research/scans/batches` | Yes, bounded |
+| POST | `/api/tw-research/scans/enrichment-batches` | Yes, bounded (#313) |
 | GET | `/api/tw-research/scans/{scan_id}` | No |
+| GET | `/api/tw-research/scans/{scan_id}/export/manifest` | No |
+| GET | `/api/tw-research/scans/{scan_id}/export/chunk` | No |
+| GET | `/api/tw-research/scans/{scan_id}/export/csv` | No |
+| GET | `/api/tw-research/scans/{scan_id}/export/browser-text` | No |
 
 ## Baseline / instrumentation plan (#310 → #315)
 

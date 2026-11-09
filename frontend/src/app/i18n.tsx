@@ -22,6 +22,39 @@ export type TranslationKey =
   | "nav.portfolio"
   | "nav.assets"
   | "nav.aiSettings"
+  | "nav.twResearch"
+  | "research.tw.eyebrow"
+  | "research.tw.title"
+  | "research.tw.subtitle"
+  | "research.tw.universeMode"
+  | "research.tw.modePreset"
+  | "research.tw.modeThemes"
+  | "research.tw.modeIds"
+  | "research.tw.stockIds"
+  | "research.tw.themeKeys"
+  | "research.tw.themeKeysHint"
+  | "research.tw.targetCount"
+  | "research.tw.createScan"
+  | "research.tw.runBatch"
+  | "research.tw.runEnrichment"
+  | "research.tw.refresh"
+  | "research.tw.working"
+  | "research.tw.scanId"
+  | "research.tw.statusLine"
+  | "research.tw.targetNote"
+  | "research.tw.ledgerTitle"
+  | "research.tw.colStock"
+  | "research.tw.colStage"
+  | "research.tw.colDaily"
+  | "research.tw.colMonthly"
+  | "research.tw.colThemes"
+  | "research.tw.colReason"
+  | "research.tw.unclassified"
+  | "research.tw.loadAgentJson"
+  | "research.tw.downloadCsv"
+  | "research.tw.agentHandoffNote"
+  | "research.tw.agentJson"
+  | "research.tw.errorTitle"
   | "nav.menu.open"
   | "nav.menu.close"
   | "header.notifications"
@@ -575,6 +608,43 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "nav.portfolio": "Portfolio",
     "nav.assets": "Assets",
     "nav.aiSettings": "AI settings",
+    "nav.twResearch": "TW research",
+    "research.tw.eyebrow": "Private research",
+    "research.tw.title": "Taiwan research scan",
+    "research.tw.subtitle":
+      "Industry-agnostic scan, enrichment, and browser-readable export. Stock Ticker never writes Notion.",
+    "research.tw.universeMode": "Universe selector",
+    "research.tw.modePreset": "Optional starter 14-sector preset",
+    "research.tw.modeThemes": "Optional theme / sector keys",
+    "research.tw.modeIds": "Explicit canonical stock IDs",
+    "research.tw.stockIds": "Stock IDs (any valid TWSE/TPEx symbols)",
+    "research.tw.themeKeys": "Theme keys (one per line)",
+    "research.tw.themeKeysHint": "Optional filters only — not an allowlist. Available TW keys: {keys}",
+    "research.tw.targetCount": "Output target (does not relax pass rules)",
+    "research.tw.createScan": "Create scan",
+    "research.tw.runBatch": "Run scan batch",
+    "research.tw.runEnrichment": "Run enrichment batch",
+    "research.tw.refresh": "Refresh snapshot",
+    "research.tw.working": "Working…",
+    "research.tw.scanId": "Scan ID",
+    "research.tw.statusLine":
+      "Status {status}. Processed {processed}/{universe} (remaining {remaining}). Day pass {dayPass}, dual-pass {qualified}. Target {target} is not padded.",
+    "research.tw.targetNote":
+      "If fewer stocks pass than the target, the actual pass count is shown. Missing themes are Unclassified.",
+    "research.tw.ledgerTitle": "Scan ledger (paginated)",
+    "research.tw.colStock": "Stock",
+    "research.tw.colStage": "Stage",
+    "research.tw.colDaily": "Daily",
+    "research.tw.colMonthly": "Monthly",
+    "research.tw.colThemes": "Themes",
+    "research.tw.colReason": "Reason",
+    "research.tw.unclassified": "Unclassified",
+    "research.tw.loadAgentJson": "Load Agent JSON",
+    "research.tw.downloadCsv": "Download CSV",
+    "research.tw.agentHandoffNote":
+      "frontend_export_ready. External Notion publish is Agent-owned and optional (#315).",
+    "research.tw.agentJson": "Browser-readable export JSON",
+    "research.tw.errorTitle": "Taiwan research request failed",
     "nav.menu.open": "Open navigation menu",
     "nav.menu.close": "Close navigation menu",
     "header.notifications": "Notifications",
@@ -1168,6 +1238,42 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "nav.portfolio": "投資組合",
     "nav.assets": "資產總覽",
     "nav.aiSettings": "AI 設定",
+    "nav.twResearch": "台股研究",
+    "research.tw.eyebrow": "私人研究",
+    "research.tw.title": "台股研究掃描",
+    "research.tw.subtitle":
+      "產業中立掃描、enrichment 與瀏覽器可讀匯出。Stock Ticker 不會寫入 Notion。",
+    "research.tw.universeMode": "宇宙選擇",
+    "research.tw.modePreset": "可選 14 產業起始預設",
+    "research.tw.modeThemes": "可選主題／產業鍵",
+    "research.tw.modeIds": "明確股票代號",
+    "research.tw.stockIds": "股票代號（任何有效上市櫃代號）",
+    "research.tw.themeKeys": "主題鍵（每行一個）",
+    "research.tw.themeKeysHint": "僅為選用篩選，不是白名單。可用台股鍵：{keys}",
+    "research.tw.targetCount": "輸出目標（不放寬通過條件）",
+    "research.tw.createScan": "建立掃描",
+    "research.tw.runBatch": "執行掃描批次",
+    "research.tw.runEnrichment": "執行 enrichment 批次",
+    "research.tw.refresh": "重新整理快照",
+    "research.tw.working": "處理中…",
+    "research.tw.scanId": "掃描 ID",
+    "research.tw.statusLine":
+      "狀態 {status}。已處理 {processed}/{universe}（剩餘 {remaining}）。日線通過 {dayPass}，雙通過 {qualified}。目標 {target} 不會湊數。",
+    "research.tw.targetNote": "若通過數少於目標，顯示實際通過數。沒有主題的股票顯示為未分類。",
+    "research.tw.ledgerTitle": "掃描帳本（分頁）",
+    "research.tw.colStock": "股票",
+    "research.tw.colStage": "階段",
+    "research.tw.colDaily": "日線",
+    "research.tw.colMonthly": "月線",
+    "research.tw.colThemes": "主題",
+    "research.tw.colReason": "原因",
+    "research.tw.unclassified": "未分類",
+    "research.tw.loadAgentJson": "載入 Agent JSON",
+    "research.tw.downloadCsv": "下載 CSV",
+    "research.tw.agentHandoffNote":
+      "frontend_export_ready。外部 Notion 發佈由 Agent 負責，且為選用（#315）。",
+    "research.tw.agentJson": "瀏覽器可讀匯出 JSON",
+    "research.tw.errorTitle": "台股研究請求失敗",
     "nav.menu.open": "開啟導覽選單",
     "nav.menu.close": "關閉導覽選單",
     "header.notifications": "通知",
