@@ -1,0 +1,107 @@
+[
+  {
+    "field": "stock_id",
+    "source": "catalog",
+    "freshness_class": "config",
+    "validation": "canonical TW:NNNN via quote_service.get_catalog_stock",
+    "missing": false
+  },
+  {
+    "field": "exchange",
+    "source": "catalog",
+    "freshness_class": "config",
+    "validation": "TWSE|TPEx",
+    "missing": false
+  },
+  {
+    "field": "sector_theme_tags",
+    "source": "stock_theme_service",
+    "freshness_class": "config",
+    "validation": "optional metadata; not an eligibility whitelist",
+    "missing": false
+  },
+  {
+    "field": "ohlcv_daily",
+    "source": "daily_price_history_service / TWSE|TPEx month APIs",
+    "freshness_class": "quote_or_eod_day",
+    "validation": "completed trading day only; source_as_of is session date",
+    "missing": false
+  },
+  {
+    "field": "macd_kd_daily",
+    "source": "tw_research.indicators",
+    "freshness_class": "computed",
+    "validation": "MACD(12,26,9) KD(9,3,3); pass=DIF>0 & OSC>0 & K>50 & D>50",
+    "missing": false
+  },
+  {
+    "field": "macd_kd_monthly",
+    "source": "tw_research.indicators",
+    "freshness_class": "monthly_closed_month",
+    "validation": "fully closed calendar months only; never current month",
+    "missing": false
+  },
+  {
+    "field": "sma_20_60_120_240",
+    "source": "tw_research.indicators",
+    "freshness_class": "computed",
+    "validation": "completed daily closes; unadjusted",
+    "missing": false
+  },
+  {
+    "field": "week52_position",
+    "source": "tw_research.indicators",
+    "freshness_class": "computed",
+    "validation": "trailing up to 252 completed sessions",
+    "missing": false
+  },
+  {
+    "field": "institutional_net_buys_5d",
+    "source": "tw_institutional_service (prefer persisted daily store)",
+    "freshness_class": "quote_or_eod_day",
+    "validation": "five completed sessions; lots via net_shares_to_lots; #313",
+    "missing": false
+  },
+  {
+    "field": "tdcc_holders_ge_400_lots",
+    "source": "tw_ownership_concentration_service",
+    "freshness_class": "tdcc_weekly",
+    "validation": "weekly publication date + prior-week change; never same-day stamp; #313",
+    "missing": false
+  },
+  {
+    "field": "margin_balance_and_delta",
+    "source": "tw_margin_short_service",
+    "freshness_class": "quote_or_eod_day",
+    "validation": "balance + approx 5-session delta; utilization only when both sides verified",
+    "missing": false
+  },
+  {
+    "field": "margin_utilization",
+    "source": "tw_margin_short_service",
+    "freshness_class": "quote_or_eod_day",
+    "validation": "unavailable unless numerator+denominator both verified",
+    "missing": true
+  },
+  {
+    "field": "official_pe",
+    "source": "key_stats_service official TWSE/TPEx daily P/E",
+    "freshness_class": "quote_or_eod_day",
+    "validation": "official_daily type; do not reverse-engineer EPS from PE",
+    "missing": false
+  },
+  {
+    "field": "ttm_eps_pe_peg",
+    "source": "key_stats_service / none",
+    "freshness_class": "earnings_quarterly",
+    "validation": "TTM EPS often unavailable on TW official PE path; PEG null without growth denom",
+    "missing": true
+  },
+  {
+    "field": "reference_levels",
+    "source": "stock_analysis_key_price_levels",
+    "freshness_class": "computed",
+    "validation": "only when computable; final trade judgments belong outside Stock Ticker",
+    "missing": false
+  }
+]
