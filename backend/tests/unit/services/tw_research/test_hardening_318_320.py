@@ -1502,3 +1502,137 @@ def test_api_surfaces_durable_store_error_as_503() -> None:
     assert detail["error"] == "durable_store_unavailable"
     assert detail["retryable"] is True
     assert detail["operation"] == "claim_scan_batch"
+
+
+def test_create_scan_raises_when_durable_scan_write_fails(monkeypatch) -> None:
+    import pytest
+    from app.services.tw_research.scan import TwResearchDurableStoreError
+
+    factory = install_in_memory_sessionlocal(monkeypatch)
+    repo = TwResearchRepository()
+    repo.set_session_factory_override(factory)
+    monkeypatch.setattr(
+        "app.repositories.tw_research_repository.tw_research_repository",
+        repo,
+    )
+    monkeypatch.setattr(
+        "app.services.tw_research.persistence.tw_research_repository",
+        repo,
+    )
+
+    def _boom(*_args, **_kwargs):  # noqa: ANN001
+        raise RuntimeError("simulated postgres write failure")
+
+    monkeypatch.setattr(repo, "upsert_scan", _boom)
+
+    service = TwResearchScanService(
+        history_loader=lambda stock, limit, *, max_month_fetches: ([], 0),
+        stock_loader=lambda stock_id: _tw(stock_id),
+        persist=True,
+    )
+    with pytest.raises(TwResearchDurableStoreError) as raised:
+        service.create_scan(
+            UniverseSelector(mode="stock_ids", stock_ids=("TW:2330",)),
+            trading_day="2024-06-28",
+            user_id="user-1",
+        )
+    assert raised.value.operation == "persist_scan"
+    assert raised.value.retryable is True
+    assert raised.value.scan_id is not None
+    # Failed create must not leave a successful in-memory or durable scan.
+    assert service.get_scan(raised.value.scan_id) is None
+    assert repo.get_scan(raised.value.scan_id) is None
+
+
+def test_run_batch_raises_when_durable_symbol_write_fails(monkeypatch) -> None:
+    import pytest
+    from app.services.tw_research.scan import TwResearchDurableStoreError
+
+    factory = install_in_memory_sessionlocal(monkeypatch)
+    repo = TwResearchRepository()
+    repo.set_session_factory_override(factory)
+    monkeypatch.setattr(
+        "app.repositories.tw_research_repository.tw_research_repository",
+        repo,
+    )
+    monkeypatch.setattr(
+        "app.services.tw_research.persistence.tw_research_repository",
+        repo,
+    )
+    service = TwResearchScanService(
+        history_loader=lambda stock, limit, *, max_month_fetches: ([], 0),
+        stock_loader=lambda stock_id: _tw(stock_id),
+        persist=True,
+    )
+    state = service.create_scan(
+        UniverseSelector(mode="stock_ids", stock_ids=("TW:2330", "TW:2454")),
+        trading_day="2024-06-28",
+        user_id="user-1",
+    )
+
+    def _boom(*_args, **_kwargs):  # noqa: ANN001
+        raise RuntimeError("simulated symbol write failure")
+
+    monkeypatch.setattr(repo, "upsert_symbol_result", _boom)
+
+    with pytest.raises(TwResearchDurableStoreError) as raised:
+        service.run_batch(state.scan_id, batch_size=2)
+    assert raised.value.operation == "persist_symbol"
+    assert raised.value.retryable is True
+    # Must not finalize / advertise verified_ready on unpersisted work.
+    assert state.status != "verified_ready"
+    assert state.active_snapshot_id is None
+
+
+def test_finalize_does_not_advertise_verified_when_scan_pointer_write_fails(
+    monkeypatch,
+) -> None:
+    factory = install_in_memory_sessionlocal(monkeypatch)
+    repo = TwResearchRepository()
+    repo.set_session_factory_override(factory)
+    monkeypatch.setattr(
+        "app.repositories.tw_research_repository.tw_research_repository",
+        repo,
+    )
+    monkeypatch.setattr(
+        "app.services.tw_research.persistence.tw_research_repository",
+        repo,
+    )
+    service = TwResearchScanService(
+        history_loader=lambda stock, limit, *, max_month_fetches: ([], 0),
+        stock_loader=lambda stock_id: _tw(stock_id),
+        persist=True,
+    )
+    state = service.create_scan(
+        UniverseSelector(mode="stock_ids", stock_ids=("TW:2330",)),
+        trading_day="2024-06-28",
+        user_id="user-1",
+    )
+    state.status = "completed_processing"
+    state.quality_status = "technically_qualified"
+    state.records["TW:2330"] = SymbolScanRecord(
+        stock_id="TW:2330",
+        stage="B",
+        readiness="technically_qualified",
+        daily={"passStatus": "pass"},
+        monthly={"passStatus": "pass"},
+    )
+    persist_scan(state, repository=repo, user_id="user-1")
+    persist_symbol(state, state.records["TW:2330"], repository=repo)
+
+    def _fail_pointer(*_args, **_kwargs):  # noqa: ANN001
+        raise RuntimeError("scan pointer write failed")
+
+    # Setup writes already committed; fail only the post-snapshot scan pointer update.
+    monkeypatch.setattr(repo, "upsert_scan", _fail_pointer)
+
+    result = finalize_verified_snapshot(state, repository=repo, user_id="user-1")
+    assert result is None
+    assert state.status == "completed_processing"
+    assert state.quality_status == "technically_qualified"
+    assert state.active_snapshot_id is None
+    # Immutable snapshot row may exist; scan must not claim verified_ready yet.
+    durable = repo.get_scan(state.scan_id)
+    assert durable is not None
+    assert durable["status"] == "completed_processing"
+    assert durable.get("active_snapshot_id") is None

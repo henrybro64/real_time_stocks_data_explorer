@@ -311,9 +311,14 @@ class TwResearchScanService:
             )
         with self._lock:
             self._scans[state.scan_id] = state
-        self._persist_scan(state)
-        for record in state.records.values():
-            self._persist_symbol(state, record)
+        try:
+            self._persist_scan(state)
+            for record in state.records.values():
+                self._persist_symbol(state, record)
+        except TwResearchDurableStoreError:
+            with self._lock:
+                self._scans.pop(state.scan_id, None)
+            raise
         return state
 
     def get_scan(self, scan_id: str) -> ScanState | None:
@@ -384,7 +389,8 @@ class TwResearchScanService:
                     if note not in state.notes:
                         state.notes.append(note)
                     state.updated_at = datetime.now(TAIPEI).isoformat()
-                    self._persist_scan(state)
+                # Persist outside self._lock — DB work must not nest with hydrate/rewind.
+                self._persist_scan(state)
 
             calculation_now = _calculation_now(state.trading_day, override=now)
             for stock_id in batch_ids:
@@ -396,12 +402,16 @@ class TwResearchScanService:
                         state.status = "partial"
                         state.notes.append("Batch stopped: run timeout.")
                         state.updated_at = datetime.now(TAIPEI).isoformat()
-                        self._persist_scan(state)
-                    # Rewind/hydrate acquire self._lock — must run outside it.
+                    # Persist/rewind acquire repository locks and self._lock — outside.
+                    self._persist_scan(state)
                     self._rewind_durable_cursor(state)
                     return state
                 try:
                     self._process_symbol(state, stock_id, now=calculation_now)
+                except TwResearchDurableStoreError:
+                    # Required durable write failed — stop the batch; do not
+                    # convert this into a per-symbol screening error.
+                    raise
                 except Exception as exc:  # noqa: BLE001 — isolate per symbol
                     record = SymbolScanRecord(
                         stock_id=stock_id,
@@ -428,7 +438,7 @@ class TwResearchScanService:
                 state.notes.append(
                     "target_count is an output target only and does not relax pass rules."
                 )
-                self._persist_scan(state)
+            self._persist_scan(state)
             self._complete_durable_batch(state)
             if state.status != "failed":
                 self._maybe_finalize(state)
@@ -599,7 +609,7 @@ class TwResearchScanService:
                         "Enrichment stopped: max_enrichments_per_run budget exhausted."
                     )
                     state.updated_at = datetime.now(TAIPEI).isoformat()
-                    self._persist_scan(state)
+                self._persist_scan(state)
                 return state
             if not batch_ids:
                 # Active enrichment lease held by another worker.
@@ -618,11 +628,14 @@ class TwResearchScanService:
                     calculation_now=calculation_now,
                     prior_week52=prior_week52,
                 )
+                record_to_persist: SymbolScanRecord | None = None
                 with self._lock:
                     record = state.records.get(stock_id)
                     if record is not None:
                         record.enrichment = payload
-                        self._persist_symbol(state, record)
+                        record_to_persist = record
+                if record_to_persist is not None:
+                    self._persist_symbol(state, record_to_persist)
 
             self._complete_durable_enrichment(state)
             with self._lock:
@@ -631,7 +644,7 @@ class TwResearchScanService:
                     "Missing chip/valuation data is per-field unavailable; "
                     "it does not convert a technical pass into a fail."
                 )
-                self._persist_scan(state)
+            self._persist_scan(state)
             # Newer immutable snapshot; prior finalized snapshots remain unchanged.
             if state.status != "failed":
                 self._maybe_finalize(state, allow_verified_refresh=True)
@@ -970,23 +983,47 @@ class TwResearchScanService:
     def _persist_scan(self, state: ScanState) -> None:
         if not self._persist:
             return
+        from app.repositories.tw_research_repository import tw_research_repository
         from app.services.tw_research.persistence import persist_scan
 
-        persist_scan(state, user_id=state.user_id)
+        if not tw_research_repository.is_available():
+            raise TwResearchDurableStoreError(
+                "Durable persistence is enabled but PostgreSQL is unavailable.",
+                scan_id=state.scan_id,
+                operation="persist_scan",
+            )
+        if not persist_scan(state, user_id=state.user_id):
+            raise TwResearchDurableStoreError(
+                "Durable scan write failed.",
+                scan_id=state.scan_id,
+                operation="persist_scan",
+            )
 
     def _persist_symbol(self, state: ScanState, record: SymbolScanRecord) -> None:
         if not self._persist:
             return
+        from app.repositories.tw_research_repository import tw_research_repository
         from app.services.tw_research.persistence import persist_symbol
 
+        if not tw_research_repository.is_available():
+            raise TwResearchDurableStoreError(
+                "Durable persistence is enabled but PostgreSQL is unavailable.",
+                scan_id=state.scan_id,
+                operation="persist_symbol",
+            )
         lease_generation = None
         if record.enrichment is not None:
             lease_generation = int(getattr(state, "enrich_lease_generation", 0) or 0) or None
-        persist_symbol(
+        if not persist_symbol(
             state,
             record,
             enrich_lease_generation=lease_generation,
-        )
+        ):
+            raise TwResearchDurableStoreError(
+                f"Durable symbol write failed for {record.stock_id}.",
+                scan_id=state.scan_id,
+                operation="persist_symbol",
+            )
 
 
 def _invoke_enricher(

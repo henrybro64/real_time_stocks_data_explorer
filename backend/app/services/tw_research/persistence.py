@@ -301,10 +301,24 @@ def finalize_verified_snapshot(
             exc_info=True,
         )
         return None
+
+    # Snapshot row is already immutable. Only advertise verified_ready after the
+    # scan pointer/status write succeeds; prior published snapshots stay readable.
+    previous_snapshot_id = state.active_snapshot_id
+    previous_quality = state.quality_status
+    previous_status = state.status
     state.active_snapshot_id = stored["snapshot_id"]
     state.quality_status = "verified_ready"
     state.status = "verified_ready"
-    persist_scan(state, repository=repo, user_id=payload["user_id"])
+    if not persist_scan(state, repository=repo, user_id=payload["user_id"]):
+        state.active_snapshot_id = previous_snapshot_id
+        state.quality_status = previous_quality
+        state.status = previous_status
+        logger.warning(
+            "tw_research finalize snapshot stored but scan pointer persist failed for %s",
+            state.scan_id,
+        )
+        return None
     return {
         "snapshotId": stored["snapshot_id"],
         "contentDigest": stored["content_digest"],
