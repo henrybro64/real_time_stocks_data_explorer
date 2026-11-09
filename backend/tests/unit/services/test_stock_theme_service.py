@@ -5,10 +5,13 @@ import pytest
 from app.services.stock_theme_service import (
     DEFAULT_THEME_ASSIGNMENTS,
     DEFAULT_THEME_DEFINITIONS,
+    US_THEME_ASSIGNMENTS,
+    US_THEME_DEFINITIONS,
     StockThemeService,
     ThemeAssignment,
     ThemeDefinition,
 )
+from app.services.tw_research.preset import TW_RESEARCH_THEME_DEFINITIONS
 from tests.support import stock_record
 
 
@@ -42,8 +45,10 @@ def test_stock_theme_service_lists_default_themes() -> None:
     service = StockThemeService(stock_loader=lambda stock_id: None)
 
     themes = service.list_themes()
+    keys = [theme.key for theme in themes]
+    labels = [theme.label for theme in themes]
 
-    assert [theme.key for theme in themes] == [
+    assert keys[:8] == [
         "ai-infrastructure",
         "gpu",
         "networking",
@@ -53,7 +58,7 @@ def test_stock_theme_service_lists_default_themes() -> None:
         "cooling",
         "power",
     ]
-    assert [theme.label for theme in themes] == [
+    assert labels[:8] == [
         "AI Infrastructure",
         "GPU",
         "Networking",
@@ -63,6 +68,9 @@ def test_stock_theme_service_lists_default_themes() -> None:
         "Cooling",
         "Power",
     ]
+    assert "tw-pcb" in keys
+    assert "tw-ccl" in keys
+    assert len(keys) == len(US_THEME_DEFINITIONS) + len(TW_RESEARCH_THEME_DEFINITIONS)
 
 
 def test_stock_theme_service_default_assignments_match_issue_examples() -> None:
@@ -74,7 +82,12 @@ def test_stock_theme_service_default_assignments_match_issue_examples() -> None:
     assert assignments["US:ANET"] == ("ai-infrastructure", "networking")
     assert assignments["US:LITE"] == ("optical",)
     assert assignments["US:CRWD"] == ("security",)
-    assert len(DEFAULT_THEME_DEFINITIONS) == 8
+    assert len(US_THEME_DEFINITIONS) == 8
+    assert len(US_THEME_ASSIGNMENTS) == 9
+    assert assignments["TW:2383"] == ("tw-ccl", "tw-pcb")
+    assert len(DEFAULT_THEME_DEFINITIONS) == len(US_THEME_DEFINITIONS) + len(
+        TW_RESEARCH_THEME_DEFINITIONS
+    )
 
 
 def test_stock_theme_service_returns_stocks_for_theme() -> None:

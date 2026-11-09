@@ -24,6 +24,7 @@ from app.api.routes.tw_margin_short import router as tw_margin_short_router
 from app.api.routes.tw_ownership_concentration import router as tw_ownership_concentration_router
 from app.api.routes.tw_profitability import router as tw_profitability_router
 from app.api.routes.taiwan_market_data import router as taiwan_market_data_router
+from app.api.routes.tw_research import router as tw_research_router
 from app.api.routes.watchlist import router as watchlist_router
 from app.core.config import settings
 from app.core.logging import configure_logging
@@ -66,6 +67,7 @@ app.include_router(tw_margin_short_router, prefix=settings.api_prefix)
 app.include_router(tw_ownership_concentration_router, prefix=settings.api_prefix)
 app.include_router(tw_profitability_router, prefix=settings.api_prefix)
 app.include_router(taiwan_market_data_router, prefix=settings.api_prefix)
+app.include_router(tw_research_router, prefix=settings.api_prefix)
 app.include_router(watchlist_router, prefix=settings.api_prefix)
 app.include_router(portfolio_router, prefix=settings.api_prefix)
 app.include_router(realized_trades_router, prefix=settings.api_prefix)

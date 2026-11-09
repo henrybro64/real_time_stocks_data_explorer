@@ -59,35 +59,76 @@ class DailyPriceHistoryService:
         provider,
     ) -> list[CandleRecord]:
         """Return daily candles from Postgres, backfilling months never stored."""
+        candles, _months = self.get_daily_history_within_budget(
+            stock,
+            range_name,
+            limit=limit,
+            provider=provider,
+            max_month_fetches=None,
+        )
+        return candles
+
+    def get_daily_history_within_budget(
+        self,
+        stock: StockRecord,
+        range_name: str,
+        *,
+        limit: int | None = None,
+        provider,
+        max_month_fetches: int | None,
+    ) -> tuple[list[CandleRecord], int]:
+        """Like ``get_daily_history``, but caps upstream month fetches.
+
+        Returns ``(candles, months_fetched)``. When ``max_month_fetches`` is 0,
+        only stored bars are returned (no upstream calls). When ``None``,
+        behavior matches the uncapped backfill path.
+        """
         candle_limit = limit if limit is not None else _RANGE_LIMITS.get(range_name, 90)
         stored, readable = self._load_stored(stock, max(candle_limit + 5, 40))
+        months_fetched = 0
+
         if not readable:
+            if max_month_fetches is not None and max_month_fetches <= 0:
+                return [], 0
+            # Legacy full-range pull counts as one upstream attempt for budgeting.
             stored = self._fetch_legacy(stock, range_name, candle_limit, provider)
+            months_fetched = 1
         else:
             missing = self._missing_months(stock, stored, candle_limit)
             if missing:
-                fetched, failed = self._fetch_missing_months(
-                    stock,
-                    missing,
-                    range_name=range_name,
-                    limit=candle_limit,
-                    provider=provider,
-                )
-                if failed and not stored and not fetched:
-                    raise RuntimeError("Daily history temporarily unavailable")
-                if fetched:
-                    if self._persist(stock, fetched):
-                        reloaded, still_readable = self._load_stored(
-                            stock, max(candle_limit + 5, 40)
-                        )
-                        stored = reloaded if still_readable and reloaded else _overlay(stored, fetched)
+                if max_month_fetches is not None:
+                    if max_month_fetches <= 0:
+                        missing = []
                     else:
-                        stored = _overlay(stored, fetched)
+                        missing = missing[:max_month_fetches]
+                if missing:
+                    fetched, failed = self._fetch_missing_months(
+                        stock,
+                        missing,
+                        range_name=range_name,
+                        limit=candle_limit,
+                        provider=provider,
+                    )
+                    months_fetched = len(missing)
+                    if failed and not stored and not fetched:
+                        raise RuntimeError("Daily history temporarily unavailable")
+                    if fetched:
+                        if self._persist(stock, fetched):
+                            reloaded, still_readable = self._load_stored(
+                                stock, max(candle_limit + 5, 40)
+                            )
+                            stored = (
+                                reloaded
+                                if still_readable and reloaded
+                                else _overlay(stored, fetched)
+                            )
+                        else:
+                            stored = _overlay(stored, fetched)
 
         merged = self._merge_forming_candle_from_cache(stock, stored)
         if candle_limit > 0 and len(merged) > candle_limit:
-            return merged[-candle_limit:]
-        return merged
+            return merged[-candle_limit:], months_fetched
+        return merged, months_fetched
 
     def peek_daily_history(
         self,

@@ -34,7 +34,9 @@ def test_themes_api_lists_default_themes(client) -> None:
 
     assert response.status_code == 200
     payload = response.json()
-    assert [item["key"] for item in payload] == [
+    keys = [item["key"] for item in payload]
+    # US themes remain first; optional TW research themes are appended (#310).
+    assert keys[:8] == [
         "ai-infrastructure",
         "gpu",
         "networking",
@@ -44,6 +46,8 @@ def test_themes_api_lists_default_themes(client) -> None:
         "cooling",
         "power",
     ]
+    assert "tw-pcb" in keys
+    assert "tw-ccl" in keys
     assert payload[1]["label"] == "GPU"
 
 
