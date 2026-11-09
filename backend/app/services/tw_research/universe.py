@@ -6,6 +6,8 @@ validation for TWSE/TPEx symbols — never theme membership.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Literal
@@ -78,6 +80,21 @@ def resolve_universe(
 
     raw_ids, theme_keys_applied = _collect_raw_ids(selector, themes=themes, notes=notes)
     accepted, rejected, duplicates = _validate_and_dedupe(raw_ids, resolver)
+    del duplicates
+
+    # Prefer a digest of the accepted, catalog-validated set so reorder/dup
+    # inputs and process restarts yield the same universe_version (#319).
+    if universe_version is None and selector.mode == "stock_ids":
+        digest = deterministic_universe_digest(mode="stock_ids", stock_ids=accepted)[:16]
+        version = f"explicit:{len(accepted)}:{digest}"
+    elif universe_version is None and selector.mode == "theme_keys":
+        digest = deterministic_universe_digest(
+            mode="theme_keys",
+            stock_ids=accepted,
+            theme_keys=theme_keys_applied,
+        )[:16]
+        # Keep within String(128) persistence limit; theme keys stay in selector_json.
+        version = f"themes:{len(theme_keys_applied)}:{digest}"
 
     return ResolvedUniverse(
         universe_version=version,
@@ -89,15 +106,57 @@ def resolve_universe(
     )
 
 
+def deterministic_universe_digest(
+    *,
+    mode: str,
+    stock_ids: Sequence[str] = (),
+    theme_keys: Sequence[str] = (),
+) -> str:
+    """Stable SHA-256 digest across processes/restarts (#319).
+
+    Inputs are normalized: TW IDs uppercased, digit-only bare symbols become
+    ``TW:{digits}``, then sorted unique IDs / theme keys are hashed with the
+    selector mode. Python ``hash()`` is intentionally not used.
+    """
+    normalized_ids = sorted(
+        {
+            _normalize_stock_id(item)
+            for item in stock_ids
+            if _normalize_stock_id(item)
+        }
+    )
+    normalized_themes = sorted(_normalize_keys(theme_keys))
+    payload = {
+        "mode": mode,
+        "stockIds": normalized_ids,
+        "themeKeys": normalized_themes,
+        "presetVersion": UNIVERSE_PRESET_VERSION if mode == "starter_preset" else None,
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
 def _default_universe_version(selector: UniverseSelector) -> str:
     if selector.mode == "starter_preset":
         return UNIVERSE_PRESET_VERSION
     if selector.mode == "theme_keys":
         keys = ",".join(sorted(_normalize_keys(selector.theme_keys)))
-        return f"themes:{keys or 'none'}"
-    ids = ",".join(sorted({_normalize_stock_id(item) for item in selector.stock_ids if item}))
-    digest = str(abs(hash(ids)) % (10**12))
-    return f"explicit:{len(selector.stock_ids)}:{digest}"
+        digest = deterministic_universe_digest(
+            mode="theme_keys",
+            theme_keys=selector.theme_keys,
+        )[:16]
+        return f"themes:{keys or 'none'}:{digest}"
+    # Version uses the *accepted* set after resolve; for the provisional version
+    # before catalog filtering, digest the normalized requested IDs.
+    normalized = sorted(
+        {
+            _normalize_stock_id(item)
+            for item in selector.stock_ids
+            if _normalize_stock_id(item)
+        }
+    )
+    digest = deterministic_universe_digest(mode="stock_ids", stock_ids=normalized)[:16]
+    return f"explicit:{len(normalized)}:{digest}"
 
 
 def _collect_raw_ids(

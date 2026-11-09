@@ -44,6 +44,7 @@ def test_create_and_get_scan_round_trip_with_explicit_ids(monkeypatch) -> None:
     service = scan_module.TwResearchScanService(
         history_loader=lambda stock, limit, *, max_month_fetches: ([], 0),
         stock_loader=lambda stock_id: catalog.get(stock_id),
+        persist=False,
     )
     monkeypatch.setattr(
         "app.api.routes.tw_research.tw_research_scan_service",
@@ -64,7 +65,9 @@ def test_create_and_get_scan_round_trip_with_explicit_ids(monkeypatch) -> None:
     fetched = client.get(f"/api/tw-research/scans/{scan_id}")
     assert fetched.status_code == 200
     assert fetched.json()["scan"]["scanId"] == scan_id
-    assert fetched.json()["scan"]["checkpointsEphemeral"] is True
+    assert fetched.json()["scan"]["checkpointsEphemeral"] is False
+    assert fetched.json()["scan"]["checkpointsDurable"] is True
+    assert fetched.json()["scan"]["status"] == "queued"
 
 
 def test_resolve_universe_endpoint_accepts_out_of_preset_ids(monkeypatch) -> None:

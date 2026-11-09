@@ -54,6 +54,10 @@ class SessionBoundRepository:
     def set_session_factory_override(self, session_factory) -> None:
         self._session_factory_override = session_factory
 
+    def clear_session_factory_override(self) -> None:
+        """Restore the default SessionLocal / DATABASE_URL binding."""
+        self._session_factory_override = _UNSET
+
     def is_available(self) -> bool:
         if self._session_factory_override is not _UNSET:
             return self._session_factory_override is not None

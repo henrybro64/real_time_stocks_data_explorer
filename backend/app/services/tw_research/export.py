@@ -1,7 +1,8 @@
-"""Browser-readable research export payloads (#314).
+"""Browser-readable research export payloads (#314/#319).
 
-Reads precomputed scan/enrichment state only. Does not trigger upstream fetches.
-Exports never include portfolio holdings, API keys, or session secrets.
+Reads precomputed scan/enrichment state or immutable verified snapshots only.
+Does not trigger upstream fetches. Exports never include portfolio holdings,
+API keys, or session secrets.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ import json
 from typing import Any
 
 from app.services.tw_research.constants import (
+    CALCULATION_VERSION,
     CONTRACT_VERSION,
     ENRICHMENT_VERSION,
     EXPORT_CHUNK_SIZE,
@@ -24,24 +26,269 @@ from app.services.tw_research.scan import ScanState
 from app.services.tw_research.universe import UniverseSelector
 
 
-def build_export_manifest(state: ScanState, *, generated_at: str) -> dict[str, Any]:
-    ledger = list(state.records.values())
+def canonical_json_dumps(payload: Any) -> str:
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True, default=str)
+
+
+def content_digest(payload: Any) -> str:
+    return hashlib.sha256(canonical_json_dumps(payload).encode("utf-8")).hexdigest()
+
+
+_COVERAGE_GAP_REASONS = frozenset(
+    {
+        "insufficient_history",
+        "insufficient_monthly_history",
+        "missing_trading_sessions",
+        "trading_calendar_unavailable",
+        "incomplete_closed_month",
+        "invalid_ohlcv",
+        "duplicate_dates",
+        "invalid_bars",
+    }
+)
+_UNRESOLVED_REJECTION_PREFIXES = ("symbol_error", "provider_error")
+_UNRESOLVED_REJECTION_REASONS = frozenset(
+    {
+        "history_budget_exhausted",
+        "not_in_catalog",
+        "provider_unavailable",
+    }
+)
+
+
+def _coverage_reason(record: Any) -> set[str]:
+    coverage = getattr(record, "coverage", None) or {}
+    reasons: set[str] = set()
+    for bucket in (coverage.get("daily") or {}, coverage.get("monthly") or {}):
+        reason = bucket.get("reason")
+        if reason:
+            reasons.add(str(reason))
+        if bucket.get("invalidBars"):
+            reasons.add("invalid_bars")
+        if bucket.get("duplicateDates"):
+            reasons.add("duplicate_dates")
+    return reasons
+
+
+def _pass_status(record: Any, *, timeframe: str) -> str | None:
+    payload = getattr(record, timeframe, None) or {}
+    status = payload.get("passStatus")
+    return str(status) if status is not None else None
+
+
+def has_definitive_screening_outcome(record: Any) -> bool:
+    """True when screening produced a valid technical pass or fail.
+
+    Unknown indicators, coverage gaps, provider/symbol errors, and rejected
+    budget/catalog outcomes are unresolved — not valid screening results.
+    A valid technical failure is still definitive (and does not need enrichment).
+    """
+    readiness = getattr(record, "readiness", None)
+    if readiness == "source_incomplete":
+        return False
+    if readiness == "rejected":
+        return False
+    rejection = str(getattr(record, "rejection_reason", "") or "")
+    if rejection:
+        if rejection in _UNRESOLVED_REJECTION_REASONS:
+            return False
+        if any(rejection.startswith(prefix) for prefix in _UNRESOLVED_REJECTION_PREFIXES):
+            return False
+    if _coverage_reason(record) & _COVERAGE_GAP_REASONS:
+        return False
+
+    daily = _pass_status(record, timeframe="daily")
+    if daily == "fail":
+        return True
+    if daily == "pass":
+        monthly = _pass_status(record, timeframe="monthly")
+        return monthly in {"pass", "fail"}
+    # unknown / missing daily indicators are unresolved.
+    return False
+
+
+def _publication_statuses(state: ScanState, ledger: list[Any]) -> dict[str, str]:
+    """Derive consumer-facing completeness labels (independent of any Agent)."""
+    total = len(state.stock_ids)
+    processed = min(int(state.cursor), total) if total else 0
+    remaining = max(0, total - processed)
+    by_id = {
+        getattr(record, "stock_id", None): record
+        for record in ledger
+        if getattr(record, "stock_id", None) is not None
+    }
+    missing_from_ledger = sum(1 for stock_id in state.stock_ids if stock_id not in by_id)
+    unprocessed = max(missing_from_ledger, remaining)
+    definitive = sum(
+        1
+        for stock_id in state.stock_ids
+        if (record := by_id.get(stock_id)) is not None
+        and has_definitive_screening_outcome(record)
+    )
+    unresolved = max(0, total - definitive)
+    universe_fully_processed = total == 0 or (processed >= total and unprocessed == 0)
+    qualified = [
+        record
+        for record in ledger
+        if is_technically_qualified(record)
+        or getattr(record, "readiness", None) in {"technically_qualified", "verified_ready"}
+    ]
+    enriched = [
+        record for record in qualified if getattr(record, "enrichment", None) is not None
+    ]
+
+    if state.status == "failed":
+        technical = "unavailable"
+    elif not universe_fully_processed:
+        # Unprocessed symbols remain — never advertise technical complete
+        # (including budget_exhausted mid-universe).
+        if processed == 0:
+            technical = "not_started"
+        elif state.status in {"running"} and remaining > 0:
+            technical = "in_progress"
+        else:
+            technical = "partial"
+    elif state.status in {"completed_processing", "verified_ready", "budget_exhausted"}:
+        technical = "complete"
+    elif state.status in {"running", "partial"}:
+        technical = "partial"
+    else:
+        technical = "partial"
+
+    if not qualified:
+        enrichment = "unavailable" if technical == "complete" else "not_started"
+    elif len(enriched) == 0:
+        enrichment = "not_started" if state.enrichments_run == 0 else "in_progress"
+    elif len(enriched) < len(qualified):
+        enrichment = "partial"
+    else:
+        enrichment = "complete"
+
+    # Single definition: complete only when every accepted stock has a definitive
+    # pass/fail screening outcome. Enrichment is intentionally independent.
+    if state.status == "failed" or technical == "unavailable":
+        source = "unavailable"
+    elif total == 0 or (unresolved == 0 and unprocessed == 0):
+        source = "complete"
+    else:
+        source = "partial"
+
+    return {
+        "technicalStatus": technical,
+        "enrichmentStatus": enrichment,
+        "sourceCompleteness": source,
+    }
+
+
+def _manifest_counts(state: ScanState, ledger: list[Any]) -> dict[str, int]:
     qualified = [record for record in ledger if is_technically_qualified(record)]
+    verified = [
+        record
+        for record in ledger
+        if getattr(record, "readiness", None) == "verified_ready"
+    ]
     enriched = [
         record
         for record in qualified
         if getattr(record, "enrichment", None) is not None
     ]
+    insufficient = 0
+    missing_sessions = 0
+    for record in ledger:
+        reasons = _coverage_reason(record)
+        if "insufficient_history" in reasons or "insufficient_monthly_history" in reasons:
+            insufficient += 1
+        if "missing_trading_sessions" in reasons:
+            missing_sessions += 1
+    rejected = sum(1 for record in ledger if record.stage == "rejected")
+    symbol_errors = sum(
+        1
+        for record in ledger
+        if str(getattr(record, "rejection_reason", "") or "").startswith("symbol_error")
+    )
+    ledger_ids = {getattr(record, "stock_id", None) for record in ledger}
+    processed = min(int(state.cursor), len(state.stock_ids))
+    unprocessed = max(
+        0,
+        max(
+            len(state.stock_ids) - processed,
+            sum(1 for sid in state.stock_ids if sid not in ledger_ids),
+        ),
+    )
+    by_id = {
+        getattr(record, "stock_id", None): record
+        for record in ledger
+        if getattr(record, "stock_id", None) is not None
+    }
+    definitive = sum(
+        1
+        for stock_id in state.stock_ids
+        if (record := by_id.get(stock_id)) is not None
+        and has_definitive_screening_outcome(record)
+    )
+    unresolved = max(0, len(state.stock_ids) - definitive)
+    fully_evaluated = definitive
+    return {
+        "requested": len(state.stock_ids) + rejected,
+        "accepted": len(state.stock_ids),
+        "processed": processed,
+        "remaining": max(0, len(state.stock_ids) - processed),
+        "unprocessed": unprocessed,
+        "fullyEvaluated": fully_evaluated,
+        "definitiveEvaluations": definitive,
+        "unresolvedEvaluations": unresolved,
+        "attempted": len(ledger),
+        "dayPass": len(state.day_pass_ids),
+        "technicallyQualified": len(qualified),
+        "qualifiedCount": len(qualified),
+        "verifiedReady": len(verified),
+        "sourceIncomplete": sum(
+            1
+            for record in ledger
+            if getattr(record, "readiness", None) == "source_incomplete"
+        ),
+        "insufficientHistory": insufficient,
+        "missingTradingSessions": missing_sessions,
+        "symbolErrors": symbol_errors,
+        "enriched": len(enriched),
+        "enrichedCount": len(enriched),
+        "rejected": rejected,
+        "unknownDaily": sum(
+            1
+            for record in ledger
+            if (record.daily or {}).get("passStatus") == "unknown"
+        ),
+        "unknownMonthly": sum(
+            1
+            for record in ledger
+            if (record.monthly or {}).get("passStatus") == "unknown"
+        ),
+    }
+
+
+def build_export_manifest(state: ScanState, *, generated_at: str) -> dict[str, Any]:
+    ledger = list(state.records.values())
     theme_summary = _theme_summary(state.selector, ledger)
+    quality = getattr(state, "quality_status", state.status)
+    publication = _publication_statuses(state, ledger)
+    counts = _manifest_counts(state, ledger)
     return {
         "schemaVersion": RESEARCH_SCHEMA_VERSION,
         "contractVersion": CONTRACT_VERSION,
+        "calculationVersion": CALCULATION_VERSION,
         "enrichmentVersion": ENRICHMENT_VERSION,
         "generatedAt": generated_at,
         "scanId": state.scan_id,
+        "snapshotId": getattr(state, "active_snapshot_id", None),
         "tradingDay": state.trading_day,
         "lastCompleteMonth": _last_complete_month(state.trading_day),
         "status": state.status,
+        "qualityStatus": quality,
+        "technicalStatus": publication["technicalStatus"],
+        "enrichmentStatus": publication["enrichmentStatus"],
+        "sourceCompleteness": publication["sourceCompleteness"],
+        "qualifiedCount": counts["qualifiedCount"],
+        "enrichedCount": counts["enrichedCount"],
         "universe": {
             "mode": state.selector.mode,
             "universeVersion": state.universe_version,
@@ -53,28 +300,144 @@ def build_export_manifest(state: ScanState, *, generated_at: str) -> dict[str, A
             "continuationCursor": state.cursor,
         },
         "targetCount": state.target_count,
-        "counts": {
-            "attempted": len(ledger),
-            "dayPass": len(state.day_pass_ids),
-            "technicallyQualified": len(qualified),
-            "enriched": len(enriched),
-            "rejected": sum(1 for record in ledger if record.stage == "rejected"),
-            "unknownDaily": sum(
-                1
-                for record in ledger
-                if (record.daily or {}).get("passStatus") == "unknown"
-            ),
-        },
+        "counts": counts,
         "themeSummary": theme_summary,
         "notes": [
             "target_count is an output selection parameter only; actual pass count is not padded.",
             "Starter 14-sector labels are optional filters, not an allowlist.",
-            "frontend_export_ready; external_notion_published is owned by an outside Agent (#315).",
-            "No Notion SDK or credentials in Stock Ticker.",
+            "technicalStatus describes indicator/coverage evaluation; enrichmentStatus is independent.",
+            "technicalStatus=complete only when every accepted symbol was processed; budget_exhausted with remaining work is partial.",
+            "sourceCompleteness=complete only when every accepted stock has a definitive technical pass or fail; unknown/provider/coverage gaps are partial.",
+            "Valid technical failures are definitive screening outcomes; enrichmentStatus is independent of sourceCompleteness.",
+            "Missing chip/valuation fields never convert a technical pass into a fail.",
+            "completed_processing means batches finished; quality verified_ready means an immutable snapshot was published.",
+            "GET/export routes are read-only over persisted state and never fetch market data.",
+            "Stock Ticker does not track consumer acknowledgment and does not write to Notion.",
         ],
-        "checkpointsEphemeral": True,
+        "checkpointsDurable": True,
+        "checkpointsEphemeral": False,
+        "checkpointContract": {
+            "key": [
+                "trading_day",
+                "universe_version",
+                "calculation_version",
+                "symbol",
+                "scan_id",
+            ],
+            "durable": True,
+        },
         "exportChunkSize": EXPORT_CHUNK_SIZE,
     }
+
+
+def stable_export_content_digest(
+    *,
+    rows: list[dict[str, Any]],
+    chunk_digests: dict[str, str],
+    universe_version: str,
+    trading_day: str,
+    quality_status: str,
+) -> str:
+    """Hash research content only — no timestamps or scan/snapshot UUIDs (#319)."""
+    return content_digest(
+        {
+            "schemaVersion": RESEARCH_SCHEMA_VERSION,
+            "calculationVersion": CALCULATION_VERSION,
+            "enrichmentVersion": ENRICHMENT_VERSION,
+            "universeVersion": universe_version,
+            "tradingDay": trading_day,
+            "qualityStatus": quality_status,
+            "rows": rows,
+            "chunkDigests": chunk_digests,
+        }
+    )
+
+
+def stable_chunk_checksum(
+    *,
+    rows: list[dict[str, Any]],
+    chunk_index: int,
+    chunk_size: int,
+    kind: str,
+    trading_day: str,
+    total_rows: int,
+) -> str:
+    """Checksum over chunk research payload; excludes scanId / generatedAt."""
+    total_chunks = (total_rows + chunk_size - 1) // chunk_size if total_rows else 0
+    return content_digest(
+        {
+            "schemaVersion": RESEARCH_SCHEMA_VERSION,
+            "tradingDay": trading_day,
+            "kind": kind,
+            "chunkIndex": chunk_index,
+            "chunkSize": chunk_size,
+            "totalRows": total_rows,
+            "totalChunks": total_chunks,
+            "rows": rows,
+        }
+    )
+
+
+def build_immutable_manifest(
+    state: ScanState,
+    *,
+    rows: list[dict[str, Any]],
+    chunk_digests: dict[str, str],
+    frozen_at: str,
+    quality_status: str,
+) -> dict[str, Any]:
+    """Manifest frozen at finalize time; content digests stay UUID/time-stable (#319)."""
+    base = build_export_manifest(state, generated_at=frozen_at)
+    base["qualityStatus"] = quality_status
+    base["finalizedAt"] = frozen_at
+    base["generatedAt"] = frozen_at
+    base["chunkDigests"] = chunk_digests
+    base["chunkIds"] = sorted(chunk_digests.keys(), key=lambda value: int(value))
+    base["ledgerRowCount"] = len(rows)
+    base["contentDigest"] = stable_export_content_digest(
+        rows=rows,
+        chunk_digests=chunk_digests,
+        universe_version=state.universe_version,
+        trading_day=state.trading_day,
+        quality_status=quality_status,
+    )
+    return base
+
+
+def build_export_chunk_from_rows(
+    rows: list[dict[str, Any]],
+    *,
+    chunk_index: int,
+    chunk_size: int,
+    kind: str,
+    scan_id: str,
+    trading_day: str,
+    frozen_at: str,
+) -> dict[str, Any]:
+    total = len(rows)
+    start = chunk_index * chunk_size
+    slice_rows = rows[start : start + chunk_size]
+    payload = {
+        "schemaVersion": RESEARCH_SCHEMA_VERSION,
+        "generatedAt": frozen_at,
+        "scanId": scan_id,
+        "tradingDay": trading_day,
+        "kind": kind,
+        "chunkIndex": chunk_index,
+        "chunkSize": chunk_size,
+        "totalRows": total,
+        "totalChunks": (total + chunk_size - 1) // chunk_size if total else 0,
+        "rows": slice_rows,
+    }
+    payload["checksumSha256"] = stable_chunk_checksum(
+        rows=slice_rows,
+        chunk_index=chunk_index,
+        chunk_size=chunk_size,
+        kind=kind,
+        trading_day=trading_day,
+        total_rows=total,
+    )
+    return payload
 
 
 def build_export_chunk(
@@ -106,24 +469,15 @@ def build_export_chunk(
         rows = [_record_export(record) for record in state.records.values()]
 
     rows.sort(key=lambda item: item["stockId"])
-    total = len(rows)
-    start = chunk_index * chunk_size
-    slice_rows = rows[start : start + chunk_size]
-    payload = {
-        "schemaVersion": RESEARCH_SCHEMA_VERSION,
-        "generatedAt": generated_at,
-        "scanId": state.scan_id,
-        "tradingDay": state.trading_day,
-        "kind": kind,
-        "chunkIndex": chunk_index,
-        "chunkSize": chunk_size,
-        "totalRows": total,
-        "totalChunks": (total + chunk_size - 1) // chunk_size if total else 0,
-        "rows": slice_rows,
-    }
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
-    payload["checksumSha256"] = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
-    return payload
+    return build_export_chunk_from_rows(
+        rows,
+        chunk_index=chunk_index,
+        chunk_size=chunk_size,
+        kind=kind,
+        scan_id=state.scan_id,
+        trading_day=state.trading_day,
+        frozen_at=generated_at,
+    )
 
 
 def build_export_csv(state: ScanState, *, kind: str = "ledger") -> str:
@@ -174,10 +528,10 @@ def build_browser_text_view(
     chunk_index: int = 0,
     kind: str = "ledger",
 ) -> str:
-    """Compact authenticated JSON text for a browser-only Agent to copy.
+    """Compact authenticated JSON for a browser client to copy.
 
-    Returns one export chunk plus continuation metadata so Agents can walk the
-    full ledger without loading every row in a single payload.
+    Returns one export chunk plus continuation metadata so any authorized
+    consumer can walk the ledger without loading every row at once.
     """
     manifest = build_export_manifest(state, generated_at=generated_at)
     chunk = build_export_chunk(
@@ -210,12 +564,12 @@ def build_browser_text_view(
                 "Rows are sorted by stockId; enrichment is included in ledger rows."
             ),
         },
-        "handoff": {
+        "producer": {
             "frontendExportReady": True,
-            "externalNotionPublished": "not_performed_in_stock_ticker",
-            "instruction": (
-                "External Agent may copy this JSON (and remaining chunks) and "
-                "optionally publish to Notion. Stock Ticker never writes Notion."
+            "independentPublisher": True,
+            "note": (
+                "Stock Ticker publishes immutable research snapshots independently. "
+                "It does not track consumer acknowledgment and never writes to Notion."
             ),
         },
     }
@@ -227,6 +581,7 @@ def _record_export(record: Any) -> dict[str, Any]:
     return {
         "stockId": record.stock_id,
         "stage": record.stage,
+        "readiness": getattr(record, "readiness", "processed"),
         "rejectionReason": record.rejection_reason,
         "daily": record.daily,
         "monthly": record.monthly,
@@ -237,6 +592,7 @@ def _record_export(record: Any) -> dict[str, Any]:
         "week52Position": record.week52_position,
         "enrichment": enrichment,
         "themeKeys": list(getattr(record, "theme_keys", ()) or ()),
+        "coverage": getattr(record, "coverage", None),
     }
 
 

@@ -431,3 +431,156 @@ class UserApiKey(Base, UserOwnedRowMixin, TimestampedRowMixin):
 
     provider: Mapped[str] = mapped_column(String(32), nullable=False)
     api_key: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class TwResearchScan(Base):
+    """Durable Taiwan research scan metadata (#318)."""
+
+    __tablename__ = "tw_research_scans"
+    __table_args__ = (
+        Index(
+            "ix_tw_research_scans_universe_trading_day",
+            "universe_version",
+            "trading_day",
+            "status",
+        ),
+    )
+
+    scan_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    trading_day: Mapped[str] = mapped_column(String(10), nullable=False)
+    universe_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    calculation_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    enrichment_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    selector_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    stock_ids_json: Mapped[list] = mapped_column(JSON, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    quality_status: Mapped[str] = mapped_column(String(32), nullable=False)
+    cursor: Mapped[int] = mapped_column(nullable=False, server_default=text("0"))
+    # Exclusive end of the in-flight batch reservation; cursor stays at the
+    # completed watermark until the batch finishes or the lease expires (#318).
+    reserve_cursor: Mapped[int] = mapped_column(nullable=False, server_default=text("0"))
+    reserve_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    enrich_cursor: Mapped[int] = mapped_column(nullable=False, server_default=text("0"))
+    # In-flight enrichment reservation (stock ids) + lease expiry (#318).
+    enrich_reserve_ids_json: Mapped[list] = mapped_column(JSON, nullable=False)
+    enrich_reserve_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    # Bumped on every enrichment claim so stale workers cannot write after reclaim.
+    enrich_lease_generation: Mapped[int] = mapped_column(
+        nullable=False, server_default=text("0")
+    )
+    target_count: Mapped[int] = mapped_column(nullable=False)
+    upstream_month_fetches: Mapped[int] = mapped_column(nullable=False, server_default=text("0"))
+    max_upstream_month_fetches: Mapped[int] = mapped_column(nullable=False)
+    enrichments_run: Mapped[int] = mapped_column(nullable=False, server_default=text("0"))
+    max_enrichments_per_run: Mapped[int] = mapped_column(nullable=False)
+    day_pass_ids_json: Mapped[list] = mapped_column(JSON, nullable=False)
+    qualified_ids_json: Mapped[list] = mapped_column(JSON, nullable=False)
+    notes_json: Mapped[list] = mapped_column(JSON, nullable=False)
+    active_snapshot_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
+class TwResearchSymbolResult(Base):
+    """Per-symbol checkpoint + ledger payload for a research scan (#318)."""
+
+    __tablename__ = "tw_research_symbol_results"
+    __table_args__ = (
+        UniqueConstraint(
+            "scan_id",
+            "stock_id",
+            name="uq_tw_research_symbol_results_scan_stock",
+        ),
+        UniqueConstraint(
+            "trading_day",
+            "universe_version",
+            "calculation_version",
+            "stock_id",
+            "scan_id",
+            name="uq_tw_research_checkpoint_identity",
+        ),
+        Index("ix_tw_research_symbol_results_scan", "scan_id", "stock_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    scan_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("tw_research_scans.scan_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    stock_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    trading_day: Mapped[str] = mapped_column(String(10), nullable=False)
+    universe_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    calculation_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    stage: Mapped[str] = mapped_column(String(16), nullable=False)
+    readiness: Mapped[str] = mapped_column(String(32), nullable=False)
+    payload_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
+class TwResearchExportSnapshot(Base):
+    """Immutable finalized export snapshot (#318/#319)."""
+
+    __tablename__ = "tw_research_export_snapshots"
+    __table_args__ = (
+        # Same research content → same digest; uniqueness is per owner so users
+        # never share snapshot rows across authorization boundaries (#319).
+        UniqueConstraint(
+            "user_id",
+            "content_digest",
+            name="uq_tw_research_export_user_content_digest",
+        ),
+        Index(
+            "ix_tw_research_export_latest",
+            "universe_version",
+            "trading_day",
+            "quality_status",
+            "finalized_at",
+        ),
+    )
+
+    snapshot_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    # SET NULL on scan delete so verified snapshots outlive scan retention.
+    scan_id: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey("tw_research_scans.scan_id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    universe_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    trading_day: Mapped[str] = mapped_column(String(10), nullable=False)
+    schema_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    calculation_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    enrichment_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    quality_status: Mapped[str] = mapped_column(String(32), nullable=False)
+    content_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    manifest_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    ledger_json: Mapped[list] = mapped_column(JSON, nullable=False)
+    chunk_digests_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    finalized_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
