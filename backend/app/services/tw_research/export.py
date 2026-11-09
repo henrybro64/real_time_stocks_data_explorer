@@ -34,6 +34,28 @@ def content_digest(payload: Any) -> str:
     return hashlib.sha256(canonical_json_dumps(payload).encode("utf-8")).hexdigest()
 
 
+_COVERAGE_GAP_REASONS = frozenset(
+    {
+        "insufficient_history",
+        "insufficient_monthly_history",
+        "missing_trading_sessions",
+        "trading_calendar_unavailable",
+        "incomplete_closed_month",
+        "invalid_ohlcv",
+        "duplicate_dates",
+        "invalid_bars",
+    }
+)
+_UNRESOLVED_REJECTION_PREFIXES = ("symbol_error", "provider_error")
+_UNRESOLVED_REJECTION_REASONS = frozenset(
+    {
+        "history_budget_exhausted",
+        "not_in_catalog",
+        "provider_unavailable",
+    }
+)
+
+
 def _coverage_reason(record: Any) -> set[str]:
     coverage = getattr(record, "coverage", None) or {}
     reasons: set[str] = set()
@@ -41,7 +63,48 @@ def _coverage_reason(record: Any) -> set[str]:
         reason = bucket.get("reason")
         if reason:
             reasons.add(str(reason))
+        if bucket.get("invalidBars"):
+            reasons.add("invalid_bars")
+        if bucket.get("duplicateDates"):
+            reasons.add("duplicate_dates")
     return reasons
+
+
+def _pass_status(record: Any, *, timeframe: str) -> str | None:
+    payload = getattr(record, timeframe, None) or {}
+    status = payload.get("passStatus")
+    return str(status) if status is not None else None
+
+
+def has_definitive_screening_outcome(record: Any) -> bool:
+    """True when screening produced a valid technical pass or fail.
+
+    Unknown indicators, coverage gaps, provider/symbol errors, and rejected
+    budget/catalog outcomes are unresolved — not valid screening results.
+    A valid technical failure is still definitive (and does not need enrichment).
+    """
+    readiness = getattr(record, "readiness", None)
+    if readiness == "source_incomplete":
+        return False
+    if readiness == "rejected":
+        return False
+    rejection = str(getattr(record, "rejection_reason", "") or "")
+    if rejection:
+        if rejection in _UNRESOLVED_REJECTION_REASONS:
+            return False
+        if any(rejection.startswith(prefix) for prefix in _UNRESOLVED_REJECTION_PREFIXES):
+            return False
+    if _coverage_reason(record) & _COVERAGE_GAP_REASONS:
+        return False
+
+    daily = _pass_status(record, timeframe="daily")
+    if daily == "fail":
+        return True
+    if daily == "pass":
+        monthly = _pass_status(record, timeframe="monthly")
+        return monthly in {"pass", "fail"}
+    # unknown / missing daily indicators are unresolved.
+    return False
 
 
 def _publication_statuses(state: ScanState, ledger: list[Any]) -> dict[str, str]:
@@ -49,25 +112,21 @@ def _publication_statuses(state: ScanState, ledger: list[Any]) -> dict[str, str]
     total = len(state.stock_ids)
     processed = min(int(state.cursor), total) if total else 0
     remaining = max(0, total - processed)
-    ledger_ids = {getattr(record, "stock_id", None) for record in ledger}
-    unprocessed = remaining or sum(1 for stock_id in state.stock_ids if stock_id not in ledger_ids)
-    incomplete = sum(
-        1
+    by_id = {
+        getattr(record, "stock_id", None): record
         for record in ledger
-        if getattr(record, "readiness", None) == "source_incomplete"
-    )
-    coverage_gaps = sum(
+        if getattr(record, "stock_id", None) is not None
+    }
+    missing_from_ledger = sum(1 for stock_id in state.stock_ids if stock_id not in by_id)
+    unprocessed = max(missing_from_ledger, remaining)
+    definitive = sum(
         1
-        for record in ledger
-        if _coverage_reason(record)
-        & {
-            "insufficient_history",
-            "insufficient_monthly_history",
-            "missing_trading_sessions",
-            "trading_calendar_unavailable",
-            "incomplete_closed_month",
-        }
+        for stock_id in state.stock_ids
+        if (record := by_id.get(stock_id)) is not None
+        and has_definitive_screening_outcome(record)
     )
+    unresolved = max(0, total - definitive)
+    universe_fully_processed = total == 0 or (processed >= total and unprocessed == 0)
     qualified = [
         record
         for record in ledger
@@ -77,7 +136,6 @@ def _publication_statuses(state: ScanState, ledger: list[Any]) -> dict[str, str]
     enriched = [
         record for record in qualified if getattr(record, "enrichment", None) is not None
     ]
-    universe_fully_processed = total == 0 or (processed >= total and unprocessed == 0)
 
     if state.status == "failed":
         technical = "unavailable"
@@ -106,15 +164,11 @@ def _publication_statuses(state: ScanState, ledger: list[Any]) -> dict[str, str]
     else:
         enrichment = "complete"
 
-    # complete ⇒ entire requested eligible universe was properly evaluated.
-    if technical == "unavailable":
+    # Single definition: complete only when every accepted stock has a definitive
+    # pass/fail screening outcome. Enrichment is intentionally independent.
+    if state.status == "failed" or technical == "unavailable":
         source = "unavailable"
-    elif (
-        technical == "complete"
-        and incomplete == 0
-        and coverage_gaps == 0
-        and unprocessed == 0
-    ):
+    elif total == 0 or (unresolved == 0 and unprocessed == 0):
         source = "complete"
     else:
         source = "partial"
@@ -156,14 +210,24 @@ def _manifest_counts(state: ScanState, ledger: list[Any]) -> dict[str, int]:
     processed = min(int(state.cursor), len(state.stock_ids))
     unprocessed = max(
         0,
-        max(len(state.stock_ids) - processed, sum(1 for sid in state.stock_ids if sid not in ledger_ids)),
+        max(
+            len(state.stock_ids) - processed,
+            sum(1 for sid in state.stock_ids if sid not in ledger_ids),
+        ),
     )
-    fully_evaluated = sum(
-        1
+    by_id = {
+        getattr(record, "stock_id", None): record
         for record in ledger
-        if getattr(record, "readiness", None)
-        in {"processed", "technically_qualified", "verified_ready", "source_incomplete", "rejected"}
+        if getattr(record, "stock_id", None) is not None
+    }
+    definitive = sum(
+        1
+        for stock_id in state.stock_ids
+        if (record := by_id.get(stock_id)) is not None
+        and has_definitive_screening_outcome(record)
     )
+    unresolved = max(0, len(state.stock_ids) - definitive)
+    fully_evaluated = definitive
     return {
         "requested": len(state.stock_ids) + rejected,
         "accepted": len(state.stock_ids),
@@ -171,6 +235,8 @@ def _manifest_counts(state: ScanState, ledger: list[Any]) -> dict[str, int]:
         "remaining": max(0, len(state.stock_ids) - processed),
         "unprocessed": unprocessed,
         "fullyEvaluated": fully_evaluated,
+        "definitiveEvaluations": definitive,
+        "unresolvedEvaluations": unresolved,
         "attempted": len(ledger),
         "dayPass": len(state.day_pass_ids),
         "technicallyQualified": len(qualified),
@@ -241,7 +307,8 @@ def build_export_manifest(state: ScanState, *, generated_at: str) -> dict[str, A
             "Starter 14-sector labels are optional filters, not an allowlist.",
             "technicalStatus describes indicator/coverage evaluation; enrichmentStatus is independent.",
             "technicalStatus=complete only when every accepted symbol was processed; budget_exhausted with remaining work is partial.",
-            "sourceCompleteness=complete only when the entire requested eligible universe was properly evaluated with no coverage gaps.",
+            "sourceCompleteness=complete only when every accepted stock has a definitive technical pass or fail; unknown/provider/coverage gaps are partial.",
+            "Valid technical failures are definitive screening outcomes; enrichmentStatus is independent of sourceCompleteness.",
             "Missing chip/valuation fields never convert a technical pass into a fail.",
             "completed_processing means batches finished; quality verified_ready means an immutable snapshot was published.",
             "GET/export routes are read-only over persisted state and never fetch market data.",

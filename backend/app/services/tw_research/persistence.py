@@ -330,13 +330,18 @@ def retention_cleanup(
     return {"snapshotsDeleted": snapshots, "scansDeleted": scans}
 
 
-def _mark_persist_failure(state: ScanState, reason: str) -> None:
+def mark_persist_failure(state: ScanState, reason: str) -> None:
+    """Mark a durable write/complete failure without mutating prior verified snapshots."""
     note = f"persist_failed:{reason}"
     if note not in state.notes:
         state.notes.append(note)
     # Do not clobber an already-finalized verified scan.
     if state.status != "verified_ready":
         state.status = "failed"
+
+
+# Backward-compatible private alias.
+_mark_persist_failure = mark_persist_failure
 
 
 def _export_row(record: SymbolScanRecord) -> dict[str, Any]:

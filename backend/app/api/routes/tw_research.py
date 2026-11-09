@@ -37,7 +37,11 @@ from app.services.tw_research.export import (
     build_export_manifest,
 )
 from app.services.tw_research.preset import starter_preset_stock_ids, starter_preset_theme_keys
-from app.services.tw_research.scan import ScanState, tw_research_scan_service
+from app.services.tw_research.scan import (
+    ScanState,
+    TwResearchDurableStoreError,
+    tw_research_scan_service,
+)
 from app.services.tw_research.universe import UniverseSelector, resolve_universe
 
 TAIPEI = ZoneInfo("Asia/Taipei")
@@ -386,6 +390,18 @@ def _call_or_http(action: Callable[[], T]) -> T:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except TwResearchDurableStoreError as exc:
+        # Durable PostgreSQL path failed; do not pretend the batch succeeded.
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "durable_store_unavailable",
+                "retryable": True,
+                "operation": exc.operation,
+                "scanId": exc.scan_id,
+                "message": str(exc),
+            },
+        ) from exc
 
 
 def _selector_from_request(body: UniverseSelectorRequest) -> UniverseSelector:

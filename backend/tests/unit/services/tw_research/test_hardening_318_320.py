@@ -980,6 +980,8 @@ def test_source_completeness_requires_full_universe_evaluation() -> None:
     assert manifest["sourceCompleteness"] == "partial"
     assert manifest["counts"]["missingTradingSessions"] == 1
     assert manifest["counts"]["unknownDaily"] == 1
+    assert manifest["counts"]["definitiveEvaluations"] == 1
+    assert manifest["counts"]["unresolvedEvaluations"] == 1
 
     # Clean evaluation of the full universe → complete.
     state.records["TW:2454"] = SymbolScanRecord(
@@ -991,6 +993,138 @@ def test_source_completeness_requires_full_universe_evaluation() -> None:
     clean = build_export_manifest(state, generated_at="2024-06-28T17:00:00+00:00")
     assert clean["technicalStatus"] == "complete"
     assert clean["sourceCompleteness"] == "complete"
+    assert clean["counts"]["definitiveEvaluations"] == 2
+    assert clean["counts"]["unresolvedEvaluations"] == 0
+
+
+def test_source_completeness_matrix_for_pass_fail_unknown_and_errors() -> None:
+    from app.services.tw_research.export import build_export_manifest
+    from app.services.tw_research.scan import ScanState
+
+    def _state(*ids: str, cursor: int | None = None, status: str = "completed_processing"):
+        stock_ids = tuple(ids)
+        return ScanState(
+            scan_id="scan-matrix",
+            trading_day="2024-06-28",
+            universe_version=f"explicit:{len(stock_ids)}:abc",
+            calculation_version="macd12-26-9_kd9-3-3_v1",
+            selector=UniverseSelector(mode="stock_ids", stock_ids=stock_ids),
+            stock_ids=stock_ids,
+            cursor=len(stock_ids) if cursor is None else cursor,
+            status=status,  # type: ignore[arg-type]
+            quality_status="processed",
+        )
+
+    # All evaluated; mix of pass and fail → complete (zero enrichment required).
+    mixed = _state("TW:2330", "TW:2454", "TW:2303")
+    mixed.records["TW:2330"] = SymbolScanRecord(
+        stock_id="TW:2330",
+        stage="B",
+        readiness="verified_ready",
+        daily={"passStatus": "pass"},
+        monthly={"passStatus": "pass"},
+    )
+    mixed.records["TW:2454"] = SymbolScanRecord(
+        stock_id="TW:2454",
+        stage="A",
+        readiness="processed",
+        daily={"passStatus": "fail"},
+    )
+    mixed.records["TW:2303"] = SymbolScanRecord(
+        stock_id="TW:2303",
+        stage="A",
+        readiness="processed",
+        daily={"passStatus": "fail"},
+    )
+    mixed_manifest = build_export_manifest(mixed, generated_at="2024-06-28T17:00:00+00:00")
+    assert mixed_manifest["sourceCompleteness"] == "complete"
+    assert mixed_manifest["enrichmentStatus"] == "not_started"
+    assert mixed_manifest["counts"]["qualifiedCount"] == 1
+    assert mixed_manifest["counts"]["definitiveEvaluations"] == 3
+
+    # All fail / zero qualifiers → still complete.
+    zero = _state("TW:2330", "TW:2454")
+    zero.records["TW:2330"] = SymbolScanRecord(
+        stock_id="TW:2330", stage="A", readiness="processed", daily={"passStatus": "fail"}
+    )
+    zero.records["TW:2454"] = SymbolScanRecord(
+        stock_id="TW:2454", stage="A", readiness="processed", daily={"passStatus": "fail"}
+    )
+    zero_manifest = build_export_manifest(zero, generated_at="2024-06-28T17:00:00+00:00")
+    assert zero_manifest["sourceCompleteness"] == "complete"
+    assert zero_manifest["counts"]["qualifiedCount"] == 0
+    assert zero_manifest["enrichmentStatus"] == "unavailable"
+
+    # Unknown MACD/KD → partial.
+    unknown = _state("TW:2330", "TW:2454")
+    unknown.records["TW:2330"] = SymbolScanRecord(
+        stock_id="TW:2330", stage="A", readiness="processed", daily={"passStatus": "fail"}
+    )
+    unknown.records["TW:2454"] = SymbolScanRecord(
+        stock_id="TW:2454",
+        stage="A",
+        readiness="processed",
+        daily={"passStatus": "unknown"},
+    )
+    unknown_manifest = build_export_manifest(
+        unknown, generated_at="2024-06-28T17:00:00+00:00"
+    )
+    assert unknown_manifest["sourceCompleteness"] == "partial"
+    assert unknown_manifest["counts"]["unknownDaily"] == 1
+
+    # Provider / symbol error → partial.
+    errored = _state("TW:2330", "TW:2454")
+    errored.records["TW:2330"] = SymbolScanRecord(
+        stock_id="TW:2330", stage="A", readiness="processed", daily={"passStatus": "fail"}
+    )
+    errored.records["TW:2454"] = SymbolScanRecord(
+        stock_id="TW:2454",
+        stage="A",
+        readiness="processed",
+        rejection_reason="symbol_error:TimeoutError",
+    )
+    error_manifest = build_export_manifest(errored, generated_at="2024-06-28T17:00:00+00:00")
+    assert error_manifest["sourceCompleteness"] == "partial"
+    assert error_manifest["counts"]["symbolErrors"] == 1
+
+    # Insufficient history → partial.
+    history = _state("TW:2330", "TW:2454")
+    history.records["TW:2330"] = SymbolScanRecord(
+        stock_id="TW:2330", stage="A", readiness="processed", daily={"passStatus": "fail"}
+    )
+    history.records["TW:2454"] = SymbolScanRecord(
+        stock_id="TW:2454",
+        stage="A",
+        readiness="source_incomplete",
+        daily={"passStatus": "unknown"},
+        coverage={"daily": {"ok": False, "reason": "insufficient_history"}},
+    )
+    history_manifest = build_export_manifest(
+        history, generated_at="2024-06-28T17:00:00+00:00"
+    )
+    assert history_manifest["sourceCompleteness"] == "partial"
+    assert history_manifest["counts"]["insufficientHistory"] == 1
+
+    # Partially processed universe → partial.
+    partial = _state("TW:2330", "TW:2454", "TW:2303", cursor=1, status="running")
+    partial.records["TW:2330"] = SymbolScanRecord(
+        stock_id="TW:2330", stage="A", readiness="processed", daily={"passStatus": "fail"}
+    )
+    partial_manifest = build_export_manifest(
+        partial, generated_at="2024-06-28T17:00:00+00:00"
+    )
+    assert partial_manifest["sourceCompleteness"] == "partial"
+    assert partial_manifest["technicalStatus"] == "in_progress"
+    assert partial_manifest["counts"]["unprocessed"] == 2
+
+    # Processing/DB failure → unavailable.
+    failed = _state("TW:2330", status="failed")
+    failed.records["TW:2330"] = SymbolScanRecord(
+        stock_id="TW:2330", stage="A", readiness="processed", daily={"passStatus": "fail"}
+    )
+    failed_manifest = build_export_manifest(failed, generated_at="2024-06-28T17:00:00+00:00")
+    assert failed_manifest["sourceCompleteness"] == "unavailable"
+    assert failed_manifest["technicalStatus"] == "unavailable"
 
 
 def test_complete_durable_enrichment_does_not_deadlock(monkeypatch) -> None:
@@ -1173,3 +1307,196 @@ def test_stale_enrichment_lease_cannot_overwrite_after_reclaim(monkeypatch) -> N
         "qualified": True,
         "source": "winner",
     }
+
+
+def test_durable_scan_claim_failure_does_not_process_or_fallback(monkeypatch) -> None:
+    import pytest
+    from app.services.tw_research.scan import TwResearchDurableStoreError
+
+    factory = install_in_memory_sessionlocal(monkeypatch)
+    repo = TwResearchRepository()
+    repo.set_session_factory_override(factory)
+    monkeypatch.setattr(
+        "app.repositories.tw_research_repository.tw_research_repository",
+        repo,
+    )
+    monkeypatch.setattr(
+        "app.services.tw_research.persistence.tw_research_repository",
+        repo,
+    )
+
+    processed: list[str] = []
+
+    def _history(stock, limit, *, max_month_fetches):  # noqa: ANN001
+        processed.append(stock.id)
+        return [], 0
+
+    service = TwResearchScanService(
+        history_loader=_history,
+        stock_loader=lambda stock_id: _tw(stock_id),
+        persist=True,
+    )
+    state = service.create_scan(
+        UniverseSelector(mode="stock_ids", stock_ids=("TW:2330", "TW:2454")),
+        trading_day="2024-06-28",
+        user_id="user-1",
+    )
+    cursor_before = state.cursor
+
+    def _boom(*_args, **_kwargs):  # noqa: ANN001
+        raise RuntimeError("simulated postgres outage")
+
+    monkeypatch.setattr(repo, "claim_scan_batch", _boom)
+
+    with pytest.raises(TwResearchDurableStoreError) as raised:
+        service.run_batch(state.scan_id, batch_size=2)
+    assert raised.value.retryable is True
+    assert raised.value.operation == "claim_scan_batch"
+    assert processed == []
+    assert state.cursor == cursor_before
+    assert state.records == {}
+    durable = repo.get_scan(state.scan_id)
+    assert durable is not None
+    assert durable["cursor"] == 0
+    assert durable["reserve_cursor"] == 0
+
+
+def test_durable_enrichment_claim_failure_does_not_call_enricher(monkeypatch) -> None:
+    import pytest
+    from app.services.tw_research.scan import TwResearchDurableStoreError
+
+    factory = install_in_memory_sessionlocal(monkeypatch)
+    repo = TwResearchRepository()
+    repo.set_session_factory_override(factory)
+    monkeypatch.setattr(
+        "app.repositories.tw_research_repository.tw_research_repository",
+        repo,
+    )
+    monkeypatch.setattr(
+        "app.services.tw_research.persistence.tw_research_repository",
+        repo,
+    )
+    service = TwResearchScanService(
+        history_loader=lambda stock, limit, *, max_month_fetches: ([], 0),
+        stock_loader=lambda stock_id: _tw(stock_id),
+        persist=True,
+    )
+    state = service.create_scan(
+        UniverseSelector(mode="stock_ids", stock_ids=("TW:2330",)),
+        trading_day="2024-06-28",
+        user_id="user-1",
+    )
+    record = SymbolScanRecord(
+        stock_id="TW:2330",
+        stage="B",
+        readiness="verified_ready",
+        daily={"passStatus": "pass"},
+        monthly={"passStatus": "pass"},
+    )
+    state.records["TW:2330"] = record
+    state.qualified_ids = ["TW:2330"]
+    persist_scan(state, repository=repo, user_id="user-1")
+    persist_symbol(state, record, repository=repo)
+
+    enrich_calls: list[str] = []
+
+    def _enricher(stock_id: str, **kwargs):  # noqa: ANN001
+        enrich_calls.append(stock_id)
+        return {"qualified": True}
+
+    monkeypatch.setattr(
+        repo,
+        "claim_enrichment_batch",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("pg down")),
+    )
+
+    with pytest.raises(TwResearchDurableStoreError) as raised:
+        service.run_enrichment_batch(state.scan_id, batch_size=1, enricher=_enricher)
+    assert raised.value.operation == "claim_enrichment_batch"
+    assert enrich_calls == []
+    assert state.records["TW:2330"].enrichment is None
+
+
+def test_durable_claim_recovers_after_postgres_returns(monkeypatch) -> None:
+    import pytest
+    from app.services.tw_research.scan import TwResearchDurableStoreError
+
+    factory = install_in_memory_sessionlocal(monkeypatch)
+    repo = TwResearchRepository()
+    repo.set_session_factory_override(factory)
+    monkeypatch.setattr(
+        "app.repositories.tw_research_repository.tw_research_repository",
+        repo,
+    )
+    monkeypatch.setattr(
+        "app.services.tw_research.persistence.tw_research_repository",
+        repo,
+    )
+    service = TwResearchScanService(
+        history_loader=lambda stock, limit, *, max_month_fetches: ([], 0),
+        stock_loader=lambda stock_id: _tw(stock_id),
+        persist=True,
+    )
+    state = service.create_scan(
+        UniverseSelector(mode="stock_ids", stock_ids=("TW:2330",)),
+        trading_day="2024-06-28",
+        user_id="user-1",
+    )
+
+    original_claim = repo.claim_scan_batch
+    calls = {"n": 0}
+
+    def _flaky(*args, **kwargs):  # noqa: ANN001
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("transient outage")
+        return original_claim(*args, **kwargs)
+
+    monkeypatch.setattr(repo, "claim_scan_batch", _flaky)
+
+    with pytest.raises(TwResearchDurableStoreError):
+        service.run_batch(state.scan_id, batch_size=1)
+    assert state.cursor == 0
+
+    recovered = service.run_batch(state.scan_id, batch_size=1)
+    assert recovered.cursor >= 1
+    assert "TW:2330" in recovered.records
+
+
+def test_memory_only_persist_false_still_runs_without_postgres() -> None:
+    service = TwResearchScanService(
+        history_loader=lambda stock, limit, *, max_month_fetches: ([], 0),
+        stock_loader=lambda stock_id: _tw(stock_id),
+        persist=False,
+    )
+    state = service.create_scan(
+        UniverseSelector(mode="stock_ids", stock_ids=("TW:2330",)),
+        trading_day="2024-06-28",
+    )
+    result = service.run_batch(state.scan_id, batch_size=1)
+    assert result.cursor == 1
+    assert "TW:2330" in result.records
+
+
+def test_api_surfaces_durable_store_error_as_503() -> None:
+    import pytest
+    from fastapi import HTTPException
+
+    from app.api.routes import tw_research as routes
+    from app.services.tw_research.scan import TwResearchDurableStoreError
+
+    def _boom():
+        raise TwResearchDurableStoreError(
+            "Durable scan claim failed (OperationalError).",
+            scan_id="scan-x",
+            operation="claim_scan_batch",
+        )
+
+    with pytest.raises(HTTPException) as raised:
+        routes._call_or_http(_boom)
+    assert raised.value.status_code == 503
+    detail = raised.value.detail
+    assert isinstance(detail, dict)
+    assert detail["error"] == "durable_store_unavailable"
+    assert detail["retryable"] is True
+    assert detail["operation"] == "claim_scan_batch"
