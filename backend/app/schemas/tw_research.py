@@ -101,7 +101,9 @@ class ScheduleRunResponse(BaseModel):
     tradingDay: str
     scanId: str | None = None
     status: str | None = None
+    qualityStatus: str | None = None
     batchesRun: int = 0
+    enrichBatchesRun: int = 0
     resumed: bool = False
     notes: list[str] = Field(default_factory=list)
     dryRun: bool = False

@@ -7,9 +7,9 @@ spec:
   # Prerequisites: #321 pilot metrics, #329 budget resume, configured schedule
   # token + owner user id, and TW_RESEARCH_SCHEDULE_ENABLED=true on the API.
   suspend: true
-  # Weekdays 15:30 local to the CronJob controller clock. Prefer configuring the
-  # node/controller for Asia/Taipei, or adjust this expression for UTC offset.
+  # Weekdays 15:30 Asia/Taipei. Backend still skips holidays / incomplete sessions.
   schedule: "30 15 * * 1-5"
+  timeZone: Asia/Taipei
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 1
   failedJobsHistoryLimit: 3

@@ -107,7 +107,86 @@ def test_schedule_reuses_same_day_scan(monkeypatch: pytest.MonkeyPatch) -> None:
         now=datetime(2024, 6, 28, 16, 0, tzinfo=TZ),
     )
     assert result.scan_id == created.scan_id
-    assert result.outcome in {"reused_scan", "partial", "budget_exhausted", "completed_window"}
+    assert result.outcome in {
+        "reused_scan",
+        "partial",
+        "budget_exhausted",
+        "completed_window",
+        "technically_complete",
+        "enrichment_partial",
+        "verified_ready",
+    }
+    assert result.enrich_batches_run >= 0
+
+
+def test_schedule_continues_across_windows(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "app.services.tw_research.scan.preflight_tw_trading_calendars",
+        lambda **_kwargs: {"ok": True, "missing": []},
+    )
+    ids = tuple(f"TW:{2300 + i}" for i in range(12))
+    catalog = {stock_id: _tw(stock_id) for stock_id in ids}
+    service = TwResearchScanService(
+        history_loader=lambda stock, limit, *, max_month_fetches: ([], 0),
+        stock_loader=lambda stock_id: catalog.get(stock_id),
+        persist=False,
+    )
+    created = service.create_scan(
+        UniverseSelector(mode="stock_ids", stock_ids=ids),
+        trading_day="2024-06-28",
+        target_count=10,
+        user_id="schedule-owner",
+        now=datetime(2024, 6, 28, 16, 0, tzinfo=TZ),
+    )
+
+    # Force starter-preset reuse path via list_scans while keeping the large universe.
+    created.selector = UniverseSelector(mode="starter_preset")
+
+    def _list(user_id: str, limit: int = 20):  # noqa: ANN001
+        del limit
+        return [
+            {
+                "scanId": created.scan_id,
+                "tradingDay": "2024-06-28",
+                "selectorMode": "starter_preset",
+                "status": created.status,
+            }
+        ]
+
+    monkeypatch.setattr(service, "list_scans", _list)
+    first = run_scheduled_research(
+        user_id="schedule-owner",
+        enabled=True,
+        trading_day="2024-06-28",
+        max_batches=1,
+        max_enrich_batches=0,
+        service=service,
+        now=datetime(2024, 6, 28, 16, 0, tzinfo=TZ),
+    )
+    assert first.scan_id == created.scan_id
+    assert first.batches_run == 1
+    mid = service.get_scan(created.scan_id)
+    assert mid is not None
+    assert mid.cursor < len(ids)
+
+    second = run_scheduled_research(
+        user_id="schedule-owner",
+        enabled=True,
+        trading_day="2024-06-28",
+        max_batches=5,
+        max_enrich_batches=0,
+        service=service,
+        now=datetime(2024, 6, 28, 16, 0, tzinfo=TZ),
+    )
+    assert second.scan_id == created.scan_id
+    done = service.get_scan(created.scan_id)
+    assert done is not None
+    assert done.cursor == len(ids) or done.status in {
+        "completed_processing",
+        "verified_ready",
+        "budget_exhausted",
+        "partial",
+    }
 
 
 def test_resolve_schedule_trading_day_skips_weekend(monkeypatch: pytest.MonkeyPatch) -> None:

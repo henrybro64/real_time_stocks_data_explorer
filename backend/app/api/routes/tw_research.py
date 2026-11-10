@@ -60,6 +60,12 @@ router = APIRouter(
     tags=["tw-research"],
     dependencies=[Depends(get_effective_user_id)],
 )
+# Internal schedule tick uses capture-token auth only — must not inherit session
+# dependencies or AUTH_ENABLED=true rejects CronJob calls before the token check (#330).
+schedule_router = APIRouter(
+    prefix="/tw-research",
+    tags=["tw-research"],
+)
 
 _EXPORT_KIND_PATTERN = "^(ledger|qualified|enriched)$"
 
@@ -165,12 +171,16 @@ def resume_budget_window(
     return _snapshot(state)
 
 
-@router.post("/schedule/run", response_model=ScheduleRunResponse)
+@schedule_router.post("/schedule/run", response_model=ScheduleRunResponse)
 def run_scheduled_research_tick(
     body: ScheduleRunRequest | None = None,
     x_tw_research_schedule_token: str | None = Header(default=None),
 ) -> ScheduleRunResponse:
-    """Internal post-market schedule tick (#330). Token auth; disabled by default."""
+    """Internal post-market schedule tick (#330). Token auth; disabled by default.
+
+    Intentionally registered on ``schedule_router`` without session auth so a
+    configured CronJob token works when ``AUTH_ENABLED=true``.
+    """
     from app.api.capture_auth import require_capture_token
     from app.services.tw_research.scheduler import run_scheduled_research
 

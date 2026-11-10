@@ -41,6 +41,7 @@ Confirm and reuse — do not reimplement:
 | `docs/tw-research-agent-handoff.md` | #322 browser-only Agent transfer runbook |
 | `backend/app/services/tw_research/agent_handoff.py` | Manifest-first chunk plan + digest verify helpers (#322) |
 | Alembic `20261109_0021` | `tw_research_scans`, `tw_research_symbol_results`, `tw_research_export_snapshots` |
+| Alembic `20261110_0022` | History flights, coordination locks, scan lease generation, budget windows |
 
 ## Indicator conventions (#311)
 
@@ -135,7 +136,9 @@ selected scan. UI duplicate-create checks are **session/page helpers only**.
   `history_budget_exhausted` symbol rows, and rewinds the durable cursor so a
   later batch can resume. Repeat `POST /scans/batches` while status is
   `budget_exhausted` returns **HTTP 409** (`budget_resume_required`) — never a
-  false HTTP 200 no-op.
+  false HTTP 200 no-op. Durable resume is a **single PostgreSQL transaction**
+  (`SELECT … FOR UPDATE`); concurrent resumes cannot double-grant windows, and
+  resume is rejected while an active scan-batch lease is held.
 - Snapshots and progress expose `definitiveEvaluatedCount`,
   `budgetExhaustedCount`, `sourceIncompleteCount`, `unresolvedCount`, and
   `unprocessedCount` so `processedCount` is never mistaken for valid Top-N
@@ -143,9 +146,18 @@ selected scan. UI duplicate-create checks are **session/page helpers only**.
   Progress polls use lean evaluation fields only — not full ledger payloads.
 - Warm OHLCV already lives in `daily_price_bars` /
   `daily_price_month_fetches`; a later window reuses stored months
-  (`months_used=0`) without spending budget. Same-process history loads for one
-  symbol are single-flighted. Cluster-wide concurrent batch leases are limited
-  (`DEFAULT_MAX_IN_FLIGHT_SCAN_BATCHES`, HTTP 503 when saturated).
+  (`months_used=0`) without spending budget.
+- **Cross-pod history single-flight:** compatible backfills use
+  `tw_research_history_flights` leases (symbol + price basis + limit + bars
+  version). Short DB transactions acquire/complete the lease; waiters poll with
+  bounded backoff and never hold a DB transaction during upstream HTTP. Process
+  locks remain as an intra-pod accelerator. Lease fencing (`generation` + owner)
+  recovers after pod crash without stale completes.
+- **Atomic cluster admission:** `claim_scan_batch` serializes on the
+  `scan_admission` coordination lock, counts live leases, and claims in one
+  transaction (fail closed on durable DB errors). `scan_lease_generation`
+  fences stale batch completes. Limit: `DEFAULT_MAX_IN_FLIGHT_SCAN_BATCHES`
+  (HTTP 503 when saturated). Alembic `20261110_0022`.
 - Partial / budget-exhausted finalize stays labeled via
   `technicalStatus` / `sourceCompleteness`; never advertise full coverage when
   unresolved symbols remain.
@@ -153,16 +165,22 @@ selected scan. UI duplicate-create checks are **session/page helpers only**.
 ## Post-market schedule (disabled by default) (#330)
 
 - Internal tick: `POST /api/tw-research/schedule/run` with header
-  `X-Tw-Research-Schedule-Token`. Requires configured
+  `X-Tw-Research-Schedule-Token`. Mounted on a **separate router without session
+  auth** so CronJob calls work when `AUTH_ENABLED=true`. Requires configured
   `TW_RESEARCH_SCHEDULE_TOKEN`, `TW_RESEARCH_SCHEDULE_USER_ID`, and
   `TW_RESEARCH_SCHEDULE_ENABLED=true`. Placeholder tokens are treated as unset.
+  The schedule token never unlocks ordinary `/tw-research/*` user routes.
 - Skips Taiwan nontrading days and pre-close sessions (`last_completed_session_date`).
-  Reuses the owner's same-day starter-preset scan when present; otherwise creates
-  one. Runs a bounded number of batches and may call #329 resume when exhausted.
+  Reuses the owner's compatible same-day starter-preset scan (owner + trading day
+  + universe + calculation + target); otherwise creates one. Runs a bounded
+  number of batches, may call #329 resume when exhausted, then bounded enrichment
+  for eligible symbols. Outcomes distinguish technical completion, enrichment
+  partial, verified ready, deferred lock, and failures. Duplicate CronJob pods
+  share a PostgreSQL schedule-tick lock.
 - Kubernetes CronJob `stock-ticker-tw-research-schedule` ships **suspended**
-  (`suspend: true`, `concurrencyPolicy: Forbid`, resource limits,
-  `activeDeadlineSeconds`). Do not unsuspend or set ENABLED without pilot
-  approval (#321) and an explicit operator decision.
+  (`suspend: true`, `timeZone: Asia/Taipei`, `concurrencyPolicy: Forbid`,
+  resource limits, `activeDeadlineSeconds`). Do not unsuspend or set ENABLED
+  without pilot approval (#321) and an explicit operator decision.
 - Manual `/research/tw` create/batch/resume remains available and still respects
   global admission / single-flight controls from #329.
 
