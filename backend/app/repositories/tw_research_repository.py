@@ -630,36 +630,74 @@ class TwResearchRepository(SessionBoundRepository):
         payload: dict[str, Any],
         *,
         enrich_lease_generation: int | None = None,
+        scan_lease_generation: int | None = None,
     ) -> dict[str, Any]:
-        """Upsert a symbol row.
+        """Upsert a symbol row with optional lease-generation fencing (#318/#329).
 
-        Returns ``{"applied": bool, "enrichment_rejected": bool}``. Enrichment
-        updates require a matching ``enrich_lease_generation`` when provided so
-        a reclaimed lease cannot be overwritten by a stale worker.
+        Returns ``{"applied": bool, "enrichment_rejected": bool,
+        "technical_rejected": bool}``.
+
+        Fencing rules
+        -------------
+        - ``scan_lease_generation`` (technical screening writes from a claimed
+          scan batch): mandatory match against the scan row **and** an active
+          scan-batch lease (``reserve_expires_at`` still in the future). Rejected
+          writes leave the existing row untouched.
+        - ``enrich_lease_generation`` (enrichment updates): must match the scan's
+          enrich lease generation. On mismatch, enrichment is stripped but other
+          fields may still apply when no technical fence was requested.
+        - When neither generation is supplied (scan create seed rows, fixtures,
+          unfenced maintenance), the write applies without lease checks.
         """
         session_factory = self._session_factory()
         with session_factory() as session:
+            now = datetime.now(timezone.utc)
+            scan_row = None
+            if scan_lease_generation is not None or (
+                enrich_lease_generation is not None
+                and dict(payload.get("payload_json") or {}).get("enrichment")
+            ):
+                scan_row = session.execute(
+                    select(TwResearchScan)
+                    .where(TwResearchScan.scan_id == payload["scan_id"])
+                    .with_for_update()
+                ).scalar_one_or_none()
+
+            if scan_lease_generation is not None:
+                current_generation = (
+                    int(getattr(scan_row, "scan_lease_generation", 0) or 0)
+                    if scan_row is not None
+                    else -1
+                )
+                lease_until = (
+                    _as_utc(getattr(scan_row, "reserve_expires_at", None))
+                    if scan_row is not None
+                    else None
+                )
+                lease_active = lease_until is not None and lease_until > now
+                if current_generation != int(scan_lease_generation) or not lease_active:
+                    session.commit()
+                    return {
+                        "applied": False,
+                        "enrichment_rejected": False,
+                        "technical_rejected": True,
+                    }
+
             existing = session.execute(
                 select(TwResearchSymbolResult).where(
                     TwResearchSymbolResult.scan_id == payload["scan_id"],
                     TwResearchSymbolResult.stock_id == payload["stock_id"],
                 )
             ).scalar_one_or_none()
-            now = datetime.now(timezone.utc)
             incoming_payload = dict(payload.get("payload_json") or {})
             enrichment_rejected = False
             if enrich_lease_generation is not None and incoming_payload.get("enrichment"):
-                scan_row = session.execute(
-                    select(TwResearchScan)
-                    .where(TwResearchScan.scan_id == payload["scan_id"])
-                    .with_for_update()
-                ).scalar_one_or_none()
-                current_generation = (
+                current_enrich_generation = (
                     int(getattr(scan_row, "enrich_lease_generation", 0) or 0)
                     if scan_row is not None
                     else -1
                 )
-                if current_generation != int(enrich_lease_generation):
+                if current_enrich_generation != int(enrich_lease_generation):
                     enrichment_rejected = True
                     incoming_payload = {
                         key: value
@@ -690,6 +728,7 @@ class TwResearchRepository(SessionBoundRepository):
             return {
                 "applied": True,
                 "enrichment_rejected": enrichment_rejected,
+                "technical_rejected": False,
             }
 
     def list_symbol_results(self, scan_id: str) -> list[dict[str, Any]]:

@@ -161,8 +161,13 @@ selected scan. UI duplicate-create checks are **session/page helpers only**.
 - **Atomic cluster admission:** `claim_scan_batch` serializes on the
   `scan_admission` coordination lock, counts live leases, and claims in one
   transaction (fail closed on durable DB errors). `scan_lease_generation`
-  fences stale batch completes. Limit: `DEFAULT_MAX_IN_FLIGHT_SCAN_BATCHES`
-  (HTTP 503 when saturated). Alembic `20261110_0022`.
+  fences stale batch completes **and** technical symbol-result upserts: a write
+  must present the authorizing generation and an still-active
+  `reserve_expires_at` lease, or PostgreSQL rejects it without mutating the row.
+  Enrichment continues to use `enrich_lease_generation` independently. Seed rows
+  and unfenced fixtures omit both tokens. Limit:
+  `DEFAULT_MAX_IN_FLIGHT_SCAN_BATCHES` (HTTP 503 when saturated). Alembic
+  `20261110_0022`.
 - Partial / budget-exhausted finalize stays labeled via
   `technicalStatus` / `sourceCompleteness`; never advertise full coverage when
   unresolved symbols remain.

@@ -178,6 +178,28 @@ class TwResearchHistoryCoordinationError(RuntimeError):
         self.operation = "history_flight"
 
 
+class TwResearchScanLeaseStaleError(RuntimeError):
+    """Technical symbol write rejected: scan-batch lease generation is stale (#329).
+
+    Raised when a worker's ``scan_lease_generation`` no longer matches an active
+    PostgreSQL batch lease. Callers must stop the batch without advancing the
+    watermark or publishing a verified snapshot from the stale worker.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        scan_id: str | None = None,
+        stock_id: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.scan_id = scan_id
+        self.stock_id = stock_id
+        self.retryable = True
+        self.operation = "persist_symbol"
+
+
 class HistoryLoader(Protocol):
     def __call__(
         self,
@@ -1058,6 +1080,19 @@ class TwResearchScanService:
                     self._persist_scan(state)
                     self._rewind_durable_cursor(state)
                     return state
+                except TwResearchScanLeaseStaleError:
+                    # Another worker reclaimed the batch (or lease expired). Stop
+                    # without completing under the stale generation.
+                    with self._lock:
+                        remaining = batch_ids[batch_ids.index(stock_id) :]
+                        state.cursor = max(0, state.cursor - len(remaining))
+                        state.status = "partial"
+                        note = f"scan_lease_stale_write_rejected:{stock_id}"
+                        if note not in state.notes:
+                            state.notes.append(note)
+                        state.updated_at = datetime.now(TAIPEI).isoformat()
+                    self._persist_scan(state)
+                    return state
                 except TwResearchDurableStoreError:
                     # Required durable write failed — stop the batch; do not
                     # convert this into a per-symbol screening error.
@@ -1930,14 +1965,31 @@ class TwResearchScanService:
                 scan_id=state.scan_id,
                 operation="persist_symbol",
             )
-        lease_generation = None
+        enrich_lease_generation = None
+        scan_lease_generation = None
         if record.enrichment is not None:
-            lease_generation = int(getattr(state, "enrich_lease_generation", 0) or 0) or None
+            # Enrichment path: fence enrichment only (independent of scan batch).
+            enrich_lease_generation = (
+                int(getattr(state, "enrich_lease_generation", 0) or 0) or None
+            )
+        else:
+            # Technical screening under a claimed scan batch (generation > 0).
+            # Seed rows / fixtures leave generation at 0 and remain unfenced.
+            scan_lease_generation = (
+                int(getattr(state, "scan_lease_generation", 0) or 0) or None
+            )
         if not persist_symbol(
             state,
             record,
-            enrich_lease_generation=lease_generation,
+            enrich_lease_generation=enrich_lease_generation,
+            scan_lease_generation=scan_lease_generation,
         ):
+            if "scan_lease_stale_write_rejected" in state.notes:
+                raise TwResearchScanLeaseStaleError(
+                    f"Stale scan-batch lease rejected technical write for {record.stock_id}.",
+                    scan_id=state.scan_id,
+                    stock_id=record.stock_id,
+                )
             raise TwResearchDurableStoreError(
                 f"Durable symbol write failed for {record.stock_id}.",
                 scan_id=state.scan_id,

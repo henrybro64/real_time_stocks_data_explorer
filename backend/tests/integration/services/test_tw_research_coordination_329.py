@@ -511,3 +511,407 @@ def test_postgres_backlog_prefers_older_incomplete_day() -> None:
     assert backlog[0]["scan_id"] == older.scan_id
     assert backlog[0]["trading_day"] == "2024-06-27"
     assert any(item["scan_id"] == newer.scan_id for item in backlog)
+
+
+def test_postgres_stale_technical_write_cannot_overwrite_newer_result() -> None:
+    """Test A: expired worker A cannot overwrite Worker B's technical result."""
+    from app.db.models import TwResearchScan
+    from app.db.session import SessionLocal
+    from app.services.tw_research.persistence import load_scan_state
+
+    repo = TwResearchRepository()
+    service = TwResearchScanService(
+        history_loader=lambda stock, limit, *, max_month_fetches: ([], 0),
+        stock_loader=lambda stock_id: _tw(stock_id),
+        persist=True,
+    )
+    state = service.create_scan(
+        UniverseSelector(mode="stock_ids", stock_ids=("TW:2330", "TW:2454")),
+        trading_day="2024-06-28",
+        user_id=DEFAULT_USER_ID,
+    )
+    first = repo.claim_scan_batch(
+        state.scan_id,
+        batch_size=1,
+        terminal_statuses={"completed_processing", "verified_ready"},
+        max_in_flight=10,
+        lease_seconds=60,
+    )
+    assert first is not None
+    assert first["batch_ids"] == ["TW:2330"]
+    stale_generation = int(first["lease_generation"])
+
+    assert SessionLocal is not None
+    with SessionLocal() as session:
+        row = session.get(TwResearchScan, state.scan_id)
+        assert row is not None
+        row.reserve_expires_at = datetime(2020, 1, 1, tzinfo=timezone.utc)
+        session.commit()
+
+    reclaimed = repo.claim_scan_batch(
+        state.scan_id,
+        batch_size=1,
+        terminal_statuses={"completed_processing", "verified_ready"},
+        max_in_flight=10,
+        lease_seconds=60,
+    )
+    assert reclaimed is not None
+    assert int(reclaimed["lease_generation"]) == stale_generation + 1
+    winner_generation = int(reclaimed["lease_generation"])
+
+    winner = SymbolScanRecord(
+        stock_id="TW:2330",
+        stage="B",
+        readiness="technically_qualified",
+        daily={"passStatus": "pass", "source": "winner"},
+        monthly={"passStatus": "pass"},
+    )
+    assert (
+        persist_symbol(
+            state,
+            winner,
+            repository=repo,
+            scan_lease_generation=winner_generation,
+        )
+        is True
+    )
+
+    loser = SymbolScanRecord(
+        stock_id="TW:2330",
+        stage="A",
+        readiness="processed",
+        daily={"passStatus": "fail", "source": "loser"},
+    )
+    assert (
+        persist_symbol(
+            state,
+            loser,
+            repository=repo,
+            scan_lease_generation=stale_generation,
+        )
+        is False
+    )
+    assert "scan_lease_stale_write_rejected" in state.notes
+
+    durable = load_scan_state(state.scan_id, repository=repo)
+    assert durable is not None
+    assert durable.records["TW:2330"].daily == {
+        "passStatus": "pass",
+        "source": "winner",
+    }
+    assert durable.records["TW:2330"].readiness == "technically_qualified"
+
+    completed = repo.complete_scan_batch(
+        state.scan_id,
+        status="partial",
+        lease_generation=winner_generation,
+    )
+    assert completed is not None
+    assert completed["stale_lease"] is False
+    assert int(completed["cursor"]) == 1
+
+
+def test_postgres_active_technical_write_persists_and_completes() -> None:
+    """Test B: valid worker persists under its active generation."""
+    from app.services.tw_research.persistence import load_scan_state
+
+    repo = TwResearchRepository()
+    service = TwResearchScanService(
+        history_loader=lambda stock, limit, *, max_month_fetches: ([], 0),
+        stock_loader=lambda stock_id: _tw(stock_id),
+        persist=True,
+    )
+    state = service.create_scan(
+        UniverseSelector(mode="stock_ids", stock_ids=("TW:2330", "TW:2454")),
+        trading_day="2024-06-28",
+        user_id=DEFAULT_USER_ID,
+    )
+    claimed = repo.claim_scan_batch(
+        state.scan_id,
+        batch_size=2,
+        terminal_statuses={"completed_processing", "verified_ready"},
+        max_in_flight=10,
+        lease_seconds=60,
+    )
+    assert claimed is not None
+    generation = int(claimed["lease_generation"])
+    for stock_id in claimed["batch_ids"]:
+        record = SymbolScanRecord(
+            stock_id=stock_id,
+            stage="A",
+            readiness="processed",
+            daily={"passStatus": "fail"},
+        )
+        state.records[stock_id] = record
+        assert (
+            persist_symbol(
+                state,
+                record,
+                repository=repo,
+                scan_lease_generation=generation,
+            )
+            is True
+        )
+    completed = repo.complete_scan_batch(
+        state.scan_id,
+        status="completed_processing",
+        lease_generation=generation,
+    )
+    assert completed is not None
+    assert completed["stale_lease"] is False
+    assert int(completed["cursor"]) == 2
+    durable = load_scan_state(state.scan_id, repository=repo)
+    assert durable is not None
+    assert set(durable.records) == {"TW:2330", "TW:2454"}
+
+
+def test_postgres_expired_lease_without_replacement_rejects_technical_write() -> None:
+    """Test C: expired lease blocks writes even before a replacement claim."""
+    from app.db.models import TwResearchScan
+    from app.db.session import SessionLocal
+
+    repo = TwResearchRepository()
+    service = TwResearchScanService(
+        history_loader=lambda stock, limit, *, max_month_fetches: ([], 0),
+        stock_loader=lambda stock_id: _tw(stock_id),
+        persist=True,
+    )
+    state = service.create_scan(
+        UniverseSelector(mode="stock_ids", stock_ids=("TW:2330",)),
+        trading_day="2024-06-28",
+        user_id=DEFAULT_USER_ID,
+    )
+    claimed = repo.claim_scan_batch(
+        state.scan_id,
+        batch_size=1,
+        terminal_statuses={"completed_processing", "verified_ready"},
+        max_in_flight=10,
+        lease_seconds=60,
+    )
+    assert claimed is not None
+    generation = int(claimed["lease_generation"])
+
+    assert SessionLocal is not None
+    with SessionLocal() as session:
+        row = session.get(TwResearchScan, state.scan_id)
+        assert row is not None
+        row.reserve_expires_at = datetime(2020, 1, 1, tzinfo=timezone.utc)
+        session.commit()
+
+    record = SymbolScanRecord(
+        stock_id="TW:2330",
+        stage="A",
+        readiness="processed",
+        daily={"passStatus": "fail"},
+    )
+    assert (
+        persist_symbol(
+            state,
+            record,
+            repository=repo,
+            scan_lease_generation=generation,
+        )
+        is False
+    )
+    rows = repo.list_symbol_results(state.scan_id)
+    assert rows == []
+
+
+def test_postgres_technical_fencing_preserves_enrichment_and_rejects_stale_enrich() -> None:
+    """Test D: technical/enrichment fencing remain independent."""
+    from app.db.models import TwResearchScan
+    from app.db.session import SessionLocal
+    from app.services.tw_research.persistence import load_scan_state, persist_scan
+
+    repo = TwResearchRepository()
+    service = TwResearchScanService(
+        history_loader=lambda stock, limit, *, max_month_fetches: ([], 0),
+        stock_loader=lambda stock_id: _tw(stock_id),
+        persist=True,
+    )
+    state = service.create_scan(
+        UniverseSelector(mode="stock_ids", stock_ids=("TW:2330",)),
+        trading_day="2024-06-28",
+        user_id=DEFAULT_USER_ID,
+    )
+    claimed = repo.claim_scan_batch(
+        state.scan_id,
+        batch_size=1,
+        terminal_statuses={"completed_processing", "verified_ready"},
+        max_in_flight=10,
+        lease_seconds=60,
+    )
+    assert claimed is not None
+    scan_generation = int(claimed["lease_generation"])
+    technical = SymbolScanRecord(
+        stock_id="TW:2330",
+        stage="B",
+        readiness="technically_qualified",
+        daily={"passStatus": "pass"},
+        monthly={"passStatus": "pass"},
+    )
+    assert (
+        persist_symbol(
+            state,
+            technical,
+            repository=repo,
+            scan_lease_generation=scan_generation,
+        )
+        is True
+    )
+    # Technical update must preserve any pre-existing enrichment (none yet).
+    repo.complete_scan_batch(
+        state.scan_id,
+        status="completed_processing",
+        lease_generation=scan_generation,
+    )
+    state.qualified_ids = ["TW:2330"]
+    persist_scan(state, repository=repo, user_id=DEFAULT_USER_ID)
+
+    enrich_claim = repo.claim_enrichment_batch(
+        state.scan_id, batch_size=1, lease_seconds=60
+    )
+    assert enrich_claim is not None
+    stale_enrich_generation = int(enrich_claim["lease_generation"])
+
+    assert SessionLocal is not None
+    with SessionLocal() as session:
+        row = session.get(TwResearchScan, state.scan_id)
+        assert row is not None
+        row.enrich_reserve_expires_at = datetime(2020, 1, 1, tzinfo=timezone.utc)
+        session.commit()
+
+    reclaimed = repo.claim_enrichment_batch(
+        state.scan_id, batch_size=1, lease_seconds=60
+    )
+    assert reclaimed is not None
+    assert int(reclaimed["lease_generation"]) == stale_enrich_generation + 1
+    winner = SymbolScanRecord(
+        stock_id="TW:2330",
+        stage="B",
+        readiness="technically_qualified",
+        daily={"passStatus": "pass"},
+        monthly={"passStatus": "pass"},
+        enrichment={"qualified": True, "source": "winner"},
+    )
+    assert (
+        persist_symbol(
+            state,
+            winner,
+            repository=repo,
+            enrich_lease_generation=int(reclaimed["lease_generation"]),
+        )
+        is True
+    )
+    loser = SymbolScanRecord(
+        stock_id="TW:2330",
+        stage="B",
+        readiness="technically_qualified",
+        daily={"passStatus": "pass"},
+        monthly={"passStatus": "pass"},
+        enrichment={"qualified": True, "source": "loser"},
+    )
+    assert (
+        persist_symbol(
+            state,
+            loser,
+            repository=repo,
+            enrich_lease_generation=stale_enrich_generation,
+        )
+        is True
+    )
+    assert loser.enrichment is None
+    durable = load_scan_state(state.scan_id, repository=repo)
+    assert durable is not None
+    assert durable.records["TW:2330"].enrichment == {
+        "qualified": True,
+        "source": "winner",
+    }
+    assert durable.records["TW:2330"].daily["passStatus"] == "pass"
+
+    # Active technical generation after complete is inactive — late technical
+    # overwrite with the old scan generation must be rejected.
+    assert (
+        persist_symbol(
+            state,
+            SymbolScanRecord(
+                stock_id="TW:2330",
+                stage="A",
+                readiness="processed",
+                daily={"passStatus": "fail", "source": "late-stale"},
+            ),
+            repository=repo,
+            scan_lease_generation=scan_generation,
+        )
+        is False
+    )
+    durable = load_scan_state(state.scan_id, repository=repo)
+    assert durable is not None
+    assert durable.records["TW:2330"].enrichment == {
+        "qualified": True,
+        "source": "winner",
+    }
+    assert durable.records["TW:2330"].daily.get("source") != "late-stale"
+
+
+def test_postgres_crash_reclaim_retry_continues_safely() -> None:
+    """Test E: replacement worker continues after crash/expiry without corruption."""
+    from app.db.models import TwResearchScan
+    from app.db.session import SessionLocal
+    from app.services.tw_research.persistence import load_scan_state
+
+    repo = TwResearchRepository()
+    service = TwResearchScanService(
+        history_loader=lambda stock, limit, *, max_month_fetches: ([], 0),
+        stock_loader=lambda stock_id: _tw(stock_id),
+        persist=True,
+    )
+    state = service.create_scan(
+        UniverseSelector(mode="stock_ids", stock_ids=("TW:2330", "TW:2454", "TW:2303")),
+        trading_day="2024-06-28",
+        user_id=DEFAULT_USER_ID,
+    )
+    first = repo.claim_scan_batch(
+        state.scan_id,
+        batch_size=2,
+        terminal_statuses={"completed_processing", "verified_ready"},
+        max_in_flight=10,
+        lease_seconds=60,
+    )
+    assert first is not None
+    # Crash before persisting any symbol results: expire lease.
+    assert SessionLocal is not None
+    with SessionLocal() as session:
+        row = session.get(TwResearchScan, state.scan_id)
+        assert row is not None
+        row.reserve_expires_at = datetime(2020, 1, 1, tzinfo=timezone.utc)
+        session.commit()
+
+    replacement = TwResearchScanService(
+        history_loader=lambda stock, limit, *, max_month_fetches: ([], 0),
+        stock_loader=lambda stock_id: _tw(stock_id),
+        persist=True,
+    )
+    # Service path: reclaim via run_batch after expiry.
+    monkey_state = replacement.get_scan(state.scan_id)
+    assert monkey_state is not None
+    from zoneinfo import ZoneInfo
+
+    finished = replacement.run_batch(
+        state.scan_id,
+        batch_size=2,
+        now=datetime(2024, 6, 28, 16, 0, tzinfo=ZoneInfo("Asia/Taipei")),
+    )
+    assert finished.cursor >= 2
+    assert len(finished.records) >= 2
+    durable = load_scan_state(state.scan_id, repository=repo)
+    assert durable is not None
+    assert len(durable.records) >= 2
+    # Stale first generation cannot complete.
+    stale_complete = repo.complete_scan_batch(
+        state.scan_id,
+        status="partial",
+        lease_generation=int(first["lease_generation"]),
+    )
+    assert stale_complete is not None
+    assert stale_complete["stale_lease"] is True

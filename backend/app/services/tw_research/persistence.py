@@ -107,7 +107,14 @@ def persist_symbol(
     *,
     repository: TwResearchRepository | None = None,
     enrich_lease_generation: int | None = None,
+    scan_lease_generation: int | None = None,
 ) -> bool:
+    """Persist one symbol row.
+
+    ``scan_lease_generation`` fences technical screening writes from a claimed
+    scan batch. ``enrich_lease_generation`` fences enrichment payload updates.
+    Seed / fixture / unfenced callers omit both.
+    """
     repo = repository or tw_research_repository
     if not repo.is_available():
         return True
@@ -115,7 +122,13 @@ def persist_symbol(
         result = repo.upsert_symbol_result(
             symbol_row_payload(state, record),
             enrich_lease_generation=enrich_lease_generation,
+            scan_lease_generation=scan_lease_generation,
         )
+        if result.get("technical_rejected"):
+            note = "scan_lease_stale_write_rejected"
+            if note not in state.notes:
+                state.notes.append(note)
+            return False
         if result.get("enrichment_rejected"):
             # Keep in-memory enrichment for this worker, but durable store refused
             # a stale lease write. Drop local enrichment so consumers hydrate truth.
