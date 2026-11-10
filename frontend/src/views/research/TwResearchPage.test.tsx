@@ -230,6 +230,36 @@ describe("TwResearchPage operation failures (#328)", () => {
     expect(createTwResearchScan).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps the batch error when the durable snapshot is marked failed", async () => {
+    const user = userEvent.setup();
+    vi.mocked(runTwResearchBatch).mockRejectedValue(
+      new ApiError("Request failed: 503", {
+        status: 503,
+        detail: "durable_store_unavailable",
+        kind: "unavailable",
+      }),
+    );
+    vi.mocked(fetchTwResearchScan).mockResolvedValue(
+      queuedScan({
+        status: "failed",
+        cursor: 4,
+        processedCount: 4,
+        remainingCount: 69,
+        notes: ["persist_symbol:OperationalError"],
+      }),
+    );
+    renderPage();
+    await user.click(screen.getByTestId("tw-research-create"));
+    expect(await screen.findByLabelText("掃描 ID")).toHaveValue(SCAN_ID);
+
+    await user.click(screen.getByTestId("tw-research-batch"));
+    const batchError = await screen.findByTestId("tw-research-error-batch");
+    expect(batchError).toHaveTextContent("掃描批次");
+    expect(batchError).toHaveTextContent("503");
+    expect(await screen.findByText(/已處理 4\/73/)).toBeInTheDocument();
+    expect(screen.getByLabelText("掃描 ID")).toHaveValue(SCAN_ID);
+  });
+
   it("keeps the previous scan when the batch and the follow-up read both fail", async () => {
     const user = userEvent.setup();
     vi.mocked(runTwResearchBatch).mockRejectedValue(http500());

@@ -77,6 +77,19 @@ function scanProgressKey(scan: TwResearchScanSnapshot | null): string {
   ].join(":");
 }
 
+/**
+ * After a lost/proxy-failed mutation response, a GET may show that the server
+ * finished the work. Keep that snapshot, but never treat a durable `failed`
+ * status as recovery — that is the backend's explicit failure signal.
+ */
+function recoveredAfterLostMutation(
+  beforeKey: string,
+  latest: TwResearchScanSnapshot | null,
+): boolean {
+  if (!latest || latest.status === "failed") return false;
+  return scanProgressKey(latest) !== beforeKey;
+}
+
 function describeResearchFailure(error: unknown): string {
   const api = toApiError(error);
   const text = api.detail || api.message;
@@ -212,7 +225,7 @@ export function TwResearchPage() {
     onError: async () => {
       const before = scanProgressKey(scanRef.current);
       const latest = await reloadDurableScan();
-      markRecovered("batch", Boolean(latest) && scanProgressKey(latest) !== before);
+      markRecovered("batch", recoveredAfterLostMutation(before, latest));
     },
   });
 
@@ -223,7 +236,7 @@ export function TwResearchPage() {
     onError: async () => {
       const before = scanProgressKey(scanRef.current);
       const latest = await reloadDurableScan();
-      markRecovered("enrich", Boolean(latest) && scanProgressKey(latest) !== before);
+      markRecovered("enrich", recoveredAfterLostMutation(before, latest));
     },
   });
 
