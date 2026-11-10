@@ -84,6 +84,19 @@ const TW_RESEARCH_ROWS = [
   ["research.tw.loadLatestChunk", "Load snapshot chunk 0", "載入快照 chunk 0"],
   ["research.tw.latestManifestJson", "Latest verified manifest JSON", "最新 verified manifest JSON"],
   ["research.tw.errorTitle", "Taiwan research request failed", "台股研究請求失敗"],
+  ["research.tw.errorCreate", "Create scan", "建立掃描"],
+  ["research.tw.errorBatch", "Scan batch", "掃描批次"],
+  ["research.tw.errorEnrich", "Enrichment batch", "Enrichment 批次"],
+  ["research.tw.errorRefresh", "Refresh snapshot", "重新整理快照"],
+  ["research.tw.errorManifest", "Export manifest", "匯出 manifest"],
+  ["research.tw.errorAgent", "Agent JSON", "Agent JSON"],
+  ["research.tw.errorLatestManifest", "Latest verified manifest", "最新 verified manifest"],
+  ["research.tw.errorLatestChunk", "Verified snapshot chunk", "已驗證快照 chunk"],
+  [
+    "research.tw.existingScanKept",
+    "This selection already has a scan in this session. Change the universe or target to create another. Another browser can still create its own scan.",
+    "這個選擇在本次工作階段已有掃描。請變更宇宙或目標才會再建立。其他瀏覽器仍可建立自己的掃描。",
+  ],
 ] as const satisfies ReadonlyArray<readonly [string, string, string]>;
 
 export type TwResearchTranslationKey = (typeof TW_RESEARCH_ROWS)[number][0];

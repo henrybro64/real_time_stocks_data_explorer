@@ -114,6 +114,23 @@ Suggested pilot thresholds to record on the home node:
 
 Manifest-first, changed-chunks-only transfer: [tw-research-agent-handoff.md](tw-research-agent-handoff.md). A plan is `verification_required` until checksum checks return `stock_ticker_export_verified`. `notion_published_verified` stays with the external Agent.
 
+## Browser rewrite proxy and long research batches (#328)
+
+Same-origin `/api/*` traffic is rewritten through Next.js. Installed Next
+`proxy-request` defaults `proxyTimeout` to **30 seconds** and answers HTTP 500
+with body `Internal Server Error` when that fires, even if FastAPI later logs
+HTTP 200. `experimental.proxyTimeout` is a **single global** rewrite setting —
+Next does not expose a path-scoped timeout — so Stock Ticker sets it to
+**150 seconds** (`frontend/research-proxy-timeout.mjs`) to cover the default
+research batch budget of 120 seconds. Shorter unrelated API calls still finish
+as soon as the upstream responds. Capture routes remain in `beforeFiles` and
+never hit the rewrite proxy.
+
+This repo's Traefik ingress has no explicit request timeout annotation. Probe
+`timeoutSeconds` values are health checks only. The original 2026-11-10 UI
+`Request failed: 500` was **not** packet-captured; the 30s/49.7s gap is the
+established mechanism from source + access logs, not a live reproduction.
+
 ## Extensibility acceptance
 
 Selecting a valid TW symbol **outside** the starter 14 sectors / ~80 list must work with the same schema and no code change: use `mode=stock_ids` on resolve/create-scan.
