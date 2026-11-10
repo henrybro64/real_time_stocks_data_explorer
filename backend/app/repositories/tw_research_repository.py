@@ -904,27 +904,27 @@ class TwResearchRepository(SessionBoundRepository):
 
             previous_max = int(row.max_upstream_month_fetches)
             new_max = min(int(max_cap), previous_max + int(additional_month_fetches))
-            # Require an exhausted terminal state or retryable rows so concurrent
-            # resumes cannot stack duplicate windows after the first commit (#329).
-            if str(row.status) != "budget_exhausted" and not cleared:
+            stock_ids = list(row.stock_ids_json or [])
+            # After deletes, first gap is the resume watermark.
+            session.flush()
+            new_cursor = _first_missing_symbol_index(session, scan_id, stock_ids)
+            has_open_work = new_cursor < len(stock_ids)
+            # Require exhausted status, retryable rows, or remaining unprocessed
+            # symbols so early verified snapshots can reopen technical work.
+            if str(row.status) != "budget_exhausted" and not cleared and not has_open_work:
                 return {
                     "ok": False,
                     "code": "resume_not_applicable",
                     "scan": _scan_to_dict(row),
                     "cleared": [],
                 }
-            if new_max <= previous_max and not cleared:
+            if new_max <= previous_max and not cleared and not has_open_work:
                 return {
                     "ok": False,
                     "code": "budget_cap_reached",
                     "scan": _scan_to_dict(row),
                     "cleared": [],
                 }
-
-            stock_ids = list(row.stock_ids_json or [])
-            # After deletes, first gap is the resume watermark.
-            session.flush()
-            new_cursor = _first_missing_symbol_index(session, scan_id, stock_ids)
             row.max_upstream_month_fetches = new_max
             row.budget_windows_opened = int(
                 getattr(row, "budget_windows_opened", 0) or 0
@@ -1054,25 +1054,40 @@ class TwResearchRepository(SessionBoundRepository):
                 .with_for_update()
             ).scalar_one_or_none()
             if row is None:
-                row = TwResearchHistoryFlight(
-                    flight_key=flight_key,
-                    stock_id=stock_id,
-                    compatibility_key=compatibility_key,
-                    owner_token=owner_token,
-                    generation=1,
-                    state="held",
-                    lease_expires_at=now
-                    + timedelta(seconds=max(1, int(lease_seconds))),
-                    created_at=now,
-                    updated_at=now,
-                )
-                session.add(row)
-                session.commit()
-                return {
-                    "status": "acquired",
-                    "generation": 1,
-                    "owner_token": owner_token,
-                }
+                try:
+                    with session.begin_nested():
+                        session.add(
+                            TwResearchHistoryFlight(
+                                flight_key=flight_key,
+                                stock_id=stock_id,
+                                compatibility_key=compatibility_key,
+                                owner_token=owner_token,
+                                generation=1,
+                                state="held",
+                                lease_expires_at=now
+                                + timedelta(seconds=max(1, int(lease_seconds))),
+                                created_at=now,
+                                updated_at=now,
+                            )
+                        )
+                        session.flush()
+                except IntegrityError:
+                    # Concurrent first insert won; lock and inspect the winner.
+                    session.expire_all()
+                    row = session.execute(
+                        select(TwResearchHistoryFlight)
+                        .where(TwResearchHistoryFlight.flight_key == flight_key)
+                        .with_for_update()
+                    ).scalar_one_or_none()
+                    if row is None:
+                        raise
+                else:
+                    session.commit()
+                    return {
+                        "status": "acquired",
+                        "generation": 1,
+                        "owner_token": owner_token,
+                    }
 
             lease_until = _as_utc(row.lease_expires_at)
             if row.state == "ready" and (

@@ -126,7 +126,24 @@ function workerActivity(scan: TwResearchScanSnapshot): "active" | "unknown" | "i
   return ACTIVE_SCAN_STATUSES.has(scan.status) ? "unknown" : "idle";
 }
 
-export function TwResearchPage({ initialScanId = null }: { initialScanId?: string | null }) {
+/** Coerce ledger/UI values without Object's "[object Object]" stringification. */
+function displayText(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return "";
+}
+
+function workerActivityLabelKey(
+  activity: "active" | "unknown" | "idle",
+): TranslationKey {
+  if (activity === "active") return "research.tw.workerActive";
+  if (activity === "idle") return "research.tw.workerIdle";
+  return "research.tw.workerUnknown";
+}
+
+export function TwResearchPage({
+  initialScanId = null,
+}: Readonly<{ initialScanId?: string | null }>) {
   const { t } = useLanguage();
   const router = useRouter();
   const queryClient = useQueryClient();
@@ -760,13 +777,7 @@ export function TwResearchPage({ initialScanId = null }: { initialScanId?: strin
                   })}
                 </p>
                 <p className="cds--body-compact-01" data-testid="tw-research-worker">
-                  {t(
-                    displayWorker === "active"
-                      ? "research.tw.workerActive"
-                      : displayWorker === "idle"
-                        ? "research.tw.workerIdle"
-                        : "research.tw.workerUnknown",
-                  )}
+                  {t(workerActivityLabelKey(displayWorker))}
                 </p>
                 <p className="cds--helper-text-01">
                   {t("research.tw.budgetLine", {
@@ -813,8 +824,9 @@ export function TwResearchPage({ initialScanId = null }: { initialScanId?: strin
                       .filter((row) => row.rejection_reason || row.readiness === "source_incomplete")
                       .slice(0, 20)
                       .map((row) => (
-                        <p key={String(row.stock_id)} className="cds--helper-text-01">
-                          {String(row.stock_id)} · {String(row.rejection_reason || row.readiness || "")}
+                        <p key={displayText(row.stock_id)} className="cds--helper-text-01">
+                          {displayText(row.stock_id)} ·{" "}
+                          {displayText(row.rejection_reason || row.readiness || "")}
                         </p>
                       ))}
                   </div>
@@ -848,15 +860,15 @@ export function TwResearchPage({ initialScanId = null }: { initialScanId?: strin
                     const monthly = (row.monthly as Record<string, unknown> | undefined) || {};
                     const themes = (row.theme_keys as string[] | undefined) || [];
                     return (
-                      <TableRow key={String(row.stock_id)}>
-                        <TableCell>{String(row.stock_id)}</TableCell>
-                        <TableCell>{String(row.stage)}</TableCell>
-                        <TableCell>{String(daily.passStatus ?? "")}</TableCell>
-                        <TableCell>{String(monthly.passStatus ?? "")}</TableCell>
+                      <TableRow key={displayText(row.stock_id)}>
+                        <TableCell>{displayText(row.stock_id)}</TableCell>
+                        <TableCell>{displayText(row.stage)}</TableCell>
+                        <TableCell>{displayText(daily.passStatus)}</TableCell>
+                        <TableCell>{displayText(monthly.passStatus)}</TableCell>
                         <TableCell>
                           {themes.length ? themes.join(", ") : t("research.tw.unclassified")}
                         </TableCell>
-                        <TableCell>{String(row.rejection_reason ?? "")}</TableCell>
+                        <TableCell>{displayText(row.rejection_reason)}</TableCell>
                       </TableRow>
                     );
                   })}

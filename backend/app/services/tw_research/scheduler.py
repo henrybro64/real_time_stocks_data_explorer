@@ -16,7 +16,10 @@ day's scan, preserving the original trading-day calculation anchor.
 
 A scan status of ``verified_ready`` with an immutable snapshot is **not**
 sufficient to stop the scheduler when eligible enrichment remains and budget
-allows — export publication and enrichment completion are independent.
+allows — export publication and enrichment completion are independent. The same
+applies when technical screening still has unprocessed or
+``history_budget_exhausted`` symbols after an early snapshot: later ticks must
+reopen a bounded budget window rather than treating the day as done.
 """
 
 from __future__ import annotations
@@ -36,6 +39,7 @@ from app.services.tw_research.constants import (
     DEFAULT_SCHEDULE_MAX_BATCHES,
     DEFAULT_SCHEDULE_MAX_ENRICH_BATCHES,
     DEFAULT_SCHEDULE_TICK_DEADLINE_SECONDS,
+    HISTORY_BUDGET_EXHAUSTED_REASON,
     INCOMPLETE_SCHEDULE_STATUSES,
     MAX_ENRICHMENTS_PER_SCAN_CAP,
     PREFERRED_DAILY_HISTORY_LIMIT,
@@ -184,6 +188,17 @@ def pending_enrichment_ids(state: ScanState) -> list[str]:
     ]
 
 
+def schedule_has_technical_work(state: ScanState) -> bool:
+    """True when screening still has unprocessed or budget-retryable symbols."""
+    for stock_id in state.stock_ids:
+        record = state.records.get(stock_id)
+        if record is None:
+            return True
+        if record.rejection_reason == HISTORY_BUDGET_EXHAUSTED_REASON:
+            return True
+    return False
+
+
 def enrichment_budget_remaining(state: ScanState) -> int:
     return max(0, int(state.max_enrichments_per_run) - int(state.enrichments_run))
 
@@ -197,6 +212,9 @@ def schedule_has_remaining_work(state: ScanState) -> bool:
     """True when a later schedule tick can still make progress on ``state``."""
     if state.status == "failed":
         return False
+    # Early verified snapshots must not hide unfinished technical coverage.
+    if schedule_has_technical_work(state):
+        return True
     if state.status in {"queued", "running", "partial", "budget_exhausted"}:
         return True
     if state.status in {"completed_processing", "verified_ready"}:
@@ -634,7 +652,14 @@ def _run_scheduled_research_locked(
                 dry_run=False,
             )
 
-    if state.status == "budget_exhausted" and resume_if_exhausted:
+    needs_budget_resume = resume_if_exhausted and (
+        state.status == "budget_exhausted"
+        or (
+            schedule_has_technical_work(state)
+            and state.status in {"verified_ready", "completed_processing"}
+        )
+    )
+    if needs_budget_resume:
         try:
             state = scan_service.resume_budget_window(state.scan_id)
             resumed = True
@@ -693,10 +718,12 @@ def _run_scheduled_research_locked(
                 state.status,
                 len(state.records),
             )
+            batch_scan_id = state.scan_id
+            batch_trading_day = state.trading_day
             state, lost = _run_with_heartbeat(
-                lambda: scan_service.run_batch(
-                    state.scan_id,
-                    now=_calculation_now_for_scan(state.trading_day, override=now),
+                lambda sid=batch_scan_id, day=batch_trading_day: scan_service.run_batch(
+                    sid,
+                    now=_calculation_now_for_scan(day, override=now),
                 )
             )
             batches_run += 1
@@ -758,10 +785,14 @@ def _run_scheduled_research_locked(
                 state.active_snapshot_id,
                 len(pending),
             )
+            enrich_scan_id = state.scan_id
+            enrich_trading_day = state.trading_day
             state, lost = _run_with_heartbeat(
-                lambda: scan_service.run_enrichment_batch(
-                    state.scan_id,
-                    now=_calculation_now_for_scan(state.trading_day, override=now),
+                lambda sid=enrich_scan_id, day=enrich_trading_day: (
+                    scan_service.run_enrichment_batch(
+                        sid,
+                        now=_calculation_now_for_scan(day, override=now),
+                    )
                 )
             )
             enrich_batches_run += 1
@@ -930,16 +961,31 @@ def _select_scan_for_tick(
             logger.warning("tw_research schedule scan selection failed", exc_info=True)
 
     if not candidates:
-        mem = _find_reusable_scan_memory(
-            service,
-            user_id=user_id,
-            preferred_day=preferred_day,
-            # Preferred day itself is always eligible; backlog window only
-            # bounds older incomplete days.
-            min_trading_day=min(min_day, preferred_day),
-        )
-        if mem is not None:
-            candidates.append(mem)
+        # Durable selection already applied target/universe/calculation filters.
+        # Only fall back to process/list memory when PostgreSQL is unavailable so
+        # a target-10 row cannot satisfy a target-20 tick (or version skew).
+        use_memory_fallback = not getattr(service, "_persist", True)
+        if getattr(service, "_persist", True):
+            try:
+                from app.repositories.tw_research_repository import tw_research_repository
+
+                use_memory_fallback = not tw_research_repository.is_available()
+            except Exception:  # noqa: BLE001
+                use_memory_fallback = False
+        if use_memory_fallback:
+            mem = _find_reusable_scan_memory(
+                service,
+                user_id=user_id,
+                preferred_day=preferred_day,
+                # Preferred day itself is always eligible; backlog window only
+                # bounds older incomplete days.
+                min_trading_day=min(min_day, preferred_day),
+                universe_version=universe_version,
+                calculation_version=calculation_version,
+                target_count=target_count,
+            )
+            if mem is not None:
+                candidates.append(mem)
 
     first_done: dict[str, Any] | None = None
     for candidate in candidates:
@@ -949,6 +995,8 @@ def _select_scan_for_tick(
         state = service.get_scan(str(scan_id))
         if state is None:
             continue
+        # Compatibility (target/universe/calculation) is enforced by the durable
+        # query and by `_find_reusable_scan_memory`; hydrate only for work checks.
         if schedule_has_remaining_work(state):
             return {"scan_id": state.scan_id, "status": state.status}
         # Remember preferred-day completed scan for idempotent exit.
@@ -975,6 +1023,9 @@ def _find_reusable_scan_memory(
     user_id: str,
     preferred_day: str,
     min_trading_day: str,
+    universe_version: str,
+    calculation_version: str,
+    target_count: int,
 ) -> dict[str, Any] | None:
     try:
         scans = service.list_scans(user_id, limit=50)
@@ -992,6 +1043,19 @@ def _find_reusable_scan_memory(
         if trading < min_trading_day or trading > preferred_day:
             continue
         if status not in INCOMPLETE_SCHEDULE_STATUSES:
+            continue
+        item_universe = str(
+            item.get("universeVersion") or item.get("universe_version") or ""
+        )
+        item_calculation = str(
+            item.get("calculationVersion") or item.get("calculation_version") or ""
+        )
+        item_target = int(item.get("targetCount") or item.get("target_count") or 0)
+        if item_universe and item_universe != universe_version:
+            continue
+        if item_calculation and item_calculation != calculation_version:
+            continue
+        if item_target and item_target != int(target_count):
             continue
         incomplete.append(
             (

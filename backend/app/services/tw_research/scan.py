@@ -461,6 +461,7 @@ def _summary_from_state(state: ScanState) -> dict[str, Any]:
         "scanId": state.scan_id,
         "tradingDay": state.trading_day,
         "universeVersion": state.universe_version,
+        "calculationVersion": state.calculation_version,
         "status": state.status,
         "qualityStatus": state.quality_status,
         "targetCount": state.target_count,
@@ -489,6 +490,7 @@ def _summary_from_row(row: dict[str, Any]) -> dict[str, Any]:
         "scanId": row["scan_id"],
         "tradingDay": row["trading_day"],
         "universeVersion": row["universe_version"],
+        "calculationVersion": row.get("calculation_version") or "",
         "status": row["status"],
         "qualityStatus": row.get("quality_status") or "processed",
         "targetCount": int(row.get("target_count") or 0),
@@ -739,7 +741,15 @@ class TwResearchScanService:
                 f"additional_month_fetches must be 1..{DEFAULT_BUDGET_WINDOW_MONTH_FETCHES}"
             )
 
-        allowed = {"budget_exhausted", "partial", "running"}
+        # verified_ready / completed_processing may still need a bounded reopen
+        # after an early snapshot left unprocessed or budget-exhausted symbols.
+        allowed = {
+            "budget_exhausted",
+            "partial",
+            "running",
+            "verified_ready",
+            "completed_processing",
+        }
         with self._run_lock_for(scan_id):
             state = self.get_scan(scan_id)
             if state is None:
@@ -761,7 +771,8 @@ class TwResearchScanService:
                 )
             if state.status not in allowed:
                 raise TwResearchConflictError(
-                    f"Resume requires budget_exhausted/partial/running (got {state.status}).",
+                    "Resume requires budget_exhausted/partial/running/"
+                    f"verified_ready/completed_processing (got {state.status}).",
                     scan_id=scan_id,
                     operation="resume_budget_window",
                     code="resume_not_applicable",
@@ -774,14 +785,20 @@ class TwResearchScanService:
                 MAX_UPSTREAM_MONTH_FETCHES_CAP,
                 previous_max + additional_month_fetches,
             )
-            if prior_status != "budget_exhausted" and not cleared:
+            open_index = self._first_open_symbol_index(state)
+            has_open_work = open_index < len(state.stock_ids)
+            if (
+                prior_status != "budget_exhausted"
+                and not cleared
+                and not has_open_work
+            ):
                 raise TwResearchConflictError(
                     "Resume requires budget_exhausted or retryable unresolved symbols.",
                     scan_id=scan_id,
                     operation="resume_budget_window",
                     code="resume_not_applicable",
                 )
-            if new_max <= previous_max and not cleared:
+            if new_max <= previous_max and not cleared and not has_open_work:
                 raise TwResearchConflictError(
                     "Budget window already at the safety cap and no retryable symbols remain.",
                     scan_id=scan_id,
@@ -961,7 +978,8 @@ class TwResearchScanService:
                     "Cannot resume a failed scan; create a new scan after fixing persistence."
                 ),
                 "resume_not_applicable": (
-                    "Resume requires budget_exhausted/partial/running."
+                    "Resume requires budget_exhausted/partial/running/"
+                    "verified_ready/completed_processing with open work."
                 ),
                 "budget_cap_reached": (
                     "Budget window already at the safety cap and no retryable symbols remain."
@@ -1588,7 +1606,14 @@ class TwResearchScanService:
                 if claim.get("status") == "acquired":
                     acquired_generation = int(claim["generation"])
                     break
-                return self._history_loader(stock, limit, max_month_fetches=0)
+                # Still busy without validated coverage: do not persist a
+                # definitive source_incomplete outcome for a temporary wait.
+                raise TwResearchHistoryCoordinationError(
+                    "History flight wait timed out without ownership or "
+                    "validated coverage; retry after the leader finishes.",
+                    scan_id=state.scan_id,
+                    stock_id=stock.id,
+                )
             time.sleep(sleep_for)
             sleep_for = min(sleep_for * 2, HISTORY_FLIGHT_POLL_MAX_SECONDS)
 
@@ -1908,6 +1933,9 @@ class TwResearchScanService:
             )
             state.max_upstream_month_fetches = int(
                 getattr(loaded, "max_upstream_month_fetches", state.max_upstream_month_fetches)
+            )
+            state.max_enrichments_per_run = int(
+                getattr(loaded, "max_enrichments_per_run", state.max_enrichments_per_run)
             )
             state.active_snapshot_id = loaded.active_snapshot_id
             state.notes = list(loaded.notes)

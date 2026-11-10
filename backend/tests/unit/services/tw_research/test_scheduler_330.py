@@ -552,6 +552,38 @@ def test_schedule_has_remaining_work_for_verified_pending_enrichment() -> None:
     assert schedule_has_remaining_work(state) is False
 
 
+def test_schedule_has_remaining_work_for_verified_with_technical_backlog() -> None:
+    """Early verified snapshots must still count unfinished technical work."""
+    from app.services.tw_research.constants import HISTORY_BUDGET_EXHAUSTED_REASON
+    from app.services.tw_research.scan import SymbolScanRecord
+    from app.services.tw_research.scheduler import schedule_has_remaining_work
+
+    service = TwResearchScanService(
+        history_loader=lambda stock, limit, *, max_month_fetches: ([], 0),
+        stock_loader=lambda stock_id: _tw(stock_id),
+        persist=False,
+    )
+    state = service.create_scan(
+        UniverseSelector(mode="stock_ids", stock_ids=("TW:2330", "TW:2317")),
+        trading_day="2024-06-28",
+        target_count=10,
+        user_id="schedule-owner",
+    )
+    state.status = "verified_ready"
+    state.active_snapshot_id = "snap-1"
+    state.cursor = 2
+    state.records["TW:2330"] = SymbolScanRecord(
+        stock_id="TW:2330",
+        stage="A",
+        readiness="processed",
+        rejection_reason=HISTORY_BUDGET_EXHAUSTED_REASON,
+    )
+    assert schedule_has_remaining_work(state) is True
+    resumed = service.resume_budget_window(state.scan_id)
+    assert resumed.status == "partial"
+    assert "TW:2330" not in resumed.records
+
+
 def test_tick_heartbeat_renews_during_long_batch(monkeypatch: pytest.MonkeyPatch) -> None:
     """Fix 2: heartbeat renews while work exceeds the original lease window."""
     import time

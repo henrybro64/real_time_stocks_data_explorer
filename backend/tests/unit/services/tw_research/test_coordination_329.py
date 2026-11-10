@@ -72,6 +72,8 @@ def test_history_flight_identity_is_stable_and_compatibility_scoped() -> None:
 
 
 def test_memory_resume_rejects_non_applicable_status() -> None:
+    from app.services.tw_research.scan import SymbolScanRecord
+
     service = TwResearchScanService(
         history_loader=lambda stock, limit, *, max_month_fetches: ([], 0),
         stock_loader=lambda stock_id: _tw(stock_id),
@@ -82,6 +84,14 @@ def test_memory_resume_rejects_non_applicable_status() -> None:
         trading_day="2024-06-28",
         now=datetime(2024, 6, 28, 16, 0, tzinfo=TZ),
     )
+    # Fully screened + verified: no open technical work remains.
+    state.records["TW:2330"] = SymbolScanRecord(
+        stock_id="TW:2330",
+        stage="A",
+        readiness="processed",
+        rejection_reason="insufficient_history",
+    )
+    state.cursor = 1
     state.status = "verified_ready"
     with pytest.raises(TwResearchConflictError) as exc:
         service.resume_budget_window(state.scan_id)
@@ -419,3 +429,67 @@ def test_history_flight_stale_raises_coordination_error(
     assert complete_calls
     assert complete_calls[-1]["success"] is False
     assert complete_calls[-1]["coverage_complete"] is False
+
+
+def test_history_flight_waiter_timeout_raises_coordination_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Busy flight without coverage must defer rather than mark source_incomplete."""
+    from app.services.tw_research import scan as scan_mod
+    from app.services.tw_research.scan import TwResearchHistoryCoordinationError
+
+    monkeypatch.setattr(scan_mod, "HISTORY_FLIGHT_WAIT_MAX_SECONDS", 0.05)
+    monkeypatch.setattr(scan_mod, "HISTORY_FLIGHT_POLL_INITIAL_SECONDS", 0.01)
+    monkeypatch.setattr(scan_mod, "HISTORY_FLIGHT_POLL_MAX_SECONDS", 0.01)
+
+    class _Repo:
+        def is_available(self) -> bool:
+            return True
+
+        def acquire_history_flight(self, **kwargs):  # noqa: ANN003
+            del kwargs
+            return {"status": "busy", "generation": 1, "owner_token": "other"}
+
+        def renew_history_flight(self, **kwargs):  # noqa: ANN003
+            del kwargs
+            return {"ok": True}
+
+        def complete_history_flight(self, **kwargs):  # noqa: ANN003
+            del kwargs
+            return {"ok": True}
+
+    monkeypatch.setattr(
+        "app.repositories.tw_research_repository.tw_research_repository",
+        _Repo(),
+    )
+    monkeypatch.setattr(
+        scan_mod,
+        "stored_history_covers_requirement",
+        lambda *a, **k: False,
+    )
+
+    loader_calls: list[int] = []
+
+    def loader(stock, limit, *, max_month_fetches):  # noqa: ANN001
+        del stock, limit
+        loader_calls.append(int(max_month_fetches))
+        return [], 0
+
+    service = TwResearchScanService(
+        history_loader=loader,
+        stock_loader=lambda stock_id: _tw(stock_id),
+        persist=False,
+    )
+    state = service.create_scan(
+        UniverseSelector(mode="stock_ids", stock_ids=("TW:2330",)),
+        trading_day="2024-06-28",
+        now=datetime(2024, 6, 28, 16, 0, tzinfo=TZ),
+    )
+    service._persist = True
+    with pytest.raises(TwResearchHistoryCoordinationError):
+        service._load_history_single_flight(  # noqa: SLF001
+            state,
+            _tw("TW:2330"),
+            remaining_budget=5,
+        )
+    assert loader_calls == []

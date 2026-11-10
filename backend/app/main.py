@@ -125,7 +125,7 @@ def _retry_bootstrap(step: Callable[[], None], *, failed_event: str) -> None:
             if _try_bootstrap(step, failed_event=failed_event):
                 return
         except Exception as exc:  # noqa: BLE001 - nothing to raise to in a daemon thread
-            logger.error(
+            logger.exception(
                 "Bootstrap retry stopped after a non-connection error",
                 extra={
                     "event": "app.bootstrap.retry_stopped",
