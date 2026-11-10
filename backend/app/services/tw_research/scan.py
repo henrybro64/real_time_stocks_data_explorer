@@ -791,11 +791,14 @@ class TwResearchScanService:
                 previous_max + additional_month_fetches,
             )
             open_index = self._first_open_symbol_index(state)
-            has_open_work = open_index < len(state.stock_ids)
+            reopen_terminal_with_gap = (
+                prior_status in {"verified_ready", "completed_processing"}
+                and open_index < len(state.stock_ids)
+            )
             if (
                 prior_status != "budget_exhausted"
                 and not cleared
-                and not has_open_work
+                and not reopen_terminal_with_gap
             ):
                 raise TwResearchConflictError(
                     "Resume requires budget_exhausted or retryable unresolved symbols.",
@@ -803,7 +806,11 @@ class TwResearchScanService:
                     operation="resume_budget_window",
                     code="resume_not_applicable",
                 )
-            if new_max <= previous_max and not cleared and not has_open_work:
+            if (
+                new_max <= previous_max
+                and not cleared
+                and not reopen_terminal_with_gap
+            ):
                 raise TwResearchConflictError(
                     "Budget window already at the safety cap and no retryable symbols remain.",
                     scan_id=scan_id,

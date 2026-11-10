@@ -908,17 +908,25 @@ class TwResearchRepository(SessionBoundRepository):
             # After deletes, first gap is the resume watermark.
             session.flush()
             new_cursor = _first_missing_symbol_index(session, scan_id, stock_ids)
-            has_open_work = new_cursor < len(stock_ids)
-            # Require exhausted status, retryable rows, or remaining unprocessed
-            # symbols so early verified snapshots can reopen technical work.
-            if str(row.status) != "budget_exhausted" and not cleared and not has_open_work:
+            # Early verified/completed snapshots may still need a reopen when
+            # symbols remain unprocessed. Active partial/running scans already
+            # claim that work — do not stack duplicate budget windows there.
+            reopen_terminal_with_gap = (
+                str(row.status) in {"verified_ready", "completed_processing"}
+                and new_cursor < len(stock_ids)
+            )
+            if (
+                str(row.status) != "budget_exhausted"
+                and not cleared
+                and not reopen_terminal_with_gap
+            ):
                 return {
                     "ok": False,
                     "code": "resume_not_applicable",
                     "scan": _scan_to_dict(row),
                     "cleared": [],
                 }
-            if new_max <= previous_max and not cleared and not has_open_work:
+            if new_max <= previous_max and not cleared and not reopen_terminal_with_gap:
                 return {
                     "ok": False,
                     "code": "budget_cap_reached",
