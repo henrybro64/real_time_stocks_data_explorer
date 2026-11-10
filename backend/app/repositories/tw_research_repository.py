@@ -1147,14 +1147,9 @@ class TwResearchRepository(SessionBoundRepository):
                 selector = dict(row.selector_json or {})
                 if selector.get("mode") != selector_mode:
                     continue
-                # completed_processing without a verified snapshot still needs work
-                # (enrichment / finalize). verified_ready is excluded by status set.
-                if (
-                    row.status == "completed_processing"
-                    and row.active_snapshot_id
-                    and row.quality_status == "verified_ready"
-                ):
-                    continue
+                # Include verified_ready rows: enrichment may still be pending after
+                # an early immutable snapshot. Callers filter with
+                # schedule_has_remaining_work after hydrate.
                 out.append(_scan_to_dict(row))
             return out
 

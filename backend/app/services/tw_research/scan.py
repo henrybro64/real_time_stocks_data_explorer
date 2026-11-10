@@ -42,6 +42,7 @@ from app.services.tw_research.constants import (
     ENRICH_BATCH_SIZE,
     HISTORY_BUDGET_EXHAUSTED_REASON,
     HISTORY_FLIGHT_LEASE_SECONDS,
+    HISTORY_FLIGHT_MAX_CONSECUTIVE_RENEW_FAILURES,
     HISTORY_FLIGHT_POLL_INITIAL_SECONDS,
     HISTORY_FLIGHT_POLL_MAX_SECONDS,
     HISTORY_FLIGHT_RENEW_INTERVAL_SECONDS,
@@ -1399,7 +1400,7 @@ class TwResearchScanService:
 
         assert acquired_generation is not None
         stop_renew = Event()
-        renew_failed = {"stale": False}
+        renew_state = {"stale": False, "consecutive_failures": 0}
 
         def _renew_loop() -> None:
             while not stop_renew.wait(HISTORY_FLIGHT_RENEW_INTERVAL_SECONDS):
@@ -1410,15 +1411,30 @@ class TwResearchScanService:
                         generation=acquired_generation,
                         lease_seconds=HISTORY_FLIGHT_LEASE_SECONDS,
                     )
-                except Exception:  # noqa: BLE001 — transient; fencing checked at complete
+                except Exception:  # noqa: BLE001 — bound consecutive outages
+                    renew_state["consecutive_failures"] = (
+                        int(renew_state["consecutive_failures"]) + 1
+                    )
                     logger.warning(
                         "tw_research history flight renew failed",
                         exc_info=True,
-                        extra={"stock_id": stock.id, "flight_key": flight_key},
+                        extra={
+                            "stock_id": stock.id,
+                            "flight_key": flight_key,
+                            "consecutive_failures": renew_state["consecutive_failures"],
+                        },
                     )
+                    if (
+                        int(renew_state["consecutive_failures"])
+                        >= HISTORY_FLIGHT_MAX_CONSECUTIVE_RENEW_FAILURES
+                    ):
+                        # Fail closed: lease may already be stolen; do not publish ready.
+                        renew_state["stale"] = True
+                        return
                     continue
+                renew_state["consecutive_failures"] = 0
                 if not renewed.get("ok"):
-                    renew_failed["stale"] = True
+                    renew_state["stale"] = True
                     return
 
         renew_thread = Thread(target=_renew_loop, name="tw-history-flight-renew", daemon=True)
@@ -1438,8 +1454,11 @@ class TwResearchScanService:
             stop_renew.set()
             renew_thread.join(timeout=1.0)
             try:
-                # Stale leaders must not publish ready after losing the fence.
-                if renew_failed["stale"]:
+                # Stale / ownership-uncertain leaders must not publish ready.
+                # In-flight HTTP may already have persisted bars idempotently;
+                # coordination fails closed so waiters re-acquire before more
+                # upstream work rather than trusting a false ready marker.
+                if renew_state["stale"]:
                     tw_research_repository.complete_history_flight(
                         flight_key=flight_key,
                         owner_token=owner_token,

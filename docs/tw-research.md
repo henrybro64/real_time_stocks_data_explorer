@@ -175,17 +175,26 @@ selected scan. UI duplicate-create checks are **session/page helpers only**.
   `TW_RESEARCH_SCHEDULE_TOKEN`, `TW_RESEARCH_SCHEDULE_USER_ID`, and
   `TW_RESEARCH_SCHEDULE_ENABLED=true`. Placeholder tokens are treated as unset.
   The schedule token never unlocks ordinary `/tw-research/*` user routes.
-- Skips Taiwan pre-close sessions (`skipped_data_not_ready`). On holidays /
-  weekends, still continues incomplete backlog within
-  `SCHEDULE_BACKLOG_MAX_CALENDAR_DAYS` without creating a newer-day scan.
-  Prioritizes the **oldest** incomplete compatible scan (owner + universe +
-  calculation + target) so yesterday is not abandoned when a new trading day
-  begins; the original trading-day calculation anchor is preserved. Same-day
-  reuse remains idempotent. Each tick runs bounded technical batches, optional
-  #329 resume, then bounded enrichment. Outcomes distinguish technical
-  completion, enrichment partial, verified ready, deferred lock / lease loss /
-  deadline, and failures. Owner-level PostgreSQL tick locks are renewed between
-  batches (not a fixed one-shot lease).
+- Skips Taiwan pre-close sessions (`skipped_data_not_ready`). After the session
+  is complete, a lightweight persisted-OHLCV readiness sample
+  (`skipped_market_data_not_ready`) still gates *creating* today's scan;
+  prior-day backlog continues. On holidays / weekends, still continues
+  incomplete backlog within `SCHEDULE_BACKLOG_MAX_CALENDAR_DAYS` without creating
+  a newer-day scan. Prioritizes the **oldest** incomplete compatible scan
+  (owner + universe + calculation + target) so yesterday is not abandoned when a
+  new trading day begins; the original trading-day calculation anchor is
+  preserved. Same-day reuse remains idempotent — completed technical scans and
+  `verified_ready` snapshots without remaining enrichment report completion
+  instead of opening a duplicate scan. A `verified_ready` snapshot with pending
+  enrichment continues bounded enrichment (or returns
+  `enrichment_budget_exhausted` when the run budget is spent). Each tick runs
+  bounded technical batches, optional #329 resume, then bounded enrichment.
+  Outcomes distinguish technical completion, enrichment partial / budget
+  exhaustion, verified ready, deferred lock / lease loss / deadline, and
+  failures. Owner-level PostgreSQL tick locks are heartbeated during long batches
+  (not only between batches). History-flight renewals fail closed after
+  consecutive PostgreSQL renew errors so a lost lease cannot publish a false
+  `ready` marker.
 - Kubernetes CronJob `stock-ticker-tw-research-schedule` ships **suspended**
   (`suspend: true`, `timeZone: Asia/Taipei`, weekday continuation windows
   `30 15-18 * * 1-5`, `concurrencyPolicy: Forbid`, resource limits,

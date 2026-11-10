@@ -166,3 +166,178 @@ def test_memory_resume_preserves_completed_symbols(monkeypatch: pytest.MonkeyPat
     for stock_id in exhausted:
         assert stock_id not in state.records
     assert state.budget_windows_opened == 1
+
+
+def test_history_flight_renew_fail_closed_after_consecutive_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fix 3: prolonged renew DB failures must not publish ready markers."""
+    import time
+
+    from app.models.quote import CandleRecord
+    from app.services.tw_research import scan as scan_mod
+    from app.services.tw_research.constants import (
+        HISTORY_FLIGHT_MAX_CONSECUTIVE_RENEW_FAILURES,
+    )
+
+    monkeypatch.setattr(scan_mod, "HISTORY_FLIGHT_RENEW_INTERVAL_SECONDS", 0.05)
+    monkeypatch.setattr(scan_mod, "HISTORY_FLIGHT_MAX_CONSECUTIVE_RENEW_FAILURES", 3)
+
+    complete_calls: list[dict] = []
+    renew_failures = {"n": 0}
+
+    class _Repo:
+        def is_available(self) -> bool:
+            return True
+
+        def acquire_history_flight(self, **kwargs):  # noqa: ANN003
+            del kwargs
+            return {"status": "acquired", "generation": 7}
+
+        def renew_history_flight(self, **kwargs):  # noqa: ANN003
+            del kwargs
+            renew_failures["n"] += 1
+            raise RuntimeError("connection refused")
+
+        def complete_history_flight(self, **kwargs):  # noqa: ANN003
+            complete_calls.append(dict(kwargs))
+            return {"ok": True, "stale": False}
+
+    monkeypatch.setattr(
+        "app.repositories.tw_research_repository.tw_research_repository",
+        _Repo(),
+    )
+    monkeypatch.setattr(
+        scan_mod,
+        "stored_history_covers_requirement",
+        lambda *a, **k: False,
+    )
+
+    def loader(stock, limit, *, max_month_fetches):  # noqa: ANN001
+        del stock, limit, max_month_fetches
+        # Stay longer than renew interval * consecutive failure threshold.
+        time.sleep(0.05 * (HISTORY_FLIGHT_MAX_CONSECUTIVE_RENEW_FAILURES + 2) + 0.15)
+        return [
+            CandleRecord(
+                time="2024-06-28T13:30:00+08:00",
+                open=1,
+                high=1,
+                low=1,
+                close=1,
+                volume=1,
+            )
+        ], 1
+
+    service = TwResearchScanService(
+        history_loader=loader,
+        stock_loader=lambda stock_id: _tw(stock_id),
+        persist=False,
+    )
+    state = service.create_scan(
+        UniverseSelector(mode="stock_ids", stock_ids=("TW:2330",)),
+        trading_day="2024-06-28",
+        now=datetime(2024, 6, 28, 16, 0, tzinfo=TZ),
+    )
+    # Enable durable flight coordination path without requiring Postgres for create.
+    service._persist = True
+
+    candles, months = service._load_history_single_flight(  # noqa: SLF001
+        state,
+        _tw("TW:2330"),
+        remaining_budget=5,
+    )
+    assert candles
+    assert months == 1
+    assert renew_failures["n"] >= HISTORY_FLIGHT_MAX_CONSECUTIVE_RENEW_FAILURES
+    assert complete_calls
+    assert complete_calls[-1]["success"] is False
+    assert complete_calls[-1]["coverage_complete"] is False
+    assert complete_calls[-1]["generation"] == 7
+
+
+def test_history_flight_renew_recovers_after_transient_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import time
+
+    from app.models.quote import CandleRecord
+    from app.services.tw_research import scan as scan_mod
+
+    monkeypatch.setattr(scan_mod, "HISTORY_FLIGHT_RENEW_INTERVAL_SECONDS", 0.05)
+    monkeypatch.setattr(scan_mod, "HISTORY_FLIGHT_MAX_CONSECUTIVE_RENEW_FAILURES", 3)
+
+    complete_calls: list[dict] = []
+    renew_state = {"n": 0}
+
+    class _Repo:
+        def is_available(self) -> bool:
+            return True
+
+        def acquire_history_flight(self, **kwargs):  # noqa: ANN003
+            del kwargs
+            return {"status": "acquired", "generation": 3}
+
+        def renew_history_flight(self, **kwargs):  # noqa: ANN003
+            del kwargs
+            renew_state["n"] += 1
+            if renew_state["n"] == 1:
+                raise RuntimeError("brief blip")
+            return {"ok": True, "stale": False}
+
+        def complete_history_flight(self, **kwargs):  # noqa: ANN003
+            complete_calls.append(dict(kwargs))
+            return {"ok": True, "stale": False}
+
+    monkeypatch.setattr(
+        "app.repositories.tw_research_repository.tw_research_repository",
+        _Repo(),
+    )
+    cover_calls = {"n": 0}
+
+    def _covers(*_a, **_k):  # noqa: ANN001
+        # First warm-path check is False so we enter the flight; later checks
+        # (post-load) report complete.
+        cover_calls["n"] += 1
+        return cover_calls["n"] >= 2
+
+    monkeypatch.setattr(
+        scan_mod,
+        "stored_history_covers_requirement",
+        _covers,
+    )
+
+    def loader(stock, limit, *, max_month_fetches):  # noqa: ANN001
+        del stock, limit, max_month_fetches
+        time.sleep(0.2)
+        return [
+            CandleRecord(
+                time="2024-06-28T13:30:00+08:00",
+                open=1,
+                high=1,
+                low=1,
+                close=1,
+                volume=1,
+            )
+        ], 1
+
+    service = TwResearchScanService(
+        history_loader=loader,
+        stock_loader=lambda stock_id: _tw(stock_id),
+        persist=False,
+    )
+    state = service.create_scan(
+        UniverseSelector(mode="stock_ids", stock_ids=("TW:2330",)),
+        trading_day="2024-06-28",
+        now=datetime(2024, 6, 28, 16, 0, tzinfo=TZ),
+    )
+    service._persist = True
+
+    service._load_history_single_flight(  # noqa: SLF001
+        state,
+        _tw("TW:2330"),
+        remaining_budget=5,
+    )
+    assert complete_calls
+    assert complete_calls[-1]["success"] is True
+    assert complete_calls[-1]["coverage_complete"] is True
+    assert renew_state["n"] >= 1
