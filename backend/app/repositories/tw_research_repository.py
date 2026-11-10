@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.db.models import TwResearchExportSnapshot, TwResearchScan, TwResearchSymbolResult
@@ -239,6 +239,20 @@ class TwResearchRepository(SessionBoundRepository):
                     setattr(row, key, value)
                 row.updated_at = now
             session.commit()
+
+    def list_scans_for_user(self, user_id: str, *, limit: int = 20) -> list[dict[str, Any]]:
+        """Newest scans for one owner. One query, no symbol payloads."""
+        if not self.is_available():
+            return []
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            rows = session.execute(
+                select(TwResearchScan)
+                .where(TwResearchScan.user_id == user_id)
+                .order_by(TwResearchScan.updated_at.desc(), TwResearchScan.scan_id.desc())
+                .limit(limit)
+            ).scalars().all()
+            return [_scan_to_dict(row) for row in rows]
 
     def get_scan(self, scan_id: str) -> dict[str, Any] | None:
         session_factory = self._session_factory()
@@ -559,6 +573,17 @@ class TwResearchRepository(SessionBoundRepository):
                 .order_by(TwResearchSymbolResult.stock_id)
             ).scalars()
             return [_symbol_to_dict(row) for row in rows]
+
+    def count_symbol_results(self, scan_id: str) -> int:
+        """Symbol row count only — no payload JSON (#327 progress polling)."""
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            total = session.execute(
+                select(func.count())
+                .select_from(TwResearchSymbolResult)
+                .where(TwResearchSymbolResult.scan_id == scan_id)
+            ).scalar_one()
+            return int(total or 0)
 
     def insert_export_snapshot(self, payload: dict[str, Any]) -> dict[str, Any]:
         session_factory = self._session_factory()

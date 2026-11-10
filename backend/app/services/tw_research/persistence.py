@@ -24,7 +24,12 @@ from app.services.tw_research.export import (
     build_immutable_manifest,
     stable_export_content_digest,
 )
-from app.services.tw_research.scan import ScanState, SymbolScanRecord
+from app.services.tw_research.scan import (
+    ScanState,
+    SymbolScanRecord,
+    TwResearchDurableStoreError,
+    describe_worker_activity,
+)
 from app.services.tw_research.universe import UniverseSelector
 
 # Keep verified snapshots and recent scans for ~30 days by default.
@@ -130,25 +135,79 @@ def persist_symbol(
         return False
 
 
+def _iso_or_none(value: Any) -> str | None:
+    if value is None:
+        return None
+    return value.isoformat() if hasattr(value, "isoformat") else str(value)
+
+
 def load_scan_state(
     scan_id: str,
     *,
     repository: TwResearchRepository | None = None,
 ) -> ScanState | None:
+    """Load an authoritative scan snapshot from PostgreSQL.
+
+    Returns ``None`` only when the scan ID is missing. Database failures raise
+    ``TwResearchDurableStoreError`` so callers never treat a failed read as an
+    empty or incomplete ledger (#327).
+    """
     repo = repository or tw_research_repository
     if not repo.is_available():
-        return None
+        raise TwResearchDurableStoreError(
+            "Durable research store is unavailable",
+            scan_id=scan_id,
+            operation="load_scan",
+        )
     try:
         row = repo.get_scan(scan_id)
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
         logger.warning("tw_research load_scan_state failed for %s", scan_id, exc_info=True)
-        return None
+        raise TwResearchDurableStoreError(
+            f"Failed to load scan {scan_id}",
+            scan_id=scan_id,
+            operation="load_scan",
+        ) from exc
     if row is None:
         return None
+    state = _state_from_scan_row(row)
+    try:
+        symbol_rows = repo.list_symbol_results(scan_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("tw_research list_symbol_results failed for %s", scan_id, exc_info=True)
+        raise TwResearchDurableStoreError(
+            f"Failed to load symbol results for {scan_id}",
+            scan_id=scan_id,
+            operation="load_symbol_results",
+        ) from exc
+    for symbol_row in symbol_rows:
+        payload = dict(symbol_row.get("payload_json") or {})
+        record = SymbolScanRecord(
+            stock_id=symbol_row["stock_id"],
+            stage=payload.get("stage", symbol_row["stage"]),
+            readiness=payload.get("readiness", symbol_row.get("readiness", "processed")),
+            daily=payload.get("daily"),
+            monthly=payload.get("monthly"),
+            sma20=payload.get("sma20"),
+            sma60=payload.get("sma60"),
+            sma120=payload.get("sma120"),
+            sma240=payload.get("sma240"),
+            week52_position=payload.get("week52_position"),
+            rejection_reason=payload.get("rejection_reason"),
+            checkpoint=tuple(payload["checkpoint"]) if payload.get("checkpoint") else None,
+            theme_keys=tuple(payload.get("theme_keys") or ()),
+            enrichment=payload.get("enrichment"),
+            coverage=payload.get("coverage"),
+        )
+        state.records[record.stock_id] = record
+    return state
+
+
+def _state_from_scan_row(row: dict[str, Any]) -> ScanState:
     selector_payload = row.get("selector_json") or {}
     created = row["created_at"]
     updated = row["updated_at"]
-    state = ScanState(
+    return ScanState(
         scan_id=row["scan_id"],
         trading_day=row["trading_day"],
         universe_version=row["universe_version"],
@@ -176,33 +235,141 @@ def load_scan_state(
         notes=list(row.get("notes_json") or []),
         user_id=row.get("user_id"),
         active_snapshot_id=row.get("active_snapshot_id"),
+        reserve_expires_at=_iso_or_none(row.get("reserve_expires_at")),
+        enrich_reserve_expires_at=_iso_or_none(row.get("enrich_reserve_expires_at")),
     )
-    try:
-        symbol_rows = repo.list_symbol_results(scan_id)
-    except Exception:  # noqa: BLE001
-        logger.warning("tw_research list_symbol_results failed for %s", scan_id, exc_info=True)
-        return state
-    for symbol_row in symbol_rows:
-        payload = dict(symbol_row.get("payload_json") or {})
-        record = SymbolScanRecord(
-            stock_id=symbol_row["stock_id"],
-            stage=payload.get("stage", symbol_row["stage"]),
-            readiness=payload.get("readiness", symbol_row.get("readiness", "processed")),
-            daily=payload.get("daily"),
-            monthly=payload.get("monthly"),
-            sma20=payload.get("sma20"),
-            sma60=payload.get("sma60"),
-            sma120=payload.get("sma120"),
-            sma240=payload.get("sma240"),
-            week52_position=payload.get("week52_position"),
-            rejection_reason=payload.get("rejection_reason"),
-            checkpoint=tuple(payload["checkpoint"]) if payload.get("checkpoint") else None,
-            theme_keys=tuple(payload.get("theme_keys") or ()),
-            enrichment=payload.get("enrichment"),
-            coverage=payload.get("coverage"),
+
+
+def progress_revision(
+    *,
+    updated_at: str,
+    status: str,
+    quality_status: str,
+    cursor: int,
+    enrich_cursor: int,
+    processed_count: int,
+    upstream_month_fetches: int,
+    enrichments_run: int,
+    worker_activity: str,
+    active_snapshot_id: str | None,
+) -> str:
+    """Compact change token so clients can skip full ledger reloads."""
+    return "|".join(
+        [
+            updated_at,
+            status,
+            quality_status,
+            str(cursor),
+            str(enrich_cursor),
+            str(processed_count),
+            str(upstream_month_fetches),
+            str(enrichments_run),
+            worker_activity,
+            active_snapshot_id or "",
+        ]
+    )
+
+
+def load_scan_progress(
+    scan_id: str,
+    *,
+    user_id: str | None = None,
+    repository: TwResearchRepository | None = None,
+) -> dict[str, Any] | None:
+    """Counters-only progress from committed scan metadata + symbol count.
+
+    Does not load symbol payloads or trigger upstream market-data fetches.
+    Returns ``None`` for a missing scan or a scan owned by another user.
+    """
+    repo = repository or tw_research_repository
+    if not repo.is_available():
+        raise TwResearchDurableStoreError(
+            "Durable research store is unavailable",
+            scan_id=scan_id,
+            operation="load_scan_progress",
         )
-        state.records[record.stock_id] = record
-    return state
+    try:
+        row = repo.get_scan(scan_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("tw_research load_scan_progress failed for %s", scan_id, exc_info=True)
+        raise TwResearchDurableStoreError(
+            f"Failed to load scan progress {scan_id}",
+            scan_id=scan_id,
+            operation="load_scan_progress",
+        ) from exc
+    if row is None:
+        return None
+    if user_id is not None and row.get("user_id") != user_id:
+        return None
+    try:
+        processed_count = repo.count_symbol_results(scan_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "tw_research count_symbol_results failed for %s",
+            scan_id,
+            exc_info=True,
+        )
+        raise TwResearchDurableStoreError(
+            f"Failed to count symbol results for {scan_id}",
+            scan_id=scan_id,
+            operation="count_symbol_results",
+        ) from exc
+    stock_ids = list(row.get("stock_ids_json") or [])
+    cursor = int(row.get("cursor") or 0)
+    enrich_cursor = int(row.get("enrich_cursor") or 0)
+    updated = row.get("updated_at")
+    updated_at = updated.isoformat() if hasattr(updated, "isoformat") else str(updated or "")
+    created = row.get("created_at")
+    created_at = created.isoformat() if hasattr(created, "isoformat") else str(created or "")
+    status = str(row.get("status") or "")
+    quality_status = str(row.get("quality_status") or "processed")
+    worker_activity = describe_worker_activity(
+        status,
+        row.get("reserve_expires_at"),
+        row.get("enrich_reserve_expires_at"),
+    )
+    day_pass_ids = list(row.get("day_pass_ids_json") or [])
+    qualified_ids = list(row.get("qualified_ids_json") or [])
+    active_snapshot_id = row.get("active_snapshot_id")
+    revision = progress_revision(
+        updated_at=updated_at,
+        status=status,
+        quality_status=quality_status,
+        cursor=cursor,
+        enrich_cursor=enrich_cursor,
+        processed_count=processed_count,
+        upstream_month_fetches=int(row.get("upstream_month_fetches") or 0),
+        enrichments_run=int(row.get("enrichments_run") or 0),
+        worker_activity=worker_activity,
+        active_snapshot_id=active_snapshot_id,
+    )
+    return {
+        "scanId": row["scan_id"],
+        "tradingDay": row["trading_day"],
+        "universeVersion": row["universe_version"],
+        "status": status,
+        "qualityStatus": quality_status,
+        "cursor": cursor,
+        "enrichCursor": enrich_cursor,
+        "universeSize": len(stock_ids),
+        "processedCount": processed_count,
+        "remainingCount": max(0, len(stock_ids) - cursor),
+        "targetCount": int(row.get("target_count") or 0),
+        "dayPassCount": len(day_pass_ids),
+        "qualifiedCount": len(qualified_ids),
+        "enrichmentsRun": int(row.get("enrichments_run") or 0),
+        "maxEnrichmentsPerRun": int(row.get("max_enrichments_per_run") or 0),
+        "upstreamMonthFetches": int(row.get("upstream_month_fetches") or 0),
+        "maxUpstreamMonthFetches": int(row.get("max_upstream_month_fetches") or 0),
+        "createdAt": created_at,
+        "updatedAt": updated_at,
+        "activeSnapshotId": active_snapshot_id,
+        "reserveExpiresAt": _iso_or_none(row.get("reserve_expires_at")),
+        "enrichReserveExpiresAt": _iso_or_none(row.get("enrich_reserve_expires_at")),
+        "workerActivity": worker_activity,
+        "ledgerRevision": revision,
+        "includesLedger": False,
+    }
 
 
 def finalize_verified_snapshot(

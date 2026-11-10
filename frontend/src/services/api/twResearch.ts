@@ -26,7 +26,96 @@ export type TwResearchScanSnapshot = {
   notes: string[];
   ledger: Array<Record<string, unknown>>;
   checkpointsEphemeral: boolean;
+  qualityStatus?: string;
+  upstreamMonthFetches?: number;
+  maxUpstreamMonthFetches?: number;
+  createdAt?: string;
+  updatedAt?: string;
+  workerActivity?: "active" | "unknown" | "idle";
+  activeSnapshotId?: string | null;
+}
+
+export type TwResearchScanSummary = {
+  scanId: string;
+  tradingDay: string;
+  universeVersion: string;
+  status: string;
+  qualityStatus: string;
+  targetCount: number;
+  universeSize: number;
+  cursor: number;
+  remainingCount: number;
+  updatedAt: string;
+  activeSnapshotId?: string | null;
+  workerActivity: "active" | "unknown" | "idle";
+  selectorMode: TwResearchUniverseMode;
+  themeKeys: string[];
+  stockIds: string[];
 };
+
+export type TwResearchScanProgress = {
+  scanId: string;
+  tradingDay: string;
+  universeVersion: string;
+  status: string;
+  qualityStatus: string;
+  cursor: number;
+  enrichCursor?: number;
+  universeSize: number;
+  processedCount: number;
+  remainingCount: number;
+  targetCount: number;
+  dayPassCount: number;
+  qualifiedCount?: number;
+  enrichmentsRun?: number;
+  maxEnrichmentsPerRun?: number;
+  upstreamMonthFetches?: number;
+  maxUpstreamMonthFetches?: number;
+  createdAt?: string;
+  updatedAt?: string;
+  activeSnapshotId?: string | null;
+  workerActivity?: "active" | "unknown" | "idle";
+  ledgerRevision: string;
+  includesLedger: boolean;
+};
+
+/** Read-only poll while a scan can still make progress. Stop on a terminal status. */
+export function researchScanRefetchInterval(status: string | undefined): number | false {
+  if (status === "queued" || status === "running" || status === "partial") return 10_000;
+  return false;
+}
+
+/** Recent-scan discovery for Agent/other-session creates. Slower than progress. */
+export function researchScanListRefetchInterval(): number {
+  return 30_000;
+}
+
+/** Keep in sync with backend persistence.progress_revision. */
+export function researchProgressRevision(input: {
+  updatedAt?: string | null;
+  status?: string | null;
+  qualityStatus?: string | null;
+  cursor?: number | null;
+  enrichCursor?: number | null;
+  processedCount?: number | null;
+  upstreamMonthFetches?: number | null;
+  enrichmentsRun?: number | null;
+  workerActivity?: string | null;
+  activeSnapshotId?: string | null;
+}): string {
+  return [
+    input.updatedAt ?? "",
+    input.status ?? "",
+    input.qualityStatus ?? "",
+    String(input.cursor ?? 0),
+    String(input.enrichCursor ?? 0),
+    String(input.processedCount ?? 0),
+    String(input.upstreamMonthFetches ?? 0),
+    String(input.enrichmentsRun ?? 0),
+    input.workerActivity ?? "",
+    input.activeSnapshotId ?? "",
+  ].join("|");
+}
 
 export async function fetchTwResearchContract() {
   return requestJson<Record<string, unknown>>("/tw-research/contract");
@@ -96,9 +185,23 @@ export async function runTwResearchEnrichmentBatch(scanId: string, batchSize = 1
   return postScanMutation("/tw-research/scans/enrichment-batches", { scanId, batchSize });
 }
 
+export async function fetchTwResearchScans(limit = 20) {
+  const response = await requestJson<{ scans: TwResearchScanSummary[] }>(
+    `/tw-research/scans?limit=${limit}`,
+  );
+  return response;
+}
+
 export async function fetchTwResearchScan(scanId: string) {
   const response = await requestJson<{ scan: TwResearchScanSnapshot }>(scanPath(scanId));
   return response.scan;
+}
+
+export async function fetchTwResearchScanProgress(scanId: string) {
+  const response = await requestJson<{ progress: TwResearchScanProgress }>(
+    scanPath(scanId, "/progress"),
+  );
+  return response.progress;
 }
 
 export async function fetchTwResearchExportManifest(scanId: string) {

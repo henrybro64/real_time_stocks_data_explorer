@@ -89,7 +89,9 @@ All routes use `Depends(get_effective_user_id)`.
 | POST | `/api/tw-research/scans` | No (creates ledger) |
 | POST | `/api/tw-research/scans/batches` | Yes, bounded |
 | POST | `/api/tw-research/scans/enrichment-batches` | Yes, bounded (#313) |
+| GET | `/api/tw-research/scans` | No (#327 recent history) |
 | GET | `/api/tw-research/scans/{scan_id}` | No |
+| GET | `/api/tw-research/scans/{scan_id}/progress` | No (#327 counters only) |
 | GET | `/api/tw-research/scans/{scan_id}/export/manifest` | No |
 | GET | `/api/tw-research/scans/{scan_id}/export/chunk` | No |
 | GET | `/api/tw-research/scans/{scan_id}/export/csv` | No |
@@ -113,6 +115,18 @@ Suggested pilot thresholds to record on the home node:
 ## Agent handoff (#322)
 
 Manifest-first, changed-chunks-only transfer: [tw-research-agent-handoff.md](tw-research-agent-handoff.md). A plan is `verification_required` until checksum checks return `stock_ticker_export_verified`. `notion_published_verified` stays with the external Agent.
+
+## Persisted research dashboard (#327)
+
+PostgreSQL is authoritative for scan list, progress, and ledgers. Durable
+`get_scan` / progress reads raise a retryable store error on database failure
+instead of returning an empty or partial ledger. The UI polls
+`GET /scans/{id}/progress` while a scan is active and reloads the full ledger
+only when `ledgerRevision` changes. The recent-scan list polls slowly so an
+external Agent or another session can appear without stealing the user's
+selected scan. UI duplicate-create checks are **session/page helpers only** —
+cluster-wide admission, per-symbol locks, and historical-budget resume remain
+Issue **#329**.
 
 ## Browser rewrite proxy and long research batches (#328)
 

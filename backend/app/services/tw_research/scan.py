@@ -8,8 +8,8 @@ Checkpoint contract key:
   (trading_day, universe_version, calculation_version, symbol, scan_id)
 
 Checkpoints and scan ledgers are persisted to PostgreSQL when DATABASE_URL is
-configured (#318). An in-memory cache still accelerates a single process; GET
-paths fall back to durable rows after restart.
+configured (#318). Durable reads load committed rows and do not serve the
+process-local cache. The cache is only the persist=False path.
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timezone
 from inspect import Parameter, signature
 from threading import Lock
 from typing import Any, Literal, Protocol
@@ -186,6 +186,9 @@ class ScanState:
     notes: list[str] = field(default_factory=list)
     user_id: str | None = None
     active_snapshot_id: str | None = None
+    # Lease deadlines copied from PostgreSQL. A status of "running" is not a heartbeat.
+    reserve_expires_at: str | None = None
+    enrich_reserve_expires_at: str | None = None
     run_lock: Lock = field(default_factory=Lock, repr=False, compare=False)
 
     def snapshot(self) -> dict[str, Any]:
@@ -223,6 +226,13 @@ class ScanState:
             "notes": list(self.notes),
             "ledger": [asdict(record) for record in self.records.values()],
             "activeSnapshotId": self.active_snapshot_id,
+            "reserveExpiresAt": self.reserve_expires_at,
+            "enrichReserveExpiresAt": self.enrich_reserve_expires_at,
+            "workerActivity": describe_worker_activity(
+                self.status,
+                self.reserve_expires_at,
+                self.enrich_reserve_expires_at,
+            ),
             "checkpointsDurable": True,
             "checkpointsEphemeral": False,
             "checkpointContract": {
@@ -240,6 +250,89 @@ class ScanState:
                 ),
             },
         }
+
+
+_NONTERMINAL_SCAN_STATUSES = {"queued", "running", "partial"}
+
+
+def _as_utc(value: datetime | str | None) -> datetime | None:
+    if value is None or value == "":
+        return None
+    parsed = datetime.fromisoformat(value) if isinstance(value, str) else value
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def describe_worker_activity(
+    status: str,
+    reserve_expires_at: datetime | str | None,
+    enrich_reserve_expires_at: datetime | str | None,
+    *,
+    now: datetime | None = None,
+) -> str:
+    """Lease-based liveness. A stored status of running is not a heartbeat."""
+    current = now or datetime.now(timezone.utc)
+    for lease in (reserve_expires_at, enrich_reserve_expires_at):
+        expires = _as_utc(lease)
+        if expires is not None and expires > current:
+            return "active"
+    if status in _NONTERMINAL_SCAN_STATUSES:
+        return "unknown"
+    return "idle"
+
+
+def _summary_from_state(state: ScanState) -> dict[str, Any]:
+    universe_size = len(state.stock_ids)
+    return {
+        "scanId": state.scan_id,
+        "tradingDay": state.trading_day,
+        "universeVersion": state.universe_version,
+        "status": state.status,
+        "qualityStatus": state.quality_status,
+        "targetCount": state.target_count,
+        "universeSize": universe_size,
+        "cursor": state.cursor,
+        "remainingCount": max(0, universe_size - state.cursor),
+        "updatedAt": state.updated_at,
+        "activeSnapshotId": state.active_snapshot_id,
+        "workerActivity": describe_worker_activity(
+            state.status,
+            state.reserve_expires_at,
+            state.enrich_reserve_expires_at,
+        ),
+        "selectorMode": state.selector.mode,
+        "themeKeys": list(state.selector.theme_keys),
+        "stockIds": list(state.selector.stock_ids),
+    }
+
+
+def _summary_from_row(row: dict[str, Any]) -> dict[str, Any]:
+    stock_ids = list(row.get("stock_ids_json") or [])
+    selector = row.get("selector_json") or {}
+    cursor = int(row.get("cursor") or 0)
+    updated = row.get("updated_at")
+    return {
+        "scanId": row["scan_id"],
+        "tradingDay": row["trading_day"],
+        "universeVersion": row["universe_version"],
+        "status": row["status"],
+        "qualityStatus": row.get("quality_status") or "processed",
+        "targetCount": int(row.get("target_count") or 0),
+        "universeSize": len(stock_ids),
+        "cursor": cursor,
+        "remainingCount": max(0, len(stock_ids) - cursor),
+        "updatedAt": updated.isoformat() if hasattr(updated, "isoformat") else str(updated or ""),
+        "activeSnapshotId": row.get("active_snapshot_id"),
+        "workerActivity": describe_worker_activity(
+            str(row.get("status") or ""),
+            row.get("reserve_expires_at"),
+            row.get("enrich_reserve_expires_at"),
+        ),
+        "selectorMode": selector.get("mode") or "starter_preset",
+        "themeKeys": list(selector.get("themeKeys") or []),
+        "stockIds": list(selector.get("stockIds") or []),
+    }
 
 
 class TwResearchScanService:
@@ -263,8 +356,19 @@ class TwResearchScanService:
         self._stock_loader = stock_loader or quote_service.get_catalog_stock
         self._persist = persist
         self._lock = Lock()
+        # Process-local accelerator for persist=False. Durable reads do not use it.
         self._scans: dict[str, ScanState] = {}
+        # Stable across get_scan() reloads so two batches in this process still queue.
+        self._run_locks: dict[str, Lock] = {}
         self._checkpoints: set[tuple[str, str, str, str]] = set()
+
+    def _run_lock_for(self, scan_id: str) -> Lock:
+        with self._lock:
+            lock = self._run_locks.get(scan_id)
+            if lock is None:
+                lock = Lock()
+                self._run_locks[scan_id] = lock
+            return lock
 
     def create_scan(
         self,
@@ -322,32 +426,117 @@ class TwResearchScanService:
         return state
 
     def get_scan(self, scan_id: str) -> ScanState | None:
-        with self._lock:
-            cached = self._scans.get(scan_id)
-        if cached is not None:
-            return cached
+        """Return the scan.
+
+        Durable mode always reads committed PostgreSQL rows. The process cache
+        is not consulted, so a write from another worker or pod is visible and
+        is not merged with a stale in-memory copy.
+        """
         if not self._persist:
-            return None
+            with self._lock:
+                return self._scans.get(scan_id)
         from app.services.tw_research.persistence import load_scan_state
 
-        loaded = load_scan_state(scan_id)
-        if loaded is None:
-            return None
+        return load_scan_state(scan_id)
+
+    def list_scans(self, user_id: str, *, limit: int = 20) -> list[dict[str, Any]]:
+        """Recent scans for one user. Does not load symbol rows or upstream data."""
+        bounded = max(1, min(int(limit), 50))
+        if not self._persist:
+            with self._lock:
+                states = [state for state in self._scans.values() if state.user_id == user_id]
+            states.sort(key=lambda state: state.updated_at or "", reverse=True)
+            return [_summary_from_state(state) for state in states[:bounded]]
+        from app.repositories.tw_research_repository import tw_research_repository
+
+        if not tw_research_repository.is_available():
+            raise TwResearchDurableStoreError(
+                "Durable research store is unavailable",
+                operation="list_scans",
+            )
+        try:
+            rows = tw_research_repository.list_scans_for_user(user_id, limit=bounded)
+        except Exception as exc:  # noqa: BLE001
+            raise TwResearchDurableStoreError(
+                "Failed to list research scans",
+                operation="list_scans",
+            ) from exc
+        return [_summary_from_row(row) for row in rows]
+
+    def get_scan_progress(
+        self,
+        scan_id: str,
+        *,
+        user_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Counters-only progress. Durable mode never returns a stale process cache."""
+        if not self._persist:
+            with self._lock:
+                state = self._scans.get(scan_id)
+            if state is None:
+                return None
+            if user_id is not None and state.user_id != user_id:
+                return None
+            snapshot = state.snapshot()
+            from app.services.tw_research.persistence import progress_revision
+
+            revision = progress_revision(
+                updated_at=str(snapshot.get("updatedAt") or ""),
+                status=str(snapshot.get("status") or ""),
+                quality_status=str(snapshot.get("qualityStatus") or ""),
+                cursor=int(snapshot.get("cursor") or 0),
+                enrich_cursor=int(snapshot.get("enrichCursor") or 0),
+                processed_count=int(snapshot.get("processedCount") or 0),
+                upstream_month_fetches=int(snapshot.get("upstreamMonthFetches") or 0),
+                enrichments_run=int(snapshot.get("enrichmentsRun") or 0),
+                worker_activity=str(snapshot.get("workerActivity") or "unknown"),
+                active_snapshot_id=snapshot.get("activeSnapshotId"),
+            )
+            return {
+                "scanId": snapshot["scanId"],
+                "tradingDay": snapshot["tradingDay"],
+                "universeVersion": snapshot["universeVersion"],
+                "status": snapshot["status"],
+                "qualityStatus": snapshot["qualityStatus"],
+                "cursor": snapshot["cursor"],
+                "enrichCursor": snapshot["enrichCursor"],
+                "universeSize": snapshot["universeSize"],
+                "processedCount": snapshot["processedCount"],
+                "remainingCount": snapshot["remainingCount"],
+                "targetCount": snapshot["targetCount"],
+                "dayPassCount": snapshot["dayPassCount"],
+                "qualifiedCount": snapshot["qualifiedCount"],
+                "enrichmentsRun": snapshot["enrichmentsRun"],
+                "maxEnrichmentsPerRun": snapshot["maxEnrichmentsPerRun"],
+                "upstreamMonthFetches": snapshot["upstreamMonthFetches"],
+                "maxUpstreamMonthFetches": snapshot["maxUpstreamMonthFetches"],
+                "createdAt": snapshot["createdAt"],
+                "updatedAt": snapshot["updatedAt"],
+                "activeSnapshotId": snapshot["activeSnapshotId"],
+                "reserveExpiresAt": snapshot.get("reserveExpiresAt"),
+                "enrichReserveExpiresAt": snapshot.get("enrichReserveExpiresAt"),
+                "workerActivity": snapshot["workerActivity"],
+                "ledgerRevision": revision,
+                "includesLedger": False,
+            }
+        from app.services.tw_research.persistence import load_scan_progress
+
+        return load_scan_progress(scan_id, user_id=user_id)
+
+    def _remember_checkpoints(self, state: ScanState) -> None:
         with self._lock:
-            self._scans[scan_id] = loaded
-            for stock_id, record in loaded.records.items():
+            for stock_id, record in state.records.items():
                 if record.checkpoint is not None:
                     self._checkpoints.add(record.checkpoint)
                 else:
                     self._checkpoints.add(
                         (
-                            loaded.trading_day,
-                            loaded.universe_version,
-                            loaded.calculation_version,
+                            state.trading_day,
+                            state.universe_version,
+                            state.calculation_version,
                             stock_id,
                         )
                     )
-        return loaded
 
     def run_batch(
         self,
@@ -362,13 +551,14 @@ class TwResearchScanService:
             raise ValueError(f"batch_size must be 1..{SCAN_BATCH_SIZE}")
         started = datetime.now(TAIPEI)
 
-        state = self.get_scan(scan_id)
-        if state is None:
-            raise KeyError(f"Unknown scan_id: {scan_id}")
-
         # Serialize overlapping batch POSTs for the same scan (process lock +
         # durable SELECT FOR UPDATE claim when Postgres is available).
-        with state.run_lock:
+        # Reload inside the lock so a waiter does not apply a stale copy.
+        with self._run_lock_for(scan_id):
+            state = self.get_scan(scan_id)
+            if state is None:
+                raise KeyError(f"Unknown scan_id: {scan_id}")
+            self._remember_checkpoints(state)
             batch_ids = self._claim_batch_ids(state, batch_size=batch_size)
             if batch_ids is None:
                 return state
@@ -595,11 +785,11 @@ class TwResearchScanService:
             raise ValueError(f"batch_size must be 1..{ENRICH_BATCH_SIZE}")
         enrich_fn = enricher or enrich_qualified_symbol
 
-        state = self.get_scan(scan_id)
-        if state is None:
-            raise KeyError(f"Unknown scan_id: {scan_id}")
-
-        with state.run_lock:
+        with self._run_lock_for(scan_id):
+            state = self.get_scan(scan_id)
+            if state is None:
+                raise KeyError(f"Unknown scan_id: {scan_id}")
+            self._remember_checkpoints(state)
             batch_ids, remaining_budget = self._claim_enrichment_ids(
                 state, batch_size=batch_size
             )

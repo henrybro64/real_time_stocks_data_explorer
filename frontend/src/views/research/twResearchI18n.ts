@@ -94,8 +94,50 @@ const TW_RESEARCH_ROWS = [
   ["research.tw.errorLatestChunk", "Verified snapshot chunk", "已驗證快照 chunk"],
   [
     "research.tw.existingScanKept",
-    "This selection already has a scan in this session. Change the universe or target to create another. Another browser can still create its own scan.",
-    "這個選擇在本次工作階段已有掃描。請變更宇宙或目標才會再建立。其他瀏覽器仍可建立自己的掃描。",
+    "This selection already has an active scan. Change the universe or target to create another. This page does not stop another browser or pod from creating a scan.",
+    "這個選擇已有進行中的掃描。請變更宇宙或目標才會再建立。此頁面無法阻止其他瀏覽器或 pod 建立掃描。",
+  ],
+  ["research.tw.historyLabel", "Recent scans", "最近的掃描"],
+  ["research.tw.progressTitle", "Scan progress", "掃描進度"],
+  ["research.tw.errorScan", "Saved scan", "已儲存的掃描"],
+  ["research.tw.errorList", "Recent scans", "最近的掃描"],
+  [
+    "research.tw.workerActive",
+    "A worker holds a lease and is processing.",
+    "有 worker 持有租約，正在處理。",
+  ],
+  [
+    "research.tw.workerUnknown",
+    "No live lease. A saved running status does not mean a worker is still active.",
+    "沒有有效租約。已儲存的 running 狀態不代表 worker 仍在處理。",
+  ],
+  ["research.tw.workerIdle", "No worker is processing this scan.", "沒有 worker 正在處理這個掃描。"],
+  [
+    "research.tw.budgetLine",
+    "Historical-data budget {used}/{max}.",
+    "歷史資料預算 {used}/{max}。",
+  ],
+  [
+    "research.tw.enrichmentLine",
+    "Enrichment {run}/{max}. Enrichment cursor {cursor}.",
+    "Enrichment {run}/{max}。Enrichment 游標 {cursor}。",
+  ],
+  [
+    "research.tw.notVerified",
+    "Quality {quality}. This is not a verified export.",
+    "品質 {quality}。這不是已驗證匯出。",
+  ],
+  [
+    "research.tw.verifiedExport",
+    "Verified export snapshot is available.",
+    "已有驗證匯出快照。",
+  ],
+  ["research.tw.updatedAt", "Last saved update {time}.", "最後寫入時間 {time}。"],
+  ["research.tw.unresolvedTitle", "Unresolved symbols", "未解決的股票"],
+  [
+    "research.tw.budgetExhausted",
+    "Historical-data budget is exhausted. Resume is not available from this page.",
+    "歷史資料預算已用盡。此頁面無法接續。",
   ],
 ] as const satisfies ReadonlyArray<readonly [string, string, string]>;
 
