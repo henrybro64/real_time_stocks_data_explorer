@@ -72,6 +72,16 @@ function researchSelectionKey(input: {
   });
 }
 
+/** Calendar day the backend uses when create omits tradingDay (Asia/Taipei). */
+export function taipeiTradingDay(now = new Date()): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Taipei",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(now);
+}
+
 function scanProgressKey(scan: TwResearchScanSnapshot | null): string {
   if (!scan) return "";
   return [
@@ -81,6 +91,19 @@ function scanProgressKey(scan: TwResearchScanSnapshot | null): string {
     scan.enrichCursor ?? 0,
     scan.qualifiedCount ?? 0,
   ].join(":");
+}
+
+/**
+ * After a lost/proxy-failed mutation response, a GET may show that the server
+ * finished the work. Keep that snapshot, but never treat a durable `failed`
+ * status as recovery — that is the backend's explicit failure signal.
+ */
+function recoveredAfterLostMutation(
+  beforeKey: string,
+  latest: TwResearchScanSnapshot | null,
+): boolean {
+  if (!latest || latest.status === "failed") return false;
+  return scanProgressKey(latest) !== beforeKey;
 }
 
 function describeResearchFailure(error: unknown): string {
@@ -121,6 +144,7 @@ export function TwResearchPage({ initialScanId = null }: { initialScanId?: strin
   const [keptExistingScan, setKeptExistingScan] = useState(false);
   const [recoveredOperations, setRecoveredOperations] = useState<Record<string, boolean>>({});
   const scanRef = useRef<TwResearchScanSnapshot | null>(null);
+  const scanIdRef = useRef<string | null>(scanId);
   const createGuard = useRef(false);
 
   const refreshManifest = (id: string | null) => {
@@ -275,6 +299,17 @@ export function TwResearchPage({ initialScanId = null }: { initialScanId?: strin
   }, [scan]);
 
   useEffect(() => {
+    scanIdRef.current = scanId;
+  }, [scanId]);
+
+  useEffect(() => {
+    setAgentText("");
+    setAgentChunkIndex(0);
+    setAgentTotalChunks(0);
+    setPage(1);
+  }, [scanId]);
+
+  useEffect(() => {
     if (!scanId || !progress?.ledgerRevision) return;
     const currentRevision = researchProgressRevision({
       updatedAt: scan?.updatedAt,
@@ -290,6 +325,7 @@ export function TwResearchPage({ initialScanId = null }: { initialScanId?: strin
     });
     if (currentRevision === progress.ledgerRevision) return;
     void queryClient.invalidateQueries({ queryKey: ["tw-research-scan", scanId] });
+    void queryClient.invalidateQueries({ queryKey: ["tw-research-manifest", scanId] });
   }, [progress, queryClient, scan, scanId]);
 
   useEffect(() => {
@@ -331,10 +367,6 @@ export function TwResearchPage({ initialScanId = null }: { initialScanId?: strin
       applyScanSnapshot(created);
       setActiveSelectionKey(key);
       setKeptExistingScan(false);
-      setPage(1);
-      setAgentText("");
-      setAgentChunkIndex(0);
-      setAgentTotalChunks(0);
       void queryClient.invalidateQueries({ queryKey: ["tw-research-scans"] });
     },
     onSettled: () => {
@@ -349,7 +381,7 @@ export function TwResearchPage({ initialScanId = null }: { initialScanId?: strin
     onError: async () => {
       const before = scanProgressKey(scanRef.current);
       const latest = await reloadDurableScan();
-      markRecovered("batch", Boolean(latest) && scanProgressKey(latest) !== before);
+      markRecovered("batch", recoveredAfterLostMutation(before, latest));
     },
   });
 
@@ -360,7 +392,7 @@ export function TwResearchPage({ initialScanId = null }: { initialScanId?: strin
     onError: async () => {
       const before = scanProgressKey(scanRef.current);
       const latest = await reloadDurableScan();
-      markRecovered("enrich", Boolean(latest) && scanProgressKey(latest) !== before);
+      markRecovered("enrich", recoveredAfterLostMutation(before, latest));
     },
   });
 
@@ -370,9 +402,13 @@ export function TwResearchPage({ initialScanId = null }: { initialScanId?: strin
   });
 
   const agentMutation = useMutation({
-    mutationFn: async (chunkIndex: number) =>
-      fetchTwResearchBrowserText(requireScanId(), chunkIndex),
-    onSuccess: (payload, chunkIndex) => {
+    mutationFn: async (chunkIndex: number) => {
+      const id = requireScanId();
+      const payload = await fetchTwResearchBrowserText(id, chunkIndex);
+      return { id, payload, chunkIndex };
+    },
+    onSuccess: ({ id, payload, chunkIndex }) => {
+      if (scanIdRef.current !== id) return;
       setAgentChunkIndex(chunkIndex);
       const continuation = payload.continuation as
         | { totalChunks?: number; nextChunkIndex?: number | null }
@@ -418,7 +454,13 @@ export function TwResearchPage({ initialScanId = null }: { initialScanId?: strin
     agentMutation.isPending ||
     latestManifestMutation.isPending ||
     latestChunkMutation.isPending;
+  const requestedTradingDay = taipeiTradingDay();
   const operationErrors: Array<{ key: string; label: TranslationKey; error: unknown }> = [
+    {
+      key: "list",
+      label: "research.tw.errorList",
+      error: listQuery.isFetching ? null : listQuery.error,
+    },
     {
       key: "create",
       label: "research.tw.errorCreate",
@@ -567,6 +609,7 @@ export function TwResearchPage({ initialScanId = null }: { initialScanId?: strin
                         const persisted = (listQuery.data?.scans ?? []).find(
                           (item) =>
                             ACTIVE_SCAN_STATUSES.has(item.status) &&
+                            item.tradingDay === requestedTradingDay &&
                             researchSelectionKey({
                               mode: item.selectorMode,
                               targetCount: item.targetCount,
@@ -859,10 +902,12 @@ export function TwResearchPage({ initialScanId = null }: { initialScanId?: strin
                     kind="tertiary"
                     disabled={busy}
                     onClick={async () => {
-                      if (!scanId) {
+                      const id = scanId;
+                      if (!id) {
                         return;
                       }
-                      const chunk = await fetchTwResearchExportChunk(scanId, agentChunkIndex);
+                      const chunk = await fetchTwResearchExportChunk(id, agentChunkIndex);
+                      if (scanIdRef.current !== id) return;
                       setAgentText(JSON.stringify(chunk, null, 2));
                     }}
                   >

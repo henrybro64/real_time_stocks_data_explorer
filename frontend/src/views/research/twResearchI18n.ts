@@ -100,6 +100,7 @@ const TW_RESEARCH_ROWS = [
   ["research.tw.historyLabel", "Recent scans", "最近的掃描"],
   ["research.tw.progressTitle", "Scan progress", "掃描進度"],
   ["research.tw.errorScan", "Saved scan", "已儲存的掃描"],
+  ["research.tw.errorList", "Recent scans", "最近的掃描"],
   [
     "research.tw.workerActive",
     "A worker holds a lease and is processing.",

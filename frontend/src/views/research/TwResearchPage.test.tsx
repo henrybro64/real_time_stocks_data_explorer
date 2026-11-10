@@ -12,6 +12,7 @@ import { ApiError } from "../../services/api/client";
 import {
   createTwResearchScan,
   fetchThemeOptions,
+  fetchTwResearchBrowserText,
   fetchTwResearchExportManifest,
   fetchTwResearchLatestManifest,
   fetchTwResearchScan,
@@ -26,7 +27,7 @@ import {
   type TwResearchScanSnapshot,
   type TwResearchScanSummary,
 } from "../../services/api/twResearch";
-import { TwResearchPage } from "./TwResearchPage";
+import { TwResearchPage, taipeiTradingDay } from "./TwResearchPage";
 
 vi.mock("../../services/api/twResearch", async () => {
   const actual = await vi.importActual<typeof import("../../services/api/twResearch")>(
@@ -269,6 +270,44 @@ describe("TwResearchPage operation failures (#328)", () => {
     expect(screen.getByLabelText("掃描 ID")).toHaveValue(SCAN_ID);
     expect(screen.getByText(/已處理 0\/73/)).toBeInTheDocument();
     expect(screen.queryByTestId("tw-research-error-refresh")).not.toBeInTheDocument();
+  });
+
+  it("keeps the batch error when the durable snapshot is marked failed", async () => {
+    const user = userEvent.setup();
+    vi.mocked(runTwResearchBatch).mockRejectedValue(
+      new ApiError("Request failed: 503", {
+        status: 503,
+        detail: "durable_store_unavailable",
+        kind: "unavailable",
+      }),
+    );
+    vi.mocked(fetchTwResearchScan).mockResolvedValue(
+      queuedScan({
+        status: "failed",
+        cursor: 4,
+        processedCount: 4,
+        remainingCount: 69,
+        notes: ["persist_symbol:OperationalError"],
+      }),
+    );
+    vi.mocked(fetchTwResearchScanProgress).mockResolvedValue(
+      progress({
+        status: "failed",
+        cursor: 4,
+        processedCount: 4,
+        remainingCount: 69,
+      }),
+    );
+    renderPage();
+    await user.click(screen.getByTestId("tw-research-create"));
+    expect(await screen.findByLabelText("掃描 ID")).toHaveValue(SCAN_ID);
+
+    await user.click(screen.getByTestId("tw-research-batch"));
+    const batchError = await screen.findByTestId("tw-research-error-batch");
+    expect(batchError).toHaveTextContent("掃描批次");
+    expect(batchError).toHaveTextContent("503");
+    expect(await screen.findByText(/已處理 4\/73/)).toBeInTheDocument();
+    expect(screen.getByLabelText("掃描 ID")).toHaveValue(SCAN_ID);
   });
 
   it("keeps the scan on screen while a batch request is still running", async () => {
@@ -537,12 +576,149 @@ describe("TwResearchPage persisted scans (#327)", () => {
 
   it("does not create a duplicate while an equivalent active scan is saved", async () => {
     const user = userEvent.setup();
-    vi.mocked(fetchTwResearchScans).mockResolvedValue({ scans: [summary()] });
+    vi.mocked(fetchTwResearchScans).mockResolvedValue({
+      scans: [summary({ tradingDay: taipeiTradingDay() })],
+    });
     renderPage();
     expect(await screen.findByLabelText("掃描 ID")).toHaveValue(SCAN_ID);
     await user.click(screen.getByTestId("tw-research-create"));
     expect(createTwResearchScan).not.toHaveBeenCalled();
     expect(screen.getByTestId("tw-research-existing-scan")).toBeInTheDocument();
+  });
+
+  it("creates a new scan when the matching active scan is for a prior trading day", async () => {
+    const user = userEvent.setup();
+    vi.mocked(fetchTwResearchScans).mockResolvedValue({
+      scans: [summary({ tradingDay: "2020-01-02", status: "partial", cursor: 12 })],
+    });
+    vi.mocked(createTwResearchScan).mockResolvedValue(
+      queuedScan({ scanId: "new-scan-for-today-aaaaaaaa", tradingDay: taipeiTradingDay() }),
+    );
+    renderPage({ initialScanId: SCAN_ID });
+    expect(await screen.findByLabelText("掃描 ID")).toHaveValue(SCAN_ID);
+    await user.click(screen.getByTestId("tw-research-create"));
+    await waitFor(() => {
+      expect(createTwResearchScan).toHaveBeenCalledTimes(1);
+    });
+    expect(await screen.findByLabelText("掃描 ID")).toHaveValue("new-scan-for-today-aaaaaaaa");
+    expect(screen.queryByTestId("tw-research-existing-scan")).not.toBeInTheDocument();
+  });
+
+  it("refreshes the export manifest when polled progress revision changes", async () => {
+    const unchanged = progress({
+      status: "running",
+      processedCount: 0,
+      cursor: 0,
+      qualityStatus: "processed",
+      updatedAt: "2026-11-10T08:28:52+08:00",
+    });
+    const changed = progress({
+      status: "running",
+      processedCount: 10,
+      cursor: 10,
+      remainingCount: 63,
+      qualityStatus: "verified_ready",
+      activeSnapshotId: "snap-1",
+      updatedAt: "2026-11-10T08:30:00+08:00",
+    });
+    vi.mocked(fetchTwResearchScan).mockResolvedValue(
+      queuedScan({ status: "running", processedCount: 0, cursor: 0, qualityStatus: "processed" }),
+    );
+    vi.mocked(fetchTwResearchScanProgress)
+      .mockResolvedValueOnce(unchanged)
+      .mockResolvedValueOnce(changed);
+    vi.mocked(fetchTwResearchExportManifest)
+      .mockResolvedValueOnce({ qualityStatus: "processed" })
+      .mockResolvedValueOnce({ qualityStatus: "verified_ready", snapshotId: "snap-1" });
+    const { client } = renderPage({ initialScanId: SCAN_ID });
+    expect(await screen.findByLabelText("掃描 ID")).toHaveValue(SCAN_ID);
+    await waitFor(() => {
+      expect(fetchTwResearchExportManifest).toHaveBeenCalled();
+    });
+    const afterInitial = vi.mocked(fetchTwResearchExportManifest).mock.calls.length;
+    vi.mocked(fetchTwResearchScan).mockResolvedValue(
+      queuedScan({
+        status: "running",
+        processedCount: 10,
+        cursor: 10,
+        remainingCount: 63,
+        qualityStatus: "verified_ready",
+        activeSnapshotId: "snap-1",
+        updatedAt: "2026-11-10T08:30:00+08:00",
+      }),
+    );
+    await client.refetchQueries({ queryKey: ["tw-research-progress", SCAN_ID] });
+    await waitFor(() => {
+      expect(vi.mocked(fetchTwResearchExportManifest).mock.calls.length).toBeGreaterThan(
+        afterInitial,
+      );
+    });
+  });
+
+  it("clears Agent handoff state when switching saved scans", async () => {
+    const user = userEvent.setup();
+    const older = "ddbbf9c7-9fb2-447e-a393-780b6da27611";
+    vi.mocked(fetchTwResearchScans).mockResolvedValue({
+      scans: [summary(), summary({ scanId: older, status: "completed_processing", cursor: 73 })],
+    });
+    vi.mocked(fetchTwResearchScan).mockImplementation(async (id: string) =>
+      queuedScan({
+        scanId: id,
+        status: id === older ? "completed_processing" : "queued",
+        processedCount: id === older ? 73 : 0,
+        remainingCount: id === older ? 0 : 73,
+      }),
+    );
+    vi.mocked(fetchTwResearchScanProgress).mockImplementation(async (id: string) =>
+      progress({
+        scanId: id,
+        status: id === older ? "completed_processing" : "queued",
+        processedCount: id === older ? 73 : 0,
+        remainingCount: id === older ? 0 : 73,
+      }),
+    );
+    vi.mocked(fetchTwResearchBrowserText).mockResolvedValue({
+      scanId: SCAN_ID,
+      continuation: { totalChunks: 3, nextChunkIndex: 1 },
+      rows: [{ stockId: "TW:2330" }],
+    });
+    renderPage({ initialScanId: SCAN_ID });
+    expect(await screen.findByLabelText("掃描 ID")).toHaveValue(SCAN_ID);
+    await user.click(screen.getByRole("button", { name: "載入 Agent JSON" }));
+    await waitFor(() => {
+      const area = screen.getByLabelText("瀏覽器可讀匯出 JSON") as HTMLTextAreaElement;
+      expect(area.value).toContain("TW:2330");
+    });
+    expect(screen.getByText(/Agent 交接 chunk 0／3/)).toBeInTheDocument();
+
+    await user.selectOptions(screen.getByLabelText("最近的掃描"), older);
+    expect(await screen.findByLabelText("掃描 ID")).toHaveValue(older);
+    await waitFor(() => {
+      const area = screen.getByLabelText("瀏覽器可讀匯出 JSON") as HTMLTextAreaElement;
+      expect(area.value).toBe("");
+    });
+    expect(screen.getByText(/Agent 交接 chunk 0／—/)).toBeInTheDocument();
+  });
+
+  it("surfaces a recent-scan list failure without hiding cached history", async () => {
+    vi.mocked(fetchTwResearchScans)
+      .mockResolvedValueOnce({ scans: [summary({ tradingDay: taipeiTradingDay() })] })
+      .mockRejectedValueOnce(
+        new ApiError("Request failed: 503", {
+          status: 503,
+          detail: "durable_store_unavailable",
+          kind: "unavailable",
+        }),
+      );
+    const { client } = renderPage();
+    expect(await screen.findByLabelText("掃描 ID")).toHaveValue(SCAN_ID);
+    expect(screen.getByTestId("tw-research-history")).toBeInTheDocument();
+    await client.refetchQueries({ queryKey: ["tw-research-scans"] });
+    const listError = await screen.findByTestId("tw-research-error-list");
+    expect(listError).toHaveTextContent("最近的掃描");
+    expect(listError).toHaveTextContent("503");
+    expect(screen.getByTestId("tw-research-history")).toHaveValue(SCAN_ID);
+    expect(screen.getByLabelText("掃描 ID")).toHaveValue(SCAN_ID);
   });
 
   it("shows a budget-exhausted scan as unfinished and not resumable", async () => {
