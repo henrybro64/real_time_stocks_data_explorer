@@ -26,6 +26,7 @@ from app.schemas.tw_research import (
     RunBatchRequest,
     RunEnrichmentBatchRequest,
     ScanListResponse,
+    ScanProgressResponse,
     ScanSnapshotResponse,
     UniverseSelectorRequest,
 )
@@ -120,7 +121,9 @@ def list_scans(
 ) -> ScanListResponse:
     """Recent persisted scans for this user. Read-only: no upstream fetches."""
     return ScanListResponse(
-        scans=tw_research_scan_service.list_scans(user_id, limit=limit)
+        scans=_call_or_http(
+            lambda: tw_research_scan_service.list_scans(user_id, limit=limit)
+        )
     )
 
 
@@ -163,6 +166,20 @@ def get_scan(
 ) -> ScanSnapshotResponse:
     """Read-only snapshot. Does not trigger upstream fetches (#312/#318)."""
     return _snapshot(_require_owned_scan(scan_id, user_id))
+
+
+@router.get("/scans/{scan_id}/progress", response_model=ScanProgressResponse)
+def get_scan_progress(
+    scan_id: str,
+    user_id: str = Depends(get_effective_user_id),
+) -> ScanProgressResponse:
+    """Counters-only progress. No ledger payload and no upstream fetches (#327)."""
+    progress = _call_or_http(
+        lambda: tw_research_scan_service.get_scan_progress(scan_id, user_id=user_id)
+    )
+    if progress is None:
+        raise HTTPException(status_code=404, detail=f"Unknown scan_id: {scan_id}")
+    return ScanProgressResponse(progress=progress)
 
 
 @router.get("/exports/latest/manifest", response_model=ExportManifestResponse)
@@ -348,7 +365,7 @@ def _snapshot(state: ScanState) -> ScanSnapshotResponse:
 
 def _require_owned_scan(scan_id: str, user_id: str) -> ScanState:
     """Return the scan only when it belongs to ``user_id`` (404 otherwise)."""
-    state = tw_research_scan_service.get_scan(scan_id)
+    state = _call_or_http(lambda: tw_research_scan_service.get_scan(scan_id))
     if state is None or state.user_id != user_id:
         raise HTTPException(status_code=404, detail=f"Unknown scan_id: {scan_id}")
     return state

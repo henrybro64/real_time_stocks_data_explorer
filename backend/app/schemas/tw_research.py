@@ -105,6 +105,12 @@ class ScanListResponse(BaseModel):
     scans: list[ScanSummaryResponse]
 
 
+class ScanProgressResponse(BaseModel):
+    """Counters-only progress. Does not include the symbol ledger (#327)."""
+
+    progress: dict[str, Any]
+
+
 class ExportManifestResponse(BaseModel):
     manifest: dict[str, Any]
 

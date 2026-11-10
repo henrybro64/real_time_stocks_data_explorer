@@ -20,7 +20,14 @@ def test_contract_endpoint_is_industry_agnostic() -> None:
     assert payload["fieldMap"]
 
 
-def test_get_scan_does_not_create_state() -> None:
+def test_get_scan_does_not_create_state(monkeypatch) -> None:
+    from app.services.tw_research.scan import TwResearchScanService
+
+    # Memory-only service: missing IDs are 404. A broken durable store is 503 (#327).
+    monkeypatch.setattr(
+        "app.api.routes.tw_research.tw_research_scan_service",
+        TwResearchScanService(persist=False),
+    )
     response = client.get("/api/tw-research/scans/does-not-exist")
     assert response.status_code == 404
 

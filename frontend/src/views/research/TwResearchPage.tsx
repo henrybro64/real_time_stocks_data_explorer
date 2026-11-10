@@ -35,8 +35,11 @@ import {
   fetchTwResearchExportManifest,
   fetchTwResearchLatestManifest,
   fetchTwResearchScan,
+  fetchTwResearchScanProgress,
   fetchTwResearchScans,
   fetchTwResearchSnapshotChunk,
+  researchProgressRevision,
+  researchScanListRefetchInterval,
   researchScanRefetchInterval,
   resolveTwResearchUniverse,
   runTwResearchBatch,
@@ -137,6 +140,42 @@ export function TwResearchPage({ initialScanId = null }: { initialScanId?: strin
   const applyScanSnapshot = (next: TwResearchScanSnapshot) => {
     scanRef.current = next;
     queryClient.setQueryData(["tw-research-scan", next.scanId], next);
+    queryClient.setQueryData(["tw-research-progress", next.scanId], {
+      scanId: next.scanId,
+      tradingDay: next.tradingDay,
+      universeVersion: next.universeVersion,
+      status: next.status,
+      qualityStatus: next.qualityStatus ?? "processed",
+      cursor: next.cursor,
+      enrichCursor: next.enrichCursor ?? 0,
+      universeSize: next.universeSize,
+      processedCount: next.processedCount,
+      remainingCount: next.remainingCount,
+      targetCount: next.targetCount,
+      dayPassCount: next.dayPassCount,
+      qualifiedCount: next.qualifiedCount ?? 0,
+      enrichmentsRun: next.enrichmentsRun ?? 0,
+      maxEnrichmentsPerRun: next.maxEnrichmentsPerRun ?? 0,
+      upstreamMonthFetches: next.upstreamMonthFetches ?? 0,
+      maxUpstreamMonthFetches: next.maxUpstreamMonthFetches ?? 0,
+      createdAt: next.createdAt,
+      updatedAt: next.updatedAt,
+      activeSnapshotId: next.activeSnapshotId ?? null,
+      workerActivity: workerActivity(next),
+      ledgerRevision: researchProgressRevision({
+        updatedAt: next.updatedAt,
+        status: next.status,
+        qualityStatus: next.qualityStatus,
+        cursor: next.cursor,
+        enrichCursor: next.enrichCursor,
+        processedCount: next.processedCount,
+        upstreamMonthFetches: next.upstreamMonthFetches,
+        enrichmentsRun: next.enrichmentsRun,
+        workerActivity: workerActivity(next),
+        activeSnapshotId: next.activeSnapshotId,
+      }),
+      includesLedger: false,
+    });
     refreshManifest(next.scanId);
   };
 
@@ -189,24 +228,72 @@ export function TwResearchPage({ initialScanId = null }: { initialScanId?: strin
     queryKey: ["tw-research-scans"],
     queryFn: () => fetchTwResearchScans(),
     staleTime: 15_000,
+    refetchInterval: researchScanListRefetchInterval(),
+    refetchIntervalInBackground: false,
+  });
+
+  const progressQuery = useQuery({
+    queryKey: ["tw-research-progress", scanId],
+    queryFn: () => fetchTwResearchScanProgress(scanId as string),
+    enabled: Boolean(scanId),
+    staleTime: 5_000,
+    refetchInterval: (query) => researchScanRefetchInterval(query.state.data?.status),
+    refetchIntervalInBackground: false,
   });
 
   const scanQuery = useQuery({
     queryKey: ["tw-research-scan", scanId],
     queryFn: () => fetchTwResearchScan(scanId as string),
     enabled: Boolean(scanId),
-    staleTime: 10_000,
-    refetchInterval: (query) => researchScanRefetchInterval(query.state.data?.status),
+    staleTime: 30_000,
+    // Full ledger is loaded on selection / revision change, not every poll tick.
+    refetchInterval: false,
     refetchIntervalInBackground: false,
   });
 
   const scan = scanQuery.data?.scanId === scanId ? scanQuery.data : null;
+  const progress = progressQuery.data?.scanId === scanId ? progressQuery.data : null;
+  const displayStatus = progress?.status ?? scan?.status ?? "";
+  const displayProcessed = progress?.processedCount ?? scan?.processedCount ?? 0;
+  const displayUniverse = progress?.universeSize ?? scan?.universeSize ?? 0;
+  const displayRemaining = progress?.remainingCount ?? scan?.remainingCount ?? 0;
+  const displayDayPass = progress?.dayPassCount ?? scan?.dayPassCount ?? 0;
+  const displayQualified = progress?.qualifiedCount ?? scan?.qualifiedCount ?? 0;
+  const displayTarget = progress?.targetCount ?? scan?.targetCount ?? 0;
+  const displayWorker =
+    progress?.workerActivity ?? (scan ? workerActivity(scan) : "unknown");
+  const displayBudgetUsed = progress?.upstreamMonthFetches ?? scan?.upstreamMonthFetches ?? 0;
+  const displayBudgetMax = progress?.maxUpstreamMonthFetches ?? scan?.maxUpstreamMonthFetches ?? 0;
+  const displayEnrichRun = progress?.enrichmentsRun ?? scan?.enrichmentsRun ?? 0;
+  const displayEnrichMax = progress?.maxEnrichmentsPerRun ?? scan?.maxEnrichmentsPerRun ?? 0;
+  const displayEnrichCursor = progress?.enrichCursor ?? scan?.enrichCursor ?? 0;
+  const displayQuality = progress?.qualityStatus ?? scan?.qualityStatus;
+  const displayUpdatedAt = progress?.updatedAt ?? scan?.updatedAt;
 
   useEffect(() => {
     if (scan) scanRef.current = scan;
   }, [scan]);
 
   useEffect(() => {
+    if (!scanId || !progress?.ledgerRevision) return;
+    const currentRevision = researchProgressRevision({
+      updatedAt: scan?.updatedAt,
+      status: scan?.status,
+      qualityStatus: scan?.qualityStatus,
+      cursor: scan?.cursor,
+      enrichCursor: scan?.enrichCursor,
+      processedCount: scan?.processedCount,
+      upstreamMonthFetches: scan?.upstreamMonthFetches,
+      enrichmentsRun: scan?.enrichmentsRun,
+      workerActivity: scan ? workerActivity(scan) : null,
+      activeSnapshotId: scan?.activeSnapshotId,
+    });
+    if (currentRevision === progress.ledgerRevision) return;
+    void queryClient.invalidateQueries({ queryKey: ["tw-research-scan", scanId] });
+  }, [progress, queryClient, scan, scanId]);
+
+  useEffect(() => {
+    // First visit only: pick the newest persisted scan. Never steal a deliberate selection.
     if (scanId || !listQuery.data?.scans.length) return;
     setScanId(listQuery.data.scans[0]?.scanId ?? null);
   }, [listQuery.data, scanId]);
@@ -506,7 +593,10 @@ export function TwResearchPage({ initialScanId = null }: { initialScanId?: strin
                       key: "batch",
                       kind: "secondary" as const,
                       label: "research.tw.runBatch" as const,
-                      disabled: busy || !scanId || (scan != null && !ACTIVE_SCAN_STATUSES.has(scan.status)),
+                      disabled:
+                        busy ||
+                        !scanId ||
+                        (displayStatus !== "" && !ACTIVE_SCAN_STATUSES.has(displayStatus)),
                       onClick: () => batchMutation.mutate(),
                     },
                     {
@@ -542,7 +632,7 @@ export function TwResearchPage({ initialScanId = null }: { initialScanId?: strin
                   {t("research.tw.existingScanKept")}
                 </p>
               ) : null}
-              {scan?.status === "budget_exhausted" ? (
+              {displayStatus === "budget_exhausted" ? (
                 <p className="cds--helper-text-01" data-testid="tw-research-budget-exhausted">
                   {t("research.tw.budgetExhausted")}
                 </p>
@@ -551,7 +641,7 @@ export function TwResearchPage({ initialScanId = null }: { initialScanId?: strin
             </Stack>
           </Tile>
 
-          {scanQuery.isError && scan ? (
+          {(scanQuery.isError || progressQuery.isError) && scan ? (
             <div data-testid="tw-research-stale">
               <RequestStateNotice
                 kind="stale"
@@ -581,50 +671,50 @@ export function TwResearchPage({ initialScanId = null }: { initialScanId?: strin
                 />
                 <p className="cds--body-compact-01">
                   {t("research.tw.statusLine", {
-                    status: scan.status,
-                    processed: scan.processedCount,
-                    universe: scan.universeSize,
-                    remaining: scan.remainingCount,
-                    dayPass: scan.dayPassCount,
-                    qualified: scan.qualifiedCount ?? 0,
-                    target: scan.targetCount,
+                    status: displayStatus,
+                    processed: displayProcessed,
+                    universe: displayUniverse,
+                    remaining: displayRemaining,
+                    dayPass: displayDayPass,
+                    qualified: displayQualified,
+                    target: displayTarget,
                   })}
                 </p>
                 <p className="cds--body-compact-01" data-testid="tw-research-worker">
                   {t(
-                    workerActivity(scan) === "active"
+                    displayWorker === "active"
                       ? "research.tw.workerActive"
-                      : workerActivity(scan) === "idle"
+                      : displayWorker === "idle"
                         ? "research.tw.workerIdle"
                         : "research.tw.workerUnknown",
                   )}
                 </p>
                 <p className="cds--helper-text-01">
                   {t("research.tw.budgetLine", {
-                    used: scan.upstreamMonthFetches ?? 0,
-                    max: scan.maxUpstreamMonthFetches ?? 0,
+                    used: displayBudgetUsed,
+                    max: displayBudgetMax,
                   })}
                 </p>
                 <p className="cds--helper-text-01">
                   {t("research.tw.enrichmentLine", {
-                    run: scan.enrichmentsRun ?? 0,
-                    max: scan.maxEnrichmentsPerRun ?? 0,
-                    cursor: scan.enrichCursor ?? 0,
+                    run: displayEnrichRun,
+                    max: displayEnrichMax,
+                    cursor: displayEnrichCursor,
                   })}
                 </p>
-                {scan.qualityStatus && scan.qualityStatus !== "verified_ready" ? (
+                {displayQuality && displayQuality !== "verified_ready" ? (
                   <p className="cds--helper-text-01" data-testid="tw-research-quality">
-                    {t("research.tw.notVerified", { quality: scan.qualityStatus })}
+                    {t("research.tw.notVerified", { quality: displayQuality })}
                   </p>
                 ) : null}
-                {scan.qualityStatus === "verified_ready" ? (
+                {displayQuality === "verified_ready" ? (
                   <p className="cds--helper-text-01" data-testid="tw-research-quality">
                     {t("research.tw.verifiedExport")}
                   </p>
                 ) : null}
-                {scan.updatedAt ? (
+                {displayUpdatedAt ? (
                   <p className="cds--helper-text-01">
-                    {t("research.tw.updatedAt", { time: scan.updatedAt })}
+                    {t("research.tw.updatedAt", { time: displayUpdatedAt })}
                   </p>
                 ) : null}
                 {ledger.some((row) => row.rejection_reason || row.readiness === "source_incomplete") ? (

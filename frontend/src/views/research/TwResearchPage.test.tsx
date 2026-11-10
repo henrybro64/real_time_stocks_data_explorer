@@ -15,10 +15,14 @@ import {
   fetchTwResearchExportManifest,
   fetchTwResearchLatestManifest,
   fetchTwResearchScan,
+  fetchTwResearchScanProgress,
   fetchTwResearchScans,
   fetchTwResearchSnapshotChunk,
+  researchProgressRevision,
+  researchScanListRefetchInterval,
   researchScanRefetchInterval,
   runTwResearchBatch,
+  type TwResearchScanProgress,
   type TwResearchScanSnapshot,
   type TwResearchScanSummary,
 } from "../../services/api/twResearch";
@@ -38,6 +42,7 @@ vi.mock("../../services/api/twResearch", async () => {
     runTwResearchBatch: vi.fn(),
     runTwResearchEnrichmentBatch: vi.fn(),
     fetchTwResearchScan: vi.fn(),
+    fetchTwResearchScanProgress: vi.fn(),
     fetchTwResearchScans: vi.fn(async () => ({ scans: [] })),
     fetchTwResearchExportManifest: vi.fn(),
     fetchTwResearchBrowserText: vi.fn(),
@@ -148,6 +153,10 @@ describe("TwResearchPage operation failures (#328)", () => {
     vi.mocked(fetchTwResearchExportManifest).mockResolvedValue({ snapshotId: "manifest" });
     vi.mocked(fetchTwResearchScan).mockReset();
     vi.mocked(fetchTwResearchScan).mockResolvedValue(queuedScan());
+    vi.mocked(fetchTwResearchScanProgress).mockReset();
+    vi.mocked(fetchTwResearchScanProgress).mockResolvedValue(progress());
+    vi.mocked(fetchTwResearchScans).mockReset();
+    vi.mocked(fetchTwResearchScans).mockResolvedValue({ scans: [] });
     vi.mocked(runTwResearchBatch).mockReset();
   });
 
@@ -306,6 +315,50 @@ function summary(overrides: Partial<TwResearchScanSummary> = {}): TwResearchScan
   };
 }
 
+function progress(overrides: Partial<TwResearchScanProgress> = {}): TwResearchScanProgress {
+  const base = {
+    scanId: SCAN_ID,
+    tradingDay: "2026-11-10",
+    universeVersion: "tw-starter",
+    status: "queued",
+    qualityStatus: "processed",
+    cursor: 0,
+    enrichCursor: 0,
+    universeSize: 73,
+    processedCount: 0,
+    remainingCount: 73,
+    targetCount: 10,
+    dayPassCount: 0,
+    qualifiedCount: 0,
+    enrichmentsRun: 0,
+    maxEnrichmentsPerRun: 20,
+    upstreamMonthFetches: 0,
+    maxUpstreamMonthFetches: 40,
+    updatedAt: "2026-11-10T08:28:52+08:00",
+    activeSnapshotId: null,
+    workerActivity: "unknown" as const,
+    includesLedger: false,
+    ...overrides,
+  };
+  return {
+    ...base,
+    ledgerRevision:
+      overrides.ledgerRevision ??
+      researchProgressRevision({
+        updatedAt: base.updatedAt,
+        status: base.status,
+        qualityStatus: base.qualityStatus,
+        cursor: base.cursor,
+        enrichCursor: base.enrichCursor,
+        processedCount: base.processedCount,
+        upstreamMonthFetches: base.upstreamMonthFetches,
+        enrichmentsRun: base.enrichmentsRun,
+        workerActivity: base.workerActivity,
+        activeSnapshotId: base.activeSnapshotId,
+      }),
+  };
+}
+
 describe("TwResearchPage persisted scans (#327)", () => {
   beforeEach(() => {
     vi.mocked(fetchThemeOptions).mockResolvedValue([]);
@@ -315,6 +368,8 @@ describe("TwResearchPage persisted scans (#327)", () => {
     vi.mocked(fetchTwResearchExportManifest).mockResolvedValue({});
     vi.mocked(fetchTwResearchScan).mockReset();
     vi.mocked(fetchTwResearchScan).mockResolvedValue(queuedScan());
+    vi.mocked(fetchTwResearchScanProgress).mockReset();
+    vi.mocked(fetchTwResearchScanProgress).mockResolvedValue(progress());
     vi.mocked(fetchTwResearchScans).mockReset();
     vi.mocked(fetchTwResearchScans).mockResolvedValue({ scans: [] });
     vi.mocked(runTwResearchBatch).mockReset();
@@ -355,19 +410,20 @@ describe("TwResearchPage persisted scans (#327)", () => {
   });
 
   it("keeps the last ledger when a progress read fails", async () => {
-    vi.mocked(fetchTwResearchScan)
-      .mockResolvedValueOnce(queuedScan())
+    vi.mocked(fetchTwResearchScan).mockResolvedValue(queuedScan());
+    vi.mocked(fetchTwResearchScanProgress)
+      .mockResolvedValueOnce(progress())
       .mockRejectedValueOnce(http500());
     const { client } = renderPage({ initialScanId: SCAN_ID });
     expect(await screen.findByText("TW:2330")).toBeInTheDocument();
-    await client.refetchQueries({ queryKey: ["tw-research-scan", SCAN_ID] });
+    await client.refetchQueries({ queryKey: ["tw-research-progress", SCAN_ID] });
     expect(screen.getByLabelText("掃描 ID")).toHaveValue(SCAN_ID);
     expect(screen.getByText("TW:2330")).toBeInTheDocument();
     expect(await screen.findByTestId("tw-research-stale")).toBeInTheDocument();
     expect(runTwResearchBatch).not.toHaveBeenCalled();
   });
 
-  it("polls only while work can still progress and does not run a batch", async () => {
+  it("polls progress while active and does not poll the full ledger on a timer", async () => {
     expect(researchScanRefetchInterval("running")).toBe(10_000);
     expect(researchScanRefetchInterval("queued")).toBe(10_000);
     expect(researchScanRefetchInterval("partial")).toBe(10_000);
@@ -375,18 +431,107 @@ describe("TwResearchPage persisted scans (#327)", () => {
     expect(researchScanRefetchInterval("completed_processing")).toBe(false);
     expect(researchScanRefetchInterval("verified_ready")).toBe(false);
     expect(researchScanRefetchInterval(undefined)).toBe(false);
+    expect(researchScanListRefetchInterval()).toBe(30_000);
 
     vi.mocked(fetchTwResearchScan).mockResolvedValue(
       queuedScan({ status: "running", workerActivity: "unknown", qualityStatus: "source_incomplete" }),
+    );
+    vi.mocked(fetchTwResearchScanProgress).mockResolvedValue(
+      progress({ status: "running", qualityStatus: "source_incomplete", workerActivity: "unknown" }),
     );
     const { client } = renderPage({ initialScanId: SCAN_ID });
     expect(await screen.findByTestId("tw-research-worker")).toHaveTextContent("沒有有效租約");
     expect(screen.getByTestId("tw-research-quality")).toHaveTextContent("source_incomplete");
     expect(screen.getByTestId("tw-research-quality")).toHaveTextContent("不是已驗證匯出");
-    const query = client.getQueryCache().find({ queryKey: ["tw-research-scan", SCAN_ID] });
-    const interval = query?.options.refetchInterval;
-    expect(typeof interval).toBe("function");
-    expect(interval && typeof interval === "function" ? interval(query!) : false).toBe(10_000);
+    const progressQuery = client.getQueryCache().find({ queryKey: ["tw-research-progress", SCAN_ID] });
+    const progressInterval = progressQuery?.options.refetchInterval;
+    expect(typeof progressInterval).toBe("function");
+    expect(
+      progressInterval && typeof progressInterval === "function"
+        ? progressInterval(progressQuery!)
+        : false,
+    ).toBe(10_000);
+    const scanQuery = client.getQueryCache().find({ queryKey: ["tw-research-scan", SCAN_ID] });
+    expect(scanQuery?.options.refetchInterval).toBe(false);
+    expect(runTwResearchBatch).not.toHaveBeenCalled();
+  });
+
+  it("discovers a newly created scan without changing the selected scan", async () => {
+    const other = "agent-created-scan-bbbbbbbbbbbb";
+    vi.mocked(fetchTwResearchScans)
+      .mockResolvedValueOnce({ scans: [summary()] })
+      .mockResolvedValueOnce({
+        scans: [
+          summary({
+            scanId: other,
+            tradingDay: "2026-11-10",
+            status: "queued",
+            updatedAt: "2026-11-10T09:00:00+08:00",
+          }),
+          summary(),
+        ],
+      });
+    vi.mocked(fetchTwResearchScan).mockImplementation(async (id: string) =>
+      queuedScan({ scanId: id }),
+    );
+    vi.mocked(fetchTwResearchScanProgress).mockImplementation(async (id: string) =>
+      progress({ scanId: id }),
+    );
+    const { client } = renderPage({ initialScanId: SCAN_ID });
+    expect(await screen.findByLabelText("掃描 ID")).toHaveValue(SCAN_ID);
+    await client.refetchQueries({ queryKey: ["tw-research-scans"] });
+    await waitFor(() => {
+      const history = screen.getByTestId("tw-research-history") as HTMLSelectElement;
+      expect([...history.options].map((option) => option.value)).toEqual(
+        expect.arrayContaining([SCAN_ID, other]),
+      );
+    });
+    expect(screen.getByTestId("tw-research-history")).toHaveValue(SCAN_ID);
+    expect(screen.getByLabelText("掃描 ID")).toHaveValue(SCAN_ID);
+    expect(createTwResearchScan).not.toHaveBeenCalled();
+    expect(runTwResearchBatch).not.toHaveBeenCalled();
+  });
+
+  it("reloads the ledger only when progress revision changes", async () => {
+    const unchanged = progress({
+      status: "running",
+      processedCount: 0,
+      cursor: 0,
+      updatedAt: "2026-11-10T08:28:52+08:00",
+    });
+    const changed = progress({
+      status: "running",
+      processedCount: 10,
+      cursor: 10,
+      remainingCount: 63,
+      updatedAt: "2026-11-10T08:30:00+08:00",
+    });
+    vi.mocked(fetchTwResearchScan).mockResolvedValue(
+      queuedScan({ status: "running", processedCount: 0, cursor: 0 }),
+    );
+    vi.mocked(fetchTwResearchScanProgress)
+      .mockResolvedValueOnce(unchanged)
+      .mockResolvedValueOnce(unchanged)
+      .mockResolvedValueOnce(changed);
+    const { client } = renderPage({ initialScanId: SCAN_ID });
+    expect(await screen.findByLabelText("掃描 ID")).toHaveValue(SCAN_ID);
+    const afterInitial = vi.mocked(fetchTwResearchScan).mock.calls.length;
+    await client.refetchQueries({ queryKey: ["tw-research-progress", SCAN_ID] });
+    expect(vi.mocked(fetchTwResearchScan).mock.calls.length).toBe(afterInitial);
+    vi.mocked(fetchTwResearchScan).mockResolvedValue(
+      queuedScan({
+        status: "running",
+        processedCount: 10,
+        cursor: 10,
+        remainingCount: 63,
+        updatedAt: "2026-11-10T08:30:00+08:00",
+        ledger: [{ stock_id: "TW:2330", stage: "A" }, { stock_id: "TW:2454", stage: "A" }],
+      }),
+    );
+    await client.refetchQueries({ queryKey: ["tw-research-progress", SCAN_ID] });
+    await waitFor(() => {
+      expect(vi.mocked(fetchTwResearchScan).mock.calls.length).toBeGreaterThan(afterInitial);
+    });
     expect(runTwResearchBatch).not.toHaveBeenCalled();
   });
 
@@ -401,21 +546,29 @@ describe("TwResearchPage persisted scans (#327)", () => {
   });
 
   it("shows a budget-exhausted scan as unfinished and not resumable", async () => {
-    vi.mocked(fetchTwResearchScan).mockResolvedValue(
-      queuedScan({
+    const exhausted = queuedScan({
+      status: "budget_exhausted",
+      qualityStatus: "source_incomplete",
+      workerActivity: "idle",
+      upstreamMonthFetches: 40,
+      maxUpstreamMonthFetches: 40,
+      ledger: [
+        {
+          stock_id: "TW:2330",
+          stage: "A",
+          readiness: "rejected",
+          rejection_reason: "history_budget_exhausted",
+        },
+      ],
+    });
+    vi.mocked(fetchTwResearchScan).mockResolvedValue(exhausted);
+    vi.mocked(fetchTwResearchScanProgress).mockResolvedValue(
+      progress({
         status: "budget_exhausted",
         qualityStatus: "source_incomplete",
         workerActivity: "idle",
         upstreamMonthFetches: 40,
         maxUpstreamMonthFetches: 40,
-        ledger: [
-          {
-            stock_id: "TW:2330",
-            stage: "A",
-            readiness: "rejected",
-            rejection_reason: "history_budget_exhausted",
-          },
-        ],
       }),
     );
     renderPage({ initialScanId: SCAN_ID });

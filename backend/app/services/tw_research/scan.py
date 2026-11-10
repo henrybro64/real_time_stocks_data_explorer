@@ -449,8 +449,79 @@ class TwResearchScanService:
             return [_summary_from_state(state) for state in states[:bounded]]
         from app.repositories.tw_research_repository import tw_research_repository
 
-        rows = tw_research_repository.list_scans_for_user(user_id, limit=bounded)
+        if not tw_research_repository.is_available():
+            raise TwResearchDurableStoreError(
+                "Durable research store is unavailable",
+                operation="list_scans",
+            )
+        try:
+            rows = tw_research_repository.list_scans_for_user(user_id, limit=bounded)
+        except Exception as exc:  # noqa: BLE001
+            raise TwResearchDurableStoreError(
+                "Failed to list research scans",
+                operation="list_scans",
+            ) from exc
         return [_summary_from_row(row) for row in rows]
+
+    def get_scan_progress(
+        self,
+        scan_id: str,
+        *,
+        user_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Counters-only progress. Durable mode never returns a stale process cache."""
+        if not self._persist:
+            with self._lock:
+                state = self._scans.get(scan_id)
+            if state is None:
+                return None
+            if user_id is not None and state.user_id != user_id:
+                return None
+            snapshot = state.snapshot()
+            from app.services.tw_research.persistence import progress_revision
+
+            revision = progress_revision(
+                updated_at=str(snapshot.get("updatedAt") or ""),
+                status=str(snapshot.get("status") or ""),
+                quality_status=str(snapshot.get("qualityStatus") or ""),
+                cursor=int(snapshot.get("cursor") or 0),
+                enrich_cursor=int(snapshot.get("enrichCursor") or 0),
+                processed_count=int(snapshot.get("processedCount") or 0),
+                upstream_month_fetches=int(snapshot.get("upstreamMonthFetches") or 0),
+                enrichments_run=int(snapshot.get("enrichmentsRun") or 0),
+                worker_activity=str(snapshot.get("workerActivity") or "unknown"),
+                active_snapshot_id=snapshot.get("activeSnapshotId"),
+            )
+            return {
+                "scanId": snapshot["scanId"],
+                "tradingDay": snapshot["tradingDay"],
+                "universeVersion": snapshot["universeVersion"],
+                "status": snapshot["status"],
+                "qualityStatus": snapshot["qualityStatus"],
+                "cursor": snapshot["cursor"],
+                "enrichCursor": snapshot["enrichCursor"],
+                "universeSize": snapshot["universeSize"],
+                "processedCount": snapshot["processedCount"],
+                "remainingCount": snapshot["remainingCount"],
+                "targetCount": snapshot["targetCount"],
+                "dayPassCount": snapshot["dayPassCount"],
+                "qualifiedCount": snapshot["qualifiedCount"],
+                "enrichmentsRun": snapshot["enrichmentsRun"],
+                "maxEnrichmentsPerRun": snapshot["maxEnrichmentsPerRun"],
+                "upstreamMonthFetches": snapshot["upstreamMonthFetches"],
+                "maxUpstreamMonthFetches": snapshot["maxUpstreamMonthFetches"],
+                "createdAt": snapshot["createdAt"],
+                "updatedAt": snapshot["updatedAt"],
+                "activeSnapshotId": snapshot["activeSnapshotId"],
+                "reserveExpiresAt": snapshot.get("reserveExpiresAt"),
+                "enrichReserveExpiresAt": snapshot.get("enrichReserveExpiresAt"),
+                "workerActivity": snapshot["workerActivity"],
+                "ledgerRevision": revision,
+                "includesLedger": False,
+            }
+        from app.services.tw_research.persistence import load_scan_progress
+
+        return load_scan_progress(scan_id, user_id=user_id)
 
     def _remember_checkpoints(self, state: ScanState) -> None:
         with self._lock:
