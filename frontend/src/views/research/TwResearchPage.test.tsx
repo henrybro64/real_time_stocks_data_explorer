@@ -3,6 +3,10 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ replace: vi.fn() }),
+}));
+
 import { LanguageProvider } from "../../app/i18n";
 import { ApiError } from "../../services/api/client";
 import {
@@ -11,9 +15,12 @@ import {
   fetchTwResearchExportManifest,
   fetchTwResearchLatestManifest,
   fetchTwResearchScan,
+  fetchTwResearchScans,
   fetchTwResearchSnapshotChunk,
+  researchScanRefetchInterval,
   runTwResearchBatch,
   type TwResearchScanSnapshot,
+  type TwResearchScanSummary,
 } from "../../services/api/twResearch";
 import { TwResearchPage } from "./TwResearchPage";
 
@@ -31,23 +38,25 @@ vi.mock("../../services/api/twResearch", async () => {
     runTwResearchBatch: vi.fn(),
     runTwResearchEnrichmentBatch: vi.fn(),
     fetchTwResearchScan: vi.fn(),
+    fetchTwResearchScans: vi.fn(async () => ({ scans: [] })),
     fetchTwResearchExportManifest: vi.fn(),
     fetchTwResearchBrowserText: vi.fn(),
     fetchTwResearchExportChunk: vi.fn(),
   };
 });
 
-function renderPage() {
+function renderPage(props: { initialScanId?: string | null } = {}) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
-  return render(
+  const view = render(
     <QueryClientProvider client={client}>
       <LanguageProvider>
-        <TwResearchPage />
+        <TwResearchPage initialScanId={props.initialScanId ?? null} />
       </LanguageProvider>
     </QueryClientProvider>,
   );
+  return { ...view, client };
 }
 
 describe("TwResearchPage latest verified handoff (#322)", () => {
@@ -274,5 +283,148 @@ describe("TwResearchPage operation failures (#328)", () => {
     releaseBatch(queuedScan({ status: "running", processedCount: 5, remainingCount: 68, cursor: 5 }));
     expect(await screen.findByText(/已處理 5\/73/)).toBeInTheDocument();
     expect(screen.queryByText("處理中…")).not.toBeInTheDocument();
+  });
+});
+
+function summary(overrides: Partial<TwResearchScanSummary> = {}): TwResearchScanSummary {
+  return {
+    scanId: SCAN_ID,
+    tradingDay: "2026-11-10",
+    universeVersion: "tw-starter",
+    status: "queued",
+    qualityStatus: "processed",
+    targetCount: 10,
+    universeSize: 73,
+    cursor: 0,
+    remainingCount: 73,
+    updatedAt: "2026-11-10T08:28:52+08:00",
+    workerActivity: "unknown",
+    selectorMode: "starter_preset",
+    themeKeys: [],
+    stockIds: [],
+    ...overrides,
+  };
+}
+
+describe("TwResearchPage persisted scans (#327)", () => {
+  beforeEach(() => {
+    vi.mocked(fetchThemeOptions).mockResolvedValue([]);
+    vi.mocked(createTwResearchScan).mockReset();
+    vi.mocked(createTwResearchScan).mockResolvedValue(queuedScan());
+    vi.mocked(fetchTwResearchExportManifest).mockReset();
+    vi.mocked(fetchTwResearchExportManifest).mockResolvedValue({});
+    vi.mocked(fetchTwResearchScan).mockReset();
+    vi.mocked(fetchTwResearchScan).mockResolvedValue(queuedScan());
+    vi.mocked(fetchTwResearchScans).mockReset();
+    vi.mocked(fetchTwResearchScans).mockResolvedValue({ scans: [] });
+    vi.mocked(runTwResearchBatch).mockReset();
+  });
+
+  it("restores the newest saved scan without creating one", async () => {
+    vi.mocked(fetchTwResearchScans).mockResolvedValue({ scans: [summary()] });
+    renderPage();
+    expect(await screen.findByLabelText("掃描 ID")).toHaveValue(SCAN_ID);
+    expect(screen.getByText("TW:2330")).toBeInTheDocument();
+    expect(createTwResearchScan).not.toHaveBeenCalled();
+    expect(runTwResearchBatch).not.toHaveBeenCalled();
+    expect(screen.getByTestId("tw-research-worker")).toHaveTextContent("沒有有效租約");
+  });
+
+  it("opens a direct scan link and can switch to another saved scan", async () => {
+    const user = userEvent.setup();
+    const older = "ddbbf9c7-9fb2-447e-a393-780b6da27611";
+    vi.mocked(fetchTwResearchScans).mockResolvedValue({
+      scans: [summary(), summary({ scanId: older, status: "completed_processing", cursor: 73, remainingCount: 0 })],
+    });
+    vi.mocked(fetchTwResearchScan).mockImplementation(async (id: string) =>
+      queuedScan({
+        scanId: id,
+        status: id === older ? "completed_processing" : "queued",
+        processedCount: id === older ? 73 : 0,
+        remainingCount: id === older ? 0 : 73,
+      }),
+    );
+    renderPage({ initialScanId: SCAN_ID });
+    expect(await screen.findByLabelText("掃描 ID")).toHaveValue(SCAN_ID);
+    expect(createTwResearchScan).not.toHaveBeenCalled();
+
+    await user.selectOptions(screen.getByLabelText("最近的掃描"), older);
+    expect(await screen.findByLabelText("掃描 ID")).toHaveValue(older);
+    expect(fetchTwResearchScan).toHaveBeenCalledWith(older);
+    expect(runTwResearchBatch).not.toHaveBeenCalled();
+  });
+
+  it("keeps the last ledger when a progress read fails", async () => {
+    vi.mocked(fetchTwResearchScan)
+      .mockResolvedValueOnce(queuedScan())
+      .mockRejectedValueOnce(http500());
+    const { client } = renderPage({ initialScanId: SCAN_ID });
+    expect(await screen.findByText("TW:2330")).toBeInTheDocument();
+    await client.refetchQueries({ queryKey: ["tw-research-scan", SCAN_ID] });
+    expect(screen.getByLabelText("掃描 ID")).toHaveValue(SCAN_ID);
+    expect(screen.getByText("TW:2330")).toBeInTheDocument();
+    expect(await screen.findByTestId("tw-research-stale")).toBeInTheDocument();
+    expect(runTwResearchBatch).not.toHaveBeenCalled();
+  });
+
+  it("polls only while work can still progress and does not run a batch", async () => {
+    expect(researchScanRefetchInterval("running")).toBe(10_000);
+    expect(researchScanRefetchInterval("queued")).toBe(10_000);
+    expect(researchScanRefetchInterval("partial")).toBe(10_000);
+    expect(researchScanRefetchInterval("budget_exhausted")).toBe(false);
+    expect(researchScanRefetchInterval("completed_processing")).toBe(false);
+    expect(researchScanRefetchInterval("verified_ready")).toBe(false);
+    expect(researchScanRefetchInterval(undefined)).toBe(false);
+
+    vi.mocked(fetchTwResearchScan).mockResolvedValue(
+      queuedScan({ status: "running", workerActivity: "unknown", qualityStatus: "source_incomplete" }),
+    );
+    const { client } = renderPage({ initialScanId: SCAN_ID });
+    expect(await screen.findByTestId("tw-research-worker")).toHaveTextContent("沒有有效租約");
+    expect(screen.getByTestId("tw-research-quality")).toHaveTextContent("source_incomplete");
+    expect(screen.getByTestId("tw-research-quality")).toHaveTextContent("不是已驗證匯出");
+    const query = client.getQueryCache().find({ queryKey: ["tw-research-scan", SCAN_ID] });
+    const interval = query?.options.refetchInterval;
+    expect(typeof interval).toBe("function");
+    expect(interval && typeof interval === "function" ? interval(query!) : false).toBe(10_000);
+    expect(runTwResearchBatch).not.toHaveBeenCalled();
+  });
+
+  it("does not create a duplicate while an equivalent active scan is saved", async () => {
+    const user = userEvent.setup();
+    vi.mocked(fetchTwResearchScans).mockResolvedValue({ scans: [summary()] });
+    renderPage();
+    expect(await screen.findByLabelText("掃描 ID")).toHaveValue(SCAN_ID);
+    await user.click(screen.getByTestId("tw-research-create"));
+    expect(createTwResearchScan).not.toHaveBeenCalled();
+    expect(screen.getByTestId("tw-research-existing-scan")).toBeInTheDocument();
+  });
+
+  it("shows a budget-exhausted scan as unfinished and not resumable", async () => {
+    vi.mocked(fetchTwResearchScan).mockResolvedValue(
+      queuedScan({
+        status: "budget_exhausted",
+        qualityStatus: "source_incomplete",
+        workerActivity: "idle",
+        upstreamMonthFetches: 40,
+        maxUpstreamMonthFetches: 40,
+        ledger: [
+          {
+            stock_id: "TW:2330",
+            stage: "A",
+            readiness: "rejected",
+            rejection_reason: "history_budget_exhausted",
+          },
+        ],
+      }),
+    );
+    renderPage({ initialScanId: SCAN_ID });
+    expect(await screen.findByTestId("tw-research-budget-exhausted")).toBeInTheDocument();
+    expect(screen.getByTestId("tw-research-batch")).toBeDisabled();
+    expect(screen.getByTestId("tw-research-quality")).toHaveTextContent("source_incomplete");
+    expect(screen.getByTestId("tw-research-unresolved")).toHaveTextContent("history_budget_exhausted");
+    expect(screen.getByTestId("tw-research-worker")).toHaveTextContent("沒有 worker 正在處理");
+    expect(createTwResearchScan).not.toHaveBeenCalled();
+    expect(runTwResearchBatch).not.toHaveBeenCalled();
   });
 });

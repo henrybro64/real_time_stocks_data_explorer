@@ -21,6 +21,7 @@ import {
   Tile,
 } from "@carbon/react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { useLanguage, type TranslationKey } from "../../app/i18n";
@@ -34,7 +35,9 @@ import {
   fetchTwResearchExportManifest,
   fetchTwResearchLatestManifest,
   fetchTwResearchScan,
+  fetchTwResearchScans,
   fetchTwResearchSnapshotChunk,
+  researchScanRefetchInterval,
   resolveTwResearchUniverse,
   runTwResearchBatch,
   runTwResearchEnrichmentBatch,
@@ -83,15 +86,28 @@ function describeResearchFailure(error: unknown): string {
   return api.requestId ? `${text} · request ${api.requestId}` : text;
 }
 
-export function TwResearchPage() {
+const ACTIVE_SCAN_STATUSES = new Set(["queued", "running", "partial"]);
+
+function workerActivity(scan: TwResearchScanSnapshot): "active" | "unknown" | "idle" {
+  if (
+    scan.workerActivity === "active" ||
+    scan.workerActivity === "unknown" ||
+    scan.workerActivity === "idle"
+  ) {
+    return scan.workerActivity;
+  }
+  return ACTIVE_SCAN_STATUSES.has(scan.status) ? "unknown" : "idle";
+}
+
+export function TwResearchPage({ initialScanId = null }: { initialScanId?: string | null }) {
   const { t } = useLanguage();
+  const router = useRouter();
   const queryClient = useQueryClient();
   const [mode, setMode] = useState<TwResearchUniverseMode>("starter_preset");
   const [stockIdsText, setStockIdsText] = useState("TW:2727\nTW:2618\nTW:2330");
   const [themeKeysText, setThemeKeysText] = useState("tw-pcb\ntw-ccl");
   const [targetCount, setTargetCount] = useState<10 | 20>(10);
-  const [scanId, setScanId] = useState<string | null>(null);
-  const [scan, setScan] = useState<TwResearchScanSnapshot | null>(null);
+  const [scanId, setScanId] = useState<string | null>(initialScanId);
   const [page, setPage] = useState(1);
   const [agentText, setAgentText] = useState("");
   const [agentChunkIndex, setAgentChunkIndex] = useState(0);
@@ -120,7 +136,7 @@ export function TwResearchPage() {
 
   const applyScanSnapshot = (next: TwResearchScanSnapshot) => {
     scanRef.current = next;
-    setScan(next);
+    queryClient.setQueryData(["tw-research-scan", next.scanId], next);
     refreshManifest(next.scanId);
   };
 
@@ -169,6 +185,39 @@ export function TwResearchPage() {
     return keys.length ? keys.join(", ") : "tw-pcb, tw-ccl, …";
   }, [themesQuery.data]);
 
+  const listQuery = useQuery({
+    queryKey: ["tw-research-scans"],
+    queryFn: () => fetchTwResearchScans(),
+    staleTime: 15_000,
+  });
+
+  const scanQuery = useQuery({
+    queryKey: ["tw-research-scan", scanId],
+    queryFn: () => fetchTwResearchScan(scanId as string),
+    enabled: Boolean(scanId),
+    staleTime: 10_000,
+    refetchInterval: (query) => researchScanRefetchInterval(query.state.data?.status),
+    refetchIntervalInBackground: false,
+  });
+
+  const scan = scanQuery.data?.scanId === scanId ? scanQuery.data : null;
+
+  useEffect(() => {
+    if (scan) scanRef.current = scan;
+  }, [scan]);
+
+  useEffect(() => {
+    if (scanId || !listQuery.data?.scans.length) return;
+    setScanId(listQuery.data.scans[0]?.scanId ?? null);
+  }, [listQuery.data, scanId]);
+
+  useEffect(() => {
+    if (!scanId || typeof window === "undefined") return;
+    const current = new URLSearchParams(window.location.search).get("scan");
+    if (current === scanId) return;
+    router.replace(`/research/tw?scan=${encodeURIComponent(scanId)}`, { scroll: false });
+  }, [router, scanId]);
+
   const manifestQuery = useQuery({
     queryKey: ["tw-research-manifest", scanId],
     queryFn: () => fetchTwResearchExportManifest(scanId as string),
@@ -199,6 +248,7 @@ export function TwResearchPage() {
       setAgentText("");
       setAgentChunkIndex(0);
       setAgentTotalChunks(0);
+      void queryClient.invalidateQueries({ queryKey: ["tw-research-scans"] });
     },
     onSettled: () => {
       createGuard.current = false;
@@ -384,6 +434,30 @@ export function TwResearchPage() {
                   </p>
                 </Stack>
               ) : null}
+              {listQuery.data?.scans.length || scanId ? (
+                <Select
+                  id="tw-research-history"
+                  data-testid="tw-research-history"
+                  labelText={t("research.tw.historyLabel")}
+                  value={scanId ?? ""}
+                  onChange={(event) => {
+                    const next = event.target.value;
+                    if (next) setScanId(next);
+                  }}
+                >
+                  {(listQuery.data?.scans ?? []).map((item) => (
+                    <SelectItem
+                      key={item.scanId}
+                      value={item.scanId}
+                      text={`${item.tradingDay} · ${item.status} · ${item.cursor}/${item.universeSize}`}
+                    />
+                  ))}
+                  {scanId &&
+                  !(listQuery.data?.scans ?? []).some((item) => item.scanId === scanId) ? (
+                    <SelectItem value={scanId} text={scanId} />
+                  ) : null}
+                </Select>
+              ) : null}
               <Select
                 id="tw-research-target"
                 labelText={t("research.tw.targetCount")}
@@ -403,6 +477,22 @@ export function TwResearchPage() {
                       disabled: busy,
                       onClick: () => {
                         if (createGuard.current || createMutation.isPending) return;
+                        const persisted = (listQuery.data?.scans ?? []).find(
+                          (item) =>
+                            ACTIVE_SCAN_STATUSES.has(item.status) &&
+                            researchSelectionKey({
+                              mode: item.selectorMode,
+                              targetCount: item.targetCount,
+                              stockIds: item.stockIds,
+                              themeKeys: item.themeKeys,
+                            }) === selectionKey,
+                        );
+                        if (persisted) {
+                          setScanId(persisted.scanId);
+                          setActiveSelectionKey(selectionKey);
+                          setKeptExistingScan(true);
+                          return;
+                        }
                         if (scanId && selectionKey === activeSelectionKey) {
                           setKeptExistingScan(true);
                           return;
@@ -416,7 +506,7 @@ export function TwResearchPage() {
                       key: "batch",
                       kind: "secondary" as const,
                       label: "research.tw.runBatch" as const,
-                      disabled: busy || !scanId,
+                      disabled: busy || !scanId || (scan != null && !ACTIVE_SCAN_STATUSES.has(scan.status)),
                       onClick: () => batchMutation.mutate(),
                     },
                     {
@@ -452,12 +542,36 @@ export function TwResearchPage() {
                   {t("research.tw.existingScanKept")}
                 </p>
               ) : null}
+              {scan?.status === "budget_exhausted" ? (
+                <p className="cds--helper-text-01" data-testid="tw-research-budget-exhausted">
+                  {t("research.tw.budgetExhausted")}
+                </p>
+              ) : null}
               {busy ? <InlineLoading description={t("research.tw.working")} /> : null}
             </Stack>
           </Tile>
 
+          {scanQuery.isError && scan ? (
+            <div data-testid="tw-research-stale">
+              <RequestStateNotice
+                kind="stale"
+                scopeLabel={t("research.tw.progressTitle")}
+              />
+            </div>
+          ) : null}
+          {scanQuery.isError && !scan ? (
+            <div data-testid="tw-research-error-scan">
+              <RequestStateNotice
+                kind={errorToNoticeKind(toApiError(scanQuery.error))}
+                scopeLabel={t("research.tw.errorScan")}
+                status={toApiError(scanQuery.error).status}
+                detail={describeResearchFailure(scanQuery.error)}
+              />
+            </div>
+          ) : null}
+
           {scan ? (
-            <Tile>
+            <Tile data-testid="tw-research-progress">
               <Stack gap={3}>
                 <TextInput
                   id="tw-research-scan-id"
@@ -476,6 +590,56 @@ export function TwResearchPage() {
                     target: scan.targetCount,
                   })}
                 </p>
+                <p className="cds--body-compact-01" data-testid="tw-research-worker">
+                  {t(
+                    workerActivity(scan) === "active"
+                      ? "research.tw.workerActive"
+                      : workerActivity(scan) === "idle"
+                        ? "research.tw.workerIdle"
+                        : "research.tw.workerUnknown",
+                  )}
+                </p>
+                <p className="cds--helper-text-01">
+                  {t("research.tw.budgetLine", {
+                    used: scan.upstreamMonthFetches ?? 0,
+                    max: scan.maxUpstreamMonthFetches ?? 0,
+                  })}
+                </p>
+                <p className="cds--helper-text-01">
+                  {t("research.tw.enrichmentLine", {
+                    run: scan.enrichmentsRun ?? 0,
+                    max: scan.maxEnrichmentsPerRun ?? 0,
+                    cursor: scan.enrichCursor ?? 0,
+                  })}
+                </p>
+                {scan.qualityStatus && scan.qualityStatus !== "verified_ready" ? (
+                  <p className="cds--helper-text-01" data-testid="tw-research-quality">
+                    {t("research.tw.notVerified", { quality: scan.qualityStatus })}
+                  </p>
+                ) : null}
+                {scan.qualityStatus === "verified_ready" ? (
+                  <p className="cds--helper-text-01" data-testid="tw-research-quality">
+                    {t("research.tw.verifiedExport")}
+                  </p>
+                ) : null}
+                {scan.updatedAt ? (
+                  <p className="cds--helper-text-01">
+                    {t("research.tw.updatedAt", { time: scan.updatedAt })}
+                  </p>
+                ) : null}
+                {ledger.some((row) => row.rejection_reason || row.readiness === "source_incomplete") ? (
+                  <div data-testid="tw-research-unresolved">
+                    <p className="cds--label-01">{t("research.tw.unresolvedTitle")}</p>
+                    {ledger
+                      .filter((row) => row.rejection_reason || row.readiness === "source_incomplete")
+                      .slice(0, 20)
+                      .map((row) => (
+                        <p key={String(row.stock_id)} className="cds--helper-text-01">
+                          {String(row.stock_id)} · {String(row.rejection_reason || row.readiness || "")}
+                        </p>
+                      ))}
+                  </div>
+                ) : null}
                 <p className="cds--helper-text-01">{t("research.tw.targetNote")}</p>
                 {manifestQuery.data ? (
                   <pre className="cds--body-compact-01" style={{ whiteSpace: "pre-wrap" }}>

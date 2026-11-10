@@ -83,6 +83,28 @@ class ScanSnapshotResponse(BaseModel):
     scan: dict[str, Any]
 
 
+class ScanSummaryResponse(BaseModel):
+    scanId: str
+    tradingDay: str
+    universeVersion: str
+    status: str
+    qualityStatus: str
+    targetCount: int
+    universeSize: int
+    cursor: int
+    remainingCount: int
+    updatedAt: str
+    activeSnapshotId: str | None = None
+    workerActivity: Literal["active", "unknown", "idle"]
+    selectorMode: str
+    themeKeys: list[str] = Field(default_factory=list)
+    stockIds: list[str] = Field(default_factory=list)
+
+
+class ScanListResponse(BaseModel):
+    scans: list[ScanSummaryResponse]
+
+
 class ExportManifestResponse(BaseModel):
     manifest: dict[str, Any]
 

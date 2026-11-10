@@ -26,6 +26,37 @@ export type TwResearchScanSnapshot = {
   notes: string[];
   ledger: Array<Record<string, unknown>>;
   checkpointsEphemeral: boolean;
+  qualityStatus?: string;
+  upstreamMonthFetches?: number;
+  maxUpstreamMonthFetches?: number;
+  createdAt?: string;
+  updatedAt?: string;
+  workerActivity?: "active" | "unknown" | "idle";
+  activeSnapshotId?: string | null;
+}
+
+export type TwResearchScanSummary = {
+  scanId: string;
+  tradingDay: string;
+  universeVersion: string;
+  status: string;
+  qualityStatus: string;
+  targetCount: number;
+  universeSize: number;
+  cursor: number;
+  remainingCount: number;
+  updatedAt: string;
+  activeSnapshotId?: string | null;
+  workerActivity: "active" | "unknown" | "idle";
+  selectorMode: TwResearchUniverseMode;
+  themeKeys: string[];
+  stockIds: string[];
+};
+
+/** Read-only poll while a scan can still make progress. Stop on a terminal status. */
+export function researchScanRefetchInterval(status: string | undefined): number | false {
+  if (status === "queued" || status === "running" || status === "partial") return 10_000;
+  return false;
 };
 
 export async function fetchTwResearchContract() {
@@ -94,6 +125,13 @@ export async function runTwResearchBatch(scanId: string, batchSize = 10) {
 
 export async function runTwResearchEnrichmentBatch(scanId: string, batchSize = 10) {
   return postScanMutation("/tw-research/scans/enrichment-batches", { scanId, batchSize });
+}
+
+export async function fetchTwResearchScans(limit = 20) {
+  const response = await requestJson<{ scans: TwResearchScanSummary[] }>(
+    `/tw-research/scans?limit=${limit}`,
+  );
+  return response;
 }
 
 export async function fetchTwResearchScan(scanId: string) {

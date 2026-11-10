@@ -130,6 +130,12 @@ def persist_symbol(
         return False
 
 
+def _iso_or_none(value: Any) -> str | None:
+    if value is None:
+        return None
+    return value.isoformat() if hasattr(value, "isoformat") else str(value)
+
+
 def load_scan_state(
     scan_id: str,
     *,
@@ -176,6 +182,8 @@ def load_scan_state(
         notes=list(row.get("notes_json") or []),
         user_id=row.get("user_id"),
         active_snapshot_id=row.get("active_snapshot_id"),
+        reserve_expires_at=_iso_or_none(row.get("reserve_expires_at")),
+        enrich_reserve_expires_at=_iso_or_none(row.get("enrich_reserve_expires_at")),
     )
     try:
         symbol_rows = repo.list_symbol_results(scan_id)

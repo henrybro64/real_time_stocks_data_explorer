@@ -25,6 +25,7 @@ from app.schemas.tw_research import (
     ResolvedUniverseResponse,
     RunBatchRequest,
     RunEnrichmentBatchRequest,
+    ScanListResponse,
     ScanSnapshotResponse,
     UniverseSelectorRequest,
 )
@@ -110,6 +111,17 @@ def create_scan(
         )
     )
     return _snapshot(state)
+
+
+@router.get("/scans", response_model=ScanListResponse)
+def list_scans(
+    limit: int = Query(default=20, ge=1, le=50),
+    user_id: str = Depends(get_effective_user_id),
+) -> ScanListResponse:
+    """Recent persisted scans for this user. Read-only: no upstream fetches."""
+    return ScanListResponse(
+        scans=tw_research_scan_service.list_scans(user_id, limit=limit)
+    )
 
 
 @router.post("/scans/batches", response_model=ScanSnapshotResponse)

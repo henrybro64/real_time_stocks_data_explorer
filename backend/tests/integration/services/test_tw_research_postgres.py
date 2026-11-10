@@ -332,3 +332,45 @@ def test_postgres_concurrent_claims_do_not_overlap() -> None:
     reloaded = load_scan_state(state.scan_id, repository=repo)
     assert reloaded is not None
     assert reloaded.cursor == len(set(claimed_ids))
+
+
+def test_postgres_get_scan_sees_another_worker_without_clearing_cache() -> None:
+    """A process-local cache must not hide a commit made by another worker."""
+    repo = TwResearchRepository()
+    service = TwResearchScanService(
+        history_loader=lambda stock, limit, *, max_month_fetches: ([], 0),
+        stock_loader=lambda stock_id: _tw(stock_id),
+        persist=True,
+    )
+    state = service.create_scan(
+        UniverseSelector(mode="stock_ids", stock_ids=("TW:2330",)),
+        trading_day="2024-06-28",
+        user_id=DEFAULT_USER_ID,
+    )
+    assert state.scan_id in service._scans
+
+    other = TwResearchScanService(
+        history_loader=lambda stock, limit, *, max_month_fetches: ([], 0),
+        stock_loader=lambda stock_id: _tw(stock_id),
+        persist=True,
+    )
+    durable = other.get_scan(state.scan_id)
+    assert durable is not None
+    durable.records["TW:2330"] = SymbolScanRecord(
+        stock_id="TW:2330",
+        stage="A",
+        readiness="processed",
+        rejection_reason="history_budget_exhausted",
+    )
+    persist_symbol(durable, durable.records["TW:2330"], repository=repo)
+    # Cursor is owned by the durable claim/complete path, not a stale upsert.
+    assert repo.complete_scan_batch(state.scan_id, status="running") is not None
+
+    visible = service.get_scan(state.scan_id)
+    assert visible is not None
+    assert visible is not state
+    assert visible.cursor == 1
+    assert visible.status == "running"
+    assert visible.records["TW:2330"].rejection_reason == "history_budget_exhausted"
+    assert service._scans[state.scan_id].cursor == 0
+    assert "TW:2330" not in service._scans[state.scan_id].records

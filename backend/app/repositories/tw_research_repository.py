@@ -240,6 +240,20 @@ class TwResearchRepository(SessionBoundRepository):
                 row.updated_at = now
             session.commit()
 
+    def list_scans_for_user(self, user_id: str, *, limit: int = 20) -> list[dict[str, Any]]:
+        """Newest scans for one owner. One query, no symbol payloads."""
+        if not self.is_available():
+            return []
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            rows = session.execute(
+                select(TwResearchScan)
+                .where(TwResearchScan.user_id == user_id)
+                .order_by(TwResearchScan.updated_at.desc(), TwResearchScan.scan_id.desc())
+                .limit(limit)
+            ).scalars().all()
+            return [_scan_to_dict(row) for row in rows]
+
     def get_scan(self, scan_id: str) -> dict[str, Any] | None:
         session_factory = self._session_factory()
         with session_factory() as session:
