@@ -276,9 +276,11 @@ def load_scan_progress(
     user_id: str | None = None,
     repository: TwResearchRepository | None = None,
 ) -> dict[str, Any] | None:
-    """Counters-only progress from committed scan metadata + symbol count.
+    """Counters-only progress from committed scan metadata + lean symbol fields.
 
-    Does not load symbol payloads or trigger upstream market-data fetches.
+    Does not hydrate full ledgers or trigger upstream market-data fetches.
+    Evaluation counters use ``list_symbol_evaluation_fields`` so the #327 poll
+    path stays light (#329).
     Returns ``None`` for a missing scan or a scan owned by another user.
     """
     repo = repository or tw_research_repository
@@ -302,17 +304,17 @@ def load_scan_progress(
     if user_id is not None and row.get("user_id") != user_id:
         return None
     try:
-        symbol_rows = repo.list_symbol_results(scan_id)
+        symbol_rows = repo.list_symbol_evaluation_fields(scan_id)
     except Exception as exc:  # noqa: BLE001
         logger.warning(
-            "tw_research list_symbol_results failed for progress %s",
+            "tw_research list_symbol_evaluation_fields failed for progress %s",
             scan_id,
             exc_info=True,
         )
         raise TwResearchDurableStoreError(
-            f"Failed to load symbol results for progress {scan_id}",
+            f"Failed to load evaluation fields for progress {scan_id}",
             scan_id=scan_id,
-            operation="list_symbol_results",
+            operation="list_symbol_evaluation_fields",
         ) from exc
     stock_ids = list(row.get("stock_ids_json") or [])
     cursor = int(row.get("cursor") or 0)
@@ -337,10 +339,10 @@ def load_scan_progress(
     records = {
         item["stock_id"]: SimpleNamespace(
             readiness=item.get("readiness"),
-            rejection_reason=(item.get("payload_json") or {}).get("rejection_reason"),
-            daily=(item.get("payload_json") or {}).get("daily"),
-            monthly=(item.get("payload_json") or {}).get("monthly"),
-            coverage=(item.get("payload_json") or {}).get("coverage"),
+            rejection_reason=item.get("rejection_reason"),
+            daily=item.get("daily"),
+            monthly=item.get("monthly"),
+            coverage=item.get("coverage"),
         )
         for item in symbol_rows
     }

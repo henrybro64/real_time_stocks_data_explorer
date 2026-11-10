@@ -140,6 +140,7 @@ selected scan. UI duplicate-create checks are **session/page helpers only**.
   `budgetExhaustedCount`, `sourceIncompleteCount`, `unresolvedCount`, and
   `unprocessedCount` so `processedCount` is never mistaken for valid Top-N
   results. Unknown / budget-exhausted rows stay out of verified recommendations.
+  Progress polls use lean evaluation fields only — not full ledger payloads.
 - Warm OHLCV already lives in `daily_price_bars` /
   `daily_price_month_fetches`; a later window reuses stored months
   (`months_used=0`) without spending budget. Same-process history loads for one

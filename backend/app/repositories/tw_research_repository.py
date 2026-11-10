@@ -585,6 +585,52 @@ class TwResearchRepository(SessionBoundRepository):
             ).scalar_one()
             return int(total or 0)
 
+    def list_symbol_evaluation_fields(self, scan_id: str) -> list[dict[str, Any]]:
+        """Lean readiness/rejection/pass fields for progress counters (#329).
+
+        Avoids hydrating full symbol payloads (enrichment, SMAs, theme lists) on
+        the #327 progress poll path. Extracts only the JSON keys evaluation needs.
+        """
+        session_factory = self._session_factory()
+        payload = TwResearchSymbolResult.payload_json
+        with session_factory() as session:
+            rows = session.execute(
+                select(
+                    TwResearchSymbolResult.stock_id,
+                    TwResearchSymbolResult.readiness,
+                    payload["rejection_reason"].as_string().label("rejection_reason"),
+                    payload["daily"].label("daily"),
+                    payload["monthly"].label("monthly"),
+                    payload["coverage"].label("coverage"),
+                )
+                .where(TwResearchSymbolResult.scan_id == scan_id)
+                .order_by(TwResearchSymbolResult.stock_id)
+            ).all()
+            result: list[dict[str, Any]] = []
+            for stock_id, readiness, rejection_reason, daily, monthly, coverage in rows:
+                daily_payload = daily if isinstance(daily, dict) else {}
+                monthly_payload = monthly if isinstance(monthly, dict) else {}
+                # Keep only passStatus — drop bulky indicator snapshots if present.
+                result.append(
+                    {
+                        "stock_id": stock_id,
+                        "readiness": readiness,
+                        "rejection_reason": rejection_reason,
+                        "daily": (
+                            {"passStatus": daily_payload.get("passStatus")}
+                            if daily_payload
+                            else None
+                        ),
+                        "monthly": (
+                            {"passStatus": monthly_payload.get("passStatus")}
+                            if monthly_payload
+                            else None
+                        ),
+                        "coverage": coverage if isinstance(coverage, dict) else coverage,
+                    }
+                )
+            return result
+
     def delete_symbol_results_by_rejection(
         self,
         scan_id: str,

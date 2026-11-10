@@ -169,6 +169,82 @@ def test_resume_budget_window_clears_retryable_symbols_and_allows_progress() -> 
     assert state.records["TW:2454"].rejection_reason != HISTORY_BUDGET_EXHAUSTED_REASON
 
 
+def test_progress_uses_lean_evaluation_fields_not_full_ledger() -> None:
+    from app.services.tw_research import persistence as persistence_module
+
+    calls: list[str] = []
+
+    class LeanRepo:
+        def is_available(self) -> bool:
+            return True
+
+        def get_scan(self, scan_id: str):
+            return {
+                "scan_id": scan_id,
+                "user_id": "user-1",
+                "trading_day": "2024-06-28",
+                "universe_version": "explicit-v1",
+                "stock_ids_json": ["TW:2330", "TW:2454"],
+                "status": "budget_exhausted",
+                "quality_status": "source_incomplete",
+                "cursor": 2,
+                "enrich_cursor": 0,
+                "target_count": 10,
+                "day_pass_ids_json": [],
+                "qualified_ids_json": [],
+                "upstream_month_fetches": 3,
+                "max_upstream_month_fetches": 3,
+                "enrichments_run": 0,
+                "max_enrichments_per_run": 20,
+                "active_snapshot_id": None,
+                "reserve_expires_at": None,
+                "enrich_reserve_expires_at": None,
+                "created_at": "2024-06-28T16:00:00+08:00",
+                "updated_at": "2024-06-28T16:05:00+08:00",
+            }
+
+        def list_symbol_results(self, scan_id: str):
+            calls.append("list_symbol_results")
+            raise AssertionError("progress must not hydrate full symbol ledgers")
+
+        def list_symbol_evaluation_fields(self, scan_id: str):
+            calls.append("list_symbol_evaluation_fields")
+            return [
+                {
+                    "stock_id": "TW:2330",
+                    "readiness": "processed",
+                    "rejection_reason": None,
+                    "daily": {"passStatus": "fail"},
+                    "monthly": None,
+                    "coverage": {"daily": {"ok": True, "reason": None}},
+                },
+                {
+                    "stock_id": "TW:2454",
+                    "readiness": "rejected",
+                    "rejection_reason": HISTORY_BUDGET_EXHAUSTED_REASON,
+                    "daily": None,
+                    "monthly": None,
+                    "coverage": None,
+                },
+            ]
+
+        def count_symbol_results(self, scan_id: str) -> int:
+            calls.append("count_symbol_results")
+            return 2
+
+    progress = persistence_module.load_scan_progress(
+        "scan-lean",
+        user_id="user-1",
+        repository=LeanRepo(),  # type: ignore[arg-type]
+    )
+    assert progress is not None
+    assert progress["processedCount"] == 2
+    assert progress["budgetExhaustedCount"] == 1
+    assert progress["definitiveEvaluatedCount"] == 1
+    assert progress["includesLedger"] is False
+    assert calls == ["list_symbol_evaluation_fields"]
+
+
 def test_warm_history_with_zero_month_fetches_does_not_mark_budget_exhausted() -> None:
     catalog = {"TW:2330": _tw("TW:2330")}
     warm = _rising_history(80)
