@@ -6,6 +6,7 @@ import {
   RANKINGS_REQUEST_TIMEOUT_MS,
   fetchQuotes,
   fetchRankings,
+  requestJson,
   fetchRankingsHistory,
   fetchRankingsHistoryDates,
   historyDatesRetryDelayMs,
@@ -660,5 +661,43 @@ describe("fetchQuotes", () => {
     expect(firstUrl).toContain("US%3AS0");
     expect(firstUrl).not.toContain("US%3AS100");
     expect(secondUrl).toContain("US%3AS100");
+  });
+});
+
+describe("failed request correlation", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("keeps a request id and drops credential-like header values", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response("Internal Server Error", {
+          status: 500,
+          headers: { "X-Request-ID": "abc12345" },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ detail: "nope" }), {
+          status: 500,
+          headers: {
+            "content-type": "application/json",
+            "X-Request-ID": "eyJhbGciOiJIUzI1NiJ9.payload.sig",
+          },
+        }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(requestJson("/health")).rejects.toMatchObject({
+      status: 500,
+      requestId: "abc12345",
+      message: "Request failed: 500",
+    });
+    await expect(requestJson("/health")).rejects.toMatchObject({
+      status: 500,
+      requestId: null,
+      detail: "nope",
+    });
   });
 });

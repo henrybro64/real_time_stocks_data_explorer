@@ -49,6 +49,7 @@ type ApiErrorKind =
 export class ApiError extends Error {
   readonly detail: string | null;
   readonly kind: ApiErrorKind;
+  readonly requestId: string | null;
   readonly status: number | null;
   readonly retryAfterSeconds: number | null;
 
@@ -58,6 +59,7 @@ export class ApiError extends Error {
       status?: number | null;
       detail?: string | null;
       kind: ApiErrorKind;
+      requestId?: string | null;
       retryAfterSeconds?: number | null;
     },
   ) {
@@ -66,6 +68,7 @@ export class ApiError extends Error {
     this.status = options.status ?? null;
     this.detail = options.detail ?? null;
     this.kind = options.kind;
+    this.requestId = options.requestId ?? null;
     this.retryAfterSeconds = options.retryAfterSeconds ?? null;
   }
 }
@@ -239,17 +242,28 @@ export function parseRetryAfterSeconds(header: string | null): number | null {
   return null;
 }
 
+function headerValue(response: Response, name: string): string | null {
+  if (typeof response.headers?.get !== "function") return null;
+  return response.headers.get(name);
+}
+
+/** Keep correlation ids. Drop anything that could be a credential or cookie. */
+function safeRequestId(value: string | null): string | null {
+  if (!value) return null;
+  const trimmed = value.trim();
+  if (!/^[A-Za-z0-9_-]{8,64}$/.test(trimmed)) return null;
+  return trimmed;
+}
+
 async function failedRequestError(response: Response): Promise<ApiError> {
   const detail = await failedRequestDetail(response);
   const message = detail ? `Request failed: ${response.status} - ${detail}` : `Request failed: ${response.status}`;
-  const retryAfterHeader =
-    typeof response.headers?.get === "function"
-      ? response.headers.get("Retry-After")
-      : null;
+  const retryAfterHeader = headerValue(response, "Retry-After");
   return new ApiError(message, {
     status: response.status,
     detail,
     kind: classifyApiErrorKind(response.status, detail, message),
+    requestId: safeRequestId(headerValue(response, "X-Request-ID")),
     retryAfterSeconds: parseRetryAfterSeconds(retryAfterHeader),
   });
 }

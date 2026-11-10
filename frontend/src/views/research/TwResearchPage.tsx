@@ -21,9 +21,9 @@ import {
   Tile,
 } from "@carbon/react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
-import { useLanguage } from "../../app/i18n";
+import { useLanguage, type TranslationKey } from "../../app/i18n";
 import { RequestStateNotice, errorToNoticeKind } from "../../components/state/RequestStateNotice";
 import { toApiError } from "../../services/api/client";
 import {
@@ -52,6 +52,37 @@ function splitLines(text: string): string[] {
     .filter(Boolean);
 }
 
+function researchSelectionKey(input: {
+  mode: TwResearchUniverseMode;
+  targetCount: number;
+  stockIds: string[];
+  themeKeys: string[];
+}): string {
+  return JSON.stringify({
+    mode: input.mode,
+    targetCount: input.targetCount,
+    stockIds: input.mode === "stock_ids" ? input.stockIds : [],
+    themeKeys: input.mode === "theme_keys" ? input.themeKeys : [],
+  });
+}
+
+function scanProgressKey(scan: TwResearchScanSnapshot | null): string {
+  if (!scan) return "";
+  return [
+    scan.status,
+    scan.processedCount,
+    scan.cursor,
+    scan.enrichCursor ?? 0,
+    scan.qualifiedCount ?? 0,
+  ].join(":");
+}
+
+function describeResearchFailure(error: unknown): string {
+  const api = toApiError(error);
+  const text = api.detail || api.message;
+  return api.requestId ? `${text} · request ${api.requestId}` : text;
+}
+
 export function TwResearchPage() {
   const { t } = useLanguage();
   const queryClient = useQueryClient();
@@ -67,6 +98,11 @@ export function TwResearchPage() {
   const [agentTotalChunks, setAgentTotalChunks] = useState(0);
   const [latestManifestText, setLatestManifestText] = useState("");
   const [latestSnapshotId, setLatestSnapshotId] = useState<string | null>(null);
+  const [activeSelectionKey, setActiveSelectionKey] = useState<string | null>(null);
+  const [keptExistingScan, setKeptExistingScan] = useState(false);
+  const [recoveredOperations, setRecoveredOperations] = useState<Record<string, boolean>>({});
+  const scanRef = useRef<TwResearchScanSnapshot | null>(null);
+  const createGuard = useRef(false);
 
   const refreshManifest = (id: string | null) => {
     if (!id) {
@@ -83,12 +119,43 @@ export function TwResearchPage() {
   };
 
   const applyScanSnapshot = (next: TwResearchScanSnapshot) => {
+    scanRef.current = next;
     setScan(next);
     refreshManifest(next.scanId);
   };
 
+  const reloadDurableScan = async (): Promise<TwResearchScanSnapshot | null> => {
+    const id = scanRef.current?.scanId;
+    if (!id) return null;
+    try {
+      const latest = await fetchTwResearchScan(id);
+      applyScanSnapshot(latest);
+      return latest;
+    } catch {
+      return null;
+    }
+  };
+
+  const markRecovered = (operation: string, recovered: boolean) => {
+    setRecoveredOperations((current) => ({ ...current, [operation]: recovered }));
+  };
+
   const explicitIds = useMemo(() => splitLines(stockIdsText), [stockIdsText]);
   const themeKeys = useMemo(() => splitLines(themeKeysText), [themeKeysText]);
+  const selectionKey = useMemo(
+    () =>
+      researchSelectionKey({
+        mode,
+        targetCount,
+        stockIds: explicitIds,
+        themeKeys,
+      }),
+    [explicitIds, mode, targetCount, themeKeys],
+  );
+
+  useEffect(() => {
+    setKeptExistingScan(false);
+  }, [selectionKey]);
 
   const themesQuery = useQuery({
     queryKey: ["themes-for-tw-research"],
@@ -109,38 +176,55 @@ export function TwResearchPage() {
   });
 
   const createMutation = useMutation({
-    mutationFn: async () => {
+    mutationFn: async (key: string) => {
       if (mode === "stock_ids") {
         await resolveTwResearchUniverse({ mode, stockIds: explicitIds });
       } else if (mode === "theme_keys") {
         await resolveTwResearchUniverse({ mode, themeKeys });
       }
-      return createTwResearchScan({
+      const created = await createTwResearchScan({
         mode,
         stockIds: mode === "stock_ids" ? explicitIds : [],
         themeKeys: mode === "theme_keys" ? themeKeys : [],
         targetCount,
       });
+      return { created, key };
     },
-    onSuccess: (created) => {
+    onSuccess: ({ created, key }) => {
       setScanId(created.scanId);
-      setScan(created);
+      applyScanSnapshot(created);
+      setActiveSelectionKey(key);
+      setKeptExistingScan(false);
       setPage(1);
       setAgentText("");
       setAgentChunkIndex(0);
       setAgentTotalChunks(0);
-      refreshManifest(created.scanId);
+    },
+    onSettled: () => {
+      createGuard.current = false;
     },
   });
 
   const batchMutation = useMutation({
     mutationFn: async () => runTwResearchBatch(requireScanId(), 10),
+    onMutate: () => markRecovered("batch", false),
     onSuccess: applyScanSnapshot,
+    onError: async () => {
+      const before = scanProgressKey(scanRef.current);
+      const latest = await reloadDurableScan();
+      markRecovered("batch", Boolean(latest) && scanProgressKey(latest) !== before);
+    },
   });
 
   const enrichMutation = useMutation({
     mutationFn: async () => runTwResearchEnrichmentBatch(requireScanId(), 10),
+    onMutate: () => markRecovered("enrich", false),
     onSuccess: applyScanSnapshot,
+    onError: async () => {
+      const before = scanProgressKey(scanRef.current);
+      const latest = await reloadDurableScan();
+      markRecovered("enrich", Boolean(latest) && scanProgressKey(latest) !== before);
+    },
   });
 
   const refreshMutation = useMutation({
@@ -197,15 +281,48 @@ export function TwResearchPage() {
     agentMutation.isPending ||
     latestManifestMutation.isPending ||
     latestChunkMutation.isPending;
-  const error =
-    createMutation.error ||
-    batchMutation.error ||
-    enrichMutation.error ||
-    refreshMutation.error ||
-    agentMutation.error ||
-    latestManifestMutation.error ||
-    latestChunkMutation.error ||
-    manifestQuery.error;
+  const operationErrors: Array<{ key: string; label: TranslationKey; error: unknown }> = [
+    {
+      key: "create",
+      label: "research.tw.errorCreate",
+      error: createMutation.isPending ? null : createMutation.error,
+    },
+    {
+      key: "batch",
+      label: "research.tw.errorBatch",
+      error: batchMutation.isPending || recoveredOperations.batch ? null : batchMutation.error,
+    },
+    {
+      key: "enrich",
+      label: "research.tw.errorEnrich",
+      error: enrichMutation.isPending || recoveredOperations.enrich ? null : enrichMutation.error,
+    },
+    {
+      key: "refresh",
+      label: "research.tw.errorRefresh",
+      error: refreshMutation.isPending ? null : refreshMutation.error,
+    },
+    {
+      key: "agent",
+      label: "research.tw.errorAgent",
+      error: agentMutation.isPending ? null : agentMutation.error,
+    },
+    {
+      key: "latest-manifest",
+      label: "research.tw.errorLatestManifest",
+      error: latestManifestMutation.isPending ? null : latestManifestMutation.error,
+    },
+    {
+      key: "latest-chunk",
+      label: "research.tw.errorLatestChunk",
+      error: latestChunkMutation.isPending ? null : latestChunkMutation.error,
+    },
+    {
+      key: "manifest",
+      label: "research.tw.errorManifest",
+      error: manifestQuery.isFetching ? null : manifestQuery.error,
+    },
+  ];
 
   return (
     <Grid className="app-page-grid" fullWidth>
@@ -217,13 +334,20 @@ export function TwResearchPage() {
             <p className="cds--body-compact-01">{t("research.tw.subtitle")}</p>
           </div>
 
-          {error ? (
-            <RequestStateNotice
-              kind={errorToNoticeKind(toApiError(error))}
-              scopeLabel={t("research.tw.errorTitle")}
-              detail={toApiError(error).detail || toApiError(error).message}
-            />
-          ) : null}
+          {operationErrors.map((failure) => {
+            if (!failure.error) return null;
+            const apiError = toApiError(failure.error);
+            return (
+              <div key={failure.key} data-testid={`tw-research-error-${failure.key}`}>
+                <RequestStateNotice
+                  kind={errorToNoticeKind(apiError)}
+                  scopeLabel={t(failure.label)}
+                  status={apiError.status}
+                  detail={describeResearchFailure(failure.error)}
+                />
+              </div>
+            );
+          })}
 
           <Tile>
             <Stack gap={4}>
@@ -277,7 +401,16 @@ export function TwResearchPage() {
                       kind: "primary" as const,
                       label: "research.tw.createScan" as const,
                       disabled: busy,
-                      onClick: () => createMutation.mutate(),
+                      onClick: () => {
+                        if (createGuard.current || createMutation.isPending) return;
+                        if (scanId && selectionKey === activeSelectionKey) {
+                          setKeptExistingScan(true);
+                          return;
+                        }
+                        createGuard.current = true;
+                        setKeptExistingScan(false);
+                        createMutation.mutate(selectionKey);
+                      },
                     },
                     {
                       key: "batch",
@@ -307,12 +440,18 @@ export function TwResearchPage() {
                     size="md"
                     kind={action.kind}
                     disabled={action.disabled}
+                    data-testid={`tw-research-${action.key}`}
                     onClick={action.onClick}
                   >
                     {t(action.label)}
                   </Button>
                 ))}
               </Stack>
+              {keptExistingScan ? (
+                <p className="cds--helper-text-01" data-testid="tw-research-existing-scan">
+                  {t("research.tw.existingScanKept")}
+                </p>
+              ) : null}
               {busy ? <InlineLoading description={t("research.tw.working")} /> : null}
             </Stack>
           </Tile>
