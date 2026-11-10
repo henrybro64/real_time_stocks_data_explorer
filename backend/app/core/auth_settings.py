@@ -39,6 +39,7 @@ _CAPTURE_TOKEN_SETTINGS = (
     ("RANKINGS_CAPTURE_TOKEN", "rankings_capture_token"),
     ("RANKINGS_ARCHIVE_CAPTURE_TOKEN", "rankings_archive_capture_token"),
     ("TAIWAN_MARKET_DATA_CAPTURE_TOKEN", "taiwan_market_data_capture_token"),
+    ("TW_RESEARCH_SCHEDULE_TOKEN", "tw_research_schedule_token"),
 )
 
 
@@ -79,6 +80,7 @@ def validate_auth_runtime_settings(
     rankings_capture_token: str = "",
     rankings_archive_capture_token: str = "",
     taiwan_market_data_capture_token: str = "",
+    tw_research_schedule_token: str = "",
     entra_external_id_enabled: bool = False,
     entra_tenant_id: str = "",
     entra_client_id: str = "",
@@ -97,6 +99,7 @@ def validate_auth_runtime_settings(
         rankings_capture_token=rankings_capture_token,
         rankings_archive_capture_token=rankings_archive_capture_token,
         taiwan_market_data_capture_token=taiwan_market_data_capture_token,
+        tw_research_schedule_token=tw_research_schedule_token,
     )
 
     entra_ready = bool(
@@ -175,6 +178,7 @@ def apply_auth_runtime_settings(settings: Any) -> list[str]:
         rankings_capture_token=settings.rankings_capture_token,
         rankings_archive_capture_token=settings.rankings_archive_capture_token,
         taiwan_market_data_capture_token=settings.taiwan_market_data_capture_token,
+        tw_research_schedule_token=getattr(settings, "tw_research_schedule_token", ""),
         entra_external_id_enabled=settings.entra_external_id_enabled,
         entra_tenant_id=settings.entra_tenant_id,
         entra_client_id=settings.entra_client_id,
@@ -231,11 +235,13 @@ def _placeholder_capture_labels(
     rankings_capture_token: str,
     rankings_archive_capture_token: str,
     taiwan_market_data_capture_token: str,
+    tw_research_schedule_token: str = "",
 ) -> list[str]:
     values = {
         "PORTFOLIO_HISTORY_CAPTURE_TOKEN": portfolio_history_capture_token,
         "RANKINGS_CAPTURE_TOKEN": rankings_capture_token,
         "RANKINGS_ARCHIVE_CAPTURE_TOKEN": rankings_archive_capture_token,
         "TAIWAN_MARKET_DATA_CAPTURE_TOKEN": taiwan_market_data_capture_token,
+        "TW_RESEARCH_SCHEDULE_TOKEN": tw_research_schedule_token,
     }
     return [label for label, token in values.items() if is_placeholder_capture_token(token)]

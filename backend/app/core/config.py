@@ -123,6 +123,11 @@ class Settings(BaseSettings):
     taiwan_market_data_refresh_hour: int = Field(default=18, ge=0, le=23)
     taiwan_market_data_timezone: str = Field(default="Asia/Taipei")
     taiwan_market_data_capture_token: str = Field(default="")
+    # Taiwan research post-market scheduler (#330). Disabled until a real token
+    # is configured and the CronJob is unsuspended with explicit approval.
+    tw_research_schedule_token: str = Field(default="")
+    tw_research_schedule_user_id: str = Field(default="")
+    tw_research_schedule_enabled: bool = Field(default=False)
     # Backend logging controls.
     log_level: str = Field(default="INFO")
     log_format: str = Field(default="console")

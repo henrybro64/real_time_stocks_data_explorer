@@ -89,6 +89,7 @@ All routes use `Depends(get_effective_user_id)`.
 | POST | `/api/tw-research/scans` | No (creates ledger) |
 | POST | `/api/tw-research/scans/batches` | Yes, bounded |
 | POST | `/api/tw-research/scans/resume-budget` | No (#329 reopen window) |
+| POST | `/api/tw-research/schedule/run` | Yes, bounded (#330 token auth) |
 | POST | `/api/tw-research/scans/enrichment-batches` | Yes, bounded (#313) |
 | GET | `/api/tw-research/scans` | No (#327 recent history) |
 | GET | `/api/tw-research/scans/{scan_id}` | No |
@@ -147,6 +148,22 @@ selected scan. UI duplicate-create checks are **session/page helpers only**.
 - Partial / budget-exhausted finalize stays labeled via
   `technicalStatus` / `sourceCompleteness`; never advertise full coverage when
   unresolved symbols remain.
+
+## Post-market schedule (disabled by default) (#330)
+
+- Internal tick: `POST /api/tw-research/schedule/run` with header
+  `X-Tw-Research-Schedule-Token`. Requires configured
+  `TW_RESEARCH_SCHEDULE_TOKEN`, `TW_RESEARCH_SCHEDULE_USER_ID`, and
+  `TW_RESEARCH_SCHEDULE_ENABLED=true`. Placeholder tokens are treated as unset.
+- Skips Taiwan nontrading days and pre-close sessions (`last_completed_session_date`).
+  Reuses the owner's same-day starter-preset scan when present; otherwise creates
+  one. Runs a bounded number of batches and may call #329 resume when exhausted.
+- Kubernetes CronJob `stock-ticker-tw-research-schedule` ships **suspended**
+  (`suspend: true`, `concurrencyPolicy: Forbid`, resource limits,
+  `activeDeadlineSeconds`). Do not unsuspend or set ENABLED without pilot
+  approval (#321) and an explicit operator decision.
+- Manual `/research/tw` create/batch/resume remains available and still respects
+  global admission / single-flight controls from #329.
 
 ## Browser rewrite proxy and long research batches (#328)
 

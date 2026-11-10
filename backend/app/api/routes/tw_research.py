@@ -13,9 +13,10 @@ from datetime import datetime
 from typing import Any, TypeVar
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response
 
 from app.api.deps import get_effective_user_id
+from app.core.config import settings
 from app.schemas.tw_research import (
     CreateScanRequest,
     ExportChunkResponse,
@@ -26,6 +27,8 @@ from app.schemas.tw_research import (
     ResumeBudgetWindowRequest,
     RunBatchRequest,
     RunEnrichmentBatchRequest,
+    ScheduleRunRequest,
+    ScheduleRunResponse,
     ScanListResponse,
     ScanProgressResponse,
     ScanSnapshotResponse,
@@ -160,6 +163,41 @@ def resume_budget_window(
         )
     )
     return _snapshot(state)
+
+
+@router.post("/schedule/run", response_model=ScheduleRunResponse)
+def run_scheduled_research_tick(
+    body: ScheduleRunRequest | None = None,
+    x_tw_research_schedule_token: str | None = Header(default=None),
+) -> ScheduleRunResponse:
+    """Internal post-market schedule tick (#330). Token auth; disabled by default."""
+    from app.api.capture_auth import require_capture_token
+    from app.services.tw_research.scheduler import run_scheduled_research
+
+    require_capture_token(
+        x_tw_research_schedule_token,
+        settings.tw_research_schedule_token,
+        not_configured_detail="Taiwan research schedule endpoint is not configured",
+    )
+    payload = body or ScheduleRunRequest()
+    owner = str(settings.tw_research_schedule_user_id or "").strip()
+    if not owner:
+        raise HTTPException(
+            status_code=503,
+            detail="TW_RESEARCH_SCHEDULE_USER_ID is not configured",
+        )
+    result = _call_or_http(
+        lambda: run_scheduled_research(
+            user_id=owner,
+            enabled=bool(settings.tw_research_schedule_enabled),
+            dry_run=payload.dryRun,
+            max_batches=payload.maxBatches,
+            target_count=payload.targetCount,
+            trading_day=payload.tradingDay,
+            resume_if_exhausted=payload.resumeIfExhausted,
+        )
+    )
+    return ScheduleRunResponse(**result.as_dict())
 
 
 @router.post("/scans/enrichment-batches", response_model=ScanSnapshotResponse)
