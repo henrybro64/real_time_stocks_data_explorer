@@ -13,8 +13,12 @@ CALCULATION_VERSION = "macd12-26-9_kd9-3-3_v1"
 ENRICHMENT_VERSION = "enrich-v1"
 
 # Enrichment operational budgets — not a global researchable-stock cap.
+# ``max_enrichments_per_run`` is a per-scan window allowance (#313). Explicit
+# ``resume_enrichment_window`` (#330) opens another bounded window, hard-capped.
 ENRICH_BATCH_SIZE = 10
 DEFAULT_MAX_ENRICHMENTS_PER_RUN = 20
+DEFAULT_ENRICHMENT_WINDOW_SIZE = DEFAULT_MAX_ENRICHMENTS_PER_RUN
+MAX_ENRICHMENTS_PER_SCAN_CAP = 100
 EXPORT_CHUNK_SIZE = 25
 
 # Bump when the optional starter membership list changes.

@@ -186,15 +186,21 @@ selected scan. UI duplicate-create checks are **session/page helpers only**.
   preserved. Same-day reuse remains idempotent — completed technical scans and
   `verified_ready` snapshots without remaining enrichment report completion
   instead of opening a duplicate scan. A `verified_ready` snapshot with pending
-  enrichment continues bounded enrichment (or returns
-  `enrichment_budget_exhausted` when the run budget is spent). Each tick runs
-  bounded technical batches, optional #329 resume, then bounded enrichment.
-  Outcomes distinguish technical completion, enrichment partial / budget
-  exhaustion, verified ready, deferred lock / lease loss / deadline, and
-  failures. Owner-level PostgreSQL tick locks are heartbeated during long batches
-  (not only between batches). History-flight renewals fail closed after
-  consecutive PostgreSQL renew errors so a lost lease cannot publish a false
-  `ready` marker.
+  enrichment continues bounded enrichment. When the per-scan enrichment window
+  (`max_enrichments_per_run`) is spent but qualified symbols still lack
+  enrichment, the tick opens another bounded window (default +20, hard cap 100)
+  via atomic PostgreSQL resume — analogous to #329 history-budget windows —
+  rather than treating exhaustion as a permanent stop. Only the hard cap yields
+  a terminal `enrichment_budget_exhausted` / `enrichment_cap_reached` outcome.
+  Each tick runs bounded technical batches, optional #329 resume, optional
+  enrichment-window resume, then bounded enrichment. Outcomes distinguish
+  technical completion, enrichment partial / budget exhaustion, verified ready,
+  deferred lock / lease loss / deadline, and failures. Durable ticks **fail
+  closed** when PostgreSQL coordination is unavailable (never run uncoordinated).
+  Owner-level PostgreSQL tick locks are heartbeated during long batches.
+  History-flight renewals fail closed after consecutive PostgreSQL renew errors;
+  confirmed lease loss raises a retryable coordination error and does not publish
+  a false `ready` marker or a definitive screening result for that symbol.
 - Kubernetes CronJob `stock-ticker-tw-research-schedule` ships **suspended**
   (`suspend: true`, `timeZone: Asia/Taipei`, weekday continuation windows
   `30 15-18 * * 1-5`, `concurrencyPolicy: Forbid`, resource limits,

@@ -37,6 +37,7 @@ from app.services.tw_research.constants import (
     DEFAULT_SCHEDULE_MAX_ENRICH_BATCHES,
     DEFAULT_SCHEDULE_TICK_DEADLINE_SECONDS,
     INCOMPLETE_SCHEDULE_STATUSES,
+    MAX_ENRICHMENTS_PER_SCAN_CAP,
     PREFERRED_DAILY_HISTORY_LIMIT,
     SCHEDULE_BACKLOG_MAX_CALENDAR_DAYS,
     SCHEDULE_DATA_READY_SAMPLE_SIZE,
@@ -187,6 +188,11 @@ def enrichment_budget_remaining(state: ScanState) -> int:
     return max(0, int(state.max_enrichments_per_run) - int(state.enrichments_run))
 
 
+def enrichment_window_available(state: ScanState) -> bool:
+    """True when another bounded enrichment window can still be opened."""
+    return int(state.max_enrichments_per_run) < MAX_ENRICHMENTS_PER_SCAN_CAP
+
+
 def schedule_has_remaining_work(state: ScanState) -> bool:
     """True when a later schedule tick can still make progress on ``state``."""
     if state.status == "failed":
@@ -197,8 +203,10 @@ def schedule_has_remaining_work(state: ScanState) -> bool:
         pending = pending_enrichment_ids(state)
         if not pending:
             return False
-        # Auto ticks cannot raise enrichment budget; exhausted means no progress.
-        return enrichment_budget_remaining(state) > 0
+        if enrichment_budget_remaining(state) > 0:
+            return True
+        # Spent window with pending work is still actionable via resume (#330).
+        return enrichment_window_available(state)
     return False
 
 
@@ -363,31 +371,45 @@ def run_scheduled_research(
     lock_name = f"schedule:{user_id}:starter_preset:{CALCULATION_VERSION}:t{target_count}"
     lock_held = False
     repo = None
+    # Durable schedule ticks must hold the PostgreSQL tick lock. Never fall
+    # through to uncoordinated work when persist=True (#330 Fix 1).
     if getattr(scan_service, "_persist", True):
         try:
             from app.repositories.tw_research_repository import tw_research_repository
 
             repo = tw_research_repository
-            if repo.is_available():
-                claimed = repo.claim_schedule_tick_lock(
-                    lock_name=lock_name,
-                    owner_token=tick_token,
-                    lease_seconds=SCHEDULE_TICK_LEASE_SECONDS,
+            if not repo.is_available():
+                return ScheduleRunResult(
+                    outcome="deferred_lock",
+                    trading_day=day,
+                    scan_id=None,
+                    status=None,
+                    quality_status=None,
+                    batches_run=0,
+                    enrich_batches_run=0,
+                    resumed=False,
+                    notes=("schedule_coordination_unavailable",),
+                    dry_run=False,
                 )
-                if not claimed.get("acquired"):
-                    return ScheduleRunResult(
-                        outcome="deferred_lock",
-                        trading_day=day,
-                        scan_id=None,
-                        status=None,
-                        quality_status=None,
-                        batches_run=0,
-                        enrich_batches_run=0,
-                        resumed=False,
-                        notes=("schedule_tick_lock_held",),
-                        dry_run=False,
-                    )
-                lock_held = True
+            claimed = repo.claim_schedule_tick_lock(
+                lock_name=lock_name,
+                owner_token=tick_token,
+                lease_seconds=SCHEDULE_TICK_LEASE_SECONDS,
+            )
+            if not claimed.get("acquired"):
+                return ScheduleRunResult(
+                    outcome="deferred_lock",
+                    trading_day=day,
+                    scan_id=None,
+                    status=None,
+                    quality_status=None,
+                    batches_run=0,
+                    enrich_batches_run=0,
+                    resumed=False,
+                    notes=("schedule_tick_lock_held",),
+                    dry_run=False,
+                )
+            lock_held = True
         except Exception:  # noqa: BLE001 — fail closed on coordination errors
             logger.exception("tw_research schedule tick lock failed")
             return ScheduleRunResult(
@@ -551,30 +573,38 @@ def _run_scheduled_research_locked(
 
     day = state.trading_day
 
-    # Fix 1: snapshot + verified_ready does not stop pending enrichment.
+    # Snapshot + verified_ready does not stop pending enrichment.
     # Same-day completed technical scans with no remaining enrichment must not
-    # create a duplicate scan — report completion and exit. Pending enrichment
-    # with a spent run budget is a deferred outcome, not false success.
+    # create a duplicate scan — report completion and exit.
     pending_upfront = pending_enrichment_ids(state)
     if (
-        state.status in {"verified_ready", "completed_processing"}
+        state.status == "verified_ready"
+        and state.active_snapshot_id
         and pending_upfront
-        and enrichment_budget_remaining(state) <= 0
     ):
-        notes.append("enrichment_budget_exhausted")
-        return ScheduleRunResult(
-            outcome="enrichment_budget_exhausted",
-            trading_day=day,
-            scan_id=state.scan_id,
-            status=state.status,
-            quality_status=state.quality_status,
-            batches_run=0,
-            enrich_batches_run=0,
-            resumed=False,
-            notes=tuple(notes),
-            dry_run=False,
-        )
+        notes.append("verified_snapshot_enrichment_pending")
+
     if not schedule_has_remaining_work(state):
+        if (
+            state.status in {"verified_ready", "completed_processing"}
+            and pending_upfront
+            and enrichment_budget_remaining(state) <= 0
+            and not enrichment_window_available(state)
+        ):
+            notes.append("enrichment_budget_exhausted")
+            notes.append("enrichment_cap_reached")
+            return ScheduleRunResult(
+                outcome="enrichment_budget_exhausted",
+                trading_day=day,
+                scan_id=state.scan_id,
+                status=state.status,
+                quality_status=state.quality_status,
+                batches_run=0,
+                enrich_batches_run=0,
+                resumed=False,
+                notes=tuple(notes),
+                dry_run=False,
+            )
         if state.status == "verified_ready" and state.active_snapshot_id:
             notes.append("already_verified_ready")
             return ScheduleRunResult(
@@ -604,13 +634,6 @@ def _run_scheduled_research_locked(
                 dry_run=False,
             )
 
-    if (
-        state.status == "verified_ready"
-        and state.active_snapshot_id
-        and pending_upfront
-    ):
-        notes.append("verified_snapshot_enrichment_pending")
-
     if state.status == "budget_exhausted" and resume_if_exhausted:
         try:
             state = scan_service.resume_budget_window(state.scan_id)
@@ -618,6 +641,34 @@ def _run_scheduled_research_locked(
             notes.append("budget_window_resumed")
         except TwResearchConflictError as exc:
             notes.append(f"resume_conflict:{exc.code}")
+
+    # Open another enrichment window when the current allowance is spent but
+    # persisted qualified symbols still lack enrichment (#330 Fix 3).
+    if (
+        resume_if_exhausted
+        and pending_enrichment_ids(state)
+        and enrichment_budget_remaining(state) <= 0
+        and enrichment_window_available(state)
+    ):
+        try:
+            state = scan_service.resume_enrichment_window(state.scan_id)
+            resumed = True
+            notes.append("enrichment_window_resumed")
+        except TwResearchConflictError as exc:
+            notes.append(f"enrichment_resume_conflict:{exc.code}")
+            if exc.code == "enrichment_cap_reached":
+                return ScheduleRunResult(
+                    outcome="enrichment_budget_exhausted",
+                    trading_day=day,
+                    scan_id=state.scan_id,
+                    status=state.status,
+                    quality_status=state.quality_status,
+                    batches_run=0,
+                    enrich_batches_run=0,
+                    resumed=resumed,
+                    notes=tuple(notes),
+                    dry_run=False,
+                )
 
     batches_run = 0
     enrich_batches_run = 0
@@ -687,9 +738,20 @@ def _run_scheduled_research_locked(
                 notes.append("enrichment_caught_up")
                 break
             if enrichment_budget_remaining(state) <= 0:
-                notes.append("enrichment_budget_exhausted")
-                deferred = "enrichment_budget_exhausted"
-                break
+                if resume_if_exhausted and enrichment_window_available(state):
+                    try:
+                        state = scan_service.resume_enrichment_window(state.scan_id)
+                        resumed = True
+                        notes.append("enrichment_window_resumed")
+                    except TwResearchConflictError as exc:
+                        notes.append(f"enrichment_resume_conflict:{exc.code}")
+                        notes.append("enrichment_budget_exhausted")
+                        deferred = "enrichment_budget_exhausted"
+                        break
+                else:
+                    notes.append("enrichment_budget_exhausted")
+                    deferred = "enrichment_budget_exhausted"
+                    break
             before_enrich = (
                 state.enrichments_run,
                 state.enrich_cursor,

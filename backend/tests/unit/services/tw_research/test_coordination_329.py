@@ -241,13 +241,14 @@ def test_history_flight_renew_fail_closed_after_consecutive_errors(
     # Enable durable flight coordination path without requiring Postgres for create.
     service._persist = True
 
-    candles, months = service._load_history_single_flight(  # noqa: SLF001
-        state,
-        _tw("TW:2330"),
-        remaining_budget=5,
-    )
-    assert candles
-    assert months == 1
+    from app.services.tw_research.scan import TwResearchHistoryCoordinationError
+
+    with pytest.raises(TwResearchHistoryCoordinationError):
+        service._load_history_single_flight(  # noqa: SLF001
+            state,
+            _tw("TW:2330"),
+            remaining_budget=5,
+        )
     assert renew_failures["n"] >= HISTORY_FLIGHT_MAX_CONSECUTIVE_RENEW_FAILURES
     assert complete_calls
     assert complete_calls[-1]["success"] is False
@@ -341,3 +342,80 @@ def test_history_flight_renew_recovers_after_transient_error(
     assert complete_calls[-1]["success"] is True
     assert complete_calls[-1]["coverage_complete"] is True
     assert renew_state["n"] >= 1
+
+
+def test_history_flight_stale_raises_coordination_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fix 4: confirmed lease loss must not return a coordinated success."""
+    import time
+
+    from app.models.quote import CandleRecord
+    from app.services.tw_research import scan as scan_mod
+    from app.services.tw_research.scan import TwResearchHistoryCoordinationError
+
+    monkeypatch.setattr(scan_mod, "HISTORY_FLIGHT_RENEW_INTERVAL_SECONDS", 0.05)
+    monkeypatch.setattr(scan_mod, "HISTORY_FLIGHT_MAX_CONSECUTIVE_RENEW_FAILURES", 3)
+
+    complete_calls: list[dict] = []
+
+    class _Repo:
+        def is_available(self) -> bool:
+            return True
+
+        def acquire_history_flight(self, **kwargs):  # noqa: ANN003
+            del kwargs
+            return {"status": "acquired", "generation": 9}
+
+        def renew_history_flight(self, **kwargs):  # noqa: ANN003
+            del kwargs
+            return {"ok": False, "stale": True}
+
+        def complete_history_flight(self, **kwargs):  # noqa: ANN003
+            complete_calls.append(dict(kwargs))
+            return {"ok": True, "stale": False}
+
+    monkeypatch.setattr(
+        "app.repositories.tw_research_repository.tw_research_repository",
+        _Repo(),
+    )
+    monkeypatch.setattr(
+        scan_mod,
+        "stored_history_covers_requirement",
+        lambda *a, **k: False,
+    )
+
+    def loader(stock, limit, *, max_month_fetches):  # noqa: ANN001
+        del stock, limit, max_month_fetches
+        time.sleep(0.2)
+        return [
+            CandleRecord(
+                time="2024-06-28T13:30:00+08:00",
+                open=1,
+                high=1,
+                low=1,
+                close=1,
+                volume=1,
+            )
+        ], 1
+
+    service = TwResearchScanService(
+        history_loader=loader,
+        stock_loader=lambda stock_id: _tw(stock_id),
+        persist=False,
+    )
+    state = service.create_scan(
+        UniverseSelector(mode="stock_ids", stock_ids=("TW:2330",)),
+        trading_day="2024-06-28",
+        now=datetime(2024, 6, 28, 16, 0, tzinfo=TZ),
+    )
+    service._persist = True
+    with pytest.raises(TwResearchHistoryCoordinationError):
+        service._load_history_single_flight(  # noqa: SLF001
+            state,
+            _tw("TW:2330"),
+            remaining_budget=5,
+        )
+    assert complete_calls
+    assert complete_calls[-1]["success"] is False
+    assert complete_calls[-1]["coverage_complete"] is False

@@ -435,6 +435,7 @@ def test_verified_snapshot_with_pending_enrichment_continues(
 def test_verified_snapshot_enrichment_budget_exhausted_defers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from app.services.tw_research.constants import MAX_ENRICHMENTS_PER_SCAN_CAP
     from app.services.tw_research.scan import SymbolScanRecord
 
     catalog = {"TW:2330": _tw("TW:2330")}
@@ -454,8 +455,9 @@ def test_verified_snapshot_enrichment_budget_exhausted_defers(
     state.status = "verified_ready"
     state.active_snapshot_id = "snap-1"
     state.qualified_ids = ["TW:2330"]
-    state.max_enrichments_per_run = 1
-    state.enrichments_run = 1
+    # Hard cap already reached — no further enrichment windows may open.
+    state.max_enrichments_per_run = MAX_ENRICHMENTS_PER_SCAN_CAP
+    state.enrichments_run = MAX_ENRICHMENTS_PER_SCAN_CAP
     state.records["TW:2330"] = SymbolScanRecord(
         stock_id="TW:2330",
         stage="B",
@@ -487,6 +489,7 @@ def test_verified_snapshot_enrichment_budget_exhausted_defers(
     )
     assert result.outcome == "enrichment_budget_exhausted"
     assert "enrichment_budget_exhausted" in result.notes
+    assert "enrichment_cap_reached" in result.notes
 
 
 def test_market_ohlcv_ready_requires_sample_coverage(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -540,6 +543,12 @@ def test_schedule_has_remaining_work_for_verified_pending_enrichment() -> None:
     assert schedule_has_remaining_work(state) is False
     state.records["TW:2330"].enrichment = None
     state.enrichments_run = 5
+    # Spent window with pending work remains actionable via resume until hard cap.
+    assert schedule_has_remaining_work(state) is True
+    from app.services.tw_research.constants import MAX_ENRICHMENTS_PER_SCAN_CAP
+
+    state.max_enrichments_per_run = MAX_ENRICHMENTS_PER_SCAN_CAP
+    state.enrichments_run = MAX_ENRICHMENTS_PER_SCAN_CAP
     assert schedule_has_remaining_work(state) is False
 
 
@@ -621,3 +630,130 @@ def test_market_data_not_ready_defers_create_without_override(
     )
     assert result.outcome == "skipped_market_data_not_ready"
     assert result.scan_id is None
+
+
+def test_durable_schedule_fails_closed_when_repo_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Repo:
+        def is_available(self) -> bool:
+            return False
+
+    monkeypatch.setattr(
+        "app.repositories.tw_research_repository.tw_research_repository",
+        _Repo(),
+    )
+    catalog = {"TW:2330": _tw("TW:2330")}
+    fetches: list[str] = []
+
+    def loader(stock, limit, *, max_month_fetches):  # noqa: ANN001
+        del limit, max_month_fetches
+        fetches.append(stock.id)
+        return [], 0
+
+    service = TwResearchScanService(
+        history_loader=loader,
+        stock_loader=lambda stock_id: catalog.get(stock_id),
+        persist=True,
+    )
+    result = run_scheduled_research(
+        user_id="schedule-owner",
+        enabled=True,
+        trading_day="2024-06-28",
+        max_batches=1,
+        service=service,
+        now=datetime(2024, 6, 28, 16, 0, tzinfo=TZ),
+        require_market_data=False,
+    )
+    assert result.outcome == "deferred_lock"
+    assert "schedule_coordination_unavailable" in result.notes
+    assert result.scan_id is None
+    assert fetches == []
+
+
+def test_enrichment_window_resume_across_schedule_ticks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.tw_research.enrichment import EnrichmentResult, ProvenanceField
+    from app.services.tw_research.scan import SymbolScanRecord
+
+    catalog = {f"TW:{n}": _tw(f"TW:{n}") for n in ("2330", "2454", "2303")}
+    service = TwResearchScanService(
+        history_loader=lambda stock, limit, *, max_month_fetches: ([], 0),
+        stock_loader=lambda stock_id: catalog.get(stock_id),
+        persist=False,
+    )
+    state = service.create_scan(
+        UniverseSelector(mode="stock_ids", stock_ids=("TW:2330", "TW:2454", "TW:2303")),
+        trading_day="2024-06-28",
+        target_count=10,
+        user_id="schedule-owner",
+        max_enrichments_per_run=1,
+        now=datetime(2024, 6, 28, 16, 0, tzinfo=TZ),
+    )
+    state.selector = UniverseSelector(mode="starter_preset")
+    state.status = "verified_ready"
+    state.active_snapshot_id = "snap-1"
+    state.cursor = 3
+    state.qualified_ids = ["TW:2330", "TW:2454", "TW:2303"]
+    for stock_id in state.qualified_ids:
+        state.records[stock_id] = SymbolScanRecord(
+            stock_id=stock_id,
+            stage="B",
+            readiness="technically_qualified",
+            daily={"passStatus": "pass"},
+            monthly={"passStatus": "pass"},
+        )
+
+    def _enrich(stock_id: str, **kwargs):  # noqa: ANN001
+        del kwargs
+        return EnrichmentResult(
+            stock_id=stock_id,
+            qualified=True,
+            fields={
+                "peg": ProvenanceField(
+                    field="peg",
+                    status="unavailable",
+                    source="none",
+                    reason="verified_eps_growth_denominator_unavailable",
+                )
+            },
+        )
+
+    # Spend the first enrichment window.
+    state = service.run_enrichment_batch(state.scan_id, batch_size=1, enricher=_enrich)
+    assert state.enrichments_run == 1
+    assert state.records["TW:2454"].enrichment is None
+
+    monkeypatch.setattr(
+        service,
+        "list_scans",
+        lambda user_id, limit=20: [
+            {
+                "scanId": state.scan_id,
+                "tradingDay": "2024-06-28",
+                "selectorMode": "starter_preset",
+                "status": "verified_ready",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        "app.services.tw_research.scan.enrich_qualified_symbol",
+        _enrich,
+    )
+    result = run_scheduled_research(
+        user_id="schedule-owner",
+        enabled=True,
+        trading_day="2024-06-28",
+        max_batches=0,
+        max_enrich_batches=3,
+        service=service,
+        now=datetime(2024, 6, 28, 17, 0, tzinfo=TZ),
+        require_market_data=False,
+    )
+    assert "enrichment_window_resumed" in result.notes
+    done = service.get_scan(state.scan_id)
+    assert done is not None
+    assert all(done.records[sid].enrichment is not None for sid in done.qualified_ids)
+    assert done.max_enrichments_per_run > 1
+    assert result.outcome == "verified_ready"

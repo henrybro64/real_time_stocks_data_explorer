@@ -914,6 +914,84 @@ class TwResearchRepository(SessionBoundRepository):
                 "new_max": new_max,
             }
 
+    def resume_enrichment_window(
+        self,
+        scan_id: str,
+        *,
+        additional_enrichments: int,
+        max_cap: int,
+    ) -> dict[str, Any] | None:
+        """Atomically open another bounded enrichment window (#330).
+
+        Raises ``max_enrichments_per_run`` by ``additional_enrichments`` up to
+        ``max_cap`` when persisted qualified symbols still lack enrichment.
+        Rejects while an enrichment lease is held so concurrent workers cannot
+        double-grant windows.
+        """
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            row = session.execute(
+                select(TwResearchScan)
+                .where(TwResearchScan.scan_id == scan_id)
+                .with_for_update()
+            ).scalar_one_or_none()
+            if row is None:
+                return None
+            now = datetime.now(timezone.utc)
+            if str(row.status) == "failed":
+                return {
+                    "ok": False,
+                    "code": "scan_failed",
+                    "scan": _scan_to_dict(row),
+                }
+            lease_until = _as_utc(getattr(row, "enrich_reserve_expires_at", None))
+            reserved = list(getattr(row, "enrich_reserve_ids_json", None) or [])
+            if lease_until is not None and lease_until > now and reserved:
+                return {
+                    "ok": False,
+                    "code": "active_enrichment_lease",
+                    "scan": _scan_to_dict(row),
+                }
+            pending = _unenriched_qualified_ids(session, row)
+            if not pending:
+                return {
+                    "ok": False,
+                    "code": "enrichment_complete",
+                    "scan": _scan_to_dict(row),
+                }
+            previous_max = int(row.max_enrichments_per_run)
+            remaining = max(0, previous_max - int(row.enrichments_run))
+            if remaining > 0:
+                return {
+                    "ok": False,
+                    "code": "enrichment_budget_remaining",
+                    "scan": _scan_to_dict(row),
+                }
+            new_max = min(int(max_cap), previous_max + int(additional_enrichments))
+            if new_max <= previous_max:
+                return {
+                    "ok": False,
+                    "code": "enrichment_cap_reached",
+                    "scan": _scan_to_dict(row),
+                }
+            row.max_enrichments_per_run = new_max
+            notes = list(row.notes_json or [])
+            notes.append(
+                "enrichment_window_opened:"
+                f"+{new_max - previous_max}:max={new_max}:pending={len(pending)}"
+            )
+            row.notes_json = notes[-50:]
+            row.updated_at = now
+            session.commit()
+            return {
+                "ok": True,
+                "code": "resumed",
+                "scan": _scan_to_dict(row),
+                "previous_max": previous_max,
+                "new_max": new_max,
+                "pending": len(pending),
+            }
+
     def acquire_history_flight(
         self,
         *,

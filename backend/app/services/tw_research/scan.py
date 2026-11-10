@@ -34,6 +34,7 @@ from app.services.quote_service import quote_service
 from app.services.tw_research.constants import (
     CALCULATION_VERSION,
     DEFAULT_BUDGET_WINDOW_MONTH_FETCHES,
+    DEFAULT_ENRICHMENT_WINDOW_SIZE,
     DEFAULT_MAX_ENRICHMENTS_PER_RUN,
     DEFAULT_MAX_IN_FLIGHT_SCAN_BATCHES,
     DEFAULT_MAX_UPSTREAM_MONTH_FETCHES,
@@ -47,6 +48,7 @@ from app.services.tw_research.constants import (
     HISTORY_FLIGHT_POLL_MAX_SECONDS,
     HISTORY_FLIGHT_RENEW_INTERVAL_SECONDS,
     HISTORY_FLIGHT_WAIT_MAX_SECONDS,
+    MAX_ENRICHMENTS_PER_SCAN_CAP,
     MAX_UPSTREAM_MONTH_FETCHES_CAP,
     PREFERRED_DAILY_HISTORY_LIMIT,
     PRICE_BASIS,
@@ -152,6 +154,28 @@ class TwResearchDurableStoreError(RuntimeError):
         self.scan_id = scan_id
         self.operation = operation
         self.retryable = True
+
+
+class TwResearchHistoryCoordinationError(RuntimeError):
+    """History-flight ownership was lost or became uncertain mid-fetch (#329).
+
+    Not a definitive technical screening outcome. Callers must not persist a
+    screening result for the affected symbol; a later worker may retry after
+    reclaiming the flight. Upstream bars already written remain reusable.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        scan_id: str | None = None,
+        stock_id: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.scan_id = scan_id
+        self.stock_id = stock_id
+        self.retryable = True
+        self.operation = "history_flight"
 
 
 class HistoryLoader(Protocol):
@@ -760,6 +784,127 @@ class TwResearchScanService:
                 self._refresh_status_locked(state)
             return state
 
+    def resume_enrichment_window(
+        self,
+        scan_id: str,
+        *,
+        additional_enrichments: int = DEFAULT_ENRICHMENT_WINDOW_SIZE,
+    ) -> ScanState:
+        """Open another bounded enrichment window when the run budget is spent (#330).
+
+        ``max_enrichments_per_run`` is a per-scan window allowance (not a lifetime
+        prohibition). This raises it by ``additional_enrichments`` up to
+        ``MAX_ENRICHMENTS_PER_SCAN_CAP``. Durable path is a single PostgreSQL
+        transaction; concurrent grants and mid-lease resumes are rejected.
+        """
+        if additional_enrichments <= 0:
+            raise ValueError("additional_enrichments must be > 0")
+        if additional_enrichments > DEFAULT_ENRICHMENT_WINDOW_SIZE:
+            raise ValueError(
+                f"additional_enrichments must be 1..{DEFAULT_ENRICHMENT_WINDOW_SIZE}"
+            )
+
+        with self._run_lock_for(scan_id):
+            state = self.get_scan(scan_id)
+            if state is None:
+                raise KeyError(f"Unknown scan_id: {scan_id}")
+            if self._persist:
+                return self._resume_enrichment_window_durable(
+                    state, additional_enrichments=additional_enrichments
+                )
+
+            if state.status == "failed":
+                raise TwResearchConflictError(
+                    "Cannot resume enrichment on a failed scan.",
+                    scan_id=scan_id,
+                    operation="resume_enrichment_window",
+                    code="scan_failed",
+                )
+            pending = [
+                stock_id
+                for stock_id in state.qualified_ids
+                if stock_id in state.records
+                and state.records[stock_id].enrichment is None
+            ]
+            if not pending:
+                raise TwResearchConflictError(
+                    "No pending enrichment remains.",
+                    scan_id=scan_id,
+                    operation="resume_enrichment_window",
+                    code="enrichment_complete",
+                )
+            remaining = max(0, state.max_enrichments_per_run - state.enrichments_run)
+            if remaining > 0:
+                raise TwResearchConflictError(
+                    "Enrichment budget still remains; resume not required.",
+                    scan_id=scan_id,
+                    operation="resume_enrichment_window",
+                    code="enrichment_budget_remaining",
+                )
+            previous_max = state.max_enrichments_per_run
+            new_max = min(
+                MAX_ENRICHMENTS_PER_SCAN_CAP,
+                previous_max + additional_enrichments,
+            )
+            if new_max <= previous_max:
+                raise TwResearchConflictError(
+                    "Enrichment window already at the safety cap.",
+                    scan_id=scan_id,
+                    operation="resume_enrichment_window",
+                    code="enrichment_cap_reached",
+                )
+            with self._lock:
+                state.max_enrichments_per_run = new_max
+                state.notes.append(
+                    "enrichment_window_opened:"
+                    f"+{new_max - previous_max}:max={new_max}:pending={len(pending)}"
+                )
+                state.updated_at = datetime.now(TAIPEI).isoformat()
+            return state
+
+    def _resume_enrichment_window_durable(
+        self,
+        state: ScanState,
+        *,
+        additional_enrichments: int,
+    ) -> ScanState:
+        repo = self._require_durable_repository(
+            scan_id=state.scan_id, operation="resume_enrichment_window"
+        )
+        result = self._run_durable(
+            scan_id=state.scan_id,
+            operation="resume_enrichment_window",
+            action=lambda: repo.resume_enrichment_window(
+                state.scan_id,
+                additional_enrichments=additional_enrichments,
+                max_cap=MAX_ENRICHMENTS_PER_SCAN_CAP,
+            ),
+            state=state,
+        )
+        if result is None:
+            raise KeyError(f"Unknown scan_id: {state.scan_id}")
+        if not result.get("ok"):
+            code = str(result.get("code") or "conflict")
+            messages = {
+                "active_enrichment_lease": (
+                    "Cannot resume enrichment while an enrichment lease is held."
+                ),
+                "enrichment_complete": "No pending enrichment remains.",
+                "enrichment_budget_remaining": (
+                    "Enrichment budget still remains; resume not required."
+                ),
+                "enrichment_cap_reached": "Enrichment window already at the safety cap.",
+                "scan_failed": "Cannot resume enrichment on a failed scan.",
+            }
+            raise TwResearchConflictError(
+                messages.get(code, f"Enrichment resume conflict ({code})."),
+                scan_id=state.scan_id,
+                operation="resume_enrichment_window",
+                code=code,
+            )
+        self._hydrate_state_from_durable(state)
+        return state
+
     def _resume_budget_window_durable(
         self,
         state: ScanState,
@@ -899,6 +1044,20 @@ class TwResearchScanService:
                     return state
                 try:
                     self._process_symbol(state, stock_id, now=calculation_now)
+                except TwResearchHistoryCoordinationError:
+                    # Ownership lost mid-fetch: rewind this and remaining reserved
+                    # ids without writing a definitive screening outcome.
+                    with self._lock:
+                        remaining = batch_ids[batch_ids.index(stock_id) :]
+                        state.cursor = max(0, state.cursor - len(remaining))
+                        state.status = "partial"
+                        note = f"history_flight_coordination_lost:{stock_id}"
+                        if note not in state.notes:
+                            state.notes.append(note)
+                        state.updated_at = datetime.now(TAIPEI).isoformat()
+                    self._persist_scan(state)
+                    self._rewind_durable_cursor(state)
+                    return state
                 except TwResearchDurableStoreError:
                     # Required durable write failed — stop the batch; do not
                     # convert this into a per-symbol screening error.
@@ -1441,6 +1600,8 @@ class TwResearchScanService:
         renew_thread.start()
         success = False
         coverage_complete = False
+        candles: list[CandleRecord] = []
+        months_used = 0
         try:
             candles, months_used = self._history_loader(
                 stock, limit, max_month_fetches=remaining_budget
@@ -1449,7 +1610,6 @@ class TwResearchScanService:
             coverage_complete = stored_history_covers_requirement(
                 stock, limit=limit, expect_through=state.trading_day
             )
-            return candles, months_used
         finally:
             stop_renew.set()
             renew_thread.join(timeout=1.0)
@@ -1480,6 +1640,16 @@ class TwResearchScanService:
                     exc_info=True,
                     extra={"stock_id": stock.id, "flight_key": flight_key},
                 )
+        if renew_state["stale"]:
+            # Ownership lost during fetch: do not return a coordinated success
+            # that would drive screening/persistence under a stolen lease.
+            raise TwResearchHistoryCoordinationError(
+                "History flight lease lost or uncertain during upstream fetch; "
+                "retry after reclaim.",
+                scan_id=state.scan_id,
+                stock_id=stock.id,
+            )
+        return candles, months_used
 
     def _claim_batch_ids(self, state: ScanState, *, batch_size: int) -> list[str] | None:
         """Reserve next symbol slice; None means already complete.
