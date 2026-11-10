@@ -230,6 +230,8 @@ def _state_from_scan_row(row: dict[str, Any]) -> ScanState:
         enrichments_run=int(row["enrichments_run"]),
         max_enrichments_per_run=int(row["max_enrichments_per_run"]),
         enrich_lease_generation=int(row.get("enrich_lease_generation") or 0),
+        scan_lease_generation=int(row.get("scan_lease_generation") or 0),
+        budget_windows_opened=int(row.get("budget_windows_opened") or 0),
         created_at=created.isoformat() if hasattr(created, "isoformat") else str(created),
         updated_at=updated.isoformat() if hasattr(updated, "isoformat") else str(updated),
         notes=list(row.get("notes_json") or []),

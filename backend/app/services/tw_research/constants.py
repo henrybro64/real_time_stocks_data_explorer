@@ -31,8 +31,18 @@ DEFAULT_BUDGET_WINDOW_MONTH_FETCHES = 40
 MAX_UPSTREAM_MONTH_FETCHES_CAP = 200
 # Cluster-wide concurrent scan-batch leases (manual + scheduled). Not a universe cap.
 DEFAULT_MAX_IN_FLIGHT_SCAN_BATCHES = 2
+# Cross-pod history single-flight lease (#329). Short enough to recover after pod crash.
+HISTORY_FLIGHT_LEASE_SECONDS = 120
+HISTORY_FLIGHT_WAIT_MAX_SECONDS = 90
+HISTORY_FLIGHT_POLL_INITIAL_SECONDS = 0.05
+HISTORY_FLIGHT_POLL_MAX_SECONDS = 1.0
+# Named coordination lock for atomic admission (#329).
+SCAN_ADMISSION_LOCK_NAME = "scan_admission"
 HISTORY_BUDGET_EXHAUSTED_REASON = "history_budget_exhausted"
 DEFAULT_TARGET_COUNT = 10
+# Schedule tick: bounded batches + enrichment windows per invocation (#330).
+DEFAULT_SCHEDULE_MAX_BATCHES = 5
+DEFAULT_SCHEDULE_MAX_ENRICH_BATCHES = 2
 
 # Indicator warm-up guidance (documented; enforced as insufficient_history).
 # Daily MACD(12,26,9) needs roughly 26 + 9 completed sessions after seed.

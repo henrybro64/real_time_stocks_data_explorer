@@ -6,10 +6,22 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.db.models import TwResearchExportSnapshot, TwResearchScan, TwResearchSymbolResult
+from app.db.models import (
+    TwResearchCoordinationLock,
+    TwResearchExportSnapshot,
+    TwResearchHistoryFlight,
+    TwResearchScan,
+    TwResearchSymbolResult,
+)
 from app.repositories.session import SessionBoundRepository
+from app.services.tw_research.constants import (
+    DEFAULT_MAX_IN_FLIGHT_SCAN_BATCHES,
+    HISTORY_FLIGHT_LEASE_SECONDS,
+    SCAN_ADMISSION_LOCK_NAME,
+)
 
 # How long a claimed batch may remain unfinished before another worker can reclaim.
 BATCH_LEASE_SECONDS = 300
@@ -73,6 +85,46 @@ def _enriched_qualified_count(session: Session, row: TwResearchScan) -> int:
     return sum(1 for stock_id in qualified if enriched.get(stock_id))
 
 
+def _count_active_batch_leases(
+    session: Session,
+    *,
+    now: datetime,
+    exclude_scan_id: str | None = None,
+) -> int:
+    stmt = (
+        select(func.count())
+        .select_from(TwResearchScan)
+        .where(
+            TwResearchScan.reserve_expires_at.is_not(None),
+            TwResearchScan.reserve_expires_at > now,
+        )
+    )
+    if exclude_scan_id:
+        stmt = stmt.where(TwResearchScan.scan_id != exclude_scan_id)
+    total = session.execute(stmt).scalar_one()
+    return int(total or 0)
+
+
+def _ensure_coordination_lock(session: Session, lock_name: str) -> None:
+    """Insert the named lock row if missing (idempotent; safe under races)."""
+    if session.get(TwResearchCoordinationLock, lock_name) is not None:
+        return
+    try:
+        with session.begin_nested():
+            session.add(
+                TwResearchCoordinationLock(
+                    lock_name=lock_name,
+                    holder_token=None,
+                    lease_expires_at=None,
+                    updated_at=datetime.now(timezone.utc),
+                )
+            )
+            session.flush()
+    except IntegrityError:
+        # Concurrent creator won; row is visible after the savepoint abort.
+        session.expire_all()
+
+
 def _scan_to_dict(row: TwResearchScan) -> dict[str, Any]:
     return {
         "scan_id": row.scan_id,
@@ -92,6 +144,8 @@ def _scan_to_dict(row: TwResearchScan) -> dict[str, Any]:
         "enrich_reserve_ids_json": list(getattr(row, "enrich_reserve_ids_json", None) or []),
         "enrich_reserve_expires_at": getattr(row, "enrich_reserve_expires_at", None),
         "enrich_lease_generation": int(getattr(row, "enrich_lease_generation", 0) or 0),
+        "scan_lease_generation": int(getattr(row, "scan_lease_generation", 0) or 0),
+        "budget_windows_opened": int(getattr(row, "budget_windows_opened", 0) or 0),
         "target_count": int(row.target_count),
         "upstream_month_fetches": int(row.upstream_month_fetches),
         "max_upstream_month_fetches": int(row.max_upstream_month_fetches),
@@ -150,12 +204,17 @@ _SCAN_PROGRESS_KEYS = frozenset(
         "enrich_reserve_ids_json",
         "enrich_reserve_expires_at",
         "enrich_lease_generation",
+        "scan_lease_generation",
+        "budget_windows_opened",
     }
 )
 _SCAN_COUNTER_MAX_KEYS = frozenset(
     {
         "upstream_month_fetches",
         "enrichments_run",
+        # Resume raises the cap; stale workers must not regress it (#329).
+        "max_upstream_month_fetches",
+        "max_enrichments_per_run",
     }
 )
 _SCAN_STATUS_RANK = {
@@ -195,6 +254,8 @@ class TwResearchRepository(SessionBoundRepository):
                 insert_payload.setdefault("enrich_reserve_ids_json", [])
                 insert_payload.setdefault("enrich_reserve_expires_at", None)
                 insert_payload.setdefault("enrich_lease_generation", 0)
+                insert_payload.setdefault("scan_lease_generation", 0)
+                insert_payload.setdefault("budget_windows_opened", 0)
                 session.add(
                     TwResearchScan(
                         **insert_payload,
@@ -269,16 +330,27 @@ class TwResearchRepository(SessionBoundRepository):
         batch_size: int,
         terminal_statuses: set[str],
         lease_seconds: int = BATCH_LEASE_SECONDS,
+        max_in_flight: int | None = DEFAULT_MAX_IN_FLIGHT_SCAN_BATCHES,
     ) -> dict[str, Any] | None:
-        """Atomically reserve the next ``batch_size`` stock IDs (#318).
+        """Atomically admit + reserve the next ``batch_size`` stock IDs (#318/#329).
 
         ``cursor`` is the completed watermark (symbols with persisted results).
         Reservations advance ``reserve_cursor`` under a short lease so a crashed
-        worker does not permanently skip unfinished symbols. Uses
-        ``SELECT ... FOR UPDATE``.
+        worker does not permanently skip unfinished symbols.
+
+        Cluster-wide admission is serialized via the ``scan_admission`` coordination
+        lock in the same transaction as the claim — never a TOCTOU count-then-claim.
         """
         session_factory = self._session_factory()
         with session_factory() as session:
+            now = datetime.now(timezone.utc)
+            _ensure_coordination_lock(session, SCAN_ADMISSION_LOCK_NAME)
+            session.execute(
+                select(TwResearchCoordinationLock)
+                .where(TwResearchCoordinationLock.lock_name == SCAN_ADMISSION_LOCK_NAME)
+                .with_for_update()
+            ).scalar_one()
+
             row = session.execute(
                 select(TwResearchScan)
                 .where(TwResearchScan.scan_id == scan_id)
@@ -286,7 +358,6 @@ class TwResearchRepository(SessionBoundRepository):
             ).scalar_one_or_none()
             if row is None:
                 return None
-            now = datetime.now(timezone.utc)
             stock_ids = list(row.stock_ids_json or [])
             lease_until = _as_utc(getattr(row, "reserve_expires_at", None))
             reserve_cursor = int(getattr(row, "reserve_cursor", 0) or 0)
@@ -301,19 +372,44 @@ class TwResearchRepository(SessionBoundRepository):
                 reserve_cursor = cursor
                 lease_until = None
 
-            if (
+            own_lease_active = (
                 lease_until is not None
                 and lease_until > now
                 and reserve_cursor > cursor
-            ):
+            )
+            if own_lease_active:
                 session.commit()
                 return {
                     "batch_ids": [],
                     "scan": _scan_to_dict(row),
                     "already_complete": False,
                     "lease_held": True,
+                    "admission_denied": False,
                     "reserved_from": cursor,
+                    "lease_generation": int(
+                        getattr(row, "scan_lease_generation", 0) or 0
+                    ),
                 }
+
+            if max_in_flight is not None:
+                in_flight = _count_active_batch_leases(
+                    session, now=now, exclude_scan_id=scan_id
+                )
+                if in_flight >= int(max_in_flight):
+                    session.commit()
+                    return {
+                        "batch_ids": [],
+                        "scan": _scan_to_dict(row),
+                        "already_complete": False,
+                        "lease_held": False,
+                        "admission_denied": True,
+                        "in_flight": in_flight,
+                        "limit": int(max_in_flight),
+                        "reserved_from": cursor,
+                        "lease_generation": int(
+                            getattr(row, "scan_lease_generation", 0) or 0
+                        ),
+                    }
 
             cursor = _first_missing_symbol_index(session, scan_id, stock_ids)
             row.cursor = cursor
@@ -326,11 +422,17 @@ class TwResearchRepository(SessionBoundRepository):
                     "scan": _scan_to_dict(row),
                     "already_complete": True,
                     "lease_held": False,
+                    "admission_denied": False,
                     "reserved_from": cursor,
+                    "lease_generation": int(
+                        getattr(row, "scan_lease_generation", 0) or 0
+                    ),
                 }
             if row.status == "queued":
                 row.status = "running"
             batch_ids = stock_ids[cursor : cursor + batch_size]
+            generation = int(getattr(row, "scan_lease_generation", 0) or 0) + 1
+            row.scan_lease_generation = generation
             row.reserve_cursor = cursor + len(batch_ids)
             row.reserve_expires_at = now + timedelta(seconds=max(1, int(lease_seconds)))
             row.updated_at = now
@@ -340,11 +442,23 @@ class TwResearchRepository(SessionBoundRepository):
                 "scan": _scan_to_dict(row),
                 "already_complete": False,
                 "lease_held": False,
+                "admission_denied": False,
                 "reserved_from": cursor,
+                "lease_generation": generation,
             }
 
-    def complete_scan_batch(self, scan_id: str, *, status: str) -> dict[str, Any] | None:
-        """Advance the completed watermark from persisted symbol results and clear the lease."""
+    def complete_scan_batch(
+        self,
+        scan_id: str,
+        *,
+        status: str,
+        lease_generation: int | None = None,
+    ) -> dict[str, Any] | None:
+        """Advance the completed watermark from persisted symbol results and clear the lease.
+
+        When ``lease_generation`` is supplied and no longer matches, this is a
+        no-op on the lease (another worker already reclaimed).
+        """
         session_factory = self._session_factory()
         with session_factory() as session:
             row = session.execute(
@@ -354,6 +468,16 @@ class TwResearchRepository(SessionBoundRepository):
             ).scalar_one_or_none()
             if row is None:
                 return None
+            current_generation = int(getattr(row, "scan_lease_generation", 0) or 0)
+            stale = (
+                lease_generation is not None
+                and int(lease_generation) != current_generation
+            )
+            if stale:
+                result = _scan_to_dict(row)
+                result["stale_lease"] = True
+                session.commit()
+                return result
             stock_ids = list(row.stock_ids_json or [])
             completed = _first_missing_symbol_index(session, scan_id, stock_ids)
             row.cursor = completed
@@ -362,7 +486,9 @@ class TwResearchRepository(SessionBoundRepository):
             row.status = status
             row.updated_at = datetime.now(timezone.utc)
             session.commit()
-            return _scan_to_dict(row)
+            result = _scan_to_dict(row)
+            result["stale_lease"] = False
+            return result
 
     def rewind_scan_cursor(self, scan_id: str, *, new_cursor: int, status: str) -> None:
         """Clear the lease and set the completed watermark from durable results.
@@ -661,19 +787,342 @@ class TwResearchRepository(SessionBoundRepository):
         """Count scans whose batch reservation lease is still live (#329)."""
         session_factory = self._session_factory()
         with session_factory() as session:
-            now = datetime.now(timezone.utc)
-            stmt = (
-                select(func.count())
-                .select_from(TwResearchScan)
-                .where(
-                    TwResearchScan.reserve_expires_at.is_not(None),
-                    TwResearchScan.reserve_expires_at > now,
-                )
+            return _count_active_batch_leases(
+                session,
+                now=datetime.now(timezone.utc),
+                exclude_scan_id=exclude_scan_id,
             )
-            if exclude_scan_id:
-                stmt = stmt.where(TwResearchScan.scan_id != exclude_scan_id)
-            total = session.execute(stmt).scalar_one()
-            return int(total or 0)
+
+    def resume_budget_window(
+        self,
+        scan_id: str,
+        *,
+        additional_month_fetches: int,
+        max_cap: int,
+        rejection_reason: str,
+        allowed_statuses: set[str],
+    ) -> dict[str, Any] | None:
+        """Atomically open a bounded budget window and clear retryable rows (#329).
+
+        Single transaction: FOR UPDATE scan → reject active lease → delete
+        retryable symbol rows → raise max → rewind cursor → bump window counter.
+        """
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            row = session.execute(
+                select(TwResearchScan)
+                .where(TwResearchScan.scan_id == scan_id)
+                .with_for_update()
+            ).scalar_one_or_none()
+            if row is None:
+                return None
+            now = datetime.now(timezone.utc)
+            lease_until = _as_utc(getattr(row, "reserve_expires_at", None))
+            reserve_cursor = int(getattr(row, "reserve_cursor", 0) or 0)
+            cursor = int(row.cursor)
+            if (
+                lease_until is not None
+                and lease_until > now
+                and reserve_cursor > cursor
+            ):
+                return {
+                    "ok": False,
+                    "code": "active_batch_lease",
+                    "scan": _scan_to_dict(row),
+                    "cleared": [],
+                }
+            if str(row.status) == "failed":
+                return {
+                    "ok": False,
+                    "code": "scan_failed",
+                    "scan": _scan_to_dict(row),
+                    "cleared": [],
+                }
+            if str(row.status) not in allowed_statuses:
+                return {
+                    "ok": False,
+                    "code": "resume_not_applicable",
+                    "scan": _scan_to_dict(row),
+                    "cleared": [],
+                }
+
+            symbol_rows = list(
+                session.execute(
+                    select(TwResearchSymbolResult).where(
+                        TwResearchSymbolResult.scan_id == scan_id
+                    )
+                ).scalars()
+            )
+            cleared: list[str] = []
+            for symbol_row in symbol_rows:
+                payload = dict(symbol_row.payload_json or {})
+                if payload.get("rejection_reason") != rejection_reason:
+                    continue
+                cleared.append(symbol_row.stock_id)
+                session.delete(symbol_row)
+
+            previous_max = int(row.max_upstream_month_fetches)
+            new_max = min(int(max_cap), previous_max + int(additional_month_fetches))
+            # Require an exhausted terminal state or retryable rows so concurrent
+            # resumes cannot stack duplicate windows after the first commit (#329).
+            if str(row.status) != "budget_exhausted" and not cleared:
+                return {
+                    "ok": False,
+                    "code": "resume_not_applicable",
+                    "scan": _scan_to_dict(row),
+                    "cleared": [],
+                }
+            if new_max <= previous_max and not cleared:
+                return {
+                    "ok": False,
+                    "code": "budget_cap_reached",
+                    "scan": _scan_to_dict(row),
+                    "cleared": [],
+                }
+
+            stock_ids = list(row.stock_ids_json or [])
+            # After deletes, first gap is the resume watermark.
+            session.flush()
+            new_cursor = _first_missing_symbol_index(session, scan_id, stock_ids)
+            row.max_upstream_month_fetches = new_max
+            row.budget_windows_opened = int(
+                getattr(row, "budget_windows_opened", 0) or 0
+            ) + 1
+            row.cursor = new_cursor
+            row.reserve_cursor = new_cursor
+            row.reserve_expires_at = None
+            if new_cursor >= len(stock_ids):
+                row.status = "completed_processing"
+            else:
+                row.status = "partial"
+            notes = list(row.notes_json or [])
+            notes.append(
+                "budget_window_opened:"
+                f"+{new_max - previous_max}:max={new_max}:cleared={len(cleared)}"
+            )
+            row.notes_json = notes[-50:]
+            row.updated_at = now
+            session.commit()
+            return {
+                "ok": True,
+                "code": "resumed",
+                "scan": _scan_to_dict(row),
+                "cleared": cleared,
+                "previous_max": previous_max,
+                "new_max": new_max,
+            }
+
+    def acquire_history_flight(
+        self,
+        *,
+        flight_key: str,
+        stock_id: str,
+        compatibility_key: str,
+        owner_token: str,
+        lease_seconds: int = HISTORY_FLIGHT_LEASE_SECONDS,
+    ) -> dict[str, Any]:
+        """Claim or observe a cross-pod history backfill lease (#329).
+
+        Returns ``status`` in {acquired, busy, ready}. Transactions are short —
+        callers must never hold this lock while performing upstream HTTP.
+        """
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            now = datetime.now(timezone.utc)
+            row = session.execute(
+                select(TwResearchHistoryFlight)
+                .where(TwResearchHistoryFlight.flight_key == flight_key)
+                .with_for_update()
+            ).scalar_one_or_none()
+            if row is None:
+                row = TwResearchHistoryFlight(
+                    flight_key=flight_key,
+                    stock_id=stock_id,
+                    compatibility_key=compatibility_key,
+                    owner_token=owner_token,
+                    generation=1,
+                    state="held",
+                    lease_expires_at=now
+                    + timedelta(seconds=max(1, int(lease_seconds))),
+                    created_at=now,
+                    updated_at=now,
+                )
+                session.add(row)
+                session.commit()
+                return {
+                    "status": "acquired",
+                    "generation": 1,
+                    "owner_token": owner_token,
+                }
+
+            lease_until = _as_utc(row.lease_expires_at)
+            if row.state == "ready" and (
+                lease_until is None or lease_until > now
+            ):
+                # Ready marker stays briefly so waiters can reuse committed bars.
+                session.commit()
+                return {
+                    "status": "ready",
+                    "generation": int(row.generation),
+                    "owner_token": row.owner_token,
+                }
+
+            held_active = (
+                row.state == "held"
+                and lease_until is not None
+                and lease_until > now
+                and row.owner_token != owner_token
+            )
+            if held_active:
+                session.commit()
+                return {
+                    "status": "busy",
+                    "generation": int(row.generation),
+                    "owner_token": row.owner_token,
+                    "lease_expires_at": lease_until,
+                }
+
+            generation = int(row.generation) + 1
+            row.generation = generation
+            row.owner_token = owner_token
+            row.compatibility_key = compatibility_key
+            row.stock_id = stock_id
+            row.state = "held"
+            row.lease_expires_at = now + timedelta(
+                seconds=max(1, int(lease_seconds))
+            )
+            row.updated_at = now
+            session.commit()
+            return {
+                "status": "acquired",
+                "generation": generation,
+                "owner_token": owner_token,
+            }
+
+    def complete_history_flight(
+        self,
+        *,
+        flight_key: str,
+        owner_token: str,
+        generation: int,
+        success: bool,
+        ready_ttl_seconds: int = 30,
+    ) -> dict[str, Any]:
+        """Release a history flight with fencing; stale owners are ignored."""
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            row = session.execute(
+                select(TwResearchHistoryFlight)
+                .where(TwResearchHistoryFlight.flight_key == flight_key)
+                .with_for_update()
+            ).scalar_one_or_none()
+            if row is None:
+                return {"ok": False, "stale": True}
+            if row.owner_token != owner_token or int(row.generation) != int(generation):
+                session.commit()
+                return {"ok": False, "stale": True}
+            now = datetime.now(timezone.utc)
+            if success:
+                row.state = "ready"
+                row.lease_expires_at = now + timedelta(
+                    seconds=max(1, int(ready_ttl_seconds))
+                )
+            else:
+                row.state = "failed"
+                row.lease_expires_at = now
+            row.updated_at = now
+            session.commit()
+            return {"ok": True, "stale": False, "state": row.state}
+
+    def find_compatible_scan(
+        self,
+        *,
+        user_id: str,
+        trading_day: str,
+        universe_version: str,
+        calculation_version: str,
+        selector_mode: str,
+        target_count: int,
+    ) -> dict[str, Any] | None:
+        """Return the newest non-failed compatible scan for schedule reuse (#330)."""
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            rows = session.execute(
+                select(TwResearchScan)
+                .where(
+                    TwResearchScan.user_id == user_id,
+                    TwResearchScan.trading_day == trading_day,
+                    TwResearchScan.universe_version == universe_version,
+                    TwResearchScan.calculation_version == calculation_version,
+                    TwResearchScan.target_count == target_count,
+                    TwResearchScan.status != "failed",
+                )
+                .order_by(TwResearchScan.updated_at.desc(), TwResearchScan.scan_id.desc())
+                .limit(20)
+            ).scalars().all()
+            for row in rows:
+                selector = dict(row.selector_json or {})
+                if selector.get("mode") != selector_mode:
+                    continue
+                return _scan_to_dict(row)
+            return None
+
+    def claim_schedule_tick_lock(
+        self,
+        *,
+        lock_name: str,
+        owner_token: str,
+        lease_seconds: int = 300,
+    ) -> dict[str, Any]:
+        """Bounded schedule-tick lock so duplicate CronJob pods do not overlap (#330)."""
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            now = datetime.now(timezone.utc)
+            _ensure_coordination_lock(session, lock_name)
+            row = session.execute(
+                select(TwResearchCoordinationLock)
+                .where(TwResearchCoordinationLock.lock_name == lock_name)
+                .with_for_update()
+            ).scalar_one()
+            lease_until = _as_utc(row.lease_expires_at)
+            if (
+                lease_until is not None
+                and lease_until > now
+                and row.holder_token
+                and row.holder_token != owner_token
+            ):
+                session.commit()
+                return {
+                    "acquired": False,
+                    "holder_token": row.holder_token,
+                    "lease_expires_at": lease_until,
+                }
+            row.holder_token = owner_token
+            row.lease_expires_at = now + timedelta(seconds=max(1, int(lease_seconds)))
+            row.updated_at = now
+            session.commit()
+            return {"acquired": True, "holder_token": owner_token}
+
+    def release_schedule_tick_lock(
+        self,
+        *,
+        lock_name: str,
+        owner_token: str,
+    ) -> None:
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            row = session.execute(
+                select(TwResearchCoordinationLock)
+                .where(TwResearchCoordinationLock.lock_name == lock_name)
+                .with_for_update()
+            ).scalar_one_or_none()
+            if row is None:
+                return
+            if row.holder_token == owner_token:
+                row.holder_token = None
+                row.lease_expires_at = None
+                row.updated_at = datetime.now(timezone.utc)
+            session.commit()
 
     def insert_export_snapshot(self, payload: dict[str, Any]) -> dict[str, Any]:
         session_factory = self._session_factory()
