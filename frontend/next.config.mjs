@@ -18,7 +18,8 @@ const backendProxyUrl = (
 const nextConfig = {
   reactStrictMode: true,
   experimental: {
-    // Covers the default 120s research batch. See research-proxy-timeout.mjs.
+    // Global rewrite proxy only — Next has no path-scoped timeout (#328).
+    // 150s covers the default 120s research batch. See research-proxy-timeout.mjs.
     proxyTimeout: RESEARCH_PROXY_TIMEOUT_MS,
   },
   // Shared contracts live next to frontend/ in the monorepo (and Docker image).
