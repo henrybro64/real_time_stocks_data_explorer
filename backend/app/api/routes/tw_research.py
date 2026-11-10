@@ -23,6 +23,7 @@ from app.schemas.tw_research import (
     RejectedStockResponse,
     ResearchContractResponse,
     ResolvedUniverseResponse,
+    ResumeBudgetWindowRequest,
     RunBatchRequest,
     RunEnrichmentBatchRequest,
     ScanListResponse,
@@ -41,6 +42,8 @@ from app.services.tw_research.export import (
 from app.services.tw_research.preset import starter_preset_stock_ids, starter_preset_theme_keys
 from app.services.tw_research.scan import (
     ScanState,
+    TwResearchAdmissionError,
+    TwResearchConflictError,
     TwResearchDurableStoreError,
     tw_research_scan_service,
 )
@@ -138,6 +141,22 @@ def run_scan_batch(
             body.scanId,
             batch_size=body.batchSize,
             timeout_seconds=body.timeoutSeconds,
+        )
+    )
+    return _snapshot(state)
+
+
+@router.post("/scans/resume-budget", response_model=ScanSnapshotResponse)
+def resume_budget_window(
+    body: ResumeBudgetWindowRequest,
+    user_id: str = Depends(get_effective_user_id),
+) -> ScanSnapshotResponse:
+    """Open a bounded history-budget window and reopen unresolved symbols (#329)."""
+    _require_owned_scan(body.scanId, user_id)
+    state = _call_or_http(
+        lambda: tw_research_scan_service.resume_budget_window(
+            body.scanId,
+            additional_month_fetches=body.additionalMonthFetches,
         )
     )
     return _snapshot(state)
@@ -417,8 +436,31 @@ def _call_or_http(action: Callable[[], T]) -> T:
         return action()
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except TwResearchConflictError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": exc.code,
+                "operation": exc.operation,
+                "scanId": exc.scan_id,
+                "message": str(exc),
+            },
+        ) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except TwResearchAdmissionError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "scan_admission_limited",
+                "retryable": True,
+                "operation": exc.operation,
+                "scanId": exc.scan_id,
+                "inFlight": exc.in_flight,
+                "limit": exc.limit,
+                "message": str(exc),
+            },
+        ) from exc
     except TwResearchDurableStoreError as exc:
         # Durable PostgreSQL path failed; do not pretend the batch succeeded.
         raise HTTPException(

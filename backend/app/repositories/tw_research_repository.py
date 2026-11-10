@@ -585,6 +585,50 @@ class TwResearchRepository(SessionBoundRepository):
             ).scalar_one()
             return int(total or 0)
 
+    def delete_symbol_results_by_rejection(
+        self,
+        scan_id: str,
+        *,
+        rejection_reason: str,
+    ) -> list[str]:
+        """Delete retryable symbol rows matching ``rejection_reason`` (#329)."""
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            rows = list(
+                session.execute(
+                    select(TwResearchSymbolResult).where(
+                        TwResearchSymbolResult.scan_id == scan_id
+                    )
+                ).scalars()
+            )
+            deleted: list[str] = []
+            for row in rows:
+                payload = dict(row.payload_json or {})
+                if payload.get("rejection_reason") != rejection_reason:
+                    continue
+                deleted.append(row.stock_id)
+                session.delete(row)
+            session.commit()
+            return deleted
+
+    def count_active_scan_batch_leases(self, *, exclude_scan_id: str | None = None) -> int:
+        """Count scans whose batch reservation lease is still live (#329)."""
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            now = datetime.now(timezone.utc)
+            stmt = (
+                select(func.count())
+                .select_from(TwResearchScan)
+                .where(
+                    TwResearchScan.reserve_expires_at.is_not(None),
+                    TwResearchScan.reserve_expires_at > now,
+                )
+            )
+            if exclude_scan_id:
+                stmt = stmt.where(TwResearchScan.scan_id != exclude_scan_id)
+            total = session.execute(stmt).scalar_one()
+            return int(total or 0)
+
     def insert_export_snapshot(self, payload: dict[str, Any]) -> dict[str, Any]:
         session_factory = self._session_factory()
         with session_factory() as session:

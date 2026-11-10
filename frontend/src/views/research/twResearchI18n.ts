@@ -32,6 +32,17 @@ const TW_RESEARCH_ROWS = [
   ],
   ["research.tw.createScan", "Create scan", "建立掃描"],
   ["research.tw.runBatch", "Run scan batch", "執行掃描批次"],
+  ["research.tw.resumeBudget", "Resume budget window", "恢復歷史預算視窗"],
+  [
+    "research.tw.errorResume",
+    "Resume budget window",
+    "恢復歷史預算視窗",
+  ],
+  [
+    "research.tw.evaluationLine",
+    "Definitive {definitive} · budget-exhausted {budget} · incomplete {incomplete} · unresolved {unresolved} · unprocessed {unprocessed}. Processed {processed} is not the same as valid results.",
+    "確定結果 {definitive} · 預算耗盡 {budget} · 不完整 {incomplete} · 未解決 {unresolved} · 未處理 {unprocessed}。已處理 {processed} 不等於有效結果。",
+  ],
   ["research.tw.runEnrichment", "Run enrichment batch", "執行 enrichment 批次"],
   ["research.tw.refresh", "Refresh snapshot", "重新整理快照"],
   ["research.tw.working", "Working…", "處理中…"],

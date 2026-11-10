@@ -79,6 +79,13 @@ class RunEnrichmentBatchRequest(BaseModel):
     batchSize: int = Field(default=10, ge=1, le=10)
 
 
+class ResumeBudgetWindowRequest(BaseModel):
+    """Open another bounded history-fetch window for unresolved symbols (#329)."""
+
+    scanId: str
+    additionalMonthFetches: int = Field(default=40, ge=1, le=40)
+
+
 class ScanSnapshotResponse(BaseModel):
     scan: dict[str, Any]
 

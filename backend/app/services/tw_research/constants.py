@@ -26,6 +26,12 @@ QUOTE_PROVIDER_CHUNK_SIZE = 20  # TWProvider.get_quotes_batch layer; distinct fr
 DEFAULT_EXTERNAL_WORKERS = 1
 DEFAULT_RUN_TIMEOUT_SECONDS = 120
 DEFAULT_MAX_UPSTREAM_MONTH_FETCHES = 40
+# #329: each explicit resume opens another bounded month-fetch window.
+DEFAULT_BUDGET_WINDOW_MONTH_FETCHES = 40
+MAX_UPSTREAM_MONTH_FETCHES_CAP = 200
+# Cluster-wide concurrent scan-batch leases (manual + scheduled). Not a universe cap.
+DEFAULT_MAX_IN_FLIGHT_SCAN_BATCHES = 2
+HISTORY_BUDGET_EXHAUSTED_REASON = "history_budget_exhausted"
 DEFAULT_TARGET_COUNT = 10
 
 # Indicator warm-up guidance (documented; enforced as insufficient_history).

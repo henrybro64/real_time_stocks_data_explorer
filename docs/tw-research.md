@@ -88,6 +88,7 @@ All routes use `Depends(get_effective_user_id)`.
 | POST | `/api/tw-research/universe/resolve` | Catalog only |
 | POST | `/api/tw-research/scans` | No (creates ledger) |
 | POST | `/api/tw-research/scans/batches` | Yes, bounded |
+| POST | `/api/tw-research/scans/resume-budget` | No (#329 reopen window) |
 | POST | `/api/tw-research/scans/enrichment-batches` | Yes, bounded (#313) |
 | GET | `/api/tw-research/scans` | No (#327 recent history) |
 | GET | `/api/tw-research/scans/{scan_id}` | No |
@@ -124,9 +125,28 @@ instead of returning an empty or partial ledger. The UI polls
 `GET /scans/{id}/progress` while a scan is active and reloads the full ledger
 only when `ledgerRevision` changes. The recent-scan list polls slowly so an
 external Agent or another session can appear without stealing the user's
-selected scan. UI duplicate-create checks are **session/page helpers only** —
-cluster-wide admission, per-symbol locks, and historical-budget resume remain
-Issue **#329**.
+selected scan. UI duplicate-create checks are **session/page helpers only**.
+
+## History-budget resume and evaluation counters (#329)
+
+- `POST /api/tw-research/scans/resume-budget` opens another bounded upstream
+  month-fetch window (default +40, hard cap 200), clears
+  `history_budget_exhausted` symbol rows, and rewinds the durable cursor so a
+  later batch can resume. Repeat `POST /scans/batches` while status is
+  `budget_exhausted` returns **HTTP 409** (`budget_resume_required`) — never a
+  false HTTP 200 no-op.
+- Snapshots and progress expose `definitiveEvaluatedCount`,
+  `budgetExhaustedCount`, `sourceIncompleteCount`, `unresolvedCount`, and
+  `unprocessedCount` so `processedCount` is never mistaken for valid Top-N
+  results. Unknown / budget-exhausted rows stay out of verified recommendations.
+- Warm OHLCV already lives in `daily_price_bars` /
+  `daily_price_month_fetches`; a later window reuses stored months
+  (`months_used=0`) without spending budget. Same-process history loads for one
+  symbol are single-flighted. Cluster-wide concurrent batch leases are limited
+  (`DEFAULT_MAX_IN_FLIGHT_SCAN_BATCHES`, HTTP 503 when saturated).
+- Partial / budget-exhausted finalize stays labeled via
+  `technicalStatus` / `sourceCompleteness`; never advertise full coverage when
+  unresolved symbols remain.
 
 ## Browser rewrite proxy and long research batches (#328)
 
