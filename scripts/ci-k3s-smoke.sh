@@ -285,19 +285,36 @@ append_summary_section "Backend pod -> Postgres probe" "${postgres_probe}"
 
 echo "Checking a pod without an allowed label cannot reach Postgres (#308 NetworkPolicy)"
 if [[ "${BACKEND_IMAGE}" == */* ]]; then np_pull_policy="IfNotPresent"; else np_pull_policy="Never"; fi
-np_check="$(
-  run_kubectl -n "${NAMESPACE}" run smoke-postgres-denied --rm -i --restart=Never \
-    --image="${BACKEND_IMAGE}" --image-pull-policy="${np_pull_policy}" --labels=app=smoke-postgres-denied \
-    --command -- python -c \
-    "import socket
+# Avoid `kubectl run -i`: interactive attach can drop the probe's stdout on CI
+# ("If you don't see a command prompt…") and fail a healthy NetworkPolicy.
+np_check=""
+np_attempt=0
+while (( np_attempt < 3 )); do
+  np_attempt=$((np_attempt + 1))
+  np_pod="smoke-postgres-denied-${np_attempt}"
+  run_kubectl -n "${NAMESPACE}" delete pod "${np_pod}" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+  np_check="$(
+    run_kubectl -n "${NAMESPACE}" run "${np_pod}" --rm --restart=Never --attach=true \
+      --image="${BACKEND_IMAGE}" --image-pull-policy="${np_pull_policy}" \
+      --labels=app=smoke-postgres-denied \
+      --command -- python -c \
+      "import socket
 # Resolve outside the try: a DNS failure must not pass as BLOCKED.
 address = socket.gethostbyname('stock-ticker-postgres')
 try:
     socket.create_connection((address, 5432), timeout=5).close()
-    print('REACHED')
+    print('REACHED', flush=True)
 except OSError as exc:
-    print('BLOCKED', type(exc).__name__)" 2>&1 || true
-)"
+    print('BLOCKED', type(exc).__name__, flush=True)" 2>&1 || true
+  )"
+  if grep -q '^BLOCKED' <<< "${np_check}"; then
+    break
+  fi
+  if grep -q '^REACHED' <<< "${np_check}"; then
+    break
+  fi
+  sleep 2
+done
 printf '%s\n' "${np_check}" > "${ARTIFACT_DIR}/postgres-networkpolicy.txt"
 if ! grep -q '^BLOCKED' <<< "${np_check}"; then
   echo "Expected the NetworkPolicy to block an unlabeled pod from Postgres, got: ${np_check}" >&2
