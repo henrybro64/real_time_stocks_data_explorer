@@ -4,13 +4,23 @@ Creates or reuses an idempotent scan for the schedule owner, runs a bounded
 number of batches (and optional budget resume + enrichment), and never pretends
 incomplete work is a verified success. The Kubernetes CronJob stays suspended
 until an operator enables it after pilot measurement.
+
+Continuation policy
+-------------------
+Each CronJob tick is independently bounded (batches, enrichment, wall clock).
+Multiple weekday evening windows (see k8s CronJob schedule) continue the same
+logical scan until technical screening, enrichment, and verified publication
+finish. Incomplete scans from prior trading days within
+``SCHEDULE_BACKLOG_MAX_CALENDAR_DAYS`` are resumed **before** opening a newer
+day's scan, preserving the original trading-day calculation anchor.
 """
 
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Literal
 from uuid import uuid4
 from zoneinfo import ZoneInfo
@@ -20,6 +30,11 @@ from app.services.tw_research.constants import (
     CALCULATION_VERSION,
     DEFAULT_SCHEDULE_MAX_BATCHES,
     DEFAULT_SCHEDULE_MAX_ENRICH_BATCHES,
+    DEFAULT_SCHEDULE_TICK_DEADLINE_SECONDS,
+    INCOMPLETE_SCHEDULE_STATUSES,
+    SCHEDULE_BACKLOG_MAX_CALENDAR_DAYS,
+    SCHEDULE_TICK_LEASE_SECONDS,
+    SCHEDULE_TICK_RENEW_INTERVAL_SECONDS,
     UNIVERSE_PRESET_VERSION,
 )
 from app.services.tw_research.scan import (
@@ -40,6 +55,8 @@ ScheduleOutcome = Literal[
     "skipped_data_not_ready",
     "skipped_disabled",
     "deferred_lock",
+    "deferred_deadline",
+    "deferred_lease_lost",
     "reused_scan",
     "created_scan",
     "completed_window",
@@ -125,13 +142,14 @@ def run_scheduled_research(
     now: datetime | None = None,
     service: TwResearchScanService | None = None,
     allow_holiday_fetch: bool = False,
+    tick_deadline_seconds: int = DEFAULT_SCHEDULE_TICK_DEADLINE_SECONDS,
 ) -> ScheduleRunResult:
     """Idempotent bounded schedule tick for the starter-preset universe.
 
     One logical research run per (owner, trading day, universe, calculation,
-    target). Subsequent CronJob windows continue the same scan until technical
-    screening, enrichment, and verified publication complete — never inventing
-    a second expensive scan for compatible configuration.
+    target). Subsequent CronJob windows continue the same scan. Owner-level
+    tick locks are renewed between batches so slow work cannot be stolen by a
+    second scheduler instance while the leader is healthy.
     """
     notes: list[str] = []
     day, skip = resolve_schedule_trading_day(
@@ -151,19 +169,24 @@ def run_scheduled_research(
             dry_run=dry_run,
         )
 
-    if skip is not None:
-        return ScheduleRunResult(
-            outcome=skip,
-            trading_day=day,
-            scan_id=None,
-            status=None,
-            quality_status=None,
-            batches_run=0,
-            enrich_batches_run=0,
-            resumed=False,
-            notes=(skip,),
-            dry_run=dry_run,
-        )
+    if skip is not None and trading_day is None:
+        # Even on nontrading / pre-close ticks, attempt backlog continuation for
+        # prior incomplete scans when market data for those days already exists.
+        if skip == "skipped_data_not_ready":
+            return ScheduleRunResult(
+                outcome=skip,
+                trading_day=day,
+                scan_id=None,
+                status=None,
+                quality_status=None,
+                batches_run=0,
+                enrich_batches_run=0,
+                resumed=False,
+                notes=(skip,),
+                dry_run=dry_run,
+            )
+        # Holidays/weekends: still allow backlog-only work below.
+        notes.append(skip)
 
     if dry_run:
         return ScheduleRunResult(
@@ -186,19 +209,20 @@ def run_scheduled_research(
 
     scan_service = service or tw_research_scan_service
     tick_token = uuid4().hex
-    lock_name = (
-        f"schedule:{user_id}:{day}:starter_preset:{CALCULATION_VERSION}:t{target_count}"
-    )
+    # Owner-level lock (not per trading day) so backlog and today cannot overlap.
+    lock_name = f"schedule:{user_id}:starter_preset:{CALCULATION_VERSION}:t{target_count}"
     lock_held = False
+    repo = None
     if getattr(scan_service, "_persist", True):
         try:
             from app.repositories.tw_research_repository import tw_research_repository
 
-            if tw_research_repository.is_available():
-                claimed = tw_research_repository.claim_schedule_tick_lock(
+            repo = tw_research_repository
+            if repo.is_available():
+                claimed = repo.claim_schedule_tick_lock(
                     lock_name=lock_name,
                     owner_token=tick_token,
-                    lease_seconds=max(60, int(max_batches) * 180),
+                    lease_seconds=SCHEDULE_TICK_LEASE_SECONDS,
                 )
                 if not claimed.get("acquired"):
                     return ScheduleRunResult(
@@ -233,20 +257,23 @@ def run_scheduled_research(
         return _run_scheduled_research_locked(
             scan_service=scan_service,
             user_id=user_id,
-            day=day,
+            preferred_day=day,
+            allow_create_preferred=(skip is None or trading_day is not None),
             max_batches=max_batches,
             max_enrich_batches=max_enrich_batches,
             target_count=target_count,
             resume_if_exhausted=resume_if_exhausted,
             now=now,
             notes=notes,
+            tick_deadline_seconds=tick_deadline_seconds,
+            lock_name=lock_name if lock_held else None,
+            tick_token=tick_token if lock_held else None,
+            repo=repo if lock_held else None,
         )
     finally:
-        if lock_held:
+        if lock_held and repo is not None:
             try:
-                from app.repositories.tw_research_repository import tw_research_repository
-
-                tw_research_repository.release_schedule_tick_lock(
+                repo.release_schedule_tick_lock(
                     lock_name=lock_name,
                     owner_token=tick_token,
                 )
@@ -261,33 +288,76 @@ def _run_scheduled_research_locked(
     *,
     scan_service: TwResearchScanService,
     user_id: str,
-    day: str,
+    preferred_day: str,
+    allow_create_preferred: bool,
     max_batches: int,
     max_enrich_batches: int,
     target_count: int,
     resume_if_exhausted: bool,
     now: datetime | None,
     notes: list[str],
+    tick_deadline_seconds: int,
+    lock_name: str | None,
+    tick_token: str | None,
+    repo: Any,
 ) -> ScheduleRunResult:
     selector = UniverseSelector(mode="starter_preset")
-    # Starter-preset universe version is stable; avoid catalog resolve on the tick path.
     universe_version = UNIVERSE_PRESET_VERSION
+    started = time.monotonic()
+    last_renew = started
 
-    existing = _find_reusable_scan(
+    def _maybe_renew() -> ScheduleOutcome | None:
+        nonlocal last_renew
+        if lock_name is None or tick_token is None or repo is None:
+            return None
+        if time.monotonic() - last_renew < SCHEDULE_TICK_RENEW_INTERVAL_SECONDS:
+            return None
+        renewed = repo.renew_schedule_tick_lock(
+            lock_name=lock_name,
+            owner_token=tick_token,
+            lease_seconds=SCHEDULE_TICK_LEASE_SECONDS,
+        )
+        last_renew = time.monotonic()
+        if not renewed.get("ok"):
+            notes.append("schedule_tick_lease_lost")
+            return "deferred_lease_lost"
+        return None
+
+    def _deadline_hit() -> bool:
+        return (time.monotonic() - started) >= max(1, int(tick_deadline_seconds))
+
+    existing = _select_scan_for_tick(
         scan_service,
         user_id=user_id,
-        trading_day=day,
+        preferred_day=preferred_day,
         universe_version=universe_version,
         calculation_version=CALCULATION_VERSION,
         target_count=target_count,
+        now=now,
     )
     resumed = False
     created = False
     if existing is None:
+        if not allow_create_preferred:
+            notes.append("no_backlog_and_create_skipped")
+            return ScheduleRunResult(
+                outcome="skipped_nontrading_day"
+                if "skipped_nontrading_day" in notes
+                else "partial",
+                trading_day=preferred_day,
+                scan_id=None,
+                status=None,
+                quality_status=None,
+                batches_run=0,
+                enrich_batches_run=0,
+                resumed=False,
+                notes=tuple(notes),
+                dry_run=False,
+            )
         state = scan_service.create_scan(
             selector,
             target_count=target_count,  # type: ignore[arg-type]
-            trading_day=day,
+            trading_day=preferred_day,
             user_id=user_id,
             now=now,
         )
@@ -301,7 +371,12 @@ def _run_scheduled_research_locked(
                 scan_id=str(existing["scan_id"]),
                 operation="schedule_run",
             )
-        notes.append("reused_scan")
+        if state.trading_day != preferred_day:
+            notes.append(f"backlog_resume:{state.trading_day}")
+        else:
+            notes.append("reused_scan")
+
+    day = state.trading_day
 
     if state.status == "verified_ready" and state.active_snapshot_id:
         notes.append("already_verified_ready")
@@ -328,19 +403,32 @@ def _run_scheduled_research_locked(
 
     batches_run = 0
     enrich_batches_run = 0
+    deferred: ScheduleOutcome | None = None
     try:
         while batches_run < max_batches and state.status in {
             "queued",
             "running",
             "partial",
         }:
+            if _deadline_hit():
+                notes.append("tick_deadline_stop")
+                deferred = "deferred_deadline"
+                break
+            lost = _maybe_renew()
+            if lost is not None:
+                deferred = lost
+                break
             before = (
                 state.cursor,
                 state.upstream_month_fetches,
                 state.status,
                 len(state.records),
             )
-            state = scan_service.run_batch(state.scan_id, now=now)
+            # Preserve the scan's trading-day calculation anchor.
+            state = scan_service.run_batch(
+                state.scan_id,
+                now=_calculation_now_for_scan(state.trading_day, override=now),
+            )
             batches_run += 1
             after = (
                 state.cursor,
@@ -357,13 +445,21 @@ def _run_scheduled_research_locked(
             if state.status in {"completed_processing", "verified_ready"}:
                 break
 
-        # Eligible enrichment only after technical screening has work to enrich.
         while (
-            enrich_batches_run < max_enrich_batches
+            deferred is None
+            and enrich_batches_run < max_enrich_batches
             and state.status
             in {"completed_processing", "partial", "verified_ready", "running"}
             and state.qualified_ids
         ):
+            if _deadline_hit():
+                notes.append("tick_deadline_stop")
+                deferred = "deferred_deadline"
+                break
+            lost = _maybe_renew()
+            if lost is not None:
+                deferred = lost
+                break
             pending = [
                 stock_id
                 for stock_id in state.qualified_ids
@@ -378,7 +474,10 @@ def _run_scheduled_research_locked(
                 state.enrich_cursor,
                 state.active_snapshot_id,
             )
-            state = scan_service.run_enrichment_batch(state.scan_id, now=now)
+            state = scan_service.run_enrichment_batch(
+                state.scan_id,
+                now=_calculation_now_for_scan(state.trading_day, override=now),
+            )
             enrich_batches_run += 1
             after_enrich = (
                 state.enrichments_run,
@@ -408,15 +507,17 @@ def _run_scheduled_research_locked(
             dry_run=False,
         )
 
-    outcome = _classify_outcome(
-        state=state,
-        created=created,
-        existing=existing,
-        batches_run=batches_run,
-        enrich_batches_run=enrich_batches_run,
-        resumed=resumed,
-        notes=notes,
-    )
+    if deferred is not None:
+        outcome: ScheduleOutcome = deferred
+    else:
+        outcome = _classify_outcome(
+            state=state,
+            created=created,
+            existing=existing,
+            batches_run=batches_run,
+            enrich_batches_run=enrich_batches_run,
+            resumed=resumed,
+        )
     notes.append(f"schedule_tick_batches={batches_run}")
     notes.append(f"schedule_tick_enrich_batches={enrich_batches_run}")
     return ScheduleRunResult(
@@ -433,6 +534,19 @@ def _run_scheduled_research_locked(
     )
 
 
+def _calculation_now_for_scan(
+    trading_day: str, *, override: datetime | None
+) -> datetime | None:
+    """Keep indicator ``now`` anchored to the scan trading day unless overridden."""
+    if override is not None:
+        return override
+    try:
+        day = datetime.fromisoformat(trading_day).date()
+    except ValueError:
+        return None
+    return datetime(day.year, day.month, day.day, 14, 0, tzinfo=TAIPEI)
+
+
 def _classify_outcome(
     *,
     state: Any,
@@ -441,7 +555,6 @@ def _classify_outcome(
     batches_run: int,
     enrich_batches_run: int,
     resumed: bool,
-    notes: list[str],
 ) -> ScheduleOutcome:
     if state.status == "verified_ready" and state.active_snapshot_id:
         return "verified_ready"
@@ -463,28 +576,47 @@ def _classify_outcome(
         return "reused_scan"
     if state.status in {"completed_processing", "verified_ready"}:
         return "completed_window"
-    del notes  # notes already capture deferral reasons
     return "partial"
 
 
-def _find_reusable_scan(
+def _select_scan_for_tick(
     service: TwResearchScanService,
     *,
     user_id: str,
-    trading_day: str,
+    preferred_day: str,
     universe_version: str,
     calculation_version: str,
     target_count: int,
+    now: datetime | None,
 ) -> dict[str, Any] | None:
-    """Prefer a same-day compatible starter-preset scan for the schedule owner."""
+    """Prefer oldest incomplete backlog scan, else today's compatible scan."""
+    current = now or datetime.now(TAIPEI)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=TAIPEI)
+    else:
+        current = current.astimezone(TAIPEI)
+    min_day = (current.date() - timedelta(days=SCHEDULE_BACKLOG_MAX_CALENDAR_DAYS)).isoformat()
+
     if getattr(service, "_persist", True):
         try:
             from app.repositories.tw_research_repository import tw_research_repository
 
             if tw_research_repository.is_available():
+                backlog = tw_research_repository.find_incomplete_backlog_scans(
+                    user_id=user_id,
+                    universe_version=universe_version,
+                    calculation_version=calculation_version,
+                    selector_mode="starter_preset",
+                    target_count=target_count,
+                    min_trading_day=min_day,
+                    max_trading_day=preferred_day,
+                )
+                if backlog:
+                    # Oldest first; never abandon yesterday for a brand-new today.
+                    return backlog[0]
                 found = tw_research_repository.find_compatible_scan(
                     user_id=user_id,
-                    trading_day=trading_day,
+                    trading_day=preferred_day,
                     universe_version=universe_version,
                     calculation_version=calculation_version,
                     selector_mode="starter_preset",
@@ -493,24 +625,52 @@ def _find_reusable_scan(
                 if found is not None:
                     return found
         except Exception:  # noqa: BLE001
-            logger.warning("tw_research find_compatible_scan failed", exc_info=True)
+            logger.warning("tw_research schedule scan selection failed", exc_info=True)
 
+    return _find_reusable_scan_memory(
+        service,
+        user_id=user_id,
+        preferred_day=preferred_day,
+        min_trading_day=min_day,
+    )
+
+
+def _find_reusable_scan_memory(
+    service: TwResearchScanService,
+    *,
+    user_id: str,
+    preferred_day: str,
+    min_trading_day: str,
+) -> dict[str, Any] | None:
     try:
-        scans = service.list_scans(user_id, limit=20)
+        scans = service.list_scans(user_id, limit=50)
     except TwResearchDurableStoreError:
         return None
+    incomplete: list[tuple[str, dict[str, Any]]] = []
     for item in scans:
-        trading = item.get("tradingDay") or item.get("trading_day")
-        if trading != trading_day:
-            continue
+        trading = str(item.get("tradingDay") or item.get("trading_day") or "")
         mode = item.get("selectorMode") or (item.get("selector_json") or {}).get("mode")
         if mode != "starter_preset":
             continue
-        if item.get("status") == "failed":
+        status = str(item.get("status") or "")
+        if status == "failed":
             continue
-        # Normalize to repository-shaped keys for callers.
-        return {
-            "scan_id": item.get("scanId") or item.get("scan_id"),
-            "status": item.get("status"),
-        }
-    return None
+        if trading < min_trading_day or trading > preferred_day:
+            continue
+        if status not in INCOMPLETE_SCHEDULE_STATUSES and status != "verified_ready":
+            continue
+        if status == "verified_ready":
+            continue
+        incomplete.append(
+            (
+                trading,
+                {
+                    "scan_id": item.get("scanId") or item.get("scan_id"),
+                    "status": status,
+                },
+            )
+        )
+    if not incomplete:
+        return None
+    incomplete.sort(key=lambda pair: pair[0])
+    return incomplete[0][1]

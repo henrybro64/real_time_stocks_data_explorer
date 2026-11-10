@@ -204,3 +204,144 @@ def test_resolve_schedule_trading_day_skips_weekend(monkeypatch: pytest.MonkeyPa
     )
     assert day == "2024-06-28"
     assert skip == "skipped_nontrading_day"
+
+
+def test_schedule_73_symbol_universe_across_windows(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "app.services.tw_research.scan.preflight_tw_trading_calendars",
+        lambda **_kwargs: {"ok": True, "missing": []},
+    )
+    ids = tuple(f"TW:{2000 + i}" for i in range(73))
+    catalog = {stock_id: _tw(stock_id) for stock_id in ids}
+    fetches: list[str] = []
+
+    def loader(stock, limit, *, max_month_fetches):  # noqa: ANN001
+        del limit, max_month_fetches
+        fetches.append(stock.id)
+        return [], 0
+
+    service = TwResearchScanService(
+        history_loader=loader,
+        stock_loader=lambda stock_id: catalog.get(stock_id),
+        persist=False,
+    )
+    created = service.create_scan(
+        UniverseSelector(mode="stock_ids", stock_ids=ids),
+        trading_day="2024-06-28",
+        target_count=10,
+        user_id="schedule-owner",
+        now=datetime(2024, 6, 28, 16, 0, tzinfo=TZ),
+    )
+    created.selector = UniverseSelector(mode="starter_preset")
+
+    def _list(user_id: str, limit: int = 20):  # noqa: ANN001
+        del user_id, limit
+        state = service.get_scan(created.scan_id)
+        assert state is not None
+        return [
+            {
+                "scanId": created.scan_id,
+                "tradingDay": "2024-06-28",
+                "selectorMode": "starter_preset",
+                "status": state.status,
+            }
+        ]
+
+    monkeypatch.setattr(service, "list_scans", _list)
+
+    # Window 1: at most 50 symbols (5 batches × 10).
+    first = run_scheduled_research(
+        user_id="schedule-owner",
+        enabled=True,
+        trading_day="2024-06-28",
+        max_batches=5,
+        max_enrich_batches=0,
+        service=service,
+        now=datetime(2024, 6, 28, 16, 0, tzinfo=TZ),
+    )
+    assert first.scan_id == created.scan_id
+    assert first.batches_run == 5
+    mid = service.get_scan(created.scan_id)
+    assert mid is not None
+    assert mid.cursor == 50
+    assert len(mid.records) == 50
+    first_fetch_count = len(fetches)
+
+    # Simulated restart: new service process would hydrate from durable store;
+    # here the in-memory service retains progress and list_scans reuses the id.
+    second = run_scheduled_research(
+        user_id="schedule-owner",
+        enabled=True,
+        trading_day="2024-06-28",
+        max_batches=5,
+        max_enrich_batches=2,
+        service=service,
+        now=datetime(2024, 6, 28, 17, 0, tzinfo=TZ),
+    )
+    assert second.scan_id == created.scan_id
+    done = service.get_scan(created.scan_id)
+    assert done is not None
+    assert done.cursor == 73
+    assert len(done.records) == 73
+    # Completed symbols are not re-fetched.
+    assert len(fetches) == first_fetch_count + 23
+    assert done.status in {"completed_processing", "verified_ready", "partial"}
+
+
+def test_schedule_prefers_prior_day_incomplete_over_new_day(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.services.tw_research.scan.preflight_tw_trading_calendars",
+        lambda **_kwargs: {"ok": True, "missing": []},
+    )
+    catalog = {f"TW:{n}": _tw(f"TW:{n}") for n in ("2330", "2454", "2303")}
+    service = TwResearchScanService(
+        history_loader=lambda stock, limit, *, max_month_fetches: ([], 0),
+        stock_loader=lambda stock_id: catalog.get(stock_id),
+        persist=False,
+    )
+    prior = service.create_scan(
+        UniverseSelector(mode="stock_ids", stock_ids=("TW:2330", "TW:2454", "TW:2303")),
+        trading_day="2024-06-27",
+        target_count=10,
+        user_id="schedule-owner",
+        now=datetime(2024, 6, 27, 16, 0, tzinfo=TZ),
+    )
+    prior.selector = UniverseSelector(mode="starter_preset")
+    prior = service.run_batch(
+        prior.scan_id,
+        batch_size=1,
+        now=datetime(2024, 6, 27, 16, 0, tzinfo=TZ),
+    )
+    assert prior.cursor == 1
+
+    def _list(user_id: str, limit: int = 20):  # noqa: ANN001
+        del user_id, limit
+        state = service.get_scan(prior.scan_id)
+        assert state is not None
+        return [
+            {
+                "scanId": prior.scan_id,
+                "tradingDay": "2024-06-27",
+                "selectorMode": "starter_preset",
+                "status": state.status,
+            }
+        ]
+
+    monkeypatch.setattr(service, "list_scans", _list)
+    result = run_scheduled_research(
+        user_id="schedule-owner",
+        enabled=True,
+        trading_day="2024-06-28",
+        max_batches=2,
+        max_enrich_batches=0,
+        service=service,
+        now=datetime(2024, 6, 28, 16, 0, tzinfo=TZ),
+    )
+    assert result.scan_id == prior.scan_id
+    assert result.trading_day == "2024-06-27"
+    assert any(note.startswith("backlog_resume:") for note in result.notes)
+    finished = service.get_scan(prior.scan_id)
+    assert finished is not None
+    assert finished.cursor == 3

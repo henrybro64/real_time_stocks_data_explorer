@@ -148,11 +148,16 @@ selected scan. UI duplicate-create checks are **session/page helpers only**.
   `daily_price_month_fetches`; a later window reuses stored months
   (`months_used=0`) without spending budget.
 - **Cross-pod history single-flight:** compatible backfills use
-  `tw_research_history_flights` leases (symbol + price basis + limit + bars
-  version). Short DB transactions acquire/complete the lease; waiters poll with
-  bounded backoff and never hold a DB transaction during upstream HTTP. Process
-  locks remain as an intra-pod accelerator. Lease fencing (`generation` + owner)
-  recovers after pod crash without stale completes.
+  `tw_research_history_flights` leases. Compatibility contract:
+  `symbol|basis=unadjusted_close|adj=none|provider|limit|through=<tradingDay>|bars=daily_v1`.
+  Short DB transactions acquire/renew/complete the lease; waiters poll with
+  bounded backoff and never hold a DB transaction during upstream HTTP. A
+  `ready` marker is emitted only when persisted OHLCV coverage is validated for
+  `expect_through`; waiters always re-check the store and load with budget 0.
+  Incomplete fetches clear the hold without a ready marker. Leaders renew the
+  lease while upstream work runs so slow healthy fetches are not stolen.
+  Process locks remain an intra-pod accelerator. Lease fencing (`generation` +
+  owner) recovers after pod crash without stale completes.
 - **Atomic cluster admission:** `claim_scan_batch` serializes on the
   `scan_admission` coordination lock, counts live leases, and claims in one
   transaction (fail closed on durable DB errors). `scan_lease_generation`
@@ -170,17 +175,22 @@ selected scan. UI duplicate-create checks are **session/page helpers only**.
   `TW_RESEARCH_SCHEDULE_TOKEN`, `TW_RESEARCH_SCHEDULE_USER_ID`, and
   `TW_RESEARCH_SCHEDULE_ENABLED=true`. Placeholder tokens are treated as unset.
   The schedule token never unlocks ordinary `/tw-research/*` user routes.
-- Skips Taiwan nontrading days and pre-close sessions (`last_completed_session_date`).
-  Reuses the owner's compatible same-day starter-preset scan (owner + trading day
-  + universe + calculation + target); otherwise creates one. Runs a bounded
-  number of batches, may call #329 resume when exhausted, then bounded enrichment
-  for eligible symbols. Outcomes distinguish technical completion, enrichment
-  partial, verified ready, deferred lock, and failures. Duplicate CronJob pods
-  share a PostgreSQL schedule-tick lock.
+- Skips Taiwan pre-close sessions (`skipped_data_not_ready`). On holidays /
+  weekends, still continues incomplete backlog within
+  `SCHEDULE_BACKLOG_MAX_CALENDAR_DAYS` without creating a newer-day scan.
+  Prioritizes the **oldest** incomplete compatible scan (owner + universe +
+  calculation + target) so yesterday is not abandoned when a new trading day
+  begins; the original trading-day calculation anchor is preserved. Same-day
+  reuse remains idempotent. Each tick runs bounded technical batches, optional
+  #329 resume, then bounded enrichment. Outcomes distinguish technical
+  completion, enrichment partial, verified ready, deferred lock / lease loss /
+  deadline, and failures. Owner-level PostgreSQL tick locks are renewed between
+  batches (not a fixed one-shot lease).
 - Kubernetes CronJob `stock-ticker-tw-research-schedule` ships **suspended**
-  (`suspend: true`, `timeZone: Asia/Taipei`, `concurrencyPolicy: Forbid`,
-  resource limits, `activeDeadlineSeconds`). Do not unsuspend or set ENABLED
-  without pilot approval (#321) and an explicit operator decision.
+  (`suspend: true`, `timeZone: Asia/Taipei`, weekday continuation windows
+  `30 15-18 * * 1-5`, `concurrencyPolicy: Forbid`, resource limits,
+  `activeDeadlineSeconds: 900`). Do not unsuspend or set ENABLED without pilot
+  approval (#321) and an explicit operator decision.
 - Manual `/research/tw` create/batch/resume remains available and still respects
   global admission / single-flight controls from #329.
 

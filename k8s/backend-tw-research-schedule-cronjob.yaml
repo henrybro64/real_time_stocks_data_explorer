@@ -7,8 +7,11 @@ spec:
   # Prerequisites: #321 pilot metrics, #329 budget resume, configured schedule
   # token + owner user id, and TW_RESEARCH_SCHEDULE_ENABLED=true on the API.
   suspend: true
-  # Weekdays 15:30 Asia/Taipei. Backend still skips holidays / incomplete sessions.
-  schedule: "30 15 * * 1-5"
+  # Weekday continuation windows Asia/Taipei at 15:30, 16:30, 17:30, 18:30.
+  # Four bounded ticks × 5 batches cover a 73-symbol universe across the evening
+  # without a long-running worker. Backend skips holidays / incomplete sessions
+  # and resumes incomplete prior-day backlog before opening a newer trading day.
+  schedule: "30 15-18 * * 1-5"
   timeZone: Asia/Taipei
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 1

@@ -15,7 +15,7 @@ def test_tw_research_schedule_cronjob_is_suspended_with_taipei_timezone() -> Non
     assert "kind: CronJob" in text
     assert "suspend: true" in text
     assert "timeZone: Asia/Taipei" in text
-    assert 'schedule: "30 15 * * 1-5"' in text
+    assert 'schedule: "30 15-18 * * 1-5"' in text
     assert "concurrencyPolicy: Forbid" in text
     assert "activeDeadlineSeconds: 900" in text
     assert "X-Tw-Research-Schedule-Token" in text
@@ -39,5 +39,5 @@ def test_tw_research_schedule_cronjob_yaml_parses() -> None:
     assert cron["kind"] == "CronJob"
     assert cron["spec"]["suspend"] is True
     assert cron["spec"]["timeZone"] == "Asia/Taipei"
-    assert cron["spec"]["schedule"] == "30 15 * * 1-5"
+    assert cron["spec"]["schedule"] == "30 15-18 * * 1-5"
     assert cron["spec"]["concurrencyPolicy"] == "Forbid"
