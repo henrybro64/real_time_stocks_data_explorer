@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
+from uuid import uuid4
+
 import pytest
 
 from app.db.init_ids import DEFAULT_USER_ID
@@ -126,7 +128,9 @@ def test_postgres_simultaneous_admission_respects_limit() -> None:
 
 def test_postgres_history_flight_single_owner_and_waiter_reuses() -> None:
     repo = TwResearchRepository()
-    flight_key, compat = history_flight_identity("TW:2330", limit=800)
+    flight_key, compat = history_flight_identity(
+        "TW:2330", limit=800, expect_through="2024-06-28"
+    )
     first = repo.acquire_history_flight(
         flight_key=flight_key,
         stock_id="TW:2330",
@@ -143,34 +147,50 @@ def test_postgres_history_flight_single_owner_and_waiter_reuses() -> None:
         lease_seconds=60,
     )
     assert second["status"] == "busy"
-    done = repo.complete_history_flight(
+    incomplete = repo.complete_history_flight(
         flight_key=flight_key,
         owner_token="owner-a",
         generation=int(first["generation"]),
         success=True,
+        coverage_complete=False,
     )
-    assert done["ok"] is True
-    stale = repo.complete_history_flight(
-        flight_key=flight_key,
-        owner_token="owner-a",
-        generation=int(first["generation"]),
-        success=True,
-    )
-    # Same generation still owns ready marker until TTL; not stale for complete.
-    assert stale["ok"] is True or stale["stale"] is True
-    ready = repo.acquire_history_flight(
+    assert incomplete["ok"] is True
+    assert incomplete["state"] == "incomplete"
+
+    # Incomplete marker must not look like validated ready — reclaim allowed.
+    reclaimed = repo.acquire_history_flight(
         flight_key=flight_key,
         stock_id="TW:2330",
         compatibility_key=compat,
         owner_token="owner-b",
         lease_seconds=60,
     )
-    assert ready["status"] in {"ready", "acquired"}
+    assert reclaimed["status"] == "acquired"
+
+    done = repo.complete_history_flight(
+        flight_key=flight_key,
+        owner_token="owner-b",
+        generation=int(reclaimed["generation"]),
+        success=True,
+        coverage_complete=True,
+    )
+    assert done["ok"] is True
+    assert done["state"] == "ready"
+    ready = repo.acquire_history_flight(
+        flight_key=flight_key,
+        stock_id="TW:2330",
+        compatibility_key=compat,
+        owner_token="owner-c",
+        lease_seconds=60,
+    )
+    assert ready["status"] == "ready"
 
 
 def test_postgres_history_flight_recovers_after_lease_expiry() -> None:
     repo = TwResearchRepository()
-    flight_key, compat = history_flight_identity("TW:2454", limit=800)
+    flight_key, compat = history_flight_identity(
+        "TW:2454", limit=800, expect_through="2024-06-28"
+    )
     first = repo.acquire_history_flight(
         flight_key=flight_key,
         stock_id="TW:2454",
@@ -391,3 +411,103 @@ def test_postgres_resume_via_service_conflict_on_active_batch() -> None:
     with pytest.raises(TwResearchConflictError) as exc:
         service.resume_budget_window(state.scan_id)
     assert exc.value.code == "active_batch_lease"
+
+
+def test_postgres_history_flight_renew_keeps_ownership() -> None:
+    repo = TwResearchRepository()
+    flight_key, compat = history_flight_identity(
+        "TW:2303", limit=800, expect_through="2024-06-28"
+    )
+    first = repo.acquire_history_flight(
+        flight_key=flight_key,
+        stock_id="TW:2303",
+        compatibility_key=compat,
+        owner_token="leader",
+        lease_seconds=2,
+    )
+    assert first["status"] == "acquired"
+    renewed = repo.renew_history_flight(
+        flight_key=flight_key,
+        owner_token="leader",
+        generation=int(first["generation"]),
+        lease_seconds=60,
+    )
+    assert renewed["ok"] is True
+    blocked = repo.acquire_history_flight(
+        flight_key=flight_key,
+        stock_id="TW:2303",
+        compatibility_key=compat,
+        owner_token="other",
+        lease_seconds=60,
+    )
+    assert blocked["status"] == "busy"
+    stale_renew = repo.renew_history_flight(
+        flight_key=flight_key,
+        owner_token="other",
+        generation=int(first["generation"]),
+        lease_seconds=60,
+    )
+    assert stale_renew["stale"] is True
+
+
+def test_postgres_schedule_tick_lock_blocks_second_owner() -> None:
+    repo = TwResearchRepository()
+    lock_name = f"schedule-test-{uuid4().hex[:8]}"
+    first = repo.claim_schedule_tick_lock(
+        lock_name=lock_name, owner_token="tick-a", lease_seconds=60
+    )
+    assert first["acquired"] is True
+    second = repo.claim_schedule_tick_lock(
+        lock_name=lock_name, owner_token="tick-b", lease_seconds=60
+    )
+    assert second["acquired"] is False
+    renewed = repo.renew_schedule_tick_lock(
+        lock_name=lock_name, owner_token="tick-a", lease_seconds=60
+    )
+    assert renewed["ok"] is True
+    lost = repo.renew_schedule_tick_lock(
+        lock_name=lock_name, owner_token="tick-b", lease_seconds=60
+    )
+    assert lost["stale"] is True
+    repo.release_schedule_tick_lock(lock_name=lock_name, owner_token="tick-a")
+    third = repo.claim_schedule_tick_lock(
+        lock_name=lock_name, owner_token="tick-b", lease_seconds=60
+    )
+    assert third["acquired"] is True
+    repo.release_schedule_tick_lock(lock_name=lock_name, owner_token="tick-b")
+
+
+def test_postgres_backlog_prefers_older_incomplete_day() -> None:
+    from app.services.tw_research.constants import CALCULATION_VERSION, UNIVERSE_PRESET_VERSION
+
+    repo = TwResearchRepository()
+    service = TwResearchScanService(
+        history_loader=lambda stock, limit, *, max_month_fetches: ([], 0),
+        stock_loader=lambda stock_id: _tw(stock_id),
+        persist=True,
+    )
+    older = service.create_scan(
+        UniverseSelector(mode="starter_preset"),
+        trading_day="2024-06-27",
+        user_id=DEFAULT_USER_ID,
+        target_count=10,
+    )
+    newer = service.create_scan(
+        UniverseSelector(mode="starter_preset"),
+        trading_day="2024-06-28",
+        user_id=DEFAULT_USER_ID,
+        target_count=10,
+    )
+    backlog = repo.find_incomplete_backlog_scans(
+        user_id=DEFAULT_USER_ID,
+        universe_version=UNIVERSE_PRESET_VERSION,
+        calculation_version=CALCULATION_VERSION,
+        selector_mode="starter_preset",
+        target_count=10,
+        min_trading_day="2024-06-01",
+        max_trading_day="2024-06-28",
+    )
+    assert backlog
+    assert backlog[0]["scan_id"] == older.scan_id
+    assert backlog[0]["trading_day"] == "2024-06-27"
+    assert any(item["scan_id"] == newer.scan_id for item in backlog)

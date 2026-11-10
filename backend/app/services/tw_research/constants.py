@@ -31,9 +31,11 @@ DEFAULT_BUDGET_WINDOW_MONTH_FETCHES = 40
 MAX_UPSTREAM_MONTH_FETCHES_CAP = 200
 # Cluster-wide concurrent scan-batch leases (manual + scheduled). Not a universe cap.
 DEFAULT_MAX_IN_FLIGHT_SCAN_BATCHES = 2
-# Cross-pod history single-flight lease (#329). Short enough to recover after pod crash.
-HISTORY_FLIGHT_LEASE_SECONDS = 120
-HISTORY_FLIGHT_WAIT_MAX_SECONDS = 90
+# Cross-pod history single-flight lease (#329). Short enough to recover after pod crash,
+# renewed by a healthy leader so slow upstream work does not open a duplicate window.
+HISTORY_FLIGHT_LEASE_SECONDS = 180
+HISTORY_FLIGHT_RENEW_INTERVAL_SECONDS = 45
+HISTORY_FLIGHT_WAIT_MAX_SECONDS = 120
 HISTORY_FLIGHT_POLL_INITIAL_SECONDS = 0.05
 HISTORY_FLIGHT_POLL_MAX_SECONDS = 1.0
 # Named coordination lock for atomic admission (#329).
@@ -43,6 +45,22 @@ DEFAULT_TARGET_COUNT = 10
 # Schedule tick: bounded batches + enrichment windows per invocation (#330).
 DEFAULT_SCHEDULE_MAX_BATCHES = 5
 DEFAULT_SCHEDULE_MAX_ENRICH_BATCHES = 2
+# Owner-level tick lock: short lease, renewed between batches (#330).
+SCHEDULE_TICK_LEASE_SECONDS = 120
+SCHEDULE_TICK_RENEW_INTERVAL_SECONDS = 40
+# Wall-clock budget for one CronJob tick (under k8s activeDeadlineSeconds=900).
+DEFAULT_SCHEDULE_TICK_DEADLINE_SECONDS = 800
+# Continue unfinished prior trading-day scans before opening a newer day (#330).
+SCHEDULE_BACKLOG_MAX_CALENDAR_DAYS = 5
+INCOMPLETE_SCHEDULE_STATUSES = frozenset(
+    {
+        "queued",
+        "running",
+        "partial",
+        "budget_exhausted",
+        "completed_processing",
+    }
+)
 
 # Indicator warm-up guidance (documented; enforced as insufficient_history).
 # Daily MACD(12,26,9) needs roughly 26 + 9 completed sessions after seed.

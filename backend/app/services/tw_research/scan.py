@@ -21,7 +21,7 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime, time as dt_time, timezone
 from inspect import Parameter, signature
-from threading import Lock
+from threading import Event, Lock, Thread
 from typing import Any, Literal, Protocol
 from uuid import uuid4
 from zoneinfo import ZoneInfo
@@ -44,6 +44,7 @@ from app.services.tw_research.constants import (
     HISTORY_FLIGHT_LEASE_SECONDS,
     HISTORY_FLIGHT_POLL_INITIAL_SECONDS,
     HISTORY_FLIGHT_POLL_MAX_SECONDS,
+    HISTORY_FLIGHT_RENEW_INTERVAL_SECONDS,
     HISTORY_FLIGHT_WAIT_MAX_SECONDS,
     MAX_UPSTREAM_MONTH_FETCHES_CAP,
     PREFERRED_DAILY_HISTORY_LIMIT,
@@ -351,13 +352,60 @@ def _history_flight_lock(stock_id: str) -> Lock:
         return lock
 
 
-def history_flight_identity(stock_id: str, *, limit: int) -> tuple[str, str]:
-    """Return ``(flight_key, compatibility_key)`` for equivalent OHLCV backfills."""
+def history_flight_identity(
+    stock_id: str,
+    *,
+    limit: int,
+    expect_through: str,
+    provider: str = "tw_default",
+) -> tuple[str, str]:
+    """Return ``(flight_key, compatibility_key)`` for equivalent OHLCV backfills.
+
+    Compatibility contract (#329): same symbol, unadjusted close basis, no
+    corporate-action adjustment, same provider family, same bar limit, and the
+    same required completed trading day (``expect_through``). Requests that
+    differ on any of these fields must not share a ready marker.
+    """
     compatibility = (
-        f"{stock_id}|basis={PRICE_BASIS}|limit={int(limit)}|bars=daily_v1"
+        f"{stock_id}|basis={PRICE_BASIS}|adj=none|provider={provider}"
+        f"|limit={int(limit)}|through={expect_through}|bars=daily_v1"
     )
     flight_key = hashlib.sha256(compatibility.encode("utf-8")).hexdigest()[:48]
     return flight_key, compatibility
+
+
+def stored_history_covers_requirement(
+    stock: StockRecord,
+    *,
+    limit: int,
+    expect_through: str,
+) -> bool:
+    """True when persisted bars cover the flight without missing upstream months."""
+    try:
+        candles, missing = daily_price_history_service.peek_daily_history(
+            stock,
+            "MAX",
+            limit=limit,
+        )
+    except Exception:  # noqa: BLE001 — treat unreadable store as incomplete
+        return False
+    if missing or not candles:
+        return False
+    try:
+        required = date.fromisoformat(expect_through)
+    except ValueError:
+        return bool(candles) and not missing
+    latest = None
+    for candle in reversed(candles):
+        stamp = getattr(candle, "time", None) or ""
+        try:
+            latest = datetime.fromisoformat(str(stamp).replace("Z", "+00:00")).date()
+            break
+        except ValueError:
+            continue
+    if latest is None:
+        return False
+    return latest >= required
 
 
 def _summary_from_state(state: ScanState) -> dict[str, Any]:
@@ -1264,9 +1312,11 @@ class TwResearchScanService:
     ) -> tuple[list[CandleRecord], int]:
         """Deduplicate compatible upstream OHLCV backfills across pods (#329).
 
-        Short DB transactions acquire/release a fenced lease. Waiting workers poll
-        with bounded backoff and prefer committed warm bars over a second upstream
-        pull. Incompatible or expired leases never silently reuse foreign results.
+        Short DB transactions acquire/renew/complete a fenced lease. Waiting
+        workers poll with bounded backoff. A ``ready`` marker is never treated as
+        proof of coverage — waiters validate persisted bars first and only then
+        load with budget 0. Incomplete ready/incomplete markers force
+        re-coordination before any positive upstream budget is spent.
         """
         limit = PREFERRED_DAILY_HISTORY_LIMIT
         if not self._persist:
@@ -1277,14 +1327,23 @@ class TwResearchScanService:
         from app.repositories.tw_research_repository import tw_research_repository
 
         if not tw_research_repository.is_available():
-            # Fail closed for durable scans: do not start unbounded duplicate pulls.
             raise TwResearchDurableStoreError(
                 "Durable history flight coordination requires PostgreSQL.",
                 scan_id=state.scan_id,
                 operation="history_flight",
             )
 
-        flight_key, compatibility = history_flight_identity(stock.id, limit=limit)
+        # Warm path: validated store coverage needs no flight / no upstream.
+        if stored_history_covers_requirement(
+            stock, limit=limit, expect_through=state.trading_day
+        ):
+            return self._history_loader(stock, limit, max_month_fetches=0)
+
+        flight_key, compatibility = history_flight_identity(
+            stock.id,
+            limit=limit,
+            expect_through=state.trading_day,
+        )
         owner_token = f"{state.scan_id}:{uuid4().hex[:12]}"
         deadline = time.monotonic() + HISTORY_FLIGHT_WAIT_MAX_SECONDS
         sleep_for = HISTORY_FLIGHT_POLL_INITIAL_SECONDS
@@ -1311,13 +1370,12 @@ class TwResearchScanService:
                 acquired_generation = int(claim["generation"])
                 break
             if status == "ready":
-                # Leader already committed bars; load within remaining budget (warm=0).
-                return self._history_loader(
-                    stock, limit, max_month_fetches=remaining_budget
-                )
+                if stored_history_covers_requirement(
+                    stock, limit=limit, expect_through=state.trading_day
+                ):
+                    return self._history_loader(stock, limit, max_month_fetches=0)
+                # Misleading/expired ready without coverage — keep waiting or reclaim.
             if time.monotonic() >= deadline:
-                # Lease wait exhausted: attempt one more acquire; otherwise proceed
-                # only if we can take ownership. Never duplicate while busy without try.
                 try:
                     claim = tw_research_repository.acquire_history_flight(
                         flight_key=flight_key,
@@ -1335,28 +1393,69 @@ class TwResearchScanService:
                 if claim.get("status") == "acquired":
                     acquired_generation = int(claim["generation"])
                     break
-                # Still busy after wait — use store-only path (budget 0) to avoid stampede.
                 return self._history_loader(stock, limit, max_month_fetches=0)
             time.sleep(sleep_for)
             sleep_for = min(sleep_for * 2, HISTORY_FLIGHT_POLL_MAX_SECONDS)
 
         assert acquired_generation is not None
+        stop_renew = Event()
+        renew_failed = {"stale": False}
+
+        def _renew_loop() -> None:
+            while not stop_renew.wait(HISTORY_FLIGHT_RENEW_INTERVAL_SECONDS):
+                try:
+                    renewed = tw_research_repository.renew_history_flight(
+                        flight_key=flight_key,
+                        owner_token=owner_token,
+                        generation=acquired_generation,
+                        lease_seconds=HISTORY_FLIGHT_LEASE_SECONDS,
+                    )
+                except Exception:  # noqa: BLE001 — transient; fencing checked at complete
+                    logger.warning(
+                        "tw_research history flight renew failed",
+                        exc_info=True,
+                        extra={"stock_id": stock.id, "flight_key": flight_key},
+                    )
+                    continue
+                if not renewed.get("ok"):
+                    renew_failed["stale"] = True
+                    return
+
+        renew_thread = Thread(target=_renew_loop, name="tw-history-flight-renew", daemon=True)
+        renew_thread.start()
         success = False
+        coverage_complete = False
         try:
             candles, months_used = self._history_loader(
                 stock, limit, max_month_fetches=remaining_budget
             )
             success = True
+            coverage_complete = stored_history_covers_requirement(
+                stock, limit=limit, expect_through=state.trading_day
+            )
             return candles, months_used
         finally:
+            stop_renew.set()
+            renew_thread.join(timeout=1.0)
             try:
-                tw_research_repository.complete_history_flight(
-                    flight_key=flight_key,
-                    owner_token=owner_token,
-                    generation=acquired_generation,
-                    success=success,
-                )
-            except Exception:  # noqa: BLE001 — lease expiry recovers; do not mask fetch errors
+                # Stale leaders must not publish ready after losing the fence.
+                if renew_failed["stale"]:
+                    tw_research_repository.complete_history_flight(
+                        flight_key=flight_key,
+                        owner_token=owner_token,
+                        generation=acquired_generation,
+                        success=False,
+                        coverage_complete=False,
+                    )
+                else:
+                    tw_research_repository.complete_history_flight(
+                        flight_key=flight_key,
+                        owner_token=owner_token,
+                        generation=acquired_generation,
+                        success=success,
+                        coverage_complete=coverage_complete,
+                    )
+            except Exception:  # noqa: BLE001 — lease expiry recovers
                 logger.warning(
                     "tw_research history flight complete failed",
                     exc_info=True,

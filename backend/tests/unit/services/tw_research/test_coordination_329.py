@@ -38,15 +38,37 @@ def _tw(stock_id: str):
 
 
 def test_history_flight_identity_is_stable_and_compatibility_scoped() -> None:
-    key_a, compat_a = history_flight_identity("TW:2330", limit=PREFERRED_DAILY_HISTORY_LIMIT)
-    key_b, compat_b = history_flight_identity("TW:2330", limit=PREFERRED_DAILY_HISTORY_LIMIT)
+    key_a, compat_a = history_flight_identity(
+        "TW:2330",
+        limit=PREFERRED_DAILY_HISTORY_LIMIT,
+        expect_through="2024-06-28",
+    )
+    key_b, compat_b = history_flight_identity(
+        "TW:2330",
+        limit=PREFERRED_DAILY_HISTORY_LIMIT,
+        expect_through="2024-06-28",
+    )
     assert key_a == key_b
     assert compat_a == compat_b
     assert PRICE_BASIS in compat_a
-    key_other, _ = history_flight_identity("TW:2454", limit=PREFERRED_DAILY_HISTORY_LIMIT)
+    assert "through=2024-06-28" in compat_a
+    assert "adj=none" in compat_a
+    key_other, _ = history_flight_identity(
+        "TW:2454",
+        limit=PREFERRED_DAILY_HISTORY_LIMIT,
+        expect_through="2024-06-28",
+    )
     assert key_other != key_a
-    key_limit, _ = history_flight_identity("TW:2330", limit=100)
+    key_limit, _ = history_flight_identity(
+        "TW:2330", limit=100, expect_through="2024-06-28"
+    )
     assert key_limit != key_a
+    key_day, _ = history_flight_identity(
+        "TW:2330",
+        limit=PREFERRED_DAILY_HISTORY_LIMIT,
+        expect_through="2024-06-27",
+    )
+    assert key_day != key_a
 
 
 def test_memory_resume_rejects_non_applicable_status() -> None:

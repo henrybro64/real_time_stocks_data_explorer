@@ -20,7 +20,9 @@ from app.repositories.session import SessionBoundRepository
 from app.services.tw_research.constants import (
     DEFAULT_MAX_IN_FLIGHT_SCAN_BATCHES,
     HISTORY_FLIGHT_LEASE_SECONDS,
+    INCOMPLETE_SCHEDULE_STATUSES,
     SCAN_ADMISSION_LOCK_NAME,
+    SCHEDULE_TICK_LEASE_SECONDS,
 )
 
 # How long a claimed batch may remain unfinished before another worker can reclaim.
@@ -999,6 +1001,37 @@ class TwResearchRepository(SessionBoundRepository):
                 "owner_token": owner_token,
             }
 
+    def renew_history_flight(
+        self,
+        *,
+        flight_key: str,
+        owner_token: str,
+        generation: int,
+        lease_seconds: int = HISTORY_FLIGHT_LEASE_SECONDS,
+    ) -> dict[str, Any]:
+        """Extend a held history-flight lease; stale owners fail closed."""
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            row = session.execute(
+                select(TwResearchHistoryFlight)
+                .where(TwResearchHistoryFlight.flight_key == flight_key)
+                .with_for_update()
+            ).scalar_one_or_none()
+            if row is None:
+                return {"ok": False, "stale": True}
+            if (
+                row.state != "held"
+                or row.owner_token != owner_token
+                or int(row.generation) != int(generation)
+            ):
+                session.commit()
+                return {"ok": False, "stale": True}
+            now = datetime.now(timezone.utc)
+            row.lease_expires_at = now + timedelta(seconds=max(1, int(lease_seconds)))
+            row.updated_at = now
+            session.commit()
+            return {"ok": True, "stale": False, "lease_expires_at": row.lease_expires_at}
+
     def complete_history_flight(
         self,
         *,
@@ -1006,9 +1039,15 @@ class TwResearchRepository(SessionBoundRepository):
         owner_token: str,
         generation: int,
         success: bool,
+        coverage_complete: bool = False,
         ready_ttl_seconds: int = 30,
     ) -> dict[str, Any]:
-        """Release a history flight with fencing; stale owners are ignored."""
+        """Release a history flight with fencing; stale owners are ignored.
+
+        ``ready`` is set only when the leader reports both fetch success and
+        validated store coverage. Partial success clears the hold without a
+        misleading ready marker so waiters re-coordinate before more upstream.
+        """
         session_factory = self._session_factory()
         with session_factory() as session:
             row = session.execute(
@@ -1022,11 +1061,15 @@ class TwResearchRepository(SessionBoundRepository):
                 session.commit()
                 return {"ok": False, "stale": True}
             now = datetime.now(timezone.utc)
-            if success:
+            if success and coverage_complete:
                 row.state = "ready"
                 row.lease_expires_at = now + timedelta(
                     seconds=max(1, int(ready_ttl_seconds))
                 )
+            elif success:
+                # Fetch ran but required coverage is still incomplete.
+                row.state = "incomplete"
+                row.lease_expires_at = now
             else:
                 row.state = "failed"
                 row.lease_expires_at = now
@@ -1067,12 +1110,60 @@ class TwResearchRepository(SessionBoundRepository):
                 return _scan_to_dict(row)
             return None
 
+    def find_incomplete_backlog_scans(
+        self,
+        *,
+        user_id: str,
+        universe_version: str,
+        calculation_version: str,
+        selector_mode: str,
+        target_count: int,
+        min_trading_day: str,
+        max_trading_day: str,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """Incomplete compatible scans in ``[min_trading_day, max_trading_day]`` (#330).
+
+        Ordered oldest trading day first so yesterday finishes before today starts.
+        """
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            rows = session.execute(
+                select(TwResearchScan)
+                .where(
+                    TwResearchScan.user_id == user_id,
+                    TwResearchScan.universe_version == universe_version,
+                    TwResearchScan.calculation_version == calculation_version,
+                    TwResearchScan.target_count == target_count,
+                    TwResearchScan.trading_day >= min_trading_day,
+                    TwResearchScan.trading_day <= max_trading_day,
+                    TwResearchScan.status.in_(tuple(INCOMPLETE_SCHEDULE_STATUSES)),
+                )
+                .order_by(TwResearchScan.trading_day.asc(), TwResearchScan.updated_at.asc())
+                .limit(limit)
+            ).scalars().all()
+            out: list[dict[str, Any]] = []
+            for row in rows:
+                selector = dict(row.selector_json or {})
+                if selector.get("mode") != selector_mode:
+                    continue
+                # completed_processing without a verified snapshot still needs work
+                # (enrichment / finalize). verified_ready is excluded by status set.
+                if (
+                    row.status == "completed_processing"
+                    and row.active_snapshot_id
+                    and row.quality_status == "verified_ready"
+                ):
+                    continue
+                out.append(_scan_to_dict(row))
+            return out
+
     def claim_schedule_tick_lock(
         self,
         *,
         lock_name: str,
         owner_token: str,
-        lease_seconds: int = 300,
+        lease_seconds: int = SCHEDULE_TICK_LEASE_SECONDS,
     ) -> dict[str, Any]:
         """Bounded schedule-tick lock so duplicate CronJob pods do not overlap (#330)."""
         session_factory = self._session_factory()
@@ -1102,6 +1193,31 @@ class TwResearchRepository(SessionBoundRepository):
             row.updated_at = now
             session.commit()
             return {"acquired": True, "holder_token": owner_token}
+
+    def renew_schedule_tick_lock(
+        self,
+        *,
+        lock_name: str,
+        owner_token: str,
+        lease_seconds: int = SCHEDULE_TICK_LEASE_SECONDS,
+    ) -> dict[str, Any]:
+        """Keep tick ownership alive across bounded batch windows (#330)."""
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            row = session.execute(
+                select(TwResearchCoordinationLock)
+                .where(TwResearchCoordinationLock.lock_name == lock_name)
+                .with_for_update()
+            ).scalar_one_or_none()
+            if row is None or row.holder_token != owner_token:
+                if row is not None:
+                    session.commit()
+                return {"ok": False, "stale": True}
+            now = datetime.now(timezone.utc)
+            row.lease_expires_at = now + timedelta(seconds=max(1, int(lease_seconds)))
+            row.updated_at = now
+            session.commit()
+            return {"ok": True, "stale": False}
 
     def release_schedule_tick_lock(
         self,
