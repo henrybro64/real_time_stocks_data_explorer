@@ -475,6 +475,14 @@ class TwResearchScan(Base):
     enrich_lease_generation: Mapped[int] = mapped_column(
         nullable=False, server_default=text("0")
     )
+    # Bumped on every scan-batch claim so expired workers cannot complete/corrupt (#329).
+    scan_lease_generation: Mapped[int] = mapped_column(
+        nullable=False, server_default=text("0")
+    )
+    # Explicit #329 resume windows granted (bounded by max_upstream_month_fetches cap).
+    budget_windows_opened: Mapped[int] = mapped_column(
+        nullable=False, server_default=text("0")
+    )
     target_count: Mapped[int] = mapped_column(nullable=False)
     upstream_month_fetches: Mapped[int] = mapped_column(nullable=False, server_default=text("0"))
     max_upstream_month_fetches: Mapped[int] = mapped_column(nullable=False)
@@ -531,6 +539,56 @@ class TwResearchSymbolResult(Base):
     stage: Mapped[str] = mapped_column(String(16), nullable=False)
     readiness: Mapped[str] = mapped_column(String(32), nullable=False)
     payload_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
+class TwResearchHistoryFlight(Base):
+    """Cross-pod single-flight lease for compatible OHLCV backfills (#329)."""
+
+    __tablename__ = "tw_research_history_flights"
+    __table_args__ = (
+        Index("ix_tw_research_history_flights_stock", "stock_id", "state"),
+    )
+
+    flight_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    stock_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    compatibility_key: Mapped[str] = mapped_column(String(256), nullable=False)
+    owner_token: Mapped[str] = mapped_column(String(64), nullable=False)
+    generation: Mapped[int] = mapped_column(nullable=False, server_default=text("0"))
+    state: Mapped[str] = mapped_column(String(16), nullable=False)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
+class TwResearchCoordinationLock(Base):
+    """Named PostgreSQL row locks for cluster-wide admission / schedule ticks (#329/#330)."""
+
+    __tablename__ = "tw_research_coordination_locks"
+
+    lock_name: Mapped[str] = mapped_column(String(128), primary_key=True)
+    holder_token: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),

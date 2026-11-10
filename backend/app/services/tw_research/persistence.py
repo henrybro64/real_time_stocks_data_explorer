@@ -107,7 +107,14 @@ def persist_symbol(
     *,
     repository: TwResearchRepository | None = None,
     enrich_lease_generation: int | None = None,
+    scan_lease_generation: int | None = None,
 ) -> bool:
+    """Persist one symbol row.
+
+    ``scan_lease_generation`` fences technical screening writes from a claimed
+    scan batch. ``enrich_lease_generation`` fences enrichment payload updates.
+    Seed / fixture / unfenced callers omit both.
+    """
     repo = repository or tw_research_repository
     if not repo.is_available():
         return True
@@ -115,7 +122,13 @@ def persist_symbol(
         result = repo.upsert_symbol_result(
             symbol_row_payload(state, record),
             enrich_lease_generation=enrich_lease_generation,
+            scan_lease_generation=scan_lease_generation,
         )
+        if result.get("technical_rejected"):
+            note = "scan_lease_stale_write_rejected"
+            if note not in state.notes:
+                state.notes.append(note)
+            return False
         if result.get("enrichment_rejected"):
             # Keep in-memory enrichment for this worker, but durable store refused
             # a stale lease write. Drop local enrichment so consumers hydrate truth.
@@ -230,6 +243,8 @@ def _state_from_scan_row(row: dict[str, Any]) -> ScanState:
         enrichments_run=int(row["enrichments_run"]),
         max_enrichments_per_run=int(row["max_enrichments_per_run"]),
         enrich_lease_generation=int(row.get("enrich_lease_generation") or 0),
+        scan_lease_generation=int(row.get("scan_lease_generation") or 0),
+        budget_windows_opened=int(row.get("budget_windows_opened") or 0),
         created_at=created.isoformat() if hasattr(created, "isoformat") else str(created),
         updated_at=updated.isoformat() if hasattr(updated, "isoformat") else str(updated),
         notes=list(row.get("notes_json") or []),
@@ -276,9 +291,11 @@ def load_scan_progress(
     user_id: str | None = None,
     repository: TwResearchRepository | None = None,
 ) -> dict[str, Any] | None:
-    """Counters-only progress from committed scan metadata + symbol count.
+    """Counters-only progress from committed scan metadata + lean symbol fields.
 
-    Does not load symbol payloads or trigger upstream market-data fetches.
+    Does not hydrate full ledgers or trigger upstream market-data fetches.
+    Evaluation counters use ``list_symbol_evaluation_fields`` so the #327 poll
+    path stays light (#329).
     Returns ``None`` for a missing scan or a scan owned by another user.
     """
     repo = repository or tw_research_repository
@@ -302,17 +319,17 @@ def load_scan_progress(
     if user_id is not None and row.get("user_id") != user_id:
         return None
     try:
-        processed_count = repo.count_symbol_results(scan_id)
+        symbol_rows = repo.list_symbol_evaluation_fields(scan_id)
     except Exception as exc:  # noqa: BLE001
         logger.warning(
-            "tw_research count_symbol_results failed for %s",
+            "tw_research list_symbol_evaluation_fields failed for progress %s",
             scan_id,
             exc_info=True,
         )
         raise TwResearchDurableStoreError(
-            f"Failed to count symbol results for {scan_id}",
+            f"Failed to load evaluation fields for progress {scan_id}",
             scan_id=scan_id,
-            operation="count_symbol_results",
+            operation="list_symbol_evaluation_fields",
         ) from exc
     stock_ids = list(row.get("stock_ids_json") or [])
     cursor = int(row.get("cursor") or 0)
@@ -331,6 +348,21 @@ def load_scan_progress(
     day_pass_ids = list(row.get("day_pass_ids_json") or [])
     qualified_ids = list(row.get("qualified_ids_json") or [])
     active_snapshot_id = row.get("active_snapshot_id")
+    from app.services.tw_research.evaluation import evaluation_counts
+    from types import SimpleNamespace
+
+    records = {
+        item["stock_id"]: SimpleNamespace(
+            readiness=item.get("readiness"),
+            rejection_reason=item.get("rejection_reason"),
+            daily=item.get("daily"),
+            monthly=item.get("monthly"),
+            coverage=item.get("coverage"),
+        )
+        for item in symbol_rows
+    }
+    counts = evaluation_counts(stock_ids=stock_ids, records=records, cursor=cursor)
+    processed_count = counts["processedCount"]
     revision = progress_revision(
         updated_at=updated_at,
         status=status,
@@ -353,7 +385,12 @@ def load_scan_progress(
         "enrichCursor": enrich_cursor,
         "universeSize": len(stock_ids),
         "processedCount": processed_count,
-        "remainingCount": max(0, len(stock_ids) - cursor),
+        "definitiveEvaluatedCount": counts["definitiveEvaluatedCount"],
+        "budgetExhaustedCount": counts["budgetExhaustedCount"],
+        "sourceIncompleteCount": counts["sourceIncompleteCount"],
+        "unresolvedCount": counts["unresolvedCount"],
+        "unprocessedCount": counts["unprocessedCount"],
+        "remainingCount": counts["remainingCount"],
         "targetCount": int(row.get("target_count") or 0),
         "dayPassCount": len(day_pass_ids),
         "qualifiedCount": len(qualified_ids),

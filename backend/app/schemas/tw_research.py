@@ -79,6 +79,36 @@ class RunEnrichmentBatchRequest(BaseModel):
     batchSize: int = Field(default=10, ge=1, le=10)
 
 
+class ResumeBudgetWindowRequest(BaseModel):
+    """Open another bounded history-fetch window for unresolved symbols (#329)."""
+
+    scanId: str
+    additionalMonthFetches: int = Field(default=40, ge=1, le=40)
+
+
+class ScheduleRunRequest(BaseModel):
+    """Internal post-market schedule tick (#330). Requires capture token auth."""
+
+    dryRun: bool = False
+    maxBatches: int = Field(default=5, ge=1, le=20)
+    targetCount: Literal[10, 20] = 10
+    tradingDay: str | None = None
+    resumeIfExhausted: bool = True
+
+
+class ScheduleRunResponse(BaseModel):
+    outcome: str
+    tradingDay: str
+    scanId: str | None = None
+    status: str | None = None
+    qualityStatus: str | None = None
+    batchesRun: int = 0
+    enrichBatchesRun: int = 0
+    resumed: bool = False
+    notes: list[str] = Field(default_factory=list)
+    dryRun: bool = False
+
+
 class ScanSnapshotResponse(BaseModel):
     scan: dict[str, Any]
 

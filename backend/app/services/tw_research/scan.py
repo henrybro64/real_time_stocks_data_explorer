@@ -14,12 +14,14 @@ process-local cache. The cache is only the persist=False path.
 
 from __future__ import annotations
 
+import hashlib
 import logging
+import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime, time as dt_time, timezone
 from inspect import Parameter, signature
-from threading import Lock
+from threading import Event, Lock, Thread
 from typing import Any, Literal, Protocol
 from uuid import uuid4
 from zoneinfo import ZoneInfo
@@ -31,14 +33,28 @@ from app.services.moving_average import completed_daily_candles
 from app.services.quote_service import quote_service
 from app.services.tw_research.constants import (
     CALCULATION_VERSION,
+    DEFAULT_BUDGET_WINDOW_MONTH_FETCHES,
+    DEFAULT_ENRICHMENT_WINDOW_SIZE,
     DEFAULT_MAX_ENRICHMENTS_PER_RUN,
+    DEFAULT_MAX_IN_FLIGHT_SCAN_BATCHES,
     DEFAULT_MAX_UPSTREAM_MONTH_FETCHES,
     DEFAULT_RUN_TIMEOUT_SECONDS,
     DEFAULT_TARGET_COUNT,
     ENRICH_BATCH_SIZE,
+    HISTORY_BUDGET_EXHAUSTED_REASON,
+    HISTORY_FLIGHT_LEASE_SECONDS,
+    HISTORY_FLIGHT_MAX_CONSECUTIVE_RENEW_FAILURES,
+    HISTORY_FLIGHT_POLL_INITIAL_SECONDS,
+    HISTORY_FLIGHT_POLL_MAX_SECONDS,
+    HISTORY_FLIGHT_RENEW_INTERVAL_SECONDS,
+    HISTORY_FLIGHT_WAIT_MAX_SECONDS,
+    MAX_ENRICHMENTS_PER_SCAN_CAP,
+    MAX_UPSTREAM_MONTH_FETCHES_CAP,
     PREFERRED_DAILY_HISTORY_LIMIT,
+    PRICE_BASIS,
     SCAN_BATCH_SIZE,
 )
+from app.services.tw_research.evaluation import evaluation_counts
 from app.services.tw_research.coverage import (
     derive_readiness,
     preflight_tw_trading_calendars,
@@ -63,6 +79,9 @@ from app.services.tw_research.universe import (
 
 TAIPEI = ZoneInfo("Asia/Taipei")
 logger = logging.getLogger(__name__)
+# Cross-scan single-flight for equivalent history downloads within one process (#329).
+_HISTORY_FLIGHT_GUARD = Lock()
+_HISTORY_FLIGHT_LOCKS: dict[str, Lock] = {}
 ScanStatus = Literal[
     "queued",
     "running",
@@ -78,6 +97,48 @@ QualityStatus = Literal[
     "source_incomplete",
     "verified_ready",
 ]
+
+
+class TwResearchConflictError(ValueError):
+    """Caller must take an explicit action before retrying (HTTP 409)."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        scan_id: str | None = None,
+        operation: str | None = None,
+        code: str = "conflict",
+    ) -> None:
+        super().__init__(message)
+        self.scan_id = scan_id
+        self.operation = operation
+        self.code = code
+
+
+class TwResearchAdmissionError(RuntimeError):
+    """Cluster-wide in-flight scan batch limit reached (HTTP 503, retryable)."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        scan_id: str | None = None,
+        operation: str | None = None,
+        in_flight: int | None = None,
+        limit: int | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.scan_id = scan_id
+        self.operation = operation
+        self.in_flight = in_flight
+        self.limit = limit
+        self.retryable = True
+
+
+_DURABLE_POSTGRES_UNAVAILABLE = (
+    "Durable persistence is enabled but PostgreSQL is unavailable."
+)
 
 
 class TwResearchDurableStoreError(RuntimeError):
@@ -98,6 +159,50 @@ class TwResearchDurableStoreError(RuntimeError):
         self.scan_id = scan_id
         self.operation = operation
         self.retryable = True
+
+
+class TwResearchHistoryCoordinationError(RuntimeError):
+    """History-flight ownership was lost or became uncertain mid-fetch (#329).
+
+    Not a definitive technical screening outcome. Callers must not persist a
+    screening result for the affected symbol; a later worker may retry after
+    reclaiming the flight. Upstream bars already written remain reusable.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        scan_id: str | None = None,
+        stock_id: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.scan_id = scan_id
+        self.stock_id = stock_id
+        self.retryable = True
+        self.operation = "history_flight"
+
+
+class TwResearchScanLeaseStaleError(RuntimeError):
+    """Technical symbol write rejected: scan-batch lease generation is stale (#329).
+
+    Raised when a worker's ``scan_lease_generation`` no longer matches an active
+    PostgreSQL batch lease. Callers must stop the batch without advancing the
+    watermark or publishing a verified snapshot from the stale worker.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        scan_id: str | None = None,
+        stock_id: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.scan_id = scan_id
+        self.stock_id = stock_id
+        self.retryable = True
+        self.operation = "persist_symbol"
 
 
 class HistoryLoader(Protocol):
@@ -181,6 +286,9 @@ class ScanState:
     max_enrichments_per_run: int = DEFAULT_MAX_ENRICHMENTS_PER_RUN
     # Active enrichment lease generation; bumped by durable claim_enrichment_batch.
     enrich_lease_generation: int = 0
+    # Active scan-batch lease generation; bumped by durable claim_scan_batch (#329).
+    scan_lease_generation: int = 0
+    budget_windows_opened: int = 0
     created_at: str = ""
     updated_at: str = ""
     notes: list[str] = field(default_factory=list)
@@ -192,6 +300,11 @@ class ScanState:
     run_lock: Lock = field(default_factory=Lock, repr=False, compare=False)
 
     def snapshot(self) -> dict[str, Any]:
+        counts = evaluation_counts(
+            stock_ids=self.stock_ids,
+            records=self.records,
+            cursor=self.cursor,
+        )
         return {
             "scanId": self.scan_id,
             "tradingDay": self.trading_day,
@@ -202,8 +315,13 @@ class ScanState:
             "cursor": self.cursor,
             "enrichCursor": self.enrich_cursor,
             "universeSize": len(self.stock_ids),
-            "processedCount": len(self.records),
-            "remainingCount": max(0, len(self.stock_ids) - self.cursor),
+            "processedCount": counts["processedCount"],
+            "definitiveEvaluatedCount": counts["definitiveEvaluatedCount"],
+            "budgetExhaustedCount": counts["budgetExhaustedCount"],
+            "sourceIncompleteCount": counts["sourceIncompleteCount"],
+            "unresolvedCount": counts["unresolvedCount"],
+            "unprocessedCount": counts["unprocessedCount"],
+            "remainingCount": counts["remainingCount"],
             "targetCount": self.target_count,
             "dayPassCount": len(self.day_pass_ids),
             "dayPassIds": list(self.day_pass_ids),
@@ -211,11 +329,6 @@ class ScanState:
             "qualifiedIds": list(self.qualified_ids),
             "verifiedReadyCount": sum(
                 1 for record in self.records.values() if record.readiness == "verified_ready"
-            ),
-            "sourceIncompleteCount": sum(
-                1
-                for record in self.records.values()
-                if record.readiness == "source_incomplete"
             ),
             "enrichmentsRun": self.enrichments_run,
             "maxEnrichmentsPerRun": self.max_enrichments_per_run,
@@ -282,12 +395,78 @@ def describe_worker_activity(
     return "idle"
 
 
+def _history_flight_lock(stock_id: str) -> Lock:
+    with _HISTORY_FLIGHT_GUARD:
+        lock = _HISTORY_FLIGHT_LOCKS.get(stock_id)
+        if lock is None:
+            lock = Lock()
+            _HISTORY_FLIGHT_LOCKS[stock_id] = lock
+        return lock
+
+
+def history_flight_identity(
+    stock_id: str,
+    *,
+    limit: int,
+    expect_through: str,
+    provider: str = "tw_default",
+) -> tuple[str, str]:
+    """Return ``(flight_key, compatibility_key)`` for equivalent OHLCV backfills.
+
+    Compatibility contract (#329): same symbol, unadjusted close basis, no
+    corporate-action adjustment, same provider family, same bar limit, and the
+    same required completed trading day (``expect_through``). Requests that
+    differ on any of these fields must not share a ready marker.
+    """
+    compatibility = (
+        f"{stock_id}|basis={PRICE_BASIS}|adj=none|provider={provider}"
+        f"|limit={int(limit)}|through={expect_through}|bars=daily_v1"
+    )
+    flight_key = hashlib.sha256(compatibility.encode("utf-8")).hexdigest()[:48]
+    return flight_key, compatibility
+
+
+def stored_history_covers_requirement(
+    stock: StockRecord,
+    *,
+    limit: int,
+    expect_through: str,
+) -> bool:
+    """True when persisted bars cover the flight without missing upstream months."""
+    try:
+        candles, missing = daily_price_history_service.peek_daily_history(
+            stock,
+            "MAX",
+            limit=limit,
+        )
+    except Exception:  # noqa: BLE001 — treat unreadable store as incomplete
+        return False
+    if missing or not candles:
+        return False
+    try:
+        required = date.fromisoformat(expect_through)
+    except ValueError:
+        return bool(candles) and not missing
+    latest = None
+    for candle in reversed(candles):
+        stamp = getattr(candle, "time", None) or ""
+        try:
+            latest = datetime.fromisoformat(str(stamp).replace("Z", "+00:00")).date()
+            break
+        except ValueError:
+            continue
+    if latest is None:
+        return False
+    return latest >= required
+
+
 def _summary_from_state(state: ScanState) -> dict[str, Any]:
     universe_size = len(state.stock_ids)
     return {
         "scanId": state.scan_id,
         "tradingDay": state.trading_day,
         "universeVersion": state.universe_version,
+        "calculationVersion": state.calculation_version,
         "status": state.status,
         "qualityStatus": state.quality_status,
         "targetCount": state.target_count,
@@ -316,6 +495,7 @@ def _summary_from_row(row: dict[str, Any]) -> dict[str, Any]:
         "scanId": row["scan_id"],
         "tradingDay": row["trading_day"],
         "universeVersion": row["universe_version"],
+        "calculationVersion": row.get("calculation_version") or "",
         "status": row["status"],
         "qualityStatus": row.get("quality_status") or "processed",
         "targetCount": int(row.get("target_count") or 0),
@@ -502,6 +682,11 @@ class TwResearchScanService:
                 "enrichCursor": snapshot["enrichCursor"],
                 "universeSize": snapshot["universeSize"],
                 "processedCount": snapshot["processedCount"],
+                "definitiveEvaluatedCount": snapshot["definitiveEvaluatedCount"],
+                "budgetExhaustedCount": snapshot["budgetExhaustedCount"],
+                "sourceIncompleteCount": snapshot["sourceIncompleteCount"],
+                "unresolvedCount": snapshot["unresolvedCount"],
+                "unprocessedCount": snapshot["unprocessedCount"],
                 "remainingCount": snapshot["remainingCount"],
                 "targetCount": snapshot["targetCount"],
                 "dayPassCount": snapshot["dayPassCount"],
@@ -538,6 +723,310 @@ class TwResearchScanService:
                         )
                     )
 
+    def resume_budget_window(
+        self,
+        scan_id: str,
+        *,
+        additional_month_fetches: int = DEFAULT_BUDGET_WINDOW_MONTH_FETCHES,
+    ) -> ScanState:
+        """Open a bounded history-budget window and reopen unresolved symbols (#329).
+
+        Clears ``history_budget_exhausted`` results so a later batch can retry them
+        without re-fetching already-validated warm OHLCV months. Does not raise the
+        safety cap above ``MAX_UPSTREAM_MONTH_FETCHES_CAP``.
+
+        Durable path is a single PostgreSQL transaction (FOR UPDATE) so concurrent
+        resume requests cannot double-grant windows and mid-flight crashes cannot
+        leave cursor/budget/symbol rows half-applied.
+        """
+        if additional_month_fetches <= 0:
+            raise ValueError("additional_month_fetches must be > 0")
+        if additional_month_fetches > DEFAULT_BUDGET_WINDOW_MONTH_FETCHES:
+            raise ValueError(
+                f"additional_month_fetches must be 1..{DEFAULT_BUDGET_WINDOW_MONTH_FETCHES}"
+            )
+
+        # verified_ready / completed_processing may still need a bounded reopen
+        # after an early snapshot left unprocessed or budget-exhausted symbols.
+        allowed = {
+            "budget_exhausted",
+            "partial",
+            "running",
+            "verified_ready",
+            "completed_processing",
+        }
+        with self._run_lock_for(scan_id):
+            state = self.get_scan(scan_id)
+            if state is None:
+                raise KeyError(f"Unknown scan_id: {scan_id}")
+
+            if self._persist:
+                return self._resume_budget_window_durable(
+                    state,
+                    additional_month_fetches=additional_month_fetches,
+                    allowed_statuses=allowed,
+                )
+
+            if state.status == "failed":
+                raise TwResearchConflictError(
+                    "Cannot resume a failed scan; create a new scan after fixing persistence.",
+                    scan_id=scan_id,
+                    operation="resume_budget_window",
+                    code="scan_failed",
+                )
+            if state.status not in allowed:
+                raise TwResearchConflictError(
+                    "Resume requires budget_exhausted/partial/running/"
+                    f"verified_ready/completed_processing (got {state.status}).",
+                    scan_id=scan_id,
+                    operation="resume_budget_window",
+                    code="resume_not_applicable",
+                )
+
+            prior_status = state.status
+            cleared = self._clear_budget_exhausted_symbols(state)
+            previous_max = state.max_upstream_month_fetches
+            new_max = min(
+                MAX_UPSTREAM_MONTH_FETCHES_CAP,
+                previous_max + additional_month_fetches,
+            )
+            open_index = self._first_open_symbol_index(state)
+            reopen_terminal_with_gap = (
+                prior_status in {"verified_ready", "completed_processing"}
+                and open_index < len(state.stock_ids)
+            )
+            if (
+                prior_status != "budget_exhausted"
+                and not cleared
+                and not reopen_terminal_with_gap
+            ):
+                raise TwResearchConflictError(
+                    "Resume requires budget_exhausted or retryable unresolved symbols.",
+                    scan_id=scan_id,
+                    operation="resume_budget_window",
+                    code="resume_not_applicable",
+                )
+            if (
+                new_max <= previous_max
+                and not cleared
+                and not reopen_terminal_with_gap
+            ):
+                raise TwResearchConflictError(
+                    "Budget window already at the safety cap and no retryable symbols remain.",
+                    scan_id=scan_id,
+                    operation="resume_budget_window",
+                    code="budget_cap_reached",
+                )
+
+            with self._lock:
+                state.max_upstream_month_fetches = new_max
+                state.budget_windows_opened = int(state.budget_windows_opened or 0) + 1
+                state.cursor = self._first_open_symbol_index(state)
+                if state.cursor >= len(state.stock_ids):
+                    state.status = "completed_processing"
+                else:
+                    state.status = "partial"
+                state.updated_at = datetime.now(TAIPEI).isoformat()
+                state.notes.append(
+                    "budget_window_opened:"
+                    f"+{new_max - previous_max}:max={new_max}:cleared={len(cleared)}"
+                )
+                self._rebuild_aggregates_locked(state)
+                self._refresh_status_locked(state)
+            return state
+
+    def resume_enrichment_window(
+        self,
+        scan_id: str,
+        *,
+        additional_enrichments: int = DEFAULT_ENRICHMENT_WINDOW_SIZE,
+    ) -> ScanState:
+        """Open another bounded enrichment window when the run budget is spent (#330).
+
+        ``max_enrichments_per_run`` is a per-scan window allowance (not a lifetime
+        prohibition). This raises it by ``additional_enrichments`` up to
+        ``MAX_ENRICHMENTS_PER_SCAN_CAP``. Durable path is a single PostgreSQL
+        transaction; concurrent grants and mid-lease resumes are rejected.
+        """
+        if additional_enrichments <= 0:
+            raise ValueError("additional_enrichments must be > 0")
+        if additional_enrichments > DEFAULT_ENRICHMENT_WINDOW_SIZE:
+            raise ValueError(
+                f"additional_enrichments must be 1..{DEFAULT_ENRICHMENT_WINDOW_SIZE}"
+            )
+
+        with self._run_lock_for(scan_id):
+            state = self.get_scan(scan_id)
+            if state is None:
+                raise KeyError(f"Unknown scan_id: {scan_id}")
+            if self._persist:
+                return self._resume_enrichment_window_durable(
+                    state, additional_enrichments=additional_enrichments
+                )
+
+            if state.status == "failed":
+                raise TwResearchConflictError(
+                    "Cannot resume enrichment on a failed scan.",
+                    scan_id=scan_id,
+                    operation="resume_enrichment_window",
+                    code="scan_failed",
+                )
+            pending = [
+                stock_id
+                for stock_id in state.qualified_ids
+                if stock_id in state.records
+                and state.records[stock_id].enrichment is None
+            ]
+            if not pending:
+                raise TwResearchConflictError(
+                    "No pending enrichment remains.",
+                    scan_id=scan_id,
+                    operation="resume_enrichment_window",
+                    code="enrichment_complete",
+                )
+            remaining = max(0, state.max_enrichments_per_run - state.enrichments_run)
+            if remaining > 0:
+                raise TwResearchConflictError(
+                    "Enrichment budget still remains; resume not required.",
+                    scan_id=scan_id,
+                    operation="resume_enrichment_window",
+                    code="enrichment_budget_remaining",
+                )
+            previous_max = state.max_enrichments_per_run
+            new_max = min(
+                MAX_ENRICHMENTS_PER_SCAN_CAP,
+                previous_max + additional_enrichments,
+            )
+            if new_max <= previous_max:
+                raise TwResearchConflictError(
+                    "Enrichment window already at the safety cap.",
+                    scan_id=scan_id,
+                    operation="resume_enrichment_window",
+                    code="enrichment_cap_reached",
+                )
+            with self._lock:
+                state.max_enrichments_per_run = new_max
+                state.notes.append(
+                    "enrichment_window_opened:"
+                    f"+{new_max - previous_max}:max={new_max}:pending={len(pending)}"
+                )
+                state.updated_at = datetime.now(TAIPEI).isoformat()
+            return state
+
+    def _resume_enrichment_window_durable(
+        self,
+        state: ScanState,
+        *,
+        additional_enrichments: int,
+    ) -> ScanState:
+        repo = self._require_durable_repository(
+            scan_id=state.scan_id, operation="resume_enrichment_window"
+        )
+        result = self._run_durable(
+            scan_id=state.scan_id,
+            operation="resume_enrichment_window",
+            action=lambda: repo.resume_enrichment_window(
+                state.scan_id,
+                additional_enrichments=additional_enrichments,
+                max_cap=MAX_ENRICHMENTS_PER_SCAN_CAP,
+            ),
+            state=state,
+        )
+        if result is None:
+            raise KeyError(f"Unknown scan_id: {state.scan_id}")
+        if not result.get("ok"):
+            code = str(result.get("code") or "conflict")
+            messages = {
+                "active_enrichment_lease": (
+                    "Cannot resume enrichment while an enrichment lease is held."
+                ),
+                "enrichment_complete": "No pending enrichment remains.",
+                "enrichment_budget_remaining": (
+                    "Enrichment budget still remains; resume not required."
+                ),
+                "enrichment_cap_reached": "Enrichment window already at the safety cap.",
+                "scan_failed": "Cannot resume enrichment on a failed scan.",
+            }
+            raise TwResearchConflictError(
+                messages.get(code, f"Enrichment resume conflict ({code})."),
+                scan_id=state.scan_id,
+                operation="resume_enrichment_window",
+                code=code,
+            )
+        self._hydrate_state_from_durable(state)
+        return state
+
+    def _resume_budget_window_durable(
+        self,
+        state: ScanState,
+        *,
+        additional_month_fetches: int,
+        allowed_statuses: set[str],
+    ) -> ScanState:
+        repo = self._require_durable_repository(
+            scan_id=state.scan_id, operation="resume_budget_window"
+        )
+        result = self._run_durable(
+            scan_id=state.scan_id,
+            operation="resume_budget_window",
+            action=lambda: repo.resume_budget_window(
+                state.scan_id,
+                additional_month_fetches=additional_month_fetches,
+                max_cap=MAX_UPSTREAM_MONTH_FETCHES_CAP,
+                rejection_reason=HISTORY_BUDGET_EXHAUSTED_REASON,
+                allowed_statuses=allowed_statuses,
+            ),
+            state=state,
+        )
+        if result is None:
+            raise KeyError(f"Unknown scan_id: {state.scan_id}")
+        if not result.get("ok"):
+            code = str(result.get("code") or "conflict")
+            messages = {
+                "active_batch_lease": (
+                    "Cannot resume while an active scan batch lease is held; retry later."
+                ),
+                "scan_failed": (
+                    "Cannot resume a failed scan; create a new scan after fixing persistence."
+                ),
+                "resume_not_applicable": (
+                    "Resume requires budget_exhausted/partial/running/"
+                    "verified_ready/completed_processing with open work."
+                ),
+                "budget_cap_reached": (
+                    "Budget window already at the safety cap and no retryable symbols remain."
+                ),
+            }
+            raise TwResearchConflictError(
+                messages.get(code, f"Resume conflict ({code})."),
+                scan_id=state.scan_id,
+                operation="resume_budget_window",
+                code=code,
+            )
+        # Drop cleared budget rows from the process cache, then hydrate truth.
+        cleared = set(result.get("cleared") or [])
+        with self._lock:
+            for stock_id in cleared:
+                record = state.records.pop(stock_id, None)
+                if record is None:
+                    continue
+                if record.checkpoint is not None:
+                    self._checkpoints.discard(record.checkpoint)
+                else:
+                    self._checkpoints.discard(
+                        (
+                            state.trading_day,
+                            state.universe_version,
+                            state.calculation_version,
+                            stock_id,
+                        )
+                    )
+        self._hydrate_state_from_durable(state)
+        refreshed = self.get_scan(state.scan_id)
+        if refreshed is None:
+            raise KeyError(f"Unknown scan_id: {state.scan_id}")
+        return refreshed
+
     def run_batch(
         self,
         scan_id: str,
@@ -558,6 +1047,15 @@ class TwResearchScanService:
             state = self.get_scan(scan_id)
             if state is None:
                 raise KeyError(f"Unknown scan_id: {scan_id}")
+            if state.status == "budget_exhausted":
+                # Do not silently burn zero-budget claims as HTTP 200 progress.
+                raise TwResearchConflictError(
+                    "Scan history budget is exhausted. Open a resume window before running another batch.",
+                    scan_id=scan_id,
+                    operation="run_batch",
+                    code="budget_resume_required",
+                )
+            # Admission is atomic inside durable claim_scan_batch (#329).
             self._remember_checkpoints(state)
             batch_ids = self._claim_batch_ids(state, batch_size=batch_size)
             if batch_ids is None:
@@ -598,6 +1096,33 @@ class TwResearchScanService:
                     return state
                 try:
                     self._process_symbol(state, stock_id, now=calculation_now)
+                except TwResearchHistoryCoordinationError:
+                    # Ownership lost mid-fetch: rewind this and remaining reserved
+                    # ids without writing a definitive screening outcome.
+                    with self._lock:
+                        remaining = batch_ids[batch_ids.index(stock_id) :]
+                        state.cursor = max(0, state.cursor - len(remaining))
+                        state.status = "partial"
+                        note = f"history_flight_coordination_lost:{stock_id}"
+                        if note not in state.notes:
+                            state.notes.append(note)
+                        state.updated_at = datetime.now(TAIPEI).isoformat()
+                    self._persist_scan(state)
+                    self._rewind_durable_cursor(state)
+                    return state
+                except TwResearchScanLeaseStaleError:
+                    # Another worker reclaimed the batch (or lease expired). Stop
+                    # without completing under the stale generation.
+                    with self._lock:
+                        remaining = batch_ids[batch_ids.index(stock_id) :]
+                        state.cursor = max(0, state.cursor - len(remaining))
+                        state.status = "partial"
+                        note = f"scan_lease_stale_write_rejected:{stock_id}"
+                        if note not in state.notes:
+                            state.notes.append(note)
+                        state.updated_at = datetime.now(TAIPEI).isoformat()
+                    self._persist_scan(state)
+                    return state
                 except TwResearchDurableStoreError:
                     # Required durable write failed — stop the batch; do not
                     # convert this into a per-symbol screening error.
@@ -667,11 +1192,13 @@ class TwResearchScanService:
                 0, state.max_upstream_month_fetches - state.upstream_month_fetches
             )
 
-        candles, months_used = self._history_loader(
-            stock,
-            PREFERRED_DAILY_HISTORY_LIMIT,
-            max_month_fetches=remaining_budget,
-        )
+        # Process lock + durable cross-pod history flight (#329).
+        with _history_flight_lock(stock_id):
+            candles, months_used = self._load_history_single_flight(
+                state,
+                stock,
+                remaining_budget=remaining_budget,
+            )
         with self._lock:
             state.upstream_month_fetches += months_used
             remaining_after = max(
@@ -715,7 +1242,7 @@ class TwResearchScanService:
             # Stage B is local computation over already-loaded candles. History
             # budget was enforced before the fetch above.
             if not candles and remaining_after <= 0 and months_used == 0:
-                record.rejection_reason = "history_budget_exhausted"
+                record.rejection_reason = HISTORY_BUDGET_EXHAUSTED_REASON
                 record.readiness = "rejected"
             else:
                 monthly = monthly_macd_kd_snapshot(candles, market="TW", now=now)
@@ -750,7 +1277,7 @@ class TwResearchScanService:
                     if is_technically_qualified(record):
                         state.qualified_ids.append(stock_id)
         elif months_used == 0 and remaining_budget <= 0 and not candles:
-            record.rejection_reason = "history_budget_exhausted"
+            record.rejection_reason = HISTORY_BUDGET_EXHAUSTED_REASON
             record.readiness = "rejected"
 
         if record.readiness != "rejected":
@@ -922,7 +1449,7 @@ class TwResearchScanService:
 
         if not tw_research_repository.is_available():
             raise TwResearchDurableStoreError(
-                "Durable persistence is enabled but PostgreSQL is unavailable.",
+                _DURABLE_POSTGRES_UNAVAILABLE,
                 scan_id=scan_id,
                 operation=operation,
             )
@@ -956,13 +1483,259 @@ class TwResearchScanService:
                 operation=operation,
             ) from exc
 
+    def _first_open_symbol_index(self, state: ScanState) -> int:
+        """Index of the first universe symbol without a non-retryable result."""
+        for index, stock_id in enumerate(state.stock_ids):
+            record = state.records.get(stock_id)
+            if record is None:
+                return index
+            if record.rejection_reason == HISTORY_BUDGET_EXHAUSTED_REASON:
+                return index
+        return len(state.stock_ids)
+
+    def _clear_budget_exhausted_symbols(self, state: ScanState) -> list[str]:
+        """Drop retryable budget-exhausted rows so a new window can reclaim them."""
+        cleared: list[str] = []
+        with self._lock:
+            for stock_id, record in list(state.records.items()):
+                if record.rejection_reason != HISTORY_BUDGET_EXHAUSTED_REASON:
+                    continue
+                cleared.append(stock_id)
+                del state.records[stock_id]
+                if record.checkpoint is not None:
+                    self._checkpoints.discard(record.checkpoint)
+                else:
+                    self._checkpoints.discard(
+                        (
+                            state.trading_day,
+                            state.universe_version,
+                            state.calculation_version,
+                            stock_id,
+                        )
+                    )
+        if cleared and self._persist:
+            repo = self._require_durable_repository(
+                scan_id=state.scan_id, operation="delete_budget_exhausted_symbols"
+            )
+            self._run_durable(
+                scan_id=state.scan_id,
+                operation="delete_budget_exhausted_symbols",
+                action=lambda: repo.delete_symbol_results_by_rejection(
+                    state.scan_id,
+                    rejection_reason=HISTORY_BUDGET_EXHAUSTED_REASON,
+                ),
+                state=state,
+            )
+        return cleared
+
+    def _load_history_single_flight(
+        self,
+        state: ScanState,
+        stock: StockRecord,
+        *,
+        remaining_budget: int,
+    ) -> tuple[list[CandleRecord], int]:
+        """Deduplicate compatible upstream OHLCV backfills across pods (#329).
+
+        Short DB transactions acquire/renew/complete a fenced lease. Waiting
+        workers poll with bounded backoff. A ``ready`` marker is never treated as
+        proof of coverage — waiters validate persisted bars first and only then
+        load with budget 0. Incomplete ready/incomplete markers force
+        re-coordination before any positive upstream budget is spent.
+        """
+        limit = PREFERRED_DAILY_HISTORY_LIMIT
+        if not self._persist:
+            return self._history_loader(
+                stock, limit, max_month_fetches=remaining_budget
+            )
+
+        from app.repositories.tw_research_repository import tw_research_repository
+
+        if not tw_research_repository.is_available():
+            raise TwResearchDurableStoreError(
+                "Durable history flight coordination requires PostgreSQL.",
+                scan_id=state.scan_id,
+                operation="history_flight",
+            )
+
+        # Warm path: validated store coverage needs no flight / no upstream.
+        if stored_history_covers_requirement(
+            stock, limit=limit, expect_through=state.trading_day
+        ):
+            return self._history_loader(stock, limit, max_month_fetches=0)
+
+        flight_key, compatibility = history_flight_identity(
+            stock.id,
+            limit=limit,
+            expect_through=state.trading_day,
+        )
+        owner_token = f"{state.scan_id}:{uuid4().hex[:12]}"
+        deadline = time.monotonic() + HISTORY_FLIGHT_WAIT_MAX_SECONDS
+        sleep_for = HISTORY_FLIGHT_POLL_INITIAL_SECONDS
+        acquired_generation: int | None = None
+
+        while True:
+            try:
+                claim = tw_research_repository.acquire_history_flight(
+                    flight_key=flight_key,
+                    stock_id=stock.id,
+                    compatibility_key=compatibility,
+                    owner_token=owner_token,
+                    lease_seconds=HISTORY_FLIGHT_LEASE_SECONDS,
+                )
+            except Exception as exc:  # noqa: BLE001
+                raise TwResearchDurableStoreError(
+                    f"History flight acquire failed ({type(exc).__name__}).",
+                    scan_id=state.scan_id,
+                    operation="history_flight",
+                ) from exc
+
+            status = str(claim.get("status") or "")
+            if status == "acquired":
+                acquired_generation = int(claim["generation"])
+                break
+            if status == "ready":
+                if stored_history_covers_requirement(
+                    stock, limit=limit, expect_through=state.trading_day
+                ):
+                    return self._history_loader(stock, limit, max_month_fetches=0)
+                # Misleading/expired ready without coverage — keep waiting or reclaim.
+            if time.monotonic() >= deadline:
+                try:
+                    claim = tw_research_repository.acquire_history_flight(
+                        flight_key=flight_key,
+                        stock_id=stock.id,
+                        compatibility_key=compatibility,
+                        owner_token=owner_token,
+                        lease_seconds=HISTORY_FLIGHT_LEASE_SECONDS,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    raise TwResearchDurableStoreError(
+                        f"History flight acquire failed ({type(exc).__name__}).",
+                        scan_id=state.scan_id,
+                        operation="history_flight",
+                    ) from exc
+                if claim.get("status") == "acquired":
+                    acquired_generation = int(claim["generation"])
+                    break
+                # Still busy without validated coverage: do not persist a
+                # definitive source_incomplete outcome for a temporary wait.
+                raise TwResearchHistoryCoordinationError(
+                    "History flight wait timed out without ownership or "
+                    "validated coverage; retry after the leader finishes.",
+                    scan_id=state.scan_id,
+                    stock_id=stock.id,
+                )
+            time.sleep(sleep_for)
+            sleep_for = min(sleep_for * 2, HISTORY_FLIGHT_POLL_MAX_SECONDS)
+
+        if acquired_generation is None:
+            raise TwResearchHistoryCoordinationError(
+                "History flight acquired without a generation; retry reclaim.",
+                scan_id=state.scan_id,
+                stock_id=stock.id,
+            )
+        stop_renew = Event()
+        renew_state = {"stale": False, "consecutive_failures": 0}
+
+        def _renew_loop() -> None:
+            while not stop_renew.wait(HISTORY_FLIGHT_RENEW_INTERVAL_SECONDS):
+                try:
+                    renewed = tw_research_repository.renew_history_flight(
+                        flight_key=flight_key,
+                        owner_token=owner_token,
+                        generation=acquired_generation,
+                        lease_seconds=HISTORY_FLIGHT_LEASE_SECONDS,
+                    )
+                except Exception:  # noqa: BLE001 — bound consecutive outages
+                    renew_state["consecutive_failures"] = (
+                        int(renew_state["consecutive_failures"]) + 1
+                    )
+                    logger.warning(
+                        "tw_research history flight renew failed",
+                        exc_info=True,
+                        extra={
+                            "stock_id": stock.id,
+                            "flight_key": flight_key,
+                            "consecutive_failures": renew_state["consecutive_failures"],
+                        },
+                    )
+                    if (
+                        int(renew_state["consecutive_failures"])
+                        >= HISTORY_FLIGHT_MAX_CONSECUTIVE_RENEW_FAILURES
+                    ):
+                        # Fail closed: lease may already be stolen; do not publish ready.
+                        renew_state["stale"] = True
+                        return
+                    continue
+                renew_state["consecutive_failures"] = 0
+                if not renewed.get("ok"):
+                    renew_state["stale"] = True
+                    return
+
+        renew_thread = Thread(target=_renew_loop, name="tw-history-flight-renew", daemon=True)
+        renew_thread.start()
+        success = False
+        coverage_complete = False
+        candles: list[CandleRecord] = []
+        months_used = 0
+        try:
+            candles, months_used = self._history_loader(
+                stock, limit, max_month_fetches=remaining_budget
+            )
+            success = True
+            coverage_complete = stored_history_covers_requirement(
+                stock, limit=limit, expect_through=state.trading_day
+            )
+        finally:
+            stop_renew.set()
+            renew_thread.join(timeout=1.0)
+            try:
+                # Stale / ownership-uncertain leaders must not publish ready.
+                # In-flight HTTP may already have persisted bars idempotently;
+                # coordination fails closed so waiters re-acquire before more
+                # upstream work rather than trusting a false ready marker.
+                if renew_state["stale"]:
+                    tw_research_repository.complete_history_flight(
+                        flight_key=flight_key,
+                        owner_token=owner_token,
+                        generation=acquired_generation,
+                        success=False,
+                        coverage_complete=False,
+                    )
+                else:
+                    tw_research_repository.complete_history_flight(
+                        flight_key=flight_key,
+                        owner_token=owner_token,
+                        generation=acquired_generation,
+                        success=success,
+                        coverage_complete=coverage_complete,
+                    )
+            except Exception:  # noqa: BLE001 — lease expiry recovers
+                logger.warning(
+                    "tw_research history flight complete failed",
+                    exc_info=True,
+                    extra={"stock_id": stock.id, "flight_key": flight_key},
+                )
+        if renew_state["stale"]:
+            # Ownership lost during fetch: do not return a coordinated success
+            # that would drive screening/persistence under a stolen lease.
+            raise TwResearchHistoryCoordinationError(
+                "History flight lease lost or uncertain during upstream fetch; "
+                "retry after reclaim.",
+                scan_id=state.scan_id,
+                stock_id=stock.id,
+            )
+        return candles, months_used
+
     def _claim_batch_ids(self, state: ScanState, *, batch_size: int) -> list[str] | None:
         """Reserve next symbol slice; None means already complete.
 
         When ``persist=True``, reservations must succeed in PostgreSQL. Failures
         raise ``TwResearchDurableStoreError`` and never fall back to memory.
         """
-        terminal = {"completed_processing", "verified_ready", "budget_exhausted"}
+        # budget_exhausted is handled before claim (explicit resume required).
+        terminal = {"completed_processing", "verified_ready"}
         if not self._persist:
             with self._lock:
                 if state.status in terminal and state.cursor >= len(state.stock_ids):
@@ -985,6 +1758,7 @@ class TwResearchScanService:
                 state.scan_id,
                 batch_size=batch_size,
                 terminal_statuses=terminal,
+                max_in_flight=DEFAULT_MAX_IN_FLIGHT_SCAN_BATCHES,
             ),
         )
         if claimed is None:
@@ -992,6 +1766,14 @@ class TwResearchScanService:
                 "Durable scan row missing for claim.",
                 scan_id=state.scan_id,
                 operation="claim_scan_batch",
+            )
+        if claimed.get("admission_denied"):
+            raise TwResearchAdmissionError(
+                "Too many in-flight Taiwan research batches; retry after a lease expires.",
+                scan_id=state.scan_id,
+                operation="run_batch",
+                in_flight=int(claimed.get("in_flight") or 0),
+                limit=int(claimed.get("limit") or DEFAULT_MAX_IN_FLIGHT_SCAN_BATCHES),
             )
         # Pull peer-worker symbol results / counters before processing.
         self._hydrate_state_from_durable(state)
@@ -1001,6 +1783,11 @@ class TwResearchScanService:
             # In-memory cursor tracks the reservation end for timeout rewind.
             state.cursor = reserved_from + len(batch_ids)
             state.status = claimed["scan"]["status"]  # type: ignore[assignment]
+            state.scan_lease_generation = int(
+                claimed.get("lease_generation")
+                or claimed["scan"].get("scan_lease_generation")
+                or 0
+            )
             state.updated_at = datetime.now(TAIPEI).isoformat()
         if claimed.get("already_complete"):
             return None
@@ -1111,16 +1898,26 @@ class TwResearchScanService:
         repo = self._require_durable_repository(
             scan_id=state.scan_id, operation="complete_scan_batch"
         )
+        lease_generation = int(getattr(state, "scan_lease_generation", 0) or 0) or None
         completed = self._run_durable(
             scan_id=state.scan_id,
             operation="complete_scan_batch",
             action=lambda: repo.complete_scan_batch(
-                state.scan_id, status=state.status
+                state.scan_id,
+                status=state.status,
+                lease_generation=lease_generation,
             ),
             failure_note="complete_batch",
             state=state,
         )
         if completed is None:
+            return
+        if completed.get("stale_lease"):
+            with self._lock:
+                note = "scan_batch_lease_stale_complete_rejected"
+                if note not in state.notes:
+                    state.notes.append(note)
+            self._hydrate_state_from_durable(state)
             return
         with self._lock:
             state.cursor = int(completed["cursor"])
@@ -1144,6 +1941,18 @@ class TwResearchScanService:
             state.enrichments_run = loaded.enrichments_run
             state.enrich_lease_generation = int(
                 getattr(loaded, "enrich_lease_generation", 0) or 0
+            )
+            state.scan_lease_generation = int(
+                getattr(loaded, "scan_lease_generation", 0) or 0
+            )
+            state.budget_windows_opened = int(
+                getattr(loaded, "budget_windows_opened", 0) or 0
+            )
+            state.max_upstream_month_fetches = int(
+                getattr(loaded, "max_upstream_month_fetches", state.max_upstream_month_fetches)
+            )
+            state.max_enrichments_per_run = int(
+                getattr(loaded, "max_enrichments_per_run", state.max_enrichments_per_run)
             )
             state.active_snapshot_id = loaded.active_snapshot_id
             state.notes = list(loaded.notes)
@@ -1178,7 +1987,7 @@ class TwResearchScanService:
 
         if not tw_research_repository.is_available():
             raise TwResearchDurableStoreError(
-                "Durable persistence is enabled but PostgreSQL is unavailable.",
+                _DURABLE_POSTGRES_UNAVAILABLE,
                 scan_id=state.scan_id,
                 operation="persist_scan",
             )
@@ -1197,18 +2006,35 @@ class TwResearchScanService:
 
         if not tw_research_repository.is_available():
             raise TwResearchDurableStoreError(
-                "Durable persistence is enabled but PostgreSQL is unavailable.",
+                _DURABLE_POSTGRES_UNAVAILABLE,
                 scan_id=state.scan_id,
                 operation="persist_symbol",
             )
-        lease_generation = None
+        enrich_lease_generation = None
+        scan_lease_generation = None
         if record.enrichment is not None:
-            lease_generation = int(getattr(state, "enrich_lease_generation", 0) or 0) or None
+            # Enrichment path: fence enrichment only (independent of scan batch).
+            enrich_lease_generation = (
+                int(getattr(state, "enrich_lease_generation", 0) or 0) or None
+            )
+        else:
+            # Technical screening under a claimed scan batch (generation > 0).
+            # Seed rows / fixtures leave generation at 0 and remain unfenced.
+            scan_lease_generation = (
+                int(getattr(state, "scan_lease_generation", 0) or 0) or None
+            )
         if not persist_symbol(
             state,
             record,
-            enrich_lease_generation=lease_generation,
+            enrich_lease_generation=enrich_lease_generation,
+            scan_lease_generation=scan_lease_generation,
         ):
+            if "scan_lease_stale_write_rejected" in state.notes:
+                raise TwResearchScanLeaseStaleError(
+                    f"Stale scan-batch lease rejected technical write for {record.stock_id}.",
+                    scan_id=state.scan_id,
+                    stock_id=record.stock_id,
+                )
             raise TwResearchDurableStoreError(
                 f"Durable symbol write failed for {record.stock_id}.",
                 scan_id=state.scan_id,
@@ -1268,7 +2094,7 @@ def _calculation_now(trading_day: str, *, override: datetime | None) -> datetime
     day = date.fromisoformat(trading_day)
     if override is not None and override.astimezone(TAIPEI).date() == day:
         return override.astimezone(TAIPEI)
-    return datetime.combine(day, time(14, 0), tzinfo=TAIPEI)
+    return datetime.combine(day, dt_time(14, 0), tzinfo=TAIPEI)
 
 
 def _snapshot_dict(snapshot: MacdKdSnapshot) -> dict[str, Any]:

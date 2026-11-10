@@ -780,6 +780,7 @@ describe("TwResearchPage persisted scans (#327)", () => {
     renderPage({ initialScanId: SCAN_ID });
     expect(await screen.findByTestId("tw-research-budget-exhausted")).toBeInTheDocument();
     expect(screen.getByTestId("tw-research-batch")).toBeDisabled();
+    expect(screen.getByTestId("tw-research-resume")).toBeEnabled();
     expect(screen.getByTestId("tw-research-quality")).toHaveTextContent("source_incomplete");
     expect(screen.getByTestId("tw-research-unresolved")).toHaveTextContent("history_budget_exhausted");
     expect(screen.getByTestId("tw-research-worker")).toHaveTextContent("沒有 worker 正在處理");

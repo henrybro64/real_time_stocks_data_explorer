@@ -42,6 +42,7 @@ import {
   researchScanListRefetchInterval,
   researchScanRefetchInterval,
   resolveTwResearchUniverse,
+  resumeTwResearchBudgetWindow,
   runTwResearchBatch,
   runTwResearchEnrichmentBatch,
   twResearchCsvUrl,
@@ -125,7 +126,24 @@ function workerActivity(scan: TwResearchScanSnapshot): "active" | "unknown" | "i
   return ACTIVE_SCAN_STATUSES.has(scan.status) ? "unknown" : "idle";
 }
 
-export function TwResearchPage({ initialScanId = null }: { initialScanId?: string | null }) {
+/** Coerce ledger/UI values without Object's "[object Object]" stringification. */
+function displayText(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return "";
+}
+
+function workerActivityLabelKey(
+  activity: "active" | "unknown" | "idle",
+): TranslationKey {
+  if (activity === "active") return "research.tw.workerActive";
+  if (activity === "idle") return "research.tw.workerIdle";
+  return "research.tw.workerUnknown";
+}
+
+export function TwResearchPage({
+  initialScanId = null,
+}: Readonly<{ initialScanId?: string | null }>) {
   const { t } = useLanguage();
   const router = useRouter();
   const queryClient = useQueryClient();
@@ -174,6 +192,11 @@ export function TwResearchPage({ initialScanId = null }: { initialScanId?: strin
       enrichCursor: next.enrichCursor ?? 0,
       universeSize: next.universeSize,
       processedCount: next.processedCount,
+      definitiveEvaluatedCount: next.definitiveEvaluatedCount ?? 0,
+      budgetExhaustedCount: next.budgetExhaustedCount ?? 0,
+      sourceIncompleteCount: next.sourceIncompleteCount ?? 0,
+      unresolvedCount: next.unresolvedCount ?? 0,
+      unprocessedCount: next.unprocessedCount ?? 0,
       remainingCount: next.remainingCount,
       targetCount: next.targetCount,
       dayPassCount: next.dayPassCount,
@@ -293,6 +316,14 @@ export function TwResearchPage({ initialScanId = null }: { initialScanId?: strin
   const displayEnrichCursor = progress?.enrichCursor ?? scan?.enrichCursor ?? 0;
   const displayQuality = progress?.qualityStatus ?? scan?.qualityStatus;
   const displayUpdatedAt = progress?.updatedAt ?? scan?.updatedAt;
+  const displayDefinitive =
+    progress?.definitiveEvaluatedCount ?? scan?.definitiveEvaluatedCount ?? 0;
+  const displayBudgetExhausted =
+    progress?.budgetExhaustedCount ?? scan?.budgetExhaustedCount ?? 0;
+  const displayIncomplete =
+    progress?.sourceIncompleteCount ?? scan?.sourceIncompleteCount ?? 0;
+  const displayUnresolved = progress?.unresolvedCount ?? scan?.unresolvedCount ?? 0;
+  const displayUnprocessed = progress?.unprocessedCount ?? scan?.unprocessedCount ?? 0;
 
   useEffect(() => {
     if (scan) scanRef.current = scan;
@@ -385,6 +416,15 @@ export function TwResearchPage({ initialScanId = null }: { initialScanId?: strin
     },
   });
 
+  const resumeMutation = useMutation({
+    mutationFn: async () => resumeTwResearchBudgetWindow(requireScanId()),
+    onSuccess: (next) => {
+      applyScanSnapshot(next);
+      void queryClient.invalidateQueries({ queryKey: ["tw-research-progress", next.scanId] });
+      void queryClient.invalidateQueries({ queryKey: ["tw-research-scans"] });
+    },
+  });
+
   const enrichMutation = useMutation({
     mutationFn: async () => runTwResearchEnrichmentBatch(requireScanId(), 10),
     onMutate: () => markRecovered("enrich", false),
@@ -449,6 +489,7 @@ export function TwResearchPage({ initialScanId = null }: { initialScanId?: strin
   const busy =
     createMutation.isPending ||
     batchMutation.isPending ||
+    resumeMutation.isPending ||
     enrichMutation.isPending ||
     refreshMutation.isPending ||
     agentMutation.isPending ||
@@ -470,6 +511,11 @@ export function TwResearchPage({ initialScanId = null }: { initialScanId?: strin
       key: "batch",
       label: "research.tw.errorBatch",
       error: batchMutation.isPending || recoveredOperations.batch ? null : batchMutation.error,
+    },
+    {
+      key: "resume",
+      label: "research.tw.errorResume",
+      error: resumeMutation.isPending ? null : resumeMutation.error,
     },
     {
       key: "enrich",
@@ -643,6 +689,13 @@ export function TwResearchPage({ initialScanId = null }: { initialScanId?: strin
                       onClick: () => batchMutation.mutate(),
                     },
                     {
+                      key: "resume",
+                      kind: "tertiary" as const,
+                      label: "research.tw.resumeBudget" as const,
+                      disabled: busy || !scanId || displayStatus !== "budget_exhausted",
+                      onClick: () => resumeMutation.mutate(),
+                    },
+                    {
                       key: "enrich",
                       kind: "tertiary" as const,
                       label: "research.tw.runEnrichment" as const,
@@ -724,18 +777,22 @@ export function TwResearchPage({ initialScanId = null }: { initialScanId?: strin
                   })}
                 </p>
                 <p className="cds--body-compact-01" data-testid="tw-research-worker">
-                  {t(
-                    displayWorker === "active"
-                      ? "research.tw.workerActive"
-                      : displayWorker === "idle"
-                        ? "research.tw.workerIdle"
-                        : "research.tw.workerUnknown",
-                  )}
+                  {t(workerActivityLabelKey(displayWorker))}
                 </p>
                 <p className="cds--helper-text-01">
                   {t("research.tw.budgetLine", {
                     used: displayBudgetUsed,
                     max: displayBudgetMax,
+                  })}
+                </p>
+                <p className="cds--helper-text-01" data-testid="tw-research-evaluation">
+                  {t("research.tw.evaluationLine", {
+                    definitive: displayDefinitive,
+                    budget: displayBudgetExhausted,
+                    incomplete: displayIncomplete,
+                    unresolved: displayUnresolved,
+                    unprocessed: displayUnprocessed,
+                    processed: displayProcessed,
                   })}
                 </p>
                 <p className="cds--helper-text-01">
@@ -767,8 +824,9 @@ export function TwResearchPage({ initialScanId = null }: { initialScanId?: strin
                       .filter((row) => row.rejection_reason || row.readiness === "source_incomplete")
                       .slice(0, 20)
                       .map((row) => (
-                        <p key={String(row.stock_id)} className="cds--helper-text-01">
-                          {String(row.stock_id)} · {String(row.rejection_reason || row.readiness || "")}
+                        <p key={displayText(row.stock_id)} className="cds--helper-text-01">
+                          {displayText(row.stock_id)} ·{" "}
+                          {displayText(row.rejection_reason || row.readiness || "")}
                         </p>
                       ))}
                   </div>
@@ -802,15 +860,15 @@ export function TwResearchPage({ initialScanId = null }: { initialScanId?: strin
                     const monthly = (row.monthly as Record<string, unknown> | undefined) || {};
                     const themes = (row.theme_keys as string[] | undefined) || [];
                     return (
-                      <TableRow key={String(row.stock_id)}>
-                        <TableCell>{String(row.stock_id)}</TableCell>
-                        <TableCell>{String(row.stage)}</TableCell>
-                        <TableCell>{String(daily.passStatus ?? "")}</TableCell>
-                        <TableCell>{String(monthly.passStatus ?? "")}</TableCell>
+                      <TableRow key={displayText(row.stock_id)}>
+                        <TableCell>{displayText(row.stock_id)}</TableCell>
+                        <TableCell>{displayText(row.stage)}</TableCell>
+                        <TableCell>{displayText(daily.passStatus)}</TableCell>
+                        <TableCell>{displayText(monthly.passStatus)}</TableCell>
                         <TableCell>
                           {themes.length ? themes.join(", ") : t("research.tw.unclassified")}
                         </TableCell>
-                        <TableCell>{String(row.rejection_reason ?? "")}</TableCell>
+                        <TableCell>{displayText(row.rejection_reason)}</TableCell>
                       </TableRow>
                     );
                   })}

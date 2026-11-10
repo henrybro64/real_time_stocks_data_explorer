@@ -13,9 +13,10 @@ from datetime import datetime
 from typing import Any, TypeVar
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response
 
 from app.api.deps import get_effective_user_id
+from app.core.config import settings
 from app.schemas.tw_research import (
     CreateScanRequest,
     ExportChunkResponse,
@@ -23,8 +24,11 @@ from app.schemas.tw_research import (
     RejectedStockResponse,
     ResearchContractResponse,
     ResolvedUniverseResponse,
+    ResumeBudgetWindowRequest,
     RunBatchRequest,
     RunEnrichmentBatchRequest,
+    ScheduleRunRequest,
+    ScheduleRunResponse,
     ScanListResponse,
     ScanProgressResponse,
     ScanSnapshotResponse,
@@ -41,6 +45,8 @@ from app.services.tw_research.export import (
 from app.services.tw_research.preset import starter_preset_stock_ids, starter_preset_theme_keys
 from app.services.tw_research.scan import (
     ScanState,
+    TwResearchAdmissionError,
+    TwResearchConflictError,
     TwResearchDurableStoreError,
     tw_research_scan_service,
 )
@@ -53,6 +59,12 @@ router = APIRouter(
     prefix="/tw-research",
     tags=["tw-research"],
     dependencies=[Depends(get_effective_user_id)],
+)
+# Internal schedule tick uses capture-token auth only — must not inherit session
+# dependencies or AUTH_ENABLED=true rejects CronJob calls before the token check (#330).
+schedule_router = APIRouter(
+    prefix="/tw-research",
+    tags=["tw-research"],
 )
 
 _EXPORT_KIND_PATTERN = "^(ledger|qualified|enriched)$"
@@ -141,6 +153,61 @@ def run_scan_batch(
         )
     )
     return _snapshot(state)
+
+
+@router.post("/scans/resume-budget", response_model=ScanSnapshotResponse)
+def resume_budget_window(
+    body: ResumeBudgetWindowRequest,
+    user_id: str = Depends(get_effective_user_id),
+) -> ScanSnapshotResponse:
+    """Open a bounded history-budget window and reopen unresolved symbols (#329)."""
+    _require_owned_scan(body.scanId, user_id)
+    state = _call_or_http(
+        lambda: tw_research_scan_service.resume_budget_window(
+            body.scanId,
+            additional_month_fetches=body.additionalMonthFetches,
+        )
+    )
+    return _snapshot(state)
+
+
+@schedule_router.post("/schedule/run", response_model=ScheduleRunResponse)
+def run_scheduled_research_tick(
+    body: ScheduleRunRequest | None = None,
+    x_tw_research_schedule_token: str | None = Header(default=None),
+) -> ScheduleRunResponse:
+    """Internal post-market schedule tick (#330). Token auth; disabled by default.
+
+    Intentionally registered on ``schedule_router`` without session auth so a
+    configured CronJob token works when ``AUTH_ENABLED=true``.
+    """
+    from app.api.capture_auth import require_capture_token
+    from app.services.tw_research.scheduler import run_scheduled_research
+
+    require_capture_token(
+        x_tw_research_schedule_token,
+        settings.tw_research_schedule_token,
+        not_configured_detail="Taiwan research schedule endpoint is not configured",
+    )
+    payload = body or ScheduleRunRequest()
+    owner = str(settings.tw_research_schedule_user_id or "").strip()
+    if not owner:
+        raise HTTPException(
+            status_code=503,
+            detail="TW_RESEARCH_SCHEDULE_USER_ID is not configured",
+        )
+    result = _call_or_http(
+        lambda: run_scheduled_research(
+            user_id=owner,
+            enabled=bool(settings.tw_research_schedule_enabled),
+            dry_run=payload.dryRun,
+            max_batches=payload.maxBatches,
+            target_count=payload.targetCount,
+            trading_day=payload.tradingDay,
+            resume_if_exhausted=payload.resumeIfExhausted,
+        )
+    )
+    return ScheduleRunResponse(**result.as_dict())
 
 
 @router.post("/scans/enrichment-batches", response_model=ScanSnapshotResponse)
@@ -417,8 +484,31 @@ def _call_or_http(action: Callable[[], T]) -> T:
         return action()
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except TwResearchConflictError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": exc.code,
+                "operation": exc.operation,
+                "scanId": exc.scan_id,
+                "message": str(exc),
+            },
+        ) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except TwResearchAdmissionError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "scan_admission_limited",
+                "retryable": True,
+                "operation": exc.operation,
+                "scanId": exc.scan_id,
+                "inFlight": exc.in_flight,
+                "limit": exc.limit,
+                "message": str(exc),
+            },
+        ) from exc
     except TwResearchDurableStoreError as exc:
         # Durable PostgreSQL path failed; do not pretend the batch succeeded.
         raise HTTPException(

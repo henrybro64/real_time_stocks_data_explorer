@@ -1,0 +1,59 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: stock-ticker-tw-research-schedule
+spec:
+  # Suspended until Henry explicitly enables post-market automation (#330).
+  # Prerequisites: #321 pilot metrics, #329 budget resume, configured schedule
+  # token + owner user id, and TW_RESEARCH_SCHEDULE_ENABLED=true on the API.
+  suspend: true
+  # Weekday continuation windows Asia/Taipei at 15:30, 16:30, 17:30, 18:30.
+  # Four bounded ticks × 5 batches cover a 73-symbol universe across the evening
+  # without a long-running worker. Backend skips holidays / incomplete sessions
+  # and resumes incomplete prior-day backlog before opening a newer trading day.
+  schedule: "30 15-18 * * 1-5"
+  timeZone: Asia/Taipei
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  startingDeadlineSeconds: 600
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 900
+      backoffLimit: 1
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: tw-research-schedule
+              image: curlimages/curl:8.7.1
+              imagePullPolicy: IfNotPresent
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 32Mi
+                limits:
+                  cpu: 100m
+                  memory: 64Mi
+              env:
+                - name: TW_RESEARCH_SCHEDULE_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: stock-ticker-backend-auth
+                      key: TW_RESEARCH_SCHEDULE_TOKEN
+                      optional: true
+              command:
+                - sh
+                - -c
+                - |
+                  set -eu
+                  if [ -z "${TW_RESEARCH_SCHEDULE_TOKEN:-}" ]; then
+                    echo "TW_RESEARCH_SCHEDULE_TOKEN unset; schedule tick skipped"
+                    exit 0
+                  fi
+                  curl --fail --show-error --silent \
+                    -X POST \
+                    -H "Content-Type: application/json" \
+                    -H "X-Tw-Research-Schedule-Token: ${TW_RESEARCH_SCHEDULE_TOKEN}" \
+                    -d '{"dryRun":false,"maxBatches":5,"targetCount":10,"resumeIfExhausted":true}' \
+                    http://stock-ticker-backend:8000/api/tw-research/schedule/run

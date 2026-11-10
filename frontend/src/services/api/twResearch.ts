@@ -16,6 +16,11 @@ export type TwResearchScanSnapshot = {
   enrichCursor?: number;
   universeSize: number;
   processedCount: number;
+  definitiveEvaluatedCount?: number;
+  budgetExhaustedCount?: number;
+  sourceIncompleteCount?: number;
+  unresolvedCount?: number;
+  unprocessedCount?: number;
   remainingCount: number;
   targetCount: number;
   dayPassCount: number;
@@ -63,6 +68,11 @@ export type TwResearchScanProgress = {
   enrichCursor?: number;
   universeSize: number;
   processedCount: number;
+  definitiveEvaluatedCount?: number;
+  budgetExhaustedCount?: number;
+  sourceIncompleteCount?: number;
+  unresolvedCount?: number;
+  unprocessedCount?: number;
   remainingCount: number;
   targetCount: number;
   dayPassCount: number;
@@ -179,6 +189,17 @@ async function postScanMutation(path: string, body: Record<string, unknown>) {
 
 export async function runTwResearchBatch(scanId: string, batchSize = 10) {
   return postScanMutation("/tw-research/scans/batches", { scanId, batchSize });
+}
+
+/** Open another bounded history-fetch window for unresolved symbols (#329). */
+export async function resumeTwResearchBudgetWindow(
+  scanId: string,
+  additionalMonthFetches = 40,
+) {
+  return postScanMutation("/tw-research/scans/resume-budget", {
+    scanId,
+    additionalMonthFetches,
+  });
 }
 
 export async function runTwResearchEnrichmentBatch(scanId: string, batchSize = 10) {

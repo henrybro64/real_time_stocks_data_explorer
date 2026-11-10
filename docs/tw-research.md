@@ -41,6 +41,7 @@ Confirm and reuse — do not reimplement:
 | `docs/tw-research-agent-handoff.md` | #322 browser-only Agent transfer runbook |
 | `backend/app/services/tw_research/agent_handoff.py` | Manifest-first chunk plan + digest verify helpers (#322) |
 | Alembic `20261109_0021` | `tw_research_scans`, `tw_research_symbol_results`, `tw_research_export_snapshots` |
+| Alembic `20261110_0022` | History flights, coordination locks, scan lease generation, budget windows |
 
 ## Indicator conventions (#311)
 
@@ -88,6 +89,8 @@ All routes use `Depends(get_effective_user_id)`.
 | POST | `/api/tw-research/universe/resolve` | Catalog only |
 | POST | `/api/tw-research/scans` | No (creates ledger) |
 | POST | `/api/tw-research/scans/batches` | Yes, bounded |
+| POST | `/api/tw-research/scans/resume-budget` | No (#329 reopen window) |
+| POST | `/api/tw-research/schedule/run` | Yes, bounded (#330 token auth) |
 | POST | `/api/tw-research/scans/enrichment-batches` | Yes, bounded (#313) |
 | GET | `/api/tw-research/scans` | No (#327 recent history) |
 | GET | `/api/tw-research/scans/{scan_id}` | No |
@@ -124,9 +127,92 @@ instead of returning an empty or partial ledger. The UI polls
 `GET /scans/{id}/progress` while a scan is active and reloads the full ledger
 only when `ledgerRevision` changes. The recent-scan list polls slowly so an
 external Agent or another session can appear without stealing the user's
-selected scan. UI duplicate-create checks are **session/page helpers only** —
-cluster-wide admission, per-symbol locks, and historical-budget resume remain
-Issue **#329**.
+selected scan. UI duplicate-create checks are **session/page helpers only**.
+
+## History-budget resume and evaluation counters (#329)
+
+- `POST /api/tw-research/scans/resume-budget` opens another bounded upstream
+  month-fetch window (default +40, hard cap 200), clears
+  `history_budget_exhausted` symbol rows, and rewinds the durable cursor so a
+  later batch can resume. Repeat `POST /scans/batches` while status is
+  `budget_exhausted` returns **HTTP 409** (`budget_resume_required`) — never a
+  false HTTP 200 no-op. Durable resume is a **single PostgreSQL transaction**
+  (`SELECT … FOR UPDATE`); concurrent resumes cannot double-grant windows, and
+  resume is rejected while an active scan-batch lease is held.
+- Snapshots and progress expose `definitiveEvaluatedCount`,
+  `budgetExhaustedCount`, `sourceIncompleteCount`, `unresolvedCount`, and
+  `unprocessedCount` so `processedCount` is never mistaken for valid Top-N
+  results. Unknown / budget-exhausted rows stay out of verified recommendations.
+  Progress polls use lean evaluation fields only — not full ledger payloads.
+- Warm OHLCV already lives in `daily_price_bars` /
+  `daily_price_month_fetches`; a later window reuses stored months
+  (`months_used=0`) without spending budget.
+- **Cross-pod history single-flight:** compatible backfills use
+  `tw_research_history_flights` leases. Compatibility contract:
+  `symbol|basis=unadjusted_close|adj=none|provider|limit|through=<tradingDay>|bars=daily_v1`.
+  Short DB transactions acquire/renew/complete the lease; waiters poll with
+  bounded backoff and never hold a DB transaction during upstream HTTP. A
+  `ready` marker is emitted only when persisted OHLCV coverage is validated for
+  `expect_through`; waiters always re-check the store and load with budget 0.
+  Incomplete fetches clear the hold without a ready marker. Leaders renew the
+  lease while upstream work runs so slow healthy fetches are not stolen.
+  Process locks remain an intra-pod accelerator. Lease fencing (`generation` +
+  owner) recovers after pod crash without stale completes.
+- **Atomic cluster admission:** `claim_scan_batch` serializes on the
+  `scan_admission` coordination lock, counts live leases, and claims in one
+  transaction (fail closed on durable DB errors). `scan_lease_generation`
+  fences stale batch completes **and** technical symbol-result upserts: a write
+  must present the authorizing generation and an still-active
+  `reserve_expires_at` lease, or PostgreSQL rejects it without mutating the row.
+  Enrichment continues to use `enrich_lease_generation` independently. Seed rows
+  and unfenced fixtures omit both tokens. Limit:
+  `DEFAULT_MAX_IN_FLIGHT_SCAN_BATCHES` (HTTP 503 when saturated). Alembic
+  `20261110_0022`.
+- Partial / budget-exhausted finalize stays labeled via
+  `technicalStatus` / `sourceCompleteness`; never advertise full coverage when
+  unresolved symbols remain.
+
+## Post-market schedule (disabled by default) (#330)
+
+- Internal tick: `POST /api/tw-research/schedule/run` with header
+  `X-Tw-Research-Schedule-Token`. Mounted on a **separate router without session
+  auth** so CronJob calls work when `AUTH_ENABLED=true`. Requires configured
+  `TW_RESEARCH_SCHEDULE_TOKEN`, `TW_RESEARCH_SCHEDULE_USER_ID`, and
+  `TW_RESEARCH_SCHEDULE_ENABLED=true`. Placeholder tokens are treated as unset.
+  The schedule token never unlocks ordinary `/tw-research/*` user routes.
+- Skips Taiwan pre-close sessions (`skipped_data_not_ready`). After the session
+  is complete, a lightweight persisted-OHLCV readiness sample
+  (`skipped_market_data_not_ready`) still gates *creating* today's scan;
+  prior-day backlog continues. On holidays / weekends, still continues
+  incomplete backlog within `SCHEDULE_BACKLOG_MAX_CALENDAR_DAYS` without creating
+  a newer-day scan. Prioritizes the **oldest** incomplete compatible scan
+  (owner + universe + calculation + target) so yesterday is not abandoned when a
+  new trading day begins; the original trading-day calculation anchor is
+  preserved. Same-day reuse remains idempotent — completed technical scans and
+  `verified_ready` snapshots without remaining enrichment report completion
+  instead of opening a duplicate scan. A `verified_ready` snapshot with pending
+  enrichment continues bounded enrichment. When the per-scan enrichment window
+  (`max_enrichments_per_run`) is spent but qualified symbols still lack
+  enrichment, the tick opens another bounded window (default +20, hard cap 100)
+  via atomic PostgreSQL resume — analogous to #329 history-budget windows —
+  rather than treating exhaustion as a permanent stop. Only the hard cap yields
+  a terminal `enrichment_budget_exhausted` / `enrichment_cap_reached` outcome.
+  Each tick runs bounded technical batches, optional #329 resume, optional
+  enrichment-window resume, then bounded enrichment. Outcomes distinguish
+  technical completion, enrichment partial / budget exhaustion, verified ready,
+  deferred lock / lease loss / deadline, and failures. Durable ticks **fail
+  closed** when PostgreSQL coordination is unavailable (never run uncoordinated).
+  Owner-level PostgreSQL tick locks are heartbeated during long batches.
+  History-flight renewals fail closed after consecutive PostgreSQL renew errors;
+  confirmed lease loss raises a retryable coordination error and does not publish
+  a false `ready` marker or a definitive screening result for that symbol.
+- Kubernetes CronJob `stock-ticker-tw-research-schedule` ships **suspended**
+  (`suspend: true`, `timeZone: Asia/Taipei`, weekday continuation windows
+  `30 15-18 * * 1-5`, `concurrencyPolicy: Forbid`, resource limits,
+  `activeDeadlineSeconds: 900`). Do not unsuspend or set ENABLED without pilot
+  approval (#321) and an explicit operator decision.
+- Manual `/research/tw` create/batch/resume remains available and still respects
+  global admission / single-flight controls from #329.
 
 ## Browser rewrite proxy and long research batches (#328)
 
