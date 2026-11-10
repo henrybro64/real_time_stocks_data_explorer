@@ -793,7 +793,7 @@ class TwResearchRepository(SessionBoundRepository):
                             if monthly_payload
                             else None
                         ),
-                        "coverage": coverage if isinstance(coverage, dict) else coverage,
+                        "coverage": coverage if isinstance(coverage, dict) else None,
                     }
                 )
             return result

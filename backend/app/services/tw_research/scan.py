@@ -136,6 +136,11 @@ class TwResearchAdmissionError(RuntimeError):
         self.retryable = True
 
 
+_DURABLE_POSTGRES_UNAVAILABLE = (
+    "Durable persistence is enabled but PostgreSQL is unavailable."
+)
+
+
 class TwResearchDurableStoreError(RuntimeError):
     """Durable PostgreSQL claim/write failed; caller should retry when available.
 
@@ -1437,7 +1442,7 @@ class TwResearchScanService:
 
         if not tw_research_repository.is_available():
             raise TwResearchDurableStoreError(
-                "Durable persistence is enabled but PostgreSQL is unavailable.",
+                _DURABLE_POSTGRES_UNAVAILABLE,
                 scan_id=scan_id,
                 operation=operation,
             )
@@ -1617,7 +1622,12 @@ class TwResearchScanService:
             time.sleep(sleep_for)
             sleep_for = min(sleep_for * 2, HISTORY_FLIGHT_POLL_MAX_SECONDS)
 
-        assert acquired_generation is not None
+        if acquired_generation is None:
+            raise TwResearchHistoryCoordinationError(
+                "History flight acquired without a generation; retry reclaim.",
+                scan_id=state.scan_id,
+                stock_id=stock.id,
+            )
         stop_renew = Event()
         renew_state = {"stale": False, "consecutive_failures": 0}
 
@@ -1970,7 +1980,7 @@ class TwResearchScanService:
 
         if not tw_research_repository.is_available():
             raise TwResearchDurableStoreError(
-                "Durable persistence is enabled but PostgreSQL is unavailable.",
+                _DURABLE_POSTGRES_UNAVAILABLE,
                 scan_id=state.scan_id,
                 operation="persist_scan",
             )
@@ -1989,7 +1999,7 @@ class TwResearchScanService:
 
         if not tw_research_repository.is_available():
             raise TwResearchDurableStoreError(
-                "Durable persistence is enabled but PostgreSQL is unavailable.",
+                _DURABLE_POSTGRES_UNAVAILABLE,
                 scan_id=state.scan_id,
                 operation="persist_symbol",
             )
