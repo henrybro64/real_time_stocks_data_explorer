@@ -1588,15 +1588,20 @@ class TwResearchRepository(SessionBoundRepository):
                     session.add(row)
                     session.flush()
             except IntegrityError:
+                # Concurrent same-user digest hit, or rare PK race — never publish
+                # a partial row; re-read the owner's digest match.
                 existing = session.execute(
                     select(TwResearchFirstPassSnapshot).where(
                         TwResearchFirstPassSnapshot.user_id == user_id,
                         TwResearchFirstPassSnapshot.content_digest == content_digest,
                     )
                 ).scalars().first()
-                if existing is None:
-                    raise
-                return _first_pass_snapshot_to_dict(existing)
+                if existing is not None:
+                    return _first_pass_snapshot_to_dict(existing)
+                by_pk = session.get(TwResearchFirstPassSnapshot, snapshot_id)
+                if by_pk is not None and by_pk.user_id == user_id:
+                    return _first_pass_snapshot_to_dict(by_pk)
+                raise
             session.commit()
             session.refresh(row)
             return _first_pass_snapshot_to_dict(row)
@@ -1779,24 +1784,75 @@ class TwResearchRepository(SessionBoundRepository):
             cursor = _first_missing_first_pass_index(session, job_id, stock_ids)
             row.cursor = cursor
             if cursor >= len(stock_ids):
-                row.status = "completed" if row.status != "failed" else row.status
+                cooling = _first_pass_cooling_retry_count(session, job_id, stock_ids)
                 row.reserve_cursor = cursor
                 row.reserve_expires_at = None
+                if cooling:
+                    # Failures still in backoff — do not finalize or claim complete.
+                    row.status = "deferred"
+                    session.commit()
+                    return {
+                        "batch_ids": [],
+                        "job": _first_pass_job_to_dict(row),
+                        "already_complete": False,
+                        "waiting_for_retry": True,
+                        "lease_held": False,
+                        "lease_generation": int(row.lease_generation or 0),
+                    }
+                row.status = "completed" if row.status != "failed" else row.status
                 session.commit()
                 return {
                     "batch_ids": [],
                     "job": _first_pass_job_to_dict(row),
                     "already_complete": True,
+                    "waiting_for_retry": False,
                     "lease_held": False,
                     "lease_generation": int(row.lease_generation or 0),
                 }
 
             if row.status in {"pending", "deferred", "partial"}:
                 row.status = "running"
-            batch_ids = stock_ids[cursor : cursor + max(1, int(batch_size))]
+            # Claim contiguous unfinished symbols starting at cursor, skipping any
+            # that became non-actionable between index scans (cooling retries).
+            batch_ids: list[str] = []
+            by_stock = {
+                item.stock_id: item
+                for item in session.execute(
+                    select(TwResearchFirstPassSymbolResult).where(
+                        TwResearchFirstPassSymbolResult.job_id == job_id
+                    )
+                ).scalars().all()
+            }
+            for stock_id in stock_ids[cursor:]:
+                if not _first_pass_symbol_needs_work(by_stock.get(stock_id), now=now):
+                    continue
+                batch_ids.append(stock_id)
+                if len(batch_ids) >= max(1, int(batch_size)):
+                    break
+            if not batch_ids:
+                cooling = _first_pass_cooling_retry_count(session, job_id, stock_ids)
+                row.status = "deferred" if cooling else (
+                    "completed" if row.status != "failed" else row.status
+                )
+                row.reserve_cursor = cursor
+                row.reserve_expires_at = None
+                session.commit()
+                return {
+                    "batch_ids": [],
+                    "job": _first_pass_job_to_dict(row),
+                    "already_complete": not cooling,
+                    "waiting_for_retry": bool(cooling),
+                    "lease_held": False,
+                    "lease_generation": int(row.lease_generation or 0),
+                }
             generation = int(row.lease_generation or 0) + 1
             row.lease_generation = generation
-            row.reserve_cursor = cursor + len(batch_ids)
+            claimed = set(batch_ids)
+            last_claimed_index = cursor
+            for index, stock_id in enumerate(stock_ids):
+                if stock_id in claimed:
+                    last_claimed_index = index
+            row.reserve_cursor = last_claimed_index + 1
             row.reserve_expires_at = now + timedelta(seconds=max(1, int(lease_seconds)))
             row.updated_at = now
             session.commit()
@@ -1806,6 +1862,28 @@ class TwResearchRepository(SessionBoundRepository):
                 "already_complete": False,
                 "lease_held": False,
                 "lease_generation": generation,
+            }
+
+    def get_first_pass_symbol(
+        self, job_id: str, stock_id: str
+    ) -> dict[str, Any] | None:
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            row = session.execute(
+                select(TwResearchFirstPassSymbolResult).where(
+                    TwResearchFirstPassSymbolResult.job_id == job_id,
+                    TwResearchFirstPassSymbolResult.stock_id == stock_id,
+                )
+            ).scalars().first()
+            if row is None:
+                return None
+            return {
+                "stock_id": row.stock_id,
+                "status": row.status,
+                "payload": dict(row.payload_json or {}),
+                "updated_at": row.updated_at.isoformat()
+                if hasattr(row.updated_at, "isoformat")
+                else str(row.updated_at),
             }
 
     def upsert_first_pass_symbol(
@@ -1881,9 +1959,12 @@ class TwResearchRepository(SessionBoundRepository):
             row.reserve_expires_at = None
             row.updated_at = now
             if cursor >= len(stock_ids):
+                cooling = _first_pass_cooling_retry_count(session, job_id, stock_ids)
                 failed = _count_first_pass_status(session, job_id, "failed")
                 deferred = _count_first_pass_status(session, job_id, "deferred")
-                if failed:
+                if cooling:
+                    row.status = "deferred"
+                elif failed:
                     row.status = "partial"
                 elif deferred:
                     row.status = "deferred"
@@ -2026,22 +2107,98 @@ def _first_pass_job_to_dict(row: TwResearchFirstPassJob) -> dict[str, Any]:
     }
 
 
+def _parse_iso_utc(value: object) -> datetime | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _first_pass_symbol_needs_work(
+    row: TwResearchFirstPassSymbolResult | None,
+    *,
+    now: datetime,
+) -> bool:
+    """True when the symbol is missing or has a retryable durable failure (#335)."""
+    if row is None:
+        return True
+    status = str(row.status or "")
+    if status in {"ok", "partial", "pending"}:
+        # partial = usable incomplete evidence (missing PEG etc.); do not refetch.
+        # pending rows are claimed placeholders and should not be re-queued here.
+        return status == "pending"
+    if status == "deferred":
+        payload = dict(row.payload_json or {})
+        if payload.get("retryExhausted"):
+            return False
+        next_retry = _parse_iso_utc(payload.get("nextRetryAt"))
+        return next_retry is None or next_retry <= now
+    if status == "failed":
+        payload = dict(row.payload_json or {})
+        if payload.get("retryExhausted"):
+            return False
+        if str(payload.get("failureClass") or "") == "permanent":
+            return False
+        next_retry = _parse_iso_utc(payload.get("nextRetryAt"))
+        return next_retry is None or next_retry <= now
+    return True
+
+
 def _first_missing_first_pass_index(
     session: Session, job_id: str, stock_ids: list[str]
 ) -> int:
+    """Next index that is missing or eligible for bounded retry (#335)."""
     if not stock_ids:
         return 0
-    existing = set(
-        session.scalars(
-            select(TwResearchFirstPassSymbolResult.stock_id).where(
-                TwResearchFirstPassSymbolResult.job_id == job_id
-            )
-        ).all()
-    )
+    rows = session.execute(
+        select(TwResearchFirstPassSymbolResult).where(
+            TwResearchFirstPassSymbolResult.job_id == job_id
+        )
+    ).scalars().all()
+    by_stock = {row.stock_id: row for row in rows}
+    now = datetime.now(timezone.utc)
     for index, stock_id in enumerate(stock_ids):
-        if stock_id not in existing:
+        if _first_pass_symbol_needs_work(by_stock.get(stock_id), now=now):
             return index
     return len(stock_ids)
+
+
+def _first_pass_cooling_retry_count(
+    session: Session, job_id: str, stock_ids: list[str]
+) -> int:
+    """Count failed/deferred symbols waiting for nextRetryAt (#335)."""
+    if not stock_ids:
+        return 0
+    wanted = set(stock_ids)
+    now = datetime.now(timezone.utc)
+    rows = session.execute(
+        select(TwResearchFirstPassSymbolResult).where(
+            TwResearchFirstPassSymbolResult.job_id == job_id
+        )
+    ).scalars().all()
+    cooling = 0
+    for row in rows:
+        if row.stock_id not in wanted:
+            continue
+        if str(row.status) not in {"failed", "deferred"}:
+            continue
+        payload = dict(row.payload_json or {})
+        if payload.get("retryExhausted"):
+            continue
+        if str(payload.get("failureClass") or "") == "permanent":
+            continue
+        next_retry = _parse_iso_utc(payload.get("nextRetryAt"))
+        if next_retry is not None and next_retry > now:
+            cooling += 1
+    return cooling
 
 
 def _count_first_pass_status(session: Session, job_id: str, status: str) -> int:

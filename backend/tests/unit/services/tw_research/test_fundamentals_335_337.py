@@ -595,6 +595,170 @@ def test_resumable_first_pass_job_beyond_batch_limit(monkeypatch) -> None:
     tw_research_repository.clear_session_factory_override()
 
 
+def test_first_pass_snapshot_ids_are_unique_across_users(monkeypatch) -> None:
+    from tests.support import install_in_memory_sessionlocal, seed_test_users
+
+    session_local = install_in_memory_sessionlocal(monkeypatch)
+    seed_test_users(session_local, "user-a", "user-b")
+    from app.repositories.tw_research_repository import tw_research_repository
+    from app.services.tw_research.first_pass import (
+        FirstPassBatchResult,
+        FirstPassSymbolRecord,
+    )
+    from app.services.tw_research.first_pass_durable import persist_first_pass_batch
+
+    tw_research_repository.clear_session_factory_override()
+    tw_research_repository.set_session_factory_override(session_local)
+
+    batch = FirstPassBatchResult(
+        first_pass_version="first-pass-v1",
+        universe_version="shared-u",
+        requested_count=1,
+        collected_count=1,
+        deduped_count=1,
+        records=[
+            FirstPassSymbolRecord(
+                stock_id="TW:2330",
+                stock_name="台積電",
+                name_status="ok",
+                name_source="catalog",
+                exchange="TWSE",
+                market="TW",
+                sector_theme_keys=["semiconductor"],
+            )
+        ],
+        coverage_summary={},
+        notes=[],
+    )
+    snap_a = persist_first_pass_batch(batch, user_id="user-a", repository=tw_research_repository)
+    snap_b = persist_first_pass_batch(batch, user_id="user-b", repository=tw_research_repository)
+    assert snap_a.content_digest == snap_b.content_digest
+    assert snap_a.snapshot_id != snap_b.snapshot_id
+    assert tw_research_repository.get_first_pass_snapshot(
+        snap_a.snapshot_id, user_id="user-b"
+    ) is None
+    again_a = persist_first_pass_batch(batch, user_id="user-a", repository=tw_research_repository)
+    assert again_a.snapshot_id == snap_a.snapshot_id
+    tw_research_repository.clear_session_factory_override()
+
+
+def test_first_pass_retries_transient_failures_with_backoff(monkeypatch) -> None:
+    from tests.support import install_in_memory_sessionlocal, seed_test_users
+
+    session_local = install_in_memory_sessionlocal(monkeypatch)
+    seed_test_users(session_local, "user-retry")
+    from app.repositories.tw_research_repository import tw_research_repository
+    from app.services.tw_research.first_pass import FirstPassBatchResult, FirstPassSymbolRecord
+    from app.services.tw_research.first_pass_job import FirstPassJobService
+
+    tw_research_repository.clear_session_factory_override()
+    tw_research_repository.set_session_factory_override(session_local)
+
+    calls = {"count": 0}
+
+    def fake_collect(ids, **kwargs):
+        calls["count"] += 1
+        records = []
+        for sid in ids:
+            if calls["count"] == 1:
+                records.append(
+                    FirstPassSymbolRecord(
+                        stock_id=sid,
+                        stock_name=sid,
+                        name_status="ok",
+                        name_source="catalog",
+                        exchange="TWSE",
+                        market="TW",
+                        sector_theme_keys=[],
+                        error="timeout: upstream timed out",
+                        completeness={"fieldsOk": 0, "fieldsUnavailable": 1},
+                    )
+                )
+            else:
+                records.append(
+                    FirstPassSymbolRecord(
+                        stock_id=sid,
+                        stock_name=sid,
+                        name_status="ok",
+                        name_source="catalog",
+                        exchange="TWSE",
+                        market="TW",
+                        sector_theme_keys=[],
+                        completeness={"fieldsOk": 1, "fieldsUnavailable": 0},
+                    )
+                )
+        return FirstPassBatchResult(
+            first_pass_version="first-pass-v1",
+            universe_version="explicit:1",
+            requested_count=len(ids),
+            collected_count=len(ids),
+            deduped_count=len(ids),
+            records=records,
+            coverage_summary={},
+            notes=[],
+        )
+
+    monkeypatch.setattr(
+        "app.services.tw_research.first_pass_job.collect_first_pass_batch",
+        fake_collect,
+    )
+    # Force immediate retry eligibility (no wall-clock wait in unit test).
+    monkeypatch.setattr(
+        "app.services.tw_research.first_pass_job._FIRST_PASS_RETRY_BASE_SECONDS",
+        0,
+    )
+    monkeypatch.setattr(
+        "app.services.tw_research.first_pass_job._FIRST_PASS_RETRY_CAP_SECONDS",
+        0,
+    )
+
+    service = FirstPassJobService(repository=tw_research_repository)
+    job = service.create_job(
+        user_id="user-retry",
+        stock_ids=["TW:2330"],
+        use_membership=False,
+    )
+    first = service.run_batch(job["job_id"], user_id="user-retry", batch_size=1)
+    assert first["processed"] == 1
+    row = tw_research_repository.get_first_pass_symbol(job["job_id"], "TW:2330")
+    assert row is not None
+    assert row["status"] == "failed"
+    assert row["payload"]["attemptCount"] == 1
+
+    from datetime import datetime, timedelta, timezone
+
+    from sqlalchemy import select
+
+    from app.db.models import TwResearchFirstPassJob, TwResearchFirstPassSymbolResult
+
+    session = session_local()
+    try:
+        fp_job = session.get(TwResearchFirstPassJob, job["job_id"])
+        assert fp_job is not None
+        fp_job.reserve_expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+        sym = session.execute(
+            select(TwResearchFirstPassSymbolResult).where(
+                TwResearchFirstPassSymbolResult.job_id == job["job_id"],
+                TwResearchFirstPassSymbolResult.stock_id == "TW:2330",
+            )
+        ).scalars().first()
+        assert sym is not None
+        payload = dict(sym.payload_json or {})
+        payload["nextRetryAt"] = "1970-01-01T00:00:00+00:00"
+        sym.payload_json = payload
+        session.commit()
+    finally:
+        session.close()
+
+    second = service.run_batch(job["job_id"], user_id="user-retry", batch_size=1)
+    assert second["processed"] == 1
+    recovered = tw_research_repository.get_first_pass_symbol(job["job_id"], "TW:2330")
+    assert recovered is not None
+    assert recovered["status"] == "ok"
+    assert calls["count"] == 2
+    tw_research_repository.clear_session_factory_override()
+
+
 def test_membership_occ_uses_version_predicate(monkeypatch) -> None:
     from tests.support import install_in_memory_sessionlocal, seed_test_users
 

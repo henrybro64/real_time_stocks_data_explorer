@@ -8,9 +8,11 @@ inclusion, rankings, or trade instructions.
 
 | Issue | Scope | Code status |
 | --- | --- | --- |
-| #335 | Source audit + **resumable** full-universe first-pass jobs + analyst export | Implemented (Alembic `20261111_0023` + `0024`) |
-| #336 | Editable per-sector membership, OCC, candidate sets pinned to digest | Implemented with **Postgres fail-closed** + `UPDATE … WHERE version` |
+| #335 | Source audit + **resumable** full-universe first-pass jobs + analyst export | Implemented (Alembic `20261111_0023` + `0024`); owner-scoped snapshot IDs + durable per-symbol retry |
+| #336 | Editable per-sector membership, OCC, candidate sets pinned to digest | Implemented with **Postgres fail-closed** + UI sector editor + candidate-set version tracking |
 | #337 | Relative price-basis with coverage/staleness/corporate-action flags | Implemented (historical PE range still unavailable) |
+
+See also `docs/ai-handoff-335-336-337.md` for the latest implementation handoff.
 
 No CronJob enablement, Notion SDK, new microservice, or production deploy in this slice.
 

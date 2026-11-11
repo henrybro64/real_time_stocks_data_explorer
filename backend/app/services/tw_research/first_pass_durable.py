@@ -80,6 +80,16 @@ def content_digest_for_first_pass(result: FirstPassBatchResult) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
+def first_pass_snapshot_id(*, user_id: str, content_digest: str) -> str:
+    """Globally unique, deterministic id scoped by owner + content digest (#335).
+
+    Deduplication remains ``(user_id, content_digest)``. Using only the digest
+    as the PK collided when two users persisted identical evidence.
+    """
+    material = f"{user_id}\0{content_digest}".encode("utf-8")
+    return f"fp_{hashlib.sha256(material).hexdigest()[:40]}"
+
+
 def persist_first_pass_batch(
     result: FirstPassBatchResult,
     *,
@@ -90,7 +100,7 @@ def persist_first_pass_batch(
     if not repo.is_available():
         raise FirstPassDurableUnavailable()
     digest = content_digest_for_first_pass(result)
-    snapshot_id = f"fp_{digest[:24]}"
+    snapshot_id = first_pass_snapshot_id(user_id=user_id, content_digest=digest)
     stock_ids = [record.stock_id for record in result.records]
     payload = result.as_dict()
     payload["contentDigest"] = digest

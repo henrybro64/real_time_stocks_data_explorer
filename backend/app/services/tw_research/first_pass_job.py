@@ -43,8 +43,40 @@ def _universe_digest(stock_ids: list[str], universe_version: str) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
+# Transient collection failures may be retried with durable backoff (#335).
+_FIRST_PASS_MAX_ATTEMPTS = 4
+_FIRST_PASS_RETRY_BASE_SECONDS = 30
+_FIRST_PASS_RETRY_CAP_SECONDS = 900
+_PERMANENT_SYMBOL_ERRORS = frozenset(
+    {
+        "not_in_catalog",
+        "unsupported",
+        "permanently_unavailable",
+    }
+)
+
+
+def _classify_symbol_failure(error: str | None) -> str:
+    text = str(error or "").strip().lower()
+    if not text:
+        return "unknown"
+    if text in _PERMANENT_SYMBOL_ERRORS or text.startswith("unsupported"):
+        return "permanent"
+    if "429" in text or "rate limit" in text or "too many requests" in text:
+        return "rate_limited"
+    if "timeout" in text or "timed out" in text:
+        return "timeout"
+    if "network" in text or "connection" in text or "temporarily" in text:
+        return "transient"
+    return "transient"
+
+
 def _symbol_status(record: FirstPassSymbolRecord) -> str:
     if record.error:
+        failure_class = _classify_symbol_failure(record.error)
+        if failure_class == "permanent":
+            # Keep usable incomplete evidence rather than endless retries.
+            return "partial"
         return "failed"
     completeness = record.completeness or {}
     if completeness.get("fieldsUnavailable", 0) and not completeness.get("fieldsOk", 0):
@@ -55,6 +87,42 @@ def _symbol_status(record: FirstPassSymbolRecord) -> str:
     if record.name_status == "unavailable":
         return "partial"
     return "ok"
+
+
+def _enrich_symbol_payload(
+    record: FirstPassSymbolRecord,
+    *,
+    status: str,
+    previous_payload: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Attach durable retry metadata without fabricating financial fields."""
+    payload = record.as_dict()
+    prior = dict(previous_payload or {})
+    prior_attempts = int(prior.get("attemptCount") or 0)
+    if status == "failed":
+        attempts = prior_attempts + 1
+        failure_class = _classify_symbol_failure(record.error)
+        delay = min(
+            _FIRST_PASS_RETRY_CAP_SECONDS,
+            _FIRST_PASS_RETRY_BASE_SECONDS * (2 ** max(0, attempts - 1)),
+        )
+        # Deterministic jitter from stock id (stable across workers).
+        jitter = int(hashlib.sha256(record.stock_id.encode("utf-8")).hexdigest()[:4], 16) % 11
+        exhausted = attempts >= _FIRST_PASS_MAX_ATTEMPTS
+        from datetime import UTC, datetime, timedelta
+
+        payload["attemptCount"] = attempts
+        payload["failureClass"] = failure_class
+        payload["retryExhausted"] = exhausted
+        payload["nextRetryAt"] = None if exhausted else (
+            datetime.now(UTC) + timedelta(seconds=delay + jitter)
+        ).isoformat()
+    else:
+        payload["attemptCount"] = max(prior_attempts, 1)
+        payload["failureClass"] = None
+        payload["retryExhausted"] = False
+        payload["nextRetryAt"] = None
+    return payload
 
 
 class FirstPassJobService:
@@ -188,6 +256,15 @@ class FirstPassJobService:
                 "alreadyComplete": False,
                 "processed": 0,
             }
+        if claim.get("waiting_for_retry"):
+            return {
+                "job": claim["job"],
+                "batchIds": [],
+                "leaseHeld": False,
+                "alreadyComplete": False,
+                "waitingForRetry": True,
+                "processed": 0,
+            }
         if claim.get("already_complete"):
             finalized = self._maybe_finalize(job_id, user_id=user_id)
             return {
@@ -195,6 +272,7 @@ class FirstPassJobService:
                 "batchIds": [],
                 "leaseHeld": False,
                 "alreadyComplete": True,
+                "waitingForRetry": False,
                 "processed": 0,
             }
 
@@ -210,11 +288,17 @@ class FirstPassJobService:
         processed = 0
         for record in result.records:
             status = _symbol_status(record)
+            previous = self._repo.get_first_pass_symbol(job_id, record.stock_id)
+            payload = _enrich_symbol_payload(
+                record,
+                status=status,
+                previous_payload=(previous or {}).get("payload"),
+            )
             ok = self._repo.upsert_first_pass_symbol(
                 job_id=job_id,
                 stock_id=record.stock_id,
                 status=status,
-                payload=record.as_dict(),
+                payload=payload,
                 lease_generation=generation,
             )
             if ok:
@@ -226,7 +310,9 @@ class FirstPassJobService:
             processed_count=processed,
         )
         job_out = (completed or {}).get("job") or claim["job"]
-        if job_out.get("status") in {"completed", "partial", "deferred"}:
+        # Finalize only when every symbol is terminal (ok/partial/exhausted), not
+        # while transient failures remain in backoff.
+        if job_out.get("status") in {"completed", "partial"}:
             finalized = self._maybe_finalize(job_id, user_id=user_id)
             if finalized is not None:
                 job_out = finalized
@@ -235,6 +321,7 @@ class FirstPassJobService:
             "batchIds": batch_ids,
             "leaseHeld": False,
             "alreadyComplete": False,
+            "waitingForRetry": job_out.get("status") == "deferred",
             "processed": processed,
         }
 
@@ -314,12 +401,14 @@ class FirstPassJobService:
         payload["universeDigest"] = job["universe_digest"]
         payload["jobId"] = job_id
         try:
+            from app.services.tw_research.first_pass_durable import first_pass_snapshot_id
+
             digest = hashlib.sha256(
                 json.dumps(payloads, sort_keys=True, separators=(",", ":"), default=str).encode(
                     "utf-8"
                 )
             ).hexdigest()
-            snapshot_id = f"fp_{digest[:24]}"
+            snapshot_id = first_pass_snapshot_id(user_id=user_id, content_digest=digest)
             saved = self._repo.save_first_pass_snapshot(
                 snapshot_id=snapshot_id,
                 user_id=user_id,

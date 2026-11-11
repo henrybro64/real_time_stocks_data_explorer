@@ -38,6 +38,7 @@ import {
   fetchTwResearchFirstPassManifest,
   fetchTwResearchFirstPassProgress,
   fetchTwResearchFirstPassSymbols,
+  fetchTwResearchLatestCandidateSet,
   fetchTwResearchLatestManifest,
   fetchTwResearchMembership,
   fetchTwResearchScan,
@@ -173,13 +174,25 @@ export function TwResearchPage({
   const [recoveredOperations, setRecoveredOperations] = useState<Record<string, boolean>>({});
   const [membershipText, setMembershipText] = useState("");
   const [membershipVersion, setMembershipVersion] = useState(0);
+  const [membershipThemeKeys, setMembershipThemeKeys] = useState<string[]>([]);
+  const [disabledThemeKeys, setDisabledThemeKeys] = useState<string[]>([]);
+  const [sectorAdditions, setSectorAdditions] = useState<Record<string, string[]>>({});
+  const [sectorRemovals, setSectorRemovals] = useState<Record<string, string[]>>({});
+  const [membershipExtraIds, setMembershipExtraIds] = useState<string[]>([]);
+  const [selectedSectorKey, setSelectedSectorKey] = useState("");
+  const [sectorStockDraft, setSectorStockDraft] = useState("");
   const [firstPassJobId, setFirstPassJobId] = useState<string | null>(null);
   const [firstPassProgressText, setFirstPassProgressText] = useState("");
   const [firstPassEvidenceText, setFirstPassEvidenceText] = useState("");
   const [firstPassSnapshotId, setFirstPassSnapshotId] = useState<string | null>(null);
   const [firstPassDigest, setFirstPassDigest] = useState<string | null>(null);
+  const [evidenceOffset, setEvidenceOffset] = useState(0);
+  const [evidenceStatusFilter, setEvidenceStatusFilter] = useState("");
+  const [evidenceSearch, setEvidenceSearch] = useState("");
   const [candidateIdsText, setCandidateIdsText] = useState("");
   const [candidateSetText, setCandidateSetText] = useState("");
+  const [candidateSetVersion, setCandidateSetVersion] = useState(0);
+  const [candidateSetConflict, setCandidateSetConflict] = useState<string | null>(null);
   const scanRef = useRef<TwResearchScanSnapshot | null>(null);
   const scanIdRef = useRef<string | null>(scanId);
   const createGuard = useRef(false);
@@ -290,11 +303,121 @@ export function TwResearchPage({
     retry: false,
   });
 
+  const candidateSetQuery = useQuery({
+    queryKey: ["tw-research-candidate-set-latest"],
+    queryFn: async () => {
+      try {
+        return await fetchTwResearchLatestCandidateSet();
+      } catch (error) {
+        if (toApiError(error).status === 404) return null;
+        throw error;
+      }
+    },
+    staleTime: 15_000,
+    retry: false,
+  });
+
+  const applyMembershipState = (membership: Record<string, unknown>) => {
+    setMembershipText(JSON.stringify(membership, null, 2));
+    setMembershipVersion(Number(membership.version ?? 0));
+    setMembershipThemeKeys(
+      Array.isArray(membership.themeKeys)
+        ? membership.themeKeys.map(String)
+        : [],
+    );
+    setDisabledThemeKeys(
+      Array.isArray(membership.disabledThemeKeys)
+        ? membership.disabledThemeKeys.map(String)
+        : [],
+    );
+    setSectorAdditions(
+      membership.sectorAdditions && typeof membership.sectorAdditions === "object"
+        ? Object.fromEntries(
+            Object.entries(membership.sectorAdditions as Record<string, unknown>).map(
+              ([key, values]) => [
+                key,
+                Array.isArray(values) ? values.map(String) : [],
+              ],
+            ),
+          )
+        : {},
+    );
+    setSectorRemovals(
+      membership.sectorRemovals && typeof membership.sectorRemovals === "object"
+        ? Object.fromEntries(
+            Object.entries(membership.sectorRemovals as Record<string, unknown>).map(
+              ([key, values]) => [
+                key,
+                Array.isArray(values) ? values.map(String) : [],
+              ],
+            ),
+          )
+        : {},
+    );
+    setMembershipExtraIds(
+      Array.isArray(membership.extraStockIds)
+        ? membership.extraStockIds.map(String)
+        : [],
+    );
+    const sectorKeys = Object.keys(
+      (membership.sectorMembership as Record<string, unknown> | undefined) ?? {},
+    );
+    if (!selectedSectorKey && sectorKeys.length) {
+      setSelectedSectorKey(sectorKeys[0]);
+    }
+  };
+
   useEffect(() => {
     if (!membershipQuery.data) return;
-    setMembershipText(JSON.stringify(membershipQuery.data, null, 2));
-    setMembershipVersion(Number(membershipQuery.data.version ?? 0));
+    applyMembershipState(membershipQuery.data);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- sync authoritative membership once loaded
   }, [membershipQuery.data]);
+
+  useEffect(() => {
+    if (!candidateSetQuery.data) return;
+    const latest = candidateSetQuery.data;
+    setCandidateSetVersion(Number(latest.version ?? 0));
+    setCandidateSetText(JSON.stringify(latest, null, 2));
+    if (Array.isArray(latest.stockIds)) {
+      setCandidateIdsText(latest.stockIds.map(String).join("\n"));
+    }
+    if (typeof latest.firstPassSnapshotId === "string" && latest.firstPassSnapshotId) {
+      setFirstPassSnapshotId(latest.firstPassSnapshotId);
+    }
+    if (typeof latest.firstPassDigest === "string" && latest.firstPassDigest) {
+      setFirstPassDigest(latest.firstPassDigest);
+    }
+  }, [candidateSetQuery.data]);
+
+  const membershipEditPayload = useMemo(
+    () => ({
+      themeKeys: membershipThemeKeys,
+      disabledThemeKeys,
+      sectorAdditions,
+      sectorRemovals,
+      extraStockIds: membershipExtraIds,
+    }),
+    [
+      disabledThemeKeys,
+      membershipExtraIds,
+      membershipThemeKeys,
+      sectorAdditions,
+      sectorRemovals,
+    ],
+  );
+
+  const sectorMembership = useMemo(() => {
+    const raw = membershipQuery.data?.sectorMembership;
+    if (!raw || typeof raw !== "object") return {} as Record<string, string[]>;
+    return Object.fromEntries(
+      Object.entries(raw as Record<string, unknown>).map(([key, values]) => [
+        key,
+        Array.isArray(values) ? values.map(String) : [],
+      ]),
+    );
+  }, [membershipQuery.data]);
+
+  const selectedSectorMembers = sectorMembership[selectedSectorKey] ?? [];
 
   const firstPassProgressQuery = useQuery({
     queryKey: ["tw-research-first-pass-progress", firstPassJobId],
@@ -458,13 +581,9 @@ export function TwResearchPage({
   });
 
   const previewMembershipMutation = useMutation({
-    mutationFn: async () =>
-      previewTwResearchMembership({
-        themeKeys,
-        extraStockIds: explicitIds,
-      }),
+    mutationFn: async () => previewTwResearchMembership(membershipEditPayload),
     onSuccess: (membership) => {
-      setMembershipText(JSON.stringify(membership, null, 2));
+      applyMembershipState(membership);
     },
   });
 
@@ -472,12 +591,10 @@ export function TwResearchPage({
     mutationFn: async () =>
       saveTwResearchMembership({
         expectedVersion: membershipVersion,
-        themeKeys,
-        extraStockIds: explicitIds,
+        ...membershipEditPayload,
       }),
     onSuccess: (membership) => {
-      setMembershipText(JSON.stringify(membership, null, 2));
-      setMembershipVersion(Number(membership.version ?? 0));
+      applyMembershipState(membership);
       void queryClient.invalidateQueries({ queryKey: ["tw-research-membership"] });
     },
   });
@@ -489,8 +606,7 @@ export function TwResearchPage({
         resetToStarter: true,
       }),
     onSuccess: (membership) => {
-      setMembershipText(JSON.stringify(membership, null, 2));
-      setMembershipVersion(Number(membership.version ?? 0));
+      applyMembershipState(membership);
       void queryClient.invalidateQueries({ queryKey: ["tw-research-membership"] });
     },
   });
@@ -520,24 +636,43 @@ export function TwResearchPage({
   });
 
   const loadFirstPassEvidenceMutation = useMutation({
-    mutationFn: async () => {
+    mutationFn: async (offset: number) => {
       if (!firstPassJobId) throw new Error("missing_first_pass_job");
-      return fetchTwResearchFirstPassSymbols(firstPassJobId, { offset: 0, limit: 25 });
+      return fetchTwResearchFirstPassSymbols(firstPassJobId, {
+        offset,
+        limit: PAGE_SIZE,
+        status: evidenceStatusFilter || undefined,
+      });
     },
-    onSuccess: (result) => {
-      setFirstPassEvidenceText(JSON.stringify(result, null, 2));
+    onSuccess: (result, offset) => {
+      setEvidenceOffset(offset);
+      const records = Array.isArray(result.records) ? result.records : [];
+      const needle = evidenceSearch.trim().toLowerCase();
+      const filtered = needle
+        ? records.filter((row) => {
+            const evidence = (row as { evidence?: Record<string, unknown> }).evidence ?? {};
+            const stockId = String((row as { stockId?: string }).stockId ?? "");
+            const name = String(evidence.stockName ?? "");
+            return (
+              stockId.toLowerCase().includes(needle) || name.toLowerCase().includes(needle)
+            );
+          })
+        : records;
+      setFirstPassEvidenceText(
+        JSON.stringify({ ...result, records: filtered, clientSearch: needle || null }, null, 2),
+      );
     },
   });
 
   const loadFirstPassManifestMutation = useMutation({
-    mutationFn: async () => {
+    mutationFn: async (chunkIndex: number) => {
       if (!firstPassSnapshotId) throw new Error("missing_first_pass_snapshot");
       const manifest = await fetchTwResearchFirstPassManifest(firstPassSnapshotId);
-      const chunk = await fetchTwResearchFirstPassChunk(firstPassSnapshotId, 0);
+      const chunk = await fetchTwResearchFirstPassChunk(firstPassSnapshotId, chunkIndex);
       setFirstPassDigest(
         typeof manifest.contentDigest === "string" ? manifest.contentDigest : null,
       );
-      return { manifest, chunk };
+      return { manifest, chunk, chunkIndex };
     },
     onSuccess: (payload) => {
       setFirstPassEvidenceText(JSON.stringify(payload, null, 2));
@@ -549,16 +684,39 @@ export function TwResearchPage({
       if (!firstPassSnapshotId || !firstPassDigest) {
         throw new Error("missing_first_pass_snapshot_or_digest");
       }
+      setCandidateSetConflict(null);
       return submitTwResearchCandidateSet({
         firstPassSnapshotId,
         firstPassDigest,
         stockIds: splitLines(candidateIdsText),
         origin: "manual",
-        expectedVersion: 0,
+        expectedVersion: candidateSetVersion,
       });
     },
     onSuccess: (candidateSet) => {
       setCandidateSetText(JSON.stringify(candidateSet, null, 2));
+      setCandidateSetVersion(Number(candidateSet.version ?? 0));
+      setCandidateSetConflict(null);
+      void queryClient.invalidateQueries({ queryKey: ["tw-research-candidate-set-latest"] });
+    },
+    onError: async (error) => {
+      const apiError = toApiError(error);
+      if (apiError.status !== 409) return;
+      try {
+        const latest = await fetchTwResearchLatestCandidateSet();
+        setCandidateSetVersion(Number(latest.version ?? 0));
+        setCandidateSetText(JSON.stringify(latest, null, 2));
+        if (Array.isArray(latest.stockIds)) {
+          setCandidateIdsText(latest.stockIds.map(String).join("\n"));
+        }
+        setCandidateSetConflict(
+          t("research.tw.candidateVersionConflict", {
+            version: String(latest.version ?? 0),
+          }),
+        );
+      } catch {
+        setCandidateSetConflict(t("research.tw.candidateVersionConflictRefreshFailed"));
+      }
     },
   });
 
@@ -738,6 +896,15 @@ export function TwResearchPage({
                 <p className="cds--helper-text-01">{t("research.tw.fundamentalsNote")}</p>
                 <p className="cds--helper-text-01">{t("research.tw.stageHint")}</p>
               </div>
+              <p className="cds--helper-text-01" data-testid="tw-research-membership-meta">
+                {t("research.tw.membershipMeta", {
+                  version: membershipVersion,
+                  updatedAt: String(membershipQuery.data?.updatedAt ?? "—"),
+                  count: Array.isArray(membershipQuery.data?.resolvedStockIds)
+                    ? membershipQuery.data.resolvedStockIds.length
+                    : membershipExtraIds.length,
+                })}
+              </p>
               <Stack gap={3} orientation="horizontal">
                 <Button
                   kind="tertiary"
@@ -772,6 +939,119 @@ export function TwResearchPage({
                   {t("research.tw.resetMembership")}
                 </Button>
               </Stack>
+              <div data-testid="tw-research-sector-editor">
+                <h3 className="cds--productive-heading-02">{t("research.tw.sectorEditor")}</h3>
+                <Stack gap={3}>
+                  <Select
+                    id="tw-research-sector-select"
+                    labelText={t("research.tw.sectorSelect")}
+                    value={selectedSectorKey}
+                    onChange={(event) => setSelectedSectorKey(event.target.value)}
+                  >
+                    {Object.keys(sectorMembership).map((key) => (
+                      <SelectItem
+                        key={key}
+                        value={key}
+                        text={`${key}${disabledThemeKeys.includes(key) ? " (disabled)" : ""}`}
+                      />
+                    ))}
+                  </Select>
+                  {selectedSectorKey ? (
+                    <Stack gap={2} orientation="horizontal">
+                      <Button
+                        kind="tertiary"
+                        size="sm"
+                        onClick={() => {
+                          setDisabledThemeKeys((current) =>
+                            current.includes(selectedSectorKey)
+                              ? current.filter((key) => key !== selectedSectorKey)
+                              : [...current, selectedSectorKey],
+                          );
+                        }}
+                      >
+                        {disabledThemeKeys.includes(selectedSectorKey)
+                          ? t("research.tw.enableSector")
+                          : t("research.tw.disableSector")}
+                      </Button>
+                    </Stack>
+                  ) : null}
+                  <TextInput
+                    id="tw-research-sector-add-stock"
+                    labelText={t("research.tw.sectorAddStock")}
+                    value={sectorStockDraft}
+                    onChange={(event) => setSectorStockDraft(event.target.value)}
+                  />
+                  <Stack gap={2} orientation="horizontal">
+                    <Button
+                      kind="secondary"
+                      size="sm"
+                      disabled={!selectedSectorKey || !sectorStockDraft.trim()}
+                      onClick={() => {
+                        const stockId = sectorStockDraft.trim();
+                        setSectorAdditions((current) => {
+                          const existing = current[selectedSectorKey] ?? [];
+                          if (existing.includes(stockId)) return current;
+                          return {
+                            ...current,
+                            [selectedSectorKey]: [...existing, stockId],
+                          };
+                        });
+                        setSectorRemovals((current) => {
+                          const existing = current[selectedSectorKey] ?? [];
+                          return {
+                            ...current,
+                            [selectedSectorKey]: existing.filter((id) => id !== stockId),
+                          };
+                        });
+                        setSectorStockDraft("");
+                      }}
+                    >
+                      {t("research.tw.sectorAddStock")}
+                    </Button>
+                  </Stack>
+                  <ul data-testid="tw-research-sector-members">
+                    {selectedSectorMembers.map((stockId) => (
+                      <li key={stockId}>
+                        <Stack gap={2} orientation="horizontal">
+                          <span>{stockId}</span>
+                          <Button
+                            kind="ghost"
+                            size="sm"
+                            onClick={() => {
+                              setSectorRemovals((current) => {
+                                const existing = current[selectedSectorKey] ?? [];
+                                if (existing.includes(stockId)) return current;
+                                return {
+                                  ...current,
+                                  [selectedSectorKey]: [...existing, stockId],
+                                };
+                              });
+                              setSectorAdditions((current) => {
+                                const existing = current[selectedSectorKey] ?? [];
+                                return {
+                                  ...current,
+                                  [selectedSectorKey]: existing.filter((id) => id !== stockId),
+                                };
+                              });
+                            }}
+                          >
+                            {t("research.tw.sectorRemoveStock")}
+                          </Button>
+                        </Stack>
+                      </li>
+                    ))}
+                  </ul>
+                  <TextArea
+                    id="tw-research-membership-extra-ids"
+                    labelText={t("research.tw.extraMembershipIds")}
+                    value={membershipExtraIds.join("\n")}
+                    onChange={(event) =>
+                      setMembershipExtraIds(splitLines(event.target.value))
+                    }
+                    rows={3}
+                  />
+                </Stack>
+              </div>
               <Stack gap={3} orientation="horizontal">
                 <Button
                   kind="primary"
@@ -793,7 +1073,7 @@ export function TwResearchPage({
                   kind="tertiary"
                   size="sm"
                   disabled={!firstPassJobId || loadFirstPassEvidenceMutation.isPending}
-                  onClick={() => loadFirstPassEvidenceMutation.mutate()}
+                  onClick={() => loadFirstPassEvidenceMutation.mutate(0)}
                 >
                   {t("research.tw.loadFirstPassEvidence")}
                 </Button>
@@ -801,9 +1081,49 @@ export function TwResearchPage({
                   kind="tertiary"
                   size="sm"
                   disabled={!firstPassSnapshotId || loadFirstPassManifestMutation.isPending}
-                  onClick={() => loadFirstPassManifestMutation.mutate()}
+                  onClick={() => loadFirstPassManifestMutation.mutate(0)}
                 >
                   {t("research.tw.loadFirstPassManifest")}
+                </Button>
+              </Stack>
+              <Stack gap={3} orientation="horizontal">
+                <TextInput
+                  id="tw-research-evidence-search"
+                  labelText={t("research.tw.evidenceSearch")}
+                  value={evidenceSearch}
+                  onChange={(event) => setEvidenceSearch(event.target.value)}
+                />
+                <Select
+                  id="tw-research-evidence-status"
+                  labelText={t("research.tw.evidenceStatus")}
+                  value={evidenceStatusFilter}
+                  onChange={(event) => setEvidenceStatusFilter(event.target.value)}
+                >
+                  <SelectItem value="" text="all" />
+                  <SelectItem value="ok" text="ok" />
+                  <SelectItem value="partial" text="partial" />
+                  <SelectItem value="failed" text="failed" />
+                  <SelectItem value="deferred" text="deferred" />
+                </Select>
+                <Button
+                  kind="ghost"
+                  size="sm"
+                  disabled={!firstPassJobId || evidenceOffset <= 0 || loadFirstPassEvidenceMutation.isPending}
+                  onClick={() =>
+                    loadFirstPassEvidenceMutation.mutate(Math.max(0, evidenceOffset - PAGE_SIZE))
+                  }
+                >
+                  {t("research.tw.evidencePrev")}
+                </Button>
+                <Button
+                  kind="ghost"
+                  size="sm"
+                  disabled={!firstPassJobId || loadFirstPassEvidenceMutation.isPending}
+                  onClick={() =>
+                    loadFirstPassEvidenceMutation.mutate(evidenceOffset + PAGE_SIZE)
+                  }
+                >
+                  {t("research.tw.evidenceNext")}
                 </Button>
               </Stack>
               <TextArea
@@ -834,6 +1154,17 @@ export function TwResearchPage({
                 onChange={(event) => setCandidateIdsText(event.target.value)}
                 rows={3}
               />
+              <p className="cds--helper-text-01" data-testid="tw-research-candidate-version">
+                {t("research.tw.candidateVersion", { version: candidateSetVersion })}
+              </p>
+              {candidateSetConflict ? (
+                <RequestStateNotice
+                  kind="validation"
+                  scopeLabel={t("research.tw.saveCandidateSet")}
+                  status={409}
+                  detail={candidateSetConflict}
+                />
+              ) : null}
               <Button
                 kind="primary"
                 size="sm"
