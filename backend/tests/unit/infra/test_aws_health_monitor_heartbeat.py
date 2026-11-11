@@ -221,15 +221,46 @@ def test_sigv4_signed_headers_without_session_token(
     assert "X-Amz-Security-Token" not in headers
 
 
-def test_main_skips_without_credentials(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
+def test_main_skips_when_not_configured(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
+    monkeypatch.delenv("AWS_HEALTH_MONITOR_ENABLED", raising=False)
     monkeypatch.delenv("AWS_ACCESS_KEY_ID", raising=False)
     monkeypatch.delenv("AWS_SECRET_ACCESS_KEY", raising=False)
     monkeypatch.delenv("AWS_REGION", raising=False)
     monkeypatch.delenv("TABLE_NAME", raising=False)
     assert hb.main() == 0
     logged = json.loads(capsys.readouterr().out.strip())
-    assert logged["status"] == "skipped"
-    assert logged["reason"] == "missing_credentials"
+    assert logged["delivery_status"] == "skipped"
+    assert logged["reason"] == "not_configured"
+
+
+def test_main_skips_when_explicitly_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys,
+) -> None:
+    monkeypatch.setenv("AWS_HEALTH_MONITOR_ENABLED", "false")
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIATEST")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "secret")
+    monkeypatch.setenv("AWS_REGION", "us-east-1")
+    monkeypatch.setenv("TABLE_NAME", "stock-ticker-health-heartbeats")
+    assert hb.main() == 0
+    logged = json.loads(capsys.readouterr().out.strip())
+    assert logged["delivery_status"] == "skipped"
+    assert logged["reason"] == "disabled"
+
+
+def test_main_fails_when_enabled_without_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys,
+) -> None:
+    monkeypatch.setenv("AWS_HEALTH_MONITOR_ENABLED", "true")
+    monkeypatch.delenv("AWS_ACCESS_KEY_ID", raising=False)
+    monkeypatch.delenv("AWS_SECRET_ACCESS_KEY", raising=False)
+    monkeypatch.delenv("AWS_REGION", raising=False)
+    monkeypatch.delenv("TABLE_NAME", raising=False)
+    assert hb.main() == 2
+    logged = json.loads(capsys.readouterr().out.strip())
+    assert logged["delivery_status"] == "error"
+    assert logged["error_type"] == "missing_credentials"
 
 
 def test_put_dynamodb_item_posts_signed_payload(
@@ -297,6 +328,7 @@ def test_main_logs_structured_error_on_put_failure(
     monkeypatch: pytest.MonkeyPatch,
     capsys,
 ) -> None:
+    monkeypatch.setenv("AWS_HEALTH_MONITOR_ENABLED", "true")
     monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIATEST")
     monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "secret")
     monkeypatch.setenv("AWS_REGION", "us-east-1")
@@ -311,13 +343,36 @@ def test_main_logs_structured_error_on_put_failure(
     )
     assert hb.main() == 1
     logged = json.loads(capsys.readouterr().out.strip())
-    assert logged["status"] == "error"
+    assert logged["delivery_status"] == "error"
     assert logged["error_type"] == "aws_http_client"
     assert logged["exception_type"] == "RuntimeError"
     assert "message" not in logged
     assert "secret" not in json.dumps(logged).lower()
     assert "AKIATEST" not in json.dumps(logged)
     assert "AccessDenied" not in json.dumps(logged)
+
+
+def test_main_separates_delivery_from_unhealthy_service(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys,
+) -> None:
+    """Local /health unhealthy still counts as successful AWS delivery (#325)."""
+    monkeypatch.setenv("AWS_HEALTH_MONITOR_ENABLED", "true")
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIATEST")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "secret")
+    monkeypatch.setenv("AWS_REGION", "us-east-1")
+    monkeypatch.setenv("TABLE_NAME", "stock-ticker-health-heartbeats")
+
+    def unhealthy_getter(_url: str, _timeout: float) -> tuple[int, str]:
+        return 503, "unavailable"
+
+    monkeypatch.setattr(hb, "http_get", unhealthy_getter)
+    monkeypatch.setattr(hb, "put_dynamodb_item", lambda **_kwargs: None)
+    assert hb.main() == 0
+    logged = json.loads(capsys.readouterr().out.strip())
+    assert logged["delivery_status"] == "delivered"
+    assert logged["service_status"] == "unhealthy"
+    assert logged["http_status"] == 503
 
 
 def test_put_dynamodb_http_error_omits_response_body(
@@ -362,6 +417,8 @@ def test_cronjob_manifest_has_bounded_deadline_and_ttl() -> None:
     assert "failedJobsHistoryLimit: 5" in text
     assert "successfulJobsHistoryLimit: 2" in text
     assert "startingDeadlineSeconds: 300" in text
+    assert "AWS_HEALTH_MONITOR_ENABLED" in text
+    assert 'schedule: "*/15 * * * *"' in text
 
 
 def test_script_is_stdlib_only() -> None:

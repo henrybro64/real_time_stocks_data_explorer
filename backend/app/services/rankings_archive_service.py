@@ -12,9 +12,7 @@ from typing import Literal
 from sqlalchemy.exc import (
     DBAPIError,
     DisconnectionError,
-    InterfaceError,
     InvalidatePoolError,
-    OperationalError,
     ProgrammingError,
 )
 from sqlalchemy.exc import TimeoutError as SATimeoutError
@@ -91,8 +89,86 @@ _SAMPLER_CONNECTIVITY_BACKOFF_CAP_SECONDS = 1800
 _CONNECTIVITY_CAUSE_WALK_MAX_DEPTH = 6
 
 
+# ODBC / SQLSTATE classes that indicate transport / login-timeout outages (#326).
+_CONNECTIVITY_SQLSTATES = frozenset(
+    {
+        "08001",  # client unable to establish connection
+        "08003",  # connection does not exist
+        "08004",  # server rejected connection
+        "08007",  # connection failure during transaction
+        "08s01",  # communication link failure
+        "08s02",  # connection name in use (rare; treat as transport)
+        "hyt00",  # login timeout (Azure SQL AutoPause)
+    }
+)
+_AUTH_SQLSTATES = frozenset(
+    {
+        "28000",  # invalid authorization specification
+        "28p01",  # invalid password (PostgreSQL)
+    }
+)
+_CONNECTIVITY_MESSAGE_TOKENS = (
+    "login timeout",
+    "communication link failure",
+    "connection refused",
+    "connection reset",
+    "connection timed out",
+    "connection is busy",
+    "connection is closed",
+    "not connected",
+    "could not open a connection",
+    "server is not found",
+    "tcp provider",
+    "network error",
+    "broken pipe",
+    # Also match SQLSTATE text when drivers stringify args instead of exposing codes.
+    "08001",
+    "08s01",
+    "08s02",
+    "hyt00",
+)
+_AUTH_MESSAGE_TOKENS = (
+    "login failed for user",
+    "login failed",
+    "authentication failed",
+    "password authentication failed",
+    "access denied for user",
+    "18456",  # MSSQL login failed
+)
+
+
 def _archive_failure_message(exc: BaseException) -> str:
     return str(getattr(exc, "orig", None) or exc).lower()
+
+
+def _iter_archive_failure_nodes(exc: BaseException) -> list[BaseException]:
+    nodes: list[BaseException] = [exc]
+    orig = getattr(exc, "orig", None)
+    if isinstance(orig, BaseException) and orig is not exc:
+        nodes.append(orig)
+    return nodes
+
+
+def _extract_sqlstates(exc: BaseException) -> set[str]:
+    """Collect driver SQLSTATE / ODBC codes from an exception chain node."""
+    states: set[str] = set()
+    for node in _iter_archive_failure_nodes(exc):
+        for attr in ("sqlstate", "pgcode"):
+            value = getattr(node, attr, None)
+            if isinstance(value, str) and value.strip():
+                states.add(value.strip().lower())
+        args = getattr(node, "args", None)
+        if not args:
+            continue
+        first = args[0]
+        # pyodbc: ('HYT00', '[Microsoft][ODBC Driver 18 ...]...')
+        if isinstance(first, str) and len(first) == 5 and first.isalnum():
+            states.add(first.lower())
+        elif isinstance(first, tuple) and first:
+            code = first[0]
+            if isinstance(code, str) and len(code) == 5 and code.isalnum():
+                states.add(code.lower())
+    return states
 
 
 def _is_archive_auth_failure(exc: BaseException) -> bool:
@@ -101,16 +177,17 @@ def _is_archive_auth_failure(exc: BaseException) -> bool:
     Auth errors are often ``OperationalError`` from ODBC, but reconnecting with
     the same bad credentials only amplifies lockouts (#326).
     """
+    if _extract_sqlstates(exc) & _AUTH_SQLSTATES:
+        return True
     message = _archive_failure_message(exc)
-    tokens = (
-        "login failed for user",
-        "login failed",
-        "authentication failed",
-        "password authentication failed",
-        "access denied for user",
-        "18456",  # MSSQL login failed
-    )
-    return any(token in message for token in tokens)
+    return any(token in message for token in _AUTH_MESSAGE_TOKENS)
+
+
+def _has_archive_connectivity_signal(exc: BaseException) -> bool:
+    if _extract_sqlstates(exc) & _CONNECTIVITY_SQLSTATES:
+        return True
+    message = _archive_failure_message(exc)
+    return any(token in message for token in _CONNECTIVITY_MESSAGE_TOKENS)
 
 
 def _is_archive_connectivity_failure(
@@ -118,58 +195,36 @@ def _is_archive_connectivity_failure(
     *,
     _depth: int = 0,
 ) -> bool:
-    """True for connection/transport failures; false for SQL syntax/logic errors.
+    """True for connection/transport failures; false for SQL/auth/config errors.
 
     Mid-life AutoPause / dead sockets should invalidate the cached engine (#177).
     ``ProgrammingError`` and similar app/SQL bugs must not (#181).
 
     ``InvalidatePoolError`` / ``DisconnectionError`` are *not* subclasses of
     ``OperationalError``; they must be matched explicitly (#326 HYT00 path).
-    Auth failures are also excluded so bad credentials do not thrash the pool.
+
+    Do **not** treat every ``OperationalError`` / ``InterfaceError`` as
+    reconnectable — drivers use those classes for auth, config, and logic
+    failures too. Prefer ``connection_invalidated``, SQLSTATE, and curated
+    transport tokens.
     """
     # Syntax / constraint / logic bugs must not drop a healthy engine.
     if isinstance(exc, ProgrammingError):
         return False
     if _is_archive_auth_failure(exc):
         return False
-    if isinstance(
-        exc,
-        (
-            InvalidatePoolError,
-            DisconnectionError,
-            OperationalError,
-            InterfaceError,
-            SATimeoutError,
-            ConnectionError,
-            TimeoutError,
-        ),
-    ):
+    if isinstance(exc, (InvalidatePoolError, DisconnectionError)):
+        return True
+    if isinstance(exc, (ConnectionError, TimeoutError, SATimeoutError)):
         return True
     if isinstance(exc, DBAPIError):
-        # SQLAlchemy may mark a dropped socket even when the driver message
-        # does not match our curated connectivity tokens (#181 / Codex).
+        # SQLAlchemy marks dropped sockets even when the driver message is vague.
         if getattr(exc, "connection_invalidated", False):
             return True
-        message = _archive_failure_message(exc)
-        # Prefer specific connectivity phrases over a bare "connection" substring
-        # (that can appear in unrelated ODBC/SQL text).
-        tokens = (
-            "login timeout",
-            "communication link failure",
-            "connection refused",
-            "connection reset",
-            "connection timed out",
-            "connection is busy",
-            "not connected",
-            "could not open a connection",
-            "server is not found",
-            "tcp provider",
-            "08001",
-            "08s01",
-            "hyt00",
-            "08s02",
-        )
-        return any(token in message for token in tokens)
+        if _has_archive_connectivity_signal(exc):
+            return True
+        # OperationalError / InterfaceError without transport signals: not
+        # reconnectable (avoids pool thrash on unrelated DBAPI failures).
     # Walk __cause__/__context__ — SQLAlchemy often wraps pyodbc HYT00.
     if _depth >= _CONNECTIVITY_CAUSE_WALK_MAX_DEPTH:
         return False

@@ -681,6 +681,7 @@ def test_capture_contains_persist_exceptions_per_target() -> None:
 def test_archive_connectivity_failure_classification() -> None:
     from sqlalchemy.exc import (
         DBAPIError,
+        InterfaceError,
         InvalidatePoolError,
         OperationalError,
         ProgrammingError,
@@ -705,6 +706,27 @@ def test_archive_connectivity_failure_classification() -> None:
         "SELECT 1",
         {},
         Exception("Login failed for user 'archive_app'. (18456)"),
+    )
+    # Bare OperationalError without transport signals must not invalidate.
+    unrelated_operational = OperationalError(
+        "SELECT 1",
+        {},
+        Exception("string or binary data would be truncated"),
+    )
+    unrelated_interface = InterfaceError(
+        "SELECT 1",
+        {},
+        Exception("cursor already closed after commit"),
+    )
+    sqlstate_hyt00 = OperationalError(
+        "SELECT 1",
+        {},
+        Exception("('HYT00', '[Microsoft][ODBC Driver 18 for SQL Server]Login timeout expired')"),
+    )
+    sqlstate_08s01 = OperationalError(
+        "SELECT 1",
+        {},
+        Exception("('08S01', 'Communication link failure')"),
     )
     # Bare "connection" in unrelated text must not classify as outage.
     vague = DBAPIError(
@@ -740,6 +762,10 @@ def test_archive_connectivity_failure_classification() -> None:
     assert _is_archive_connectivity_failure(programming) is False
     assert _is_archive_connectivity_failure(operational) is True
     assert _is_archive_connectivity_failure(auth_failed) is False
+    assert _is_archive_connectivity_failure(unrelated_operational) is False
+    assert _is_archive_connectivity_failure(unrelated_interface) is False
+    assert _is_archive_connectivity_failure(sqlstate_hyt00) is True
+    assert _is_archive_connectivity_failure(sqlstate_08s01) is True
     assert _is_archive_connectivity_failure(RuntimeError("azure down")) is False
     assert _is_archive_connectivity_failure(ConnectionError("reset")) is True
     assert _is_archive_connectivity_failure(vague) is False

@@ -237,21 +237,66 @@ def put_dynamodb_item(
         raise RuntimeError(f"DynamoDB PutItem failed HTTP {exc.code}") from exc
 
 
+def _parse_enabled_flag(raw: str | None) -> bool | None:
+    """Return True/False for explicit values; None when the env var is unset."""
+    if raw is None:
+        return None
+    text = raw.strip().lower()
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off", ""}:
+        return False
+    return False
+
+
 def main(argv: list[str] | None = None) -> int:
     _ = argv
     access_key_id = os.environ.get("AWS_ACCESS_KEY_ID", "").strip()
     secret_access_key = os.environ.get("AWS_SECRET_ACCESS_KEY", "").strip()
     region = os.environ.get("AWS_REGION", "").strip()
     table_name = os.environ.get("TABLE_NAME", "").strip()
-    # Optional Secret refs leave these empty until the operator creates the Secret.
-    # Exit 0 so vanilla deploys (no AWS credentials) do not mark the CronJob failed.
-    if not access_key_id or not secret_access_key or not region or not table_name:
+    enabled = _parse_enabled_flag(os.environ.get("AWS_HEALTH_MONITOR_ENABLED"))
+    has_credentials = bool(
+        access_key_id and secret_access_key and region and table_name
+    )
+
+    # Explicit disable always skips (even if a Secret still has keys).
+    if enabled is False:
         print(
             json.dumps(
                 {
                     "event": "aws_health_monitor.heartbeat",
-                    "status": "skipped",
-                    "reason": "missing_credentials",
+                    "delivery_status": "skipped",
+                    "reason": "disabled",
+                },
+                separators=(",", ":"),
+            ),
+            flush=True,
+        )
+        return 0
+
+    if not has_credentials:
+        # ENABLED=true without credentials is a config failure (Job Failed).
+        # ENABLED unset + no credentials = vanilla deploy, intentionally off.
+        if enabled is True:
+            print(
+                json.dumps(
+                    {
+                        "event": "aws_health_monitor.heartbeat",
+                        "delivery_status": "error",
+                        "error_type": "missing_credentials",
+                    },
+                    separators=(",", ":"),
+                ),
+                flush=True,
+            )
+            return 2
+        print(
+            json.dumps(
+                {
+                    "event": "aws_health_monitor.heartbeat",
+                    "delivery_status": "skipped",
+                    "reason": "not_configured",
                 },
                 separators=(",", ":"),
             ),
@@ -272,9 +317,8 @@ def main(argv: list[str] | None = None) -> int:
             json.dumps(
                 {
                     "event": "aws_health_monitor.heartbeat",
-                    "status": "error",
+                    "delivery_status": "error",
                     "error_type": "invalid_ttl_days",
-                    "message": "TTL_DAYS must be an integer",
                 },
                 separators=(",", ":"),
             ),
@@ -305,7 +349,7 @@ def main(argv: list[str] | None = None) -> int:
             json.dumps(
                 {
                     "event": "aws_health_monitor.heartbeat",
-                    "status": "error",
+                    "delivery_status": "error",
                     "error_type": _classify_put_failure(exc),
                     "exception_type": type(exc).__name__,
                     "aws_region_set": bool(region),
@@ -316,12 +360,14 @@ def main(argv: list[str] | None = None) -> int:
             flush=True,
         )
         return 1
-    # One compact line for CronJob logs; never the health body or secrets.
+    # delivery_status ≠ service_status: Job success means DynamoDB accepted the
+    # item; service_status reflects in-cluster /health (may be unhealthy).
     print(
         json.dumps(
             {
                 "event": "aws_health_monitor.heartbeat",
-                "status": record["status"],
+                "delivery_status": "delivered",
+                "service_status": record["status"],
                 "http_status": record["http_status"],
                 "latency_ms": record["latency_ms"],
                 "error_type": record["error_type"],

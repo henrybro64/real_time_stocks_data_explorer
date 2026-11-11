@@ -124,14 +124,28 @@ all access keys.
 ## Deploy home CronJob
 
 The CronJob is in the default `k8s/` kustomization and is **not** suspended
-(redeploys must not flip an enabled job back off). Secret refs are optional: with
-no credentials the job exits 0 and logs `status=skipped`.
+(redeploys must not flip an enabled job back off). Secret refs are optional.
 
-**Job `Succeeded` is not proof of AWS delivery.** Exit 0 covers both a real
-PutItem (`status=healthy` / `unhealthy`) and a config skip
-(`status=skipped`, `reason=missing_credentials`). Post-deploy checks that only
-look at Job success must also inspect the latest Job log line before claiming
-CloudWatch/DynamoDB delivery.
+Enablement semantics (#325):
+
+| Configuration | Result |
+| --- | --- |
+| No Secret / `AWS_HEALTH_MONITOR_ENABLED` unset, no credentials | Exit 0, `delivery_status=skipped`, `reason=not_configured` |
+| `AWS_HEALTH_MONITOR_ENABLED=false` | Exit 0, `delivery_status=skipped`, `reason=disabled` |
+| `AWS_HEALTH_MONITOR_ENABLED=true`, credentials missing | Exit 2, `delivery_status=error`, `error_type=missing_credentials` |
+| Enabled (flag true **or** credentials present), PutItem fails | Exit 1, `delivery_status=error` (sanitized; no AWS body) |
+| PutItem succeeds | Exit 0, `delivery_status=delivered`, plus `service_status` from `/health` |
+
+**Job `Succeeded` is not proof of AWS delivery.** Exit 0 covers delivered
+heartbeats **and** intentional skips. Inspect the latest Job log for
+`delivery_status=delivered` before claiming CloudWatch/DynamoDB delivery.
+`service_status=unhealthy` with `delivery_status=delivered` means AWS accepted
+the record while in-cluster `/health` was not `ok`.
+
+**Schedule:** the CronJob stays at `*/15 * * * *` (aligned with the AWS-side
+EventBridge 15-minute stale check). A longer-term hourly cadence remains a
+cost/ops goal, not the current default — changing it would require updating
+`stale_after_seconds` and Terraform schedule together.
 
 ```bash
 cp k8s/aws-health-heartbeat-secret.yaml.example k8s/aws-health-heartbeat-secret.yaml

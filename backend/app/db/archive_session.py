@@ -40,6 +40,8 @@ _schema_ready = False
 _last_init_failure_at: float | None = None
 # Set while a leader runs cold-start; waiters block on this Event (#326).
 _init_in_flight: Event | None = None
+# Bumped on invalidate/reset so an in-flight leader will not publish a stale engine.
+_init_generation = 0
 
 
 def rankings_archive_database_url() -> str:
@@ -48,8 +50,10 @@ def rankings_archive_database_url() -> str:
 
 def reset_rankings_archive_session_state() -> None:
     """Test helper: clear cached engine and session factory."""
-    global _engine, _session_factory, _schema_ready, _last_init_failure_at, _init_in_flight
+    global _engine, _session_factory, _schema_ready, _last_init_failure_at
+    global _init_in_flight, _init_generation
     with _lock:
+        _init_generation += 1
         if _engine is not None:
             _engine.dispose()
         _engine = None
@@ -67,17 +71,25 @@ def invalidate_rankings_archive_engine(*, reason: str = "outage") -> None:
     Used after mid-life AutoPause / connection failures when a previously healthy
     engine is no longer usable. Does not arm the init cooldown — the next request
     should attempt a full wake budget immediately.
+
+    Always bumps ``_init_generation`` so an in-flight cold-start leader will
+    dispose its result instead of publishing over a concurrent invalidate (#326).
+    Does not clear ``_init_in_flight`` (the leader's ``finally`` releases waiters).
     """
-    global _engine, _session_factory, _schema_ready, _last_init_failure_at
+    global _engine, _session_factory, _schema_ready, _last_init_failure_at, _init_generation
     with _lock:
-        if _engine is None and _session_factory is None and not _schema_ready:
-            return
+        _init_generation += 1
+        had_cached_state = (
+            _engine is not None or _session_factory is not None or _schema_ready
+        )
         if _engine is not None:
             _engine.dispose()
         _engine = None
         _session_factory = None
         _schema_ready = False
         _last_init_failure_at = None
+        if not had_cached_state:
+            return
         logger.warning(
             "Rankings archive engine invalidated",
             extra={
@@ -142,10 +154,17 @@ def _begin_initialize() -> str | None:
     return url
 
 
-def _publish_engine(engine: Engine, *, attempt: int) -> Engine:
-    """Install a freshly created engine, or keep a concurrent winner."""
+def _publish_engine(engine: Engine, *, attempt: int, generation: int) -> Engine | None:
+    """Install a freshly created engine, or keep a concurrent winner.
+
+    If ``generation`` no longer matches (invalidate/reset during connect), dispose
+    the new engine and return the current cached engine (often ``None``).
+    """
     global _engine, _session_factory, _last_init_failure_at
     with _lock:
+        if generation != _init_generation:
+            engine.dispose()
+            return _engine
         if _engine is not None:
             engine.dispose()
             return _engine
@@ -169,9 +188,12 @@ def _publish_engine(engine: Engine, *, attempt: int) -> Engine:
         return _engine
 
 
-def _mark_init_exhausted(last_error: Exception | None) -> None:
+def _mark_init_exhausted(last_error: Exception | None, *, generation: int) -> None:
     global _engine, _session_factory, _last_init_failure_at
     with _lock:
+        if generation != _init_generation:
+            # Invalidate/reset already owns recovery; do not arm a stale cooldown.
+            return
         if _engine is not None:
             # Another thread recovered while we were failing.
             return
@@ -192,17 +214,20 @@ def _initialize_engine() -> Engine | None:
     """Create the archive engine with in-request backoff; sleeps outside the lock.
 
     Concurrent cold-start callers share one leader; waiters block on an Event so
-    AutoPause wake attempts are not stacked in parallel (#326).
+    AutoPause wake attempts are not stacked in parallel (#326). The leader's
+    ``finally`` always releases waiters (success, exhaustion, or unexpected raise).
     """
     global _init_in_flight
     lead = False
     waiter: Event | None = None
+    generation = 0
     with _lock:
         if _engine is not None:
             return _engine
         url = _begin_initialize()
         if url is None:
             return _engine
+        generation = _init_generation
         if _init_in_flight is not None:
             waiter = _init_in_flight
         else:
@@ -220,6 +245,8 @@ def _initialize_engine() -> Engine | None:
         last_error: Exception | None = None
         for attempt in range(1, _INIT_IN_REQUEST_ATTEMPTS + 1):
             with _lock:
+                if generation != _init_generation:
+                    return _engine
                 if _engine is not None:
                     return _engine
             try:
@@ -237,10 +264,12 @@ def _initialize_engine() -> Engine | None:
                     )
                     sleep(backoff)
                     with _lock:
+                        if generation != _init_generation:
+                            return _engine
                         if _engine is not None:
                             return _engine
                 engine = _try_create_engine(url)
-                return _publish_engine(engine, attempt=attempt)
+                return _publish_engine(engine, attempt=attempt, generation=generation)
             except Exception as exc:  # noqa: BLE001
                 last_error = exc
                 logger.warning(
@@ -253,7 +282,7 @@ def _initialize_engine() -> Engine | None:
                     },
                 )
 
-        _mark_init_exhausted(last_error)
+        _mark_init_exhausted(last_error, generation=generation)
         with _lock:
             return _engine
     finally:

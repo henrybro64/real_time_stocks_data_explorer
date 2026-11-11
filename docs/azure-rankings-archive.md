@@ -123,8 +123,10 @@ Mitigations in-repo:
 - Cold-start init is **single-flight**: concurrent callers wait for one leader
   instead of stacking parallel wake attempts.
 - `_is_archive_connectivity_failure` treats `InvalidatePoolError` /
-  `DisconnectionError` / `HYT00` as reconnectable outages, and does **not**
-  treat SQL auth failures (`Login failed` / 18456) as pool-invalidate triggers.
+  `DisconnectionError`, `connection_invalidated`, SQLSTATE `HYT00` /
+  `08S01` / `08001`, and curated transport tokens as reconnectable outages.
+  It does **not** treat bare `OperationalError`/`InterfaceError` or SQL auth
+  failures (`Login failed` / 18456 / `28000`) as pool-invalidate triggers.
 - `capture_eod_archives` catches connectivity failures during existence priming
   (and the rest of the cycle), invalidates the pool, and returns
   `connectivity_failed=1` instead of raising into the sampler.
