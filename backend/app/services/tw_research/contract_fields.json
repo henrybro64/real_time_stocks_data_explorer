@@ -4,104 +4,275 @@
     "source": "catalog",
     "freshness_class": "config",
     "validation": "canonical TW:NNNN via quote_service.get_catalog_stock",
-    "missing": false
+    "missing": false,
+    "status": "implemented",
+    "required": true,
+    "unit": null,
+    "sector_applicability": "all",
+    "implementation_notes": "Internal join key; never replaced by display name."
+  },
+  {
+    "field": "stock_name",
+    "source": "catalog name_zh_tw|name",
+    "freshness_class": "config",
+    "validation": "verified Traditional Chinese or catalog name; never invent",
+    "missing": false,
+    "status": "implemented",
+    "required": true,
+    "unit": null,
+    "sector_applicability": "all",
+    "implementation_notes": "nameStatus=unavailable when catalog has no verified name; show ID plus marker."
   },
   {
     "field": "exchange",
     "source": "catalog",
     "freshness_class": "config",
     "validation": "TWSE|TPEx",
-    "missing": false
+    "missing": false,
+    "status": "implemented",
+    "required": true,
+    "unit": null,
+    "sector_applicability": "all",
+    "implementation_notes": null
   },
   {
     "field": "sector_theme_tags",
     "source": "stock_theme_service",
     "freshness_class": "config",
     "validation": "optional metadata; not an eligibility whitelist",
-    "missing": false
+    "missing": false,
+    "status": "implemented",
+    "required": false,
+    "unit": null,
+    "sector_applicability": "all",
+    "implementation_notes": "Starter 14-sector preset is optional, not a hard ceiling."
   },
   {
     "field": "ohlcv_daily",
     "source": "daily_price_history_service / TWSE|TPEx month APIs",
     "freshness_class": "quote_or_eod_day",
     "validation": "completed trading day only; source_as_of is session date",
-    "missing": false
+    "missing": false,
+    "status": "implemented",
+    "required": true,
+    "unit": "TWD",
+    "sector_applicability": "all",
+    "implementation_notes": "First-pass prefers stored-only peek; no unbounded 3–5y backfill."
   },
   {
     "field": "macd_kd_daily",
     "source": "tw_research.indicators",
     "freshness_class": "computed",
     "validation": "MACD(12,26,9) KD(9,3,3); pass=DIF>0 & OSC>0 & K>50 & D>50",
-    "missing": false
+    "missing": false,
+    "status": "implemented",
+    "required": false,
+    "unit": null,
+    "sector_applicability": "all",
+    "implementation_notes": "Second-pass technical path; not invoked by first-pass collector."
   },
   {
     "field": "macd_kd_monthly",
     "source": "tw_research.indicators",
     "freshness_class": "monthly_closed_month",
     "validation": "fully closed calendar months only; never current month",
-    "missing": false
+    "missing": false,
+    "status": "implemented",
+    "required": false,
+    "unit": null,
+    "sector_applicability": "all",
+    "implementation_notes": "Second-pass technical path; not invoked by first-pass collector."
   },
   {
     "field": "sma_20_60_120_240",
     "source": "tw_research.indicators",
     "freshness_class": "computed",
     "validation": "completed daily closes; unadjusted",
-    "missing": false
+    "missing": false,
+    "status": "implemented",
+    "required": false,
+    "unit": "TWD",
+    "sector_applicability": "all",
+    "implementation_notes": "Reused by relative price-basis distances (#337)."
   },
   {
     "field": "week52_position",
     "source": "tw_research.indicators",
     "freshness_class": "computed",
     "validation": "trailing up to 252 completed sessions",
-    "missing": false
+    "missing": false,
+    "status": "implemented",
+    "required": false,
+    "unit": "ratio_0_1",
+    "sector_applicability": "all",
+    "implementation_notes": null
+  },
+  {
+    "field": "relative_price_basis",
+    "source": "tw_research.price_basis",
+    "freshness_class": "computed",
+    "validation": "low|mid|high_relative_price_basis|insufficient_data; evidence only",
+    "missing": false,
+    "status": "implemented",
+    "required": false,
+    "unit": "category",
+    "sector_applicability": "all",
+    "implementation_notes": "Not a buy/sell or Notion-inclusion rule. Distinct from PRICE_BASIS candle convention."
   },
   {
     "field": "institutional_net_buys_5d",
     "source": "tw_institutional_service (prefer persisted daily store)",
     "freshness_class": "quote_or_eod_day",
     "validation": "five completed sessions; lots via net_shares_to_lots; #313",
-    "missing": false
+    "missing": false,
+    "status": "implemented",
+    "required": false,
+    "unit": "lots",
+    "sector_applicability": "all",
+    "implementation_notes": null
   },
   {
     "field": "tdcc_holders_ge_400_lots",
     "source": "tw_ownership_concentration_service",
     "freshness_class": "tdcc_weekly",
     "validation": "weekly publication date + prior-week change; never same-day stamp; #313",
-    "missing": false
+    "missing": false,
+    "status": "implemented",
+    "required": false,
+    "unit": "percent",
+    "sector_applicability": "all",
+    "implementation_notes": null
   },
   {
     "field": "margin_balance_and_delta",
     "source": "tw_margin_short_service",
     "freshness_class": "quote_or_eod_day",
     "validation": "balance + approx 5-session delta; utilization only when both sides verified",
-    "missing": false
+    "missing": false,
+    "status": "implemented",
+    "required": false,
+    "unit": "lots",
+    "sector_applicability": "all",
+    "implementation_notes": null
   },
   {
     "field": "margin_utilization",
     "source": "tw_margin_short_service",
     "freshness_class": "quote_or_eod_day",
     "validation": "unavailable unless numerator+denominator both verified",
-    "missing": true
+    "missing": true,
+    "status": "unavailable",
+    "required": false,
+    "unit": "ratio",
+    "sector_applicability": "all",
+    "implementation_notes": "Denominator not verified in current margin payload."
   },
   {
     "field": "official_pe",
     "source": "key_stats_service official TWSE/TPEx daily P/E",
     "freshness_class": "quote_or_eod_day",
     "validation": "official_daily type; do not reverse-engineer EPS from PE",
-    "missing": false
+    "missing": false,
+    "status": "implemented",
+    "required": false,
+    "unit": "ratio",
+    "sector_applicability": "non_etf_equity; financials may differ in interpretation",
+    "implementation_notes": "Missing PE must not auto-reject a candidate."
+  },
+  {
+    "field": "official_pb",
+    "source": "none (BWIBBU 股價淨值比 not wired)",
+    "freshness_class": "quote_or_eod_day",
+    "validation": "explicit unavailable until official adapter verified",
+    "missing": true,
+    "status": "not_implemented",
+    "required": false,
+    "unit": "ratio",
+    "sector_applicability": "all",
+    "implementation_notes": "Do not substitute Finnhub/Yahoo as official PB."
+  },
+  {
+    "field": "official_dividend_yield",
+    "source": "none (BWIBBU 殖利率 not wired as official)",
+    "freshness_class": "quote_or_eod_day",
+    "validation": "explicit unavailable; Finnhub yield is nonofficial",
+    "missing": true,
+    "status": "not_implemented",
+    "required": false,
+    "unit": "percent",
+    "sector_applicability": "all",
+    "implementation_notes": null
   },
   {
     "field": "ttm_eps_pe_peg",
     "source": "key_stats_service / none",
     "freshness_class": "earnings_quarterly",
     "validation": "TTM EPS often unavailable on TW official PE path; PEG null without growth denom",
-    "missing": true
+    "missing": true,
+    "status": "partial",
+    "required": false,
+    "unit": "TWD_per_share|ratio",
+    "sector_applicability": "all",
+    "implementation_notes": "Missing PEG must not reject a good stock."
+  },
+  {
+    "field": "monthly_revenue_yoy_mom",
+    "source": "none (tw_insights revenue is SYNTHETIC — forbidden)",
+    "freshness_class": "monthly_closed_month",
+    "validation": "requires real MOPS/official monthly revenue adapter",
+    "missing": true,
+    "status": "not_implemented",
+    "required": false,
+    "unit": "percent",
+    "sector_applicability": "non_financial preferred; financials need sector-aware handling",
+    "implementation_notes": "Never use TW_INSIGHTS_REVENUE_IS_SYNTHETIC placeholders."
+  },
+  {
+    "field": "gross_operating_net_margins",
+    "source": "tw_profitability_service (Yahoo quarterly; nonofficial)",
+    "freshness_class": "earnings_quarterly",
+    "validation": "opt-in only; label source honestly; MOPS/XBRL follow-up",
+    "missing": true,
+    "status": "partial",
+    "required": false,
+    "unit": "percent",
+    "sector_applicability": "non_financial preferred",
+    "implementation_notes": "Default first-pass marks not_fetched to avoid unbounded Yahoo fan-out."
+  },
+  {
+    "field": "operating_cash_flow_debt",
+    "source": "none",
+    "freshness_class": "earnings_quarterly",
+    "validation": "balance-sheet / cash-flow adapter not present",
+    "missing": true,
+    "status": "not_implemented",
+    "required": false,
+    "unit": "TWD|ratio",
+    "sector_applicability": "financials need different debt semantics",
+    "implementation_notes": null
+  },
+  {
+    "field": "historical_pe_pb_range",
+    "source": "none",
+    "freshness_class": "computed",
+    "validation": "same-definition historical valuation source not verified",
+    "missing": true,
+    "status": "not_implemented",
+    "required": false,
+    "unit": "percentile|range",
+    "sector_applicability": "all",
+    "implementation_notes": "Relative price basis must not claim valuation cheapness from this gap."
   },
   {
     "field": "reference_levels",
     "source": "stock_analysis_key_price_levels",
     "freshness_class": "computed",
     "validation": "only when computable; final trade judgments belong outside Stock Ticker",
-    "missing": false
+    "missing": false,
+    "status": "implemented",
+    "required": false,
+    "unit": "TWD",
+    "sector_applicability": "all",
+    "implementation_notes": "Used by technical enrichment path (#313)."
   }
 ]

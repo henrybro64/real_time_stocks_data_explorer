@@ -195,10 +195,15 @@ def load_scan_state(
         ) from exc
     for symbol_row in symbol_rows:
         payload = dict(symbol_row.get("payload_json") or {})
+        name_status = payload.get("name_status") or "unavailable"
+        if name_status not in {"ok", "unavailable"}:
+            name_status = "unavailable"
         record = SymbolScanRecord(
             stock_id=symbol_row["stock_id"],
             stage=payload.get("stage", symbol_row["stage"]),
             readiness=payload.get("readiness", symbol_row.get("readiness", "processed")),
+            stock_name=payload.get("stock_name"),
+            name_status=name_status,
             daily=payload.get("daily"),
             monthly=payload.get("monthly"),
             sma20=payload.get("sma20"),

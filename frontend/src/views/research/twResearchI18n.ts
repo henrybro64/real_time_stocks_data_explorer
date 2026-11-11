@@ -59,6 +59,8 @@ const TW_RESEARCH_ROWS = [
   ],
   ["research.tw.ledgerTitle", "Scan ledger (paginated)", "掃描帳本（分頁）"],
   ["research.tw.colStock", "Stock", "股票"],
+  ["research.tw.colName", "Name", "名稱"],
+  ["research.tw.nameUnavailable", "Name unavailable", "名稱不可用"],
   ["research.tw.colStage", "Stage", "階段"],
   ["research.tw.colDaily", "Daily", "日線"],
   ["research.tw.colMonthly", "Monthly", "月線"],

@@ -847,6 +847,7 @@ export function TwResearchPage({
                 <TableHead>
                   <TableRow>
                     <TableHeader>{t("research.tw.colStock")}</TableHeader>
+                    <TableHeader>{t("research.tw.colName")}</TableHeader>
                     <TableHeader>{t("research.tw.colStage")}</TableHeader>
                     <TableHeader>{t("research.tw.colDaily")}</TableHeader>
                     <TableHeader>{t("research.tw.colMonthly")}</TableHeader>
@@ -859,9 +860,22 @@ export function TwResearchPage({
                     const daily = (row.daily as Record<string, unknown> | undefined) || {};
                     const monthly = (row.monthly as Record<string, unknown> | undefined) || {};
                     const themes = (row.theme_keys as string[] | undefined) || [];
+                    const stockName =
+                      displayText(row.stock_name) ||
+                      displayText(row.stockName) ||
+                      "";
+                    const nameUnavailable =
+                      row.name_status === "unavailable" ||
+                      row.nameStatus === "unavailable" ||
+                      !stockName;
                     return (
                       <TableRow key={displayText(row.stock_id)}>
                         <TableCell>{displayText(row.stock_id)}</TableCell>
+                        <TableCell>
+                          {nameUnavailable
+                            ? t("research.tw.nameUnavailable")
+                            : stockName}
+                        </TableCell>
                         <TableCell>{displayText(row.stage)}</TableCell>
                         <TableCell>{displayText(daily.passStatus)}</TableCell>
                         <TableCell>{displayText(monthly.passStatus)}</TableCell>

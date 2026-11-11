@@ -24,6 +24,14 @@ class FieldProvenance(BaseModel):
         "computed",
         "config",
     ]
+    # #335 contract audit extensions (optional so older rows remain valid).
+    status: (
+        Literal["implemented", "partial", "unavailable", "not_implemented", "deferred"] | None
+    ) = None
+    unit: str | None = None
+    required: bool = False
+    sector_applicability: str | None = None
+    implementation_notes: str | None = None
 
 
 class ResearchContractResponse(BaseModel):
@@ -32,10 +40,13 @@ class ResearchContractResponse(BaseModel):
     calculationVersion: str
     universePresetVersion: str
     priceBasis: str
+    firstPassVersion: str | None = None
+    relativePriceBasisVersion: str | None = None
     industryAgnostic: bool = True
     starterPresetIsOptional: bool = True
     noHardUniverseCap: bool = True
     fieldMap: list[FieldProvenance]
+    feasibilityMatrix: list[dict[str, Any]] = Field(default_factory=list)
     notes: list[str]
 
 
@@ -147,3 +158,56 @@ class ExportManifestResponse(BaseModel):
 
 class ExportChunkResponse(BaseModel):
     chunk: dict[str, Any]
+
+
+class FirstPassBatchRequest(BaseModel):
+    """Bounded first-pass evidence collection (#335/#336). No CronJob/deploy."""
+
+    universe: UniverseSelectorRequest = Field(default_factory=UniverseSelectorRequest)
+    stockIds: list[str] = Field(default_factory=list)
+    batchLimit: int = Field(default=10, ge=1, le=25)
+    includeNonofficialMargins: bool = False
+    # Default True: persist immutable snapshot (fail closed if DB unavailable).
+    persist: bool = True
+
+
+class FirstPassBatchResponse(BaseModel):
+    result: dict[str, Any]
+
+
+class ResearchMembershipSaveRequest(BaseModel):
+    expectedVersion: int = Field(ge=0)
+    themeKeys: list[str] | None = None
+    extraStockIds: list[str] | None = None
+    computeSubsetIds: list[str] | None = None
+    resetToStarter: bool = False
+
+
+class ResearchMembershipResponse(BaseModel):
+    membership: dict[str, Any]
+
+
+class RelativePriceBasisRequest(BaseModel):
+    stockId: str
+    officialPe: float | None = None
+
+
+class RelativePriceBasisResponse(BaseModel):
+    evidence: dict[str, Any]
+
+
+class CandidateSetSubmitRequest(BaseModel):
+    """Analyst/manual technical compute subset pinned to a first-pass digest (#336)."""
+
+    firstPassSnapshotId: str
+    firstPassDigest: str
+    stockIds: list[str] = Field(default_factory=list)
+    origin: Literal["manual", "analyst"] = "analyst"
+    expectedVersion: int = Field(default=0, ge=0)
+    selectionReasons: dict[str, Any] = Field(default_factory=dict)
+    decisionDate: str | None = None
+    notes: list[str] = Field(default_factory=list)
+
+
+class CandidateSetResponse(BaseModel):
+    candidateSet: dict[str, Any]

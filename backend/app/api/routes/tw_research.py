@@ -18,11 +18,19 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response
 from app.api.deps import get_effective_user_id
 from app.core.config import settings
 from app.schemas.tw_research import (
+    CandidateSetResponse,
+    CandidateSetSubmitRequest,
     CreateScanRequest,
     ExportChunkResponse,
     ExportManifestResponse,
+    FirstPassBatchRequest,
+    FirstPassBatchResponse,
     RejectedStockResponse,
+    RelativePriceBasisRequest,
+    RelativePriceBasisResponse,
     ResearchContractResponse,
+    ResearchMembershipResponse,
+    ResearchMembershipSaveRequest,
     ResolvedUniverseResponse,
     ResumeBudgetWindowRequest,
     RunBatchRequest,
@@ -34,7 +42,7 @@ from app.schemas.tw_research import (
     ScanSnapshotResponse,
     UniverseSelectorRequest,
 )
-from app.services.tw_research.contract import build_research_contract
+from app.services.tw_research.contract import build_research_contract, load_feasibility_matrix
 from app.services.tw_research.export import (
     build_browser_text_view,
     build_export_chunk,
@@ -42,7 +50,22 @@ from app.services.tw_research.export import (
     build_export_csv,
     build_export_manifest,
 )
+from app.services.tw_research.first_pass import collect_first_pass_batch, dedupe_stock_ids
+from app.services.tw_research.first_pass_durable import (
+    CandidateSetConflict,
+    CandidateSetValidationError,
+    FirstPassDurableUnavailable,
+    latest_candidate_set,
+    persist_first_pass_batch,
+    submit_candidate_set,
+)
+from app.services.tw_research.fundamentals_watchlist import (
+    ResearchMembershipConflict,
+    ResearchMembershipUnavailable,
+    research_membership_store,
+)
 from app.services.tw_research.preset import starter_preset_stock_ids, starter_preset_theme_keys
+from app.services.tw_research.price_basis import evaluate_relative_price_basis
 from app.services.tw_research.scan import (
     ScanState,
     TwResearchAdmissionError,
@@ -51,6 +74,9 @@ from app.services.tw_research.scan import (
     tw_research_scan_service,
 )
 from app.services.tw_research.universe import UniverseSelector, resolve_universe
+from app.services.daily_price_history_service import daily_price_history_service
+from app.services.quote_service import quote_service
+from app.services.tw_research.constants import PREFERRED_DAILY_HISTORY_LIMIT
 
 TAIPEI = ZoneInfo("Asia/Taipei")
 T = TypeVar("T")
@@ -73,6 +99,216 @@ _EXPORT_KIND_PATTERN = "^(ledger|qualified|enriched)$"
 @router.get("/contract", response_model=ResearchContractResponse)
 def get_research_contract() -> ResearchContractResponse:
     return build_research_contract()
+
+
+@router.get("/feasibility-matrix")
+def get_feasibility_matrix() -> dict[str, object]:
+    """Repository-grounded field feasibility audit (#335). Read-only."""
+    return {
+        "contractVersion": build_research_contract().contractVersion,
+        "matrix": load_feasibility_matrix(),
+        "notes": [
+            "implemented = wired and safe to consume with provenance",
+            "partial = present but incomplete / nonofficial / often null",
+            "not_implemented / unavailable = explicit gap; never fabricate",
+            "deferred = exists on another path (e.g. technical second-pass)",
+        ],
+    }
+
+
+@router.post("/first-pass/batch", response_model=FirstPassBatchResponse)
+def post_first_pass_batch(
+    body: FirstPassBatchRequest,
+    user_id: str = Depends(get_effective_user_id),
+) -> FirstPassBatchResponse:
+    """Bounded first-pass evidence for configured universe symbols (#335/#336).
+
+    Deduplicates **before** ``batchLimit`` and before collection. Does not invoke
+    second-pass MACD/KD. Default ``persist=true`` writes an immutable Postgres
+    snapshot (fail closed if DB unavailable).
+    """
+    if body.stockIds:
+        ids = dedupe_stock_ids(body.stockIds)
+        version = f"explicit:{len(ids)}"
+    else:
+        resolved = _call_or_http(lambda: resolve_universe(_selector_from_request(body.universe)))
+        ids = dedupe_stock_ids(resolved.stock_ids)
+        version = resolved.universe_version
+    limited = ids[: body.batchLimit]
+    result = _call_or_http(
+        lambda: collect_first_pass_batch(
+            limited,
+            universe_version=version,
+            include_nonofficial_margins=body.includeNonofficialMargins,
+        )
+    )
+    payload = result.as_dict()
+    payload["batchLimit"] = body.batchLimit
+    payload["universeSize"] = len(ids)
+    payload["truncated"] = len(ids) > len(limited)
+    payload["durable"] = False
+    if body.persist:
+        try:
+            snap = persist_first_pass_batch(result, user_id=user_id)
+        except FirstPassDurableUnavailable as exc:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "error": "durable_store_unavailable",
+                    "retryable": True,
+                    "operation": exc.operation,
+                    "message": str(exc),
+                },
+            ) from exc
+        payload["durable"] = True
+        payload["snapshotId"] = snap.snapshot_id
+        payload["contentDigest"] = snap.content_digest
+        payload["persistedAt"] = snap.created_at
+    return FirstPassBatchResponse(result=payload)
+
+
+@router.get("/membership", response_model=ResearchMembershipResponse)
+def get_research_membership(
+    user_id: str = Depends(get_effective_user_id),
+) -> ResearchMembershipResponse:
+    try:
+        membership = research_membership_store.get(user_id).as_dict()
+    except ResearchMembershipUnavailable as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "durable_store_unavailable",
+                "retryable": True,
+                "operation": exc.operation,
+                "message": str(exc),
+            },
+        ) from exc
+    return ResearchMembershipResponse(membership=membership)
+
+
+@router.put("/membership", response_model=ResearchMembershipResponse)
+def put_research_membership(
+    body: ResearchMembershipSaveRequest,
+    user_id: str = Depends(get_effective_user_id),
+) -> ResearchMembershipResponse:
+    """Atomic version-checked membership / compute-subset save (#336). Fail closed."""
+    try:
+        snapshot = research_membership_store.save(
+            user_id,
+            expected_version=body.expectedVersion,
+            theme_keys=body.themeKeys,
+            extra_stock_ids=body.extraStockIds,
+            compute_subset_ids=body.computeSubsetIds,
+            reset_to_starter=body.resetToStarter,
+        )
+    except ResearchMembershipUnavailable as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "durable_store_unavailable",
+                "retryable": True,
+                "operation": exc.operation,
+                "message": str(exc),
+            },
+        ) from exc
+    except ResearchMembershipConflict as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "reason": exc.reason,
+                "currentVersion": exc.current_version,
+                "expectedVersion": exc.expected_version,
+            },
+        ) from exc
+    return ResearchMembershipResponse(membership=snapshot.as_dict())
+
+
+@router.post("/candidate-sets", response_model=CandidateSetResponse)
+def post_candidate_set(
+    body: CandidateSetSubmitRequest,
+    user_id: str = Depends(get_effective_user_id),
+) -> CandidateSetResponse:
+    """Persist analyst/manual compute subset pinned to a first-pass digest (#336)."""
+    try:
+        saved = submit_candidate_set(
+            user_id=user_id,
+            first_pass_snapshot_id=body.firstPassSnapshotId,
+            first_pass_digest=body.firstPassDigest,
+            stock_ids=body.stockIds,
+            origin=body.origin,
+            expected_version=body.expectedVersion,
+            selection_reasons=body.selectionReasons,
+            decision_date=body.decisionDate,
+            notes=body.notes,
+        )
+    except ResearchMembershipUnavailable as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "durable_store_unavailable",
+                "retryable": True,
+                "operation": getattr(exc, "operation", "candidate_set"),
+                "message": str(exc),
+            },
+        ) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except CandidateSetConflict as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "reason": exc.reason,
+                "currentVersion": exc.current_version,
+                "expectedVersion": exc.expected_version,
+            },
+        ) from exc
+    except CandidateSetValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return CandidateSetResponse(candidateSet=saved)
+
+
+@router.get("/candidate-sets/latest", response_model=CandidateSetResponse)
+def get_latest_candidate_set(
+    user_id: str = Depends(get_effective_user_id),
+) -> CandidateSetResponse:
+    try:
+        saved = latest_candidate_set(user_id=user_id)
+    except ResearchMembershipUnavailable as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "durable_store_unavailable",
+                "retryable": True,
+                "operation": getattr(exc, "operation", "candidate_set"),
+                "message": str(exc),
+            },
+        ) from exc
+    if saved is None:
+        raise HTTPException(status_code=404, detail="candidate_set_not_found")
+    return CandidateSetResponse(candidateSet=saved)
+
+
+@router.post("/relative-price-basis", response_model=RelativePriceBasisResponse)
+def post_relative_price_basis(
+    body: RelativePriceBasisRequest,
+    user_id: str = Depends(get_effective_user_id),
+) -> RelativePriceBasisResponse:
+    """Evaluate relative price-basis evidence from stored bars only (#337)."""
+    del user_id
+    stock = quote_service.get_catalog_stock(body.stockId)
+    if stock is None:
+        raise HTTPException(status_code=404, detail="stock_not_in_catalog")
+    candles, _missing = daily_price_history_service.peek_daily_history(
+        stock,
+        "MAX",
+        limit=PREFERRED_DAILY_HISTORY_LIMIT,
+    )
+    evidence = evaluate_relative_price_basis(
+        list(candles),
+        market="TW",
+        official_pe=body.officialPe,
+    )
+    return RelativePriceBasisResponse(evidence=evidence.as_dict())
 
 
 @router.get("/universe/starter-preset")

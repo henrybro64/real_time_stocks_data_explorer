@@ -250,6 +250,8 @@ class SymbolScanRecord:
         "verified_ready",
         "rejected",
     ] = "processed"
+    stock_name: str | None = None
+    name_status: Literal["ok", "unavailable"] = "unavailable"
     daily: dict[str, Any] | None = None
     monthly: dict[str, Any] | None = None
     sma20: float | None = None
@@ -1180,12 +1182,19 @@ class TwResearchScanService:
                 stage="rejected",
                 readiness="rejected",
                 rejection_reason="not_in_catalog",
+                stock_name=None,
+                name_status="unavailable",
                 checkpoint=checkpoint.as_tuple(),
             )
             with self._lock:
                 state.records[stock_id] = record
             self._persist_symbol(state, record)
             return
+
+        display_name = (stock.name_zh_tw or stock.name or "").strip() or None
+        name_status: Literal["ok", "unavailable"] = (
+            "ok" if display_name else "unavailable"
+        )
 
         with self._lock:
             remaining_budget = max(
@@ -1222,6 +1231,8 @@ class TwResearchScanService:
             stock_id=stock_id,
             stage="A",
             readiness="processed",
+            stock_name=display_name,
+            name_status=name_status,
             daily=_snapshot_dict(daily),
             checkpoint=checkpoint.as_tuple(),
             coverage={

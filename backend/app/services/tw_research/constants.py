@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 # Bump when the research field contract or provenance rules change.
-CONTRACT_VERSION = "2026-11-09.1"
+CONTRACT_VERSION = "2026-11-11.1"
 RESEARCH_SCHEMA_VERSION = CONTRACT_VERSION
 
 # Bump when MACD/KD/pass rules or monthly assembly change.
@@ -11,6 +11,17 @@ CALCULATION_VERSION = "macd12-26-9_kd9-3-3_v1"
 
 # Bump when enrichment field provenance rules change (#313).
 ENRICHMENT_VERSION = "enrich-v1"
+
+# First-pass fundamental/market evidence pack (#335/#336). Independent of
+# technical day+month qualification — every universe symbol may be collected.
+FIRST_PASS_VERSION = "first-pass-v1"
+DEFAULT_FIRST_PASS_BATCH_SIZE = 10
+MAX_FIRST_PASS_BATCH_SIZE = 25
+
+# Relative price-basis classifier (#337). Distinct from PRICE_BASIS candle convention.
+RELATIVE_PRICE_BASIS_VERSION = "relative-price-basis-v1"
+RELATIVE_PRICE_BASIS_LOW_THRESHOLD = 0.30
+RELATIVE_PRICE_BASIS_HIGH_THRESHOLD = 0.70
 
 # Enrichment operational budgets — not a global researchable-stock cap.
 # ``max_enrichments_per_run`` is a per-scan window allowance (#313). Explicit

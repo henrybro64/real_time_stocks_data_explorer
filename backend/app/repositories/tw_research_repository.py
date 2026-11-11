@@ -10,9 +10,12 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.db.models import (
+    TwResearchCandidateSet,
     TwResearchCoordinationLock,
     TwResearchExportSnapshot,
+    TwResearchFirstPassSnapshot,
     TwResearchHistoryFlight,
+    TwResearchMembership,
     TwResearchScan,
     TwResearchSymbolResult,
 )
@@ -1460,6 +1463,231 @@ class TwResearchRepository(SessionBoundRepository):
                 count += 1
             session.commit()
             return count
+
+    # --- Membership / first-pass / candidate sets (#335/#336) ---
+
+    def get_membership(self, user_id: str) -> dict[str, Any] | None:
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            row = session.get(TwResearchMembership, user_id)
+            if row is None:
+                return None
+            return {
+                "user_id": row.user_id,
+                "version": int(row.version),
+                "theme_keys": list(row.theme_keys_json or []),
+                "extra_stock_ids": list(row.extra_stock_ids_json or []),
+                "compute_subset_ids": list(row.compute_subset_ids_json or []),
+                "updated_at": row.updated_at.isoformat()
+                if hasattr(row.updated_at, "isoformat")
+                else str(row.updated_at),
+            }
+
+    def save_membership(
+        self,
+        user_id: str,
+        *,
+        expected_version: int,
+        theme_keys: list[str],
+        extra_stock_ids: list[str],
+        compute_subset_ids: list[str],
+    ) -> dict[str, Any]:
+        """Optimistic version-checked membership upsert. Raises ValueError on conflict."""
+        now = datetime.now(timezone.utc)
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            row = session.get(TwResearchMembership, user_id)
+            if row is None:
+                if expected_version != 0:
+                    raise ValueError("membership_version_mismatch")
+                row = TwResearchMembership(
+                    user_id=user_id,
+                    version=1,
+                    theme_keys_json=list(theme_keys),
+                    extra_stock_ids_json=list(extra_stock_ids),
+                    compute_subset_ids_json=list(compute_subset_ids),
+                    updated_at=now,
+                )
+                session.add(row)
+            else:
+                if int(row.version) != expected_version:
+                    raise ValueError("membership_version_mismatch")
+                row.version = int(row.version) + 1
+                row.theme_keys_json = list(theme_keys)
+                row.extra_stock_ids_json = list(extra_stock_ids)
+                row.compute_subset_ids_json = list(compute_subset_ids)
+                row.updated_at = now
+            session.commit()
+            session.refresh(row)
+            return {
+                "user_id": row.user_id,
+                "version": int(row.version),
+                "theme_keys": list(row.theme_keys_json or []),
+                "extra_stock_ids": list(row.extra_stock_ids_json or []),
+                "compute_subset_ids": list(row.compute_subset_ids_json or []),
+                "updated_at": row.updated_at.isoformat()
+                if hasattr(row.updated_at, "isoformat")
+                else str(row.updated_at),
+            }
+
+    def save_first_pass_snapshot(
+        self,
+        *,
+        snapshot_id: str,
+        user_id: str,
+        universe_version: str,
+        first_pass_version: str,
+        content_digest: str,
+        payload: dict[str, Any],
+        stock_ids: list[str],
+    ) -> dict[str, Any]:
+        """Idempotent by (user_id, content_digest). Returns existing row on digest hit."""
+        now = datetime.now(timezone.utc)
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            existing = session.execute(
+                select(TwResearchFirstPassSnapshot).where(
+                    TwResearchFirstPassSnapshot.user_id == user_id,
+                    TwResearchFirstPassSnapshot.content_digest == content_digest,
+                )
+            ).scalars().first()
+            if existing is not None:
+                return _first_pass_snapshot_to_dict(existing)
+            row = TwResearchFirstPassSnapshot(
+                snapshot_id=snapshot_id,
+                user_id=user_id,
+                universe_version=universe_version,
+                first_pass_version=first_pass_version,
+                content_digest=content_digest,
+                payload_json=payload,
+                stock_ids_json=list(stock_ids),
+                created_at=now,
+            )
+            try:
+                with session.begin_nested():
+                    session.add(row)
+                    session.flush()
+            except IntegrityError:
+                existing = session.execute(
+                    select(TwResearchFirstPassSnapshot).where(
+                        TwResearchFirstPassSnapshot.user_id == user_id,
+                        TwResearchFirstPassSnapshot.content_digest == content_digest,
+                    )
+                ).scalars().first()
+                if existing is None:
+                    raise
+                return _first_pass_snapshot_to_dict(existing)
+            session.commit()
+            session.refresh(row)
+            return _first_pass_snapshot_to_dict(row)
+
+    def get_first_pass_snapshot(
+        self, snapshot_id: str, *, user_id: str | None = None
+    ) -> dict[str, Any] | None:
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            row = session.get(TwResearchFirstPassSnapshot, snapshot_id)
+            if row is None:
+                return None
+            if user_id is not None and row.user_id != user_id:
+                return None
+            return _first_pass_snapshot_to_dict(row)
+
+    def save_candidate_set(
+        self,
+        *,
+        candidate_set_id: str,
+        user_id: str,
+        expected_version: int,
+        first_pass_snapshot_id: str,
+        first_pass_digest: str,
+        stock_ids: list[str],
+        origin: str,
+        selection_reasons: dict[str, Any],
+        decision_date: str | None,
+        notes: list[str],
+    ) -> dict[str, Any]:
+        """Append a new candidate-set version. expected_version must equal latest."""
+        now = datetime.now(timezone.utc)
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            latest = session.execute(
+                select(TwResearchCandidateSet)
+                .where(TwResearchCandidateSet.user_id == user_id)
+                .order_by(TwResearchCandidateSet.version.desc())
+                .limit(1)
+            ).scalars().first()
+            current_version = int(latest.version) if latest is not None else 0
+            if current_version != expected_version:
+                raise ValueError("candidate_set_version_mismatch")
+            snap = session.get(TwResearchFirstPassSnapshot, first_pass_snapshot_id)
+            if snap is None or snap.user_id != user_id:
+                raise KeyError("first_pass_snapshot_not_found")
+            if snap.content_digest != first_pass_digest:
+                raise ValueError("first_pass_digest_mismatch")
+            row = TwResearchCandidateSet(
+                candidate_set_id=candidate_set_id,
+                user_id=user_id,
+                version=current_version + 1,
+                first_pass_snapshot_id=first_pass_snapshot_id,
+                first_pass_digest=first_pass_digest,
+                stock_ids_json=list(stock_ids),
+                origin=origin,
+                selection_reasons_json=dict(selection_reasons or {}),
+                decision_date=decision_date,
+                notes_json=list(notes),
+                created_at=now,
+            )
+            session.add(row)
+            session.commit()
+            session.refresh(row)
+            return _candidate_set_to_dict(row)
+
+    def latest_candidate_set(self, user_id: str) -> dict[str, Any] | None:
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            row = session.execute(
+                select(TwResearchCandidateSet)
+                .where(TwResearchCandidateSet.user_id == user_id)
+                .order_by(TwResearchCandidateSet.version.desc())
+                .limit(1)
+            ).scalars().first()
+            if row is None:
+                return None
+            return _candidate_set_to_dict(row)
+
+
+def _first_pass_snapshot_to_dict(row: TwResearchFirstPassSnapshot) -> dict[str, Any]:
+    return {
+        "snapshot_id": row.snapshot_id,
+        "user_id": row.user_id,
+        "universe_version": row.universe_version,
+        "first_pass_version": row.first_pass_version,
+        "content_digest": row.content_digest,
+        "payload": dict(row.payload_json or {}),
+        "stock_ids": list(row.stock_ids_json or []),
+        "created_at": row.created_at.isoformat()
+        if hasattr(row.created_at, "isoformat")
+        else str(row.created_at),
+    }
+
+
+def _candidate_set_to_dict(row: TwResearchCandidateSet) -> dict[str, Any]:
+    return {
+        "candidate_set_id": row.candidate_set_id,
+        "user_id": row.user_id,
+        "version": int(row.version),
+        "first_pass_snapshot_id": row.first_pass_snapshot_id,
+        "first_pass_digest": row.first_pass_digest,
+        "stock_ids": list(row.stock_ids_json or []),
+        "origin": row.origin,
+        "selection_reasons": dict(row.selection_reasons_json or {}),
+        "decision_date": row.decision_date,
+        "notes": list(row.notes_json or []),
+        "created_at": row.created_at.isoformat()
+        if hasattr(row.created_at, "isoformat")
+        else str(row.created_at),
+    }
 
 
 tw_research_repository = TwResearchRepository()
