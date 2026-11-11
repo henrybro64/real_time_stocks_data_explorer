@@ -17,8 +17,12 @@ from app.services.tw_research.constants import FIRST_PASS_VERSION
 from app.services.tw_research.first_pass import (
     FirstPassBatchResult,
     FirstPassSymbolRecord,
+    classify_field_reason,
     collect_first_pass_batch,
     dedupe_stock_ids,
+    dominant_transient_field_error,
+    field_reason_is_retryable,
+    retry_after_seconds_from_reason,
 )
 from app.services.tw_research.first_pass_durable import FirstPassDurableUnavailable
 from app.services.tw_research.fundamentals_watchlist import (
@@ -62,6 +66,11 @@ def _classify_symbol_failure(error: str | None) -> str:
         return "unknown"
     if text in _PERMANENT_SYMBOL_ERRORS or text.startswith("unsupported"):
         return "permanent"
+    field_class = classify_field_reason(error)
+    if field_class == "permanent":
+        return "permanent"
+    if field_class in {"rate_limited", "timeout", "transient", "provider_validation", "stale"}:
+        return field_class
     if "429" in text or "rate limit" in text or "too many requests" in text:
         return "rate_limited"
     if "timeout" in text or "timed out" in text:
@@ -71,6 +80,17 @@ def _classify_symbol_failure(error: str | None) -> str:
     return "transient"
 
 
+def _symbol_has_retryable_field_failure(record: FirstPassSymbolRecord) -> bool:
+    if dominant_transient_field_error(record.fields):
+        return True
+    for field in record.fields.values():
+        if field.status in {"unavailable", "partial"} and field_reason_is_retryable(
+            field.reason
+        ):
+            return True
+    return False
+
+
 def _symbol_status(record: FirstPassSymbolRecord) -> str:
     if record.error:
         failure_class = _classify_symbol_failure(record.error)
@@ -78,15 +98,46 @@ def _symbol_status(record: FirstPassSymbolRecord) -> str:
             # Keep usable incomplete evidence rather than endless retries.
             return "partial"
         return "failed"
+    if _symbol_has_retryable_field_failure(record):
+        # Field-level transient faults (valuation timeout, HTTP 429, etc.) must
+        # enter the durable retry path even when catalog identity succeeded.
+        return "failed"
     completeness = record.completeness or {}
     if completeness.get("fieldsUnavailable", 0) and not completeness.get("fieldsOk", 0):
         return "partial"
     pe = record.fields.get("official_pe")
     if pe is not None and pe.status == "unavailable":
+        # Permanent PE gaps (adapter/missing publication) stay reviewable partials.
+        if field_reason_is_retryable(pe.reason):
+            return "failed"
         return "partial"
     if record.name_status == "unavailable":
         return "partial"
     return "ok"
+
+
+def _merge_preserved_ok_fields(
+    previous_fields: dict[str, Any] | None,
+    current_fields: dict[str, Any],
+) -> dict[str, Any]:
+    """Preserve already-valid evidence across retries; never fabricate values."""
+    merged = dict(current_fields)
+    for key, prior in dict(previous_fields or {}).items():
+        if not isinstance(prior, dict):
+            continue
+        if str(prior.get("status") or "") != "ok":
+            continue
+        current = merged.get(key)
+        if not isinstance(current, dict):
+            merged[key] = prior
+            continue
+        current_status = str(current.get("status") or "")
+        if current_status == "ok":
+            continue
+        if field_reason_is_retryable(current.get("reason")):
+            # Keep prior OK rather than replacing with a transient blip.
+            merged[key] = prior
+    return merged
 
 
 def _enrich_symbol_payload(
@@ -98,17 +149,30 @@ def _enrich_symbol_payload(
     """Attach durable retry metadata without fabricating financial fields."""
     payload = record.as_dict()
     prior = dict(previous_payload or {})
+    payload["fields"] = _merge_preserved_ok_fields(
+        prior.get("fields") if isinstance(prior.get("fields"), dict) else None,
+        dict(payload.get("fields") or {}),
+    )
+    # Recompute dominant transient after merge (may clear retry need).
+    transient = dominant_transient_field_error(payload["fields"])
+    if status == "failed" and not payload.get("error"):
+        payload["error"] = transient or record.error or "transient_field_failure"
     prior_attempts = int(prior.get("attemptCount") or 0)
     if status == "failed":
         attempts = prior_attempts + 1
-        failure_class = _classify_symbol_failure(record.error)
+        failure_class = _classify_symbol_failure(
+            str(payload.get("error") or record.error or transient or "")
+        )
         delay = min(
             _FIRST_PASS_RETRY_CAP_SECONDS,
             _FIRST_PASS_RETRY_BASE_SECONDS * (2 ** max(0, attempts - 1)),
         )
+        hinted = retry_after_seconds_from_reason(str(payload.get("error") or ""))
+        if hinted is not None:
+            delay = max(delay, hinted)
         # Deterministic jitter from stock id (stable across workers).
         jitter = int(hashlib.sha256(record.stock_id.encode("utf-8")).hexdigest()[:4], 16) % 11
-        exhausted = attempts >= _FIRST_PASS_MAX_ATTEMPTS
+        exhausted = attempts >= _FIRST_PASS_MAX_ATTEMPTS or failure_class == "permanent"
         from datetime import UTC, datetime, timedelta
 
         payload["attemptCount"] = attempts
@@ -117,11 +181,17 @@ def _enrich_symbol_payload(
         payload["nextRetryAt"] = None if exhausted else (
             datetime.now(UTC) + timedelta(seconds=delay + jitter)
         ).isoformat()
+        payload["preservedOkFields"] = sorted(
+            key
+            for key, value in payload["fields"].items()
+            if isinstance(value, dict) and value.get("status") == "ok"
+        )
     else:
         payload["attemptCount"] = max(prior_attempts, 1)
         payload["failureClass"] = None
         payload["retryExhausted"] = False
         payload["nextRetryAt"] = None
+        payload.pop("preservedOkFields", None)
     return payload
 
 
@@ -207,6 +277,11 @@ class FirstPassJobService:
             raise KeyError("first_pass_job_not_found")
         return job
 
+    def list_jobs(self, *, user_id: str, limit: int = 20) -> list[dict[str, Any]]:
+        if not self._repo.is_available():
+            raise FirstPassJobError("first_pass_job_store_unavailable")
+        return self._repo.list_first_pass_jobs(user_id, limit=max(1, min(limit, 50)))
+
     def progress(self, job_id: str, *, user_id: str) -> dict[str, Any]:
         job = self.get_job(job_id, user_id=user_id)
         counts = self._repo.count_first_pass_symbols(job_id)
@@ -279,21 +354,69 @@ class FirstPassJobService:
         batch_ids = list(claim["batch_ids"])
         generation = int(claim["lease_generation"])
         kwargs = dict(collectors or {})
+        previous_fields_by_stock: dict[str, dict[str, Any]] = {}
+        previous_payloads: dict[str, dict[str, Any]] = {}
+        for stock_id in batch_ids:
+            previous = self._repo.get_first_pass_symbol(job_id, stock_id)
+            if previous is None:
+                continue
+            payload = dict(previous.get("payload") or {})
+            previous_payloads[stock_id] = payload
+            fields = payload.get("fields")
+            if isinstance(fields, dict):
+                previous_fields_by_stock[stock_id] = fields
         result = collect_first_pass_batch(
             batch_ids,
             universe_version=job["universe_version"],
             include_nonofficial_margins=include_nonofficial_margins,
+            previous_fields_by_stock=previous_fields_by_stock,
             **kwargs,
         )
         processed = 0
         for record in result.records:
             status = _symbol_status(record)
-            previous = self._repo.get_first_pass_symbol(job_id, record.stock_id)
+            previous_payload = previous_payloads.get(record.stock_id)
+            if previous_payload is None:
+                previous = self._repo.get_first_pass_symbol(job_id, record.stock_id)
+                previous_payload = (previous or {}).get("payload")
             payload = _enrich_symbol_payload(
                 record,
                 status=status,
-                previous_payload=(previous or {}).get("payload"),
+                previous_payload=previous_payload,
             )
+            # After merging preserved OK fields, a formerly-failed symbol may no
+            # longer have retryable field faults — reclassify before persist.
+            if status == "failed":
+                remaining = dominant_transient_field_error(payload.get("fields") or {})
+                top_error = str(payload.get("error") or record.error or "")
+                top_class = _classify_symbol_failure(top_error)
+                if remaining is not None:
+                    payload["error"] = remaining
+                elif top_error and top_class == "permanent":
+                    status = "partial"
+                    payload["failureClass"] = "permanent"
+                    payload["retryExhausted"] = True
+                    payload["nextRetryAt"] = None
+                elif top_error and top_class != "permanent":
+                    # Keep symbol-level transient failures (may have empty fields).
+                    payload["error"] = top_error
+                else:
+                    # Transient field faults were restored/cleared by merge.
+                    payload["error"] = None
+                    pe = (payload.get("fields") or {}).get("official_pe") or {}
+                    if (
+                        isinstance(pe, dict)
+                        and pe.get("status") == "unavailable"
+                        and not field_reason_is_retryable(pe.get("reason"))
+                    ):
+                        status = "partial"
+                    elif record.name_status == "unavailable":
+                        status = "partial"
+                    else:
+                        status = "ok"
+                    payload["failureClass"] = None
+                    payload["retryExhausted"] = False
+                    payload["nextRetryAt"] = None
             ok = self._repo.upsert_first_pass_symbol(
                 job_id=job_id,
                 stock_id=record.stock_id,
@@ -331,22 +454,44 @@ class FirstPassJobService:
         *,
         user_id: str,
         status: str | None = None,
+        q: str | None = None,
+        completeness: str | None = None,
         offset: int = 0,
         limit: int = 50,
     ) -> dict[str, Any]:
         self.get_job(job_id, user_id=user_id)
         rows = self._repo.list_first_pass_symbols(
-            job_id, status=status, offset=offset, limit=limit
+            job_id,
+            status=status,
+            q=q,
+            completeness=completeness,
+            offset=offset,
+            limit=limit,
+        )
+        total = self._repo.count_first_pass_symbols_matching(
+            job_id,
+            status=status,
+            q=q,
+            completeness=completeness,
         )
         return {
             "jobId": job_id,
             "offset": offset,
             "limit": limit,
+            "total": total,
             "statusFilter": status,
+            "q": q,
+            "completenessFilter": completeness,
             "records": [
                 {
                     "stockId": row["stock_id"],
+                    "stockName": (row["payload"] or {}).get("stockName"),
+                    "nameStatus": (row["payload"] or {}).get("nameStatus"),
+                    "displayLabel": _display_label(row["payload"] or {}, row["stock_id"]),
                     "status": row["status"],
+                    "sectorThemeKeys": list(
+                        (row["payload"] or {}).get("sectorThemeKeys") or []
+                    ),
                     "updatedAt": row["updated_at"],
                     "evidence": row["payload"],
                 }
@@ -427,6 +572,16 @@ class FirstPassJobService:
             snapshot_id=saved["snapshot_id"],
             quality_status=quality,
         )
+
+
+def _display_label(payload: dict[str, Any], stock_id: str) -> str:
+    """Traditional Chinese name + canonical id, or explicit unavailable marker."""
+    short_id = stock_id.split(":", 1)[-1] if stock_id else stock_id
+    name = str(payload.get("stockName") or "").strip()
+    name_status = str(payload.get("nameStatus") or "")
+    if name and name_status != "unavailable":
+        return f"{name} ({short_id})"
+    return f"名稱不可用 ({short_id})"
 
 
 first_pass_job_service = FirstPassJobService()

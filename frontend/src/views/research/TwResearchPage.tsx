@@ -30,11 +30,13 @@ import { toApiError } from "../../services/api/client";
 import {
   createTwResearchFirstPassJob,
   createTwResearchScan,
+  createTwResearchTechnicalScanFromCandidateSet,
   fetchThemeOptions,
   fetchTwResearchBrowserText,
   fetchTwResearchExportChunk,
   fetchTwResearchExportManifest,
   fetchTwResearchFirstPassChunk,
+  fetchTwResearchFirstPassJob,
   fetchTwResearchFirstPassManifest,
   fetchTwResearchFirstPassProgress,
   fetchTwResearchFirstPassSymbols,
@@ -45,6 +47,7 @@ import {
   fetchTwResearchScanProgress,
   fetchTwResearchScans,
   fetchTwResearchSnapshotChunk,
+  listTwResearchFirstPassJobs,
   previewTwResearchMembership,
   researchProgressRevision,
   researchScanListRefetchInterval,
@@ -62,6 +65,21 @@ import {
 } from "../../services/api/twResearch";
 
 const PAGE_SIZE = 25;
+
+/** Traditional Chinese name + canonical id; never invent missing names. */
+export function formatTwStockLabel(
+  stockId: string,
+  stockName?: string | null,
+  nameStatus?: string | null,
+  unavailableLabel = "名稱不可用",
+): string {
+  const shortId = stockId.includes(":") ? stockId.split(":").slice(1).join(":") : stockId;
+  const name = (stockName ?? "").trim();
+  if (name && nameStatus !== "unavailable") {
+    return `${name} (${shortId})`;
+  }
+  return `${unavailableLabel} (${shortId})`;
+}
 
 function splitLines(text: string): string[] {
   return text
@@ -190,9 +208,12 @@ export function TwResearchPage({
   const [evidenceStatusFilter, setEvidenceStatusFilter] = useState("");
   const [evidenceSearch, setEvidenceSearch] = useState("");
   const [candidateIdsText, setCandidateIdsText] = useState("");
+  const [committedCandidateIdsText, setCommittedCandidateIdsText] = useState("");
   const [candidateSetText, setCandidateSetText] = useState("");
   const [candidateSetVersion, setCandidateSetVersion] = useState(0);
   const [candidateSetConflict, setCandidateSetConflict] = useState<string | null>(null);
+  const [candidateConflictServerIds, setCandidateConflictServerIds] = useState<string[]>([]);
+  const [firstPassJobs, setFirstPassJobs] = useState<Record<string, unknown>[]>([]);
   const scanRef = useRef<TwResearchScanSnapshot | null>(null);
   const scanIdRef = useRef<string | null>(scanId);
   const createGuard = useRef(false);
@@ -317,6 +338,62 @@ export function TwResearchPage({
     retry: false,
   });
 
+  const firstPassJobsQuery = useQuery({
+    queryKey: ["tw-research-first-pass-jobs"],
+    queryFn: async () => {
+      try {
+        return await listTwResearchFirstPassJobs(20);
+      } catch (error) {
+        if (toApiError(error).status === 503) return [];
+        throw error;
+      }
+    },
+    staleTime: 15_000,
+    retry: false,
+  });
+
+  useEffect(() => {
+    const jobs = firstPassJobsQuery.data;
+    if (!jobs) return;
+    setFirstPassJobs(jobs);
+    if (firstPassJobId || jobs.length === 0) return;
+    const latest = jobs[0];
+    const jobId = String(latest.jobId ?? "");
+    if (!jobId) return;
+    setFirstPassJobId(jobId);
+    setFirstPassProgressText(JSON.stringify(latest, null, 2));
+    if (typeof latest.activeSnapshotId === "string" && latest.activeSnapshotId) {
+      setFirstPassSnapshotId(latest.activeSnapshotId);
+    }
+  }, [firstPassJobsQuery.data, firstPassJobId]);
+
+  useEffect(() => {
+    const candidateSet = candidateSetQuery.data;
+    if (!candidateSet) return;
+    setCandidateSetVersion(Number(candidateSet.version ?? 0));
+    setCandidateSetText(JSON.stringify(candidateSet, null, 2));
+    if (Array.isArray(candidateSet.stockIds)) {
+      const text = candidateSet.stockIds.map(String).join("\n");
+      setCommittedCandidateIdsText(text);
+      // Only seed the draft once so refresh/conflict never clobber unsaved edits.
+      setCandidateIdsText((current) => (current.trim() ? current : text));
+    }
+    if (
+      typeof candidateSet.firstPassSnapshotId === "string" &&
+      candidateSet.firstPassSnapshotId &&
+      !firstPassSnapshotId
+    ) {
+      setFirstPassSnapshotId(candidateSet.firstPassSnapshotId);
+    }
+    if (
+      typeof candidateSet.firstPassDigest === "string" &&
+      candidateSet.firstPassDigest &&
+      !firstPassDigest
+    ) {
+      setFirstPassDigest(candidateSet.firstPassDigest);
+    }
+  }, [candidateSetQuery.data, firstPassDigest, firstPassSnapshotId]);
+
   const applyMembershipState = (membership: Record<string, unknown>) => {
     setMembershipText(JSON.stringify(membership, null, 2));
     setMembershipVersion(Number(membership.version ?? 0));
@@ -372,22 +449,6 @@ export function TwResearchPage({
     applyMembershipState(membershipQuery.data);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- sync authoritative membership once loaded
   }, [membershipQuery.data]);
-
-  useEffect(() => {
-    if (!candidateSetQuery.data) return;
-    const latest = candidateSetQuery.data;
-    setCandidateSetVersion(Number(latest.version ?? 0));
-    setCandidateSetText(JSON.stringify(latest, null, 2));
-    if (Array.isArray(latest.stockIds)) {
-      setCandidateIdsText(latest.stockIds.map(String).join("\n"));
-    }
-    if (typeof latest.firstPassSnapshotId === "string" && latest.firstPassSnapshotId) {
-      setFirstPassSnapshotId(latest.firstPassSnapshotId);
-    }
-    if (typeof latest.firstPassDigest === "string" && latest.firstPassDigest) {
-      setFirstPassDigest(latest.firstPassDigest);
-    }
-  }, [candidateSetQuery.data]);
 
   const membershipEditPayload = useMemo(
     () => ({
@@ -616,6 +677,7 @@ export function TwResearchPage({
     onSuccess: (job) => {
       setFirstPassJobId(String(job.jobId ?? ""));
       setFirstPassProgressText(JSON.stringify(job, null, 2));
+      void queryClient.invalidateQueries({ queryKey: ["tw-research-first-pass-jobs"] });
     },
   });
 
@@ -632,6 +694,7 @@ export function TwResearchPage({
       void queryClient.invalidateQueries({
         queryKey: ["tw-research-first-pass-progress", firstPassJobId],
       });
+      void queryClient.invalidateQueries({ queryKey: ["tw-research-first-pass-jobs"] });
     },
   });
 
@@ -642,24 +705,35 @@ export function TwResearchPage({
         offset,
         limit: PAGE_SIZE,
         status: evidenceStatusFilter || undefined,
+        q: evidenceSearch.trim() || undefined,
       });
     },
     onSuccess: (result, offset) => {
       setEvidenceOffset(offset);
       const records = Array.isArray(result.records) ? result.records : [];
-      const needle = evidenceSearch.trim().toLowerCase();
-      const filtered = needle
-        ? records.filter((row) => {
-            const evidence = (row as { evidence?: Record<string, unknown> }).evidence ?? {};
-            const stockId = String((row as { stockId?: string }).stockId ?? "");
-            const name = String(evidence.stockName ?? "");
-            return (
-              stockId.toLowerCase().includes(needle) || name.toLowerCase().includes(needle)
-            );
-          })
-        : records;
+      const labeled = records.map((row) => {
+        const evidence = (row as { evidence?: Record<string, unknown> }).evidence ?? {};
+        const stockId = String((row as { stockId?: string }).stockId ?? "");
+        const displayLabel =
+          String((row as { displayLabel?: string }).displayLabel ?? "") ||
+          formatTwStockLabel(
+            stockId,
+            String(evidence.stockName ?? (row as { stockName?: string }).stockName ?? ""),
+            String(evidence.nameStatus ?? (row as { nameStatus?: string }).nameStatus ?? ""),
+            t("research.tw.nameUnavailable"),
+          );
+        return { ...row, displayLabel };
+      });
       setFirstPassEvidenceText(
-        JSON.stringify({ ...result, records: filtered, clientSearch: needle || null }, null, 2),
+        JSON.stringify(
+          {
+            ...result,
+            records: labeled,
+            serverSearch: evidenceSearch.trim() || null,
+          },
+          null,
+          2,
+        ),
       );
     },
   });
@@ -694,8 +768,14 @@ export function TwResearchPage({
       });
     },
     onSuccess: (candidateSet) => {
+      const text = Array.isArray(candidateSet.stockIds)
+        ? candidateSet.stockIds.map(String).join("\n")
+        : candidateIdsText;
       setCandidateSetText(JSON.stringify(candidateSet, null, 2));
       setCandidateSetVersion(Number(candidateSet.version ?? 0));
+      setCommittedCandidateIdsText(text);
+      setCandidateIdsText(text);
+      setCandidateConflictServerIds([]);
       setCandidateSetConflict(null);
       void queryClient.invalidateQueries({ queryKey: ["tw-research-candidate-set-latest"] });
     },
@@ -704,11 +784,14 @@ export function TwResearchPage({
       if (apiError.status !== 409) return;
       try {
         const latest = await fetchTwResearchLatestCandidateSet();
+        const serverIds = Array.isArray(latest.stockIds)
+          ? latest.stockIds.map(String)
+          : [];
+        // Preserve unsaved analyst draft; refresh only server version + committed view.
         setCandidateSetVersion(Number(latest.version ?? 0));
         setCandidateSetText(JSON.stringify(latest, null, 2));
-        if (Array.isArray(latest.stockIds)) {
-          setCandidateIdsText(latest.stockIds.map(String).join("\n"));
-        }
+        setCommittedCandidateIdsText(serverIds.join("\n"));
+        setCandidateConflictServerIds(serverIds);
         setCandidateSetConflict(
           t("research.tw.candidateVersionConflict", {
             version: String(latest.version ?? 0),
@@ -717,6 +800,23 @@ export function TwResearchPage({
       } catch {
         setCandidateSetConflict(t("research.tw.candidateVersionConflictRefreshFailed"));
       }
+    },
+  });
+
+  const startTechnicalFromCandidateMutation = useMutation({
+    mutationFn: async () =>
+      createTwResearchTechnicalScanFromCandidateSet({
+        expectedVersion: candidateSetVersion || undefined,
+        targetCount: 10,
+      }),
+    onSuccess: (created) => {
+      setScanId(created.scanId);
+      applyScanSnapshot(created);
+      setMode("stock_ids");
+      if (Array.isArray(created.stockIds)) {
+        setStockIdsText(created.stockIds.map(String).join("\n"));
+      }
+      void queryClient.invalidateQueries({ queryKey: ["tw-research-scans"] });
     },
   });
 
@@ -1086,6 +1186,43 @@ export function TwResearchPage({
                   {t("research.tw.loadFirstPassManifest")}
                 </Button>
               </Stack>
+              {firstPassJobs.length > 0 ? (
+                <Select
+                  id="tw-research-first-pass-job-history"
+                  data-testid="tw-research-first-pass-job-history"
+                  labelText={t("research.tw.firstPassJobHistory")}
+                  value={firstPassJobId ?? ""}
+                  onChange={(event) => {
+                    const next = event.target.value;
+                    if (!next) return;
+                    setFirstPassJobId(next);
+                    const match = firstPassJobs.find((job) => String(job.jobId) === next);
+                    if (match) {
+                      setFirstPassProgressText(JSON.stringify(match, null, 2));
+                      setFirstPassSnapshotId(
+                        typeof match.activeSnapshotId === "string"
+                          ? match.activeSnapshotId
+                          : null,
+                      );
+                    } else {
+                      void fetchTwResearchFirstPassJob(next).then((job) => {
+                        setFirstPassProgressText(JSON.stringify(job, null, 2));
+                        if (typeof job.activeSnapshotId === "string") {
+                          setFirstPassSnapshotId(job.activeSnapshotId);
+                        }
+                      });
+                    }
+                  }}
+                >
+                  {firstPassJobs.map((job) => (
+                    <SelectItem
+                      key={String(job.jobId)}
+                      value={String(job.jobId)}
+                      text={`${String(job.jobId)} · ${String(job.status ?? "")} · ${String(job.qualityStatus ?? "")}`}
+                    />
+                  ))}
+                </Select>
+              ) : null}
               <Stack gap={3} orientation="horizontal">
                 <TextInput
                   id="tw-research-evidence-search"
@@ -1105,6 +1242,14 @@ export function TwResearchPage({
                   <SelectItem value="failed" text="failed" />
                   <SelectItem value="deferred" text="deferred" />
                 </Select>
+                <Button
+                  kind="ghost"
+                  size="sm"
+                  disabled={!firstPassJobId || loadFirstPassEvidenceMutation.isPending}
+                  onClick={() => loadFirstPassEvidenceMutation.mutate(0)}
+                >
+                  {t("research.tw.evidenceSearchApply")}
+                </Button>
                 <Button
                   kind="ghost"
                   size="sm"
@@ -1149,6 +1294,7 @@ export function TwResearchPage({
               />
               <TextArea
                 id="tw-research-candidate-ids"
+                data-testid="tw-research-candidate-ids"
                 labelText={t("research.tw.candidateIds")}
                 value={candidateIdsText}
                 onChange={(event) => setCandidateIdsText(event.target.value)}
@@ -1158,25 +1304,98 @@ export function TwResearchPage({
                 {t("research.tw.candidateVersion", { version: candidateSetVersion })}
               </p>
               {candidateSetConflict ? (
-                <RequestStateNotice
-                  kind="validation"
-                  scopeLabel={t("research.tw.saveCandidateSet")}
-                  status={409}
-                  detail={candidateSetConflict}
-                />
+                <Stack gap={3}>
+                  <RequestStateNotice
+                    kind="validation"
+                    scopeLabel={t("research.tw.saveCandidateSet")}
+                    status={409}
+                    detail={candidateSetConflict}
+                  />
+                  <TextArea
+                    id="tw-research-candidate-committed"
+                    data-testid="tw-research-candidate-committed"
+                    labelText={t("research.tw.candidateCommitted")}
+                    value={committedCandidateIdsText}
+                    readOnly
+                    rows={3}
+                  />
+                  <TextArea
+                    id="tw-research-candidate-proposed"
+                    data-testid="tw-research-candidate-proposed"
+                    labelText={t("research.tw.candidateProposed")}
+                    value={candidateIdsText}
+                    readOnly
+                    rows={3}
+                  />
+                  <Stack gap={3} orientation="horizontal">
+                    <Button
+                      kind="secondary"
+                      size="sm"
+                      data-testid="tw-research-candidate-reapply"
+                      onClick={() => {
+                        // Keep draft; only bump expected version already refreshed.
+                        setCandidateSetConflict(null);
+                      }}
+                    >
+                      {t("research.tw.candidateReapply")}
+                    </Button>
+                    <Button
+                      kind="danger--tertiary"
+                      size="sm"
+                      data-testid="tw-research-candidate-discard"
+                      onClick={() => {
+                        setCandidateIdsText(committedCandidateIdsText);
+                        setCandidateConflictServerIds([]);
+                        setCandidateSetConflict(null);
+                      }}
+                    >
+                      {t("research.tw.candidateDiscard")}
+                    </Button>
+                    <Button
+                      kind="primary"
+                      size="sm"
+                      data-testid="tw-research-candidate-resolve-save"
+                      disabled={saveCandidateSetMutation.isPending}
+                      onClick={() => saveCandidateSetMutation.mutate()}
+                    >
+                      {t("research.tw.candidateResolveSave")}
+                    </Button>
+                  </Stack>
+                  {candidateConflictServerIds.length ? (
+                    <p className="cds--helper-text-01" data-testid="tw-research-candidate-server-count">
+                      {t("research.tw.candidateServerCount", {
+                        count: String(candidateConflictServerIds.length),
+                      })}
+                    </p>
+                  ) : null}
+                </Stack>
               ) : null}
-              <Button
-                kind="primary"
-                size="sm"
-                disabled={
-                  !firstPassSnapshotId ||
-                  !firstPassDigest ||
-                  saveCandidateSetMutation.isPending
-                }
-                onClick={() => saveCandidateSetMutation.mutate()}
-              >
-                {t("research.tw.saveCandidateSet")}
-              </Button>
+              <Stack gap={3} orientation="horizontal">
+                <Button
+                  kind="primary"
+                  size="sm"
+                  disabled={
+                    !firstPassSnapshotId ||
+                    !firstPassDigest ||
+                    saveCandidateSetMutation.isPending
+                  }
+                  onClick={() => saveCandidateSetMutation.mutate()}
+                >
+                  {t("research.tw.saveCandidateSet")}
+                </Button>
+                <Button
+                  kind="secondary"
+                  size="sm"
+                  data-testid="tw-research-start-technical-from-candidates"
+                  disabled={
+                    candidateSetVersion <= 0 ||
+                    startTechnicalFromCandidateMutation.isPending
+                  }
+                  onClick={() => startTechnicalFromCandidateMutation.mutate()}
+                >
+                  {t("research.tw.startTechnicalFromCandidates")}
+                </Button>
+              </Stack>
               {candidateSetText ? (
                 <TextArea
                   id="tw-research-candidate-set-json"
@@ -1475,21 +1694,23 @@ export function TwResearchPage({
                     const daily = (row.daily as Record<string, unknown> | undefined) || {};
                     const monthly = (row.monthly as Record<string, unknown> | undefined) || {};
                     const themes = (row.theme_keys as string[] | undefined) || [];
+                    const stockId = displayText(row.stock_id) || displayText(row.stockId);
                     const stockName =
                       displayText(row.stock_name) ||
                       displayText(row.stockName) ||
                       "";
-                    const nameUnavailable =
-                      row.name_status === "unavailable" ||
-                      row.nameStatus === "unavailable" ||
-                      !stockName;
+                    const nameStatus =
+                      displayText(row.name_status) || displayText(row.nameStatus);
                     return (
-                      <TableRow key={displayText(row.stock_id)}>
-                        <TableCell>{displayText(row.stock_id)}</TableCell>
+                      <TableRow key={stockId}>
+                        <TableCell>{stockId}</TableCell>
                         <TableCell>
-                          {nameUnavailable
-                            ? t("research.tw.nameUnavailable")
-                            : stockName}
+                          {formatTwStockLabel(
+                            stockId,
+                            stockName,
+                            nameStatus,
+                            t("research.tw.nameUnavailable"),
+                          )}
                         </TableCell>
                         <TableCell>{displayText(row.stage)}</TableCell>
                         <TableCell>{displayText(daily.passStatus)}</TableCell>

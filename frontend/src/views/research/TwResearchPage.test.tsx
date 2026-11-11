@@ -11,23 +11,28 @@ import { LanguageProvider } from "../../app/i18n";
 import { ApiError } from "../../services/api/client";
 import {
   createTwResearchScan,
+  createTwResearchTechnicalScanFromCandidateSet,
   fetchThemeOptions,
   fetchTwResearchBrowserText,
   fetchTwResearchExportManifest,
+  fetchTwResearchFirstPassSymbols,
+  fetchTwResearchLatestCandidateSet,
   fetchTwResearchLatestManifest,
   fetchTwResearchScan,
   fetchTwResearchScanProgress,
   fetchTwResearchScans,
   fetchTwResearchSnapshotChunk,
+  listTwResearchFirstPassJobs,
   researchProgressRevision,
   researchScanListRefetchInterval,
   researchScanRefetchInterval,
   runTwResearchBatch,
+  submitTwResearchCandidateSet,
   type TwResearchScanProgress,
   type TwResearchScanSnapshot,
   type TwResearchScanSummary,
 } from "../../services/api/twResearch";
-import { TwResearchPage, taipeiTradingDay } from "./TwResearchPage";
+import { TwResearchPage, formatTwStockLabel, taipeiTradingDay } from "./TwResearchPage";
 
 vi.mock("../../services/api/twResearch", async () => {
   const actual = await vi.importActual<typeof import("../../services/api/twResearch")>(
@@ -48,6 +53,24 @@ vi.mock("../../services/api/twResearch", async () => {
     fetchTwResearchExportManifest: vi.fn(),
     fetchTwResearchBrowserText: vi.fn(),
     fetchTwResearchExportChunk: vi.fn(),
+    fetchTwResearchMembership: vi.fn(async () => {
+      throw new ApiError("missing", {
+        status: 404,
+        detail: "membership_not_found",
+        kind: "not_found",
+      });
+    }),
+    fetchTwResearchLatestCandidateSet: vi.fn(async () => {
+      throw new ApiError("missing", {
+        status: 404,
+        detail: "candidate_set_not_found",
+        kind: "not_found",
+      });
+    }),
+    listTwResearchFirstPassJobs: vi.fn(async () => []),
+    submitTwResearchCandidateSet: vi.fn(),
+    createTwResearchTechnicalScanFromCandidateSet: vi.fn(),
+    fetchTwResearchFirstPassSymbols: vi.fn(),
   };
 });
 
@@ -786,5 +809,152 @@ describe("TwResearchPage persisted scans (#327)", () => {
     expect(screen.getByTestId("tw-research-worker")).toHaveTextContent("沒有 worker 正在處理");
     expect(createTwResearchScan).not.toHaveBeenCalled();
     expect(runTwResearchBatch).not.toHaveBeenCalled();
+  });
+});
+
+describe("TwResearchPage reliability UX (#335–#337)", () => {
+  beforeEach(() => {
+    vi.mocked(fetchThemeOptions).mockResolvedValue([]);
+    vi.mocked(fetchTwResearchLatestManifest).mockRejectedValue(
+      new ApiError("none", { status: 404, detail: "none", kind: "not_found" }),
+    );
+    vi.mocked(listTwResearchFirstPassJobs).mockResolvedValue([]);
+    vi.mocked(fetchTwResearchLatestCandidateSet).mockRejectedValue(
+      new ApiError("missing", {
+        status: 404,
+        detail: "candidate_set_not_found",
+        kind: "not_found",
+      }),
+    );
+  });
+
+  it("formats Traditional Chinese stock labels without inventing names", () => {
+    expect(formatTwStockLabel("TW:2330", "台積電", "ok")).toBe("台積電 (2330)");
+    expect(formatTwStockLabel("TW:9999", "", "unavailable", "Name unavailable")).toBe(
+      "Name unavailable (9999)",
+    );
+  });
+
+  it("restores the latest durable first-pass job after remount", async () => {
+    vi.mocked(listTwResearchFirstPassJobs).mockResolvedValue([
+      {
+        jobId: "fpj_restored",
+        status: "running",
+        qualityStatus: "incomplete",
+        activeSnapshotId: "snap_restored",
+      },
+    ]);
+    renderPage();
+    await waitFor(() => {
+      expect(listTwResearchFirstPassJobs).toHaveBeenCalled();
+    });
+    expect(await screen.findByTestId("tw-research-first-pass-job-history")).toHaveValue(
+      "fpj_restored",
+    );
+  });
+
+  it("preserves unsaved candidate edits on version conflict", async () => {
+    const user = userEvent.setup();
+    vi.mocked(fetchTwResearchLatestCandidateSet)
+      .mockResolvedValueOnce({
+        version: 1,
+        stockIds: ["TW:2330"],
+        firstPassSnapshotId: "snap_a",
+        firstPassDigest: "d".repeat(64),
+      })
+      .mockResolvedValueOnce({
+        version: 2,
+        stockIds: ["TW:2454"],
+        firstPassSnapshotId: "snap_a",
+        firstPassDigest: "d".repeat(64),
+      });
+    vi.mocked(submitTwResearchCandidateSet).mockRejectedValue(
+      new ApiError("conflict", {
+        status: 409,
+        detail: "version_mismatch",
+        kind: "validation",
+      }),
+    );
+
+    renderPage();
+    await waitFor(() => {
+      expect(fetchTwResearchLatestCandidateSet).toHaveBeenCalled();
+    });
+    const draft = await screen.findByTestId("tw-research-candidate-ids");
+    await user.clear(draft);
+    await user.type(draft, "TW:2330\nTW:2303");
+    await user.click(screen.getByRole("button", { name: /儲存分析師候選集|Save analyst candidate set/i }));
+
+    expect(await screen.findByTestId("tw-research-candidate-proposed")).toHaveValue(
+      "TW:2330\nTW:2303",
+    );
+    expect(screen.getByTestId("tw-research-candidate-committed")).toHaveValue("TW:2454");
+    expect(screen.getByTestId("tw-research-candidate-ids")).toHaveValue("TW:2330\nTW:2303");
+  });
+
+  it("uses server-side evidence search parameters", async () => {
+    const user = userEvent.setup();
+    vi.mocked(listTwResearchFirstPassJobs).mockResolvedValue([
+      { jobId: "fpj_search", status: "completed", qualityStatus: "complete_attempted" },
+    ]);
+    vi.mocked(fetchTwResearchFirstPassSymbols).mockResolvedValue({
+      records: [
+        {
+          stockId: "TW:2330",
+          displayLabel: "台積電 (2330)",
+          evidence: { stockName: "台積電", nameStatus: "ok" },
+        },
+      ],
+      total: 1,
+      q: "台積",
+    });
+    renderPage();
+    await screen.findByTestId("tw-research-first-pass-job-history");
+    const search = screen.getByLabelText(/搜尋股票名稱或代號|Search stock name or code/i);
+    await user.type(search, "台積");
+    await user.click(screen.getByRole("button", { name: /搜尋證據|Search evidence/i }));
+    await waitFor(() => {
+      expect(fetchTwResearchFirstPassSymbols).toHaveBeenCalledWith(
+        "fpj_search",
+        expect.objectContaining({ q: "台積" }),
+      );
+    });
+  });
+
+  it("starts a technical scan from the approved candidate set only", async () => {
+    const user = userEvent.setup();
+    vi.mocked(fetchTwResearchLatestCandidateSet).mockResolvedValue({
+      version: 3,
+      stockIds: ["TW:2330", "TW:2454"],
+      firstPassSnapshotId: "snap_b",
+      firstPassDigest: "e".repeat(64),
+    });
+    vi.mocked(createTwResearchTechnicalScanFromCandidateSet).mockResolvedValue({
+      scanId: "scan_from_candidates",
+      tradingDay: "2024-06-28",
+      universeVersion: "explicit:2",
+      status: "queued",
+      cursor: 0,
+      universeSize: 2,
+      processedCount: 0,
+      remainingCount: 2,
+      targetCount: 10,
+      dayPassCount: 0,
+      notes: ["candidate set"],
+      ledger: [],
+      checkpointsEphemeral: false,
+      stockIds: ["TW:2330", "TW:2454"],
+    });
+    renderPage();
+    await waitFor(() => {
+      expect(screen.getByTestId("tw-research-start-technical-from-candidates")).toBeEnabled();
+    });
+    await user.click(screen.getByTestId("tw-research-start-technical-from-candidates"));
+    await waitFor(() => {
+      expect(createTwResearchTechnicalScanFromCandidateSet).toHaveBeenCalledWith(
+        expect.objectContaining({ expectedVersion: 3, targetCount: 10 }),
+      );
+    });
+    expect(await screen.findByLabelText("掃描 ID")).toHaveValue("scan_from_candidates");
   });
 });

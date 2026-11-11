@@ -20,6 +20,7 @@ from app.core.config import settings
 from app.schemas.tw_research import (
     CandidateSetResponse,
     CandidateSetSubmitRequest,
+    CandidateTechnicalScanRequest,
     CreateScanRequest,
     ExportChunkResponse,
     ExportManifestResponse,
@@ -27,6 +28,7 @@ from app.schemas.tw_research import (
     FirstPassBatchResponse,
     FirstPassJobBatchRequest,
     FirstPassJobCreateRequest,
+    FirstPassJobListResponse,
     FirstPassJobProgressResponse,
     FirstPassJobResponse,
     FirstPassJobSymbolsResponse,
@@ -61,6 +63,7 @@ from app.services.tw_research.first_pass_durable import (
     CandidateSetConflict,
     CandidateSetValidationError,
     FirstPassDurableUnavailable,
+    create_technical_scan_from_candidate_set,
     latest_candidate_set,
     persist_first_pass_batch,
     submit_candidate_set,
@@ -268,6 +271,22 @@ def preview_research_membership(
     return ResearchMembershipResponse(membership=snapshot.as_dict())
 
 
+@router.get("/first-pass/jobs", response_model=FirstPassJobListResponse)
+def list_first_pass_jobs(
+    limit: int = Query(default=20, ge=1, le=50),
+    user_id: str = Depends(get_effective_user_id),
+) -> FirstPassJobListResponse:
+    """Ownership-scoped recent first-pass jobs for UI restore after refresh (#335)."""
+    try:
+        jobs = first_pass_job_service.list_jobs(user_id=user_id, limit=limit)
+    except FirstPassJobError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={"error": str(exc), "operation": exc.operation},
+        ) from exc
+    return FirstPassJobListResponse(jobs=[_camel_job(job) for job in jobs])
+
+
 @router.post("/first-pass/jobs", response_model=FirstPassJobResponse)
 def create_first_pass_job(
     body: FirstPassJobCreateRequest,
@@ -371,6 +390,8 @@ def get_first_pass_job_symbols(
     job_id: str,
     user_id: str = Depends(get_effective_user_id),
     status: str | None = Query(default=None),
+    q: str | None = Query(default=None),
+    completeness: str | None = Query(default=None),
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=50, ge=1, le=200),
 ) -> FirstPassJobSymbolsResponse:
@@ -379,6 +400,8 @@ def get_first_pass_job_symbols(
             job_id,
             user_id=user_id,
             status=status,
+            q=q,
+            completeness=completeness,
             offset=offset,
             limit=limit,
         )
@@ -549,6 +572,50 @@ def get_latest_candidate_set(
     if saved is None:
         raise HTTPException(status_code=404, detail="candidate_set_not_found")
     return CandidateSetResponse(candidateSet=saved)
+
+
+@router.post("/candidate-sets/technical-scan", response_model=ScanSnapshotResponse)
+def post_candidate_technical_scan(
+    body: CandidateTechnicalScanRequest,
+    user_id: str = Depends(get_effective_user_id),
+) -> ScanSnapshotResponse:
+    """Create a technical MACD/KD scan from the approved candidate set (#336)."""
+    try:
+        result = create_technical_scan_from_candidate_set(
+            user_id=user_id,
+            expected_version=body.expectedVersion,
+            candidate_set_id=body.candidateSetId,
+            target_count=body.targetCount,
+            trading_day=body.tradingDay,
+            max_upstream_month_fetches=body.maxUpstreamMonthFetches,
+            max_enrichments_per_run=body.maxEnrichmentsPerRun,
+        )
+    except ResearchMembershipUnavailable as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "durable_store_unavailable",
+                "retryable": True,
+                "operation": getattr(exc, "operation", "candidate_set"),
+                "message": str(exc),
+            },
+        ) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except CandidateSetConflict as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "reason": exc.reason,
+                "currentVersion": exc.current_version,
+                "expectedVersion": exc.expected_version,
+            },
+        ) from exc
+    except CandidateSetValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _snapshot(result["scan"])
 
 
 @router.post("/relative-price-basis", response_model=RelativePriceBasisResponse)

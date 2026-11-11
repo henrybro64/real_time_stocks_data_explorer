@@ -339,6 +339,8 @@ class ScanState:
             "createdAt": self.created_at,
             "updatedAt": self.updated_at,
             "notes": list(self.notes),
+            "stockIds": list(self.stock_ids),
+            "selectorMode": self.selector.mode,
             "ledger": [asdict(record) for record in self.records.values()],
             "activeSnapshotId": self.active_snapshot_id,
             "reserveExpiresAt": self.reserve_expires_at,

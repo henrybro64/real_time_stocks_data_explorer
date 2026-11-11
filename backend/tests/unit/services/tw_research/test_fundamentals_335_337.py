@@ -759,6 +759,490 @@ def test_first_pass_retries_transient_failures_with_backoff(monkeypatch) -> None
     tw_research_repository.clear_session_factory_override()
 
 
+def test_field_level_timeout_marks_failed_and_preserves_ok_fields() -> None:
+    stock = stock_record(
+        "TW:2330",
+        market="TW",
+        symbol="2330",
+        name="台積電",
+        name_zh_tw="台積電",
+        exchange="TWSE",
+        currency="TWD",
+        timezone="Asia/Taipei",
+    )
+
+    def institutional_loader(_stock_id: str, _days: int):
+        rows = tuple(
+            _InstRow(
+                date=f"2024-06-{day:02d}",
+                foreign_net_shares=1000,
+                investment_trust_net_shares=0,
+                dealer_net_shares=0,
+                total_net_shares=1000,
+            )
+            for day in range(20, 25)
+        )
+        return _InstResult(history=rows, latest_date="2024-06-24", source="fixture")
+
+    def margin_loader(_stock_id: str, _days: int):
+        return _MarginResult(
+            history=(),
+            summary=None,
+            latest_date=None,
+            source="fixture",
+            empty_reason="empty",
+        )
+
+    def ownership_loader(_stock_id: str):
+        return _OwnResult(points=(), as_of=None, source="fixture")
+
+    def key_stats_loader(_stock_id: str):
+        raise TimeoutError("valuation upstream timed out")
+
+    result = collect_first_pass_batch(
+        ["TW:2330"],
+        stock_loader=lambda sid: stock if sid == "TW:2330" else None,
+        candles_loader=lambda _stock: _candles(days=60, start_close=100.0, low_bias=True),
+        institutional_loader=institutional_loader,
+        margin_loader=margin_loader,
+        ownership_loader=ownership_loader,
+        key_stats_loader=key_stats_loader,
+        theme_keys_loader=lambda _sid: ["semiconductor"],
+    )
+    record = result.records[0]
+    assert record.fields["institutional_5d"].status == "ok"
+    assert record.fields["official_pe"].status == "unavailable"
+    assert "timeout" in (record.fields["official_pe"].reason or "").lower()
+    assert record.error is not None
+    assert "timeout" in record.error.lower()
+    # Permanent gaps remain non-retryable markers.
+    assert "adapter" in (record.fields["operating_cash_flow"].reason or "") or (
+        "not_implemented" in (record.fields["operating_cash_flow"].reason or "")
+    )
+
+
+def test_http_429_field_failure_encodes_retry_after() -> None:
+    class RateLimited(Exception):
+        def __init__(self) -> None:
+            super().__init__("Too Many Requests")
+            self.status_code = 429
+            self.retry_after = 42
+
+    stock = stock_record(
+        "TW:2454",
+        market="TW",
+        symbol="2454",
+        name="聯發科",
+        name_zh_tw="聯發科",
+        exchange="TWSE",
+        currency="TWD",
+        timezone="Asia/Taipei",
+    )
+
+    def ok_inst(_stock_id: str, _days: int):
+        return _InstResult(history=(), latest_date=None, source="fixture")
+
+    def ok_margin(_stock_id: str, _days: int):
+        return _MarginResult(
+            history=(), summary=None, latest_date=None, source="fixture", empty_reason="empty"
+        )
+
+    def ok_own(_stock_id: str):
+        return _OwnResult(points=(), as_of=None, source="fixture")
+
+    result = collect_first_pass_batch(
+        ["TW:2454"],
+        stock_loader=lambda sid: stock if sid == "TW:2454" else None,
+        candles_loader=lambda _stock: [],
+        institutional_loader=ok_inst,
+        margin_loader=ok_margin,
+        ownership_loader=ok_own,
+        key_stats_loader=lambda _sid: (_ for _ in ()).throw(RateLimited()),
+        theme_keys_loader=lambda _sid: [],
+    )
+    reason = result.records[0].fields["official_pe"].reason or ""
+    assert "rate_limited" in reason
+    assert "retry_after=42" in reason
+
+
+def test_per_symbol_isolation_in_ten_symbol_batch() -> None:
+    stocks = {
+        f"TW:{1000 + index}": stock_record(
+            f"TW:{1000 + index}",
+            market="TW",
+            symbol=str(1000 + index),
+            name=f"股票{index}",
+            name_zh_tw=f"股票{index}",
+            exchange="TWSE",
+            currency="TWD",
+            timezone="Asia/Taipei",
+        )
+        for index in range(10)
+    }
+    fail_id = "TW:1003"
+    partial_id = "TW:1007"
+
+    def stock_loader(stock_id: str):
+        return stocks.get(stock_id)
+
+    def candles_loader(stock):
+        if stock.id == fail_id:
+            raise RuntimeError("candle store unavailable")
+        return _candles(days=40, start_close=80.0, low_bias=True)
+
+    def key_stats_loader(stock_id: str):
+        if stock_id == partial_id:
+            raise TimeoutError("pe timeout")
+        return {
+            "peRatio": 12.0,
+            "peRatioType": "official_daily",
+            "peRatioSource": "fixture",
+            "valuationAsOf": "2024-06-27",
+            "epsTtm": None,
+        }
+
+    def institutional_loader(_stock_id: str, _days: int):
+        return _InstResult(history=(), latest_date=None, source="fixture")
+
+    def margin_loader(_stock_id: str, _days: int):
+        return _MarginResult(
+            history=(), summary=None, latest_date=None, source="fixture", empty_reason="empty"
+        )
+
+    def ownership_loader(_stock_id: str):
+        return _OwnResult(points=(), as_of=None, source="fixture")
+
+    result = collect_first_pass_batch(
+        list(stocks.keys()),
+        stock_loader=stock_loader,
+        candles_loader=candles_loader,
+        institutional_loader=institutional_loader,
+        margin_loader=margin_loader,
+        ownership_loader=ownership_loader,
+        key_stats_loader=key_stats_loader,
+        theme_keys_loader=lambda _sid: ["tw-pcb"],
+    )
+    assert len(result.records) == 10
+    by_id = {record.stock_id: record for record in result.records}
+    assert by_id[fail_id].fields["latest_completed_close"].status == "unavailable"
+    assert "symbol_error" in (by_id[fail_id].fields["latest_completed_close"].reason or "") or (
+        "RuntimeError" in (by_id[fail_id].fields["latest_completed_close"].reason or "")
+    )
+    assert by_id[partial_id].error is not None
+    assert by_id[partial_id].fields["official_pe"].status == "unavailable"
+    successes = [
+        record
+        for sid, record in by_id.items()
+        if sid not in {fail_id, partial_id} and record.fields["official_pe"].status == "ok"
+    ]
+    assert len(successes) == 8
+
+
+def test_first_pass_job_retries_field_level_timeout_and_reuses_ok_fields(monkeypatch) -> None:
+    from tests.support import install_in_memory_sessionlocal, seed_test_users
+
+    session_local = install_in_memory_sessionlocal(monkeypatch)
+    seed_test_users(session_local, "user-field-retry")
+    from app.repositories.tw_research_repository import tw_research_repository
+    from app.services.tw_research.first_pass import FirstPassBatchResult, FirstPassSymbolRecord
+    from app.services.tw_research.first_pass_job import FirstPassJobService
+    from app.services.tw_research.enrichment import ProvenanceField
+
+    tw_research_repository.clear_session_factory_override()
+    tw_research_repository.set_session_factory_override(session_local)
+
+    calls = {"count": 0}
+
+    def fake_collect(ids, **kwargs):
+        calls["count"] += 1
+        previous = (kwargs.get("previous_fields_by_stock") or {}).get("TW:2330") or {}
+        records = []
+        for sid in ids:
+            if calls["count"] == 1:
+                records.append(
+                    FirstPassSymbolRecord(
+                        stock_id=sid,
+                        stock_name="台積電",
+                        name_status="ok",
+                        name_source="catalog",
+                        exchange="TWSE",
+                        market="TW",
+                        sector_theme_keys=["semiconductor"],
+                        fields={
+                            "institutional_5d": ProvenanceField(
+                                field="institutional_5d",
+                                status="ok",
+                                source="fixture",
+                                captured_at="2024-06-28T00:00:00+00:00",
+                                freshness_class="quote_or_eod_day",
+                                value={"ok": True},
+                            ),
+                            "official_pe": ProvenanceField(
+                                field="official_pe",
+                                status="unavailable",
+                                source="key_stats_service",
+                                captured_at="2024-06-28T00:00:00+00:00",
+                                freshness_class="quote_or_eod_day",
+                                reason="transient_timeout:TimeoutError",
+                            ),
+                            "peg": ProvenanceField(
+                                field="peg",
+                                status="unavailable",
+                                source="none",
+                                captured_at="2024-06-28T00:00:00+00:00",
+                                freshness_class="earnings_quarterly",
+                                reason="verified_eps_growth_denominator_unavailable",
+                            ),
+                        },
+                        error="transient_timeout:TimeoutError",
+                        completeness={"fieldsOk": 1, "fieldsUnavailable": 2},
+                    )
+                )
+            else:
+                assert previous.get("institutional_5d", {}).get("status") == "ok"
+                records.append(
+                    FirstPassSymbolRecord(
+                        stock_id=sid,
+                        stock_name="台積電",
+                        name_status="ok",
+                        name_source="catalog",
+                        exchange="TWSE",
+                        market="TW",
+                        sector_theme_keys=["semiconductor"],
+                        fields={
+                            "institutional_5d": ProvenanceField(
+                                field="institutional_5d",
+                                status="ok",
+                                source="reused_prior_ok",
+                                captured_at="2024-06-28T00:00:00+00:00",
+                                freshness_class="reused",
+                                value={"ok": True},
+                            ),
+                            "official_pe": ProvenanceField(
+                                field="official_pe",
+                                status="ok",
+                                source="key_stats_service",
+                                captured_at="2024-06-28T00:00:00+00:00",
+                                freshness_class="quote_or_eod_day",
+                                value={"peRatio": 18.0},
+                            ),
+                            "peg": ProvenanceField(
+                                field="peg",
+                                status="unavailable",
+                                source="none",
+                                captured_at="2024-06-28T00:00:00+00:00",
+                                freshness_class="earnings_quarterly",
+                                reason="verified_eps_growth_denominator_unavailable",
+                            ),
+                        },
+                        completeness={"fieldsOk": 2, "fieldsUnavailable": 1},
+                    )
+                )
+        return FirstPassBatchResult(
+            first_pass_version="first-pass-v1",
+            universe_version="explicit:1",
+            requested_count=len(ids),
+            collected_count=len(ids),
+            deduped_count=len(ids),
+            records=records,
+            coverage_summary={},
+            notes=[],
+        )
+
+    monkeypatch.setattr(
+        "app.services.tw_research.first_pass_job.collect_first_pass_batch",
+        fake_collect,
+    )
+    monkeypatch.setattr(
+        "app.services.tw_research.first_pass_job._FIRST_PASS_RETRY_BASE_SECONDS",
+        0,
+    )
+    monkeypatch.setattr(
+        "app.services.tw_research.first_pass_job._FIRST_PASS_RETRY_CAP_SECONDS",
+        0,
+    )
+
+    service = FirstPassJobService(repository=tw_research_repository)
+    job = service.create_job(
+        user_id="user-field-retry",
+        stock_ids=["TW:2330"],
+        use_membership=False,
+    )
+    first = service.run_batch(job["job_id"], user_id="user-field-retry", batch_size=1)
+    assert first["processed"] == 1
+    row = tw_research_repository.get_first_pass_symbol(job["job_id"], "TW:2330")
+    assert row is not None
+    assert row["status"] == "failed"
+    assert row["payload"]["fields"]["institutional_5d"]["status"] == "ok"
+
+    from datetime import datetime, timedelta, timezone
+
+    from sqlalchemy import select
+
+    from app.db.models import TwResearchFirstPassJob, TwResearchFirstPassSymbolResult
+
+    session = session_local()
+    try:
+        fp_job = session.get(TwResearchFirstPassJob, job["job_id"])
+        assert fp_job is not None
+        fp_job.reserve_expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+        sym = session.execute(
+            select(TwResearchFirstPassSymbolResult).where(
+                TwResearchFirstPassSymbolResult.job_id == job["job_id"],
+                TwResearchFirstPassSymbolResult.stock_id == "TW:2330",
+            )
+        ).scalars().first()
+        assert sym is not None
+        payload = dict(sym.payload_json or {})
+        payload["nextRetryAt"] = "1970-01-01T00:00:00+00:00"
+        sym.payload_json = payload
+        session.commit()
+    finally:
+        session.close()
+
+    second = service.run_batch(job["job_id"], user_id="user-field-retry", batch_size=1)
+    assert second["processed"] == 1
+    recovered = tw_research_repository.get_first_pass_symbol(job["job_id"], "TW:2330")
+    assert recovered is not None
+    assert recovered["status"] in {"ok", "partial"}
+    assert recovered["payload"]["fields"]["institutional_5d"]["status"] == "ok"
+    assert recovered["payload"]["fields"]["official_pe"]["status"] == "ok"
+    assert recovered["payload"]["fields"]["peg"]["status"] == "unavailable"
+    assert calls["count"] == 2
+    tw_research_repository.clear_session_factory_override()
+
+
+def test_candidate_set_feeds_technical_scan_universe_only(monkeypatch) -> None:
+    from tests.support import install_in_memory_sessionlocal, seed_test_users
+
+    session_local = install_in_memory_sessionlocal(monkeypatch)
+    seed_test_users(session_local, "user-tech")
+    from app.repositories.tw_research_repository import tw_research_repository
+    from app.services.tw_research.first_pass import FirstPassBatchResult, FirstPassSymbolRecord
+    from app.services.tw_research.first_pass_durable import (
+        create_technical_scan_from_candidate_set,
+        persist_first_pass_batch,
+        submit_candidate_set,
+    )
+    from app.services.tw_research.scan import TwResearchScanService
+
+    tw_research_repository.clear_session_factory_override()
+    tw_research_repository.set_session_factory_override(session_local)
+
+    batch = FirstPassBatchResult(
+        first_pass_version="first-pass-v1",
+        universe_version="u1",
+        requested_count=3,
+        collected_count=3,
+        deduped_count=3,
+        records=[
+            FirstPassSymbolRecord(
+                stock_id=sid,
+                stock_name=sid,
+                name_status="ok",
+                name_source="catalog",
+                exchange="TWSE",
+                market="TW",
+                sector_theme_keys=[],
+            )
+            for sid in ("TW:2330", "TW:2454", "TW:2303")
+        ],
+        coverage_summary={},
+        notes=[],
+    )
+    snap = persist_first_pass_batch(batch, user_id="user-tech", repository=tw_research_repository)
+    candidates = submit_candidate_set(
+        user_id="user-tech",
+        first_pass_snapshot_id=snap.snapshot_id,
+        first_pass_digest=snap.content_digest,
+        stock_ids=["TW:2330", "TW:2454"],
+        origin="analyst",
+        expected_version=0,
+        repository=tw_research_repository,
+    )
+
+    service = TwResearchScanService(
+        stock_loader=lambda stock_id: stock_record(
+            stock_id,
+            market="TW",
+            symbol=stock_id.split(":")[-1],
+            name=stock_id,
+            name_zh_tw=stock_id,
+            exchange="TWSE",
+            currency="TWD",
+            timezone="Asia/Taipei",
+        )
+    )
+    result = create_technical_scan_from_candidate_set(
+        user_id="user-tech",
+        expected_version=int(candidates["version"]),
+        repository=tw_research_repository,
+        scan_service=service,
+    )
+    scan = result["scan"]
+    assert list(scan.stock_ids) == ["TW:2330", "TW:2454"]
+    assert "TW:2303" not in scan.stock_ids
+    assert any("candidate set" in note.lower() for note in scan.notes)
+    assert any("not a notion" in note.lower() for note in scan.notes)
+    tw_research_repository.clear_session_factory_override()
+
+
+def test_evidence_search_matches_name_and_sector(monkeypatch) -> None:
+    from tests.support import install_in_memory_sessionlocal, seed_test_users
+
+    session_local = install_in_memory_sessionlocal(monkeypatch)
+    seed_test_users(session_local, "user-search")
+    from app.repositories.tw_research_repository import tw_research_repository
+    from app.services.tw_research.first_pass_job import FirstPassJobService
+
+    tw_research_repository.clear_session_factory_override()
+    tw_research_repository.set_session_factory_override(session_local)
+    service = FirstPassJobService(repository=tw_research_repository)
+    job = service.create_job(
+        user_id="user-search",
+        stock_ids=["TW:2330", "TW:2454"],
+        use_membership=False,
+    )
+    tw_research_repository.upsert_first_pass_symbol(
+        job_id=job["job_id"],
+        stock_id="TW:2330",
+        status="ok",
+        payload={
+            "stockId": "TW:2330",
+            "stockName": "台積電",
+            "nameStatus": "ok",
+            "sectorThemeKeys": ["semiconductor"],
+            "completeness": {"fieldsOk": 3, "fieldsUnavailable": 1},
+        },
+        lease_generation=0,
+    )
+    tw_research_repository.upsert_first_pass_symbol(
+        job_id=job["job_id"],
+        stock_id="TW:2454",
+        status="partial",
+        payload={
+            "stockId": "TW:2454",
+            "stockName": "聯發科",
+            "nameStatus": "ok",
+            "sectorThemeKeys": ["ic-design"],
+            "completeness": {"fieldsOk": 1, "fieldsUnavailable": 4},
+        },
+        lease_generation=0,
+    )
+    found = service.list_symbols(
+        job["job_id"], user_id="user-search", q="台積", offset=0, limit=10
+    )
+    assert found["total"] == 1
+    assert found["records"][0]["stockId"] == "TW:2330"
+    assert found["records"][0]["displayLabel"] == "台積電 (2330)"
+    sector = service.list_symbols(
+        job["job_id"], user_id="user-search", q="ic-design", offset=0, limit=10
+    )
+    assert sector["total"] == 1
+    assert sector["records"][0]["stockId"] == "TW:2454"
+    tw_research_repository.clear_session_factory_override()
+
+
 def test_membership_occ_uses_version_predicate(monkeypatch) -> None:
     from tests.support import install_in_memory_sessionlocal, seed_test_users
 

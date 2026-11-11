@@ -226,3 +226,95 @@ def latest_candidate_set(*, user_id: str, repository: Any | None = None) -> dict
         "durable": True,
         "notNotionReportList": True,
     }
+
+
+def create_technical_scan_from_candidate_set(
+    *,
+    user_id: str,
+    expected_version: int | None = None,
+    candidate_set_id: str | None = None,
+    target_count: int = 10,
+    trading_day: str | None = None,
+    max_upstream_month_fetches: int | None = None,
+    max_enrichments_per_run: int | None = None,
+    repository: Any | None = None,
+    scan_service: Any | None = None,
+) -> dict[str, Any]:
+    """Create a monthly/daily MACD/KD scan from an approved candidate set (#336).
+
+    Consumes only the explicitly selected candidate IDs. Does not publish Notion
+    report recommendations or expand the universe silently.
+    """
+    from app.services.tw_research.constants import (
+        DEFAULT_MAX_ENRICHMENTS_PER_RUN,
+        DEFAULT_MAX_UPSTREAM_MONTH_FETCHES,
+    )
+    from app.services.tw_research.scan import tw_research_scan_service
+    from app.services.tw_research.universe import UniverseSelector
+
+    repo = repository or tw_research_repository
+    if not repo.is_available():
+        raise ResearchMembershipUnavailable("candidate_set_store_unavailable")
+
+    saved = repo.latest_candidate_set(user_id)
+    if saved is None:
+        raise KeyError("candidate_set_not_found")
+    if candidate_set_id and str(saved["candidate_set_id"]) != str(candidate_set_id):
+        # Historical versions remain immutable; technical scan uses the approved
+        # latest set unless the caller pins expected_version below.
+        raise CandidateSetValidationError(
+            "candidate_set_id_not_latest;pass_expected_version_to_pin_latest_approval"
+        )
+
+    if expected_version is not None and int(saved["version"]) != int(expected_version):
+        raise CandidateSetConflict(
+            reason="version_mismatch",
+            current_version=int(saved["version"]),
+            expected_version=int(expected_version),
+        )
+
+    stock_ids = list(saved["stock_ids"] or [])
+    if not stock_ids:
+        raise CandidateSetValidationError("empty_candidate_set")
+
+    service = scan_service or tw_research_scan_service
+    state = service.create_scan(
+        UniverseSelector(mode="stock_ids", stock_ids=tuple(stock_ids)),
+        target_count=target_count,
+        trading_day=trading_day,
+        max_upstream_month_fetches=(
+            DEFAULT_MAX_UPSTREAM_MONTH_FETCHES
+            if max_upstream_month_fetches is None
+            else max_upstream_month_fetches
+        ),
+        max_enrichments_per_run=(
+            DEFAULT_MAX_ENRICHMENTS_PER_RUN
+            if max_enrichments_per_run is None
+            else max_enrichments_per_run
+        ),
+        user_id=user_id,
+    )
+    # Stamp provenance onto scan notes without mutating candidate set.
+    state.notes = list(state.notes or []) + [
+        (
+            "Technical second-pass sourced from candidate set "
+            f"{saved['candidate_set_id']} v{saved['version']} "
+            f"(firstPassSnapshotId={saved['first_pass_snapshot_id']})."
+        ),
+        "Monthly MACD/KD evaluated before daily; universe is the approved candidate IDs only.",
+        "Not a Notion report list — final report selection remains external.",
+    ]
+    try:
+        service._persist_scan(state)  # noqa: SLF001 — reuse durable scan write path
+    except Exception:
+        # In-memory fallback still returns the scan; durable note persist is best-effort.
+        pass
+    return {
+        "scan": state,
+        "candidateSetId": saved["candidate_set_id"],
+        "candidateSetVersion": saved["version"],
+        "firstPassSnapshotId": saved["first_pass_snapshot_id"],
+        "firstPassDigest": saved["first_pass_digest"],
+        "stockIds": list(state.stock_ids),
+        "notNotionReportList": True,
+    }

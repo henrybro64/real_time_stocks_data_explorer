@@ -1983,6 +1983,8 @@ class TwResearchRepository(SessionBoundRepository):
         job_id: str,
         *,
         status: str | None = None,
+        q: str | None = None,
+        completeness: str | None = None,
         offset: int = 0,
         limit: int = 50,
     ) -> list[dict[str, Any]]:
@@ -1993,12 +1995,21 @@ class TwResearchRepository(SessionBoundRepository):
             )
             if status:
                 stmt = stmt.where(TwResearchFirstPassSymbolResult.status == status)
-            stmt = (
+            rows = session.execute(
                 stmt.order_by(TwResearchFirstPassSymbolResult.stock_id)
-                .offset(max(0, offset))
-                .limit(max(1, min(limit, 200)))
-            )
-            rows = session.execute(stmt).scalars().all()
+            ).scalars().all()
+            matched = [
+                row
+                for row in rows
+                if _first_pass_symbol_matches_filters(
+                    row,
+                    q=q,
+                    completeness=completeness,
+                )
+            ]
+            start = max(0, offset)
+            end = start + max(1, min(limit, 200))
+            page = matched[start:end]
             return [
                 {
                     "stock_id": row.stock_id,
@@ -2008,8 +2019,34 @@ class TwResearchRepository(SessionBoundRepository):
                     if hasattr(row.updated_at, "isoformat")
                     else str(row.updated_at),
                 }
-                for row in rows
+                for row in page
             ]
+
+    def count_first_pass_symbols_matching(
+        self,
+        job_id: str,
+        *,
+        status: str | None = None,
+        q: str | None = None,
+        completeness: str | None = None,
+    ) -> int:
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            stmt = select(TwResearchFirstPassSymbolResult).where(
+                TwResearchFirstPassSymbolResult.job_id == job_id
+            )
+            if status:
+                stmt = stmt.where(TwResearchFirstPassSymbolResult.status == status)
+            rows = session.execute(stmt).scalars().all()
+            return sum(
+                1
+                for row in rows
+                if _first_pass_symbol_matches_filters(
+                    row,
+                    q=q,
+                    completeness=completeness,
+                )
+            )
 
     def count_first_pass_symbols(self, job_id: str) -> dict[str, int]:
         session_factory = self._session_factory()
@@ -2120,6 +2157,37 @@ def _parse_iso_utc(value: object) -> datetime | None:
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)
+
+
+def _first_pass_symbol_matches_filters(
+    row: TwResearchFirstPassSymbolResult,
+    *,
+    q: str | None = None,
+    completeness: str | None = None,
+) -> bool:
+    """Server-side evidence search across the job (bounded in-process filter)."""
+    payload = dict(row.payload_json or {})
+    needle = str(q or "").strip().lower()
+    if needle:
+        stock_id = str(row.stock_id or "").lower()
+        name = str(payload.get("stockName") or "").lower()
+        sectors = " ".join(str(item).lower() for item in (payload.get("sectorThemeKeys") or []))
+        status = str(row.status or "").lower()
+        haystack = f"{stock_id} {name} {sectors} {status}"
+        if needle not in haystack and needle not in stock_id.replace("tw:", ""):
+            return False
+    wanted = str(completeness or "").strip().lower()
+    if wanted:
+        completeness_payload = dict(payload.get("completeness") or {})
+        fields_ok = int(completeness_payload.get("fieldsOk") or 0)
+        fields_unavailable = int(completeness_payload.get("fieldsUnavailable") or 0)
+        if wanted in {"complete", "ok"} and fields_ok <= 0:
+            return False
+        if wanted in {"incomplete", "partial"} and fields_unavailable <= 0 and str(row.status) == "ok":
+            return False
+        if wanted == "failed" and str(row.status) != "failed":
+            return False
+    return True
 
 
 def _first_pass_symbol_needs_work(

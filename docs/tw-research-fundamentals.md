@@ -82,14 +82,16 @@ Low relative price **does not** mean cheap valuation. Historical valuation conte
 | GET | `/api/tw-research/contract` | Includes feasibility matrix + first-pass versions |
 | GET | `/api/tw-research/feasibility-matrix` | Read-only audit |
 | POST | `/api/tw-research/first-pass/batch` | Ephemeral/bounded helper; prefer jobs for full universe |
+| GET | `/api/tw-research/first-pass/jobs` | Owner-scoped recent jobs (UI restore after refresh) |
 | POST | `/api/tw-research/first-pass/jobs` | Start resumable full-universe job (frozen membership) |
-| POST | `/api/tw-research/first-pass/jobs/{id}/batches` | Lease + process next bounded batch |
+| POST | `/api/tw-research/first-pass/jobs/{id}/batches` | Lease + process next bounded batch; field-level retries |
 | GET | `/api/tw-research/first-pass/jobs/{id}/progress` | pending/running/completed/partial/failed/deferred |
-| GET | `/api/tw-research/first-pass/jobs/{id}/symbols` | Paginated evidence / failed / deferred |
+| GET | `/api/tw-research/first-pass/jobs/{id}/symbols` | Paginated evidence; `q` / status / completeness filters |
 | GET | `/api/tw-research/first-pass/snapshots/{id}` (+ `/manifest`, `/chunk`) | Analyst export |
 | GET/PUT | `/api/tw-research/membership` | Per-sector add/remove + OCC; **503** if DB unavailable |
 | POST | `/api/tw-research/membership/preview` | Preview without persist |
 | POST/GET | `/api/tw-research/candidate-sets` (+ `/latest`) | Analyst/manual subset pinned to first-pass digest |
+| POST | `/api/tw-research/candidate-sets/technical-scan` | Monthly/daily MACD/KD scan from approved candidate IDs only |
 | POST | `/api/tw-research/relative-price-basis` | Stored bars only |
 
 ## Provider cost notes (honest)

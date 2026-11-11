@@ -247,3 +247,18 @@ class CandidateSetSubmitRequest(BaseModel):
 
 class CandidateSetResponse(BaseModel):
     candidateSet: dict[str, Any]
+
+
+class CandidateTechnicalScanRequest(BaseModel):
+    """Start monthly/daily technical scan from an approved candidate set (#336)."""
+
+    expectedVersion: int | None = Field(default=None, ge=0)
+    candidateSetId: str | None = None
+    targetCount: Literal[10, 20] = 10
+    tradingDay: str | None = None
+    maxUpstreamMonthFetches: int | None = Field(default=None, ge=0)
+    maxEnrichmentsPerRun: int | None = Field(default=None, ge=0)
+
+
+class FirstPassJobListResponse(BaseModel):
+    jobs: list[dict[str, Any]]

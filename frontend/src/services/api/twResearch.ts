@@ -38,6 +38,7 @@ export type TwResearchScanSnapshot = {
   updatedAt?: string;
   workerActivity?: "active" | "unknown" | "idle";
   activeSnapshotId?: string | null;
+  stockIds?: string[];
 }
 
 export type TwResearchScanSummary = {
@@ -308,6 +309,13 @@ export async function previewTwResearchMembership(body: Record<string, unknown>)
   return response.membership;
 }
 
+export async function listTwResearchFirstPassJobs(limit = 20) {
+  const response = await requestJson<{ jobs: Record<string, unknown>[] }>(
+    `/tw-research/first-pass/jobs?limit=${encodeURIComponent(String(limit))}`,
+  );
+  return response.jobs;
+}
+
 export async function createTwResearchFirstPassJob(body?: {
   stockIds?: string[];
   useMembership?: boolean;
@@ -316,6 +324,13 @@ export async function createTwResearchFirstPassJob(body?: {
     "/tw-research/first-pass/jobs",
     "POST",
     body ?? { useMembership: true },
+  );
+  return response.job;
+}
+
+export async function fetchTwResearchFirstPassJob(jobId: string) {
+  const response = await requestJson<{ job: Record<string, unknown> }>(
+    `/tw-research/first-pass/jobs/${encodeURIComponent(jobId)}`,
   );
   return response.job;
 }
@@ -341,10 +356,18 @@ export async function fetchTwResearchFirstPassProgress(jobId: string) {
 
 export async function fetchTwResearchFirstPassSymbols(
   jobId: string,
-  params?: { status?: string; offset?: number; limit?: number },
+  params?: {
+    status?: string;
+    q?: string;
+    completeness?: string;
+    offset?: number;
+    limit?: number;
+  },
 ) {
   const query = new URLSearchParams();
   if (params?.status) query.set("status", params.status);
+  if (params?.q) query.set("q", params.q);
+  if (params?.completeness) query.set("completeness", params.completeness);
   if (params?.offset != null) query.set("offset", String(params.offset));
   if (params?.limit != null) query.set("limit", String(params.limit));
   const suffix = query.size ? `?${query.toString()}` : "";
@@ -397,4 +420,18 @@ export async function fetchTwResearchLatestCandidateSet() {
     "/tw-research/candidate-sets/latest",
   );
   return response.candidateSet;
+}
+
+export async function createTwResearchTechnicalScanFromCandidateSet(body?: {
+  expectedVersion?: number;
+  candidateSetId?: string;
+  targetCount?: number;
+  tradingDay?: string;
+}) {
+  const response = await requestJsonWithBody<{ scan: TwResearchScanSnapshot }>(
+    "/tw-research/candidate-sets/technical-scan",
+    "POST",
+    body ?? {},
+  );
+  return response.scan;
 }
