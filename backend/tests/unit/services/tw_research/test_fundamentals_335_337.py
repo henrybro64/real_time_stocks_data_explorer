@@ -1608,6 +1608,117 @@ def test_first_pass_job_raises_on_infrastructure_during_collect(monkeypatch) -> 
     tw_research_repository.clear_session_factory_override()
 
 
+def test_candidate_scan_does_not_re_resolve_after_catalog_flip(monkeypatch) -> None:
+    """Catalog mutations after the single validation resolve must not alter the scan."""
+    from app.services.tw_research.first_pass_durable import create_technical_scan_from_candidate_set
+    from app.services.tw_research.scan import TwResearchScanService
+
+    repo, _snap, candidates = _seed_candidate_universe(
+        monkeypatch, "user-race", ["TW:2330", "TW:2454", "TW:2303"]
+    )
+    catalog = {
+        sid: stock_record(
+            sid,
+            market="TW",
+            symbol=sid.split(":")[-1],
+            name=sid,
+            name_zh_tw=sid,
+            exchange="TWSE",
+            currency="TWD",
+            timezone="Asia/Taipei",
+        )
+        for sid in ("TW:2330", "TW:2454", "TW:2303")
+    }
+    lookups: list[str] = []
+
+    def flipping_loader(stock_id: str):
+        lookups.append(stock_id)
+        # After the first full validation pass (2 candidate lookups), disappear 2454.
+        candidate_lookups = [sid for sid in lookups if sid in {"TW:2330", "TW:2454"}]
+        if len(candidate_lookups) > 2 and stock_id == "TW:2454":
+            return None
+        return catalog.get(stock_id)
+
+    service = TwResearchScanService(stock_loader=flipping_loader, persist=False)
+    result = create_technical_scan_from_candidate_set(
+        user_id="user-race",
+        expected_version=int(candidates["version"]),
+        repository=repo,
+        scan_service=service,
+    )
+    assert list(result["scan"].stock_ids) == ["TW:2330", "TW:2454"]
+    # Resolver must not be consulted again during create_scan for membership.
+    assert lookups.count("TW:2330") == 1
+    assert lookups.count("TW:2454") == 1
+    repo.clear_session_factory_override()
+
+
+def test_candidate_scan_rejects_cross_user_snapshot_access(monkeypatch) -> None:
+    from app.services.tw_research.first_pass_durable import (
+        CandidateSetValidationError,
+        create_technical_scan_from_candidate_set,
+    )
+    from app.services.tw_research.scan import TwResearchScanService
+    from tests.support import install_in_memory_sessionlocal, seed_test_users
+
+    session_local = install_in_memory_sessionlocal(monkeypatch)
+    seed_test_users(session_local, "user-a", "user-b")
+    from app.repositories.tw_research_repository import tw_research_repository
+    from app.services.tw_research.first_pass import FirstPassBatchResult, FirstPassSymbolRecord
+    from app.services.tw_research.first_pass_durable import (
+        persist_first_pass_batch,
+        submit_candidate_set,
+    )
+
+    tw_research_repository.clear_session_factory_override()
+    tw_research_repository.set_session_factory_override(session_local)
+    batch = FirstPassBatchResult(
+        first_pass_version="first-pass-v1",
+        universe_version="u1",
+        requested_count=1,
+        collected_count=1,
+        deduped_count=1,
+        records=[
+            FirstPassSymbolRecord(
+                stock_id="TW:2330",
+                stock_name="台積電",
+                name_status="ok",
+                name_source="catalog",
+                exchange="TWSE",
+                market="TW",
+                sector_theme_keys=[],
+            )
+        ],
+        coverage_summary={},
+        notes=[],
+    )
+    snap_a = persist_first_pass_batch(batch, user_id="user-a", repository=tw_research_repository)
+    # user-b cannot pin to user-a's snapshot via submit; create scan for user-b
+    # with no candidate set of their own.
+    with pytest.raises(KeyError):
+        create_technical_scan_from_candidate_set(
+            user_id="user-b",
+            repository=tw_research_repository,
+            scan_service=TwResearchScanService(persist=False),
+        )
+    # user-a can submit; snapshot ownership is enforced on get.
+    submit_candidate_set(
+        user_id="user-a",
+        first_pass_snapshot_id=snap_a.snapshot_id,
+        first_pass_digest=snap_a.content_digest,
+        stock_ids=["TW:2330"],
+        origin="analyst",
+        expected_version=0,
+        repository=tw_research_repository,
+    )
+    assert (
+        tw_research_repository.get_first_pass_snapshot(snap_a.snapshot_id, user_id="user-b")
+        is None
+    )
+    del CandidateSetValidationError
+    tw_research_repository.clear_session_factory_override()
+
+
 def test_candidate_scan_atomic_provenance_fails_closed(monkeypatch) -> None:
     from app.services.tw_research.first_pass_durable import create_technical_scan_from_candidate_set
     from app.services.tw_research.scan import TwResearchDurableStoreError, TwResearchScanService
@@ -1643,4 +1754,88 @@ def test_candidate_scan_atomic_provenance_fails_closed(monkeypatch) -> None:
                 persist=True,
             ),
         )
+    repo.clear_session_factory_override()
+
+
+def test_candidate_technical_scan_runs_stage_a_then_b_on_fixture_history(monkeypatch) -> None:
+    """Candidate-derived scans use the established Stage A daily → Stage B monthly pipeline.
+
+    Monthly MACD/KD is computed only after daily pass. Qualification is technical
+    evidence only — not a Notion report recommendation. No live providers.
+    """
+    from app.services.tw_research.first_pass_durable import create_technical_scan_from_candidate_set
+    from app.services.tw_research.scan import TwResearchScanService
+
+    repo, _snap, candidates = _seed_candidate_universe(
+        monkeypatch, "user-macd", ["TW:2330", "TW:2454", "TW:2303"]
+    )
+    end = datetime(2024, 6, 28, 13, 30, tzinfo=TZ)
+    dates: list[datetime] = []
+    offset = 0
+    while len(dates) < 200:
+        day = end - timedelta(days=offset)
+        offset += 1
+        if day.weekday() >= 5:
+            continue
+        dates.append(day.replace(hour=13, minute=30, second=0, microsecond=0))
+    dates.reverse()
+    history = [
+        CandleRecord(
+            time=stamp.isoformat(),
+            open=100.0 + index - 0.5,
+            high=100.0 + index + 1.0,
+            low=100.0 + index - 1.0,
+            close=100.0 + index,
+            volume=1000 + index,
+        )
+        for index, stamp in enumerate(dates)
+    ]
+
+    def loader(stock, limit, *, max_month_fetches):  # noqa: ANN001
+        del stock, limit, max_month_fetches
+        return list(history), 0
+
+    service = TwResearchScanService(
+        history_loader=loader,
+        stock_loader=lambda stock_id: stock_record(
+            stock_id,
+            market="TW",
+            symbol=stock_id.split(":")[-1],
+            name=stock_id,
+            name_zh_tw=stock_id,
+            exchange="TWSE",
+            currency="TWD",
+            timezone="Asia/Taipei",
+        ),
+        persist=False,
+    )
+    created = create_technical_scan_from_candidate_set(
+        user_id="user-macd",
+        expected_version=int(candidates["version"]),
+        repository=repo,
+        scan_service=service,
+        trading_day="2024-06-28",
+    )
+    state = created["scan"]
+    assert list(state.stock_ids) == ["TW:2330", "TW:2454"]
+    assert "TW:2303" not in state.stock_ids
+    assert state.candidate_provenance is not None
+
+    state = service.run_batch(
+        state.scan_id,
+        batch_size=2,
+        now=datetime(2024, 6, 28, 16, 0, tzinfo=TZ),
+    )
+    assert set(state.records) == {"TW:2330", "TW:2454"}
+    for stock_id, record in state.records.items():
+        assert record.daily is not None, stock_id
+        if record.daily.get("passStatus") == "pass":
+            assert record.stage == "B"
+            assert record.monthly is not None
+            assert stock_id in state.day_pass_ids
+        else:
+            assert record.stage == "A"
+            assert record.monthly is None
+            assert stock_id not in state.day_pass_ids
+    assert all(sid in state.stock_ids for sid in state.qualified_ids)
     repo.clear_session_factory_override()

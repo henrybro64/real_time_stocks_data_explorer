@@ -73,6 +73,7 @@ from app.services.tw_research.indicators import (
     monthly_macd_kd_snapshot,
 )
 from app.services.tw_research.universe import (
+    ResolvedUniverse,
     UniverseSelector,
     resolve_universe,
 )
@@ -573,13 +574,34 @@ class TwResearchScanService:
         user_id: str | None = None,
         extra_notes: list[str] | None = None,
         candidate_provenance: dict[str, Any] | None = None,
+        resolved_universe: ResolvedUniverse | None = None,
     ) -> ScanState:
         if target_count not in {10, 20}:
             # Output target only; never changes pass rules.
             raise ValueError("target_count must be 10 or 20")
         if max_enrichments_per_run < 0:
             raise ValueError("max_enrichments_per_run must be >= 0")
-        resolved = resolve_universe(selector, stock_resolver=self._stock_loader)
+        if resolved_universe is not None:
+            # Candidate-derived path: use the caller's single authoritative
+            # resolution. Do not re-query the catalog (avoids TOCTOU races).
+            if resolved_universe.rejected:
+                raise ValueError(
+                    "resolved_universe must not include rejected stocks; "
+                    "validate before create_scan"
+                )
+            if not resolved_universe.stock_ids:
+                raise ValueError("resolved_universe requires at least one stock id")
+            resolved = resolved_universe
+            # Freeze selector membership to the validated IDs for persistence.
+            selector = UniverseSelector(
+                mode=selector.mode,
+                theme_keys=selector.theme_keys,
+                stock_ids=resolved.stock_ids
+                if selector.mode == "stock_ids"
+                else selector.stock_ids,
+            )
+        else:
+            resolved = resolve_universe(selector, stock_resolver=self._stock_loader)
         current = now or datetime.now(TAIPEI)
         day = trading_day or current.date().isoformat()
         stamp = current.isoformat()
@@ -606,6 +628,8 @@ class TwResearchScanService:
             user_id=user_id,
             candidate_provenance=provenance,
         )
+        # Rejected rows only appear on the legacy resolve path. Pre-resolved
+        # candidate universes must already be exact/clean.
         for item in resolved.rejected:
             state.records[item.stock_id] = SymbolScanRecord(
                 stock_id=item.stock_id,

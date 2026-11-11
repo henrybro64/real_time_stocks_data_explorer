@@ -968,6 +968,38 @@ describe("TwResearchPage reliability UX (#335–#337)", () => {
       ledger: [],
       checkpointsEphemeral: false,
       stockIds: ["TW:2330", "TW:2454"],
+      candidateProvenance: {
+        candidateSetId: "cs_abc",
+        candidateSetVersion: 3,
+        firstPassSnapshotId: "snap_b",
+        firstPassDigest: "e".repeat(64),
+        approvedStockIds: ["TW:2330", "TW:2454"],
+        calculationVersion: "calc-v1",
+      },
+    });
+    vi.mocked(fetchTwResearchScan).mockResolvedValue({
+      scanId: "scan_from_candidates",
+      tradingDay: "2024-06-28",
+      universeVersion: "explicit:2",
+      status: "queued",
+      cursor: 0,
+      universeSize: 2,
+      processedCount: 0,
+      remainingCount: 2,
+      targetCount: 10,
+      dayPassCount: 0,
+      notes: ["candidate set"],
+      ledger: [],
+      checkpointsEphemeral: false,
+      stockIds: ["TW:2330", "TW:2454"],
+      candidateProvenance: {
+        candidateSetId: "cs_abc",
+        candidateSetVersion: 3,
+        firstPassSnapshotId: "snap_b",
+        firstPassDigest: "e".repeat(64),
+        approvedStockIds: ["TW:2330", "TW:2454"],
+        calculationVersion: "calc-v1",
+      },
     });
     renderPage();
     await waitFor(() => {
@@ -980,5 +1012,8 @@ describe("TwResearchPage reliability UX (#335–#337)", () => {
       );
     });
     expect(await screen.findByLabelText("掃描 ID")).toHaveValue("scan_from_candidates");
+    expect(await screen.findByTestId("tw-research-candidate-provenance")).toHaveTextContent(
+      /cs_abc/,
+    );
   });
 });

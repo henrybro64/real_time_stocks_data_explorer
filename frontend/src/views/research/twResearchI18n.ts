@@ -107,6 +107,16 @@ const TW_RESEARCH_ROWS = [
     "Start technical scan from candidate set",
     "從候選集啟動技術掃描",
   ],
+  [
+    "research.tw.candidateProvenanceLine",
+    "Candidate set {candidateSetId} v{version} · snapshot {snapshotId} · {count} approved IDs",
+    "候選集 {candidateSetId} v{version} · 快照 {snapshotId} · {count} 個核准代號",
+  ],
+  [
+    "research.tw.candidateProvenanceDigest",
+    "First-pass digest {digest}",
+    "第一輪摘要 {digest}",
+  ],
   ["research.tw.firstPassJobHistory", "First-pass jobs", "第一輪工作"],
   [
     "research.tw.firstPassJobHistoryStale",

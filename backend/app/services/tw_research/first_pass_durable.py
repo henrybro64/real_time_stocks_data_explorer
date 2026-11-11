@@ -317,10 +317,9 @@ def create_technical_scan_from_candidate_set(
     approved = dedupe_stock_ids(stock_ids)
     service = scan_service or tw_research_scan_service
     stock_resolver = getattr(service, "_stock_loader", None)
-    resolved = resolve_universe(
-        UniverseSelector(mode="stock_ids", stock_ids=tuple(approved)),
-        stock_resolver=stock_resolver,
-    )
+    selector = UniverseSelector(mode="stock_ids", stock_ids=tuple(approved))
+    # Single authoritative catalog resolution for this candidate set.
+    resolved = resolve_universe(selector, stock_resolver=stock_resolver)
     resolved_ids = list(resolved.stock_ids)
     approved_set = set(approved)
     resolved_set = set(resolved_ids)
@@ -342,12 +341,17 @@ def create_technical_scan_from_candidate_set(
             },
         )
 
+    # Freeze the validated membership (canonical resolved order) before persist.
+    frozen_selector = UniverseSelector(
+        mode="stock_ids",
+        stock_ids=tuple(resolved_ids),
+    )
     provenance = {
         "candidateSetId": saved["candidate_set_id"],
         "candidateSetVersion": int(saved["version"]),
         "firstPassSnapshotId": saved["first_pass_snapshot_id"],
         "firstPassDigest": saved["first_pass_digest"],
-        "approvedStockIds": approved,
+        "approvedStockIds": resolved_ids,
         "universeVersion": resolved.universe_version,
         "calculationVersion": CALCULATION_VERSION,
         "notNotionReportList": True,
@@ -358,12 +362,15 @@ def create_technical_scan_from_candidate_set(
             f"{saved['candidate_set_id']} v{saved['version']} "
             f"(firstPassSnapshotId={saved['first_pass_snapshot_id']})."
         ),
-        "Monthly MACD/KD evaluated before daily; universe is the approved candidate IDs only.",
+        (
+            "Stage A daily MACD/KD then Stage B monthly for day-pass symbols "
+            "(established technical pipeline); universe is the approved candidate IDs only."
+        ),
         "Not a Notion report list — final report selection remains external.",
     ]
     try:
         state = service.create_scan(
-            UniverseSelector(mode="stock_ids", stock_ids=tuple(approved)),
+            frozen_selector,
             target_count=target_count,
             trading_day=trading_day,
             max_upstream_month_fetches=(
@@ -379,21 +386,13 @@ def create_technical_scan_from_candidate_set(
             user_id=user_id,
             extra_notes=extra_notes,
             candidate_provenance=provenance,
+            # Pass the already-validated resolution — create_scan must not
+            # re-resolve against a possibly mutated catalog.
+            resolved_universe=resolved,
         )
     except TwResearchDurableStoreError:
         # Fail closed — never return a scan without durable provenance.
         raise
-
-    if list(state.stock_ids) != approved:
-        # Defense in depth: create_scan must not diverge after pre-check.
-        raise CandidateSetValidationError(
-            "candidate_universe_mismatch_after_create",
-            detail={
-                "error": "candidate_universe_mismatch_after_create",
-                "approvedStockIds": approved,
-                "scanStockIds": list(state.stock_ids),
-            },
-        )
 
     return {
         "scan": state,

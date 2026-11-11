@@ -44,11 +44,18 @@ No CronJob enablement, Notion SDK, new microservice, or production deploy in thi
 
 ## Explicit gaps (do not fabricate)
 
-- Real monthly revenue YoY/MoM (`tw_insights` revenue is **synthetic** and forbidden)
-- Official PB / official dividend yield adapters (BWIBBU fields not wired)
-- Operating cash flow, debt metrics, ROE/ROA
-- Same-definition historical PE/PB range
-- Second-pass daily/monthly MACD/KD (existing scan path; not invoked by first-pass)
+Missing values stay `unavailable` / `not_fetched` with provenance reasons. They are never coerced to zero or treated as favorable.
+
+| Metric | Mandatory for #335–#337? | Collection status | Dependency / follow-up |
+| --- | --- | --- | --- |
+| Real monthly revenue YoY/MoM | Desired for ChatGPT fundamental triage; **not blocking** durable workflow APIs | **Unavailable** — `tw_insights` revenue is synthetic and forbidden | Real MOPS/monthly-revenue adapter (proposed follow-up; do not invent issue #) |
+| Operating cash flow | Same as above | **Unavailable** — no adapter | Reliable cash-flow source + adapter |
+| Debt-related metrics | Same as above | **Unavailable** — no adapter | Balance-sheet / debt adapter |
+| Verified historical valuation comparisons | #337 marks historical PE/PB range as unavailable | **Unavailable** — same-definition history not verified | Verified PE/PB history source |
+| Official PB / dividend yield | Partial toward fundamentals | **Unavailable** or unmapped on BWIBBU | Field mapping verification |
+| Second-pass MACD/KD | #336 technical path | **Available** via existing scan; Stage **A daily then B monthly** for day-pass (see `docs/tw-research.md`) | Candidate→technical uses that pipeline; wording “monthly/daily” means both stages, not monthly-first |
+
+Do **not** declare mandatory acceptance complete for adapters that remain absent. Deferred metrics stay explicitly tracked here and in the AI handoff.
 
 ## Provenance rules
 
@@ -91,7 +98,7 @@ Low relative price **does not** mean cheap valuation. Historical valuation conte
 | GET/PUT | `/api/tw-research/membership` | Per-sector add/remove + OCC; **503** if DB unavailable |
 | POST | `/api/tw-research/membership/preview` | Preview without persist |
 | POST/GET | `/api/tw-research/candidate-sets` (+ `/latest`) | Analyst/manual subset pinned to first-pass digest |
-| POST | `/api/tw-research/candidate-sets/technical-scan` | Monthly/daily MACD/KD from approved IDs; rejects catalog mismatches; atomic provenance |
+| POST | `/api/tw-research/candidate-sets/technical-scan` | Stage A daily → Stage B monthly MACD/KD from approved IDs; single catalog resolve; atomic provenance |
 | POST | `/api/tw-research/relative-price-basis` | Stored bars only |
 
 ## Provider cost notes (honest)
@@ -114,6 +121,11 @@ cd backend && .venv313/bin/python -m pytest \
   tests/unit/services/tw_research/test_fundamentals_335_337.py \
   tests/unit/services/tw_research/test_universe_and_scan.py \
   tests/unit/services/tw_research/test_enrichment_and_export.py -q
+
+# PostgreSQL provenance round-trip (CI uses stocks_test):
+DATABASE_URL=postgresql+psycopg://henrybro@127.0.0.1:5432/stocks_test \
+  .venv313/bin/python -m pytest \
+  tests/integration/services/test_tw_research_candidate_provenance_336.py -q
 ```
 
 ## Outstanding

@@ -1660,6 +1660,29 @@ export function TwResearchPage({
                 <p className="cds--body-compact-01" data-testid="tw-research-worker">
                   {t(workerActivityLabelKey(displayWorker))}
                 </p>
+                {scan.candidateProvenance?.candidateSetId ? (
+                  <div data-testid="tw-research-candidate-provenance">
+                    <p className="cds--helper-text-01">
+                      {t("research.tw.candidateProvenanceLine", {
+                        candidateSetId: scan.candidateProvenance.candidateSetId,
+                        version: String(scan.candidateProvenance.candidateSetVersion ?? ""),
+                        snapshotId: scan.candidateProvenance.firstPassSnapshotId ?? "",
+                        count: String(
+                          scan.candidateProvenance.approvedStockIds?.length ??
+                            scan.stockIds?.length ??
+                            0,
+                        ),
+                      })}
+                    </p>
+                    {scan.candidateProvenance.firstPassDigest ? (
+                      <p className="cds--helper-text-01">
+                        {t("research.tw.candidateProvenanceDigest", {
+                          digest: `${scan.candidateProvenance.firstPassDigest.slice(0, 12)}…`,
+                        })}
+                      </p>
+                    ) : null}
+                  </div>
+                ) : null}
                 <p className="cds--helper-text-01">
                   {t("research.tw.budgetLine", {
                     used: displayBudgetUsed,

@@ -39,6 +39,18 @@ export type TwResearchScanSnapshot = {
   workerActivity?: "active" | "unknown" | "idle";
   activeSnapshotId?: string | null;
   stockIds?: string[];
+  /** Present when the scan was created from an analyst candidate set (#336). */
+  candidateProvenance?: {
+    candidateSetId?: string;
+    candidateSetVersion?: number;
+    firstPassSnapshotId?: string;
+    firstPassDigest?: string;
+    approvedStockIds?: string[];
+    universeVersion?: string;
+    calculationVersion?: string;
+    tradingDay?: string;
+    notNotionReportList?: boolean;
+  } | null;
 }
 
 export type TwResearchScanSummary = {
