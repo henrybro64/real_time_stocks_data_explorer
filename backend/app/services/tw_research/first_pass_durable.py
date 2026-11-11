@@ -141,6 +141,7 @@ def submit_candidate_set(
     origin: CandidateOrigin,
     expected_version: int,
     selection_reasons: dict[str, Any] | None = None,
+    daily_override_ids: list[str] | None = None,
     decision_date: str | None = None,
     notes: list[str] | None = None,
     repository: Any | None = None,
@@ -168,6 +169,16 @@ def submit_candidate_set(
             f"stock_ids_outside_first_pass_universe:{','.join(rejected[:8])}"
         )
 
+    overrides = dedupe_stock_ids(daily_override_ids or [])
+    override_rejected = [sid for sid in overrides if sid not in set(deduped)]
+    if override_rejected:
+        raise CandidateSetValidationError(
+            f"daily_override_ids_outside_candidate_set:{','.join(override_rejected[:8])}"
+        )
+    reasons = dict(selection_reasons or {})
+    if overrides:
+        reasons["dailyOverrideIds"] = overrides
+
     candidate_set_id = f"cs_{uuid.uuid4().hex[:24]}"
     try:
         saved = repo.save_candidate_set(
@@ -178,13 +189,20 @@ def submit_candidate_set(
             first_pass_digest=first_pass_digest,
             stock_ids=deduped,
             origin=origin,
-            selection_reasons=dict(selection_reasons or {}),
+            selection_reasons=reasons,
             decision_date=decision_date,
             notes=list(notes or [])
             + [
                 "Analyst/manual compute subset only — not a Notion report list.",
                 "Changing selection creates a new version; historical sets remain.",
-            ],
+            ]
+            + (
+                [
+                    "dailyOverrideIds allow bounded daily MACD/KD despite monthly fail (#338)."
+                ]
+                if overrides
+                else []
+            ),
         )
     except ValueError as exc:
         if "version_mismatch" in str(exc):
@@ -204,6 +222,9 @@ def submit_candidate_set(
         "stockIds": list(saved["stock_ids"]),
         "origin": saved["origin"],
         "selectionReasons": dict(saved["selection_reasons"]),
+        "dailyOverrideIds": list(
+            (saved["selection_reasons"] or {}).get("dailyOverrideIds") or []
+        ),
         "decisionDate": saved["decision_date"],
         "notes": list(saved["notes"]),
         "createdAt": saved["created_at"],
@@ -244,6 +265,7 @@ def create_technical_scan_from_candidate_set(
     trading_day: str | None = None,
     max_upstream_month_fetches: int | None = None,
     max_enrichments_per_run: int | None = None,
+    daily_override_ids: list[str] | None = None,
     repository: Any | None = None,
     scan_service: Any | None = None,
 ) -> dict[str, Any]:
@@ -348,6 +370,16 @@ def create_technical_scan_from_candidate_set(
         mode="stock_ids",
         stock_ids=tuple(resolved_ids),
     )
+    stored_overrides = list(
+        (saved.get("selection_reasons") or {}).get("dailyOverrideIds") or []
+    )
+    request_overrides = dedupe_stock_ids(daily_override_ids or [])
+    override_ids = dedupe_stock_ids([*stored_overrides, *request_overrides])
+    override_outside = [sid for sid in override_ids if sid not in set(resolved_ids)]
+    if override_outside:
+        raise CandidateSetValidationError(
+            f"daily_override_ids_outside_candidate_set:{','.join(override_outside[:8])}"
+        )
     provenance = {
         "candidateSetId": saved["candidate_set_id"],
         "candidateSetVersion": int(saved["version"]),
@@ -358,6 +390,7 @@ def create_technical_scan_from_candidate_set(
         "calculationVersion": CALCULATION_VERSION_MONTHLY_FIRST,
         "stageOrder": STAGE_ORDER_MONTHLY_FIRST,
         "dailyContinuationPolicy": MONTHLY_FIRST_DAILY_CONTINUATION_POLICY,
+        "dailyOverrideIds": override_ids,
         "notNotionReportList": True,
     }
     extra_notes = [

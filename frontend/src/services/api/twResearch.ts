@@ -33,6 +33,10 @@ export type TwResearchScanSnapshot = {
   dualPassCount?: number;
   dailyDeferredCount?: number;
   monthlyIncompleteCount?: number;
+  dailyNotRunByDesignCount?: number;
+  dailyNotRunByDesignIds?: string[];
+  monthlyFailWatchlistCount?: number;
+  monthlyFailWatchlistIds?: string[];
   stageProgressSemanticsVersion?: string;
   qualifiedCount?: number;
   qualifiedIds?: string[];
@@ -457,6 +461,7 @@ export async function createTwResearchTechnicalScanFromCandidateSet(body?: {
   candidateSetId?: string;
   targetCount?: number;
   tradingDay?: string;
+  dailyOverrideIds?: string[];
 }) {
   const response = await requestJsonWithBody<{ scan: TwResearchScanSnapshot }>(
     "/tw-research/candidate-sets/technical-scan",
@@ -464,4 +469,87 @@ export async function createTwResearchTechnicalScanFromCandidateSet(body?: {
     body ?? {},
   );
   return response.scan;
+}
+
+export type TwResearchRun = {
+  researchRunId: string;
+  userId: string;
+  phase: string;
+  status: string;
+  tradingDay?: string | null;
+  firstPassJobId?: string | null;
+  firstPassSnapshotId?: string | null;
+  candidateSetId?: string | null;
+  candidateSetVersion?: number | null;
+  technicalScanId?: string | null;
+  gates?: Record<string, unknown>;
+  dimensions?: Record<string, unknown>;
+  notes?: string[];
+  scheduleEnabled?: boolean;
+  notNotionPublisher?: boolean;
+  cronjobRemainsSuspended?: boolean;
+  durable?: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+};
+
+export async function fetchTwResearchRunCurrent() {
+  const response = await requestJson<{ researchRun: TwResearchRun }>(
+    "/tw-research/research-runs/current",
+  );
+  return response.researchRun;
+}
+
+export async function startTwResearchRun(body?: {
+  phase?: "phase1_first_pass";
+  tradingDay?: string;
+  notes?: string[];
+}) {
+  const response = await requestJsonWithBody<{ researchRun: TwResearchRun }>(
+    "/tw-research/research-runs/start",
+    "POST",
+    body ?? { phase: "phase1_first_pass" },
+  );
+  return response.researchRun;
+}
+
+export async function advanceTwResearchRunGate(params?: {
+  firstPassJobId?: string;
+  firstPassSnapshotId?: string;
+  jobStatus?: string;
+  scanStatus?: string;
+}) {
+  const query = new URLSearchParams();
+  if (params?.firstPassJobId) query.set("firstPassJobId", params.firstPassJobId);
+  if (params?.firstPassSnapshotId) {
+    query.set("firstPassSnapshotId", params.firstPassSnapshotId);
+  }
+  if (params?.jobStatus) query.set("jobStatus", params.jobStatus);
+  if (params?.scanStatus) query.set("scanStatus", params.scanStatus);
+  const suffix = query.size ? `?${query.toString()}` : "";
+  const response = await requestJsonWithBody<{ researchRun: TwResearchRun }>(
+    `/tw-research/research-runs/gate${suffix}`,
+    "POST",
+    {},
+  );
+  return response.researchRun;
+}
+
+export async function postTwResearchReportEvidence(body?: {
+  tradingDay?: string;
+  firstPassSnapshotId?: string;
+  scanId?: string;
+}) {
+  const response = await requestJsonWithBody<{ evidence: Record<string, unknown> }>(
+    "/tw-research/report-evidence",
+    "POST",
+    body ?? {},
+  );
+  return response.evidence;
+}
+
+export async function fetchTwResearchReportEvidenceExampleZhTw() {
+  return requestJson<Record<string, unknown>>(
+    "/tw-research/report-evidence/example-zh-tw",
+  );
 }

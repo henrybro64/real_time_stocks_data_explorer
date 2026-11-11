@@ -241,6 +241,8 @@ class CandidateSetSubmitRequest(BaseModel):
     origin: Literal["manual", "analyst"] = "analyst"
     expectedVersion: int = Field(default=0, ge=0)
     selectionReasons: dict[str, Any] = Field(default_factory=dict)
+    # Optional bounded daily MACD/KD even when monthly gate fails (#338).
+    dailyOverrideIds: list[str] = Field(default_factory=list)
     decisionDate: str | None = None
     notes: list[str] = Field(default_factory=list)
 
@@ -258,6 +260,32 @@ class CandidateTechnicalScanRequest(BaseModel):
     tradingDay: str | None = None
     maxUpstreamMonthFetches: int | None = Field(default=None, ge=0)
     maxEnrichmentsPerRun: int | None = Field(default=None, ge=0)
+    # Bounded analyst override: compute daily despite monthly fail (#338).
+    dailyOverrideIds: list[str] = Field(default_factory=list)
+
+
+class ResearchRunStartRequest(BaseModel):
+    """Manual full-research orchestration start (#341). Never auto-publishes."""
+
+    phase: Literal["phase1_first_pass", "phase2_technical"] = "phase1_first_pass"
+    tradingDay: str | None = None
+    notes: list[str] = Field(default_factory=list)
+
+
+class ResearchRunResponse(BaseModel):
+    researchRun: dict[str, Any]
+
+
+class ReportEvidenceRequest(BaseModel):
+    """Build analyst-ready evidence pack for external ChatGPT (#340)."""
+
+    firstPassSnapshotId: str | None = None
+    scanId: str | None = None
+    tradingDay: str | None = None
+
+
+class ReportEvidenceResponse(BaseModel):
+    evidence: dict[str, Any]
 
 
 class FirstPassJobListResponse(BaseModel):

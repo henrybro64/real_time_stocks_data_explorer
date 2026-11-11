@@ -19,6 +19,8 @@ import {
   fetchTwResearchFirstPassSymbols,
   fetchTwResearchLatestCandidateSet,
   fetchTwResearchLatestManifest,
+  fetchTwResearchReportEvidenceExampleZhTw,
+  fetchTwResearchRunCurrent,
   fetchTwResearchScan,
   fetchTwResearchScanProgress,
   fetchTwResearchScans,
@@ -74,6 +76,20 @@ vi.mock("../../services/api/twResearch", async () => {
     createTwResearchTechnicalScanFromCandidateSet: vi.fn(),
     fetchTwResearchFirstPassSymbols: vi.fn(),
     fetchTwResearchFirstPassManifest: vi.fn(),
+    fetchTwResearchRunCurrent: vi.fn(async () => {
+      throw new ApiError("missing", {
+        status: 404,
+        detail: "research_run_not_found",
+        kind: "not_found",
+      });
+    }),
+    startTwResearchRun: vi.fn(),
+    advanceTwResearchRunGate: vi.fn(),
+    postTwResearchReportEvidence: vi.fn(),
+    fetchTwResearchReportEvidenceExampleZhTw: vi.fn(async () => ({
+      exampleOnly: true,
+      disclaimer: "本文件為測試用範例，不是即時投資建議",
+    })),
   };
 });
 
@@ -739,6 +755,8 @@ describe("TwResearchPage persisted scans (#327)", () => {
       rows: [{ stockId: "TW:2330" }],
     });
     renderPage({ initialScanId: SCAN_ID });
+    expect(await screen.findByTestId("tw-research-tabs")).toBeInTheDocument();
+    await user.click(screen.getByTestId("tw-research-tab-progress"));
     expect(await screen.findByLabelText("掃描 ID")).toHaveValue(SCAN_ID);
     await user.click(screen.getByRole("button", { name: "載入 Agent JSON" }));
     await waitFor(() => {
@@ -1103,5 +1121,32 @@ describe("TwResearchPage reliability UX (#335–#337)", () => {
         screen.getByRole("button", { name: /載入第一輪 manifest|Load first-pass manifest/i }),
       ).toBeDisabled();
     });
+  });
+
+  it("shows phase banner and loads ZH-TW evidence example (#339/#340/#341)", async () => {
+    const user = userEvent.setup();
+    vi.mocked(fetchTwResearchRunCurrent).mockResolvedValue({
+      researchRunId: "rr_test",
+      userId: "u1",
+      phase: "awaiting_analyst_candidate_selection",
+      status: "gated",
+      durable: true,
+      cronjobRemainsSuspended: true,
+      notNotionPublisher: true,
+    });
+    renderPage();
+    expect(await screen.findByTestId("tw-research-phase-banner")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByTestId("tw-research-phase-label")).toHaveTextContent(/階段 2|Phase 2/);
+    });
+    await user.click(
+      screen.getByRole("button", { name: /載入繁中證據範例|Load ZH-TW evidence example/i }),
+    );
+    await waitFor(() => {
+      expect(fetchTwResearchReportEvidenceExampleZhTw).toHaveBeenCalled();
+    });
+    expect(await screen.findByTestId("tw-research-report-evidence")).toHaveTextContent(
+      "exampleOnly",
+    );
   });
 });

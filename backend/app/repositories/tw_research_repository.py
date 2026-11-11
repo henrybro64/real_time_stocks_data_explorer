@@ -18,6 +18,7 @@ from app.db.models import (
     TwResearchFirstPassSymbolResult,
     TwResearchHistoryFlight,
     TwResearchMembership,
+    TwResearchResearchRun,
     TwResearchScan,
     TwResearchSymbolResult,
 )
@@ -1687,6 +1688,72 @@ class TwResearchRepository(SessionBoundRepository):
                 return None
             return _candidate_set_to_dict(row)
 
+    # --- Manual research-run orchestration (#341) ---
+
+    def get_research_run(self, user_id: str) -> dict[str, Any] | None:
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            row = session.get(TwResearchResearchRun, user_id)
+            if row is None:
+                return None
+            return _research_run_to_dict(row)
+
+    def upsert_research_run(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Replace the user's authoritative research-run row (fail closed)."""
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            user_id = str(payload["user_id"])
+            row = session.get(TwResearchResearchRun, user_id)
+            now = datetime.now(timezone.utc)
+            if row is None:
+                row = TwResearchResearchRun(
+                    user_id=user_id,
+                    research_run_id=str(payload["research_run_id"]),
+                    version=str(payload.get("version") or "research-run-v1"),
+                    phase=str(payload["phase"]),
+                    status=str(payload["status"]),
+                    trading_day=payload.get("trading_day"),
+                    first_pass_job_id=payload.get("first_pass_job_id"),
+                    first_pass_snapshot_id=payload.get("first_pass_snapshot_id"),
+                    candidate_set_id=payload.get("candidate_set_id"),
+                    candidate_set_version=payload.get("candidate_set_version"),
+                    technical_scan_id=payload.get("technical_scan_id"),
+                    gates_json=dict(payload.get("gates") or {}),
+                    dimensions_json=dict(payload.get("dimensions") or {}),
+                    notes_json=list(payload.get("notes") or []),
+                    schedule_enabled=bool(payload.get("schedule_enabled")),
+                    created_at=now,
+                    updated_at=now,
+                )
+                session.add(row)
+            else:
+                row.research_run_id = str(payload["research_run_id"])
+                row.version = str(payload.get("version") or row.version)
+                row.phase = str(payload["phase"])
+                row.status = str(payload["status"])
+                row.trading_day = payload.get("trading_day")
+                row.first_pass_job_id = payload.get("first_pass_job_id")
+                row.first_pass_snapshot_id = payload.get("first_pass_snapshot_id")
+                row.candidate_set_id = payload.get("candidate_set_id")
+                row.candidate_set_version = payload.get("candidate_set_version")
+                row.technical_scan_id = payload.get("technical_scan_id")
+                row.gates_json = dict(payload.get("gates") or {})
+                row.dimensions_json = dict(payload.get("dimensions") or {})
+                row.notes_json = list(payload.get("notes") or [])
+                row.schedule_enabled = bool(payload.get("schedule_enabled"))
+                row.updated_at = now
+            session.commit()
+            session.refresh(row)
+            return _research_run_to_dict(row)
+
+    def delete_research_run(self, user_id: str) -> None:
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            row = session.get(TwResearchResearchRun, user_id)
+            if row is not None:
+                session.delete(row)
+                session.commit()
+
     # --- First-pass resumable jobs (#335) ---
 
     def create_first_pass_job(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -2323,6 +2390,32 @@ def _candidate_set_to_dict(row: TwResearchCandidateSet) -> dict[str, Any]:
         "created_at": row.created_at.isoformat()
         if hasattr(row.created_at, "isoformat")
         else str(row.created_at),
+    }
+
+
+def _research_run_to_dict(row: TwResearchResearchRun) -> dict[str, Any]:
+    return {
+        "user_id": row.user_id,
+        "research_run_id": row.research_run_id,
+        "version": row.version,
+        "phase": row.phase,
+        "status": row.status,
+        "trading_day": row.trading_day,
+        "first_pass_job_id": row.first_pass_job_id,
+        "first_pass_snapshot_id": row.first_pass_snapshot_id,
+        "candidate_set_id": row.candidate_set_id,
+        "candidate_set_version": row.candidate_set_version,
+        "technical_scan_id": row.technical_scan_id,
+        "gates": dict(row.gates_json or {}),
+        "dimensions": dict(row.dimensions_json or {}),
+        "notes": list(row.notes_json or []),
+        "schedule_enabled": bool(row.schedule_enabled),
+        "created_at": row.created_at.isoformat()
+        if hasattr(row.created_at, "isoformat")
+        else str(row.created_at),
+        "updated_at": row.updated_at.isoformat()
+        if hasattr(row.updated_at, "isoformat")
+        else str(row.updated_at),
     }
 
 

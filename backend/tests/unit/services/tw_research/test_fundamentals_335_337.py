@@ -1954,10 +1954,14 @@ def test_candidate_monthly_fail_retains_monthly_and_defers_daily(monkeypatch) ->
         assert record.monthly is not None
         assert record.monthly.get("passStatus") == "fail"
         assert record.stage == "A"
-        assert record.daily is None
+        assert record.daily is not None
+        assert record.daily.get("executionStatus") == "not_run_by_design"
+        assert record.daily.get("passStatus") is None
+        assert record.daily.get("passStatus") != "fail"
         daily_cov = (record.coverage or {}).get("daily") or {}
         assert daily_cov.get("deferred") is True
         assert daily_cov.get("reason") == "monthly_screen_failed"
+        assert daily_cov.get("executionStatus") == "not_run_by_design"
     assert state.qualified_ids == []
     repo.clear_session_factory_override()
 
@@ -2001,10 +2005,15 @@ def test_candidate_incomplete_monthly_is_not_screening_fail(monkeypatch) -> None
     assert record.monthly is not None
     assert record.monthly.get("passStatus") == "unknown"
     assert record.monthly.get("quality") in {"insufficient_history", "unavailable"}
-    assert record.daily is None
+    assert record.daily is not None
+    assert record.daily.get("executionStatus") == "not_run_by_design"
+    assert record.daily.get("passStatus") != "fail"
     assert record.readiness == "source_incomplete"
     assert (record.coverage or {}).get("daily", {}).get("reason") == (
         "monthly_indicators_incomplete"
+    )
+    assert (record.coverage or {}).get("daily", {}).get("executionStatus") == (
+        "not_run_by_design"
     )
     repo.clear_session_factory_override()
 

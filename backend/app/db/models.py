@@ -773,6 +773,48 @@ class TwResearchCandidateSet(Base):
     )
 
 
+class TwResearchResearchRun(Base):
+    """Manual full-research orchestration with analyst gates (#341).
+
+    One authoritative row per user. PostgreSQL is source of truth across pods.
+    """
+
+    __tablename__ = "tw_research_research_runs"
+    __table_args__ = (
+        UniqueConstraint(
+            "research_run_id",
+            name="uq_tw_research_research_runs_run_id",
+        ),
+        Index("ix_tw_research_research_runs_updated", "updated_at"),
+    )
+
+    user_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    research_run_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    version: Mapped[str] = mapped_column(String(64), nullable=False)
+    phase: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(64), nullable=False)
+    trading_day: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    first_pass_job_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    first_pass_snapshot_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    candidate_set_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    candidate_set_version: Mapped[int | None] = mapped_column(nullable=True)
+    technical_scan_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    gates_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    dimensions_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    notes_json: Mapped[list] = mapped_column(JSON, nullable=False)
+    schedule_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+
+
 class TwResearchExportSnapshot(Base):
     """Immutable finalized export snapshot (#318/#319)."""
 

@@ -35,10 +35,14 @@ from app.schemas.tw_research import (
     RejectedStockResponse,
     RelativePriceBasisRequest,
     RelativePriceBasisResponse,
+    ReportEvidenceRequest,
+    ReportEvidenceResponse,
     ResearchContractResponse,
     ResearchMembershipPreviewRequest,
     ResearchMembershipResponse,
     ResearchMembershipSaveRequest,
+    ResearchRunResponse,
+    ResearchRunStartRequest,
     ResolvedUniverseResponse,
     ResumeBudgetWindowRequest,
     RunBatchRequest,
@@ -91,6 +95,15 @@ from app.services.tw_research.universe import UniverseSelector, resolve_universe
 from app.services.daily_price_history_service import daily_price_history_service
 from app.services.quote_service import quote_service
 from app.services.tw_research.constants import PREFERRED_DAILY_HISTORY_LIMIT
+from app.services.tw_research.report_evidence import (
+    build_report_evidence,
+    load_zh_tw_example_fixture,
+)
+from app.services.tw_research.research_run import (
+    ResearchRunGateError,
+    ResearchRunStoreUnavailable,
+    research_run_store,
+)
 
 TAIPEI = ZoneInfo("Asia/Taipei")
 T = TypeVar("T")
@@ -524,9 +537,19 @@ def post_candidate_set(
             origin=body.origin,
             expected_version=body.expectedVersion,
             selection_reasons=body.selectionReasons,
+            daily_override_ids=body.dailyOverrideIds,
             decision_date=body.decisionDate,
             notes=body.notes,
         )
+        try:
+            research_run_store.attach_candidate_set(
+                user_id,
+                candidate_set_id=str(saved["candidateSetId"]),
+                candidate_set_version=int(saved["version"]),
+            )
+        except (KeyError, ResearchRunStoreUnavailable):
+            # Orchestration is correlative; candidate set remains durable SoT.
+            pass
     except ResearchMembershipUnavailable as exc:
         raise HTTPException(
             status_code=503,
@@ -589,7 +612,18 @@ def post_candidate_technical_scan(
             trading_day=body.tradingDay,
             max_upstream_month_fetches=body.maxUpstreamMonthFetches,
             max_enrichments_per_run=body.maxEnrichmentsPerRun,
+            daily_override_ids=body.dailyOverrideIds,
         )
+        scan_state = result.get("scan")
+        scan_id = getattr(scan_state, "scan_id", None) or (
+            scan_state.get("scanId") if isinstance(scan_state, dict) else None
+        )
+        if scan_id:
+            try:
+                research_run_store.start_phase2(user_id, technical_scan_id=str(scan_id))
+            except (KeyError, ResearchRunGateError, ResearchRunStoreUnavailable):
+                # Orchestration is correlative; technical scan still succeeds.
+                pass
     except ResearchMembershipUnavailable as exc:
         raise HTTPException(
             status_code=503,
@@ -652,6 +686,157 @@ def post_relative_price_basis(
         official_pe=body.officialPe,
     )
     return RelativePriceBasisResponse(evidence=evidence.as_dict())
+
+
+def _research_run_unavailable(exc: ResearchRunStoreUnavailable) -> HTTPException:
+    return HTTPException(
+        status_code=503,
+        detail={
+            "error": "research_run_store_unavailable",
+            "retryable": True,
+            "message": str(exc),
+        },
+    )
+
+
+@router.get("/research-runs/current", response_model=ResearchRunResponse)
+def get_current_research_run(
+    user_id: str = Depends(get_effective_user_id),
+) -> ResearchRunResponse:
+    """Manual orchestration status with explicit analyst gates (#341)."""
+    try:
+        run = research_run_store.get(user_id)
+    except ResearchRunStoreUnavailable as exc:
+        raise _research_run_unavailable(exc) from exc
+    if run is None:
+        raise HTTPException(status_code=404, detail="research_run_not_found")
+    return ResearchRunResponse(researchRun=run.as_dict())
+
+
+@router.post("/research-runs/start", response_model=ResearchRunResponse)
+def start_research_run(
+    body: ResearchRunStartRequest,
+    user_id: str = Depends(get_effective_user_id),
+) -> ResearchRunResponse:
+    """Start Phase-1 by creating a durable first-pass job + research_run row.
+
+    Never enables CronJob/Notion. Phase-2 starts via candidate-set technical-scan.
+    """
+    if body.phase == "phase1_first_pass":
+        job_id: str | None = None
+        try:
+            job = first_pass_job_service.create_job(
+                user_id=user_id,
+                use_membership=True,
+            )
+            job_id = str(job.get("job_id") or job.get("jobId") or "")
+        except FirstPassJobError as exc:
+            # Fail closed when durable first-pass store is down; otherwise surface.
+            if "unavailable" in str(exc):
+                raise HTTPException(
+                    status_code=503,
+                    detail={"error": str(exc), "operation": exc.operation},
+                ) from exc
+            raise HTTPException(
+                status_code=400,
+                detail={"error": str(exc), "operation": exc.operation},
+            ) from exc
+        try:
+            run = research_run_store.start_phase1(
+                user_id,
+                trading_day=body.tradingDay,
+                first_pass_job_id=job_id or None,
+                notes=list(body.notes or [])
+                + [
+                    f"Durable first-pass job {job_id} created with research run.",
+                ],
+            )
+        except ResearchRunStoreUnavailable as exc:
+            raise _research_run_unavailable(exc) from exc
+        return ResearchRunResponse(researchRun=run.as_dict())
+    if body.phase == "phase2_technical":
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "phase2_requires_candidate_technical_scan_endpoint",
+                "hint": "POST /candidate-sets/technical-scan after candidate approval",
+            },
+        )
+    raise HTTPException(status_code=400, detail="unsupported_phase")
+
+
+@router.post("/research-runs/gate", response_model=ResearchRunResponse)
+def advance_research_run_gate(
+    user_id: str = Depends(get_effective_user_id),
+    firstPassJobId: str | None = Query(default=None),
+    firstPassSnapshotId: str | None = Query(default=None),
+    jobStatus: str | None = Query(default=None),
+    scanStatus: str | None = Query(default=None),
+) -> ResearchRunResponse:
+    """Mark a phase gated / waiting / exhausted from durable job/scan status."""
+    try:
+        if scanStatus is not None:
+            run = research_run_store.mark_phase2_gated(user_id, scan_status=scanStatus)
+        else:
+            run = research_run_store.mark_phase1_gated(
+                user_id,
+                first_pass_job_id=firstPassJobId,
+                first_pass_snapshot_id=firstPassSnapshotId,
+                job_status=jobStatus,
+            )
+    except ResearchRunStoreUnavailable as exc:
+        raise _research_run_unavailable(exc) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return ResearchRunResponse(researchRun=run.as_dict())
+
+
+@router.post("/report-evidence", response_model=ReportEvidenceResponse)
+def post_report_evidence(
+    body: ReportEvidenceRequest,
+    user_id: str = Depends(get_effective_user_id),
+) -> ReportEvidenceResponse:
+    """Compose analyst-ready evidence for external ChatGPT (#340). No Notion write."""
+    first_pass = None
+    if body.firstPassSnapshotId:
+        first_pass = tw_research_repository.get_first_pass_snapshot(
+            body.firstPassSnapshotId, user_id=user_id
+        )
+        if first_pass is None:
+            raise HTTPException(status_code=404, detail="first_pass_snapshot_not_found")
+    candidate = None
+    try:
+        candidate = latest_candidate_set(user_id=user_id)
+    except ResearchMembershipUnavailable:
+        candidate = None
+    technical = None
+    ledger_rows: list[dict[str, Any]] = []
+    if body.scanId:
+        state = _call_or_http(lambda: tw_research_scan_service.get_scan(body.scanId or ""))
+        if state is None:
+            raise HTTPException(status_code=404, detail="scan_not_found")
+        if getattr(state, "user_id", None) not in {None, user_id}:
+            raise HTTPException(status_code=404, detail="scan_not_found")
+        technical = state.snapshot() if hasattr(state, "snapshot") else state
+        chunk = build_export_chunk(state, kind="ledger", chunk_index=0)
+        ledger_rows = list(chunk.get("rows") or [])
+    pack = build_report_evidence(
+        trading_day=body.tradingDay,
+        first_pass_snapshot=first_pass,
+        candidate_set=candidate,
+        technical_scan=technical if isinstance(technical, dict) else None,
+        ledger_rows=ledger_rows,
+    )
+    return ReportEvidenceResponse(evidence=pack.as_dict())
+
+
+@router.get("/report-evidence/example-zh-tw")
+def get_report_evidence_example_zh_tw(
+    user_id: str = Depends(get_effective_user_id),
+) -> dict[str, Any]:
+    """Traditional Chinese fixture example — not a live recommendation (#340)."""
+    del user_id
+    return load_zh_tw_example_fixture()
 
 
 @router.get("/universe/starter-preset")

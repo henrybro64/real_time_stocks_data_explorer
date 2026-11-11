@@ -61,6 +61,14 @@ from app.services.tw_research.constants import (
     SCAN_BATCH_SIZE,
     STAGE_ORDER_DAILY_FIRST,
     STAGE_ORDER_MONTHLY_FIRST,
+    TECHNICAL_STAGE_DAILY_FAIL,
+    TECHNICAL_STAGE_DAILY_NOT_RUN,
+    TECHNICAL_STAGE_DAILY_PASS,
+    TECHNICAL_STAGE_DAILY_UNKNOWN,
+    TECHNICAL_STAGE_DEFERRED,
+    TECHNICAL_STAGE_MONTHLY_FAIL,
+    TECHNICAL_STAGE_MONTHLY_PASS,
+    TECHNICAL_STAGE_MONTHLY_UNKNOWN,
 )
 from app.services.tw_research.evaluation import derive_stage_progress, evaluation_counts
 from app.services.tw_research.coverage import (
@@ -274,6 +282,9 @@ class SymbolScanRecord:
         "verified_ready",
         "rejected",
     ] = "processed"
+    # Fine-grained monthly/daily lifecycle for monthly-first (#338). Persisted
+    # inside payload_json; coarse ``stage`` remains A/B/rejected for legacy rows.
+    technical_stage: str | None = None
     stock_name: str | None = None
     name_status: Literal["ok", "unavailable"] = "unavailable"
     daily: dict[str, Any] | None = None
@@ -372,7 +383,11 @@ class ScanState:
             "firstStagePassIds": stage["firstStagePassIds"],
             "dualPassCount": stage["dualPassCount"],
             "dailyDeferredCount": stage["dailyDeferredCount"],
+            "dailyNotRunByDesignCount": stage.get("dailyNotRunByDesignCount", 0),
+            "dailyNotRunByDesignIds": list(stage.get("dailyNotRunByDesignIds") or []),
             "monthlyIncompleteCount": stage["monthlyIncompleteCount"],
+            "monthlyFailWatchlistCount": stage.get("monthlyFailWatchlistCount", 0),
+            "monthlyFailWatchlistIds": list(stage.get("monthlyFailWatchlistIds") or []),
             "qualifiedCount": len(self.qualified_ids),
             "qualifiedIds": list(self.qualified_ids),
             "verifiedReadyCount": sum(
@@ -1489,13 +1504,24 @@ class TwResearchScanService:
         daily_coverage_payload: dict[str, Any],
         budget_blocked: bool,
     ) -> tuple[SymbolScanRecord, bool]:
-        """Candidate #336 Stage A monthly → Stage B daily (continuation policy)."""
+        """Candidate #338 Stage A monthly → Stage B daily (continuation policy)."""
+        from app.services.tw_research.constants import DAILY_NOT_RUN_BY_DESIGN
+
         del daily_coverage
+        override_ids = set()
+        provenance = state.candidate_provenance or {}
+        raw_overrides = provenance.get("dailyOverrideIds") or provenance.get(
+            "daily_override_ids"
+        )
+        if isinstance(raw_overrides, (list, tuple, set)):
+            override_ids = {str(item).strip().upper() for item in raw_overrides if item}
+
         if budget_blocked and not candles:
             record = SymbolScanRecord(
                 stock_id=stock_id,
                 stage="rejected",
                 readiness="rejected",
+                technical_stage=TECHNICAL_STAGE_DEFERRED,
                 stock_name=display_name,
                 name_status=name_status,
                 rejection_reason=HISTORY_BUDGET_EXHAUSTED_REASON,
@@ -1515,10 +1541,18 @@ class TwResearchScanService:
             allow_holiday_fetch=False,
         )
         monthly_coverage_ok = monthly_coverage.ok
+        monthly_quality = monthly.quality
+        if monthly.pass_status == "pass":
+            monthly_stage = TECHNICAL_STAGE_MONTHLY_PASS
+        elif monthly.pass_status == "fail":
+            monthly_stage = TECHNICAL_STAGE_MONTHLY_FAIL
+        else:
+            monthly_stage = TECHNICAL_STAGE_MONTHLY_UNKNOWN
         record = SymbolScanRecord(
             stock_id=stock_id,
             stage="A",
             readiness="processed",
+            technical_stage=monthly_stage,
             stock_name=display_name,
             name_status=name_status,
             monthly=_snapshot_dict(monthly),
@@ -1540,46 +1574,62 @@ class TwResearchScanService:
             },
         )
 
-        monthly_quality = monthly.quality
-        if monthly_quality != "ok":
-            # Incomplete/unavailable monthly ≠ screening fail; daily stays deferred.
+        monthly_eligible = monthly_quality == "ok" and monthly.pass_status == "pass"
+        analyst_override = stock_id.upper() in override_ids
+
+        if not monthly_eligible and not analyst_override:
+            skip_reason = (
+                "monthly_indicators_incomplete"
+                if monthly_quality != "ok"
+                else "monthly_screen_failed"
+            )
+            record.daily = _not_run_daily_payload(
+                reason=skip_reason,
+                monthly_quality=monthly_quality,
+                override_available=True,
+            )
+            record.technical_stage = TECHNICAL_STAGE_DAILY_NOT_RUN
             record.coverage = {
                 **(record.coverage or {}),
                 "daily": {
                     **daily_coverage_payload,
                     "deferred": True,
-                    "reason": "monthly_indicators_incomplete",
+                    "executionStatus": DAILY_NOT_RUN_BY_DESIGN,
+                    "reason": skip_reason,
                     "continuationPolicy": MONTHLY_FIRST_DAILY_CONTINUATION_POLICY,
                     "monthlyQuality": monthly_quality,
                 },
             }
             return record, monthly_coverage_ok
 
-        if monthly.pass_status != "pass":
-            # Failed monthly screen: keep monthly evidence; skip daily by policy.
-            record.coverage = {
-                **(record.coverage or {}),
-                "daily": {
-                    **daily_coverage_payload,
-                    "deferred": True,
-                    "reason": "monthly_screen_failed",
-                    "continuationPolicy": MONTHLY_FIRST_DAILY_CONTINUATION_POLICY,
-                },
-            }
-            return record, monthly_coverage_ok
-
-        # Monthly pass → Stage B daily on the same loaded history (no re-fetch).
+        # Monthly pass (or analyst daily override) → Stage B daily on same history.
         daily = daily_macd_kd_snapshot(candles, market="TW", now=now)
         record.stage = "B"
-        record.daily = _snapshot_dict(daily)
+        if daily.pass_status == "pass":
+            record.technical_stage = TECHNICAL_STAGE_DAILY_PASS
+        elif daily.pass_status == "fail":
+            record.technical_stage = TECHNICAL_STAGE_DAILY_FAIL
+        else:
+            record.technical_stage = TECHNICAL_STAGE_DAILY_UNKNOWN
+        daily_payload = _snapshot_dict(daily)
+        if analyst_override and not monthly_eligible:
+            daily_payload = {
+                **daily_payload,
+                "analystDailyOverride": True,
+                "monthlyGate": monthly.pass_status,
+                "monthlyQuality": monthly_quality,
+            }
+        record.daily = daily_payload
         self._attach_stage_b_levels(record, completed)
         record.coverage = {
             **(record.coverage or {}),
             "daily": {
                 **daily_coverage_payload,
                 "deferred": False,
+                "executionStatus": daily.pass_status,
                 "reason": None,
                 "continuationPolicy": MONTHLY_FIRST_DAILY_CONTINUATION_POLICY,
+                "analystDailyOverride": analyst_override and not monthly_eligible,
             },
         }
         with self._lock:
@@ -2409,11 +2459,51 @@ def _snapshot_dict(snapshot: MacdKdSnapshot) -> dict[str, Any]:
         "k": snapshot.k,
         "d": snapshot.d,
         "passStatus": snapshot.pass_status,
+        "executionStatus": snapshot.pass_status,
         "quality": snapshot.quality,
         "priceBasis": snapshot.price_basis,
         "calculationVersion": snapshot.calculation_version,
         "barCount": snapshot.bar_count,
         "timeframe": snapshot.timeframe,
+    }
+
+
+def _not_run_daily_payload(
+    *,
+    reason: str,
+    monthly_quality: str | None = None,
+    override_available: bool = False,
+) -> dict[str, Any]:
+    """Daily MACD/KD intentionally skipped (#338). Not a technical fail."""
+    from app.services.tw_research.constants import (
+        CALCULATION_VERSION_MONTHLY_FIRST,
+        DAILY_NOT_RUN_BY_DESIGN,
+        MONTHLY_FIRST_DAILY_CONTINUATION_POLICY,
+        PRICE_BASIS,
+    )
+
+    return {
+        "asOf": None,
+        "dif": None,
+        "signal": None,
+        "osc": None,
+        "k": None,
+        "d": None,
+        "passStatus": None,
+        "executionStatus": DAILY_NOT_RUN_BY_DESIGN,
+        "quality": "unavailable",
+        "priceBasis": PRICE_BASIS,
+        "calculationVersion": CALCULATION_VERSION_MONTHLY_FIRST,
+        "barCount": 0,
+        "timeframe": "daily",
+        "reason": reason,
+        "continuationPolicy": MONTHLY_FIRST_DAILY_CONTINUATION_POLICY,
+        "monthlyQuality": monthly_quality,
+        "analystDailyOverrideAvailable": override_available,
+        "note": (
+            "Daily MACD/KD was not run by design after the monthly gate; "
+            "this is not a technical fail."
+        ),
     }
 
 

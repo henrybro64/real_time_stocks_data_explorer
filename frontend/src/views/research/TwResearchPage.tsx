@@ -9,6 +9,11 @@ import {
   Select,
   SelectItem,
   Stack,
+  Tab,
+  TabList,
+  TabPanel,
+  TabPanels,
+  Tabs,
   Table,
   TableBody,
   TableCell,
@@ -22,12 +27,13 @@ import {
 } from "@carbon/react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 
 import { useLanguage, type TranslationKey } from "../../app/i18n";
 import { RequestStateNotice, errorToNoticeKind } from "../../components/state/RequestStateNotice";
 import { toApiError } from "../../services/api/client";
 import {
+  advanceTwResearchRunGate,
   createTwResearchFirstPassJob,
   createTwResearchScan,
   createTwResearchTechnicalScanFromCandidateSet,
@@ -43,11 +49,14 @@ import {
   fetchTwResearchLatestCandidateSet,
   fetchTwResearchLatestManifest,
   fetchTwResearchMembership,
+  fetchTwResearchReportEvidenceExampleZhTw,
+  fetchTwResearchRunCurrent,
   fetchTwResearchScan,
   fetchTwResearchScanProgress,
   fetchTwResearchScans,
   fetchTwResearchSnapshotChunk,
   listTwResearchFirstPassJobs,
+  postTwResearchReportEvidence,
   previewTwResearchMembership,
   researchProgressRevision,
   researchScanListRefetchInterval,
@@ -58,11 +67,29 @@ import {
   runTwResearchEnrichmentBatch,
   runTwResearchFirstPassBatch,
   saveTwResearchMembership,
+  startTwResearchRun,
   submitTwResearchCandidateSet,
   twResearchCsvUrl,
+  type TwResearchRun,
   type TwResearchScanSnapshot,
   type TwResearchUniverseMode,
 } from "../../services/api/twResearch";
+
+function researchPhaseLabelKey(phase: string | undefined | null): TranslationKey {
+  switch (phase) {
+    case "phase1_first_pass":
+      return "research.tw.phase1";
+    case "awaiting_analyst_candidate_selection":
+      return "research.tw.phaseAwaitingCandidates";
+    case "phase2_technical":
+      return "research.tw.phase2Technical";
+    case "awaiting_analyst_report_decision":
+    case "complete_evidence_ready":
+      return "research.tw.phaseAwaitingReport";
+    default:
+      return "research.tw.phaseIdle";
+  }
+}
 
 const PAGE_SIZE = 25;
 
@@ -337,6 +364,29 @@ export function TwResearchPage({
     staleTime: 15_000,
     retry: false,
   });
+
+  const researchRunQuery = useQuery({
+    queryKey: ["tw-research-run-current"],
+    queryFn: async (): Promise<TwResearchRun | null> => {
+      try {
+        return await fetchTwResearchRunCurrent();
+      } catch (error) {
+        const status = toApiError(error).status;
+        if (status === 404) return null;
+        throw error;
+      }
+    },
+    staleTime: 5_000,
+    refetchInterval: (query) => {
+      const phase = query.state.data?.phase;
+      if (phase === "phase1_first_pass" || phase === "phase2_technical") return 5_000;
+      return false;
+    },
+    retry: false,
+  });
+
+  const [reportEvidenceText, setReportEvidenceText] = useState("");
+  const [expandedLedgerIds, setExpandedLedgerIds] = useState<Record<string, boolean>>({});
 
   const [firstPassJobsStale, setFirstPassJobsStale] = useState(false);
 
@@ -713,13 +763,66 @@ export function TwResearchPage({
     },
     onSuccess: (job) => {
       setFirstPassProgressText(JSON.stringify(job, null, 2));
-      if (typeof job.activeSnapshotId === "string" && job.activeSnapshotId) {
-        setFirstPassSnapshotId(job.activeSnapshotId);
+      const snapshotId =
+        typeof job.activeSnapshotId === "string" && job.activeSnapshotId
+          ? job.activeSnapshotId
+          : null;
+      if (snapshotId) {
+        setFirstPassSnapshotId(snapshotId);
+      }
+      const status = String(job.status ?? "");
+      if (
+        firstPassJobId &&
+        (status === "completed" || status === "partial" || status === "deferred")
+      ) {
+        void advanceTwResearchRunGate({
+          firstPassJobId,
+          firstPassSnapshotId: snapshotId ?? undefined,
+          jobStatus: status,
+        }).finally(() => {
+          void queryClient.invalidateQueries({ queryKey: ["tw-research-run-current"] });
+        });
       }
       void queryClient.invalidateQueries({
         queryKey: ["tw-research-first-pass-progress", firstPassJobId],
       });
       void queryClient.invalidateQueries({ queryKey: ["tw-research-first-pass-jobs"] });
+    },
+  });
+
+  const startFullResearchMutation = useMutation({
+    mutationFn: async () =>
+      startTwResearchRun({
+        phase: "phase1_first_pass",
+        tradingDay: taipeiTradingDay(),
+      }),
+    onSuccess: (run) => {
+      if (run.firstPassJobId) {
+        setFirstPassJobId(run.firstPassJobId);
+        setFirstPassSnapshotId(null);
+        setFirstPassDigest(null);
+      }
+      void queryClient.invalidateQueries({ queryKey: ["tw-research-run-current"] });
+      void queryClient.invalidateQueries({ queryKey: ["tw-research-first-pass-jobs"] });
+    },
+  });
+
+  const exportReportEvidenceMutation = useMutation({
+    mutationFn: async () =>
+      postTwResearchReportEvidence({
+        tradingDay: taipeiTradingDay(),
+        firstPassSnapshotId: firstPassSnapshotId ?? undefined,
+        scanId: scanId ?? undefined,
+      }),
+    onSuccess: (evidence) => {
+      setReportEvidenceText(JSON.stringify(evidence, null, 2));
+    },
+  });
+
+  const loadEvidenceExampleMutation = useMutation({
+    mutationFn: async () => fetchTwResearchReportEvidenceExampleZhTw(),
+    onSuccess: (example) => {
+      setReportEvidenceText(JSON.stringify(example, null, 2));
     },
   });
 
@@ -842,6 +945,7 @@ export function TwResearchPage({
         setStockIdsText(created.stockIds.map(String).join("\n"));
       }
       void queryClient.invalidateQueries({ queryKey: ["tw-research-scans"] });
+      void queryClient.invalidateQueries({ queryKey: ["tw-research-run-current"] });
     },
   });
 
@@ -1019,6 +1123,69 @@ export function TwResearchPage({
             );
           })}
 
+          <Tile data-testid="tw-research-phase-banner">
+            <Stack gap={3}>
+              <h2 className="cds--productive-heading-03">{t("research.tw.phaseBannerTitle")}</h2>
+              <p className="cds--body-compact-01" data-testid="tw-research-phase-label">
+                {t(researchPhaseLabelKey(researchRunQuery.data?.phase))}
+              </p>
+              {researchRunQuery.data ? (
+                <p className="cds--helper-text-01" data-testid="tw-research-phase-meta">
+                  {t("research.tw.phaseMeta", {
+                    status: String(researchRunQuery.data.status ?? "—"),
+                    runId: String(researchRunQuery.data.researchRunId ?? "—"),
+                  })}
+                </p>
+              ) : null}
+              <Stack gap={2} orientation="horizontal">
+                <Button
+                  kind="primary"
+                  size="sm"
+                  disabled={startFullResearchMutation.isPending}
+                  onClick={() => startFullResearchMutation.mutate()}
+                >
+                  {t("research.tw.startFullResearch")}
+                </Button>
+                <Button
+                  kind="tertiary"
+                  size="sm"
+                  disabled={exportReportEvidenceMutation.isPending}
+                  onClick={() => exportReportEvidenceMutation.mutate()}
+                >
+                  {t("research.tw.exportReportEvidence")}
+                </Button>
+                <Button
+                  kind="ghost"
+                  size="sm"
+                  disabled={loadEvidenceExampleMutation.isPending}
+                  onClick={() => loadEvidenceExampleMutation.mutate()}
+                >
+                  {t("research.tw.loadEvidenceExample")}
+                </Button>
+              </Stack>
+              <p className="cds--helper-text-01">{t("research.tw.evidencePackNote")}</p>
+              {reportEvidenceText ? (
+                <pre
+                  className="cds--body-compact-01"
+                  data-testid="tw-research-report-evidence"
+                  style={{ whiteSpace: "pre-wrap", maxHeight: 240, overflow: "auto" }}
+                >
+                  {reportEvidenceText}
+                </pre>
+              ) : null}
+            </Stack>
+          </Tile>
+
+          <div data-testid="tw-research-tabs">
+          <Tabs>
+            <TabList aria-label={t("research.tw.tabsAria")} contained>
+              <Tab data-testid="tw-research-tab-evidence">{t("research.tw.tabEvidence")}</Tab>
+              <Tab data-testid="tw-research-tab-watchlist">{t("research.tw.tabWatchlist")}</Tab>
+              <Tab data-testid="tw-research-tab-progress">{t("research.tw.tabProgress")}</Tab>
+            </TabList>
+            <TabPanels>
+              <TabPanel>
+                <Stack gap={6}>
           <Tile data-testid="tw-research-fundamentals">
             <Stack gap={4}>
               <div>
@@ -1140,10 +1307,31 @@ export function TwResearchPage({
                     </Button>
                   </Stack>
                   <ul data-testid="tw-research-sector-members">
-                    {selectedSectorMembers.map((stockId) => (
+                    {selectedSectorMembers.map((stockId) => {
+                      const ledgerRow = ledger.find(
+                        (item) =>
+                          String(item.stockId ?? item.stock_id ?? "") === stockId,
+                      );
+                      const name =
+                        String(
+                          ledgerRow?.stockName ??
+                            ledgerRow?.stock_name ??
+                            "",
+                        ) || "";
+                      const nameStatus = String(
+                        ledgerRow?.nameStatus ?? ledgerRow?.name_status ?? "",
+                      );
+                      return (
                       <li key={stockId}>
                         <Stack gap={2} orientation="horizontal">
-                          <span>{stockId}</span>
+                          <span>
+                            {formatTwStockLabel(
+                              stockId,
+                              name || null,
+                              nameStatus || (name ? "ok" : "unavailable"),
+                              t("research.tw.nameUnavailable"),
+                            )}
+                          </span>
                           <Button
                             kind="ghost"
                             size="sm"
@@ -1169,7 +1357,8 @@ export function TwResearchPage({
                           </Button>
                         </Stack>
                       </li>
-                    ))}
+                      );
+                    })}
                   </ul>
                   <TextArea
                     id="tw-research-membership-extra-ids"
@@ -1636,6 +1825,127 @@ export function TwResearchPage({
             </Stack>
           </Tile>
 
+                </Stack>
+              </TabPanel>
+              <TabPanel>
+
+          <Tile data-testid="tw-research-watchlist">
+            <Stack gap={3}>
+              <div>
+                <h2 className="cds--productive-heading-03">{t("research.tw.tabWatchlist")}</h2>
+                <p className="cds--helper-text-01">{t("research.tw.watchlistNote")}</p>
+              </div>
+              <p className="cds--body-compact-01" data-testid="tw-research-watchlist-counts">
+                {t("research.tw.watchlistCounts", {
+                  monthlyFail: Number(scan?.monthlyFailWatchlistCount ?? 0),
+                  notRun: Number(scan?.dailyNotRunByDesignCount ?? 0),
+                })}
+              </p>
+              <p className="cds--helper-text-01">{t("research.tw.expandHint")}</p>
+              <TableContainer title={t("research.tw.tabWatchlist")}>
+                <Table size="sm">
+                  <TableHead>
+                    <TableRow>
+                      <TableHeader>{t("research.tw.expandDetails")}</TableHeader>
+                      <TableHeader>{t("research.tw.colStock")}</TableHeader>
+                      <TableHeader>{t("research.tw.colMonthly")}</TableHeader>
+                      <TableHeader>{t("research.tw.colDaily")}</TableHeader>
+                      <TableHeader>{t("research.tw.colTechnicalStage")}</TableHeader>
+                      <TableHeader>{t("research.tw.colNote")}</TableHeader>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {(
+                      (scan?.monthlyFailWatchlistIds?.length
+                        ? scan.monthlyFailWatchlistIds
+                        : scan?.dailyNotRunByDesignIds) ?? []
+                    )
+                      .slice(0, 50)
+                      .map((id) => {
+                        const row = ledger.find(
+                          (item) =>
+                            String(item.stockId ?? item.stock_id ?? "") === id,
+                        );
+                        const monthly = row?.monthly as { passStatus?: string } | undefined;
+                        const daily = row?.daily as {
+                          executionStatus?: string;
+                          passStatus?: string;
+                        } | undefined;
+                        const expanded = Boolean(expandedLedgerIds[`wl:${id}`]);
+                        return (
+                          <Fragment key={id}>
+                          <TableRow>
+                            <TableCell>
+                              <Button
+                                kind="ghost"
+                                size="sm"
+                                data-testid={`tw-research-watchlist-expand-${id}`}
+                                onClick={() =>
+                                  setExpandedLedgerIds((current) => ({
+                                    ...current,
+                                    [`wl:${id}`]: !current[`wl:${id}`],
+                                  }))
+                                }
+                              >
+                                {expanded ? "−" : "+"}
+                              </Button>
+                            </TableCell>
+                            <TableCell>
+                              {formatTwStockLabel(
+                                id,
+                                (row?.stockName ?? row?.stock_name) as string | undefined,
+                                (row?.nameStatus ?? row?.name_status) as string | undefined,
+                                t("research.tw.nameUnavailable"),
+                              )}
+                            </TableCell>
+                            <TableCell>{String(monthly?.passStatus ?? "—")}</TableCell>
+                            <TableCell>
+                              {String(
+                                daily?.executionStatus ??
+                                  daily?.passStatus ??
+                                  "not_run_by_design",
+                              )}
+                            </TableCell>
+                            <TableCell>
+                              {String(
+                                row?.technical_stage ??
+                                  row?.technicalStage ??
+                                  "daily_not_run_by_design",
+                              )}
+                            </TableCell>
+                            <TableCell>{t("research.tw.watchlistRowNote")}</TableCell>
+                          </TableRow>
+                          {expanded ? (
+                            <TableRow>
+                              <TableCell colSpan={6}>
+                                <pre
+                                  className="cds--body-compact-01"
+                                  style={{ whiteSpace: "pre-wrap", margin: 0 }}
+                                >
+                                  {JSON.stringify(
+                                    {
+                                      coverage: row?.coverage ?? null,
+                                      monthly: row?.monthly ?? null,
+                                      daily: row?.daily ?? null,
+                                    },
+                                    null,
+                                    2,
+                                  )}
+                                </pre>
+                              </TableCell>
+                            </TableRow>
+                          ) : null}
+                          </Fragment>
+                        );
+                      })}
+                  </TableBody>
+                </Table>
+              </TableContainer>
+            </Stack>
+          </Tile>
+              </TabPanel>
+              <TabPanel>
+                <Stack gap={6}>
           {(scanQuery.isError || progressQuery.isError) && scan ? (
             <div data-testid="tw-research-stale">
               <RequestStateNotice
@@ -1784,12 +2094,15 @@ export function TwResearchPage({
                     : "research.tw.stageOrderDailyFirst",
                 )}
               </p>
+              <p className="cds--helper-text-01">{t("research.tw.expandHint")}</p>
               <Table size="sm">
                 <TableHead>
                   <TableRow>
+                    <TableHeader>{t("research.tw.expandDetails")}</TableHeader>
                     <TableHeader>{t("research.tw.colStock")}</TableHeader>
                     <TableHeader>{t("research.tw.colName")}</TableHeader>
                     <TableHeader>{t("research.tw.colStage")}</TableHeader>
+                    <TableHeader>{t("research.tw.colTechnicalStage")}</TableHeader>
                     {scan.stageOrder === "monthly_first" ? (
                       <>
                         <TableHeader>{t("research.tw.colMonthlyFirst")}</TableHeader>
@@ -1801,6 +2114,7 @@ export function TwResearchPage({
                         <TableHeader>{t("research.tw.colMonthlySecond")}</TableHeader>
                       </>
                     )}
+                    <TableHeader>{t("research.tw.colBasis")}</TableHeader>
                     <TableHeader>{t("research.tw.colThemes")}</TableHeader>
                     <TableHeader>{t("research.tw.colReason")}</TableHeader>
                   </TableRow>
@@ -1823,10 +2137,35 @@ export function TwResearchPage({
                         : displayText(daily.passStatus);
                     const secondPass =
                       scan.stageOrder === "monthly_first"
-                        ? displayText(daily.passStatus)
+                        ? displayText(
+                            daily.executionStatus ?? daily.passStatus,
+                          )
                         : displayText(monthly.passStatus);
+                    const expanded = Boolean(expandedLedgerIds[stockId]);
+                    const basis =
+                      displayText(row.relativePriceBasis) ||
+                      displayText(
+                        (row.fields as { relative_price_basis?: { value?: string } } | undefined)
+                          ?.relative_price_basis?.value,
+                      );
                     return (
-                      <TableRow key={stockId}>
+                      <Fragment key={stockId}>
+                      <TableRow>
+                        <TableCell>
+                          <Button
+                            kind="ghost"
+                            size="sm"
+                            data-testid={`tw-research-expand-${stockId}`}
+                            onClick={() =>
+                              setExpandedLedgerIds((current) => ({
+                                ...current,
+                                [stockId]: !current[stockId],
+                              }))
+                            }
+                          >
+                            {expanded ? "−" : "+"}
+                          </Button>
+                        </TableCell>
                         <TableCell>{stockId}</TableCell>
                         <TableCell>
                           {formatTwStockLabel(
@@ -1837,13 +2176,43 @@ export function TwResearchPage({
                           )}
                         </TableCell>
                         <TableCell>{displayText(row.stage)}</TableCell>
+                        <TableCell>
+                          {displayText(row.technical_stage) ||
+                            displayText(row.technicalStage) ||
+                            "—"}
+                        </TableCell>
                         <TableCell>{firstPass}</TableCell>
                         <TableCell>{secondPass}</TableCell>
+                        <TableCell>{basis || "—"}</TableCell>
                         <TableCell>
                           {themes.length ? themes.join(", ") : t("research.tw.unclassified")}
                         </TableCell>
                         <TableCell>{displayText(row.rejection_reason)}</TableCell>
                       </TableRow>
+                      {expanded ? (
+                        <TableRow>
+                          <TableCell colSpan={10}>
+                            <pre
+                              className="cds--body-compact-01"
+                              data-testid={`tw-research-detail-${stockId}`}
+                              style={{ whiteSpace: "pre-wrap", margin: 0 }}
+                            >
+                              {JSON.stringify(
+                                {
+                                  coverage: row.coverage ?? null,
+                                  enrichment: row.enrichment ?? null,
+                                  monthly,
+                                  daily,
+                                  readiness: row.readiness ?? null,
+                                },
+                                null,
+                                2,
+                              )}
+                            </pre>
+                          </TableCell>
+                        </TableRow>
+                      ) : null}
+                      </Fragment>
                     );
                   })}
                 </TableBody>
@@ -1966,6 +2335,11 @@ export function TwResearchPage({
               </Stack>
             </Tile>
           ) : null}
+                </Stack>
+              </TabPanel>
+            </TabPanels>
+          </Tabs>
+          </div>
         </Stack>
       </Column>
     </Grid>
