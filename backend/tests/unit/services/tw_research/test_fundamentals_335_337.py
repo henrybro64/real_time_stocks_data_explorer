@@ -2055,3 +2055,53 @@ def test_candidate_monthly_first_scan_resumes_after_interrupt(monkeypatch) -> No
     for record in second.records.values():
         assert record.monthly is not None
     repo.clear_session_factory_override()
+
+
+def test_first_pass_claim_keeps_partial_when_symbol_failures_exhausted(monkeypatch) -> None:
+    """Claim/reclaim must not upgrade partial → completed after exhausted failures."""
+    from tests.support import install_in_memory_sessionlocal, seed_test_users
+
+    session_local = install_in_memory_sessionlocal(monkeypatch)
+    seed_test_users(session_local, "user-partial-claim")
+    from app.repositories.tw_research_repository import tw_research_repository
+    from app.services.tw_research.first_pass_job import FirstPassJobService
+
+    tw_research_repository.clear_session_factory_override()
+    tw_research_repository.set_session_factory_override(session_local)
+    service = FirstPassJobService(repository=tw_research_repository)
+    job = service.create_job(
+        user_id="user-partial-claim",
+        stock_ids=["TW:2330", "TW:2454"],
+        use_membership=False,
+    )
+    job_id = job["job_id"]
+    tw_research_repository.upsert_first_pass_symbol(
+        job_id=job_id,
+        stock_id="TW:2330",
+        status="ok",
+        payload={"stockId": "TW:2330", "retryExhausted": False},
+        lease_generation=0,
+    )
+    tw_research_repository.upsert_first_pass_symbol(
+        job_id=job_id,
+        stock_id="TW:2454",
+        status="failed",
+        payload={
+            "stockId": "TW:2454",
+            "retryExhausted": True,
+            "failureClass": "permanent",
+        },
+        lease_generation=0,
+    )
+    completed = tw_research_repository.complete_first_pass_batch(
+        job_id, lease_generation=0, processed_count=2
+    )
+    assert completed is not None
+    assert completed["job"]["status"] == "partial"
+
+    reclaim = tw_research_repository.claim_first_pass_batch(job_id, batch_size=10)
+    assert reclaim is not None
+    assert reclaim["already_complete"] is True
+    assert reclaim["job"]["status"] == "partial"
+    assert reclaim["job"]["status"] != "completed"
+    tw_research_repository.clear_session_factory_override()

@@ -1799,7 +1799,8 @@ class TwResearchRepository(SessionBoundRepository):
                         "lease_held": False,
                         "lease_generation": int(row.lease_generation or 0),
                     }
-                row.status = "completed" if row.status != "failed" else row.status
+                # Match complete_first_pass_batch: exhausted symbol failures ⇒ partial.
+                row.status = _resolve_first_pass_terminal_status(session, job_id)
                 session.commit()
                 return {
                     "batch_ids": [],
@@ -1831,9 +1832,10 @@ class TwResearchRepository(SessionBoundRepository):
                     break
             if not batch_ids:
                 cooling = _first_pass_cooling_retry_count(session, job_id, stock_ids)
-                row.status = "deferred" if cooling else (
-                    "completed" if row.status != "failed" else row.status
-                )
+                if cooling:
+                    row.status = "deferred"
+                else:
+                    row.status = _resolve_first_pass_terminal_status(session, job_id)
                 row.reserve_cursor = cursor
                 row.reserve_expires_at = None
                 session.commit()
@@ -1960,16 +1962,10 @@ class TwResearchRepository(SessionBoundRepository):
             row.updated_at = now
             if cursor >= len(stock_ids):
                 cooling = _first_pass_cooling_retry_count(session, job_id, stock_ids)
-                failed = _count_first_pass_status(session, job_id, "failed")
-                deferred = _count_first_pass_status(session, job_id, "deferred")
                 if cooling:
                     row.status = "deferred"
-                elif failed:
-                    row.status = "partial"
-                elif deferred:
-                    row.status = "deferred"
                 else:
-                    row.status = "completed"
+                    row.status = _resolve_first_pass_terminal_status(session, job_id)
             else:
                 row.status = "running"
             session.commit()
@@ -2279,6 +2275,22 @@ def _count_first_pass_status(session: Session, job_id: str, status: str) -> int:
         )
     ).scalar_one()
     return int(total or 0)
+
+
+def _resolve_first_pass_terminal_status(session: Session, job_id: str) -> str:
+    """Terminal job status when no symbols remain actionable (#335/#336).
+
+    Exhausted symbol failures stay ``partial`` — never silently upgraded to
+    ``completed`` on claim/reclaim after ``complete_first_pass_batch``.
+    """
+    failed = _count_first_pass_status(session, job_id, "failed")
+    deferred = _count_first_pass_status(session, job_id, "deferred")
+    if failed:
+        return "partial"
+    if deferred:
+        return "deferred"
+    return "completed"
+
 
 
 def _first_pass_snapshot_to_dict(row: TwResearchFirstPassSnapshot) -> dict[str, Any]:
