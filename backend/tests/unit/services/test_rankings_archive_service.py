@@ -728,6 +728,15 @@ def test_archive_connectivity_failure_classification() -> None:
         {},
         Exception("('08S01', 'Communication link failure')"),
     )
+    # 08004 alone is typically auth/permission/config rejection, not AutoPause.
+    sqlstate_08004 = OperationalError(
+        "SELECT 1",
+        {},
+        Exception(
+            "('08004', 'Server rejected the connection; "
+            "Access to selected database has been denied.')"
+        ),
+    )
     # Bare "connection" in unrelated text must not classify as outage.
     vague = DBAPIError(
         "SELECT 1",
@@ -766,6 +775,7 @@ def test_archive_connectivity_failure_classification() -> None:
     assert _is_archive_connectivity_failure(unrelated_interface) is False
     assert _is_archive_connectivity_failure(sqlstate_hyt00) is True
     assert _is_archive_connectivity_failure(sqlstate_08s01) is True
+    assert _is_archive_connectivity_failure(sqlstate_08004) is False
     assert _is_archive_connectivity_failure(RuntimeError("azure down")) is False
     assert _is_archive_connectivity_failure(ConnectionError("reset")) is True
     assert _is_archive_connectivity_failure(vague) is False

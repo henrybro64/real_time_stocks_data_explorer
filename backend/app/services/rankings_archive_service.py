@@ -94,7 +94,9 @@ _CONNECTIVITY_SQLSTATES = frozenset(
     {
         "08001",  # client unable to establish connection
         "08003",  # connection does not exist
-        "08004",  # server rejected connection
+        # 08004 (server rejected establishment) is often auth/permission/config
+        # (DB access denied, SSL policy, pg_hba) — not evidence of a transient
+        # transport outage. Do not auto-invalidate the pool on 08004 alone (#326).
         "08007",  # connection failure during transaction
         "08s01",  # communication link failure
         "08s02",  # connection name in use (rare; treat as transport)

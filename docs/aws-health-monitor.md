@@ -132,6 +132,7 @@ Enablement semantics (#325):
 | --- | --- |
 | No Secret / `AWS_HEALTH_MONITOR_ENABLED` unset, no credentials | Exit 0, `delivery_status=skipped`, `reason=not_configured` |
 | `AWS_HEALTH_MONITOR_ENABLED=false` | Exit 0, `delivery_status=skipped`, `reason=disabled` |
+| `AWS_HEALTH_MONITOR_ENABLED` set to an unrecognized value | Exit 2, `delivery_status=error`, `error_type=invalid_enabled_flag` |
 | `AWS_HEALTH_MONITOR_ENABLED=true`, credentials missing | Exit 2, `delivery_status=error`, `error_type=missing_credentials` |
 | Enabled (flag true **or** credentials present), PutItem fails | Exit 1, `delivery_status=error` (sanitized; no AWS body) |
 | PutItem succeeds | Exit 0, `delivery_status=delivered`, plus `service_status` from `/health` |

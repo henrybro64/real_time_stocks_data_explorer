@@ -263,6 +263,32 @@ def test_main_fails_when_enabled_without_credentials(
     assert logged["error_type"] == "missing_credentials"
 
 
+def test_main_fails_on_invalid_enabled_flag(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys,
+) -> None:
+    """Typos must not silently disable monitoring (#325)."""
+    monkeypatch.setenv("AWS_HEALTH_MONITOR_ENABLED", "enable")
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIATEST")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "secret")
+    monkeypatch.setenv("AWS_REGION", "us-east-1")
+    monkeypatch.setenv("TABLE_NAME", "stock-ticker-health-heartbeats")
+    assert hb.main() == 2
+    logged = json.loads(capsys.readouterr().out.strip())
+    assert logged["delivery_status"] == "error"
+    assert logged["error_type"] == "invalid_enabled_flag"
+
+
+def test_parse_enabled_flag_rejects_unknown_values() -> None:
+    assert hb._parse_enabled_flag(None) is None
+    assert hb._parse_enabled_flag("true") is True
+    assert hb._parse_enabled_flag("FALSE") is False
+    with pytest.raises(ValueError, match="invalid AWS_HEALTH_MONITOR_ENABLED"):
+        hb._parse_enabled_flag("enable")
+    with pytest.raises(ValueError, match="invalid AWS_HEALTH_MONITOR_ENABLED"):
+        hb._parse_enabled_flag("2")
+
+
 def test_put_dynamodb_item_posts_signed_payload(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -238,7 +238,11 @@ def put_dynamodb_item(
 
 
 def _parse_enabled_flag(raw: str | None) -> bool | None:
-    """Return True/False for explicit values; None when the env var is unset."""
+    """Return True/False for explicit values; None when the env var is unset.
+
+    Unknown values raise ``ValueError`` so operators get a Job failure instead of
+    a silent disable (#325).
+    """
     if raw is None:
         return None
     text = raw.strip().lower()
@@ -246,7 +250,7 @@ def _parse_enabled_flag(raw: str | None) -> bool | None:
         return True
     if text in {"0", "false", "no", "off", ""}:
         return False
-    return False
+    raise ValueError("invalid AWS_HEALTH_MONITOR_ENABLED value")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -255,7 +259,21 @@ def main(argv: list[str] | None = None) -> int:
     secret_access_key = os.environ.get("AWS_SECRET_ACCESS_KEY", "").strip()
     region = os.environ.get("AWS_REGION", "").strip()
     table_name = os.environ.get("TABLE_NAME", "").strip()
-    enabled = _parse_enabled_flag(os.environ.get("AWS_HEALTH_MONITOR_ENABLED"))
+    try:
+        enabled = _parse_enabled_flag(os.environ.get("AWS_HEALTH_MONITOR_ENABLED"))
+    except ValueError:
+        print(
+            json.dumps(
+                {
+                    "event": "aws_health_monitor.heartbeat",
+                    "delivery_status": "error",
+                    "error_type": "invalid_enabled_flag",
+                },
+                separators=(",", ":"),
+            ),
+            flush=True,
+        )
+        return 2
     has_credentials = bool(
         access_key_id and secret_access_key and region and table_name
     )
