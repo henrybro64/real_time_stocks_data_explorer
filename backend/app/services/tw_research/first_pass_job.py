@@ -365,7 +365,13 @@ class FirstPassJobService:
             previous_payloads[stock_id] = payload
             fields = payload.get("fields")
             if isinstance(fields, dict):
-                previous_fields_by_stock[stock_id] = fields
+                prior = dict(fields)
+                # Carry the full relative-price evidence alongside provenance fields
+                # so retries do not collapse to an abbreviated summary.
+                relative_basis = payload.get("relativePriceBasis")
+                if isinstance(relative_basis, dict):
+                    prior["relativePriceBasis"] = relative_basis
+                previous_fields_by_stock[stock_id] = prior
         try:
             result = collect_first_pass_batch(
                 batch_ids,

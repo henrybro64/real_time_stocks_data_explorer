@@ -106,10 +106,10 @@ def _normalize_sector_map(
         return {}
     out: dict[str, tuple[str, ...]] = {}
     for key, values in raw.items():
-        theme = str(key).strip()
-        if not theme:
+        themes = _dedupe_theme_keys([key])
+        if not themes:
             continue
-        out[theme] = _dedupe_preserve(values)
+        out[themes[0]] = _dedupe_preserve(values)
     return out
 
 
@@ -145,7 +145,12 @@ def _resolve_sector_membership(
         if theme not in stored.disabled_theme_keys and theme in known_themes
     )
     if not enabled and not stored.extra_stock_ids and not stored.sector_additions:
-        enabled = starter_preset_theme_keys()
+        # Starter fallback still honors disabled theme keys (casing-normalized).
+        enabled = tuple(
+            theme
+            for theme in starter_preset_theme_keys()
+            if theme not in stored.disabled_theme_keys
+        )
         notes.append("No sectors selected; using starter preset themes as template.")
 
     # Base membership from immutable preset assignments.
@@ -244,10 +249,10 @@ class ResearchMembershipStore:
         current = self._load(user_id)
         draft = _StoredMembership(
             version=current.version,
-            theme_keys=_dedupe_preserve(theme_keys)
+            theme_keys=_dedupe_theme_keys(theme_keys)
             if theme_keys is not None
             else current.theme_keys,
-            disabled_theme_keys=_dedupe_preserve(disabled_theme_keys)
+            disabled_theme_keys=_dedupe_theme_keys(disabled_theme_keys)
             if disabled_theme_keys is not None
             else current.disabled_theme_keys,
             sector_additions=_normalize_sector_map(sector_additions)
@@ -302,10 +307,10 @@ class ResearchMembershipStore:
         else:
             next_state = _StoredMembership(
                 version=expected_version + 1,
-                theme_keys=_dedupe_preserve(theme_keys)
+                theme_keys=_dedupe_theme_keys(theme_keys)
                 if theme_keys is not None
                 else current.theme_keys,
-                disabled_theme_keys=_dedupe_preserve(disabled_theme_keys)
+                disabled_theme_keys=_dedupe_theme_keys(disabled_theme_keys)
                 if disabled_theme_keys is not None
                 else current.disabled_theme_keys,
                 sector_additions=_normalize_sector_map(sector_additions)
@@ -473,6 +478,30 @@ class ResearchMembershipConflict(Exception):
         self.reason = reason
         self.current_version = current_version
         self.expected_version = expected_version
+
+
+def _dedupe_theme_keys(values: list[str] | tuple[str, ...] | None) -> tuple[str, ...]:
+    """Case-insensitive theme-key dedupe that preserves preset/custom casing."""
+    if not values:
+        return ()
+    known: dict[str, str] = {
+        theme.key.casefold(): theme.key for theme in TW_RESEARCH_THEME_DEFINITIONS
+    }
+    for key in starter_preset_theme_keys():
+        known.setdefault(key.casefold(), key)
+    seen: set[str] = set()
+    out: list[str] = []
+    for raw in values:
+        text = str(raw).strip()
+        if not text:
+            continue
+        canonical = known.get(text.casefold(), text)
+        fold = canonical.casefold()
+        if fold in seen:
+            continue
+        seen.add(fold)
+        out.append(canonical)
+    return tuple(out)
 
 
 def _dedupe_preserve(values: list[str] | tuple[str, ...] | None) -> tuple[str, ...]:

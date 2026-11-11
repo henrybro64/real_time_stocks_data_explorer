@@ -2105,3 +2105,142 @@ def test_first_pass_claim_keeps_partial_when_symbol_failures_exhausted(monkeypat
     assert reclaim["job"]["status"] == "partial"
     assert reclaim["job"]["status"] != "completed"
     tw_research_repository.clear_session_factory_override()
+
+
+def test_membership_theme_keys_preserve_preset_casing() -> None:
+    from app.services.tw_research.fundamentals_watchlist import ResearchMembershipStore
+
+    store = ResearchMembershipStore(persist=False, stock_resolver=lambda _sid: None)
+    preview = store.preview(
+        "user-theme-case",
+        theme_keys=["TW-PCB", "tw-pcb", "Tw-Thermal"],
+        disabled_theme_keys=["TW-CCL"],
+    )
+    assert preview.theme_keys == ("tw-pcb", "tw-thermal")
+    assert preview.disabled_theme_keys == ("tw-ccl",)
+    saved = store.save(
+        "user-theme-case",
+        expected_version=0,
+        theme_keys=["TW-PCB"],
+        disabled_theme_keys=["TW-PCB"],
+    )
+    assert saved.theme_keys == ("tw-pcb",)
+    assert saved.disabled_theme_keys == ("tw-pcb",)
+    # Disabled sector must match enabled keys so it stays excluded after fallback.
+    assert "tw-pcb" not in saved.sector_membership
+    assert "tw-thermal" in saved.sector_membership
+
+
+def test_relative_price_basis_retry_preserves_full_evidence() -> None:
+    from app.services.tw_research.first_pass import collect_first_pass_batch
+
+    stock = stock_record(
+        "TW:2330",
+        market="TW",
+        symbol="2330",
+        name="台積電",
+        name_zh_tw="台積電",
+        exchange="TWSE",
+        currency="TWD",
+        timezone="Asia/Taipei",
+    )
+    full_basis = {
+        "category": "low_relative_price_basis",
+        "version": "relative-price-basis-v2",
+        "price_basis": "completed_daily_close",
+        "as_of": "2024-06-28",
+        "latest_close": 100.0,
+        "week52_high": 200.0,
+        "week52_low": 80.0,
+        "week52_position": 0.17,
+        "drawdown_from_week52_high": 0.5,
+        "sma20": 110.0,
+        "sma60": 120.0,
+        "sma120": 130.0,
+        "sma240": 140.0,
+        "session_count": 250,
+        "history_coverage_status": "ok",
+        "stale_history_flag": False,
+        "corporate_action_status": "unknown_unadjusted",
+        "rationale": "fixture",
+        "potential_value_trap_flag": False,
+        "value_trap_status": "not_indicated",
+        "official_pe": 12.0,
+        "official_pe_missing": False,
+    }
+    prior_fields = {
+        "latest_completed_close": {
+            "field": "latest_completed_close",
+            "status": "ok",
+            "source": "daily_price_history_service",
+            "captured_at": "2024-06-28T16:00:00+00:00",
+            "freshness_class": "quote_or_eod_day",
+            "value": {"close": 100.0, "asOf": "2024-06-28"},
+        },
+        "relative_price_basis": {
+            "field": "relative_price_basis",
+            "status": "ok",
+            "source": "tw_research.price_basis",
+            "captured_at": "2024-06-28T16:00:00+00:00",
+            "freshness_class": "computed",
+            "value": {
+                "category": "low_relative_price_basis",
+                "week52Position": 0.17,
+            },
+        },
+        "relativePriceBasis": full_basis,
+        "official_pe": {
+            "field": "official_pe",
+            "status": "ok",
+            "source": "fixture",
+            "captured_at": "2024-06-28T16:00:00+00:00",
+            "freshness_class": "quote_or_eod_day",
+            "value": {"peRatio": 12.0},
+        },
+    }
+
+    def boom_candles(_stock):  # noqa: ANN001
+        raise AssertionError("candles must not be re-fetched when basis is reused")
+
+    result = collect_first_pass_batch(
+        ["TW:2330"],
+        stock_loader=lambda sid: stock if sid == "TW:2330" else None,
+        candles_loader=boom_candles,
+        institutional_loader=lambda *_a, **_k: _InstResult((), None, "fixture"),
+        margin_loader=lambda *_a, **_k: _MarginResult((), None, None, "fixture", "empty"),
+        ownership_loader=lambda *_a, **_k: _OwnResult((), None, "fixture"),
+        key_stats_loader=lambda *_a, **_k: {"peRatio": 12.0},
+        theme_keys_loader=lambda *_a, **_k: [],
+        previous_fields_by_stock={"TW:2330": prior_fields},
+    )
+    record = result.records[0]
+    assert record.relative_price_basis == full_basis
+    assert record.relative_price_basis.get("sma20") == 110.0
+    assert record.relative_price_basis.get("as_of") == "2024-06-28"
+
+
+def test_first_pass_default_key_stats_uses_valuation_only(monkeypatch) -> None:
+    from app.services.tw_research import first_pass as first_pass_mod
+
+    calls: dict[str, int] = {"valuation": 0, "full": 0}
+
+    def fake_valuation(stock_id: str):
+        calls["valuation"] += 1
+        return {"peRatio": 15.0, "peRatioType": "official_daily"}
+
+    def fake_full(stock_id: str):
+        calls["full"] += 1
+        raise AssertionError("get_key_statistics must not be used by first-pass default loader")
+
+    monkeypatch.setattr(
+        "app.services.key_stats_service.get_valuation_statistics",
+        fake_valuation,
+    )
+    monkeypatch.setattr(
+        "app.services.key_stats_service.get_key_statistics",
+        fake_full,
+    )
+    out = first_pass_mod._default_key_stats("TW:2330")
+    assert out == {"peRatio": 15.0, "peRatioType": "official_daily"}
+    assert calls["valuation"] == 1
+    assert calls["full"] == 0

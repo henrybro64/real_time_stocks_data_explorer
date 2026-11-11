@@ -385,21 +385,26 @@ export function TwResearchPage({
       // Only seed the draft once so refresh/conflict never clobber unsaved edits.
       setCandidateIdsText((current) => (current.trim() ? current : text));
     }
-    if (
-      typeof candidateSet.firstPassSnapshotId === "string" &&
-      candidateSet.firstPassSnapshotId &&
-      !firstPassSnapshotId
-    ) {
-      setFirstPassSnapshotId(candidateSet.firstPassSnapshotId);
+    // Only seed snapshot/digest from the saved candidate set when no first-pass
+    // job is active. Starting a new job clears these; do not re-apply the prior
+    // snapshot while the new job is incomplete.
+    if (!firstPassJobId) {
+      if (
+        typeof candidateSet.firstPassSnapshotId === "string" &&
+        candidateSet.firstPassSnapshotId &&
+        !firstPassSnapshotId
+      ) {
+        setFirstPassSnapshotId(candidateSet.firstPassSnapshotId);
+      }
+      if (
+        typeof candidateSet.firstPassDigest === "string" &&
+        candidateSet.firstPassDigest &&
+        !firstPassDigest
+      ) {
+        setFirstPassDigest(candidateSet.firstPassDigest);
+      }
     }
-    if (
-      typeof candidateSet.firstPassDigest === "string" &&
-      candidateSet.firstPassDigest &&
-      !firstPassDigest
-    ) {
-      setFirstPassDigest(candidateSet.firstPassDigest);
-    }
-  }, [candidateSetQuery.data, firstPassDigest, firstPassSnapshotId]);
+  }, [candidateSetQuery.data, firstPassDigest, firstPassJobId, firstPassSnapshotId]);
 
   const applyMembershipState = (membership: Record<string, unknown>) => {
     setMembershipText(JSON.stringify(membership, null, 2));
@@ -688,6 +693,15 @@ export function TwResearchPage({
     onSuccess: (job) => {
       setFirstPassJobId(String(job.jobId ?? ""));
       setFirstPassProgressText(JSON.stringify(job, null, 2));
+      // Clear prior job's snapshot/evidence so approvals cannot reuse stale data.
+      setFirstPassSnapshotId(
+        typeof job.activeSnapshotId === "string" && job.activeSnapshotId
+          ? job.activeSnapshotId
+          : null,
+      );
+      setFirstPassDigest(null);
+      setFirstPassEvidenceText("");
+      setEvidenceOffset(0);
       void queryClient.invalidateQueries({ queryKey: ["tw-research-first-pass-jobs"] });
     },
   });

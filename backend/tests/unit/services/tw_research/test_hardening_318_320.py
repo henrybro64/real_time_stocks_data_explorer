@@ -999,6 +999,71 @@ def test_source_completeness_requires_full_universe_evaluation() -> None:
     assert clean["counts"]["unresolvedEvaluations"] == 0
 
 
+def test_monthly_gate_failure_counts_as_definitive_without_daily() -> None:
+    from app.services.tw_research.constants import CALCULATION_VERSION_MONTHLY_FIRST
+    from app.services.tw_research.export import (
+        build_export_manifest,
+        has_definitive_screening_outcome,
+    )
+    from app.services.tw_research.scan import ScanState
+
+    stock_ids = ("TW:2330",)
+    state = ScanState(
+        scan_id="scan-monthly-fail",
+        trading_day="2024-06-28",
+        universe_version="explicit:1:abc",
+        calculation_version=CALCULATION_VERSION_MONTHLY_FIRST,
+        selector=UniverseSelector(mode="stock_ids", stock_ids=stock_ids),
+        stock_ids=stock_ids,
+        cursor=1,
+        status="completed_processing",  # type: ignore[arg-type]
+        quality_status="processed",
+    )
+    record = SymbolScanRecord(
+        stock_id="TW:2330",
+        stage="A",
+        readiness="processed",
+        monthly={"passStatus": "fail", "quality": "ok"},
+        daily=None,
+        coverage={"daily": {"deferred": True}},
+    )
+    state.records["TW:2330"] = record
+    assert has_definitive_screening_outcome(record) is True
+    manifest = build_export_manifest(state, generated_at="2024-06-28T17:00:00+00:00")
+    assert manifest["calculationVersion"] == CALCULATION_VERSION_MONTHLY_FIRST
+    assert manifest["sourceCompleteness"] == "complete"
+    assert manifest["counts"]["definitiveEvaluations"] == 1
+    assert manifest["counts"]["unresolvedEvaluations"] == 0
+
+
+def test_export_digest_uses_state_calculation_version() -> None:
+    from app.services.tw_research.constants import (
+        CALCULATION_VERSION,
+        CALCULATION_VERSION_MONTHLY_FIRST,
+    )
+    from app.services.tw_research.export import stable_export_content_digest
+
+    rows = [{"stockId": "TW:2330", "stage": "A", "readiness": "processed"}]
+    digests = {"0": "abc"}
+    legacy = stable_export_content_digest(
+        rows=rows,
+        chunk_digests=digests,
+        universe_version="explicit:1:deadbeef",
+        trading_day="2024-06-28",
+        quality_status="verified_ready",
+        calculation_version=CALCULATION_VERSION,
+    )
+    monthly = stable_export_content_digest(
+        rows=rows,
+        chunk_digests=digests,
+        universe_version="explicit:1:deadbeef",
+        trading_day="2024-06-28",
+        quality_status="verified_ready",
+        calculation_version=CALCULATION_VERSION_MONTHLY_FIRST,
+    )
+    assert legacy != monthly
+
+
 def test_source_completeness_matrix_for_pass_fail_unknown_and_errors() -> None:
     from app.services.tw_research.export import build_export_manifest
     from app.services.tw_research.scan import ScanState

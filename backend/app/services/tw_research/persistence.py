@@ -492,12 +492,14 @@ def finalize_verified_snapshot(
         )
         chunk_digests[str(index)] = chunk["checksumSha256"]
 
+    calculation_version = getattr(state, "calculation_version", None) or CALCULATION_VERSION
     digest = stable_export_content_digest(
         rows=rows,
         chunk_digests=chunk_digests,
         universe_version=state.universe_version,
         trading_day=state.trading_day,
         quality_status="verified_ready",
+        calculation_version=calculation_version,
     )
     snapshot_id = str(uuid4())
     manifest = build_immutable_manifest(
@@ -518,7 +520,7 @@ def finalize_verified_snapshot(
         "universe_version": state.universe_version,
         "trading_day": state.trading_day,
         "schema_version": RESEARCH_SCHEMA_VERSION,
-        "calculation_version": CALCULATION_VERSION,
+        "calculation_version": calculation_version,
         "enrichment_version": ENRICHMENT_VERSION,
         "quality_status": "verified_ready",
         "content_digest": digest,

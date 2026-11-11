@@ -10,6 +10,7 @@ vi.mock("next/navigation", () => ({
 import { LanguageProvider } from "../../app/i18n";
 import { ApiError } from "../../services/api/client";
 import {
+  createTwResearchFirstPassJob,
   createTwResearchScan,
   createTwResearchTechnicalScanFromCandidateSet,
   fetchThemeOptions,
@@ -44,6 +45,7 @@ vi.mock("../../services/api/twResearch", async () => {
     fetchTwResearchLatestManifest: vi.fn(),
     fetchTwResearchSnapshotChunk: vi.fn(),
     createTwResearchScan: vi.fn(),
+    createTwResearchFirstPassJob: vi.fn(),
     resolveTwResearchUniverse: vi.fn(),
     runTwResearchBatch: vi.fn(),
     runTwResearchEnrichmentBatch: vi.fn(),
@@ -71,6 +73,7 @@ vi.mock("../../services/api/twResearch", async () => {
     submitTwResearchCandidateSet: vi.fn(),
     createTwResearchTechnicalScanFromCandidateSet: vi.fn(),
     fetchTwResearchFirstPassSymbols: vi.fn(),
+    fetchTwResearchFirstPassManifest: vi.fn(),
   };
 });
 
@@ -1052,5 +1055,49 @@ describe("TwResearchPage reliability UX (#335–#337)", () => {
     expect(line).toHaveTextContent(/月線通過 2/);
     expect(line).toHaveTextContent(/日線通過 1/);
     expect(line).toHaveTextContent(/日線暫緩 1/);
+  });
+
+  it("clears prior snapshot identity when starting a new first-pass job", async () => {
+    const user = userEvent.setup();
+    vi.mocked(fetchTwResearchLatestCandidateSet).mockResolvedValue({
+      version: 1,
+      stockIds: ["TW:2330"],
+      firstPassSnapshotId: "snap_old",
+      firstPassDigest: "a".repeat(64),
+    });
+    vi.mocked(createTwResearchFirstPassJob).mockResolvedValue({
+      jobId: "fpj_new",
+      status: "running",
+      qualityStatus: "incomplete",
+    });
+    vi.mocked(listTwResearchFirstPassJobs).mockResolvedValue([
+      {
+        jobId: "fpj_old",
+        status: "completed",
+        qualityStatus: "verified_ready",
+        activeSnapshotId: "snap_old",
+      },
+    ]);
+
+    renderPage();
+    await waitFor(() => {
+      expect(fetchTwResearchLatestCandidateSet).toHaveBeenCalled();
+    });
+    // Candidate set hydrates the prior snapshot id into local state.
+    await waitFor(() => {
+      expect(
+        screen.getByRole("button", { name: /載入第一輪 manifest|Load first-pass manifest/i }),
+      ).toBeEnabled();
+    });
+
+    await user.click(screen.getByRole("button", { name: /開始第一輪收集|Start first-pass job/i }));
+    await waitFor(() => {
+      expect(createTwResearchFirstPassJob).toHaveBeenCalled();
+    });
+    await waitFor(() => {
+      expect(
+        screen.getByRole("button", { name: /載入第一輪 manifest|Load first-pass manifest/i }),
+      ).toBeDisabled();
+    });
   });
 });

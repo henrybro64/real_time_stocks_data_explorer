@@ -929,6 +929,17 @@ def get_valuation_snapshot(stock: StockRecord, quote_record: QuoteRecord) -> dic
     return _apply_valuation_enrichment(_null_valuation(), stock, quote_record)
 
 
+def get_valuation_statistics(stock_id: str) -> dict[str, object] | None:
+    """Valuation-only lookup by stock id — does not fetch historical candles."""
+    stock = quote_service.get_stock(stock_id)
+    if stock is None:
+        return None
+    quote = quote_service.get_quote(stock_id)
+    if quote is None:
+        return None
+    return get_valuation_snapshot(stock, quote)
+
+
 def get_valuation_snapshots(
     envelopes: list[tuple[StockRecord, QuoteRecord]],
 ) -> dict[str, dict[str, object]]:

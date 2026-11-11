@@ -678,12 +678,15 @@ def _collect_one(
     if reused_close is not None and reused_basis is not None:
         scratch.fields["latest_completed_close"] = reused_close
         scratch.fields["relative_price_basis"] = reused_basis
-        if isinstance(prior_basis_field, Mapping) and isinstance(
+        # Prefer the full top-level evidence object; fall back to provenance value
+        # (which stores basis.as_dict() for newly written fields).
+        prior_full = prior_fields.get("relativePriceBasis")
+        if isinstance(prior_full, dict):
+            record.relative_price_basis = dict(prior_full)
+        elif isinstance(prior_basis_field, Mapping) and isinstance(
             prior_basis_field.get("value"), dict
         ):
             record.relative_price_basis = dict(prior_basis_field["value"])
-        elif isinstance(prior_fields.get("relativePriceBasis"), dict):
-            record.relative_price_basis = dict(prior_fields["relativePriceBasis"])
     else:
         try:
             candles = list(candles_loader(stock) or [])
@@ -749,15 +752,8 @@ def _collect_one(
                 captured_at=captured_at,
                 freshness_class="computed",
                 reason=None if basis.category != "insufficient_data" else basis.rationale,
-                value={
-                    "category": basis.category,
-                    "week52Position": basis.week52_position,
-                    "drawdownFromWeek52High": basis.drawdown_from_week52_high,
-                    "potentialValueTrapFlag": basis.potential_value_trap_flag,
-                    "valueTrapStatus": basis.value_trap_status,
-                    "officialPeMissing": basis.official_pe_missing,
-                    "rationale": basis.rationale,
-                },
+                # Store the full evidence object so retries can reuse it verbatim.
+                value=basis.as_dict(),
             )
         except Exception as exc:  # noqa: BLE001 — isolate price-basis calculation
             if is_infrastructure_failure(exc):
@@ -889,9 +885,10 @@ def _default_ownership(stock_id: str) -> TaiwanOwnershipConcentrationResult:
 
 
 def _default_key_stats(stock_id: str) -> dict[str, object] | None:
-    from app.services.key_stats_service import get_key_statistics
+    # Valuation-only: never backfill 1Y candle history during first-pass collection.
+    from app.services.key_stats_service import get_valuation_statistics
 
-    return get_key_statistics(stock_id)
+    return get_valuation_statistics(stock_id)
 
 
 def _default_profitability(stock_id: str) -> dict[str, object] | None:
