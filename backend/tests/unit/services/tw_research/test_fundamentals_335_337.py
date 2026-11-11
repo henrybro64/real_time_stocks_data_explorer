@@ -1870,6 +1870,9 @@ def test_candidate_technical_scan_monthly_before_daily_on_fixture_history(monkey
     )
     assert set(state.records) == {"TW:2330", "TW:2454"}
     monthly_passed = 0
+    snap = state.snapshot()
+    assert snap["stageProgressSemanticsVersion"] == "stage-progress-v1"
+    assert snap["stageOrder"] == STAGE_ORDER_MONTHLY_FIRST
     for stock_id, record in state.records.items():
         assert record.monthly is not None, stock_id
         assert record.monthly.get("quality") == "ok", stock_id
@@ -1877,13 +1880,23 @@ def test_candidate_technical_scan_monthly_before_daily_on_fixture_history(monkey
             monthly_passed += 1
             assert record.stage == "B"
             assert record.daily is not None
-            assert stock_id in state.day_pass_ids
+            assert stock_id in snap["monthPassIds"]
+            assert stock_id in snap["firstStagePassIds"]
+            # dayPassIds means daily pass only — not the monthly gate.
+            if record.daily.get("passStatus") == "pass":
+                assert stock_id in snap["dayPassIds"]
+                assert stock_id in state.day_pass_ids
+            else:
+                assert stock_id not in snap["dayPassIds"]
         else:
             assert record.stage == "A"
             assert record.daily is None
             assert (record.coverage or {}).get("daily", {}).get("deferred") is True
-            assert stock_id not in state.day_pass_ids
+            assert stock_id not in snap["dayPassIds"]
+            assert stock_id not in snap["monthPassIds"]
     assert monthly_passed >= 1
+    assert snap["monthPassCount"] == monthly_passed
+    assert snap["firstStagePassCount"] == monthly_passed
     assert all(sid in state.stock_ids for sid in state.qualified_ids)
     repo.clear_session_factory_override()
 

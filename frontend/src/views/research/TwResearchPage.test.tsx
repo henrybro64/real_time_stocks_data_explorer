@@ -1016,4 +1016,41 @@ describe("TwResearchPage reliability UX (#335–#337)", () => {
       /cs_abc/,
     );
   });
+
+  it("labels monthly-first progress counters without calling them daily pass", async () => {
+    vi.mocked(fetchTwResearchScans).mockResolvedValue({ scans: [summary()] });
+    vi.mocked(fetchTwResearchScan).mockResolvedValue(
+      queuedScan({
+        scanId: SCAN_ID,
+        stageOrder: "monthly_first",
+        dayPassCount: 1,
+        monthPassCount: 2,
+        dailyDeferredCount: 1,
+        qualifiedCount: 1,
+        status: "running",
+        processedCount: 3,
+        universeSize: 3,
+        remainingCount: 0,
+      }),
+    );
+    vi.mocked(fetchTwResearchScanProgress).mockResolvedValue(
+      progress({
+        scanId: SCAN_ID,
+        stageOrder: "monthly_first",
+        dayPassCount: 1,
+        monthPassCount: 2,
+        dailyDeferredCount: 1,
+        qualifiedCount: 1,
+        status: "running",
+        processedCount: 3,
+        universeSize: 3,
+        remainingCount: 0,
+      }),
+    );
+    renderPage({ initialScanId: SCAN_ID });
+    const line = await screen.findByTestId("tw-research-status-line");
+    expect(line).toHaveTextContent(/月線通過 2/);
+    expect(line).toHaveTextContent(/日線通過 1/);
+    expect(line).toHaveTextContent(/日線暫緩 1/);
+  });
 });

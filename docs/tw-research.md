@@ -63,6 +63,7 @@ Confirm and reuse — do not reimplement:
 
 - Legacy / technical-first (`CALCULATION_VERSION`): Stage A daily MACD/KD; Stage B monthly + SMA20/60/120/240 + 52-week for **day-pass** symbols only.
 - Candidate-derived monthly-first (`CALCULATION_VERSION_MONTHLY_FIRST`, #336): Stage A monthly MACD/KD for every approved candidate; Stage B daily + levels only when monthly passes (`MONTHLY_FIRST_DAILY_CONTINUATION_POLICY=only_on_monthly_pass`). Monthly evidence is retained when daily is deferred or fails. Incomplete monthly history is `source_incomplete`, not a screening fail.
+- Progress counters (`stage-progress-v1`): `dayPass*` always means **daily** MACD/KD pass; monthly-first also exposes `monthPass*`, `firstStagePass*`, `dailyDeferred*`, and `monthlyIncomplete*` derived from committed symbol evidence.
 - Upstream month budget is enforced **before** history backfill via `get_daily_history_within_budget`; counters track actual month fetches, not Stage B local math.
 - Enrichment levels use **stored-only** `peek_daily_history` by default (no cold backfill). Stage B `week52_position` is reused when the store peek is empty.
 - Indicator `now` is anchored to the scan `tradingDay` (after TW cash close). Overlapping batch POSTs use a per-scan lock **and** durable leased reservations for both scan and enrichment (`cursor` / `enrich_cursor` watermarks + lease fields) under `SELECT … FOR UPDATE`. Stale `upsert_scan` writes never regress progress; stale workers cannot wipe newer enrichment payloads.

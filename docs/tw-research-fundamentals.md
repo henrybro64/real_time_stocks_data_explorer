@@ -122,7 +122,8 @@ cd backend && .venv313/bin/python -m pytest \
   tests/unit/services/tw_research/test_universe_and_scan.py \
   tests/unit/services/tw_research/test_enrichment_and_export.py -q
 
-# PostgreSQL provenance round-trip (CI uses stocks_test):
+# PostgreSQL provenance round-trip (disposable DB only):
+ALLOW_DESTRUCTIVE_DB_TESTS=1 \
 DATABASE_URL=postgresql+psycopg://henrybro@127.0.0.1:5432/stocks_test \
   .venv313/bin/python -m pytest \
   tests/integration/services/test_tw_research_candidate_provenance_336.py -q

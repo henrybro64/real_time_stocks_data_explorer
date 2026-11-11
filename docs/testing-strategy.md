@@ -61,6 +61,7 @@ Each layer can write Allure results (`allure-pytest`, `allure-vitest`, `allure-p
 ```bash
 # Backend (from repo root; install backend/requirements-dev.txt first)
 pytest backend/tests/unit
+ALLOW_DESTRUCTIVE_DB_TESTS=1 \
 DATABASE_URL=postgresql+psycopg://postgres:postgres@127.0.0.1:5432/stocks_test \
   pytest backend/tests/integration
 

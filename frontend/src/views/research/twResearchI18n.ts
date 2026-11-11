@@ -48,6 +48,16 @@ const TW_RESEARCH_ROWS = [
   ["research.tw.working", "Working…", "處理中…"],
   ["research.tw.scanId", "Scan ID", "掃描 ID"],
   [
+    "research.tw.statusLineDailyFirst",
+    "Status {status}. Processed {processed}/{universe} (remaining {remaining}). Daily pass {dayPass}, dual-pass {qualified}. Target {target} is not padded.",
+    "狀態 {status}。已處理 {processed}/{universe}（剩餘 {remaining}）。日線通過 {dayPass}，雙通過 {qualified}。目標 {target} 不會湊數。",
+  ],
+  [
+    "research.tw.statusLineMonthlyFirst",
+    "Status {status}. Processed {processed}/{universe} (remaining {remaining}). Monthly pass {monthPass}, daily pass {dayPass}, dual-pass {qualified}, daily deferred {deferred}. Target {target} is not padded.",
+    "狀態 {status}。已處理 {processed}/{universe}（剩餘 {remaining}）。月線通過 {monthPass}，日線通過 {dayPass}，雙通過 {qualified}，日線暫緩 {deferred}。目標 {target} 不會湊數。",
+  ],
+  [
     "research.tw.statusLine",
     "Status {status}. Processed {processed}/{universe} (remaining {remaining}). Day pass {dayPass}, dual-pass {qualified}. Target {target} is not padded.",
     "狀態 {status}。已處理 {processed}/{universe}（剩餘 {remaining}）。日線通過 {dayPass}，雙通過 {qualified}。目標 {target} 不會湊數。",

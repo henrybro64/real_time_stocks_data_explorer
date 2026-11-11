@@ -28,6 +28,12 @@ export type TwResearchScanSnapshot = {
   remainingCount: number;
   targetCount: number;
   dayPassCount: number;
+  monthPassCount?: number;
+  firstStagePassCount?: number;
+  dualPassCount?: number;
+  dailyDeferredCount?: number;
+  monthlyIncompleteCount?: number;
+  stageProgressSemanticsVersion?: string;
   qualifiedCount?: number;
   qualifiedIds?: string[];
   enrichmentsRun?: number;
@@ -93,6 +99,14 @@ export type TwResearchScanProgress = {
   remainingCount: number;
   targetCount: number;
   dayPassCount: number;
+  monthPassCount?: number;
+  firstStagePassCount?: number;
+  dualPassCount?: number;
+  dailyDeferredCount?: number;
+  monthlyIncompleteCount?: number;
+  calculationVersion?: string;
+  stageOrder?: "daily_first" | "monthly_first" | string;
+  stageProgressSemanticsVersion?: string;
   qualifiedCount?: number;
   enrichmentsRun?: number;
   maxEnrichmentsPerRun?: number;

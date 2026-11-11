@@ -548,6 +548,10 @@ export function TwResearchPage({
   const displayUniverse = progress?.universeSize ?? scan?.universeSize ?? 0;
   const displayRemaining = progress?.remainingCount ?? scan?.remainingCount ?? 0;
   const displayDayPass = progress?.dayPassCount ?? scan?.dayPassCount ?? 0;
+  const displayMonthPass = progress?.monthPassCount ?? scan?.monthPassCount ?? 0;
+  const displayDailyDeferred =
+    progress?.dailyDeferredCount ?? scan?.dailyDeferredCount ?? 0;
+  const displayStageOrder = progress?.stageOrder ?? scan?.stageOrder;
   const displayQualified = progress?.qualifiedCount ?? scan?.qualifiedCount ?? 0;
   const displayTarget = progress?.targetCount ?? scan?.targetCount ?? 0;
   const displayWorker =
@@ -1646,16 +1650,28 @@ export function TwResearchPage({
                   value={scan.scanId}
                   readOnly
                 />
-                <p className="cds--body-compact-01">
-                  {t("research.tw.statusLine", {
-                    status: displayStatus,
-                    processed: displayProcessed,
-                    universe: displayUniverse,
-                    remaining: displayRemaining,
-                    dayPass: displayDayPass,
-                    qualified: displayQualified,
-                    target: displayTarget,
-                  })}
+                <p className="cds--body-compact-01" data-testid="tw-research-status-line">
+                  {displayStageOrder === "monthly_first"
+                    ? t("research.tw.statusLineMonthlyFirst", {
+                        status: displayStatus,
+                        processed: displayProcessed,
+                        universe: displayUniverse,
+                        remaining: displayRemaining,
+                        monthPass: displayMonthPass,
+                        dayPass: displayDayPass,
+                        qualified: displayQualified,
+                        deferred: displayDailyDeferred,
+                        target: displayTarget,
+                      })
+                    : t("research.tw.statusLineDailyFirst", {
+                        status: displayStatus,
+                        processed: displayProcessed,
+                        universe: displayUniverse,
+                        remaining: displayRemaining,
+                        dayPass: displayDayPass,
+                        qualified: displayQualified,
+                        target: displayTarget,
+                      })}
                 </p>
                 <p className="cds--body-compact-01" data-testid="tw-research-worker">
                   {t(workerActivityLabelKey(displayWorker))}

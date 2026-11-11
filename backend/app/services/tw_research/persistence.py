@@ -360,10 +360,12 @@ def load_scan_progress(
         row.get("reserve_expires_at"),
         row.get("enrich_reserve_expires_at"),
     )
-    day_pass_ids = list(row.get("day_pass_ids_json") or [])
     qualified_ids = list(row.get("qualified_ids_json") or [])
     active_snapshot_id = row.get("active_snapshot_id")
-    from app.services.tw_research.evaluation import evaluation_counts
+    from app.services.tw_research.evaluation import (
+        derive_stage_progress,
+        evaluation_counts,
+    )
     from types import SimpleNamespace
 
     records = {
@@ -376,7 +378,13 @@ def load_scan_progress(
         )
         for item in symbol_rows
     }
+    calculation_version = str(row.get("calculation_version") or "")
     counts = evaluation_counts(stock_ids=stock_ids, records=records, cursor=cursor)
+    stage = derive_stage_progress(
+        stock_ids=stock_ids,
+        records=records,
+        calculation_version=calculation_version,
+    )
     processed_count = counts["processedCount"]
     revision = progress_revision(
         updated_at=updated_at,
@@ -394,6 +402,9 @@ def load_scan_progress(
         "scanId": row["scan_id"],
         "tradingDay": row["trading_day"],
         "universeVersion": row["universe_version"],
+        "calculationVersion": calculation_version,
+        "stageOrder": stage["stageOrder"],
+        "stageProgressSemanticsVersion": stage["stageProgressSemanticsVersion"],
         "status": status,
         "qualityStatus": quality_status,
         "cursor": cursor,
@@ -407,7 +418,12 @@ def load_scan_progress(
         "unprocessedCount": counts["unprocessedCount"],
         "remainingCount": counts["remainingCount"],
         "targetCount": int(row.get("target_count") or 0),
-        "dayPassCount": len(day_pass_ids),
+        "dayPassCount": stage["dayPassCount"],
+        "monthPassCount": stage["monthPassCount"],
+        "firstStagePassCount": stage["firstStagePassCount"],
+        "dualPassCount": stage["dualPassCount"],
+        "dailyDeferredCount": stage["dailyDeferredCount"],
+        "monthlyIncompleteCount": stage["monthlyIncompleteCount"],
         "qualifiedCount": len(qualified_ids),
         "enrichmentsRun": int(row.get("enrichments_run") or 0),
         "maxEnrichmentsPerRun": int(row.get("max_enrichments_per_run") or 0),

@@ -62,7 +62,7 @@ from app.services.tw_research.constants import (
     STAGE_ORDER_DAILY_FIRST,
     STAGE_ORDER_MONTHLY_FIRST,
 )
-from app.services.tw_research.evaluation import evaluation_counts
+from app.services.tw_research.evaluation import derive_stage_progress, evaluation_counts
 from app.services.tw_research.coverage import (
     derive_readiness,
     preflight_tw_trading_calendars,
@@ -333,12 +333,18 @@ class ScanState:
             records=self.records,
             cursor=self.cursor,
         )
+        stage = derive_stage_progress(
+            stock_ids=self.stock_ids,
+            records=self.records,
+            calculation_version=self.calculation_version,
+        )
         return {
             "scanId": self.scan_id,
             "tradingDay": self.trading_day,
             "universeVersion": self.universe_version,
             "calculationVersion": self.calculation_version,
-            "stageOrder": stage_order_for_calculation(self.calculation_version),
+            "stageOrder": stage["stageOrder"],
+            "stageProgressSemanticsVersion": stage["stageProgressSemanticsVersion"],
             "dailyContinuationPolicy": (
                 MONTHLY_FIRST_DAILY_CONTINUATION_POLICY
                 if is_monthly_first_calculation(self.calculation_version)
@@ -357,8 +363,16 @@ class ScanState:
             "unprocessedCount": counts["unprocessedCount"],
             "remainingCount": counts["remainingCount"],
             "targetCount": self.target_count,
-            "dayPassCount": len(self.day_pass_ids),
-            "dayPassIds": list(self.day_pass_ids),
+            # dayPass* = daily MACD/KD pass only (never monthly-first gate).
+            "dayPassCount": stage["dayPassCount"],
+            "dayPassIds": stage["dayPassIds"],
+            "monthPassCount": stage["monthPassCount"],
+            "monthPassIds": stage["monthPassIds"],
+            "firstStagePassCount": stage["firstStagePassCount"],
+            "firstStagePassIds": stage["firstStagePassIds"],
+            "dualPassCount": stage["dualPassCount"],
+            "dailyDeferredCount": stage["dailyDeferredCount"],
+            "monthlyIncompleteCount": stage["monthlyIncompleteCount"],
             "qualifiedCount": len(self.qualified_ids),
             "qualifiedIds": list(self.qualified_ids),
             "verifiedReadyCount": sum(
@@ -773,7 +787,17 @@ class TwResearchScanService:
                 "unprocessedCount": snapshot["unprocessedCount"],
                 "remainingCount": snapshot["remainingCount"],
                 "targetCount": snapshot["targetCount"],
+                "calculationVersion": snapshot.get("calculationVersion"),
+                "stageOrder": snapshot.get("stageOrder"),
+                "stageProgressSemanticsVersion": snapshot.get(
+                    "stageProgressSemanticsVersion"
+                ),
                 "dayPassCount": snapshot["dayPassCount"],
+                "monthPassCount": snapshot.get("monthPassCount", 0),
+                "firstStagePassCount": snapshot.get("firstStagePassCount", 0),
+                "dualPassCount": snapshot.get("dualPassCount", 0),
+                "dailyDeferredCount": snapshot.get("dailyDeferredCount", 0),
+                "monthlyIncompleteCount": snapshot.get("monthlyIncompleteCount", 0),
                 "qualifiedCount": snapshot["qualifiedCount"],
                 "enrichmentsRun": snapshot["enrichmentsRun"],
                 "maxEnrichmentsPerRun": snapshot["maxEnrichmentsPerRun"],
@@ -1559,8 +1583,9 @@ class TwResearchScanService:
             },
         }
         with self._lock:
-            # First-stage (monthly) pass for monthly-first scans.
-            state.day_pass_ids.append(stock_id)
+            # day_pass_ids always means daily MACD/KD pass (literal), not monthly gate.
+            if daily.pass_status == "pass":
+                state.day_pass_ids.append(stock_id)
             if is_technically_qualified(record):
                 state.qualified_ids.append(stock_id)
         return record, monthly_coverage_ok
@@ -2239,17 +2264,14 @@ class TwResearchScanService:
             self._rebuild_aggregates_locked(state)
 
     def _rebuild_aggregates_locked(self, state: ScanState) -> None:
-        monthly_first = is_monthly_first_calculation(state.calculation_version)
-        state.day_pass_ids = [
-            stock_id
-            for stock_id in state.stock_ids
-            if (record := state.records.get(stock_id)) is not None
-            and (
-                (record.monthly or {}).get("passStatus") == "pass"
-                if monthly_first
-                else (record.daily or {}).get("passStatus") == "pass"
-            )
-        ]
+        # Persist day_pass_ids as daily-pass only; progress/snapshot derive richer
+        # stage counters from symbol evidence via derive_stage_progress.
+        stage = derive_stage_progress(
+            stock_ids=state.stock_ids,
+            records=state.records,
+            calculation_version=state.calculation_version,
+        )
+        state.day_pass_ids = list(stage["dayPassIds"])
         state.qualified_ids = [
             stock_id
             for stock_id in state.stock_ids
