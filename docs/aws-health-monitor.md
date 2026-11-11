@@ -211,6 +211,59 @@ Delete any leftover access keys if you created them outside Terraform. This does
 **not** touch Azure, Postgres, Redis, or the app workloads beyond the optional
 CronJob.
 
+## Historical Error pods (#325)
+
+Observed 2026-11-10 on the home k3s cluster: several
+`stock-ticker-aws-health-heartbeat-*` pods aged ~4 days were `0/1 Error`, while a
+newer Job had already `Completed`. **Do not treat old Error pods alone as proof
+the CronJob is still failing.**
+
+Likely historical causes (capture before deleting evidence):
+
+1. Temporary DynamoDB PutItem / DNS / credential failure while the Secret was
+   present (script exited non-zero → Job `Error`).
+2. Image/script mismatch during a local image rollout window.
+3. In-cluster `/health` unreachable briefly (still writes an `unhealthy`
+   heartbeat when PutItem succeeds — that is **not** a Job Error).
+
+**Exact root cause of those 2026-11-10 Error pods is still
+`aws_e2e_verification_pending`** until an authorized operator captures
+`kubectl describe` / logs from a failed Job (or confirms they have already
+rotated out). Do not invent pod log contents.
+
+Hardening in-repo (#325):
+
+| Change | Why |
+| --- | --- |
+| Structured JSON on PutItem failure (`status=error`, `error_type`, no secrets) | Actionable CronJob logs |
+| Non-zero exit on AWS write failure | Job stays `Failed` until the next healthy run |
+| `activeDeadlineSeconds: 60` | Bound hung Jobs |
+| `ttlSecondsAfterFinished: 86400` | Auto-clean finished Jobs after 24h |
+| `failedJobsHistoryLimit: 5` / `successfulJobsHistoryLimit: 2` | Keep short diagnostic history |
+| `startingDeadlineSeconds: 300` | Skip stale schedules after node downtime |
+
+### Manual verification (authorized; do not run without approval)
+
+```bash
+# Distinguish historical Error from current health
+kubectl -n stock-ticker get cronjob stock-ticker-aws-health-heartbeat -o yaml
+kubectl -n stock-ticker get jobs --sort-by=.metadata.creationTimestamp \
+  | awk 'NR==1 || /aws-health-heartbeat/'
+# Latest heartbeat Job logs (name match, not “last job of any kind”)
+JOB=$(kubectl -n stock-ticker get jobs --sort-by=.metadata.creationTimestamp \
+  -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' \
+  | awk '/aws-health-heartbeat/ {name=$0} END {print name}')
+kubectl -n stock-ticker logs "job/${JOB}" --tail=50
+
+# One-shot manual Job (does not change the CronJob schedule)
+kubectl -n stock-ticker create job "stock-ticker-aws-health-heartbeat-manual-$(date +%s)" \
+  --from=cronjob/stock-ticker-aws-health-heartbeat
+```
+
+Confirm CloudWatch / DynamoDB only if AWS credentials and budget approval exist.
+If access is unavailable, record `aws_e2e_verification_pending` — do not claim
+delivery succeeded.
+
 ## Tests
 
 No live AWS. From the repo root:

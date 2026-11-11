@@ -679,9 +679,17 @@ def test_capture_contains_persist_exceptions_per_target() -> None:
 
 
 def test_archive_connectivity_failure_classification() -> None:
-    from sqlalchemy.exc import DBAPIError, OperationalError, ProgrammingError
+    from sqlalchemy.exc import (
+        DBAPIError,
+        InvalidatePoolError,
+        OperationalError,
+        ProgrammingError,
+    )
 
-    from app.services.rankings_archive_service import _is_archive_connectivity_failure
+    from app.services.rankings_archive_service import (
+        _is_archive_connectivity_failure,
+        _sampler_connectivity_backoff_seconds,
+    )
 
     programming = ProgrammingError(
         "SELECT TOP 5 DISTINCT ...",
@@ -712,6 +720,18 @@ def test_archive_connectivity_failure_classification() -> None:
         Exception("unrecognized transport failure"),
         connection_invalidated=True,
     )
+    # Observed worker failure shape (#326): InvalidatePoolError wrapping HYT00.
+    pool_error = InvalidatePoolError(
+        "Could not connect",
+        Exception("('HYT00', '[Microsoft][ODBC Driver 18 for SQL Server]Login timeout expired')"),
+        Exception("('HYT00', '[Microsoft][ODBC Driver 18 for SQL Server]Login timeout expired')"),
+    )
+    wrapped = RuntimeError("sampler boom")
+    wrapped.__cause__ = OperationalError(
+        "SELECT 1",
+        {},
+        Exception("('HYT00', 'Login timeout expired')"),
+    )
     assert _is_archive_connectivity_failure(programming) is False
     assert _is_archive_connectivity_failure(operational) is True
     assert _is_archive_connectivity_failure(RuntimeError("azure down")) is False
@@ -719,6 +739,48 @@ def test_archive_connectivity_failure_classification() -> None:
     assert _is_archive_connectivity_failure(vague) is False
     assert _is_archive_connectivity_failure(specific) is True
     assert _is_archive_connectivity_failure(invalidated) is True
+    assert _is_archive_connectivity_failure(pool_error) is True
+    assert _is_archive_connectivity_failure(wrapped) is True
+    assert _sampler_connectivity_backoff_seconds(1) == 120
+    assert _sampler_connectivity_backoff_seconds(2) == 300
+    assert _sampler_connectivity_backoff_seconds(5) == 1800
+    assert _sampler_connectivity_backoff_seconds(99) == 1800
+
+    # Pathological cause chains must not recurse forever.
+    outer = RuntimeError("outer")
+    inner = RuntimeError("inner")
+    outer.__cause__ = inner
+    inner.__cause__ = outer
+    assert _is_archive_connectivity_failure(outer) is False
+
+
+def test_capture_soft_fails_on_existence_prime_connectivity(monkeypatch) -> None:
+    """HYT00 during _prime_existence_cache must not raise into the sampler (#326)."""
+    from sqlalchemy.exc import InvalidatePoolError
+
+    from app.services.rankings_archive_service import RankingsArchiveService
+
+    class BoomRepo(_FakeRepo):
+        def list_eod_snapshot_keys_in_range(self, **kwargs):  # noqa: ANN003
+            del kwargs
+            raise InvalidatePoolError(
+                "pool invalidated",
+                Exception("('HYT00', 'Login timeout expired')"),
+                Exception("('HYT00', 'Login timeout expired')"),
+            )
+
+    service = RankingsArchiveService(repository=BoomRepo())
+    invalidated: list[str] = []
+    monkeypatch.setattr(
+        "app.services.rankings_archive_service.invalidate_rankings_archive_engine",
+        lambda reason="outage": invalidated.append(reason),
+    )
+    monkeypatch.setattr(service, "is_available", lambda: True)
+    result = service.capture_eod_archives(trigger="sampler", force=True)
+    assert result["failed"] == 1
+    assert result["connectivity_failed"] == 1
+    assert result["captured"] == 0
+    assert invalidated == ["capture_connectivity_failed"]
 
 
 def test_any_active_capture_window_only_within_retry_budget() -> None:
@@ -890,6 +952,54 @@ def test_run_sampler_does_not_record_success_when_capture_fails(monkeypatch) -> 
         .get("last_success_at")
         is None
     )
+
+
+def test_run_sampler_backs_off_on_connectivity_failed(monkeypatch) -> None:
+    """Soft-failed HYT00 must use backoff ladder, not inflate to poll_seconds (#326)."""
+    service = RankingsArchiveService(repository=_FakeRepo())
+    calls: list[str] = []
+    wake_gaps: list[float] = []
+
+    def _capture(**_kwargs):
+        calls.append("capture")
+        return {
+            "captured": 0,
+            "skipped": 0,
+            "failed": 1,
+            "had_missing": 0,
+            "still_missing": 0,
+            "sql_round_trips": 1,
+            "connectivity_failed": 1,
+        }
+
+    monkeypatch.setattr(service, "capture_eod_archives", _capture)
+    monkeypatch.setattr(
+        "app.services.rankings_archive_service.settings.rankings_archive_eod_enabled",
+        True,
+    )
+    monkeypatch.setattr(service, "is_configured", lambda: True)
+    monkeypatch.setattr(service, "any_active_capture_window", lambda _now=None: True)
+    monkeypatch.setattr(
+        service,
+        "_active_capture_window_end",
+        lambda _now: datetime.now(timezone.utc) + timedelta(minutes=30),
+    )
+
+    def _wait(seconds: float) -> bool:
+        wake_gaps.append(seconds)
+        service._stop_event.set()
+        return True
+
+    monkeypatch.setattr(service._stop_event, "wait", _wait)
+    reset_job_health_for_tests()
+    # Typical archive poll is 900s; first connectivity backoff must stay 120s.
+    service._run_sampler(poll_seconds=900)
+    assert calls == ["capture"]
+    assert wake_gaps and abs(wake_gaps[0] - 120) < 1
+    health = get_background_jobs_health().get("rankings-archive-eod", {})
+    assert health.get("last_success_at") is None
+    assert health.get("last_error_at") is not None
+    assert health.get("last_error_type") == "RankingsArchiveUnavailableError"
 
 
 def test_run_sampler_retries_within_budget_when_still_missing(monkeypatch) -> None:

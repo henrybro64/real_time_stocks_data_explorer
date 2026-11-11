@@ -111,6 +111,26 @@ next settle event so AutoPause can engage (idle longer than 60 minutes).
 Failures are logged and never raised into ranking request paths. AutoPause cold
 starts remain expected on the first probe after a long idle.
 
+### ODBC HYT00 / login timeout (#326)
+
+Azure SQL Free AutoPause can exceed the ODBC default login timeout (~15s),
+surfacing as `pyodbc.OperationalError` `HYT00` and sometimes
+`sqlalchemy.exc.InvalidatePoolError` (not a subclass of `OperationalError`).
+
+Mitigations in-repo:
+
+- Archive engine sets pyodbc `timeout=45` for mssql URLs.
+- `_is_archive_connectivity_failure` treats `InvalidatePoolError` /
+  `DisconnectionError` / `HYT00` as reconnectable outages.
+- `capture_eod_archives` catches connectivity failures during existence priming
+  (and the rest of the cycle), invalidates the pool, and returns
+  `connectivity_failed=1` instead of raising into the sampler.
+- Sampler uses bounded backoff (2m → 5m → 10m → 15m → 30m cap) and logs a
+  warning without traceback spam for connectivity failures.
+
+Live worker verification still requires cluster access; until then record
+`azure_sql_e2e_verification_pending`.
+
 ## Snapshot retention
 
 Azure SQL Free Offer storage is finite. Default retention keeps about **two

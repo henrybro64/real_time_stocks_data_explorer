@@ -150,6 +150,44 @@ def test_successful_engine_is_cached(monkeypatch, tmp_path) -> None:
     archive_session.reset_rankings_archive_session_state()
 
 
+def test_mssql_engine_sets_odbc_login_timeout(monkeypatch) -> None:
+    """AutoPause wake needs a longer pyodbc login timeout than the ~15s default (#326)."""
+    archive_session.reset_rankings_archive_session_state()
+    captured: dict[str, object] = {}
+
+    def fake_create_engine(url, **kwargs):  # noqa: ANN001
+        captured["url"] = url
+        captured["connect_args"] = kwargs.get("connect_args")
+
+        class FakeConn:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_exc):
+                return False
+
+            def execute(self, *_a, **_k):
+                return None
+
+        class FakeEngine:
+            def connect(self):
+                return FakeConn()
+
+            def dispose(self):
+                return None
+
+        return FakeEngine()
+
+    monkeypatch.setattr(archive_session, "create_engine", fake_create_engine)
+    engine = archive_session._try_create_engine(
+        "mssql+pyodbc://user:pass@server/db?driver=ODBC+Driver+18+for+SQL+Server"
+    )
+    assert engine is not None
+    assert captured["connect_args"] == {"timeout": archive_session._MSSQL_LOGIN_TIMEOUT_SECONDS}
+    assert archive_session._MSSQL_LOGIN_TIMEOUT_SECONDS >= 30
+    archive_session.reset_rankings_archive_session_state()
+
+
 def test_invalidate_clears_cached_engine_for_mid_life_autopause(monkeypatch, tmp_path) -> None:
     """After AutoPause, invalidate drops the dead pool so cold-start can run again."""
     archive_session.reset_rankings_archive_session_state()

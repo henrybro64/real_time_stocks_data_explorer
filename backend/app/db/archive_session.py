@@ -84,10 +84,19 @@ def rankings_archive_is_configured() -> bool:
     return bool(rankings_archive_database_url())
 
 
+# ODBC/pyodbc login timeout (seconds). Azure SQL Free AutoPause wake often
+# exceeds the driver default (~15s) and surfaces as HYT00 (#326).
+_MSSQL_LOGIN_TIMEOUT_SECONDS = 45
+
+
 def _try_create_engine(url: str) -> Engine:
     connect_args: dict[str, object] = {}
-    if url.startswith("sqlite"):
+    normalized = url.strip().lower()
+    if normalized.startswith("sqlite"):
         connect_args["check_same_thread"] = False
+    elif "mssql" in normalized or "pyodbc" in normalized:
+        # pyodbc uses ``timeout`` as the login timeout for SQLDriverConnect.
+        connect_args["timeout"] = _MSSQL_LOGIN_TIMEOUT_SECONDS
     engine = create_engine(
         url,
         pool_pre_ping=True,

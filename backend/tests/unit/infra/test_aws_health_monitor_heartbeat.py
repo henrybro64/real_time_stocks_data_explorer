@@ -290,6 +290,39 @@ def test_put_item_failure_propagates() -> None:
         )
 
 
+def test_main_logs_structured_error_on_put_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys,
+) -> None:
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIATEST")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "secret")
+    monkeypatch.setenv("AWS_REGION", "us-east-1")
+    monkeypatch.setenv("TABLE_NAME", "stock-ticker-health-heartbeats")
+
+    monkeypatch.setattr(
+        hb,
+        "run_heartbeat",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            RuntimeError("DynamoDB PutItem failed HTTP 400: AccessDenied")
+        ),
+    )
+    assert hb.main() == 1
+    logged = json.loads(capsys.readouterr().out.strip())
+    assert logged["status"] == "error"
+    assert logged["error_type"] == "aws_http_client"
+    assert "secret" not in json.dumps(logged).lower()
+    assert "AKIATEST" not in json.dumps(logged)
+
+
+def test_cronjob_manifest_has_bounded_deadline_and_ttl() -> None:
+    text = (ROOT / "k8s" / "aws-health-heartbeat.yaml").read_text(encoding="utf-8")
+    assert "activeDeadlineSeconds: 60" in text
+    assert "ttlSecondsAfterFinished: 86400" in text
+    assert "failedJobsHistoryLimit: 5" in text
+    assert "successfulJobsHistoryLimit: 2" in text
+    assert "startingDeadlineSeconds: 300" in text
+
+
 def test_script_is_stdlib_only() -> None:
     source = HEARTBEAT_PATH.read_text(encoding="utf-8")
     assert "import boto3" not in source

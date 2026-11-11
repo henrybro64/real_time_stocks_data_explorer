@@ -259,7 +259,22 @@ def main(argv: list[str] | None = None) -> int:
     )
     session_token = os.environ.get("AWS_SESSION_TOKEN") or None
     service_name = os.environ.get("SERVICE_NAME", SERVICE_NAME)
-    ttl_days = int(os.environ.get("TTL_DAYS", str(DEFAULT_TTL_DAYS)))
+    try:
+        ttl_days = int(os.environ.get("TTL_DAYS", str(DEFAULT_TTL_DAYS)))
+    except ValueError:
+        print(
+            json.dumps(
+                {
+                    "event": "aws_health_monitor.heartbeat",
+                    "status": "error",
+                    "error_type": "invalid_ttl_days",
+                    "message": "TTL_DAYS must be an integer",
+                },
+                separators=(",", ":"),
+            ),
+            flush=True,
+        )
+        return 2
 
     def put_item(item: dict[str, Any]) -> None:
         put_dynamodb_item(
@@ -271,12 +286,30 @@ def main(argv: list[str] | None = None) -> int:
             session_token=session_token,
         )
 
-    record = run_heartbeat(
-        health_url,
-        service_name=service_name,
-        ttl_days=ttl_days,
-        put_item=put_item,
-    )
+    try:
+        record = run_heartbeat(
+            health_url,
+            service_name=service_name,
+            ttl_days=ttl_days,
+            put_item=put_item,
+        )
+    except Exception as exc:  # noqa: BLE001 — structured Job failure (#325)
+        # Never log secrets, health bodies, or full stack traces into CronJob logs.
+        print(
+            json.dumps(
+                {
+                    "event": "aws_health_monitor.heartbeat",
+                    "status": "error",
+                    "error_type": _classify_put_failure(exc),
+                    "message": _bound_message(f"{type(exc).__name__}: {exc}"),
+                    "aws_region_set": bool(region),
+                    "table_name_set": bool(table_name),
+                },
+                separators=(",", ":"),
+            ),
+            flush=True,
+        )
+        return 1
     # One compact line for CronJob logs; never the health body or secrets.
     print(
         json.dumps(
@@ -292,6 +325,21 @@ def main(argv: list[str] | None = None) -> int:
         flush=True,
     )
     return 0
+
+
+def _classify_put_failure(exc: BaseException) -> str:
+    text = str(exc).lower()
+    if "timed out" in text or isinstance(exc, TimeoutError):
+        return "aws_timeout"
+    if "name or service not known" in text or "nodename nor servname" in text:
+        return "aws_dns"
+    if "http 4" in text:
+        return "aws_http_client"
+    if "http 5" in text:
+        return "aws_http_server"
+    if "putitem failed" in text:
+        return "aws_put_item"
+    return "aws_unexpected"
 
 
 def _bound_message(message: object) -> str | None:
