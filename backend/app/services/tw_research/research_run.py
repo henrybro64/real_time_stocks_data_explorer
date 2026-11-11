@@ -9,6 +9,9 @@ Sequence:
 PostgreSQL is the authoritative ledger (fail closed when unavailable).
 Never auto-publishes Notion. Never enables CronJob. Recoverable pauses map to
 ``waiting_for_next_window``; hard-cap exhaustion stays ``budget_exhausted``.
+
+Phase/status transitions are **server-derived** via ``reconcile()`` from durable
+first-pass job and technical-scan rows — clients cannot assert status.
 """
 
 from __future__ import annotations
@@ -42,6 +45,25 @@ ResearchRunStatus = Literal[
     "evidence_ready",
 ]
 
+_NOTES_CAP = 50
+_ACTIVE_PHASES = frozenset({"phase1_first_pass", "phase2_technical"})
+_TERMINAL_OR_GATED_PHASES = frozenset(
+    {
+        "awaiting_analyst_candidate_selection",
+        "awaiting_analyst_report_decision",
+        "complete_evidence_ready",
+    }
+)
+_JOB_TERMINAL = frozenset({"completed", "partial", "failed", "budget_exhausted"})
+_SCAN_TERMINAL = frozenset(
+    {
+        "completed_processing",
+        "verified_ready",
+        "failed",
+        "budget_exhausted",
+    }
+)
+
 
 class ResearchRunStoreUnavailable(Exception):
     """Raised when the durable research-run store is unavailable (fail closed)."""
@@ -49,6 +71,14 @@ class ResearchRunStoreUnavailable(Exception):
 
 class ResearchRunGateError(Exception):
     """Raised when a manual gate is not satisfied."""
+
+
+class ResearchRunConflict(Exception):
+    """Raised when an optimistic concurrency write loses (HTTP 409)."""
+
+    def __init__(self, message: str = "research_run_revision_conflict") -> None:
+        super().__init__(message)
+        self.reason = "revision_conflict"
 
 
 class _ResearchRunRepository(Protocol):
@@ -80,6 +110,7 @@ class ResearchRun:
     created_at: str = ""
     updated_at: str = ""
     schedule_enabled: bool = False
+    revision: int = 0
 
     def as_dict(self) -> dict[str, Any]:
         payload = asdict(self)
@@ -114,10 +145,11 @@ class ResearchRun:
             "technical_scan_id": self.technical_scan_id,
             "gates": dict(self.gates),
             "dimensions": dict(self.dimensions),
-            "notes": list(self.notes),
+            "notes": list(self.notes)[-_NOTES_CAP:],
             "schedule_enabled": bool(self.schedule_enabled),
             "created_at": self.created_at,
             "updated_at": self.updated_at,
+            "revision": int(self.revision),
         }
 
     @classmethod
@@ -140,11 +172,15 @@ class ResearchRun:
             technical_scan_id=payload.get("technical_scan_id"),
             gates=dict(payload.get("gates") or {}),
             dimensions=dict(payload.get("dimensions") or {}),
-            notes=list(payload.get("notes") or []),
+            notes=list(payload.get("notes") or [])[-_NOTES_CAP:],
             created_at=str(payload.get("created_at") or ""),
             updated_at=str(payload.get("updated_at") or ""),
             schedule_enabled=bool(payload.get("schedule_enabled")),
+            revision=int(payload.get("revision") or 0),
         )
+
+    def append_note(self, note: str) -> None:
+        self.notes = [*self.notes, note][-_NOTES_CAP:]
 
 
 class ResearchRunStore:
@@ -168,30 +204,51 @@ class ResearchRunStore:
                 return None
             return ResearchRun.from_persist_payload(row)
 
-    def start_phase1(
+    def reconcile(self, user_id: str) -> ResearchRun | None:
+        """Derive phase/status from durable first-pass job + technical scan rows."""
+        with self._lock:
+            run = self._load_locked(user_id)
+            if run is None:
+                return None
+            changed = self._reconcile_locked(run)
+            if changed:
+                return self._persist_locked(run)
+            return run
+
+    def begin_phase1(
         self,
         user_id: str,
         *,
         trading_day: str | None = None,
-        first_pass_job_id: str | None = None,
         notes: list[str] | None = None,
     ) -> ResearchRun:
+        """Create or return the active run **before** the first-pass job exists.
+
+        Idempotent: an active phase1/phase2 run is returned unchanged (HTTP 200).
+        """
         now = datetime.now(UTC).isoformat()
         with self._lock:
+            existing = self._load_locked(user_id)
+            if existing is not None:
+                changed = self._reconcile_locked(existing)
+                if changed:
+                    existing = self._persist_locked(existing)
+                if self._is_active_nonterminal(existing):
+                    return existing
             run = ResearchRun(
                 research_run_id=f"rr_{uuid4().hex[:20]}",
                 user_id=user_id,
                 phase="phase1_first_pass",
-                status="running",
+                status="queued",
                 trading_day=trading_day,
-                first_pass_job_id=first_pass_job_id,
+                first_pass_job_id=None,
                 gates={
                     "candidateSelection": "pending",
                     "reportDecision": "blocked_until_phase2",
                     "notionPublication": "external_only_never_auto",
                 },
                 dimensions={
-                    "fundamentals": "in_progress",
+                    "fundamentals": "queued",
                     "monthlyTechnical": "not_started",
                     "dailyTechnical": "not_started",
                     "chipEnrichment": "not_started",
@@ -206,8 +263,51 @@ class ResearchRunStore:
                 ],
                 created_at=now,
                 updated_at=now,
+                revision=0,
             )
             return self._persist_locked(run)
+
+    def attach_first_pass_job(
+        self,
+        user_id: str,
+        *,
+        first_pass_job_id: str,
+        notes: list[str] | None = None,
+    ) -> ResearchRun:
+        with self._lock:
+            run = self._require_locked(user_id)
+            if run.first_pass_job_id and run.first_pass_job_id != first_pass_job_id:
+                # Idempotent start already returned an active run with a job.
+                return run
+            run.first_pass_job_id = first_pass_job_id
+            run.status = "running"
+            run.phase = "phase1_first_pass"
+            run.dimensions["fundamentals"] = "in_progress"
+            for note in notes or []:
+                run.append_note(note)
+            run.updated_at = datetime.now(UTC).isoformat()
+            return self._persist_locked(run)
+
+    def start_phase1(
+        self,
+        user_id: str,
+        *,
+        trading_day: str | None = None,
+        first_pass_job_id: str | None = None,
+        notes: list[str] | None = None,
+    ) -> ResearchRun:
+        """Backward-compatible helper used by older tests — prefer begin+attach."""
+        run = self.begin_phase1(user_id, trading_day=trading_day, notes=notes)
+        if first_pass_job_id and (
+            not run.first_pass_job_id or run.first_pass_job_id == first_pass_job_id
+        ):
+            if run.phase == "phase1_first_pass" and run.status in {"queued", "running"}:
+                return self.attach_first_pass_job(
+                    user_id,
+                    first_pass_job_id=first_pass_job_id,
+                    notes=None,
+                )
+        return run
 
     def mark_phase1_gated(
         self,
@@ -217,34 +317,12 @@ class ResearchRunStore:
         first_pass_snapshot_id: str | None = None,
         job_status: str | None = None,
     ) -> ResearchRun:
-        with self._lock:
-            run = self._require_locked(user_id)
-            if first_pass_job_id:
-                run.first_pass_job_id = first_pass_job_id
-            if first_pass_snapshot_id:
-                run.first_pass_snapshot_id = first_pass_snapshot_id
-            mapped = map_recoverable_status(job_status or "gated")
-            if mapped == WAITING_FOR_NEXT_WINDOW:
-                run.status = WAITING_FOR_NEXT_WINDOW
-                run.phase = "phase1_first_pass"
-                run.dimensions["fundamentals"] = WAITING_FOR_NEXT_WINDOW
-                run.notes.append(
-                    "Recoverable pause mapped to waiting_for_next_window; "
-                    "hard caps remain enforced."
-                )
-            elif job_status == "budget_exhausted":
-                run.status = "budget_exhausted"
-                run.dimensions["fundamentals"] = "budget_exhausted"
-            else:
-                # completed / partial / gated → analyst gate (partial still reviewable)
-                run.phase = "awaiting_analyst_candidate_selection"
-                run.status = "gated"
-                run.dimensions["fundamentals"] = (
-                    "partial" if job_status == "partial" else "complete_or_partial"
-                )
-                run.gates["candidateSelection"] = "awaiting_analyst"
-            run.updated_at = datetime.now(UTC).isoformat()
-            return self._persist_locked(run)
+        """Compatibility shim — reconcile ignores client-asserted status."""
+        del first_pass_job_id, first_pass_snapshot_id, job_status
+        run = self.reconcile(user_id)
+        if run is None:
+            raise KeyError("research_run_not_found")
+        return run
 
     def attach_candidate_set(
         self,
@@ -252,13 +330,25 @@ class ResearchRunStore:
         *,
         candidate_set_id: str,
         candidate_set_version: int,
+        first_pass_snapshot_id: str | None = None,
     ) -> ResearchRun:
         with self._lock:
             run = self._require_locked(user_id)
+            self._reconcile_locked(run)
+            if run.phase != "awaiting_analyst_candidate_selection":
+                raise ResearchRunGateError(
+                    "candidate_attach_requires_awaiting_analyst_candidate_selection"
+                )
+            if (
+                first_pass_snapshot_id
+                and run.first_pass_snapshot_id
+                and str(first_pass_snapshot_id) != str(run.first_pass_snapshot_id)
+            ):
+                raise ResearchRunGateError("candidate_set_first_pass_snapshot_mismatch")
             run.candidate_set_id = candidate_set_id
             run.candidate_set_version = candidate_set_version
             run.gates["candidateSelection"] = "approved"
-            run.notes.append(
+            run.append_note(
                 f"Candidate set {candidate_set_id} v{candidate_set_version} approved; "
                 "Phase-2 technical may start manually."
             )
@@ -274,20 +364,24 @@ class ResearchRunStore:
     ) -> ResearchRun:
         with self._lock:
             run = self._require_locked(user_id)
+            self._reconcile_locked(run)
             if run.gates.get("candidateSelection") != "approved":
                 raise ResearchRunGateError("candidate_selection_gate_not_approved")
+            # Idempotent: already in phase2 with same (or any) technical scan.
+            if run.phase == "phase2_technical" and run.technical_scan_id:
+                return run
+            if run.phase == "awaiting_analyst_report_decision" and run.technical_scan_id:
+                return run
             run.phase = "phase2_technical"
             run.status = "running"
             run.technical_scan_id = technical_scan_id
             run.dimensions["monthlyTechnical"] = "in_progress"
             run.dimensions["dailyTechnical"] = "pending_monthly_gate"
-            run.notes.extend(
-                list(notes or [])
-                + [
-                    "Phase-2 monthly-first technical started from approved candidates only.",
-                    "Stops for analyst report decision; no Notion write.",
-                ]
-            )
+            for note in list(notes or []) + [
+                "Phase-2 monthly-first technical started from approved candidates only.",
+                "Stops for analyst report decision; no Notion write.",
+            ]:
+                run.append_note(note)
             run.updated_at = datetime.now(UTC).isoformat()
             return self._persist_locked(run)
 
@@ -297,30 +391,12 @@ class ResearchRunStore:
         *,
         scan_status: str | None = None,
     ) -> ResearchRun:
-        with self._lock:
-            run = self._require_locked(user_id)
-            mapped = map_recoverable_status(scan_status or "gated")
-            if mapped == WAITING_FOR_NEXT_WINDOW:
-                run.status = WAITING_FOR_NEXT_WINDOW
-                run.dimensions["monthlyTechnical"] = WAITING_FOR_NEXT_WINDOW
-            elif scan_status == "budget_exhausted":
-                run.status = "budget_exhausted"
-                run.dimensions["monthlyTechnical"] = "budget_exhausted"
-            else:
-                # completed / verified_ready / partial / gated → report decision gate
-                run.phase = "awaiting_analyst_report_decision"
-                run.status = "gated" if scan_status != "verified_ready" else "evidence_ready"
-                run.dimensions["monthlyTechnical"] = (
-                    "partial" if scan_status == "partial" else "complete_or_partial"
-                )
-                run.dimensions["dailyTechnical"] = "complete_or_not_run_by_design"
-                run.gates["reportDecision"] = "awaiting_analyst"
-                run.notes.append(
-                    "Evidence ready for ChatGPT report judgement; "
-                    "Stock Ticker does not author or publish the Notion report."
-                )
-            run.updated_at = datetime.now(UTC).isoformat()
-            return self._persist_locked(run)
+        """Compatibility shim — reconcile ignores client-asserted status."""
+        del scan_status
+        run = self.reconcile(user_id)
+        if run is None:
+            raise KeyError("research_run_not_found")
+        return run
 
     def clear_for_tests(self) -> None:
         """Enable isolated in-memory backend for unit tests (never for production)."""
@@ -342,23 +418,213 @@ class ResearchRunStore:
             raise ResearchRunStoreUnavailable("research_run_store_unavailable")
         return repo
 
-    def _require_locked(self, user_id: str) -> ResearchRun:
+    def _load_locked(self, user_id: str) -> ResearchRun | None:
         if self._test_memory is not None:
-            run = self._test_memory.get(user_id)
-            if run is None:
-                raise KeyError("research_run_not_found")
-            return run
+            return self._test_memory.get(user_id)
         row = self._repo().get_research_run(user_id)
         if row is None:
-            raise KeyError("research_run_not_found")
+            return None
         return ResearchRun.from_persist_payload(row)
 
+    def _require_locked(self, user_id: str) -> ResearchRun:
+        run = self._load_locked(user_id)
+        if run is None:
+            raise KeyError("research_run_not_found")
+        return run
+
     def _persist_locked(self, run: ResearchRun) -> ResearchRun:
+        run.notes = list(run.notes)[-_NOTES_CAP:]
         if self._test_memory is not None:
+            # In-memory OCC: reject stale revision writes from another store view.
+            current = self._test_memory.get(run.user_id)
+            if current is not None and current.research_run_id == run.research_run_id:
+                if int(current.revision) != int(run.revision):
+                    raise ResearchRunConflict()
+            run.revision = int(run.revision) + 1
             self._test_memory[run.user_id] = run
             return run
-        saved = self._repo().upsert_research_run(run.as_persist_payload())
+        try:
+            saved = self._repo().upsert_research_run(run.as_persist_payload())
+        except ResearchRunConflict:
+            raise
         return ResearchRun.from_persist_payload(saved)
+
+    def _is_active_nonterminal(self, run: ResearchRun) -> bool:
+        if run.phase not in _ACTIVE_PHASES:
+            return False
+        if run.status in {"failed", "budget_exhausted", "evidence_ready", "gated"}:
+            # gated with active phase shouldn't happen after reconcile, but treat as terminal-ish
+            if run.phase in _TERMINAL_OR_GATED_PHASES:
+                return False
+            if run.status in {"failed", "budget_exhausted"}:
+                return False
+        if run.phase == "phase1_first_pass":
+            return run.status in {
+                "queued",
+                "running",
+                WAITING_FOR_NEXT_WINDOW,
+            } or (run.first_pass_job_id is not None and run.status not in _JOB_TERMINAL)
+        if run.phase == "phase2_technical":
+            return run.status in {
+                "queued",
+                "running",
+                WAITING_FOR_NEXT_WINDOW,
+            } or (
+                run.technical_scan_id is not None
+                and run.status not in _SCAN_TERMINAL | {"gated", "evidence_ready"}
+            )
+        return False
+
+    def _reconcile_locked(self, run: ResearchRun) -> bool:
+        before = (
+            run.phase,
+            run.status,
+            run.first_pass_snapshot_id,
+            run.technical_scan_id,
+            tuple(run.notes[-3:]),
+        )
+        # Prefer phase2 when a technical scan is attached.
+        if run.technical_scan_id:
+            self._reconcile_from_scan_locked(run)
+        elif run.first_pass_job_id:
+            self._reconcile_from_job_locked(run)
+        after = (
+            run.phase,
+            run.status,
+            run.first_pass_snapshot_id,
+            run.technical_scan_id,
+            tuple(run.notes[-3:]),
+        )
+        if before != after:
+            run.updated_at = datetime.now(UTC).isoformat()
+            return True
+        return False
+
+    def _reconcile_from_job_locked(self, run: ResearchRun) -> None:
+        job = self._load_first_pass_job(run.user_id, run.first_pass_job_id)
+        if job is None:
+            return
+        status = str(job.get("status") or job.get("job_status") or "")
+        snapshot_id = (
+            job.get("active_snapshot_id")
+            or job.get("activeSnapshotId")
+            or job.get("first_pass_snapshot_id")
+        )
+        if status in {"running", "pending", "queued"}:
+            run.phase = "phase1_first_pass"
+            run.status = "running"
+            run.dimensions["fundamentals"] = "in_progress"
+            return
+        if status == "deferred" or map_recoverable_status(status) == WAITING_FOR_NEXT_WINDOW:
+            if status != "budget_exhausted":
+                run.phase = "phase1_first_pass"
+                run.status = WAITING_FOR_NEXT_WINDOW
+                run.dimensions["fundamentals"] = WAITING_FOR_NEXT_WINDOW
+                return
+        if status == "budget_exhausted":
+            run.phase = "phase1_first_pass"
+            run.status = "budget_exhausted"
+            run.dimensions["fundamentals"] = "budget_exhausted"
+            return
+        if status == "failed":
+            run.phase = "phase1_first_pass"
+            run.status = "failed"
+            run.dimensions["fundamentals"] = "failed"
+            return
+        if status in {"completed", "partial"} and snapshot_id:
+            run.phase = "awaiting_analyst_candidate_selection"
+            run.status = "gated"
+            run.first_pass_snapshot_id = str(snapshot_id)
+            run.dimensions["fundamentals"] = (
+                "partial" if status == "partial" else "complete_or_partial"
+            )
+            run.gates["candidateSelection"] = "awaiting_analyst"
+            return
+        if status in {"completed", "partial"}:
+            run.phase = "phase1_first_pass"
+            run.status = "running"
+            run.dimensions["fundamentals"] = "in_progress"
+
+    def _reconcile_from_scan_locked(self, run: ResearchRun) -> None:
+        scan = self._load_scan(run.user_id, run.technical_scan_id)
+        if scan is None:
+            return
+        status = str(scan.get("status") or "")
+        if status in {"queued", "running"}:
+            run.phase = "phase2_technical"
+            run.status = "running"
+            run.dimensions["monthlyTechnical"] = "in_progress"
+            return
+        mapped = map_recoverable_status(status)
+        if status == "deferred" or mapped == WAITING_FOR_NEXT_WINDOW:
+            if status != "budget_exhausted" and status != "failed":
+                # Recoverable partial pauses → waiting; hard budget stays exhausted.
+                if status == "partial":
+                    # Spec: partial(recoverable) → waiting_for_next_window
+                    run.phase = "phase2_technical"
+                    run.status = WAITING_FOR_NEXT_WINDOW
+                    run.dimensions["monthlyTechnical"] = WAITING_FOR_NEXT_WINDOW
+                    return
+                run.phase = "phase2_technical"
+                run.status = WAITING_FOR_NEXT_WINDOW
+                run.dimensions["monthlyTechnical"] = WAITING_FOR_NEXT_WINDOW
+                return
+        if status == "budget_exhausted":
+            run.phase = "phase2_technical"
+            run.status = "budget_exhausted"
+            run.dimensions["monthlyTechnical"] = "budget_exhausted"
+            return
+        if status == "failed":
+            run.phase = "phase2_technical"
+            run.status = "failed"
+            run.dimensions["monthlyTechnical"] = "failed"
+            return
+        if status in {"completed_processing", "verified_ready"}:
+            run.phase = "awaiting_analyst_report_decision"
+            run.status = "evidence_ready" if status == "verified_ready" else "gated"
+            run.dimensions["monthlyTechnical"] = "complete_or_partial"
+            run.dimensions["dailyTechnical"] = "complete_or_not_run_by_design"
+            run.gates["reportDecision"] = "awaiting_analyst"
+            return
+
+    def _load_first_pass_job(
+        self, user_id: str, job_id: str | None
+    ) -> dict[str, Any] | None:
+        if not job_id:
+            return None
+        if self._test_memory is not None:
+            # Unit tests may inject jobs via repository override.
+            repo = self._repository
+            getter = getattr(repo, "get_first_pass_job", None) if repo else None
+            if callable(getter):
+                return getter(job_id, user_id=user_id)
+            return None
+        from app.repositories.tw_research_repository import tw_research_repository
+
+        return tw_research_repository.get_first_pass_job(job_id, user_id=user_id)
+
+    def _load_scan(self, user_id: str, scan_id: str | None) -> dict[str, Any] | None:
+        if not scan_id:
+            return None
+        if self._test_memory is not None:
+            repo = self._repository
+            getter = getattr(repo, "get_scan", None) if repo else None
+            if callable(getter):
+                row = getter(scan_id)
+                if row is None:
+                    return None
+                if row.get("user_id") not in {None, user_id}:
+                    return None
+                return row
+            return None
+        from app.repositories.tw_research_repository import tw_research_repository
+
+        row = tw_research_repository.get_scan(scan_id)
+        if row is None:
+            return None
+        if row.get("user_id") not in {None, user_id}:
+            return None
+        return row
 
 
 research_run_store = ResearchRunStore()

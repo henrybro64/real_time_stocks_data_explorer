@@ -233,6 +233,23 @@ def submit_candidate_set(
     }
 
 
+def _candidate_set_api_dict(saved: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "candidateSetId": saved["candidate_set_id"],
+        "version": saved["version"],
+        "firstPassSnapshotId": saved["first_pass_snapshot_id"],
+        "firstPassDigest": saved["first_pass_digest"],
+        "stockIds": list(saved["stock_ids"]),
+        "origin": saved.get("origin"),
+        "selectionReasons": dict(saved.get("selection_reasons") or {}),
+        "decisionDate": saved.get("decision_date"),
+        "notes": list(saved.get("notes") or []),
+        "createdAt": saved.get("created_at"),
+        "durable": True,
+        "notNotionReportList": True,
+    }
+
+
 def latest_candidate_set(*, user_id: str, repository: Any | None = None) -> dict[str, Any] | None:
     repo = repository or tw_research_repository
     if not repo.is_available():
@@ -240,20 +257,35 @@ def latest_candidate_set(*, user_id: str, repository: Any | None = None) -> dict
     saved = repo.latest_candidate_set(user_id)
     if saved is None:
         return None
-    return {
-        "candidateSetId": saved["candidate_set_id"],
-        "version": saved["version"],
-        "firstPassSnapshotId": saved["first_pass_snapshot_id"],
-        "firstPassDigest": saved["first_pass_digest"],
-        "stockIds": list(saved["stock_ids"]),
-        "origin": saved["origin"],
-        "selectionReasons": dict(saved["selection_reasons"]),
-        "decisionDate": saved["decision_date"],
-        "notes": list(saved["notes"]),
-        "createdAt": saved["created_at"],
-        "durable": True,
-        "notNotionReportList": True,
-    }
+    return _candidate_set_api_dict(saved)
+
+
+def get_candidate_set(
+    *,
+    user_id: str,
+    candidate_set_id: str,
+    version: int | None = None,
+    repository: Any | None = None,
+) -> dict[str, Any] | None:
+    """Load a pinned candidate-set version (not necessarily latest)."""
+    repo = repository or tw_research_repository
+    if not repo.is_available():
+        raise ResearchMembershipUnavailable("candidate_set_store_unavailable")
+    getter = getattr(repo, "get_candidate_set", None)
+    if not callable(getter):
+        # Fallback for test doubles that only implement latest_candidate_set.
+        saved = repo.latest_candidate_set(user_id)
+        if saved is None:
+            return None
+        if str(saved["candidate_set_id"]) != str(candidate_set_id):
+            return None
+        if version is not None and int(saved["version"]) != int(version):
+            return None
+        return _candidate_set_api_dict(saved)
+    saved = getter(user_id, candidate_set_id=candidate_set_id, version=version)
+    if saved is None:
+        return None
+    return _candidate_set_api_dict(saved)
 
 
 def create_technical_scan_from_candidate_set(
@@ -393,6 +425,27 @@ def create_technical_scan_from_candidate_set(
         "dailyOverrideIds": override_ids,
         "notNotionReportList": True,
     }
+    from zoneinfo import ZoneInfo
+
+    effective_trading_day = trading_day or datetime.now(ZoneInfo("Asia/Taipei")).date().isoformat()
+    # Idempotent: return an existing non-failed scan for the same candidate key.
+    existing_state = _find_existing_candidate_scan(
+        repo=repo,
+        service=service,
+        user_id=user_id,
+        candidate_set_id=str(saved["candidate_set_id"]),
+        candidate_set_version=int(saved["version"]),
+        trading_day=str(effective_trading_day),
+        calculation_version=CALCULATION_VERSION_MONTHLY_FIRST,
+        daily_override_ids=override_ids,
+    )
+    if existing_state is not None:
+        return {
+            "scan": existing_state,
+            "candidateSetId": saved["candidate_set_id"],
+            "candidateSetVersion": int(saved["version"]),
+            "idempotentReuse": True,
+        }
     extra_notes = [
         (
             "Technical second-pass sourced from candidate set "
@@ -411,7 +464,7 @@ def create_technical_scan_from_candidate_set(
         state = service.create_scan(
             frozen_selector,
             target_count=target_count,
-            trading_day=trading_day,
+            trading_day=effective_trading_day,
             max_upstream_month_fetches=(
                 DEFAULT_MAX_UPSTREAM_MONTH_FETCHES
                 if max_upstream_month_fetches is None
@@ -444,3 +497,61 @@ def create_technical_scan_from_candidate_set(
         "candidateProvenance": provenance,
         "notNotionReportList": True,
     }
+
+
+def _find_existing_candidate_scan(
+    *,
+    repo: Any,
+    service: Any,
+    user_id: str,
+    candidate_set_id: str,
+    candidate_set_version: int,
+    trading_day: str,
+    calculation_version: str,
+    daily_override_ids: list[str],
+) -> Any | None:
+    wanted_overrides = sorted(
+        {str(item).upper() for item in daily_override_ids if item}
+    )
+    finder = getattr(repo, "find_matching_candidate_scan", None)
+    if callable(finder):
+        existing = finder(
+            user_id=user_id,
+            candidate_set_id=candidate_set_id,
+            candidate_set_version=candidate_set_version,
+            trading_day=trading_day,
+            calculation_version=calculation_version,
+            daily_override_ids=daily_override_ids,
+        )
+        if existing is not None:
+            state = service.get_scan(existing["scan_id"])
+            if state is not None and state.status != "failed":
+                return state
+    # In-memory / process-local fallback for persist=False unit tests.
+    scans = getattr(service, "_scans", None)
+    if isinstance(scans, dict):
+        for state in scans.values():
+            if getattr(state, "user_id", None) != user_id:
+                continue
+            if str(getattr(state, "trading_day", "")) != str(trading_day):
+                continue
+            if str(getattr(state, "calculation_version", "")) != str(calculation_version):
+                continue
+            if getattr(state, "status", None) == "failed":
+                continue
+            provenance = getattr(state, "candidate_provenance", None) or {}
+            if str(provenance.get("candidateSetId") or "") != str(candidate_set_id):
+                continue
+            if int(provenance.get("candidateSetVersion") or -1) != int(candidate_set_version):
+                continue
+            overrides = sorted(
+                {
+                    str(item).upper()
+                    for item in (provenance.get("dailyOverrideIds") or [])
+                    if item
+                }
+            )
+            if overrides != wanted_overrides:
+                continue
+            return state
+    return None

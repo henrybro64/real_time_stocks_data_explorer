@@ -1389,32 +1389,36 @@ class TwResearchScanService:
                 budget_blocked=budget_blocked,
             )
 
-        if record.readiness != "rejected":
-            if (
-                is_monthly_first_calculation(state.calculation_version)
-                and record.monthly
-                and (record.monthly.get("quality") or "") != "ok"
-                and record.stage == "A"
-            ):
-                # Incomplete monthly history is not a screening fail.
-                record.readiness = "source_incomplete"
-            else:
-                record.readiness = derive_readiness(
-                    stage=record.stage,
-                    daily_pass=(record.daily or {}).get("passStatus"),
-                    monthly_pass=(record.monthly or {}).get("passStatus")
-                    if record.monthly
-                    else None,
-                    daily_coverage_ok=daily_coverage.ok,
-                    monthly_coverage_ok=monthly_coverage_ok
-                    if record.stage == "B"
-                    or (
-                        is_monthly_first_calculation(state.calculation_version)
-                        and record.monthly is not None
-                    )
-                    else daily_coverage.ok,
-                    rejection_reason=record.rejection_reason,
+        if record.readiness == "rejected":
+            pass
+        elif record.readiness == "source_incomplete":
+            # Keep monthly-first coverage gate (e.g. monthly_coverage_unverified).
+            pass
+        elif (
+            is_monthly_first_calculation(state.calculation_version)
+            and record.monthly
+            and (record.monthly.get("quality") or "") != "ok"
+            and record.stage == "A"
+        ):
+            # Incomplete monthly history is not a screening fail.
+            record.readiness = "source_incomplete"
+        else:
+            record.readiness = derive_readiness(
+                stage=record.stage,
+                daily_pass=(record.daily or {}).get("passStatus"),
+                monthly_pass=(record.monthly or {}).get("passStatus")
+                if record.monthly
+                else None,
+                daily_coverage_ok=daily_coverage.ok,
+                monthly_coverage_ok=monthly_coverage_ok
+                if record.stage == "B"
+                or (
+                    is_monthly_first_calculation(state.calculation_version)
+                    and record.monthly is not None
                 )
+                else daily_coverage.ok,
+                rejection_reason=record.rejection_reason,
+            )
 
         record.theme_keys = _theme_keys_for(stock_id)
         with self._lock:
@@ -1574,21 +1578,28 @@ class TwResearchScanService:
             },
         )
 
-        monthly_eligible = monthly_quality == "ok" and monthly.pass_status == "pass"
+        monthly_eligible = (
+            monthly_quality == "ok"
+            and monthly_coverage_ok
+            and monthly.pass_status == "pass"
+        )
         analyst_override = stock_id.upper() in override_ids
 
         if not monthly_eligible and not analyst_override:
-            skip_reason = (
-                "monthly_indicators_incomplete"
-                if monthly_quality != "ok"
-                else "monthly_screen_failed"
-            )
+            if not monthly_coverage_ok:
+                skip_reason = "monthly_coverage_unverified"
+            elif monthly_quality != "ok":
+                skip_reason = "monthly_indicators_incomplete"
+            else:
+                skip_reason = "monthly_screen_failed"
             record.daily = _not_run_daily_payload(
                 reason=skip_reason,
                 monthly_quality=monthly_quality,
                 override_available=True,
             )
             record.technical_stage = TECHNICAL_STAGE_DAILY_NOT_RUN
+            if skip_reason == "monthly_coverage_unverified":
+                record.readiness = "source_incomplete"
             record.coverage = {
                 **(record.coverage or {}),
                 "daily": {

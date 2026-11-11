@@ -209,6 +209,7 @@ export function TwResearchPage({
   const [targetCount, setTargetCount] = useState<10 | 20>(10);
   const [scanId, setScanId] = useState<string | null>(initialScanId);
   const [page, setPage] = useState(1);
+  const [watchlistPage, setWatchlistPage] = useState(1);
   const [agentText, setAgentText] = useState("");
   const [agentChunkIndex, setAgentChunkIndex] = useState(0);
   const [agentTotalChunks, setAgentTotalChunks] = useState(0);
@@ -775,11 +776,8 @@ export function TwResearchPage({
         firstPassJobId &&
         (status === "completed" || status === "partial" || status === "deferred")
       ) {
-        void advanceTwResearchRunGate({
-          firstPassJobId,
-          firstPassSnapshotId: snapshotId ?? undefined,
-          jobStatus: status,
-        }).finally(() => {
+        // Server reconciles from durable job/scan rows; do not assert client status.
+        void advanceTwResearchRunGate().finally(() => {
           void queryClient.invalidateQueries({ queryKey: ["tw-research-run-current"] });
         });
       }
@@ -1851,17 +1849,32 @@ export function TwResearchPage({
                       <TableHeader>{t("research.tw.colMonthly")}</TableHeader>
                       <TableHeader>{t("research.tw.colDaily")}</TableHeader>
                       <TableHeader>{t("research.tw.colTechnicalStage")}</TableHeader>
+                      <TableHeader>{t("research.tw.colReason")}</TableHeader>
                       <TableHeader>{t("research.tw.colNote")}</TableHeader>
                     </TableRow>
                   </TableHead>
                   <TableBody>
-                    {(
-                      (scan?.monthlyFailWatchlistIds?.length
-                        ? scan.monthlyFailWatchlistIds
-                        : scan?.dailyNotRunByDesignIds) ?? []
-                    )
-                      .slice(0, 50)
-                      .map((id) => {
+                    {(() => {
+                      const monthlyFailIds = scan?.monthlyFailWatchlistIds ?? [];
+                      const notRunIds = scan?.dailyNotRunByDesignIds ?? [];
+                      const reasonById = new Map<string, string>();
+                      for (const id of notRunIds) {
+                        reasonById.set(id, "daily_not_run_by_design");
+                      }
+                      for (const id of monthlyFailIds) {
+                        const prior = reasonById.get(id);
+                        reasonById.set(
+                          id,
+                          prior ? `${prior}+monthly_fail_watchlist` : "monthly_fail_watchlist",
+                        );
+                      }
+                      const watchlistIds = Array.from(reasonById.keys()).sort();
+                      return watchlistIds
+                        .slice(
+                          (watchlistPage - 1) * PAGE_SIZE,
+                          watchlistPage * PAGE_SIZE,
+                        )
+                        .map((id) => {
                         const row = ledger.find(
                           (item) =>
                             String(item.stockId ?? item.stock_id ?? "") === id,
@@ -1872,9 +1885,13 @@ export function TwResearchPage({
                           passStatus?: string;
                         } | undefined;
                         const expanded = Boolean(expandedLedgerIds[`wl:${id}`]);
+                        const stageValue =
+                          row?.technical_stage ?? row?.technicalStage;
+                        const dailyValue =
+                          daily?.executionStatus ?? daily?.passStatus;
                         return (
                           <Fragment key={id}>
-                          <TableRow>
+                          <TableRow data-testid={`tw-research-watchlist-row-${id}`}>
                             <TableCell>
                               <Button
                                 kind="ghost"
@@ -1899,25 +1916,14 @@ export function TwResearchPage({
                               )}
                             </TableCell>
                             <TableCell>{String(monthly?.passStatus ?? "—")}</TableCell>
-                            <TableCell>
-                              {String(
-                                daily?.executionStatus ??
-                                  daily?.passStatus ??
-                                  "not_run_by_design",
-                              )}
-                            </TableCell>
-                            <TableCell>
-                              {String(
-                                row?.technical_stage ??
-                                  row?.technicalStage ??
-                                  "daily_not_run_by_design",
-                              )}
-                            </TableCell>
+                            <TableCell>{String(dailyValue ?? "—")}</TableCell>
+                            <TableCell>{String(stageValue ?? "—")}</TableCell>
+                            <TableCell>{reasonById.get(id) ?? "—"}</TableCell>
                             <TableCell>{t("research.tw.watchlistRowNote")}</TableCell>
                           </TableRow>
                           {expanded ? (
                             <TableRow>
-                              <TableCell colSpan={6}>
+                              <TableCell colSpan={7}>
                                 <pre
                                   className="cds--body-compact-01"
                                   style={{ whiteSpace: "pre-wrap", margin: 0 }}
@@ -1937,10 +1943,24 @@ export function TwResearchPage({
                           ) : null}
                           </Fragment>
                         );
-                      })}
+                      });
+                    })()}
                   </TableBody>
                 </Table>
               </TableContainer>
+              <Pagination
+                data-testid="tw-research-watchlist-pagination"
+                page={watchlistPage}
+                pageSize={PAGE_SIZE}
+                pageSizes={[PAGE_SIZE]}
+                totalItems={
+                  new Set([
+                    ...(scan?.monthlyFailWatchlistIds ?? []),
+                    ...(scan?.dailyNotRunByDesignIds ?? []),
+                  ]).size
+                }
+                onChange={({ page: nextPage }) => setWatchlistPage(nextPage)}
+              />
             </Stack>
           </Tile>
               </TabPanel>

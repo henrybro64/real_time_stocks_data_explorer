@@ -1150,3 +1150,75 @@ describe("TwResearchPage reliability UX (#335–#337)", () => {
     );
   });
 });
+
+describe("TwResearchPage watchlist union (#338)", () => {
+  beforeEach(() => {
+    vi.mocked(fetchThemeOptions).mockResolvedValue([]);
+    vi.mocked(createTwResearchScan).mockReset();
+    vi.mocked(fetchTwResearchExportManifest).mockResolvedValue({ snapshotId: "manifest" });
+    vi.mocked(fetchTwResearchScanProgress).mockResolvedValue(progress());
+    vi.mocked(fetchTwResearchScans).mockResolvedValue({ scans: [] });
+    vi.mocked(fetchTwResearchRunCurrent).mockRejectedValue(
+      new ApiError("missing", {
+        status: 404,
+        detail: "research_run_not_found",
+        kind: "not_found",
+      }),
+    );
+  });
+
+  it("shows de-duplicated monthly-fail and not-run rows with — for missing stage", async () => {
+    const user = userEvent.setup();
+    const scan = queuedScan({
+      status: "completed_processing",
+      monthlyFailWatchlistIds: ["TW:2317", "TW:2330"],
+      monthlyFailWatchlistCount: 2,
+      dailyNotRunByDesignIds: ["TW:2330", "TW:2454"],
+      dailyNotRunByDesignCount: 2,
+      ledger: [
+        {
+          stock_id: "TW:2317",
+          stockName: "鴻海",
+          monthly: { passStatus: "fail" },
+          // no technicalStage on purpose
+        },
+        {
+          stock_id: "TW:2330",
+          stockName: "台積電",
+          technicalStage: "daily_not_run_by_design",
+          monthly: { passStatus: "fail" },
+          daily: { executionStatus: "not_run_by_design" },
+        },
+        {
+          stock_id: "TW:2454",
+          stockName: "聯發科",
+          monthly: { passStatus: "fail" },
+          daily: { executionStatus: "not_run_by_design" },
+        },
+      ],
+    });
+    vi.mocked(createTwResearchScan).mockResolvedValue(scan);
+    vi.mocked(fetchTwResearchScan).mockResolvedValue(scan);
+
+    renderPage();
+    await user.click(screen.getByTestId("tw-research-create"));
+    expect(await screen.findByLabelText("掃描 ID")).toHaveValue(SCAN_ID);
+
+    await user.click(screen.getByTestId("tw-research-tab-watchlist"));
+    expect(await screen.findByTestId("tw-research-watchlist")).toBeInTheDocument();
+
+    expect(screen.getByTestId("tw-research-watchlist-row-TW:2317")).toBeInTheDocument();
+    expect(screen.getByTestId("tw-research-watchlist-row-TW:2330")).toBeInTheDocument();
+    expect(screen.getByTestId("tw-research-watchlist-row-TW:2454")).toBeInTheDocument();
+
+    const row2317 = screen.getByTestId("tw-research-watchlist-row-TW:2317");
+    expect(row2317).toHaveTextContent("—");
+    expect(row2317).not.toHaveTextContent("not_run_by_design");
+    expect(row2317).toHaveTextContent("monthly_fail_watchlist");
+
+    const row2330 = screen.getByTestId("tw-research-watchlist-row-TW:2330");
+    expect(row2330).toHaveTextContent("daily_not_run_by_design+monthly_fail_watchlist");
+
+    expect(screen.getByTestId("tw-research-watchlist-pagination")).toBeInTheDocument();
+  });
+});

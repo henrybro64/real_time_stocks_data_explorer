@@ -1688,6 +1688,80 @@ class TwResearchRepository(SessionBoundRepository):
                 return None
             return _candidate_set_to_dict(row)
 
+    def get_candidate_set(
+        self,
+        user_id: str,
+        *,
+        candidate_set_id: str,
+        version: int | None = None,
+    ) -> dict[str, Any] | None:
+        """Load a specific candidate-set version for the owning user."""
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            stmt = select(TwResearchCandidateSet).where(
+                TwResearchCandidateSet.user_id == user_id,
+                TwResearchCandidateSet.candidate_set_id == candidate_set_id,
+            )
+            if version is not None:
+                stmt = stmt.where(TwResearchCandidateSet.version == int(version))
+            else:
+                stmt = stmt.order_by(TwResearchCandidateSet.version.desc())
+            row = session.execute(stmt.limit(1)).scalars().first()
+            if row is None:
+                return None
+            return _candidate_set_to_dict(row)
+
+    def find_matching_candidate_scan(
+        self,
+        *,
+        user_id: str,
+        candidate_set_id: str,
+        candidate_set_version: int,
+        trading_day: str,
+        calculation_version: str,
+        daily_override_ids: list[str] | None = None,
+        limit: int = 50,
+    ) -> dict[str, Any] | None:
+        """Return an existing non-failed scan matching the candidate technical key."""
+        wanted_overrides = sorted(
+            {str(item).upper() for item in (daily_override_ids or []) if item}
+        )
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            rows = session.execute(
+                select(TwResearchScan)
+                .where(
+                    TwResearchScan.user_id == user_id,
+                    TwResearchScan.trading_day == trading_day,
+                    TwResearchScan.calculation_version == calculation_version,
+                    TwResearchScan.status.notin_(("failed",)),
+                )
+                .order_by(TwResearchScan.updated_at.desc(), TwResearchScan.scan_id.desc())
+                .limit(limit)
+            ).scalars().all()
+            for row in rows:
+                selector = dict(row.selector_json or {})
+                provenance = selector.get("candidateProvenance")
+                if not isinstance(provenance, dict):
+                    continue
+                if str(provenance.get("candidateSetId") or "") != str(candidate_set_id):
+                    continue
+                if int(provenance.get("candidateSetVersion") or -1) != int(
+                    candidate_set_version
+                ):
+                    continue
+                overrides = sorted(
+                    {
+                        str(item).upper()
+                        for item in (provenance.get("dailyOverrideIds") or [])
+                        if item
+                    }
+                )
+                if overrides != wanted_overrides:
+                    continue
+                return _scan_to_dict(row)
+            return None
+
     # --- Manual research-run orchestration (#341) ---
 
     def get_research_run(self, user_id: str) -> dict[str, Any] | None:
@@ -1699,12 +1773,15 @@ class TwResearchRepository(SessionBoundRepository):
             return _research_run_to_dict(row)
 
     def upsert_research_run(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Replace the user's authoritative research-run row (fail closed)."""
+        """OCC upsert: bump revision when ``WHERE revision = expected`` matches."""
+        from app.services.tw_research.research_run import ResearchRunConflict
+
         session_factory = self._session_factory()
         with session_factory() as session:
             user_id = str(payload["user_id"])
-            row = session.get(TwResearchResearchRun, user_id)
+            expected_revision = int(payload.get("revision") or 0)
             now = datetime.now(timezone.utc)
+            row = session.get(TwResearchResearchRun, user_id)
             if row is None:
                 row = TwResearchResearchRun(
                     user_id=user_id,
@@ -1720,28 +1797,51 @@ class TwResearchRepository(SessionBoundRepository):
                     technical_scan_id=payload.get("technical_scan_id"),
                     gates_json=dict(payload.get("gates") or {}),
                     dimensions_json=dict(payload.get("dimensions") or {}),
-                    notes_json=list(payload.get("notes") or []),
+                    notes_json=list(payload.get("notes") or [])[-50:],
                     schedule_enabled=bool(payload.get("schedule_enabled")),
+                    revision=1,
                     created_at=now,
                     updated_at=now,
                 )
-                session.add(row)
+                try:
+                    with session.begin_nested():
+                        session.add(row)
+                        session.flush()
+                except IntegrityError:
+                    session.expire_all()
+                    existing = session.get(TwResearchResearchRun, user_id)
+                    if existing is None:
+                        raise ResearchRunConflict() from None
+                    raise ResearchRunConflict() from None
             else:
-                row.research_run_id = str(payload["research_run_id"])
-                row.version = str(payload.get("version") or row.version)
-                row.phase = str(payload["phase"])
-                row.status = str(payload["status"])
-                row.trading_day = payload.get("trading_day")
-                row.first_pass_job_id = payload.get("first_pass_job_id")
-                row.first_pass_snapshot_id = payload.get("first_pass_snapshot_id")
-                row.candidate_set_id = payload.get("candidate_set_id")
-                row.candidate_set_version = payload.get("candidate_set_version")
-                row.technical_scan_id = payload.get("technical_scan_id")
-                row.gates_json = dict(payload.get("gates") or {})
-                row.dimensions_json = dict(payload.get("dimensions") or {})
-                row.notes_json = list(payload.get("notes") or [])
-                row.schedule_enabled = bool(payload.get("schedule_enabled"))
-                row.updated_at = now
+                updated = session.execute(
+                    update(TwResearchResearchRun)
+                    .where(
+                        TwResearchResearchRun.user_id == user_id,
+                        TwResearchResearchRun.revision == expected_revision,
+                    )
+                    .values(
+                        research_run_id=str(payload["research_run_id"]),
+                        version=str(payload.get("version") or row.version),
+                        phase=str(payload["phase"]),
+                        status=str(payload["status"]),
+                        trading_day=payload.get("trading_day"),
+                        first_pass_job_id=payload.get("first_pass_job_id"),
+                        first_pass_snapshot_id=payload.get("first_pass_snapshot_id"),
+                        candidate_set_id=payload.get("candidate_set_id"),
+                        candidate_set_version=payload.get("candidate_set_version"),
+                        technical_scan_id=payload.get("technical_scan_id"),
+                        gates_json=dict(payload.get("gates") or {}),
+                        dimensions_json=dict(payload.get("dimensions") or {}),
+                        notes_json=list(payload.get("notes") or [])[-50:],
+                        schedule_enabled=bool(payload.get("schedule_enabled")),
+                        revision=expected_revision + 1,
+                        updated_at=now,
+                    )
+                )
+                if int(updated.rowcount or 0) != 1:
+                    raise ResearchRunConflict()
+                session.refresh(row)
             session.commit()
             session.refresh(row)
             return _research_run_to_dict(row)
@@ -2410,6 +2510,7 @@ def _research_run_to_dict(row: TwResearchResearchRun) -> dict[str, Any]:
         "dimensions": dict(row.dimensions_json or {}),
         "notes": list(row.notes_json or []),
         "schedule_enabled": bool(row.schedule_enabled),
+        "revision": int(getattr(row, "revision", 0) or 0),
         "created_at": row.created_at.isoformat()
         if hasattr(row.created_at, "isoformat")
         else str(row.created_at),

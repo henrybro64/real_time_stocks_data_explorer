@@ -23,8 +23,18 @@ from app.services.tw_research.constants import (
     REPORT_EVIDENCE_VERSION,
 )
 from app.services.tw_research.evaluation import derive_stage_progress
+from app.services.tw_research.export import content_digest
 
 _FIXTURE_PATH = Path(__file__).with_name("report_evidence_fixture_zh_tw.json")
+
+_PARTIAL_STATUSES = frozenset(
+    {
+        "partial",
+        "deferred",
+        "budget_exhausted",
+        "waiting_for_next_window",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -33,6 +43,59 @@ class ReportEvidencePack:
 
     def as_dict(self) -> dict[str, Any]:
         return dict(self.payload)
+
+
+def normalize_first_pass_snapshot(raw: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Accept snake_case repository rows or camelCase API shapes."""
+    if not raw:
+        return None
+    payload = raw.get("payload") if isinstance(raw.get("payload"), dict) else {}
+    snapshot_id = (
+        raw.get("snapshotId")
+        or raw.get("snapshot_id")
+        or raw.get("firstPassSnapshotId")
+        or raw.get("first_pass_snapshot_id")
+    )
+    digest = (
+        raw.get("contentDigest")
+        or raw.get("content_digest")
+        or raw.get("firstPassDigest")
+        or raw.get("first_pass_digest")
+    )
+    stock_ids = list(
+        raw.get("stockIds")
+        or raw.get("stock_ids")
+        or payload.get("stockIds")
+        or payload.get("stock_ids")
+        or []
+    )
+    quality = (
+        raw.get("qualityStatus")
+        or raw.get("quality_status")
+        or payload.get("qualityStatus")
+        or payload.get("quality_status")
+    )
+    trading_day = (
+        raw.get("tradingDay")
+        or raw.get("trading_day")
+        or payload.get("tradingDay")
+        or payload.get("trading_day")
+    )
+    return {
+        "snapshotId": snapshot_id,
+        "contentDigest": digest,
+        "stockIds": stock_ids,
+        "universeSize": int(
+            raw.get("universeSize")
+            or raw.get("universe_size")
+            or len(stock_ids)
+            or 0
+        ),
+        "qualityStatus": quality,
+        "tradingDay": trading_day,
+        "payload": dict(payload) if payload else {},
+        "raw": dict(raw),
+    }
 
 
 def build_report_evidence(
@@ -45,6 +108,7 @@ def build_report_evidence(
 ) -> ReportEvidencePack:
     """Compose a compact analyst-ready evidence document from durable inputs."""
     now = datetime.now(UTC).isoformat()
+    first_pass = normalize_first_pass_snapshot(first_pass_snapshot)
     rows = list(ledger_rows or [])
     stage = {}
     if technical_scan is not None:
@@ -57,28 +121,30 @@ def build_report_evidence(
         )
 
     quality_warnings: list[str] = []
-    if first_pass_snapshot and first_pass_snapshot.get("qualityStatus") not in {
+    first_pass_quality = (first_pass or {}).get("qualityStatus")
+    if first_pass is not None and first_pass_quality in _PARTIAL_STATUSES:
+        quality_warnings.append("first_pass_incomplete_or_partial")
+    elif first_pass is not None and first_pass_quality not in {
         None,
         "verified_ready",
         "complete",
-        "partial",
+        "completed",
+        "ok",
     }:
         quality_warnings.append("first_pass_quality_not_verified_ready")
-    if technical_scan and technical_scan.get("status") == "budget_exhausted":
+
+    technical_status = (technical_scan or {}).get("status")
+    if technical_status == "budget_exhausted":
         quality_warnings.append("technical_hard_cap_budget_exhausted")
-    if technical_scan and technical_scan.get("status") in {
-        "partial",
-        "deferred",
-        "waiting_for_next_window",
-    }:
+    if technical_status in _PARTIAL_STATUSES:
         quality_warnings.append("technical_waiting_or_partial")
 
     publishability = "draft_only"
     if (
-        first_pass_snapshot
+        first_pass
         and candidate_set
         and technical_scan
-        and technical_scan.get("status") in {"verified_ready", "completed_processing"}
+        and technical_status in {"verified_ready", "completed_processing"}
         and not quality_warnings
     ):
         publishability = "evidence_ready_for_analyst_decision"
@@ -98,12 +164,22 @@ def build_report_evidence(
         row for row in symbols if row.get("bucket") == "technical_confirmed"
     ]
 
+    first_pass_ref = None
+    if first_pass and first_pass.get("snapshotId"):
+        snapshot_id = str(first_pass["snapshotId"])
+        first_pass_ref = {
+            "snapshotId": snapshot_id,
+            "contentDigest": first_pass.get("contentDigest"),
+            "stockCount": int(first_pass.get("universeSize") or len(first_pass.get("stockIds") or [])),
+            "manifestPath": f"/api/tw-research/first-pass/snapshots/{snapshot_id}/manifest",
+        }
+
     payload = {
         "reportEvidenceVersion": REPORT_EVIDENCE_VERSION,
         "generatedAt": now,
         "tradingDay": trading_day
         or (technical_scan or {}).get("tradingDay")
-        or (first_pass_snapshot or {}).get("tradingDay"),
+        or (first_pass or {}).get("tradingDay"),
         "ownership": {
             "stockTickerRole": "data_producer_evidence_only",
             "chatgptRole": "two_decision_analyst",
@@ -112,11 +188,7 @@ def build_report_evidence(
             "stockTickerRanksFinalPicks": False,
         },
         "summary": {
-            "universeSize": int(
-                (first_pass_snapshot or {}).get("universeSize")
-                or len((first_pass_snapshot or {}).get("stockIds") or [])
-                or 0
-            ),
+            "universeSize": int((first_pass or {}).get("universeSize") or 0),
             "candidateCount": len((candidate_set or {}).get("stockIds") or []),
             "tradingCandidateCount": len(trading_candidates),
             "watchlistCount": len(watchlist),
@@ -127,15 +199,15 @@ def build_report_evidence(
             "noTopNPadding": True,
         },
         "pins": {
-            "firstPassSnapshotId": (first_pass_snapshot or {}).get("snapshotId")
-            or (first_pass_snapshot or {}).get("firstPassSnapshotId"),
-            "firstPassDigest": (first_pass_snapshot or {}).get("contentDigest")
+            "firstPassSnapshotId": (first_pass or {}).get("snapshotId"),
+            "firstPassDigest": (first_pass or {}).get("contentDigest")
             or (candidate_set or {}).get("firstPassDigest"),
             "candidateSetId": (candidate_set or {}).get("candidateSetId"),
             "candidateSetVersion": (candidate_set or {}).get("version"),
             "technicalScanId": (technical_scan or {}).get("scanId"),
             "technicalContentDigest": (technical_scan or {}).get("contentDigest"),
         },
+        "firstPass": first_pass_ref,
         "stageProgress": stage,
         "symbols": symbols,
         "analystDecisionSlots": {
@@ -158,6 +230,8 @@ def build_report_evidence(
             "Unchanged contentDigest ⇒ external Agent must not rewrite Notion.",
         ],
     }
+    digest_payload = {key: value for key, value in payload.items() if key != "generatedAt"}
+    payload["contentDigest"] = content_digest(digest_payload)
     return ReportEvidencePack(payload=payload)
 
 
@@ -202,6 +276,7 @@ def _symbol_evidence_row(row: dict[str, Any]) -> dict[str, Any]:
         "stockId": row.get("stockId"),
         "stockName": row.get("stockName"),
         "nameStatus": row.get("nameStatus"),
+        "technicalStage": row.get("technicalStage") or row.get("technical_stage"),
         "bucket": bucket,
         "monthlyPassStatus": monthly_pass,
         "dailyPassStatus": daily_pass,
