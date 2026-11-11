@@ -91,6 +91,56 @@ _RETRYABLE_FIELD_CLASSES = frozenset(
     }
 )
 
+# Infrastructure / coordination failures must fail closed — never become
+# ProvenanceField(status="unavailable") market-data gaps.
+_INFRA_EXC_TYPE_NAMES = frozenset(
+    {
+        "OperationalError",
+        "DBAPIError",
+        "IntegrityError",
+        "DataError",
+        "InternalError",
+        "InterfaceError",
+        "DatabaseError",
+        "SQLAlchemyError",
+        "PendingRollbackError",
+        "InvalidRequestError",
+        "StatementError",
+        "TwResearchDurableStoreError",
+        "FirstPassDurableUnavailable",
+        "FirstPassJobError",
+        "ResearchMembershipUnavailable",
+    }
+)
+
+
+def is_infrastructure_failure(exc: BaseException) -> bool:
+    """True when ``exc`` is a DB/coordination failure, not a market-data fault."""
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        name = type(current).__name__
+        module = str(getattr(type(current), "__module__", "") or "")
+        if name in _INFRA_EXC_TYPE_NAMES:
+            return True
+        if module.startswith("sqlalchemy.") or module.startswith("psycopg"):
+            return True
+        if "sqlalchemy" in module and "Error" in name:
+            return True
+        # Explicit markers used by durable first-pass / scan layers.
+        if getattr(current, "operation", None) in {
+            "persist_scan",
+            "persist_symbol",
+            "claim_first_pass_batch",
+            "complete_first_pass_batch",
+            "first_pass_snapshot",
+            "create_first_pass_job",
+        }:
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
 
 @dataclass
 class FirstPassSymbolRecord:
@@ -346,7 +396,9 @@ def collect_first_pass_batch(
                 )
             )
         except Exception as exc:  # noqa: BLE001 — isolate unexpected per-symbol faults
-            # Do not catch DB/lease errors here; those happen outside this collector.
+            if is_infrastructure_failure(exc):
+                # PostgreSQL / lease / persistence must fail closed.
+                raise
             failed = FirstPassSymbolRecord(
                 stock_id=stock_id,
                 stock_name=None,
@@ -514,6 +566,8 @@ def _collect_one(
         try:
             action()
         except Exception as exc:  # noqa: BLE001 — isolate per source
+            if is_infrastructure_failure(exc):
+                raise
             scratch.fields[field_name] = ProvenanceField(
                 field=field_name,
                 status="unavailable",
@@ -634,6 +688,8 @@ def _collect_one(
         try:
             candles = list(candles_loader(stock) or [])
         except Exception as exc:  # noqa: BLE001 — isolate candle retrieval
+            if is_infrastructure_failure(exc):
+                raise
             scratch.fields["latest_completed_close"] = ProvenanceField(
                 field="latest_completed_close",
                 status="unavailable",
@@ -702,6 +758,8 @@ def _collect_one(
                 },
             )
         except Exception as exc:  # noqa: BLE001 — isolate price-basis calculation
+            if is_infrastructure_failure(exc):
+                raise
             scratch.fields["relative_price_basis"] = ProvenanceField(
                 field="relative_price_basis",
                 status="unavailable",
@@ -753,6 +811,8 @@ def _apply_margins(
     try:
         payload = loader(stock_id)
     except Exception as exc:  # noqa: BLE001
+        if is_infrastructure_failure(exc):
+            raise
         scratch.fields["gross_operating_net_margins"] = ProvenanceField(
             field="gross_operating_net_margins",
             status="unavailable",

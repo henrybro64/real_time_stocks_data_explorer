@@ -1184,6 +1184,11 @@ def test_candidate_set_feeds_technical_scan_universe_only(monkeypatch) -> None:
     assert "TW:2303" not in scan.stock_ids
     assert any("candidate set" in note.lower() for note in scan.notes)
     assert any("not a notion" in note.lower() for note in scan.notes)
+    assert scan.candidate_provenance is not None
+    assert scan.candidate_provenance["candidateSetId"] == candidates["candidateSetId"]
+    assert scan.candidate_provenance["candidateSetVersion"] == candidates["version"]
+    assert scan.candidate_provenance["approvedStockIds"] == ["TW:2330", "TW:2454"]
+    assert "candidateProvenance" in scan.snapshot()
     tw_research_repository.clear_session_factory_override()
 
 
@@ -1281,3 +1286,361 @@ def test_membership_occ_uses_version_predicate(monkeypatch) -> None:
     assert second["version"] == 2
     assert second["sector_additions"]["tw-thermal"] == ["TW:2330"]
     tw_research_repository.clear_session_factory_override()
+
+
+def _seed_candidate_universe(monkeypatch, user_id: str, stock_ids: list[str]):
+    from tests.support import install_in_memory_sessionlocal, seed_test_users
+
+    session_local = install_in_memory_sessionlocal(monkeypatch)
+    seed_test_users(session_local, user_id)
+    from app.repositories.tw_research_repository import tw_research_repository
+    from app.services.tw_research.first_pass import FirstPassBatchResult, FirstPassSymbolRecord
+    from app.services.tw_research.first_pass_durable import (
+        persist_first_pass_batch,
+        submit_candidate_set,
+    )
+
+    tw_research_repository.clear_session_factory_override()
+    tw_research_repository.set_session_factory_override(session_local)
+    batch = FirstPassBatchResult(
+        first_pass_version="first-pass-v1",
+        universe_version="u1",
+        requested_count=len(stock_ids),
+        collected_count=len(stock_ids),
+        deduped_count=len(stock_ids),
+        records=[
+            FirstPassSymbolRecord(
+                stock_id=sid,
+                stock_name=sid,
+                name_status="ok",
+                name_source="catalog",
+                exchange="TWSE",
+                market="TW",
+                sector_theme_keys=[],
+            )
+            for sid in stock_ids
+        ],
+        coverage_summary={},
+        notes=[],
+    )
+    snap = persist_first_pass_batch(batch, user_id=user_id, repository=tw_research_repository)
+    candidates = submit_candidate_set(
+        user_id=user_id,
+        first_pass_snapshot_id=snap.snapshot_id,
+        first_pass_digest=snap.content_digest,
+        stock_ids=stock_ids[:2] if len(stock_ids) >= 2 else stock_ids,
+        origin="analyst",
+        expected_version=0,
+        repository=tw_research_repository,
+    )
+    return tw_research_repository, snap, candidates
+
+
+def test_candidate_scan_rejects_missing_catalog_id(monkeypatch) -> None:
+    from app.services.tw_research.first_pass_durable import (
+        CandidateSetValidationError,
+        create_technical_scan_from_candidate_set,
+    )
+    from app.services.tw_research.scan import TwResearchScanService
+
+    repo, _snap, candidates = _seed_candidate_universe(
+        monkeypatch, "user-miss", ["TW:2330", "TW:2454", "TW:2303"]
+    )
+
+    def loader(stock_id: str):
+        if stock_id == "TW:2454":
+            return None
+        return stock_record(
+            stock_id,
+            market="TW",
+            symbol=stock_id.split(":")[-1],
+            name=stock_id,
+            name_zh_tw=stock_id,
+            exchange="TWSE",
+            currency="TWD",
+            timezone="Asia/Taipei",
+        )
+
+    service = TwResearchScanService(stock_loader=loader, persist=False)
+    with pytest.raises(CandidateSetValidationError) as raised:
+        create_technical_scan_from_candidate_set(
+            user_id="user-miss",
+            expected_version=int(candidates["version"]),
+            repository=repo,
+            scan_service=service,
+        )
+    assert raised.value.detail["error"] == "candidate_universe_mismatch"
+    assert "TW:2454" in raised.value.detail["missingFromCatalog"]
+    assert service.list_scans("user-miss", limit=5) == []
+    repo.clear_session_factory_override()
+
+
+def test_candidate_scan_rejects_empty_and_version_conflict(monkeypatch) -> None:
+    from app.services.tw_research.first_pass_durable import (
+        CandidateSetConflict,
+        CandidateSetValidationError,
+        create_technical_scan_from_candidate_set,
+    )
+    from app.services.tw_research.scan import TwResearchScanService
+
+    repo, snap, candidates = _seed_candidate_universe(
+        monkeypatch, "user-empty", ["TW:2330", "TW:2454"]
+    )
+
+    empty = repo.save_candidate_set(
+        candidate_set_id="cs_empty",
+        user_id="user-empty",
+        expected_version=int(candidates["version"]),
+        first_pass_snapshot_id=snap.snapshot_id,
+        first_pass_digest=snap.content_digest,
+        stock_ids=[],
+        origin="analyst",
+        selection_reasons={},
+        decision_date=None,
+        notes=[],
+    )
+    with pytest.raises(CandidateSetValidationError) as empty_exc:
+        create_technical_scan_from_candidate_set(
+            user_id="user-empty",
+            expected_version=int(empty["version"]),
+            repository=repo,
+            scan_service=TwResearchScanService(persist=False),
+        )
+    assert empty_exc.value.detail["error"] == "empty_candidate_set"
+
+    with pytest.raises(CandidateSetConflict):
+        create_technical_scan_from_candidate_set(
+            user_id="user-empty",
+            expected_version=0,
+            repository=repo,
+            scan_service=TwResearchScanService(persist=False),
+        )
+    repo.clear_session_factory_override()
+
+
+def test_candidate_scan_rejects_digest_mismatch(monkeypatch) -> None:
+    from app.services.tw_research.first_pass_durable import (
+        CandidateSetValidationError,
+        create_technical_scan_from_candidate_set,
+    )
+    from app.services.tw_research.scan import TwResearchScanService
+
+    repo, snap, candidates = _seed_candidate_universe(
+        monkeypatch, "user-digest", ["TW:2330", "TW:2454"]
+    )
+    # Corrupt digest on the stored candidate set row.
+    session = repo._session_factory()()
+    try:
+        from sqlalchemy import select
+
+        from app.db.models import TwResearchCandidateSet
+
+        row = session.execute(
+            select(TwResearchCandidateSet).where(
+                TwResearchCandidateSet.candidate_set_id == candidates["candidateSetId"]
+            )
+        ).scalars().first()
+        assert row is not None
+        row.first_pass_digest = "0" * 64
+        session.commit()
+    finally:
+        session.close()
+
+    with pytest.raises(CandidateSetValidationError) as raised:
+        create_technical_scan_from_candidate_set(
+            user_id="user-digest",
+            expected_version=int(candidates["version"]),
+            repository=repo,
+            scan_service=TwResearchScanService(
+                stock_loader=lambda sid: stock_record(
+                    sid,
+                    market="TW",
+                    symbol=sid.split(":")[-1],
+                    name=sid,
+                    name_zh_tw=sid,
+                    exchange="TWSE",
+                    currency="TWD",
+                    timezone="Asia/Taipei",
+                ),
+                persist=False,
+            ),
+        )
+    assert raised.value.detail["error"] == "first_pass_digest_mismatch"
+    del snap
+    repo.clear_session_factory_override()
+
+
+def test_infrastructure_failure_is_not_converted_to_unavailable_field() -> None:
+    from sqlalchemy.exc import OperationalError
+
+    from app.services.tw_research.first_pass import (
+        collect_first_pass_batch,
+        is_infrastructure_failure,
+    )
+
+    assert is_infrastructure_failure(OperationalError("stmt", {}, Exception("db down")))
+
+    stock = stock_record(
+        "TW:2330",
+        market="TW",
+        symbol="2330",
+        name="台積電",
+        name_zh_tw="台積電",
+        exchange="TWSE",
+        currency="TWD",
+        timezone="Asia/Taipei",
+    )
+
+    def boom(_sid: str):
+        raise OperationalError("SELECT 1", {}, Exception("connection refused"))
+
+    with pytest.raises(OperationalError):
+        collect_first_pass_batch(
+            ["TW:2330", "TW:2454"],
+            stock_loader=lambda sid: stock if sid == "TW:2330" else stock_record(
+                sid,
+                market="TW",
+                symbol=sid.split(":")[-1],
+                name=sid,
+                name_zh_tw=sid,
+                exchange="TWSE",
+                currency="TWD",
+                timezone="Asia/Taipei",
+            ),
+            candles_loader=lambda _s: _candles(days=40, start_close=90.0, low_bias=True),
+            institutional_loader=lambda _sid, _days: _InstResult(
+                history=(), latest_date=None, source="fixture"
+            ),
+            margin_loader=lambda _sid, _days: _MarginResult(
+                history=(), summary=None, latest_date=None, source="fixture", empty_reason="empty"
+            ),
+            ownership_loader=lambda _sid: _OwnResult(points=(), as_of=None, source="fixture"),
+            key_stats_loader=boom,
+            theme_keys_loader=lambda _sid: [],
+        )
+
+
+def test_provider_timeout_still_isolates_peers() -> None:
+    stocks = {
+        "TW:2330": stock_record(
+            "TW:2330",
+            market="TW",
+            symbol="2330",
+            name="台積電",
+            name_zh_tw="台積電",
+            exchange="TWSE",
+            currency="TWD",
+            timezone="Asia/Taipei",
+        ),
+        "TW:2454": stock_record(
+            "TW:2454",
+            market="TW",
+            symbol="2454",
+            name="聯發科",
+            name_zh_tw="聯發科",
+            exchange="TWSE",
+            currency="TWD",
+            timezone="Asia/Taipei",
+        ),
+    }
+
+    def key_stats(stock_id: str):
+        if stock_id == "TW:2330":
+            raise TimeoutError("upstream timeout")
+        return {
+            "peRatio": 15.0,
+            "peRatioType": "official_daily",
+            "peRatioSource": "fixture",
+            "valuationAsOf": "2024-06-27",
+            "epsTtm": None,
+        }
+
+    result = collect_first_pass_batch(
+        ["TW:2330", "TW:2454"],
+        stock_loader=lambda sid: stocks[sid],
+        candles_loader=lambda _s: _candles(days=40, start_close=90.0, low_bias=True),
+        institutional_loader=lambda _sid, _days: _InstResult(
+            history=(), latest_date=None, source="fixture"
+        ),
+        margin_loader=lambda _sid, _days: _MarginResult(
+            history=(), summary=None, latest_date=None, source="fixture", empty_reason="empty"
+        ),
+        ownership_loader=lambda _sid: _OwnResult(points=(), as_of=None, source="fixture"),
+        key_stats_loader=key_stats,
+        theme_keys_loader=lambda _sid: [],
+    )
+    by_id = {record.stock_id: record for record in result.records}
+    assert by_id["TW:2330"].error is not None
+    assert "timeout" in (by_id["TW:2330"].fields["official_pe"].reason or "").lower()
+    assert by_id["TW:2454"].fields["official_pe"].status == "ok"
+
+
+def test_first_pass_job_raises_on_infrastructure_during_collect(monkeypatch) -> None:
+    from sqlalchemy.exc import OperationalError
+    from tests.support import install_in_memory_sessionlocal, seed_test_users
+
+    session_local = install_in_memory_sessionlocal(monkeypatch)
+    seed_test_users(session_local, "user-infra")
+    from app.repositories.tw_research_repository import tw_research_repository
+    from app.services.tw_research.first_pass_job import FirstPassJobError, FirstPassJobService
+
+    tw_research_repository.clear_session_factory_override()
+    tw_research_repository.set_session_factory_override(session_local)
+
+    def boom(*_args, **_kwargs):
+        raise OperationalError("SELECT 1", {}, Exception("db down"))
+
+    monkeypatch.setattr(
+        "app.services.tw_research.first_pass_job.collect_first_pass_batch",
+        boom,
+    )
+    service = FirstPassJobService(repository=tw_research_repository)
+    job = service.create_job(
+        user_id="user-infra",
+        stock_ids=["TW:2330"],
+        use_membership=False,
+    )
+    with pytest.raises(FirstPassJobError) as raised:
+        service.run_batch(job["job_id"], user_id="user-infra", batch_size=1)
+    assert "infrastructure" in str(raised.value)
+    # Prior job row remains; no false symbol success.
+    assert tw_research_repository.get_first_pass_symbol(job["job_id"], "TW:2330") is None
+    tw_research_repository.clear_session_factory_override()
+
+
+def test_candidate_scan_atomic_provenance_fails_closed(monkeypatch) -> None:
+    from app.services.tw_research.first_pass_durable import create_technical_scan_from_candidate_set
+    from app.services.tw_research.scan import TwResearchDurableStoreError, TwResearchScanService
+
+    repo, _snap, candidates = _seed_candidate_universe(
+        monkeypatch, "user-atom", ["TW:2330", "TW:2454"]
+    )
+
+    class FailingScanService(TwResearchScanService):
+        def create_scan(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+            raise TwResearchDurableStoreError(
+                "Durable scan write failed.",
+                scan_id="scan_x",
+                operation="persist_scan",
+            )
+
+    with pytest.raises(TwResearchDurableStoreError):
+        create_technical_scan_from_candidate_set(
+            user_id="user-atom",
+            expected_version=int(candidates["version"]),
+            repository=repo,
+            scan_service=FailingScanService(
+                stock_loader=lambda sid: stock_record(
+                    sid,
+                    market="TW",
+                    symbol=sid.split(":")[-1],
+                    name=sid,
+                    name_zh_tw=sid,
+                    exchange="TWSE",
+                    currency="TWD",
+                    timezone="Asia/Taipei",
+                ),
+                persist=True,
+            ),
+        )
+    repo.clear_session_factory_override()

@@ -22,6 +22,7 @@ from app.services.tw_research.first_pass import (
     dedupe_stock_ids,
     dominant_transient_field_error,
     field_reason_is_retryable,
+    is_infrastructure_failure,
     retry_after_seconds_from_reason,
 )
 from app.services.tw_research.first_pass_durable import FirstPassDurableUnavailable
@@ -365,14 +366,23 @@ class FirstPassJobService:
             fields = payload.get("fields")
             if isinstance(fields, dict):
                 previous_fields_by_stock[stock_id] = fields
-        result = collect_first_pass_batch(
-            batch_ids,
-            universe_version=job["universe_version"],
-            include_nonofficial_margins=include_nonofficial_margins,
-            previous_fields_by_stock=previous_fields_by_stock,
-            **kwargs,
-        )
+        try:
+            result = collect_first_pass_batch(
+                batch_ids,
+                universe_version=job["universe_version"],
+                include_nonofficial_margins=include_nonofficial_margins,
+                previous_fields_by_stock=previous_fields_by_stock,
+                **kwargs,
+            )
+        except Exception as exc:  # noqa: BLE001 — classify infra vs unexpected
+            if is_infrastructure_failure(exc):
+                raise FirstPassJobError(
+                    "first_pass_infrastructure_unavailable",
+                    operation="run_first_pass_batch",
+                ) from exc
+            raise
         processed = 0
+        lease_rejected = 0
         for record in result.records:
             status = _symbol_status(record)
             previous_payload = previous_payloads.get(record.stock_id)
@@ -417,21 +427,45 @@ class FirstPassJobService:
                     payload["failureClass"] = None
                     payload["retryExhausted"] = False
                     payload["nextRetryAt"] = None
-            ok = self._repo.upsert_first_pass_symbol(
-                job_id=job_id,
-                stock_id=record.stock_id,
-                status=status,
-                payload=payload,
-                lease_generation=generation,
-            )
+            try:
+                ok = self._repo.upsert_first_pass_symbol(
+                    job_id=job_id,
+                    stock_id=record.stock_id,
+                    status=status,
+                    payload=payload,
+                    lease_generation=generation,
+                )
+            except Exception as exc:  # noqa: BLE001
+                if is_infrastructure_failure(exc):
+                    raise FirstPassJobError(
+                        "first_pass_infrastructure_unavailable",
+                        operation="persist_first_pass_symbol",
+                    ) from exc
+                raise
             if ok:
                 processed += 1
+            else:
+                lease_rejected += 1
 
-        completed = self._repo.complete_first_pass_batch(
-            job_id,
-            lease_generation=generation,
-            processed_count=processed,
-        )
+        if lease_rejected and processed == 0 and result.records:
+            raise FirstPassJobError(
+                "first_pass_lease_generation_mismatch",
+                operation="persist_first_pass_symbol",
+            )
+
+        try:
+            completed = self._repo.complete_first_pass_batch(
+                job_id,
+                lease_generation=generation,
+                processed_count=processed,
+            )
+        except Exception as exc:  # noqa: BLE001
+            if is_infrastructure_failure(exc):
+                raise FirstPassJobError(
+                    "first_pass_infrastructure_unavailable",
+                    operation="complete_first_pass_batch",
+                ) from exc
+            raise
         job_out = (completed or {}).get("job") or claim["job"]
         # Finalize only when every symbol is terminal (ok/partial/exhausted), not
         # while transient failures remain in backoff.

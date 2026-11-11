@@ -296,6 +296,8 @@ class ScanState:
     notes: list[str] = field(default_factory=list)
     user_id: str | None = None
     active_snapshot_id: str | None = None
+    # Optional immutable candidate-set provenance for second-pass scans (#336).
+    candidate_provenance: dict[str, Any] | None = None
     # Lease deadlines copied from PostgreSQL. A status of "running" is not a heartbeat.
     reserve_expires_at: str | None = None
     enrich_reserve_expires_at: str | None = None
@@ -341,6 +343,11 @@ class ScanState:
             "notes": list(self.notes),
             "stockIds": list(self.stock_ids),
             "selectorMode": self.selector.mode,
+            "candidateProvenance": (
+                dict(self.candidate_provenance)
+                if self.candidate_provenance is not None
+                else None
+            ),
             "ledger": [asdict(record) for record in self.records.values()],
             "activeSnapshotId": self.active_snapshot_id,
             "reserveExpiresAt": self.reserve_expires_at,
@@ -564,6 +571,8 @@ class TwResearchScanService:
         max_enrichments_per_run: int = DEFAULT_MAX_ENRICHMENTS_PER_RUN,
         now: datetime | None = None,
         user_id: str | None = None,
+        extra_notes: list[str] | None = None,
+        candidate_provenance: dict[str, Any] | None = None,
     ) -> ScanState:
         if target_count not in {10, 20}:
             # Output target only; never changes pass rules.
@@ -574,6 +583,12 @@ class TwResearchScanService:
         current = now or datetime.now(TAIPEI)
         day = trading_day or current.date().isoformat()
         stamp = current.isoformat()
+        provenance = dict(candidate_provenance) if candidate_provenance else None
+        if provenance is not None:
+            provenance.setdefault("tradingDay", day)
+            provenance.setdefault("calculationVersion", CALCULATION_VERSION)
+            provenance.setdefault("universeVersion", resolved.universe_version)
+            provenance.setdefault("approvedStockIds", list(resolved.stock_ids))
         state = ScanState(
             scan_id=str(uuid4()),
             trading_day=day,
@@ -587,8 +602,9 @@ class TwResearchScanService:
             max_enrichments_per_run=max_enrichments_per_run,
             created_at=stamp,
             updated_at=stamp,
-            notes=list(resolved.notes),
+            notes=list(resolved.notes) + list(extra_notes or []),
             user_id=user_id,
+            candidate_provenance=provenance,
         )
         for item in resolved.rejected:
             state.records[item.stock_id] = SymbolScanRecord(
@@ -600,6 +616,7 @@ class TwResearchScanService:
         with self._lock:
             self._scans[state.scan_id] = state
         try:
+            # Notes + candidate provenance are included in this first durable write.
             self._persist_scan(state)
             for record in state.records.values():
                 self._persist_symbol(state, record)

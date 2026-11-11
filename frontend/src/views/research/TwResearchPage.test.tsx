@@ -853,6 +853,30 @@ describe("TwResearchPage reliability UX (#335–#337)", () => {
     );
   });
 
+  it("shows backend unavailable for HTTP 503 instead of empty job history", async () => {
+    vi.mocked(listTwResearchFirstPassJobs).mockRejectedValue(
+      new ApiError("Request failed: 503", {
+        status: 503,
+        detail: "durable_store_unavailable",
+        kind: "unavailable",
+      }),
+    );
+    renderPage();
+    expect(
+      await screen.findByTestId("tw-research-first-pass-jobs-unavailable"),
+    ).toBeInTheDocument();
+    expect(screen.queryByTestId("tw-research-first-pass-jobs-empty")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("tw-research-first-pass-job-history")).not.toBeInTheDocument();
+    // Failed reads must not invent a new job id.
+    expect(screen.queryByTestId("tw-research-first-pass-job-history")).toBeNull();
+  });
+
+  it("shows legitimate empty state when no jobs exist", async () => {
+    vi.mocked(listTwResearchFirstPassJobs).mockResolvedValue([]);
+    renderPage();
+    expect(await screen.findByTestId("tw-research-first-pass-jobs-empty")).toBeInTheDocument();
+  });
+
   it("preserves unsaved candidate edits on version conflict", async () => {
     const user = userEvent.setup();
     vi.mocked(fetchTwResearchLatestCandidateSet)

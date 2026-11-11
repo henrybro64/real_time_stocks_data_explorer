@@ -91,7 +91,7 @@ Low relative price **does not** mean cheap valuation. Historical valuation conte
 | GET/PUT | `/api/tw-research/membership` | Per-sector add/remove + OCC; **503** if DB unavailable |
 | POST | `/api/tw-research/membership/preview` | Preview without persist |
 | POST/GET | `/api/tw-research/candidate-sets` (+ `/latest`) | Analyst/manual subset pinned to first-pass digest |
-| POST | `/api/tw-research/candidate-sets/technical-scan` | Monthly/daily MACD/KD scan from approved candidate IDs only |
+| POST | `/api/tw-research/candidate-sets/technical-scan` | Monthly/daily MACD/KD from approved IDs; rejects catalog mismatches; atomic provenance |
 | POST | `/api/tw-research/relative-price-basis` | Stored bars only |
 
 ## Provider cost notes (honest)

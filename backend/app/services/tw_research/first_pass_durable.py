@@ -43,7 +43,14 @@ class CandidateSetConflict(Exception):
 
 
 class CandidateSetValidationError(ValueError):
-    pass
+    """Invalid candidate-set input or universe mismatch.
+
+    ``detail`` is a structured, non-sensitive payload for HTTP 400 responses.
+    """
+
+    def __init__(self, message: str, *, detail: dict[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.detail = detail or {"error": message}
 
 
 @dataclass(frozen=True)
@@ -242,15 +249,17 @@ def create_technical_scan_from_candidate_set(
 ) -> dict[str, Any]:
     """Create a monthly/daily MACD/KD scan from an approved candidate set (#336).
 
-    Consumes only the explicitly selected candidate IDs. Does not publish Notion
-    report recommendations or expand the universe silently.
+    Consumes only the explicitly selected candidate IDs. Rejects the operation
+    when catalog resolution would silently drop or add membership. Does not
+    publish Notion report recommendations.
     """
     from app.services.tw_research.constants import (
+        CALCULATION_VERSION,
         DEFAULT_MAX_ENRICHMENTS_PER_RUN,
         DEFAULT_MAX_UPSTREAM_MONTH_FETCHES,
     )
-    from app.services.tw_research.scan import tw_research_scan_service
-    from app.services.tw_research.universe import UniverseSelector
+    from app.services.tw_research.scan import TwResearchDurableStoreError, tw_research_scan_service
+    from app.services.tw_research.universe import UniverseSelector, resolve_universe
 
     repo = repository or tw_research_repository
     if not repo.is_available():
@@ -263,7 +272,11 @@ def create_technical_scan_from_candidate_set(
         # Historical versions remain immutable; technical scan uses the approved
         # latest set unless the caller pins expected_version below.
         raise CandidateSetValidationError(
-            "candidate_set_id_not_latest;pass_expected_version_to_pin_latest_approval"
+            "candidate_set_id_not_latest;pass_expected_version_to_pin_latest_approval",
+            detail={
+                "error": "candidate_set_id_not_latest",
+                "latestCandidateSetId": saved["candidate_set_id"],
+            },
         )
 
     if expected_version is not None and int(saved["version"]) != int(expected_version):
@@ -275,27 +288,71 @@ def create_technical_scan_from_candidate_set(
 
     stock_ids = list(saved["stock_ids"] or [])
     if not stock_ids:
-        raise CandidateSetValidationError("empty_candidate_set")
+        raise CandidateSetValidationError(
+            "empty_candidate_set",
+            detail={"error": "empty_candidate_set"},
+        )
 
-    service = scan_service or tw_research_scan_service
-    state = service.create_scan(
-        UniverseSelector(mode="stock_ids", stock_ids=tuple(stock_ids)),
-        target_count=target_count,
-        trading_day=trading_day,
-        max_upstream_month_fetches=(
-            DEFAULT_MAX_UPSTREAM_MONTH_FETCHES
-            if max_upstream_month_fetches is None
-            else max_upstream_month_fetches
-        ),
-        max_enrichments_per_run=(
-            DEFAULT_MAX_ENRICHMENTS_PER_RUN
-            if max_enrichments_per_run is None
-            else max_enrichments_per_run
-        ),
-        user_id=user_id,
+    # Verify the pinned first-pass snapshot identity still matches.
+    snap = repo.get_first_pass_snapshot(
+        saved["first_pass_snapshot_id"], user_id=user_id
     )
-    # Stamp provenance onto scan notes without mutating candidate set.
-    state.notes = list(state.notes or []) + [
+    if snap is None:
+        raise CandidateSetValidationError(
+            "first_pass_snapshot_not_found",
+            detail={
+                "error": "first_pass_snapshot_not_found",
+                "firstPassSnapshotId": saved["first_pass_snapshot_id"],
+            },
+        )
+    if str(snap["content_digest"]) != str(saved["first_pass_digest"]):
+        raise CandidateSetValidationError(
+            "first_pass_digest_mismatch",
+            detail={
+                "error": "first_pass_digest_mismatch",
+                "firstPassSnapshotId": saved["first_pass_snapshot_id"],
+            },
+        )
+
+    approved = dedupe_stock_ids(stock_ids)
+    service = scan_service or tw_research_scan_service
+    stock_resolver = getattr(service, "_stock_loader", None)
+    resolved = resolve_universe(
+        UniverseSelector(mode="stock_ids", stock_ids=tuple(approved)),
+        stock_resolver=stock_resolver,
+    )
+    resolved_ids = list(resolved.stock_ids)
+    approved_set = set(approved)
+    resolved_set = set(resolved_ids)
+    rejected = [
+        {"stockId": item.stock_id, "reason": item.reason} for item in resolved.rejected
+    ]
+    missing = sorted(approved_set - resolved_set)
+    unexpected = sorted(resolved_set - approved_set)
+    if rejected or missing or unexpected or len(resolved_ids) != len(approved):
+        raise CandidateSetValidationError(
+            "candidate_universe_mismatch",
+            detail={
+                "error": "candidate_universe_mismatch",
+                "approvedStockIds": approved,
+                "resolvedStockIds": resolved_ids,
+                "rejected": rejected,
+                "missingFromCatalog": missing,
+                "unexpectedAdditions": unexpected,
+            },
+        )
+
+    provenance = {
+        "candidateSetId": saved["candidate_set_id"],
+        "candidateSetVersion": int(saved["version"]),
+        "firstPassSnapshotId": saved["first_pass_snapshot_id"],
+        "firstPassDigest": saved["first_pass_digest"],
+        "approvedStockIds": approved,
+        "universeVersion": resolved.universe_version,
+        "calculationVersion": CALCULATION_VERSION,
+        "notNotionReportList": True,
+    }
+    extra_notes = [
         (
             "Technical second-pass sourced from candidate set "
             f"{saved['candidate_set_id']} v{saved['version']} "
@@ -305,10 +362,39 @@ def create_technical_scan_from_candidate_set(
         "Not a Notion report list — final report selection remains external.",
     ]
     try:
-        service._persist_scan(state)  # noqa: SLF001 — reuse durable scan write path
-    except Exception:
-        # In-memory fallback still returns the scan; durable note persist is best-effort.
-        pass
+        state = service.create_scan(
+            UniverseSelector(mode="stock_ids", stock_ids=tuple(approved)),
+            target_count=target_count,
+            trading_day=trading_day,
+            max_upstream_month_fetches=(
+                DEFAULT_MAX_UPSTREAM_MONTH_FETCHES
+                if max_upstream_month_fetches is None
+                else max_upstream_month_fetches
+            ),
+            max_enrichments_per_run=(
+                DEFAULT_MAX_ENRICHMENTS_PER_RUN
+                if max_enrichments_per_run is None
+                else max_enrichments_per_run
+            ),
+            user_id=user_id,
+            extra_notes=extra_notes,
+            candidate_provenance=provenance,
+        )
+    except TwResearchDurableStoreError:
+        # Fail closed — never return a scan without durable provenance.
+        raise
+
+    if list(state.stock_ids) != approved:
+        # Defense in depth: create_scan must not diverge after pre-check.
+        raise CandidateSetValidationError(
+            "candidate_universe_mismatch_after_create",
+            detail={
+                "error": "candidate_universe_mismatch_after_create",
+                "approvedStockIds": approved,
+                "scanStockIds": list(state.stock_ids),
+            },
+        )
+
     return {
         "scan": state,
         "candidateSetId": saved["candidate_set_id"],
@@ -316,5 +402,6 @@ def create_technical_scan_from_candidate_set(
         "firstPassSnapshotId": saved["first_pass_snapshot_id"],
         "firstPassDigest": saved["first_pass_digest"],
         "stockIds": list(state.stock_ids),
+        "candidateProvenance": provenance,
         "notNotionReportList": True,
     }

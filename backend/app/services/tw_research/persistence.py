@@ -48,6 +48,11 @@ def scan_row_payload(state: ScanState, *, user_id: str | None = None) -> dict[st
             "mode": state.selector.mode,
             "themeKeys": list(state.selector.theme_keys),
             "stockIds": list(state.selector.stock_ids),
+            **(
+                {"candidateProvenance": dict(state.candidate_provenance)}
+                if getattr(state, "candidate_provenance", None)
+                else {}
+            ),
         },
         "stock_ids_json": list(state.stock_ids),
         "status": state.status,
@@ -255,6 +260,11 @@ def _state_from_scan_row(row: dict[str, Any]) -> ScanState:
         notes=list(row.get("notes_json") or []),
         user_id=row.get("user_id"),
         active_snapshot_id=row.get("active_snapshot_id"),
+        candidate_provenance=(
+            dict(selector_payload["candidateProvenance"])
+            if isinstance(selector_payload.get("candidateProvenance"), dict)
+            else None
+        ),
         reserve_expires_at=_iso_or_none(row.get("reserve_expires_at")),
         enrich_reserve_expires_at=_iso_or_none(row.get("enrich_reserve_expires_at")),
     )

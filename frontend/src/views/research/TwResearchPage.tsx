@@ -338,24 +338,26 @@ export function TwResearchPage({
     retry: false,
   });
 
+  const [firstPassJobsStale, setFirstPassJobsStale] = useState(false);
+
   const firstPassJobsQuery = useQuery({
     queryKey: ["tw-research-first-pass-jobs"],
-    queryFn: async () => {
-      try {
-        return await listTwResearchFirstPassJobs(20);
-      } catch (error) {
-        if (toApiError(error).status === 503) return [];
-        throw error;
-      }
-    },
+    queryFn: async () => listTwResearchFirstPassJobs(20),
     staleTime: 15_000,
+    // Avoid hammering an unavailable Postgres; manual retry is available.
     retry: false,
   });
 
   useEffect(() => {
+    if (firstPassJobsQuery.isError) {
+      // Keep last verified jobs visible but mark them stale — never invent empty success.
+      setFirstPassJobsStale(firstPassJobs.length > 0);
+      return;
+    }
     const jobs = firstPassJobsQuery.data;
     if (!jobs) return;
     setFirstPassJobs(jobs);
+    setFirstPassJobsStale(false);
     if (firstPassJobId || jobs.length === 0) return;
     const latest = jobs[0];
     const jobId = String(latest.jobId ?? "");
@@ -365,7 +367,12 @@ export function TwResearchPage({
     if (typeof latest.activeSnapshotId === "string" && latest.activeSnapshotId) {
       setFirstPassSnapshotId(latest.activeSnapshotId);
     }
-  }, [firstPassJobsQuery.data, firstPassJobId]);
+  }, [
+    firstPassJobsQuery.data,
+    firstPassJobsQuery.isError,
+    firstPassJobId,
+    firstPassJobs.length,
+  ]);
 
   useEffect(() => {
     const candidateSet = candidateSetQuery.data;
@@ -962,6 +969,11 @@ export function TwResearchPage({
       label: "research.tw.errorManifest",
       error: manifestQuery.isFetching ? null : manifestQuery.error,
     },
+    {
+      key: "first-pass-jobs",
+      label: "research.tw.errorFirstPassJobs",
+      error: firstPassJobsQuery.isFetching ? null : firstPassJobsQuery.error,
+    },
   ];
 
   return (
@@ -1186,11 +1198,46 @@ export function TwResearchPage({
                   {t("research.tw.loadFirstPassManifest")}
                 </Button>
               </Stack>
+              {firstPassJobsQuery.isError ? (
+                <div data-testid="tw-research-first-pass-jobs-unavailable">
+                  <RequestStateNotice
+                    kind={errorToNoticeKind(firstPassJobsQuery.error)}
+                    scopeLabel={t("research.tw.firstPassJobHistory")}
+                    status={toApiError(firstPassJobsQuery.error).status}
+                    detail={describeResearchFailure(firstPassJobsQuery.error)}
+                    onRetry={() => {
+                      void firstPassJobsQuery.refetch();
+                    }}
+                  />
+                  {firstPassJobsStale ? (
+                    <p
+                      className="cds--helper-text-01"
+                      data-testid="tw-research-first-pass-jobs-stale"
+                    >
+                      {t("research.tw.firstPassJobsStale")}
+                    </p>
+                  ) : null}
+                </div>
+              ) : null}
+              {!firstPassJobsQuery.isError &&
+              firstPassJobsQuery.isSuccess &&
+              firstPassJobs.length === 0 ? (
+                <p
+                  className="cds--helper-text-01"
+                  data-testid="tw-research-first-pass-jobs-empty"
+                >
+                  {t("research.tw.firstPassJobsEmpty")}
+                </p>
+              ) : null}
               {firstPassJobs.length > 0 ? (
                 <Select
                   id="tw-research-first-pass-job-history"
                   data-testid="tw-research-first-pass-job-history"
-                  labelText={t("research.tw.firstPassJobHistory")}
+                  labelText={
+                    firstPassJobsStale
+                      ? t("research.tw.firstPassJobHistoryStale")
+                      : t("research.tw.firstPassJobHistory")
+                  }
                   value={firstPassJobId ?? ""}
                   onChange={(event) => {
                     const next = event.target.value;

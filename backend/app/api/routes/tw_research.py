@@ -612,7 +612,20 @@ def post_candidate_technical_scan(
             },
         ) from exc
     except CandidateSetValidationError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=400,
+            detail=getattr(exc, "detail", None) or {"error": str(exc)},
+        ) from exc
+    except TwResearchDurableStoreError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "durable_store_unavailable",
+                "retryable": True,
+                "operation": getattr(exc, "operation", "create_scan"),
+                "message": "Technical scan could not be persisted.",
+            },
+        ) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return _snapshot(result["scan"])

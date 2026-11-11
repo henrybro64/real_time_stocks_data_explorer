@@ -108,6 +108,26 @@ const TW_RESEARCH_ROWS = [
     "從候選集啟動技術掃描",
   ],
   ["research.tw.firstPassJobHistory", "First-pass jobs", "第一輪工作"],
+  [
+    "research.tw.firstPassJobHistoryStale",
+    "First-pass jobs (stale — refresh failed)",
+    "第一輪工作（過期 — 重新整理失敗）",
+  ],
+  [
+    "research.tw.firstPassJobsEmpty",
+    "No first-pass jobs yet for this account.",
+    "此帳號尚無第一輪工作。",
+  ],
+  [
+    "research.tw.firstPassJobsStale",
+    "Showing the last verified job list. Backend/database is currently unavailable.",
+    "顯示上次確認的工作清單。後端／資料庫目前無法使用。",
+  ],
+  [
+    "research.tw.errorFirstPassJobs",
+    "First-pass job history",
+    "第一輪工作歷史",
+  ],
   ["research.tw.evidenceSearchApply", "Search evidence", "搜尋證據"],
   ["research.tw.membershipJson", "Membership / preview JSON", "成員／預覽 JSON"],
   ["research.tw.membershipMeta", "Version {version} · updated {updatedAt} · {count} unique stocks", "版本 {version} · 更新於 {updatedAt} · {count} 檔不重複股票"],
