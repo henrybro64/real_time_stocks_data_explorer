@@ -754,6 +754,8 @@ def _collect_one(
                     "week52Position": basis.week52_position,
                     "drawdownFromWeek52High": basis.drawdown_from_week52_high,
                     "potentialValueTrapFlag": basis.potential_value_trap_flag,
+                    "valueTrapStatus": basis.value_trap_status,
+                    "officialPeMissing": basis.official_pe_missing,
                     "rationale": basis.rationale,
                 },
             )

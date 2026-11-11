@@ -8,6 +8,8 @@ from fastapi.testclient import TestClient
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from tests.support import assert_disposable_integration_database
+
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
 
@@ -16,6 +18,8 @@ if not DATABASE_URL:
         "integration tests require DATABASE_URL",
         allow_module_level=True,
     )
+
+assert_disposable_integration_database(DATABASE_URL)
 
 from app.db.init_ids import DEFAULT_USER_ID
 from app.db.models import Base, User

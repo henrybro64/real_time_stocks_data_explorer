@@ -1747,14 +1747,30 @@ export function TwResearchPage({
 
           {scan ? (
             <TableContainer title={t("research.tw.ledgerTitle")}>
+              <p className="cds--helper-text-01" data-testid="tw-research-stage-order">
+                {t(
+                  scan.stageOrder === "monthly_first"
+                    ? "research.tw.stageOrderMonthlyFirst"
+                    : "research.tw.stageOrderDailyFirst",
+                )}
+              </p>
               <Table size="sm">
                 <TableHead>
                   <TableRow>
                     <TableHeader>{t("research.tw.colStock")}</TableHeader>
                     <TableHeader>{t("research.tw.colName")}</TableHeader>
                     <TableHeader>{t("research.tw.colStage")}</TableHeader>
-                    <TableHeader>{t("research.tw.colDaily")}</TableHeader>
-                    <TableHeader>{t("research.tw.colMonthly")}</TableHeader>
+                    {scan.stageOrder === "monthly_first" ? (
+                      <>
+                        <TableHeader>{t("research.tw.colMonthlyFirst")}</TableHeader>
+                        <TableHeader>{t("research.tw.colDailySecond")}</TableHeader>
+                      </>
+                    ) : (
+                      <>
+                        <TableHeader>{t("research.tw.colDailyFirst")}</TableHeader>
+                        <TableHeader>{t("research.tw.colMonthlySecond")}</TableHeader>
+                      </>
+                    )}
                     <TableHeader>{t("research.tw.colThemes")}</TableHeader>
                     <TableHeader>{t("research.tw.colReason")}</TableHeader>
                   </TableRow>
@@ -1771,6 +1787,14 @@ export function TwResearchPage({
                       "";
                     const nameStatus =
                       displayText(row.name_status) || displayText(row.nameStatus);
+                    const firstPass =
+                      scan.stageOrder === "monthly_first"
+                        ? displayText(monthly.passStatus)
+                        : displayText(daily.passStatus);
+                    const secondPass =
+                      scan.stageOrder === "monthly_first"
+                        ? displayText(daily.passStatus)
+                        : displayText(monthly.passStatus);
                     return (
                       <TableRow key={stockId}>
                         <TableCell>{stockId}</TableCell>
@@ -1783,8 +1807,8 @@ export function TwResearchPage({
                           )}
                         </TableCell>
                         <TableCell>{displayText(row.stage)}</TableCell>
-                        <TableCell>{displayText(daily.passStatus)}</TableCell>
-                        <TableCell>{displayText(monthly.passStatus)}</TableCell>
+                        <TableCell>{firstPass}</TableCell>
+                        <TableCell>{secondPass}</TableCell>
                         <TableCell>
                           {themes.length ? themes.join(", ") : t("research.tw.unclassified")}
                         </TableCell>

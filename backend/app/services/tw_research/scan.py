@@ -1,8 +1,12 @@
-"""Bounded configurable Taiwan research batch scan (#312/#318/#320).
+"""Bounded configurable Taiwan research batch scan (#312/#318/#320/#336).
 
-Stage A: daily close + completed-day MACD/KD pass for each symbol in the batch.
-Stage B: for day-pass symbols only, completed-month indicators, SMAs, 52-week
-position. Strict eligibility never changes to fill target_count.
+Legacy / technical-first (``CALCULATION_VERSION``):
+  Stage A: daily MACD/KD; Stage B: monthly MACD/KD for day-pass symbols only.
+
+Candidate-derived monthly-first (``CALCULATION_VERSION_MONTHLY_FIRST``, #336):
+  Stage A: monthly MACD/KD for every approved candidate; Stage B: daily MACD/KD
+  only when the monthly stage passes (``MONTHLY_FIRST_DAILY_CONTINUATION_POLICY``).
+  Monthly evidence is retained when daily is deferred or fails.
 
 Checkpoint contract key:
   (trading_day, universe_version, calculation_version, symbol, scan_id)
@@ -33,6 +37,7 @@ from app.services.moving_average import completed_daily_candles
 from app.services.quote_service import quote_service
 from app.services.tw_research.constants import (
     CALCULATION_VERSION,
+    CALCULATION_VERSION_MONTHLY_FIRST,
     DEFAULT_BUDGET_WINDOW_MONTH_FETCHES,
     DEFAULT_ENRICHMENT_WINDOW_SIZE,
     DEFAULT_MAX_ENRICHMENTS_PER_RUN,
@@ -50,9 +55,12 @@ from app.services.tw_research.constants import (
     HISTORY_FLIGHT_WAIT_MAX_SECONDS,
     MAX_ENRICHMENTS_PER_SCAN_CAP,
     MAX_UPSTREAM_MONTH_FETCHES_CAP,
+    MONTHLY_FIRST_DAILY_CONTINUATION_POLICY,
     PREFERRED_DAILY_HISTORY_LIMIT,
     PRICE_BASIS,
     SCAN_BATCH_SIZE,
+    STAGE_ORDER_DAILY_FIRST,
+    STAGE_ORDER_MONTHLY_FIRST,
 )
 from app.services.tw_research.evaluation import evaluation_counts
 from app.services.tw_research.coverage import (
@@ -83,6 +91,21 @@ logger = logging.getLogger(__name__)
 # Cross-scan single-flight for equivalent history downloads within one process (#329).
 _HISTORY_FLIGHT_GUARD = Lock()
 _HISTORY_FLIGHT_LOCKS: dict[str, Lock] = {}
+
+
+def stage_order_for_calculation(calculation_version: str) -> str:
+    """Return ``daily_first`` or ``monthly_first`` from a calculation version stamp."""
+    if calculation_version == CALCULATION_VERSION_MONTHLY_FIRST or (
+        "monthly_first" in (calculation_version or "")
+    ):
+        return STAGE_ORDER_MONTHLY_FIRST
+    return STAGE_ORDER_DAILY_FIRST
+
+
+def is_monthly_first_calculation(calculation_version: str) -> bool:
+    return stage_order_for_calculation(calculation_version) == STAGE_ORDER_MONTHLY_FIRST
+
+
 ScanStatus = Literal[
     "queued",
     "running",
@@ -315,6 +338,12 @@ class ScanState:
             "tradingDay": self.trading_day,
             "universeVersion": self.universe_version,
             "calculationVersion": self.calculation_version,
+            "stageOrder": stage_order_for_calculation(self.calculation_version),
+            "dailyContinuationPolicy": (
+                MONTHLY_FIRST_DAILY_CONTINUATION_POLICY
+                if is_monthly_first_calculation(self.calculation_version)
+                else None
+            ),
             "status": self.status,
             "qualityStatus": self.quality_status,
             "cursor": self.cursor,
@@ -575,6 +604,7 @@ class TwResearchScanService:
         extra_notes: list[str] | None = None,
         candidate_provenance: dict[str, Any] | None = None,
         resolved_universe: ResolvedUniverse | None = None,
+        calculation_version: str | None = None,
     ) -> ScanState:
         if target_count not in {10, 20}:
             # Output target only; never changes pass rules.
@@ -605,17 +635,26 @@ class TwResearchScanService:
         current = now or datetime.now(TAIPEI)
         day = trading_day or current.date().isoformat()
         stamp = current.isoformat()
+        calc_version = calculation_version or CALCULATION_VERSION
         provenance = dict(candidate_provenance) if candidate_provenance else None
         if provenance is not None:
             provenance.setdefault("tradingDay", day)
-            provenance.setdefault("calculationVersion", CALCULATION_VERSION)
+            provenance.setdefault("calculationVersion", calc_version)
+            provenance.setdefault(
+                "stageOrder", stage_order_for_calculation(calc_version)
+            )
             provenance.setdefault("universeVersion", resolved.universe_version)
             provenance.setdefault("approvedStockIds", list(resolved.stock_ids))
+            if is_monthly_first_calculation(calc_version):
+                provenance.setdefault(
+                    "dailyContinuationPolicy",
+                    MONTHLY_FIRST_DAILY_CONTINUATION_POLICY,
+                )
         state = ScanState(
             scan_id=str(uuid4()),
             trading_day=day,
             universe_version=resolved.universe_version,
-            calculation_version=CALCULATION_VERSION,
+            calculation_version=calc_version,
             selector=selector,
             stock_ids=resolved.stock_ids,
             target_count=target_count,
@@ -1269,6 +1308,97 @@ class TwResearchScanService:
             allow_holiday_fetch=False,
             expect_through=expect_through,
         )
+        daily_coverage_payload = {
+            "ok": daily_coverage.ok,
+            "reason": daily_coverage.reason,
+            "barCount": daily_coverage.bar_count,
+            "missingTradingDays": list(daily_coverage.missing_trading_days),
+            "duplicateDates": list(daily_coverage.duplicate_dates),
+            "invalidBars": daily_coverage.invalid_bars,
+            "priceBasis": daily_coverage.price_basis,
+        }
+        budget_blocked = (
+            months_used == 0 and remaining_budget <= 0 and not candles
+        ) or (not candles and remaining_after <= 0 and months_used == 0)
+
+        if is_monthly_first_calculation(state.calculation_version):
+            record, monthly_coverage_ok = self._evaluate_monthly_first_symbol(
+                state=state,
+                stock_id=stock_id,
+                display_name=display_name,
+                name_status=name_status,
+                checkpoint=checkpoint,
+                candles=candles,
+                completed=completed,
+                now=now,
+                daily_coverage=daily_coverage,
+                daily_coverage_payload=daily_coverage_payload,
+                budget_blocked=budget_blocked,
+            )
+        else:
+            record, monthly_coverage_ok = self._evaluate_daily_first_symbol(
+                state=state,
+                stock_id=stock_id,
+                display_name=display_name,
+                name_status=name_status,
+                checkpoint=checkpoint,
+                candles=candles,
+                completed=completed,
+                now=now,
+                daily_coverage=daily_coverage,
+                daily_coverage_payload=daily_coverage_payload,
+                budget_blocked=budget_blocked,
+            )
+
+        if record.readiness != "rejected":
+            if (
+                is_monthly_first_calculation(state.calculation_version)
+                and record.monthly
+                and (record.monthly.get("quality") or "") != "ok"
+                and record.stage == "A"
+            ):
+                # Incomplete monthly history is not a screening fail.
+                record.readiness = "source_incomplete"
+            else:
+                record.readiness = derive_readiness(
+                    stage=record.stage,
+                    daily_pass=(record.daily or {}).get("passStatus"),
+                    monthly_pass=(record.monthly or {}).get("passStatus")
+                    if record.monthly
+                    else None,
+                    daily_coverage_ok=daily_coverage.ok,
+                    monthly_coverage_ok=monthly_coverage_ok
+                    if record.stage == "B"
+                    or (
+                        is_monthly_first_calculation(state.calculation_version)
+                        and record.monthly is not None
+                    )
+                    else daily_coverage.ok,
+                    rejection_reason=record.rejection_reason,
+                )
+
+        record.theme_keys = _theme_keys_for(stock_id)
+        with self._lock:
+            state.records[stock_id] = record
+        self._persist_symbol(state, record)
+
+    def _evaluate_daily_first_symbol(
+        self,
+        *,
+        state: ScanState,
+        stock_id: str,
+        display_name: str | None,
+        name_status: Literal["ok", "unavailable"],
+        checkpoint: CheckpointKey,
+        candles: list[CandleRecord],
+        completed: list[CandleRecord],
+        now: datetime,
+        daily_coverage: Any,
+        daily_coverage_payload: dict[str, Any],
+        budget_blocked: bool,
+    ) -> tuple[SymbolScanRecord, bool]:
+        """Legacy Stage A daily → Stage B monthly for day-pass symbols."""
+        del daily_coverage  # payload already normalized
         daily = daily_macd_kd_snapshot(candles, market="TW", now=now)
         record = SymbolScanRecord(
             stock_id=stock_id,
@@ -1278,24 +1408,11 @@ class TwResearchScanService:
             name_status=name_status,
             daily=_snapshot_dict(daily),
             checkpoint=checkpoint.as_tuple(),
-            coverage={
-                "daily": {
-                    "ok": daily_coverage.ok,
-                    "reason": daily_coverage.reason,
-                    "barCount": daily_coverage.bar_count,
-                    "missingTradingDays": list(daily_coverage.missing_trading_days),
-                    "duplicateDates": list(daily_coverage.duplicate_dates),
-                    "invalidBars": daily_coverage.invalid_bars,
-                    "priceBasis": daily_coverage.price_basis,
-                }
-            },
+            coverage={"daily": daily_coverage_payload},
         )
-
         monthly_coverage_ok = False
         if daily.pass_status == "pass":
-            # Stage B is local computation over already-loaded candles. History
-            # budget was enforced before the fetch above.
-            if not candles and remaining_after <= 0 and months_used == 0:
+            if budget_blocked and not candles:
                 record.rejection_reason = HISTORY_BUDGET_EXHAUSTED_REASON
                 record.readiness = "rejected"
             else:
@@ -1312,46 +1429,151 @@ class TwResearchScanService:
                 monthly_coverage_ok = monthly_coverage.ok
                 record.stage = "B"
                 record.monthly = _snapshot_dict(monthly)
-                record.sma20 = latest_sma(completed, 20)
-                record.sma60 = latest_sma(completed, 60)
-                record.sma120 = latest_sma(completed, 120)
-                record.sma240 = latest_sma(completed, 240)
-                record.week52_position = fifty_two_week_position(completed)
+                self._attach_stage_b_levels(record, completed)
                 record.coverage = {
                     **(record.coverage or {}),
                     "monthly": {
                         "ok": monthly_coverage.ok,
                         "reason": monthly_coverage.reason,
                         "barCount": monthly_coverage.bar_count,
-                        "missingTradingDays": list(monthly_coverage.missing_trading_days),
+                        "missingTradingDays": list(
+                            monthly_coverage.missing_trading_days
+                        ),
                     },
                 }
                 with self._lock:
                     state.day_pass_ids.append(stock_id)
                     if is_technically_qualified(record):
                         state.qualified_ids.append(stock_id)
-        elif months_used == 0 and remaining_budget <= 0 and not candles:
+        elif budget_blocked:
             record.rejection_reason = HISTORY_BUDGET_EXHAUSTED_REASON
             record.readiness = "rejected"
+        return record, monthly_coverage_ok
 
-        if record.readiness != "rejected":
-            record.readiness = derive_readiness(
-                stage=record.stage,
-                daily_pass=(record.daily or {}).get("passStatus"),
-                monthly_pass=(record.monthly or {}).get("passStatus")
-                if record.monthly
-                else None,
-                daily_coverage_ok=daily_coverage.ok,
-                monthly_coverage_ok=monthly_coverage_ok
-                if record.stage == "B"
-                else daily_coverage.ok,
-                rejection_reason=record.rejection_reason,
+    def _evaluate_monthly_first_symbol(
+        self,
+        *,
+        state: ScanState,
+        stock_id: str,
+        display_name: str | None,
+        name_status: Literal["ok", "unavailable"],
+        checkpoint: CheckpointKey,
+        candles: list[CandleRecord],
+        completed: list[CandleRecord],
+        now: datetime,
+        daily_coverage: Any,
+        daily_coverage_payload: dict[str, Any],
+        budget_blocked: bool,
+    ) -> tuple[SymbolScanRecord, bool]:
+        """Candidate #336 Stage A monthly → Stage B daily (continuation policy)."""
+        del daily_coverage
+        if budget_blocked and not candles:
+            record = SymbolScanRecord(
+                stock_id=stock_id,
+                stage="rejected",
+                readiness="rejected",
+                stock_name=display_name,
+                name_status=name_status,
+                rejection_reason=HISTORY_BUDGET_EXHAUSTED_REASON,
+                checkpoint=checkpoint.as_tuple(),
+                coverage={"daily": daily_coverage_payload},
             )
+            return record, False
 
-        record.theme_keys = _theme_keys_for(stock_id)
+        monthly = monthly_macd_kd_snapshot(candles, market="TW", now=now)
+        monthly_bars = assemble_monthly_candles(completed, now=now)
+        from app.services.tw_research.coverage import monthly_series_verified
+
+        monthly_coverage = monthly_series_verified(
+            completed,
+            monthly_bars,
+            market="TW",
+            allow_holiday_fetch=False,
+        )
+        monthly_coverage_ok = monthly_coverage.ok
+        record = SymbolScanRecord(
+            stock_id=stock_id,
+            stage="A",
+            readiness="processed",
+            stock_name=display_name,
+            name_status=name_status,
+            monthly=_snapshot_dict(monthly),
+            daily=None,
+            checkpoint=checkpoint.as_tuple(),
+            coverage={
+                "monthly": {
+                    "ok": monthly_coverage.ok,
+                    "reason": monthly_coverage.reason,
+                    "barCount": monthly_coverage.bar_count,
+                    "missingTradingDays": list(monthly_coverage.missing_trading_days),
+                },
+                "daily": {
+                    **daily_coverage_payload,
+                    "deferred": True,
+                    "reason": "awaiting_monthly_gate",
+                    "continuationPolicy": MONTHLY_FIRST_DAILY_CONTINUATION_POLICY,
+                },
+            },
+        )
+
+        monthly_quality = monthly.quality
+        if monthly_quality != "ok":
+            # Incomplete/unavailable monthly ≠ screening fail; daily stays deferred.
+            record.coverage = {
+                **(record.coverage or {}),
+                "daily": {
+                    **daily_coverage_payload,
+                    "deferred": True,
+                    "reason": "monthly_indicators_incomplete",
+                    "continuationPolicy": MONTHLY_FIRST_DAILY_CONTINUATION_POLICY,
+                    "monthlyQuality": monthly_quality,
+                },
+            }
+            return record, monthly_coverage_ok
+
+        if monthly.pass_status != "pass":
+            # Failed monthly screen: keep monthly evidence; skip daily by policy.
+            record.coverage = {
+                **(record.coverage or {}),
+                "daily": {
+                    **daily_coverage_payload,
+                    "deferred": True,
+                    "reason": "monthly_screen_failed",
+                    "continuationPolicy": MONTHLY_FIRST_DAILY_CONTINUATION_POLICY,
+                },
+            }
+            return record, monthly_coverage_ok
+
+        # Monthly pass → Stage B daily on the same loaded history (no re-fetch).
+        daily = daily_macd_kd_snapshot(candles, market="TW", now=now)
+        record.stage = "B"
+        record.daily = _snapshot_dict(daily)
+        self._attach_stage_b_levels(record, completed)
+        record.coverage = {
+            **(record.coverage or {}),
+            "daily": {
+                **daily_coverage_payload,
+                "deferred": False,
+                "reason": None,
+                "continuationPolicy": MONTHLY_FIRST_DAILY_CONTINUATION_POLICY,
+            },
+        }
         with self._lock:
-            state.records[stock_id] = record
-        self._persist_symbol(state, record)
+            # First-stage (monthly) pass for monthly-first scans.
+            state.day_pass_ids.append(stock_id)
+            if is_technically_qualified(record):
+                state.qualified_ids.append(stock_id)
+        return record, monthly_coverage_ok
+
+    @staticmethod
+    def _attach_stage_b_levels(
+        record: SymbolScanRecord, completed: list[CandleRecord]
+    ) -> None:
+        record.sma20 = latest_sma(completed, 20)
+        record.sma60 = latest_sma(completed, 60)
+        record.sma120 = latest_sma(completed, 120)
+        record.sma240 = latest_sma(completed, 240)
+        record.week52_position = fifty_two_week_position(completed)
 
     def run_enrichment_batch(
         self,
@@ -2017,11 +2239,16 @@ class TwResearchScanService:
             self._rebuild_aggregates_locked(state)
 
     def _rebuild_aggregates_locked(self, state: ScanState) -> None:
+        monthly_first = is_monthly_first_calculation(state.calculation_version)
         state.day_pass_ids = [
             stock_id
             for stock_id in state.stock_ids
-            if (state.records.get(stock_id) is not None)
-            and (state.records[stock_id].daily or {}).get("passStatus") == "pass"
+            if (record := state.records.get(stock_id)) is not None
+            and (
+                (record.monthly or {}).get("passStatus") == "pass"
+                if monthly_first
+                else (record.daily or {}).get("passStatus") == "pass"
+            )
         ]
         state.qualified_ids = [
             stock_id

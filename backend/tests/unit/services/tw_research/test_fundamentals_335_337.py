@@ -130,18 +130,38 @@ def test_relative_price_basis_low_mid_high_and_insufficient() -> None:
     assert low.multi_year_price_location_status == "not_calculated"
     assert "not cheap valuation" in low.rationale
 
-    # Missing PE on a low basis raises potential value-trap flag (evidence only).
-    trap = evaluate_relative_price_basis(
+    # Missing PE on a low basis is incomplete valuation — not a value trap.
+    missing_pe = evaluate_relative_price_basis(
         _candles(days=280, start_close=200.0, low_bias=True),
         official_pe=None,
     )
-    assert trap.potential_value_trap_flag is True
+    assert missing_pe.potential_value_trap_flag is False
+    assert missing_pe.value_trap_status == "not_evaluated_missing_pe"
+    assert missing_pe.official_pe_missing is True
+    assert "official_pe_missing" in missing_pe.rationale
+
+    high_pe_trap = evaluate_relative_price_basis(
+        _candles(days=280, start_close=200.0, low_bias=True),
+        official_pe=45.0,
+    )
+    assert high_pe_trap.category == "low_relative_price_basis"
+    assert high_pe_trap.potential_value_trap_flag is True
+    assert high_pe_trap.value_trap_status == "potential_trap"
+
+    low_pe_ok = evaluate_relative_price_basis(
+        _candles(days=280, start_close=200.0, low_bias=True),
+        official_pe=12.0,
+    )
+    assert low_pe_ok.potential_value_trap_flag is False
+    assert low_pe_ok.value_trap_status == "not_indicated"
 
     high = evaluate_relative_price_basis(_candles(days=280, start_close=50.0, low_bias=False))
     assert high.category in {"high_relative_price_basis", "mid_relative_price_basis"}
 
     empty = evaluate_relative_price_basis([])
     assert empty.category == "insufficient_data"
+    assert empty.potential_value_trap_flag is False
+    assert empty.value_trap_status == "not_applicable"
 
 
 def test_relative_price_basis_is_deterministic() -> None:
@@ -1757,39 +1777,52 @@ def test_candidate_scan_atomic_provenance_fails_closed(monkeypatch) -> None:
     repo.clear_session_factory_override()
 
 
-def test_candidate_technical_scan_runs_stage_a_then_b_on_fixture_history(monkeypatch) -> None:
-    """Candidate-derived scans use the established Stage A daily → Stage B monthly pipeline.
-
-    Monthly MACD/KD is computed only after daily pass. Qualification is technical
-    evidence only — not a Notion report recommendation. No live providers.
-    """
-    from app.services.tw_research.first_pass_durable import create_technical_scan_from_candidate_set
-    from app.services.tw_research.scan import TwResearchScanService
-
-    repo, _snap, candidates = _seed_candidate_universe(
-        monkeypatch, "user-macd", ["TW:2330", "TW:2454", "TW:2303"]
-    )
+def _fixture_history(*, n: int, rising: bool) -> list[CandleRecord]:
     end = datetime(2024, 6, 28, 13, 30, tzinfo=TZ)
     dates: list[datetime] = []
     offset = 0
-    while len(dates) < 200:
+    while len(dates) < n:
         day = end - timedelta(days=offset)
         offset += 1
         if day.weekday() >= 5:
             continue
         dates.append(day.replace(hour=13, minute=30, second=0, microsecond=0))
     dates.reverse()
-    history = [
-        CandleRecord(
-            time=stamp.isoformat(),
-            open=100.0 + index - 0.5,
-            high=100.0 + index + 1.0,
-            low=100.0 + index - 1.0,
-            close=100.0 + index,
-            volume=1000 + index,
+    out: list[CandleRecord] = []
+    for index, stamp in enumerate(dates):
+        level = (100.0 + index) if rising else (300.0 - index * 0.4)
+        out.append(
+            CandleRecord(
+                time=stamp.isoformat(),
+                open=level - 0.5,
+                high=level + 1.0,
+                low=level - 1.0,
+                close=level,
+                volume=1000 + index,
+            )
         )
-        for index, stamp in enumerate(dates)
-    ]
+    return out
+
+
+def test_candidate_technical_scan_monthly_before_daily_on_fixture_history(monkeypatch) -> None:
+    """Candidate-derived scans use versioned Stage A monthly → Stage B daily (#336).
+
+    Daily runs only after monthly pass. Qualification is technical evidence only —
+    not a Notion report recommendation. No live providers.
+    """
+    from app.services.tw_research.constants import (
+        CALCULATION_VERSION_MONTHLY_FIRST,
+        MONTHLY_FIRST_DAILY_CONTINUATION_POLICY,
+        STAGE_ORDER_MONTHLY_FIRST,
+    )
+    from app.services.tw_research.first_pass_durable import create_technical_scan_from_candidate_set
+    from app.services.tw_research.scan import TwResearchScanService
+
+    repo, _snap, candidates = _seed_candidate_universe(
+        monkeypatch, "user-macd", ["TW:2330", "TW:2454", "TW:2303"]
+    )
+    # ≥35 completed months required for monthly MACD/KD quality=ok.
+    history = _fixture_history(n=900, rising=True)
 
     def loader(stock, limit, *, max_month_fetches):  # noqa: ANN001
         del stock, limit, max_month_fetches
@@ -1819,7 +1852,16 @@ def test_candidate_technical_scan_runs_stage_a_then_b_on_fixture_history(monkeyp
     state = created["scan"]
     assert list(state.stock_ids) == ["TW:2330", "TW:2454"]
     assert "TW:2303" not in state.stock_ids
+    assert state.calculation_version == CALCULATION_VERSION_MONTHLY_FIRST
     assert state.candidate_provenance is not None
+    assert state.candidate_provenance["stageOrder"] == STAGE_ORDER_MONTHLY_FIRST
+    assert (
+        state.candidate_provenance["dailyContinuationPolicy"]
+        == MONTHLY_FIRST_DAILY_CONTINUATION_POLICY
+    )
+    assert state.snapshot()["stageOrder"] == STAGE_ORDER_MONTHLY_FIRST
+    assert any("monthly" in note.lower() and "daily" in note.lower() for note in state.notes)
+    assert any("not a notion" in note.lower() for note in state.notes)
 
     state = service.run_batch(
         state.scan_id,
@@ -1827,15 +1869,176 @@ def test_candidate_technical_scan_runs_stage_a_then_b_on_fixture_history(monkeyp
         now=datetime(2024, 6, 28, 16, 0, tzinfo=TZ),
     )
     assert set(state.records) == {"TW:2330", "TW:2454"}
+    monthly_passed = 0
     for stock_id, record in state.records.items():
-        assert record.daily is not None, stock_id
-        if record.daily.get("passStatus") == "pass":
+        assert record.monthly is not None, stock_id
+        assert record.monthly.get("quality") == "ok", stock_id
+        if record.monthly.get("passStatus") == "pass":
+            monthly_passed += 1
             assert record.stage == "B"
-            assert record.monthly is not None
+            assert record.daily is not None
             assert stock_id in state.day_pass_ids
         else:
             assert record.stage == "A"
-            assert record.monthly is None
+            assert record.daily is None
+            assert (record.coverage or {}).get("daily", {}).get("deferred") is True
             assert stock_id not in state.day_pass_ids
+    assert monthly_passed >= 1
     assert all(sid in state.stock_ids for sid in state.qualified_ids)
+    repo.clear_session_factory_override()
+
+
+def test_candidate_monthly_fail_retains_monthly_and_defers_daily(monkeypatch) -> None:
+    from dataclasses import replace
+
+    from app.services.tw_research.first_pass_durable import create_technical_scan_from_candidate_set
+    from app.services.tw_research.indicators import monthly_macd_kd_snapshot
+    from app.services.tw_research.scan import TwResearchScanService
+
+    repo, _snap, candidates = _seed_candidate_universe(
+        monkeypatch, "user-mfail", ["TW:2330", "TW:2454"]
+    )
+    history = _fixture_history(n=900, rising=True)
+
+    def failing_monthly(candles, *, market="TW", now=None):  # noqa: ANN001
+        snap = monthly_macd_kd_snapshot(candles, market=market, now=now)
+        assert snap.quality == "ok"
+        return replace(snap, pass_status="fail")
+
+    monkeypatch.setattr(
+        "app.services.tw_research.scan.monthly_macd_kd_snapshot",
+        failing_monthly,
+    )
+
+    service = TwResearchScanService(
+        history_loader=lambda stock, limit, *, max_month_fetches: (list(history), 0),
+        stock_loader=lambda stock_id: stock_record(
+            stock_id,
+            market="TW",
+            symbol=stock_id.split(":")[-1],
+            name=stock_id,
+            name_zh_tw=stock_id,
+            exchange="TWSE",
+            currency="TWD",
+            timezone="Asia/Taipei",
+        ),
+        persist=False,
+    )
+    created = create_technical_scan_from_candidate_set(
+        user_id="user-mfail",
+        expected_version=int(candidates["version"]),
+        repository=repo,
+        scan_service=service,
+        trading_day="2024-06-28",
+    )
+    state = service.run_batch(
+        created["scan"].scan_id,
+        batch_size=2,
+        now=datetime(2024, 6, 28, 16, 0, tzinfo=TZ),
+    )
+    assert state.records
+    for record in state.records.values():
+        assert record.monthly is not None
+        assert record.monthly.get("passStatus") == "fail"
+        assert record.stage == "A"
+        assert record.daily is None
+        daily_cov = (record.coverage or {}).get("daily") or {}
+        assert daily_cov.get("deferred") is True
+        assert daily_cov.get("reason") == "monthly_screen_failed"
+    assert state.qualified_ids == []
+    repo.clear_session_factory_override()
+
+
+def test_candidate_incomplete_monthly_is_not_screening_fail(monkeypatch) -> None:
+    from app.services.tw_research.first_pass_durable import create_technical_scan_from_candidate_set
+    from app.services.tw_research.scan import TwResearchScanService
+
+    repo, _snap, candidates = _seed_candidate_universe(
+        monkeypatch, "user-minc", ["TW:2330"]
+    )
+    short = _fixture_history(n=15, rising=True)
+
+    service = TwResearchScanService(
+        history_loader=lambda stock, limit, *, max_month_fetches: (list(short), 0),
+        stock_loader=lambda stock_id: stock_record(
+            stock_id,
+            market="TW",
+            symbol=stock_id.split(":")[-1],
+            name=stock_id,
+            name_zh_tw=stock_id,
+            exchange="TWSE",
+            currency="TWD",
+            timezone="Asia/Taipei",
+        ),
+        persist=False,
+    )
+    created = create_technical_scan_from_candidate_set(
+        user_id="user-minc",
+        expected_version=int(candidates["version"]),
+        repository=repo,
+        scan_service=service,
+        trading_day="2024-06-28",
+    )
+    state = service.run_batch(
+        created["scan"].scan_id,
+        batch_size=1,
+        now=datetime(2024, 6, 28, 16, 0, tzinfo=TZ),
+    )
+    record = state.records["TW:2330"]
+    assert record.monthly is not None
+    assert record.monthly.get("passStatus") == "unknown"
+    assert record.monthly.get("quality") in {"insufficient_history", "unavailable"}
+    assert record.daily is None
+    assert record.readiness == "source_incomplete"
+    assert (record.coverage or {}).get("daily", {}).get("reason") == (
+        "monthly_indicators_incomplete"
+    )
+    repo.clear_session_factory_override()
+
+
+def test_candidate_monthly_first_scan_resumes_after_interrupt(monkeypatch) -> None:
+    from app.services.tw_research.first_pass_durable import create_technical_scan_from_candidate_set
+    from app.services.tw_research.scan import TwResearchScanService
+
+    repo, _snap, candidates = _seed_candidate_universe(
+        monkeypatch, "user-resume", ["TW:2330", "TW:2454"]
+    )
+    history = _fixture_history(n=900, rising=True)
+    service = TwResearchScanService(
+        history_loader=lambda stock, limit, *, max_month_fetches: (list(history), 0),
+        stock_loader=lambda stock_id: stock_record(
+            stock_id,
+            market="TW",
+            symbol=stock_id.split(":")[-1],
+            name=stock_id,
+            name_zh_tw=stock_id,
+            exchange="TWSE",
+            currency="TWD",
+            timezone="Asia/Taipei",
+        ),
+        persist=False,
+    )
+    created = create_technical_scan_from_candidate_set(
+        user_id="user-resume",
+        expected_version=int(candidates["version"]),
+        repository=repo,
+        scan_service=service,
+        trading_day="2024-06-28",
+    )
+    first = service.run_batch(
+        created["scan"].scan_id,
+        batch_size=1,
+        now=datetime(2024, 6, 28, 16, 0, tzinfo=TZ),
+    )
+    assert first.cursor == 1
+    assert len(first.records) == 1
+    second = service.run_batch(
+        first.scan_id,
+        batch_size=1,
+        now=datetime(2024, 6, 28, 16, 5, tzinfo=TZ),
+    )
+    assert second.cursor == 2
+    assert set(second.records) == {"TW:2330", "TW:2454"}
+    for record in second.records.values():
+        assert record.monthly is not None
     repo.clear_session_factory_override()

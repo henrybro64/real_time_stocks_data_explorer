@@ -373,3 +373,23 @@ def sample_margin_short_result():
         history=(record,),
         source="TWSE official margin and borrowed-short daily data",
     )
+
+
+def assert_disposable_integration_database(url: str) -> None:
+    """Fail closed before drop_all/TRUNCATE against non-test databases.
+
+    Allowed: exact ``stocks_test`` (CI) or any name ending in ``_test``.
+    """
+    from sqlalchemy.engine import make_url
+
+    name = (make_url(url).database or "").strip()
+    if not name:
+        raise RuntimeError(
+            "Refusing destructive integration tests: DATABASE_URL has no database name"
+        )
+    if name == "stocks_test" or name.endswith("_test"):
+        return
+    raise RuntimeError(
+        f"Refusing destructive integration tests against database {name!r}; "
+        "set DATABASE_URL to stocks_test or a name ending in _test"
+    )

@@ -39,6 +39,14 @@ HistoryCoverageStatus = Literal[
     "insufficient",
 ]
 
+# Separate missing PE / incomplete context from evidence-backed trap risk (#337).
+ValueTrapStatus = Literal[
+    "not_applicable",
+    "not_indicated",
+    "potential_trap",
+    "not_evaluated_missing_pe",
+]
+
 TAIPEI = ZoneInfo("Asia/Taipei")
 
 
@@ -73,7 +81,9 @@ class RelativePriceBasisEvidence:
     high_threshold: float
     rationale: str
     potential_value_trap_flag: bool
+    value_trap_status: ValueTrapStatus
     official_pe: float | None
+    official_pe_missing: bool
     valuation_context_status: Literal["ok", "unavailable", "not_same_definition"]
     valuation_context_reason: str | None
     multi_year_price_location_status: Literal["not_calculated", "unavailable"]
@@ -183,16 +193,31 @@ def evaluate_relative_price_basis(
         rationale += "; stale_history_flag"
 
     trap = False
+    pe_missing = official_pe is None
+    value_trap_status: ValueTrapStatus = "not_applicable"
     if category == "low_relative_price_basis":
-        if official_pe is None:
-            trap = True
-            rationale += "; potential_value_trap_flag because official_pe_missing"
+        if pe_missing:
+            # Missing PE is incomplete valuation evidence — not a trap signal.
+            value_trap_status = "not_evaluated_missing_pe"
+            rationale += (
+                "; official_pe_missing; value_trap_not_evaluated; "
+                "incomplete_valuation_context"
+            )
         elif official_pe >= value_trap_pe_threshold:
             trap = True
+            value_trap_status = "potential_trap"
             rationale += (
                 f"; potential_value_trap_flag because official_pe={official_pe} "
                 f">= {value_trap_pe_threshold}"
             )
+        else:
+            value_trap_status = "not_indicated"
+            rationale += (
+                f"; official_pe={official_pe} below trap threshold "
+                f"{value_trap_pe_threshold}"
+            )
+    elif pe_missing:
+        rationale += "; official_pe_missing"
 
     return RelativePriceBasisEvidence(
         category=category,
@@ -224,7 +249,9 @@ def evaluate_relative_price_basis(
         high_threshold=high_threshold,
         rationale=rationale,
         potential_value_trap_flag=trap,
+        value_trap_status=value_trap_status,
         official_pe=official_pe,
+        official_pe_missing=pe_missing,
         valuation_context_status="unavailable",
         valuation_context_reason=(
             "historical_pe_pb_range_same_definition_source_not_verified"
@@ -285,7 +312,9 @@ def _insufficient(
         high_threshold=high_threshold,
         rationale=rationale,
         potential_value_trap_flag=False,
+        value_trap_status="not_applicable",
         official_pe=official_pe,
+        official_pe_missing=official_pe is None,
         valuation_context_status="unavailable",
         valuation_context_reason=(
             "historical_pe_pb_range_same_definition_source_not_verified"

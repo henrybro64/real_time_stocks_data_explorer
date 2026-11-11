@@ -254,9 +254,11 @@ def create_technical_scan_from_candidate_set(
     publish Notion report recommendations.
     """
     from app.services.tw_research.constants import (
-        CALCULATION_VERSION,
+        CALCULATION_VERSION_MONTHLY_FIRST,
         DEFAULT_MAX_ENRICHMENTS_PER_RUN,
         DEFAULT_MAX_UPSTREAM_MONTH_FETCHES,
+        MONTHLY_FIRST_DAILY_CONTINUATION_POLICY,
+        STAGE_ORDER_MONTHLY_FIRST,
     )
     from app.services.tw_research.scan import TwResearchDurableStoreError, tw_research_scan_service
     from app.services.tw_research.universe import UniverseSelector, resolve_universe
@@ -353,7 +355,9 @@ def create_technical_scan_from_candidate_set(
         "firstPassDigest": saved["first_pass_digest"],
         "approvedStockIds": resolved_ids,
         "universeVersion": resolved.universe_version,
-        "calculationVersion": CALCULATION_VERSION,
+        "calculationVersion": CALCULATION_VERSION_MONTHLY_FIRST,
+        "stageOrder": STAGE_ORDER_MONTHLY_FIRST,
+        "dailyContinuationPolicy": MONTHLY_FIRST_DAILY_CONTINUATION_POLICY,
         "notNotionReportList": True,
     }
     extra_notes = [
@@ -363,8 +367,10 @@ def create_technical_scan_from_candidate_set(
             f"(firstPassSnapshotId={saved['first_pass_snapshot_id']})."
         ),
         (
-            "Stage A daily MACD/KD then Stage B monthly for day-pass symbols "
-            "(established technical pipeline); universe is the approved candidate IDs only."
+            "Stage A monthly MACD/KD for every approved candidate, then Stage B "
+            f"daily MACD/KD only when monthly passes "
+            f"(policy={MONTHLY_FIRST_DAILY_CONTINUATION_POLICY}); "
+            "universe is the approved candidate IDs only."
         ),
         "Not a Notion report list — final report selection remains external.",
     ]
@@ -389,6 +395,7 @@ def create_technical_scan_from_candidate_set(
             # Pass the already-validated resolution — create_scan must not
             # re-resolve against a possibly mutated catalog.
             resolved_universe=resolved,
+            calculation_version=CALCULATION_VERSION_MONTHLY_FIRST,
         )
     except TwResearchDurableStoreError:
         # Fail closed — never return a scan without durable provenance.

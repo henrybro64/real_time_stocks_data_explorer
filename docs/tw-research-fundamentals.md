@@ -53,7 +53,7 @@ Missing values stay `unavailable` / `not_fetched` with provenance reasons. They 
 | Debt-related metrics | Same as above | **Unavailable** — no adapter | Balance-sheet / debt adapter |
 | Verified historical valuation comparisons | #337 marks historical PE/PB range as unavailable | **Unavailable** — same-definition history not verified | Verified PE/PB history source |
 | Official PB / dividend yield | Partial toward fundamentals | **Unavailable** or unmapped on BWIBBU | Field mapping verification |
-| Second-pass MACD/KD | #336 technical path | **Available** via existing scan; Stage **A daily then B monthly** for day-pass (see `docs/tw-research.md`) | Candidate→technical uses that pipeline; wording “monthly/daily” means both stages, not monthly-first |
+| Second-pass MACD/KD | #336 technical path | **Available** | Candidate scans: versioned **monthly-first** (`CALCULATION_VERSION_MONTHLY_FIRST`, Stage A monthly → Stage B daily with `only_on_monthly_pass`). Legacy/technical-first scans keep daily-first (`CALCULATION_VERSION`). |
 
 Do **not** declare mandatory acceptance complete for adapters that remain absent. Deferred metrics stay explicitly tracked here and in the AI handoff.
 
@@ -98,7 +98,7 @@ Low relative price **does not** mean cheap valuation. Historical valuation conte
 | GET/PUT | `/api/tw-research/membership` | Per-sector add/remove + OCC; **503** if DB unavailable |
 | POST | `/api/tw-research/membership/preview` | Preview without persist |
 | POST/GET | `/api/tw-research/candidate-sets` (+ `/latest`) | Analyst/manual subset pinned to first-pass digest |
-| POST | `/api/tw-research/candidate-sets/technical-scan` | Stage A daily → Stage B monthly MACD/KD from approved IDs; single catalog resolve; atomic provenance |
+| POST | `/api/tw-research/candidate-sets/technical-scan` | Stage A **monthly** → Stage B **daily** MACD/KD (`monthly_first` version); single catalog resolve; atomic provenance |
 | POST | `/api/tw-research/relative-price-basis` | Stored bars only |
 
 ## Provider cost notes (honest)

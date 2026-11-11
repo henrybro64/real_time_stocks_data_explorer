@@ -11,6 +11,10 @@ export type TwResearchScanSnapshot = {
   scanId: string;
   tradingDay: string;
   universeVersion: string;
+  calculationVersion?: string;
+  /** ``daily_first`` (legacy) or ``monthly_first`` (candidate #336). */
+  stageOrder?: "daily_first" | "monthly_first" | string;
+  dailyContinuationPolicy?: string | null;
   status: string;
   cursor: number;
   enrichCursor?: number;
