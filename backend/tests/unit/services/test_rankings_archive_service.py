@@ -1080,12 +1080,24 @@ def test_run_sampler_does_not_record_success_when_capture_fails(monkeypatch) -> 
 
 def test_run_sampler_backs_off_on_connectivity_failed(monkeypatch) -> None:
     """Soft-failed HYT00 must use backoff ladder, not inflate to poll_seconds (#326)."""
+    import app.services.rankings_archive_service as ras
+
     service = RankingsArchiveService(repository=_FakeRepo())
     calls: list[str] = []
     wake_gaps: list[float] = []
+    # Iteration start; capture then burns ~195s of cold-start retries.
+    clock = {"now": datetime(2026, 8, 17, 20, 0, 0, tzinfo=timezone.utc)}
+    real_datetime = ras.datetime
+
+    class _ClockDateTime(real_datetime):  # type: ignore[misc,valid-type]
+        @classmethod
+        def now(cls, tz=None):  # noqa: ANN001
+            current = clock["now"]
+            return current if tz is None else current.astimezone(tz)
 
     def _capture(**_kwargs):
         calls.append("capture")
+        clock["now"] = clock["now"] + timedelta(seconds=195)
         return {
             "captured": 0,
             "skipped": 0,
@@ -1096,6 +1108,7 @@ def test_run_sampler_backs_off_on_connectivity_failed(monkeypatch) -> None:
             "connectivity_failed": 1,
         }
 
+    monkeypatch.setattr(ras, "datetime", _ClockDateTime)
     monkeypatch.setattr(service, "capture_eod_archives", _capture)
     monkeypatch.setattr(
         "app.services.rankings_archive_service.settings.rankings_archive_eod_enabled",
@@ -1106,7 +1119,7 @@ def test_run_sampler_backs_off_on_connectivity_failed(monkeypatch) -> None:
     monkeypatch.setattr(
         service,
         "_active_capture_window_end",
-        lambda _now: datetime.now(timezone.utc) + timedelta(minutes=30),
+        lambda _now: clock["now"] + timedelta(minutes=30),
     )
 
     def _wait(seconds: float) -> bool:
@@ -1116,7 +1129,8 @@ def test_run_sampler_backs_off_on_connectivity_failed(monkeypatch) -> None:
 
     monkeypatch.setattr(service._stop_event, "wait", _wait)
     reset_job_health_for_tests()
-    # Typical archive poll is 900s; first connectivity backoff must stay 120s.
+    # Typical archive poll is 900s; first connectivity backoff must stay 120s
+    # measured from *after* capture, not the pre-capture iteration start.
     service._run_sampler(poll_seconds=900)
     assert calls == ["capture"]
     assert wake_gaps and abs(wake_gaps[0] - 120) < 1

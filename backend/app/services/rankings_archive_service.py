@@ -1636,10 +1636,14 @@ class RankingsArchiveService:
                 # Soft-failed HYT00 / AutoPause / pool invalidation (#326).
                 # Use the backoff ladder alone (do not clamp up to poll_seconds —
                 # that would hide 2m/5m/10m steps when poll_seconds is 15m).
+                # Anchor after capture: cold-start retries can burn ~minutes, so
+                # using the iteration-start ``now`` would make the first backoff
+                # already expired (#326 Codex review).
                 if int(result.get("connectivity_failed") or 0):
                     connectivity_failures += 1
                     backoff = _sampler_connectivity_backoff_seconds(connectivity_failures)
-                    next_wake = now + timedelta(seconds=backoff)
+                    after_capture = datetime.now(timezone.utc)
+                    next_wake = after_capture + timedelta(seconds=backoff)
                     idle_until = None
                     note_job_failure(
                         "rankings-archive-eod",
@@ -1658,8 +1662,9 @@ class RankingsArchiveService:
                     )
                     continue
                 connectivity_failures = 0
+                after_capture = datetime.now(timezone.utc)
                 next_wake, reason = self._sampler_next_wake_after_capture(
-                    now=now,
+                    now=after_capture,
                     poll_seconds=poll_seconds,
                     result=result,
                 )
@@ -1686,6 +1691,7 @@ class RankingsArchiveService:
                     note_job_success("rankings-archive-eod")
             except Exception as exc:  # noqa: BLE001
                 note_job_failure("rankings-archive-eod", exc)
+                after_failure = datetime.now(timezone.utc)
                 if _is_archive_connectivity_failure(exc):
                     invalidate_rankings_archive_engine(reason="sampler_connectivity_failed")
                     connectivity_failures += 1
@@ -1700,7 +1706,7 @@ class RankingsArchiveService:
                             "backoff_seconds": backoff,
                         },
                     )
-                    next_wake = now + timedelta(seconds=backoff)
+                    next_wake = after_failure + timedelta(seconds=backoff)
                 else:
                     connectivity_failures = 0
                     logger.exception(
@@ -1711,7 +1717,7 @@ class RankingsArchiveService:
                             "connectivity": False,
                         },
                     )
-                    next_wake = now + timedelta(seconds=poll_seconds)
+                    next_wake = after_failure + timedelta(seconds=poll_seconds)
 
 
 rankings_archive_service = RankingsArchiveService()
