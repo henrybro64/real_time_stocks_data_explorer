@@ -8,9 +8,9 @@ inclusion, rankings, or trade instructions.
 
 | Issue | Scope | Code status |
 | --- | --- | --- |
-| #335 | Source audit, field contract, provenance, feasibility matrix | Implemented in-repo (+ durable first-pass snapshot) |
-| #336 | First-pass collection + membership/compute-subset + candidate set | Implemented with **Postgres fail-closed** membership / candidate sets (Alembic `20261111_0023`) |
-| #337 | Relative price-basis / valuation-position evidence | Implemented (historical PE range still unavailable) |
+| #335 | Source audit + **resumable** full-universe first-pass jobs + analyst export | Implemented (Alembic `20261111_0023` + `0024`) |
+| #336 | Editable per-sector membership, OCC, candidate sets pinned to digest | Implemented with **Postgres fail-closed** + `UPDATE … WHERE version` |
+| #337 | Relative price-basis with coverage/staleness/corporate-action flags | Implemented (historical PE range still unavailable) |
 
 No CronJob enablement, Notion SDK, new microservice, or production deploy in this slice.
 
@@ -79,10 +79,29 @@ Low relative price **does not** mean cheap valuation. Historical valuation conte
 | --- | --- | --- |
 | GET | `/api/tw-research/contract` | Includes feasibility matrix + first-pass versions |
 | GET | `/api/tw-research/feasibility-matrix` | Read-only audit |
-| POST | `/api/tw-research/first-pass/batch` | Dedupe **then** `batchLimit` ≤ 25; `persist=true` (default) writes immutable snapshot |
-| GET/PUT | `/api/tw-research/membership` | Postgres optimistic `expectedVersion`; **503** if DB unavailable |
-| POST/GET | `/api/tw-research/candidate-sets` (+ `/latest`) | Analyst/manual subset pinned to first-pass digest (not Notion list) |
+| POST | `/api/tw-research/first-pass/batch` | Ephemeral/bounded helper; prefer jobs for full universe |
+| POST | `/api/tw-research/first-pass/jobs` | Start resumable full-universe job (frozen membership) |
+| POST | `/api/tw-research/first-pass/jobs/{id}/batches` | Lease + process next bounded batch |
+| GET | `/api/tw-research/first-pass/jobs/{id}/progress` | pending/running/completed/partial/failed/deferred |
+| GET | `/api/tw-research/first-pass/jobs/{id}/symbols` | Paginated evidence / failed / deferred |
+| GET | `/api/tw-research/first-pass/snapshots/{id}` (+ `/manifest`, `/chunk`) | Analyst export |
+| GET/PUT | `/api/tw-research/membership` | Per-sector add/remove + OCC; **503** if DB unavailable |
+| POST | `/api/tw-research/membership/preview` | Preview without persist |
+| POST/GET | `/api/tw-research/candidate-sets` (+ `/latest`) | Analyst/manual subset pinned to first-pass digest |
 | POST | `/api/tw-research/relative-price-basis` | Stored bars only |
+
+## Provider cost notes (honest)
+
+| Provider | Batch | Worst-case for N symbols | Notes |
+| --- | --- | --- | --- |
+| Catalog identity | local | 0 upstream | Prefer stored catalog |
+| Daily OHLCV | `peek_daily_history` | 0 if warm | No 3–5y first-pass backfill |
+| Official PE/PB/yield | TWSE BWIBBU / TPEx daily | ~1 board snapshot / day (shared cache) | Per-board LRU cache |
+| Institutional / margin / TDCC | existing services | ≤N calls; reuse enrichment caches | Per-symbol isolation |
+| Yahoo margins | opt-in only | 0 by default | `includeNonofficialMargins` |
+| Monthly revenue / OCF / debt | none | n/a | Explicit unavailable |
+
+Live Ubuntu/k3s cold/warm timings remain `ubuntu_measurement_pending`.
 
 ## Tests
 
@@ -95,9 +114,9 @@ cd backend && .venv313/bin/python -m pytest \
 
 ## Outstanding
 
-1. Wire official PB / yield from verified TWSE/TPEx payloads when field mapping is confirmed.
-2. Real MOPS/monthly-revenue adapter (never synthetic insights).
+1. Real MOPS/monthly-revenue adapter (never synthetic insights).
+2. Operating cash flow / debt adapters.
 3. Optional explainable `fundamental_*` hint outcomes (analyst still owns selection).
-4. First-pass completeness columns in the research UI (name column is present).
+4. TPEx official PB/yield field mapping verification against live payloads.
 5. Live Ubuntu/k3s performance measurements remain `ubuntu_measurement_pending`.
-6. Apply Alembic `20261111_0023` before using durable membership/first-pass/candidate APIs in a real DB.
+6. Apply Alembic `20261111_0023` + `20261111_0024` before using durable APIs in a real DB.

@@ -25,19 +25,19 @@
   },
   {
     "field": "official_pb",
-    "implementation": "not_implemented",
-    "provider": "TWSE BWIBBU may expose 股價淨值比 — not wired",
+    "implementation": "implemented",
+    "provider": "key_stats_service TWSE BWIBBU_d 股價淨值比 (TPEx when field present)",
     "boards": ["TWSE", "TPEx"],
     "freshness_class": "quote_or_eod_day",
-    "notes": "Explicit unavailable until official adapter verified."
+    "notes": "Parsed from the same official daily valuation snapshot as PE; unavailable when blank."
   },
   {
     "field": "official_dividend_yield",
-    "implementation": "not_implemented",
-    "provider": "TWSE BWIBBU may expose 殖利率 — not wired as official path",
+    "implementation": "implemented",
+    "provider": "key_stats_service TWSE BWIBBU_d 殖利率(%) (TPEx when field present)",
     "boards": ["TWSE", "TPEx"],
     "freshness_class": "quote_or_eod_day",
-    "notes": "Finnhub yield is nonofficial and not used as Taiwan official yield."
+    "notes": "Official daily yield only; Finnhub/Yahoo yields are never promoted to official."
   },
   {
     "field": "ttm_eps",

@@ -25,10 +25,16 @@ from app.schemas.tw_research import (
     ExportManifestResponse,
     FirstPassBatchRequest,
     FirstPassBatchResponse,
+    FirstPassJobBatchRequest,
+    FirstPassJobCreateRequest,
+    FirstPassJobProgressResponse,
+    FirstPassJobResponse,
+    FirstPassJobSymbolsResponse,
     RejectedStockResponse,
     RelativePriceBasisRequest,
     RelativePriceBasisResponse,
     ResearchContractResponse,
+    ResearchMembershipPreviewRequest,
     ResearchMembershipResponse,
     ResearchMembershipSaveRequest,
     ResolvedUniverseResponse,
@@ -59,11 +65,16 @@ from app.services.tw_research.first_pass_durable import (
     persist_first_pass_batch,
     submit_candidate_set,
 )
+from app.services.tw_research.first_pass_job import (
+    FirstPassJobError,
+    first_pass_job_service,
+)
 from app.services.tw_research.fundamentals_watchlist import (
     ResearchMembershipConflict,
     ResearchMembershipUnavailable,
     research_membership_store,
 )
+from app.repositories.tw_research_repository import tw_research_repository
 from app.services.tw_research.preset import starter_preset_stock_ids, starter_preset_theme_keys
 from app.services.tw_research.price_basis import evaluate_relative_price_basis
 from app.services.tw_research.scan import (
@@ -197,6 +208,10 @@ def put_research_membership(
             user_id,
             expected_version=body.expectedVersion,
             theme_keys=body.themeKeys,
+            disabled_theme_keys=body.disabledThemeKeys,
+            sector_additions=body.sectorAdditions,
+            sector_removals=body.sectorRemovals,
+            custom_sectors=body.customSectors,
             extra_stock_ids=body.extraStockIds,
             compute_subset_ids=body.computeSubsetIds,
             reset_to_starter=body.resetToStarter,
@@ -221,6 +236,254 @@ def put_research_membership(
             },
         ) from exc
     return ResearchMembershipResponse(membership=snapshot.as_dict())
+
+
+@router.post("/membership/preview", response_model=ResearchMembershipResponse)
+def preview_research_membership(
+    body: ResearchMembershipPreviewRequest,
+    user_id: str = Depends(get_effective_user_id),
+) -> ResearchMembershipResponse:
+    """Preview membership edits without persisting (#336)."""
+    try:
+        snapshot = research_membership_store.preview(
+            user_id,
+            theme_keys=body.themeKeys,
+            disabled_theme_keys=body.disabledThemeKeys,
+            sector_additions=body.sectorAdditions,
+            sector_removals=body.sectorRemovals,
+            custom_sectors=body.customSectors,
+            extra_stock_ids=body.extraStockIds,
+            compute_subset_ids=body.computeSubsetIds,
+        )
+    except ResearchMembershipUnavailable as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "durable_store_unavailable",
+                "retryable": True,
+                "operation": exc.operation,
+                "message": str(exc),
+            },
+        ) from exc
+    return ResearchMembershipResponse(membership=snapshot.as_dict())
+
+
+@router.post("/first-pass/jobs", response_model=FirstPassJobResponse)
+def create_first_pass_job(
+    body: FirstPassJobCreateRequest,
+    user_id: str = Depends(get_effective_user_id),
+) -> FirstPassJobResponse:
+    """Start a resumable full-universe first-pass job (#335)."""
+    try:
+        job = first_pass_job_service.create_job(
+            user_id=user_id,
+            stock_ids=body.stockIds or None,
+            use_membership=body.useMembership,
+        )
+    except FirstPassJobError as exc:
+        raise HTTPException(
+            status_code=503 if "unavailable" in str(exc) else 400,
+            detail={"error": str(exc), "operation": exc.operation},
+        ) from exc
+    return FirstPassJobResponse(job=_camel_job(job))
+
+
+@router.post("/first-pass/jobs/{job_id}/batches", response_model=FirstPassJobResponse)
+def run_first_pass_job_batch(
+    job_id: str,
+    body: FirstPassJobBatchRequest,
+    user_id: str = Depends(get_effective_user_id),
+) -> FirstPassJobResponse:
+    """Continue/resume a first-pass job with a bounded leased batch (#335)."""
+    try:
+        result = first_pass_job_service.run_batch(
+            job_id,
+            user_id=user_id,
+            batch_size=body.batchSize,
+            include_nonofficial_margins=body.includeNonofficialMargins,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except FirstPassJobError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={"error": str(exc), "operation": exc.operation},
+        ) from exc
+    except FirstPassDurableUnavailable as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "durable_store_unavailable",
+                "operation": exc.operation,
+                "message": str(exc),
+            },
+        ) from exc
+    payload = _camel_job(result["job"])
+    payload["batchIds"] = result["batchIds"]
+    payload["processed"] = result["processed"]
+    payload["leaseHeld"] = result["leaseHeld"]
+    payload["alreadyComplete"] = result["alreadyComplete"]
+    return FirstPassJobResponse(job=payload)
+
+
+@router.get("/first-pass/jobs/{job_id}", response_model=FirstPassJobResponse)
+def get_first_pass_job(
+    job_id: str,
+    user_id: str = Depends(get_effective_user_id),
+) -> FirstPassJobResponse:
+    try:
+        job = first_pass_job_service.get_job(job_id, user_id=user_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except FirstPassJobError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={"error": str(exc), "operation": exc.operation},
+        ) from exc
+    return FirstPassJobResponse(job=_camel_job(job))
+
+
+@router.get(
+    "/first-pass/jobs/{job_id}/progress",
+    response_model=FirstPassJobProgressResponse,
+)
+def get_first_pass_job_progress(
+    job_id: str,
+    user_id: str = Depends(get_effective_user_id),
+) -> FirstPassJobProgressResponse:
+    try:
+        progress = first_pass_job_service.progress(job_id, user_id=user_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except FirstPassJobError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={"error": str(exc), "operation": exc.operation},
+        ) from exc
+    return FirstPassJobProgressResponse(progress=progress)
+
+
+@router.get(
+    "/first-pass/jobs/{job_id}/symbols",
+    response_model=FirstPassJobSymbolsResponse,
+)
+def get_first_pass_job_symbols(
+    job_id: str,
+    user_id: str = Depends(get_effective_user_id),
+    status: str | None = Query(default=None),
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=200),
+) -> FirstPassJobSymbolsResponse:
+    try:
+        result = first_pass_job_service.list_symbols(
+            job_id,
+            user_id=user_id,
+            status=status,
+            offset=offset,
+            limit=limit,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except FirstPassJobError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={"error": str(exc), "operation": exc.operation},
+        ) from exc
+    return FirstPassJobSymbolsResponse(result=result)
+
+
+@router.get("/first-pass/snapshots/{snapshot_id}")
+def get_first_pass_snapshot(
+    snapshot_id: str,
+    user_id: str = Depends(get_effective_user_id),
+) -> dict[str, object]:
+    """Ownership-scoped immutable first-pass snapshot metadata + digests (#335/#336)."""
+    if not tw_research_repository.is_available():
+        raise HTTPException(
+            status_code=503,
+            detail={"error": "durable_store_unavailable"},
+        )
+    snap = tw_research_repository.get_first_pass_snapshot(snapshot_id, user_id=user_id)
+    if snap is None:
+        raise HTTPException(status_code=404, detail="first_pass_snapshot_not_found")
+    records = list((snap.get("payload") or {}).get("records") or [])
+    return {
+        "snapshotId": snap["snapshot_id"],
+        "contentDigest": snap["content_digest"],
+        "universeVersion": snap["universe_version"],
+        "firstPassVersion": snap["first_pass_version"],
+        "stockIds": list(snap["stock_ids"]),
+        "recordCount": len(records),
+        "createdAt": snap["created_at"],
+        "notNotionReportList": True,
+        "notes": [
+            "Complete frozen-universe evidence for analyst review.",
+            "Missing fundamentals remain visible with provenance.",
+        ],
+    }
+
+
+@router.get("/first-pass/snapshots/{snapshot_id}/manifest")
+def get_first_pass_snapshot_manifest(
+    snapshot_id: str,
+    user_id: str = Depends(get_effective_user_id),
+) -> dict[str, object]:
+    if not tw_research_repository.is_available():
+        raise HTTPException(
+            status_code=503,
+            detail={"error": "durable_store_unavailable"},
+        )
+    snap = tw_research_repository.get_first_pass_snapshot(snapshot_id, user_id=user_id)
+    if snap is None:
+        raise HTTPException(status_code=404, detail="first_pass_snapshot_not_found")
+    records = list((snap.get("payload") or {}).get("records") or [])
+    chunk_size = 25
+    chunk_count = max(1, (len(records) + chunk_size - 1) // chunk_size) if records else 1
+    return {
+        "snapshotId": snap["snapshot_id"],
+        "contentDigest": snap["content_digest"],
+        "universeVersion": snap["universe_version"],
+        "firstPassVersion": snap["first_pass_version"],
+        "recordCount": len(records),
+        "chunkSize": chunk_size,
+        "chunkCount": chunk_count,
+        "chunkPathTemplate": (
+            f"/api/tw-research/first-pass/snapshots/{snapshot_id}/chunk"
+            "?chunkIndex={chunkIndex}"
+        ),
+        "notNotionReportList": True,
+    }
+
+
+@router.get("/first-pass/snapshots/{snapshot_id}/chunk")
+def get_first_pass_snapshot_chunk(
+    snapshot_id: str,
+    user_id: str = Depends(get_effective_user_id),
+    chunkIndex: int = Query(default=0, ge=0),
+) -> dict[str, object]:
+    if not tw_research_repository.is_available():
+        raise HTTPException(
+            status_code=503,
+            detail={"error": "durable_store_unavailable"},
+        )
+    snap = tw_research_repository.get_first_pass_snapshot(snapshot_id, user_id=user_id)
+    if snap is None:
+        raise HTTPException(status_code=404, detail="first_pass_snapshot_not_found")
+    records = list((snap.get("payload") or {}).get("records") or [])
+    chunk_size = 25
+    start = chunkIndex * chunk_size
+    end = start + chunk_size
+    if start >= len(records) and chunkIndex > 0:
+        raise HTTPException(status_code=404, detail="chunk_out_of_range")
+    return {
+        "snapshotId": snap["snapshot_id"],
+        "contentDigest": snap["content_digest"],
+        "chunkIndex": chunkIndex,
+        "chunkSize": chunk_size,
+        "records": records[start:end],
+        "truncated": end < len(records),
+        "notNotionReportList": True,
+    }
 
 
 @router.post("/candidate-sets", response_model=CandidateSetResponse)
@@ -757,6 +1020,29 @@ def _call_or_http(action: Callable[[], T]) -> T:
                 "message": str(exc),
             },
         ) from exc
+
+
+def _camel_job(job: dict[str, object]) -> dict[str, object]:
+    return {
+        "jobId": job.get("job_id"),
+        "userId": job.get("user_id"),
+        "universeVersion": job.get("universe_version"),
+        "universeDigest": job.get("universe_digest"),
+        "membershipVersion": job.get("membership_version"),
+        "firstPassVersion": job.get("first_pass_version"),
+        "stockIds": job.get("stock_ids"),
+        "universeSize": job.get("universe_size"),
+        "selector": job.get("selector"),
+        "status": job.get("status"),
+        "qualityStatus": job.get("quality_status"),
+        "cursor": job.get("cursor"),
+        "reserveCursor": job.get("reserve_cursor"),
+        "leaseGeneration": job.get("lease_generation"),
+        "activeSnapshotId": job.get("active_snapshot_id"),
+        "notes": job.get("notes"),
+        "createdAt": job.get("created_at"),
+        "updatedAt": job.get("updated_at"),
+    }
 
 
 def _selector_from_request(body: UniverseSelectorRequest) -> UniverseSelector:

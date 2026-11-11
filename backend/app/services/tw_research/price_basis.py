@@ -11,8 +11,9 @@ recent history and moving averages?
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Literal
+from zoneinfo import ZoneInfo
 
 from app.models.quote import CandleRecord
 from app.services.moving_average import completed_daily_candles
@@ -30,6 +31,15 @@ RelativePriceBasisCategory = Literal[
     "high_relative_price_basis",
     "insufficient_data",
 ]
+
+HistoryCoverageStatus = Literal[
+    "complete_52w",
+    "partial",
+    "sparse",
+    "insufficient",
+]
+
+TAIPEI = ZoneInfo("Asia/Taipei")
 
 
 @dataclass(frozen=True)
@@ -55,6 +65,10 @@ class RelativePriceBasisEvidence:
     sma240_distance: float | None
     session_count: int
     coverage_sessions: int
+    history_coverage_status: HistoryCoverageStatus
+    stale_history_flag: bool
+    corporate_action_status: Literal["unknown_unadjusted", "unavailable"]
+    corporate_action_reason: str
     low_threshold: float
     high_threshold: float
     rationale: str
@@ -85,12 +99,15 @@ def evaluate_relative_price_basis(
     duplicate calculation engine. Multi-year (3–5y) location stays
     ``not_calculated`` unless a future budgeted path requests it.
     """
-    completed = completed_daily_candles(candles, market, now=now)
+    clock = now or datetime.now(TAIPEI)
+    completed = completed_daily_candles(candles, market, now=clock)
     session_count = len(completed)
     if session_count < 2:
         return _insufficient(
             session_count=session_count,
             coverage_sessions=0,
+            history_coverage_status="insufficient",
+            stale_history_flag=False,
             low_threshold=low_threshold,
             high_threshold=high_threshold,
             official_pe=official_pe,
@@ -106,6 +123,23 @@ def evaluate_relative_price_basis(
     position = fifty_two_week_position(completed)
     drawdown = None if high <= 0 else (high - close) / high
 
+    coverage_status: HistoryCoverageStatus
+    if coverage >= 240:
+        coverage_status = "complete_52w"
+    elif coverage >= 60:
+        coverage_status = "partial"
+    else:
+        coverage_status = "sparse"
+
+    stale = False
+    try:
+        last_day = datetime.fromisoformat(window[-1].time).astimezone(TAIPEI).date()
+        today = clock.astimezone(TAIPEI).date() if clock.tzinfo else clock.replace(tzinfo=TAIPEI).date()
+        # More than ~7 calendar days behind latest completed session ⇒ stale flag.
+        stale = (today - last_day) > timedelta(days=7)
+    except Exception:  # noqa: BLE001
+        stale = False
+
     sma20 = latest_sma(completed, 20)
     sma60 = latest_sma(completed, 60)
     sma120 = latest_sma(completed, 120)
@@ -115,6 +149,8 @@ def evaluate_relative_price_basis(
         return _insufficient(
             session_count=session_count,
             coverage_sessions=coverage,
+            history_coverage_status=coverage_status,
+            stale_history_flag=stale,
             low_threshold=low_threshold,
             high_threshold=high_threshold,
             official_pe=official_pe,
@@ -140,6 +176,11 @@ def evaluate_relative_price_basis(
             f"week52_position={position:.4f} between "
             f"{low_threshold} and {high_threshold}"
         )
+
+    if coverage_status != "complete_52w":
+        rationale += f"; history_coverage={coverage_status}"
+    if stale:
+        rationale += "; stale_history_flag"
 
     trap = False
     if category == "low_relative_price_basis":
@@ -173,6 +214,12 @@ def evaluate_relative_price_basis(
         sma240_distance=_distance(close, sma240),
         session_count=session_count,
         coverage_sessions=coverage,
+        history_coverage_status=coverage_status,
+        stale_history_flag=stale,
+        corporate_action_status="unknown_unadjusted",
+        corporate_action_reason=(
+            "PRICE_BASIS=unadjusted_close; split/adjustment ambiguity not resolved"
+        ),
         low_threshold=low_threshold,
         high_threshold=high_threshold,
         rationale=rationale,
@@ -199,6 +246,8 @@ def _insufficient(
     *,
     session_count: int,
     coverage_sessions: int,
+    history_coverage_status: HistoryCoverageStatus,
+    stale_history_flag: bool,
     low_threshold: float,
     high_threshold: float,
     official_pe: float | None,
@@ -226,6 +275,12 @@ def _insufficient(
         sma240_distance=None,
         session_count=session_count,
         coverage_sessions=coverage_sessions,
+        history_coverage_status=history_coverage_status,
+        stale_history_flag=stale_history_flag,
+        corporate_action_status="unknown_unadjusted",
+        corporate_action_reason=(
+            "PRICE_BASIS=unadjusted_close; split/adjustment ambiguity not resolved"
+        ),
         low_threshold=low_threshold,
         high_threshold=high_threshold,
         rationale=rationale,

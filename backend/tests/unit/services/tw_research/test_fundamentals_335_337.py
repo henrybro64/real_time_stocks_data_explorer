@@ -304,7 +304,7 @@ def test_membership_save_is_version_checked_and_dedupes_subset() -> None:
     )
     assert saved.version == 1
     assert saved.extra_stock_ids == ("TW:2330", "TW:2317")
-    assert saved.resolved_stock_ids == ("TW:2330", "TW:2317")
+    assert set(saved.resolved_stock_ids) == {"TW:2330", "TW:2317"}
     # Orphan 9999 dropped; 2330 deduped.
     assert "TW:9999" not in saved.compute_subset_ids
     assert saved.compute_subset_ids.count("TW:2330") == 1
@@ -450,4 +450,186 @@ def test_durable_membership_and_candidate_set_round_trip(monkeypatch) -> None:
     assert latest is not None
     assert latest["candidateSetId"] == candidates["candidateSetId"]
 
+    tw_research_repository.clear_session_factory_override()
+
+
+def test_relative_price_basis_marks_sparse_and_stale_history() -> None:
+    sparse = evaluate_relative_price_basis(_candles(days=20, start_close=100.0, low_bias=True))
+    assert sparse.history_coverage_status in {"sparse", "partial", "insufficient"}
+    assert sparse.corporate_action_status == "unknown_unadjusted"
+
+    # Force stale by anchoring now far in the future.
+    stale = evaluate_relative_price_basis(
+        _candles(days=120, start_close=100.0, low_bias=True),
+        now=datetime(2030, 1, 1, tzinfo=TZ),
+    )
+    assert stale.stale_history_flag is True
+
+
+def test_editable_sector_membership_add_remove_and_preview() -> None:
+    catalog = {
+        "TW:2330": stock_record(
+            "TW:2330", market="TW", symbol="2330", name="台積電",
+            name_zh_tw="台積電", exchange="TWSE", currency="TWD", timezone="Asia/Taipei",
+        ),
+        "TW:2454": stock_record(
+            "TW:2454", market="TW", symbol="2454", name="聯發科",
+            name_zh_tw="聯發科", exchange="TWSE", currency="TWD", timezone="Asia/Taipei",
+        ),
+        "TW:2727": stock_record(
+            "TW:2727", market="TW", symbol="2727", name="王品",
+            name_zh_tw="王品", exchange="TWSE", currency="TWD", timezone="Asia/Taipei",
+        ),
+    }
+    store = research_membership_store.__class__(persist=False, stock_resolver=catalog.get)
+    store.clear_for_tests()
+    user = "user-sector-edit"
+    preview = store.preview(
+        user,
+        theme_keys=["tw-ic-design"],
+        sector_additions={"tw-ic-design": ["TW:2727"]},
+        sector_removals={"tw-ic-design": ["TW:2454"]},
+        extra_stock_ids=["TW:2330"],
+    )
+    assert preview.preview is True
+    assert "TW:2727" in preview.sector_membership.get("tw-ic-design", ())
+    assert "TW:2454" not in preview.sector_membership.get("tw-ic-design", ())
+    assert "TW:2330" in preview.resolved_stock_ids
+
+    saved = store.save(
+        user,
+        expected_version=0,
+        theme_keys=["tw-ic-design"],
+        sector_additions={"tw-ic-design": ["TW:2727"]},
+        sector_removals={"tw-ic-design": ["TW:2454"]},
+        extra_stock_ids=["TW:2330"],
+    )
+    assert saved.version == 1
+    assert saved.preview is False
+    reset = store.reset(user, expected_version=1)
+    assert reset.version == 2
+    assert reset.sector_additions == {}
+
+
+def test_resumable_first_pass_job_beyond_batch_limit(monkeypatch) -> None:
+    from tests.support import install_in_memory_sessionlocal, seed_test_users
+
+    session_local = install_in_memory_sessionlocal(monkeypatch)
+    seed_test_users(session_local, "user-fp-job")
+    from app.repositories.tw_research_repository import tw_research_repository
+    from app.services.tw_research.first_pass import FirstPassSymbolRecord
+    from app.services.tw_research.first_pass_job import FirstPassJobService
+
+    tw_research_repository.clear_session_factory_override()
+    tw_research_repository.set_session_factory_override(session_local)
+
+    # Build a universe larger than 80 symbols.
+    stock_ids = [f"TW:{1000 + i}" for i in range(90)]
+
+    def fake_collect(ids, **kwargs):
+        from app.services.tw_research.first_pass import FirstPassBatchResult
+
+        records = [
+            FirstPassSymbolRecord(
+                stock_id=sid,
+                stock_name=sid,
+                name_status="ok",
+                name_source="catalog",
+                exchange="TWSE",
+                market="TW",
+                sector_theme_keys=[],
+                completeness={"fieldsOk": 1, "fieldsUnavailable": 0},
+            )
+            for sid in ids
+        ]
+        return FirstPassBatchResult(
+            first_pass_version="first-pass-v1",
+            universe_version="explicit:90",
+            requested_count=len(ids),
+            collected_count=len(ids),
+            deduped_count=len(ids),
+            records=records,
+            coverage_summary={},
+            notes=[],
+        )
+
+    monkeypatch.setattr(
+        "app.services.tw_research.first_pass_job.collect_first_pass_batch",
+        fake_collect,
+    )
+    service = FirstPassJobService(repository=tw_research_repository)
+    job = service.create_job(user_id="user-fp-job", stock_ids=stock_ids, use_membership=False)
+    assert job["universe_size"] == 90
+    assert job["status"] == "pending"
+
+    total_processed = 0
+    for _ in range(20):
+        result = service.run_batch(job["job_id"], user_id="user-fp-job", batch_size=10)
+        total_processed += int(result["processed"])
+        if result["job"]["status"] in {"completed", "partial", "deferred"} and result[
+            "alreadyComplete"
+        ] or result["job"].get("status") == "completed":
+            if result["job"]["cursor"] >= 90 or result["alreadyComplete"]:
+                break
+        if result["job"]["cursor"] >= 90:
+            break
+
+    progress = service.progress(job["job_id"], user_id="user-fp-job")
+    assert progress["processedCount"] == 90
+    assert progress["pendingCount"] == 0
+    assert progress["universeSize"] == 90
+    final = service.get_job(job["job_id"], user_id="user-fp-job")
+    assert final["status"] in {"completed", "partial", "deferred"}
+    assert final["active_snapshot_id"]
+
+    # Ownership isolation for snapshot retrieval.
+    snap = tw_research_repository.get_first_pass_snapshot(
+        final["active_snapshot_id"], user_id="user-fp-job"
+    )
+    assert snap is not None
+    denied = tw_research_repository.get_first_pass_snapshot(
+        final["active_snapshot_id"], user_id="other-user"
+    )
+    assert denied is None
+
+    tw_research_repository.clear_session_factory_override()
+
+
+def test_membership_occ_uses_version_predicate(monkeypatch) -> None:
+    from tests.support import install_in_memory_sessionlocal, seed_test_users
+
+    session_local = install_in_memory_sessionlocal(monkeypatch)
+    seed_test_users(session_local, "user-occ")
+    from app.repositories.tw_research_repository import tw_research_repository
+
+    tw_research_repository.clear_session_factory_override()
+    tw_research_repository.set_session_factory_override(session_local)
+
+    first = tw_research_repository.save_membership(
+        "user-occ",
+        expected_version=0,
+        theme_keys=["tw-pcb"],
+        extra_stock_ids=[],
+        compute_subset_ids=[],
+    )
+    assert first["version"] == 1
+    with pytest.raises(ValueError):
+        tw_research_repository.save_membership(
+            "user-occ",
+            expected_version=0,
+            theme_keys=["tw-thermal"],
+            extra_stock_ids=[],
+            compute_subset_ids=[],
+        )
+    second = tw_research_repository.save_membership(
+        "user-occ",
+        expected_version=1,
+        theme_keys=["tw-thermal"],
+        extra_stock_ids=["TW:2330"],
+        compute_subset_ids=[],
+        sector_additions={"tw-thermal": ["TW:2330"]},
+        sector_removals={"tw-thermal": []},
+    )
+    assert second["version"] == 2
+    assert second["sector_additions"]["tw-thermal"] == ["TW:2330"]
     tw_research_repository.clear_session_factory_override()

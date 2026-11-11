@@ -28,16 +28,23 @@ import { useLanguage, type TranslationKey } from "../../app/i18n";
 import { RequestStateNotice, errorToNoticeKind } from "../../components/state/RequestStateNotice";
 import { toApiError } from "../../services/api/client";
 import {
+  createTwResearchFirstPassJob,
   createTwResearchScan,
   fetchThemeOptions,
   fetchTwResearchBrowserText,
   fetchTwResearchExportChunk,
   fetchTwResearchExportManifest,
+  fetchTwResearchFirstPassChunk,
+  fetchTwResearchFirstPassManifest,
+  fetchTwResearchFirstPassProgress,
+  fetchTwResearchFirstPassSymbols,
   fetchTwResearchLatestManifest,
+  fetchTwResearchMembership,
   fetchTwResearchScan,
   fetchTwResearchScanProgress,
   fetchTwResearchScans,
   fetchTwResearchSnapshotChunk,
+  previewTwResearchMembership,
   researchProgressRevision,
   researchScanListRefetchInterval,
   researchScanRefetchInterval,
@@ -45,6 +52,9 @@ import {
   resumeTwResearchBudgetWindow,
   runTwResearchBatch,
   runTwResearchEnrichmentBatch,
+  runTwResearchFirstPassBatch,
+  saveTwResearchMembership,
+  submitTwResearchCandidateSet,
   twResearchCsvUrl,
   type TwResearchScanSnapshot,
   type TwResearchUniverseMode,
@@ -161,6 +171,15 @@ export function TwResearchPage({
   const [activeSelectionKey, setActiveSelectionKey] = useState<string | null>(null);
   const [keptExistingScan, setKeptExistingScan] = useState(false);
   const [recoveredOperations, setRecoveredOperations] = useState<Record<string, boolean>>({});
+  const [membershipText, setMembershipText] = useState("");
+  const [membershipVersion, setMembershipVersion] = useState(0);
+  const [firstPassJobId, setFirstPassJobId] = useState<string | null>(null);
+  const [firstPassProgressText, setFirstPassProgressText] = useState("");
+  const [firstPassEvidenceText, setFirstPassEvidenceText] = useState("");
+  const [firstPassSnapshotId, setFirstPassSnapshotId] = useState<string | null>(null);
+  const [firstPassDigest, setFirstPassDigest] = useState<string | null>(null);
+  const [candidateIdsText, setCandidateIdsText] = useState("");
+  const [candidateSetText, setCandidateSetText] = useState("");
   const scanRef = useRef<TwResearchScanSnapshot | null>(null);
   const scanIdRef = useRef<string | null>(scanId);
   const createGuard = useRef(false);
@@ -263,6 +282,39 @@ export function TwResearchPage({
     queryKey: ["themes-for-tw-research"],
     queryFn: fetchThemeOptions,
   });
+
+  const membershipQuery = useQuery({
+    queryKey: ["tw-research-membership"],
+    queryFn: fetchTwResearchMembership,
+    staleTime: 15_000,
+    retry: false,
+  });
+
+  useEffect(() => {
+    if (!membershipQuery.data) return;
+    setMembershipText(JSON.stringify(membershipQuery.data, null, 2));
+    setMembershipVersion(Number(membershipQuery.data.version ?? 0));
+  }, [membershipQuery.data]);
+
+  const firstPassProgressQuery = useQuery({
+    queryKey: ["tw-research-first-pass-progress", firstPassJobId],
+    queryFn: () => fetchTwResearchFirstPassProgress(firstPassJobId as string),
+    enabled: Boolean(firstPassJobId),
+    refetchInterval: (query) => {
+      const status = String(query.state.data?.status ?? "");
+      return ["pending", "running", "partial", "deferred"].includes(status) ? 4_000 : false;
+    },
+    refetchIntervalInBackground: false,
+  });
+
+  useEffect(() => {
+    if (!firstPassProgressQuery.data) return;
+    setFirstPassProgressText(JSON.stringify(firstPassProgressQuery.data, null, 2));
+    const snapshotId = firstPassProgressQuery.data.activeSnapshotId;
+    if (typeof snapshotId === "string" && snapshotId) {
+      setFirstPassSnapshotId(snapshotId);
+    }
+  }, [firstPassProgressQuery.data]);
 
   const twThemeHint = useMemo(() => {
     const keys = (themesQuery.data ?? [])
@@ -402,6 +454,111 @@ export function TwResearchPage({
     },
     onSettled: () => {
       createGuard.current = false;
+    },
+  });
+
+  const previewMembershipMutation = useMutation({
+    mutationFn: async () =>
+      previewTwResearchMembership({
+        themeKeys,
+        extraStockIds: explicitIds,
+      }),
+    onSuccess: (membership) => {
+      setMembershipText(JSON.stringify(membership, null, 2));
+    },
+  });
+
+  const saveMembershipMutation = useMutation({
+    mutationFn: async () =>
+      saveTwResearchMembership({
+        expectedVersion: membershipVersion,
+        themeKeys,
+        extraStockIds: explicitIds,
+      }),
+    onSuccess: (membership) => {
+      setMembershipText(JSON.stringify(membership, null, 2));
+      setMembershipVersion(Number(membership.version ?? 0));
+      void queryClient.invalidateQueries({ queryKey: ["tw-research-membership"] });
+    },
+  });
+
+  const resetMembershipMutation = useMutation({
+    mutationFn: async () =>
+      saveTwResearchMembership({
+        expectedVersion: membershipVersion,
+        resetToStarter: true,
+      }),
+    onSuccess: (membership) => {
+      setMembershipText(JSON.stringify(membership, null, 2));
+      setMembershipVersion(Number(membership.version ?? 0));
+      void queryClient.invalidateQueries({ queryKey: ["tw-research-membership"] });
+    },
+  });
+
+  const startFirstPassMutation = useMutation({
+    mutationFn: async () => createTwResearchFirstPassJob({ useMembership: true }),
+    onSuccess: (job) => {
+      setFirstPassJobId(String(job.jobId ?? ""));
+      setFirstPassProgressText(JSON.stringify(job, null, 2));
+    },
+  });
+
+  const firstPassBatchMutation = useMutation({
+    mutationFn: async () => {
+      if (!firstPassJobId) throw new Error("missing_first_pass_job");
+      return runTwResearchFirstPassBatch(firstPassJobId, 10);
+    },
+    onSuccess: (job) => {
+      setFirstPassProgressText(JSON.stringify(job, null, 2));
+      if (typeof job.activeSnapshotId === "string" && job.activeSnapshotId) {
+        setFirstPassSnapshotId(job.activeSnapshotId);
+      }
+      void queryClient.invalidateQueries({
+        queryKey: ["tw-research-first-pass-progress", firstPassJobId],
+      });
+    },
+  });
+
+  const loadFirstPassEvidenceMutation = useMutation({
+    mutationFn: async () => {
+      if (!firstPassJobId) throw new Error("missing_first_pass_job");
+      return fetchTwResearchFirstPassSymbols(firstPassJobId, { offset: 0, limit: 25 });
+    },
+    onSuccess: (result) => {
+      setFirstPassEvidenceText(JSON.stringify(result, null, 2));
+    },
+  });
+
+  const loadFirstPassManifestMutation = useMutation({
+    mutationFn: async () => {
+      if (!firstPassSnapshotId) throw new Error("missing_first_pass_snapshot");
+      const manifest = await fetchTwResearchFirstPassManifest(firstPassSnapshotId);
+      const chunk = await fetchTwResearchFirstPassChunk(firstPassSnapshotId, 0);
+      setFirstPassDigest(
+        typeof manifest.contentDigest === "string" ? manifest.contentDigest : null,
+      );
+      return { manifest, chunk };
+    },
+    onSuccess: (payload) => {
+      setFirstPassEvidenceText(JSON.stringify(payload, null, 2));
+    },
+  });
+
+  const saveCandidateSetMutation = useMutation({
+    mutationFn: async () => {
+      if (!firstPassSnapshotId || !firstPassDigest) {
+        throw new Error("missing_first_pass_snapshot_or_digest");
+      }
+      return submitTwResearchCandidateSet({
+        firstPassSnapshotId,
+        firstPassDigest,
+        stockIds: splitLines(candidateIdsText),
+        origin: "manual",
+        expectedVersion: 0,
+      });
+    },
+    onSuccess: (candidateSet) => {
+      setCandidateSetText(JSON.stringify(candidateSet, null, 2));
     },
   });
 
@@ -573,6 +730,133 @@ export function TwResearchPage({
               </div>
             );
           })}
+
+          <Tile data-testid="tw-research-fundamentals">
+            <Stack gap={4}>
+              <div>
+                <h2 className="cds--productive-heading-03">{t("research.tw.fundamentalsTitle")}</h2>
+                <p className="cds--helper-text-01">{t("research.tw.fundamentalsNote")}</p>
+                <p className="cds--helper-text-01">{t("research.tw.stageHint")}</p>
+              </div>
+              <Stack gap={3} orientation="horizontal">
+                <Button
+                  kind="tertiary"
+                  size="sm"
+                  disabled={membershipQuery.isFetching}
+                  onClick={() => void membershipQuery.refetch()}
+                >
+                  {t("research.tw.loadMembership")}
+                </Button>
+                <Button
+                  kind="tertiary"
+                  size="sm"
+                  disabled={previewMembershipMutation.isPending}
+                  onClick={() => previewMembershipMutation.mutate()}
+                >
+                  {t("research.tw.previewMembership")}
+                </Button>
+                <Button
+                  kind="primary"
+                  size="sm"
+                  disabled={saveMembershipMutation.isPending}
+                  onClick={() => saveMembershipMutation.mutate()}
+                >
+                  {t("research.tw.saveMembership")}
+                </Button>
+                <Button
+                  kind="danger--tertiary"
+                  size="sm"
+                  disabled={resetMembershipMutation.isPending}
+                  onClick={() => resetMembershipMutation.mutate()}
+                >
+                  {t("research.tw.resetMembership")}
+                </Button>
+              </Stack>
+              <Stack gap={3} orientation="horizontal">
+                <Button
+                  kind="primary"
+                  size="sm"
+                  disabled={startFirstPassMutation.isPending}
+                  onClick={() => startFirstPassMutation.mutate()}
+                >
+                  {t("research.tw.startFirstPass")}
+                </Button>
+                <Button
+                  kind="secondary"
+                  size="sm"
+                  disabled={!firstPassJobId || firstPassBatchMutation.isPending}
+                  onClick={() => firstPassBatchMutation.mutate()}
+                >
+                  {t("research.tw.runFirstPassBatch")}
+                </Button>
+                <Button
+                  kind="tertiary"
+                  size="sm"
+                  disabled={!firstPassJobId || loadFirstPassEvidenceMutation.isPending}
+                  onClick={() => loadFirstPassEvidenceMutation.mutate()}
+                >
+                  {t("research.tw.loadFirstPassEvidence")}
+                </Button>
+                <Button
+                  kind="tertiary"
+                  size="sm"
+                  disabled={!firstPassSnapshotId || loadFirstPassManifestMutation.isPending}
+                  onClick={() => loadFirstPassManifestMutation.mutate()}
+                >
+                  {t("research.tw.loadFirstPassManifest")}
+                </Button>
+              </Stack>
+              <TextArea
+                id="tw-research-membership-json"
+                labelText={t("research.tw.membershipJson")}
+                value={membershipText}
+                readOnly
+                rows={6}
+              />
+              <TextArea
+                id="tw-research-first-pass-progress"
+                labelText={t("research.tw.firstPassProgress")}
+                value={firstPassProgressText}
+                readOnly
+                rows={5}
+              />
+              <TextArea
+                id="tw-research-first-pass-evidence"
+                labelText={t("research.tw.firstPassEvidence")}
+                value={firstPassEvidenceText}
+                readOnly
+                rows={6}
+              />
+              <TextArea
+                id="tw-research-candidate-ids"
+                labelText={t("research.tw.candidateIds")}
+                value={candidateIdsText}
+                onChange={(event) => setCandidateIdsText(event.target.value)}
+                rows={3}
+              />
+              <Button
+                kind="primary"
+                size="sm"
+                disabled={
+                  !firstPassSnapshotId ||
+                  !firstPassDigest ||
+                  saveCandidateSetMutation.isPending
+                }
+                onClick={() => saveCandidateSetMutation.mutate()}
+              >
+                {t("research.tw.saveCandidateSet")}
+              </Button>
+              {candidateSetText ? (
+                <TextArea
+                  id="tw-research-candidate-set-json"
+                  labelText={t("research.tw.saveCandidateSet")}
+                  value={candidateSetText}
+                  readOnly
+                  rows={4}
+                />
+              ) : null}
+            </Stack>
+          </Tile>
 
           <Tile>
             <Stack gap={4}>

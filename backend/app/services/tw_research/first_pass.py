@@ -305,19 +305,9 @@ def _collect_one(
             )
 
     # Explicit not-implemented / unavailable fundamentals (no fabrication).
+    # official_pb / official_dividend_yield may already be set by _enrich_valuation
+    # from TWSE BWIBBU / TPEx official daily valuation fields.
     for field_name, source, freshness_class, reason in (
-        (
-            "official_pb",
-            "none",
-            "quote_or_eod_day",
-            "official_pb_adapter_not_wired",
-        ),
-        (
-            "official_dividend_yield",
-            "none",
-            "quote_or_eod_day",
-            "official_yield_adapter_not_wired",
-        ),
         (
             "monthly_revenue_yoy_mom",
             "none",
@@ -352,6 +342,24 @@ def _collect_one(
                 freshness_class=freshness_class,
                 reason=reason,
             )
+    if "official_pb" not in scratch.fields:
+        scratch.fields["official_pb"] = ProvenanceField(
+            field="official_pb",
+            status="unavailable",
+            source="key_stats_service",
+            captured_at=captured_at,
+            freshness_class="quote_or_eod_day",
+            reason="official_pb_not_present_in_valuation_snapshot",
+        )
+    if "official_dividend_yield" not in scratch.fields:
+        scratch.fields["official_dividend_yield"] = ProvenanceField(
+            field="official_dividend_yield",
+            status="unavailable",
+            source="key_stats_service",
+            captured_at=captured_at,
+            freshness_class="quote_or_eod_day",
+            reason="official_yield_not_present_in_valuation_snapshot",
+        )
 
     if "peg" not in scratch.fields:
         scratch.fields["peg"] = ProvenanceField(

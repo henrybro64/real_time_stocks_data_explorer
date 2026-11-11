@@ -181,11 +181,11 @@
   },
   {
     "field": "official_pb",
-    "source": "none (BWIBBU 股價淨值比 not wired)",
+    "source": "key_stats_service TWSE BWIBBU_d 股價淨值比",
     "freshness_class": "quote_or_eod_day",
-    "validation": "explicit unavailable until official adapter verified",
-    "missing": true,
-    "status": "not_implemented",
+    "validation": "official daily P/B when present; unavailable when blank",
+    "missing": false,
+    "status": "implemented",
     "required": false,
     "unit": "ratio",
     "sector_applicability": "all",
@@ -193,15 +193,15 @@
   },
   {
     "field": "official_dividend_yield",
-    "source": "none (BWIBBU 殖利率 not wired as official)",
+    "source": "key_stats_service TWSE BWIBBU_d 殖利率(%)",
     "freshness_class": "quote_or_eod_day",
-    "validation": "explicit unavailable; Finnhub yield is nonofficial",
-    "missing": true,
-    "status": "not_implemented",
+    "validation": "official daily yield only; nonofficial yields rejected",
+    "missing": false,
+    "status": "implemented",
     "required": false,
     "unit": "percent",
     "sector_applicability": "all",
-    "implementation_notes": null
+    "implementation_notes": "Finnhub/Yahoo yield never promoted to official."
   },
   {
     "field": "ttm_eps_pe_peg",

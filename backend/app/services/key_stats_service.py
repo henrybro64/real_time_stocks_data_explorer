@@ -613,6 +613,8 @@ def _fetch_twse_daily_pe_snapshot(target_day: date) -> tuple[dict[str, dict[str,
     symbol_index = _field_index(fields, "證券代號")
     pe_index = _field_index(fields, "本益比")
     price_index = _field_index(fields, "收盤價")
+    pb_index = _field_index(fields, "股價淨值比")
+    yield_index = _field_index(fields, "殖利率(%)", "殖利率")
     parsed_rows: dict[str, dict[str, object]] = {}
     for row in rows:
         if not isinstance(row, list):
@@ -621,10 +623,14 @@ def _fetch_twse_daily_pe_snapshot(target_day: date) -> tuple[dict[str, dict[str,
         if not symbol:
             continue
         pe_ratio, pe_status = _parse_official_pe_value(_row_value(row, pe_index))
+        pb_ratio = _parse_number(_row_value(row, pb_index))
+        div_yield = _parse_number(_row_value(row, yield_index))
         parsed_rows[symbol] = {
             "peRatio": pe_ratio,
             "peStatus": pe_status,
             "priceUsed": _parse_number(_row_value(row, price_index)),
+            "pbRatio": pb_ratio,
+            "dividendYieldPercent": div_yield,
         }
     return parsed_rows, _yyyymmdd_to_iso(payload.get("date"))
 
@@ -687,48 +693,71 @@ def _apply_tw_official_valuation(
         pe_ratio = _positive_float(row.get("peRatio"))
         price_used = _parse_number(row.get("priceUsed"))
         price_as_of = valuation_as_of if price_used is not None else None
+        pb_ratio = _positive_float(row.get("pbRatio"))
+        div_yield = _parse_number(row.get("dividendYieldPercent"))
+
+        def _with_official_pb_yield(payload: dict[str, object]) -> dict[str, object]:
+            # Official TWSE BWIBBU / TPEx daily valuation fields when present.
+            if pb_ratio is not None:
+                payload["pbRatio"] = pb_ratio
+                payload["pbRatioType"] = "official_daily"
+                payload["pbRatioSource"] = source_label.replace("P/E", "P/B")
+            if div_yield is not None:
+                payload["dividendYieldPercent"] = div_yield
+                payload["dividendYieldType"] = "official_daily"
+                payload["dividendYieldSource"] = source_label.replace("P/E", "yield")
+            return payload
+
         if pe_ratio is not None:
             return (
-                _set_valuation_fields(
-                    out,
-                    pe_ratio=pe_ratio,
-                    pe_ratio_type="official_daily",
-                    pe_ratio_source=source_label,
-                    price_used=price_used,
-                    price_as_of=price_as_of,
-                    valuation_as_of=valuation_as_of,
+                _with_official_pb_yield(
+                    _set_valuation_fields(
+                        out,
+                        pe_ratio=pe_ratio,
+                        pe_ratio_type="official_daily",
+                        pe_ratio_source=source_label,
+                        price_used=price_used,
+                        price_as_of=price_as_of,
+                        valuation_as_of=valuation_as_of,
+                    )
                 ),
                 True,
             )
 
         if row.get("peStatus") == "malformed":
             return (
-                _set_valuation_fields(
-                    out,
-                    pe_ratio=None,
-                    valuation_as_of=valuation_as_of,
-                    valuation_warning=f"{source_label} returned a malformed P/E value.",
+                _with_official_pb_yield(
+                    _set_valuation_fields(
+                        out,
+                        pe_ratio=None,
+                        valuation_as_of=valuation_as_of,
+                        valuation_warning=f"{source_label} returned a malformed P/E value.",
+                    )
                 ),
                 True,
             )
 
         if _looks_like_fund_or_etf(stock):
             return (
-                _set_valuation_fields(
-                    out,
-                    pe_ratio=None,
-                    valuation_as_of=valuation_as_of,
-                    valuation_warning="P/E is not reported for ETF or fund instruments.",
+                _with_official_pb_yield(
+                    _set_valuation_fields(
+                        out,
+                        pe_ratio=None,
+                        valuation_as_of=valuation_as_of,
+                        valuation_warning="P/E is not reported for ETF or fund instruments.",
+                    )
                 ),
                 True,
             )
 
         return (
-            _set_valuation_fields(
-                out,
-                pe_ratio=None,
-                valuation_as_of=valuation_as_of,
-                valuation_warning=f"{source_label} did not report a usable P/E value.",
+            _with_official_pb_yield(
+                _set_valuation_fields(
+                    out,
+                    pe_ratio=None,
+                    valuation_as_of=valuation_as_of,
+                    valuation_warning=f"{source_label} did not report a usable P/E value.",
+                )
             ),
             True,
         )

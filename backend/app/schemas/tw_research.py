@@ -178,13 +178,49 @@ class FirstPassBatchResponse(BaseModel):
 class ResearchMembershipSaveRequest(BaseModel):
     expectedVersion: int = Field(ge=0)
     themeKeys: list[str] | None = None
+    disabledThemeKeys: list[str] | None = None
+    sectorAdditions: dict[str, list[str]] | None = None
+    sectorRemovals: dict[str, list[str]] | None = None
+    customSectors: list[dict[str, Any]] | None = None
     extraStockIds: list[str] | None = None
     computeSubsetIds: list[str] | None = None
     resetToStarter: bool = False
 
 
+class ResearchMembershipPreviewRequest(BaseModel):
+    themeKeys: list[str] | None = None
+    disabledThemeKeys: list[str] | None = None
+    sectorAdditions: dict[str, list[str]] | None = None
+    sectorRemovals: dict[str, list[str]] | None = None
+    customSectors: list[dict[str, Any]] | None = None
+    extraStockIds: list[str] | None = None
+    computeSubsetIds: list[str] | None = None
+
+
 class ResearchMembershipResponse(BaseModel):
     membership: dict[str, Any]
+
+
+class FirstPassJobCreateRequest(BaseModel):
+    stockIds: list[str] = Field(default_factory=list)
+    useMembership: bool = True
+
+
+class FirstPassJobBatchRequest(BaseModel):
+    batchSize: int = Field(default=10, ge=1, le=25)
+    includeNonofficialMargins: bool = False
+
+
+class FirstPassJobResponse(BaseModel):
+    job: dict[str, Any]
+
+
+class FirstPassJobProgressResponse(BaseModel):
+    progress: dict[str, Any]
+
+
+class FirstPassJobSymbolsResponse(BaseModel):
+    result: dict[str, Any]
 
 
 class RelativePriceBasisRequest(BaseModel):
