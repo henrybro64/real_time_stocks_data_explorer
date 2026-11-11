@@ -32,7 +32,7 @@
     "finalizedAt": "2024-06-28T09:00:00+00:00",
     "generatedAt": "2024-06-28T09:00:00+00:00",
     "chunkDigests": {
-      "0": "4a30322c446f8b4bdcd0d8d189be6368ab884226733c73f92c208cb8d2aca88a"
+      "0": "004f0d6060d5ebedd1b328e4aef2fc6256c7d5fd9c5e586d226a672760e8e750"
     },
     "chunkIds": [
       "0"
@@ -48,11 +48,11 @@
       "Deterministic fixture for Agent transfer tests (#322).",
       "Stock Ticker never writes Notion."
     ],
-    "contentDigest": "44fa3557e895322a9672d8e1310ce24654fbfa4244b6a9c2a8ed59fb5d7e4f00"
+    "contentDigest": "6e9331f629aafb04dd1baee2f2d8367a8030a133de24cd432bbd7f92dcc1a9d1"
   },
   "chunks": {
     "0": {
-      "schemaVersion": "2026-11-09.1",
+      "schemaVersion": "2026-11-11.1",
       "generatedAt": "2024-06-28T09:00:00+00:00",
       "scanId": "example-scan",
       "tradingDay": "2024-06-28",
@@ -110,7 +110,7 @@
           "enrichment": null
         }
       ],
-      "checksumSha256": "4a30322c446f8b4bdcd0d8d189be6368ab884226733c73f92c208cb8d2aca88a"
+      "checksumSha256": "004f0d6060d5ebedd1b328e4aef2fc6256c7d5fd9c5e586d226a672760e8e750"
     }
   },
   "unchangedSecondRead": {

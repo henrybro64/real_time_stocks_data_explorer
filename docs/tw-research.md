@@ -27,7 +27,13 @@ Confirm and reuse — do not reimplement:
 | --- | --- |
 | `backend/app/services/tw_research/preset.py` | Optional TW sector themes + assignments (extends `stock_theme_service`) |
 | `backend/app/services/tw_research/universe.py` | Universe selector: starter preset / theme keys / explicit IDs |
-| `backend/app/services/tw_research/contract.py` | Versioned field/source map |
+| `backend/app/services/tw_research/contract.py` | Versioned field/source map (+ #335 feasibility matrix) |
+| `backend/app/services/tw_research/first_pass.py` | Fundamental-first first-pass collector (#335/#336) |
+| `backend/app/services/tw_research/price_basis.py` | Relative price-basis evidence (#337) |
+| `backend/app/services/tw_research/fundamentals_watchlist.py` | Versioned membership / compute subset (#336, Postgres fail-closed) |
+| `backend/app/services/tw_research/first_pass_durable.py` | Immutable first-pass snapshots + analyst candidate sets (#335/#336) |
+| `docs/tw-research-fundamentals.md` | #335–#337 audit, gaps, APIs |
+| Alembic `20261111_0023` | Membership, first-pass snapshots, candidate sets |
 | `backend/app/services/tw_research/indicators.py` | Daily + monthly MACD(12,26,9) and KD(9,3,3) |
 | `backend/app/services/tw_research/scan.py` | Bounded Stage A/B scan + enrichment batches + durable checkpoints |
 | `backend/app/services/tw_research/coverage.py` | OHLCV + TW calendar coverage / readiness (#320) |
@@ -55,8 +61,9 @@ Confirm and reuse — do not reimplement:
 
 ## Scan, checkpoints, and readiness (#312 / #318 / #320)
 
-- Stage A: daily MACD/KD for each symbol in the batch.
-- Stage B: monthly + SMA20/60/120/240 + 52-week position for **day-pass** symbols only.
+- Legacy / technical-first (`CALCULATION_VERSION`): Stage A daily MACD/KD; Stage B monthly + SMA20/60/120/240 + 52-week for **day-pass** symbols only.
+- Candidate-derived monthly-first (`CALCULATION_VERSION_MONTHLY_FIRST`, #336): Stage A monthly MACD/KD for every approved candidate; Stage B daily + levels only when monthly passes (`MONTHLY_FIRST_DAILY_CONTINUATION_POLICY=only_on_monthly_pass`). Monthly evidence is retained when daily is deferred or fails. Incomplete monthly history is `source_incomplete`, not a screening fail.
+- Progress counters (`stage-progress-v1`): `dayPass*` always means **daily** MACD/KD pass; monthly-first also exposes `monthPass*`, `firstStagePass*`, `dailyDeferred*`, and `monthlyIncomplete*` derived from committed symbol evidence.
 - Upstream month budget is enforced **before** history backfill via `get_daily_history_within_budget`; counters track actual month fetches, not Stage B local math.
 - Enrichment levels use **stored-only** `peek_daily_history` by default (no cold backfill). Stage B `week52_position` is reused when the store peek is empty.
 - Indicator `now` is anchored to the scan `tradingDay` (after TW cash close). Overlapping batch POSTs use a per-scan lock **and** durable leased reservations for both scan and enrichment (`cursor` / `enrich_cursor` watermarks + lease fields) under `SELECT … FOR UPDATE`. Stale `upsert_scan` writes never regress progress; stale workers cannot wipe newer enrichment payloads.
@@ -85,6 +92,10 @@ All routes use `Depends(get_effective_user_id)`.
 | Method | Path | Upstream fetches? |
 | --- | --- | --- |
 | GET | `/api/tw-research/contract` | No |
+| GET | `/api/tw-research/feasibility-matrix` | No (#335) |
+| POST | `/api/tw-research/first-pass/batch` | Yes, bounded (#335/#336) |
+| GET/PUT | `/api/tw-research/membership` | Catalog only (#336) |
+| POST | `/api/tw-research/relative-price-basis` | Stored bars only (#337) |
 | GET | `/api/tw-research/universe/starter-preset` | No |
 | POST | `/api/tw-research/universe/resolve` | Catalog only |
 | POST | `/api/tw-research/scans` | No (creates ledger) |

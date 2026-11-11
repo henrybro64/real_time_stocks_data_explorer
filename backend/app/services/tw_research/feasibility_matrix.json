@@ -1,0 +1,130 @@
+[
+  {
+    "field": "stock_name_zh_tw",
+    "implementation": "implemented",
+    "provider": "catalog / quote_service.get_catalog_stock",
+    "boards": ["TWSE", "TPEx"],
+    "freshness_class": "config",
+    "notes": "Prefer name_zh_tw then name; never invent a Chinese name."
+  },
+  {
+    "field": "ohlcv_daily_completed",
+    "implementation": "implemented",
+    "provider": "daily_price_history_service.peek_daily_history (stored-only default)",
+    "boards": ["TWSE", "TPEx"],
+    "freshness_class": "quote_or_eod_day",
+    "notes": "First-pass prefers stored bars; no unbounded 3–5y backfill."
+  },
+  {
+    "field": "official_pe",
+    "implementation": "implemented",
+    "provider": "key_stats_service TWSE BWIBBU_d / TPEx peQryDate",
+    "boards": ["TWSE", "TPEx"],
+    "freshness_class": "quote_or_eod_day",
+    "notes": "Do not reverse-engineer EPS from PE."
+  },
+  {
+    "field": "official_pb",
+    "implementation": "implemented",
+    "provider": "key_stats_service TWSE BWIBBU_d 股價淨值比 (TPEx when field present)",
+    "boards": ["TWSE", "TPEx"],
+    "freshness_class": "quote_or_eod_day",
+    "notes": "Parsed from the same official daily valuation snapshot as PE; unavailable when blank."
+  },
+  {
+    "field": "official_dividend_yield",
+    "implementation": "implemented",
+    "provider": "key_stats_service TWSE BWIBBU_d 殖利率(%) (TPEx when field present)",
+    "boards": ["TWSE", "TPEx"],
+    "freshness_class": "quote_or_eod_day",
+    "notes": "Official daily yield only; Finnhub/Yahoo yields are never promoted to official."
+  },
+  {
+    "field": "ttm_eps",
+    "implementation": "partial",
+    "provider": "key_stats_service (often null on TW official PE path)",
+    "boards": ["TWSE", "TPEx"],
+    "freshness_class": "earnings_quarterly",
+    "notes": "Never fabricate; PEG stays unavailable without verified growth denom."
+  },
+  {
+    "field": "peg",
+    "implementation": "unavailable",
+    "provider": "none",
+    "boards": ["TWSE", "TPEx"],
+    "freshness_class": "earnings_quarterly",
+    "notes": "Missing PEG must not reject a good fundamental candidate."
+  },
+  {
+    "field": "monthly_revenue_yoy_mom",
+    "implementation": "not_implemented",
+    "provider": "none (tw_insights revenue is SYNTHETIC — forbidden)",
+    "boards": ["TWSE", "TPEx"],
+    "freshness_class": "monthly_closed_month",
+    "notes": "Requires real MOPS/official monthly revenue adapter."
+  },
+  {
+    "field": "gross_operating_net_margins",
+    "implementation": "partial",
+    "provider": "tw_profitability_service (Yahoo quarterly; nonofficial)",
+    "boards": ["TWSE", "TPEx"],
+    "freshness_class": "earnings_quarterly",
+    "notes": "Opt-in only; default first-pass marks not_fetched to avoid unbounded Yahoo calls."
+  },
+  {
+    "field": "operating_cash_flow_debt",
+    "implementation": "not_implemented",
+    "provider": "none",
+    "boards": ["TWSE", "TPEx"],
+    "freshness_class": "earnings_quarterly",
+    "notes": "Balance-sheet / cash-flow adapter not present."
+  },
+  {
+    "field": "institutional_5d",
+    "implementation": "implemented",
+    "provider": "tw_institutional_service",
+    "boards": ["TWSE", "TPEx"],
+    "freshness_class": "quote_or_eod_day",
+    "notes": "Reuse enrichment provenance shape."
+  },
+  {
+    "field": "margin_balance",
+    "implementation": "implemented",
+    "provider": "tw_margin_short_service",
+    "boards": ["TWSE", "TPEx"],
+    "freshness_class": "quote_or_eod_day",
+    "notes": "Utilization remains unavailable without verified denominator."
+  },
+  {
+    "field": "tdcc_holders_ge_400_lots",
+    "implementation": "implemented",
+    "provider": "tw_ownership_concentration_service",
+    "boards": ["TWSE", "TPEx"],
+    "freshness_class": "tdcc_weekly",
+    "notes": "Weekly publication; never same-day stamp."
+  },
+  {
+    "field": "relative_price_basis",
+    "implementation": "implemented",
+    "provider": "tw_research.price_basis + indicators.fifty_two_week_position/latest_sma",
+    "boards": ["TWSE", "TPEx"],
+    "freshness_class": "computed",
+    "notes": "Evidence only; not a recommendation. Historical PE range still unavailable."
+  },
+  {
+    "field": "historical_pe_pb_range",
+    "implementation": "not_implemented",
+    "provider": "none (same-definition historical source not verified)",
+    "boards": ["TWSE", "TPEx"],
+    "freshness_class": "computed",
+    "notes": "Explicit unavailable — never invent percentiles."
+  },
+  {
+    "field": "second_pass_macd_kd",
+    "implementation": "deferred",
+    "provider": "tw_research.scan Stage A/B (existing technical path)",
+    "boards": ["TWSE", "TPEx"],
+    "freshness_class": "computed",
+    "notes": "First-pass must not invoke costly per-symbol second-pass MACD/KD."
+  }
+]

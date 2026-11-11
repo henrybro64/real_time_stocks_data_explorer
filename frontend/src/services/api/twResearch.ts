@@ -11,6 +11,10 @@ export type TwResearchScanSnapshot = {
   scanId: string;
   tradingDay: string;
   universeVersion: string;
+  calculationVersion?: string;
+  /** ``daily_first`` (legacy) or ``monthly_first`` (candidate #336). */
+  stageOrder?: "daily_first" | "monthly_first" | string;
+  dailyContinuationPolicy?: string | null;
   status: string;
   cursor: number;
   enrichCursor?: number;
@@ -24,6 +28,12 @@ export type TwResearchScanSnapshot = {
   remainingCount: number;
   targetCount: number;
   dayPassCount: number;
+  monthPassCount?: number;
+  firstStagePassCount?: number;
+  dualPassCount?: number;
+  dailyDeferredCount?: number;
+  monthlyIncompleteCount?: number;
+  stageProgressSemanticsVersion?: string;
   qualifiedCount?: number;
   qualifiedIds?: string[];
   enrichmentsRun?: number;
@@ -38,6 +48,19 @@ export type TwResearchScanSnapshot = {
   updatedAt?: string;
   workerActivity?: "active" | "unknown" | "idle";
   activeSnapshotId?: string | null;
+  stockIds?: string[];
+  /** Present when the scan was created from an analyst candidate set (#336). */
+  candidateProvenance?: {
+    candidateSetId?: string;
+    candidateSetVersion?: number;
+    firstPassSnapshotId?: string;
+    firstPassDigest?: string;
+    approvedStockIds?: string[];
+    universeVersion?: string;
+    calculationVersion?: string;
+    tradingDay?: string;
+    notNotionReportList?: boolean;
+  } | null;
 }
 
 export type TwResearchScanSummary = {
@@ -76,6 +99,14 @@ export type TwResearchScanProgress = {
   remainingCount: number;
   targetCount: number;
   dayPassCount: number;
+  monthPassCount?: number;
+  firstStagePassCount?: number;
+  dualPassCount?: number;
+  dailyDeferredCount?: number;
+  monthlyIncompleteCount?: number;
+  calculationVersion?: string;
+  stageOrder?: "daily_first" | "monthly_first" | string;
+  stageProgressSemanticsVersion?: string;
   qualifiedCount?: number;
   enrichmentsRun?: number;
   maxEnrichmentsPerRun?: number;
@@ -280,4 +311,157 @@ export async function fetchTwResearchSnapshotChunk(
 /** Browser navigation / download URL (includes `/api` prefix via apiUrl). */
 export function twResearchCsvUrl(scanId: string) {
   return apiUrl(scanPath(scanId, "/export/csv"));
+}
+
+/** Research membership / first-pass job helpers (#335/#336). */
+export async function fetchTwResearchMembership() {
+  const response = await requestJson<{ membership: Record<string, unknown> }>(
+    "/tw-research/membership",
+  );
+  return response.membership;
+}
+
+export async function saveTwResearchMembership(body: Record<string, unknown>) {
+  const response = await requestJsonWithBody<{ membership: Record<string, unknown> }>(
+    "/tw-research/membership",
+    "PUT",
+    body,
+  );
+  return response.membership;
+}
+
+export async function previewTwResearchMembership(body: Record<string, unknown>) {
+  const response = await requestJsonWithBody<{ membership: Record<string, unknown> }>(
+    "/tw-research/membership/preview",
+    "POST",
+    body,
+  );
+  return response.membership;
+}
+
+export async function listTwResearchFirstPassJobs(limit = 20) {
+  const response = await requestJson<{ jobs: Record<string, unknown>[] }>(
+    `/tw-research/first-pass/jobs?limit=${encodeURIComponent(String(limit))}`,
+  );
+  return response.jobs;
+}
+
+export async function createTwResearchFirstPassJob(body?: {
+  stockIds?: string[];
+  useMembership?: boolean;
+}) {
+  const response = await requestJsonWithBody<{ job: Record<string, unknown> }>(
+    "/tw-research/first-pass/jobs",
+    "POST",
+    body ?? { useMembership: true },
+  );
+  return response.job;
+}
+
+export async function fetchTwResearchFirstPassJob(jobId: string) {
+  const response = await requestJson<{ job: Record<string, unknown> }>(
+    `/tw-research/first-pass/jobs/${encodeURIComponent(jobId)}`,
+  );
+  return response.job;
+}
+
+export async function runTwResearchFirstPassBatch(
+  jobId: string,
+  batchSize = 10,
+) {
+  const response = await requestJsonWithBody<{ job: Record<string, unknown> }>(
+    `/tw-research/first-pass/jobs/${encodeURIComponent(jobId)}/batches`,
+    "POST",
+    { batchSize },
+  );
+  return response.job;
+}
+
+export async function fetchTwResearchFirstPassProgress(jobId: string) {
+  const response = await requestJson<{ progress: Record<string, unknown> }>(
+    `/tw-research/first-pass/jobs/${encodeURIComponent(jobId)}/progress`,
+  );
+  return response.progress;
+}
+
+export async function fetchTwResearchFirstPassSymbols(
+  jobId: string,
+  params?: {
+    status?: string;
+    q?: string;
+    completeness?: string;
+    offset?: number;
+    limit?: number;
+  },
+) {
+  const query = new URLSearchParams();
+  if (params?.status) query.set("status", params.status);
+  if (params?.q) query.set("q", params.q);
+  if (params?.completeness) query.set("completeness", params.completeness);
+  if (params?.offset != null) query.set("offset", String(params.offset));
+  if (params?.limit != null) query.set("limit", String(params.limit));
+  const suffix = query.size ? `?${query.toString()}` : "";
+  const response = await requestJson<{ result: Record<string, unknown> }>(
+    `/tw-research/first-pass/jobs/${encodeURIComponent(jobId)}/symbols${suffix}`,
+  );
+  return response.result;
+}
+
+export async function fetchTwResearchFirstPassSnapshot(snapshotId: string) {
+  return requestJson<Record<string, unknown>>(
+    `/tw-research/first-pass/snapshots/${encodeURIComponent(snapshotId)}`,
+  );
+}
+
+export async function fetchTwResearchFirstPassManifest(snapshotId: string) {
+  return requestJson<Record<string, unknown>>(
+    `/tw-research/first-pass/snapshots/${encodeURIComponent(snapshotId)}/manifest`,
+  );
+}
+
+export async function fetchTwResearchFirstPassChunk(
+  snapshotId: string,
+  chunkIndex = 0,
+) {
+  return requestJson<Record<string, unknown>>(
+    `/tw-research/first-pass/snapshots/${encodeURIComponent(snapshotId)}/chunk`
+      + `?chunkIndex=${chunkIndex}`,
+  );
+}
+
+export async function submitTwResearchCandidateSet(body: {
+  firstPassSnapshotId: string;
+  firstPassDigest: string;
+  stockIds: string[];
+  origin?: "manual" | "analyst";
+  expectedVersion?: number;
+  selectionReasons?: Record<string, unknown>;
+}) {
+  const response = await requestJsonWithBody<{ candidateSet: Record<string, unknown> }>(
+    "/tw-research/candidate-sets",
+    "POST",
+    body,
+  );
+  return response.candidateSet;
+}
+
+export async function fetchTwResearchLatestCandidateSet() {
+  const response = await requestJson<{ candidateSet: Record<string, unknown> }>(
+    "/tw-research/candidate-sets/latest",
+  );
+  return response.candidateSet;
+}
+
+export async function createTwResearchTechnicalScanFromCandidateSet(body?: {
+  expectedVersion?: number;
+  candidateSetId?: string;
+  targetCount?: number;
+  tradingDay?: string;
+}) {
+  const response = await requestJsonWithBody<{ scan: TwResearchScanSnapshot }>(
+    "/tw-research/candidate-sets/technical-scan",
+    "POST",
+    body ?? {},
+  );
+  return response.scan;
 }

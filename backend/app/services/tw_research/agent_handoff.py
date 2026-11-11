@@ -329,6 +329,7 @@ def build_agent_transfer_example() -> dict[str, Any]:
         universe_version=str(manifest["universeVersion"]),
         trading_day=str(manifest["tradingDay"]),
         quality_status=str(manifest["qualityStatus"]),
+        calculation_version=str(manifest.get("calculationVersion") or ""),
     )
     plan = plan_chunk_transfer(previous_manifest=None, current_manifest=manifest)
     return {

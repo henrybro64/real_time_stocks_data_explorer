@@ -48,6 +48,11 @@ def scan_row_payload(state: ScanState, *, user_id: str | None = None) -> dict[st
             "mode": state.selector.mode,
             "themeKeys": list(state.selector.theme_keys),
             "stockIds": list(state.selector.stock_ids),
+            **(
+                {"candidateProvenance": dict(state.candidate_provenance)}
+                if getattr(state, "candidate_provenance", None)
+                else {}
+            ),
         },
         "stock_ids_json": list(state.stock_ids),
         "status": state.status,
@@ -195,10 +200,15 @@ def load_scan_state(
         ) from exc
     for symbol_row in symbol_rows:
         payload = dict(symbol_row.get("payload_json") or {})
+        name_status = payload.get("name_status") or "unavailable"
+        if name_status not in {"ok", "unavailable"}:
+            name_status = "unavailable"
         record = SymbolScanRecord(
             stock_id=symbol_row["stock_id"],
             stage=payload.get("stage", symbol_row["stage"]),
             readiness=payload.get("readiness", symbol_row.get("readiness", "processed")),
+            stock_name=payload.get("stock_name"),
+            name_status=name_status,
             daily=payload.get("daily"),
             monthly=payload.get("monthly"),
             sma20=payload.get("sma20"),
@@ -250,6 +260,11 @@ def _state_from_scan_row(row: dict[str, Any]) -> ScanState:
         notes=list(row.get("notes_json") or []),
         user_id=row.get("user_id"),
         active_snapshot_id=row.get("active_snapshot_id"),
+        candidate_provenance=(
+            dict(selector_payload["candidateProvenance"])
+            if isinstance(selector_payload.get("candidateProvenance"), dict)
+            else None
+        ),
         reserve_expires_at=_iso_or_none(row.get("reserve_expires_at")),
         enrich_reserve_expires_at=_iso_or_none(row.get("enrich_reserve_expires_at")),
     )
@@ -345,10 +360,12 @@ def load_scan_progress(
         row.get("reserve_expires_at"),
         row.get("enrich_reserve_expires_at"),
     )
-    day_pass_ids = list(row.get("day_pass_ids_json") or [])
     qualified_ids = list(row.get("qualified_ids_json") or [])
     active_snapshot_id = row.get("active_snapshot_id")
-    from app.services.tw_research.evaluation import evaluation_counts
+    from app.services.tw_research.evaluation import (
+        derive_stage_progress,
+        evaluation_counts,
+    )
     from types import SimpleNamespace
 
     records = {
@@ -361,7 +378,13 @@ def load_scan_progress(
         )
         for item in symbol_rows
     }
+    calculation_version = str(row.get("calculation_version") or "")
     counts = evaluation_counts(stock_ids=stock_ids, records=records, cursor=cursor)
+    stage = derive_stage_progress(
+        stock_ids=stock_ids,
+        records=records,
+        calculation_version=calculation_version,
+    )
     processed_count = counts["processedCount"]
     revision = progress_revision(
         updated_at=updated_at,
@@ -379,6 +402,9 @@ def load_scan_progress(
         "scanId": row["scan_id"],
         "tradingDay": row["trading_day"],
         "universeVersion": row["universe_version"],
+        "calculationVersion": calculation_version,
+        "stageOrder": stage["stageOrder"],
+        "stageProgressSemanticsVersion": stage["stageProgressSemanticsVersion"],
         "status": status,
         "qualityStatus": quality_status,
         "cursor": cursor,
@@ -392,7 +418,12 @@ def load_scan_progress(
         "unprocessedCount": counts["unprocessedCount"],
         "remainingCount": counts["remainingCount"],
         "targetCount": int(row.get("target_count") or 0),
-        "dayPassCount": len(day_pass_ids),
+        "dayPassCount": stage["dayPassCount"],
+        "monthPassCount": stage["monthPassCount"],
+        "firstStagePassCount": stage["firstStagePassCount"],
+        "dualPassCount": stage["dualPassCount"],
+        "dailyDeferredCount": stage["dailyDeferredCount"],
+        "monthlyIncompleteCount": stage["monthlyIncompleteCount"],
         "qualifiedCount": len(qualified_ids),
         "enrichmentsRun": int(row.get("enrichments_run") or 0),
         "maxEnrichmentsPerRun": int(row.get("max_enrichments_per_run") or 0),
@@ -461,12 +492,14 @@ def finalize_verified_snapshot(
         )
         chunk_digests[str(index)] = chunk["checksumSha256"]
 
+    calculation_version = getattr(state, "calculation_version", None) or CALCULATION_VERSION
     digest = stable_export_content_digest(
         rows=rows,
         chunk_digests=chunk_digests,
         universe_version=state.universe_version,
         trading_day=state.trading_day,
         quality_status="verified_ready",
+        calculation_version=calculation_version,
     )
     snapshot_id = str(uuid4())
     manifest = build_immutable_manifest(
@@ -487,7 +520,7 @@ def finalize_verified_snapshot(
         "universe_version": state.universe_version,
         "trading_day": state.trading_day,
         "schema_version": RESEARCH_SCHEMA_VERSION,
-        "calculation_version": CALCULATION_VERSION,
+        "calculation_version": calculation_version,
         "enrichment_version": ENRICHMENT_VERSION,
         "quality_status": "verified_ready",
         "content_digest": digest,

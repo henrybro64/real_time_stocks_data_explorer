@@ -597,6 +597,182 @@ class TwResearchCoordinationLock(Base):
     )
 
 
+class TwResearchMembership(Base):
+    """User-scoped editable research membership + compute subset (#336)."""
+
+    __tablename__ = "tw_research_memberships"
+
+    user_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    version: Mapped[int] = mapped_column(nullable=False, server_default=text("0"))
+    base_preset_version: Mapped[str] = mapped_column(
+        String(64), nullable=False, server_default=text("'starter'")
+    )
+    theme_keys_json: Mapped[list] = mapped_column(JSON, nullable=False)
+    disabled_theme_keys_json: Mapped[list] = mapped_column(JSON, nullable=False)
+    sector_additions_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    sector_removals_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    custom_sectors_json: Mapped[list] = mapped_column(JSON, nullable=False)
+    extra_stock_ids_json: Mapped[list] = mapped_column(JSON, nullable=False)
+    compute_subset_ids_json: Mapped[list] = mapped_column(JSON, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
+class TwResearchFirstPassJob(Base):
+    """Resumable full-universe first-pass collection job (#335)."""
+
+    __tablename__ = "tw_research_first_pass_jobs"
+    __table_args__ = (
+        Index(
+            "ix_tw_research_first_pass_jobs_user_updated",
+            "user_id",
+            "updated_at",
+        ),
+    )
+
+    job_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    universe_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    universe_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    membership_version: Mapped[int] = mapped_column(nullable=False, server_default=text("0"))
+    first_pass_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    stock_ids_json: Mapped[list] = mapped_column(JSON, nullable=False)
+    selector_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    # pending|running|completed|partial|failed|deferred
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    # data completeness (independent of processing status)
+    quality_status: Mapped[str] = mapped_column(String(32), nullable=False)
+    cursor: Mapped[int] = mapped_column(nullable=False, server_default=text("0"))
+    reserve_cursor: Mapped[int] = mapped_column(nullable=False, server_default=text("0"))
+    reserve_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    lease_generation: Mapped[int] = mapped_column(
+        nullable=False, server_default=text("0")
+    )
+    active_snapshot_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    notes_json: Mapped[list] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
+class TwResearchFirstPassSymbolResult(Base):
+    """Per-symbol first-pass evidence checkpoint for a job (#335)."""
+
+    __tablename__ = "tw_research_first_pass_symbol_results"
+    __table_args__ = (
+        UniqueConstraint(
+            "job_id",
+            "stock_id",
+            name="uq_tw_research_first_pass_symbol_job_stock",
+        ),
+        Index("ix_tw_research_first_pass_symbol_job", "job_id", "stock_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    job_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("tw_research_first_pass_jobs.job_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    stock_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    # pending|ok|partial|failed|deferred
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    payload_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    lease_generation: Mapped[int] = mapped_column(
+        nullable=False, server_default=text("0")
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
+class TwResearchFirstPassSnapshot(Base):
+    """Immutable first-pass evidence batch for analyst handoff (#335/#336)."""
+
+    __tablename__ = "tw_research_first_pass_snapshots"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "content_digest",
+            name="uq_tw_research_first_pass_user_digest",
+        ),
+        Index(
+            "ix_tw_research_first_pass_user_created",
+            "user_id",
+            "created_at",
+        ),
+    )
+
+    snapshot_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    universe_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    first_pass_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    content_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    payload_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    stock_ids_json: Mapped[list] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+
+
+class TwResearchCandidateSet(Base):
+    """Analyst-selected technical compute subset pinned to first-pass digest (#336)."""
+
+    __tablename__ = "tw_research_candidate_sets"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "version",
+            name="uq_tw_research_candidate_sets_user_version",
+        ),
+        Index(
+            "ix_tw_research_candidate_sets_user_created",
+            "user_id",
+            "created_at",
+        ),
+    )
+
+    candidate_set_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    version: Mapped[int] = mapped_column(nullable=False)
+    first_pass_snapshot_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("tw_research_first_pass_snapshots.snapshot_id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    first_pass_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    stock_ids_json: Mapped[list] = mapped_column(JSON, nullable=False)
+    origin: Mapped[str] = mapped_column(String(32), nullable=False)
+    selection_reasons_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    decision_date: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    notes_json: Mapped[list] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+
+
 class TwResearchExportSnapshot(Base):
     """Immutable finalized export snapshot (#318/#319)."""
 

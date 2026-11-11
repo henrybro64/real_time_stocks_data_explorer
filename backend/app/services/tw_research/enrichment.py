@@ -462,6 +462,58 @@ def _enrich_valuation(
             value={"peRatio": pe, "peRatioType": pe_type},
         )
 
+    pb = stats.get("pbRatio")
+    if pb is None:
+        _set_field(
+            result,
+            field="official_pb",
+            status="unavailable",
+            source=str(stats.get("pbRatioSource") or "key_stats_service"),
+            source_as_of=pe_as_of,
+            captured_at=captured_at,
+            reason="official_pb_not_present_in_valuation_snapshot",
+        )
+    else:
+        _set_field(
+            result,
+            field="official_pb",
+            status="ok",
+            source=str(stats.get("pbRatioSource") or pe_source_label),
+            source_as_of=pe_as_of,
+            captured_at=captured_at,
+            value={"pbRatio": pb, "pbRatioType": stats.get("pbRatioType")},
+        )
+
+    div_yield = stats.get("dividendYieldPercent")
+    yield_type = stats.get("dividendYieldType")
+    if div_yield is None or yield_type != "official_daily":
+        _set_field(
+            result,
+            field="official_dividend_yield",
+            status="unavailable",
+            source=str(stats.get("dividendYieldSource") or "key_stats_service"),
+            source_as_of=pe_as_of,
+            captured_at=captured_at,
+            reason=(
+                "official_yield_not_present_in_valuation_snapshot"
+                if div_yield is None
+                else "nonofficial_yield_not_used_as_taiwan_official"
+            ),
+        )
+    else:
+        _set_field(
+            result,
+            field="official_dividend_yield",
+            status="ok",
+            source=str(stats.get("dividendYieldSource") or pe_source_label),
+            source_as_of=pe_as_of,
+            captured_at=captured_at,
+            value={
+                "dividendYieldPercent": div_yield,
+                "dividendYieldType": yield_type,
+            },
+        )
+
     eps = stats.get("epsTtm")
     if eps is None:
         _set_field(

@@ -1,6 +1,8 @@
+import os
 import threading
 from datetime import datetime
 from types import SimpleNamespace
+from typing import Mapping
 
 from app.models.quote import CandleRecord, QuoteRecord
 from app.models.stock import StockRecord
@@ -372,4 +374,77 @@ def sample_margin_short_result():
         summary=record,
         history=(record,),
         source="TWSE official margin and borrowed-short daily data",
+    )
+
+
+_DISPOSABLE_LOCAL_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+_BLOCKED_DATABASE_NAMES = frozenset(
+    {
+        "stocks",
+        "postgres",
+        "template0",
+        "template1",
+        "production",
+        "prod",
+        "sto",
+    }
+)
+
+
+def _env_flag_true(value: str | None) -> bool:
+    return (value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def assert_disposable_integration_database(
+    url: str,
+    *,
+    environ: Mapping[str, str] | None = None,
+) -> None:
+    """Fail closed before drop_all/TRUNCATE against non-disposable targets.
+
+    Requires all of:
+    - Explicit opt-in ``ALLOW_DESTRUCTIVE_DB_TESTS=1``, or GitHub Actions ``CI=true``
+      when the database name is exactly ``stocks_test``.
+    - PostgreSQL URL with an explicit database name.
+    - Local loopback host only (``127.0.0.1`` / ``localhost`` / ``::1``).
+    - Database name ``stocks_test`` or ending in ``_test``, and not a blocked name.
+    """
+    from sqlalchemy.engine import make_url
+
+    env = environ if environ is not None else os.environ
+    parsed = make_url(url)
+    driver = (parsed.drivername or "").lower()
+    if "postgresql" not in driver and "postgres" not in driver:
+        raise RuntimeError(
+            f"Refusing destructive integration tests: unsupported driver {driver!r}"
+        )
+    name = (parsed.database or "").strip()
+    host = (parsed.host or "").strip().lower()
+    if not name:
+        raise RuntimeError(
+            "Refusing destructive integration tests: DATABASE_URL has no database name"
+        )
+    if name in _BLOCKED_DATABASE_NAMES:
+        raise RuntimeError(
+            f"Refusing destructive integration tests against blocked database {name!r}"
+        )
+    if name != "stocks_test" and not name.endswith("_test"):
+        raise RuntimeError(
+            f"Refusing destructive integration tests against database {name!r}; "
+            "use stocks_test or a name ending in _test"
+        )
+    if host and host not in _DISPOSABLE_LOCAL_HOSTS:
+        raise RuntimeError(
+            f"Refusing destructive integration tests against non-local host {host!r}; "
+            "only 127.0.0.1/localhost/::1 are allowed"
+        )
+    allow = _env_flag_true(env.get("ALLOW_DESTRUCTIVE_DB_TESTS"))
+    ci = _env_flag_true(env.get("CI"))
+    if allow:
+        return
+    if ci and name == "stocks_test":
+        return
+    raise RuntimeError(
+        "Refusing destructive integration tests without "
+        "ALLOW_DESTRUCTIVE_DB_TESTS=1 (or CI=true with stocks_test)"
     )

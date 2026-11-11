@@ -313,6 +313,55 @@ def test_scan_enforces_upstream_budget_before_history_fetch() -> None:
     assert state.records["TW:2454"].rejection_reason == "history_budget_exhausted"
 
 
+def test_scan_stage_a_daily_before_stage_b_monthly_for_day_pass() -> None:
+    """Established technical pipeline (#310–#322): Stage A daily, then Stage B monthly.
+
+    Daily fail never computes monthly. Daily pass advances to monthly MACD/KD.
+    Technical qualification is not a Notion report recommendation.
+    """
+    catalog = {"TW:2330": _tw("TW:2330"), "TW:2454": _tw("TW:2454")}
+    # Rising history tends to produce daily MACD/KD pass on completed sessions.
+    history = _rising_history(200)
+
+    def loader(stock, limit, *, max_month_fetches):  # noqa: ANN001
+        del stock, limit, max_month_fetches
+        return list(history), 0
+
+    service = TwResearchScanService(
+        history_loader=loader,
+        stock_loader=lambda stock_id: catalog.get(stock_id),
+        persist=False,
+    )
+    state = service.create_scan(
+        UniverseSelector(mode="stock_ids", stock_ids=("TW:2330", "TW:2454")),
+        trading_day="2024-06-28",
+        now=datetime(2024, 6, 28, 16, 0, tzinfo=TZ),
+    )
+    assert list(state.stock_ids) == ["TW:2330", "TW:2454"]
+    state = service.run_batch(
+        state.scan_id,
+        batch_size=2,
+        now=datetime(2024, 6, 28, 16, 0, tzinfo=TZ),
+    )
+    assert set(state.records) == {"TW:2330", "TW:2454"}
+    for stock_id, record in state.records.items():
+        assert record.daily is not None, stock_id
+        assert "passStatus" in record.daily
+        if record.daily.get("passStatus") == "pass":
+            assert record.stage == "B"
+            assert record.monthly is not None
+            assert "passStatus" in record.monthly
+            assert stock_id in state.day_pass_ids
+        else:
+            # Monthly must not be fabricated when daily fails.
+            assert record.stage == "A"
+            assert record.monthly is None
+            assert stock_id not in state.day_pass_ids
+    # Qualification list is technical evidence only — not a Notion report list.
+    assert all(sid in state.stock_ids for sid in state.qualified_ids)
+    assert state.candidate_provenance is None
+
+
 def test_scan_indicators_anchor_to_trading_day_not_wall_clock() -> None:
     catalog = {"TW:2330": _tw("TW:2330")}
     history = _rising_history(80)

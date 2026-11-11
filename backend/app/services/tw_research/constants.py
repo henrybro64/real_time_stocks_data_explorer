@@ -3,14 +3,35 @@
 from __future__ import annotations
 
 # Bump when the research field contract or provenance rules change.
-CONTRACT_VERSION = "2026-11-09.1"
+CONTRACT_VERSION = "2026-11-11.1"
 RESEARCH_SCHEMA_VERSION = CONTRACT_VERSION
 
 # Bump when MACD/KD/pass rules or monthly assembly change.
+# Legacy technical-first / scheduled scans: Stage A daily → Stage B monthly.
 CALCULATION_VERSION = "macd12-26-9_kd9-3-3_v1"
+# Candidate-derived fundamental-first second pass (#336): Stage A monthly →
+# Stage B daily. Distinct version so historical daily-first checkpoints stay valid.
+CALCULATION_VERSION_MONTHLY_FIRST = "macd12-26-9_kd9-3-3_monthly_first_v1"
+STAGE_ORDER_DAILY_FIRST = "daily_first"
+STAGE_ORDER_MONTHLY_FIRST = "monthly_first"
+# Daily MACD/KD runs only after monthly pass. Monthly fail / incomplete skips
+# daily to conserve budget while retaining monthly evidence.
+MONTHLY_FIRST_DAILY_CONTINUATION_POLICY = "only_on_monthly_pass"
 
 # Bump when enrichment field provenance rules change (#313).
 ENRICHMENT_VERSION = "enrich-v1"
+
+# First-pass fundamental/market evidence pack (#335/#336). Independent of
+# technical day+month qualification — every universe symbol may be collected.
+FIRST_PASS_VERSION = "first-pass-v1"
+DEFAULT_FIRST_PASS_BATCH_SIZE = 10
+MAX_FIRST_PASS_BATCH_SIZE = 25
+
+# Relative price-basis classifier (#337). Distinct from PRICE_BASIS candle convention.
+# v2: missing official PE no longer sets potential_value_trap_flag (#337).
+RELATIVE_PRICE_BASIS_VERSION = "relative-price-basis-v2"
+RELATIVE_PRICE_BASIS_LOW_THRESHOLD = 0.30
+RELATIVE_PRICE_BASIS_HIGH_THRESHOLD = 0.70
 
 # Enrichment operational budgets — not a global researchable-stock cap.
 # ``max_enrichments_per_run`` is a per-scan window allowance (#313). Explicit

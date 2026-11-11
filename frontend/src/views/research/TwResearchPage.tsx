@@ -28,16 +28,27 @@ import { useLanguage, type TranslationKey } from "../../app/i18n";
 import { RequestStateNotice, errorToNoticeKind } from "../../components/state/RequestStateNotice";
 import { toApiError } from "../../services/api/client";
 import {
+  createTwResearchFirstPassJob,
   createTwResearchScan,
+  createTwResearchTechnicalScanFromCandidateSet,
   fetchThemeOptions,
   fetchTwResearchBrowserText,
   fetchTwResearchExportChunk,
   fetchTwResearchExportManifest,
+  fetchTwResearchFirstPassChunk,
+  fetchTwResearchFirstPassJob,
+  fetchTwResearchFirstPassManifest,
+  fetchTwResearchFirstPassProgress,
+  fetchTwResearchFirstPassSymbols,
+  fetchTwResearchLatestCandidateSet,
   fetchTwResearchLatestManifest,
+  fetchTwResearchMembership,
   fetchTwResearchScan,
   fetchTwResearchScanProgress,
   fetchTwResearchScans,
   fetchTwResearchSnapshotChunk,
+  listTwResearchFirstPassJobs,
+  previewTwResearchMembership,
   researchProgressRevision,
   researchScanListRefetchInterval,
   researchScanRefetchInterval,
@@ -45,12 +56,30 @@ import {
   resumeTwResearchBudgetWindow,
   runTwResearchBatch,
   runTwResearchEnrichmentBatch,
+  runTwResearchFirstPassBatch,
+  saveTwResearchMembership,
+  submitTwResearchCandidateSet,
   twResearchCsvUrl,
   type TwResearchScanSnapshot,
   type TwResearchUniverseMode,
 } from "../../services/api/twResearch";
 
 const PAGE_SIZE = 25;
+
+/** Traditional Chinese name + canonical id; never invent missing names. */
+export function formatTwStockLabel(
+  stockId: string,
+  stockName?: string | null,
+  nameStatus?: string | null,
+  unavailableLabel = "名稱不可用",
+): string {
+  const shortId = stockId.includes(":") ? stockId.split(":").slice(1).join(":") : stockId;
+  const name = (stockName ?? "").trim();
+  if (name && nameStatus !== "unavailable") {
+    return `${name} (${shortId})`;
+  }
+  return `${unavailableLabel} (${shortId})`;
+}
 
 function splitLines(text: string): string[] {
   return text
@@ -161,6 +190,30 @@ export function TwResearchPage({
   const [activeSelectionKey, setActiveSelectionKey] = useState<string | null>(null);
   const [keptExistingScan, setKeptExistingScan] = useState(false);
   const [recoveredOperations, setRecoveredOperations] = useState<Record<string, boolean>>({});
+  const [membershipText, setMembershipText] = useState("");
+  const [membershipVersion, setMembershipVersion] = useState(0);
+  const [membershipThemeKeys, setMembershipThemeKeys] = useState<string[]>([]);
+  const [disabledThemeKeys, setDisabledThemeKeys] = useState<string[]>([]);
+  const [sectorAdditions, setSectorAdditions] = useState<Record<string, string[]>>({});
+  const [sectorRemovals, setSectorRemovals] = useState<Record<string, string[]>>({});
+  const [membershipExtraIds, setMembershipExtraIds] = useState<string[]>([]);
+  const [selectedSectorKey, setSelectedSectorKey] = useState("");
+  const [sectorStockDraft, setSectorStockDraft] = useState("");
+  const [firstPassJobId, setFirstPassJobId] = useState<string | null>(null);
+  const [firstPassProgressText, setFirstPassProgressText] = useState("");
+  const [firstPassEvidenceText, setFirstPassEvidenceText] = useState("");
+  const [firstPassSnapshotId, setFirstPassSnapshotId] = useState<string | null>(null);
+  const [firstPassDigest, setFirstPassDigest] = useState<string | null>(null);
+  const [evidenceOffset, setEvidenceOffset] = useState(0);
+  const [evidenceStatusFilter, setEvidenceStatusFilter] = useState("");
+  const [evidenceSearch, setEvidenceSearch] = useState("");
+  const [candidateIdsText, setCandidateIdsText] = useState("");
+  const [committedCandidateIdsText, setCommittedCandidateIdsText] = useState("");
+  const [candidateSetText, setCandidateSetText] = useState("");
+  const [candidateSetVersion, setCandidateSetVersion] = useState(0);
+  const [candidateSetConflict, setCandidateSetConflict] = useState<string | null>(null);
+  const [candidateConflictServerIds, setCandidateConflictServerIds] = useState<string[]>([]);
+  const [firstPassJobs, setFirstPassJobs] = useState<Record<string, unknown>[]>([]);
   const scanRef = useRef<TwResearchScanSnapshot | null>(null);
   const scanIdRef = useRef<string | null>(scanId);
   const createGuard = useRef(false);
@@ -264,6 +317,201 @@ export function TwResearchPage({
     queryFn: fetchThemeOptions,
   });
 
+  const membershipQuery = useQuery({
+    queryKey: ["tw-research-membership"],
+    queryFn: fetchTwResearchMembership,
+    staleTime: 15_000,
+    retry: false,
+  });
+
+  const candidateSetQuery = useQuery({
+    queryKey: ["tw-research-candidate-set-latest"],
+    queryFn: async () => {
+      try {
+        return await fetchTwResearchLatestCandidateSet();
+      } catch (error) {
+        if (toApiError(error).status === 404) return null;
+        throw error;
+      }
+    },
+    staleTime: 15_000,
+    retry: false,
+  });
+
+  const [firstPassJobsStale, setFirstPassJobsStale] = useState(false);
+
+  const firstPassJobsQuery = useQuery({
+    queryKey: ["tw-research-first-pass-jobs"],
+    queryFn: async () => listTwResearchFirstPassJobs(20),
+    staleTime: 15_000,
+    // Avoid hammering an unavailable Postgres; manual retry is available.
+    retry: false,
+  });
+
+  useEffect(() => {
+    if (firstPassJobsQuery.isError) {
+      // Keep last verified jobs visible but mark them stale — never invent empty success.
+      setFirstPassJobsStale(firstPassJobs.length > 0);
+      return;
+    }
+    const jobs = firstPassJobsQuery.data;
+    if (!jobs) return;
+    setFirstPassJobs(jobs);
+    setFirstPassJobsStale(false);
+    if (firstPassJobId || jobs.length === 0) return;
+    const latest = jobs[0];
+    const jobId = String(latest.jobId ?? "");
+    if (!jobId) return;
+    setFirstPassJobId(jobId);
+    setFirstPassProgressText(JSON.stringify(latest, null, 2));
+    if (typeof latest.activeSnapshotId === "string" && latest.activeSnapshotId) {
+      setFirstPassSnapshotId(latest.activeSnapshotId);
+    }
+  }, [
+    firstPassJobsQuery.data,
+    firstPassJobsQuery.isError,
+    firstPassJobId,
+    firstPassJobs.length,
+  ]);
+
+  useEffect(() => {
+    const candidateSet = candidateSetQuery.data;
+    if (!candidateSet) return;
+    setCandidateSetVersion(Number(candidateSet.version ?? 0));
+    setCandidateSetText(JSON.stringify(candidateSet, null, 2));
+    if (Array.isArray(candidateSet.stockIds)) {
+      const text = candidateSet.stockIds.map(String).join("\n");
+      setCommittedCandidateIdsText(text);
+      // Only seed the draft once so refresh/conflict never clobber unsaved edits.
+      setCandidateIdsText((current) => (current.trim() ? current : text));
+    }
+    // Only seed snapshot/digest from the saved candidate set when no first-pass
+    // job is active. Starting a new job clears these; do not re-apply the prior
+    // snapshot while the new job is incomplete.
+    if (!firstPassJobId) {
+      if (
+        typeof candidateSet.firstPassSnapshotId === "string" &&
+        candidateSet.firstPassSnapshotId &&
+        !firstPassSnapshotId
+      ) {
+        setFirstPassSnapshotId(candidateSet.firstPassSnapshotId);
+      }
+      if (
+        typeof candidateSet.firstPassDigest === "string" &&
+        candidateSet.firstPassDigest &&
+        !firstPassDigest
+      ) {
+        setFirstPassDigest(candidateSet.firstPassDigest);
+      }
+    }
+  }, [candidateSetQuery.data, firstPassDigest, firstPassJobId, firstPassSnapshotId]);
+
+  const applyMembershipState = (membership: Record<string, unknown>) => {
+    setMembershipText(JSON.stringify(membership, null, 2));
+    setMembershipVersion(Number(membership.version ?? 0));
+    setMembershipThemeKeys(
+      Array.isArray(membership.themeKeys)
+        ? membership.themeKeys.map(String)
+        : [],
+    );
+    setDisabledThemeKeys(
+      Array.isArray(membership.disabledThemeKeys)
+        ? membership.disabledThemeKeys.map(String)
+        : [],
+    );
+    setSectorAdditions(
+      membership.sectorAdditions && typeof membership.sectorAdditions === "object"
+        ? Object.fromEntries(
+            Object.entries(membership.sectorAdditions as Record<string, unknown>).map(
+              ([key, values]) => [
+                key,
+                Array.isArray(values) ? values.map(String) : [],
+              ],
+            ),
+          )
+        : {},
+    );
+    setSectorRemovals(
+      membership.sectorRemovals && typeof membership.sectorRemovals === "object"
+        ? Object.fromEntries(
+            Object.entries(membership.sectorRemovals as Record<string, unknown>).map(
+              ([key, values]) => [
+                key,
+                Array.isArray(values) ? values.map(String) : [],
+              ],
+            ),
+          )
+        : {},
+    );
+    setMembershipExtraIds(
+      Array.isArray(membership.extraStockIds)
+        ? membership.extraStockIds.map(String)
+        : [],
+    );
+    const sectorKeys = Object.keys(
+      (membership.sectorMembership as Record<string, unknown> | undefined) ?? {},
+    );
+    if (!selectedSectorKey && sectorKeys.length) {
+      setSelectedSectorKey(sectorKeys[0]);
+    }
+  };
+
+  useEffect(() => {
+    if (!membershipQuery.data) return;
+    applyMembershipState(membershipQuery.data);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- sync authoritative membership once loaded
+  }, [membershipQuery.data]);
+
+  const membershipEditPayload = useMemo(
+    () => ({
+      themeKeys: membershipThemeKeys,
+      disabledThemeKeys,
+      sectorAdditions,
+      sectorRemovals,
+      extraStockIds: membershipExtraIds,
+    }),
+    [
+      disabledThemeKeys,
+      membershipExtraIds,
+      membershipThemeKeys,
+      sectorAdditions,
+      sectorRemovals,
+    ],
+  );
+
+  const sectorMembership = useMemo(() => {
+    const raw = membershipQuery.data?.sectorMembership;
+    if (!raw || typeof raw !== "object") return {} as Record<string, string[]>;
+    return Object.fromEntries(
+      Object.entries(raw as Record<string, unknown>).map(([key, values]) => [
+        key,
+        Array.isArray(values) ? values.map(String) : [],
+      ]),
+    );
+  }, [membershipQuery.data]);
+
+  const selectedSectorMembers = sectorMembership[selectedSectorKey] ?? [];
+
+  const firstPassProgressQuery = useQuery({
+    queryKey: ["tw-research-first-pass-progress", firstPassJobId],
+    queryFn: () => fetchTwResearchFirstPassProgress(firstPassJobId as string),
+    enabled: Boolean(firstPassJobId),
+    refetchInterval: (query) => {
+      const status = String(query.state.data?.status ?? "");
+      return ["pending", "running", "partial", "deferred"].includes(status) ? 4_000 : false;
+    },
+    refetchIntervalInBackground: false,
+  });
+
+  useEffect(() => {
+    if (!firstPassProgressQuery.data) return;
+    setFirstPassProgressText(JSON.stringify(firstPassProgressQuery.data, null, 2));
+    const snapshotId = firstPassProgressQuery.data.activeSnapshotId;
+    if (typeof snapshotId === "string" && snapshotId) {
+      setFirstPassSnapshotId(snapshotId);
+    }
+  }, [firstPassProgressQuery.data]);
+
   const twThemeHint = useMemo(() => {
     const keys = (themesQuery.data ?? [])
       .map((theme) => theme.key)
@@ -305,6 +553,10 @@ export function TwResearchPage({
   const displayUniverse = progress?.universeSize ?? scan?.universeSize ?? 0;
   const displayRemaining = progress?.remainingCount ?? scan?.remainingCount ?? 0;
   const displayDayPass = progress?.dayPassCount ?? scan?.dayPassCount ?? 0;
+  const displayMonthPass = progress?.monthPassCount ?? scan?.monthPassCount ?? 0;
+  const displayDailyDeferred =
+    progress?.dailyDeferredCount ?? scan?.dailyDeferredCount ?? 0;
+  const displayStageOrder = progress?.stageOrder ?? scan?.stageOrder;
   const displayQualified = progress?.qualifiedCount ?? scan?.qualifiedCount ?? 0;
   const displayTarget = progress?.targetCount ?? scan?.targetCount ?? 0;
   const displayWorker =
@@ -402,6 +654,194 @@ export function TwResearchPage({
     },
     onSettled: () => {
       createGuard.current = false;
+    },
+  });
+
+  const previewMembershipMutation = useMutation({
+    mutationFn: async () => previewTwResearchMembership(membershipEditPayload),
+    onSuccess: (membership) => {
+      applyMembershipState(membership);
+    },
+  });
+
+  const saveMembershipMutation = useMutation({
+    mutationFn: async () =>
+      saveTwResearchMembership({
+        expectedVersion: membershipVersion,
+        ...membershipEditPayload,
+      }),
+    onSuccess: (membership) => {
+      applyMembershipState(membership);
+      void queryClient.invalidateQueries({ queryKey: ["tw-research-membership"] });
+    },
+  });
+
+  const resetMembershipMutation = useMutation({
+    mutationFn: async () =>
+      saveTwResearchMembership({
+        expectedVersion: membershipVersion,
+        resetToStarter: true,
+      }),
+    onSuccess: (membership) => {
+      applyMembershipState(membership);
+      void queryClient.invalidateQueries({ queryKey: ["tw-research-membership"] });
+    },
+  });
+
+  const startFirstPassMutation = useMutation({
+    mutationFn: async () => createTwResearchFirstPassJob({ useMembership: true }),
+    onSuccess: (job) => {
+      setFirstPassJobId(String(job.jobId ?? ""));
+      setFirstPassProgressText(JSON.stringify(job, null, 2));
+      // Clear prior job's snapshot/evidence so approvals cannot reuse stale data.
+      setFirstPassSnapshotId(
+        typeof job.activeSnapshotId === "string" && job.activeSnapshotId
+          ? job.activeSnapshotId
+          : null,
+      );
+      setFirstPassDigest(null);
+      setFirstPassEvidenceText("");
+      setEvidenceOffset(0);
+      void queryClient.invalidateQueries({ queryKey: ["tw-research-first-pass-jobs"] });
+    },
+  });
+
+  const firstPassBatchMutation = useMutation({
+    mutationFn: async () => {
+      if (!firstPassJobId) throw new Error("missing_first_pass_job");
+      return runTwResearchFirstPassBatch(firstPassJobId, 10);
+    },
+    onSuccess: (job) => {
+      setFirstPassProgressText(JSON.stringify(job, null, 2));
+      if (typeof job.activeSnapshotId === "string" && job.activeSnapshotId) {
+        setFirstPassSnapshotId(job.activeSnapshotId);
+      }
+      void queryClient.invalidateQueries({
+        queryKey: ["tw-research-first-pass-progress", firstPassJobId],
+      });
+      void queryClient.invalidateQueries({ queryKey: ["tw-research-first-pass-jobs"] });
+    },
+  });
+
+  const loadFirstPassEvidenceMutation = useMutation({
+    mutationFn: async (offset: number) => {
+      if (!firstPassJobId) throw new Error("missing_first_pass_job");
+      return fetchTwResearchFirstPassSymbols(firstPassJobId, {
+        offset,
+        limit: PAGE_SIZE,
+        status: evidenceStatusFilter || undefined,
+        q: evidenceSearch.trim() || undefined,
+      });
+    },
+    onSuccess: (result, offset) => {
+      setEvidenceOffset(offset);
+      const records = Array.isArray(result.records) ? result.records : [];
+      const labeled = records.map((row) => {
+        const evidence = (row as { evidence?: Record<string, unknown> }).evidence ?? {};
+        const stockId = String((row as { stockId?: string }).stockId ?? "");
+        const displayLabel =
+          String((row as { displayLabel?: string }).displayLabel ?? "") ||
+          formatTwStockLabel(
+            stockId,
+            String(evidence.stockName ?? (row as { stockName?: string }).stockName ?? ""),
+            String(evidence.nameStatus ?? (row as { nameStatus?: string }).nameStatus ?? ""),
+            t("research.tw.nameUnavailable"),
+          );
+        return { ...row, displayLabel };
+      });
+      setFirstPassEvidenceText(
+        JSON.stringify(
+          {
+            ...result,
+            records: labeled,
+            serverSearch: evidenceSearch.trim() || null,
+          },
+          null,
+          2,
+        ),
+      );
+    },
+  });
+
+  const loadFirstPassManifestMutation = useMutation({
+    mutationFn: async (chunkIndex: number) => {
+      if (!firstPassSnapshotId) throw new Error("missing_first_pass_snapshot");
+      const manifest = await fetchTwResearchFirstPassManifest(firstPassSnapshotId);
+      const chunk = await fetchTwResearchFirstPassChunk(firstPassSnapshotId, chunkIndex);
+      setFirstPassDigest(
+        typeof manifest.contentDigest === "string" ? manifest.contentDigest : null,
+      );
+      return { manifest, chunk, chunkIndex };
+    },
+    onSuccess: (payload) => {
+      setFirstPassEvidenceText(JSON.stringify(payload, null, 2));
+    },
+  });
+
+  const saveCandidateSetMutation = useMutation({
+    mutationFn: async () => {
+      if (!firstPassSnapshotId || !firstPassDigest) {
+        throw new Error("missing_first_pass_snapshot_or_digest");
+      }
+      setCandidateSetConflict(null);
+      return submitTwResearchCandidateSet({
+        firstPassSnapshotId,
+        firstPassDigest,
+        stockIds: splitLines(candidateIdsText),
+        origin: "manual",
+        expectedVersion: candidateSetVersion,
+      });
+    },
+    onSuccess: (candidateSet) => {
+      const text = Array.isArray(candidateSet.stockIds)
+        ? candidateSet.stockIds.map(String).join("\n")
+        : candidateIdsText;
+      setCandidateSetText(JSON.stringify(candidateSet, null, 2));
+      setCandidateSetVersion(Number(candidateSet.version ?? 0));
+      setCommittedCandidateIdsText(text);
+      setCandidateIdsText(text);
+      setCandidateConflictServerIds([]);
+      setCandidateSetConflict(null);
+      void queryClient.invalidateQueries({ queryKey: ["tw-research-candidate-set-latest"] });
+    },
+    onError: async (error) => {
+      const apiError = toApiError(error);
+      if (apiError.status !== 409) return;
+      try {
+        const latest = await fetchTwResearchLatestCandidateSet();
+        const serverIds = Array.isArray(latest.stockIds)
+          ? latest.stockIds.map(String)
+          : [];
+        // Preserve unsaved analyst draft; refresh only server version + committed view.
+        setCandidateSetVersion(Number(latest.version ?? 0));
+        setCandidateSetText(JSON.stringify(latest, null, 2));
+        setCommittedCandidateIdsText(serverIds.join("\n"));
+        setCandidateConflictServerIds(serverIds);
+        setCandidateSetConflict(
+          t("research.tw.candidateVersionConflict", {
+            version: String(latest.version ?? 0),
+          }),
+        );
+      } catch {
+        setCandidateSetConflict(t("research.tw.candidateVersionConflictRefreshFailed"));
+      }
+    },
+  });
+
+  const startTechnicalFromCandidateMutation = useMutation({
+    mutationFn: async () =>
+      createTwResearchTechnicalScanFromCandidateSet({
+        expectedVersion: candidateSetVersion || undefined,
+        targetCount: 10,
+      }),
+    onSuccess: (created) => {
+      setScanId(created.scanId);
+      applyScanSnapshot(created);
+      setMode("stock_ids");
+      if (Array.isArray(created.stockIds)) {
+        setStockIdsText(created.stockIds.map(String).join("\n"));
+      }
+      void queryClient.invalidateQueries({ queryKey: ["tw-research-scans"] });
     },
   });
 
@@ -547,6 +987,11 @@ export function TwResearchPage({
       label: "research.tw.errorManifest",
       error: manifestQuery.isFetching ? null : manifestQuery.error,
     },
+    {
+      key: "first-pass-jobs",
+      label: "research.tw.errorFirstPassJobs",
+      error: firstPassJobsQuery.isFetching ? null : firstPassJobsQuery.error,
+    },
   ];
 
   return (
@@ -573,6 +1018,460 @@ export function TwResearchPage({
               </div>
             );
           })}
+
+          <Tile data-testid="tw-research-fundamentals">
+            <Stack gap={4}>
+              <div>
+                <h2 className="cds--productive-heading-03">{t("research.tw.fundamentalsTitle")}</h2>
+                <p className="cds--helper-text-01">{t("research.tw.fundamentalsNote")}</p>
+                <p className="cds--helper-text-01">{t("research.tw.stageHint")}</p>
+              </div>
+              <p className="cds--helper-text-01" data-testid="tw-research-membership-meta">
+                {t("research.tw.membershipMeta", {
+                  version: membershipVersion,
+                  updatedAt: String(membershipQuery.data?.updatedAt ?? "—"),
+                  count: Array.isArray(membershipQuery.data?.resolvedStockIds)
+                    ? membershipQuery.data.resolvedStockIds.length
+                    : membershipExtraIds.length,
+                })}
+              </p>
+              <Stack gap={3} orientation="horizontal">
+                <Button
+                  kind="tertiary"
+                  size="sm"
+                  disabled={membershipQuery.isFetching}
+                  onClick={() => void membershipQuery.refetch()}
+                >
+                  {t("research.tw.loadMembership")}
+                </Button>
+                <Button
+                  kind="tertiary"
+                  size="sm"
+                  disabled={previewMembershipMutation.isPending}
+                  onClick={() => previewMembershipMutation.mutate()}
+                >
+                  {t("research.tw.previewMembership")}
+                </Button>
+                <Button
+                  kind="primary"
+                  size="sm"
+                  disabled={saveMembershipMutation.isPending}
+                  onClick={() => saveMembershipMutation.mutate()}
+                >
+                  {t("research.tw.saveMembership")}
+                </Button>
+                <Button
+                  kind="danger--tertiary"
+                  size="sm"
+                  disabled={resetMembershipMutation.isPending}
+                  onClick={() => resetMembershipMutation.mutate()}
+                >
+                  {t("research.tw.resetMembership")}
+                </Button>
+              </Stack>
+              <div data-testid="tw-research-sector-editor">
+                <h3 className="cds--productive-heading-02">{t("research.tw.sectorEditor")}</h3>
+                <Stack gap={3}>
+                  <Select
+                    id="tw-research-sector-select"
+                    labelText={t("research.tw.sectorSelect")}
+                    value={selectedSectorKey}
+                    onChange={(event) => setSelectedSectorKey(event.target.value)}
+                  >
+                    {Object.keys(sectorMembership).map((key) => (
+                      <SelectItem
+                        key={key}
+                        value={key}
+                        text={`${key}${disabledThemeKeys.includes(key) ? " (disabled)" : ""}`}
+                      />
+                    ))}
+                  </Select>
+                  {selectedSectorKey ? (
+                    <Stack gap={2} orientation="horizontal">
+                      <Button
+                        kind="tertiary"
+                        size="sm"
+                        onClick={() => {
+                          setDisabledThemeKeys((current) =>
+                            current.includes(selectedSectorKey)
+                              ? current.filter((key) => key !== selectedSectorKey)
+                              : [...current, selectedSectorKey],
+                          );
+                        }}
+                      >
+                        {disabledThemeKeys.includes(selectedSectorKey)
+                          ? t("research.tw.enableSector")
+                          : t("research.tw.disableSector")}
+                      </Button>
+                    </Stack>
+                  ) : null}
+                  <TextInput
+                    id="tw-research-sector-add-stock"
+                    labelText={t("research.tw.sectorAddStock")}
+                    value={sectorStockDraft}
+                    onChange={(event) => setSectorStockDraft(event.target.value)}
+                  />
+                  <Stack gap={2} orientation="horizontal">
+                    <Button
+                      kind="secondary"
+                      size="sm"
+                      disabled={!selectedSectorKey || !sectorStockDraft.trim()}
+                      onClick={() => {
+                        const stockId = sectorStockDraft.trim();
+                        setSectorAdditions((current) => {
+                          const existing = current[selectedSectorKey] ?? [];
+                          if (existing.includes(stockId)) return current;
+                          return {
+                            ...current,
+                            [selectedSectorKey]: [...existing, stockId],
+                          };
+                        });
+                        setSectorRemovals((current) => {
+                          const existing = current[selectedSectorKey] ?? [];
+                          return {
+                            ...current,
+                            [selectedSectorKey]: existing.filter((id) => id !== stockId),
+                          };
+                        });
+                        setSectorStockDraft("");
+                      }}
+                    >
+                      {t("research.tw.sectorAddStock")}
+                    </Button>
+                  </Stack>
+                  <ul data-testid="tw-research-sector-members">
+                    {selectedSectorMembers.map((stockId) => (
+                      <li key={stockId}>
+                        <Stack gap={2} orientation="horizontal">
+                          <span>{stockId}</span>
+                          <Button
+                            kind="ghost"
+                            size="sm"
+                            onClick={() => {
+                              setSectorRemovals((current) => {
+                                const existing = current[selectedSectorKey] ?? [];
+                                if (existing.includes(stockId)) return current;
+                                return {
+                                  ...current,
+                                  [selectedSectorKey]: [...existing, stockId],
+                                };
+                              });
+                              setSectorAdditions((current) => {
+                                const existing = current[selectedSectorKey] ?? [];
+                                return {
+                                  ...current,
+                                  [selectedSectorKey]: existing.filter((id) => id !== stockId),
+                                };
+                              });
+                            }}
+                          >
+                            {t("research.tw.sectorRemoveStock")}
+                          </Button>
+                        </Stack>
+                      </li>
+                    ))}
+                  </ul>
+                  <TextArea
+                    id="tw-research-membership-extra-ids"
+                    labelText={t("research.tw.extraMembershipIds")}
+                    value={membershipExtraIds.join("\n")}
+                    onChange={(event) =>
+                      setMembershipExtraIds(splitLines(event.target.value))
+                    }
+                    rows={3}
+                  />
+                </Stack>
+              </div>
+              <Stack gap={3} orientation="horizontal">
+                <Button
+                  kind="primary"
+                  size="sm"
+                  disabled={startFirstPassMutation.isPending}
+                  onClick={() => startFirstPassMutation.mutate()}
+                >
+                  {t("research.tw.startFirstPass")}
+                </Button>
+                <Button
+                  kind="secondary"
+                  size="sm"
+                  disabled={!firstPassJobId || firstPassBatchMutation.isPending}
+                  onClick={() => firstPassBatchMutation.mutate()}
+                >
+                  {t("research.tw.runFirstPassBatch")}
+                </Button>
+                <Button
+                  kind="tertiary"
+                  size="sm"
+                  disabled={!firstPassJobId || loadFirstPassEvidenceMutation.isPending}
+                  onClick={() => loadFirstPassEvidenceMutation.mutate(0)}
+                >
+                  {t("research.tw.loadFirstPassEvidence")}
+                </Button>
+                <Button
+                  kind="tertiary"
+                  size="sm"
+                  disabled={!firstPassSnapshotId || loadFirstPassManifestMutation.isPending}
+                  onClick={() => loadFirstPassManifestMutation.mutate(0)}
+                >
+                  {t("research.tw.loadFirstPassManifest")}
+                </Button>
+              </Stack>
+              {firstPassJobsQuery.isError ? (
+                <div data-testid="tw-research-first-pass-jobs-unavailable">
+                  <RequestStateNotice
+                    kind={errorToNoticeKind(firstPassJobsQuery.error)}
+                    scopeLabel={t("research.tw.firstPassJobHistory")}
+                    status={toApiError(firstPassJobsQuery.error).status}
+                    detail={describeResearchFailure(firstPassJobsQuery.error)}
+                    onRetry={() => {
+                      void firstPassJobsQuery.refetch();
+                    }}
+                  />
+                  {firstPassJobsStale ? (
+                    <p
+                      className="cds--helper-text-01"
+                      data-testid="tw-research-first-pass-jobs-stale"
+                    >
+                      {t("research.tw.firstPassJobsStale")}
+                    </p>
+                  ) : null}
+                </div>
+              ) : null}
+              {!firstPassJobsQuery.isError &&
+              firstPassJobsQuery.isSuccess &&
+              firstPassJobs.length === 0 ? (
+                <p
+                  className="cds--helper-text-01"
+                  data-testid="tw-research-first-pass-jobs-empty"
+                >
+                  {t("research.tw.firstPassJobsEmpty")}
+                </p>
+              ) : null}
+              {firstPassJobs.length > 0 ? (
+                <Select
+                  id="tw-research-first-pass-job-history"
+                  data-testid="tw-research-first-pass-job-history"
+                  labelText={
+                    firstPassJobsStale
+                      ? t("research.tw.firstPassJobHistoryStale")
+                      : t("research.tw.firstPassJobHistory")
+                  }
+                  value={firstPassJobId ?? ""}
+                  onChange={(event) => {
+                    const next = event.target.value;
+                    if (!next) return;
+                    setFirstPassJobId(next);
+                    const match = firstPassJobs.find((job) => String(job.jobId) === next);
+                    if (match) {
+                      setFirstPassProgressText(JSON.stringify(match, null, 2));
+                      setFirstPassSnapshotId(
+                        typeof match.activeSnapshotId === "string"
+                          ? match.activeSnapshotId
+                          : null,
+                      );
+                    } else {
+                      void fetchTwResearchFirstPassJob(next).then((job) => {
+                        setFirstPassProgressText(JSON.stringify(job, null, 2));
+                        if (typeof job.activeSnapshotId === "string") {
+                          setFirstPassSnapshotId(job.activeSnapshotId);
+                        }
+                      });
+                    }
+                  }}
+                >
+                  {firstPassJobs.map((job) => (
+                    <SelectItem
+                      key={String(job.jobId)}
+                      value={String(job.jobId)}
+                      text={`${String(job.jobId)} · ${String(job.status ?? "")} · ${String(job.qualityStatus ?? "")}`}
+                    />
+                  ))}
+                </Select>
+              ) : null}
+              <Stack gap={3} orientation="horizontal">
+                <TextInput
+                  id="tw-research-evidence-search"
+                  labelText={t("research.tw.evidenceSearch")}
+                  value={evidenceSearch}
+                  onChange={(event) => setEvidenceSearch(event.target.value)}
+                />
+                <Select
+                  id="tw-research-evidence-status"
+                  labelText={t("research.tw.evidenceStatus")}
+                  value={evidenceStatusFilter}
+                  onChange={(event) => setEvidenceStatusFilter(event.target.value)}
+                >
+                  <SelectItem value="" text="all" />
+                  <SelectItem value="ok" text="ok" />
+                  <SelectItem value="partial" text="partial" />
+                  <SelectItem value="failed" text="failed" />
+                  <SelectItem value="deferred" text="deferred" />
+                </Select>
+                <Button
+                  kind="ghost"
+                  size="sm"
+                  disabled={!firstPassJobId || loadFirstPassEvidenceMutation.isPending}
+                  onClick={() => loadFirstPassEvidenceMutation.mutate(0)}
+                >
+                  {t("research.tw.evidenceSearchApply")}
+                </Button>
+                <Button
+                  kind="ghost"
+                  size="sm"
+                  disabled={!firstPassJobId || evidenceOffset <= 0 || loadFirstPassEvidenceMutation.isPending}
+                  onClick={() =>
+                    loadFirstPassEvidenceMutation.mutate(Math.max(0, evidenceOffset - PAGE_SIZE))
+                  }
+                >
+                  {t("research.tw.evidencePrev")}
+                </Button>
+                <Button
+                  kind="ghost"
+                  size="sm"
+                  disabled={!firstPassJobId || loadFirstPassEvidenceMutation.isPending}
+                  onClick={() =>
+                    loadFirstPassEvidenceMutation.mutate(evidenceOffset + PAGE_SIZE)
+                  }
+                >
+                  {t("research.tw.evidenceNext")}
+                </Button>
+              </Stack>
+              <TextArea
+                id="tw-research-membership-json"
+                labelText={t("research.tw.membershipJson")}
+                value={membershipText}
+                readOnly
+                rows={6}
+              />
+              <TextArea
+                id="tw-research-first-pass-progress"
+                labelText={t("research.tw.firstPassProgress")}
+                value={firstPassProgressText}
+                readOnly
+                rows={5}
+              />
+              <TextArea
+                id="tw-research-first-pass-evidence"
+                labelText={t("research.tw.firstPassEvidence")}
+                value={firstPassEvidenceText}
+                readOnly
+                rows={6}
+              />
+              <TextArea
+                id="tw-research-candidate-ids"
+                data-testid="tw-research-candidate-ids"
+                labelText={t("research.tw.candidateIds")}
+                value={candidateIdsText}
+                onChange={(event) => setCandidateIdsText(event.target.value)}
+                rows={3}
+              />
+              <p className="cds--helper-text-01" data-testid="tw-research-candidate-version">
+                {t("research.tw.candidateVersion", { version: candidateSetVersion })}
+              </p>
+              {candidateSetConflict ? (
+                <Stack gap={3}>
+                  <RequestStateNotice
+                    kind="validation"
+                    scopeLabel={t("research.tw.saveCandidateSet")}
+                    status={409}
+                    detail={candidateSetConflict}
+                  />
+                  <TextArea
+                    id="tw-research-candidate-committed"
+                    data-testid="tw-research-candidate-committed"
+                    labelText={t("research.tw.candidateCommitted")}
+                    value={committedCandidateIdsText}
+                    readOnly
+                    rows={3}
+                  />
+                  <TextArea
+                    id="tw-research-candidate-proposed"
+                    data-testid="tw-research-candidate-proposed"
+                    labelText={t("research.tw.candidateProposed")}
+                    value={candidateIdsText}
+                    readOnly
+                    rows={3}
+                  />
+                  <Stack gap={3} orientation="horizontal">
+                    <Button
+                      kind="secondary"
+                      size="sm"
+                      data-testid="tw-research-candidate-reapply"
+                      onClick={() => {
+                        // Keep draft; only bump expected version already refreshed.
+                        setCandidateSetConflict(null);
+                      }}
+                    >
+                      {t("research.tw.candidateReapply")}
+                    </Button>
+                    <Button
+                      kind="danger--tertiary"
+                      size="sm"
+                      data-testid="tw-research-candidate-discard"
+                      onClick={() => {
+                        setCandidateIdsText(committedCandidateIdsText);
+                        setCandidateConflictServerIds([]);
+                        setCandidateSetConflict(null);
+                      }}
+                    >
+                      {t("research.tw.candidateDiscard")}
+                    </Button>
+                    <Button
+                      kind="primary"
+                      size="sm"
+                      data-testid="tw-research-candidate-resolve-save"
+                      disabled={saveCandidateSetMutation.isPending}
+                      onClick={() => saveCandidateSetMutation.mutate()}
+                    >
+                      {t("research.tw.candidateResolveSave")}
+                    </Button>
+                  </Stack>
+                  {candidateConflictServerIds.length ? (
+                    <p className="cds--helper-text-01" data-testid="tw-research-candidate-server-count">
+                      {t("research.tw.candidateServerCount", {
+                        count: String(candidateConflictServerIds.length),
+                      })}
+                    </p>
+                  ) : null}
+                </Stack>
+              ) : null}
+              <Stack gap={3} orientation="horizontal">
+                <Button
+                  kind="primary"
+                  size="sm"
+                  disabled={
+                    !firstPassSnapshotId ||
+                    !firstPassDigest ||
+                    saveCandidateSetMutation.isPending
+                  }
+                  onClick={() => saveCandidateSetMutation.mutate()}
+                >
+                  {t("research.tw.saveCandidateSet")}
+                </Button>
+                <Button
+                  kind="secondary"
+                  size="sm"
+                  data-testid="tw-research-start-technical-from-candidates"
+                  disabled={
+                    candidateSetVersion <= 0 ||
+                    startTechnicalFromCandidateMutation.isPending
+                  }
+                  onClick={() => startTechnicalFromCandidateMutation.mutate()}
+                >
+                  {t("research.tw.startTechnicalFromCandidates")}
+                </Button>
+              </Stack>
+              {candidateSetText ? (
+                <TextArea
+                  id="tw-research-candidate-set-json"
+                  labelText={t("research.tw.saveCandidateSet")}
+                  value={candidateSetText}
+                  readOnly
+                  rows={4}
+                />
+              ) : null}
+            </Stack>
+          </Tile>
 
           <Tile>
             <Stack gap={4}>
@@ -765,20 +1664,55 @@ export function TwResearchPage({
                   value={scan.scanId}
                   readOnly
                 />
-                <p className="cds--body-compact-01">
-                  {t("research.tw.statusLine", {
-                    status: displayStatus,
-                    processed: displayProcessed,
-                    universe: displayUniverse,
-                    remaining: displayRemaining,
-                    dayPass: displayDayPass,
-                    qualified: displayQualified,
-                    target: displayTarget,
-                  })}
+                <p className="cds--body-compact-01" data-testid="tw-research-status-line">
+                  {displayStageOrder === "monthly_first"
+                    ? t("research.tw.statusLineMonthlyFirst", {
+                        status: displayStatus,
+                        processed: displayProcessed,
+                        universe: displayUniverse,
+                        remaining: displayRemaining,
+                        monthPass: displayMonthPass,
+                        dayPass: displayDayPass,
+                        qualified: displayQualified,
+                        deferred: displayDailyDeferred,
+                        target: displayTarget,
+                      })
+                    : t("research.tw.statusLineDailyFirst", {
+                        status: displayStatus,
+                        processed: displayProcessed,
+                        universe: displayUniverse,
+                        remaining: displayRemaining,
+                        dayPass: displayDayPass,
+                        qualified: displayQualified,
+                        target: displayTarget,
+                      })}
                 </p>
                 <p className="cds--body-compact-01" data-testid="tw-research-worker">
                   {t(workerActivityLabelKey(displayWorker))}
                 </p>
+                {scan.candidateProvenance?.candidateSetId ? (
+                  <div data-testid="tw-research-candidate-provenance">
+                    <p className="cds--helper-text-01">
+                      {t("research.tw.candidateProvenanceLine", {
+                        candidateSetId: scan.candidateProvenance.candidateSetId,
+                        version: String(scan.candidateProvenance.candidateSetVersion ?? ""),
+                        snapshotId: scan.candidateProvenance.firstPassSnapshotId ?? "",
+                        count: String(
+                          scan.candidateProvenance.approvedStockIds?.length ??
+                            scan.stockIds?.length ??
+                            0,
+                        ),
+                      })}
+                    </p>
+                    {scan.candidateProvenance.firstPassDigest ? (
+                      <p className="cds--helper-text-01">
+                        {t("research.tw.candidateProvenanceDigest", {
+                          digest: `${scan.candidateProvenance.firstPassDigest.slice(0, 12)}…`,
+                        })}
+                      </p>
+                    ) : null}
+                  </div>
+                ) : null}
                 <p className="cds--helper-text-01">
                   {t("research.tw.budgetLine", {
                     used: displayBudgetUsed,
@@ -843,13 +1777,30 @@ export function TwResearchPage({
 
           {scan ? (
             <TableContainer title={t("research.tw.ledgerTitle")}>
+              <p className="cds--helper-text-01" data-testid="tw-research-stage-order">
+                {t(
+                  scan.stageOrder === "monthly_first"
+                    ? "research.tw.stageOrderMonthlyFirst"
+                    : "research.tw.stageOrderDailyFirst",
+                )}
+              </p>
               <Table size="sm">
                 <TableHead>
                   <TableRow>
                     <TableHeader>{t("research.tw.colStock")}</TableHeader>
+                    <TableHeader>{t("research.tw.colName")}</TableHeader>
                     <TableHeader>{t("research.tw.colStage")}</TableHeader>
-                    <TableHeader>{t("research.tw.colDaily")}</TableHeader>
-                    <TableHeader>{t("research.tw.colMonthly")}</TableHeader>
+                    {scan.stageOrder === "monthly_first" ? (
+                      <>
+                        <TableHeader>{t("research.tw.colMonthlyFirst")}</TableHeader>
+                        <TableHeader>{t("research.tw.colDailySecond")}</TableHeader>
+                      </>
+                    ) : (
+                      <>
+                        <TableHeader>{t("research.tw.colDailyFirst")}</TableHeader>
+                        <TableHeader>{t("research.tw.colMonthlySecond")}</TableHeader>
+                      </>
+                    )}
                     <TableHeader>{t("research.tw.colThemes")}</TableHeader>
                     <TableHeader>{t("research.tw.colReason")}</TableHeader>
                   </TableRow>
@@ -859,12 +1810,35 @@ export function TwResearchPage({
                     const daily = (row.daily as Record<string, unknown> | undefined) || {};
                     const monthly = (row.monthly as Record<string, unknown> | undefined) || {};
                     const themes = (row.theme_keys as string[] | undefined) || [];
+                    const stockId = displayText(row.stock_id) || displayText(row.stockId);
+                    const stockName =
+                      displayText(row.stock_name) ||
+                      displayText(row.stockName) ||
+                      "";
+                    const nameStatus =
+                      displayText(row.name_status) || displayText(row.nameStatus);
+                    const firstPass =
+                      scan.stageOrder === "monthly_first"
+                        ? displayText(monthly.passStatus)
+                        : displayText(daily.passStatus);
+                    const secondPass =
+                      scan.stageOrder === "monthly_first"
+                        ? displayText(daily.passStatus)
+                        : displayText(monthly.passStatus);
                     return (
-                      <TableRow key={displayText(row.stock_id)}>
-                        <TableCell>{displayText(row.stock_id)}</TableCell>
+                      <TableRow key={stockId}>
+                        <TableCell>{stockId}</TableCell>
+                        <TableCell>
+                          {formatTwStockLabel(
+                            stockId,
+                            stockName,
+                            nameStatus,
+                            t("research.tw.nameUnavailable"),
+                          )}
+                        </TableCell>
                         <TableCell>{displayText(row.stage)}</TableCell>
-                        <TableCell>{displayText(daily.passStatus)}</TableCell>
-                        <TableCell>{displayText(monthly.passStatus)}</TableCell>
+                        <TableCell>{firstPass}</TableCell>
+                        <TableCell>{secondPass}</TableCell>
                         <TableCell>
                           {themes.length ? themes.join(", ") : t("research.tw.unclassified")}
                         </TableCell>

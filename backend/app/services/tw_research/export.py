@@ -98,12 +98,14 @@ def has_definitive_screening_outcome(record: Any) -> bool:
         return False
 
     daily = _pass_status(record, timeframe="daily")
-    if daily == "fail":
+    monthly = _pass_status(record, timeframe="monthly")
+    # Valid technical failure is definitive on either gate — including monthly-first
+    # gate failures where daily evaluation is intentionally skipped.
+    if daily == "fail" or monthly == "fail":
         return True
-    if daily == "pass":
-        monthly = _pass_status(record, timeframe="monthly")
-        return monthly in {"pass", "fail"}
-    # unknown / missing daily indicators are unresolved.
+    if daily == "pass" and monthly == "pass":
+        return True
+    # unknown / missing indicators are unresolved.
     return False
 
 
@@ -272,10 +274,11 @@ def build_export_manifest(state: ScanState, *, generated_at: str) -> dict[str, A
     quality = getattr(state, "quality_status", state.status)
     publication = _publication_statuses(state, ledger)
     counts = _manifest_counts(state, ledger)
+    calculation_version = getattr(state, "calculation_version", None) or CALCULATION_VERSION
     return {
         "schemaVersion": RESEARCH_SCHEMA_VERSION,
         "contractVersion": CONTRACT_VERSION,
-        "calculationVersion": CALCULATION_VERSION,
+        "calculationVersion": calculation_version,
         "enrichmentVersion": ENRICHMENT_VERSION,
         "generatedAt": generated_at,
         "scanId": state.scan_id,
@@ -337,12 +340,13 @@ def stable_export_content_digest(
     universe_version: str,
     trading_day: str,
     quality_status: str,
+    calculation_version: str | None = None,
 ) -> str:
     """Hash research content only — no timestamps or scan/snapshot UUIDs (#319)."""
     return content_digest(
         {
             "schemaVersion": RESEARCH_SCHEMA_VERSION,
-            "calculationVersion": CALCULATION_VERSION,
+            "calculationVersion": calculation_version or CALCULATION_VERSION,
             "enrichmentVersion": ENRICHMENT_VERSION,
             "universeVersion": universe_version,
             "tradingDay": trading_day,
@@ -400,6 +404,7 @@ def build_immutable_manifest(
         universe_version=state.universe_version,
         trading_day=state.trading_day,
         quality_status=quality_status,
+        calculation_version=getattr(state, "calculation_version", None) or CALCULATION_VERSION,
     )
     return base
 

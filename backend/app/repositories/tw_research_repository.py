@@ -5,14 +5,19 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.db.models import (
+    TwResearchCandidateSet,
     TwResearchCoordinationLock,
     TwResearchExportSnapshot,
+    TwResearchFirstPassJob,
+    TwResearchFirstPassSnapshot,
+    TwResearchFirstPassSymbolResult,
     TwResearchHistoryFlight,
+    TwResearchMembership,
     TwResearchScan,
     TwResearchSymbolResult,
 )
@@ -1460,6 +1465,865 @@ class TwResearchRepository(SessionBoundRepository):
                 count += 1
             session.commit()
             return count
+
+    # --- Membership / first-pass / candidate sets (#335/#336) ---
+
+    def get_membership(self, user_id: str) -> dict[str, Any] | None:
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            row = session.get(TwResearchMembership, user_id)
+            if row is None:
+                return None
+            return _membership_to_dict(row)
+
+    def save_membership(
+        self,
+        user_id: str,
+        *,
+        expected_version: int,
+        theme_keys: list[str],
+        extra_stock_ids: list[str],
+        compute_subset_ids: list[str],
+        disabled_theme_keys: list[str] | None = None,
+        sector_additions: dict[str, list[str]] | None = None,
+        sector_removals: dict[str, list[str]] | None = None,
+        custom_sectors: list[dict[str, Any]] | None = None,
+        base_preset_version: str = "starter",
+    ) -> dict[str, Any]:
+        """DB-level optimistic concurrency via UPDATE … WHERE version = expected."""
+        now = datetime.now(timezone.utc)
+        disabled = list(disabled_theme_keys or [])
+        additions = dict(sector_additions or {})
+        removals = dict(sector_removals or {})
+        customs = list(custom_sectors or [])
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            if expected_version == 0:
+                row = TwResearchMembership(
+                    user_id=user_id,
+                    version=1,
+                    base_preset_version=base_preset_version,
+                    theme_keys_json=list(theme_keys),
+                    disabled_theme_keys_json=disabled,
+                    sector_additions_json=additions,
+                    sector_removals_json=removals,
+                    custom_sectors_json=customs,
+                    extra_stock_ids_json=list(extra_stock_ids),
+                    compute_subset_ids_json=list(compute_subset_ids),
+                    updated_at=now,
+                )
+                try:
+                    with session.begin_nested():
+                        session.add(row)
+                        session.flush()
+                except IntegrityError as exc:
+                    raise ValueError("membership_version_mismatch") from exc
+                session.commit()
+                session.refresh(row)
+                return _membership_to_dict(row)
+
+            result = session.execute(
+                update(TwResearchMembership)
+                .where(
+                    TwResearchMembership.user_id == user_id,
+                    TwResearchMembership.version == expected_version,
+                )
+                .values(
+                    version=expected_version + 1,
+                    base_preset_version=base_preset_version,
+                    theme_keys_json=list(theme_keys),
+                    disabled_theme_keys_json=disabled,
+                    sector_additions_json=additions,
+                    sector_removals_json=removals,
+                    custom_sectors_json=customs,
+                    extra_stock_ids_json=list(extra_stock_ids),
+                    compute_subset_ids_json=list(compute_subset_ids),
+                    updated_at=now,
+                )
+            )
+            if int(result.rowcount or 0) != 1:
+                session.rollback()
+                raise ValueError("membership_version_mismatch")
+            session.commit()
+            row = session.get(TwResearchMembership, user_id)
+            if row is None:
+                raise ValueError("membership_version_mismatch")
+            return _membership_to_dict(row)
+
+    def save_first_pass_snapshot(
+        self,
+        *,
+        snapshot_id: str,
+        user_id: str,
+        universe_version: str,
+        first_pass_version: str,
+        content_digest: str,
+        payload: dict[str, Any],
+        stock_ids: list[str],
+    ) -> dict[str, Any]:
+        """Idempotent by (user_id, content_digest). Returns existing row on digest hit."""
+        now = datetime.now(timezone.utc)
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            existing = session.execute(
+                select(TwResearchFirstPassSnapshot).where(
+                    TwResearchFirstPassSnapshot.user_id == user_id,
+                    TwResearchFirstPassSnapshot.content_digest == content_digest,
+                )
+            ).scalars().first()
+            if existing is not None:
+                return _first_pass_snapshot_to_dict(existing)
+            row = TwResearchFirstPassSnapshot(
+                snapshot_id=snapshot_id,
+                user_id=user_id,
+                universe_version=universe_version,
+                first_pass_version=first_pass_version,
+                content_digest=content_digest,
+                payload_json=payload,
+                stock_ids_json=list(stock_ids),
+                created_at=now,
+            )
+            try:
+                with session.begin_nested():
+                    session.add(row)
+                    session.flush()
+            except IntegrityError:
+                # Concurrent same-user digest hit, or rare PK race — never publish
+                # a partial row; re-read the owner's digest match.
+                existing = session.execute(
+                    select(TwResearchFirstPassSnapshot).where(
+                        TwResearchFirstPassSnapshot.user_id == user_id,
+                        TwResearchFirstPassSnapshot.content_digest == content_digest,
+                    )
+                ).scalars().first()
+                if existing is not None:
+                    return _first_pass_snapshot_to_dict(existing)
+                by_pk = session.get(TwResearchFirstPassSnapshot, snapshot_id)
+                if by_pk is not None and by_pk.user_id == user_id:
+                    return _first_pass_snapshot_to_dict(by_pk)
+                raise
+            session.commit()
+            session.refresh(row)
+            return _first_pass_snapshot_to_dict(row)
+
+    def get_first_pass_snapshot(
+        self, snapshot_id: str, *, user_id: str | None = None
+    ) -> dict[str, Any] | None:
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            row = session.get(TwResearchFirstPassSnapshot, snapshot_id)
+            if row is None:
+                return None
+            if user_id is not None and row.user_id != user_id:
+                return None
+            return _first_pass_snapshot_to_dict(row)
+
+    def save_candidate_set(
+        self,
+        *,
+        candidate_set_id: str,
+        user_id: str,
+        expected_version: int,
+        first_pass_snapshot_id: str,
+        first_pass_digest: str,
+        stock_ids: list[str],
+        origin: str,
+        selection_reasons: dict[str, Any],
+        decision_date: str | None,
+        notes: list[str],
+    ) -> dict[str, Any]:
+        """Append a new candidate-set version under row lock + unique(version)."""
+        now = datetime.now(timezone.utc)
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            # Lock existing rows for this user so concurrent appends serialize.
+            locked = session.execute(
+                select(TwResearchCandidateSet)
+                .where(TwResearchCandidateSet.user_id == user_id)
+                .order_by(TwResearchCandidateSet.version.desc())
+                .with_for_update()
+            ).scalars().first()
+            current_version = int(locked.version) if locked is not None else 0
+            if current_version != expected_version:
+                raise ValueError("candidate_set_version_mismatch")
+            snap = session.get(TwResearchFirstPassSnapshot, first_pass_snapshot_id)
+            if snap is None or snap.user_id != user_id:
+                raise KeyError("first_pass_snapshot_not_found")
+            if snap.content_digest != first_pass_digest:
+                raise ValueError("first_pass_digest_mismatch")
+            row = TwResearchCandidateSet(
+                candidate_set_id=candidate_set_id,
+                user_id=user_id,
+                version=current_version + 1,
+                first_pass_snapshot_id=first_pass_snapshot_id,
+                first_pass_digest=first_pass_digest,
+                stock_ids_json=list(stock_ids),
+                origin=origin,
+                selection_reasons_json=dict(selection_reasons or {}),
+                decision_date=decision_date,
+                notes_json=list(notes),
+                created_at=now,
+            )
+            try:
+                with session.begin_nested():
+                    session.add(row)
+                    session.flush()
+            except IntegrityError as exc:
+                raise ValueError("candidate_set_version_mismatch") from exc
+            session.commit()
+            session.refresh(row)
+            return _candidate_set_to_dict(row)
+
+    def latest_candidate_set(self, user_id: str) -> dict[str, Any] | None:
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            row = session.execute(
+                select(TwResearchCandidateSet)
+                .where(TwResearchCandidateSet.user_id == user_id)
+                .order_by(TwResearchCandidateSet.version.desc())
+                .limit(1)
+            ).scalars().first()
+            if row is None:
+                return None
+            return _candidate_set_to_dict(row)
+
+    # --- First-pass resumable jobs (#335) ---
+
+    def create_first_pass_job(self, payload: dict[str, Any]) -> dict[str, Any]:
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            row = TwResearchFirstPassJob(
+                job_id=payload["job_id"],
+                user_id=payload["user_id"],
+                universe_version=payload["universe_version"],
+                universe_digest=payload["universe_digest"],
+                membership_version=int(payload.get("membership_version") or 0),
+                first_pass_version=payload["first_pass_version"],
+                stock_ids_json=list(payload["stock_ids"]),
+                selector_json=dict(payload.get("selector") or {}),
+                status=payload.get("status") or "pending",
+                quality_status=payload.get("quality_status") or "incomplete",
+                cursor=0,
+                reserve_cursor=0,
+                notes_json=list(payload.get("notes") or []),
+            )
+            session.add(row)
+            session.commit()
+            session.refresh(row)
+            return _first_pass_job_to_dict(row)
+
+    def get_first_pass_job(
+        self, job_id: str, *, user_id: str | None = None
+    ) -> dict[str, Any] | None:
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            row = session.get(TwResearchFirstPassJob, job_id)
+            if row is None:
+                return None
+            if user_id is not None and row.user_id != user_id:
+                return None
+            return _first_pass_job_to_dict(row)
+
+    def list_first_pass_jobs(self, user_id: str, *, limit: int = 20) -> list[dict[str, Any]]:
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            rows = session.execute(
+                select(TwResearchFirstPassJob)
+                .where(TwResearchFirstPassJob.user_id == user_id)
+                .order_by(TwResearchFirstPassJob.updated_at.desc())
+                .limit(limit)
+            ).scalars().all()
+            return [_first_pass_job_to_dict(row) for row in rows]
+
+    def claim_first_pass_batch(
+        self,
+        job_id: str,
+        *,
+        batch_size: int,
+        lease_seconds: int = BATCH_LEASE_SECONDS,
+    ) -> dict[str, Any] | None:
+        """Lease the next batch of unfinished first-pass symbols."""
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            now = datetime.now(timezone.utc)
+            row = session.execute(
+                select(TwResearchFirstPassJob)
+                .where(TwResearchFirstPassJob.job_id == job_id)
+                .with_for_update()
+            ).scalar_one_or_none()
+            if row is None:
+                return None
+            stock_ids = list(row.stock_ids_json or [])
+            lease_until = _as_utc(row.reserve_expires_at)
+            cursor = int(row.cursor or 0)
+            reserve_cursor = int(row.reserve_cursor or 0)
+
+            if lease_until is not None and lease_until <= now:
+                cursor = _first_missing_first_pass_index(session, job_id, stock_ids)
+                row.cursor = cursor
+                row.reserve_cursor = cursor
+                row.reserve_expires_at = None
+                reserve_cursor = cursor
+                lease_until = None
+
+            own_lease_active = (
+                lease_until is not None
+                and lease_until > now
+                and reserve_cursor > cursor
+            )
+            if own_lease_active:
+                session.commit()
+                return {
+                    "batch_ids": [],
+                    "job": _first_pass_job_to_dict(row),
+                    "already_complete": False,
+                    "lease_held": True,
+                    "lease_generation": int(row.lease_generation or 0),
+                }
+
+            cursor = _first_missing_first_pass_index(session, job_id, stock_ids)
+            row.cursor = cursor
+            if cursor >= len(stock_ids):
+                cooling = _first_pass_cooling_retry_count(session, job_id, stock_ids)
+                row.reserve_cursor = cursor
+                row.reserve_expires_at = None
+                if cooling:
+                    # Failures still in backoff — do not finalize or claim complete.
+                    row.status = "deferred"
+                    session.commit()
+                    return {
+                        "batch_ids": [],
+                        "job": _first_pass_job_to_dict(row),
+                        "already_complete": False,
+                        "waiting_for_retry": True,
+                        "lease_held": False,
+                        "lease_generation": int(row.lease_generation or 0),
+                    }
+                # Match complete_first_pass_batch: exhausted symbol failures ⇒ partial.
+                row.status = _resolve_first_pass_terminal_status(session, job_id)
+                session.commit()
+                return {
+                    "batch_ids": [],
+                    "job": _first_pass_job_to_dict(row),
+                    "already_complete": True,
+                    "waiting_for_retry": False,
+                    "lease_held": False,
+                    "lease_generation": int(row.lease_generation or 0),
+                }
+
+            if row.status in {"pending", "deferred", "partial"}:
+                row.status = "running"
+            # Claim contiguous unfinished symbols starting at cursor, skipping any
+            # that became non-actionable between index scans (cooling retries).
+            batch_ids: list[str] = []
+            by_stock = {
+                item.stock_id: item
+                for item in session.execute(
+                    select(TwResearchFirstPassSymbolResult).where(
+                        TwResearchFirstPassSymbolResult.job_id == job_id
+                    )
+                ).scalars().all()
+            }
+            for stock_id in stock_ids[cursor:]:
+                if not _first_pass_symbol_needs_work(by_stock.get(stock_id), now=now):
+                    continue
+                batch_ids.append(stock_id)
+                if len(batch_ids) >= max(1, int(batch_size)):
+                    break
+            if not batch_ids:
+                cooling = _first_pass_cooling_retry_count(session, job_id, stock_ids)
+                if cooling:
+                    row.status = "deferred"
+                else:
+                    row.status = _resolve_first_pass_terminal_status(session, job_id)
+                row.reserve_cursor = cursor
+                row.reserve_expires_at = None
+                session.commit()
+                return {
+                    "batch_ids": [],
+                    "job": _first_pass_job_to_dict(row),
+                    "already_complete": not cooling,
+                    "waiting_for_retry": bool(cooling),
+                    "lease_held": False,
+                    "lease_generation": int(row.lease_generation or 0),
+                }
+            generation = int(row.lease_generation or 0) + 1
+            row.lease_generation = generation
+            claimed = set(batch_ids)
+            last_claimed_index = cursor
+            for index, stock_id in enumerate(stock_ids):
+                if stock_id in claimed:
+                    last_claimed_index = index
+            row.reserve_cursor = last_claimed_index + 1
+            row.reserve_expires_at = now + timedelta(seconds=max(1, int(lease_seconds)))
+            row.updated_at = now
+            session.commit()
+            return {
+                "batch_ids": batch_ids,
+                "job": _first_pass_job_to_dict(row),
+                "already_complete": False,
+                "lease_held": False,
+                "lease_generation": generation,
+            }
+
+    def get_first_pass_symbol(
+        self, job_id: str, stock_id: str
+    ) -> dict[str, Any] | None:
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            row = session.execute(
+                select(TwResearchFirstPassSymbolResult).where(
+                    TwResearchFirstPassSymbolResult.job_id == job_id,
+                    TwResearchFirstPassSymbolResult.stock_id == stock_id,
+                )
+            ).scalars().first()
+            if row is None:
+                return None
+            return {
+                "stock_id": row.stock_id,
+                "status": row.status,
+                "payload": dict(row.payload_json or {}),
+                "updated_at": row.updated_at.isoformat()
+                if hasattr(row.updated_at, "isoformat")
+                else str(row.updated_at),
+            }
+
+    def upsert_first_pass_symbol(
+        self,
+        *,
+        job_id: str,
+        stock_id: str,
+        status: str,
+        payload: dict[str, Any],
+        lease_generation: int,
+    ) -> bool:
+        """Persist one symbol result if lease generation is still current."""
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            job = session.execute(
+                select(TwResearchFirstPassJob)
+                .where(TwResearchFirstPassJob.job_id == job_id)
+                .with_for_update()
+            ).scalar_one_or_none()
+            if job is None:
+                return False
+            if int(job.lease_generation or 0) != int(lease_generation):
+                return False
+            existing = session.execute(
+                select(TwResearchFirstPassSymbolResult).where(
+                    TwResearchFirstPassSymbolResult.job_id == job_id,
+                    TwResearchFirstPassSymbolResult.stock_id == stock_id,
+                )
+            ).scalars().first()
+            now = datetime.now(timezone.utc)
+            if existing is None:
+                session.add(
+                    TwResearchFirstPassSymbolResult(
+                        job_id=job_id,
+                        stock_id=stock_id,
+                        status=status,
+                        payload_json=payload,
+                        lease_generation=lease_generation,
+                        updated_at=now,
+                    )
+                )
+            else:
+                existing.status = status
+                existing.payload_json = payload
+                existing.lease_generation = lease_generation
+                existing.updated_at = now
+            session.commit()
+            return True
+
+    def complete_first_pass_batch(
+        self,
+        job_id: str,
+        *,
+        lease_generation: int,
+        processed_count: int,
+    ) -> dict[str, Any] | None:
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            now = datetime.now(timezone.utc)
+            row = session.execute(
+                select(TwResearchFirstPassJob)
+                .where(TwResearchFirstPassJob.job_id == job_id)
+                .with_for_update()
+            ).scalar_one_or_none()
+            if row is None:
+                return None
+            if int(row.lease_generation or 0) != int(lease_generation):
+                return None
+            stock_ids = list(row.stock_ids_json or [])
+            cursor = _first_missing_first_pass_index(session, job_id, stock_ids)
+            row.cursor = cursor
+            row.reserve_cursor = cursor
+            row.reserve_expires_at = None
+            row.updated_at = now
+            if cursor >= len(stock_ids):
+                cooling = _first_pass_cooling_retry_count(session, job_id, stock_ids)
+                if cooling:
+                    row.status = "deferred"
+                else:
+                    row.status = _resolve_first_pass_terminal_status(session, job_id)
+            else:
+                row.status = "running"
+            session.commit()
+            return {
+                "job": _first_pass_job_to_dict(row),
+                "processed_count": processed_count,
+            }
+
+    def list_first_pass_symbols(
+        self,
+        job_id: str,
+        *,
+        status: str | None = None,
+        q: str | None = None,
+        completeness: str | None = None,
+        offset: int = 0,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            stmt = select(TwResearchFirstPassSymbolResult).where(
+                TwResearchFirstPassSymbolResult.job_id == job_id
+            )
+            if status:
+                stmt = stmt.where(TwResearchFirstPassSymbolResult.status == status)
+            rows = session.execute(
+                stmt.order_by(TwResearchFirstPassSymbolResult.stock_id)
+            ).scalars().all()
+            matched = [
+                row
+                for row in rows
+                if _first_pass_symbol_matches_filters(
+                    row,
+                    q=q,
+                    completeness=completeness,
+                )
+            ]
+            start = max(0, offset)
+            end = start + max(1, min(limit, 200))
+            page = matched[start:end]
+            return [
+                {
+                    "stock_id": row.stock_id,
+                    "status": row.status,
+                    "payload": dict(row.payload_json or {}),
+                    "updated_at": row.updated_at.isoformat()
+                    if hasattr(row.updated_at, "isoformat")
+                    else str(row.updated_at),
+                }
+                for row in page
+            ]
+
+    def count_first_pass_symbols_matching(
+        self,
+        job_id: str,
+        *,
+        status: str | None = None,
+        q: str | None = None,
+        completeness: str | None = None,
+    ) -> int:
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            stmt = select(TwResearchFirstPassSymbolResult).where(
+                TwResearchFirstPassSymbolResult.job_id == job_id
+            )
+            if status:
+                stmt = stmt.where(TwResearchFirstPassSymbolResult.status == status)
+            rows = session.execute(stmt).scalars().all()
+            return sum(
+                1
+                for row in rows
+                if _first_pass_symbol_matches_filters(
+                    row,
+                    q=q,
+                    completeness=completeness,
+                )
+            )
+
+    def count_first_pass_symbols(self, job_id: str) -> dict[str, int]:
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            rows = session.execute(
+                select(
+                    TwResearchFirstPassSymbolResult.status,
+                    func.count(),
+                )
+                .where(TwResearchFirstPassSymbolResult.job_id == job_id)
+                .group_by(TwResearchFirstPassSymbolResult.status)
+            ).all()
+            counts = {str(status): int(count) for status, count in rows}
+            total = sum(counts.values())
+            return {
+                "total": total,
+                "ok": counts.get("ok", 0),
+                "partial": counts.get("partial", 0),
+                "failed": counts.get("failed", 0),
+                "deferred": counts.get("deferred", 0),
+                "pending": counts.get("pending", 0),
+            }
+
+    def set_first_pass_job_snapshot(
+        self, job_id: str, *, snapshot_id: str, quality_status: str
+    ) -> dict[str, Any] | None:
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            row = session.get(TwResearchFirstPassJob, job_id)
+            if row is None:
+                return None
+            row.active_snapshot_id = snapshot_id
+            row.quality_status = quality_status
+            row.updated_at = datetime.now(timezone.utc)
+            session.commit()
+            session.refresh(row)
+            return _first_pass_job_to_dict(row)
+
+    def list_first_pass_snapshot_payloads(
+        self, job_id: str
+    ) -> list[dict[str, Any]]:
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            rows = session.execute(
+                select(TwResearchFirstPassSymbolResult)
+                .where(TwResearchFirstPassSymbolResult.job_id == job_id)
+                .order_by(TwResearchFirstPassSymbolResult.stock_id)
+            ).scalars().all()
+            return [dict(row.payload_json or {}) for row in rows]
+
+
+def _membership_to_dict(row: TwResearchMembership) -> dict[str, Any]:
+    return {
+        "user_id": row.user_id,
+        "version": int(row.version),
+        "base_preset_version": getattr(row, "base_preset_version", None) or "starter",
+        "theme_keys": list(row.theme_keys_json or []),
+        "disabled_theme_keys": list(getattr(row, "disabled_theme_keys_json", None) or []),
+        "sector_additions": dict(getattr(row, "sector_additions_json", None) or {}),
+        "sector_removals": dict(getattr(row, "sector_removals_json", None) or {}),
+        "custom_sectors": list(getattr(row, "custom_sectors_json", None) or []),
+        "extra_stock_ids": list(row.extra_stock_ids_json or []),
+        "compute_subset_ids": list(row.compute_subset_ids_json or []),
+        "updated_at": row.updated_at.isoformat()
+        if hasattr(row.updated_at, "isoformat")
+        else str(row.updated_at),
+    }
+
+
+def _first_pass_job_to_dict(row: TwResearchFirstPassJob) -> dict[str, Any]:
+    stock_ids = list(row.stock_ids_json or [])
+    return {
+        "job_id": row.job_id,
+        "user_id": row.user_id,
+        "universe_version": row.universe_version,
+        "universe_digest": row.universe_digest,
+        "membership_version": int(row.membership_version or 0),
+        "first_pass_version": row.first_pass_version,
+        "stock_ids": stock_ids,
+        "universe_size": len(stock_ids),
+        "selector": dict(row.selector_json or {}),
+        "status": row.status,
+        "quality_status": row.quality_status,
+        "cursor": int(row.cursor or 0),
+        "reserve_cursor": int(row.reserve_cursor or 0),
+        "lease_generation": int(row.lease_generation or 0),
+        "active_snapshot_id": row.active_snapshot_id,
+        "notes": list(row.notes_json or []),
+        "created_at": row.created_at.isoformat()
+        if hasattr(row.created_at, "isoformat")
+        else str(row.created_at),
+        "updated_at": row.updated_at.isoformat()
+        if hasattr(row.updated_at, "isoformat")
+        else str(row.updated_at),
+    }
+
+
+def _parse_iso_utc(value: object) -> datetime | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _first_pass_symbol_matches_filters(
+    row: TwResearchFirstPassSymbolResult,
+    *,
+    q: str | None = None,
+    completeness: str | None = None,
+) -> bool:
+    """Server-side evidence search across the job (bounded in-process filter)."""
+    payload = dict(row.payload_json or {})
+    needle = str(q or "").strip().lower()
+    if needle:
+        stock_id = str(row.stock_id or "").lower()
+        name = str(payload.get("stockName") or "").lower()
+        sectors = " ".join(str(item).lower() for item in (payload.get("sectorThemeKeys") or []))
+        status = str(row.status or "").lower()
+        haystack = f"{stock_id} {name} {sectors} {status}"
+        if needle not in haystack and needle not in stock_id.replace("tw:", ""):
+            return False
+    wanted = str(completeness or "").strip().lower()
+    if wanted:
+        completeness_payload = dict(payload.get("completeness") or {})
+        fields_ok = int(completeness_payload.get("fieldsOk") or 0)
+        fields_unavailable = int(completeness_payload.get("fieldsUnavailable") or 0)
+        if wanted in {"complete", "ok"} and fields_ok <= 0:
+            return False
+        if wanted in {"incomplete", "partial"} and fields_unavailable <= 0 and str(row.status) == "ok":
+            return False
+        if wanted == "failed" and str(row.status) != "failed":
+            return False
+    return True
+
+
+def _first_pass_symbol_needs_work(
+    row: TwResearchFirstPassSymbolResult | None,
+    *,
+    now: datetime,
+) -> bool:
+    """True when the symbol is missing or has a retryable durable failure (#335)."""
+    if row is None:
+        return True
+    status = str(row.status or "")
+    if status in {"ok", "partial", "pending"}:
+        # partial = usable incomplete evidence (missing PEG etc.); do not refetch.
+        # pending rows are claimed placeholders and should not be re-queued here.
+        return status == "pending"
+    if status == "deferred":
+        payload = dict(row.payload_json or {})
+        if payload.get("retryExhausted"):
+            return False
+        next_retry = _parse_iso_utc(payload.get("nextRetryAt"))
+        return next_retry is None or next_retry <= now
+    if status == "failed":
+        payload = dict(row.payload_json or {})
+        if payload.get("retryExhausted"):
+            return False
+        if str(payload.get("failureClass") or "") == "permanent":
+            return False
+        next_retry = _parse_iso_utc(payload.get("nextRetryAt"))
+        return next_retry is None or next_retry <= now
+    return True
+
+
+def _first_missing_first_pass_index(
+    session: Session, job_id: str, stock_ids: list[str]
+) -> int:
+    """Next index that is missing or eligible for bounded retry (#335)."""
+    if not stock_ids:
+        return 0
+    rows = session.execute(
+        select(TwResearchFirstPassSymbolResult).where(
+            TwResearchFirstPassSymbolResult.job_id == job_id
+        )
+    ).scalars().all()
+    by_stock = {row.stock_id: row for row in rows}
+    now = datetime.now(timezone.utc)
+    for index, stock_id in enumerate(stock_ids):
+        if _first_pass_symbol_needs_work(by_stock.get(stock_id), now=now):
+            return index
+    return len(stock_ids)
+
+
+def _first_pass_cooling_retry_count(
+    session: Session, job_id: str, stock_ids: list[str]
+) -> int:
+    """Count failed/deferred symbols waiting for nextRetryAt (#335)."""
+    if not stock_ids:
+        return 0
+    wanted = set(stock_ids)
+    now = datetime.now(timezone.utc)
+    rows = session.execute(
+        select(TwResearchFirstPassSymbolResult).where(
+            TwResearchFirstPassSymbolResult.job_id == job_id
+        )
+    ).scalars().all()
+    cooling = 0
+    for row in rows:
+        if row.stock_id not in wanted:
+            continue
+        if str(row.status) not in {"failed", "deferred"}:
+            continue
+        payload = dict(row.payload_json or {})
+        if payload.get("retryExhausted"):
+            continue
+        if str(payload.get("failureClass") or "") == "permanent":
+            continue
+        next_retry = _parse_iso_utc(payload.get("nextRetryAt"))
+        if next_retry is not None and next_retry > now:
+            cooling += 1
+    return cooling
+
+
+def _count_first_pass_status(session: Session, job_id: str, status: str) -> int:
+    total = session.execute(
+        select(func.count())
+        .select_from(TwResearchFirstPassSymbolResult)
+        .where(
+            TwResearchFirstPassSymbolResult.job_id == job_id,
+            TwResearchFirstPassSymbolResult.status == status,
+        )
+    ).scalar_one()
+    return int(total or 0)
+
+
+def _resolve_first_pass_terminal_status(session: Session, job_id: str) -> str:
+    """Terminal job status when no symbols remain actionable (#335/#336).
+
+    Exhausted symbol failures stay ``partial`` — never silently upgraded to
+    ``completed`` on claim/reclaim after ``complete_first_pass_batch``.
+    """
+    failed = _count_first_pass_status(session, job_id, "failed")
+    deferred = _count_first_pass_status(session, job_id, "deferred")
+    if failed:
+        return "partial"
+    if deferred:
+        return "deferred"
+    return "completed"
+
+
+
+def _first_pass_snapshot_to_dict(row: TwResearchFirstPassSnapshot) -> dict[str, Any]:
+    return {
+        "snapshot_id": row.snapshot_id,
+        "user_id": row.user_id,
+        "universe_version": row.universe_version,
+        "first_pass_version": row.first_pass_version,
+        "content_digest": row.content_digest,
+        "payload": dict(row.payload_json or {}),
+        "stock_ids": list(row.stock_ids_json or []),
+        "created_at": row.created_at.isoformat()
+        if hasattr(row.created_at, "isoformat")
+        else str(row.created_at),
+    }
+
+
+def _candidate_set_to_dict(row: TwResearchCandidateSet) -> dict[str, Any]:
+    return {
+        "candidate_set_id": row.candidate_set_id,
+        "user_id": row.user_id,
+        "version": int(row.version),
+        "first_pass_snapshot_id": row.first_pass_snapshot_id,
+        "first_pass_digest": row.first_pass_digest,
+        "stock_ids": list(row.stock_ids_json or []),
+        "origin": row.origin,
+        "selection_reasons": dict(row.selection_reasons_json or {}),
+        "decision_date": row.decision_date,
+        "notes": list(row.notes_json or []),
+        "created_at": row.created_at.isoformat()
+        if hasattr(row.created_at, "isoformat")
+        else str(row.created_at),
+    }
 
 
 tw_research_repository = TwResearchRepository()
