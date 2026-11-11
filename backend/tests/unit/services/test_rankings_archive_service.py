@@ -701,6 +701,11 @@ def test_archive_connectivity_failure_classification() -> None:
         {},
         Exception("login timeout expired"),
     )
+    auth_failed = OperationalError(
+        "SELECT 1",
+        {},
+        Exception("Login failed for user 'archive_app'. (18456)"),
+    )
     # Bare "connection" in unrelated text must not classify as outage.
     vague = DBAPIError(
         "SELECT 1",
@@ -734,6 +739,7 @@ def test_archive_connectivity_failure_classification() -> None:
     )
     assert _is_archive_connectivity_failure(programming) is False
     assert _is_archive_connectivity_failure(operational) is True
+    assert _is_archive_connectivity_failure(auth_failed) is False
     assert _is_archive_connectivity_failure(RuntimeError("azure down")) is False
     assert _is_archive_connectivity_failure(ConnectionError("reset")) is True
     assert _is_archive_connectivity_failure(vague) is False
@@ -752,6 +758,88 @@ def test_archive_connectivity_failure_classification() -> None:
     outer.__cause__ = inner
     inner.__cause__ = outer
     assert _is_archive_connectivity_failure(outer) is False
+
+
+def test_capture_auth_failure_does_not_invalidate_pool(monkeypatch) -> None:
+    """Bad credentials must not be treated as AutoPause connectivity (#326)."""
+    from sqlalchemy.exc import OperationalError
+
+    class AuthRepo(_FakeRepo):
+        def list_eod_snapshot_keys_in_range(self, **kwargs):  # noqa: ANN003
+            del kwargs
+            raise OperationalError(
+                "SELECT 1",
+                {},
+                Exception("Login failed for user 'archive_app'. (18456)"),
+            )
+
+    service = RankingsArchiveService(repository=AuthRepo())
+    invalidated: list[str] = []
+    monkeypatch.setattr(
+        "app.services.rankings_archive_service.invalidate_rankings_archive_engine",
+        lambda reason="outage": invalidated.append(reason),
+    )
+    monkeypatch.setattr(service, "is_available", lambda: True)
+    result = service.capture_eod_archives(trigger="sampler", force=True)
+    assert result["failed"] == 1
+    assert result.get("connectivity_failed", 0) == 0
+    assert invalidated == []
+
+
+def test_capture_recovers_after_connectivity_and_fills_missing(monkeypatch) -> None:
+    """After HYT00 soft-fail + pool recovery, a later cycle fills missing dates (#326)."""
+    from sqlalchemy.exc import InvalidatePoolError
+
+    monday = date(2026, 8, 17)
+    calls = {"prime": 0}
+
+    class RecoveringRepo(_FakeRepo):
+        def list_eod_snapshot_keys_in_range(self, **kwargs):  # noqa: ANN003
+            calls["prime"] += 1
+            if calls["prime"] == 1:
+                raise InvalidatePoolError(
+                    "pool invalidated",
+                    Exception("('HYT00', 'Login timeout expired')"),
+                    Exception("('HYT00', 'Login timeout expired')"),
+                )
+            return super().list_eod_snapshot_keys_in_range(**kwargs)
+
+    repo = RecoveringRepo()
+    service = RankingsArchiveService(
+        repository=repo,
+        provider_registry=_FakeRegistry(_us_session_response(monday)),
+    )
+    invalidated: list[str] = []
+    monkeypatch.setattr(
+        "app.services.rankings_archive_service.invalidate_rankings_archive_engine",
+        lambda reason="outage": invalidated.append(reason),
+    )
+    monkeypatch.setattr(service, "is_available", lambda: True)
+
+    first = service.capture_eod_archives(
+        now=datetime(2026, 8, 18, 20, 50, tzinfo=timezone.utc),
+        market="US",
+        trading_date=monday,
+        force=True,
+        trigger="sampler",
+    )
+    assert first["connectivity_failed"] == 1
+    assert first["captured"] == 0
+    assert invalidated == ["capture_connectivity_failed"]
+    assert repo.upserts == []
+
+    second = service.capture_eod_archives(
+        now=datetime(2026, 8, 18, 20, 55, tzinfo=timezone.utc),
+        market="US",
+        trading_date=monday,
+        force=True,
+        trigger="sampler",
+    )
+    assert second["connectivity_failed"] == 0
+    assert second["captured"] == 8
+    assert second["had_missing"] == 1
+    assert second["still_missing"] == 0
+    assert all(key[3] == monday for key in repo.upserts)
 
 
 def test_capture_soft_fails_on_existence_prime_connectivity(monkeypatch) -> None:

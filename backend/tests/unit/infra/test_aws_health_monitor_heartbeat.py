@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
+import urllib.error
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.error import HTTPError, URLError
@@ -303,21 +306,59 @@ def test_main_logs_structured_error_on_put_failure(
         hb,
         "run_heartbeat",
         lambda *args, **kwargs: (_ for _ in ()).throw(
-            RuntimeError("DynamoDB PutItem failed HTTP 400: AccessDenied")
+            RuntimeError("DynamoDB PutItem failed HTTP 400")
         ),
     )
     assert hb.main() == 1
     logged = json.loads(capsys.readouterr().out.strip())
     assert logged["status"] == "error"
     assert logged["error_type"] == "aws_http_client"
+    assert logged["exception_type"] == "RuntimeError"
+    assert "message" not in logged
     assert "secret" not in json.dumps(logged).lower()
     assert "AKIATEST" not in json.dumps(logged)
+    assert "AccessDenied" not in json.dumps(logged)
+
+
+def test_put_dynamodb_http_error_omits_response_body(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """AWS error bodies can mention ARNs/credentials — keep them out of Job logs (#325)."""
+    body = (
+        b'{"__type":"AccessDeniedException",'
+        b'"message":"User: arn:aws:iam::123:user/secret-role is not authorized"}'
+    )
+
+    def boom(_request, timeout=10):  # noqa: ANN001
+        del timeout
+        raise urllib.error.HTTPError(
+            url="https://dynamodb.us-east-1.amazonaws.com/",
+            code=400,
+            msg="Bad Request",
+            hdrs={},
+            fp=io.BytesIO(body),
+        )
+
+    monkeypatch.setattr(urllib.request, "urlopen", boom)
+    with pytest.raises(RuntimeError) as raised:
+        hb.put_dynamodb_item(
+            region="us-east-1",
+            table_name="stock-ticker-health-heartbeats",
+            item={"service_name": "stock-ticker-backend"},
+            access_key_id="AKIATEST",
+            secret_access_key="secret",
+        )
+    message = str(raised.value)
+    assert message == "DynamoDB PutItem failed HTTP 400"
+    assert "AccessDenied" not in message
+    assert "arn:aws" not in message
+    assert "secret-role" not in message
 
 
 def test_cronjob_manifest_has_bounded_deadline_and_ttl() -> None:
     text = (ROOT / "k8s" / "aws-health-heartbeat.yaml").read_text(encoding="utf-8")
     assert "activeDeadlineSeconds: 60" in text
-    assert "ttlSecondsAfterFinished: 86400" in text
+    assert "ttlSecondsAfterFinished: 604800" in text
     assert "failedJobsHistoryLimit: 5" in text
     assert "successfulJobsHistoryLimit: 2" in text
     assert "startingDeadlineSeconds: 300" in text

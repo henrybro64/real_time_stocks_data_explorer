@@ -127,6 +127,12 @@ The CronJob is in the default `k8s/` kustomization and is **not** suspended
 (redeploys must not flip an enabled job back off). Secret refs are optional: with
 no credentials the job exits 0 and logs `status=skipped`.
 
+**Job `Succeeded` is not proof of AWS delivery.** Exit 0 covers both a real
+PutItem (`status=healthy` / `unhealthy`) and a config skip
+(`status=skipped`, `reason=missing_credentials`). Post-deploy checks that only
+look at Job success must also inspect the latest Job log line before claiming
+CloudWatch/DynamoDB delivery.
+
 ```bash
 cp k8s/aws-health-heartbeat-secret.yaml.example k8s/aws-health-heartbeat-secret.yaml
 # Fill from terraform outputs (do not invent values):
@@ -238,7 +244,7 @@ Hardening in-repo (#325):
 | Structured JSON on PutItem failure (`status=error`, `error_type`, no secrets) | Actionable CronJob logs |
 | Non-zero exit on AWS write failure | Job stays `Failed` until the next healthy run |
 | `activeDeadlineSeconds: 60` | Bound hung Jobs |
-| `ttlSecondsAfterFinished: 86400` | Auto-clean finished Jobs after 24h |
+| `ttlSecondsAfterFinished: 604800` | Auto-clean finished Jobs after 7 days (keeps ~4-day Error pods diagnosable) |
 | `failedJobsHistoryLimit: 5` / `successfulJobsHistoryLimit: 2` | Keep short diagnostic history |
 | `startingDeadlineSeconds: 300` | Skip stale schedules after node downtime |
 
@@ -263,6 +269,11 @@ kubectl -n stock-ticker create job "stock-ticker-aws-health-heartbeat-manual-$(d
 Confirm CloudWatch / DynamoDB only if AWS credentials and budget approval exist.
 If access is unavailable, record `aws_e2e_verification_pending` — do not claim
 delivery succeeded.
+
+**Status of #325 verification:** historical Error-pod root cause and live AWS
+PutItem/CloudWatch delivery both remain **unverified** until an authorized
+operator captures Job logs and DynamoDB/CloudWatch evidence. In-repo hardening
+alone is not live proof.
 
 ## Tests
 

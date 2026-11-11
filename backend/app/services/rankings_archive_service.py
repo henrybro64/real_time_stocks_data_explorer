@@ -91,6 +91,28 @@ _SAMPLER_CONNECTIVITY_BACKOFF_CAP_SECONDS = 1800
 _CONNECTIVITY_CAUSE_WALK_MAX_DEPTH = 6
 
 
+def _archive_failure_message(exc: BaseException) -> str:
+    return str(getattr(exc, "orig", None) or exc).lower()
+
+
+def _is_archive_auth_failure(exc: BaseException) -> bool:
+    """True for credential/login failures that must not trigger pool invalidate.
+
+    Auth errors are often ``OperationalError`` from ODBC, but reconnecting with
+    the same bad credentials only amplifies lockouts (#326).
+    """
+    message = _archive_failure_message(exc)
+    tokens = (
+        "login failed for user",
+        "login failed",
+        "authentication failed",
+        "password authentication failed",
+        "access denied for user",
+        "18456",  # MSSQL login failed
+    )
+    return any(token in message for token in tokens)
+
+
 def _is_archive_connectivity_failure(
     exc: BaseException,
     *,
@@ -103,9 +125,12 @@ def _is_archive_connectivity_failure(
 
     ``InvalidatePoolError`` / ``DisconnectionError`` are *not* subclasses of
     ``OperationalError``; they must be matched explicitly (#326 HYT00 path).
+    Auth failures are also excluded so bad credentials do not thrash the pool.
     """
     # Syntax / constraint / logic bugs must not drop a healthy engine.
     if isinstance(exc, ProgrammingError):
+        return False
+    if _is_archive_auth_failure(exc):
         return False
     if isinstance(
         exc,
@@ -125,7 +150,7 @@ def _is_archive_connectivity_failure(
         # does not match our curated connectivity tokens (#181 / Codex).
         if getattr(exc, "connection_invalidated", False):
             return True
-        message = str(getattr(exc, "orig", None) or exc).lower()
+        message = _archive_failure_message(exc)
         # Prefer specific connectivity phrases over a bare "connection" substring
         # (that can appear in unrelated ODBC/SQL text).
         tokens = (

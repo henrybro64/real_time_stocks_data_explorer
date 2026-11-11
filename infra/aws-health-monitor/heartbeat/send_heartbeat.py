@@ -227,8 +227,14 @@ def put_dynamodb_item(
         with urllib.request.urlopen(request, timeout=10) as response:
             response.read()
     except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="replace")[:300]
-        raise RuntimeError(f"DynamoDB PutItem failed HTTP {exc.code}: {body}") from exc
+        # Drain the body so the socket can close, but never put AWS error text
+        # into the raised message (CronJob logs must stay free of secret-adjacent
+        # IAM/ARN/Credential snippets) (#325).
+        try:
+            exc.read()
+        except Exception:  # noqa: BLE001 — best-effort drain only
+            pass
+        raise RuntimeError(f"DynamoDB PutItem failed HTTP {exc.code}") from exc
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -294,14 +300,14 @@ def main(argv: list[str] | None = None) -> int:
             put_item=put_item,
         )
     except Exception as exc:  # noqa: BLE001 — structured Job failure (#325)
-        # Never log secrets, health bodies, or full stack traces into CronJob logs.
+        # Never log secrets, health bodies, AWS error bodies, or stack traces.
         print(
             json.dumps(
                 {
                     "event": "aws_health_monitor.heartbeat",
                     "status": "error",
                     "error_type": _classify_put_failure(exc),
-                    "message": _bound_message(f"{type(exc).__name__}: {exc}"),
+                    "exception_type": type(exc).__name__,
                     "aws_region_set": bool(region),
                     "table_name_set": bool(table_name),
                 },

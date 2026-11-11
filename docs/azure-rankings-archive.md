@@ -120,8 +120,11 @@ surfacing as `pyodbc.OperationalError` `HYT00` and sometimes
 Mitigations in-repo:
 
 - Archive engine sets pyodbc `timeout=45` for mssql URLs.
+- Cold-start init is **single-flight**: concurrent callers wait for one leader
+  instead of stacking parallel wake attempts.
 - `_is_archive_connectivity_failure` treats `InvalidatePoolError` /
-  `DisconnectionError` / `HYT00` as reconnectable outages.
+  `DisconnectionError` / `HYT00` as reconnectable outages, and does **not**
+  treat SQL auth failures (`Login failed` / 18456) as pool-invalidate triggers.
 - `capture_eod_archives` catches connectivity failures during existence priming
   (and the rest of the cycle), invalidates the pool, and returns
   `connectivity_failed=1` instead of raising into the sampler.
@@ -129,7 +132,8 @@ Mitigations in-repo:
   warning without traceback spam for connectivity failures.
 
 Live worker verification still requires cluster access; until then record
-`azure_sql_e2e_verification_pending`.
+`azure_sql_e2e_verification_pending`. Do not claim Azure SQL AutoPause recovery
+from production without that evidence.
 
 ## Snapshot retention
 

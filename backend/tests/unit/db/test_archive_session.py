@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import threading
+import time
+
 from sqlalchemy import inspect, text
 
 import app.db.archive_session as archive_session
@@ -240,6 +243,55 @@ def test_cold_start_sleeps_outside_lock(monkeypatch, tmp_path) -> None:
 
     assert archive_session.get_rankings_archive_session_factory() is not None
     assert lock_held_during_sleep["value"] is False
+    archive_session.reset_rankings_archive_session_state()
+
+
+def test_concurrent_cold_start_is_single_flight(monkeypatch, tmp_path) -> None:
+    """Only one leader may run _try_create_engine during cold-start (#326)."""
+    archive_session.reset_rankings_archive_session_state()
+    monkeypatch.setattr(archive_session, "_INIT_RETRY_COOLDOWN_SECONDS", 60.0)
+    monkeypatch.setattr(archive_session, "_INIT_IN_REQUEST_ATTEMPTS", 1)
+    monkeypatch.setattr(archive_session, "_INIT_IN_REQUEST_BACKOFF_SECONDS", ())
+    monkeypatch.setattr(
+        "app.core.config.settings.rankings_archive_database_url",
+        _sqlite_url(tmp_path),
+    )
+
+    real_try = archive_session._try_create_engine
+    started = threading.Event()
+    release = threading.Event()
+    create_calls: list[int] = []
+    create_lock = threading.Lock()
+
+    def slow_try(url: str):
+        with create_lock:
+            create_calls.append(threading.get_ident())
+        started.set()
+        assert release.wait(timeout=2.0)
+        return real_try(url)
+
+    monkeypatch.setattr(archive_session, "_try_create_engine", slow_try)
+
+    results: list[object] = []
+
+    def worker() -> None:
+        results.append(archive_session.get_rankings_archive_engine())
+
+    threads = [threading.Thread(target=worker) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    assert started.wait(timeout=2.0)
+    # Give the second caller time to enter initialize and become a waiter.
+    time.sleep(0.05)
+    release.set()
+    for thread in threads:
+        thread.join(timeout=2.0)
+        assert not thread.is_alive()
+
+    assert len(create_calls) == 1
+    assert len(results) == 2
+    assert results[0] is not None
+    assert results[0] is results[1]
     archive_session.reset_rankings_archive_session_state()
 
 
