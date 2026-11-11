@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -908,8 +908,12 @@ describe("TwResearchPage reliability UX (#335–#337)", () => {
       expect(fetchTwResearchLatestCandidateSet).toHaveBeenCalled();
     });
     const draft = await screen.findByTestId("tw-research-candidate-ids");
-    await user.clear(draft);
-    await user.type(draft, "TW:2330\nTW:2303");
+    // Set the draft atomically — user.clear+type can race on controlled textareas in CI
+    // and leave a duplicated prefix (e.g. "TW:2330TW:2330").
+    fireEvent.change(draft, { target: { value: "TW:2330\nTW:2303" } });
+    await waitFor(() => {
+      expect(draft).toHaveValue("TW:2330\nTW:2303");
+    });
     await user.click(screen.getByRole("button", { name: /儲存分析師候選集|Save analyst candidate set/i }));
 
     expect(await screen.findByTestId("tw-research-candidate-proposed")).toHaveValue(
