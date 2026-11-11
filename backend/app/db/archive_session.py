@@ -12,7 +12,7 @@ Mid-query outages invalidate the cached engine so the next call re-enters cold-s
 from __future__ import annotations
 
 import logging
-from threading import Lock
+from threading import Event, Lock
 from time import monotonic, sleep
 
 from sqlalchemy import create_engine, inspect, text
@@ -30,12 +30,18 @@ _INIT_RETRY_COOLDOWN_SECONDS = 10.0
 _INIT_IN_REQUEST_BACKOFF_SECONDS = (2.0, 5.0, 8.0)
 # One initial try + one retry per backoff entry.
 _INIT_IN_REQUEST_ATTEMPTS = len(_INIT_IN_REQUEST_BACKOFF_SECONDS) + 1
+# Waiters block for one full cold-start budget (connect + 2+5+8s) with margin.
+_INIT_WAIT_TIMEOUT_SECONDS = 240.0
 
 _lock = Lock()
 _engine: Engine | None = None
 _session_factory: sessionmaker[Session] | None = None
 _schema_ready = False
 _last_init_failure_at: float | None = None
+# Set while a leader runs cold-start; waiters block on this Event (#326).
+_init_in_flight: Event | None = None
+# Bumped on invalidate/reset so an in-flight leader will not publish a stale engine.
+_init_generation = 0
 
 
 def rankings_archive_database_url() -> str:
@@ -45,13 +51,18 @@ def rankings_archive_database_url() -> str:
 def reset_rankings_archive_session_state() -> None:
     """Test helper: clear cached engine and session factory."""
     global _engine, _session_factory, _schema_ready, _last_init_failure_at
+    global _init_in_flight, _init_generation
     with _lock:
+        _init_generation += 1
         if _engine is not None:
             _engine.dispose()
         _engine = None
         _session_factory = None
         _schema_ready = False
         _last_init_failure_at = None
+        if _init_in_flight is not None:
+            _init_in_flight.set()
+        _init_in_flight = None
 
 
 def invalidate_rankings_archive_engine(*, reason: str = "outage") -> None:
@@ -60,17 +71,25 @@ def invalidate_rankings_archive_engine(*, reason: str = "outage") -> None:
     Used after mid-life AutoPause / connection failures when a previously healthy
     engine is no longer usable. Does not arm the init cooldown — the next request
     should attempt a full wake budget immediately.
+
+    Always bumps ``_init_generation`` so an in-flight cold-start leader will
+    dispose its result instead of publishing over a concurrent invalidate (#326).
+    Does not clear ``_init_in_flight`` (the leader's ``finally`` releases waiters).
     """
-    global _engine, _session_factory, _schema_ready, _last_init_failure_at
+    global _engine, _session_factory, _schema_ready, _last_init_failure_at, _init_generation
     with _lock:
-        if _engine is None and _session_factory is None and not _schema_ready:
-            return
+        _init_generation += 1
+        had_cached_state = (
+            _engine is not None or _session_factory is not None or _schema_ready
+        )
         if _engine is not None:
             _engine.dispose()
         _engine = None
         _session_factory = None
         _schema_ready = False
         _last_init_failure_at = None
+        if not had_cached_state:
+            return
         logger.warning(
             "Rankings archive engine invalidated",
             extra={
@@ -84,10 +103,19 @@ def rankings_archive_is_configured() -> bool:
     return bool(rankings_archive_database_url())
 
 
+# ODBC/pyodbc login timeout (seconds). Azure SQL Free AutoPause wake often
+# exceeds the driver default (~15s) and surfaces as HYT00 (#326).
+_MSSQL_LOGIN_TIMEOUT_SECONDS = 45
+
+
 def _try_create_engine(url: str) -> Engine:
     connect_args: dict[str, object] = {}
-    if url.startswith("sqlite"):
+    normalized = url.strip().lower()
+    if normalized.startswith("sqlite"):
         connect_args["check_same_thread"] = False
+    elif "mssql" in normalized or "pyodbc" in normalized:
+        # pyodbc uses ``timeout`` as the login timeout for SQLDriverConnect.
+        connect_args["timeout"] = _MSSQL_LOGIN_TIMEOUT_SECONDS
     engine = create_engine(
         url,
         pool_pre_ping=True,
@@ -126,10 +154,17 @@ def _begin_initialize() -> str | None:
     return url
 
 
-def _publish_engine(engine: Engine, *, attempt: int) -> Engine:
-    """Install a freshly created engine, or keep a concurrent winner."""
+def _publish_engine(engine: Engine, *, attempt: int, generation: int) -> Engine | None:
+    """Install a freshly created engine, or keep a concurrent winner.
+
+    If ``generation`` no longer matches (invalidate/reset during connect), dispose
+    the new engine and return the current cached engine (often ``None``).
+    """
     global _engine, _session_factory, _last_init_failure_at
     with _lock:
+        if generation != _init_generation:
+            engine.dispose()
+            return _engine
         if _engine is not None:
             engine.dispose()
             return _engine
@@ -153,9 +188,12 @@ def _publish_engine(engine: Engine, *, attempt: int) -> Engine:
         return _engine
 
 
-def _mark_init_exhausted(last_error: Exception | None) -> None:
+def _mark_init_exhausted(last_error: Exception | None, *, generation: int) -> None:
     global _engine, _session_factory, _last_init_failure_at
     with _lock:
+        if generation != _init_generation:
+            # Invalidate/reset already owns recovery; do not arm a stale cooldown.
+            return
         if _engine is not None:
             # Another thread recovered while we were failing.
             return
@@ -173,53 +211,85 @@ def _mark_init_exhausted(last_error: Exception | None) -> None:
 
 
 def _initialize_engine() -> Engine | None:
-    """Create the archive engine with in-request backoff; sleeps outside the lock."""
+    """Create the archive engine with in-request backoff; sleeps outside the lock.
+
+    Concurrent cold-start callers share one leader; waiters block on an Event so
+    AutoPause wake attempts are not stacked in parallel (#326). The leader's
+    ``finally`` always releases waiters (success, exhaustion, or unexpected raise).
+    """
+    global _init_in_flight
+    lead = False
+    waiter: Event | None = None
+    generation = 0
     with _lock:
         if _engine is not None:
             return _engine
         url = _begin_initialize()
         if url is None:
             return _engine
+        generation = _init_generation
+        if _init_in_flight is not None:
+            waiter = _init_in_flight
+        else:
+            waiter = Event()
+            _init_in_flight = waiter
+            lead = True
 
-    last_error: Exception | None = None
-    for attempt in range(1, _INIT_IN_REQUEST_ATTEMPTS + 1):
+    if not lead:
+        assert waiter is not None
+        waiter.wait(timeout=_INIT_WAIT_TIMEOUT_SECONDS)
         with _lock:
-            if _engine is not None:
-                return _engine
-        try:
-            if attempt > 1:
-                backoff = _INIT_IN_REQUEST_BACKOFF_SECONDS[
-                    min(attempt - 2, len(_INIT_IN_REQUEST_BACKOFF_SECONDS) - 1)
-                ]
-                logger.info(
-                    "Rankings archive cold-start retry",
+            return _engine
+
+    try:
+        last_error: Exception | None = None
+        for attempt in range(1, _INIT_IN_REQUEST_ATTEMPTS + 1):
+            with _lock:
+                if generation != _init_generation:
+                    return _engine
+                if _engine is not None:
+                    return _engine
+            try:
+                if attempt > 1:
+                    backoff = _INIT_IN_REQUEST_BACKOFF_SECONDS[
+                        min(attempt - 2, len(_INIT_IN_REQUEST_BACKOFF_SECONDS) - 1)
+                    ]
+                    logger.info(
+                        "Rankings archive cold-start retry",
+                        extra={
+                            "event": "rankings_archive.engine.cold_start_retry",
+                            "attempt": attempt,
+                            "backoff_seconds": backoff,
+                        },
+                    )
+                    sleep(backoff)
+                    with _lock:
+                        if generation != _init_generation:
+                            return _engine
+                        if _engine is not None:
+                            return _engine
+                engine = _try_create_engine(url)
+                return _publish_engine(engine, attempt=attempt, generation=generation)
+            except Exception as exc:  # noqa: BLE001
+                last_error = exc
+                logger.warning(
+                    "Rankings archive connect attempt failed",
                     extra={
-                        "event": "rankings_archive.engine.cold_start_retry",
+                        "event": "rankings_archive.engine.connect_failed",
                         "attempt": attempt,
-                        "backoff_seconds": backoff,
+                        "max_attempts": _INIT_IN_REQUEST_ATTEMPTS,
+                        "error_type": type(exc).__name__,
                     },
                 )
-                sleep(backoff)
-                with _lock:
-                    if _engine is not None:
-                        return _engine
-            engine = _try_create_engine(url)
-            return _publish_engine(engine, attempt=attempt)
-        except Exception as exc:  # noqa: BLE001
-            last_error = exc
-            logger.warning(
-                "Rankings archive connect attempt failed",
-                extra={
-                    "event": "rankings_archive.engine.connect_failed",
-                    "attempt": attempt,
-                    "max_attempts": _INIT_IN_REQUEST_ATTEMPTS,
-                    "error_type": type(exc).__name__,
-                },
-            )
 
-    _mark_init_exhausted(last_error)
-    with _lock:
-        return _engine
+        _mark_init_exhausted(last_error, generation=generation)
+        with _lock:
+            return _engine
+    finally:
+        with _lock:
+            if _init_in_flight is waiter and waiter is not None:
+                waiter.set()
+                _init_in_flight = None
 
 
 def get_rankings_archive_engine() -> Engine | None:

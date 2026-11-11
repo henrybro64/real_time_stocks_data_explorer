@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import threading
+import time
+
 from sqlalchemy import inspect, text
 
 import app.db.archive_session as archive_session
@@ -150,6 +153,44 @@ def test_successful_engine_is_cached(monkeypatch, tmp_path) -> None:
     archive_session.reset_rankings_archive_session_state()
 
 
+def test_mssql_engine_sets_odbc_login_timeout(monkeypatch) -> None:
+    """AutoPause wake needs a longer pyodbc login timeout than the ~15s default (#326)."""
+    archive_session.reset_rankings_archive_session_state()
+    captured: dict[str, object] = {}
+
+    def fake_create_engine(url, **kwargs):  # noqa: ANN001
+        captured["url"] = url
+        captured["connect_args"] = kwargs.get("connect_args")
+
+        class FakeConn:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_exc):
+                return False
+
+            def execute(self, *_a, **_k):
+                return None
+
+        class FakeEngine:
+            def connect(self):
+                return FakeConn()
+
+            def dispose(self):
+                return None
+
+        return FakeEngine()
+
+    monkeypatch.setattr(archive_session, "create_engine", fake_create_engine)
+    engine = archive_session._try_create_engine(
+        "mssql+pyodbc://user:pass@server/db?driver=ODBC+Driver+18+for+SQL+Server"
+    )
+    assert engine is not None
+    assert captured["connect_args"] == {"timeout": archive_session._MSSQL_LOGIN_TIMEOUT_SECONDS}
+    assert archive_session._MSSQL_LOGIN_TIMEOUT_SECONDS >= 30
+    archive_session.reset_rankings_archive_session_state()
+
+
 def test_invalidate_clears_cached_engine_for_mid_life_autopause(monkeypatch, tmp_path) -> None:
     """After AutoPause, invalidate drops the dead pool so cold-start can run again."""
     archive_session.reset_rankings_archive_session_state()
@@ -202,6 +243,211 @@ def test_cold_start_sleeps_outside_lock(monkeypatch, tmp_path) -> None:
 
     assert archive_session.get_rankings_archive_session_factory() is not None
     assert lock_held_during_sleep["value"] is False
+    archive_session.reset_rankings_archive_session_state()
+
+
+def test_concurrent_cold_start_is_single_flight(monkeypatch, tmp_path) -> None:
+    """Only one leader may run _try_create_engine during cold-start (#326)."""
+    archive_session.reset_rankings_archive_session_state()
+    monkeypatch.setattr(archive_session, "_INIT_RETRY_COOLDOWN_SECONDS", 60.0)
+    monkeypatch.setattr(archive_session, "_INIT_IN_REQUEST_ATTEMPTS", 1)
+    monkeypatch.setattr(archive_session, "_INIT_IN_REQUEST_BACKOFF_SECONDS", ())
+    monkeypatch.setattr(
+        "app.core.config.settings.rankings_archive_database_url",
+        _sqlite_url(tmp_path),
+    )
+
+    real_try = archive_session._try_create_engine
+    started = threading.Event()
+    release = threading.Event()
+    create_calls: list[int] = []
+    create_lock = threading.Lock()
+
+    def slow_try(url: str):
+        with create_lock:
+            create_calls.append(threading.get_ident())
+        started.set()
+        assert release.wait(timeout=2.0)
+        return real_try(url)
+
+    monkeypatch.setattr(archive_session, "_try_create_engine", slow_try)
+
+    results: list[object] = []
+
+    def worker() -> None:
+        results.append(archive_session.get_rankings_archive_engine())
+
+    threads = [threading.Thread(target=worker) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    assert started.wait(timeout=2.0)
+    # Give the second caller time to enter initialize and become a waiter.
+    time.sleep(0.05)
+    release.set()
+    for thread in threads:
+        thread.join(timeout=2.0)
+        assert not thread.is_alive()
+
+    assert len(create_calls) == 1
+    assert len(results) == 2
+    assert results[0] is not None
+    assert results[0] is results[1]
+    archive_session.reset_rankings_archive_session_state()
+
+
+def test_failed_cold_start_releases_waiters(monkeypatch) -> None:
+    """Waiters must unblock when the leader exhausts retries (#326)."""
+    archive_session.reset_rankings_archive_session_state()
+    monkeypatch.setattr(archive_session, "_INIT_RETRY_COOLDOWN_SECONDS", 60.0)
+    monkeypatch.setattr(archive_session, "_INIT_IN_REQUEST_ATTEMPTS", 2)
+    monkeypatch.setattr(archive_session, "_INIT_IN_REQUEST_BACKOFF_SECONDS", (0.0,))
+    monkeypatch.setattr(
+        "app.core.config.settings.rankings_archive_database_url",
+        "sqlite+pysqlite:////nonexistent/path/should_fail.db",
+    )
+    monkeypatch.setattr(archive_session, "sleep", lambda _seconds: None)
+
+    started = threading.Event()
+    create_calls = {"count": 0}
+
+    def failing_try(_url: str):
+        create_calls["count"] += 1
+        started.set()
+        raise ConnectionError("cold start failed")
+
+    monkeypatch.setattr(archive_session, "_try_create_engine", failing_try)
+
+    results: list[object] = []
+
+    def worker() -> None:
+        results.append(archive_session.get_rankings_archive_engine())
+
+    threads = [threading.Thread(target=worker) for _ in range(3)]
+    for thread in threads:
+        thread.start()
+    assert started.wait(timeout=2.0)
+    for thread in threads:
+        thread.join(timeout=2.0)
+        assert not thread.is_alive()
+
+    assert create_calls["count"] == 2  # leader only; bounded attempts
+    assert results == [None, None, None]
+    assert archive_session._init_in_flight is None
+    assert archive_session._last_init_failure_at is not None
+    archive_session.reset_rankings_archive_session_state()
+
+
+def test_waiter_timeout_returns_without_blocking_forever(monkeypatch, tmp_path) -> None:
+    archive_session.reset_rankings_archive_session_state()
+    monkeypatch.setattr(archive_session, "_INIT_RETRY_COOLDOWN_SECONDS", 60.0)
+    monkeypatch.setattr(archive_session, "_INIT_IN_REQUEST_ATTEMPTS", 1)
+    monkeypatch.setattr(archive_session, "_INIT_IN_REQUEST_BACKOFF_SECONDS", ())
+    monkeypatch.setattr(archive_session, "_INIT_WAIT_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr(
+        "app.core.config.settings.rankings_archive_database_url",
+        _sqlite_url(tmp_path),
+    )
+
+    real_try = archive_session._try_create_engine
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow_try(url: str):
+        started.set()
+        assert release.wait(timeout=2.0)
+        return real_try(url)
+
+    monkeypatch.setattr(archive_session, "_try_create_engine", slow_try)
+
+    leader_result: list[object] = []
+    waiter_result: list[object] = []
+
+    def lead() -> None:
+        leader_result.append(archive_session.get_rankings_archive_engine())
+
+    def wait() -> None:
+        assert started.wait(timeout=2.0)
+        waiter_result.append(archive_session.get_rankings_archive_engine())
+
+    leader = threading.Thread(target=lead)
+    waiter = threading.Thread(target=wait)
+    leader.start()
+    waiter.start()
+    waiter.join(timeout=2.0)
+    assert not waiter.is_alive()
+    assert waiter_result == [None]
+    release.set()
+    leader.join(timeout=2.0)
+    assert not leader.is_alive()
+    assert leader_result[0] is not None
+    archive_session.reset_rankings_archive_session_state()
+
+
+def test_invalidate_during_cold_start_discards_stale_publish(monkeypatch, tmp_path) -> None:
+    """Generation bump must prevent publishing over a concurrent invalidate (#326)."""
+    archive_session.reset_rankings_archive_session_state()
+    monkeypatch.setattr(archive_session, "_INIT_RETRY_COOLDOWN_SECONDS", 60.0)
+    monkeypatch.setattr(archive_session, "_INIT_IN_REQUEST_ATTEMPTS", 1)
+    monkeypatch.setattr(archive_session, "_INIT_IN_REQUEST_BACKOFF_SECONDS", ())
+    monkeypatch.setattr(
+        "app.core.config.settings.rankings_archive_database_url",
+        _sqlite_url(tmp_path),
+    )
+
+    real_try = archive_session._try_create_engine
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow_try(url: str):
+        started.set()
+        assert release.wait(timeout=2.0)
+        return real_try(url)
+
+    monkeypatch.setattr(archive_session, "_try_create_engine", slow_try)
+
+    result: list[object] = []
+
+    def lead() -> None:
+        result.append(archive_session.get_rankings_archive_engine())
+
+    thread = threading.Thread(target=lead)
+    thread.start()
+    assert started.wait(timeout=2.0)
+    archive_session.invalidate_rankings_archive_engine(reason="test_race")
+    release.set()
+    thread.join(timeout=2.0)
+    assert not thread.is_alive()
+    assert result == [None]
+    assert archive_session._engine is None
+    assert archive_session._init_in_flight is None
+    archive_session.reset_rankings_archive_session_state()
+
+
+def test_cooldown_then_recovery_after_failed_init(monkeypatch, tmp_path) -> None:
+    archive_session.reset_rankings_archive_session_state()
+    monkeypatch.setattr(archive_session, "_INIT_RETRY_COOLDOWN_SECONDS", 60.0)
+    monkeypatch.setattr(archive_session, "_INIT_IN_REQUEST_ATTEMPTS", 1)
+    monkeypatch.setattr(archive_session, "_INIT_IN_REQUEST_BACKOFF_SECONDS", ())
+    monkeypatch.setattr(
+        "app.core.config.settings.rankings_archive_database_url",
+        "sqlite+pysqlite:////nonexistent/path/should_fail.db",
+    )
+    monkeypatch.setattr(archive_session, "sleep", lambda _seconds: None)
+
+    assert archive_session.get_rankings_archive_engine() is None
+    assert archive_session._last_init_failure_at is not None
+
+    monkeypatch.setattr(
+        "app.core.config.settings.rankings_archive_database_url",
+        _sqlite_url(tmp_path),
+    )
+    # Still cooling down.
+    assert archive_session.get_rankings_archive_engine() is None
+
+    monkeypatch.setattr(archive_session, "_INIT_RETRY_COOLDOWN_SECONDS", 0.0)
+    recovered = archive_session.get_rankings_archive_engine()
+    assert recovered is not None
+    assert archive_session._last_init_failure_at is None
     archive_session.reset_rankings_archive_session_state()
 
 

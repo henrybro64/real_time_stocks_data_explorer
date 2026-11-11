@@ -124,8 +124,29 @@ all access keys.
 ## Deploy home CronJob
 
 The CronJob is in the default `k8s/` kustomization and is **not** suspended
-(redeploys must not flip an enabled job back off). Secret refs are optional: with
-no credentials the job exits 0 and logs `status=skipped`.
+(redeploys must not flip an enabled job back off). Secret refs are optional.
+
+Enablement semantics (#325):
+
+| Configuration | Result |
+| --- | --- |
+| No Secret / `AWS_HEALTH_MONITOR_ENABLED` unset, no credentials | Exit 0, `delivery_status=skipped`, `reason=not_configured` |
+| `AWS_HEALTH_MONITOR_ENABLED=false` | Exit 0, `delivery_status=skipped`, `reason=disabled` |
+| `AWS_HEALTH_MONITOR_ENABLED` set to an unrecognized value | Exit 2, `delivery_status=error`, `error_type=invalid_enabled_flag` |
+| `AWS_HEALTH_MONITOR_ENABLED=true`, credentials missing | Exit 2, `delivery_status=error`, `error_type=missing_credentials` |
+| Enabled (flag true **or** credentials present), PutItem fails | Exit 1, `delivery_status=error` (sanitized; no AWS body) |
+| PutItem succeeds | Exit 0, `delivery_status=delivered`, plus `service_status` from `/health` |
+
+**Job `Succeeded` is not proof of AWS delivery.** Exit 0 covers delivered
+heartbeats **and** intentional skips. Inspect the latest Job log for
+`delivery_status=delivered` before claiming CloudWatch/DynamoDB delivery.
+`service_status=unhealthy` with `delivery_status=delivered` means AWS accepted
+the record while in-cluster `/health` was not `ok`.
+
+**Schedule:** the CronJob stays at `*/15 * * * *` (aligned with the AWS-side
+EventBridge 15-minute stale check). A longer-term hourly cadence remains a
+cost/ops goal, not the current default — changing it would require updating
+`stale_after_seconds` and Terraform schedule together.
 
 ```bash
 cp k8s/aws-health-heartbeat-secret.yaml.example k8s/aws-health-heartbeat-secret.yaml
@@ -210,6 +231,64 @@ terraform destroy
 Delete any leftover access keys if you created them outside Terraform. This does
 **not** touch Azure, Postgres, Redis, or the app workloads beyond the optional
 CronJob.
+
+## Historical Error pods (#325)
+
+Observed 2026-11-10 on the home k3s cluster: several
+`stock-ticker-aws-health-heartbeat-*` pods aged ~4 days were `0/1 Error`, while a
+newer Job had already `Completed`. **Do not treat old Error pods alone as proof
+the CronJob is still failing.**
+
+Likely historical causes (capture before deleting evidence):
+
+1. Temporary DynamoDB PutItem / DNS / credential failure while the Secret was
+   present (script exited non-zero → Job `Error`).
+2. Image/script mismatch during a local image rollout window.
+3. In-cluster `/health` unreachable briefly (still writes an `unhealthy`
+   heartbeat when PutItem succeeds — that is **not** a Job Error).
+
+**Exact root cause of those 2026-11-10 Error pods is still
+`aws_e2e_verification_pending`** until an authorized operator captures
+`kubectl describe` / logs from a failed Job (or confirms they have already
+rotated out). Do not invent pod log contents.
+
+Hardening in-repo (#325):
+
+| Change | Why |
+| --- | --- |
+| Structured JSON on PutItem failure (`status=error`, `error_type`, no secrets) | Actionable CronJob logs |
+| Non-zero exit on AWS write failure | Job stays `Failed` until the next healthy run |
+| `activeDeadlineSeconds: 60` | Bound hung Jobs |
+| `ttlSecondsAfterFinished: 604800` | Auto-clean finished Jobs after 7 days (keeps ~4-day Error pods diagnosable) |
+| `failedJobsHistoryLimit: 5` / `successfulJobsHistoryLimit: 2` | Keep short diagnostic history |
+| `startingDeadlineSeconds: 300` | Skip stale schedules after node downtime |
+
+### Manual verification (authorized; do not run without approval)
+
+```bash
+# Distinguish historical Error from current health
+kubectl -n stock-ticker get cronjob stock-ticker-aws-health-heartbeat -o yaml
+kubectl -n stock-ticker get jobs --sort-by=.metadata.creationTimestamp \
+  | awk 'NR==1 || /aws-health-heartbeat/'
+# Latest heartbeat Job logs (name match, not “last job of any kind”)
+JOB=$(kubectl -n stock-ticker get jobs --sort-by=.metadata.creationTimestamp \
+  -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' \
+  | awk '/aws-health-heartbeat/ {name=$0} END {print name}')
+kubectl -n stock-ticker logs "job/${JOB}" --tail=50
+
+# One-shot manual Job (does not change the CronJob schedule)
+kubectl -n stock-ticker create job "stock-ticker-aws-health-heartbeat-manual-$(date +%s)" \
+  --from=cronjob/stock-ticker-aws-health-heartbeat
+```
+
+Confirm CloudWatch / DynamoDB only if AWS credentials and budget approval exist.
+If access is unavailable, record `aws_e2e_verification_pending` — do not claim
+delivery succeeded.
+
+**Status of #325 verification:** historical Error-pod root cause and live AWS
+PutItem/CloudWatch delivery both remain **unverified** until an authorized
+operator captures Job logs and DynamoDB/CloudWatch evidence. In-repo hardening
+alone is not live proof.
 
 ## Tests
 

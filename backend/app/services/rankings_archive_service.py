@@ -11,8 +11,8 @@ from typing import Literal
 
 from sqlalchemy.exc import (
     DBAPIError,
-    InterfaceError,
-    OperationalError,
+    DisconnectionError,
+    InvalidatePoolError,
     ProgrammingError,
 )
 from sqlalchemy.exc import TimeoutError as SATimeoutError
@@ -65,7 +65,12 @@ class _CaptureCycleState:
     sql_round_trips: int = 0
 
 
-def _empty_capture_result(*, sql_round_trips: int = 0, failed: int = 0) -> dict[str, int]:
+def _empty_capture_result(
+    *,
+    sql_round_trips: int = 0,
+    failed: int = 0,
+    connectivity_failed: int = 0,
+) -> dict[str, int]:
     return {
         "captured": 0,
         "skipped": 0,
@@ -73,49 +78,173 @@ def _empty_capture_result(*, sql_round_trips: int = 0, failed: int = 0) -> dict[
         "had_missing": 0,
         "still_missing": 0,
         "sql_round_trips": sql_round_trips,
+        "connectivity_failed": connectivity_failed,
     }
 
 
-def _is_archive_connectivity_failure(exc: BaseException) -> bool:
-    """True for connection/transport failures; false for SQL syntax/logic errors.
+# Sampler backoff after Azure SQL / ODBC connectivity failures (#326).
+# Steps: 2m → 5m → 10m → 15m → 30m (cap). Cap is the final step, not dead code.
+_SAMPLER_CONNECTIVITY_BACKOFF_SECONDS = (120, 300, 600, 900, 1800)
+_SAMPLER_CONNECTIVITY_BACKOFF_CAP_SECONDS = 1800
+_CONNECTIVITY_CAUSE_WALK_MAX_DEPTH = 6
+
+
+# ODBC / SQLSTATE classes that indicate transport / login-timeout outages (#326).
+_CONNECTIVITY_SQLSTATES = frozenset(
+    {
+        "08001",  # client unable to establish connection
+        "08003",  # connection does not exist
+        # 08004 (server rejected establishment) is often auth/permission/config
+        # (DB access denied, SSL policy, pg_hba) — not evidence of a transient
+        # transport outage. Do not auto-invalidate the pool on 08004 alone (#326).
+        "08007",  # connection failure during transaction
+        "08s01",  # communication link failure
+        "08s02",  # connection name in use (rare; treat as transport)
+        "hyt00",  # login timeout (Azure SQL AutoPause)
+    }
+)
+_AUTH_SQLSTATES = frozenset(
+    {
+        "28000",  # invalid authorization specification
+        "28p01",  # invalid password (PostgreSQL)
+    }
+)
+_CONNECTIVITY_MESSAGE_TOKENS = (
+    "login timeout",
+    "communication link failure",
+    "connection refused",
+    "connection reset",
+    "connection timed out",
+    "connection is busy",
+    "connection is closed",
+    "not connected",
+    "could not open a connection",
+    "server is not found",
+    "tcp provider",
+    "network error",
+    "broken pipe",
+    # Also match SQLSTATE text when drivers stringify args instead of exposing codes.
+    "08001",
+    "08s01",
+    "08s02",
+    "hyt00",
+)
+_AUTH_MESSAGE_TOKENS = (
+    "login failed for user",
+    "login failed",
+    "authentication failed",
+    "password authentication failed",
+    "access denied for user",
+    "18456",  # MSSQL login failed
+)
+
+
+def _archive_failure_message(exc: BaseException) -> str:
+    return str(getattr(exc, "orig", None) or exc).lower()
+
+
+def _iter_archive_failure_nodes(exc: BaseException) -> list[BaseException]:
+    nodes: list[BaseException] = [exc]
+    orig = getattr(exc, "orig", None)
+    if isinstance(orig, BaseException) and orig is not exc:
+        nodes.append(orig)
+    return nodes
+
+
+def _extract_sqlstates(exc: BaseException) -> set[str]:
+    """Collect driver SQLSTATE / ODBC codes from an exception chain node."""
+    states: set[str] = set()
+    for node in _iter_archive_failure_nodes(exc):
+        for attr in ("sqlstate", "pgcode"):
+            value = getattr(node, attr, None)
+            if isinstance(value, str) and value.strip():
+                states.add(value.strip().lower())
+        args = getattr(node, "args", None)
+        if not args:
+            continue
+        first = args[0]
+        # pyodbc: ('HYT00', '[Microsoft][ODBC Driver 18 ...]...')
+        if isinstance(first, str) and len(first) == 5 and first.isalnum():
+            states.add(first.lower())
+        elif isinstance(first, tuple) and first:
+            code = first[0]
+            if isinstance(code, str) and len(code) == 5 and code.isalnum():
+                states.add(code.lower())
+    return states
+
+
+def _is_archive_auth_failure(exc: BaseException) -> bool:
+    """True for credential/login failures that must not trigger pool invalidate.
+
+    Auth errors are often ``OperationalError`` from ODBC, but reconnecting with
+    the same bad credentials only amplifies lockouts (#326).
+    """
+    if _extract_sqlstates(exc) & _AUTH_SQLSTATES:
+        return True
+    message = _archive_failure_message(exc)
+    return any(token in message for token in _AUTH_MESSAGE_TOKENS)
+
+
+def _has_archive_connectivity_signal(exc: BaseException) -> bool:
+    if _extract_sqlstates(exc) & _CONNECTIVITY_SQLSTATES:
+        return True
+    message = _archive_failure_message(exc)
+    return any(token in message for token in _CONNECTIVITY_MESSAGE_TOKENS)
+
+
+def _is_archive_connectivity_failure(
+    exc: BaseException,
+    *,
+    _depth: int = 0,
+) -> bool:
+    """True for connection/transport failures; false for SQL/auth/config errors.
 
     Mid-life AutoPause / dead sockets should invalidate the cached engine (#177).
     ``ProgrammingError`` and similar app/SQL bugs must not (#181).
+
+    ``InvalidatePoolError`` / ``DisconnectionError`` are *not* subclasses of
+    ``OperationalError``; they must be matched explicitly (#326 HYT00 path).
+
+    Do **not** treat every ``OperationalError`` / ``InterfaceError`` as
+    reconnectable — drivers use those classes for auth, config, and logic
+    failures too. Prefer ``connection_invalidated``, SQLSTATE, and curated
+    transport tokens.
     """
     # Syntax / constraint / logic bugs must not drop a healthy engine.
     if isinstance(exc, ProgrammingError):
         return False
-    if isinstance(
-        exc,
-        (OperationalError, InterfaceError, SATimeoutError, ConnectionError, TimeoutError),
-    ):
+    if _is_archive_auth_failure(exc):
+        return False
+    if isinstance(exc, (InvalidatePoolError, DisconnectionError)):
+        return True
+    if isinstance(exc, (ConnectionError, TimeoutError, SATimeoutError)):
         return True
     if isinstance(exc, DBAPIError):
-        # SQLAlchemy may mark a dropped socket even when the driver message
-        # does not match our curated connectivity tokens (#181 / Codex).
+        # SQLAlchemy marks dropped sockets even when the driver message is vague.
         if getattr(exc, "connection_invalidated", False):
             return True
-        message = str(getattr(exc, "orig", None) or exc).lower()
-        # Prefer specific connectivity phrases over a bare "connection" substring
-        # (that can appear in unrelated ODBC/SQL text).
-        tokens = (
-            "login timeout",
-            "communication link failure",
-            "connection refused",
-            "connection reset",
-            "connection timed out",
-            "connection is busy",
-            "not connected",
-            "could not open a connection",
-            "server is not found",
-            "tcp provider",
-            "08001",
-            "08s01",
-            "hyt00",
-            "08s02",
-        )
-        return any(token in message for token in tokens)
+        if _has_archive_connectivity_signal(exc):
+            return True
+        # OperationalError / InterfaceError without transport signals: not
+        # reconnectable (avoids pool thrash on unrelated DBAPI failures).
+    # Walk __cause__/__context__ — SQLAlchemy often wraps pyodbc HYT00.
+    if _depth >= _CONNECTIVITY_CAUSE_WALK_MAX_DEPTH:
+        return False
+    cause = getattr(exc, "__cause__", None) or getattr(exc, "__context__", None)
+    if isinstance(cause, BaseException) and cause is not exc:
+        return _is_archive_connectivity_failure(cause, _depth=_depth + 1)
     return False
+
+
+def _sampler_connectivity_backoff_seconds(consecutive_failures: int) -> int:
+    """Bounded backoff for repeated Azure SQL login/pool failures (#326)."""
+    if consecutive_failures <= 0:
+        return _SAMPLER_CONNECTIVITY_BACKOFF_SECONDS[0]
+    index = min(consecutive_failures - 1, len(_SAMPLER_CONNECTIVITY_BACKOFF_SECONDS) - 1)
+    return min(
+        _SAMPLER_CONNECTIVITY_BACKOFF_SECONDS[index],
+        _SAMPLER_CONNECTIVITY_BACKOFF_CAP_SECONDS,
+    )
 
 
 class RankingsArchiveUnavailableError(RuntimeError):
@@ -969,9 +1098,62 @@ class RankingsArchiveService:
                 },
             )
             # Mark failed so the sampler retries inside the same-day window (#187).
-            return _empty_capture_result(sql_round_trips=state.sql_round_trips, failed=1)
+            return _empty_capture_result(
+                sql_round_trips=state.sql_round_trips,
+                failed=1,
+                connectivity_failed=1,
+            )
 
         current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        try:
+            return self._capture_eod_archives_body(
+                current=current,
+                trigger=trigger,
+                market=market,
+                trading_date=trading_date,
+                force=force,
+                state=state,
+                started_at=started_at,
+            )
+        except Exception as exc:  # noqa: BLE001 — never raise into sampler/HTTP
+            if _is_archive_connectivity_failure(exc):
+                invalidate_rankings_archive_engine(reason="capture_connectivity_failed")
+                logger.warning(
+                    "Rankings archive capture aborted; Azure SQL connectivity failure",
+                    extra={
+                        "event": "rankings_archive.capture.connectivity_failed",
+                        "trigger": trigger,
+                        "error_type": type(exc).__name__,
+                        "sql_round_trips": state.sql_round_trips,
+                    },
+                )
+                return _empty_capture_result(
+                    sql_round_trips=state.sql_round_trips,
+                    failed=1,
+                    connectivity_failed=1,
+                )
+            logger.exception(
+                "Rankings archive capture aborted; unexpected error",
+                extra={
+                    "event": "rankings_archive.capture.unexpected_failed",
+                    "trigger": trigger,
+                    "error_type": type(exc).__name__,
+                    "sql_round_trips": state.sql_round_trips,
+                },
+            )
+            return _empty_capture_result(sql_round_trips=state.sql_round_trips, failed=1)
+
+    def _capture_eod_archives_body(
+        self,
+        *,
+        current: datetime,
+        trigger: str,
+        market: Literal["US", "TW"] | None,
+        trading_date: date | None,
+        force: bool,
+        state: _CaptureCycleState,
+        started_at: float,
+    ) -> dict[str, int]:
         state.sql_round_trips += 1
         if not self._repository.ensure_schema():
             logger.error(
@@ -1061,6 +1243,7 @@ class RankingsArchiveService:
             "had_missing": had_missing,
             "still_missing": still_missing,
             "sql_round_trips": state.sql_round_trips,
+            "connectivity_failed": 0,
         }
 
     @staticmethod
@@ -1381,6 +1564,7 @@ class RankingsArchiveService:
 
         next_wake: datetime | None = None
         idle_until: datetime | None = None
+        connectivity_failures = 0
         while not self._stop_event.is_set():
             # Heartbeat each pass; a capture stuck on Azure SQL stops it (#289).
             note_job_tick("rankings-archive-eod")
@@ -1414,6 +1598,7 @@ class RankingsArchiveService:
                         next_wake = now + timedelta(seconds=poll_seconds)
                     idle_until = next_wake
                     note_job_success("rankings-archive-eod")
+                    connectivity_failures = 0
                     logger.info(
                         "Rankings archive sampler idle until next settle",
                         extra={
@@ -1448,8 +1633,38 @@ class RankingsArchiveService:
                 still_missing = int(result.get("still_missing") or 0)
                 if failed or still_missing:
                     release_job_leadership("rankings-archive-eod", leader_token)
+                # Soft-failed HYT00 / AutoPause / pool invalidation (#326).
+                # Use the backoff ladder alone (do not clamp up to poll_seconds —
+                # that would hide 2m/5m/10m steps when poll_seconds is 15m).
+                # Anchor after capture: cold-start retries can burn ~minutes, so
+                # using the iteration-start ``now`` would make the first backoff
+                # already expired (#326 Codex review).
+                if int(result.get("connectivity_failed") or 0):
+                    connectivity_failures += 1
+                    backoff = _sampler_connectivity_backoff_seconds(connectivity_failures)
+                    after_capture = datetime.now(timezone.utc)
+                    next_wake = after_capture + timedelta(seconds=backoff)
+                    idle_until = None
+                    note_job_failure(
+                        "rankings-archive-eod",
+                        RankingsArchiveUnavailableError("archive connectivity soft-failed"),
+                    )
+                    logger.warning(
+                        "Rankings archive sampler backing off after connectivity failure",
+                        extra={
+                            "event": "rankings_archive.sampler.connectivity_backoff",
+                            "consecutive_failures": connectivity_failures,
+                            "backoff_seconds": backoff,
+                            "next_wake_at": next_wake.isoformat(),
+                            "failed": failed,
+                            "sql_round_trips": result.get("sql_round_trips"),
+                        },
+                    )
+                    continue
+                connectivity_failures = 0
+                after_capture = datetime.now(timezone.utc)
                 next_wake, reason = self._sampler_next_wake_after_capture(
-                    now=now,
+                    now=after_capture,
                     poll_seconds=poll_seconds,
                     result=result,
                 )
@@ -1476,11 +1691,33 @@ class RankingsArchiveService:
                     note_job_success("rankings-archive-eod")
             except Exception as exc:  # noqa: BLE001
                 note_job_failure("rankings-archive-eod", exc)
-                logger.exception(
-                    "Rankings archive sampler cycle failed",
-                    extra={"event": "rankings_archive.sampler.failed"},
-                )
-                next_wake = now + timedelta(seconds=poll_seconds)
+                after_failure = datetime.now(timezone.utc)
+                if _is_archive_connectivity_failure(exc):
+                    invalidate_rankings_archive_engine(reason="sampler_connectivity_failed")
+                    connectivity_failures += 1
+                    backoff = _sampler_connectivity_backoff_seconds(connectivity_failures)
+                    logger.warning(
+                        "Rankings archive sampler cycle failed; Azure SQL connectivity",
+                        extra={
+                            "event": "rankings_archive.sampler.failed",
+                            "error_type": type(exc).__name__,
+                            "connectivity": True,
+                            "consecutive_failures": connectivity_failures,
+                            "backoff_seconds": backoff,
+                        },
+                    )
+                    next_wake = after_failure + timedelta(seconds=backoff)
+                else:
+                    connectivity_failures = 0
+                    logger.exception(
+                        "Rankings archive sampler cycle failed",
+                        extra={
+                            "event": "rankings_archive.sampler.failed",
+                            "error_type": type(exc).__name__,
+                            "connectivity": False,
+                        },
+                    )
+                    next_wake = after_failure + timedelta(seconds=poll_seconds)
 
 
 rankings_archive_service = RankingsArchiveService()

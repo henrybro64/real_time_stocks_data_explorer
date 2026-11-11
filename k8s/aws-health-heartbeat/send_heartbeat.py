@@ -227,8 +227,30 @@ def put_dynamodb_item(
         with urllib.request.urlopen(request, timeout=10) as response:
             response.read()
     except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="replace")[:300]
-        raise RuntimeError(f"DynamoDB PutItem failed HTTP {exc.code}: {body}") from exc
+        # Drain the body so the socket can close, but never put AWS error text
+        # into the raised message (CronJob logs must stay free of secret-adjacent
+        # IAM/ARN/Credential snippets) (#325).
+        try:
+            exc.read()
+        except Exception:  # noqa: BLE001 — best-effort drain only
+            pass
+        raise RuntimeError(f"DynamoDB PutItem failed HTTP {exc.code}") from exc
+
+
+def _parse_enabled_flag(raw: str | None) -> bool | None:
+    """Return True/False for explicit values; None when the env var is unset.
+
+    Unknown values raise ``ValueError`` so operators get a Job failure instead of
+    a silent disable (#325).
+    """
+    if raw is None:
+        return None
+    text = raw.strip().lower()
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off", ""}:
+        return False
+    raise ValueError("invalid AWS_HEALTH_MONITOR_ENABLED value")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -237,15 +259,62 @@ def main(argv: list[str] | None = None) -> int:
     secret_access_key = os.environ.get("AWS_SECRET_ACCESS_KEY", "").strip()
     region = os.environ.get("AWS_REGION", "").strip()
     table_name = os.environ.get("TABLE_NAME", "").strip()
-    # Optional Secret refs leave these empty until the operator creates the Secret.
-    # Exit 0 so vanilla deploys (no AWS credentials) do not mark the CronJob failed.
-    if not access_key_id or not secret_access_key or not region or not table_name:
+    try:
+        enabled = _parse_enabled_flag(os.environ.get("AWS_HEALTH_MONITOR_ENABLED"))
+    except ValueError:
         print(
             json.dumps(
                 {
                     "event": "aws_health_monitor.heartbeat",
-                    "status": "skipped",
-                    "reason": "missing_credentials",
+                    "delivery_status": "error",
+                    "error_type": "invalid_enabled_flag",
+                },
+                separators=(",", ":"),
+            ),
+            flush=True,
+        )
+        return 2
+    has_credentials = bool(
+        access_key_id and secret_access_key and region and table_name
+    )
+
+    # Explicit disable always skips (even if a Secret still has keys).
+    if enabled is False:
+        print(
+            json.dumps(
+                {
+                    "event": "aws_health_monitor.heartbeat",
+                    "delivery_status": "skipped",
+                    "reason": "disabled",
+                },
+                separators=(",", ":"),
+            ),
+            flush=True,
+        )
+        return 0
+
+    if not has_credentials:
+        # ENABLED=true without credentials is a config failure (Job Failed).
+        # ENABLED unset + no credentials = vanilla deploy, intentionally off.
+        if enabled is True:
+            print(
+                json.dumps(
+                    {
+                        "event": "aws_health_monitor.heartbeat",
+                        "delivery_status": "error",
+                        "error_type": "missing_credentials",
+                    },
+                    separators=(",", ":"),
+                ),
+                flush=True,
+            )
+            return 2
+        print(
+            json.dumps(
+                {
+                    "event": "aws_health_monitor.heartbeat",
+                    "delivery_status": "skipped",
+                    "reason": "not_configured",
                 },
                 separators=(",", ":"),
             ),
@@ -259,7 +328,21 @@ def main(argv: list[str] | None = None) -> int:
     )
     session_token = os.environ.get("AWS_SESSION_TOKEN") or None
     service_name = os.environ.get("SERVICE_NAME", SERVICE_NAME)
-    ttl_days = int(os.environ.get("TTL_DAYS", str(DEFAULT_TTL_DAYS)))
+    try:
+        ttl_days = int(os.environ.get("TTL_DAYS", str(DEFAULT_TTL_DAYS)))
+    except ValueError:
+        print(
+            json.dumps(
+                {
+                    "event": "aws_health_monitor.heartbeat",
+                    "delivery_status": "error",
+                    "error_type": "invalid_ttl_days",
+                },
+                separators=(",", ":"),
+            ),
+            flush=True,
+        )
+        return 2
 
     def put_item(item: dict[str, Any]) -> None:
         put_dynamodb_item(
@@ -271,18 +354,38 @@ def main(argv: list[str] | None = None) -> int:
             session_token=session_token,
         )
 
-    record = run_heartbeat(
-        health_url,
-        service_name=service_name,
-        ttl_days=ttl_days,
-        put_item=put_item,
-    )
-    # One compact line for CronJob logs; never the health body or secrets.
+    try:
+        record = run_heartbeat(
+            health_url,
+            service_name=service_name,
+            ttl_days=ttl_days,
+            put_item=put_item,
+        )
+    except Exception as exc:  # noqa: BLE001 — structured Job failure (#325)
+        # Never log secrets, health bodies, AWS error bodies, or stack traces.
+        print(
+            json.dumps(
+                {
+                    "event": "aws_health_monitor.heartbeat",
+                    "delivery_status": "error",
+                    "error_type": _classify_put_failure(exc),
+                    "exception_type": type(exc).__name__,
+                    "aws_region_set": bool(region),
+                    "table_name_set": bool(table_name),
+                },
+                separators=(",", ":"),
+            ),
+            flush=True,
+        )
+        return 1
+    # delivery_status ≠ service_status: Job success means DynamoDB accepted the
+    # item; service_status reflects in-cluster /health (may be unhealthy).
     print(
         json.dumps(
             {
                 "event": "aws_health_monitor.heartbeat",
-                "status": record["status"],
+                "delivery_status": "delivered",
+                "service_status": record["status"],
                 "http_status": record["http_status"],
                 "latency_ms": record["latency_ms"],
                 "error_type": record["error_type"],
@@ -292,6 +395,21 @@ def main(argv: list[str] | None = None) -> int:
         flush=True,
     )
     return 0
+
+
+def _classify_put_failure(exc: BaseException) -> str:
+    text = str(exc).lower()
+    if "timed out" in text or isinstance(exc, TimeoutError):
+        return "aws_timeout"
+    if "name or service not known" in text or "nodename nor servname" in text:
+        return "aws_dns"
+    if "http 4" in text:
+        return "aws_http_client"
+    if "http 5" in text:
+        return "aws_http_server"
+    if "putitem failed" in text:
+        return "aws_put_item"
+    return "aws_unexpected"
 
 
 def _bound_message(message: object) -> str | None:

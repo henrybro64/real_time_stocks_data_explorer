@@ -1,7 +1,8 @@
-# Optional AWS heartbeat CronJob (#216).
-# Without Secret stock-ticker-aws-health-heartbeat the job skips cleanly (optional
-# secret refs). Create the Secret to enable outbound PutItem; do not rely on
-# suspend — that would be reset by every kubectl apply -k redeploy.
+# Optional AWS heartbeat CronJob (#216 / #325).
+# Without Secret stock-ticker-aws-health-heartbeat the job skips with
+# delivery_status=skipped (optional secret refs). Create the Secret with
+# AWS_HEALTH_MONITOR_ENABLED=true plus credentials to require PutItem; do not
+# rely on suspend — that would be reset by every kubectl apply -k redeploy.
 # See docs/aws-health-monitor.md and aws-health-heartbeat-secret.yaml.example.
 apiVersion: batch/v1
 kind: CronJob
@@ -10,11 +11,19 @@ metadata:
 spec:
   schedule: "*/15 * * * *"
   concurrencyPolicy: Forbid
-  successfulJobsHistoryLimit: 1
-  failedJobsHistoryLimit: 3
+  # Keep a short successful history; retain a few failed Jobs for diagnosis (#325).
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 5
+  startingDeadlineSeconds: 300
   jobTemplate:
     spec:
       backoffLimit: 1
+      # Bound wall time: health GET (3s) + PutItem (10s) + margin.
+      activeDeadlineSeconds: 60
+      # Retain finished Jobs for 7 days so weekend diagnosis still has evidence
+      # (historical Error pods on 2026-11-10 were ~4 days old). Capture logs
+      # before TTL if you need a durable archive (#325).
+      ttlSecondsAfterFinished: 604800
       template:
         spec:
           restartPolicy: Never
@@ -35,6 +44,12 @@ spec:
               env:
                 - name: HEALTH_URL
                   value: http://stock-ticker-backend:8000/health
+                - name: AWS_HEALTH_MONITOR_ENABLED
+                  valueFrom:
+                    secretKeyRef:
+                      name: stock-ticker-aws-health-heartbeat
+                      key: AWS_HEALTH_MONITOR_ENABLED
+                      optional: true
                 - name: AWS_ACCESS_KEY_ID
                   valueFrom:
                     secretKeyRef:
