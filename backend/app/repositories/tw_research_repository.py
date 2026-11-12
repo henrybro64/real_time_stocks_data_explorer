@@ -1986,7 +1986,13 @@ class TwResearchRepository(SessionBoundRepository):
                 return {
                     "outcome": "claim_lost",
                     "run": _research_run_to_dict(row),
-                    "orphan_job_id": job_id,
+                    # Pending recovery id must remain reclaimable — not marked failed.
+                    "orphan_job_id": (
+                        None
+                        if row.pending_first_pass_job_id
+                        and str(job_id) == str(row.pending_first_pass_job_id)
+                        else job_id
+                    ),
                 }
             row.pending_first_pass_job_id = job_id
             row.revision = int(row.revision or 0) + 1
@@ -2040,7 +2046,13 @@ class TwResearchRepository(SessionBoundRepository):
                 return {
                     "outcome": "claim_lost",
                     "run": _research_run_to_dict(row),
-                    "orphan_job_id": job_id,
+                    # Do not fail the durable pending recovery key on lease expiry.
+                    "orphan_job_id": (
+                        None
+                        if row.pending_first_pass_job_id
+                        and str(job_id) == str(row.pending_first_pass_job_id)
+                        else job_id
+                    ),
                 }
             row.first_pass_job_id = job_id
             row.pending_first_pass_job_id = None

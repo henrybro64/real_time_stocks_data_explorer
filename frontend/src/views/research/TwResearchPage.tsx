@@ -39,6 +39,7 @@ import {
   createTwResearchTechnicalScanFromCandidateSet,
   fetchThemeOptions,
   fetchTwResearchBrowserText,
+  fetchTwResearchCandidateSet,
   fetchTwResearchExportChunk,
   fetchTwResearchExportManifest,
   fetchTwResearchFirstPassChunk,
@@ -616,6 +617,36 @@ export function TwResearchPage({
     staleTime: 60_000,
     retry: false,
   });
+
+  // Historical scans must use their pinned candidate-set version, not "latest".
+  const pinnedCandidateSetId = scan?.candidateProvenance?.candidateSetId;
+  const pinnedCandidateSetVersion = scan?.candidateProvenance?.candidateSetVersion;
+  const pinnedCandidateSetQuery = useQuery({
+    queryKey: [
+      "tw-research-candidate-set",
+      pinnedCandidateSetId,
+      pinnedCandidateSetVersion,
+    ],
+    enabled:
+      Boolean(pinnedCandidateSetId) &&
+      pinnedCandidateSetVersion !== undefined &&
+      pinnedCandidateSetVersion !== null,
+    queryFn: () =>
+      fetchTwResearchCandidateSet(
+        String(pinnedCandidateSetId),
+        Number(pinnedCandidateSetVersion),
+      ),
+    staleTime: 60_000,
+    retry: false,
+  });
+  const watchlistCandidateSet =
+    pinnedCandidateSetQuery.data ??
+    (scan?.candidateProvenance?.approvedStockIds
+      ? {
+          stockIds: scan.candidateProvenance.approvedStockIds,
+          selectionReasons: {},
+        }
+      : candidateSetQuery.data);
   const progress = progressQuery.data?.scanId === scanId ? progressQuery.data : null;
   const displayStatus = progress?.status ?? scan?.status ?? "";
   const displayProcessed = progress?.processedCount ?? scan?.processedCount ?? 0;
@@ -824,12 +855,20 @@ export function TwResearchPage({
   });
 
   const exportReportEvidenceMutation = useMutation({
-    mutationFn: async () =>
-      postTwResearchReportEvidence({
+    mutationFn: async () => {
+      // Omit scanId unless its pinned first-pass matches the export target so a
+      // lingering historical technical scan cannot force full-two-pass mismatch.
+      const scanPinnedFp = scan?.candidateProvenance?.firstPassSnapshotId;
+      const exportFp = firstPassSnapshotId ?? undefined;
+      const includeScan =
+        Boolean(scanId) &&
+        (!exportFp || !scanPinnedFp || String(scanPinnedFp) === String(exportFp));
+      return postTwResearchReportEvidence({
         tradingDay: taipeiTradingDay(),
-        firstPassSnapshotId: firstPassSnapshotId ?? undefined,
-        scanId: scanId ?? undefined,
-      }),
+        firstPassSnapshotId: exportFp,
+        scanId: includeScan ? (scanId ?? undefined) : undefined,
+      });
+    },
     onSuccess: (evidence) => {
       setReportEvidenceText(JSON.stringify(evidence, null, 2));
     },
@@ -1062,14 +1101,14 @@ export function TwResearchPage({
       addReason(String(id), "insufficient_evidence_monthly");
     }
 
-    // Frozen first-pass universe only — never mutable current membership.
+    // Frozen first-pass universe + scan-pinned candidate set (not latest).
     const selected = new Set(
-      ((candidateSetQuery.data?.stockIds as string[] | undefined) ?? []).map(String),
+      ((watchlistCandidateSet?.stockIds as string[] | undefined) ?? []).map(String),
     );
     const frozenIds = Array.isArray(frozenFirstPassQuery.data?.stockIds)
       ? (frozenFirstPassQuery.data?.stockIds as string[]).map(String)
       : [];
-    const reasons = (candidateSetQuery.data?.selectionReasons ?? {}) as Record<
+    const reasons = (watchlistCandidateSet?.selectionReasons ?? {}) as Record<
       string,
       unknown
     >;
@@ -1138,13 +1177,13 @@ export function TwResearchPage({
     }
     return reasonById;
   }, [
-    candidateSetQuery.data?.selectionReasons,
-    candidateSetQuery.data?.stockIds,
     firstPassEvidenceText,
     frozenFirstPassQuery.data?.stockIds,
     scan?.dailyNotRunByDesignIds,
     scan?.monthlyFailWatchlistIds,
     scan?.monthlyIncompleteIds,
+    watchlistCandidateSet?.selectionReasons,
+    watchlistCandidateSet?.stockIds,
   ]);
   const watchlistIds = useMemo(
     () => Array.from(watchlistReasonById.keys()).sort(),

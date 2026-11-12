@@ -536,28 +536,18 @@ def post_candidate_set(
 ) -> CandidateSetResponse:
     """Persist analyst/manual compute subset pinned to a first-pass digest (#336)."""
     try:
-        saved = submit_candidate_set(
-            user_id=user_id,
-            first_pass_snapshot_id=body.firstPassSnapshotId,
-            first_pass_digest=body.firstPassDigest,
-            stock_ids=body.stockIds,
-            origin=body.origin,
-            expected_version=body.expectedVersion,
-            selection_reasons=body.selectionReasons,
-            daily_override_ids=body.dailyOverrideIds,
-            decision_date=body.decisionDate,
-            notes=body.notes,
-        )
+        # When a managed research run exists, validate attach gates *before*
+        # persisting a new candidate-set version so a 409 cannot leave latest
+        # pointing at a set the run rejected.
+        attach_after = False
         try:
-            # Only attach when a research run exists; legacy flows without a run
-            # keep candidate-set persistence as the source of truth.
-            if research_run_store.get(user_id) is not None:
-                research_run_store.attach_candidate_set(
+            run = research_run_store.get(user_id)
+            if run is not None:
+                research_run_store.validate_candidate_attach(
                     user_id,
-                    candidate_set_id=str(saved["candidateSetId"]),
-                    candidate_set_version=int(saved["version"]),
-                    first_pass_snapshot_id=str(saved.get("firstPassSnapshotId") or ""),
+                    first_pass_snapshot_id=str(body.firstPassSnapshotId or ""),
                 )
+                attach_after = True
         except ResearchRunStoreUnavailable as exc:
             raise HTTPException(
                 status_code=503,
@@ -578,12 +568,58 @@ def post_candidate_set(
                 detail={"error": str(exc)},
             ) from exc
         except KeyError as exc:
-            # Run vanished between get and attach — fail closed when orchestration
-            # was expected (caller already observed a run row).
             raise HTTPException(
                 status_code=409,
                 detail={"error": "research_run_not_found_during_attach"},
             ) from exc
+
+        saved = submit_candidate_set(
+            user_id=user_id,
+            first_pass_snapshot_id=body.firstPassSnapshotId,
+            first_pass_digest=body.firstPassDigest,
+            stock_ids=body.stockIds,
+            origin=body.origin,
+            expected_version=body.expectedVersion,
+            selection_reasons=body.selectionReasons,
+            daily_override_ids=body.dailyOverrideIds,
+            decision_date=body.decisionDate,
+            notes=body.notes,
+        )
+        if attach_after:
+            try:
+                research_run_store.attach_candidate_set(
+                    user_id,
+                    candidate_set_id=str(saved["candidateSetId"]),
+                    candidate_set_version=int(saved["version"]),
+                    first_pass_snapshot_id=str(saved.get("firstPassSnapshotId") or ""),
+                )
+            except ResearchRunStoreUnavailable as exc:
+                raise HTTPException(
+                    status_code=503,
+                    detail={
+                        "error": "research_run_store_unavailable",
+                        "retryable": True,
+                        "message": str(exc),
+                    },
+                ) from exc
+            except ResearchRunConflict as exc:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "error": "research_run_revision_conflict",
+                        "reason": exc.reason,
+                    },
+                ) from exc
+            except ResearchRunGateError as exc:
+                raise HTTPException(
+                    status_code=409,
+                    detail={"error": str(exc)},
+                ) from exc
+            except KeyError as exc:
+                raise HTTPException(
+                    status_code=409,
+                    detail={"error": "research_run_not_found_during_attach"},
+                ) from exc
     except ResearchMembershipUnavailable as exc:
         raise HTTPException(
             status_code=503,
@@ -616,6 +652,39 @@ def get_latest_candidate_set(
 ) -> CandidateSetResponse:
     try:
         saved = latest_candidate_set(user_id=user_id)
+    except ResearchMembershipUnavailable as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "durable_store_unavailable",
+                "retryable": True,
+                "operation": getattr(exc, "operation", "candidate_set"),
+                "message": str(exc),
+            },
+        ) from exc
+    if saved is None:
+        raise HTTPException(status_code=404, detail="candidate_set_not_found")
+    return CandidateSetResponse(candidateSet=saved)
+
+
+@router.get(
+    "/candidate-sets/{candidate_set_id}",
+    response_model=CandidateSetResponse,
+)
+def get_candidate_set_version(
+    candidate_set_id: str,
+    version: int = Query(..., ge=0),
+    user_id: str = Depends(get_effective_user_id),
+) -> CandidateSetResponse:
+    """Load an exact candidate-set version for historical scan watchlists."""
+    from app.services.tw_research.first_pass_durable import get_candidate_set
+
+    try:
+        saved = get_candidate_set(
+            user_id=user_id,
+            candidate_set_id=candidate_set_id,
+            version=version,
+        )
     except ResearchMembershipUnavailable as exc:
         raise HTTPException(
             status_code=503,

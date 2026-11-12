@@ -63,6 +63,8 @@ async function openResearchPage(page: Page) {
   setE2eAuthenticatedUser(page, { id: "handoff-user", username: "handoff-user" });
   await page.goto("/research/tw");
   await expect(page.locator("#main-content")).toBeVisible();
+  // Latest-verified lives under the Progress tab after the three-tab layout (#339).
+  await page.getByTestId("tw-research-tab-progress").click();
   await expect(page.getByTestId("tw-research-latest-verified")).toBeVisible();
 }
 

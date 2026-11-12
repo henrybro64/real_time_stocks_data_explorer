@@ -458,6 +458,17 @@ export async function fetchTwResearchLatestCandidateSet() {
   return response.candidateSet;
 }
 
+export async function fetchTwResearchCandidateSet(
+  candidateSetId: string,
+  version: number,
+) {
+  const response = await requestJson<{ candidateSet: Record<string, unknown> }>(
+    `/tw-research/candidate-sets/${encodeURIComponent(candidateSetId)}`
+      + `?version=${encodeURIComponent(String(version))}`,
+  );
+  return response.candidateSet;
+}
+
 export async function createTwResearchTechnicalScanFromCandidateSet(body?: {
   expectedVersion?: number;
   candidateSetId?: string;

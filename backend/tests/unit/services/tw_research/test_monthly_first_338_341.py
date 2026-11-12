@@ -390,6 +390,47 @@ def test_research_run_reconcile_is_server_authoritative() -> None:
     research_run_store.disable_test_memory()
 
 
+def test_begin_phase1_preserves_revision_when_replacing_gated_run() -> None:
+    """Replacement after a finished/gated run must not reset OCC revision to 0."""
+    research_run_store.clear_for_tests()
+    first = research_run_store.begin_phase1("u_rev", trading_day="2024-06-27")
+    research_run_store.attach_first_pass_job("u_rev", first_pass_job_id="fpj_rev")
+    mem = research_run_store.get("u_rev")
+    assert mem is not None
+    mem.phase = "awaiting_analyst_report_decision"
+    mem.status = "gated"
+    mem.technical_scan_id = "scan_done"
+    # Force a terminal-ish reconcile path by leaving phase outside active work.
+    before_rev = int(mem.revision)
+    replacement = research_run_store.begin_phase1("u_rev", trading_day="2024-06-28")
+    assert replacement.research_run_id != first.research_run_id
+    assert int(replacement.revision) > before_rev
+    again = research_run_store.begin_phase1("u_rev", trading_day="2024-06-28")
+    assert again.research_run_id == replacement.research_run_id
+    research_run_store.disable_test_memory()
+
+
+def test_claim_lost_does_not_orphan_pending_recovery_job_id() -> None:
+    from app.services.tw_research.research_run import _orphan_job_id_if_not_pending
+
+    assert (
+        _orphan_job_id_if_not_pending(
+            "fpj_pending",
+            pending_job_id="fpj_pending",
+            attached_job_id=None,
+        )
+        is None
+    )
+    assert (
+        _orphan_job_id_if_not_pending(
+            "fpj_other",
+            pending_job_id="fpj_pending",
+            attached_job_id=None,
+        )
+        == "fpj_other"
+    )
+
+
 def test_research_run_start_idempotent_and_conflict() -> None:
     research_run_store.clear_for_tests()
     first = research_run_store.begin_phase1("u_idemp", trading_day="2024-06-27")

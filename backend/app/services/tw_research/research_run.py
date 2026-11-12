@@ -83,6 +83,20 @@ class ResearchRunConflict(Exception):
         self.reason = "revision_conflict"
 
 
+def _orphan_job_id_if_not_pending(
+    job_id: str,
+    *,
+    pending_job_id: str | None,
+    attached_job_id: str | None,
+) -> str | None:
+    """Return a job id safe to mark orphaned; never the pending recovery key."""
+    if attached_job_id and str(job_id) == str(attached_job_id):
+        return None
+    if pending_job_id and str(job_id) == str(pending_job_id):
+        return None
+    return job_id
+
+
 class _ResearchRunRepository(Protocol):
     def is_available(self) -> bool: ...
 
@@ -263,12 +277,16 @@ class ResearchRunStore:
         now = datetime.now(UTC).isoformat()
         with self._lock:
             existing = self._load_locked(user_id)
+            # Preserve OCC revision when replacing a finished/gated run so the
+            # user-keyed upsert can succeed (revision=0 always conflicts).
+            carry_revision = 0
             if existing is not None:
                 changed = self._reconcile_locked(existing)
                 if changed:
                     existing = self._persist_locked(existing)
                 if self._is_active_nonterminal(existing):
                     return existing
+                carry_revision = int(existing.revision or 0)
             run = ResearchRun(
                 research_run_id=f"rr_{uuid4().hex[:20]}",
                 user_id=user_id,
@@ -297,7 +315,7 @@ class ResearchRunStore:
                 ],
                 created_at=now,
                 updated_at=now,
-                revision=0,
+                revision=carry_revision,
             )
             return self._persist_locked(run)
 
@@ -358,6 +376,38 @@ class ResearchRunStore:
             raise KeyError("research_run_not_found")
         return run
 
+    def validate_candidate_attach(
+        self,
+        user_id: str,
+        *,
+        first_pass_snapshot_id: str | None = None,
+    ) -> ResearchRun:
+        """Preflight attach gates without mutating the run (fail before persist)."""
+        with self._lock:
+            run = self._require_locked(user_id)
+            self._reconcile_locked(run)
+            self._assert_candidate_attach_allowed(
+                run, first_pass_snapshot_id=first_pass_snapshot_id
+            )
+            return run
+
+    def _assert_candidate_attach_allowed(
+        self,
+        run: ResearchRun,
+        *,
+        first_pass_snapshot_id: str | None = None,
+    ) -> None:
+        if run.phase != "awaiting_analyst_candidate_selection":
+            raise ResearchRunGateError(
+                "candidate_attach_requires_awaiting_analyst_candidate_selection"
+            )
+        if (
+            first_pass_snapshot_id
+            and run.first_pass_snapshot_id
+            and str(first_pass_snapshot_id) != str(run.first_pass_snapshot_id)
+        ):
+            raise ResearchRunGateError("candidate_set_first_pass_snapshot_mismatch")
+
     def attach_candidate_set(
         self,
         user_id: str,
@@ -369,16 +419,9 @@ class ResearchRunStore:
         with self._lock:
             run = self._require_locked(user_id)
             self._reconcile_locked(run)
-            if run.phase != "awaiting_analyst_candidate_selection":
-                raise ResearchRunGateError(
-                    "candidate_attach_requires_awaiting_analyst_candidate_selection"
-                )
-            if (
-                first_pass_snapshot_id
-                and run.first_pass_snapshot_id
-                and str(first_pass_snapshot_id) != str(run.first_pass_snapshot_id)
-            ):
-                raise ResearchRunGateError("candidate_set_first_pass_snapshot_mismatch")
+            self._assert_candidate_attach_allowed(
+                run, first_pass_snapshot_id=first_pass_snapshot_id
+            )
             run.candidate_set_id = candidate_set_id
             run.candidate_set_version = candidate_set_version
             run.gates["candidateSelection"] = "approved"
@@ -477,7 +520,11 @@ class ResearchRunStore:
                     return {
                         "outcome": "claim_lost",
                         "run": run.as_persist_payload(),
-                        "orphan_job_id": job_id,
+                        "orphan_job_id": _orphan_job_id_if_not_pending(
+                            job_id,
+                            pending_job_id=run.pending_first_pass_job_id,
+                            attached_job_id=run.first_pass_job_id,
+                        ),
                     }
                 run.pending_first_pass_job_id = job_id
                 run.updated_at = datetime.now(UTC).isoformat()
@@ -515,7 +562,11 @@ class ResearchRunStore:
                     return {
                         "outcome": "claim_lost",
                         "run": run.as_persist_payload(),
-                        "orphan_job_id": job_id,
+                        "orphan_job_id": _orphan_job_id_if_not_pending(
+                            job_id,
+                            pending_job_id=run.pending_first_pass_job_id,
+                            attached_job_id=run.first_pass_job_id,
+                        ),
                     }
                 run.first_pass_job_id = job_id
                 run.pending_first_pass_job_id = None

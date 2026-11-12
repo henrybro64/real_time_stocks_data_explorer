@@ -16,6 +16,7 @@ import {
   fetchThemeOptions,
   fetchTwResearchBrowserText,
   fetchTwResearchExportManifest,
+  fetchTwResearchCandidateSet,
   fetchTwResearchFirstPassSnapshot,
   fetchTwResearchFirstPassSymbols,
   fetchTwResearchLatestCandidateSet,
@@ -82,6 +83,13 @@ vi.mock("../../services/api/twResearch", async () => {
       snapshotId: "fps_1",
       stockIds: [],
     })),
+    fetchTwResearchCandidateSet: vi.fn(async () => {
+      throw new ApiError("missing", {
+        status: 404,
+        detail: "candidate_set_not_found",
+        kind: "not_found",
+      });
+    }),
     fetchTwResearchRunCurrent: vi.fn(async () => {
       throw new ApiError("missing", {
         status: 404,
