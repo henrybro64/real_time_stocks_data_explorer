@@ -209,6 +209,7 @@ def load_scan_state(
             readiness=payload.get("readiness", symbol_row.get("readiness", "processed")),
             stock_name=payload.get("stock_name"),
             name_status=name_status,
+            technical_stage=payload.get("technical_stage"),
             daily=payload.get("daily"),
             monthly=payload.get("monthly"),
             sma20=payload.get("sma20"),
@@ -598,7 +599,10 @@ _mark_persist_failure = mark_persist_failure
 def _export_row(record: SymbolScanRecord) -> dict[str, Any]:
     return {
         "stockId": record.stock_id,
+        "stockName": record.stock_name,
+        "nameStatus": record.name_status,
         "stage": record.stage,
+        "technicalStage": record.technical_stage,
         "readiness": record.readiness,
         "rejectionReason": record.rejection_reason,
         "daily": record.daily,

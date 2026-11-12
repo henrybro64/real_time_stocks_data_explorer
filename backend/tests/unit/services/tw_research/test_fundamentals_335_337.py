@@ -1810,6 +1810,8 @@ def test_candidate_technical_scan_monthly_before_daily_on_fixture_history(monkey
     Daily runs only after monthly pass. Qualification is technical evidence only —
     not a Notion report recommendation. No live providers.
     """
+    from types import SimpleNamespace
+
     from app.services.tw_research.constants import (
         CALCULATION_VERSION_MONTHLY_FIRST,
         MONTHLY_FIRST_DAILY_CONTINUATION_POLICY,
@@ -1817,6 +1819,15 @@ def test_candidate_technical_scan_monthly_before_daily_on_fixture_history(monkey
     )
     from app.services.tw_research.first_pass_durable import create_technical_scan_from_candidate_set
     from app.services.tw_research.scan import TwResearchScanService
+
+    # Fixture history has no TW trading calendar; pin coverage so this test
+    # asserts indicator monthly→daily ordering, not calendar availability.
+    monkeypatch.setattr(
+        "app.services.tw_research.coverage.monthly_series_verified",
+        lambda *a, **k: SimpleNamespace(
+            ok=True, reason=None, bar_count=40, missing_trading_days=()
+        ),
+    )
 
     repo, _snap, candidates = _seed_candidate_universe(
         monkeypatch, "user-macd", ["TW:2330", "TW:2454", "TW:2303"]
@@ -1903,10 +1914,18 @@ def test_candidate_technical_scan_monthly_before_daily_on_fixture_history(monkey
 
 def test_candidate_monthly_fail_retains_monthly_and_defers_daily(monkeypatch) -> None:
     from dataclasses import replace
+    from types import SimpleNamespace
 
     from app.services.tw_research.first_pass_durable import create_technical_scan_from_candidate_set
     from app.services.tw_research.indicators import monthly_macd_kd_snapshot
     from app.services.tw_research.scan import TwResearchScanService
+
+    monkeypatch.setattr(
+        "app.services.tw_research.coverage.monthly_series_verified",
+        lambda *a, **k: SimpleNamespace(
+            ok=True, reason=None, bar_count=40, missing_trading_days=()
+        ),
+    )
 
     repo, _snap, candidates = _seed_candidate_universe(
         monkeypatch, "user-mfail", ["TW:2330", "TW:2454"]
@@ -1954,17 +1973,32 @@ def test_candidate_monthly_fail_retains_monthly_and_defers_daily(monkeypatch) ->
         assert record.monthly is not None
         assert record.monthly.get("passStatus") == "fail"
         assert record.stage == "A"
-        assert record.daily is None
+        assert record.daily is not None
+        assert record.daily.get("executionStatus") == "not_run_by_design"
+        assert record.daily.get("passStatus") is None
+        assert record.daily.get("passStatus") != "fail"
         daily_cov = (record.coverage or {}).get("daily") or {}
         assert daily_cov.get("deferred") is True
         assert daily_cov.get("reason") == "monthly_screen_failed"
+        assert daily_cov.get("executionStatus") == "not_run_by_design"
     assert state.qualified_ids == []
     repo.clear_session_factory_override()
 
 
 def test_candidate_incomplete_monthly_is_not_screening_fail(monkeypatch) -> None:
+    from types import SimpleNamespace
+
     from app.services.tw_research.first_pass_durable import create_technical_scan_from_candidate_set
     from app.services.tw_research.scan import TwResearchScanService
+
+    # Pin coverage so the asserted skip reason is monthly_indicators_incomplete
+    # (short history), not calendar/coverage unverified.
+    monkeypatch.setattr(
+        "app.services.tw_research.coverage.monthly_series_verified",
+        lambda *a, **k: SimpleNamespace(
+            ok=True, reason=None, bar_count=2, missing_trading_days=()
+        ),
+    )
 
     repo, _snap, candidates = _seed_candidate_universe(
         monkeypatch, "user-minc", ["TW:2330"]
@@ -2001,10 +2035,15 @@ def test_candidate_incomplete_monthly_is_not_screening_fail(monkeypatch) -> None
     assert record.monthly is not None
     assert record.monthly.get("passStatus") == "unknown"
     assert record.monthly.get("quality") in {"insufficient_history", "unavailable"}
-    assert record.daily is None
+    assert record.daily is not None
+    assert record.daily.get("executionStatus") == "not_run_by_design"
+    assert record.daily.get("passStatus") != "fail"
     assert record.readiness == "source_incomplete"
     assert (record.coverage or {}).get("daily", {}).get("reason") == (
         "monthly_indicators_incomplete"
+    )
+    assert (record.coverage or {}).get("daily", {}).get("executionStatus") == (
+        "not_run_by_design"
     )
     repo.clear_session_factory_override()
 

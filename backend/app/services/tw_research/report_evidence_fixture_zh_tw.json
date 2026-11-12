@@ -1,0 +1,42 @@
+{
+  "exampleOnly": true,
+  "disclaimer": "本文件為測試用範例，不是即時投資建議，也不是已核准的 Notion 日報。",
+  "title": "台灣研究證據摘要（範例）",
+  "tradingDay": "2024-06-27",
+  "opening": "今日研究證據已就緒，供外部分析師判斷；Stock Ticker 不決定 Notion 名單。",
+  "coverage": {
+    "universeSize": 3,
+    "candidateCount": 2,
+    "tradingCandidateCount": 1,
+    "watchlistCount": 1,
+    "insufficientEvidenceCount": 1
+  },
+  "rows": [
+    {
+      "stockId": "TW:2330",
+      "stockName": "台積電",
+      "bucket": "technical_confirmed",
+      "summaryZh": "月線與日線 MACD/KD 均通過；官方本益比有來源與日期。進出場價位由分析師撰寫，此處標記 not_established。"
+    },
+    {
+      "stockId": "TW:2317",
+      "stockName": "鴻海",
+      "bucket": "fundamental_watch_monthly_fail",
+      "summaryZh": "基本面證據保留；月線未通過故日線標記 not_run_by_design（不是技術失敗）。"
+    },
+    {
+      "stockId": "TW:9991",
+      "stockName": null,
+      "nameStatus": "unavailable",
+      "bucket": "insufficient_evidence",
+      "summaryZh": "名稱不可用；必要欄位不足，不可當作已驗證日報內容。"
+    }
+  ],
+  "analystSlots": {
+    "whyNow": "not_established",
+    "entryZone": "not_established",
+    "target": "not_established",
+    "stop": "not_established"
+  },
+  "publicationGate": "draft_or_evidence_only_until_chatgpt_approves"
+}

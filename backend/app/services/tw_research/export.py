@@ -593,7 +593,10 @@ def _record_export(record: Any) -> dict[str, Any]:
     enrichment = getattr(record, "enrichment", None)
     return {
         "stockId": record.stock_id,
+        "stockName": getattr(record, "stock_name", None),
+        "nameStatus": getattr(record, "name_status", None),
         "stage": record.stage,
+        "technicalStage": getattr(record, "technical_stage", None),
         "readiness": getattr(record, "readiness", "processed"),
         "rejectionReason": record.rejection_reason,
         "daily": record.daily,

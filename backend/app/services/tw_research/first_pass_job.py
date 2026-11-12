@@ -207,12 +207,19 @@ class FirstPassJobService:
         stock_ids: list[str] | None = None,
         use_membership: bool = True,
         selector: UniverseSelector | None = None,
+        job_id: str | None = None,
     ) -> dict[str, Any]:
         if not self._repo.is_available():
             raise FirstPassJobError(
                 "first_pass_job_store_unavailable",
                 operation="create_first_pass_job",
             )
+
+        # Idempotent resume: durable association key already points at a job row.
+        if job_id:
+            existing = self._repo.get_first_pass_job(job_id, user_id=user_id)
+            if existing is not None:
+                return existing
 
         membership_version = 0
         notes: list[str] = []
@@ -248,11 +255,11 @@ class FirstPassJobService:
         if not ids:
             raise FirstPassJobError("empty_universe", operation="create_first_pass_job")
 
-        job_id = f"fpj_{uuid.uuid4().hex[:24]}"
+        resolved_job_id = job_id or f"fpj_{uuid.uuid4().hex[:24]}"
         digest = _universe_digest(ids, universe_version)
         return self._repo.create_first_pass_job(
             {
-                "job_id": job_id,
+                "job_id": resolved_job_id,
                 "user_id": user_id,
                 "universe_version": universe_version,
                 "universe_digest": digest,

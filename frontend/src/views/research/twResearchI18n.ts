@@ -279,6 +279,86 @@ const TW_RESEARCH_ROWS = [
     "Historical-data budget is exhausted. Resume is not available from this page.",
     "歷史資料預算已用盡。此頁面無法接續。",
   ],
+  ["research.tw.tabsAria", "Taiwan research workspace tabs", "台股研究工作區分頁"],
+  [
+    "research.tw.tabEvidence",
+    "Research data / technical candidates",
+    "研究資料／技術符合候選",
+  ],
+  ["research.tw.tabWatchlist", "Watchlist", "觀察名單"],
+  [
+    "research.tw.tabProgress",
+    "Research progress / data quality",
+    "研究進度／資料品質",
+  ],
+  [
+    "research.tw.watchlistNote",
+    "Frozen first-pass universe plus technical deferrals. Watchlist inclusion is not a Notion recommendation.",
+    "凍結的第一輪宇宙與技術延後。列入觀察清單不是 Notion 建議。",
+  ],
+  [
+    "research.tw.watchlistCounts",
+    "Monthly-fail {monthlyFail}; daily not-run {notRun}; monthly incomplete {monthlyIncomplete}; not selected for technical {notSelectedTechnical}; fundamental watch {fundamentalWatch}; insufficient fundamental evidence {insufficientFundamental}.",
+    "月線未過 {monthlyFail}；日線略過 {notRun}；月線未完備 {monthlyIncomplete}；未選入技術計算 {notSelectedTechnical}；基本面觀察 {fundamentalWatch}；基本面證據不足 {insufficientFundamental}。",
+  ],
+  ["research.tw.colStock", "Stock", "股票"],
+  ["research.tw.colMonthly", "Monthly MACD/KD", "月線 MACD/KD"],
+  ["research.tw.colDaily", "Daily status", "日線狀態"],
+  ["research.tw.colNote", "Note", "說明"],
+  [
+    "research.tw.watchlistRowNote",
+    "Retained for analyst review; not a Notion pick.",
+    "保留給分析師複審；不是 Notion 名單。",
+  ],
+  ["research.tw.nameUnavailable", "Name unavailable", "名稱不可用"],
+  ["research.tw.phaseBannerTitle", "Research phase", "研究階段"],
+  [
+    "research.tw.phase1",
+    "Phase 1: collecting fundamentals across the configured universe",
+    "階段 1：依設定宇宙收集基本面資料",
+  ],
+  [
+    "research.tw.phaseAwaitingCandidates",
+    "Phase 2: waiting for ChatGPT / analyst candidate selection",
+    "階段 2：等待 ChatGPT／分析師選定技術計算子集",
+  ],
+  [
+    "research.tw.phase2Technical",
+    "Phase 3: monthly-first then daily MACD/KD on selected candidates",
+    "階段 3：對選定候選先月線後再日線 MACD/KD",
+  ],
+  [
+    "research.tw.phaseAwaitingReport",
+    "Phase 4: evidence ready for ChatGPT final report judgement",
+    "階段 4：證據就緒，等待 ChatGPT 最終日報判斷",
+  ],
+  [
+    "research.tw.phaseIdle",
+    "No active research run. Start a manual full research to begin Phase 1.",
+    "尚無進行中的研究。請手動開始完整研究以進入階段 1。",
+  ],
+  [
+    "research.tw.phaseMeta",
+    "Status {status}. Run {runId}. Durable. CronJob remains suspended. Stock Ticker never writes Notion.",
+    "狀態 {status}。執行 {runId}。已持久化。CronJob 維持暫停。Stock Ticker 不會寫入 Notion。",
+  ],
+  ["research.tw.startFullResearch", "Start full research (Phase 1)", "開始完整研究（階段 1）"],
+  ["research.tw.exportReportEvidence", "Export analyst evidence pack", "匯出分析師證據包"],
+  ["research.tw.loadEvidenceExample", "Load ZH-TW evidence example", "載入繁中證據範例"],
+  [
+    "research.tw.evidencePackNote",
+    "Evidence only — ChatGPT chooses report names. Entry/target/stop stay not_established here.",
+    "僅證據 — 由 ChatGPT 決定日報名單。進出場價位在此維持 not_established。",
+  ],
+  ["research.tw.colTechnicalStage", "Technical stage", "技術階段"],
+  ["research.tw.colBasis", "Price basis", "相對價位"],
+  ["research.tw.colPe", "Official PE", "官方本益比"],
+  ["research.tw.expandDetails", "Details", "細節"],
+  [
+    "research.tw.expandHint",
+    "Expand a row for coverage, enrichment, and missing-field reasons.",
+    "展開列可看覆蓋、enrichment 與缺欄原因。",
+  ],
 ] as const satisfies ReadonlyArray<readonly [string, string, string]>;
 
 export type TwResearchTranslationKey = (typeof TW_RESEARCH_ROWS)[number][0];

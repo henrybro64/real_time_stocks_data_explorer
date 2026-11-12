@@ -33,6 +33,7 @@ Confirm and reuse — do not reimplement:
 | `backend/app/services/tw_research/fundamentals_watchlist.py` | Versioned membership / compute subset (#336, Postgres fail-closed) |
 | `backend/app/services/tw_research/first_pass_durable.py` | Immutable first-pass snapshots + analyst candidate sets (#335/#336) |
 | `docs/tw-research-fundamentals.md` | #335–#337 audit, gaps, APIs |
+| `docs/tw-research-next-338-341.md` | #338–#341 monthly-first, tabs, evidence, gates |
 | Alembic `20261111_0023` | Membership, first-pass snapshots, candidate sets |
 | `backend/app/services/tw_research/indicators.py` | Daily + monthly MACD(12,26,9) and KD(9,3,3) |
 | `backend/app/services/tw_research/scan.py` | Bounded Stage A/B scan + enrichment batches + durable checkpoints |

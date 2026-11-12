@@ -1,6 +1,8 @@
-# Taiwan research Agent JSON handoff (#322)
+# Taiwan research Agent JSON handoff (#322 / #340)
 
 Browser-only, low-token transfer contract for an **external** Agent that may optionally publish to Notion. **Stock Ticker never writes Notion**, never embeds Notion credentials, and never schedules publishes.
+
+For the analyst-ready evidence pack (Phase-1 universe + Phase-2 candidate technicals), see `POST /api/tw-research/report-evidence` and the labeled Traditional Chinese fixture at `GET /api/tw-research/report-evidence/example-zh-tw` (`exampleOnly: true` — not a live recommendation). ChatGPT makes the two selection/report decisions; the external writer publishes only after explicit approval.
 
 ## Status vocabulary (do not conflate)
 

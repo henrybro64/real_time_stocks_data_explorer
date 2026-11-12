@@ -299,3 +299,523 @@ def test_relative_price_basis_endpoint(monkeypatch) -> None:
         "high_relative_price_basis",
         "insufficient_data",
     }
+
+
+def test_report_evidence_returns_all_40_symbol_rows_with_names(monkeypatch) -> None:
+    """Persisted 40-candidate scan → 200 with all rows (no chunk-0 truncation)."""
+    from app.db.init_ids import DEFAULT_USER_ID
+    from app.services.tw_research.constants import (
+        CALCULATION_VERSION_MONTHLY_FIRST,
+        TECHNICAL_STAGE_DAILY_PASS,
+    )
+    from app.services.tw_research.scan import (
+        SymbolScanRecord,
+        TwResearchScanService,
+        UniverseSelector,
+    )
+    from tests.support import stock_record
+
+    stock_ids = tuple(f"TW:{2000 + i}" for i in range(40))
+    catalog = {
+        sid: stock_record(
+            sid,
+            market="TW",
+            symbol=sid.split(":")[1],
+            name=f"公司{sid.split(':')[1]}",
+            name_zh_tw=f"公司{sid.split(':')[1]}",
+            exchange="TWSE",
+            currency="TWD",
+            timezone="Asia/Taipei",
+        )
+        for sid in stock_ids
+    }
+    service = TwResearchScanService(
+        history_loader=lambda *a, **k: ([], 0),
+        stock_loader=catalog.get,
+        persist=False,
+    )
+    state = service.create_scan(
+        UniverseSelector(mode="stock_ids", stock_ids=stock_ids),
+        calculation_version=CALCULATION_VERSION_MONTHLY_FIRST,
+        trading_day="2024-06-28",
+        candidate_provenance={
+            "candidateSetId": "cs_40",
+            "candidateSetVersion": 1,
+            "firstPassSnapshotId": "fps_40",
+            "firstPassDigest": "digest_40",
+            "dailyOverrideIds": [],
+        },
+    )
+    state.user_id = DEFAULT_USER_ID
+    state.status = "completed_processing"
+    for sid in stock_ids:
+        state.records[sid] = SymbolScanRecord(
+            stock_id=sid,
+            stage="B",
+            readiness="processed",
+            technical_stage=TECHNICAL_STAGE_DAILY_PASS,
+            stock_name=f"公司{sid.split(':')[1]}",
+            name_status="ok",
+            monthly={"passStatus": "pass", "quality": "ok"},
+            daily={"passStatus": "pass", "quality": "ok"},
+        )
+    state.cursor = len(stock_ids)
+    monkeypatch.setattr(
+        "app.api.routes.tw_research.tw_research_scan_service",
+        service,
+    )
+    monkeypatch.setattr(
+        "app.api.routes.tw_research.get_candidate_set",
+        lambda **kwargs: {
+            "candidateSetId": "cs_40",
+            "version": 1,
+            "firstPassSnapshotId": "fps_40",
+            "firstPassDigest": "digest_40",
+            "stockIds": list(stock_ids),
+        },
+        raising=False,
+    )
+    # Route imports get_candidate_set inside the handler from first_pass_durable.
+    monkeypatch.setattr(
+        "app.services.tw_research.first_pass_durable.get_candidate_set",
+        lambda **kwargs: {
+            "candidateSetId": "cs_40",
+            "version": 1,
+            "firstPassSnapshotId": "fps_40",
+            "firstPassDigest": "digest_40",
+            "stockIds": list(stock_ids),
+        },
+    )
+    monkeypatch.setattr(
+        "app.repositories.tw_research_repository.tw_research_repository.get_first_pass_snapshot",
+        lambda snapshot_id, user_id=None: {
+            "snapshot_id": snapshot_id,
+            "content_digest": "digest_40",
+            "stock_ids": list(stock_ids),
+            "payload": {"qualityStatus": "verified_ready"},
+        },
+    )
+
+    response = client.post(
+        "/api/tw-research/report-evidence",
+        json={
+            "scanId": state.scan_id,
+            "firstPassSnapshotId": "fps_40",
+            "tradingDay": "2024-06-28",
+        },
+    )
+    assert response.status_code == 200, response.text
+    evidence = response.json()["evidence"]
+    symbols = evidence["symbols"]
+    assert len(symbols) == 40
+    assert all(row.get("stockName") for row in symbols)
+    assert all(row.get("nameStatus") == "ok" for row in symbols)
+    assert all(row.get("technicalStage") for row in symbols)
+    assert evidence["firstPass"]["snapshotId"] == "fps_40"
+    assert evidence["contentDigest"]
+
+
+def test_report_evidence_mismatched_candidate_snapshot_returns_409(monkeypatch) -> None:
+    from app.db.init_ids import DEFAULT_USER_ID
+    from app.services.tw_research.constants import CALCULATION_VERSION_MONTHLY_FIRST
+    from app.services.tw_research.scan import (
+        SymbolScanRecord,
+        TwResearchScanService,
+        UniverseSelector,
+    )
+    from tests.support import stock_record
+
+    catalog = {
+        "TW:2330": stock_record(
+            "TW:2330",
+            market="TW",
+            symbol="2330",
+            name="台積電",
+            name_zh_tw="台積電",
+            exchange="TWSE",
+            currency="TWD",
+            timezone="Asia/Taipei",
+        )
+    }
+    service = TwResearchScanService(
+        history_loader=lambda *a, **k: ([], 0),
+        stock_loader=catalog.get,
+        persist=False,
+    )
+    state = service.create_scan(
+        UniverseSelector(mode="stock_ids", stock_ids=("TW:2330",)),
+        calculation_version=CALCULATION_VERSION_MONTHLY_FIRST,
+        trading_day="2024-06-28",
+        candidate_provenance={
+            "candidateSetId": "cs_mismatch",
+            "candidateSetVersion": 1,
+            "firstPassSnapshotId": "fps_scan",
+            "firstPassDigest": "digest_scan",
+            "dailyOverrideIds": [],
+        },
+    )
+    state.user_id = DEFAULT_USER_ID
+    state.records["TW:2330"] = SymbolScanRecord(
+        stock_id="TW:2330",
+        stage="A",
+        readiness="processed",
+        stock_name="台積電",
+        name_status="ok",
+        monthly={"passStatus": "fail", "quality": "ok"},
+    )
+    monkeypatch.setattr(
+        "app.api.routes.tw_research.tw_research_scan_service",
+        service,
+    )
+    monkeypatch.setattr(
+        "app.services.tw_research.first_pass_durable.get_candidate_set",
+        lambda **kwargs: {
+            "candidateSetId": "cs_mismatch",
+            "version": 1,
+            "firstPassSnapshotId": "fps_other",
+            "firstPassDigest": "digest_other",
+            "stockIds": ["TW:2330"],
+        },
+    )
+    monkeypatch.setattr(
+        "app.repositories.tw_research_repository.tw_research_repository.get_first_pass_snapshot",
+        lambda snapshot_id, user_id=None: {
+            "snapshot_id": snapshot_id,
+            "content_digest": "digest_scan",
+            "stock_ids": ["TW:2330"],
+            "payload": {"qualityStatus": "verified_ready"},
+        },
+    )
+
+    response = client.post(
+        "/api/tw-research/report-evidence",
+        json={
+            "scanId": state.scan_id,
+            "firstPassSnapshotId": "fps_scan",
+            "tradingDay": "2024-06-28",
+        },
+    )
+    assert response.status_code == 409
+    detail = response.json()["detail"]
+    assert detail["error"] == "evidence_snapshot_mismatch"
+
+
+def test_research_run_start_idempotent_single_job(monkeypatch) -> None:
+    from app.services.tw_research.research_run import research_run_store
+
+    research_run_store.clear_for_tests()
+    jobs: list[str] = []
+
+    def fake_create_job(**kwargs):  # noqa: ANN003
+        job_id = str(kwargs.get("job_id") or f"fpj_{len(jobs) + 1}")
+        jobs.append(job_id)
+        return {"job_id": job_id, "status": "queued"}
+
+    monkeypatch.setattr(
+        "app.api.routes.tw_research.first_pass_job_service.create_job",
+        fake_create_job,
+    )
+    first = client.post(
+        "/api/tw-research/research-runs/start",
+        json={"phase": "phase1_first_pass", "tradingDay": "2024-06-27"},
+    )
+    assert first.status_code == 200, first.text
+    second = client.post(
+        "/api/tw-research/research-runs/start",
+        json={"phase": "phase1_first_pass", "tradingDay": "2024-06-27"},
+    )
+    assert second.status_code == 200, second.text
+    assert first.json()["researchRun"]["researchRunId"] == second.json()["researchRun"][
+        "researchRunId"
+    ]
+    assert len(jobs) == 1
+    run_id = first.json()["researchRun"]["researchRunId"]
+    assert jobs[0] == f"fpj_{run_id}"
+    assert second.json()["researchRun"]["firstPassJobId"] == jobs[0]
+    research_run_store.disable_test_memory()
+
+
+def test_phase2_already_attached_rejects_semantic_mismatch(monkeypatch) -> None:
+    from app.db.init_ids import DEFAULT_USER_ID
+    from app.services.tw_research.constants import CALCULATION_VERSION_MONTHLY_FIRST
+    from app.services.tw_research.research_run import research_run_store
+    from app.services.tw_research.scan import TwResearchScanService, UniverseSelector
+    from tests.support import stock_record
+
+    research_run_store.clear_for_tests()
+    catalog = {
+        "TW:2330": stock_record(
+            "TW:2330",
+            market="TW",
+            symbol="2330",
+            name="台積電",
+            exchange="TWSE",
+            currency="TWD",
+            timezone="Asia/Taipei",
+        )
+    }
+    service = TwResearchScanService(
+        history_loader=lambda *a, **k: ([], 0),
+        stock_loader=catalog.get,
+        persist=False,
+    )
+    state = service.create_scan(
+        UniverseSelector(mode="stock_ids", stock_ids=("TW:2330",)),
+        calculation_version=CALCULATION_VERSION_MONTHLY_FIRST,
+        trading_day="2024-06-27",
+        candidate_provenance={
+            "candidateSetId": "cs_a",
+            "candidateSetVersion": 1,
+            "approvedStockIds": ["TW:2330"],
+            "dailyOverrideIds": [],
+            "calculationVersion": CALCULATION_VERSION_MONTHLY_FIRST,
+        },
+    )
+    state.user_id = DEFAULT_USER_ID
+    monkeypatch.setattr(
+        "app.api.routes.tw_research.tw_research_scan_service",
+        service,
+    )
+    # Exact pinned candidate-set rows (empty overrides are valid persisted provenance).
+    candidate_rows = {
+        ("cs_a", 1): {
+            "candidate_set_id": "cs_a",
+            "version": 1,
+            "selection_reasons": {"dailyOverrideIds": []},
+        }
+    }
+
+    def fake_get_candidate_set(user_id, *, candidate_set_id, version=None):  # noqa: ANN001
+        del user_id
+        if version is None:
+            return None
+        return candidate_rows.get((str(candidate_set_id), int(version)))
+
+    monkeypatch.setattr(
+        "app.api.routes.tw_research.tw_research_repository.is_available",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        "app.api.routes.tw_research.tw_research_repository.get_candidate_set",
+        fake_get_candidate_set,
+    )
+    monkeypatch.setattr(
+        "app.api.routes.tw_research.tw_research_repository.latest_candidate_set",
+        lambda user_id: (_ for _ in ()).throw(
+            AssertionError("must not fall back to latest candidate set")
+        ),
+    )
+
+    research_run_store.begin_phase1(DEFAULT_USER_ID, trading_day="2024-06-27")
+    run = research_run_store.get(DEFAULT_USER_ID)
+    assert run is not None
+    run.phase = "phase2_technical"
+    run.status = "running"
+    run.gates["candidateSelection"] = "approved"
+    run.candidate_set_id = "cs_a"
+    run.candidate_set_version = 1
+    run.technical_scan_id = state.scan_id
+
+    # Identical retry → reuse.
+    ok = client.post(
+        "/api/tw-research/candidate-sets/technical-scan",
+        json={
+            "candidateSetId": "cs_a",
+            "expectedVersion": 1,
+            "tradingDay": "2024-06-27",
+        },
+    )
+    assert ok.status_code == 200, ok.text
+    assert ok.json()["scan"]["scanId"] == state.scan_id
+
+    # Omitted id/version/day inherit pinned context → same reuse.
+    omit = client.post(
+        "/api/tw-research/candidate-sets/technical-scan",
+        json={},
+    )
+    assert omit.status_code == 200, omit.text
+    assert omit.json()["scan"]["scanId"] == state.scan_id
+
+    # Run advanced to v2 while an incompatible v1 scan remains attached.
+    run.candidate_set_version = 2
+    bad_version = client.post(
+        "/api/tw-research/candidate-sets/technical-scan",
+        json={
+            "candidateSetId": "cs_a",
+            "expectedVersion": 2,
+            "tradingDay": "2024-06-27",
+        },
+    )
+    assert bad_version.status_code == 409
+    assert (
+        bad_version.json()["detail"]["error"]
+        == "research_run_scan_candidate_set_mismatch"
+    )
+
+    # Restore run pin for subsequent scan-level checks.
+    run.candidate_set_version = 1
+
+    # Changed trading day → 409.
+    bad_day = client.post(
+        "/api/tw-research/candidate-sets/technical-scan",
+        json={
+            "candidateSetId": "cs_a",
+            "expectedVersion": 1,
+            "tradingDay": "2024-06-28",
+        },
+    )
+    assert bad_day.status_code == 409
+    assert bad_day.json()["detail"]["error"] == "phase2_scan_request_mismatch"
+    assert "tradingDay" in bad_day.json()["detail"]["mismatches"]
+
+    # Changed daily overrides → 409 (effective grows beyond attached []).
+    bad_overrides = client.post(
+        "/api/tw-research/candidate-sets/technical-scan",
+        json={
+            "candidateSetId": "cs_a",
+            "expectedVersion": 1,
+            "tradingDay": "2024-06-27",
+            "dailyOverrideIds": ["TW:2330"],
+        },
+    )
+    assert bad_overrides.status_code == 409
+    assert bad_overrides.json()["detail"]["error"] == "phase2_scan_request_mismatch"
+    assert "dailyOverrideIds" in bad_overrides.json()["detail"]["mismatches"]
+
+    # Additive semantics: candidate [2317] ∪ request [2330] == attached → reuse.
+    candidate_rows[("cs_a", 1)] = {
+        "candidate_set_id": "cs_a",
+        "version": 1,
+        "selection_reasons": {"dailyOverrideIds": ["TW:2317"]},
+    }
+    state.candidate_provenance = {
+        **dict(state.candidate_provenance or {}),
+        "dailyOverrideIds": ["TW:2317", "TW:2330"],
+        "approvedStockIds": list(state.stock_ids),
+    }
+    shrink = client.post(
+        "/api/tw-research/candidate-sets/technical-scan",
+        json={
+            "candidateSetId": "cs_a",
+            "expectedVersion": 1,
+            "tradingDay": "2024-06-27",
+            "dailyOverrideIds": ["TW:2317"],
+        },
+    )
+    assert shrink.status_code == 409
+    assert "dailyOverrideIds" in shrink.json()["detail"]["mismatches"]
+
+    match_union = client.post(
+        "/api/tw-research/candidate-sets/technical-scan",
+        json={
+            "candidateSetId": "cs_a",
+            "expectedVersion": 1,
+            "tradingDay": "2024-06-27",
+            "dailyOverrideIds": ["TW:2330"],
+        },
+    )
+    assert match_union.status_code == 200, match_union.text
+    assert match_union.json()["scan"]["scanId"] == state.scan_id
+    research_run_store.disable_test_memory()
+
+
+def test_report_evidence_full_two_pass_requires_candidate_provenance(monkeypatch) -> None:
+    from app.db.init_ids import DEFAULT_USER_ID
+    from app.services.tw_research.constants import CALCULATION_VERSION_MONTHLY_FIRST
+    from app.services.tw_research.scan import (
+        SymbolScanRecord,
+        TwResearchScanService,
+        UniverseSelector,
+    )
+    from tests.support import stock_record
+
+    catalog = {
+        "TW:2330": stock_record(
+            "TW:2330",
+            market="TW",
+            symbol="2330",
+            name="台積電",
+            exchange="TWSE",
+            currency="TWD",
+            timezone="Asia/Taipei",
+        )
+    }
+    service = TwResearchScanService(
+        history_loader=lambda *a, **k: ([], 0),
+        stock_loader=catalog.get,
+        persist=False,
+    )
+    state = service.create_scan(
+        UniverseSelector(mode="stock_ids", stock_ids=("TW:2330",)),
+        calculation_version=CALCULATION_VERSION_MONTHLY_FIRST,
+        trading_day="2024-06-28",
+        # Missing candidateSetId/version on purpose.
+        candidate_provenance={"firstPassSnapshotId": "fps_x", "firstPassDigest": "d"},
+    )
+    state.user_id = DEFAULT_USER_ID
+    state.records["TW:2330"] = SymbolScanRecord(
+        stock_id="TW:2330",
+        stage="A",
+        readiness="processed",
+        stock_name="台積電",
+        name_status="ok",
+    )
+    monkeypatch.setattr(
+        "app.api.routes.tw_research.tw_research_scan_service",
+        service,
+    )
+    monkeypatch.setattr(
+        "app.repositories.tw_research_repository.tw_research_repository.get_first_pass_snapshot",
+        lambda snapshot_id, user_id=None: {
+            "snapshot_id": snapshot_id,
+            "content_digest": "d",
+            "stock_ids": ["TW:2330"],
+            "payload": {"qualityStatus": "verified_ready"},
+        },
+    )
+    response = client.post(
+        "/api/tw-research/report-evidence",
+        json={
+            "scanId": state.scan_id,
+            "firstPassSnapshotId": "fps_x",
+            "tradingDay": "2024-06-28",
+        },
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"]["error"] == (
+        "full_two_pass_requires_candidate_set_provenance"
+    )
+
+
+def test_candidate_technical_scan_store_unavailable_returns_503_without_scan(
+    monkeypatch,
+) -> None:
+    from app.services.tw_research.research_run import (
+        ResearchRunStoreUnavailable,
+        research_run_store,
+    )
+
+    research_run_store.clear_for_tests()
+    created: list[str] = []
+
+    def boom_get(user_id: str):  # noqa: ANN001
+        del user_id
+        raise ResearchRunStoreUnavailable("research_run_store_unavailable")
+
+    def should_not_create(**kwargs):  # noqa: ANN003
+        created.append("called")
+        raise AssertionError("scan must not be created when run store is unavailable")
+
+    monkeypatch.setattr(research_run_store, "get", boom_get)
+    monkeypatch.setattr(
+        "app.api.routes.tw_research.create_technical_scan_from_candidate_set",
+        should_not_create,
+    )
+    response = client.post(
+        "/api/tw-research/candidate-sets/technical-scan",
+        json={"tradingDay": "2024-06-27"},
+    )
+    assert response.status_code == 503
+    assert response.json()["detail"]["error"] == "research_run_store_unavailable"
+    assert created == []
+    research_run_store.disable_test_memory()

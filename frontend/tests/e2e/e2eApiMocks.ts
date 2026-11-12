@@ -1087,6 +1087,79 @@ export async function installE2eApiMocks(page: Page): Promise<void> {
       });
       return;
     }
+    if (path === "/api/tw-research/research-runs/current" && request.method() === "GET") {
+      if (!state.authStatus.loggedIn) {
+        await fulfillJson(route, { detail: "Not authenticated" }, 401);
+        return;
+      }
+      await fulfillJson(route, {
+        researchRun: {
+          researchRunId: "rr_e2e",
+          userId: "e2e",
+          phase: "awaiting_analyst_report_decision",
+          status: "evidence_ready",
+          scheduleEnabled: false,
+          durable: true,
+          cronjobRemainsSuspended: true,
+          notNotionPublisher: true,
+          gates: {
+            candidateSelection: "approved",
+            reportDecision: "awaiting_analyst",
+            notionPublication: "external_only_never_auto",
+          },
+        },
+      });
+      return;
+    }
+    if (path === "/api/tw-research/report-evidence/example-zh-tw" && request.method() === "GET") {
+      await fulfillJson(route, {
+        exampleOnly: true,
+        disclaimer: "本文件為測試用範例，不是即時投資建議",
+        title: "台灣研究證據摘要（範例）",
+      });
+      return;
+    }
+    if (path === "/api/tw-research/report-evidence" && request.method() === "POST") {
+      await fulfillJson(route, {
+        evidence: {
+          reportEvidenceVersion: "report-evidence-v1",
+          ownership: {
+            stockTickerWritesNotion: false,
+            stockTickerRanksFinalPicks: false,
+          },
+          analystDecisionSlots: { entryZone: "not_established" },
+          summary: { noTopNPadding: true, zeroQualifyingIsValid: true },
+        },
+      });
+      return;
+    }
+    if (path === "/api/tw-research/membership" && request.method() === "GET") {
+      await fulfillJson(route, {
+        membership: {
+          userId: "e2e",
+          version: 0,
+          themeKeys: [],
+          resolvedStockIds: ["TW:2330"],
+          sectorMembership: { "tw-semiconductor": ["TW:2330"] },
+          updatedAt: "2024-06-28T00:00:00+00:00",
+          durable: true,
+          notNotionReportList: true,
+        },
+      });
+      return;
+    }
+    if (path === "/api/tw-research/candidate-sets/latest" && request.method() === "GET") {
+      await fulfillJson(route, { detail: "candidate_set_not_found" }, 404);
+      return;
+    }
+    if (path === "/api/tw-research/first-pass/jobs" && request.method() === "GET") {
+      await fulfillJson(route, { jobs: [] });
+      return;
+    }
+    if (path === "/api/tw-research/scans" && request.method() === "GET") {
+      await fulfillJson(route, { scans: [] });
+      return;
+    }
     if (path === "/api/themes" && request.method() === "GET") {
       await fulfillJson(route, []);
       return;

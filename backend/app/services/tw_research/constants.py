@@ -17,6 +17,27 @@ STAGE_ORDER_MONTHLY_FIRST = "monthly_first"
 # Daily MACD/KD runs only after monthly pass. Monthly fail / incomplete skips
 # daily to conserve budget while retaining monthly evidence.
 MONTHLY_FIRST_DAILY_CONTINUATION_POLICY = "only_on_monthly_pass"
+# Explicit non-execution status for skipped daily (#338). Never label as fail.
+DAILY_NOT_RUN_BY_DESIGN = "not_run_by_design"
+# Per-candidate fine-grained technical stages persisted on SymbolScanRecord (#338).
+TECHNICAL_STAGE_PENDING = "pending"
+TECHNICAL_STAGE_MONTHLY_RUNNING = "monthly_running"
+TECHNICAL_STAGE_MONTHLY_PASS = "monthly_pass"
+TECHNICAL_STAGE_MONTHLY_FAIL = "monthly_fail"
+TECHNICAL_STAGE_MONTHLY_UNKNOWN = "monthly_unknown"
+TECHNICAL_STAGE_DAILY_RUNNING = "daily_running"
+TECHNICAL_STAGE_DAILY_PASS = "daily_pass"
+TECHNICAL_STAGE_DAILY_FAIL = "daily_fail"
+TECHNICAL_STAGE_DAILY_UNKNOWN = "daily_unknown"
+TECHNICAL_STAGE_DAILY_NOT_RUN = "daily_not_run_by_design"
+TECHNICAL_STAGE_DEFERRED = "deferred"
+TECHNICAL_STAGE_ERROR = "error"
+# Recoverable pause distinct from hard-cap budget_exhausted (#341).
+WAITING_FOR_NEXT_WINDOW = "waiting_for_next_window"
+# Manual full-research orchestration contract (#341).
+RESEARCH_RUN_VERSION = "research-run-v1"
+# Analyst-ready report evidence pack (#340).
+REPORT_EVIDENCE_VERSION = "report-evidence-v1"
 
 # Bump when enrichment field provenance rules change (#313).
 ENRICHMENT_VERSION = "enrich-v1"
@@ -59,6 +80,9 @@ DEFAULT_MAX_IN_FLIGHT_SCAN_BATCHES = 2
 # Cross-pod history single-flight lease (#329). Short enough to recover after pod crash,
 # renewed by a healthy leader so slow upstream work does not open a duplicate window.
 HISTORY_FLIGHT_LEASE_SECONDS = 180
+# Cross-pod fenced ownership for research-run job/scan association (#341).
+RESEARCH_RUN_JOB_CLAIM_LEASE_SECONDS = 60
+RESEARCH_RUN_PHASE2_CLAIM_LEASE_SECONDS = 60
 HISTORY_FLIGHT_RENEW_INTERVAL_SECONDS = 45
 # Fail closed after this many consecutive renew DB errors (lease may already be stolen).
 HISTORY_FLIGHT_MAX_CONSECUTIVE_RENEW_FAILURES = 3
