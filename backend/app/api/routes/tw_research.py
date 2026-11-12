@@ -706,7 +706,13 @@ def post_candidate_technical_scan(
                     )
                 if getattr(state, "user_id", None) not in {None, user_id}:
                     raise HTTPException(status_code=404, detail="scan_not_found")
-                mismatches = _phase2_scan_request_mismatches(state, body)
+                mismatches = _phase2_scan_request_mismatches(
+                    state,
+                    body,
+                    candidate_set_daily_override_ids=_candidate_set_daily_overrides(
+                        user_id, body=body, state=state
+                    ),
+                )
                 if mismatches:
                     _raise_phase2_scan_mismatch(
                         scan_id=str(existing_id),
@@ -729,7 +735,13 @@ def post_candidate_technical_scan(
                     None,
                     user_id,
                 }:
-                    mismatches = _phase2_scan_request_mismatches(state, body)
+                    mismatches = _phase2_scan_request_mismatches(
+                        state,
+                        body,
+                        candidate_set_daily_override_ids=_candidate_set_daily_overrides(
+                            user_id, body=body, state=state
+                        ),
+                    )
                     if mismatches:
                         _raise_phase2_scan_mismatch(
                             scan_id=str(pending_scan_id),
@@ -885,11 +897,74 @@ def _research_run_unavailable(exc: ResearchRunStoreUnavailable) -> HTTPException
     )
 
 
+def _phase2_effective_daily_overrides(
+    *,
+    candidate_set_daily_override_ids: list[str] | None,
+    request_daily_override_ids: list[str] | None,
+) -> list[str]:
+    """Match create-path additive semantics: candidate-set ∪ request overrides."""
+    return dedupe_stock_ids(
+        [*(candidate_set_daily_override_ids or []), *(request_daily_override_ids or [])]
+    )
+
+
+def _candidate_set_daily_overrides(
+    user_id: str,
+    *,
+    body: CandidateTechnicalScanRequest,
+    state: ScanState,
+) -> list[str]:
+    """Load persisted candidate-set dailyOverrideIds for effective-set comparison."""
+    provenance = dict(getattr(state, "candidate_provenance", None) or {})
+    candidate_set_id = body.candidateSetId or provenance.get("candidateSetId")
+    version = body.expectedVersion
+    if version is None:
+        raw = provenance.get("candidateSetVersion")
+        try:
+            version = int(raw) if raw is not None else None
+        except (TypeError, ValueError):
+            version = None
+    if not tw_research_repository.is_available():
+        return []
+    saved: dict[str, Any] | None = None
+    try:
+        if candidate_set_id:
+            saved = tw_research_repository.get_candidate_set(
+                user_id,
+                candidate_set_id=str(candidate_set_id),
+                version=version,
+            )
+            if saved is None and version is not None:
+                saved = tw_research_repository.get_candidate_set(
+                    user_id,
+                    candidate_set_id=str(candidate_set_id),
+                )
+        if saved is None:
+            saved = tw_research_repository.latest_candidate_set(user_id)
+    except Exception:
+        # Unit/memory paths and partially migrated DBs must not 500 the reuse check.
+        # Empty persisted overrides fails closed: effective shrinks vs a non-empty
+        # attached set → mismatch rather than silent wrong reuse.
+        return []
+    if not saved:
+        return []
+    return list((saved.get("selection_reasons") or {}).get("dailyOverrideIds") or [])
+
+
 def _phase2_scan_request_mismatches(
     state: ScanState,
     body: CandidateTechnicalScanRequest,
+    *,
+    candidate_set_daily_override_ids: list[str] | None = None,
 ) -> list[str]:
-    """Return semantic mismatch fields when reusing an attached technical scan."""
+    """Return semantic mismatch fields when reusing an attached technical scan.
+
+    Daily overrides use the same additive contract as
+    ``create_technical_scan_from_candidate_set``:
+    effective = persisted candidate-set overrides ∪ request overrides.
+    The attached scan's provenance stores that effective set; compare identity,
+    not raw request ⊆ attached.
+    """
     provenance = dict(getattr(state, "candidate_provenance", None) or {})
     mismatches: list[str] = []
     if body.candidateSetId and str(provenance.get("candidateSetId") or "") != str(
@@ -914,22 +989,19 @@ def _phase2_scan_request_mismatches(
     )
     if attached_calc and attached_calc != CALCULATION_VERSION_MONTHLY_FIRST:
         mismatches.append("calculationVersion")
-    request_overrides = sorted(
-        {str(item).upper() for item in (body.dailyOverrideIds or []) if item}
+    effective_overrides = sorted(
+        _phase2_effective_daily_overrides(
+            candidate_set_daily_override_ids=candidate_set_daily_override_ids,
+            request_daily_override_ids=body.dailyOverrideIds,
+        )
     )
     attached_overrides = sorted(
-        {
-            str(item).upper()
-            for item in (provenance.get("dailyOverrideIds") or [])
-            if item
-        }
+        dedupe_stock_ids(
+            [str(item) for item in (provenance.get("dailyOverrideIds") or []) if item]
+        )
     )
-    # Request may omit overrides already frozen on the candidate set; only reject
-    # when the caller supplies a different explicit override set.
-    if body.dailyOverrideIds and request_overrides != attached_overrides:
-        # Allow subset equality when request overrides are already present.
-        if not set(request_overrides).issubset(set(attached_overrides)):
-            mismatches.append("dailyOverrideIds")
+    if effective_overrides != attached_overrides:
+        mismatches.append("dailyOverrideIds")
     if body.candidateSetId or body.expectedVersion is not None:
         approved = {
             str(item).upper()

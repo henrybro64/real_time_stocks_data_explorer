@@ -822,25 +822,46 @@ def test_research_run_job_claim_is_exclusive() -> None:
 
 
 def test_phase2_scan_request_mismatches_unit() -> None:
-    from app.api.routes.tw_research import _phase2_scan_request_mismatches
+    from app.api.routes.tw_research import (
+        _phase2_effective_daily_overrides,
+        _phase2_scan_request_mismatches,
+    )
     from app.schemas.tw_research import CandidateTechnicalScanRequest
     from app.services.tw_research.constants import CALCULATION_VERSION_MONTHLY_FIRST
     from app.services.tw_research.scan import ScanState, UniverseSelector
 
+    # Attached provenance stores the *effective* set (candidate ∪ prior request).
     state = ScanState(
         scan_id="scan_m",
         trading_day="2024-06-27",
         universe_version="explicit:1",
         calculation_version=CALCULATION_VERSION_MONTHLY_FIRST,
-        selector=UniverseSelector(mode="stock_ids", stock_ids=("TW:2330",)),
-        stock_ids=("TW:2330",),
+        selector=UniverseSelector(mode="stock_ids", stock_ids=("TW:2330", "TW:2317")),
+        stock_ids=("TW:2330", "TW:2317"),
         candidate_provenance={
             "candidateSetId": "cs_1",
             "candidateSetVersion": 1,
-            "approvedStockIds": ["TW:2330"],
+            "approvedStockIds": ["TW:2330", "TW:2317"],
             "dailyOverrideIds": ["TW:2317"],
             "calculationVersion": CALCULATION_VERSION_MONTHLY_FIRST,
         },
+    )
+    candidate_overrides = ["TW:2317"]
+
+    # Case A: empty or identical request → effective == attached → reuse.
+    empty_req = CandidateTechnicalScanRequest(
+        candidateSetId="cs_1",
+        expectedVersion=1,
+        tradingDay="2024-06-27",
+        dailyOverrideIds=[],
+    )
+    assert (
+        _phase2_scan_request_mismatches(
+            state,
+            empty_req,
+            candidate_set_daily_override_ids=candidate_overrides,
+        )
+        == []
     )
     identical = CandidateTechnicalScanRequest(
         candidateSetId="cs_1",
@@ -848,29 +869,93 @@ def test_phase2_scan_request_mismatches_unit() -> None:
         tradingDay="2024-06-27",
         dailyOverrideIds=["TW:2317"],
     )
-    assert _phase2_scan_request_mismatches(state, identical) == []
+    assert (
+        _phase2_scan_request_mismatches(
+            state,
+            identical,
+            candidate_set_daily_override_ids=candidate_overrides,
+        )
+        == []
+    )
 
     versioned = CandidateTechnicalScanRequest(
         candidateSetId="cs_1",
         expectedVersion=2,
         tradingDay="2024-06-27",
     )
-    assert "candidateSetVersion" in _phase2_scan_request_mismatches(state, versioned)
+    assert "candidateSetVersion" in _phase2_scan_request_mismatches(
+        state, versioned, candidate_set_daily_override_ids=candidate_overrides
+    )
 
     day = CandidateTechnicalScanRequest(
         candidateSetId="cs_1",
         expectedVersion=1,
         tradingDay="2024-06-28",
     )
-    assert "tradingDay" in _phase2_scan_request_mismatches(state, day)
+    assert "tradingDay" in _phase2_scan_request_mismatches(
+        state, day, candidate_set_daily_override_ids=candidate_overrides
+    )
 
+    # Request adds a new override → effective grows beyond attached → mismatch.
     overrides = CandidateTechnicalScanRequest(
         candidateSetId="cs_1",
         expectedVersion=1,
         tradingDay="2024-06-27",
         dailyOverrideIds=["TW:2330"],
     )
-    assert "dailyOverrideIds" in _phase2_scan_request_mismatches(state, overrides)
+    assert "dailyOverrideIds" in _phase2_scan_request_mismatches(
+        state, overrides, candidate_set_daily_override_ids=candidate_overrides
+    )
+
+    # Attached effective = candidate[A] ∪ request[B] = [A,B].
+    # Retry with only [A] (or empty) must NOT reuse via subset — effective is [A].
+    state_ab = ScanState(
+        scan_id="scan_ab",
+        trading_day="2024-06-27",
+        universe_version="explicit:1",
+        calculation_version=CALCULATION_VERSION_MONTHLY_FIRST,
+        selector=UniverseSelector(
+            mode="stock_ids", stock_ids=("TW:2330", "TW:2317", "TW:2454")
+        ),
+        stock_ids=("TW:2330", "TW:2317", "TW:2454"),
+        candidate_provenance={
+            "candidateSetId": "cs_1",
+            "candidateSetVersion": 1,
+            "approvedStockIds": ["TW:2330", "TW:2317", "TW:2454"],
+            "dailyOverrideIds": ["TW:2317", "TW:2454"],
+            "calculationVersion": CALCULATION_VERSION_MONTHLY_FIRST,
+        },
+    )
+    subset_req = CandidateTechnicalScanRequest(
+        candidateSetId="cs_1",
+        expectedVersion=1,
+        tradingDay="2024-06-27",
+        dailyOverrideIds=["TW:2317"],
+    )
+    assert "dailyOverrideIds" in _phase2_scan_request_mismatches(
+        state_ab,
+        subset_req,
+        candidate_set_daily_override_ids=["TW:2317"],
+    )
+    # Same attached, request supplies B again → effective A∪B matches.
+    full_req = CandidateTechnicalScanRequest(
+        candidateSetId="cs_1",
+        expectedVersion=1,
+        tradingDay="2024-06-27",
+        dailyOverrideIds=["tw:2454"],  # normalization + order independence
+    )
+    assert (
+        _phase2_scan_request_mismatches(
+            state_ab,
+            full_req,
+            candidate_set_daily_override_ids=["TW:2317"],
+        )
+        == []
+    )
+    assert _phase2_effective_daily_overrides(
+        candidate_set_daily_override_ids=["TW:2317"],
+        request_daily_override_ids=["TW:2454", "2317"],
+    ) == ["TW:2317", "TW:2454"]
 
 
 def test_research_run_phase2_claim_attaches_scan() -> None:

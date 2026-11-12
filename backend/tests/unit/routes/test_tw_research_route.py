@@ -629,7 +629,7 @@ def test_phase2_already_attached_rejects_semantic_mismatch(monkeypatch) -> None:
     assert bad_day.json()["detail"]["error"] == "phase2_scan_request_mismatch"
     assert "tradingDay" in bad_day.json()["detail"]["mismatches"]
 
-    # Changed daily overrides → 409.
+    # Changed daily overrides → 409 (effective grows beyond attached []).
     bad_overrides = client.post(
         "/api/tw-research/candidate-sets/technical-scan",
         json={
@@ -642,6 +642,41 @@ def test_phase2_already_attached_rejects_semantic_mismatch(monkeypatch) -> None:
     assert bad_overrides.status_code == 409
     assert bad_overrides.json()["detail"]["error"] == "phase2_scan_request_mismatch"
     assert "dailyOverrideIds" in bad_overrides.json()["detail"]["mismatches"]
+
+    # Additive semantics: candidate [2317] ∪ request [2330] == attached → reuse.
+    # Subset of attached alone is not enough when effective would shrink.
+    state.candidate_provenance = {
+        **dict(state.candidate_provenance or {}),
+        "dailyOverrideIds": ["TW:2317", "TW:2330"],
+        "approvedStockIds": list(state.stock_ids),
+    }
+    monkeypatch.setattr(
+        "app.api.routes.tw_research._candidate_set_daily_overrides",
+        lambda *a, **k: ["TW:2317"],
+    )
+    shrink = client.post(
+        "/api/tw-research/candidate-sets/technical-scan",
+        json={
+            "candidateSetId": "cs_a",
+            "expectedVersion": 1,
+            "tradingDay": "2024-06-27",
+            "dailyOverrideIds": ["TW:2317"],
+        },
+    )
+    assert shrink.status_code == 409
+    assert "dailyOverrideIds" in shrink.json()["detail"]["mismatches"]
+
+    match_union = client.post(
+        "/api/tw-research/candidate-sets/technical-scan",
+        json={
+            "candidateSetId": "cs_a",
+            "expectedVersion": 1,
+            "tradingDay": "2024-06-27",
+            "dailyOverrideIds": ["TW:2330"],
+        },
+    )
+    assert match_union.status_code == 200, match_union.text
+    assert match_union.json()["scan"]["scanId"] == state.scan_id
     research_run_store.disable_test_memory()
 
 
