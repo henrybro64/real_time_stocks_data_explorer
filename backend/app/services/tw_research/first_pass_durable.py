@@ -233,6 +233,98 @@ def submit_candidate_set(
     }
 
 
+def submit_candidate_set_for_research_run(
+    *,
+    user_id: str,
+    first_pass_snapshot_id: str,
+    first_pass_digest: str,
+    stock_ids: list[str],
+    origin: CandidateOrigin,
+    expected_version: int,
+    selection_reasons: dict[str, Any] | None = None,
+    daily_override_ids: list[str] | None = None,
+    decision_date: str | None = None,
+    notes: list[str] | None = None,
+    repository: Any | None = None,
+    _fail_after_candidate_flush: bool = False,
+) -> dict[str, Any]:
+    """Managed-run approval: one PG txn for gate check + CS version + run attach.
+
+    Standalone ``submit_candidate_set`` remains for legacy flows without a run.
+    """
+    repo = repository or tw_research_repository
+    if not repo.is_available():
+        raise ResearchMembershipUnavailable("candidate_set_store_unavailable")
+
+    deduped = dedupe_stock_ids(stock_ids)
+    overrides = dedupe_stock_ids(daily_override_ids or [])
+    override_rejected = [sid for sid in overrides if sid not in set(deduped)]
+    if override_rejected:
+        raise CandidateSetValidationError(
+            f"daily_override_ids_outside_candidate_set:{','.join(override_rejected[:8])}"
+        )
+    reasons = dict(selection_reasons or {})
+    if overrides:
+        reasons["dailyOverrideIds"] = overrides
+
+    candidate_set_id = f"cs_{uuid.uuid4().hex[:24]}"
+    persist_notes = list(notes or []) + [
+        "Analyst/manual compute subset only — not a Notion report list.",
+        "Changing selection creates a new version; historical sets remain.",
+    ] + (
+        ["dailyOverrideIds allow bounded daily MACD/KD despite monthly fail (#338)."]
+        if overrides
+        else []
+    )
+    try:
+        result = repo.approve_candidate_set_for_research_run(
+            user_id=user_id,
+            candidate_set_id=candidate_set_id,
+            expected_version=expected_version,
+            first_pass_snapshot_id=first_pass_snapshot_id,
+            first_pass_digest=first_pass_digest,
+            stock_ids=deduped,
+            origin=origin,
+            selection_reasons=reasons,
+            decision_date=decision_date,
+            notes=persist_notes,
+            _fail_after_candidate_flush=_fail_after_candidate_flush,
+        )
+    except ValueError as exc:
+        if "version_mismatch" in str(exc):
+            latest = repo.latest_candidate_set(user_id)
+            raise CandidateSetConflict(
+                reason="version_mismatch",
+                current_version=int(latest["version"]) if latest else 0,
+                expected_version=expected_version,
+            ) from exc
+        if str(exc) == "first_pass_digest_mismatch":
+            raise CandidateSetValidationError("first_pass_digest_mismatch") from exc
+        if str(exc).startswith("stock_ids_outside_first_pass_universe:"):
+            raise CandidateSetValidationError(str(exc)) from exc
+        raise CandidateSetValidationError(str(exc)) from exc
+
+    saved = result["candidate_set"]
+    return {
+        "candidateSetId": saved["candidate_set_id"],
+        "version": saved["version"],
+        "firstPassSnapshotId": saved["first_pass_snapshot_id"],
+        "firstPassDigest": saved["first_pass_digest"],
+        "stockIds": list(saved["stock_ids"]),
+        "origin": saved["origin"],
+        "selectionReasons": dict(saved["selection_reasons"]),
+        "dailyOverrideIds": list(
+            (saved["selection_reasons"] or {}).get("dailyOverrideIds") or []
+        ),
+        "decisionDate": saved["decision_date"],
+        "notes": list(saved["notes"]),
+        "createdAt": saved["created_at"],
+        "durable": True,
+        "notNotionReportList": True,
+        "approvalOutcome": result.get("outcome"),
+    }
+
+
 def _candidate_set_api_dict(saved: dict[str, Any]) -> dict[str, Any]:
     return {
         "candidateSetId": saved["candidate_set_id"],

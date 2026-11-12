@@ -71,6 +71,7 @@ from app.services.tw_research.first_pass_durable import (
     latest_candidate_set,
     persist_first_pass_batch,
     submit_candidate_set,
+    submit_candidate_set_for_research_run,
 )
 from app.services.tw_research.first_pass_job import (
     FirstPassJobError,
@@ -534,20 +535,16 @@ def post_candidate_set(
     body: CandidateSetSubmitRequest,
     user_id: str = Depends(get_effective_user_id),
 ) -> CandidateSetResponse:
-    """Persist analyst/manual compute subset pinned to a first-pass digest (#336)."""
+    """Persist analyst/manual compute subset pinned to a first-pass digest (#336).
+
+    Managed research runs use one PostgreSQL transaction for gate validation,
+    candidate-set version append, and research-run approval (no TOCTOU gap).
+    Legacy standalone flows (no research run) keep ``submit_candidate_set``.
+    """
     try:
-        # When a managed research run exists, validate attach gates *before*
-        # persisting a new candidate-set version so a 409 cannot leave latest
-        # pointing at a set the run rejected.
-        attach_after = False
+        managed_run = None
         try:
-            run = research_run_store.get(user_id)
-            if run is not None:
-                research_run_store.validate_candidate_attach(
-                    user_id,
-                    first_pass_snapshot_id=str(body.firstPassSnapshotId or ""),
-                )
-                attach_after = True
+            managed_run = research_run_store.get(user_id)
         except ResearchRunStoreUnavailable as exc:
             raise HTTPException(
                 status_code=503,
@@ -557,50 +554,61 @@ def post_candidate_set(
                     "message": str(exc),
                 },
             ) from exc
-        except ResearchRunConflict as exc:
-            raise HTTPException(
-                status_code=409,
-                detail={"error": "research_run_revision_conflict", "reason": exc.reason},
-            ) from exc
-        except ResearchRunGateError as exc:
-            raise HTTPException(
-                status_code=409,
-                detail={"error": str(exc)},
-            ) from exc
-        except KeyError as exc:
-            raise HTTPException(
-                status_code=409,
-                detail={"error": "research_run_not_found_during_attach"},
-            ) from exc
 
-        saved = submit_candidate_set(
-            user_id=user_id,
-            first_pass_snapshot_id=body.firstPassSnapshotId,
-            first_pass_digest=body.firstPassDigest,
-            stock_ids=body.stockIds,
-            origin=body.origin,
-            expected_version=body.expectedVersion,
-            selection_reasons=body.selectionReasons,
-            daily_override_ids=body.dailyOverrideIds,
-            decision_date=body.decisionDate,
-            notes=body.notes,
-        )
-        if attach_after:
+        if managed_run is not None and research_run_store.uses_durable_backend():
             try:
+                saved = submit_candidate_set_for_research_run(
+                    user_id=user_id,
+                    first_pass_snapshot_id=body.firstPassSnapshotId,
+                    first_pass_digest=body.firstPassDigest,
+                    stock_ids=body.stockIds,
+                    origin=body.origin,
+                    expected_version=body.expectedVersion,
+                    selection_reasons=body.selectionReasons,
+                    daily_override_ids=body.dailyOverrideIds,
+                    decision_date=body.decisionDate,
+                    notes=body.notes,
+                )
+            except ResearchRunGateError as exc:
+                raise HTTPException(
+                    status_code=409,
+                    detail={"error": str(exc)},
+                ) from exc
+            except KeyError as exc:
+                # Run vanished between existence check and FOR UPDATE.
+                raise HTTPException(
+                    status_code=409,
+                    detail={"error": "research_run_not_found_during_attach"},
+                ) from exc
+        elif managed_run is not None:
+            # In-memory unit-test ledger only — production always uses the durable path.
+            try:
+                research_run_store.validate_candidate_attach(
+                    user_id,
+                    first_pass_snapshot_id=str(body.firstPassSnapshotId or ""),
+                )
+                saved = submit_candidate_set(
+                    user_id=user_id,
+                    first_pass_snapshot_id=body.firstPassSnapshotId,
+                    first_pass_digest=body.firstPassDigest,
+                    stock_ids=body.stockIds,
+                    origin=body.origin,
+                    expected_version=body.expectedVersion,
+                    selection_reasons=body.selectionReasons,
+                    daily_override_ids=body.dailyOverrideIds,
+                    decision_date=body.decisionDate,
+                    notes=body.notes,
+                )
                 research_run_store.attach_candidate_set(
                     user_id,
                     candidate_set_id=str(saved["candidateSetId"]),
                     candidate_set_version=int(saved["version"]),
                     first_pass_snapshot_id=str(saved.get("firstPassSnapshotId") or ""),
                 )
-            except ResearchRunStoreUnavailable as exc:
+            except ResearchRunGateError as exc:
                 raise HTTPException(
-                    status_code=503,
-                    detail={
-                        "error": "research_run_store_unavailable",
-                        "retryable": True,
-                        "message": str(exc),
-                    },
+                    status_code=409,
+                    detail={"error": str(exc)},
                 ) from exc
             except ResearchRunConflict as exc:
                 raise HTTPException(
@@ -610,16 +618,25 @@ def post_candidate_set(
                         "reason": exc.reason,
                     },
                 ) from exc
-            except ResearchRunGateError as exc:
-                raise HTTPException(
-                    status_code=409,
-                    detail={"error": str(exc)},
-                ) from exc
             except KeyError as exc:
                 raise HTTPException(
                     status_code=409,
                     detail={"error": "research_run_not_found_during_attach"},
                 ) from exc
+        else:
+            saved = submit_candidate_set(
+                user_id=user_id,
+                first_pass_snapshot_id=body.firstPassSnapshotId,
+                first_pass_digest=body.firstPassDigest,
+                stock_ids=body.stockIds,
+                origin=body.origin,
+                expected_version=body.expectedVersion,
+                selection_reasons=body.selectionReasons,
+                daily_override_ids=body.dailyOverrideIds,
+                decision_date=body.decisionDate,
+                notes=body.notes,
+            )
+        saved.pop("approvalOutcome", None)
     except ResearchMembershipUnavailable as exc:
         raise HTTPException(
             status_code=503,

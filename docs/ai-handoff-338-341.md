@@ -70,6 +70,15 @@ Watchlist universe comes from the **pinned first-pass snapshot**, not mutable me
 | P2 | Watchlist from mutable membership / false “fundamental keeper” | Frozen snapshot + distinct reasons |
 | Override P1 | Subset-of-attached override compare wrong under additive semantics | Effective = CS ∪ request |
 | Provenance P1 | Fallback to latest / empty on exception | Fail closed: exact pin, 409/503 |
+| PR #345 P1 | Managed `POST /candidate-sets` validate→persist→attach as separate commits (TOCTOU) | Single PG txn: `approve_candidate_set_for_research_run` (`FOR UPDATE` run + CS tip); legacy standalone path unchanged |
+
+### Managed candidate approval atomicity (PR #345 correction)
+
+**Root cause (reproduced):** with a managed research run, prevalidation could succeed, then the run phase could change, then `submit_candidate_set()` committed a new latest version, then `attach_candidate_set()` failed — leaving an unapproved authoritative tip.
+
+**Correction:** `submit_candidate_set_for_research_run()` → repository `approve_candidate_set_for_research_run()` validates the gate, appends the candidate-set version, and updates research-run approval in **one** PostgreSQL transaction. Duplicate retries of the same tip-creating request return `already_approved` without inserting another version. Standalone flows without a research run still use `submit_candidate_set()`.
+
+**PG integration:** `tests/integration/services/test_tw_research_candidate_approval_atomic_345.py` (8 cases).
 
 ---
 
@@ -169,6 +178,17 @@ DATABASE_URL=postgresql+psycopg://henrybro@127.0.0.1:5432/stocks_test \
   tests/integration/services/test_tw_research_schedule_e2e_329_330.py -q
 # 10 passed
 
+# Atomic candidate approval correction (PR #345 P1) — re-verified 2026-11-12:
+ALLOW_DESTRUCTIVE_DB_TESTS=1 \
+DATABASE_URL=postgresql+psycopg://henrybro@127.0.0.1:5432/stocks_test \
+  .venv/bin/python3.11 -m pytest \
+  tests/integration/services/test_tw_research_candidate_approval_atomic_345.py \
+  tests/integration/services/test_tw_research_run_claims_341.py \
+  tests/integration/services/test_tw_research_candidate_provenance_336.py \
+  tests/unit/services/tw_research/test_monthly_first_338_341.py \
+  tests/unit/routes/test_tw_research_route.py -q
+# 49 passed (8 atomic + claims/provenance/unit route regressions)
+
 cd frontend && npm test -- src/views/research/TwResearchPage.test.tsx
 # 34 passed
 
@@ -239,6 +259,7 @@ and Stock Ticker–only evidence export (no Notion publish).
 ## Architecture notes
 - Effective Phase-2 overrides = pinned candidate-set overrides ∪ request overrides
 - Managed reuse requires run pin ≡ scan provenance; exact candidate-set version load; 409/503 fail-closed
+- Managed candidate approval is one PG transaction (gate + CS version + run attach); no validate→persist→attach TOCTOU
 - Two gates: candidate selection (in-app) and report/Notion (external)
 
 ## Migrations

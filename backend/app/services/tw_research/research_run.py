@@ -718,6 +718,11 @@ class ResearchRunStore:
         with self._lock:
             self._test_memory = None
 
+    def uses_durable_backend(self) -> bool:
+        """False only when unit tests enable the in-memory ledger."""
+        with self._lock:
+            return self._test_memory is None
+
     def _repo(self) -> _ResearchRunRepository:
         if self._repository is not None:
             repo = self._repository

@@ -1690,6 +1690,141 @@ class TwResearchRepository(SessionBoundRepository):
             session.refresh(row)
             return _candidate_set_to_dict(row)
 
+    def approve_candidate_set_for_research_run(
+        self,
+        *,
+        user_id: str,
+        candidate_set_id: str,
+        expected_version: int,
+        first_pass_snapshot_id: str,
+        first_pass_digest: str,
+        stock_ids: list[str],
+        origin: str,
+        selection_reasons: dict[str, Any],
+        decision_date: str | None,
+        notes: list[str],
+        _fail_after_candidate_flush: bool = False,
+    ) -> dict[str, Any]:
+        """Atomically validate gate, append candidate-set version, and approve the run.
+
+        Single PostgreSQL transaction with ``FOR UPDATE`` on the research-run row
+        and the user's latest candidate-set tip. A gate / version / snapshot
+        failure rolls back both writes. Legacy standalone ``save_candidate_set``
+        remains for flows without a managed research run.
+        """
+        from app.services.tw_research.research_run import ResearchRunGateError
+
+        now = datetime.now(timezone.utc)
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            run = session.execute(
+                select(TwResearchResearchRun)
+                .where(TwResearchResearchRun.user_id == user_id)
+                .with_for_update()
+            ).scalar_one_or_none()
+            if run is None:
+                raise KeyError("research_run_not_found")
+
+            locked_cs = session.execute(
+                select(TwResearchCandidateSet)
+                .where(TwResearchCandidateSet.user_id == user_id)
+                .order_by(TwResearchCandidateSet.version.desc())
+                .with_for_update()
+            ).scalars().first()
+            current_version = int(locked_cs.version) if locked_cs is not None else 0
+
+            gates = dict(run.gates_json or {})
+            if (
+                gates.get("candidateSelection") == "approved"
+                and run.candidate_set_id
+                and run.candidate_set_version is not None
+            ):
+                attached = session.get(TwResearchCandidateSet, str(run.candidate_set_id))
+                if (
+                    attached is not None
+                    and int(attached.version) == int(run.candidate_set_version)
+                    and str(attached.first_pass_snapshot_id) == str(first_pass_snapshot_id)
+                    and str(attached.first_pass_digest) == str(first_pass_digest)
+                    and list(attached.stock_ids_json or []) == list(stock_ids)
+                    and int(expected_version) == int(attached.version) - 1
+                ):
+                    # Duplicate retry of the request that created the attached tip.
+                    session.commit()
+                    return {
+                        "outcome": "already_approved",
+                        "candidate_set": _candidate_set_to_dict(attached),
+                        "research_run": _research_run_to_dict(run),
+                    }
+
+            if run.phase != "awaiting_analyst_candidate_selection":
+                raise ResearchRunGateError(
+                    "candidate_attach_requires_awaiting_analyst_candidate_selection"
+                )
+            if (
+                run.first_pass_snapshot_id
+                and str(first_pass_snapshot_id) != str(run.first_pass_snapshot_id)
+            ):
+                raise ResearchRunGateError("candidate_set_first_pass_snapshot_mismatch")
+            if current_version != int(expected_version):
+                raise ValueError("candidate_set_version_mismatch")
+
+            snap = session.get(TwResearchFirstPassSnapshot, first_pass_snapshot_id)
+            if snap is None or snap.user_id != user_id:
+                raise KeyError("first_pass_snapshot_not_found")
+            if snap.content_digest != first_pass_digest:
+                raise ValueError("first_pass_digest_mismatch")
+            allowed = set(snap.stock_ids_json or [])
+            rejected = [sid for sid in stock_ids if sid not in allowed]
+            if rejected:
+                raise ValueError(
+                    f"stock_ids_outside_first_pass_universe:{','.join(rejected[:8])}"
+                )
+
+            row = TwResearchCandidateSet(
+                candidate_set_id=candidate_set_id,
+                user_id=user_id,
+                version=current_version + 1,
+                first_pass_snapshot_id=first_pass_snapshot_id,
+                first_pass_digest=first_pass_digest,
+                stock_ids_json=list(stock_ids),
+                origin=origin,
+                selection_reasons_json=dict(selection_reasons or {}),
+                decision_date=decision_date,
+                notes_json=list(notes),
+                created_at=now,
+            )
+            try:
+                with session.begin_nested():
+                    session.add(row)
+                    session.flush()
+            except IntegrityError as exc:
+                raise ValueError("candidate_set_version_mismatch") from exc
+
+            if _fail_after_candidate_flush:
+                # Test-only injection point: prove CS insert + run update share a txn.
+                raise RuntimeError("test_fail_after_candidate_flush")
+
+            gates["candidateSelection"] = "approved"
+            run_notes = list(run.notes_json or [])
+            run_notes.append(
+                f"Candidate set {candidate_set_id} v{current_version + 1} approved; "
+                "Phase-2 technical may start manually."
+            )
+            run.candidate_set_id = candidate_set_id
+            run.candidate_set_version = current_version + 1
+            run.gates_json = gates
+            run.notes_json = run_notes[-50:]
+            run.revision = int(run.revision or 0) + 1
+            run.updated_at = now
+            session.commit()
+            session.refresh(row)
+            session.refresh(run)
+            return {
+                "outcome": "approved",
+                "candidate_set": _candidate_set_to_dict(row),
+                "research_run": _research_run_to_dict(run),
+            }
+
     def latest_candidate_set(self, user_id: str) -> dict[str, Any] | None:
         session_factory = self._session_factory()
         with session_factory() as session:
