@@ -26,12 +26,15 @@ from app.schemas.tw_research import (
     ExportManifestResponse,
     FirstPassBatchRequest,
     FirstPassBatchResponse,
+    FirstPassDrainRequest,
+    FirstPassDrainResponse,
     FirstPassJobBatchRequest,
     FirstPassJobCreateRequest,
     FirstPassJobListResponse,
     FirstPassJobProgressResponse,
     FirstPassJobResponse,
     FirstPassJobSymbolsResponse,
+    ResearchRunDrainControlRequest,
     RejectedStockResponse,
     RelativePriceBasisRequest,
     RelativePriceBasisResponse,
@@ -363,6 +366,7 @@ def run_first_pass_job_batch(
     payload["processed"] = result["processed"]
     payload["leaseHeld"] = result["leaseHeld"]
     payload["alreadyComplete"] = result["alreadyComplete"]
+    payload["waitingForRetry"] = bool(result.get("waitingForRetry"))
     return FirstPassJobResponse(job=payload)
 
 
@@ -1375,6 +1379,30 @@ def get_current_research_run(
     return ResearchRunResponse(researchRun=run.as_dict())
 
 
+@router.post("/research-runs/first-pass-drain", response_model=ResearchRunResponse)
+def set_research_run_first_pass_drain(
+    body: ResearchRunDrainControlRequest,
+    user_id: str = Depends(get_effective_user_id),
+) -> ResearchRunResponse:
+    """Pause or resume durable first-pass drain for the active research run (#349)."""
+    try:
+        run = research_run_store.set_first_pass_drain_enabled(
+            user_id,
+            enabled=body.enabled,
+            notes=list(body.notes or []),
+        )
+    except ResearchRunStoreUnavailable as exc:
+        raise _research_run_unavailable(exc) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ResearchRunConflict as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"error": "research_run_revision_conflict", "reason": exc.reason},
+        ) from exc
+    return ResearchRunResponse(researchRun=run.as_dict())
+
+
 @router.post("/research-runs/start", response_model=ResearchRunResponse)
 def start_research_run(
     body: ResearchRunStartRequest,
@@ -1841,6 +1869,45 @@ def run_scheduled_research_tick(
         )
     )
     return ScheduleRunResponse(**result.as_dict())
+
+
+@schedule_router.post(
+    "/first-pass/drain",
+    response_model=FirstPassDrainResponse,
+)
+def run_first_pass_drain_tick(
+    body: FirstPassDrainRequest | None = None,
+    x_tw_research_first_pass_drain_token: str | None = Header(default=None),
+) -> FirstPassDrainResponse:
+    """Internal durable first-pass drain tick (#349). Token auth; disabled by default.
+
+    Drains only the research-run owned job when ``schedule_enabled`` is true.
+    Does not enable the technical-scan CronJob, Phase-2, or Notion writes.
+    """
+    from app.api.capture_auth import require_capture_token
+    from app.services.tw_research.first_pass_drain import drain_authorized_first_pass
+
+    require_capture_token(
+        x_tw_research_first_pass_drain_token,
+        settings.tw_research_first_pass_drain_token,
+        not_configured_detail="Taiwan research first-pass drain endpoint is not configured",
+    )
+    payload = body or FirstPassDrainRequest()
+    owner = str(settings.tw_research_first_pass_drain_user_id or "").strip()
+    if not owner:
+        raise HTTPException(
+            status_code=503,
+            detail="TW_RESEARCH_FIRST_PASS_DRAIN_USER_ID is not configured",
+        )
+    result = drain_authorized_first_pass(
+        user_id=owner,
+        enabled=bool(settings.tw_research_first_pass_drain_enabled),
+        dry_run=payload.dryRun,
+        max_batches=payload.maxBatches,
+        batch_size=payload.batchSize,
+        job_id=payload.jobId,
+    )
+    return FirstPassDrainResponse(**result.as_dict())
 
 
 @router.post("/scans/enrichment-batches", response_model=ScanSnapshotResponse)

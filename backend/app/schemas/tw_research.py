@@ -120,6 +120,42 @@ class ScheduleRunResponse(BaseModel):
     dryRun: bool = False
 
 
+class FirstPassDrainRequest(BaseModel):
+    """Internal durable first-pass drain tick (#349). Token auth; disabled by default."""
+
+    dryRun: bool = False
+    maxBatches: int = Field(default=3, ge=1, le=8)
+    batchSize: int = Field(default=10, ge=1, le=25)
+    jobId: str | None = None
+
+
+class FirstPassDrainResponse(BaseModel):
+    outcome: str
+    userId: str
+    researchRunId: str | None = None
+    jobId: str | None = None
+    phase: str | None = None
+    status: str | None = None
+    scheduleEnabled: bool = False
+    batchesRun: int = 0
+    symbolsProcessed: int = 0
+    waitingForRetry: bool = False
+    leaseHeld: bool = False
+    alreadyComplete: bool = False
+    dryRun: bool = False
+    notes: list[str] = Field(default_factory=list)
+    stopsAtAnalystGate: bool = True
+    notionWrites: bool = False
+    phase2AutoStart: bool = False
+
+
+class ResearchRunDrainControlRequest(BaseModel):
+    """Operator pause/resume for durable first-pass drain (#349)."""
+
+    enabled: bool
+    notes: list[str] = Field(default_factory=list)
+
+
 class ScanSnapshotResponse(BaseModel):
     scan: dict[str, Any]
 

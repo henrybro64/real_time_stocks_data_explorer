@@ -79,6 +79,8 @@ _PERMANENT_FIELD_REASON_MARKERS = (
     "not_in_catalog",
     "unsupported",
     "permanently_unavailable",
+    # Deterministic call-contract / code bugs (#348) — do not burn transient retries.
+    "programming_error",
 )
 
 _RETRYABLE_FIELD_CLASSES = frozenset(
@@ -214,6 +216,12 @@ def provider_exception_reason(exc: BaseException) -> str:
     except (TypeError, ValueError):
         status_int = None
 
+    # TypeError/AttributeError are almost always local contract bugs (wrong kwargs,
+    # None attribute) — not provider blips. Check *before* message heuristics so a
+    # TypeError whose text mentions "timeout"/"connection" is not misclassified as
+    # transient (#348).
+    if isinstance(exc, (TypeError, AttributeError)):
+        return f"programming_error:{name}"
     if status_int == 429 or "429" in lower or "rate limit" in lower or "too many requests" in lower:
         suffix = f":retry_after={retry_after}" if retry_after is not None else ""
         return f"rate_limited:HTTP429:{name}{suffix}"
@@ -881,7 +889,11 @@ def _default_margin(stock_id: str, days: int) -> TaiwanMarginShortResult:
 
 
 def _default_ownership(stock_id: str) -> TaiwanOwnershipConcentrationResult:
-    return tw_ownership_concentration_service.get_ownership_concentration(stock_id, range="3M")
+    # Service kw is ``range_name`` (not ``range``). Wrong kw → TypeError on every
+    # live first-pass symbol (#348).
+    return tw_ownership_concentration_service.get_ownership_concentration(
+        stock_id, range_name="3M"
+    )
 
 
 def _default_key_stats(stock_id: str) -> dict[str, object] | None:

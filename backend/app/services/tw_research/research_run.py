@@ -78,9 +78,20 @@ class ResearchRunGateError(Exception):
 class ResearchRunConflict(Exception):
     """Raised when an optimistic concurrency write loses (HTTP 409)."""
 
-    def __init__(self, message: str = "research_run_revision_conflict") -> None:
+    def __init__(
+        self,
+        message: str = "research_run_revision_conflict",
+        *,
+        reason: str | None = None,
+    ) -> None:
         super().__init__(message)
-        self.reason = "revision_conflict"
+        # Prefer an explicit machine-readable reason; fall back to message text
+        # for drain-control conflicts that are not revision races (#349).
+        self.reason = reason or (
+            "revision_conflict"
+            if message == "research_run_revision_conflict"
+            else str(message)
+        )
 
 
 def _orphan_job_id_if_not_pending(
@@ -334,7 +345,53 @@ class ResearchRunStore:
             run.first_pass_job_id = first_pass_job_id
             run.status = "running"
             run.phase = "phase1_first_pass"
+            run.schedule_enabled = True
             run.dimensions["fundamentals"] = "in_progress"
+            for note in notes or []:
+                run.append_note(note)
+            run.append_note(
+                "First-pass drain authorized for this research-run job only."
+            )
+            run.updated_at = datetime.now(UTC).isoformat()
+            return self._persist_locked(run)
+
+    def set_first_pass_drain_enabled(
+        self,
+        user_id: str,
+        *,
+        enabled: bool,
+        notes: list[str] | None = None,
+    ) -> ResearchRun:
+        """Pause/resume durable first-pass drain for the active research run (#349).
+
+        Never enables the technical-scan CronJob or Notion publishing.
+        Resume requires Phase-1 with an attached authoritative job so historical
+        orphan job ids cannot be armed without Start Research attach.
+        """
+        with self._lock:
+            run = self._require_locked(user_id)
+            if enabled:
+                if run.phase != "phase1_first_pass":
+                    raise ResearchRunConflict(
+                        f"first_pass_drain_resume_requires_phase1:{run.phase}",
+                        reason=f"first_pass_drain_resume_requires_phase1:{run.phase}",
+                    )
+                if not run.first_pass_job_id:
+                    raise ResearchRunConflict(
+                        "first_pass_drain_resume_requires_attached_job",
+                        reason="first_pass_drain_resume_requires_attached_job",
+                    )
+                if str(run.status or "") in {"failed", "budget_exhausted", "cancelled"}:
+                    raise ResearchRunConflict(
+                        f"first_pass_drain_resume_blocked_status:{run.status}",
+                        reason=f"first_pass_drain_resume_blocked_status:{run.status}",
+                    )
+            run.schedule_enabled = bool(enabled)
+            run.append_note(
+                "First-pass drain enabled."
+                if enabled
+                else "First-pass drain paused by operator."
+            )
             for note in notes or []:
                 run.append_note(note)
             run.updated_at = datetime.now(UTC).isoformat()
@@ -574,9 +631,15 @@ class ResearchRunStore:
                 run.job_claim_expires_at = None
                 run.status = "running"
                 run.phase = "phase1_first_pass"
+                # Explicit Start Research authorizes durable first-pass drain (#349).
+                # Does not unsuspend CronJob or enable Notion / Phase-2.
+                run.schedule_enabled = True
                 run.dimensions["fundamentals"] = "in_progress"
                 for note in notes or []:
                     run.append_note(note)
+                run.append_note(
+                    "First-pass drain authorized for this research-run job only."
+                )
                 run.updated_at = datetime.now(UTC).isoformat()
                 saved = self._persist_locked(run)
                 return {
@@ -851,6 +914,8 @@ class ResearchRunStore:
             run.phase = "awaiting_analyst_candidate_selection"
             run.status = "gated"
             run.first_pass_snapshot_id = str(snapshot_id)
+            # Stop auto-drain at the analyst candidate gate (#349).
+            run.schedule_enabled = False
             run.dimensions["fundamentals"] = (
                 "partial" if status == "partial" else "complete_or_partial"
             )

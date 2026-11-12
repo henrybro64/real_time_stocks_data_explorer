@@ -1,0 +1,62 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: stock-ticker-tw-research-first-pass-drain
+spec:
+  # Suspended until Henry explicitly enables durable first-pass drain (#349).
+  # Prerequisites: #348 TypeError fix, configured drain token + owner user id,
+  # TW_RESEARCH_FIRST_PASS_DRAIN_ENABLED=true on the API, and a Start Research
+  # action that sets research_run.schedule_enabled=true for the owned job.
+  # Does NOT unsuspend the technical-scan schedule CronJob (#330).
+  suspend: true
+  # Bounded ticks every 5 minutes on weekdays Asia/Taipei.
+  # One tick = 1 batch × 10 symbols. A 10-symbol synchronous batch measured
+  # ~117s with a ~150s proxy timeout, so maxBatches must stay at 1 per HTTP call.
+  # Full 73-symbol runs need multiple ticks; lease/cursor resume safely.
+  schedule: "*/5 9-22 * * 1-5"
+  timeZone: Asia/Taipei
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  startingDeadlineSeconds: 300
+  jobTemplate:
+    spec:
+      # Headroom for one ~117s batch + curl overhead (still under ~150s proxy).
+      activeDeadlineSeconds: 180
+      backoffLimit: 1
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: tw-research-first-pass-drain
+              image: curlimages/curl:8.7.1
+              imagePullPolicy: IfNotPresent
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 32Mi
+                limits:
+                  cpu: 100m
+                  memory: 64Mi
+              env:
+                - name: TW_RESEARCH_FIRST_PASS_DRAIN_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: stock-ticker-backend-auth
+                      key: TW_RESEARCH_FIRST_PASS_DRAIN_TOKEN
+                      optional: true
+              command:
+                - sh
+                - -c
+                - |
+                  set -eu
+                  if [ -z "${TW_RESEARCH_FIRST_PASS_DRAIN_TOKEN:-}" ]; then
+                    echo "TW_RESEARCH_FIRST_PASS_DRAIN_TOKEN unset; drain tick skipped"
+                    exit 0
+                  fi
+                  curl --fail --show-error --silent --max-time 150 \
+                    -X POST \
+                    -H "Content-Type: application/json" \
+                    -H "X-Tw-Research-First-Pass-Drain-Token: ${TW_RESEARCH_FIRST_PASS_DRAIN_TOKEN}" \
+                    -d '{"dryRun":false,"maxBatches":1,"batchSize":10}' \
+                    http://stock-ticker-backend:8000/api/tw-research/first-pass/drain

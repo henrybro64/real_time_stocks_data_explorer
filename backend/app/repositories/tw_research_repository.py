@@ -2195,12 +2195,17 @@ class TwResearchRepository(SessionBoundRepository):
             row.job_claim_expires_at = None
             row.status = "running"
             row.phase = "phase1_first_pass"
+            # Explicit Start Research authorizes durable first-pass drain (#349).
+            row.schedule_enabled = True
             dims = dict(row.dimensions_json or {})
             dims["fundamentals"] = "in_progress"
             row.dimensions_json = dims
             note_list = list(row.notes_json or [])
             for note in notes or []:
                 note_list.append(note)
+            note_list.append(
+                "First-pass drain authorized for this research-run job only."
+            )
             row.notes_json = note_list[-50:]
             row.revision = int(row.revision or 0) + 1
             row.updated_at = now
