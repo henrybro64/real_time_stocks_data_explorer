@@ -84,11 +84,14 @@ function statusLine(
     stale?: boolean;
     staleCheck?: string | null;
     freshnessUnverifiedLabel: string;
+    freshnessUnverifiedCaptureTimeLabel: string;
   },
 ): string {
   const bits: string[] = [status ?? "unavailable"];
   if (opts.staleCheck === "calendar_unavailable") {
     bits.push(opts.freshnessUnverifiedLabel);
+  } else if (opts.staleCheck === "capture_time_unavailable") {
+    bits.push(opts.freshnessUnverifiedCaptureTimeLabel);
   } else if (opts.stale || status === "stale") {
     bits.push(zh ? "已過期（顯示最後驗證結果）" : "stale (showing last verified)");
   }
@@ -111,6 +114,9 @@ export function ChipEvidenceCard({ row, staleCacheBanner }: Props) {
   const { language, t } = useLanguage();
   const zh = language === "zh-TW";
   const freshnessUnverifiedLabel = t("research.tw.chipFreshnessUnverifiedCalendar");
+  const freshnessUnverifiedCaptureTimeLabel = t(
+    "research.tw.chipFreshnessUnverifiedCaptureTime",
+  );
   const inst = row.institutional;
   const margin = row.margin;
   const tdcc = row.tdcc;
@@ -154,6 +160,7 @@ export function ChipEvidenceCard({ row, staleCacheBanner }: Props) {
             stale: inst?.stale,
             staleCheck: inst?.staleCheck,
             freshnessUnverifiedLabel,
+            freshnessUnverifiedCaptureTimeLabel,
           })}
         </p>
         {inst?.sessions && inst.sessions.length > 0 ? (
@@ -198,6 +205,7 @@ export function ChipEvidenceCard({ row, staleCacheBanner }: Props) {
             stale: margin?.stale,
             staleCheck: margin?.staleCheck,
             freshnessUnverifiedLabel,
+            freshnessUnverifiedCaptureTimeLabel,
           })}
         </p>
         <p className="cds--body-compact-01">
@@ -228,6 +236,7 @@ export function ChipEvidenceCard({ row, staleCacheBanner }: Props) {
             stale: tdcc?.stale,
             staleCheck: tdcc?.staleCheck,
             freshnessUnverifiedLabel,
+            freshnessUnverifiedCaptureTimeLabel,
           })}
         </p>
         <p className="cds--body-compact-01">

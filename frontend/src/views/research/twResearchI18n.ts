@@ -193,6 +193,11 @@ const TW_RESEARCH_ROWS = [
     "新鮮度未驗證（交易日曆不可用）",
   ],
   [
+    "research.tw.chipFreshnessUnverifiedCaptureTime",
+    "freshness unverified (capture time unavailable)",
+    "新鮮度未驗證（缺少擷取時間）",
+  ],
+  [
     "research.tw.chipEvidenceMeta",
     "Showing offset {offset}, page size {limit}, total {total} · snapshot {snapshot}",
     "顯示 offset {offset}、每頁 {limit}、共 {total} · 快照 {snapshot}",
