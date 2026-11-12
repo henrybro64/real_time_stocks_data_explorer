@@ -482,13 +482,15 @@ def get_first_pass_snapshot_manifest(
         raise HTTPException(status_code=404, detail="first_pass_snapshot_not_found")
     from app.services.tw_research.first_pass_chunks import build_first_pass_manifest
 
-    records = list((snap.get("payload") or {}).get("records") or [])
+    payload = snap.get("payload") or {}
+    records = list(payload.get("records") or [])
     return build_first_pass_manifest(
         snapshot_id=snap["snapshot_id"],
         content_digest=snap["content_digest"],
         universe_version=snap.get("universe_version"),
         first_pass_version=snap.get("first_pass_version"),
         records=records,
+        payload=payload if isinstance(payload, dict) else {},
     )
 
 
@@ -508,13 +510,15 @@ def get_first_pass_snapshot_chunk(
         raise HTTPException(status_code=404, detail="first_pass_snapshot_not_found")
     from app.services.tw_research.first_pass_chunks import build_first_pass_chunk
 
-    records = list((snap.get("payload") or {}).get("records") or [])
+    payload = snap.get("payload") or {}
+    records = list(payload.get("records") or [])
     try:
         return build_first_pass_chunk(
             snapshot_id=snap["snapshot_id"],
             content_digest=snap["content_digest"],
             records=records,
             chunk_index=chunkIndex,
+            payload=payload if isinstance(payload, dict) else {},
         )
     except IndexError as exc:
         raise HTTPException(status_code=404, detail="chunk_out_of_range") from exc
@@ -527,6 +531,10 @@ def get_first_pass_chip_evidence(
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=25, ge=1, le=50),
     q: str | None = Query(default=None),
+    stockIds: str | None = Query(
+        default=None,
+        description="Optional comma-separated stock ids (max 50); filter after ordering.",
+    ),
 ) -> dict[str, object]:
     """Paginated chip summaries from a frozen first-pass snapshot (#346/#347)."""
     if not tw_research_repository.is_available():
@@ -540,9 +548,8 @@ def get_first_pass_chip_evidence(
     from app.services.tw_research.chip_evidence import format_chip_evidence
     from app.services.tw_research.first_pass_chunks import ordered_first_pass_records
 
-    records = ordered_first_pass_records(
-        list((snap.get("payload") or {}).get("records") or [])
-    )
+    payload = snap.get("payload") or {}
+    records = ordered_first_pass_records(list(payload.get("records") or []))
     query = (q or "").strip().upper()
     if query:
         filtered = []
@@ -552,14 +559,38 @@ def get_first_pass_chip_evidence(
             if query in stock_id or query in name.upper():
                 filtered.append(row)
         records = filtered
+    # Filter by explicit stockIds after ordering (#346/#347).
+    requested_ids: list[str] = []
+    if stockIds:
+        requested_ids = [
+            item.strip()
+            for item in str(stockIds).split(",")
+            if item and item.strip()
+        ][:50]
+        if requested_ids:
+            wanted = {item.upper() for item in requested_ids}
+            records = [
+                row
+                for row in records
+                if str(row.get("stockId") or row.get("stock_id") or "").upper() in wanted
+            ]
     page = records[offset : offset + limit]
+    reference_day = (
+        payload.get("tradingDay")
+        or payload.get("trading_day")
+        or (str(snap.get("created_at") or "")[:10] or None)
+    )
     return {
         "snapshotId": snap["snapshot_id"],
         "contentDigest": snap["content_digest"],
         "offset": offset,
         "limit": limit,
         "total": len(records),
-        "rows": [format_chip_evidence(row) for row in page],
+        "stockIdsFilter": requested_ids or None,
+        "referenceDay": reference_day,
+        "rows": [
+            format_chip_evidence(row, reference_day=reference_day) for row in page
+        ],
         "notBuySignal": True,
         "notNotionReportList": True,
     }
@@ -1506,6 +1537,24 @@ def post_report_evidence(
             candidate = latest_candidate_set(user_id=user_id)
         except ResearchMembershipUnavailable:
             candidate = None
+
+    # Production snapshot dicts omit quality_status. Prefer owning job quality,
+    # else content-based chip gating inside build_report_evidence (#347).
+    if isinstance(first_pass, dict) and not (
+        first_pass.get("quality_status") or first_pass.get("qualityStatus")
+    ):
+        job_id = None
+        payload = first_pass.get("payload") if isinstance(first_pass.get("payload"), dict) else {}
+        raw_job = payload.get("jobId") or payload.get("job_id")
+        if isinstance(raw_job, str) and raw_job:
+            job_id = raw_job
+        if job_id:
+            try:
+                job = tw_research_repository.get_first_pass_job(job_id, user_id=user_id)
+            except Exception:  # noqa: BLE001
+                job = None
+            if isinstance(job, dict) and job.get("quality_status"):
+                first_pass = {**first_pass, "quality_status": job["quality_status"]}
 
     normalized_first = normalize_first_pass_snapshot(first_pass)
     if full_two_pass and isinstance(technical, dict):

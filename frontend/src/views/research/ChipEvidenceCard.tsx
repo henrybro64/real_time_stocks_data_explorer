@@ -6,6 +6,8 @@ export type ChipEvidenceRow = {
   stockId?: string | null;
   stockName?: string | null;
   nameStatus?: string | null;
+  status?: string | null;
+  reason?: string | null;
   institutional?: {
     status?: string;
     reason?: string | null;
@@ -66,177 +68,6 @@ function fmt(value: number | null | undefined, digits = 1): string {
   return Number(value).toFixed(digits);
 }
 
-/** Match backend ``chip_evidence._sum_present`` — omit nulls; never invent zeros. */
-function sumPresent(values: Array<number | null>): number | null {
-  const nums = values.filter((value): value is number => value != null);
-  if (!nums.length) return null;
-  return nums.reduce((acc, value) => acc + value, 0);
-}
-
-function provenanceMeta(field: Record<string, unknown> | null | undefined) {
-  return {
-    status: String(field?.status ?? "unavailable"),
-    reason: (field?.reason as string | null) ?? null,
-    sourceAsOf:
-      (field?.source_as_of as string | null) ??
-      (field?.sourceAsOf as string | null) ??
-      null,
-    capturedAt:
-      (field?.captured_at as string | null) ??
-      (field?.capturedAt as string | null) ??
-      null,
-    freshnessClass:
-      (field?.freshness_class as string | null) ??
-      (field?.freshnessClass as string | null) ??
-      null,
-    stale: Boolean(field?.stale),
-  };
-}
-
-/**
- * Format frozen first-pass / enrichment fields for display (#346).
- *
- * Totals semantics match ``backend/.../chip_evidence._format_institutional``:
- * - 5 complete sessions → ``ok`` full sum
- * - 5 sessions with null lots → ``partial`` totals via sum-present (omit nulls)
- * - fewer than 5 sessions → ``partial`` / ``unavailable`` with null totals
- */
-export function formatChipEvidenceFromFields(
-  stockId: string,
-  stockName: string | null | undefined,
-  nameStatus: string | null | undefined,
-  fields: Record<string, unknown> | null | undefined,
-): ChipEvidenceRow {
-  const institutional = (fields?.institutional_5d ?? null) as Record<string, unknown> | null;
-  const margin = (fields?.margin ?? null) as Record<string, unknown> | null;
-  const utilization = (fields?.margin_utilization ?? null) as Record<string, unknown> | null;
-  const tdcc = (fields?.tdcc_holders_ge_400_lots ?? null) as Record<string, unknown> | null;
-  const instMeta = provenanceMeta(institutional);
-  const marginMeta = provenanceMeta(margin);
-  const tdccMeta = provenanceMeta(tdcc);
-  const instValue = Array.isArray(institutional?.value) ? institutional?.value : [];
-  const sessions = (instValue as Array<Record<string, unknown>>).map((row) => ({
-    date: String(row.date ?? ""),
-    foreignNetLots: numberOrNull(row.foreignNetLots),
-    trustNetLots: numberOrNull(row.trustNetLots),
-    dealerNetLots: numberOrNull(row.dealerNetLots),
-    totalNetLots: numberOrNull(row.totalNetLots),
-  }));
-  const window = sessions.slice(-5);
-  const complete =
-    window.length >= 5 &&
-    window.every(
-      (row) =>
-        row.foreignNetLots != null &&
-        row.trustNetLots != null &&
-        row.dealerNetLots != null &&
-        row.totalNetLots != null,
-    );
-
-  let fiveSessionTotalsStatus = "unavailable";
-  let fiveSessionTotalsReason: string | null = "field_absent";
-  let fiveSessionTotals: {
-    foreignNetLots?: number | null;
-    trustNetLots?: number | null;
-    dealerNetLots?: number | null;
-    totalNetLots?: number | null;
-    dates?: string[];
-    note?: string | null;
-    sessionCount?: number;
-  } | null = null;
-
-  if (window.length >= 5) {
-    if (complete) {
-      fiveSessionTotalsStatus = "ok";
-      fiveSessionTotalsReason = null;
-      fiveSessionTotals = {
-        foreignNetLots: sumPresent(window.map((row) => row.foreignNetLots)),
-        trustNetLots: sumPresent(window.map((row) => row.trustNetLots)),
-        dealerNetLots: sumPresent(window.map((row) => row.dealerNetLots)),
-        totalNetLots: sumPresent(window.map((row) => row.totalNetLots)),
-        dates: window.map((row) => row.date),
-        sessionCount: 5,
-      };
-    } else {
-      fiveSessionTotalsStatus = "partial";
-      fiveSessionTotalsReason = "null_lots_in_session_window";
-      fiveSessionTotals = {
-        foreignNetLots: sumPresent(window.map((row) => row.foreignNetLots)),
-        trustNetLots: sumPresent(window.map((row) => row.trustNetLots)),
-        dealerNetLots: sumPresent(window.map((row) => row.dealerNetLots)),
-        totalNetLots: sumPresent(window.map((row) => row.totalNetLots)),
-        dates: window.map((row) => row.date),
-        sessionCount: window.length,
-        note: "Partial totals omit null sessions; not invented zeros.",
-      };
-    }
-  } else if (window.length > 0) {
-    fiveSessionTotalsStatus = "partial";
-    fiveSessionTotalsReason = `only_${window.length}_sessions_available`;
-    fiveSessionTotals = null;
-  }
-
-  const marginValue =
-    margin?.value && typeof margin.value === "object"
-      ? (margin.value as Record<string, unknown>)
-      : {};
-  const delta = numberOrNull(marginValue.balanceDeltaLotsApprox5Sessions);
-  const tdccValue =
-    tdcc?.value && typeof tdcc.value === "object" ? (tdcc.value as Record<string, unknown>) : {};
-  const tdccStale = Boolean(tdccValue.stale) || tdccMeta.stale;
-
-  return {
-    stockId,
-    stockName,
-    nameStatus,
-    institutional: {
-      ...instMeta,
-      sessions: window,
-      fiveSessionTotalsStatus,
-      fiveSessionTotalsReason,
-      fiveSessionTotals,
-    },
-    margin: {
-      ...marginMeta,
-      balanceLots: numberOrNull(marginValue.balanceLots),
-      balanceDeltaLotsApprox5Sessions: delta,
-      direction: delta == null ? "unavailable" : delta > 0 ? "increase" : delta < 0 ? "decrease" : "flat",
-      shortBalanceLots: numberOrNull(
-        marginValue.shortBalanceLots ??
-          marginValue.borrowedShortBalanceLots ??
-          marginValue.marginShortBalanceLots,
-      ),
-      shortBalanceStatus: numberOrNull(
-        marginValue.shortBalanceLots ??
-          marginValue.borrowedShortBalanceLots ??
-          marginValue.marginShortBalanceLots,
-      )
-        ? "ok"
-        : "unavailable",
-      utilization: {
-        status: String(utilization?.status ?? "unavailable"),
-        reason: (utilization?.reason as string | null) ?? null,
-      },
-    },
-    tdcc: {
-      ...tdccMeta,
-      stale: tdccStale,
-      holdersGe400LotsPercent: numberOrNull(tdccValue.percent),
-      weeklyChangePercentagePoints: numberOrNull(tdccValue.weeklyChangePercentPoints),
-      priorWeekDate: (tdccValue.priorWeekDate as string | null) ?? null,
-      limitation:
-        "TDCC ≥400-lot concentration is a weekly holding snapshot, not a real-time purchase/sale feed.",
-    },
-    notBuySignal: true,
-  };
-}
-
-function numberOrNull(value: unknown): number | null {
-  if (value == null || value === "") return null;
-  const num = Number(value);
-  return Number.isFinite(num) ? num : null;
-}
-
 function statusLine(
   zh: boolean,
   status: string | undefined,
@@ -260,7 +91,13 @@ function statusLine(
   return bits.join(" · ");
 }
 
-export function ChipEvidenceCard({ row }: { row: ChipEvidenceRow }) {
+type Props = {
+  row: ChipEvidenceRow;
+  /** When a refetch fails but cached rows remain (#346). */
+  staleCacheBanner?: { capturedAt?: string | null } | null;
+};
+
+export function ChipEvidenceCard({ row, staleCacheBanner }: Props) {
   const { language } = useLanguage();
   const zh = language === "zh-TW";
   const inst = row.institutional;
@@ -271,8 +108,26 @@ export function ChipEvidenceCard({ row }: { row: ChipEvidenceRow }) {
       inst?.fiveSessionTotalsStatus === "partial") &&
     inst.fiveSessionTotals;
 
+  if (row.status === "not_fetched" && row.reason === "stock_not_in_first_pass_snapshot") {
+    return (
+      <div className="app-section-stack" data-testid="chip-evidence-card">
+        <p className="cds--helper-text-01" data-testid="chip-evidence-not-in-snapshot">
+          {zh
+            ? "此標的不在釘選的第一階段快照中。"
+            : "Symbol is not in the pinned first-pass snapshot."}
+        </p>
+      </div>
+    );
+  }
+
   return (
     <div className="app-section-stack" data-testid="chip-evidence-card">
+      {staleCacheBanner ? (
+        <p className="cds--helper-text-01" data-testid="chip-evidence-stale-banner">
+          {zh ? "已過期 — 最後驗證 " : "stale — last verified "}
+          {staleCacheBanner.capturedAt ?? "—"}
+        </p>
+      ) : null}
       <p className="cds--helper-text-01">
         {zh
           ? "籌碼動向為事實證據，不是自動買進訊號。"
@@ -337,8 +192,8 @@ export function ChipEvidenceCard({ row }: { row: ChipEvidenceRow }) {
         </p>
         <p className="cds--helper-text-01">
           {zh ? "融券" : "Short balance"}:{" "}
-          {margin?.shortBalanceStatus === "ok"
-            ? fmt(margin.shortBalanceLots, 0)
+          {margin?.shortBalanceStatus === "ok" || margin?.shortBalanceLots != null
+            ? fmt(margin?.shortBalanceLots, 0)
             : zh
               ? "不可用（未驗證）"
               : "unavailable (unverified)"}

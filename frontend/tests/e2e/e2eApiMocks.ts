@@ -1149,11 +1149,42 @@ export async function installE2eApiMocks(page: Page): Promise<void> {
       return;
     }
     if (path === "/api/tw-research/candidate-sets/latest" && request.method() === "GET") {
-      await fulfillJson(route, { detail: "candidate_set_not_found" }, 404);
+      await fulfillJson(route, {
+        candidateSet: {
+          candidateSetId: "cs_e2e",
+          version: 1,
+          firstPassSnapshotId: "e2e-fps",
+          firstPassDigest: "e2e-digest",
+          stockIds: ["TW:2330"],
+          origin: "manual",
+        },
+      });
       return;
     }
     if (path === "/api/tw-research/first-pass/jobs" && request.method() === "GET") {
-      await fulfillJson(route, { jobs: [] });
+      await fulfillJson(route, {
+        jobs: [
+          {
+            jobId: "fpj_e2e",
+            status: "completed",
+            qualityStatus: "complete_attempted",
+            activeSnapshotId: "e2e-fps",
+            universeSize: 1,
+          },
+        ],
+      });
+      return;
+    }
+    if (
+      path.match(/\/api\/tw-research\/first-pass\/snapshots\/[^/]+$/) &&
+      request.method() === "GET"
+    ) {
+      await fulfillJson(route, {
+        snapshotId: "e2e-fps",
+        contentDigest: "e2e-digest",
+        stockIds: ["TW:2330"],
+        payload: { records: [], tradingDay: "2024-06-27" },
+      });
       return;
     }
     if (

@@ -25,7 +25,7 @@ import {
   TextInput,
   Tile,
 } from "@carbon/react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 
@@ -34,7 +34,6 @@ import { RequestStateNotice, errorToNoticeKind } from "../../components/state/Re
 import { toApiError } from "../../services/api/client";
 import {
   ChipEvidenceCard,
-  formatChipEvidenceFromFields,
   type ChipEvidenceRow,
 } from "./ChipEvidenceCard";
 import {
@@ -643,7 +642,12 @@ export function TwResearchPage({
       }),
     staleTime: 60_000,
     retry: false,
+    placeholderData: keepPreviousData,
   });
+
+  useEffect(() => {
+    setChipEvidenceOffset(0);
+  }, [pinnedFirstPassSnapshotId]);
 
   // Historical scans must use their pinned candidate-set version, not "latest".
   const pinnedCandidateSetId = scan?.candidateProvenance?.candidateSetId;
@@ -1112,6 +1116,39 @@ export function TwResearchPage({
 
   const ledger = (scan?.ledger ?? []) as Array<Record<string, unknown>>;
   const pageRows = ledger.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+  const ledgerPageStockIds = useMemo(
+    () =>
+      pageRows
+        .map((row) => String(row.stock_id ?? row.stockId ?? ""))
+        .filter(Boolean)
+        .slice(0, 50),
+    [pageRows],
+  );
+  const frozenPageChipQuery = useQuery({
+    queryKey: [
+      "tw-research-chip-evidence-page",
+      pinnedFirstPassSnapshotId,
+      ledgerPageStockIds.join(","),
+    ],
+    enabled: Boolean(pinnedFirstPassSnapshotId) && ledgerPageStockIds.length > 0,
+    queryFn: () =>
+      fetchTwResearchFirstPassChipEvidence(pinnedFirstPassSnapshotId as string, {
+        offset: 0,
+        limit: 50,
+        stockIds: ledgerPageStockIds,
+      }),
+    staleTime: 60_000,
+    retry: false,
+    placeholderData: keepPreviousData,
+  });
+  const frozenChipByStockId = useMemo(() => {
+    const map = new Map<string, ChipEvidenceRow>();
+    for (const row of frozenPageChipQuery.data?.rows ?? []) {
+      const id = String(row.stockId ?? "");
+      if (id) map.set(id, row as ChipEvidenceRow);
+    }
+    return map;
+  }, [frozenPageChipQuery.data]);
   const watchlistReasonById = useMemo(() => {
     const reasonById = new Map<string, string>();
     const addReason = (id: string, reason: string) => {
@@ -1219,6 +1256,38 @@ export function TwResearchPage({
       ),
     [watchlistReasonById],
   );
+  const watchlistPageStockIds = useMemo(
+    () =>
+      watchlistIds
+        .slice((watchlistPage - 1) * PAGE_SIZE, watchlistPage * PAGE_SIZE)
+        .slice(0, 50),
+    [watchlistIds, watchlistPage],
+  );
+  const frozenWatchlistChipQuery = useQuery({
+    queryKey: [
+      "tw-research-chip-evidence-watchlist-page",
+      pinnedFirstPassSnapshotId,
+      watchlistPageStockIds.join(","),
+    ],
+    enabled: Boolean(pinnedFirstPassSnapshotId) && watchlistPageStockIds.length > 0,
+    queryFn: () =>
+      fetchTwResearchFirstPassChipEvidence(pinnedFirstPassSnapshotId as string, {
+        offset: 0,
+        limit: 50,
+        stockIds: watchlistPageStockIds,
+      }),
+    staleTime: 60_000,
+    retry: false,
+    placeholderData: keepPreviousData,
+  });
+  const frozenWatchlistChipByStockId = useMemo(() => {
+    const map = new Map<string, ChipEvidenceRow>();
+    for (const row of frozenWatchlistChipQuery.data?.rows ?? []) {
+      const id = String(row.stockId ?? "");
+      if (id) map.set(id, row as ChipEvidenceRow);
+    }
+    return map;
+  }, [frozenWatchlistChipQuery.data]);
   const busy =
     createMutation.isPending ||
     batchMutation.isPending ||
@@ -1786,7 +1855,7 @@ export function TwResearchPage({
                 {chipEvidenceQueryResult.isLoading ? (
                   <InlineLoading description={t("research.tw.chipEvidenceLoading")} status="active" />
                 ) : null}
-                {chipEvidenceQueryResult.isError ? (
+                {chipEvidenceQueryResult.isError && !chipEvidenceQueryResult.data ? (
                   <RequestStateNotice
                     kind={errorToNoticeKind(chipEvidenceQueryResult.error)}
                     scopeLabel={t("research.tw.chipEvidenceTitle")}
@@ -1796,6 +1865,16 @@ export function TwResearchPage({
                       void chipEvidenceQueryResult.refetch();
                     }}
                   />
+                ) : null}
+                {chipEvidenceQueryResult.isError && chipEvidenceQueryResult.data ? (
+                  <p className="cds--helper-text-01" data-testid="tw-research-chip-evidence-stale-banner">
+                    {t("research.tw.chipEvidenceStaleBanner", {
+                      capturedAt: String(
+                        (chipEvidenceQueryResult.data.rows?.[0] as { institutional?: { capturedAt?: string } } | undefined)
+                          ?.institutional?.capturedAt ?? "—",
+                      ),
+                    })}
+                  </p>
                 ) : null}
                 {chipEvidenceQueryResult.data ? (
                   <p className="cds--helper-text-01" data-testid="tw-research-chip-evidence-meta">
@@ -1820,7 +1899,18 @@ export function TwResearchPage({
                             t("research.tw.nameUnavailable"),
                           )}
                         </p>
-                        <ChipEvidenceCard row={row as ChipEvidenceRow} />
+                        <ChipEvidenceCard
+                          row={row as ChipEvidenceRow}
+                          staleCacheBanner={
+                            chipEvidenceQueryResult.isError
+                              ? {
+                                  capturedAt:
+                                    (row.institutional as { capturedAt?: string } | undefined)
+                                      ?.capturedAt ?? null,
+                                }
+                              : null
+                          }
+                        />
                       </div>
                     );
                   })}
@@ -2172,9 +2262,6 @@ export function TwResearchPage({
                           row?.technical_stage ?? row?.technicalStage;
                         const dailyValue =
                           daily?.executionStatus ?? daily?.passStatus;
-                        const enrichment = row?.enrichment as
-                          | Record<string, unknown>
-                          | undefined;
                         return (
                           <Fragment key={id}>
                           <TableRow data-testid={`tw-research-watchlist-row-${id}`}>
@@ -2211,17 +2298,32 @@ export function TwResearchPage({
                             <TableRow>
                               <TableCell colSpan={7}>
                                 <div data-testid={`tw-research-watchlist-detail-${id}`}>
-                                  <ChipEvidenceCard
-                                    row={formatChipEvidenceFromFields(
-                                      id,
-                                      row?.stockName as string | undefined,
-                                      row?.nameStatus as string | undefined,
-                                      ((enrichment as { fields?: Record<string, unknown> } | null)
-                                        ?.fields ??
-                                        (row?.fields as Record<string, unknown> | undefined) ??
-                                        null) as Record<string, unknown> | null,
-                                    )}
-                                  />
+                                  {!pinnedFirstPassSnapshotId ? (
+                                    <p className="cds--helper-text-01">
+                                      {t("research.tw.chipEvidenceNeedSnapshot")}
+                                    </p>
+                                  ) : (
+                                    <ChipEvidenceCard
+                                      row={
+                                        frozenWatchlistChipByStockId.get(id) ?? {
+                                          stockId: id,
+                                          status: "not_fetched",
+                                          reason: "stock_not_in_first_pass_snapshot",
+                                          notBuySignal: true,
+                                        }
+                                      }
+                                      staleCacheBanner={
+                                        frozenWatchlistChipQuery.isError &&
+                                        frozenWatchlistChipQuery.data
+                                          ? {
+                                              capturedAt:
+                                                frozenWatchlistChipByStockId.get(id)?.institutional
+                                                  ?.capturedAt ?? null,
+                                            }
+                                          : null
+                                      }
+                                    />
+                                  )}
                                   <pre
                                     className="cds--body-compact-01"
                                     style={{ whiteSpace: "pre-wrap", margin: 0 }}
@@ -2508,17 +2610,31 @@ export function TwResearchPage({
                         <TableRow>
                           <TableCell colSpan={10}>
                             <div data-testid={`tw-research-detail-${stockId}`}>
-                              <ChipEvidenceCard
-                                row={formatChipEvidenceFromFields(
-                                  stockId,
-                                  row.stockName as string | undefined,
-                                  row.nameStatus as string | undefined,
-                                  ((row.enrichment as { fields?: Record<string, unknown> } | null)
-                                    ?.fields ??
-                                    (row.fields as Record<string, unknown> | undefined) ??
-                                    null) as Record<string, unknown> | null,
-                                )}
-                              />
+                              {!pinnedFirstPassSnapshotId ? (
+                                <p className="cds--helper-text-01">
+                                  {t("research.tw.chipEvidenceNeedSnapshot")}
+                                </p>
+                              ) : (
+                                <ChipEvidenceCard
+                                  row={
+                                    frozenChipByStockId.get(stockId) ?? {
+                                      stockId,
+                                      status: "not_fetched",
+                                      reason: "stock_not_in_first_pass_snapshot",
+                                      notBuySignal: true,
+                                    }
+                                  }
+                                  staleCacheBanner={
+                                    frozenPageChipQuery.isError && frozenPageChipQuery.data
+                                      ? {
+                                          capturedAt:
+                                            frozenChipByStockId.get(stockId)?.institutional
+                                              ?.capturedAt ?? null,
+                                        }
+                                      : null
+                                  }
+                                />
+                              )}
                               <pre
                                 className="cds--body-compact-01"
                                 style={{ whiteSpace: "pre-wrap", margin: 0 }}

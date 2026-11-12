@@ -10,10 +10,46 @@ Before **Decision 1** (candidate selection) or **Decision 2** (final report), th
 
 1. `GET /api/tw-research/first-pass/snapshots/{snapshotId}/manifest`
 2. Fetch **every** `chunkIndex` listed in `chunkDigests` via `chunkPathTemplate`
-3. Match each `chunk.checksumSha256` to `manifest.chunkDigests[i]`
+3. **Recompute** each chunk digest independently (do not trust `checksumSha256` alone) and match `manifest.chunkDigests[i]`
 4. Confirm `requiredChipFields` (`institutional_5d`, `margin`, `margin_utilization`, `tdcc_holders_ge_400_lots`) exist on every record (status may be `unavailable`/`partial` — never treat absence as verified-ready)
+5. Confirm no duplicate `chunkIndex` / `stockId`, and the union of chunk `stockIds` equals the snapshot/manifest stock id set when provided
 
-A link-only evidence pack is **not** proof that every chip chunk was consumed. Report evidence exposes this contract under `chipHandoff`.
+A link-only evidence pack is **not** proof that every chip chunk was consumed. Report evidence exposes this contract under `chipHandoff`. Analyst readiness is gated by chip **content** coverage on `institutional_5d`, `margin`, and `tdcc_holders_ge_400_lots` (`margin_utilization` unavailable-by-design does not block).
+
+#### First-pass chunk checksum canonicalization
+
+Digest = SHA-256 hex of UTF-8 bytes from:
+
+```text
+json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+```
+
+where `payload` is:
+
+```json
+{
+  "schemaVersion": "<RESEARCH_SCHEMA_VERSION>",
+  "kind": "first_pass_ledger",
+  "tradingDay": "<payload.tradingDay or literal first_pass_snapshot>",
+  "chunkIndex": 0,
+  "chunkSize": 25,
+  "totalRows": 300,
+  "totalChunks": 12,
+  "rows": [ /* ordered by stockId ascending */ ]
+}
+```
+
+Envelope keys (also returned as `checksumEnvelope` on each chunk): `schemaVersion`, `kind`, `tradingDay`, `chunkIndex`, `chunkSize`, `totalRows`, `totalChunks`. Empty snapshot ⇒ `chunkCount=0` (not 1). Rows are sorted by `stockId`.
+
+```python
+import hashlib, json
+
+def verify_chunk(manifest_digest: str, envelope: dict, rows: list) -> bool:
+    payload = {**envelope, "rows": rows}
+    body = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    digest = hashlib.sha256(body.encode("utf-8")).hexdigest()
+    return digest == manifest_digest
+```
 
 ## Status vocabulary (do not conflate)
 

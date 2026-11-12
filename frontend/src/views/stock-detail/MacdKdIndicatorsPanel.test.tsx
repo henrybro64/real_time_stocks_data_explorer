@@ -96,6 +96,36 @@ describe("MacdKdIndicatorsPanel", () => {
     expect(screen.queryByText("0.0000")).not.toBeInTheDocument();
   });
 
+  it("renders stale as unavailable with last bar date", async () => {
+    vi.mocked(fetchTechnicalIndicators).mockResolvedValue({
+      stockId: "TW:2330",
+      calculationVersion: "macd12-26-9_kd9-3-3_v1",
+      upstreamFetch: false,
+      daily: {
+        timeframe: "daily",
+        quality: "stale",
+        unavailableReason: "latest_bar_before_last_completed_session",
+        asOf: "2021-06-28",
+        lastBarDate: "2021-06-28",
+        macdDif: null,
+        passStatus: null,
+      },
+      monthly: {
+        timeframe: "monthly",
+        quality: "source_incomplete",
+        unavailableReason: "incomplete_closed_month",
+        asOf: "2021-05-31",
+        macdDif: null,
+        passStatus: null,
+      },
+    });
+    renderPanel("TW:2330");
+    expect(await screen.findByTestId("macd-kd-daily-unavailable")).toHaveTextContent(
+      /unavailable \(stale\)|不可用（已過期/i,
+    );
+    expect(screen.getByTestId("macd-kd-daily-unavailable")).toHaveTextContent("2021-06-28");
+  });
+
   it("does not fetch for US stocks", () => {
     const { container } = renderPanel("US:AAPL");
     expect(container).toBeEmptyDOMElement();

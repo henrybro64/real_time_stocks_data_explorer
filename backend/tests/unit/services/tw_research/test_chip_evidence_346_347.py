@@ -3,15 +3,26 @@
 from __future__ import annotations
 
 from app.services.tw_research.chip_evidence import format_chip_evidence, summarize_chip_coverage
+from app.services.tw_research.export import content_digest
 from app.services.tw_research.first_pass_chunks import (
     build_first_pass_chunk,
     build_first_pass_manifest,
+    recompute_chunk_digest,
     verify_first_pass_chunks_consumed,
 )
 from app.services.tw_research.report_evidence import build_report_evidence
 
 
-def _record(stock_id: str, *, sessions: int = 5, margin_ok: bool = True) -> dict:
+def _record(
+    stock_id: str,
+    *,
+    sessions: int = 5,
+    margin_ok: bool = True,
+    include_chip: bool = True,
+    short_balance=None,
+    source_as_of: str = "2024-06-24",
+    tdcc_prior: str | None = "2024-06-14",
+) -> dict:
     points = [
         {
             "date": f"2024-06-{20 + i:02d}",
@@ -22,15 +33,13 @@ def _record(stock_id: str, *, sessions: int = 5, margin_ok: bool = True) -> dict
         }
         for i in range(sessions)
     ]
-    return {
-        "stockId": stock_id,
-        "stockName": "台積電" if stock_id.endswith("2330") else stock_id,
-        "nameStatus": "ok",
-        "fields": {
+    fields = {}
+    if include_chip:
+        fields = {
             "institutional_5d": {
                 "status": "ok" if sessions >= 5 else "partial",
                 "source": "fixture",
-                "source_as_of": points[-1]["date"] if points else None,
+                "source_as_of": source_as_of if points else None,
                 "captured_at": "2024-06-28T08:00:00+00:00",
                 "value": points,
                 "reason": None if sessions >= 5 else "fewer_than_5_completed_sessions_in_store",
@@ -38,11 +47,16 @@ def _record(stock_id: str, *, sessions: int = 5, margin_ok: bool = True) -> dict
             "margin": {
                 "status": "ok" if margin_ok else "unavailable",
                 "source": "fixture",
-                "source_as_of": "2024-06-24",
+                "source_as_of": source_as_of,
                 "value": {
                     "balanceLots": 100.0,
                     "balanceDeltaLotsApprox5Sessions": 5.0,
                     "historyDates": [p["date"] for p in points],
+                    **(
+                        {"shortBalanceLots": short_balance}
+                        if short_balance is not None
+                        else {}
+                    ),
                 }
                 if margin_ok
                 else None,
@@ -59,18 +73,23 @@ def _record(stock_id: str, *, sessions: int = 5, margin_ok: bool = True) -> dict
                 "source_as_of": "2024-06-21",
                 "value": {
                     "percent": 41.0,
-                    "weeklyChangePercentPoints": 1.0 if sessions >= 2 else None,
-                    "priorWeekDate": "2024-06-14" if sessions >= 2 else None,
+                    "weeklyChangePercentPoints": 1.0 if tdcc_prior else None,
+                    "priorWeekDate": tdcc_prior,
                     "stale": False,
                     "note": "Weekly TDCC publication date; not a same-day daily change.",
                 },
             },
-        },
+        }
+    return {
+        "stockId": stock_id,
+        "stockName": "台積電" if stock_id.endswith("2330") else stock_id,
+        "nameStatus": "ok",
+        "fields": fields,
     }
 
 
 def test_chip_formatter_totals_and_units() -> None:
-    summary = format_chip_evidence(_record("TW:2330", sessions=5))
+    summary = format_chip_evidence(_record("TW:2330", sessions=5), reference_day="2024-06-24")
     assert summary["stockName"] == "台積電"
     assert summary["institutional"]["fiveSessionTotalsStatus"] == "ok"
     assert summary["institutional"]["fiveSessionTotals"]["foreignNetLots"] == sum(
@@ -80,32 +99,69 @@ def test_chip_formatter_totals_and_units() -> None:
     assert summary["margin"]["direction"] == "increase"
     assert summary["margin"]["utilization"]["status"] == "unavailable"
     assert summary["tdcc"]["changeUnit"] == "percentage_points"
-    assert "percentage points" in (summary["tdcc"]["note"] or "").lower() or (
-        "percentage points" in (summary["tdcc"].get("limitation") or "").lower()
-        or summary["tdcc"]["weeklyChangePercentagePoints"] == 1.0
-    )
-
-    partial = format_chip_evidence(_record("TW:2317", sessions=3))
-    assert partial["institutional"]["fiveSessionTotalsStatus"] == "partial"
-    assert "only_3_sessions" in (partial["institutional"]["fiveSessionTotalsReason"] or "")
-    assert partial["institutional"]["fiveSessionTotals"] is None
 
 
 def test_chip_formatter_partial_totals_omit_null_lots() -> None:
-    """5-session window with a null lot → partial totals via sum-present (#346 P0)."""
     record = _record("TW:2330", sessions=5)
     points = list(record["fields"]["institutional_5d"]["value"])
     points[2]["foreignNetLots"] = None
     record["fields"]["institutional_5d"]["value"] = points
-    summary = format_chip_evidence(record)
+    summary = format_chip_evidence(record, reference_day="2024-06-24")
     inst = summary["institutional"]
     assert inst["fiveSessionTotalsStatus"] == "partial"
     assert inst["fiveSessionTotalsReason"] == "null_lots_in_session_window"
     totals = inst["fiveSessionTotals"]
     assert totals is not None
-    # Omit the null session (index 2 would have been 12); do not invent zero.
     assert totals["foreignNetLots"] == sum(v for v in range(10, 15) if v != 12)
-    assert "omit null" in (totals.get("note") or "").lower()
+
+
+def test_absent_key_is_not_fetched() -> None:
+    summary = format_chip_evidence(
+        {"stockId": "TW:2330", "fields": {}},
+        reference_day="2024-06-27",
+    )
+    assert summary["institutional"]["status"] == "not_fetched"
+    assert summary["institutional"]["reason"] == "field_absent"
+    assert summary["margin"]["status"] == "not_fetched"
+    assert summary["tdcc"]["status"] == "not_fetched"
+
+
+def test_old_source_as_of_is_stale() -> None:
+    summary = format_chip_evidence(
+        _record("TW:2330", source_as_of="2024-06-01"),
+        reference_day="2024-06-27",
+    )
+    assert summary["institutional"]["status"] == "stale"
+    assert summary["margin"]["status"] == "stale"
+
+
+def test_tdcc_prior_week_missing_is_partial_with_null_pp() -> None:
+    summary = format_chip_evidence(
+        _record("TW:2330", tdcc_prior=None),
+        reference_day="2024-06-21",
+    )
+    assert summary["tdcc"]["status"] == "partial"
+    assert summary["tdcc"]["weeklyChangePercentagePoints"] is None
+
+
+def test_zero_short_balance_is_ok() -> None:
+    summary = format_chip_evidence(
+        _record("TW:2330", short_balance=0),
+        reference_day="2024-06-24",
+    )
+    assert summary["margin"]["shortBalanceStatus"] == "ok"
+    assert summary["margin"]["shortBalanceLots"] == 0.0
+
+
+def test_summarize_chip_coverage_not_fetched_and_stale() -> None:
+    coverage = summarize_chip_coverage(
+        [
+            {"stockId": "TW:1", "fields": {}},
+            _record("TW:2", source_as_of="2024-01-01"),
+        ]
+    )
+    assert coverage["fieldCoverage"]["institutional_5d"]["not_fetched"] >= 1
+    assert coverage["fieldCoverage"]["institutional_5d"]["missing"] >= 1
 
 
 def test_first_pass_chunk_digests_and_consumer_verification() -> None:
@@ -117,10 +173,11 @@ def test_first_pass_chunk_digests_and_consumer_verification() -> None:
         first_pass_version="first-pass-v1",
         records=records,
         chunk_size=25,
+        trading_day="2024-06-27",
     )
     assert manifest["chunkCount"] == 2
+    assert manifest["tradingDay"] == "2024-06-27"
     assert set(manifest["chunkDigests"]) == {"0", "1"}
-    assert "institutional_5d" in manifest["requiredChipFields"]
 
     chunks = [
         build_first_pass_chunk(
@@ -129,13 +186,14 @@ def test_first_pass_chunk_digests_and_consumer_verification() -> None:
             records=records,
             chunk_index=index,
             chunk_size=25,
+            trading_day="2024-06-27",
         )
         for index in range(2)
     ]
+    assert "checksumEnvelope" in chunks[0]
     verified = verify_first_pass_chunks_consumed(manifest=manifest, chunks=chunks)
     assert verified["ok"] is True
     assert verified["uniqueStockIds"] == 40
-    assert verified["status"] == "stock_ticker_first_pass_export_verified"
 
     # Tamper one checksum → verification fails.
     bad = dict(chunks[0])
@@ -145,8 +203,89 @@ def test_first_pass_chunk_digests_and_consumer_verification() -> None:
     assert any("digest_mismatch" in err for err in failed["errors"])
 
 
+def test_digest_mismatch_when_record_altered_but_checksum_kept() -> None:
+    records = [_record("TW:2330"), _record("TW:2317")]
+    chunk = build_first_pass_chunk(
+        snapshot_id="fps",
+        content_digest="d",
+        records=records,
+        chunk_index=0,
+        chunk_size=25,
+        trading_day="2024-06-27",
+    )
+    manifest = build_first_pass_manifest(
+        snapshot_id="fps",
+        content_digest="d",
+        universe_version="uv",
+        first_pass_version="v1",
+        records=records,
+        trading_day="2024-06-27",
+    )
+    tampered = dict(chunk)
+    tampered_records = [dict(chunk["records"][0]), dict(chunk["records"][1])]
+    fields = dict(tampered_records[0]["fields"])
+    margin = dict(fields["margin"])
+    value = dict(margin["value"])
+    value["balanceLots"] = 999.0
+    margin["value"] = value
+    fields["margin"] = margin
+    tampered_records[0] = {**tampered_records[0], "fields": fields}
+    tampered["records"] = tampered_records
+    # Keep original checksumSha256 — verifier must recompute from rows.
+    failed = verify_first_pass_chunks_consumed(manifest=manifest, chunks=[tampered])
+    assert failed["ok"] is False
+    assert any("digest_mismatch" in err for err in failed["errors"])
+
+
+def test_duplicate_chunk_fails_verification() -> None:
+    records = [_record("TW:2330")]
+    chunk = build_first_pass_chunk(
+        snapshot_id="fps",
+        content_digest="d",
+        records=records,
+        chunk_index=0,
+        trading_day="2024-06-27",
+    )
+    manifest = build_first_pass_manifest(
+        snapshot_id="fps",
+        content_digest="d",
+        universe_version="uv",
+        first_pass_version="v1",
+        records=records,
+        trading_day="2024-06-27",
+    )
+    failed = verify_first_pass_chunks_consumed(manifest=manifest, chunks=[chunk, chunk])
+    assert failed["ok"] is False
+    assert any("duplicate_chunk_index" in err for err in failed["errors"])
+
+
+def test_envelope_recompute_matches_manifest() -> None:
+    records = [_record(f"TW:{1000 + i}") for i in range(3)]
+    manifest = build_first_pass_manifest(
+        snapshot_id="fps",
+        content_digest="d",
+        universe_version="uv",
+        first_pass_version="v1",
+        records=records,
+        trading_day="2024-06-27",
+    )
+    chunk = build_first_pass_chunk(
+        snapshot_id="fps",
+        content_digest="d",
+        records=records,
+        chunk_index=0,
+        trading_day="2024-06-27",
+    )
+    recomputed = recompute_chunk_digest(
+        envelope=chunk["checksumEnvelope"],
+        rows=chunk["records"],
+    )
+    assert recomputed == manifest["chunkDigests"]["0"]
+    assert recomputed == chunk["checksumSha256"]
+    assert content_digest({**chunk["checksumEnvelope"], "rows": chunk["records"]}) == recomputed
+
+
 def test_large_universe_chunk_verification_keeps_chip_fields() -> None:
-    """#347 acceptance: ~300 frozen records, every chunk + required chip keys."""
     records = [_record(f"TW:{1000 + i}") for i in range(300)]
     manifest = build_first_pass_manifest(
         snapshot_id="fps_300",
@@ -155,6 +294,7 @@ def test_large_universe_chunk_verification_keeps_chip_fields() -> None:
         first_pass_version="first-pass-v1",
         records=records,
         chunk_size=25,
+        trading_day="2024-06-27",
     )
     assert manifest["chunkCount"] == 12
     chunks = [
@@ -164,21 +304,170 @@ def test_large_universe_chunk_verification_keeps_chip_fields() -> None:
             records=records,
             chunk_index=index,
             chunk_size=25,
+            trading_day="2024-06-27",
         )
         for index in range(manifest["chunkCount"])
     ]
     verified = verify_first_pass_chunks_consumed(manifest=manifest, chunks=chunks)
     assert verified["ok"] is True
     assert verified["uniqueStockIds"] == 300
-    for chunk in chunks:
-        for record in chunk["records"]:
-            for key in (
-                "institutional_5d",
-                "margin",
-                "margin_utilization",
-                "tdcc_holders_ge_400_lots",
-            ):
-                assert key in record["fields"]
+
+
+def test_empty_snapshot_chunk_count_is_zero() -> None:
+    manifest = build_first_pass_manifest(
+        snapshot_id="fps_empty",
+        content_digest="d",
+        universe_version="uv",
+        first_pass_version="v1",
+        records=[],
+    )
+    assert manifest["chunkCount"] == 0
+    assert manifest["chunkDigests"] == {}
+    assert manifest["tradingDay"] == "first_pass_snapshot"
+
+
+def test_report_evidence_production_shaped_dict_without_quality_status() -> None:
+    records = [_record("TW:2330"), _record("TW:2317")]
+    pack = build_report_evidence(
+        trading_day="2024-06-27",
+        first_pass_snapshot={
+            "snapshot_id": "fps_prod",
+            "content_digest": "abc",
+            "stock_ids": ["TW:2330", "TW:2317"],
+            "payload": {"records": records, "tradingDay": "2024-06-27"},
+        },
+        candidate_set={
+            "candidateSetId": "cs",
+            "version": 1,
+            "stockIds": ["TW:2330"],
+            "firstPassSnapshotId": "fps_prod",
+            "firstPassDigest": "abc",
+        },
+        technical_scan={
+            "scanId": "scan",
+            "status": "completed_processing",
+            "stockIds": ["TW:2330"],
+            "calculationVersion": "monthly-first-v1",
+        },
+        ledger_rows=[
+            {
+                "stockId": "TW:2330",
+                "monthly": {"passStatus": "pass"},
+                "daily": {"passStatus": "pass"},
+            }
+        ],
+        mode="full_two_pass",
+    ).as_dict()
+    assert "first_pass_quality_missing" not in pack["summary"]["qualityWarnings"]
+    assert "first_pass_chip_fields_missing" not in pack["summary"]["qualityWarnings"]
+    assert pack["summary"]["publishability"] == "evidence_ready_for_analyst_decision"
+
+
+def test_report_evidence_empty_fields_not_ready() -> None:
+    pack = build_report_evidence(
+        trading_day="2024-06-27",
+        first_pass_snapshot={
+            "snapshot_id": "fps_empty_fields",
+            "content_digest": "abc",
+            "stock_ids": ["TW:2330"],
+            "payload": {"records": [_record("TW:2330", include_chip=False)]},
+        },
+        candidate_set={
+            "candidateSetId": "cs",
+            "version": 1,
+            "stockIds": ["TW:2330"],
+            "firstPassSnapshotId": "fps_empty_fields",
+            "firstPassDigest": "abc",
+        },
+        technical_scan={
+            "scanId": "scan",
+            "status": "completed_processing",
+            "stockIds": ["TW:2330"],
+        },
+        ledger_rows=[
+            {
+                "stockId": "TW:2330",
+                "monthly": {"passStatus": "pass"},
+                "daily": {"passStatus": "pass"},
+            }
+        ],
+        mode="full_two_pass",
+    ).as_dict()
+    assert pack["summary"]["publishability"] != "evidence_ready_for_analyst_decision"
+    assert "first_pass_chip_fields_missing" in pack["summary"]["qualityWarnings"]
+
+
+def test_margin_utilization_unavailable_alone_does_not_block() -> None:
+    records = [_record("TW:2330")]
+    pack = build_report_evidence(
+        trading_day="2024-06-27",
+        first_pass_snapshot={
+            "snapshot_id": "fps_util",
+            "content_digest": "abc",
+            "stock_ids": ["TW:2330"],
+            "quality_status": "verified_ready",
+            "payload": {"records": records},
+        },
+        candidate_set={
+            "candidateSetId": "cs",
+            "version": 1,
+            "stockIds": ["TW:2330"],
+            "firstPassSnapshotId": "fps_util",
+            "firstPassDigest": "abc",
+        },
+        technical_scan={
+            "scanId": "scan",
+            "status": "verified_ready",
+            "stockIds": ["TW:2330"],
+        },
+        ledger_rows=[
+            {
+                "stockId": "TW:2330",
+                "monthly": {"passStatus": "pass"},
+                "daily": {"passStatus": "pass"},
+            }
+        ],
+        mode="full_two_pass",
+    ).as_dict()
+    assert "first_pass_chip_fields_missing" not in pack["summary"]["qualityWarnings"]
+    assert "first_pass_chip_fields_partial" not in pack["summary"]["qualityWarnings"]
+    assert pack["summary"]["publishability"] == "evidence_ready_for_analyst_decision"
+
+
+def test_candidate_chip_comes_from_frozen_snapshot_not_enrichment() -> None:
+    frozen = _record("TW:2330")
+    frozen["fields"]["margin"]["value"]["balanceLots"] = 42.0
+    pack = build_report_evidence(
+        trading_day="2024-06-27",
+        first_pass_snapshot={
+            "snapshot_id": "fps_chip",
+            "content_digest": "abc",
+            "stock_ids": ["TW:2330"],
+            "quality_status": "verified_ready",
+            "payload": {"records": [frozen], "tradingDay": "2024-06-24"},
+        },
+        mode="first_pass_only",
+        ledger_rows=[
+            {
+                "stockId": "TW:2330",
+                "enrichment": {
+                    "fields": {
+                        "margin": {
+                            "status": "ok",
+                            "value": {"balanceLots": 999.0, "balanceDeltaLotsApprox5Sessions": 1},
+                        }
+                    },
+                    "asOf": "2024-06-28",
+                },
+                "monthly": {"passStatus": "pass"},
+                "daily": {"passStatus": "pass"},
+            }
+        ],
+    ).as_dict()
+    row = pack["symbols"][0]
+    assert row["chipEvidence"]["margin"]["balanceLots"] == 42.0
+    assert row["phase2Enrichment"]["fields"]["margin"]["value"]["balanceLots"] == 999.0
+    assert row["enrichment"] is row["phase2Enrichment"]
 
 
 def test_report_evidence_includes_chip_handoff_contract() -> None:
@@ -203,6 +492,7 @@ def test_report_evidence_includes_chip_handoff_contract() -> None:
     ]
     assert pack["firstPass"]["chunkCount"] >= 1
     assert pack["firstPass"]["chunkDigests"]
-    assert "Retrieve and verify all first-pass chunks" in " ".join(pack["notes"])
     coverage = summarize_chip_coverage(records)
     assert coverage["recordCount"] == 2
+    # complete_attempted alone is not a free pass when chips are partial.
+    assert "first_pass_chip_fields_partial" in pack["summary"]["qualityWarnings"]

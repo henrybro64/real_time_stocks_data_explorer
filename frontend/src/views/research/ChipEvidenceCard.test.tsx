@@ -2,80 +2,85 @@ import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
 import { LanguageProvider } from "../../app/i18n";
-import { ChipEvidenceCard, formatChipEvidenceFromFields } from "./ChipEvidenceCard";
+import { ChipEvidenceCard, type ChipEvidenceRow } from "./ChipEvidenceCard";
 
-const fiveSessions = [
-  {
-    date: "2024-06-20",
-    foreignNetLots: 10,
-    trustNetLots: 1,
-    dealerNetLots: -1,
-    totalNetLots: 10,
+const okRow: ChipEvidenceRow = {
+  stockId: "TW:2330",
+  stockName: "台積電",
+  nameStatus: "ok",
+  institutional: {
+    status: "ok",
+    sourceAsOf: "2024-06-24",
+    sessions: [
+      {
+        date: "2024-06-20",
+        foreignNetLots: 10,
+        trustNetLots: 1,
+        dealerNetLots: -1,
+        totalNetLots: 10,
+      },
+      {
+        date: "2024-06-21",
+        foreignNetLots: 11,
+        trustNetLots: 1,
+        dealerNetLots: -1,
+        totalNetLots: 11,
+      },
+      {
+        date: "2024-06-22",
+        foreignNetLots: 12,
+        trustNetLots: 1,
+        dealerNetLots: -1,
+        totalNetLots: 12,
+      },
+      {
+        date: "2024-06-23",
+        foreignNetLots: 13,
+        trustNetLots: 1,
+        dealerNetLots: -1,
+        totalNetLots: 13,
+      },
+      {
+        date: "2024-06-24",
+        foreignNetLots: 14,
+        trustNetLots: 1,
+        dealerNetLots: -1,
+        totalNetLots: 14,
+      },
+    ],
+    fiveSessionTotalsStatus: "ok",
+    fiveSessionTotals: {
+      foreignNetLots: 60,
+      trustNetLots: 5,
+      dealerNetLots: -5,
+      totalNetLots: 60,
+      sessionCount: 5,
+    },
   },
-  {
-    date: "2024-06-21",
-    foreignNetLots: 11,
-    trustNetLots: 1,
-    dealerNetLots: -1,
-    totalNetLots: 11,
+  margin: {
+    status: "ok",
+    sourceAsOf: "2024-06-24",
+    balanceLots: 100,
+    balanceDeltaLotsApprox5Sessions: 5,
+    direction: "increase",
+    shortBalanceLots: 0,
+    shortBalanceStatus: "ok",
+    utilization: { status: "unavailable", reason: "unverified" },
   },
-  {
-    date: "2024-06-22",
-    foreignNetLots: 12,
-    trustNetLots: 1,
-    dealerNetLots: -1,
-    totalNetLots: 12,
+  tdcc: {
+    status: "ok",
+    holdersGe400LotsPercent: 41.2,
+    weeklyChangePercentagePoints: 0.5,
+    priorWeekDate: "2024-06-14",
   },
-  {
-    date: "2024-06-23",
-    foreignNetLots: 13,
-    trustNetLots: 1,
-    dealerNetLots: -1,
-    totalNetLots: 13,
-  },
-  {
-    date: "2024-06-24",
-    foreignNetLots: 14,
-    trustNetLots: 1,
-    dealerNetLots: -1,
-    totalNetLots: 14,
-  },
-];
+  notBuySignal: true,
+};
 
 describe("ChipEvidenceCard", () => {
   it("renders institutional sessions, margin direction, and TDCC percentage points", () => {
-    const row = formatChipEvidenceFromFields("TW:2330", "台積電", "ok", {
-      institutional_5d: {
-        status: "ok",
-        source_as_of: "2024-06-24",
-        value: fiveSessions,
-      },
-      margin: {
-        status: "ok",
-        source_as_of: "2024-06-24",
-        value: {
-          balanceLots: 100,
-          balanceDeltaLotsApprox5Sessions: 5,
-        },
-      },
-      margin_utilization: {
-        status: "unavailable",
-        reason: "numerator_and_denominator_not_both_verified",
-      },
-      tdcc_holders_ge_400_lots: {
-        status: "ok",
-        source_as_of: "2024-06-21",
-        value: {
-          percent: 41.2,
-          weeklyChangePercentPoints: 0.5,
-          priorWeekDate: "2024-06-14",
-        },
-      },
-    });
-
     render(
       <LanguageProvider>
-        <ChipEvidenceCard row={row} />
+        <ChipEvidenceCard row={okRow} />
       </LanguageProvider>,
     );
 
@@ -89,26 +94,26 @@ describe("ChipEvidenceCard", () => {
     expect(
       screen.getByText(/Utilization: unavailable|融資使用率: unavailable/i),
     ).toBeInTheDocument();
+    // Zero short balance is a real value.
+    expect(screen.getByText(/Short balance: 0|融券: 0/i)).toBeInTheDocument();
   });
 
-  it("matches backend partial totals when a session lot is null (#346 P0)", () => {
-    const sessions = fiveSessions.map((row) => ({ ...row }));
-    sessions[2] = { ...sessions[2], foreignNetLots: null as unknown as number };
-    const row = formatChipEvidenceFromFields("TW:2330", "台積電", "ok", {
-      institutional_5d: {
-        status: "partial",
-        source_as_of: "2024-06-24",
-        value: sessions,
+  it("renders partial totals banner from backend row", () => {
+    const row: ChipEvidenceRow = {
+      ...okRow,
+      institutional: {
+        ...okRow.institutional,
+        fiveSessionTotalsStatus: "partial",
+        fiveSessionTotalsReason: "null_lots_in_session_window",
+        fiveSessionTotals: {
+          foreignNetLots: 48,
+          trustNetLots: 5,
+          dealerNetLots: -5,
+          totalNetLots: 48,
+          note: "Partial totals omit null sessions; not invented zeros.",
+        },
       },
-      margin: { status: "unavailable" },
-      tdcc_holders_ge_400_lots: { status: "unavailable" },
-    });
-
-    expect(row.institutional?.fiveSessionTotalsStatus).toBe("partial");
-    expect(row.institutional?.fiveSessionTotalsReason).toBe("null_lots_in_session_window");
-    // Omit null session (12); do not invent zero.
-    expect(row.institutional?.fiveSessionTotals?.foreignNetLots).toBe(10 + 11 + 13 + 14);
-
+    };
     render(
       <LanguageProvider>
         <ChipEvidenceCard row={row} />
@@ -120,28 +125,28 @@ describe("ChipEvidenceCard", () => {
   });
 
   it("surfaces stale and not_fetched provenance honestly", () => {
-    const row = formatChipEvidenceFromFields("TW:2317", "鴻海", "ok", {
-      institutional_5d: {
+    const row: ChipEvidenceRow = {
+      stockId: "TW:2317",
+      stockName: "鴻海",
+      institutional: {
         status: "stale",
         stale: true,
-        source_as_of: "2024-06-01",
-        captured_at: "2024-06-01T08:00:00+00:00",
+        sourceAsOf: "2024-06-01",
+        capturedAt: "2024-06-01T08:00:00+00:00",
         reason: "provider_stale",
-        value: fiveSessions.slice(0, 2),
+        fiveSessionTotalsStatus: "partial",
+        fiveSessionTotals: null,
       },
       margin: {
         status: "not_fetched",
-        reason: "deferred_to_next_window",
+        reason: "field_absent",
       },
-      tdcc_holders_ge_400_lots: {
+      tdcc: {
         status: "stale",
-        value: { percent: 20, stale: true },
+        stale: true,
+        holdersGe400LotsPercent: 20,
       },
-    });
-
-    expect(row.institutional?.fiveSessionTotalsStatus).toBe("partial");
-    expect(row.institutional?.fiveSessionTotals).toBeNull();
-    expect(row.tdcc?.stale).toBe(true);
+    };
 
     render(
       <LanguageProvider>
@@ -153,6 +158,20 @@ describe("ChipEvidenceCard", () => {
     );
     expect(screen.getByTestId("chip-evidence-margin-status")).toHaveTextContent(
       /not fetched|尚未抓取/i,
+    );
+  });
+
+  it("shows stale banner when refetch failed but cached data exists", () => {
+    render(
+      <LanguageProvider>
+        <ChipEvidenceCard
+          row={okRow}
+          staleCacheBanner={{ capturedAt: "2024-06-24T08:00:00+00:00" }}
+        />
+      </LanguageProvider>,
+    );
+    expect(screen.getByTestId("chip-evidence-stale-banner")).toHaveTextContent(
+      /stale — last verified|已過期 — 最後驗證/i,
     );
   });
 });

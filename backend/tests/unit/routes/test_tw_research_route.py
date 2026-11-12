@@ -893,6 +893,15 @@ def test_chip_evidence_returns_rows_for_owner(monkeypatch) -> None:
     assert body["rows"][0]["institutional"]["fiveSessionTotalsStatus"] == "ok"
     assert body["notBuySignal"] is True
 
+    filtered = client.get(
+        "/api/tw-research/first-pass/snapshots/fps_chip/chip-evidence"
+        "?stockIds=TW:9999,TW:2330"
+    )
+    assert filtered.status_code == 200, filtered.text
+    assert filtered.json()["total"] == 1
+    assert filtered.json()["rows"][0]["stockId"] == "TW:2330"
+    assert filtered.json()["stockIdsFilter"] == ["TW:9999", "TW:2330"]
+
 
 def test_chip_evidence_cross_user_returns_404(monkeypatch) -> None:
     monkeypatch.setattr(
@@ -913,6 +922,7 @@ def test_chip_evidence_cross_user_returns_404(monkeypatch) -> None:
             offset=0,
             limit=25,
             q=None,
+            stockIds=None,
         )
     except HTTPException as exc:
         assert exc.status_code == 404

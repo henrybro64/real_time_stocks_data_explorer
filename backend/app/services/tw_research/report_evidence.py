@@ -18,7 +18,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from app.services.tw_research.chip_evidence import CHIP_FIELD_KEYS, summarize_chip_coverage
+from app.services.tw_research.chip_evidence import (
+    CHIP_FIELD_KEYS,
+    apply_chip_coverage_warnings,
+    format_chip_evidence,
+    summarize_chip_coverage,
+)
 from app.services.tw_research.constants import (
     DAILY_NOT_RUN_BY_DESIGN,
     EXPORT_CHUNK_SIZE,
@@ -36,6 +41,17 @@ _PARTIAL_STATUSES = frozenset(
         "deferred",
         "budget_exhausted",
         "waiting_for_next_window",
+    }
+)
+
+# complete_attempted is intentionally excluded — durable collection may still
+# have chip gaps; readiness is gated by snapshot content (#347).
+_FIRST_PASS_READY_STATUSES = frozenset(
+    {
+        "verified_ready",
+        "complete",
+        "completed",
+        "ok",
     }
 )
 
@@ -128,21 +144,31 @@ def build_report_evidence(
         )
 
     quality_warnings: list[str] = []
-    first_pass_quality = (first_pass or {}).get("qualityStatus")
-    if first_pass is not None and first_pass_quality in {None, ""}:
-        quality_warnings.append("first_pass_quality_missing")
-    elif first_pass is not None and first_pass_quality in _PARTIAL_STATUSES:
-        quality_warnings.append("first_pass_incomplete_or_partial")
-    elif first_pass is not None and first_pass_quality not in {
-        "verified_ready",
-        "complete",
-        "completed",
-        # complete_attempted = durable collection finished with known gaps;
-        # still not verified_ready — consumers must read qualityWarnings/digests.
-        "complete_attempted",
-        "ok",
-    }:
-        quality_warnings.append("first_pass_quality_not_verified_ready")
+    payload_records = _first_pass_records(first_pass)
+    chip_coverage_summary = None
+    if first_pass is not None:
+        first_pass_quality = first_pass.get("qualityStatus")
+        if first_pass_quality in {None, ""}:
+            # Production snapshot dicts omit quality_status. Prefer content-based
+            # chip gating when records exist; otherwise keep the missing warning.
+            if not payload_records:
+                quality_warnings.append("first_pass_quality_missing")
+        elif first_pass_quality in _PARTIAL_STATUSES:
+            quality_warnings.append("first_pass_incomplete_or_partial")
+        elif first_pass_quality == "complete_attempted":
+            # Collection finished, but chip content still gates readiness.
+            pass
+        elif first_pass_quality not in _FIRST_PASS_READY_STATUSES:
+            quality_warnings.append("first_pass_quality_not_verified_ready")
+
+        if payload_records:
+            chip_coverage_summary = apply_chip_coverage_warnings(
+                payload_records, quality_warnings
+            )
+        elif first_pass.get("snapshotId"):
+            # Empty/missing records still block full-two-pass readiness.
+            quality_warnings.append("first_pass_chip_fields_missing")
+            chip_coverage_summary = summarize_chip_coverage([])
 
     technical_status = (technical_scan or {}).get("status")
     if technical_status == "budget_exhausted":
@@ -167,7 +193,25 @@ def build_report_evidence(
     elif quality_warnings:
         publishability = "incomplete_or_partial_evidence"
 
-    symbols = [_symbol_evidence_row(row) for row in rows]
+    reference_day = (
+        trading_day
+        or (first_pass or {}).get("tradingDay")
+        or ((first_pass or {}).get("payload") or {}).get("tradingDay")
+        or ((first_pass or {}).get("raw") or {}).get("created_at")
+    )
+    first_pass_by_id = {
+        str(rec.get("stockId") or rec.get("stock_id")): rec
+        for rec in payload_records
+        if rec.get("stockId") or rec.get("stock_id")
+    }
+    symbols = [
+        _symbol_evidence_row(
+            row,
+            frozen_first_pass=first_pass_by_id.get(str(row.get("stockId") or "")),
+            reference_day=reference_day,
+        )
+        for row in rows
+    ]
     insufficient = [
         row
         for row in symbols
@@ -184,14 +228,7 @@ def build_report_evidence(
     chip_handoff = None
     if first_pass and first_pass.get("snapshotId"):
         snapshot_id = str(first_pass["snapshotId"])
-        payload_records = []
         raw_payload = first_pass.get("payload") if isinstance(first_pass.get("payload"), dict) else {}
-        if isinstance(raw_payload.get("records"), list):
-            payload_records = list(raw_payload["records"])
-        elif isinstance((first_pass.get("raw") or {}).get("payload"), dict):
-            nested = (first_pass.get("raw") or {}).get("payload") or {}
-            if isinstance(nested.get("records"), list):
-                payload_records = list(nested["records"])
         manifest = build_first_pass_manifest(
             snapshot_id=snapshot_id,
             content_digest=str(first_pass.get("contentDigest") or ""),
@@ -207,10 +244,13 @@ def build_report_evidence(
             ),
             records=payload_records,
             chunk_size=EXPORT_CHUNK_SIZE,
+            payload=raw_payload,
+            trading_day=(first_pass.get("tradingDay") if isinstance(first_pass.get("tradingDay"), str) else None),
         )
         first_pass_ref = {
             "snapshotId": snapshot_id,
             "contentDigest": first_pass.get("contentDigest"),
+            "tradingDay": manifest.get("tradingDay"),
             "stockCount": int(
                 first_pass.get("universeSize") or len(first_pass.get("stockIds") or [])
             ),
@@ -232,7 +272,8 @@ def build_report_evidence(
                 "steps": [
                     f"GET {first_pass_ref['manifestPath']}",
                     "GET every chunkIndex in chunkDigests via chunkPathTemplate",
-                    "Match each chunk.checksumSha256 to manifest.chunkDigests[i]",
+                    "Recompute sha256(canonical_json({checksumEnvelope..., rows}))",
+                    "Match recomputed digest to manifest.chunkDigests[i]",
                     "Confirm requiredChipFields exist on every record (status may be unavailable)",
                 ],
                 "statusAfterVerify": "stock_ticker_first_pass_export_verified",
@@ -246,9 +287,15 @@ def build_report_evidence(
                     "monthly-first/daily MACD/KD; zero selections is valid."
                 ),
             },
-            "coverage": summarize_chip_coverage(payload_records)
-            if payload_records
-            else first_pass_ref["chipCoverage"],
+            "coverage": (
+                chip_coverage_summary
+                if chip_coverage_summary is not None
+                else (
+                    summarize_chip_coverage(payload_records)
+                    if payload_records
+                    else first_pass_ref["chipCoverage"]
+                )
+            ),
             "notBuySignal": True,
         }
 
@@ -335,7 +382,24 @@ def _records_from_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
     return {str(row.get("stockId")): _Rec(row) for row in rows if row.get("stockId")}
 
 
-def _symbol_evidence_row(row: dict[str, Any]) -> dict[str, Any]:
+def _first_pass_records(first_pass: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if not first_pass:
+        return []
+    raw_payload = first_pass.get("payload") if isinstance(first_pass.get("payload"), dict) else {}
+    if isinstance(raw_payload.get("records"), list):
+        return [row for row in raw_payload["records"] if isinstance(row, dict)]
+    nested = (first_pass.get("raw") or {}).get("payload")
+    if isinstance(nested, dict) and isinstance(nested.get("records"), list):
+        return [row for row in nested["records"] if isinstance(row, dict)]
+    return []
+
+
+def _symbol_evidence_row(
+    row: dict[str, Any],
+    *,
+    frozen_first_pass: dict[str, Any] | None = None,
+    reference_day: str | None = None,
+) -> dict[str, Any]:
     monthly = row.get("monthly") if isinstance(row.get("monthly"), dict) else {}
     daily = row.get("daily") if isinstance(row.get("daily"), dict) else {}
     monthly_pass = monthly.get("passStatus")
@@ -353,6 +417,16 @@ def _symbol_evidence_row(row: dict[str, Any]) -> dict[str, Any]:
     elif monthly_pass == "fail" or daily_exec == DAILY_NOT_RUN_BY_DESIGN:
         bucket = "fundamental_watch_monthly_fail"
 
+    if frozen_first_pass is not None:
+        chip = format_chip_evidence(frozen_first_pass, reference_day=reference_day)
+    else:
+        chip = {
+            "status": "not_fetched",
+            "reason": "stock_not_in_first_pass_snapshot",
+            "notBuySignal": True,
+        }
+
+    enrichment = row.get("enrichment")
     return {
         "stockId": row.get("stockId"),
         "stockName": row.get("stockName"),
@@ -366,7 +440,10 @@ def _symbol_evidence_row(row: dict[str, Any]) -> dict[str, Any]:
         "relativePriceBasis": row.get("relativePriceBasis")
         or _field_value(row, "relative_price_basis"),
         "week52Position": row.get("week52Position"),
-        "enrichment": row.get("enrichment"),
+        "chipEvidence": chip,
+        "phase2Enrichment": enrichment,
+        # Deprecated alias — prefer phase2Enrichment / chipEvidence.
+        "enrichment": enrichment,
         "provenanceNote": "Values carry source/as-of when present; never fabricate.",
         "analystNarrative": "not_established",
     }

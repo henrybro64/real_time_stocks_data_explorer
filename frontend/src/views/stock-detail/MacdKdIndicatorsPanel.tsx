@@ -22,44 +22,71 @@ function formatNumber(value: number | null | undefined, digits = 4): string {
   return Number(value).toFixed(digits);
 }
 
+function translatePass(zh: boolean, passStatus: string | null | undefined): string {
+  if (passStatus == null || passStatus === "") return "—";
+  if (!zh) return String(passStatus);
+  if (passStatus === "pass") return "通過";
+  if (passStatus === "fail") return "未通過";
+  if (passStatus === "unknown") return "未知";
+  return String(passStatus);
+}
+
 function SnapshotBlock({
   title,
   snapshot,
   unavailableLabel,
   asOfLabel,
   passLabel,
+  zh,
 }: {
   title: string;
   snapshot: TechnicalIndicatorSnapshot;
   unavailableLabel: string;
   asOfLabel: string;
   passLabel: string;
+  zh: boolean;
 }) {
-  const unavailable = snapshot.quality !== "ok";
+  const quality = snapshot.quality ?? "";
+  const unavailable = quality !== "ok";
+  const lastBar =
+    (snapshot as { lastBarDate?: string | null }).lastBarDate ?? snapshot.asOf ?? null;
+  const reason = snapshot.unavailableReason ?? quality;
+  const showStaleOrIncomplete =
+    quality === "stale" || quality === "source_incomplete" || unavailable;
+
   return (
     <div data-testid={`macd-kd-${snapshot.timeframe}`}>
       <h3 className="cds--productive-heading-02">{title}</h3>
       <p className="cds--helper-text-01">
         {asOfLabel}: {snapshot.asOf ?? "—"} · {passLabel}:{" "}
-        {unavailable ? unavailableLabel : String(snapshot.passStatus ?? "—")}
+        {unavailable ? unavailableLabel : translatePass(zh, snapshot.passStatus)}
       </p>
-      {unavailable ? (
+      {showStaleOrIncomplete ? (
         <p className="cds--body-compact-01" data-testid={`macd-kd-${snapshot.timeframe}-unavailable`}>
-          {unavailableLabel}
-          {snapshot.unavailableReason ? ` (${snapshot.unavailableReason})` : ""}
+          {quality === "stale"
+            ? zh
+              ? `不可用（已過期 / stale）`
+              : "unavailable (stale)"
+            : quality === "source_incomplete"
+              ? zh
+                ? `不可用（來源不完整 / source_incomplete）`
+                : "unavailable (source_incomplete)"
+              : unavailableLabel}
+          {reason ? ` · ${reason}` : ""}
+          {lastBar ? ` · ${zh ? "最後K棒" : "last bar"} ${lastBar}` : ""}
         </p>
       ) : (
         <dl className="app-kv-list">
           <div>
-            <dt>MACD DIF</dt>
+            <dt>{zh ? "DIF" : "MACD DIF"}</dt>
             <dd>{formatNumber(snapshot.macdDif ?? snapshot.dif)}</dd>
           </div>
           <div>
-            <dt>MACD Signal</dt>
+            <dt>{zh ? "MACD（訊號）" : "MACD Signal"}</dt>
             <dd>{formatNumber(snapshot.macdSignal ?? snapshot.signal)}</dd>
           </div>
           <div>
-            <dt>MACD OSC</dt>
+            <dt>{zh ? "OSC" : "MACD OSC"}</dt>
             <dd>{formatNumber(snapshot.macdHistogram ?? snapshot.osc)}</dd>
           </div>
           <div>
@@ -110,6 +137,7 @@ export function MacdKdIndicatorsPanel({ stockId }: Props) {
             unavailableLabel={t("detail.macdKd.unavailable")}
             asOfLabel={t("detail.macdKd.asOf")}
             passLabel={t("detail.macdKd.passStatus")}
+            zh={zh}
           />
           <SnapshotBlock
             title={zh ? "月線 MACD / KD（已完成月份）" : "Monthly MACD / KD (completed months)"}
@@ -117,6 +145,7 @@ export function MacdKdIndicatorsPanel({ stockId }: Props) {
             unavailableLabel={t("detail.macdKd.unavailable")}
             asOfLabel={t("detail.macdKd.asOf")}
             passLabel={t("detail.macdKd.passStatus")}
+            zh={zh}
           />
           <p className="cds--helper-text-01">
             {zh

@@ -647,6 +647,7 @@ export type TechnicalIndicatorSnapshot = {
   timeframe: "daily" | "monthly";
   asOf?: string | null;
   as_of?: string | null;
+  lastBarDate?: string | null;
   dif?: number | null;
   signal?: number | null;
   osc?: number | null;
@@ -661,6 +662,8 @@ export type TechnicalIndicatorSnapshot = {
   pass_status?: string | null;
   quality: string;
   unavailableReason?: string | null;
+  coverage?: { ok?: boolean; reason?: string | null } | null;
+  missingUpstreamMonths?: boolean;
   barCount?: number;
 };
 

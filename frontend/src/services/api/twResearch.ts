@@ -438,16 +438,25 @@ export async function fetchTwResearchFirstPassChunk(
 /** Paginated chip summaries from a frozen first-pass snapshot (#346/#347). */
 export async function fetchTwResearchFirstPassChipEvidence(
   snapshotId: string,
-  options?: { offset?: number; limit?: number; q?: string },
+  options?: {
+    offset?: number;
+    limit?: number;
+    q?: string;
+    stockIds?: string[];
+  },
 ) {
   const params = new URLSearchParams();
   params.set("offset", String(options?.offset ?? 0));
   params.set("limit", String(options?.limit ?? 25));
   if (options?.q) params.set("q", options.q);
+  if (options?.stockIds?.length) {
+    params.set("stockIds", options.stockIds.slice(0, 50).join(","));
+  }
   return requestJson<{
     snapshotId: string;
     contentDigest?: string;
     total: number;
+    referenceDay?: string | null;
     rows: Array<Record<string, unknown>>;
   }>(
     `/tw-research/first-pass/snapshots/${encodeURIComponent(snapshotId)}/chip-evidence?${params}`,

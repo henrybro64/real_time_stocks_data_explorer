@@ -17,6 +17,7 @@ import {
   fetchTwResearchBrowserText,
   fetchTwResearchExportManifest,
   fetchTwResearchCandidateSet,
+  fetchTwResearchFirstPassChipEvidence,
   fetchTwResearchFirstPassSnapshot,
   fetchTwResearchFirstPassSymbols,
   fetchTwResearchLatestCandidateSet,
@@ -1372,5 +1373,91 @@ describe("TwResearchPage watchlist union (#338)", () => {
     expect(screen.getByTestId("tw-research-watchlist-row-TW:1301")).not.toHaveTextContent(
       "fundamentally_interesting",
     );
+  });
+
+  it("renders ledger chip detail from frozen chip-evidence (one call per page)", async () => {
+    const user = userEvent.setup();
+    const scan = queuedScan({
+      status: "completed_processing",
+      candidateProvenance: { firstPassSnapshotId: "fps_chip" },
+      ledger: [
+        {
+          stock_id: "TW:2330",
+          stockName: "台積電",
+          nameStatus: "ok",
+          stage: "A",
+          enrichment: {
+            fields: {
+              margin: { status: "ok", value: { balanceLots: 999 } },
+            },
+          },
+        },
+      ],
+    });
+    vi.mocked(fetchTwResearchScan).mockResolvedValue(scan);
+    vi.mocked(fetchTwResearchScans).mockResolvedValue({
+      scans: [{ ...summary(), scanId: SCAN_ID }],
+    });
+    vi.mocked(fetchTwResearchFirstPassChipEvidence).mockClear();
+    vi.mocked(fetchTwResearchFirstPassChipEvidence).mockResolvedValue({
+      snapshotId: "fps_chip",
+      total: 1,
+      rows: [
+        {
+          stockId: "TW:2330",
+          stockName: "台積電",
+          institutional: {
+            status: "ok",
+            fiveSessionTotalsStatus: "ok",
+            fiveSessionTotals: { foreignNetLots: 60 },
+            sessions: [],
+          },
+          margin: {
+            status: "ok",
+            balanceLots: 42,
+            direction: "increase",
+            utilization: { status: "unavailable" },
+          },
+          tdcc: { status: "ok", holdersGe400LotsPercent: 41 },
+          notBuySignal: true,
+        },
+      ],
+    });
+
+    renderPage({ initialScanId: SCAN_ID });
+    await screen.findByTestId(`tw-research-expand-TW:2330`);
+    // One bounded ledger-page query keyed by pinned snapshot + page stockIds.
+    await waitFor(() => {
+      expect(
+        vi
+          .mocked(fetchTwResearchFirstPassChipEvidence)
+          .mock.calls.some(
+            (args) =>
+              args[0] === "fps_chip" &&
+              Array.isArray(args[1]?.stockIds) &&
+              args[1]?.stockIds?.join(",") === "TW:2330",
+          ),
+      ).toBe(true);
+    });
+    const ledgerPageCalls = () =>
+      vi
+        .mocked(fetchTwResearchFirstPassChipEvidence)
+        .mock.calls.filter(
+          (args) =>
+            args[0] === "fps_chip" &&
+            Array.isArray(args[1]?.stockIds) &&
+            args[1]?.stockIds?.join(",") === "TW:2330",
+        );
+    const beforeExpand = ledgerPageCalls().length;
+    expect(beforeExpand).toBeGreaterThanOrEqual(1);
+
+    await user.click(screen.getByTestId("tw-research-expand-TW:2330"));
+    const detail = await screen.findByTestId("tw-research-detail-TW:2330");
+    expect(detail.querySelector('[data-testid="chip-evidence-card"]')).toBeTruthy();
+    expect(detail.querySelector('[data-testid="chip-evidence-margin"]')?.textContent).toMatch(
+      /42/,
+    );
+    // Expand reuses the page query — no additional ledger-page chip fetches.
+    expect(ledgerPageCalls().length).toBe(beforeExpand);
   });
 });

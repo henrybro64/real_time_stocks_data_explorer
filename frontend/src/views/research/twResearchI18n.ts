@@ -178,10 +178,15 @@ const TW_RESEARCH_ROWS = [
   ["research.tw.chipEvidenceSearchApply", "Apply chip search", "套用籌碼搜尋"],
   [
     "research.tw.chipEvidenceNeedSnapshot",
-    "Load or pin a first-pass snapshot to browse chip evidence.",
-    "請先載入或釘選第一輪快照後再瀏覽籌碼證據。",
+    "Chip evidence requires a pinned first-pass snapshot.",
+    "籌碼證據需要釘選的第一輪快照。",
   ],
   ["research.tw.chipEvidenceLoading", "Loading chip evidence…", "載入籌碼證據中…"],
+  [
+    "research.tw.chipEvidenceStaleBanner",
+    "stale — last verified {capturedAt}",
+    "已過期 — 最後驗證 {capturedAt}",
+  ],
   [
     "research.tw.chipEvidenceMeta",
     "Showing offset {offset}, page size {limit}, total {total} · snapshot {snapshot}",

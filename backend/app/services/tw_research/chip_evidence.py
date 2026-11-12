@@ -11,7 +11,10 @@ a buy signal.
 
 from __future__ import annotations
 
+from datetime import date, datetime, timedelta
 from typing import Any
+
+from app.services.market_clock import last_completed_session_date
 
 CHIP_FIELD_KEYS = (
     "institutional_5d",
@@ -20,22 +23,44 @@ CHIP_FIELD_KEYS = (
     "tdcc_holders_ge_400_lots",
 )
 
+# Keys that gate analyst readiness (#347). margin_utilization is unavailable by design.
+GATING_CHIP_FIELD_KEYS = (
+    "institutional_5d",
+    "margin",
+    "tdcc_holders_ge_400_lots",
+)
 
-def format_chip_evidence(record: dict[str, Any] | None) -> dict[str, Any]:
-    """Build a readable chip summary from one first-pass (or enrichment) record."""
+
+def format_chip_evidence(
+    record: dict[str, Any] | None,
+    *,
+    reference_day: str | date | None = None,
+) -> dict[str, Any]:
+    """Build a readable chip summary from one first-pass record.
+
+    Prefer frozen first-pass ``fields`` only. Enrichment is not merged here —
+    callers that need Phase-2 enrichment must pass it separately.
+    """
     record = record or {}
     fields = record.get("fields") if isinstance(record.get("fields"), dict) else {}
-    # Enrichment payloads nest under enrichment.fields in technical ledger rows.
-    enrichment = record.get("enrichment")
-    if isinstance(enrichment, dict) and isinstance(enrichment.get("fields"), dict):
-        # Prefer first-pass fields when both exist; fall back to enrichment.
-        merged = dict(enrichment["fields"])
-        merged.update(fields)
-        fields = merged
 
-    institutional = _format_institutional(fields.get("institutional_5d"))
-    margin = _format_margin(fields.get("margin"), fields.get("margin_utilization"))
-    tdcc = _format_tdcc(fields.get("tdcc_holders_ge_400_lots"))
+    ref = _as_date(reference_day)
+    institutional = _format_institutional(
+        fields.get("institutional_5d"),
+        present="institutional_5d" in fields,
+        reference_day=ref,
+    )
+    margin = _format_margin(
+        fields.get("margin") if "margin" in fields else None,
+        fields.get("margin_utilization") if "margin_utilization" in fields else None,
+        present="margin" in fields,
+        reference_day=ref,
+    )
+    tdcc = _format_tdcc(
+        fields.get("tdcc_holders_ge_400_lots"),
+        present="tdcc_holders_ge_400_lots" in fields,
+        reference_day=ref,
+    )
 
     return {
         "stockId": record.get("stockId") or record.get("stock_id"),
@@ -60,26 +85,39 @@ def chip_fields_from_record(record: dict[str, Any] | None) -> dict[str, Any]:
     """Return raw provenance for the three chip families (plus utilization)."""
     record = record or {}
     fields = record.get("fields") if isinstance(record.get("fields"), dict) else {}
-    enrichment = record.get("enrichment")
-    if isinstance(enrichment, dict) and isinstance(enrichment.get("fields"), dict):
-        merged = dict(enrichment["fields"])
-        merged.update(fields)
-        fields = merged
     return {key: fields.get(key) for key in CHIP_FIELD_KEYS}
 
 
 def summarize_chip_coverage(records: list[dict[str, Any]]) -> dict[str, Any]:
     """Aggregate coverage counts for handoff verification (#347)."""
     total = len(records)
-    counts = {key: {"ok": 0, "partial": 0, "unavailable": 0, "missing": 0} for key in CHIP_FIELD_KEYS}
+    counts = {
+        key: {
+            "ok": 0,
+            "partial": 0,
+            "unavailable": 0,
+            "stale": 0,
+            "not_fetched": 0,
+            "missing": 0,  # alias of not_fetched for compatibility
+        }
+        for key in CHIP_FIELD_KEYS
+    }
     for record in records:
         fields = chip_fields_from_record(record)
         for key in CHIP_FIELD_KEYS:
             payload = fields.get(key)
             if not isinstance(payload, dict):
+                counts[key]["not_fetched"] += 1
                 counts[key]["missing"] += 1
                 continue
             status = str(payload.get("status") or "unavailable")
+            if status == "stale" or bool(payload.get("stale")):
+                counts[key]["stale"] += 1
+                continue
+            if status == "not_fetched":
+                counts[key]["not_fetched"] += 1
+                counts[key]["missing"] += 1
+                continue
             if status not in counts[key]:
                 status = "unavailable"
             counts[key][status] += 1
@@ -87,20 +125,51 @@ def summarize_chip_coverage(records: list[dict[str, Any]]) -> dict[str, Any]:
         "recordCount": total,
         "fieldCoverage": counts,
         "requiredFields": list(CHIP_FIELD_KEYS),
-        "note": "missing means the provenance key was absent from the frozen record.",
+        "gatingFields": list(GATING_CHIP_FIELD_KEYS),
+        "note": (
+            "missing/not_fetched means the provenance key was absent from the "
+            "frozen record. margin_utilization unavailable-by-design does not gate."
+        ),
     }
 
 
-def _prov(field: Any) -> dict[str, Any]:
-    if not isinstance(field, dict):
+def apply_chip_coverage_warnings(
+    records: list[dict[str, Any]],
+    quality_warnings: list[str],
+) -> dict[str, Any]:
+    """Append chip-content readiness warnings (#347). Returns coverage summary."""
+    coverage = summarize_chip_coverage(records)
+    field_coverage = coverage.get("fieldCoverage") or {}
+    missing = False
+    partial = False
+    for key in GATING_CHIP_FIELD_KEYS:
+        bucket = field_coverage.get(key) or {}
+        if int(bucket.get("missing") or 0) > 0 or int(bucket.get("not_fetched") or 0) > 0:
+            missing = True
+        if (
+            int(bucket.get("partial") or 0) > 0
+            or int(bucket.get("unavailable") or 0) > 0
+            or int(bucket.get("stale") or 0) > 0
+        ):
+            partial = True
+    if missing and "first_pass_chip_fields_missing" not in quality_warnings:
+        quality_warnings.append("first_pass_chip_fields_missing")
+    if partial and "first_pass_chip_fields_partial" not in quality_warnings:
+        quality_warnings.append("first_pass_chip_fields_partial")
+    return coverage
+
+
+def _prov(field: Any, *, present: bool) -> dict[str, Any]:
+    if not present or not isinstance(field, dict):
         return {
-            "status": "unavailable",
+            "status": "not_fetched",
             "reason": "field_absent",
             "source": None,
             "sourceAsOf": None,
             "capturedAt": None,
             "freshnessClass": None,
             "value": None,
+            "stale": False,
         }
     return {
         "status": field.get("status") or "unavailable",
@@ -114,8 +183,48 @@ def _prov(field: Any) -> dict[str, Any]:
     }
 
 
-def _format_institutional(field: Any) -> dict[str, Any]:
-    base = _prov(field)
+def _apply_stale(
+    base: dict[str, Any],
+    *,
+    reference_day: date | None,
+    kind: str,
+) -> dict[str, Any]:
+    """Mark institutional/margin/TDCC stale relative to the snapshot reference day."""
+    if base.get("status") == "not_fetched":
+        return base
+    source_as_of = _as_date(base.get("sourceAsOf"))
+    if reference_day is None or source_as_of is None:
+        if base.get("stale"):
+            base["status"] = "stale"
+        return base
+
+    if kind in {"institutional", "margin"}:
+        expected = last_completed_session_date(
+            "TW",
+            datetime.combine(reference_day, datetime.min.time()),
+            allow_holiday_fetch=False,
+        )
+        # Fall back to reference_day itself when calendar lookup is empty.
+        expected_day = expected or reference_day
+        if source_as_of < expected_day:
+            base["stale"] = True
+            base["status"] = "stale"
+            base["reason"] = base.get("reason") or "source_as_of_before_last_completed_session"
+    elif kind == "tdcc":
+        if source_as_of < (reference_day - timedelta(days=10)) or base.get("stale"):
+            base["stale"] = True
+            base["status"] = "stale"
+            base["reason"] = base.get("reason") or "tdcc_source_as_of_older_than_10_calendar_days"
+    return base
+
+
+def _format_institutional(
+    field: Any,
+    *,
+    present: bool,
+    reference_day: date | None,
+) -> dict[str, Any]:
+    base = _apply_stale(_prov(field, present=present), reference_day=reference_day, kind="institutional")
     points = base.get("value")
     sessions: list[dict[str, Any]] = []
     if isinstance(points, list):
@@ -134,7 +243,10 @@ def _format_institutional(field: Any) -> dict[str, Any]:
     totals = None
     totals_status = "unavailable"
     totals_reason = "fewer_than_5_completed_sessions"
-    if len(sessions) >= 5:
+    if base.get("status") == "not_fetched":
+        totals_status = "not_fetched"
+        totals_reason = "field_absent"
+    elif len(sessions) >= 5:
         # Use the last five available completed sessions only.
         window = sessions[-5:]
         if all(
@@ -187,12 +299,17 @@ def _format_institutional(field: Any) -> dict[str, Any]:
     }
 
 
-def _format_margin(margin_field: Any, utilization_field: Any) -> dict[str, Any]:
-    base = _prov(margin_field)
+def _format_margin(
+    margin_field: Any,
+    utilization_field: Any,
+    *,
+    present: bool,
+    reference_day: date | None,
+) -> dict[str, Any]:
+    base = _apply_stale(_prov(margin_field, present=present), reference_day=reference_day, kind="margin")
     value = base.get("value") if isinstance(base.get("value"), dict) else {}
     balance = _num_or_none(value.get("balanceLots"))
     delta = _num_or_none(value.get("balanceDeltaLotsApprox5Sessions"))
-    direction = "unavailable"
     if delta is None:
         direction = "unavailable"
     elif delta > 0:
@@ -202,11 +319,11 @@ def _format_margin(margin_field: Any, utilization_field: Any) -> dict[str, Any]:
     else:
         direction = "flat"
 
-    utilization = _prov(utilization_field)
-    short_balance = _num_or_none(
-        value.get("shortBalanceLots")
-        or value.get("borrowedShortBalanceLots")
-        or value.get("marginShortBalanceLots")
+    utilization = _prov(utilization_field, present=isinstance(utilization_field, dict))
+    short_balance = _first_num(
+        value.get("shortBalanceLots"),
+        value.get("borrowedShortBalanceLots"),
+        value.get("marginShortBalanceLots"),
     )
 
     return {
@@ -232,18 +349,31 @@ def _format_margin(margin_field: Any, utilization_field: Any) -> dict[str, Any]:
     }
 
 
-def _format_tdcc(field: Any) -> dict[str, Any]:
-    base = _prov(field)
+def _format_tdcc(
+    field: Any,
+    *,
+    present: bool,
+    reference_day: date | None,
+) -> dict[str, Any]:
+    base = _apply_stale(_prov(field, present=present), reference_day=reference_day, kind="tdcc")
     value = base.get("value") if isinstance(base.get("value"), dict) else {}
     percent = _num_or_none(value.get("percent"))
     change_pp = _num_or_none(value.get("weeklyChangePercentPoints"))
+    prior_week = value.get("priorWeekDate")
+    # Prior-week missing → partial with null pp change (#346).
+    status = base.get("status")
+    if present and isinstance(field, dict) and status not in {"not_fetched", "stale"}:
+        if prior_week in {None, ""} and change_pp is None and percent is not None:
+            status = "partial"
+            base["reason"] = base.get("reason") or "prior_week_missing"
     return {
         **base,
+        "status": status,
         "unit": "percent",
         "changeUnit": "percentage_points",
         "holdersGe400LotsPercent": percent,
         "weeklyChangePercentagePoints": change_pp,
-        "priorWeekDate": value.get("priorWeekDate"),
+        "priorWeekDate": prior_week,
         "stale": bool(value.get("stale") or base.get("stale")),
         "labelZh": "大戶動向",
         "limitation": (
@@ -264,8 +394,30 @@ def _num_or_none(value: Any) -> float | None:
         return None
 
 
+def _first_num(*values: Any) -> float | None:
+    for value in values:
+        parsed = _num_or_none(value)
+        if parsed is not None:
+            return parsed
+    return None
+
+
 def _sum_present(values) -> float | None:
     nums = [float(v) for v in values if v is not None]
     if not nums:
         return None
     return sum(nums)
+
+
+def _as_date(value: str | date | None) -> date | None:
+    if value is None:
+        return None
+    if isinstance(value, date) and not isinstance(value, datetime):
+        return value
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return date.fromisoformat(text[:10])
+    except ValueError:
+        return None
