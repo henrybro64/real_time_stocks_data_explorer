@@ -155,6 +155,12 @@ export type TranslationKey =
   | "detail.twSignals.marginShortTitle"
   | "detail.twSignals.ownershipTitle"
   | "detail.twSignals.profitMarginsTitle"
+  | "detail.macdKd.eyebrow"
+  | "detail.macdKd.title"
+  | "detail.macdKd.description"
+  | "detail.macdKd.unavailable"
+  | "detail.macdKd.asOf"
+  | "detail.macdKd.passStatus"
   | "quote.updatedAt"
   | "quote.open"
   | "quote.high"
@@ -717,6 +723,13 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "detail.twSignals.marginShortTitle": "Margin / short changes",
     "detail.twSignals.ownershipTitle": "Ownership concentration",
     "detail.twSignals.profitMarginsTitle": "Profitability margins",
+    "detail.macdKd.eyebrow": "Technical indicators",
+    "detail.macdKd.title": "Daily & monthly MACD / KD",
+    "detail.macdKd.description":
+      "Numeric DIF, signal, histogram (OSC), K and D from stored completed candles. Same formulas as TW research.",
+    "detail.macdKd.unavailable": "Unavailable",
+    "detail.macdKd.asOf": "As of",
+    "detail.macdKd.passStatus": "Pass status",
     "quote.updatedAt": "Updated {time}",
     "quote.open": "Open",
     "quote.high": "High",
@@ -1308,6 +1321,13 @@ const messages: Record<AppLanguage, Record<TranslationKey, string>> = {
     "detail.twSignals.marginShortTitle": "資券變化",
     "detail.twSignals.ownershipTitle": "籌碼集中度",
     "detail.twSignals.profitMarginsTitle": "財報三率",
+    "detail.macdKd.eyebrow": "技術指標",
+    "detail.macdKd.title": "日線與月線 MACD／KD",
+    "detail.macdKd.description":
+      "顯示已完成 K 線的 DIF、訊號、柱狀圖（OSC）、K、D 數值；計算與台股研究一致。",
+    "detail.macdKd.unavailable": "不可用",
+    "detail.macdKd.asOf": "資料日期",
+    "detail.macdKd.passStatus": "通過狀態",
     "quote.updatedAt": "更新時間 {time}",
     "quote.open": "開盤",
     "quote.high": "最高",

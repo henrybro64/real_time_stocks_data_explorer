@@ -4,6 +4,17 @@ Browser-only, low-token transfer contract for an **external** Agent that may opt
 
 For the analyst-ready evidence pack (Phase-1 universe + Phase-2 candidate technicals), see `POST /api/tw-research/report-evidence` and the labeled Traditional Chinese fixture at `GET /api/tw-research/report-evidence/example-zh-tw` (`exampleOnly: true` — not a live recommendation). ChatGPT makes the two selection/report decisions; the external writer publishes only after explicit approval.
 
+### First-pass chip fields (#347)
+
+Before **Decision 1** (candidate selection) or **Decision 2** (final report), the external analyst must:
+
+1. `GET /api/tw-research/first-pass/snapshots/{snapshotId}/manifest`
+2. Fetch **every** `chunkIndex` listed in `chunkDigests` via `chunkPathTemplate`
+3. Match each `chunk.checksumSha256` to `manifest.chunkDigests[i]`
+4. Confirm `requiredChipFields` (`institutional_5d`, `margin`, `margin_utilization`, `tdcc_holders_ge_400_lots`) exist on every record (status may be `unavailable`/`partial` — never treat absence as verified-ready)
+
+A link-only evidence pack is **not** proof that every chip chunk was consumed. Report evidence exposes this contract under `chipHandoff`.
+
 ## Status vocabulary (do not conflate)
 
 | Status | Owner | Meaning |

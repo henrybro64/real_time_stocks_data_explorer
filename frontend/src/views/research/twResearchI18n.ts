@@ -164,6 +164,29 @@ const TW_RESEARCH_ROWS = [
   ["research.tw.evidenceStatus", "Evidence status filter", "證據狀態篩選"],
   ["research.tw.firstPassProgress", "First-pass progress", "第一輪進度"],
   ["research.tw.firstPassEvidence", "First-pass evidence", "第一輪證據"],
+  [
+    "research.tw.chipEvidenceTitle",
+    "Chip trends (籌碼動向)",
+    "籌碼動向",
+  ],
+  [
+    "research.tw.chipEvidenceDescription",
+    "Frozen first-pass 三大法人 / 融資 / 大戶 evidence for every researched symbol. Not a buy signal.",
+    "凍結第一輪快照的三大法人／融資／大戶證據（含未選入 MACD/KD 的標的）。不是買進訊號。",
+  ],
+  ["research.tw.chipEvidenceSearch", "Search chip evidence", "搜尋籌碼證據"],
+  ["research.tw.chipEvidenceSearchApply", "Apply chip search", "套用籌碼搜尋"],
+  [
+    "research.tw.chipEvidenceNeedSnapshot",
+    "Load or pin a first-pass snapshot to browse chip evidence.",
+    "請先載入或釘選第一輪快照後再瀏覽籌碼證據。",
+  ],
+  ["research.tw.chipEvidenceLoading", "Loading chip evidence…", "載入籌碼證據中…"],
+  [
+    "research.tw.chipEvidenceMeta",
+    "Showing offset {offset}, page size {limit}, total {total} · snapshot {snapshot}",
+    "顯示 offset {offset}、每頁 {limit}、共 {total} · 快照 {snapshot}",
+  ],
   ["research.tw.stageLabels", "Workflow stages", "流程階段"],
   [
     "research.tw.stageHint",

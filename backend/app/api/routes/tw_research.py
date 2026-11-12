@@ -480,23 +480,16 @@ def get_first_pass_snapshot_manifest(
     snap = tw_research_repository.get_first_pass_snapshot(snapshot_id, user_id=user_id)
     if snap is None:
         raise HTTPException(status_code=404, detail="first_pass_snapshot_not_found")
+    from app.services.tw_research.first_pass_chunks import build_first_pass_manifest
+
     records = list((snap.get("payload") or {}).get("records") or [])
-    chunk_size = 25
-    chunk_count = max(1, (len(records) + chunk_size - 1) // chunk_size) if records else 1
-    return {
-        "snapshotId": snap["snapshot_id"],
-        "contentDigest": snap["content_digest"],
-        "universeVersion": snap["universe_version"],
-        "firstPassVersion": snap["first_pass_version"],
-        "recordCount": len(records),
-        "chunkSize": chunk_size,
-        "chunkCount": chunk_count,
-        "chunkPathTemplate": (
-            f"/api/tw-research/first-pass/snapshots/{snapshot_id}/chunk"
-            "?chunkIndex={chunkIndex}"
-        ),
-        "notNotionReportList": True,
-    }
+    return build_first_pass_manifest(
+        snapshot_id=snap["snapshot_id"],
+        content_digest=snap["content_digest"],
+        universe_version=snap.get("universe_version"),
+        first_pass_version=snap.get("first_pass_version"),
+        records=records,
+    )
 
 
 @router.get("/first-pass/snapshots/{snapshot_id}/chunk")
@@ -513,19 +506,61 @@ def get_first_pass_snapshot_chunk(
     snap = tw_research_repository.get_first_pass_snapshot(snapshot_id, user_id=user_id)
     if snap is None:
         raise HTTPException(status_code=404, detail="first_pass_snapshot_not_found")
+    from app.services.tw_research.first_pass_chunks import build_first_pass_chunk
+
     records = list((snap.get("payload") or {}).get("records") or [])
-    chunk_size = 25
-    start = chunkIndex * chunk_size
-    end = start + chunk_size
-    if start >= len(records) and chunkIndex > 0:
-        raise HTTPException(status_code=404, detail="chunk_out_of_range")
+    try:
+        return build_first_pass_chunk(
+            snapshot_id=snap["snapshot_id"],
+            content_digest=snap["content_digest"],
+            records=records,
+            chunk_index=chunkIndex,
+        )
+    except IndexError as exc:
+        raise HTTPException(status_code=404, detail="chunk_out_of_range") from exc
+
+
+@router.get("/first-pass/snapshots/{snapshot_id}/chip-evidence")
+def get_first_pass_chip_evidence(
+    snapshot_id: str,
+    user_id: str = Depends(get_effective_user_id),
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=25, ge=1, le=50),
+    q: str | None = Query(default=None),
+) -> dict[str, object]:
+    """Paginated chip summaries from a frozen first-pass snapshot (#346/#347)."""
+    if not tw_research_repository.is_available():
+        raise HTTPException(
+            status_code=503,
+            detail={"error": "durable_store_unavailable"},
+        )
+    snap = tw_research_repository.get_first_pass_snapshot(snapshot_id, user_id=user_id)
+    if snap is None:
+        raise HTTPException(status_code=404, detail="first_pass_snapshot_not_found")
+    from app.services.tw_research.chip_evidence import format_chip_evidence
+    from app.services.tw_research.first_pass_chunks import ordered_first_pass_records
+
+    records = ordered_first_pass_records(
+        list((snap.get("payload") or {}).get("records") or [])
+    )
+    query = (q or "").strip().upper()
+    if query:
+        filtered = []
+        for row in records:
+            stock_id = str(row.get("stockId") or "").upper()
+            name = str(row.get("stockName") or "")
+            if query in stock_id or query in name.upper():
+                filtered.append(row)
+        records = filtered
+    page = records[offset : offset + limit]
     return {
         "snapshotId": snap["snapshot_id"],
         "contentDigest": snap["content_digest"],
-        "chunkIndex": chunkIndex,
-        "chunkSize": chunk_size,
-        "records": records[start:end],
-        "truncated": end < len(records),
+        "offset": offset,
+        "limit": limit,
+        "total": len(records),
+        "rows": [format_chip_evidence(row) for row in page],
+        "notBuySignal": True,
         "notNotionReportList": True,
     }
 

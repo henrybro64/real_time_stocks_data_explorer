@@ -643,6 +643,43 @@ export function fetchKeyStatistics(stockId: string) {
   return fetchJson<KeyStatistics>(`/stocks/${encodeURIComponent(stockId)}/key-statistics`);
 }
 
+export type TechnicalIndicatorSnapshot = {
+  timeframe: "daily" | "monthly";
+  asOf?: string | null;
+  as_of?: string | null;
+  dif?: number | null;
+  signal?: number | null;
+  osc?: number | null;
+  k?: number | null;
+  d?: number | null;
+  macdDif?: number | null;
+  macdSignal?: number | null;
+  macdHistogram?: number | null;
+  kdK?: number | null;
+  kdD?: number | null;
+  passStatus?: string | null;
+  pass_status?: string | null;
+  quality: string;
+  unavailableReason?: string | null;
+  barCount?: number;
+};
+
+export type TechnicalIndicatorsResponse = {
+  stockId: string;
+  calculationVersion: string;
+  daily: TechnicalIndicatorSnapshot;
+  monthly: TechnicalIndicatorSnapshot;
+  upstreamFetch: boolean;
+  notes?: string[];
+};
+
+/** Stored-only daily + completed-monthly MACD/KD for TW stock Profile (#331). */
+export function fetchTechnicalIndicators(stockId: string) {
+  return fetchJson<TechnicalIndicatorsResponse>(
+    `/stocks/${encodeURIComponent(stockId)}/technical-indicators`,
+  );
+}
+
 export function fetchStockNews(stockId: string) {
   return fetchJson<NewsItem[]>(`/stocks/${encodeURIComponent(stockId)}/news`);
 }

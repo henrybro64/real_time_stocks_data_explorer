@@ -18,12 +18,15 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from app.services.tw_research.chip_evidence import CHIP_FIELD_KEYS, summarize_chip_coverage
 from app.services.tw_research.constants import (
     DAILY_NOT_RUN_BY_DESIGN,
+    EXPORT_CHUNK_SIZE,
     REPORT_EVIDENCE_VERSION,
 )
 from app.services.tw_research.evaluation import derive_stage_progress
 from app.services.tw_research.export import content_digest
+from app.services.tw_research.first_pass_chunks import build_first_pass_manifest
 
 _FIXTURE_PATH = Path(__file__).with_name("report_evidence_fixture_zh_tw.json")
 
@@ -134,6 +137,9 @@ def build_report_evidence(
         "verified_ready",
         "complete",
         "completed",
+        # complete_attempted = durable collection finished with known gaps;
+        # still not verified_ready — consumers must read qualityWarnings/digests.
+        "complete_attempted",
         "ok",
     }:
         quality_warnings.append("first_pass_quality_not_verified_ready")
@@ -175,13 +181,75 @@ def build_report_evidence(
     ]
 
     first_pass_ref = None
+    chip_handoff = None
     if first_pass and first_pass.get("snapshotId"):
         snapshot_id = str(first_pass["snapshotId"])
+        payload_records = []
+        raw_payload = first_pass.get("payload") if isinstance(first_pass.get("payload"), dict) else {}
+        if isinstance(raw_payload.get("records"), list):
+            payload_records = list(raw_payload["records"])
+        elif isinstance((first_pass.get("raw") or {}).get("payload"), dict):
+            nested = (first_pass.get("raw") or {}).get("payload") or {}
+            if isinstance(nested.get("records"), list):
+                payload_records = list(nested["records"])
+        manifest = build_first_pass_manifest(
+            snapshot_id=snapshot_id,
+            content_digest=str(first_pass.get("contentDigest") or ""),
+            universe_version=str(
+                (first_pass.get("raw") or {}).get("universe_version")
+                or raw_payload.get("universeVersion")
+                or ""
+            ),
+            first_pass_version=str(
+                (first_pass.get("raw") or {}).get("first_pass_version")
+                or raw_payload.get("firstPassVersion")
+                or ""
+            ),
+            records=payload_records,
+            chunk_size=EXPORT_CHUNK_SIZE,
+        )
         first_pass_ref = {
             "snapshotId": snapshot_id,
             "contentDigest": first_pass.get("contentDigest"),
-            "stockCount": int(first_pass.get("universeSize") or len(first_pass.get("stockIds") or [])),
+            "stockCount": int(
+                first_pass.get("universeSize") or len(first_pass.get("stockIds") or [])
+            ),
             "manifestPath": f"/api/tw-research/first-pass/snapshots/{snapshot_id}/manifest",
+            "chunkPathTemplate": manifest["chunkPathTemplate"],
+            "chunkCount": manifest["chunkCount"],
+            "chunkDigests": manifest["chunkDigests"],
+            "chipCoverage": manifest["chipCoverage"],
+            "requiredChipFields": list(CHIP_FIELD_KEYS),
+        }
+        chip_handoff = {
+            "requiredFields": list(CHIP_FIELD_KEYS),
+            "units": {
+                "institutional_5d": "lots",
+                "margin": "lots",
+                "tdcc_holders_ge_400_lots": "percent_and_percentage_points",
+            },
+            "verification": {
+                "steps": [
+                    f"GET {first_pass_ref['manifestPath']}",
+                    "GET every chunkIndex in chunkDigests via chunkPathTemplate",
+                    "Match each chunk.checksumSha256 to manifest.chunkDigests[i]",
+                    "Confirm requiredChipFields exist on every record (status may be unavailable)",
+                ],
+                "statusAfterVerify": "stock_ticker_first_pass_export_verified",
+            },
+            "decisionGuidance": {
+                "decision1_candidateSelection": (
+                    "May use chip + fundamental evidence when choosing technical compute subset."
+                ),
+                "decision2_finalReport": (
+                    "May use chip + fundamental + valuation + price basis + "
+                    "monthly-first/daily MACD/KD; zero selections is valid."
+                ),
+            },
+            "coverage": summarize_chip_coverage(payload_records)
+            if payload_records
+            else first_pass_ref["chipCoverage"],
+            "notBuySignal": True,
         }
 
     payload = {
@@ -219,6 +287,7 @@ def build_report_evidence(
             "technicalContentDigest": (technical_scan or {}).get("contentDigest"),
         },
         "firstPass": first_pass_ref,
+        "chipHandoff": chip_handoff,
         "stageProgress": stage,
         "symbols": symbols,
         "analystDecisionSlots": {
@@ -239,6 +308,7 @@ def build_report_evidence(
             "Partial/stale/unknown required fields must not be represented as a "
             "fully verified daily Notion report.",
             "Unchanged contentDigest ⇒ external Agent must not rewrite Notion.",
+            "Retrieve and verify all first-pass chunks (chip fields) before Decision 1/2 (#347).",
         ],
     }
     digest_payload = {key: value for key, value in payload.items() if key != "generatedAt"}

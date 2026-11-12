@@ -79,6 +79,11 @@ vi.mock("../../services/api/twResearch", async () => {
     createTwResearchTechnicalScanFromCandidateSet: vi.fn(),
     fetchTwResearchFirstPassSymbols: vi.fn(),
     fetchTwResearchFirstPassManifest: vi.fn(),
+    fetchTwResearchFirstPassChipEvidence: vi.fn(async () => ({
+      snapshotId: "fps_1",
+      total: 0,
+      rows: [],
+    })),
     fetchTwResearchFirstPassSnapshot: vi.fn(async () => ({
       snapshotId: "fps_1",
       stockIds: [],

@@ -1156,8 +1156,90 @@ export async function installE2eApiMocks(page: Page): Promise<void> {
       await fulfillJson(route, { jobs: [] });
       return;
     }
+    if (
+      path.includes("/api/tw-research/first-pass/snapshots/") &&
+      path.endsWith("/chip-evidence") &&
+      request.method() === "GET"
+    ) {
+      await fulfillJson(route, {
+        snapshotId: "e2e-fps",
+        contentDigest: "e2e-digest",
+        offset: 0,
+        limit: 25,
+        total: 1,
+        notBuySignal: true,
+        rows: [
+          {
+            stockId: "TW:2330",
+            stockName: "台積電",
+            nameStatus: "ok",
+            institutional: {
+              status: "ok",
+              sourceAsOf: "2024-06-24",
+              fiveSessionTotalsStatus: "ok",
+              fiveSessionTotals: {
+                foreignNetLots: 60,
+                trustNetLots: 5,
+                dealerNetLots: -5,
+                totalNetLots: 60,
+              },
+              sessions: [],
+            },
+            margin: {
+              status: "ok",
+              direction: "increase",
+              balanceLots: 100,
+              balanceDeltaLotsApprox5Sessions: 5,
+              utilization: { status: "unavailable" },
+            },
+            tdcc: {
+              status: "ok",
+              holdersGe400LotsPercent: 41,
+              weeklyChangePercentagePoints: 0.5,
+            },
+            notBuySignal: true,
+          },
+        ],
+      });
+      return;
+    }
     if (path === "/api/tw-research/scans" && request.method() === "GET") {
       await fulfillJson(route, { scans: [] });
+      return;
+    }
+    if (
+      path.startsWith("/api/stocks/") &&
+      path.endsWith("/technical-indicators") &&
+      request.method() === "GET"
+    ) {
+      await fulfillJson(route, {
+        stockId: "TW:2330",
+        market: "TW",
+        upstreamFetch: false,
+        calculationVersion: "e2e",
+        daily: {
+          quality: "ok",
+          timeframe: "daily",
+          asOf: "2024-06-27",
+          macdDif: 1.2,
+          macdSignal: 0.8,
+          macdHistogram: 0.4,
+          kdK: 55,
+          kdD: 52,
+          passStatus: "pass",
+        },
+        monthly: {
+          quality: "ok",
+          timeframe: "monthly",
+          asOf: "2024-05-31",
+          macdDif: 2.1,
+          macdSignal: 1.5,
+          macdHistogram: 0.6,
+          kdK: 60,
+          kdD: 58,
+          passStatus: "pass",
+        },
+      });
       return;
     }
     if (path === "/api/themes" && request.method() === "GET") {

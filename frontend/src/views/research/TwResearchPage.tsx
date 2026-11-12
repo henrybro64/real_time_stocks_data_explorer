@@ -33,6 +33,11 @@ import { useLanguage, type TranslationKey } from "../../app/i18n";
 import { RequestStateNotice, errorToNoticeKind } from "../../components/state/RequestStateNotice";
 import { toApiError } from "../../services/api/client";
 import {
+  ChipEvidenceCard,
+  formatChipEvidenceFromFields,
+  type ChipEvidenceRow,
+} from "./ChipEvidenceCard";
+import {
   advanceTwResearchRunGate,
   createTwResearchFirstPassJob,
   createTwResearchScan,
@@ -42,6 +47,7 @@ import {
   fetchTwResearchCandidateSet,
   fetchTwResearchExportChunk,
   fetchTwResearchExportManifest,
+  fetchTwResearchFirstPassChipEvidence,
   fetchTwResearchFirstPassChunk,
   fetchTwResearchFirstPassJob,
   fetchTwResearchFirstPassManifest,
@@ -237,6 +243,9 @@ export function TwResearchPage({
   const [evidenceOffset, setEvidenceOffset] = useState(0);
   const [evidenceStatusFilter, setEvidenceStatusFilter] = useState("");
   const [evidenceSearch, setEvidenceSearch] = useState("");
+  const [chipEvidenceOffset, setChipEvidenceOffset] = useState(0);
+  const [chipEvidenceSearch, setChipEvidenceSearch] = useState("");
+  const [chipEvidenceQuery, setChipEvidenceQuery] = useState("");
   const [candidateIdsText, setCandidateIdsText] = useState("");
   const [committedCandidateIdsText, setCommittedCandidateIdsText] = useState("");
   const [candidateSetText, setCandidateSetText] = useState("");
@@ -614,6 +623,24 @@ export function TwResearchPage({
     queryKey: ["tw-research-first-pass-snapshot", pinnedFirstPassSnapshotId],
     enabled: Boolean(pinnedFirstPassSnapshotId),
     queryFn: () => fetchTwResearchFirstPassSnapshot(pinnedFirstPassSnapshotId as string),
+    staleTime: 60_000,
+    retry: false,
+  });
+
+  const chipEvidenceQueryResult = useQuery({
+    queryKey: [
+      "tw-research-chip-evidence",
+      pinnedFirstPassSnapshotId,
+      chipEvidenceOffset,
+      chipEvidenceQuery,
+    ],
+    enabled: Boolean(pinnedFirstPassSnapshotId),
+    queryFn: () =>
+      fetchTwResearchFirstPassChipEvidence(pinnedFirstPassSnapshotId as string, {
+        offset: chipEvidenceOffset,
+        limit: PAGE_SIZE,
+        q: chipEvidenceQuery || undefined,
+      }),
     staleTime: 60_000,
     retry: false,
   });
@@ -1708,6 +1735,97 @@ export function TwResearchPage({
                 readOnly
                 rows={6}
               />
+              <Tile data-testid="tw-research-chip-evidence">
+                <h3 className="cds--productive-heading-02">{t("research.tw.chipEvidenceTitle")}</h3>
+                <p className="cds--helper-text-01">{t("research.tw.chipEvidenceDescription")}</p>
+                <Stack gap={3} orientation="horizontal">
+                  <TextInput
+                    id="tw-research-chip-search"
+                    labelText={t("research.tw.chipEvidenceSearch")}
+                    value={chipEvidenceSearch}
+                    onChange={(event) => setChipEvidenceSearch(event.target.value)}
+                  />
+                  <Button
+                    kind="ghost"
+                    size="sm"
+                    disabled={!pinnedFirstPassSnapshotId}
+                    onClick={() => {
+                      setChipEvidenceOffset(0);
+                      setChipEvidenceQuery(chipEvidenceSearch.trim());
+                    }}
+                  >
+                    {t("research.tw.chipEvidenceSearchApply")}
+                  </Button>
+                  <Button
+                    kind="ghost"
+                    size="sm"
+                    disabled={!pinnedFirstPassSnapshotId || chipEvidenceOffset <= 0}
+                    onClick={() =>
+                      setChipEvidenceOffset((current) => Math.max(0, current - PAGE_SIZE))
+                    }
+                  >
+                    {t("research.tw.evidencePrev")}
+                  </Button>
+                  <Button
+                    kind="ghost"
+                    size="sm"
+                    disabled={
+                      !pinnedFirstPassSnapshotId ||
+                      !chipEvidenceQueryResult.data ||
+                      chipEvidenceOffset + PAGE_SIZE >=
+                        Number(chipEvidenceQueryResult.data.total ?? 0)
+                    }
+                    onClick={() => setChipEvidenceOffset((current) => current + PAGE_SIZE)}
+                  >
+                    {t("research.tw.evidenceNext")}
+                  </Button>
+                </Stack>
+                {!pinnedFirstPassSnapshotId ? (
+                  <p className="cds--helper-text-01">{t("research.tw.chipEvidenceNeedSnapshot")}</p>
+                ) : null}
+                {chipEvidenceQueryResult.isLoading ? (
+                  <InlineLoading description={t("research.tw.chipEvidenceLoading")} status="active" />
+                ) : null}
+                {chipEvidenceQueryResult.isError ? (
+                  <RequestStateNotice
+                    kind={errorToNoticeKind(chipEvidenceQueryResult.error)}
+                    scopeLabel={t("research.tw.chipEvidenceTitle")}
+                    status={toApiError(chipEvidenceQueryResult.error).status}
+                    detail={describeResearchFailure(chipEvidenceQueryResult.error)}
+                    onRetry={() => {
+                      void chipEvidenceQueryResult.refetch();
+                    }}
+                  />
+                ) : null}
+                {chipEvidenceQueryResult.data ? (
+                  <p className="cds--helper-text-01" data-testid="tw-research-chip-evidence-meta">
+                    {t("research.tw.chipEvidenceMeta", {
+                      offset: chipEvidenceOffset,
+                      limit: PAGE_SIZE,
+                      total: Number(chipEvidenceQueryResult.data.total ?? 0),
+                      snapshot: pinnedFirstPassSnapshotId ?? "—",
+                    })}
+                  </p>
+                ) : null}
+                <Stack gap={4}>
+                  {(chipEvidenceQueryResult.data?.rows ?? []).map((row) => {
+                    const stockId = String(row.stockId ?? "");
+                    return (
+                      <div key={stockId || JSON.stringify(row)} data-testid={`tw-research-chip-row-${stockId}`}>
+                        <p className="cds--productive-heading-01">
+                          {formatTwStockLabel(
+                            stockId,
+                            row.stockName as string | undefined,
+                            row.nameStatus as string | undefined,
+                            t("research.tw.nameUnavailable"),
+                          )}
+                        </p>
+                        <ChipEvidenceCard row={row as ChipEvidenceRow} />
+                      </div>
+                    );
+                  })}
+                </Stack>
+              </Tile>
               <TextArea
                 id="tw-research-candidate-ids"
                 data-testid="tw-research-candidate-ids"
@@ -2092,24 +2210,35 @@ export function TwResearchPage({
                           {expanded ? (
                             <TableRow>
                               <TableCell colSpan={7}>
-                                <pre
-                                  className="cds--body-compact-01"
-                                  style={{ whiteSpace: "pre-wrap", margin: 0 }}
-                                  data-testid={`tw-research-watchlist-detail-${id}`}
-                                >
-                                  {JSON.stringify(
-                                    {
-                                      reason: watchlistReasonById.get(id) ?? null,
-                                      coverage: row?.coverage ?? null,
-                                      monthly: row?.monthly ?? null,
-                                      daily: row?.daily ?? null,
-                                      enrichment: enrichment ?? null,
-                                      note: "Not a Notion recommendation.",
-                                    },
-                                    null,
-                                    2,
-                                  )}
-                                </pre>
+                                <div data-testid={`tw-research-watchlist-detail-${id}`}>
+                                  <ChipEvidenceCard
+                                    row={formatChipEvidenceFromFields(
+                                      id,
+                                      row?.stockName as string | undefined,
+                                      row?.nameStatus as string | undefined,
+                                      ((enrichment as { fields?: Record<string, unknown> } | null)
+                                        ?.fields ??
+                                        (row?.fields as Record<string, unknown> | undefined) ??
+                                        null) as Record<string, unknown> | null,
+                                    )}
+                                  />
+                                  <pre
+                                    className="cds--body-compact-01"
+                                    style={{ whiteSpace: "pre-wrap", margin: 0 }}
+                                  >
+                                    {JSON.stringify(
+                                      {
+                                        reason: watchlistReasonById.get(id) ?? null,
+                                        coverage: row?.coverage ?? null,
+                                        monthly: row?.monthly ?? null,
+                                        daily: row?.daily ?? null,
+                                        note: "Not a Notion recommendation.",
+                                      },
+                                      null,
+                                      2,
+                                    )}
+                                  </pre>
+                                </div>
                               </TableCell>
                             </TableRow>
                           ) : null}
@@ -2378,23 +2507,34 @@ export function TwResearchPage({
                       {expanded ? (
                         <TableRow>
                           <TableCell colSpan={10}>
-                            <pre
-                              className="cds--body-compact-01"
-                              data-testid={`tw-research-detail-${stockId}`}
-                              style={{ whiteSpace: "pre-wrap", margin: 0 }}
-                            >
-                              {JSON.stringify(
-                                {
-                                  coverage: row.coverage ?? null,
-                                  enrichment: row.enrichment ?? null,
-                                  monthly,
-                                  daily,
-                                  readiness: row.readiness ?? null,
-                                },
-                                null,
-                                2,
-                              )}
-                            </pre>
+                            <div data-testid={`tw-research-detail-${stockId}`}>
+                              <ChipEvidenceCard
+                                row={formatChipEvidenceFromFields(
+                                  stockId,
+                                  row.stockName as string | undefined,
+                                  row.nameStatus as string | undefined,
+                                  ((row.enrichment as { fields?: Record<string, unknown> } | null)
+                                    ?.fields ??
+                                    (row.fields as Record<string, unknown> | undefined) ??
+                                    null) as Record<string, unknown> | null,
+                                )}
+                              />
+                              <pre
+                                className="cds--body-compact-01"
+                                style={{ whiteSpace: "pre-wrap", margin: 0 }}
+                              >
+                                {JSON.stringify(
+                                  {
+                                    coverage: row.coverage ?? null,
+                                    monthly,
+                                    daily,
+                                    readiness: row.readiness ?? null,
+                                  },
+                                  null,
+                                  2,
+                                )}
+                              </pre>
+                            </div>
                           </TableCell>
                         </TableRow>
                       ) : null}

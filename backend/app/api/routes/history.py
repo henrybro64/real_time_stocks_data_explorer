@@ -71,6 +71,32 @@ def get_watchlist_sparklines(
 
 
 @router.get(
+    "/{stock_id}/technical-indicators",
+    responses={
+        404: {"description": "Stock not found"},
+        400: {"description": "Unsupported market for this endpoint"},
+    },
+)
+def get_technical_indicators(stock_id: str) -> dict[str, object]:
+    """Daily + completed-monthly MACD/KD for one TW stock Profile (#331).
+
+    Stored-history only; reuses ``tw_research.indicators``. Does not start a
+    research scan or upstream month backfill.
+    """
+    from app.services.stock_technical_indicators import (
+        StockTechnicalIndicatorsError,
+        get_stock_technical_indicators,
+    )
+
+    try:
+        return get_stock_technical_indicators(stock_id)
+    except StockTechnicalIndicatorsError as exc:
+        if exc.code == "not_found":
+            raise HTTPException(status_code=404, detail=exc.message) from exc
+        raise HTTPException(status_code=400, detail=exc.message) from exc
+
+
+@router.get(
     "/{stock_id}/history",
     responses={
         404: {"description": "Stock not found"},

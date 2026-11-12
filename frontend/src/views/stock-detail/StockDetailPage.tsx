@@ -24,6 +24,7 @@ import { RequestStateNotice, errorToNoticeKind } from "../../components/state/Re
 import { TwInsightsPanel } from "../../components/tw-insights/TwInsightsPanel";
 import { UsInsightsPanel } from "../../components/us-insights/UsInsightsPanel";
 import { useQuoteDerivedRefetchInterval } from "../../hooks/useQuoteDerivedRefetchInterval";
+import { MacdKdIndicatorsPanel } from "./MacdKdIndicatorsPanel";
 import { TaiwanSignalsPanel } from "./TaiwanSignalsPanel";
 import {
   fetchHistory,
@@ -263,6 +264,11 @@ export function StockDetailPage({ stockId = "" }: Props) {
           ) : null}
         </Tile>
       </Column>
+      {isTaiwanStock ? (
+        <Column className="app-column-spacing" sm={4} md={8} lg={16}>
+          <MacdKdIndicatorsPanel stockId={decodedStockId} />
+        </Column>
+      ) : null}
       {isTaiwanStock ? (
         <Column className="app-column-spacing" sm={4} md={8} lg={16}>
           <TaiwanSignalsPanel stockId={decodedStockId} />

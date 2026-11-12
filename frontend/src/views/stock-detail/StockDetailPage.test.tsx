@@ -69,6 +69,12 @@ vi.mock("../../components/us-insights/UsInsightsPanel", () => ({
   UsInsightsPanel: () => <div data-testid="us-insights-mock">us-insights</div>,
 }));
 
+vi.mock("./MacdKdIndicatorsPanel", () => ({
+  MacdKdIndicatorsPanel: ({ stockId }: { stockId: string }) => (
+    <div data-testid="macd-kd-indicators-panel">macd-kd:{stockId}</div>
+  ),
+}));
+
 const { useQueryMock } = vi.hoisted(() => ({
   useQueryMock: vi.fn(),
 }));
