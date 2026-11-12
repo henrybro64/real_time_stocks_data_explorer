@@ -2195,17 +2195,22 @@ class TwResearchRepository(SessionBoundRepository):
             row.job_claim_expires_at = None
             row.status = "running"
             row.phase = "phase1_first_pass"
-            # Explicit Start Research authorizes durable first-pass drain (#349).
-            row.schedule_enabled = True
+            from app.services.tw_research.research_run import first_pass_drain_availability
+
+            available, reason = first_pass_drain_availability(user_id)
+            row.schedule_enabled = bool(available)
             dims = dict(row.dimensions_json or {})
             dims["fundamentals"] = "in_progress"
             row.dimensions_json = dims
             note_list = list(row.notes_json or [])
             for note in notes or []:
                 note_list.append(note)
-            note_list.append(
-                "First-pass drain authorized for this research-run job only."
-            )
+            if available:
+                note_list.append(
+                    "First-pass drain authorized for this research-run job only."
+                )
+            else:
+                note_list.append(str(reason))
             row.notes_json = note_list[-50:]
             row.revision = int(row.revision or 0) + 1
             row.updated_at = now
@@ -2729,6 +2734,42 @@ class TwResearchRepository(SessionBoundRepository):
                 "job": _first_pass_job_to_dict(row),
                 "processed_count": processed_count,
             }
+
+    def fail_first_pass_job(
+        self,
+        job_id: str,
+        *,
+        user_id: str,
+        error: str,
+        lease_generation: int | None = None,
+    ) -> dict[str, Any] | None:
+        """Mark a job failed (e.g. systemic programming_error circuit breaker)."""
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            now = datetime.now(timezone.utc)
+            row = session.execute(
+                select(TwResearchFirstPassJob)
+                .where(
+                    TwResearchFirstPassJob.job_id == job_id,
+                    TwResearchFirstPassJob.user_id == user_id,
+                )
+                .with_for_update()
+            ).scalar_one_or_none()
+            if row is None:
+                return None
+            if (
+                lease_generation is not None
+                and int(row.lease_generation or 0) != int(lease_generation)
+            ):
+                return None
+            row.status = "failed"
+            row.reserve_expires_at = None
+            notes = list(row.notes_json or [])
+            notes.append(f"error:{error}")
+            row.notes_json = notes[-50:]
+            row.updated_at = now
+            session.commit()
+            return _first_pass_job_to_dict(row)
 
     def list_first_pass_symbols(
         self,

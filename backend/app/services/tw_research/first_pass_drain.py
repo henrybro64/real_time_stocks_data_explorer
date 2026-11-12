@@ -9,6 +9,7 @@ never drains historical orphan jobs that are not run-owned.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any
 
 from app.services.tw_research.first_pass_job import FirstPassJobError, first_pass_job_service
@@ -64,7 +65,8 @@ def drain_authorized_first_pass(
     enabled: bool,
     dry_run: bool = False,
     max_batches: int = 3,
-    batch_size: int = 10,
+    batch_size: int = 5,
+    time_budget_seconds: float = 90,
     job_id: str | None = None,
 ) -> FirstPassDrainResult:
     """Run up to ``max_batches`` leased first-pass batches for one authorized run.
@@ -268,6 +270,7 @@ def drain_authorized_first_pass(
                 target_job,
                 user_id=owner,
                 batch_size=max(1, min(int(batch_size), 25)),
+                time_budget_seconds=float(time_budget_seconds),
             )
         except KeyError as exc:
             return FirstPassDrainResult(
@@ -339,6 +342,20 @@ def drain_authorized_first_pass(
             reconciled = research_run_store.get(owner) or run
         except ResearchRunStoreUnavailable:
             reconciled = run
+
+    # Best-effort tick telemetry — must not fail the drain tick.
+    try:
+        research_run_store.record_first_pass_drain_tick(
+            owner,
+            last_tick_at=datetime.now(UTC).isoformat(),
+            last_outcome=stop_reason,
+        )
+        try:
+            reconciled = research_run_store.get(owner) or reconciled
+        except ResearchRunStoreUnavailable:
+            pass
+    except Exception as exc:  # noqa: BLE001
+        notes.append(f"tick_telemetry_failed:{type(exc).__name__}")
 
     return FirstPassDrainResult(
         outcome=stop_reason,

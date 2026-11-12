@@ -180,12 +180,23 @@ def enrich_qualified_symbol(
             ),
         ),
     ]
-    from app.services.tw_research.first_pass import provider_exception_reason
+    from app.services.tw_research.first_pass import (
+        log_isolated_fault,
+        provider_exception_reason,
+    )
 
     for field_name, source, freshness_class, action in steps:
         try:
             action()
         except Exception as exc:  # noqa: BLE001 — isolate per enrichment source
+            reason = provider_exception_reason(exc)
+            log_isolated_fault(
+                stock_id=result.stock_id,
+                stage=field_name,
+                source=source,
+                exc=exc,
+                reason=reason,
+            )
             _set_field(
                 result,
                 field=field_name,
@@ -194,7 +205,7 @@ def enrich_qualified_symbol(
                 captured_at=captured_at,
                 freshness_class=freshness_class,
                 # Align with first-pass: TypeError/AttributeError → programming_error (#348).
-                reason=provider_exception_reason(exc),
+                reason=reason,
             )
 
     # PEG is never reverse-engineered from a mismatched PE period.

@@ -125,7 +125,9 @@ class FirstPassDrainRequest(BaseModel):
 
     dryRun: bool = False
     maxBatches: int = Field(default=3, ge=1, le=8)
-    batchSize: int = Field(default=10, ge=1, le=25)
+    batchSize: int = Field(default=5, ge=1, le=25)
+    # Wall-clock budget per batch (budget 90 < curl 150 < lease 300).
+    timeBudgetSeconds: float = Field(default=90, ge=30, le=120)
     jobId: str | None = None
 
 
@@ -243,8 +245,10 @@ class FirstPassJobCreateRequest(BaseModel):
 
 
 class FirstPassJobBatchRequest(BaseModel):
-    batchSize: int = Field(default=10, ge=1, le=25)
+    batchSize: int = Field(default=5, ge=1, le=25)
     includeNonofficialMargins: bool = False
+    # Same default as drain — sits behind the ~150s frontend proxy.
+    timeBudgetSeconds: float = Field(default=90, ge=30, le=120)
 
 
 class FirstPassJobResponse(BaseModel):

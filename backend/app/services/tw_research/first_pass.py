@@ -8,11 +8,15 @@ fabricated. Yahoo profitability is opt-in only.
 
 from __future__ import annotations
 
+import logging
 import re
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Literal
+
+logger = logging.getLogger(__name__)
 
 from app.models.quote import CandleRecord
 from app.models.stock import StockRecord
@@ -60,6 +64,7 @@ ProfitabilityLoader = Callable[[str], dict[str, object] | None]
 ThemeKeysLoader = Callable[[str], list[str]]
 
 # Permanent / non-retryable field reason markers (substring match, lowercased).
+# programming_error is a distinct class (see classify_field_reason) — not listed here.
 _PERMANENT_FIELD_REASON_MARKERS = (
     "adapter_missing",
     "adapter_not_implemented",
@@ -79,8 +84,6 @@ _PERMANENT_FIELD_REASON_MARKERS = (
     "not_in_catalog",
     "unsupported",
     "permanently_unavailable",
-    # Deterministic call-contract / code bugs (#348) — do not burn transient retries.
-    "programming_error",
 )
 
 _RETRYABLE_FIELD_CLASSES = frozenset(
@@ -186,6 +189,9 @@ class FirstPassBatchResult:
     records: list[FirstPassSymbolRecord]
     coverage_summary: dict[str, Any]
     notes: list[str]
+    budget_stopped: bool = False
+    released_unstarted: list[str] = field(default_factory=list)
+    duration_ms: int = 0
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -197,6 +203,9 @@ class FirstPassBatchResult:
             "records": [record.as_dict() for record in self.records],
             "coverageSummary": self.coverage_summary,
             "notes": list(self.notes),
+            "budgetStopped": self.budget_stopped,
+            "releasedUnstarted": list(self.released_unstarted),
+            "durationMs": self.duration_ms,
         }
 
 
@@ -238,11 +247,60 @@ def provider_exception_reason(exc: BaseException) -> str:
     return f"symbol_error:{name}"
 
 
+def sanitize_exception_text(text: str, *, limit: int = 200) -> str:
+    """Strip URL query strings and truncate — never log tokens/headers."""
+    cleaned = re.sub(r"(\S+)\?[^\s]*", r"\1", str(text or ""))
+    cleaned = re.sub(
+        r"(?i)\bauthorization\s*[:=]\s*(?:bearer\s+)?\S+",
+        "<redacted>",
+        cleaned,
+    )
+    cleaned = re.sub(
+        r"(?i)\b(?:token|api[_-]?key)\s*[:=]\s*\S+",
+        "<redacted>",
+        cleaned,
+    )
+    cleaned = re.sub(r"(?i)\bbearer\s+\S+", "<redacted>", cleaned)
+    return cleaned[: max(0, int(limit))]
+
+
+def log_isolated_fault(
+    *,
+    stock_id: str,
+    stage: str,
+    source: str,
+    exc: BaseException,
+    reason: str,
+    job_id: str | None = None,
+) -> None:
+    """Emit one sanitized WARNING for an isolated collector/enrichment fault."""
+    programming = classify_field_reason(reason) == "programming_error"
+    safe = sanitize_exception_text(str(exc))
+    logger.warning(
+        "first_pass_isolated_fault %s",
+        safe,
+        extra={
+            "stock_id": stock_id,
+            "stage": stage,
+            "field": stage,
+            "source": source,
+            "exc_class": type(exc).__name__,
+            "reason": reason,
+            "job_id": job_id,
+            "fault_detail": safe,
+        },
+        exc_info=programming,
+    )
+
+
 def classify_field_reason(reason: str | None) -> str:
     """Map a ProvenanceField reason to a durable failure class."""
     text = str(reason or "").strip().lower()
     if not text:
         return "unknown"
+    # Distinct class — never auto-retried, not lumped into permanent markers.
+    if text.startswith("programming_error:"):
+        return "programming_error"
     if any(marker in text for marker in _PERMANENT_FIELD_REASON_MARKERS):
         return "permanent"
     if text.startswith("rate_limited") or "429" in text or "rate limit" in text:
@@ -366,6 +424,9 @@ def collect_first_pass_batch(
     include_nonofficial_margins: bool = False,
     now: datetime | None = None,
     previous_fields_by_stock: Mapping[str, Mapping[str, Any]] | None = None,
+    time_budget_seconds: float | None = None,
+    monotonic_clock: Callable[[], float] | None = None,
+    job_id: str | None = None,
 ) -> FirstPassBatchResult:
     """Collect first-pass evidence for a **deduplicated** ID list.
 
@@ -374,6 +435,10 @@ def collect_first_pass_batch(
 
     Per-symbol failures are isolated: one stock raising does not abort the batch.
     Previously successful fields may be reused to avoid repeating expensive fetches.
+
+    When ``time_budget_seconds`` is set, stop **before** starting a symbol once
+    elapsed time reaches the budget; unstarted ids are returned in
+    ``released_unstarted`` (attempts unchanged).
     """
     deduped = dedupe_stock_ids(stock_ids)
     loader = stock_loader or quote_service.get_catalog_stock
@@ -383,8 +448,18 @@ def collect_first_pass_batch(
     calculation_now = now
     prior_map = previous_fields_by_stock or {}
     records: list[FirstPassSymbolRecord] = []
+    clock = monotonic_clock or time.monotonic
+    started_at = clock()
+    budget_stopped = False
+    released_unstarted: list[str] = []
 
-    for stock_id in deduped:
+    for index, stock_id in enumerate(deduped):
+        if time_budget_seconds is not None:
+            elapsed = clock() - started_at
+            if elapsed >= float(time_budget_seconds):
+                budget_stopped = True
+                released_unstarted = list(deduped[index:])
+                break
         try:
             records.append(
                 _collect_one(
@@ -401,12 +476,22 @@ def collect_first_pass_batch(
                     captured_at=captured_at,
                     now=calculation_now,
                     previous_fields=prior_map.get(stock_id),
+                    job_id=job_id,
                 )
             )
         except Exception as exc:  # noqa: BLE001 — isolate unexpected per-symbol faults
             if is_infrastructure_failure(exc):
                 # PostgreSQL / lease / persistence must fail closed.
                 raise
+            reason = provider_exception_reason(exc)
+            log_isolated_fault(
+                stock_id=stock_id,
+                stage="symbol",
+                source="collect_first_pass_batch",
+                exc=exc,
+                reason=reason,
+                job_id=job_id,
+            )
             failed = FirstPassSymbolRecord(
                 stock_id=stock_id,
                 stock_name=None,
@@ -415,12 +500,26 @@ def collect_first_pass_batch(
                 exchange=None,
                 market=None,
                 sector_theme_keys=[],
-                error=provider_exception_reason(exc),
+                error=reason,
             )
             failed.completeness = _symbol_completeness(failed)
             records.append(failed)
 
+    duration_ms = int(max(0.0, (clock() - started_at) * 1000.0))
     coverage = _coverage_summary(records)
+    notes = [
+        "First-pass is candidate-independent evidence for the external analyst.",
+        "Technical MACD/KD second-pass is intentionally not invoked here.",
+        "Missing PEG/revenue/OCF/debt never become fabricated values.",
+        "include_nonofficial_margins defaults false to avoid unbounded Yahoo fan-out.",
+        "Stock Ticker does not decide Notion report inclusion from this pack.",
+        "Per-symbol acquisition faults are isolated; batch continues for peers.",
+    ]
+    if budget_stopped:
+        notes.append(
+            f"time_budget_stopped after {len(records)} symbols; "
+            f"{len(released_unstarted)} released unstarted."
+        )
     return FirstPassBatchResult(
         first_pass_version=FIRST_PASS_VERSION,
         universe_version=version,
@@ -429,14 +528,10 @@ def collect_first_pass_batch(
         deduped_count=len(deduped),
         records=records,
         coverage_summary=coverage,
-        notes=[
-            "First-pass is candidate-independent evidence for the external analyst.",
-            "Technical MACD/KD second-pass is intentionally not invoked here.",
-            "Missing PEG/revenue/OCF/debt never become fabricated values.",
-            "include_nonofficial_margins defaults false to avoid unbounded Yahoo fan-out.",
-            "Stock Ticker does not decide Notion report inclusion from this pack.",
-            "Per-symbol acquisition faults are isolated; batch continues for peers.",
-        ],
+        notes=notes,
+        budget_stopped=budget_stopped,
+        released_unstarted=released_unstarted,
+        duration_ms=duration_ms,
     )
 
 
@@ -476,6 +571,7 @@ def _collect_one(
     captured_at: str,
     now: datetime | None,
     previous_fields: Mapping[str, Any] | None = None,
+    job_id: str | None = None,
 ) -> FirstPassSymbolRecord:
     stock = stock_loader(stock_id)
     if stock is None:
@@ -576,13 +672,22 @@ def _collect_one(
         except Exception as exc:  # noqa: BLE001 — isolate per source
             if is_infrastructure_failure(exc):
                 raise
+            reason = provider_exception_reason(exc)
+            log_isolated_fault(
+                stock_id=stock.id,
+                stage=field_name,
+                source=source,
+                exc=exc,
+                reason=reason,
+                job_id=job_id,
+            )
             scratch.fields[field_name] = ProvenanceField(
                 field=field_name,
                 status="unavailable",
                 source=source,
                 captured_at=captured_at,
                 freshness_class=freshness_class,
-                reason=provider_exception_reason(exc),
+                reason=reason,
             )
 
     # Explicit not-implemented / unavailable fundamentals (no fabrication).
@@ -701,13 +806,22 @@ def _collect_one(
         except Exception as exc:  # noqa: BLE001 — isolate candle retrieval
             if is_infrastructure_failure(exc):
                 raise
+            reason = provider_exception_reason(exc)
+            log_isolated_fault(
+                stock_id=stock.id,
+                stage="latest_completed_close",
+                source="daily_price_history_service",
+                exc=exc,
+                reason=reason,
+                job_id=job_id,
+            )
             scratch.fields["latest_completed_close"] = ProvenanceField(
                 field="latest_completed_close",
                 status="unavailable",
                 source="daily_price_history_service",
                 captured_at=captured_at,
                 freshness_class="quote_or_eod_day",
-                reason=provider_exception_reason(exc),
+                reason=reason,
             )
             candles = []
         else:
@@ -766,13 +880,22 @@ def _collect_one(
         except Exception as exc:  # noqa: BLE001 — isolate price-basis calculation
             if is_infrastructure_failure(exc):
                 raise
+            reason = provider_exception_reason(exc)
+            log_isolated_fault(
+                stock_id=stock.id,
+                stage="relative_price_basis",
+                source="tw_research.price_basis",
+                exc=exc,
+                reason=reason,
+                job_id=job_id,
+            )
             scratch.fields["relative_price_basis"] = ProvenanceField(
                 field="relative_price_basis",
                 status="unavailable",
                 source="tw_research.price_basis",
                 captured_at=captured_at,
                 freshness_class="computed",
-                reason=provider_exception_reason(exc),
+                reason=reason,
             )
 
     # Cheap trend summary only — not second-pass MACD/KD.

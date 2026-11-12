@@ -41,10 +41,10 @@ class _OwnResult:
 @dataclass(frozen=True)
 class _InstPoint:
     date: str
-    foreign_net_lots: float = 1.0
-    trust_net_lots: float = 0.0
-    dealer_net_lots: float = 0.0
-    total_net_lots: float = 1.0
+    foreign_net_shares: int = 1000
+    investment_trust_net_shares: int = 0
+    dealer_net_shares: int = 0
+    total_net_shares: int = 1000
 
 
 @dataclass(frozen=True)
@@ -119,17 +119,20 @@ def test_default_ownership_uses_range_name_kwarg(monkeypatch) -> None:
 def test_typeerror_classified_as_programming_error_not_transient() -> None:
     reason = provider_exception_reason(TypeError("unexpected keyword argument 'range'"))
     assert reason.startswith("programming_error:")
-    assert classify_field_reason(reason) == "permanent"
+    assert classify_field_reason(reason) == "programming_error"
+    from app.services.tw_research.first_pass import field_reason_is_retryable
+
+    assert field_reason_is_retryable(reason) is False
 
 
-def test_typeerror_with_timeout_text_still_permanent() -> None:
+def test_typeerror_with_timeout_text_still_programming_error() -> None:
     """Classifier must not let message heuristics override TypeError (#348 P1)."""
     reason = provider_exception_reason(TypeError("unexpected keyword argument 'timeout'"))
     assert reason == "programming_error:TypeError"
-    assert classify_field_reason(reason) == "permanent"
+    assert classify_field_reason(reason) == "programming_error"
     reason2 = provider_exception_reason(TypeError("connection object not iterable"))
     assert reason2 == "programming_error:TypeError"
-    assert classify_field_reason(reason2) == "permanent"
+    assert classify_field_reason(reason2) == "programming_error"
 
 
 def test_mixed_batch_keeps_good_peer_when_ownership_raises(monkeypatch) -> None:
@@ -156,7 +159,7 @@ def test_mixed_batch_keeps_good_peer_when_ownership_raises(monkeypatch) -> None:
         )
 
     inst = _InstResult(
-        history=(_InstPoint("2024-06-24"),),
+        history=tuple(_InstPoint(f"2024-06-{day:02d}") for day in range(20, 25)),
         latest_date="2024-06-24",
         source="fixture",
     )
@@ -192,7 +195,7 @@ def test_mixed_batch_keeps_good_peer_when_ownership_raises(monkeypatch) -> None:
     assert "margin" in bad.fields
     assert classify_field_reason(
         str(bad.fields["tdcc_holders_ge_400_lots"].reason)
-    ) == "permanent"
+    ) == "programming_error"
 
 
 def test_malformed_tdcc_null_percent_stays_unavailable() -> None:
@@ -236,3 +239,104 @@ def test_malformed_tdcc_null_percent_stays_unavailable() -> None:
     assert isinstance(tdcc.value, dict)
     assert tdcc.value.get("percent") is None
     assert tdcc.value.get("weeklyChangePercentPoints") is None
+
+
+def test_malformed_null_institutional_margin_peers_ok() -> None:
+    """Empty/null institutional + margin → unavailable with reason; ownership peers ok."""
+
+    def stock_loader(stock_id: str):
+        return stock_record(
+            stock_id,
+            market="TW",
+            symbol="2330",
+            name="台積電",
+            exchange="TWSE",
+            currency="TWD",
+            timezone="Asia/Taipei",
+        )
+
+    result = collect_first_pass_batch(
+        ["TW:2330"],
+        universe_version="uv",
+        stock_loader=stock_loader,
+        candles_loader=lambda _stock: _candles(),
+        institutional_loader=lambda *_a, **_k: _InstResult(
+            history=(), latest_date=None, source="fixture"
+        ),
+        margin_loader=lambda *_a, **_k: _MarginResult(
+            history=(),
+            summary=None,
+            latest_date=None,
+            source="fixture",
+            empty_reason="no_data_for_stock",
+        ),
+        ownership_loader=lambda _sid: _OwnResult(
+            points=(_OwnPoint("2024-06-14", 38.0), _OwnPoint("2024-06-21", 40.0)),
+            as_of="2024-06-21",
+            source="fixture",
+        ),
+        key_stats_loader=lambda _sid: {
+            "peRatio": 18.5,
+            "peRatioType": "official_daily",
+            "peRatioSource": "fixture",
+            "valuationAsOf": "2024-06-27",
+        },
+    )
+    row = result.records[0]
+    assert row.fields["institutional_5d"].status == "unavailable"
+    assert row.fields["institutional_5d"].reason is not None
+    assert row.fields["margin"].status == "unavailable"
+    assert row.fields["margin"].reason == "no_data_for_stock"
+    assert row.fields["tdcc_holders_ge_400_lots"].status in {"ok", "partial"}
+    assert row.error is None
+
+
+def test_short_institutional_history_is_partial_or_unavailable() -> None:
+    """Fewer than 5 institutional sessions → unavailable/partial; no exception escapes."""
+
+    @dataclass(frozen=True)
+    class _InstRow:
+        date: str
+        foreign_net_shares: int = 1000
+        investment_trust_net_shares: int = 0
+        dealer_net_shares: int = 0
+        total_net_shares: int = 1000
+
+    def stock_loader(stock_id: str):
+        return stock_record(
+            stock_id,
+            market="TW",
+            symbol="2330",
+            name="台積電",
+            exchange="TWSE",
+            currency="TWD",
+            timezone="Asia/Taipei",
+        )
+
+    short = (_InstRow("2024-06-24"), _InstRow("2024-06-25"))
+    result = collect_first_pass_batch(
+        ["TW:2330"],
+        universe_version="uv",
+        stock_loader=stock_loader,
+        candles_loader=lambda _stock: _candles(),
+        institutional_loader=lambda *_a, **_k: _InstResult(
+            history=short, latest_date="2024-06-25", source="fixture"
+        ),
+        margin_loader=lambda *_a, **_k: _MarginResult(
+            history=(),
+            summary=None,
+            latest_date=None,
+            source="fixture",
+            empty_reason="empty",
+        ),
+        ownership_loader=lambda _sid: _OwnResult(
+            points=(_OwnPoint("2024-06-21", 40.0),),
+            as_of="2024-06-21",
+            source="fixture",
+        ),
+        key_stats_loader=lambda _sid: None,
+    )
+    row = result.records[0]
+    assert row.fields["institutional_5d"].status in {"unavailable", "partial"}
+    assert row.fields["institutional_5d"].reason == "fewer_than_5_completed_sessions_in_store"
+    assert row.fields["margin"].status == "unavailable"

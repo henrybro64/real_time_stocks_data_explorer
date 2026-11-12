@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 import uuid
-from typing import Any
+from collections import Counter
+from typing import Any, Callable
 
 from app.repositories.tw_research_repository import tw_research_repository
 from app.services.tw_research.constants import FIRST_PASS_VERSION
@@ -68,6 +70,8 @@ def _classify_symbol_failure(error: str | None) -> str:
     if text in _PERMANENT_SYMBOL_ERRORS or text.startswith("unsupported"):
         return "permanent"
     field_class = classify_field_reason(error)
+    if field_class == "programming_error":
+        return "programming_error"
     if field_class == "permanent":
         return "permanent"
     if field_class in {"rate_limited", "timeout", "transient", "provider_validation", "stale"}:
@@ -79,6 +83,15 @@ def _classify_symbol_failure(error: str | None) -> str:
     if "network" in text or "connection" in text or "temporarily" in text:
         return "transient"
     return "transient"
+
+
+def _programming_error_field_key(record: FirstPassSymbolRecord) -> str | None:
+    for key, field in record.fields.items():
+        if field.status in {"unavailable", "partial"} and classify_field_reason(
+            field.reason
+        ) == "programming_error":
+            return key
+    return None
 
 
 def _symbol_has_retryable_field_failure(record: FirstPassSymbolRecord) -> bool:
@@ -98,11 +111,17 @@ def _symbol_status(record: FirstPassSymbolRecord) -> str:
         if failure_class == "permanent":
             # Keep usable incomplete evidence rather than endless retries.
             return "partial"
+        if failure_class == "programming_error":
+            # Symbol-level programming errors never auto-retry.
+            return "failed"
         return "failed"
     if _symbol_has_retryable_field_failure(record):
         # Field-level transient faults (valuation timeout, HTTP 429, etc.) must
         # enter the durable retry path even when catalog identity succeeded.
         return "failed"
+    if _programming_error_field_key(record) is not None:
+        # Field-level programming_error keeps peer evidence as reviewable partial.
+        return "partial"
     completeness = record.completeness or {}
     if completeness.get("fieldsUnavailable", 0) and not completeness.get("fieldsOk", 0):
         return "partial"
@@ -173,12 +192,17 @@ def _enrich_symbol_payload(
             delay = max(delay, hinted)
         # Deterministic jitter from stock id (stable across workers).
         jitter = int(hashlib.sha256(record.stock_id.encode("utf-8")).hexdigest()[:4], 16) % 11
-        exhausted = attempts >= _FIRST_PASS_MAX_ATTEMPTS or failure_class == "permanent"
+        exhausted = (
+            attempts >= _FIRST_PASS_MAX_ATTEMPTS
+            or failure_class == "permanent"
+            or failure_class == "programming_error"
+        )
         from datetime import UTC, datetime, timedelta
 
         payload["attemptCount"] = attempts
         payload["failureClass"] = failure_class
         payload["retryExhausted"] = exhausted
+        # programming_error never schedules next_retry_at.
         payload["nextRetryAt"] = None if exhausted else (
             datetime.now(UTC) + timedelta(seconds=delay + jitter)
         ).isoformat()
@@ -189,7 +213,11 @@ def _enrich_symbol_payload(
         )
     else:
         payload["attemptCount"] = max(prior_attempts, 1)
-        payload["failureClass"] = None
+        prog_key = _programming_error_field_key(record)
+        if status == "partial" and prog_key is not None:
+            payload["failureClass"] = "programming_error"
+        else:
+            payload["failureClass"] = None
         payload["retryExhausted"] = False
         payload["nextRetryAt"] = None
         payload.pop("preservedOkFields", None)
@@ -324,6 +352,8 @@ class FirstPassJobService:
         batch_size: int = 10,
         include_nonofficial_margins: bool = False,
         collectors: dict[str, Any] | None = None,
+        time_budget_seconds: float | None = None,
+        monotonic_clock: Callable[[], float] | None = None,
     ) -> dict[str, Any]:
         if not self._repo.is_available():
             raise FirstPassJobError("first_pass_job_store_unavailable")
@@ -331,6 +361,12 @@ class FirstPassJobService:
         claim = self._repo.claim_first_pass_batch(job_id, batch_size=batch_size)
         if claim is None:
             raise KeyError("first_pass_job_not_found")
+        empty = {
+            "durationMs": 0,
+            "budgetStopped": False,
+            "releasedUnstarted": 0,
+            "batchCounts": {"ok": 0, "partial": 0, "failed": 0},
+        }
         if claim.get("lease_held"):
             return {
                 "job": claim["job"],
@@ -338,6 +374,7 @@ class FirstPassJobService:
                 "leaseHeld": True,
                 "alreadyComplete": False,
                 "processed": 0,
+                **empty,
             }
         if claim.get("waiting_for_retry"):
             return {
@@ -347,6 +384,7 @@ class FirstPassJobService:
                 "alreadyComplete": False,
                 "waitingForRetry": True,
                 "processed": 0,
+                **empty,
             }
         if claim.get("already_complete"):
             finalized = self._maybe_finalize(job_id, user_id=user_id)
@@ -357,6 +395,7 @@ class FirstPassJobService:
                 "alreadyComplete": True,
                 "waitingForRetry": False,
                 "processed": 0,
+                **empty,
             }
 
         batch_ids = list(claim["batch_ids"])
@@ -379,12 +418,16 @@ class FirstPassJobService:
                 if isinstance(relative_basis, dict):
                     prior["relativePriceBasis"] = relative_basis
                 previous_fields_by_stock[stock_id] = prior
+        clock = monotonic_clock or time.monotonic
         try:
             result = collect_first_pass_batch(
                 batch_ids,
                 universe_version=job["universe_version"],
                 include_nonofficial_margins=include_nonofficial_margins,
                 previous_fields_by_stock=previous_fields_by_stock,
+                time_budget_seconds=time_budget_seconds,
+                monotonic_clock=clock,
+                job_id=job_id,
                 **kwargs,
             )
         except Exception as exc:  # noqa: BLE001 — classify infra vs unexpected
@@ -396,6 +439,8 @@ class FirstPassJobService:
             raise
         processed = 0
         lease_rejected = 0
+        batch_counts = {"ok": 0, "partial": 0, "failed": 0}
+        persisted_payloads: list[tuple[FirstPassSymbolRecord, str, dict[str, Any]]] = []
         for record in result.records:
             status = _symbol_status(record)
             previous_payload = previous_payloads.get(record.stock_id)
@@ -418,6 +463,11 @@ class FirstPassJobService:
                 elif top_error and top_class == "permanent":
                     status = "partial"
                     payload["failureClass"] = "permanent"
+                    payload["retryExhausted"] = True
+                    payload["nextRetryAt"] = None
+                elif top_error and top_class == "programming_error":
+                    payload["error"] = top_error
+                    payload["failureClass"] = "programming_error"
                     payload["retryExhausted"] = True
                     payload["nextRetryAt"] = None
                 elif top_error and top_class != "permanent":
@@ -457,6 +507,9 @@ class FirstPassJobService:
                 raise
             if ok:
                 processed += 1
+                if status in batch_counts:
+                    batch_counts[status] += 1
+                persisted_payloads.append((record, status, payload))
             else:
                 lease_rejected += 1
 
@@ -465,6 +518,13 @@ class FirstPassJobService:
                 "first_pass_lease_generation_mismatch",
                 operation="persist_first_pass_symbol",
             )
+
+        # Unstarted claimed ids are released by complete_first_pass_batch resetting
+        # the reserve to the first missing index — attempts stay unchanged.
+        released_unstarted = list(result.released_unstarted)
+        systemic_error = _systemic_programming_error(
+            persisted_payloads, finished_count=processed
+        )
 
         try:
             completed = self._repo.complete_first_pass_batch(
@@ -480,6 +540,29 @@ class FirstPassJobService:
                 ) from exc
             raise
         job_out = (completed or {}).get("job") or claim["job"]
+
+        if systemic_error is not None:
+            failed_job = self._repo.fail_first_pass_job(
+                job_id,
+                user_id=user_id,
+                error=systemic_error,
+                lease_generation=generation,
+            )
+            job_out = failed_job or job_out
+            return {
+                "job": job_out,
+                "batchIds": batch_ids,
+                "leaseHeld": False,
+                "alreadyComplete": False,
+                "waitingForRetry": False,
+                "processed": processed,
+                "durationMs": int(result.duration_ms),
+                "budgetStopped": bool(result.budget_stopped),
+                "releasedUnstarted": len(released_unstarted),
+                "batchCounts": batch_counts,
+                "systemicProgrammingError": systemic_error,
+            }
+
         # Finalize only when every symbol is terminal (ok/partial/exhausted), not
         # while transient failures remain in backoff.
         if job_out.get("status") in {"completed", "partial"}:
@@ -493,6 +576,10 @@ class FirstPassJobService:
             "alreadyComplete": False,
             "waitingForRetry": job_out.get("status") == "deferred",
             "processed": processed,
+            "durationMs": int(result.duration_ms),
+            "budgetStopped": bool(result.budget_stopped),
+            "releasedUnstarted": len(released_unstarted),
+            "batchCounts": batch_counts,
         }
 
     def list_symbols(
@@ -629,6 +716,43 @@ def _display_label(payload: dict[str, Any], stock_id: str) -> str:
     if name and name_status != "unavailable":
         return f"{name} ({short_id})"
     return f"名稱不可用 ({short_id})"
+
+
+def _systemic_programming_error(
+    persisted: list[tuple[FirstPassSymbolRecord, str, dict[str, Any]]],
+    *,
+    finished_count: int,
+) -> str | None:
+    """Return systemic error key when ≥3 symbols and ≥50% share (field, ExcClass)."""
+    if finished_count <= 0:
+        return None
+    counter: Counter[tuple[str, str]] = Counter()
+    for record, _status, payload in persisted:
+        fields = payload.get("fields") if isinstance(payload.get("fields"), dict) else {}
+        for key, value in fields.items():
+            if not isinstance(value, dict):
+                continue
+            reason = str(value.get("reason") or "")
+            if classify_field_reason(reason) != "programming_error":
+                continue
+            # programming_error:TypeError → ExcClass TypeError
+            exc_class = "Error"
+            if ":" in reason:
+                exc_class = reason.rsplit(":", 1)[-1].strip() or "Error"
+            counter[(key, exc_class)] += 1
+        top_error = str(payload.get("error") or record.error or "")
+        if classify_field_reason(top_error) == "programming_error":
+            exc_class = (
+                top_error.rsplit(":", 1)[-1].strip() if ":" in top_error else "Error"
+            )
+            counter[("_symbol_", exc_class)] += 1
+    if not counter:
+        return None
+    (field, exc_class), count = counter.most_common(1)[0]
+    if count >= 3 and count * 2 >= finished_count:
+        label = field if field != "_symbol_" else "symbol"
+        return f"systemic_programming_error:{label}:{exc_class}"
+    return None
 
 
 first_pass_job_service = FirstPassJobService()

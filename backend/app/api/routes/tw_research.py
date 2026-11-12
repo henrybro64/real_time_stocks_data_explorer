@@ -344,6 +344,7 @@ def run_first_pass_job_batch(
             user_id=user_id,
             batch_size=body.batchSize,
             include_nonofficial_margins=body.includeNonofficialMargins,
+            time_budget_seconds=body.timeBudgetSeconds,
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -367,6 +368,14 @@ def run_first_pass_job_batch(
     payload["leaseHeld"] = result["leaseHeld"]
     payload["alreadyComplete"] = result["alreadyComplete"]
     payload["waitingForRetry"] = bool(result.get("waitingForRetry"))
+    payload["durationMs"] = result.get("durationMs", 0)
+    payload["budgetStopped"] = bool(result.get("budgetStopped"))
+    payload["releasedUnstarted"] = int(result.get("releasedUnstarted") or 0)
+    payload["batchCounts"] = result.get("batchCounts") or {
+        "ok": 0,
+        "partial": 0,
+        "failed": 0,
+    }
     return FirstPassJobResponse(job=payload)
 
 
@@ -1905,6 +1914,7 @@ def run_first_pass_drain_tick(
         dry_run=payload.dryRun,
         max_batches=payload.maxBatches,
         batch_size=payload.batchSize,
+        time_budget_seconds=payload.timeBudgetSeconds,
         job_id=payload.jobId,
     )
     return FirstPassDrainResponse(**result.as_dict())
