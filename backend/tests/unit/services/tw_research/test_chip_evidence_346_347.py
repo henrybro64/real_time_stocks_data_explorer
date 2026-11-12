@@ -1083,6 +1083,161 @@ def test_margin_ready_env_override(monkeypatch) -> None:
     )
 
 
+def test_missing_created_at_falls_back_to_request_trading_day_date_only(
+    monkeypatch,
+) -> None:
+    """No created_at → request tradingDay @ 23:59 (staleBasis=date_only)."""
+    _patch_weekday_calendar(monkeypatch)
+    stale_candidate = _record(
+        "TW:2330",
+        institutional_as_of="2026-11-12",
+        margin_as_of="2026-11-10",
+        source_as_of="2026-11-12",
+    )
+    pack = build_report_evidence(
+        trading_day="2026-11-12",
+        first_pass_snapshot={
+            "snapshot_id": "fps_no_created",
+            "content_digest": "abc",
+            "stock_ids": ["TW:2330"],
+            "quality_status": "verified_ready",
+            # No created_at; payload has no tradingDay either — request day wins.
+            "payload": {"records": [stale_candidate]},
+        },
+        candidate_set={
+            "candidateSetId": "cs",
+            "version": 1,
+            "stockIds": ["TW:2330"],
+            "firstPassSnapshotId": "fps_no_created",
+            "firstPassDigest": "abc",
+        },
+        technical_scan={
+            "scanId": "scan",
+            "status": "verified_ready",
+            "stockIds": ["TW:2330"],
+        },
+        ledger_rows=[
+            {
+                "stockId": "TW:2330",
+                "monthly": {"passStatus": "pass"},
+                "daily": {"passStatus": "pass"},
+            }
+        ],
+        mode="full_two_pass",
+    ).as_dict()
+    margin = pack["symbols"][0]["chipEvidence"]["margin"]
+    assert margin["status"] == "stale"
+    assert margin["staleBasis"] == "date_only"
+    assert "candidate_chip_fields_stale_or_missing" in pack["summary"]["qualityWarnings"]
+    assert pack["summary"]["publishability"] != "evidence_ready_for_analyst_decision"
+
+    ok_candidate = _record(
+        "TW:2330",
+        institutional_as_of="2026-11-12",
+        margin_as_of="2026-11-12",
+        source_as_of="2026-11-12",
+    )
+    ok_pack = build_report_evidence(
+        trading_day="2026-11-12",
+        first_pass_snapshot={
+            "snapshot_id": "fps_no_created_ok",
+            "content_digest": "abc",
+            "stock_ids": ["TW:2330"],
+            "quality_status": "verified_ready",
+            "payload": {"records": [ok_candidate]},
+        },
+        candidate_set={
+            "candidateSetId": "cs",
+            "version": 1,
+            "stockIds": ["TW:2330"],
+            "firstPassSnapshotId": "fps_no_created_ok",
+            "firstPassDigest": "abc",
+        },
+        technical_scan={
+            "scanId": "scan",
+            "status": "verified_ready",
+            "stockIds": ["TW:2330"],
+        },
+        ledger_rows=[
+            {
+                "stockId": "TW:2330",
+                "monthly": {"passStatus": "pass"},
+                "daily": {"passStatus": "pass"},
+            }
+        ],
+        mode="full_two_pass",
+    ).as_dict()
+    assert ok_pack["symbols"][0]["chipEvidence"]["margin"]["status"] == "ok"
+    assert ok_pack["symbols"][0]["chipEvidence"]["margin"]["staleBasis"] == "date_only"
+    assert "candidate_chip_fields_stale_or_missing" not in ok_pack["summary"][
+        "qualityWarnings"
+    ]
+
+
+def test_missing_created_at_and_trading_day_fails_closed_capture_time(
+    monkeypatch,
+) -> None:
+    """No created_at and no tradingDay → capture_time_unavailable (fail closed)."""
+    _patch_weekday_calendar(monkeypatch)
+    candidate = _record("TW:2330", source_as_of="2026-11-12")
+    non_candidate = _record("TW:2317", source_as_of="2026-11-12")
+    pack = build_report_evidence(
+        trading_day=None,
+        first_pass_snapshot={
+            "snapshot_id": "fps_no_times",
+            "content_digest": "abc",
+            "stock_ids": ["TW:2330", "TW:2317"],
+            "quality_status": "verified_ready",
+            "payload": {"records": [candidate, non_candidate]},
+        },
+        candidate_set={
+            "candidateSetId": "cs",
+            "version": 1,
+            "stockIds": ["TW:2330"],
+            "firstPassSnapshotId": "fps_no_times",
+            "firstPassDigest": "abc",
+        },
+        technical_scan={
+            "scanId": "scan",
+            "status": "verified_ready",
+            "stockIds": ["TW:2330"],
+        },
+        ledger_rows=[
+            {
+                "stockId": "TW:2330",
+                "monthly": {"passStatus": "pass"},
+                "daily": {"passStatus": "pass"},
+            }
+        ],
+        mode="full_two_pass",
+    ).as_dict()
+    assert (
+        "chip_staleness_unverifiable_capture_time_unavailable"
+        in pack["summary"]["qualityWarnings"]
+    )
+    assert pack["summary"]["publishability"] != "evidence_ready_for_analyst_decision"
+    cand_inst = pack["symbols"][0]["chipEvidence"]["institutional"]
+    assert cand_inst["staleCheck"] == "capture_time_unavailable"
+    assert cand_inst["status"] == "ok"  # not falsely marked stale
+
+    # Non-candidate path via apply_chip_coverage_warnings directly.
+    warnings: list[str] = []
+    coverage = apply_chip_coverage_warnings(
+        [non_candidate],
+        warnings,
+        candidate_stock_ids=["TW:2330"],
+        full_two_pass=True,
+        capture_at=None,
+        calendar_known=True,
+    )
+    assert "chip_staleness_unverifiable_capture_time_unavailable" not in warnings
+    assert (
+        coverage["chipGaps"]["counts"]["institutional_5d"]["stale_check_unavailable"]
+        == 1
+    )
+    assert coverage["chipGaps"]["items"][0]["status"] == "stale_check_unavailable"
+
+
 def test_tdcc_nested_value_stale_sets_status_stale() -> None:
     record = _record("TW:2330", source_as_of="2024-06-24")
     tdcc = dict(record["fields"]["tdcc_holders_ge_400_lots"])

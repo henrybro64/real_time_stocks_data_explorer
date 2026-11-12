@@ -61,6 +61,7 @@ def format_chip_evidence(
     reference_day: str | date | None = None,
     calendar_known: bool | None = None,
     capture_at: datetime | None = None,
+    date_only: bool | None = None,
 ) -> dict[str, Any]:
     """Build a readable chip summary from one first-pass record.
 
@@ -70,7 +71,8 @@ def format_chip_evidence(
     Freshness for institutional/margin is relative to ``capture_at`` (snapshot
     created_at) and each field's publication-ready time — not the capture date
     alone. When ``capture_at`` is omitted, ``reference_day`` @ 23:59 Taipei is
-    used (``staleBasis=date_only``).
+    used (``staleBasis=date_only``). When neither is available, institutional/
+    margin get ``staleCheck=capture_time_unavailable`` (never treated as fresh).
 
     ``calendar_known``:
     - ``None`` / ``True`` — compute expected session from the calendar helpers.
@@ -81,14 +83,22 @@ def format_chip_evidence(
     fields = record.get("fields") if isinstance(record.get("fields"), dict) else {}
 
     ref = _as_date(reference_day)
-    resolved_capture, date_only = _resolve_capture_at(capture_at, ref)
+    if capture_at is not None:
+        if capture_at.tzinfo is None:
+            capture_at = capture_at.replace(tzinfo=_TAIPEI)
+        resolved_capture = capture_at.astimezone(_TAIPEI)
+        resolved_date_only = bool(date_only) if date_only is not None else False
+    else:
+        resolved_capture, resolved_date_only = _resolve_capture_at(None, ref)
+        if date_only is True:
+            resolved_date_only = True
     institutional = _format_institutional(
         fields.get("institutional_5d"),
         present="institutional_5d" in fields,
         reference_day=ref,
         calendar_known=calendar_known,
         capture_at=resolved_capture,
-        date_only=date_only,
+        date_only=resolved_date_only,
     )
     margin = _format_margin(
         fields.get("margin") if "margin" in fields else None,
@@ -97,7 +107,7 @@ def format_chip_evidence(
         reference_day=ref,
         calendar_known=calendar_known,
         capture_at=resolved_capture,
-        date_only=date_only,
+        date_only=resolved_date_only,
     )
     tdcc = _format_tdcc(
         fields.get("tdcc_holders_ge_400_lots"),
@@ -208,6 +218,36 @@ def capture_at_from_snapshot(*, created_at: Any = None) -> datetime | None:
     return _parse_created_at(created_at)
 
 
+def resolve_chip_capture_at(
+    *,
+    created_at: Any = None,
+    request_trading_day: str | date | None = None,
+    payload: dict[str, Any] | None = None,
+) -> tuple[datetime | None, bool]:
+    """Resolve capture timestamp for chip freshness.
+
+    Preference: ``created_at`` → request tradingDay @ 23:59 Taipei → payload
+    tradingDay @ 23:59 Taipei. Trading-day fallbacks reuse ``_resolve_capture_at``
+    and return ``date_only=True``. When nothing is available, returns
+    ``(None, False)`` so callers can fail closed with
+    ``staleCheck=capture_time_unavailable``.
+    """
+    parsed = _parse_created_at(created_at)
+    if parsed is not None:
+        return _resolve_capture_at(parsed, None)
+
+    payload = payload or {}
+    payload_day = payload.get("tradingDay")
+    if payload_day is None or str(payload_day).strip() == "":
+        payload_day = payload.get("trading_day")
+
+    for day_src in (request_trading_day, payload_day):
+        day = _as_date(day_src)
+        if day is not None:
+            return _resolve_capture_at(None, day)
+    return None, False
+
+
 def publication_ready_time(kind: str) -> dt_time:
     """Return Asia/Taipei publication-ready clock for institutional/margin."""
     env_key = _READY_ENV_KEYS.get(kind)
@@ -314,6 +354,7 @@ def apply_chip_coverage_warnings(
     reference_day: str | date | None = None,
     calendar_known: bool | None = None,
     capture_at: datetime | None = None,
+    date_only: bool | None = None,
 ) -> dict[str, Any]:
     """Append chip-content readiness warnings (#347). Returns coverage + chipGaps.
 
@@ -328,11 +369,14 @@ def apply_chip_coverage_warnings(
       candidate-set stock has a gating field that is stale or not_fetched.
     - ``chip_staleness_unverifiable_calendar_unavailable`` (full_two_pass only)
       when a candidate gating field has ``staleCheck=calendar_unavailable``.
+    - ``chip_staleness_unverifiable_capture_time_unavailable`` (full_two_pass only)
+      when a candidate gating field has ``staleCheck=capture_time_unavailable``.
 
     Reasoned unavailable/partial and stale outside the candidate set are
     non-blocking and reported in ``chipGaps`` (capped items, sorted by stockId).
-    Non-candidate ``calendar_unavailable`` → chipGaps status
-    ``stale_check_unavailable``. ``margin_utilization`` remains non-gating.
+    Non-candidate ``calendar_unavailable`` / ``capture_time_unavailable`` →
+    chipGaps status ``stale_check_unavailable``. ``margin_utilization`` remains
+    non-gating.
     """
     coverage = summarize_chip_coverage(records)
     candidate_ids = {
@@ -347,6 +391,11 @@ def apply_chip_coverage_warnings(
     missing_block = False
     candidate_block = False
     calendar_block = False
+    capture_time_block = False
+    unverifiable_checks = {
+        "calendar_unavailable": "calendar",
+        "capture_time_unavailable": "capture_time",
+    }
 
     for record in records:
         stock_id = str(record.get("stockId") or record.get("stock_id") or "")
@@ -356,6 +405,7 @@ def apply_chip_coverage_warnings(
             reference_day=reference_day,
             calendar_known=calendar_known,
             capture_at=capture_at,
+            date_only=date_only,
         )
         raw_fields = chip_fields_from_record(record)
         for key in GATING_CHIP_FIELD_KEYS:
@@ -379,9 +429,12 @@ def apply_chip_coverage_warnings(
                 if reason is not None and str(reason).strip() == "":
                     reason = None
 
-            if stale_check == "calendar_unavailable":
+            if stale_check in unverifiable_checks:
                 if full_two_pass and stock_key in candidate_ids:
-                    calendar_block = True
+                    if unverifiable_checks[stale_check] == "calendar":
+                        calendar_block = True
+                    else:
+                        capture_time_block = True
                 else:
                     gap_status = "stale_check_unavailable"
                     bucket = gap_counts.setdefault(key, {})
@@ -450,6 +503,12 @@ def apply_chip_coverage_warnings(
         and "chip_staleness_unverifiable_calendar_unavailable" not in quality_warnings
     ):
         quality_warnings.append("chip_staleness_unverifiable_calendar_unavailable")
+    if (
+        capture_time_block
+        and "chip_staleness_unverifiable_capture_time_unavailable"
+        not in quality_warnings
+    ):
+        quality_warnings.append("chip_staleness_unverifiable_capture_time_unavailable")
     return coverage
 
 
@@ -512,7 +571,16 @@ def _apply_stale(
         base["staleBasis"] = "unverified"
         return base
 
-    if capture_at is None or source_as_of is None:
+    if capture_at is None:
+        # Fail closed: without a capture timestamp (or trading-day fallback)
+        # do not treat institutional/margin as fresh.
+        if base.get("stale"):
+            base["status"] = "stale"
+        base["staleCheck"] = "capture_time_unavailable"
+        base["staleBasis"] = "unverified"
+        return base
+
+    if source_as_of is None:
         if base.get("stale"):
             base["status"] = "stale"
         return base

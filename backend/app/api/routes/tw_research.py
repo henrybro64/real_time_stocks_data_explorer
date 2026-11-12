@@ -568,9 +568,9 @@ def get_first_pass_chip_evidence(
     from app.core.endpoint_timing import endpoint_timing
     from app.services.tw_calendar_preload import ensure_tw_calendars_bounded
     from app.services.tw_research.chip_evidence import (
-        capture_at_from_snapshot,
         format_chip_evidence,
         reference_day_from_snapshot,
+        resolve_chip_capture_at,
     )
     from app.services.tw_research.first_pass_chunks import ordered_first_pass_records
 
@@ -601,7 +601,11 @@ def get_first_pass_chip_evidence(
                 if str(row.get("stockId") or row.get("stock_id") or "").upper() in wanted
             ]
     page = records[offset : offset + limit]
-    capture_at = capture_at_from_snapshot(created_at=snap.get("created_at"))
+    # created_at → payload tradingDay@23:59 (no request tradingDay on this route).
+    capture_at, capture_date_only = resolve_chip_capture_at(
+        created_at=snap.get("created_at"),
+        payload=payload if isinstance(payload, dict) else None,
+    )
     reference_day = reference_day_from_snapshot(
         trading_day=payload.get("tradingDay") or payload.get("trading_day"),
         payload=payload,
@@ -639,6 +643,7 @@ def get_first_pass_chip_evidence(
                     reference_day=reference_day,
                     calendar_known=calendar_known,
                     capture_at=capture_at,
+                    date_only=capture_date_only,
                 )
                 for row in page
             ],

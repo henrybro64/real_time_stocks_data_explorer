@@ -81,13 +81,28 @@ Institutional/margin staleness is relative to the snapshot **capture timestamp**
 - Stale ⇔ `source_as_of < expected_session`. A capture before a session’s ready
   time therefore expects the **previous** session. The managed schedule window
   (15:30–18:30) therefore captures **previous-session margin by design**.
-- When only a date is known (no `created_at`), capture falls back to
-  `reference_day` @ **23:59** Taipei and sets `staleBasis=date_only`.
+- Capture resolution order: `created_at` → request `tradingDay` @ **23:59**
+  Taipei → payload `tradingDay` @ **23:59**. Trading-day fallbacks set
+  `staleBasis=date_only`.
+- If none is available: institutional/margin get
+  `staleCheck=capture_time_unavailable` (never treated as fresh). Full_two_pass
+  candidates → blocking `chip_staleness_unverifiable_capture_time_unavailable`;
+  non-candidates → chipGaps `stale_check_unavailable` (mirrors calendar handling).
 - TDCC remains a 10-calendar-day rule (unchanged).
 - Separate report-day gate: when request `tradingDay` is later than
   `expected_session("institutional", capture_at)`, full_two_pass adds blocking
   `first_pass_snapshot_predates_trading_day`; first_pass_only records it in
   `summary.notes` (non-blocking). Fields are **not** all marked stale for this.
+
+### Publication-ready defaults
+
+Code defaults (16:30 / 21:30) come from secondary sources. To measure real
+first-available times on trading days, use the read-only probe and runbook:
+
+[`docs/runbooks/tw-chip-publication-times.md`](runbooks/tw-chip-publication-times.md)
+
+Do not change code defaults unless measured times differ by more than 30 minutes;
+prefer ConfigMap/env overrides (`TW_CHIP_*_READY`).
 
 ### Performance (#346)
 
@@ -145,6 +160,9 @@ unknown, institutional/margin staleness is **not claimed**; see
 - `first_pass_snapshot_predates_trading_day` — **full_two_pass only**; request
   `tradingDay` is later than `expected_session("institutional", capture_at)`.
   In `first_pass_only` this is a non-blocking `summary.notes` entry instead.
+- `chip_staleness_unverifiable_capture_time_unavailable` — **full_two_pass only**;
+  a candidate gating field has `staleCheck=capture_time_unavailable` (no
+  `created_at` and no tradingDay fallback).
 
 **Non-blocking** reasoned `unavailable`/`partial` and stale outside the candidate
 set are reported in `summary.chipGaps`. Non-candidate

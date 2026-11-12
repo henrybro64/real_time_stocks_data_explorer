@@ -22,10 +22,10 @@ from app.services.tw_calendar_preload import ensure_tw_calendars_bounded
 from app.services.tw_research.chip_evidence import (
     CHIP_FIELD_KEYS,
     apply_chip_coverage_warnings,
-    capture_at_from_snapshot,
     expected_session,
     format_chip_evidence,
     reference_day_from_snapshot,
+    resolve_chip_capture_at,
     summarize_chip_coverage,
 )
 from app.services.tw_research.constants import (
@@ -163,9 +163,14 @@ def build_report_evidence(
         or (first_pass_snapshot or {}).get("created_at")
         or (first_pass or {}).get("created_at")
     )
-    capture_at = capture_at_from_snapshot(created_at=created_at_raw)
+    # created_at → request tradingDay@23:59 → payload tradingDay@23:59.
+    capture_at, capture_date_only = resolve_chip_capture_at(
+        created_at=created_at_raw,
+        request_trading_day=trading_day,
+        payload=first_pass_payload,
+    )
     reference_day = reference_day_from_snapshot(
-        trading_day=(first_pass or {}).get("tradingDay"),
+        trading_day=trading_day or (first_pass or {}).get("tradingDay"),
         payload=first_pass_payload,
         created_at=created_at_raw,
     )
@@ -197,6 +202,7 @@ def build_report_evidence(
                 reference_day=reference_day,
                 calendar_known=calendar_known,
                 capture_at=capture_at,
+                date_only=capture_date_only,
             )
             chip_gaps = chip_coverage_summary.get("chipGaps")
         elif first_pass.get("snapshotId"):
@@ -262,6 +268,7 @@ def build_report_evidence(
             reference_day=reference_day,
             calendar_known=calendar_known,
             capture_at=capture_at,
+            date_only=capture_date_only,
         )
         for row in rows
     ]
@@ -467,6 +474,7 @@ def _symbol_evidence_row(
     reference_day: str | None = None,
     calendar_known: bool | None = None,
     capture_at: datetime | None = None,
+    date_only: bool | None = None,
 ) -> dict[str, Any]:
     monthly = row.get("monthly") if isinstance(row.get("monthly"), dict) else {}
     daily = row.get("daily") if isinstance(row.get("daily"), dict) else {}
@@ -491,6 +499,7 @@ def _symbol_evidence_row(
             reference_day=reference_day,
             calendar_known=calendar_known,
             capture_at=capture_at,
+            date_only=date_only,
         )
     else:
         chip = {

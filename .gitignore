@@ -181,3 +181,6 @@ artifacts/k3s-smoke/
 # -----------------------------------------------------------------------------
 docs/_build/
 site/
+
+# Local probe / bench outputs (never commit measured JSONL)
+backend/scripts/out/
