@@ -23,6 +23,8 @@ from typing import Any, Literal, Protocol
 from uuid import uuid4
 
 from app.services.tw_research.constants import (
+    RESEARCH_RUN_JOB_CLAIM_LEASE_SECONDS,
+    RESEARCH_RUN_PHASE2_CLAIM_LEASE_SECONDS,
     RESEARCH_RUN_VERSION,
     WAITING_FOR_NEXT_WINDOW,
 )
@@ -111,6 +113,12 @@ class ResearchRun:
     updated_at: str = ""
     schedule_enabled: bool = False
     revision: int = 0
+    job_claim_token: str | None = None
+    job_claim_expires_at: str | None = None
+    pending_first_pass_job_id: str | None = None
+    phase2_claim_token: str | None = None
+    phase2_claim_expires_at: str | None = None
+    pending_technical_scan_id: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         payload = asdict(self)
@@ -125,6 +133,12 @@ class ResearchRun:
         payload["createdAt"] = payload.pop("created_at")
         payload["updatedAt"] = payload.pop("updated_at")
         payload["scheduleEnabled"] = payload.pop("schedule_enabled")
+        payload["jobClaimToken"] = payload.pop("job_claim_token")
+        payload["jobClaimExpiresAt"] = payload.pop("job_claim_expires_at")
+        payload["pendingFirstPassJobId"] = payload.pop("pending_first_pass_job_id")
+        payload["phase2ClaimToken"] = payload.pop("phase2_claim_token")
+        payload["phase2ClaimExpiresAt"] = payload.pop("phase2_claim_expires_at")
+        payload["pendingTechnicalScanId"] = payload.pop("pending_technical_scan_id")
         payload["notNotionPublisher"] = True
         payload["cronjobRemainsSuspended"] = True
         payload["durable"] = True
@@ -150,6 +164,12 @@ class ResearchRun:
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "revision": int(self.revision),
+            "job_claim_token": self.job_claim_token,
+            "job_claim_expires_at": self.job_claim_expires_at,
+            "pending_first_pass_job_id": self.pending_first_pass_job_id,
+            "phase2_claim_token": self.phase2_claim_token,
+            "phase2_claim_expires_at": self.phase2_claim_expires_at,
+            "pending_technical_scan_id": self.pending_technical_scan_id,
         }
 
     @classmethod
@@ -177,6 +197,20 @@ class ResearchRun:
             updated_at=str(payload.get("updated_at") or ""),
             schedule_enabled=bool(payload.get("schedule_enabled")),
             revision=int(payload.get("revision") or 0),
+            job_claim_token=payload.get("job_claim_token"),
+            job_claim_expires_at=(
+                str(payload["job_claim_expires_at"])
+                if payload.get("job_claim_expires_at") is not None
+                else None
+            ),
+            pending_first_pass_job_id=payload.get("pending_first_pass_job_id"),
+            phase2_claim_token=payload.get("phase2_claim_token"),
+            phase2_claim_expires_at=(
+                str(payload["phase2_claim_expires_at"])
+                if payload.get("phase2_claim_expires_at") is not None
+                else None
+            ),
+            pending_technical_scan_id=payload.get("pending_technical_scan_id"),
         )
 
     def append_note(self, note: str) -> None:
@@ -398,6 +432,232 @@ class ResearchRunStore:
             raise KeyError("research_run_not_found")
         return run
 
+    def claim_first_pass_job_slot(
+        self,
+        user_id: str,
+        *,
+        claim_token: str,
+        lease_seconds: int = RESEARCH_RUN_JOB_CLAIM_LEASE_SECONDS,
+    ) -> dict[str, Any]:
+        """DB-backed claim for creating the authoritative first-pass job."""
+        if self._test_memory is not None:
+            with self._lock:
+                return self._claim_job_slot_memory(
+                    user_id, claim_token=claim_token, lease_seconds=lease_seconds
+                )
+        try:
+            return self._repo().claim_research_run_job_slot(
+                user_id, claim_token=claim_token, lease_seconds=lease_seconds
+            )
+        except AttributeError as exc:
+            raise ResearchRunStoreUnavailable(
+                "research_run_job_claim_unsupported"
+            ) from exc
+
+    def record_pending_first_pass_job(
+        self,
+        user_id: str,
+        *,
+        claim_token: str,
+        job_id: str,
+    ) -> dict[str, Any]:
+        if self._test_memory is not None:
+            with self._lock:
+                run = self._require_locked(user_id)
+                if run.first_pass_job_id:
+                    return {
+                        "outcome": "already_attached",
+                        "run": run.as_persist_payload(),
+                        "first_pass_job_id": run.first_pass_job_id,
+                        "orphan_job_id": job_id
+                        if run.first_pass_job_id != job_id
+                        else None,
+                    }
+                if run.job_claim_token != claim_token:
+                    return {
+                        "outcome": "claim_lost",
+                        "run": run.as_persist_payload(),
+                        "orphan_job_id": job_id,
+                    }
+                run.pending_first_pass_job_id = job_id
+                run.updated_at = datetime.now(UTC).isoformat()
+                saved = self._persist_locked(run)
+                return {
+                    "outcome": "recorded",
+                    "run": saved.as_persist_payload(),
+                    "pending_first_pass_job_id": job_id,
+                }
+        return self._repo().record_pending_first_pass_job(
+            user_id, claim_token=claim_token, job_id=job_id
+        )
+
+    def attach_first_pass_job_under_claim(
+        self,
+        user_id: str,
+        *,
+        claim_token: str,
+        job_id: str,
+        notes: list[str] | None = None,
+    ) -> dict[str, Any]:
+        if self._test_memory is not None:
+            with self._lock:
+                run = self._require_locked(user_id)
+                if run.first_pass_job_id:
+                    return {
+                        "outcome": "already_attached",
+                        "run": run.as_persist_payload(),
+                        "first_pass_job_id": run.first_pass_job_id,
+                        "orphan_job_id": job_id
+                        if run.first_pass_job_id != job_id
+                        else None,
+                    }
+                if run.job_claim_token != claim_token:
+                    return {
+                        "outcome": "claim_lost",
+                        "run": run.as_persist_payload(),
+                        "orphan_job_id": job_id,
+                    }
+                run.first_pass_job_id = job_id
+                run.pending_first_pass_job_id = None
+                run.job_claim_token = None
+                run.job_claim_expires_at = None
+                run.status = "running"
+                run.phase = "phase1_first_pass"
+                run.dimensions["fundamentals"] = "in_progress"
+                for note in notes or []:
+                    run.append_note(note)
+                run.updated_at = datetime.now(UTC).isoformat()
+                saved = self._persist_locked(run)
+                return {
+                    "outcome": "attached",
+                    "run": saved.as_persist_payload(),
+                    "first_pass_job_id": job_id,
+                }
+        return self._repo().attach_first_pass_job_atomic(
+            user_id, claim_token=claim_token, job_id=job_id, notes=notes
+        )
+
+    def mark_orphaned_first_pass_job(
+        self,
+        job_id: str,
+        *,
+        user_id: str,
+        authoritative_job_id: str | None,
+        reason: str,
+    ) -> None:
+        if self._test_memory is not None:
+            # Unit-test path: annotate via optional repository hook.
+            repo = self._repository
+            marker = getattr(repo, "mark_first_pass_job_orphaned", None) if repo else None
+            if callable(marker):
+                marker(
+                    job_id,
+                    user_id=user_id,
+                    authoritative_job_id=authoritative_job_id,
+                    reason=reason,
+                )
+            return
+        self._repo().mark_first_pass_job_orphaned(
+            job_id,
+            user_id=user_id,
+            authoritative_job_id=authoritative_job_id,
+            reason=reason,
+        )
+
+    def claim_phase2_scan_slot(
+        self,
+        user_id: str,
+        *,
+        claim_token: str,
+        lease_seconds: int = RESEARCH_RUN_PHASE2_CLAIM_LEASE_SECONDS,
+    ) -> dict[str, Any]:
+        if self._test_memory is not None:
+            with self._lock:
+                return self._claim_phase2_slot_memory(
+                    user_id, claim_token=claim_token, lease_seconds=lease_seconds
+                )
+        return self._repo().claim_research_run_phase2_slot(
+            user_id, claim_token=claim_token, lease_seconds=lease_seconds
+        )
+
+    def record_pending_technical_scan(
+        self,
+        user_id: str,
+        *,
+        claim_token: str,
+        scan_id: str,
+    ) -> dict[str, Any]:
+        if self._test_memory is not None:
+            with self._lock:
+                run = self._require_locked(user_id)
+                if run.technical_scan_id:
+                    return {
+                        "outcome": "already_attached",
+                        "run": run.as_persist_payload(),
+                        "technical_scan_id": run.technical_scan_id,
+                    }
+                if run.phase2_claim_token != claim_token:
+                    return {"outcome": "claim_lost", "run": run.as_persist_payload()}
+                run.pending_technical_scan_id = scan_id
+                run.updated_at = datetime.now(UTC).isoformat()
+                saved = self._persist_locked(run)
+                return {
+                    "outcome": "recorded",
+                    "run": saved.as_persist_payload(),
+                    "pending_technical_scan_id": scan_id,
+                }
+        return self._repo().record_pending_technical_scan(
+            user_id, claim_token=claim_token, scan_id=scan_id
+        )
+
+    def attach_technical_scan_under_claim(
+        self,
+        user_id: str,
+        *,
+        claim_token: str,
+        scan_id: str,
+        notes: list[str] | None = None,
+    ) -> dict[str, Any]:
+        if self._test_memory is not None:
+            with self._lock:
+                run = self._require_locked(user_id)
+                if run.technical_scan_id:
+                    return {
+                        "outcome": "already_attached",
+                        "run": run.as_persist_payload(),
+                        "technical_scan_id": run.technical_scan_id,
+                    }
+                if run.phase2_claim_token != claim_token:
+                    return {"outcome": "claim_lost", "run": run.as_persist_payload()}
+                if run.gates.get("candidateSelection") != "approved":
+                    return {
+                        "outcome": "gate_not_approved",
+                        "run": run.as_persist_payload(),
+                    }
+                run.technical_scan_id = scan_id
+                run.pending_technical_scan_id = None
+                run.phase2_claim_token = None
+                run.phase2_claim_expires_at = None
+                run.phase = "phase2_technical"
+                run.status = "running"
+                run.dimensions["monthlyTechnical"] = "in_progress"
+                run.dimensions["dailyTechnical"] = "pending_monthly_gate"
+                for note in list(notes or []) + [
+                    "Phase-2 monthly-first technical started from approved candidates only.",
+                    "Stops for analyst report decision; no Notion write.",
+                ]:
+                    run.append_note(note)
+                run.updated_at = datetime.now(UTC).isoformat()
+                saved = self._persist_locked(run)
+                return {
+                    "outcome": "attached",
+                    "run": saved.as_persist_payload(),
+                    "technical_scan_id": scan_id,
+                }
+        return self._repo().attach_technical_scan_atomic(
+            user_id, claim_token=claim_token, scan_id=scan_id, notes=notes
+        )
+
     def clear_for_tests(self) -> None:
         """Enable isolated in-memory backend for unit tests (never for production)."""
         with self._lock:
@@ -586,6 +846,101 @@ class ResearchRunStore:
             run.dimensions["dailyTechnical"] = "complete_or_not_run_by_design"
             run.gates["reportDecision"] = "awaiting_analyst"
             return
+
+    def _claim_job_slot_memory(
+        self,
+        user_id: str,
+        *,
+        claim_token: str,
+        lease_seconds: int,
+    ) -> dict[str, Any]:
+        run = self._require_locked(user_id)
+        if run.first_pass_job_id:
+            return {
+                "outcome": "already_attached",
+                "run": run.as_persist_payload(),
+                "first_pass_job_id": run.first_pass_job_id,
+            }
+        now = datetime.now(UTC)
+        expires = None
+        if run.job_claim_expires_at:
+            try:
+                expires = datetime.fromisoformat(
+                    str(run.job_claim_expires_at).replace("Z", "+00:00")
+                )
+            except ValueError:
+                expires = None
+        held_by_other = (
+            run.job_claim_token
+            and run.job_claim_token != claim_token
+            and expires is not None
+            and expires > now
+        )
+        if held_by_other:
+            return {
+                "outcome": "claim_held",
+                "run": run.as_persist_payload(),
+                "first_pass_job_id": None,
+            }
+        from datetime import timedelta
+
+        run.job_claim_token = claim_token
+        run.job_claim_expires_at = (now + timedelta(seconds=int(lease_seconds))).isoformat()
+        run.updated_at = now.isoformat()
+        saved = self._persist_locked(run)
+        return {
+            "outcome": "claimed",
+            "run": saved.as_persist_payload(),
+            "pending_first_pass_job_id": saved.pending_first_pass_job_id,
+            "first_pass_job_id": None,
+        }
+
+    def _claim_phase2_slot_memory(
+        self,
+        user_id: str,
+        *,
+        claim_token: str,
+        lease_seconds: int,
+    ) -> dict[str, Any]:
+        run = self._require_locked(user_id)
+        if run.gates.get("candidateSelection") != "approved":
+            return {"outcome": "gate_not_approved", "run": run.as_persist_payload()}
+        if run.technical_scan_id:
+            return {
+                "outcome": "already_attached",
+                "run": run.as_persist_payload(),
+                "technical_scan_id": run.technical_scan_id,
+            }
+        now = datetime.now(UTC)
+        expires = None
+        if run.phase2_claim_expires_at:
+            try:
+                expires = datetime.fromisoformat(
+                    str(run.phase2_claim_expires_at).replace("Z", "+00:00")
+                )
+            except ValueError:
+                expires = None
+        held_by_other = (
+            run.phase2_claim_token
+            and run.phase2_claim_token != claim_token
+            and expires is not None
+            and expires > now
+        )
+        if held_by_other:
+            return {"outcome": "claim_held", "run": run.as_persist_payload()}
+        from datetime import timedelta
+
+        run.phase2_claim_token = claim_token
+        run.phase2_claim_expires_at = (
+            now + timedelta(seconds=int(lease_seconds))
+        ).isoformat()
+        run.updated_at = now.isoformat()
+        saved = self._persist_locked(run)
+        return {
+            "outcome": "claimed",
+            "run": saved.as_persist_payload(),
+            "pending_technical_scan_id": saved.pending_technical_scan_id,
+        }
 
     def _load_first_pass_job(
         self, user_id: str, job_id: str | None

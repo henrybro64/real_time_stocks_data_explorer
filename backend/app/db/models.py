@@ -804,6 +804,18 @@ class TwResearchResearchRun(Base):
     notes_json: Mapped[list] = mapped_column(JSON, nullable=False)
     schedule_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     revision: Mapped[int] = mapped_column(nullable=False, default=0)
+    # Fenced ownership for cross-pod first-pass job creation (#341 P1-1).
+    job_claim_token: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    job_claim_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    pending_first_pass_job_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Fenced ownership for phase-2 technical-scan association (#341 P1-2).
+    phase2_claim_token: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    phase2_claim_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    pending_technical_scan_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),

@@ -386,6 +386,7 @@ class ScanState:
             "dailyNotRunByDesignCount": stage.get("dailyNotRunByDesignCount", 0),
             "dailyNotRunByDesignIds": list(stage.get("dailyNotRunByDesignIds") or []),
             "monthlyIncompleteCount": stage["monthlyIncompleteCount"],
+            "monthlyIncompleteIds": list(stage.get("monthlyIncompleteIds") or []),
             "monthlyFailWatchlistCount": stage.get("monthlyFailWatchlistCount", 0),
             "monthlyFailWatchlistIds": list(stage.get("monthlyFailWatchlistIds") or []),
             "qualifiedCount": len(self.qualified_ids),

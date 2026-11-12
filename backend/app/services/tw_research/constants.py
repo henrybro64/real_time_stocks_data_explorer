@@ -80,6 +80,9 @@ DEFAULT_MAX_IN_FLIGHT_SCAN_BATCHES = 2
 # Cross-pod history single-flight lease (#329). Short enough to recover after pod crash,
 # renewed by a healthy leader so slow upstream work does not open a duplicate window.
 HISTORY_FLIGHT_LEASE_SECONDS = 180
+# Cross-pod fenced ownership for research-run job/scan association (#341).
+RESEARCH_RUN_JOB_CLAIM_LEASE_SECONDS = 60
+RESEARCH_RUN_PHASE2_CLAIM_LEASE_SECONDS = 60
 HISTORY_FLIGHT_RENEW_INTERVAL_SECONDS = 45
 # Fail closed after this many consecutive renew DB errors (lease may already be stolen).
 HISTORY_FLIGHT_MAX_CONSECUTIVE_RENEW_FAILURES = 3

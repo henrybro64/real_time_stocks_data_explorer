@@ -19,6 +19,7 @@ import {
   fetchTwResearchFirstPassSymbols,
   fetchTwResearchLatestCandidateSet,
   fetchTwResearchLatestManifest,
+  fetchTwResearchMembership,
   fetchTwResearchReportEvidenceExampleZhTw,
   fetchTwResearchRunCurrent,
   fetchTwResearchScan,
@@ -1175,6 +1176,8 @@ describe("TwResearchPage watchlist union (#338)", () => {
       monthlyFailWatchlistCount: 2,
       dailyNotRunByDesignIds: ["TW:2330", "TW:2454"],
       dailyNotRunByDesignCount: 2,
+      monthlyIncompleteIds: ["TW:2303"],
+      monthlyIncompleteCount: 1,
       ledger: [
         {
           stock_id: "TW:2317",
@@ -1195,10 +1198,27 @@ describe("TwResearchPage watchlist union (#338)", () => {
           monthly: { passStatus: "fail" },
           daily: { executionStatus: "not_run_by_design" },
         },
+        {
+          stock_id: "TW:2303",
+          stockName: "聯電",
+          readiness: "source_incomplete",
+        },
       ],
     });
     vi.mocked(createTwResearchScan).mockResolvedValue(scan);
     vi.mocked(fetchTwResearchScan).mockResolvedValue(scan);
+    vi.mocked(fetchTwResearchMembership).mockResolvedValue({
+      version: 1,
+      resolvedStockIds: ["TW:2330", "TW:2881"],
+      extraStockIds: ["TW:2881"],
+    });
+    vi.mocked(fetchTwResearchLatestCandidateSet).mockResolvedValue({
+      candidateSetId: "cs_1",
+      version: 1,
+      stockIds: ["TW:2330"],
+      firstPassSnapshotId: "fps_1",
+      firstPassDigest: "d".repeat(64),
+    });
 
     renderPage();
     await user.click(screen.getByTestId("tw-research-create"));
@@ -1210,6 +1230,8 @@ describe("TwResearchPage watchlist union (#338)", () => {
     expect(screen.getByTestId("tw-research-watchlist-row-TW:2317")).toBeInTheDocument();
     expect(screen.getByTestId("tw-research-watchlist-row-TW:2330")).toBeInTheDocument();
     expect(screen.getByTestId("tw-research-watchlist-row-TW:2454")).toBeInTheDocument();
+    expect(screen.getByTestId("tw-research-watchlist-row-TW:2303")).toBeInTheDocument();
+    expect(await screen.findByTestId("tw-research-watchlist-row-TW:2881")).toBeInTheDocument();
 
     const row2317 = screen.getByTestId("tw-research-watchlist-row-TW:2317");
     expect(row2317).toHaveTextContent("—");
@@ -1217,7 +1239,10 @@ describe("TwResearchPage watchlist union (#338)", () => {
     expect(row2317).toHaveTextContent("monthly_fail_watchlist");
 
     const row2330 = screen.getByTestId("tw-research-watchlist-row-TW:2330");
-    expect(row2330).toHaveTextContent("daily_not_run_by_design+monthly_fail_watchlist");
+    expect(row2330).toHaveTextContent("daily_waiting_or_not_run+monthly_fail_watchlist");
+
+    const row2881 = screen.getByTestId("tw-research-watchlist-row-TW:2881");
+    expect(row2881).toHaveTextContent("first_pass_fundamental_not_selected");
 
     expect(screen.getByTestId("tw-research-watchlist-pagination")).toBeInTheDocument();
   });

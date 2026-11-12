@@ -534,6 +534,74 @@ def test_research_run_start_idempotent_single_job(monkeypatch) -> None:
     research_run_store.disable_test_memory()
 
 
+def test_report_evidence_full_two_pass_requires_candidate_provenance(monkeypatch) -> None:
+    from app.db.init_ids import DEFAULT_USER_ID
+    from app.services.tw_research.constants import CALCULATION_VERSION_MONTHLY_FIRST
+    from app.services.tw_research.scan import (
+        SymbolScanRecord,
+        TwResearchScanService,
+        UniverseSelector,
+    )
+    from tests.support import stock_record
+
+    catalog = {
+        "TW:2330": stock_record(
+            "TW:2330",
+            market="TW",
+            symbol="2330",
+            name="台積電",
+            exchange="TWSE",
+            currency="TWD",
+            timezone="Asia/Taipei",
+        )
+    }
+    service = TwResearchScanService(
+        history_loader=lambda *a, **k: ([], 0),
+        stock_loader=catalog.get,
+        persist=False,
+    )
+    state = service.create_scan(
+        UniverseSelector(mode="stock_ids", stock_ids=("TW:2330",)),
+        calculation_version=CALCULATION_VERSION_MONTHLY_FIRST,
+        trading_day="2024-06-28",
+        # Missing candidateSetId/version on purpose.
+        candidate_provenance={"firstPassSnapshotId": "fps_x", "firstPassDigest": "d"},
+    )
+    state.user_id = DEFAULT_USER_ID
+    state.records["TW:2330"] = SymbolScanRecord(
+        stock_id="TW:2330",
+        stage="A",
+        readiness="processed",
+        stock_name="台積電",
+        name_status="ok",
+    )
+    monkeypatch.setattr(
+        "app.api.routes.tw_research.tw_research_scan_service",
+        service,
+    )
+    monkeypatch.setattr(
+        "app.repositories.tw_research_repository.tw_research_repository.get_first_pass_snapshot",
+        lambda snapshot_id, user_id=None: {
+            "snapshot_id": snapshot_id,
+            "content_digest": "d",
+            "stock_ids": ["TW:2330"],
+            "payload": {"qualityStatus": "verified_ready"},
+        },
+    )
+    response = client.post(
+        "/api/tw-research/report-evidence",
+        json={
+            "scanId": state.scan_id,
+            "firstPassSnapshotId": "fps_x",
+            "tradingDay": "2024-06-28",
+        },
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"]["error"] == (
+        "full_two_pass_requires_candidate_set_provenance"
+    )
+
+
 def test_candidate_technical_scan_store_unavailable_returns_503_without_scan(
     monkeypatch,
 ) -> None:

@@ -13,8 +13,8 @@ no production deploy in this slice.
 | #340 Notion-ready evidence (Stock Ticker only) | Pack + ZH-TW fixture + UI export/example + two-decision unit proof |
 | #341 Manual full-research first | **Postgres `tw_research_research_runs`** (fail-closed); start creates first-pass job |
 
-See `docs/AI_HANDOFF.md` for commands and commit notes. Migrations: `20261112_0025`,
-`20261112_0026` (research-run `revision` OCC).
+See `docs/AI_HANDOFF.md` and `docs/ai-handoff-338-341.md`. Migrations: `20261112_0025`,
+`20261112_0026` (research-run `revision` OCC), `20261112_0027` (job/scan claim fencing).
 
 ## Key modules
 
@@ -56,10 +56,11 @@ Candidate set / technical-scan requests accept `dailyOverrideIds`.
 
 - `GET /research-runs/current` and `POST /research-runs/gate` call `reconcile()`;
   client status/snapshot query params on gate are **ignored**.
-- `POST /research-runs/start` is idempotent: an active phase1/phase2 run with a
-  non-terminal job/scan is returned (HTTP 200) without creating another job.
-  Only terminal/gated runs are replaced. Run row is written (`queued`, no job id)
-  before job create; job id is attached afterward.
+- `POST /research-runs/start` is cross-pod idempotent via DB-fenced job claims
+  (`job_claim_token` / `pending_first_pass_job_id`). Only the claim owner creates
+  and attaches the authoritative first-pass job; lost-race jobs are marked orphaned.
+- Phase-2 technical scans use the same claim pattern (`phase2_claim_*` /
+  `pending_technical_scan_id`) so retries reuse the matching scan.
 - Upserts use `revision` optimistic concurrency (`WHERE user_id AND revision`);
   0 rows → **409** `research_run_revision_conflict`.
 - `attach_candidate_set` requires phase

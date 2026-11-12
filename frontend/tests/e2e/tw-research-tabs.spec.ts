@@ -39,3 +39,18 @@ test("analyst evidence example loads as labeled fixture only", async ({ page }) 
   await expect(page.getByTestId("tw-research-report-evidence")).toContainText("exampleOnly");
   await expect(page.getByTestId("tw-research-report-evidence")).toContainText("不是即時投資建議");
 });
+
+test("watchlist tab remains available after reload and does not invent Notion picks", async ({
+  page,
+}) => {
+  await openResearchPage(page);
+  await page.getByTestId("tw-research-tab-watchlist").click();
+  await expect(page.getByTestId("tw-research-watchlist")).toBeVisible();
+  await expect(page.getByTestId("tw-research-watchlist")).toContainText(
+    /Not a Notion|不是 Notion|觀察/,
+  );
+  await page.reload();
+  await expect(page.getByTestId("tw-research-tabs")).toBeVisible();
+  await page.getByTestId("tw-research-tab-watchlist").click();
+  await expect(page.getByTestId("tw-research-watchlist")).toBeVisible();
+});

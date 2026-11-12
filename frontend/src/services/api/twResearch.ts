@@ -33,6 +33,7 @@ export type TwResearchScanSnapshot = {
   dualPassCount?: number;
   dailyDeferredCount?: number;
   monthlyIncompleteCount?: number;
+  monthlyIncompleteIds?: string[];
   dailyNotRunByDesignCount?: number;
   dailyNotRunByDesignIds?: string[];
   monthlyFailWatchlistCount?: number;

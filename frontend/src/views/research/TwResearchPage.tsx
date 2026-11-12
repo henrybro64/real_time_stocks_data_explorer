@@ -1028,6 +1028,47 @@ export function TwResearchPage({
 
   const ledger = (scan?.ledger ?? []) as Array<Record<string, unknown>>;
   const pageRows = ledger.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+  const watchlistReasonById = useMemo(() => {
+    const reasonById = new Map<string, string>();
+    const addReason = (id: string, reason: string) => {
+      const prior = reasonById.get(id);
+      reasonById.set(id, prior ? `${prior}+${reason}` : reason);
+    };
+    for (const id of scan?.dailyNotRunByDesignIds ?? []) {
+      addReason(String(id), "daily_waiting_or_not_run");
+    }
+    for (const id of scan?.monthlyFailWatchlistIds ?? []) {
+      addReason(String(id), "monthly_fail_watchlist");
+    }
+    for (const id of scan?.monthlyIncompleteIds ?? []) {
+      addReason(String(id), "insufficient_evidence_monthly");
+    }
+    const selected = new Set(
+      ((candidateSetQuery.data?.stockIds as string[] | undefined) ?? []).map(String),
+    );
+    const membershipIds = Array.isArray(membershipQuery.data?.resolvedStockIds)
+      ? (membershipQuery.data?.resolvedStockIds as string[]).map(String)
+      : Array.isArray(membershipQuery.data?.extraStockIds)
+        ? (membershipQuery.data?.extraStockIds as string[]).map(String)
+        : [];
+    for (const id of membershipIds) {
+      if (!selected.has(id)) {
+        addReason(id, "first_pass_fundamental_not_selected");
+      }
+    }
+    return reasonById;
+  }, [
+    candidateSetQuery.data?.stockIds,
+    membershipQuery.data?.extraStockIds,
+    membershipQuery.data?.resolvedStockIds,
+    scan?.dailyNotRunByDesignIds,
+    scan?.monthlyFailWatchlistIds,
+    scan?.monthlyIncompleteIds,
+  ]);
+  const watchlistIds = useMemo(
+    () => Array.from(watchlistReasonById.keys()).sort(),
+    [watchlistReasonById],
+  );
   const busy =
     createMutation.isPending ||
     batchMutation.isPending ||
@@ -1837,6 +1878,12 @@ export function TwResearchPage({
                 {t("research.tw.watchlistCounts", {
                   monthlyFail: Number(scan?.monthlyFailWatchlistCount ?? 0),
                   notRun: Number(scan?.dailyNotRunByDesignCount ?? 0),
+                  monthlyIncomplete: Number(scan?.monthlyIncompleteCount ?? 0),
+                  firstPassNotSelected: watchlistIds.filter((id) =>
+                    String(watchlistReasonById.get(id) ?? "").includes(
+                      "first_pass_fundamental_not_selected",
+                    ),
+                  ).length,
                 })}
               </p>
               <p className="cds--helper-text-01">{t("research.tw.expandHint")}</p>
@@ -1854,27 +1901,12 @@ export function TwResearchPage({
                     </TableRow>
                   </TableHead>
                   <TableBody>
-                    {(() => {
-                      const monthlyFailIds = scan?.monthlyFailWatchlistIds ?? [];
-                      const notRunIds = scan?.dailyNotRunByDesignIds ?? [];
-                      const reasonById = new Map<string, string>();
-                      for (const id of notRunIds) {
-                        reasonById.set(id, "daily_not_run_by_design");
-                      }
-                      for (const id of monthlyFailIds) {
-                        const prior = reasonById.get(id);
-                        reasonById.set(
-                          id,
-                          prior ? `${prior}+monthly_fail_watchlist` : "monthly_fail_watchlist",
-                        );
-                      }
-                      const watchlistIds = Array.from(reasonById.keys()).sort();
-                      return watchlistIds
-                        .slice(
-                          (watchlistPage - 1) * PAGE_SIZE,
-                          watchlistPage * PAGE_SIZE,
-                        )
-                        .map((id) => {
+                    {watchlistIds
+                      .slice(
+                        (watchlistPage - 1) * PAGE_SIZE,
+                        watchlistPage * PAGE_SIZE,
+                      )
+                      .map((id) => {
                         const row = ledger.find(
                           (item) =>
                             String(item.stockId ?? item.stock_id ?? "") === id,
@@ -1889,6 +1921,9 @@ export function TwResearchPage({
                           row?.technical_stage ?? row?.technicalStage;
                         const dailyValue =
                           daily?.executionStatus ?? daily?.passStatus;
+                        const enrichment = row?.enrichment as
+                          | Record<string, unknown>
+                          | undefined;
                         return (
                           <Fragment key={id}>
                           <TableRow data-testid={`tw-research-watchlist-row-${id}`}>
@@ -1918,7 +1953,7 @@ export function TwResearchPage({
                             <TableCell>{String(monthly?.passStatus ?? "—")}</TableCell>
                             <TableCell>{String(dailyValue ?? "—")}</TableCell>
                             <TableCell>{String(stageValue ?? "—")}</TableCell>
-                            <TableCell>{reasonById.get(id) ?? "—"}</TableCell>
+                            <TableCell>{watchlistReasonById.get(id) ?? "—"}</TableCell>
                             <TableCell>{t("research.tw.watchlistRowNote")}</TableCell>
                           </TableRow>
                           {expanded ? (
@@ -1927,12 +1962,16 @@ export function TwResearchPage({
                                 <pre
                                   className="cds--body-compact-01"
                                   style={{ whiteSpace: "pre-wrap", margin: 0 }}
+                                  data-testid={`tw-research-watchlist-detail-${id}`}
                                 >
                                   {JSON.stringify(
                                     {
+                                      reason: watchlistReasonById.get(id) ?? null,
                                       coverage: row?.coverage ?? null,
                                       monthly: row?.monthly ?? null,
                                       daily: row?.daily ?? null,
+                                      enrichment: enrichment ?? null,
+                                      note: "Not a Notion recommendation.",
                                     },
                                     null,
                                     2,
@@ -1943,8 +1982,7 @@ export function TwResearchPage({
                           ) : null}
                           </Fragment>
                         );
-                      });
-                    })()}
+                      })}
                   </TableBody>
                 </Table>
               </TableContainer>
@@ -1953,12 +1991,7 @@ export function TwResearchPage({
                 page={watchlistPage}
                 pageSize={PAGE_SIZE}
                 pageSizes={[PAGE_SIZE]}
-                totalItems={
-                  new Set([
-                    ...(scan?.monthlyFailWatchlistIds ?? []),
-                    ...(scan?.dailyNotRunByDesignIds ?? []),
-                  ]).size
-                }
+                totalItems={watchlistIds.length}
                 onChange={({ page: nextPage }) => setWatchlistPage(nextPage)}
               />
             </Stack>

@@ -44,6 +44,21 @@ def _as_utc(value: datetime | None) -> datetime | None:
     return value.astimezone(timezone.utc)
 
 
+def _as_utc_iso(value: datetime | str | None) -> datetime | None:
+    """Parse ISO timestamps used by research-run persist payloads."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, datetime):
+        return _as_utc(value)
+    text = str(value).strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        return _as_utc(datetime.fromisoformat(text))
+    except ValueError:
+        return None
+
+
 def _first_missing_symbol_index(session: Session, scan_id: str, stock_ids: list[str]) -> int:
     """Return the first index in ``stock_ids`` without a persisted symbol result."""
     if not stock_ids:
@@ -1800,6 +1815,14 @@ class TwResearchRepository(SessionBoundRepository):
                     notes_json=list(payload.get("notes") or [])[-50:],
                     schedule_enabled=bool(payload.get("schedule_enabled")),
                     revision=1,
+                    job_claim_token=payload.get("job_claim_token"),
+                    job_claim_expires_at=_as_utc_iso(payload.get("job_claim_expires_at")),
+                    pending_first_pass_job_id=payload.get("pending_first_pass_job_id"),
+                    phase2_claim_token=payload.get("phase2_claim_token"),
+                    phase2_claim_expires_at=_as_utc_iso(
+                        payload.get("phase2_claim_expires_at")
+                    ),
+                    pending_technical_scan_id=payload.get("pending_technical_scan_id"),
                     created_at=now,
                     updated_at=now,
                 )
@@ -1836,6 +1859,20 @@ class TwResearchRepository(SessionBoundRepository):
                         notes_json=list(payload.get("notes") or [])[-50:],
                         schedule_enabled=bool(payload.get("schedule_enabled")),
                         revision=expected_revision + 1,
+                        job_claim_token=payload.get("job_claim_token"),
+                        job_claim_expires_at=_as_utc_iso(
+                            payload.get("job_claim_expires_at")
+                        ),
+                        pending_first_pass_job_id=payload.get(
+                            "pending_first_pass_job_id"
+                        ),
+                        phase2_claim_token=payload.get("phase2_claim_token"),
+                        phase2_claim_expires_at=_as_utc_iso(
+                            payload.get("phase2_claim_expires_at")
+                        ),
+                        pending_technical_scan_id=payload.get(
+                            "pending_technical_scan_id"
+                        ),
                         updated_at=now,
                     )
                 )
@@ -1853,6 +1890,389 @@ class TwResearchRepository(SessionBoundRepository):
             if row is not None:
                 session.delete(row)
                 session.commit()
+
+    def claim_research_run_job_slot(
+        self,
+        user_id: str,
+        *,
+        claim_token: str,
+        lease_seconds: int = 60,
+    ) -> dict[str, Any]:
+        """Atomically claim the right to create/attach a first-pass job (#341 P1-1).
+
+        Uses ``SELECT … FOR UPDATE`` — not process-local locks. Expired claims
+        are recoverable; an already-attached job short-circuits creation.
+        """
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            now = datetime.now(timezone.utc)
+            row = session.execute(
+                select(TwResearchResearchRun)
+                .where(TwResearchResearchRun.user_id == user_id)
+                .with_for_update()
+            ).scalar_one_or_none()
+            if row is None:
+                raise KeyError("research_run_not_found")
+            if row.first_pass_job_id:
+                session.commit()
+                return {
+                    "outcome": "already_attached",
+                    "run": _research_run_to_dict(row),
+                    "first_pass_job_id": row.first_pass_job_id,
+                }
+            expires = _as_utc(row.job_claim_expires_at)
+            held_by_other = (
+                row.job_claim_token
+                and row.job_claim_token != claim_token
+                and expires is not None
+                and expires > now
+            )
+            if held_by_other:
+                session.commit()
+                return {
+                    "outcome": "claim_held",
+                    "run": _research_run_to_dict(row),
+                    "first_pass_job_id": None,
+                }
+            # Own claim, expired claim, or free slot → take/renew ownership.
+            row.job_claim_token = claim_token
+            row.job_claim_expires_at = now + timedelta(seconds=int(lease_seconds))
+            row.revision = int(row.revision or 0) + 1
+            row.updated_at = now
+            session.commit()
+            session.refresh(row)
+            return {
+                "outcome": "claimed",
+                "run": _research_run_to_dict(row),
+                "pending_first_pass_job_id": row.pending_first_pass_job_id,
+                "first_pass_job_id": None,
+            }
+
+    def record_pending_first_pass_job(
+        self,
+        user_id: str,
+        *,
+        claim_token: str,
+        job_id: str,
+    ) -> dict[str, Any]:
+        """Persist pending job id under an owned claim (crash between create+attach)."""
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            now = datetime.now(timezone.utc)
+            row = session.execute(
+                select(TwResearchResearchRun)
+                .where(TwResearchResearchRun.user_id == user_id)
+                .with_for_update()
+            ).scalar_one_or_none()
+            if row is None:
+                raise KeyError("research_run_not_found")
+            if row.first_pass_job_id:
+                session.commit()
+                return {
+                    "outcome": "already_attached",
+                    "run": _research_run_to_dict(row),
+                    "first_pass_job_id": row.first_pass_job_id,
+                    "orphan_job_id": job_id
+                    if str(row.first_pass_job_id) != str(job_id)
+                    else None,
+                }
+            expires = _as_utc(row.job_claim_expires_at)
+            if row.job_claim_token != claim_token or expires is None or expires <= now:
+                session.commit()
+                return {
+                    "outcome": "claim_lost",
+                    "run": _research_run_to_dict(row),
+                    "orphan_job_id": job_id,
+                }
+            row.pending_first_pass_job_id = job_id
+            row.revision = int(row.revision or 0) + 1
+            row.updated_at = now
+            session.commit()
+            session.refresh(row)
+            return {
+                "outcome": "recorded",
+                "run": _research_run_to_dict(row),
+                "pending_first_pass_job_id": job_id,
+            }
+
+    def attach_first_pass_job_atomic(
+        self,
+        user_id: str,
+        *,
+        claim_token: str,
+        job_id: str,
+        notes: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Attach job id and clear the claim under ``FOR UPDATE``."""
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            now = datetime.now(timezone.utc)
+            row = session.execute(
+                select(TwResearchResearchRun)
+                .where(TwResearchResearchRun.user_id == user_id)
+                .with_for_update()
+            ).scalar_one_or_none()
+            if row is None:
+                raise KeyError("research_run_not_found")
+            if row.first_pass_job_id:
+                session.commit()
+                return {
+                    "outcome": "already_attached",
+                    "run": _research_run_to_dict(row),
+                    "first_pass_job_id": row.first_pass_job_id,
+                    "orphan_job_id": job_id
+                    if str(row.first_pass_job_id) != str(job_id)
+                    else None,
+                }
+            expires = _as_utc(row.job_claim_expires_at)
+            owns = (
+                row.job_claim_token == claim_token
+                and expires is not None
+                and expires > now
+            )
+            pending_ok = row.pending_first_pass_job_id in {None, job_id}
+            if not owns or not pending_ok:
+                session.commit()
+                return {
+                    "outcome": "claim_lost",
+                    "run": _research_run_to_dict(row),
+                    "orphan_job_id": job_id,
+                }
+            row.first_pass_job_id = job_id
+            row.pending_first_pass_job_id = None
+            row.job_claim_token = None
+            row.job_claim_expires_at = None
+            row.status = "running"
+            row.phase = "phase1_first_pass"
+            dims = dict(row.dimensions_json or {})
+            dims["fundamentals"] = "in_progress"
+            row.dimensions_json = dims
+            note_list = list(row.notes_json or [])
+            for note in notes or []:
+                note_list.append(note)
+            row.notes_json = note_list[-50:]
+            row.revision = int(row.revision or 0) + 1
+            row.updated_at = now
+            session.commit()
+            session.refresh(row)
+            return {
+                "outcome": "attached",
+                "run": _research_run_to_dict(row),
+                "first_pass_job_id": job_id,
+            }
+
+    def mark_first_pass_job_orphaned(
+        self,
+        job_id: str,
+        *,
+        user_id: str,
+        authoritative_job_id: str | None,
+        reason: str,
+    ) -> None:
+        """Explicitly mark a non-authoritative job so it is not silently abandoned."""
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            row = session.execute(
+                select(TwResearchFirstPassJob)
+                .where(
+                    TwResearchFirstPassJob.job_id == job_id,
+                    TwResearchFirstPassJob.user_id == user_id,
+                )
+                .with_for_update()
+            ).scalar_one_or_none()
+            if row is None:
+                return
+            if row.status in {"completed", "partial"} and row.active_snapshot_id:
+                # Preserve completed evidence; only annotate.
+                notes = list(row.notes_json or [])
+                notes.append(
+                    f"orphan_note:{reason}:authoritative={authoritative_job_id or 'none'}"
+                )
+                row.notes_json = notes[-50:]
+            else:
+                row.status = "failed"
+                notes = list(row.notes_json or [])
+                notes.append(
+                    f"orphaned_superseded:{reason}:authoritative={authoritative_job_id or 'none'}"
+                )
+                row.notes_json = notes[-50:]
+                row.quality_status = "incomplete"
+            row.updated_at = datetime.now(timezone.utc)
+            session.commit()
+
+    def claim_research_run_phase2_slot(
+        self,
+        user_id: str,
+        *,
+        claim_token: str,
+        lease_seconds: int = 60,
+    ) -> dict[str, Any]:
+        """Atomically claim the right to create/attach a technical scan (#341 P1-2)."""
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            now = datetime.now(timezone.utc)
+            row = session.execute(
+                select(TwResearchResearchRun)
+                .where(TwResearchResearchRun.user_id == user_id)
+                .with_for_update()
+            ).scalar_one_or_none()
+            if row is None:
+                raise KeyError("research_run_not_found")
+            gates = dict(row.gates_json or {})
+            if gates.get("candidateSelection") != "approved":
+                session.commit()
+                return {
+                    "outcome": "gate_not_approved",
+                    "run": _research_run_to_dict(row),
+                }
+            if row.technical_scan_id:
+                session.commit()
+                return {
+                    "outcome": "already_attached",
+                    "run": _research_run_to_dict(row),
+                    "technical_scan_id": row.technical_scan_id,
+                }
+            expires = _as_utc(row.phase2_claim_expires_at)
+            held_by_other = (
+                row.phase2_claim_token
+                and row.phase2_claim_token != claim_token
+                and expires is not None
+                and expires > now
+            )
+            if held_by_other:
+                session.commit()
+                return {
+                    "outcome": "claim_held",
+                    "run": _research_run_to_dict(row),
+                }
+            row.phase2_claim_token = claim_token
+            row.phase2_claim_expires_at = now + timedelta(seconds=int(lease_seconds))
+            row.revision = int(row.revision or 0) + 1
+            row.updated_at = now
+            session.commit()
+            session.refresh(row)
+            return {
+                "outcome": "claimed",
+                "run": _research_run_to_dict(row),
+                "pending_technical_scan_id": row.pending_technical_scan_id,
+            }
+
+    def record_pending_technical_scan(
+        self,
+        user_id: str,
+        *,
+        claim_token: str,
+        scan_id: str,
+    ) -> dict[str, Any]:
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            now = datetime.now(timezone.utc)
+            row = session.execute(
+                select(TwResearchResearchRun)
+                .where(TwResearchResearchRun.user_id == user_id)
+                .with_for_update()
+            ).scalar_one_or_none()
+            if row is None:
+                raise KeyError("research_run_not_found")
+            if row.technical_scan_id:
+                session.commit()
+                return {
+                    "outcome": "already_attached",
+                    "run": _research_run_to_dict(row),
+                    "technical_scan_id": row.technical_scan_id,
+                }
+            expires = _as_utc(row.phase2_claim_expires_at)
+            if (
+                row.phase2_claim_token != claim_token
+                or expires is None
+                or expires <= now
+            ):
+                session.commit()
+                return {
+                    "outcome": "claim_lost",
+                    "run": _research_run_to_dict(row),
+                }
+            row.pending_technical_scan_id = scan_id
+            row.revision = int(row.revision or 0) + 1
+            row.updated_at = now
+            session.commit()
+            session.refresh(row)
+            return {
+                "outcome": "recorded",
+                "run": _research_run_to_dict(row),
+                "pending_technical_scan_id": scan_id,
+            }
+
+    def attach_technical_scan_atomic(
+        self,
+        user_id: str,
+        *,
+        claim_token: str,
+        scan_id: str,
+        notes: list[str] | None = None,
+    ) -> dict[str, Any]:
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            now = datetime.now(timezone.utc)
+            row = session.execute(
+                select(TwResearchResearchRun)
+                .where(TwResearchResearchRun.user_id == user_id)
+                .with_for_update()
+            ).scalar_one_or_none()
+            if row is None:
+                raise KeyError("research_run_not_found")
+            if row.technical_scan_id:
+                session.commit()
+                return {
+                    "outcome": "already_attached",
+                    "run": _research_run_to_dict(row),
+                    "technical_scan_id": row.technical_scan_id,
+                }
+            expires = _as_utc(row.phase2_claim_expires_at)
+            owns = (
+                row.phase2_claim_token == claim_token
+                and expires is not None
+                and expires > now
+            )
+            if not owns:
+                session.commit()
+                return {
+                    "outcome": "claim_lost",
+                    "run": _research_run_to_dict(row),
+                }
+            gates = dict(row.gates_json or {})
+            if gates.get("candidateSelection") != "approved":
+                session.commit()
+                return {
+                    "outcome": "gate_not_approved",
+                    "run": _research_run_to_dict(row),
+                }
+            row.technical_scan_id = scan_id
+            row.pending_technical_scan_id = None
+            row.phase2_claim_token = None
+            row.phase2_claim_expires_at = None
+            row.phase = "phase2_technical"
+            row.status = "running"
+            dims = dict(row.dimensions_json or {})
+            dims["monthlyTechnical"] = "in_progress"
+            dims["dailyTechnical"] = "pending_monthly_gate"
+            row.dimensions_json = dims
+            note_list = list(row.notes_json or [])
+            for note in list(notes or []) + [
+                "Phase-2 monthly-first technical started from approved candidates only.",
+                "Stops for analyst report decision; no Notion write.",
+            ]:
+                note_list.append(note)
+            row.notes_json = note_list[-50:]
+            row.revision = int(row.revision or 0) + 1
+            row.updated_at = now
+            session.commit()
+            session.refresh(row)
+            return {
+                "outcome": "attached",
+                "run": _research_run_to_dict(row),
+                "technical_scan_id": scan_id,
+            }
 
     # --- First-pass resumable jobs (#335) ---
 
@@ -2494,6 +2914,11 @@ def _candidate_set_to_dict(row: TwResearchCandidateSet) -> dict[str, Any]:
 
 
 def _research_run_to_dict(row: TwResearchResearchRun) -> dict[str, Any]:
+    def _iso(value: datetime | None) -> str | None:
+        if value is None:
+            return None
+        return value.isoformat() if hasattr(value, "isoformat") else str(value)
+
     return {
         "user_id": row.user_id,
         "research_run_id": row.research_run_id,
@@ -2511,6 +2936,12 @@ def _research_run_to_dict(row: TwResearchResearchRun) -> dict[str, Any]:
         "notes": list(row.notes_json or []),
         "schedule_enabled": bool(row.schedule_enabled),
         "revision": int(getattr(row, "revision", 0) or 0),
+        "job_claim_token": getattr(row, "job_claim_token", None),
+        "job_claim_expires_at": _iso(getattr(row, "job_claim_expires_at", None)),
+        "pending_first_pass_job_id": getattr(row, "pending_first_pass_job_id", None),
+        "phase2_claim_token": getattr(row, "phase2_claim_token", None),
+        "phase2_claim_expires_at": _iso(getattr(row, "phase2_claim_expires_at", None)),
+        "pending_technical_scan_id": getattr(row, "pending_technical_scan_id", None),
         "created_at": row.created_at.isoformat()
         if hasattr(row.created_at, "isoformat")
         else str(row.created_at),

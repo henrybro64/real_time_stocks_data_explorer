@@ -102,6 +102,7 @@ from app.services.tw_research.report_evidence import (
     normalize_first_pass_snapshot,
 )
 from app.services.tw_research.research_run import (
+    ResearchRun,
     ResearchRunConflict,
     ResearchRunGateError,
     ResearchRunStoreUnavailable,
@@ -573,8 +574,13 @@ def post_candidate_set(
                 status_code=409,
                 detail={"error": str(exc)},
             ) from exc
-        except KeyError:
-            pass
+        except KeyError as exc:
+            # Run vanished between get and attach — fail closed when orchestration
+            # was expected (caller already observed a run row).
+            raise HTTPException(
+                status_code=409,
+                detail={"error": "research_run_not_found_during_attach"},
+            ) from exc
     except ResearchMembershipUnavailable as exc:
         raise HTTPException(
             status_code=503,
@@ -627,10 +633,12 @@ def post_candidate_technical_scan(
     body: CandidateTechnicalScanRequest,
     user_id: str = Depends(get_effective_user_id),
 ) -> ScanSnapshotResponse:
-    """Create a technical MACD/KD scan from the approved candidate set (#336)."""
+    """Create a technical MACD/KD scan from the approved candidate set (#336).
+
+    When a research run exists, Phase-2 association is fenced: claim → create/reuse
+    scan → atomic attach. Standalone (no run) keeps legacy create behaviour.
+    """
     try:
-        # When a research run exists, fail closed on store/gate errors *before*
-        # creating a scan so a 503 never leaves an orphan technical scan.
         run_before = None
         try:
             run_before = research_run_store.get(user_id)
@@ -643,11 +651,91 @@ def post_candidate_technical_scan(
                     "message": str(exc),
                 },
             ) from exc
-        if run_before is not None and run_before.gates.get("candidateSelection") != "approved":
-            raise HTTPException(
-                status_code=409,
-                detail={"error": "candidate_selection_gate_not_approved"},
+
+        claim_token: str | None = None
+        if run_before is not None:
+            if run_before.gates.get("candidateSelection") != "approved":
+                raise HTTPException(
+                    status_code=409,
+                    detail={"error": "candidate_selection_gate_not_approved"},
+                )
+            # Pin candidate-set identity against the managed run when present.
+            if (
+                body.candidateSetId
+                and run_before.candidate_set_id
+                and str(body.candidateSetId) != str(run_before.candidate_set_id)
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail={"error": "candidate_set_id_mismatch_with_research_run"},
+                )
+            if (
+                body.expectedVersion is not None
+                and run_before.candidate_set_version is not None
+                and int(body.expectedVersion) != int(run_before.candidate_set_version)
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail={"error": "candidate_set_version_mismatch_with_research_run"},
+                )
+            from uuid import uuid4
+
+            claim_token = f"p2_{uuid4().hex[:20]}"
+            claim = research_run_store.claim_phase2_scan_slot(
+                user_id, claim_token=claim_token
             )
+            outcome = str(claim.get("outcome") or "")
+            if outcome == "gate_not_approved":
+                raise HTTPException(
+                    status_code=409,
+                    detail={"error": "candidate_selection_gate_not_approved"},
+                )
+            if outcome == "already_attached":
+                existing_id = claim.get("technical_scan_id")
+                state = tw_research_scan_service.get_scan(str(existing_id or ""))
+                if state is None:
+                    raise HTTPException(
+                        status_code=409,
+                        detail={
+                            "error": "research_run_technical_scan_missing",
+                            "technicalScanId": existing_id,
+                        },
+                    )
+                if getattr(state, "user_id", None) not in {None, user_id}:
+                    raise HTTPException(status_code=404, detail="scan_not_found")
+                return _snapshot(state)
+            if outcome == "claim_held":
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "error": "phase2_claim_held",
+                        "retryable": True,
+                        "message": "Another worker is associating the technical scan.",
+                    },
+                )
+            pending_scan_id = claim.get("pending_technical_scan_id")
+            if pending_scan_id:
+                state = tw_research_scan_service.get_scan(str(pending_scan_id))
+                if state is not None and getattr(state, "user_id", None) in {
+                    None,
+                    user_id,
+                }:
+                    attached = research_run_store.attach_technical_scan_under_claim(
+                        user_id,
+                        claim_token=claim_token,
+                        scan_id=str(pending_scan_id),
+                    )
+                    if attached.get("outcome") in {"attached", "already_attached"}:
+                        return _snapshot(state)
+                    raise HTTPException(
+                        status_code=503,
+                        detail={
+                            "error": "phase2_attach_failed",
+                            "retryable": True,
+                            "scanId": pending_scan_id,
+                        },
+                    )
+
         result = create_technical_scan_from_candidate_set(
             user_id=user_id,
             expected_version=body.expectedVersion,
@@ -662,10 +750,15 @@ def post_candidate_technical_scan(
         scan_id = getattr(scan_state, "scan_id", None) or (
             scan_state.get("scanId") if isinstance(scan_state, dict) else None
         )
-        if scan_id and run_before is not None:
+        if scan_id and run_before is not None and claim_token is not None:
             try:
-                research_run_store.start_phase2(
-                    user_id, technical_scan_id=str(scan_id)
+                research_run_store.record_pending_technical_scan(
+                    user_id, claim_token=claim_token, scan_id=str(scan_id)
+                )
+                attached = research_run_store.attach_technical_scan_under_claim(
+                    user_id,
+                    claim_token=claim_token,
+                    scan_id=str(scan_id),
                 )
             except ResearchRunStoreUnavailable as exc:
                 raise HTTPException(
@@ -673,24 +766,35 @@ def post_candidate_technical_scan(
                     detail={
                         "error": "research_run_store_unavailable",
                         "retryable": True,
+                        "scanId": scan_id,
                         "message": str(exc),
                     },
                 ) from exc
-            except ResearchRunConflict as exc:
+            outcome = str(attached.get("outcome") or "")
+            if outcome == "gate_not_approved":
                 raise HTTPException(
                     status_code=409,
+                    detail={"error": "candidate_selection_gate_not_approved"},
+                )
+            if outcome == "claim_lost":
+                raise HTTPException(
+                    status_code=503,
                     detail={
-                        "error": "research_run_revision_conflict",
-                        "reason": exc.reason,
+                        "error": "phase2_claim_lost_after_scan_create",
+                        "retryable": True,
+                        "scanId": scan_id,
                     },
-                ) from exc
-            except ResearchRunGateError as exc:
+                )
+            if outcome not in {"attached", "already_attached"}:
                 raise HTTPException(
-                    status_code=409,
-                    detail={"error": str(exc)},
-                ) from exc
-            except KeyError:
-                pass
+                    status_code=503,
+                    detail={
+                        "error": "phase2_attach_incomplete",
+                        "retryable": True,
+                        "scanId": scan_id,
+                        "outcome": outcome,
+                    },
+                )
     except ResearchMembershipUnavailable as exc:
         raise HTTPException(
             status_code=503,
@@ -793,7 +897,7 @@ def start_research_run(
     """Start Phase-1 by creating a durable first-pass job + research_run row.
 
     Never enables CronJob/Notion. Phase-2 starts via candidate-set technical-scan.
-    Idempotent: an active phase1/phase2 run is returned without creating a new job.
+    Cross-pod idempotent via DB-fenced job claim (not process locks).
     """
     if body.phase == "phase1_first_pass":
         try:
@@ -814,36 +918,104 @@ def start_research_run(
             run.phase == "phase2_technical" and run.technical_scan_id
         ):
             return ResearchRunResponse(researchRun=run.as_dict())
-        job_id: str | None = None
+
+        from uuid import uuid4
+
+        claim_token = f"claim_{uuid4().hex[:20]}"
         try:
-            job = first_pass_job_service.create_job(
-                user_id=user_id,
-                use_membership=True,
+            claim = research_run_store.claim_first_pass_job_slot(
+                user_id, claim_token=claim_token
             )
-            job_id = str(job.get("job_id") or job.get("jobId") or "")
-        except FirstPassJobError as exc:
-            if "unavailable" in str(exc):
+        except ResearchRunStoreUnavailable as exc:
+            raise _research_run_unavailable(exc) from exc
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+        outcome = str(claim.get("outcome") or "")
+        if outcome == "already_attached":
+            attached = ResearchRun.from_persist_payload(claim["run"])
+            return ResearchRunResponse(researchRun=attached.as_dict())
+        if outcome == "claim_held":
+            # Another pod owns creation; return current run for safe retry.
+            held = ResearchRun.from_persist_payload(claim["run"])
+            return ResearchRunResponse(researchRun=held.as_dict())
+
+        pending_job_id = claim.get("pending_first_pass_job_id")
+        job_id: str | None = str(pending_job_id) if pending_job_id else None
+        if not job_id:
+            try:
+                job = first_pass_job_service.create_job(
+                    user_id=user_id,
+                    use_membership=True,
+                )
+                job_id = str(job.get("job_id") or job.get("jobId") or "")
+            except FirstPassJobError as exc:
+                if "unavailable" in str(exc):
+                    raise HTTPException(
+                        status_code=503,
+                        detail={"error": str(exc), "operation": exc.operation},
+                    ) from exc
                 raise HTTPException(
-                    status_code=503,
+                    status_code=400,
                     detail={"error": str(exc), "operation": exc.operation},
                 ) from exc
-            raise HTTPException(
-                status_code=400,
-                detail={"error": str(exc), "operation": exc.operation},
-            ) from exc
+            try:
+                recorded = research_run_store.record_pending_first_pass_job(
+                    user_id, claim_token=claim_token, job_id=job_id
+                )
+            except ResearchRunStoreUnavailable as exc:
+                # Job exists but claim record failed — mark orphan explicitly.
+                research_run_store.mark_orphaned_first_pass_job(
+                    job_id,
+                    user_id=user_id,
+                    authoritative_job_id=None,
+                    reason="pending_record_store_unavailable",
+                )
+                raise _research_run_unavailable(exc) from exc
+            if recorded.get("outcome") == "already_attached":
+                orphan = recorded.get("orphan_job_id")
+                if orphan:
+                    research_run_store.mark_orphaned_first_pass_job(
+                        str(orphan),
+                        user_id=user_id,
+                        authoritative_job_id=str(recorded.get("first_pass_job_id")),
+                        reason="lost_race_after_create",
+                    )
+                return ResearchRunResponse(
+                    researchRun=ResearchRun.from_persist_payload(recorded["run"]).as_dict()
+                )
+            if recorded.get("outcome") == "claim_lost":
+                orphan = recorded.get("orphan_job_id") or job_id
+                if orphan:
+                    research_run_store.mark_orphaned_first_pass_job(
+                        str(orphan),
+                        user_id=user_id,
+                        authoritative_job_id=None,
+                        reason="claim_lost_after_create",
+                    )
+                held = ResearchRun.from_persist_payload(recorded["run"])
+                return ResearchRunResponse(researchRun=held.as_dict())
+
         try:
-            run = research_run_store.attach_first_pass_job(
+            attached = research_run_store.attach_first_pass_job_under_claim(
                 user_id,
-                first_pass_job_id=job_id or "",
+                claim_token=claim_token,
+                job_id=job_id or "",
                 notes=[f"Durable first-pass job {job_id} created with research run."],
             )
         except ResearchRunStoreUnavailable as exc:
             raise _research_run_unavailable(exc) from exc
-        except ResearchRunConflict as exc:
-            raise HTTPException(
-                status_code=409,
-                detail={"error": "research_run_revision_conflict", "reason": exc.reason},
-            ) from exc
+        if attached.get("outcome") in {"already_attached", "claim_lost"}:
+            orphan = attached.get("orphan_job_id")
+            if orphan:
+                research_run_store.mark_orphaned_first_pass_job(
+                    str(orphan),
+                    user_id=user_id,
+                    authoritative_job_id=str(attached.get("first_pass_job_id") or "")
+                    or None,
+                    reason=str(attached.get("outcome")),
+                )
+        run = ResearchRun.from_persist_payload(attached["run"])
         return ResearchRunResponse(researchRun=run.as_dict())
     if body.phase == "phase2_technical":
         raise HTTPException(
@@ -885,17 +1057,16 @@ def post_report_evidence(
     body: ReportEvidenceRequest,
     user_id: str = Depends(get_effective_user_id),
 ) -> ReportEvidenceResponse:
-    """Compose analyst-ready evidence for external ChatGPT (#340). No Notion write."""
-    first_pass = None
-    if body.firstPassSnapshotId:
-        first_pass = tw_research_repository.get_first_pass_snapshot(
-            body.firstPassSnapshotId, user_id=user_id
-        )
-        if first_pass is None:
-            raise HTTPException(status_code=404, detail="first_pass_snapshot_not_found")
+    """Compose analyst-ready evidence for external ChatGPT (#340). No Notion write.
+
+    Modes:
+    - first-pass-only: ``firstPassSnapshotId`` without ``scanId``
+    - full-two-pass: ``scanId`` requires pinned first-pass + candidate-set provenance
+    """
     technical = None
     ledger_rows: list[dict[str, Any]] = []
     provenance: dict[str, Any] = {}
+    full_two_pass = bool(body.scanId)
     if body.scanId:
         state = _call_or_http(lambda: tw_research_scan_service.get_scan(body.scanId or ""))
         if state is None:
@@ -905,65 +1076,125 @@ def post_report_evidence(
         technical = state.snapshot() if hasattr(state, "snapshot") else state
         if isinstance(technical, dict):
             provenance = dict(technical.get("candidateProvenance") or {})
-        # Build ALL technical rows (sorted); never truncate to export chunk 0.
         ledger_rows = sorted(
             (_record_export(record) for record in state.records.values()),
             key=lambda item: str(item.get("stockId") or ""),
         )
+
+    first_pass_id = body.firstPassSnapshotId or provenance.get("firstPassSnapshotId")
+    if full_two_pass and not first_pass_id:
+        raise HTTPException(
+            status_code=409,
+            detail={"error": "full_two_pass_requires_first_pass_snapshot"},
+        )
+    first_pass = None
+    if first_pass_id:
+        first_pass = tw_research_repository.get_first_pass_snapshot(
+            str(first_pass_id), user_id=user_id
+        )
+        if first_pass is None:
+            raise HTTPException(status_code=404, detail="first_pass_snapshot_not_found")
+
     candidate = None
     candidate_set_id = provenance.get("candidateSetId")
     candidate_set_version = provenance.get("candidateSetVersion")
-    try:
-        if candidate_set_id is not None:
+    if full_two_pass:
+        if candidate_set_id is None or candidate_set_version is None:
+            raise HTTPException(
+                status_code=409,
+                detail={"error": "full_two_pass_requires_candidate_set_provenance"},
+            )
+        try:
             from app.services.tw_research.first_pass_durable import get_candidate_set
 
             candidate = get_candidate_set(
                 user_id=user_id,
                 candidate_set_id=str(candidate_set_id),
-                version=(
-                    int(candidate_set_version)
-                    if candidate_set_version is not None
-                    else None
-                ),
+                version=int(candidate_set_version),
             )
-        else:
+        except ResearchMembershipUnavailable as exc:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "error": "durable_store_unavailable",
+                    "retryable": True,
+                    "operation": "candidate_set",
+                    "message": str(exc),
+                },
+            ) from exc
+        except KeyError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "pinned_candidate_set_not_found",
+                    "candidateSetId": candidate_set_id,
+                    "candidateSetVersion": candidate_set_version,
+                },
+            ) from exc
+    else:
+        # First-pass-only mode may optionally include latest candidate for context.
+        try:
             candidate = latest_candidate_set(user_id=user_id)
-    except ResearchMembershipUnavailable:
-        candidate = None
-    except KeyError:
-        candidate = None
+        except ResearchMembershipUnavailable:
+            candidate = None
 
     normalized_first = normalize_first_pass_snapshot(first_pass)
-    if technical is not None and isinstance(technical, dict):
+    if full_two_pass and isinstance(technical, dict):
         scan_fp_id = provenance.get("firstPassSnapshotId")
         scan_fp_digest = provenance.get("firstPassDigest")
         pack_fp_id = (normalized_first or {}).get("snapshotId")
         pack_fp_digest = (normalized_first or {}).get("contentDigest")
         cand_fp_id = (candidate or {}).get("firstPassSnapshotId")
         cand_fp_digest = (candidate or {}).get("firstPassDigest")
-        mismatch = False
-        if pack_fp_id and scan_fp_id and str(pack_fp_id) != str(scan_fp_id):
-            mismatch = True
-        if pack_fp_digest and scan_fp_digest and str(pack_fp_digest) != str(scan_fp_digest):
-            mismatch = True
-        if cand_fp_id and scan_fp_id and str(cand_fp_id) != str(scan_fp_id):
-            mismatch = True
-        if cand_fp_digest and scan_fp_digest and str(cand_fp_digest) != str(scan_fp_digest):
-            mismatch = True
-        if pack_fp_id and cand_fp_id and str(pack_fp_id) != str(cand_fp_id):
-            mismatch = True
-        if pack_fp_digest and cand_fp_digest and str(pack_fp_digest) != str(cand_fp_digest):
-            mismatch = True
-        if mismatch:
+        if not scan_fp_id or not scan_fp_digest:
+            raise HTTPException(
+                status_code=409,
+                detail={"error": "scan_missing_first_pass_pin"},
+            )
+        if not pack_fp_id or not pack_fp_digest:
+            raise HTTPException(
+                status_code=409,
+                detail={"error": "first_pass_snapshot_missing_digest"},
+            )
+        if str(pack_fp_id) != str(scan_fp_id) or str(pack_fp_digest) != str(scan_fp_digest):
             raise HTTPException(
                 status_code=409,
                 detail={
                     "error": "evidence_snapshot_mismatch",
                     "firstPassSnapshotId": pack_fp_id,
                     "scanFirstPassSnapshotId": scan_fp_id,
-                    "candidateFirstPassSnapshotId": cand_fp_id,
                 },
             )
+        if str(cand_fp_id) != str(scan_fp_id) or str(cand_fp_digest) != str(scan_fp_digest):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "evidence_snapshot_mismatch",
+                    "candidateFirstPassSnapshotId": cand_fp_id,
+                    "scanFirstPassSnapshotId": scan_fp_id,
+                },
+            )
+        if body.tradingDay:
+            tech_day = technical.get("tradingDay") or provenance.get("tradingDay")
+            if tech_day and str(tech_day) != str(body.tradingDay):
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "error": "evidence_trading_day_mismatch",
+                        "requested": body.tradingDay,
+                        "technical": tech_day,
+                    },
+                )
+            fp_day = (normalized_first or {}).get("tradingDay")
+            if fp_day and str(fp_day) != str(body.tradingDay):
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "error": "evidence_trading_day_mismatch",
+                        "requested": body.tradingDay,
+                        "firstPass": fp_day,
+                    },
+                )
 
     pack = build_report_evidence(
         trading_day=body.tradingDay,
@@ -971,6 +1202,7 @@ def post_report_evidence(
         candidate_set=candidate,
         technical_scan=technical if isinstance(technical, dict) else None,
         ledger_rows=ledger_rows,
+        mode="full_two_pass" if full_two_pass else "first_pass_only",
     )
     return ReportEvidenceResponse(evidence=pack.as_dict())
 

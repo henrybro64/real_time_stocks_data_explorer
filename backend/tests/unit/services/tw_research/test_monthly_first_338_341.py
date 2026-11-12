@@ -765,3 +765,79 @@ def test_technical_stage_survives_persist_reload(monkeypatch) -> None:
     loaded = load_scan_state("scan_reload", repository=_Repo())
     assert loaded is not None
     assert loaded.records["TW:2330"].technical_stage == TECHNICAL_STAGE_DAILY_NOT_RUN
+
+
+def test_report_evidence_missing_quality_is_not_ready() -> None:
+    pack = build_report_evidence(
+        trading_day="2024-06-27",
+        first_pass_snapshot={
+            "snapshot_id": "fps_q",
+            "content_digest": "digest_q",
+            "stock_ids": ["TW:2330"],
+            "payload": {},
+        },
+        candidate_set={
+            "candidateSetId": "cs_q",
+            "version": 1,
+            "stockIds": ["TW:2330"],
+            "firstPassSnapshotId": "fps_q",
+            "firstPassDigest": "digest_q",
+        },
+        technical_scan={
+            "scanId": "scan_q",
+            "status": "verified_ready",
+            "stockIds": ["TW:2330"],
+            "calculationVersion": CALCULATION_VERSION_MONTHLY_FIRST,
+        },
+        ledger_rows=[{"stockId": "TW:2330", "monthly": {"passStatus": "pass"}, "daily": {"passStatus": "pass"}}],
+        mode="full_two_pass",
+    ).as_dict()
+    assert pack["summary"]["publishability"] == "incomplete_or_partial_evidence"
+    assert "first_pass_quality_missing" in pack["summary"]["qualityWarnings"]
+
+
+def test_research_run_job_claim_is_exclusive() -> None:
+    research_run_store.clear_for_tests()
+    research_run_store.begin_phase1("u_claim", trading_day="2024-06-27")
+    first = research_run_store.claim_first_pass_job_slot("u_claim", claim_token="tok_a")
+    assert first["outcome"] == "claimed"
+    second = research_run_store.claim_first_pass_job_slot("u_claim", claim_token="tok_b")
+    assert second["outcome"] == "claim_held"
+    research_run_store.record_pending_first_pass_job(
+        "u_claim", claim_token="tok_a", job_id="fpj_a"
+    )
+    attached = research_run_store.attach_first_pass_job_under_claim(
+        "u_claim", claim_token="tok_a", job_id="fpj_a"
+    )
+    assert attached["outcome"] == "attached"
+    again = research_run_store.claim_first_pass_job_slot("u_claim", claim_token="tok_c")
+    assert again["outcome"] == "already_attached"
+    assert again["first_pass_job_id"] == "fpj_a"
+    research_run_store.disable_test_memory()
+
+
+def test_research_run_phase2_claim_attaches_scan() -> None:
+    research_run_store.clear_for_tests()
+    research_run_store.begin_phase1("u_p2", trading_day="2024-06-27")
+    mem = research_run_store.get("u_p2")
+    assert mem is not None
+    mem.phase = "awaiting_analyst_candidate_selection"
+    mem.status = "gated"
+    mem.first_pass_snapshot_id = "fps_p2"
+    mem.gates["candidateSelection"] = "approved"
+    mem.candidate_set_id = "cs_p2"
+    mem.candidate_set_version = 1
+    claim = research_run_store.claim_phase2_scan_slot("u_p2", claim_token="p2tok")
+    assert claim["outcome"] == "claimed"
+    research_run_store.record_pending_technical_scan(
+        "u_p2", claim_token="p2tok", scan_id="scan_p2"
+    )
+    attached = research_run_store.attach_technical_scan_under_claim(
+        "u_p2", claim_token="p2tok", scan_id="scan_p2"
+    )
+    assert attached["outcome"] == "attached"
+    run = research_run_store.get("u_p2")
+    assert run is not None
+    assert run.technical_scan_id == "scan_p2"
+    assert run.phase == "phase2_technical"
+    research_run_store.disable_test_memory()

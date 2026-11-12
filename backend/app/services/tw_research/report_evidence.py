@@ -105,11 +105,15 @@ def build_report_evidence(
     candidate_set: dict[str, Any] | None = None,
     technical_scan: dict[str, Any] | None = None,
     ledger_rows: list[dict[str, Any]] | None = None,
+    mode: str = "auto",
 ) -> ReportEvidencePack:
     """Compose a compact analyst-ready evidence document from durable inputs."""
     now = datetime.now(UTC).isoformat()
     first_pass = normalize_first_pass_snapshot(first_pass_snapshot)
     rows = list(ledger_rows or [])
+    resolved_mode = mode
+    if resolved_mode == "auto":
+        resolved_mode = "full_two_pass" if technical_scan is not None else "first_pass_only"
     stage = {}
     if technical_scan is not None:
         stage = derive_stage_progress(
@@ -122,10 +126,11 @@ def build_report_evidence(
 
     quality_warnings: list[str] = []
     first_pass_quality = (first_pass or {}).get("qualityStatus")
-    if first_pass is not None and first_pass_quality in _PARTIAL_STATUSES:
+    if first_pass is not None and first_pass_quality in {None, ""}:
+        quality_warnings.append("first_pass_quality_missing")
+    elif first_pass is not None and first_pass_quality in _PARTIAL_STATUSES:
         quality_warnings.append("first_pass_incomplete_or_partial")
     elif first_pass is not None and first_pass_quality not in {
-        None,
         "verified_ready",
         "complete",
         "completed",
@@ -138,10 +143,15 @@ def build_report_evidence(
         quality_warnings.append("technical_hard_cap_budget_exhausted")
     if technical_status in _PARTIAL_STATUSES:
         quality_warnings.append("technical_waiting_or_partial")
+    if resolved_mode == "full_two_pass" and not candidate_set:
+        quality_warnings.append("candidate_set_missing")
+    if resolved_mode == "full_two_pass" and not first_pass:
+        quality_warnings.append("first_pass_missing")
 
     publishability = "draft_only"
     if (
-        first_pass
+        resolved_mode == "full_two_pass"
+        and first_pass
         and candidate_set
         and technical_scan
         and technical_status in {"verified_ready", "completed_processing"}
@@ -177,6 +187,7 @@ def build_report_evidence(
     payload = {
         "reportEvidenceVersion": REPORT_EVIDENCE_VERSION,
         "generatedAt": now,
+        "mode": resolved_mode,
         "tradingDay": trading_day
         or (technical_scan or {}).get("tradingDay")
         or (first_pass or {}).get("tradingDay"),

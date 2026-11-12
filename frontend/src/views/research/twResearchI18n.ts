@@ -293,13 +293,13 @@ const TW_RESEARCH_ROWS = [
   ],
   [
     "research.tw.watchlistNote",
-    "Strong fundamentals with monthly timing not ready. Daily skipped is not_run_by_design, not a technical fail.",
-    "基本面保留、月線時機未到。日線略過是 not_run_by_design，不是技術失敗。",
+    "Fundamental keepers plus technical deferrals. Watchlist inclusion is not a ChatGPT-approved Notion recommendation.",
+    "基本面保留與技術延後。列入觀察清單不是 ChatGPT 核准的 Notion 建議。",
   ],
   [
     "research.tw.watchlistCounts",
-    "Monthly-fail watchlist {monthlyFail}; daily not-run-by-design {notRun}.",
-    "月線未過觀察 {monthlyFail}；日線設計略過 {notRun}。",
+    "Monthly-fail {monthlyFail}; daily not-run {notRun}; monthly incomplete {monthlyIncomplete}; first-pass not selected {firstPassNotSelected}.",
+    "月線未過 {monthlyFail}；日線略過 {notRun}；月線未完備 {monthlyIncomplete}；第一輪未入選 {firstPassNotSelected}。",
   ],
   ["research.tw.colStock", "Stock", "股票"],
   ["research.tw.colMonthly", "Monthly MACD/KD", "月線 MACD/KD"],
