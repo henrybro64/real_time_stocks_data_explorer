@@ -1186,7 +1186,10 @@ export function TwResearchPage({
     watchlistCandidateSet?.stockIds,
   ]);
   const watchlistIds = useMemo(
-    () => Array.from(watchlistReasonById.keys()).sort(),
+    () =>
+      Array.from(watchlistReasonById.keys()).sort((left, right) =>
+        left.localeCompare(right),
+      ),
     [watchlistReasonById],
   );
   const busy =
