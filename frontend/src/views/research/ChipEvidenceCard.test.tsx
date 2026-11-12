@@ -161,6 +161,38 @@ describe("ChipEvidenceCard", () => {
     );
   });
 
+  it("renders freshness unverified when staleCheck is calendar_unavailable", () => {
+    const row: ChipEvidenceRow = {
+      ...okRow,
+      institutional: {
+        ...okRow.institutional,
+        status: "ok",
+        staleCheck: "calendar_unavailable",
+        staleBasis: "unverified",
+      },
+      margin: {
+        ...okRow.margin,
+        status: "ok",
+        staleCheck: "calendar_unavailable",
+        staleBasis: "unverified",
+      },
+    };
+    render(
+      <LanguageProvider>
+        <ChipEvidenceCard row={row} />
+      </LanguageProvider>,
+    );
+    expect(screen.getByTestId("chip-evidence-institutional-status")).toHaveTextContent(
+      /freshness unverified \(trading calendar unavailable\)|新鮮度未驗證（交易日曆不可用）/,
+    );
+    expect(screen.getByTestId("chip-evidence-margin-status")).toHaveTextContent(
+      /freshness unverified \(trading calendar unavailable\)|新鮮度未驗證（交易日曆不可用）/,
+    );
+    expect(screen.getByTestId("chip-evidence-institutional-status")).not.toHaveTextContent(
+      /stale \(showing last verified\)|已過期（顯示最後驗證結果）/,
+    );
+  });
+
   it("shows stale banner when refetch failed but cached data exists", () => {
     render(
       <LanguageProvider>

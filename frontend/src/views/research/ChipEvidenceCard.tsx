@@ -15,6 +15,8 @@ export type ChipEvidenceRow = {
     capturedAt?: string | null;
     freshnessClass?: string | null;
     stale?: boolean;
+    staleCheck?: string | null;
+    staleBasis?: string | null;
     fiveSessionTotalsStatus?: string;
     fiveSessionTotalsReason?: string | null;
     fiveSessionTotals?: {
@@ -41,6 +43,8 @@ export type ChipEvidenceRow = {
     capturedAt?: string | null;
     freshnessClass?: string | null;
     stale?: boolean;
+    staleCheck?: string | null;
+    staleBasis?: string | null;
     balanceLots?: number | null;
     balanceDeltaLotsApprox5Sessions?: number | null;
     direction?: string;
@@ -55,6 +59,8 @@ export type ChipEvidenceRow = {
     capturedAt?: string | null;
     freshnessClass?: string | null;
     stale?: boolean;
+    staleCheck?: string | null;
+    staleBasis?: string | null;
     holdersGe400LotsPercent?: number | null;
     weeklyChangePercentagePoints?: number | null;
     priorWeekDate?: string | null;
@@ -76,10 +82,14 @@ function statusLine(
     capturedAt?: string | null;
     reason?: string | null;
     stale?: boolean;
+    staleCheck?: string | null;
+    freshnessUnverifiedLabel: string;
   },
 ): string {
   const bits: string[] = [status ?? "unavailable"];
-  if (opts.stale || status === "stale") {
+  if (opts.staleCheck === "calendar_unavailable") {
+    bits.push(opts.freshnessUnverifiedLabel);
+  } else if (opts.stale || status === "stale") {
     bits.push(zh ? "已過期（顯示最後驗證結果）" : "stale (showing last verified)");
   }
   if (status === "not_fetched") {
@@ -98,8 +108,9 @@ type Props = {
 };
 
 export function ChipEvidenceCard({ row, staleCacheBanner }: Props) {
-  const { language } = useLanguage();
+  const { language, t } = useLanguage();
   const zh = language === "zh-TW";
+  const freshnessUnverifiedLabel = t("research.tw.chipFreshnessUnverifiedCalendar");
   const inst = row.institutional;
   const margin = row.margin;
   const tdcc = row.tdcc;
@@ -141,6 +152,8 @@ export function ChipEvidenceCard({ row, staleCacheBanner }: Props) {
             capturedAt: inst?.capturedAt,
             reason: inst?.reason,
             stale: inst?.stale,
+            staleCheck: inst?.staleCheck,
+            freshnessUnverifiedLabel,
           })}
         </p>
         {inst?.sessions && inst.sessions.length > 0 ? (
@@ -183,6 +196,8 @@ export function ChipEvidenceCard({ row, staleCacheBanner }: Props) {
             capturedAt: margin?.capturedAt,
             reason: margin?.reason,
             stale: margin?.stale,
+            staleCheck: margin?.staleCheck,
+            freshnessUnverifiedLabel,
           })}
         </p>
         <p className="cds--body-compact-01">
@@ -211,6 +226,8 @@ export function ChipEvidenceCard({ row, staleCacheBanner }: Props) {
             capturedAt: tdcc?.capturedAt,
             reason: tdcc?.reason,
             stale: tdcc?.stale,
+            staleCheck: tdcc?.staleCheck,
+            freshnessUnverifiedLabel,
           })}
         </p>
         <p className="cds--body-compact-01">

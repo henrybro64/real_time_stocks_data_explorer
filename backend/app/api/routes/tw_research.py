@@ -480,18 +480,28 @@ def get_first_pass_snapshot_manifest(
     snap = tw_research_repository.get_first_pass_snapshot(snapshot_id, user_id=user_id)
     if snap is None:
         raise HTTPException(status_code=404, detail="first_pass_snapshot_not_found")
+    from app.core.endpoint_timing import endpoint_timing
     from app.services.tw_research.first_pass_chunks import build_first_pass_manifest
 
     payload = snap.get("payload") or {}
     records = list(payload.get("records") or [])
-    return build_first_pass_manifest(
+    with endpoint_timing(
+        endpoint="GET /api/tw-research/first-pass/snapshots/{id}/manifest",
         snapshot_id=snap["snapshot_id"],
-        content_digest=snap["content_digest"],
-        universe_version=snap.get("universe_version"),
-        first_pass_version=snap.get("first_pass_version"),
-        records=records,
-        payload=payload if isinstance(payload, dict) else {},
-    )
+        record_count=len(records),
+        calendar_preload_attempted=False,
+    ) as timing:
+        result = build_first_pass_manifest(
+            snapshot_id=snap["snapshot_id"],
+            content_digest=snap["content_digest"],
+            universe_version=snap.get("universe_version"),
+            first_pass_version=snap.get("first_pass_version"),
+            records=records,
+            payload=payload if isinstance(payload, dict) else {},
+        )
+        timing["rows_returned"] = int(result.get("chunkCount") or 0)
+        timing["result"] = result
+        return result
 
 
 @router.get("/first-pass/snapshots/{snapshot_id}/chunk")
@@ -508,20 +518,30 @@ def get_first_pass_snapshot_chunk(
     snap = tw_research_repository.get_first_pass_snapshot(snapshot_id, user_id=user_id)
     if snap is None:
         raise HTTPException(status_code=404, detail="first_pass_snapshot_not_found")
+    from app.core.endpoint_timing import endpoint_timing
     from app.services.tw_research.first_pass_chunks import build_first_pass_chunk
 
     payload = snap.get("payload") or {}
     records = list(payload.get("records") or [])
-    try:
-        return build_first_pass_chunk(
-            snapshot_id=snap["snapshot_id"],
-            content_digest=snap["content_digest"],
-            records=records,
-            chunk_index=chunkIndex,
-            payload=payload if isinstance(payload, dict) else {},
-        )
-    except IndexError as exc:
-        raise HTTPException(status_code=404, detail="chunk_out_of_range") from exc
+    with endpoint_timing(
+        endpoint="GET /api/tw-research/first-pass/snapshots/{id}/chunk",
+        snapshot_id=snap["snapshot_id"],
+        record_count=len(records),
+        calendar_preload_attempted=False,
+    ) as timing:
+        try:
+            result = build_first_pass_chunk(
+                snapshot_id=snap["snapshot_id"],
+                content_digest=snap["content_digest"],
+                records=records,
+                chunk_index=chunkIndex,
+                payload=payload if isinstance(payload, dict) else {},
+            )
+        except IndexError as exc:
+            raise HTTPException(status_code=404, detail="chunk_out_of_range") from exc
+        timing["rows_returned"] = len(result.get("records") or [])
+        timing["result"] = result
+        return result
 
 
 @router.get("/first-pass/snapshots/{snapshot_id}/chip-evidence")
@@ -545,6 +565,8 @@ def get_first_pass_chip_evidence(
     snap = tw_research_repository.get_first_pass_snapshot(snapshot_id, user_id=user_id)
     if snap is None:
         raise HTTPException(status_code=404, detail="first_pass_snapshot_not_found")
+    from app.core.endpoint_timing import endpoint_timing
+    from app.services.tw_calendar_preload import ensure_tw_calendars_bounded
     from app.services.tw_research.chip_evidence import (
         format_chip_evidence,
         reference_day_from_snapshot,
@@ -583,20 +605,44 @@ def get_first_pass_chip_evidence(
         payload=payload,
         created_at=snap.get("created_at"),
     )
-    return {
-        "snapshotId": snap["snapshot_id"],
-        "contentDigest": snap["content_digest"],
-        "offset": offset,
-        "limit": limit,
-        "total": len(records),
-        "stockIdsFilter": requested_ids or None,
-        "referenceDay": reference_day,
-        "rows": [
-            format_chip_evidence(row, reference_day=reference_day) for row in page
-        ],
-        "notBuySignal": True,
-        "notNotionReportList": True,
-    }
+    calendar_known: bool | None = None
+    calendar_preload_attempted = False
+    if reference_day:
+        try:
+            year = int(str(reference_day)[:4])
+        except ValueError:
+            year = None
+        if year is not None:
+            calendar_preload_attempted = True
+            calendar_known = ensure_tw_calendars_bounded([year, year - 1])
+    with endpoint_timing(
+        endpoint="GET /api/tw-research/first-pass/snapshots/{id}/chip-evidence",
+        snapshot_id=snap["snapshot_id"],
+        record_count=len(records),
+        calendar_preload_attempted=calendar_preload_attempted,
+    ) as timing:
+        result = {
+            "snapshotId": snap["snapshot_id"],
+            "contentDigest": snap["content_digest"],
+            "offset": offset,
+            "limit": limit,
+            "total": len(records),
+            "stockIdsFilter": requested_ids or None,
+            "referenceDay": reference_day,
+            "rows": [
+                format_chip_evidence(
+                    row,
+                    reference_day=reference_day,
+                    calendar_known=calendar_known,
+                )
+                for row in page
+            ],
+            "notBuySignal": True,
+            "notNotionReportList": True,
+        }
+        timing["rows_returned"] = len(result["rows"])
+        timing["result"] = result
+        return result
 
 
 @router.post("/candidate-sets", response_model=CandidateSetResponse)
@@ -1617,15 +1663,30 @@ def post_report_evidence(
                     },
                 )
 
-    pack = build_report_evidence(
-        trading_day=body.tradingDay,
-        first_pass_snapshot=first_pass,
-        candidate_set=candidate,
-        technical_scan=technical if isinstance(technical, dict) else None,
-        ledger_rows=ledger_rows,
-        mode="full_two_pass" if full_two_pass else "first_pass_only",
-    )
-    return ReportEvidenceResponse(evidence=pack.as_dict())
+    from app.core.endpoint_timing import endpoint_timing
+
+    fp_records = []
+    if isinstance(first_pass, dict):
+        payload = first_pass.get("payload") if isinstance(first_pass.get("payload"), dict) else {}
+        fp_records = list(payload.get("records") or [])
+    with endpoint_timing(
+        endpoint="POST /api/tw-research/report-evidence",
+        snapshot_id=str(first_pass_id) if first_pass_id else None,
+        record_count=len(fp_records),
+        calendar_preload_attempted=True,
+    ) as timing:
+        pack = build_report_evidence(
+            trading_day=body.tradingDay,
+            first_pass_snapshot=first_pass,
+            candidate_set=candidate,
+            technical_scan=technical if isinstance(technical, dict) else None,
+            ledger_rows=ledger_rows,
+            mode="full_two_pass" if full_two_pass else "first_pass_only",
+        )
+        evidence = pack.as_dict()
+        timing["rows_returned"] = len(evidence.get("symbols") or [])
+        timing["result"] = evidence
+        return ReportEvidenceResponse(evidence=evidence)
 
 
 @router.get("/report-evidence/example-zh-tw")

@@ -6,7 +6,11 @@ from datetime import date, datetime
 
 import pytest
 
-from app.services.tw_research.chip_evidence import format_chip_evidence, summarize_chip_coverage
+from app.services.tw_research.chip_evidence import (
+    apply_chip_coverage_warnings,
+    format_chip_evidence,
+    summarize_chip_coverage,
+)
 from app.services.tw_research.export import content_digest
 from app.services.tw_research.first_pass_chunks import (
     build_first_pass_chunk,
@@ -852,3 +856,228 @@ def test_report_evidence_includes_chip_handoff_contract() -> None:
     # Reasoned partial chips are non-blocking chipGaps (first_pass_only mode).
     assert "first_pass_chip_fields_partial" not in pack["summary"]["qualityWarnings"]
     assert pack["summary"]["chipGaps"]["counts"]["institutional_5d"].get("partial", 0) >= 1
+
+
+def test_calendar_known_holiday_does_not_mark_fresh_source_stale(monkeypatch) -> None:
+    """Day after a mocked holiday: source_as_of = last real session → not stale."""
+    holiday = date(2024, 10, 10)  # Double Ten
+
+    def _is_trading(market, day, allow_holiday_fetch=False):  # noqa: ARG001
+        probe = day.date() if isinstance(day, datetime) else day
+        if probe == holiday:
+            return False
+        return probe.weekday() < 5
+
+    def _last_completed(market, now=None, allow_holiday_fetch=True):  # noqa: ARG001
+        # Match chip_evidence's midnight combine: session on reference_day not yet closed.
+        current = now.date() if isinstance(now, datetime) else date.fromisoformat(str(now)[:10])
+        day = date.fromordinal(current.toordinal() - 1)
+        for _ in range(12):
+            if _is_trading("TW", day):
+                return day
+            day = date.fromordinal(day.toordinal() - 1)
+        return None
+
+    monkeypatch.setattr(
+        "app.services.tw_research.chip_evidence.last_completed_session_date",
+        _last_completed,
+    )
+    monkeypatch.setattr("app.services.market_clock.is_trading_day", _is_trading)
+
+    # reference_day Friday 2024-10-11; last session Wed 2024-10-09.
+    summary = format_chip_evidence(
+        _record("TW:2330", source_as_of="2024-10-09"),
+        reference_day="2024-10-11",
+        calendar_known=True,
+    )
+    assert summary["institutional"]["status"] == "ok"
+    assert summary["institutional"]["staleCheck"] == "verified"
+    assert summary["margin"]["status"] == "ok"
+    assert summary["margin"]["staleCheck"] == "verified"
+    assert summary["tdcc"]["staleCheck"] == "verified"
+
+
+def test_calendar_unknown_does_not_claim_stale_and_blocks_candidate(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.services.tw_research.report_evidence.ensure_tw_calendars_bounded",
+        lambda years: False,
+    )
+    candidate = _record("TW:2330", source_as_of="2024-10-09")
+    candidate["fields"]["institutional_5d"]["status"] = "ok"
+    candidate["fields"]["institutional_5d"].pop("stale", None)
+    non_candidate = _record("TW:2317", source_as_of="2024-10-09")
+    non_candidate["fields"]["institutional_5d"]["status"] = "ok"
+    non_candidate["fields"]["institutional_5d"].pop("stale", None)
+
+    direct = format_chip_evidence(
+        candidate, reference_day="2024-10-11", calendar_known=False
+    )
+    assert direct["institutional"]["status"] == "ok"
+    assert direct["institutional"]["staleCheck"] == "calendar_unavailable"
+    assert direct["institutional"]["staleBasis"] == "unverified"
+    assert direct["margin"]["staleCheck"] == "calendar_unavailable"
+    assert direct["tdcc"]["staleCheck"] == "verified"
+
+    pack = build_report_evidence(
+        trading_day="2024-10-11",
+        first_pass_snapshot={
+            "snapshot_id": "fps_cal_unk",
+            "content_digest": "abc",
+            "stock_ids": ["TW:2330", "TW:2317"],
+            "quality_status": "verified_ready",
+            "payload": {
+                "records": [candidate, non_candidate],
+                "tradingDay": "2024-10-11",
+            },
+        },
+        candidate_set={
+            "candidateSetId": "cs",
+            "version": 1,
+            "stockIds": ["TW:2330"],
+            "firstPassSnapshotId": "fps_cal_unk",
+            "firstPassDigest": "abc",
+        },
+        technical_scan={
+            "scanId": "scan",
+            "status": "verified_ready",
+            "stockIds": ["TW:2330"],
+        },
+        ledger_rows=[
+            {
+                "stockId": "TW:2330",
+                "monthly": {"passStatus": "pass"},
+                "daily": {"passStatus": "pass"},
+            },
+            {
+                "stockId": "TW:2317",
+                "monthly": {"passStatus": "fail"},
+                "daily": {"passStatus": "not_run_by_design"},
+            },
+        ],
+        mode="full_two_pass",
+    ).as_dict()
+    assert (
+        "chip_staleness_unverifiable_calendar_unavailable"
+        in pack["summary"]["qualityWarnings"]
+    )
+    assert pack["summary"]["publishability"] != "evidence_ready_for_analyst_decision"
+    assert pack["symbols"][0]["chipEvidence"]["institutional"]["staleCheck"] == (
+        "calendar_unavailable"
+    )
+    gaps = pack["summary"]["chipGaps"]["counts"]["institutional_5d"]
+    assert gaps.get("stale_check_unavailable", 0) >= 1
+    assert any(
+        item["stockId"] == "TW:2317"
+        and item["status"] == "stale_check_unavailable"
+        for item in pack["summary"]["chipGaps"]["items"]
+    )
+
+
+def test_calendar_unknown_non_candidate_only_is_chip_gap_not_block() -> None:
+    """Non-candidate calendar_unavailable → chipGaps; pack readiness not blocked."""
+    non_candidate = _record("TW:2317", source_as_of="2024-10-09")
+    warnings: list[str] = []
+    coverage = apply_chip_coverage_warnings(
+        [non_candidate],
+        warnings,
+        candidate_stock_ids=["TW:2330"],
+        full_two_pass=True,
+        reference_day="2024-10-11",
+        calendar_known=False,
+    )
+    assert warnings == []
+    assert coverage["chipGaps"]["counts"]["institutional_5d"]["stale_check_unavailable"] == 1
+    assert coverage["chipGaps"]["items"][0]["status"] == "stale_check_unavailable"
+
+
+def test_calendar_unknown_then_preload_success_sets_verified() -> None:
+    summary = format_chip_evidence(
+        _record("TW:2330", source_as_of="2024-10-11"),
+        reference_day="2024-10-11",
+        calendar_known=True,
+    )
+    assert summary["institutional"]["staleCheck"] == "verified"
+    assert summary["institutional"]["status"] == "ok"
+
+
+def test_ensure_tw_calendars_bounded_called_once_per_report_build(monkeypatch) -> None:
+    calls: list[tuple[int, ...]] = []
+
+    def _bounded(years):
+        calls.append(tuple(sorted(int(y) for y in years)))
+        return True
+
+    monkeypatch.setattr(
+        "app.services.tw_research.report_evidence.ensure_tw_calendars_bounded",
+        _bounded,
+    )
+    records = [_record(f"TW:{1000 + i}", source_as_of="2024-06-27") for i in range(300)]
+    build_report_evidence(
+        trading_day="2024-06-27",
+        first_pass_snapshot={
+            "snapshot_id": "fps_once",
+            "content_digest": "abc",
+            "stock_ids": [r["stockId"] for r in records],
+            "quality_status": "verified_ready",
+            "payload": {"records": records, "tradingDay": "2024-06-27"},
+        },
+        mode="first_pass_only",
+        ledger_rows=[
+            {
+                "stockId": records[0]["stockId"],
+                "monthly": {"passStatus": "pass"},
+                "daily": {"passStatus": "pass"},
+            }
+        ],
+    )
+    assert len(calls) == 1
+    assert calls[0] == (2023, 2024)
+
+
+def test_chip_evidence_handler_preloads_calendar_once(monkeypatch) -> None:
+    calls: list[tuple[int, ...]] = []
+
+    def _bounded(years):
+        calls.append(tuple(sorted(int(y) for y in years)))
+        return True
+
+    monkeypatch.setattr(
+        "app.services.tw_calendar_preload.ensure_tw_calendars_bounded",
+        _bounded,
+    )
+    records = [_record(f"TW:{1000 + i}", source_as_of="2024-06-27") for i in range(300)]
+
+    def _snap(snapshot_id, user_id=None):  # noqa: ANN001
+        del user_id
+        return {
+            "snapshot_id": snapshot_id,
+            "content_digest": "digest",
+            "created_at": "2024-06-27T08:00:00+08:00",
+            "payload": {
+                "tradingDay": "2024-06-27",
+                "records": records,
+            },
+        }
+
+    monkeypatch.setattr(
+        "app.repositories.tw_research_repository.tw_research_repository.is_available",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        "app.repositories.tw_research_repository.tw_research_repository.get_first_pass_snapshot",
+        _snap,
+    )
+    from app.api.routes import tw_research as tw_routes
+
+    result = tw_routes.get_first_pass_chip_evidence(
+        "fps_once",
+        user_id="u1",
+        offset=0,
+        limit=50,
+        q=None,
+        stockIds=None,
+    )
+    assert len(calls) == 1
+    assert calls[0] == (2023, 2024)
+    assert result["total"] == 300
+    assert result["rows"][0]["institutional"]["staleCheck"] == "verified"

@@ -45,11 +45,19 @@ def format_chip_evidence(
     record: dict[str, Any] | None,
     *,
     reference_day: str | date | None = None,
+    calendar_known: bool | None = None,
 ) -> dict[str, Any]:
     """Build a readable chip summary from one first-pass record.
 
     Prefer frozen first-pass ``fields`` only. Enrichment is not merged here —
     callers that need Phase-2 enrichment must pass it separately.
+
+    ``calendar_known``:
+    - ``None`` — legacy weekday-fallback staleness (backward compatible).
+    - ``True`` — trading calendar verified; institutional/margin get
+      ``staleCheck=verified``.
+    - ``False`` — do not claim institutional/margin stale; set
+      ``staleCheck=calendar_unavailable`` / ``staleBasis=unverified``.
     """
     record = record or {}
     fields = record.get("fields") if isinstance(record.get("fields"), dict) else {}
@@ -59,17 +67,20 @@ def format_chip_evidence(
         fields.get("institutional_5d"),
         present="institutional_5d" in fields,
         reference_day=ref,
+        calendar_known=calendar_known,
     )
     margin = _format_margin(
         fields.get("margin") if "margin" in fields else None,
         fields.get("margin_utilization") if "margin_utilization" in fields else None,
         present="margin" in fields,
         reference_day=ref,
+        calendar_known=calendar_known,
     )
     tdcc = _format_tdcc(
         fields.get("tdcc_holders_ge_400_lots"),
         present="tdcc_holders_ge_400_lots" in fields,
         reference_day=ref,
+        calendar_known=calendar_known,
     )
 
     return {
@@ -191,6 +202,7 @@ def apply_chip_coverage_warnings(
     candidate_stock_ids: list[str] | None = None,
     full_two_pass: bool = False,
     reference_day: str | date | None = None,
+    calendar_known: bool | None = None,
 ) -> dict[str, Any]:
     """Append chip-content readiness warnings (#347). Returns coverage + chipGaps.
 
@@ -203,10 +215,13 @@ def apply_chip_coverage_warnings(
       (not_fetched) or a gating field is unavailable/partial with empty/None reason.
     - ``candidate_chip_fields_stale_or_missing`` (full_two_pass only) when any
       candidate-set stock has a gating field that is stale or not_fetched.
+    - ``chip_staleness_unverifiable_calendar_unavailable`` (full_two_pass only)
+      when a candidate gating field has ``staleCheck=calendar_unavailable``.
 
     Reasoned unavailable/partial and stale outside the candidate set are
     non-blocking and reported in ``chipGaps`` (capped items, sorted by stockId).
-    ``margin_utilization`` remains non-gating.
+    Non-candidate ``calendar_unavailable`` → chipGaps status
+    ``stale_check_unavailable``. ``margin_utilization`` remains non-gating.
     """
     coverage = summarize_chip_coverage(records)
     candidate_ids = {
@@ -220,20 +235,27 @@ def apply_chip_coverage_warnings(
     gap_items: list[dict[str, Any]] = []
     missing_block = False
     candidate_block = False
+    calendar_block = False
 
     for record in records:
         stock_id = str(record.get("stockId") or record.get("stock_id") or "")
         stock_key = stock_id.upper()
-        summary = format_chip_evidence(record, reference_day=reference_day)
+        summary = format_chip_evidence(
+            record,
+            reference_day=reference_day,
+            calendar_known=calendar_known,
+        )
         raw_fields = chip_fields_from_record(record)
         for key in GATING_CHIP_FIELD_KEYS:
             section = summary.get(_GATING_FORMATTED_SECTION[key])
             if not isinstance(section, dict):
                 status = "not_fetched"
                 reason = None
+                stale_check = None
             else:
                 status = str(section.get("status") or "unavailable")
                 reason = section.get("reason")
+                stale_check = section.get("staleCheck")
                 # Backward compatible: honor explicit raw stale flag.
                 raw = raw_fields.get(key)
                 if (
@@ -244,6 +266,23 @@ def apply_chip_coverage_warnings(
                     status = "stale"
                 if reason is not None and str(reason).strip() == "":
                     reason = None
+
+            if stale_check == "calendar_unavailable":
+                if full_two_pass and stock_key in candidate_ids:
+                    calendar_block = True
+                else:
+                    gap_status = "stale_check_unavailable"
+                    bucket = gap_counts.setdefault(key, {})
+                    bucket[gap_status] = int(bucket.get(gap_status) or 0) + 1
+                    gap_items.append(
+                        {
+                            "stockId": stock_id,
+                            "field": key,
+                            "status": gap_status,
+                            "reason": reason,
+                        }
+                    )
+                continue
 
             if status == "ok":
                 continue
@@ -294,6 +333,11 @@ def apply_chip_coverage_warnings(
         and "candidate_chip_fields_stale_or_missing" not in quality_warnings
     ):
         quality_warnings.append("candidate_chip_fields_stale_or_missing")
+    if (
+        calendar_block
+        and "chip_staleness_unverifiable_calendar_unavailable" not in quality_warnings
+    ):
+        quality_warnings.append("chip_staleness_unverifiable_calendar_unavailable")
     return coverage
 
 
@@ -326,6 +370,7 @@ def _apply_stale(
     *,
     reference_day: date | None,
     kind: str,
+    calendar_known: bool | None = None,
 ) -> dict[str, Any]:
     """Mark institutional/margin/TDCC stale relative to the snapshot reference day."""
     if base.get("status") == "not_fetched":
@@ -337,6 +382,11 @@ def _apply_stale(
         return base
 
     if kind in {"institutional", "margin"}:
+        if calendar_known is False:
+            # Fail closed honestly — do not invent weekday trading sessions.
+            base["staleCheck"] = "calendar_unavailable"
+            base["staleBasis"] = "unverified"
+            return base
         expected = last_completed_session_date(
             "TW",
             datetime.combine(reference_day, datetime.min.time()),
@@ -348,11 +398,15 @@ def _apply_stale(
             base["stale"] = True
             base["status"] = "stale"
             base["reason"] = base.get("reason") or "source_as_of_before_last_completed_session"
+        if calendar_known is True:
+            base["staleCheck"] = "verified"
     elif kind == "tdcc":
         if source_as_of < (reference_day - timedelta(days=10)) or base.get("stale"):
             base["stale"] = True
             base["status"] = "stale"
             base["reason"] = base.get("reason") or "tdcc_source_as_of_older_than_10_calendar_days"
+        # TDCC uses calendar days, not the TW trading calendar.
+        base["staleCheck"] = "verified"
     return base
 
 
@@ -361,8 +415,14 @@ def _format_institutional(
     *,
     present: bool,
     reference_day: date | None,
+    calendar_known: bool | None = None,
 ) -> dict[str, Any]:
-    base = _apply_stale(_prov(field, present=present), reference_day=reference_day, kind="institutional")
+    base = _apply_stale(
+        _prov(field, present=present),
+        reference_day=reference_day,
+        kind="institutional",
+        calendar_known=calendar_known,
+    )
     points = base.get("value")
     sessions: list[dict[str, Any]] = []
     if isinstance(points, list):
@@ -443,8 +503,14 @@ def _format_margin(
     *,
     present: bool,
     reference_day: date | None,
+    calendar_known: bool | None = None,
 ) -> dict[str, Any]:
-    base = _apply_stale(_prov(margin_field, present=present), reference_day=reference_day, kind="margin")
+    base = _apply_stale(
+        _prov(margin_field, present=present),
+        reference_day=reference_day,
+        kind="margin",
+        calendar_known=calendar_known,
+    )
     value = base.get("value") if isinstance(base.get("value"), dict) else {}
     balance = _num_or_none(value.get("balanceLots"))
     delta = _num_or_none(value.get("balanceDeltaLotsApprox5Sessions"))
@@ -492,7 +558,9 @@ def _format_tdcc(
     *,
     present: bool,
     reference_day: date | None,
+    calendar_known: bool | None = None,
 ) -> dict[str, Any]:
+    del calendar_known  # TDCC staleness is calendar-day based; arg kept for API symmetry.
     base = _apply_stale(_prov(field, present=present), reference_day=reference_day, kind="tdcc")
     value = base.get("value") if isinstance(base.get("value"), dict) else {}
     percent = _num_or_none(value.get("percent"))

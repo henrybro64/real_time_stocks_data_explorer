@@ -83,17 +83,27 @@ def get_technical_indicators(stock_id: str) -> dict[str, object]:
     Stored-history only; reuses ``tw_research.indicators``. Does not start a
     research scan or upstream month backfill.
     """
+    from app.core.endpoint_timing import endpoint_timing
     from app.services.stock_technical_indicators import (
         StockTechnicalIndicatorsError,
         get_stock_technical_indicators,
     )
 
-    try:
-        return get_stock_technical_indicators(stock_id)
-    except StockTechnicalIndicatorsError as exc:
-        if exc.code == "not_found":
-            raise HTTPException(status_code=404, detail=exc.message) from exc
-        raise HTTPException(status_code=400, detail=exc.message) from exc
+    with endpoint_timing(
+        endpoint="GET /api/stocks/{id}/technical-indicators",
+        stock_id=stock_id,
+        record_count=1,
+        calendar_preload_attempted=True,
+    ) as timing:
+        try:
+            result = get_stock_technical_indicators(stock_id)
+        except StockTechnicalIndicatorsError as exc:
+            if exc.code == "not_found":
+                raise HTTPException(status_code=404, detail=exc.message) from exc
+            raise HTTPException(status_code=400, detail=exc.message) from exc
+        timing["rows_returned"] = 1
+        timing["result"] = result
+        return result
 
 
 @router.get(

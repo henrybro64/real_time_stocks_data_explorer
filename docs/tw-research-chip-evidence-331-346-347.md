@@ -35,12 +35,16 @@ falls back to weekday sessions for that recency check.
 
 ### Bounded calendar preload
 
+Shared helper: `backend/app/services/tw_calendar_preload.py`
+(`ensure_tw_calendars_bounded`). Profile keeps
+`ensure_profile_tw_holiday_calendars` as a thin alias.
+
 Before coverage, the Profile path gathers calendar years spanned by completed
-bars plus the current year. If `ensure_tw_holiday_calendars_loaded(years)` is
-false, it calls `preload_tw_holiday_calendars(years, allow_network=True, max_fetches=4)`
-at most **once per process per year-set** (module lock + 10-minute negative
-cache on failure). Never inside a per-symbol loop. If calendars are still
-missing, coverage stays fail-closed with `unavailableReason=trading_calendar_unavailable`.
+bars plus the current year. If calendars are not loaded, it preloads with
+`allow_network=True, max_fetches=4` at most **once per process per year-set**
+(module lock + 10-minute negative cache on failure). Never inside a per-symbol
+loop. If calendars are still missing, coverage stays fail-closed with
+`unavailableReason=trading_calendar_unavailable`.
 
 ## #346 Chip trends in `/research/tw`
 
@@ -56,7 +60,33 @@ missing, coverage stays fail-closed with `unavailableReason=trading_calendar_una
   query when the stockId is absent. Stale banners require `isError && data` for
   the same query key.
 - `referenceDay` falls back to snapshot `created_at` converted to Asia/Taipei
-- k3s performance impact of the chip-evidence page query is **still unmeasured**
+- Chip-evidence + report-evidence call `ensure_tw_calendars_bounded` **once per
+  request** for `{reference_day.year, year-1}`. When the calendar is unknown,
+  institutional/margin are **not** labelled `stale`; they get
+  `staleCheck=calendar_unavailable` / `staleBasis=unverified`. UI shows
+  “新鮮度未驗證（交易日曆不可用）” / “freshness unverified (trading calendar unavailable)”.
+
+### Performance (#346)
+
+Runbook: [`docs/runbooks/tw-research-chip-evidence-perf-346.md`](runbooks/tw-research-chip-evidence-perf-346.md)
+
+Tooling:
+
+- Timing logs: `endpoint.timing.completed` via `app.core.endpoint_timing`
+- Offline: `backend/scripts/bench_chip_evidence.py`
+- Live READ-ONLY: `scripts/bench-tw-research-endpoints.sh`
+
+**Measured**
+
+_(empty until a human runs the k3s probe and fills the runbook table)_
+
+**Unmeasured**
+
+- chip-evidence page p50/p95 and response size on private k3s
+- report-evidence p50/p95 at ~300 records / 40 candidates on private k3s
+- pod CPU/memory delta during the live probe
+- upstream fan-out confirmation on a cold vs warm pod
+- technical-indicators / manifest / chunk live sizes under production snapshots
 
 ## #347 Analyst chip handoff
 
@@ -75,7 +105,8 @@ The readiness gate, `summary.chipGaps`, and `symbols[].chipEvidence` all use the
 `reference_day` resolved before gating via `reference_day_from_snapshot`). Raw
 collector payloads typically have `status=ok` and no `stale` flag; staleness is
 derived from `source_as_of` vs the reference day (and explicit raw `stale: true`
-is still honored).
+is still honored). When the TW holiday calendar is unknown, institutional/margin
+staleness is **not claimed**; see `staleCheck=calendar_unavailable`.
 
 **Blocking warnings**
 
@@ -84,9 +115,13 @@ is still honored).
 - `candidate_chip_fields_stale_or_missing` — **full_two_pass only**; any stock in
   the candidate set (`candidate_set.stockIds`) has a gating field that is `stale`
   or `not_fetched`.
+- `chip_staleness_unverifiable_calendar_unavailable` — **full_two_pass only**; a
+  candidate gating field has `staleCheck=calendar_unavailable` (fail closed with
+  an honest reason, not a false `stale`).
 
 **Non-blocking** reasoned `unavailable`/`partial` and stale outside the candidate
-set are reported in `summary.chipGaps`:
+set are reported in `summary.chipGaps`. Non-candidate
+`calendar_unavailable` → chipGaps status `stale_check_unavailable`:
 
 ```json
 {
@@ -105,8 +140,12 @@ Items are sorted by `stockId`, capped at 200. The blanket
 cd backend && .venv/bin/python3.11 -m pytest \
   tests/unit/services/test_stock_technical_indicators_331.py \
   tests/unit/services/tw_research/test_chip_evidence_346_347.py \
+  tests/unit/core/test_endpoint_timing.py \
+  tests/unit/scripts/test_bench_chip_evidence_smoke.py \
   tests/unit/routes/test_technical_indicators_331.py \
   tests/unit/routes/test_tw_research_route.py -q
+
+cd backend && .venv/bin/python3.11 scripts/bench_chip_evidence.py --n 73 300 --iterations 5
 
 cd frontend && npm test -- --run \
   src/views/stock-detail/MacdKdIndicatorsPanel.test.tsx \

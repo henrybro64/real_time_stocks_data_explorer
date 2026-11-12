@@ -82,7 +82,7 @@ def _patch_weekday_calendar(monkeypatch) -> None:
         lambda years: True,
     )
     monkeypatch.setattr(
-        "app.services.stock_technical_indicators.ensure_tw_holiday_calendars_loaded",
+        "app.services.tw_calendar_preload.ensure_tw_holiday_calendars_loaded",
         lambda years: True,
     )
     monkeypatch.setattr(
@@ -285,7 +285,7 @@ def test_calendar_preload_called_once_across_consecutive_calls(monkeypatch) -> N
     calls: list[tuple[int, ...]] = []
 
     monkeypatch.setattr(
-        "app.services.stock_technical_indicators.ensure_tw_holiday_calendars_loaded",
+        "app.services.tw_calendar_preload.ensure_tw_holiday_calendars_loaded",
         lambda years: False,
     )
 
@@ -296,7 +296,7 @@ def test_calendar_preload_called_once_across_consecutive_calls(monkeypatch) -> N
         return {"ok": False, "loaded": [], "missing": list(key), "fetched": 0}
 
     monkeypatch.setattr(
-        "app.services.stock_technical_indicators.preload_tw_holiday_calendars",
+        "app.services.tw_calendar_preload.preload_tw_holiday_calendars",
         _preload,
     )
     years = [2024, 2025]
@@ -311,11 +311,11 @@ def test_calendar_preload_failure_yields_trading_calendar_unavailable(
 ) -> None:
     reset_profile_calendar_preload_state_for_tests()
     monkeypatch.setattr(
-        "app.services.stock_technical_indicators.ensure_tw_holiday_calendars_loaded",
+        "app.services.tw_calendar_preload.ensure_tw_holiday_calendars_loaded",
         lambda years: False,
     )
     monkeypatch.setattr(
-        "app.services.stock_technical_indicators.preload_tw_holiday_calendars",
+        "app.services.tw_calendar_preload.preload_tw_holiday_calendars",
         lambda years, *, allow_network=True, max_fetches=4: {
             "ok": False,
             "loaded": [],
@@ -358,11 +358,11 @@ def test_calendar_present_skips_preload(monkeypatch) -> None:
     reset_profile_calendar_preload_state_for_tests()
     preload_calls: list[object] = []
     monkeypatch.setattr(
-        "app.services.stock_technical_indicators.ensure_tw_holiday_calendars_loaded",
+        "app.services.tw_calendar_preload.ensure_tw_holiday_calendars_loaded",
         lambda years: True,
     )
     monkeypatch.setattr(
-        "app.services.stock_technical_indicators.preload_tw_holiday_calendars",
+        "app.services.tw_calendar_preload.preload_tw_holiday_calendars",
         lambda years, *, allow_network=True, max_fetches=4: preload_calls.append(years)
         or {"ok": True, "loaded": list(years), "missing": [], "fetched": 0},
     )

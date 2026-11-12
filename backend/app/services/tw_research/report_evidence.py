@@ -18,6 +18,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from app.services.tw_calendar_preload import ensure_tw_calendars_bounded
 from app.services.tw_research.chip_evidence import (
     CHIP_FIELD_KEYS,
     apply_chip_coverage_warnings,
@@ -160,6 +161,7 @@ def build_report_evidence(
         payload=first_pass_payload,
         created_at=((first_pass or {}).get("raw") or {}).get("created_at"),
     )
+    calendar_known = _calendar_known_for_reference_day(reference_day)
     if first_pass is not None:
         first_pass_quality = first_pass.get("qualityStatus")
         if first_pass_quality in {None, ""}:
@@ -182,6 +184,7 @@ def build_report_evidence(
                 candidate_stock_ids=list((candidate_set or {}).get("stockIds") or []),
                 full_two_pass=(resolved_mode == "full_two_pass"),
                 reference_day=reference_day,
+                calendar_known=calendar_known,
             )
             chip_gaps = chip_coverage_summary.get("chipGaps")
         elif first_pass.get("snapshotId"):
@@ -226,6 +229,7 @@ def build_report_evidence(
             row,
             frozen_first_pass=first_pass_by_id.get(str(row.get("stockId") or "")),
             reference_day=reference_day,
+            calendar_known=calendar_known,
         )
         for row in rows
     ]
@@ -412,11 +416,23 @@ def _first_pass_records(first_pass: dict[str, Any] | None) -> list[dict[str, Any
     return []
 
 
+def _calendar_known_for_reference_day(reference_day: str | None) -> bool | None:
+    """Bounded preload once per report-evidence build; None when no reference day."""
+    if not reference_day:
+        return None
+    try:
+        year = int(str(reference_day)[:4])
+    except ValueError:
+        return None
+    return ensure_tw_calendars_bounded([year, year - 1])
+
+
 def _symbol_evidence_row(
     row: dict[str, Any],
     *,
     frozen_first_pass: dict[str, Any] | None = None,
     reference_day: str | None = None,
+    calendar_known: bool | None = None,
 ) -> dict[str, Any]:
     monthly = row.get("monthly") if isinstance(row.get("monthly"), dict) else {}
     daily = row.get("daily") if isinstance(row.get("daily"), dict) else {}
@@ -436,7 +452,11 @@ def _symbol_evidence_row(
         bucket = "fundamental_watch_monthly_fail"
 
     if frozen_first_pass is not None:
-        chip = format_chip_evidence(frozen_first_pass, reference_day=reference_day)
+        chip = format_chip_evidence(
+            frozen_first_pass,
+            reference_day=reference_day,
+            calendar_known=calendar_known,
+        )
     else:
         chip = {
             "status": "not_fetched",

@@ -188,6 +188,11 @@ const TW_RESEARCH_ROWS = [
     "已過期 — 最後驗證 {capturedAt}",
   ],
   [
+    "research.tw.chipFreshnessUnverifiedCalendar",
+    "freshness unverified (trading calendar unavailable)",
+    "新鮮度未驗證（交易日曆不可用）",
+  ],
+  [
     "research.tw.chipEvidenceMeta",
     "Showing offset {offset}, page size {limit}, total {total} · snapshot {snapshot}",
     "顯示 offset {offset}、每頁 {limit}、共 {total} · 快照 {snapshot}",

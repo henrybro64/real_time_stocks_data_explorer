@@ -7,20 +7,20 @@ Applies the same coverage gates as the TW research scan.
 
 from __future__ import annotations
 
-import time
 from dataclasses import asdict
 from datetime import date, datetime, time as dt_time, timedelta
-from threading import Lock
 from typing import Any
 from zoneinfo import ZoneInfo
 
 from app.models.stock import StockRecord
 from app.services.daily_price_history_service import daily_price_history_service
 from app.services.market_clock import (
-    ensure_tw_holiday_calendars_loaded,
     is_trading_day,
     last_completed_session_date,
-    preload_tw_holiday_calendars,
+)
+from app.services.tw_calendar_preload import (
+    ensure_tw_calendars_bounded,
+    reset_for_tests as _reset_calendar_preload_for_tests,
 )
 from app.services.moving_average import completed_daily_candles
 from app.services.quote_service import quote_service
@@ -45,10 +45,6 @@ from app.services.tw_research.indicators import (
 )
 
 _TAIPEI = ZoneInfo("Asia/Taipei")
-_PRELOAD_NEGATIVE_TTL_SECONDS = 600.0
-_preload_lock = Lock()
-# year-tuple → monotonic deadline until which failed preloads are not retried
-_preload_failed_until: dict[tuple[int, ...], float] = {}
 
 
 class StockTechnicalIndicatorsError(Exception):
@@ -178,37 +174,13 @@ def get_stock_technical_indicators(
 
 
 def ensure_profile_tw_holiday_calendars(years: list[int] | tuple[int, ...]) -> bool:
-    """Load TW calendars for Profile coverage; preload at most once per year set.
-
-    Negative-caches failed preloads for 10 minutes. Never called inside a
-    per-symbol loop by the Profile path (one call per request).
-    """
-    unique = tuple(sorted({int(year) for year in years}))
-    if not unique:
-        return True
-    if ensure_tw_holiday_calendars_loaded(unique):
-        return True
-    with _preload_lock:
-        if ensure_tw_holiday_calendars_loaded(unique):
-            return True
-        now_m = time.monotonic()
-        failed_until = _preload_failed_until.get(unique, 0.0)
-        if now_m < failed_until:
-            return False
-        result = preload_tw_holiday_calendars(
-            unique, allow_network=True, max_fetches=4
-        )
-        if bool(result.get("ok")) and ensure_tw_holiday_calendars_loaded(unique):
-            _preload_failed_until.pop(unique, None)
-            return True
-        _preload_failed_until[unique] = now_m + _PRELOAD_NEGATIVE_TTL_SECONDS
-        return False
+    """Thin alias of ``ensure_tw_calendars_bounded`` for Profile (#331) callers/tests."""
+    return ensure_tw_calendars_bounded(years)
 
 
 def reset_profile_calendar_preload_state_for_tests() -> None:
     """Clear negative cache between unit tests."""
-    with _preload_lock:
-        _preload_failed_until.clear()
+    _reset_calendar_preload_for_tests()
 
 
 def _calendar_years_for_profile(completed_candles, clock: datetime) -> list[int]:
