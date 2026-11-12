@@ -576,6 +576,35 @@ def test_phase2_already_attached_rejects_semantic_mismatch(monkeypatch) -> None:
         "app.api.routes.tw_research.tw_research_scan_service",
         service,
     )
+    # Exact pinned candidate-set rows (empty overrides are valid persisted provenance).
+    candidate_rows = {
+        ("cs_a", 1): {
+            "candidate_set_id": "cs_a",
+            "version": 1,
+            "selection_reasons": {"dailyOverrideIds": []},
+        }
+    }
+
+    def fake_get_candidate_set(user_id, *, candidate_set_id, version=None):  # noqa: ANN001
+        del user_id
+        if version is None:
+            return None
+        return candidate_rows.get((str(candidate_set_id), int(version)))
+
+    monkeypatch.setattr(
+        "app.api.routes.tw_research.tw_research_repository.is_available",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        "app.api.routes.tw_research.tw_research_repository.get_candidate_set",
+        fake_get_candidate_set,
+    )
+    monkeypatch.setattr(
+        "app.api.routes.tw_research.tw_research_repository.latest_candidate_set",
+        lambda user_id: (_ for _ in ()).throw(
+            AssertionError("must not fall back to latest candidate set")
+        ),
+    )
 
     research_run_store.begin_phase1(DEFAULT_USER_ID, trading_day="2024-06-27")
     run = research_run_store.get(DEFAULT_USER_ID)
@@ -599,6 +628,14 @@ def test_phase2_already_attached_rejects_semantic_mismatch(monkeypatch) -> None:
     assert ok.status_code == 200, ok.text
     assert ok.json()["scan"]["scanId"] == state.scan_id
 
+    # Omitted id/version/day inherit pinned context → same reuse.
+    omit = client.post(
+        "/api/tw-research/candidate-sets/technical-scan",
+        json={},
+    )
+    assert omit.status_code == 200, omit.text
+    assert omit.json()["scan"]["scanId"] == state.scan_id
+
     # Run advanced to v2 while an incompatible v1 scan remains attached.
     run.candidate_set_version = 2
     bad_version = client.post(
@@ -610,8 +647,10 @@ def test_phase2_already_attached_rejects_semantic_mismatch(monkeypatch) -> None:
         },
     )
     assert bad_version.status_code == 409
-    assert bad_version.json()["detail"]["error"] == "phase2_scan_request_mismatch"
-    assert "candidateSetVersion" in bad_version.json()["detail"]["mismatches"]
+    assert (
+        bad_version.json()["detail"]["error"]
+        == "research_run_scan_candidate_set_mismatch"
+    )
 
     # Restore run pin for subsequent scan-level checks.
     run.candidate_set_version = 1
@@ -644,16 +683,16 @@ def test_phase2_already_attached_rejects_semantic_mismatch(monkeypatch) -> None:
     assert "dailyOverrideIds" in bad_overrides.json()["detail"]["mismatches"]
 
     # Additive semantics: candidate [2317] ∪ request [2330] == attached → reuse.
-    # Subset of attached alone is not enough when effective would shrink.
+    candidate_rows[("cs_a", 1)] = {
+        "candidate_set_id": "cs_a",
+        "version": 1,
+        "selection_reasons": {"dailyOverrideIds": ["TW:2317"]},
+    }
     state.candidate_provenance = {
         **dict(state.candidate_provenance or {}),
         "dailyOverrideIds": ["TW:2317", "TW:2330"],
         "approvedStockIds": list(state.stock_ids),
     }
-    monkeypatch.setattr(
-        "app.api.routes.tw_research._candidate_set_daily_overrides",
-        lambda *a, **k: ["TW:2317"],
-    )
     shrink = client.post(
         "/api/tw-research/candidate-sets/technical-scan",
         json={

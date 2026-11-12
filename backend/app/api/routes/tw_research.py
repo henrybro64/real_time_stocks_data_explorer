@@ -706,12 +706,17 @@ def post_candidate_technical_scan(
                     )
                 if getattr(state, "user_id", None) not in {None, user_id}:
                     raise HTTPException(status_code=404, detail="scan_not_found")
+                stored_overrides = _pinned_candidate_daily_overrides_for_reuse(
+                    user_id,
+                    body=body,
+                    state=state,
+                    run=run_before,
+                )
                 mismatches = _phase2_scan_request_mismatches(
                     state,
                     body,
-                    candidate_set_daily_override_ids=_candidate_set_daily_overrides(
-                        user_id, body=body, state=state
-                    ),
+                    candidate_set_daily_override_ids=stored_overrides,
+                    require_pinned_identity=True,
                 )
                 if mismatches:
                     _raise_phase2_scan_mismatch(
@@ -735,12 +740,17 @@ def post_candidate_technical_scan(
                     None,
                     user_id,
                 }:
+                    stored_overrides = _pinned_candidate_daily_overrides_for_reuse(
+                        user_id,
+                        body=body,
+                        state=state,
+                        run=run_before,
+                    )
                     mismatches = _phase2_scan_request_mismatches(
                         state,
                         body,
-                        candidate_set_daily_override_ids=_candidate_set_daily_overrides(
-                            user_id, body=body, state=state
-                        ),
+                        candidate_set_daily_override_ids=stored_overrides,
+                        require_pinned_identity=True,
                     )
                     if mismatches:
                         _raise_phase2_scan_mismatch(
@@ -908,46 +918,142 @@ def _phase2_effective_daily_overrides(
     )
 
 
-def _candidate_set_daily_overrides(
+def _pinned_candidate_identity_for_reuse(
+    *,
+    body: CandidateTechnicalScanRequest,
+    state: ScanState,
+    run: ResearchRun,
+) -> tuple[str, int]:
+    """Resolve exact candidate-set id/version from managed run + scan provenance.
+
+    Omitted request fields inherit the pinned context. Explicit request fields and
+    run/provenance pins must all agree. Never falls back to latest/unversioned sets.
+    """
+    provenance = dict(getattr(state, "candidate_provenance", None) or {})
+    run_id = run.candidate_set_id
+    run_version = run.candidate_set_version
+    prov_id = provenance.get("candidateSetId")
+    try:
+        prov_version = (
+            int(provenance["candidateSetVersion"])
+            if provenance.get("candidateSetVersion") is not None
+            else None
+        )
+    except (TypeError, ValueError):
+        prov_version = None
+
+    if not run_id or run_version is None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "pinned_candidate_set_missing_on_research_run",
+                "candidateSetId": run_id,
+                "candidateSetVersion": run_version,
+            },
+        )
+    if not prov_id or prov_version is None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "pinned_candidate_set_missing_on_scan",
+                "technicalScanId": getattr(state, "scan_id", None),
+                "candidateSetId": prov_id,
+                "candidateSetVersion": provenance.get("candidateSetVersion"),
+            },
+        )
+    if str(run_id) != str(prov_id) or int(run_version) != int(prov_version):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "research_run_scan_candidate_set_mismatch",
+                "researchRunCandidateSetId": run_id,
+                "researchRunCandidateSetVersion": int(run_version),
+                "scanCandidateSetId": prov_id,
+                "scanCandidateSetVersion": int(prov_version),
+            },
+        )
+
+    resolved_id = str(run_id)
+    resolved_version = int(run_version)
+    if body.candidateSetId and str(body.candidateSetId) != resolved_id:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "candidate_set_id_mismatch_with_research_run",
+                "requestCandidateSetId": body.candidateSetId,
+                "pinnedCandidateSetId": resolved_id,
+            },
+        )
+    if body.expectedVersion is not None and int(body.expectedVersion) != resolved_version:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "candidate_set_version_mismatch_with_research_run",
+                "requestCandidateSetVersion": int(body.expectedVersion),
+                "pinnedCandidateSetVersion": resolved_version,
+            },
+        )
+    return resolved_id, resolved_version
+
+
+def _pinned_candidate_daily_overrides_for_reuse(
     user_id: str,
     *,
     body: CandidateTechnicalScanRequest,
     state: ScanState,
+    run: ResearchRun,
 ) -> list[str]:
-    """Load persisted candidate-set dailyOverrideIds for effective-set comparison."""
-    provenance = dict(getattr(state, "candidate_provenance", None) or {})
-    candidate_set_id = body.candidateSetId or provenance.get("candidateSetId")
-    version = body.expectedVersion
-    if version is None:
-        raw = provenance.get("candidateSetVersion")
-        try:
-            version = int(raw) if raw is not None else None
-        except (TypeError, ValueError):
-            version = None
+    """Load exact pinned candidate-set overrides for managed Phase-2 reuse.
+
+    Distinguishes a valid empty override list from missing/unreadable provenance.
+    Never falls back to a newer or latest candidate set.
+    """
+    candidate_set_id, version = _pinned_candidate_identity_for_reuse(
+        body=body, state=state, run=run
+    )
     if not tw_research_repository.is_available():
-        return []
-    saved: dict[str, Any] | None = None
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "candidate_set_store_unavailable",
+                "retryable": True,
+                "candidateSetId": candidate_set_id,
+                "candidateSetVersion": version,
+            },
+        )
     try:
-        if candidate_set_id:
-            saved = tw_research_repository.get_candidate_set(
-                user_id,
-                candidate_set_id=str(candidate_set_id),
-                version=version,
-            )
-            if saved is None and version is not None:
-                saved = tw_research_repository.get_candidate_set(
-                    user_id,
-                    candidate_set_id=str(candidate_set_id),
-                )
-        if saved is None:
-            saved = tw_research_repository.latest_candidate_set(user_id)
-    except Exception:
-        # Unit/memory paths and partially migrated DBs must not 500 the reuse check.
-        # Empty persisted overrides fails closed: effective shrinks vs a non-empty
-        # attached set → mismatch rather than silent wrong reuse.
-        return []
-    if not saved:
-        return []
+        saved = tw_research_repository.get_candidate_set(
+            user_id,
+            candidate_set_id=candidate_set_id,
+            version=version,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "candidate_set_store_error",
+                "retryable": True,
+                "candidateSetId": candidate_set_id,
+                "candidateSetVersion": version,
+                "message": str(exc.__class__.__name__),
+            },
+        ) from exc
+    if saved is None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "pinned_candidate_set_not_found",
+                "candidateSetId": candidate_set_id,
+                "candidateSetVersion": version,
+                "hint": (
+                    "The exact pinned candidate-set version is required for Phase-2 "
+                    "reuse; a newer latest set is not a substitute."
+                ),
+            },
+        )
+    # Empty list is a valid persisted override set — not the same as missing data.
     return list((saved.get("selection_reasons") or {}).get("dailyOverrideIds") or [])
 
 
@@ -956,6 +1062,7 @@ def _phase2_scan_request_mismatches(
     body: CandidateTechnicalScanRequest,
     *,
     candidate_set_daily_override_ids: list[str] | None = None,
+    require_pinned_identity: bool = False,
 ) -> list[str]:
     """Return semantic mismatch fields when reusing an attached technical scan.
 
@@ -964,6 +1071,10 @@ def _phase2_scan_request_mismatches(
     effective = persisted candidate-set overrides ∪ request overrides.
     The attached scan's provenance stores that effective set; compare identity,
     not raw request ⊆ attached.
+
+    When ``require_pinned_identity`` is true (managed research-run reuse), omitted
+    request id/version/day inherit the attached pinned context and approved
+    membership is always checked.
     """
     provenance = dict(getattr(state, "candidate_provenance", None) or {})
     mismatches: list[str] = []
@@ -1002,7 +1113,7 @@ def _phase2_scan_request_mismatches(
     )
     if effective_overrides != attached_overrides:
         mismatches.append("dailyOverrideIds")
-    if body.candidateSetId or body.expectedVersion is not None:
+    if require_pinned_identity or body.candidateSetId or body.expectedVersion is not None:
         approved = {
             str(item).upper()
             for item in (provenance.get("approvedStockIds") or list(state.stock_ids))
