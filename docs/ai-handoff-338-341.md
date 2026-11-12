@@ -2,7 +2,8 @@
 
 **Branch:** `issue-338-341-tw-research-next`  
 **Base:** `main`  
-**Latest local SHA at handoff write:** _(filled after commit)_  
+**Feature commit (code):** `975ec23fe5867b393901f3ac103b4b42ccda3a60`  
+**Branch tip:** run `git rev-parse HEAD` on `issue-338-341-tw-research-next` (handoff-only follow-up may sit on tip)  
 **Date:** 2026-11-12
 
 ## Findings fixed (this pass)
