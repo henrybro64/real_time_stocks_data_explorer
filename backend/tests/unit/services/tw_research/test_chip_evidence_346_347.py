@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from zoneinfo import ZoneInfo
 
 import pytest
 
 from app.services.tw_research.chip_evidence import (
     apply_chip_coverage_warnings,
+    expected_session,
     format_chip_evidence,
     summarize_chip_coverage,
 )
@@ -20,6 +22,8 @@ from app.services.tw_research.first_pass_chunks import (
 )
 from app.services.tw_research.report_evidence import build_report_evidence
 
+_TAIPEI = ZoneInfo("Asia/Taipei")
+
 
 def _is_weekday_session(market, day, allow_holiday_fetch=False) -> bool:  # noqa: ARG001
     probe = day.date() if isinstance(day, datetime) else day
@@ -28,15 +32,18 @@ def _is_weekday_session(market, day, allow_holiday_fetch=False) -> bool:  # noqa
 
 def _patch_weekday_calendar(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        "app.services.tw_research.chip_evidence.last_completed_session_date",
-        lambda market, now=None, allow_holiday_fetch=True: (
-            now.date() if isinstance(now, datetime) else date.fromisoformat(str(now)[:10])
-        ),
+        "app.services.tw_research.chip_evidence.is_trading_day",
+        _is_weekday_session,
     )
     monkeypatch.setattr(
         "app.services.market_clock.is_trading_day",
         _is_weekday_session,
     )
+
+
+def _capture(day: str, hour: int, minute: int = 0) -> datetime:
+    y, m, d = (int(part) for part in day.split("-"))
+    return datetime(y, m, d, hour, minute, tzinfo=_TAIPEI)
 
 
 def _record(
@@ -47,6 +54,8 @@ def _record(
     include_chip: bool = True,
     short_balance=None,
     source_as_of: str = "2024-06-27",
+    institutional_as_of: str | None = None,
+    margin_as_of: str | None = None,
     tdcc_prior: str | None = "2024-06-21",
 ) -> dict:
     points = [
@@ -65,7 +74,7 @@ def _record(
             "institutional_5d": {
                 "status": "ok" if sessions >= 5 else "partial",
                 "source": "fixture",
-                "source_as_of": source_as_of if points else None,
+                "source_as_of": (institutional_as_of or source_as_of) if points else None,
                 "captured_at": "2024-06-28T08:00:00+00:00",
                 "value": points,
                 "reason": None if sessions >= 5 else "fewer_than_5_completed_sessions_in_store",
@@ -73,7 +82,7 @@ def _record(
             "margin": {
                 "status": "ok" if margin_ok else "unavailable",
                 "source": "fixture",
-                "source_as_of": source_as_of,
+                "source_as_of": margin_as_of or source_as_of,
                 "value": {
                     "balanceLots": 100.0,
                     "balanceDeltaLotsApprox5Sessions": 5.0,
@@ -155,10 +164,13 @@ def test_absent_key_is_not_fetched() -> None:
     assert summary["tdcc"]["status"] == "not_fetched"
 
 
-def test_old_source_as_of_is_stale() -> None:
+def test_old_source_as_of_is_stale(monkeypatch) -> None:
+    _patch_weekday_calendar(monkeypatch)
     summary = format_chip_evidence(
         _record("TW:2330", source_as_of="2024-06-01"),
         reference_day="2024-06-27",
+        calendar_known=True,
+        capture_at=_capture("2024-06-27", 22, 0),
     )
     assert summary["institutional"]["status"] == "stale"
     assert summary["margin"]["status"] == "stale"
@@ -858,9 +870,100 @@ def test_report_evidence_includes_chip_handoff_contract() -> None:
     assert pack["summary"]["chipGaps"]["counts"]["institutional_5d"].get("partial", 0) >= 1
 
 
-def test_calendar_known_holiday_does_not_mark_fresh_source_stale(monkeypatch) -> None:
-    """Holiday reference_day: source_as_of = prior real session → not stale."""
-    holiday = date(2024, 10, 10)  # Double Ten
+def test_capture_time_thu_1700_institutional_thu_margin_wed_ok(monkeypatch) -> None:
+    """Schedule window 15:30–18:30: margin still from previous session by design."""
+    _patch_weekday_calendar(monkeypatch)
+    # Thu 2024-06-27
+    summary = format_chip_evidence(
+        _record(
+            "TW:2330",
+            institutional_as_of="2024-06-27",
+            margin_as_of="2024-06-26",
+            source_as_of="2024-06-27",
+        ),
+        reference_day="2024-06-27",
+        calendar_known=True,
+        capture_at=_capture("2024-06-27", 17, 0),
+    )
+    assert summary["institutional"]["status"] == "ok"
+    assert summary["margin"]["status"] == "ok"
+    stale_margin = format_chip_evidence(
+        _record(
+            "TW:2330",
+            institutional_as_of="2024-06-27",
+            margin_as_of="2024-06-25",
+            source_as_of="2024-06-27",
+        ),
+        reference_day="2024-06-27",
+        calendar_known=True,
+        capture_at=_capture("2024-06-27", 17, 0),
+    )
+    assert stale_margin["margin"]["status"] == "stale"
+
+
+def test_capture_time_thu_2200_margin_requires_thu(monkeypatch) -> None:
+    _patch_weekday_calendar(monkeypatch)
+    assert (
+        format_chip_evidence(
+            _record("TW:2330", margin_as_of="2024-06-26", source_as_of="2024-06-27"),
+            calendar_known=True,
+            capture_at=_capture("2024-06-27", 22, 0),
+        )["margin"]["status"]
+        == "stale"
+    )
+    assert (
+        format_chip_evidence(
+            _record("TW:2330", margin_as_of="2024-06-27", source_as_of="2024-06-27"),
+            calendar_known=True,
+            capture_at=_capture("2024-06-27", 22, 0),
+        )["margin"]["status"]
+        == "ok"
+    )
+
+
+def test_capture_time_thu_1000_expects_wed(monkeypatch) -> None:
+    _patch_weekday_calendar(monkeypatch)
+    summary = format_chip_evidence(
+        _record("TW:2330", source_as_of="2024-06-26"),
+        calendar_known=True,
+        capture_at=_capture("2024-06-27", 10, 0),
+    )
+    assert summary["institutional"]["status"] == "ok"
+    assert summary["margin"]["status"] == "ok"
+
+
+def test_capture_time_fri_0100_from_thu_1700z_expects_thu(monkeypatch) -> None:
+    """created_at Thu 17:00Z = Fri 01:00 Taipei — never expects Friday."""
+    _patch_weekday_calendar(monkeypatch)
+    capture = datetime(2024, 6, 27, 17, 0, tzinfo=ZoneInfo("UTC")).astimezone(_TAIPEI)
+    assert capture.hour == 1 and capture.date().isoformat() == "2024-06-28"
+    summary = format_chip_evidence(
+        _record("TW:2330", source_as_of="2024-06-27"),
+        calendar_known=True,
+        capture_at=capture,
+    )
+    assert summary["institutional"]["status"] == "ok"
+    assert summary["margin"]["status"] == "ok"
+    assert expected_session("institutional", capture) == date(2024, 6, 27)
+    assert expected_session("margin", capture) == date(2024, 6, 27)
+
+
+def test_capture_time_mon_0900_after_fri_expects_fri(monkeypatch) -> None:
+    _patch_weekday_calendar(monkeypatch)
+    summary = format_chip_evidence(
+        _record("TW:2330", source_as_of="2024-06-21"),
+        calendar_known=True,
+        capture_at=_capture("2024-06-24", 9, 0),  # Monday
+    )
+    assert summary["institutional"]["status"] == "ok"
+    assert summary["margin"]["status"] == "ok"
+    assert expected_session("institutional", _capture("2024-06-24", 9, 0)) == date(
+        2024, 6, 21
+    )
+
+
+def test_capture_time_day_after_holiday_expects_last_real_session(monkeypatch) -> None:
+    holiday = date(2024, 10, 10)  # Double Ten (Thu)
 
     def _is_trading(market, day, allow_holiday_fetch=False):  # noqa: ARG001
         probe = day.date() if isinstance(day, datetime) else day
@@ -868,45 +971,116 @@ def test_calendar_known_holiday_does_not_mark_fresh_source_stale(monkeypatch) ->
             return False
         return probe.weekday() < 5
 
-    def _last_completed(market, now=None, allow_holiday_fetch=True):  # noqa: ARG001
-        # Probe is at TW close; include current day when it is a trading session.
-        current = now.date() if isinstance(now, datetime) else date.fromisoformat(str(now)[:10])
-        day = current
-        for _ in range(12):
-            if _is_trading("TW", day):
-                return day
-            day = date.fromordinal(day.toordinal() - 1)
-        return None
-
-    monkeypatch.setattr(
-        "app.services.tw_research.chip_evidence.last_completed_session_date",
-        _last_completed,
-    )
+    monkeypatch.setattr("app.services.tw_research.chip_evidence.is_trading_day", _is_trading)
     monkeypatch.setattr("app.services.market_clock.is_trading_day", _is_trading)
-
-    # reference_day = holiday itself; close probe → last completed Wed 2024-10-09.
+    # Fri 2024-10-11 10:00 — before institutional ready → expect Wed 2024-10-09.
+    capture = _capture("2024-10-11", 10, 0)
+    assert expected_session("institutional", capture) == date(2024, 10, 9)
     summary = format_chip_evidence(
         _record("TW:2330", source_as_of="2024-10-09"),
-        reference_day="2024-10-10",
         calendar_known=True,
+        capture_at=capture,
     )
     assert summary["institutional"]["status"] == "ok"
-    assert summary["institutional"]["staleCheck"] == "verified"
     assert summary["margin"]["status"] == "ok"
-    assert summary["margin"]["staleCheck"] == "verified"
-    assert summary["tdcc"]["staleCheck"] == "verified"
 
 
-def test_after_close_reference_day_requires_that_session(monkeypatch) -> None:
-    """After-close snapshot on a trading day must not accept the prior session as fresh."""
+def test_report_trading_day_later_than_snapshot_blocks_full_two_pass(monkeypatch) -> None:
     _patch_weekday_calendar(monkeypatch)
-    summary = format_chip_evidence(
-        _record("TW:2330", source_as_of="2024-06-27"),
-        reference_day="2024-06-28",
-        calendar_known=True,
+    records = [_record("TW:2330", source_as_of="2024-06-27")]
+    snap = {
+        "snapshot_id": "fps_old",
+        "content_digest": "abc",
+        "stock_ids": ["TW:2330"],
+        "quality_status": "verified_ready",
+        "created_at": "2024-06-27T17:00:00+08:00",
+        "payload": {"records": records, "tradingDay": "2024-06-27"},
+    }
+    blocked = build_report_evidence(
+        trading_day="2024-07-02",  # following Tue
+        first_pass_snapshot=snap,
+        candidate_set={
+            "candidateSetId": "cs",
+            "version": 1,
+            "stockIds": ["TW:2330"],
+            "firstPassSnapshotId": "fps_old",
+            "firstPassDigest": "abc",
+        },
+        technical_scan={
+            "scanId": "scan",
+            "status": "verified_ready",
+            "stockIds": ["TW:2330"],
+        },
+        ledger_rows=[
+            {
+                "stockId": "TW:2330",
+                "monthly": {"passStatus": "pass"},
+                "daily": {"passStatus": "pass"},
+            }
+        ],
+        mode="full_two_pass",
+    ).as_dict()
+    assert "first_pass_snapshot_predates_trading_day" in blocked["summary"]["qualityWarnings"]
+    assert blocked["summary"]["publishability"] != "evidence_ready_for_analyst_decision"
+    # Same-day tradingDay: no such warning.
+    same = build_report_evidence(
+        trading_day="2024-06-27",
+        first_pass_snapshot=snap,
+        candidate_set={
+            "candidateSetId": "cs",
+            "version": 1,
+            "stockIds": ["TW:2330"],
+            "firstPassSnapshotId": "fps_old",
+            "firstPassDigest": "abc",
+        },
+        technical_scan={
+            "scanId": "scan",
+            "status": "verified_ready",
+            "stockIds": ["TW:2330"],
+        },
+        ledger_rows=[
+            {
+                "stockId": "TW:2330",
+                "monthly": {"passStatus": "pass"},
+                "daily": {"passStatus": "pass"},
+            }
+        ],
+        mode="full_two_pass",
+    ).as_dict()
+    assert "first_pass_snapshot_predates_trading_day" not in same["summary"]["qualityWarnings"]
+    note_pack = build_report_evidence(
+        trading_day="2024-07-02",
+        first_pass_snapshot=snap,
+        mode="first_pass_only",
+    ).as_dict()
+    assert "first_pass_snapshot_predates_trading_day" in note_pack["summary"]["notes"]
+    assert "first_pass_snapshot_predates_trading_day" not in note_pack["summary"][
+        "qualityWarnings"
+    ]
+
+
+def test_margin_ready_env_override(monkeypatch) -> None:
+    _patch_weekday_calendar(monkeypatch)
+    monkeypatch.setenv("TW_CHIP_MARGIN_READY", "20:30")
+    # Thu 22:00 still requires Thu margin.
+    assert (
+        format_chip_evidence(
+            _record("TW:2330", margin_as_of="2024-06-26", source_as_of="2024-06-27"),
+            calendar_known=True,
+            capture_at=_capture("2024-06-27", 22, 0),
+        )["margin"]["status"]
+        == "stale"
     )
-    assert summary["institutional"]["status"] == "stale"
-    assert summary["institutional"]["staleCheck"] == "verified"
+    # Thu 21:00 now requires Thu (default 21:30 would still expect Wed).
+    assert expected_session("margin", _capture("2024-06-27", 21, 0)) == date(2024, 6, 27)
+    assert (
+        format_chip_evidence(
+            _record("TW:2330", margin_as_of="2024-06-26", source_as_of="2024-06-27"),
+            calendar_known=True,
+            capture_at=_capture("2024-06-27", 21, 0),
+        )["margin"]["status"]
+        == "stale"
+    )
 
 
 def test_tdcc_nested_value_stale_sets_status_stale() -> None:

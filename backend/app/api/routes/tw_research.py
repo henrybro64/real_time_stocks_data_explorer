@@ -568,6 +568,7 @@ def get_first_pass_chip_evidence(
     from app.core.endpoint_timing import endpoint_timing
     from app.services.tw_calendar_preload import ensure_tw_calendars_bounded
     from app.services.tw_research.chip_evidence import (
+        capture_at_from_snapshot,
         format_chip_evidence,
         reference_day_from_snapshot,
     )
@@ -600,11 +601,14 @@ def get_first_pass_chip_evidence(
                 if str(row.get("stockId") or row.get("stock_id") or "").upper() in wanted
             ]
     page = records[offset : offset + limit]
+    capture_at = capture_at_from_snapshot(created_at=snap.get("created_at"))
     reference_day = reference_day_from_snapshot(
         trading_day=payload.get("tradingDay") or payload.get("trading_day"),
         payload=payload,
         created_at=snap.get("created_at"),
     )
+    if reference_day is None and capture_at is not None:
+        reference_day = capture_at.date().isoformat()
     calendar_known: bool | None = None
     calendar_preload_attempted = False
     if reference_day:
@@ -634,6 +638,7 @@ def get_first_pass_chip_evidence(
                     row,
                     reference_day=reference_day,
                     calendar_known=calendar_known,
+                    capture_at=capture_at,
                 )
                 for row in page
             ],

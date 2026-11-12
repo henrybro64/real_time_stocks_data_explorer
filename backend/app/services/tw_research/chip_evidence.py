@@ -11,11 +11,12 @@ a buy signal.
 
 from __future__ import annotations
 
+import os
 from datetime import date, datetime, time as dt_time, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from app.services.market_clock import last_completed_session_date
+from app.services.market_clock import is_trading_day
 
 _TAIPEI = ZoneInfo("Asia/Taipei")
 
@@ -40,22 +41,39 @@ _GATING_FORMATTED_SECTION = {
     "tdcc_holders_ge_400_lots": "tdcc",
 }
 
+# Approximate Asia/Taipei publication-ready cutoffs (institutional T86 ≈ 15:00–16:00,
+# margin ≈ 21:00–21:30). Override via TW_CHIP_INSTITUTIONAL_READY / TW_CHIP_MARGIN_READY
+# (HH:MM) or settings.tw_chip_*_ready.
+CHIP_PUBLICATION_READY_TIME: dict[str, dt_time] = {
+    "institutional": dt_time(16, 30),
+    "margin": dt_time(21, 30),
+}
+
+_READY_ENV_KEYS = {
+    "institutional": "TW_CHIP_INSTITUTIONAL_READY",
+    "margin": "TW_CHIP_MARGIN_READY",
+}
+
 
 def format_chip_evidence(
     record: dict[str, Any] | None,
     *,
     reference_day: str | date | None = None,
     calendar_known: bool | None = None,
+    capture_at: datetime | None = None,
 ) -> dict[str, Any]:
     """Build a readable chip summary from one first-pass record.
 
     Prefer frozen first-pass ``fields`` only. Enrichment is not merged here —
     callers that need Phase-2 enrichment must pass it separately.
 
+    Freshness for institutional/margin is relative to ``capture_at`` (snapshot
+    created_at) and each field's publication-ready time — not the capture date
+    alone. When ``capture_at`` is omitted, ``reference_day`` @ 23:59 Taipei is
+    used (``staleBasis=date_only``).
+
     ``calendar_known``:
-    - ``None`` — legacy weekday-fallback staleness (backward compatible).
-    - ``True`` — trading calendar verified; institutional/margin get
-      ``staleCheck=verified``.
+    - ``None`` / ``True`` — compute expected session from the calendar helpers.
     - ``False`` — do not claim institutional/margin stale; set
       ``staleCheck=calendar_unavailable`` / ``staleBasis=unverified``.
     """
@@ -63,11 +81,14 @@ def format_chip_evidence(
     fields = record.get("fields") if isinstance(record.get("fields"), dict) else {}
 
     ref = _as_date(reference_day)
+    resolved_capture, date_only = _resolve_capture_at(capture_at, ref)
     institutional = _format_institutional(
         fields.get("institutional_5d"),
         present="institutional_5d" in fields,
         reference_day=ref,
         calendar_known=calendar_known,
+        capture_at=resolved_capture,
+        date_only=date_only,
     )
     margin = _format_margin(
         fields.get("margin") if "margin" in fields else None,
@@ -75,12 +96,15 @@ def format_chip_evidence(
         present="margin" in fields,
         reference_day=ref,
         calendar_known=calendar_known,
+        capture_at=resolved_capture,
+        date_only=date_only,
     )
     tdcc = _format_tdcc(
         fields.get("tdcc_holders_ge_400_lots"),
         present="tdcc_holders_ge_400_lots" in fields,
         reference_day=ref,
         calendar_known=calendar_known,
+        capture_at=resolved_capture,
     )
 
     return {
@@ -179,7 +203,65 @@ def reference_day_from_snapshot(
     return _created_at_to_taipei_date(created_at)
 
 
+def capture_at_from_snapshot(*, created_at: Any = None) -> datetime | None:
+    """Parse snapshot ``created_at`` as timezone-aware Asia/Taipei datetime."""
+    return _parse_created_at(created_at)
+
+
+def publication_ready_time(kind: str) -> dt_time:
+    """Return Asia/Taipei publication-ready clock for institutional/margin."""
+    env_key = _READY_ENV_KEYS.get(kind)
+    raw = ""
+    if env_key:
+        raw = str(os.environ.get(env_key, "") or "").strip()
+    if not raw:
+        try:
+            from app.core.config import settings
+
+            attr = f"tw_chip_{kind}_ready"
+            raw = str(getattr(settings, attr, "") or "").strip()
+        except Exception:  # noqa: BLE001
+            raw = ""
+    parsed = _parse_hhmm(raw) if raw else None
+    if parsed is not None:
+        return parsed
+    return CHIP_PUBLICATION_READY_TIME[kind]
+
+
+def expected_session(kind: str, capture_at: datetime) -> date | None:
+    """Latest TW trading session S with combine(S, ready_time[kind], Taipei) <= capture_at.
+
+    No network: uses ``is_trading_day(..., allow_holiday_fetch=False)``. A capture
+    before a session's ready time therefore expects the previous session.
+    """
+    if kind not in CHIP_PUBLICATION_READY_TIME:
+        return None
+    local = capture_at.astimezone(_TAIPEI) if capture_at.tzinfo else capture_at.replace(
+        tzinfo=_TAIPEI
+    )
+    ready = publication_ready_time(kind)
+    day = local.date()
+    for _ in range(21):
+        probe = datetime.combine(day, dt_time.min, tzinfo=_TAIPEI)
+        if is_trading_day("TW", probe, allow_holiday_fetch=False):
+            ready_at = datetime.combine(day, ready, tzinfo=_TAIPEI)
+            if ready_at <= local:
+                return day
+        day -= timedelta(days=1)
+    return None
+
+
 def _created_at_to_taipei_date(created_at: Any) -> str | None:
+    parsed = _parse_created_at(created_at)
+    if parsed is None:
+        if created_at is None or created_at == "":
+            return None
+        text = str(created_at).strip()
+        return text[:10] if text else None
+    return parsed.date().isoformat()
+
+
+def _parse_created_at(created_at: Any) -> datetime | None:
     if created_at is None or created_at == "":
         return None
     if isinstance(created_at, datetime):
@@ -188,11 +270,39 @@ def _created_at_to_taipei_date(created_at: Any) -> str | None:
         try:
             parsed = datetime.fromisoformat(str(created_at).replace("Z", "+00:00"))
         except ValueError:
-            text = str(created_at).strip()
-            return text[:10] if text else None
+            return None
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=_TAIPEI)
-    return parsed.astimezone(_TAIPEI).date().isoformat()
+    return parsed.astimezone(_TAIPEI)
+
+
+def _parse_hhmm(raw: str) -> dt_time | None:
+    text = str(raw).strip()
+    parts = text.split(":")
+    if len(parts) != 2:
+        return None
+    try:
+        hour = int(parts[0])
+        minute = int(parts[1])
+    except ValueError:
+        return None
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        return None
+    return dt_time(hour, minute)
+
+
+def _resolve_capture_at(
+    capture_at: datetime | None,
+    reference_day: date | None,
+) -> tuple[datetime | None, bool]:
+    """Return (capture_at Taipei, date_only). date_only when falling back to 23:59."""
+    if capture_at is not None:
+        if capture_at.tzinfo is None:
+            capture_at = capture_at.replace(tzinfo=_TAIPEI)
+        return capture_at.astimezone(_TAIPEI), False
+    if reference_day is not None:
+        return datetime.combine(reference_day, dt_time(23, 59), tzinfo=_TAIPEI), True
+    return None, False
 
 
 def apply_chip_coverage_warnings(
@@ -203,6 +313,7 @@ def apply_chip_coverage_warnings(
     full_two_pass: bool = False,
     reference_day: str | date | None = None,
     calendar_known: bool | None = None,
+    capture_at: datetime | None = None,
 ) -> dict[str, Any]:
     """Append chip-content readiness warnings (#347). Returns coverage + chipGaps.
 
@@ -244,6 +355,7 @@ def apply_chip_coverage_warnings(
             record,
             reference_day=reference_day,
             calendar_known=calendar_known,
+            capture_at=capture_at,
         )
         raw_fields = chip_fields_from_record(record)
         for key in GATING_CHIP_FIELD_KEYS:
@@ -371,50 +483,54 @@ def _apply_stale(
     reference_day: date | None,
     kind: str,
     calendar_known: bool | None = None,
+    capture_at: datetime | None = None,
+    date_only: bool = False,
 ) -> dict[str, Any]:
-    """Mark institutional/margin/TDCC stale relative to the snapshot reference day."""
+    """Mark institutional/margin/TDCC stale relative to capture time / reference day."""
     if base.get("status") == "not_fetched":
         return base
     source_as_of = _as_date(base.get("sourceAsOf"))
-    if reference_day is None or source_as_of is None:
+    tdcc_ref = reference_day or (capture_at.astimezone(_TAIPEI).date() if capture_at else None)
+    if kind == "tdcc":
+        if tdcc_ref is None or source_as_of is None:
+            if base.get("stale"):
+                base["status"] = "stale"
+            return base
+        if source_as_of < (tdcc_ref - timedelta(days=10)) or base.get("stale"):
+            base["stale"] = True
+            base["status"] = "stale"
+            base["reason"] = base.get("reason") or "tdcc_source_as_of_older_than_10_calendar_days"
+        base["staleCheck"] = "verified"
+        return base
+
+    if kind not in {"institutional", "margin"}:
+        return base
+
+    if calendar_known is False:
+        # Fail closed honestly — do not invent weekday trading sessions.
+        base["staleCheck"] = "calendar_unavailable"
+        base["staleBasis"] = "unverified"
+        return base
+
+    if capture_at is None or source_as_of is None:
         if base.get("stale"):
             base["status"] = "stale"
         return base
 
-    if kind in {"institutional", "margin"}:
-        if calendar_known is False:
-            # Fail closed honestly — do not invent weekday trading sessions.
-            base["staleCheck"] = "calendar_unavailable"
-            base["staleBasis"] = "unverified"
-            return base
-        # Probe at TW regular close in Asia/Taipei so an after-close snapshot on
-        # ``reference_day`` resolves that session — not the prior day (midnight).
-        expected = last_completed_session_date(
-            "TW",
-            _reference_day_close_probe(reference_day),
-            allow_holiday_fetch=False,
-        )
-        # Fall back to reference_day itself when calendar lookup is empty.
-        expected_day = expected or reference_day
-        if source_as_of < expected_day:
-            base["stale"] = True
-            base["status"] = "stale"
-            base["reason"] = base.get("reason") or "source_as_of_before_last_completed_session"
-        if calendar_known is True:
-            base["staleCheck"] = "verified"
-    elif kind == "tdcc":
-        if source_as_of < (reference_day - timedelta(days=10)) or base.get("stale"):
-            base["stale"] = True
-            base["status"] = "stale"
-            base["reason"] = base.get("reason") or "tdcc_source_as_of_older_than_10_calendar_days"
-        # TDCC uses calendar days, not the TW trading calendar.
+    expected_day = expected_session(kind, capture_at)
+    if expected_day is None:
+        if date_only:
+            base["staleBasis"] = "date_only"
+        return base
+    if source_as_of < expected_day:
+        base["stale"] = True
+        base["status"] = "stale"
+        base["reason"] = base.get("reason") or "source_as_of_before_expected_session"
+    if calendar_known is True:
         base["staleCheck"] = "verified"
+    if date_only:
+        base["staleBasis"] = "date_only"
     return base
-
-
-def _reference_day_close_probe(reference_day: date) -> datetime:
-    """Timezone-aware Taipei datetime at TW regular close on ``reference_day``."""
-    return datetime.combine(reference_day, dt_time(13, 30), tzinfo=_TAIPEI)
 
 
 def _format_institutional(
@@ -423,12 +539,16 @@ def _format_institutional(
     present: bool,
     reference_day: date | None,
     calendar_known: bool | None = None,
+    capture_at: datetime | None = None,
+    date_only: bool = False,
 ) -> dict[str, Any]:
     base = _apply_stale(
         _prov(field, present=present),
         reference_day=reference_day,
         kind="institutional",
         calendar_known=calendar_known,
+        capture_at=capture_at,
+        date_only=date_only,
     )
     points = base.get("value")
     sessions: list[dict[str, Any]] = []
@@ -511,12 +631,16 @@ def _format_margin(
     present: bool,
     reference_day: date | None,
     calendar_known: bool | None = None,
+    capture_at: datetime | None = None,
+    date_only: bool = False,
 ) -> dict[str, Any]:
     base = _apply_stale(
         _prov(margin_field, present=present),
         reference_day=reference_day,
         kind="margin",
         calendar_known=calendar_known,
+        capture_at=capture_at,
+        date_only=date_only,
     )
     value = base.get("value") if isinstance(base.get("value"), dict) else {}
     balance = _num_or_none(value.get("balanceLots"))
@@ -566,9 +690,15 @@ def _format_tdcc(
     present: bool,
     reference_day: date | None,
     calendar_known: bool | None = None,
+    capture_at: datetime | None = None,
 ) -> dict[str, Any]:
     del calendar_known  # TDCC staleness is calendar-day based; arg kept for API symmetry.
-    base = _apply_stale(_prov(field, present=present), reference_day=reference_day, kind="tdcc")
+    base = _apply_stale(
+        _prov(field, present=present),
+        reference_day=reference_day,
+        kind="tdcc",
+        capture_at=capture_at,
+    )
     value = base.get("value") if isinstance(base.get("value"), dict) else {}
     percent = _num_or_none(value.get("percent"))
     change_pp = _num_or_none(value.get("weeklyChangePercentPoints"))

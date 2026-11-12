@@ -66,6 +66,29 @@ loop. If calendars are still missing, coverage stays fail-closed with
   `staleCheck=calendar_unavailable` / `staleBasis=unverified`. UI shows
   “新鮮度未驗證（交易日曆不可用）” / “freshness unverified (trading calendar unavailable)”.
 
+### Capture-time freshness (#347)
+
+Institutional/margin staleness is relative to the snapshot **capture timestamp**
+(`created_at` → Asia/Taipei), not the capture date alone:
+
+- Defaults (approximate publication-ready cutoffs, Asia/Taipei):
+  - institutional: **16:30** (T86 ≈ 15:00–16:00)
+  - margin: **21:30** (≈ 21:00–21:30)
+- Override via env/settings: `TW_CHIP_INSTITUTIONAL_READY=HH:MM`,
+  `TW_CHIP_MARGIN_READY=HH:MM` (`settings.tw_chip_*_ready`).
+- `expected_session(kind, capture_at)` = latest TW trading session `S` such that
+  `combine(S, ready_time[kind], Asia/Taipei) <= capture_at` (no network).
+- Stale ⇔ `source_as_of < expected_session`. A capture before a session’s ready
+  time therefore expects the **previous** session. The managed schedule window
+  (15:30–18:30) therefore captures **previous-session margin by design**.
+- When only a date is known (no `created_at`), capture falls back to
+  `reference_day` @ **23:59** Taipei and sets `staleBasis=date_only`.
+- TDCC remains a 10-calendar-day rule (unchanged).
+- Separate report-day gate: when request `tradingDay` is later than
+  `expected_session("institutional", capture_at)`, full_two_pass adds blocking
+  `first_pass_snapshot_predates_trading_day`; first_pass_only records it in
+  `summary.notes` (non-blocking). Fields are **not** all marked stale for this.
+
 ### Performance (#346)
 
 Runbook: [`docs/runbooks/tw-research-chip-evidence-perf-346.md`](runbooks/tw-research-chip-evidence-perf-346.md)
@@ -101,12 +124,13 @@ Gating fields: `institutional_5d`, `margin`, `tdcc_holders_ge_400_lots`
 (`margin_utilization` is never gating).
 
 The readiness gate, `summary.chipGaps`, and `symbols[].chipEvidence` all use the
-**same Asia/Taipei reference-day staleness** path (`format_chip_evidence` with
-`reference_day` resolved before gating via `reference_day_from_snapshot`). Raw
-collector payloads typically have `status=ok` and no `stale` flag; staleness is
-derived from `source_as_of` vs the reference day (and explicit raw `stale: true`
-is still honored). When the TW holiday calendar is unknown, institutional/margin
-staleness is **not claimed**; see `staleCheck=calendar_unavailable`.
+**same Asia/Taipei capture-time freshness** path (`format_chip_evidence` with
+`capture_at` from snapshot `created_at`, else `reference_day` @ 23:59 Taipei).
+Raw collector payloads typically have `status=ok` and no `stale` flag; staleness
+is derived from `source_as_of` vs `expected_session(kind, capture_at)` (and
+explicit raw `stale: true` is still honored). When the TW holiday calendar is
+unknown, institutional/margin staleness is **not claimed**; see
+`staleCheck=calendar_unavailable`.
 
 **Blocking warnings**
 
@@ -118,6 +142,9 @@ staleness is **not claimed**; see `staleCheck=calendar_unavailable`.
 - `chip_staleness_unverifiable_calendar_unavailable` — **full_two_pass only**; a
   candidate gating field has `staleCheck=calendar_unavailable` (fail closed with
   an honest reason, not a false `stale`).
+- `first_pass_snapshot_predates_trading_day` — **full_two_pass only**; request
+  `tradingDay` is later than `expected_session("institutional", capture_at)`.
+  In `first_pass_only` this is a non-blocking `summary.notes` entry instead.
 
 **Non-blocking** reasoned `unavailable`/`partial` and stale outside the candidate
 set are reported in `summary.chipGaps`. Non-candidate

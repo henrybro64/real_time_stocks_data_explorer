@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +22,8 @@ from app.services.tw_calendar_preload import ensure_tw_calendars_bounded
 from app.services.tw_research.chip_evidence import (
     CHIP_FIELD_KEYS,
     apply_chip_coverage_warnings,
+    capture_at_from_snapshot,
+    expected_session,
     format_chip_evidence,
     reference_day_from_snapshot,
     summarize_chip_coverage,
@@ -156,12 +158,21 @@ def build_report_evidence(
         if isinstance((first_pass or {}).get("payload"), dict)
         else {}
     )
-    reference_day = reference_day_from_snapshot(
-        trading_day=trading_day or (first_pass or {}).get("tradingDay"),
-        payload=first_pass_payload,
-        created_at=((first_pass or {}).get("raw") or {}).get("created_at"),
+    created_at_raw = (
+        ((first_pass or {}).get("raw") or {}).get("created_at")
+        or (first_pass_snapshot or {}).get("created_at")
+        or (first_pass or {}).get("created_at")
     )
+    capture_at = capture_at_from_snapshot(created_at=created_at_raw)
+    reference_day = reference_day_from_snapshot(
+        trading_day=(first_pass or {}).get("tradingDay"),
+        payload=first_pass_payload,
+        created_at=created_at_raw,
+    )
+    if reference_day is None and capture_at is not None:
+        reference_day = capture_at.date().isoformat()
     calendar_known = _calendar_known_for_reference_day(reference_day)
+    summary_notes: list[str] = []
     if first_pass is not None:
         first_pass_quality = first_pass.get("qualityStatus")
         if first_pass_quality in {None, ""}:
@@ -185,6 +196,7 @@ def build_report_evidence(
                 full_two_pass=(resolved_mode == "full_two_pass"),
                 reference_day=reference_day,
                 calendar_known=calendar_known,
+                capture_at=capture_at,
             )
             chip_gaps = chip_coverage_summary.get("chipGaps")
         elif first_pass.get("snapshotId"):
@@ -196,6 +208,25 @@ def build_report_evidence(
                 "items": [],
                 "truncated": False,
             }
+
+        # Report tradingDay later than the snapshot's expected institutional session
+        # is a separate readiness gate — do not mark every field stale for it.
+        if trading_day and capture_at is not None and calendar_known is not False:
+            try:
+                request_day = date.fromisoformat(str(trading_day).strip()[:10])
+            except ValueError:
+                request_day = None
+            expected_inst = expected_session("institutional", capture_at)
+            if (
+                request_day is not None
+                and expected_inst is not None
+                and request_day > expected_inst
+            ):
+                if resolved_mode == "full_two_pass":
+                    if "first_pass_snapshot_predates_trading_day" not in quality_warnings:
+                        quality_warnings.append("first_pass_snapshot_predates_trading_day")
+                else:
+                    summary_notes.append("first_pass_snapshot_predates_trading_day")
 
     technical_status = (technical_scan or {}).get("status")
     if technical_status == "budget_exhausted":
@@ -230,6 +261,7 @@ def build_report_evidence(
             frozen_first_pass=first_pass_by_id.get(str(row.get("stockId") or "")),
             reference_day=reference_day,
             calendar_known=calendar_known,
+            capture_at=capture_at,
         )
         for row in rows
     ]
@@ -345,6 +377,7 @@ def build_report_evidence(
             "publishability": publishability,
             "zeroQualifyingIsValid": True,
             "noTopNPadding": True,
+            "notes": list(summary_notes),
         },
         "pins": {
             "firstPassSnapshotId": (first_pass or {}).get("snapshotId"),
@@ -433,6 +466,7 @@ def _symbol_evidence_row(
     frozen_first_pass: dict[str, Any] | None = None,
     reference_day: str | None = None,
     calendar_known: bool | None = None,
+    capture_at: datetime | None = None,
 ) -> dict[str, Any]:
     monthly = row.get("monthly") if isinstance(row.get("monthly"), dict) else {}
     daily = row.get("daily") if isinstance(row.get("daily"), dict) else {}
@@ -456,6 +490,7 @@ def _symbol_evidence_row(
             frozen_first_pass,
             reference_day=reference_day,
             calendar_known=calendar_known,
+            capture_at=capture_at,
         )
     else:
         chip = {
