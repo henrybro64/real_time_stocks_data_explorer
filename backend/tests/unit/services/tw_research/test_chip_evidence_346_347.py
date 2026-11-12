@@ -859,7 +859,7 @@ def test_report_evidence_includes_chip_handoff_contract() -> None:
 
 
 def test_calendar_known_holiday_does_not_mark_fresh_source_stale(monkeypatch) -> None:
-    """Day after a mocked holiday: source_as_of = last real session → not stale."""
+    """Holiday reference_day: source_as_of = prior real session → not stale."""
     holiday = date(2024, 10, 10)  # Double Ten
 
     def _is_trading(market, day, allow_holiday_fetch=False):  # noqa: ARG001
@@ -869,9 +869,9 @@ def test_calendar_known_holiday_does_not_mark_fresh_source_stale(monkeypatch) ->
         return probe.weekday() < 5
 
     def _last_completed(market, now=None, allow_holiday_fetch=True):  # noqa: ARG001
-        # Match chip_evidence's midnight combine: session on reference_day not yet closed.
+        # Probe is at TW close; include current day when it is a trading session.
         current = now.date() if isinstance(now, datetime) else date.fromisoformat(str(now)[:10])
-        day = date.fromordinal(current.toordinal() - 1)
+        day = current
         for _ in range(12):
             if _is_trading("TW", day):
                 return day
@@ -884,10 +884,10 @@ def test_calendar_known_holiday_does_not_mark_fresh_source_stale(monkeypatch) ->
     )
     monkeypatch.setattr("app.services.market_clock.is_trading_day", _is_trading)
 
-    # reference_day Friday 2024-10-11; last session Wed 2024-10-09.
+    # reference_day = holiday itself; close probe → last completed Wed 2024-10-09.
     summary = format_chip_evidence(
         _record("TW:2330", source_as_of="2024-10-09"),
-        reference_day="2024-10-11",
+        reference_day="2024-10-10",
         calendar_known=True,
     )
     assert summary["institutional"]["status"] == "ok"
@@ -895,6 +895,42 @@ def test_calendar_known_holiday_does_not_mark_fresh_source_stale(monkeypatch) ->
     assert summary["margin"]["status"] == "ok"
     assert summary["margin"]["staleCheck"] == "verified"
     assert summary["tdcc"]["staleCheck"] == "verified"
+
+
+def test_after_close_reference_day_requires_that_session(monkeypatch) -> None:
+    """After-close snapshot on a trading day must not accept the prior session as fresh."""
+    _patch_weekday_calendar(monkeypatch)
+    summary = format_chip_evidence(
+        _record("TW:2330", source_as_of="2024-06-27"),
+        reference_day="2024-06-28",
+        calendar_known=True,
+    )
+    assert summary["institutional"]["status"] == "stale"
+    assert summary["institutional"]["staleCheck"] == "verified"
+
+
+def test_tdcc_nested_value_stale_sets_status_stale() -> None:
+    record = _record("TW:2330", source_as_of="2024-06-24")
+    tdcc = dict(record["fields"]["tdcc_holders_ge_400_lots"])
+    value = dict(tdcc["value"])
+    value["stale"] = True
+    tdcc["status"] = "ok"
+    tdcc.pop("stale", None)
+    tdcc["value"] = value
+    record["fields"]["tdcc_holders_ge_400_lots"] = tdcc
+    summary = format_chip_evidence(record, reference_day="2024-06-24", calendar_known=True)
+    assert summary["tdcc"]["status"] == "stale"
+    assert summary["tdcc"]["stale"] is True
+    warnings: list[str] = []
+    apply_chip_coverage_warnings(
+        [record],
+        warnings,
+        candidate_stock_ids=["TW:2330"],
+        full_two_pass=True,
+        reference_day="2024-06-24",
+        calendar_known=True,
+    )
+    assert "candidate_chip_fields_stale_or_missing" in warnings
 
 
 def test_calendar_unknown_does_not_claim_stale_and_blocks_candidate(monkeypatch) -> None:

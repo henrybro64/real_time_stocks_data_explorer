@@ -131,14 +131,13 @@ def get_stock_technical_indicators(
         )
     else:
         monthly_snap = monthly_macd_kd_snapshot(candles, market="TW", now=clock)
+    # Do not gate completed-month MACD/KD on the open-month daily-backfill flag.
+    # peek_daily_history marks missing_upstream_months when the current month is
+    # behind the latest close even though required completed months are intact.
     monthly_payload = _apply_coverage_to_snapshot(
         monthly_snap,
-        coverage_ok=monthly_coverage.ok and not missing_upstream_months,
-        coverage_reason=(
-            "missing_upstream_months"
-            if missing_upstream_months and monthly_coverage.ok
-            else monthly_coverage.reason
-        ),
+        coverage_ok=monthly_coverage.ok,
+        coverage_reason=monthly_coverage.reason,
         expect_through=expect_through,
         missing_upstream_months=bool(missing_upstream_months),
         timeframe="monthly",

@@ -11,7 +11,7 @@ a buy signal.
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time as dt_time, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -387,9 +387,11 @@ def _apply_stale(
             base["staleCheck"] = "calendar_unavailable"
             base["staleBasis"] = "unverified"
             return base
+        # Probe at TW regular close in Asia/Taipei so an after-close snapshot on
+        # ``reference_day`` resolves that session — not the prior day (midnight).
         expected = last_completed_session_date(
             "TW",
-            datetime.combine(reference_day, datetime.min.time()),
+            _reference_day_close_probe(reference_day),
             allow_holiday_fetch=False,
         )
         # Fall back to reference_day itself when calendar lookup is empty.
@@ -408,6 +410,11 @@ def _apply_stale(
         # TDCC uses calendar days, not the TW trading calendar.
         base["staleCheck"] = "verified"
     return base
+
+
+def _reference_day_close_probe(reference_day: date) -> datetime:
+    """Timezone-aware Taipei datetime at TW regular close on ``reference_day``."""
+    return datetime.combine(reference_day, dt_time(13, 30), tzinfo=_TAIPEI)
 
 
 def _format_institutional(
@@ -568,6 +575,13 @@ def _format_tdcc(
     prior_week = value.get("priorWeekDate")
     # Prior-week missing → partial with null pp change (#346).
     status = base.get("status")
+    nested_stale = bool(value.get("stale"))
+    # Ownership stale-cache fallbacks store the flag under value.stale (#346/#347).
+    if nested_stale and status not in {"not_fetched", "stale"}:
+        status = "stale"
+        base["stale"] = True
+        base["reason"] = base.get("reason") or "tdcc_value_marked_stale"
+        base["staleCheck"] = base.get("staleCheck") or "verified"
     if present and isinstance(field, dict) and status not in {"not_fetched", "stale"}:
         if prior_week in {None, ""} and change_pp is None and percent is not None:
             status = "partial"
@@ -580,7 +594,7 @@ def _format_tdcc(
         "holdersGe400LotsPercent": percent,
         "weeklyChangePercentagePoints": change_pp,
         "priorWeekDate": prior_week,
-        "stale": bool(value.get("stale") or base.get("stale")),
+        "stale": bool(nested_stale or base.get("stale")),
         "labelZh": "大戶動向",
         "limitation": (
             "TDCC ≥400-lot concentration is a weekly holding snapshot, "

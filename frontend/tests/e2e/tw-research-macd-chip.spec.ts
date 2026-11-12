@@ -44,7 +44,7 @@ test("stock profile shows TW MACD/KD panel from stored-only endpoint", async ({ 
     });
   });
 
-  await page.goto("/stocks/TW:2330");
+  await page.goto("/stock/TW%3A2330");
   await expect(page.getByTestId("macd-kd-indicators-panel")).toBeVisible({ timeout: 15_000 });
   await expect(page.getByTestId("macd-kd-indicators-panel")).toContainText(/MACD|KD|DIF/i);
 });
@@ -82,7 +82,7 @@ test("stock profile shows unavailable (stale) for stale mock", async ({ page }) 
     });
   });
 
-  await page.goto("/stocks/TW:2330");
+  await page.goto("/stock/TW%3A2330");
   await expect(page.getByTestId("macd-kd-daily-unavailable")).toBeVisible({ timeout: 15_000 });
   await expect(page.getByTestId("macd-kd-daily-unavailable")).toContainText(/unavailable \(stale\)|不可用（已過期/i);
 });

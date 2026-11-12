@@ -128,6 +128,31 @@ def test_fresh_fixture_daily_and_monthly_ok(monkeypatch) -> None:
     assert payload["upstreamFetch"] is False
 
 
+def test_open_month_behind_does_not_null_completed_monthly(monkeypatch) -> None:
+    """Current-month daily backfill gap must not discard verified completed months."""
+    _patch_weekday_calendar(monkeypatch)
+    now = datetime(2024, 11, 12, 16, 0, tzinfo=TZ)
+    expect = date(2024, 11, 12)
+    monkeypatch.setattr(
+        "app.services.stock_technical_indicators.last_completed_session_date",
+        lambda market, now=None, allow_holiday_fetch=True: expect,
+    )
+    # History through Nov 11 — completed October month is intact; open November is behind.
+    end = date(2024, 11, 11)
+    candles = _candles_ending(end, sessions=800)
+    payload = get_stock_technical_indicators(
+        "TW:2330",
+        stock_loader=lambda _sid: _stock(),
+        candles_loader=lambda _stock: (candles, True),
+        now=now,
+    )
+    assert payload["missingUpstreamMonths"] is True
+    assert payload["monthly"]["missingUpstreamMonths"] is True
+    assert payload["monthly"]["quality"] == "ok"
+    assert payload["monthly"]["macdDif"] is not None
+    assert payload["monthly"]["coverage"]["ok"] is True
+
+
 def test_stale_when_bars_end_years_ago(monkeypatch) -> None:
     _patch_weekday_calendar(monkeypatch)
     now = datetime(2026, 11, 12, 16, 0, tzinfo=TZ)
