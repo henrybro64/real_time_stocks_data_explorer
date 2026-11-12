@@ -507,8 +507,7 @@ def test_research_run_start_idempotent_single_job(monkeypatch) -> None:
     jobs: list[str] = []
 
     def fake_create_job(**kwargs):  # noqa: ANN003
-        del kwargs
-        job_id = f"fpj_{len(jobs) + 1}"
+        job_id = str(kwargs.get("job_id") or f"fpj_{len(jobs) + 1}")
         jobs.append(job_id)
         return {"job_id": job_id, "status": "queued"}
 
@@ -530,7 +529,119 @@ def test_research_run_start_idempotent_single_job(monkeypatch) -> None:
         "researchRunId"
     ]
     assert len(jobs) == 1
+    run_id = first.json()["researchRun"]["researchRunId"]
+    assert jobs[0] == f"fpj_{run_id}"
     assert second.json()["researchRun"]["firstPassJobId"] == jobs[0]
+    research_run_store.disable_test_memory()
+
+
+def test_phase2_already_attached_rejects_semantic_mismatch(monkeypatch) -> None:
+    from app.db.init_ids import DEFAULT_USER_ID
+    from app.services.tw_research.constants import CALCULATION_VERSION_MONTHLY_FIRST
+    from app.services.tw_research.research_run import research_run_store
+    from app.services.tw_research.scan import TwResearchScanService, UniverseSelector
+    from tests.support import stock_record
+
+    research_run_store.clear_for_tests()
+    catalog = {
+        "TW:2330": stock_record(
+            "TW:2330",
+            market="TW",
+            symbol="2330",
+            name="台積電",
+            exchange="TWSE",
+            currency="TWD",
+            timezone="Asia/Taipei",
+        )
+    }
+    service = TwResearchScanService(
+        history_loader=lambda *a, **k: ([], 0),
+        stock_loader=catalog.get,
+        persist=False,
+    )
+    state = service.create_scan(
+        UniverseSelector(mode="stock_ids", stock_ids=("TW:2330",)),
+        calculation_version=CALCULATION_VERSION_MONTHLY_FIRST,
+        trading_day="2024-06-27",
+        candidate_provenance={
+            "candidateSetId": "cs_a",
+            "candidateSetVersion": 1,
+            "approvedStockIds": ["TW:2330"],
+            "dailyOverrideIds": [],
+            "calculationVersion": CALCULATION_VERSION_MONTHLY_FIRST,
+        },
+    )
+    state.user_id = DEFAULT_USER_ID
+    monkeypatch.setattr(
+        "app.api.routes.tw_research.tw_research_scan_service",
+        service,
+    )
+
+    research_run_store.begin_phase1(DEFAULT_USER_ID, trading_day="2024-06-27")
+    run = research_run_store.get(DEFAULT_USER_ID)
+    assert run is not None
+    run.phase = "phase2_technical"
+    run.status = "running"
+    run.gates["candidateSelection"] = "approved"
+    run.candidate_set_id = "cs_a"
+    run.candidate_set_version = 1
+    run.technical_scan_id = state.scan_id
+
+    # Identical retry → reuse.
+    ok = client.post(
+        "/api/tw-research/candidate-sets/technical-scan",
+        json={
+            "candidateSetId": "cs_a",
+            "expectedVersion": 1,
+            "tradingDay": "2024-06-27",
+        },
+    )
+    assert ok.status_code == 200, ok.text
+    assert ok.json()["scan"]["scanId"] == state.scan_id
+
+    # Run advanced to v2 while an incompatible v1 scan remains attached.
+    run.candidate_set_version = 2
+    bad_version = client.post(
+        "/api/tw-research/candidate-sets/technical-scan",
+        json={
+            "candidateSetId": "cs_a",
+            "expectedVersion": 2,
+            "tradingDay": "2024-06-27",
+        },
+    )
+    assert bad_version.status_code == 409
+    assert bad_version.json()["detail"]["error"] == "phase2_scan_request_mismatch"
+    assert "candidateSetVersion" in bad_version.json()["detail"]["mismatches"]
+
+    # Restore run pin for subsequent scan-level checks.
+    run.candidate_set_version = 1
+
+    # Changed trading day → 409.
+    bad_day = client.post(
+        "/api/tw-research/candidate-sets/technical-scan",
+        json={
+            "candidateSetId": "cs_a",
+            "expectedVersion": 1,
+            "tradingDay": "2024-06-28",
+        },
+    )
+    assert bad_day.status_code == 409
+    assert bad_day.json()["detail"]["error"] == "phase2_scan_request_mismatch"
+    assert "tradingDay" in bad_day.json()["detail"]["mismatches"]
+
+    # Changed daily overrides → 409.
+    bad_overrides = client.post(
+        "/api/tw-research/candidate-sets/technical-scan",
+        json={
+            "candidateSetId": "cs_a",
+            "expectedVersion": 1,
+            "tradingDay": "2024-06-27",
+            "dailyOverrideIds": ["TW:2330"],
+        },
+    )
+    assert bad_overrides.status_code == 409
+    assert bad_overrides.json()["detail"]["error"] == "phase2_scan_request_mismatch"
+    assert "dailyOverrideIds" in bad_overrides.json()["detail"]["mismatches"]
     research_run_store.disable_test_memory()
 
 

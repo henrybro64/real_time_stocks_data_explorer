@@ -94,7 +94,10 @@ from app.services.tw_research.scan import (
 from app.services.tw_research.universe import UniverseSelector, resolve_universe
 from app.services.daily_price_history_service import daily_price_history_service
 from app.services.quote_service import quote_service
-from app.services.tw_research.constants import PREFERRED_DAILY_HISTORY_LIMIT
+from app.services.tw_research.constants import (
+    CALCULATION_VERSION_MONTHLY_FIRST,
+    PREFERRED_DAILY_HISTORY_LIMIT,
+)
 from app.services.tw_research.export import _record_export
 from app.services.tw_research.report_evidence import (
     build_report_evidence,
@@ -703,6 +706,12 @@ def post_candidate_technical_scan(
                     )
                 if getattr(state, "user_id", None) not in {None, user_id}:
                     raise HTTPException(status_code=404, detail="scan_not_found")
+                mismatches = _phase2_scan_request_mismatches(state, body)
+                if mismatches:
+                    _raise_phase2_scan_mismatch(
+                        scan_id=str(existing_id),
+                        mismatches=mismatches,
+                    )
                 return _snapshot(state)
             if outcome == "claim_held":
                 raise HTTPException(
@@ -720,6 +729,12 @@ def post_candidate_technical_scan(
                     None,
                     user_id,
                 }:
+                    mismatches = _phase2_scan_request_mismatches(state, body)
+                    if mismatches:
+                        _raise_phase2_scan_mismatch(
+                            scan_id=str(pending_scan_id),
+                            mismatches=mismatches,
+                        )
                     attached = research_run_store.attach_technical_scan_under_claim(
                         user_id,
                         claim_token=claim_token,
@@ -870,6 +885,83 @@ def _research_run_unavailable(exc: ResearchRunStoreUnavailable) -> HTTPException
     )
 
 
+def _phase2_scan_request_mismatches(
+    state: ScanState,
+    body: CandidateTechnicalScanRequest,
+) -> list[str]:
+    """Return semantic mismatch fields when reusing an attached technical scan."""
+    provenance = dict(getattr(state, "candidate_provenance", None) or {})
+    mismatches: list[str] = []
+    if body.candidateSetId and str(provenance.get("candidateSetId") or "") != str(
+        body.candidateSetId
+    ):
+        mismatches.append("candidateSetId")
+    if body.expectedVersion is not None:
+        try:
+            attached_version = int(provenance.get("candidateSetVersion"))
+        except (TypeError, ValueError):
+            attached_version = -1
+        if attached_version != int(body.expectedVersion):
+            mismatches.append("candidateSetVersion")
+    if body.tradingDay and str(getattr(state, "trading_day", "") or "") != str(
+        body.tradingDay
+    ):
+        mismatches.append("tradingDay")
+    attached_calc = str(
+        getattr(state, "calculation_version", "")
+        or provenance.get("calculationVersion")
+        or ""
+    )
+    if attached_calc and attached_calc != CALCULATION_VERSION_MONTHLY_FIRST:
+        mismatches.append("calculationVersion")
+    request_overrides = sorted(
+        {str(item).upper() for item in (body.dailyOverrideIds or []) if item}
+    )
+    attached_overrides = sorted(
+        {
+            str(item).upper()
+            for item in (provenance.get("dailyOverrideIds") or [])
+            if item
+        }
+    )
+    # Request may omit overrides already frozen on the candidate set; only reject
+    # when the caller supplies a different explicit override set.
+    if body.dailyOverrideIds and request_overrides != attached_overrides:
+        # Allow subset equality when request overrides are already present.
+        if not set(request_overrides).issubset(set(attached_overrides)):
+            mismatches.append("dailyOverrideIds")
+    if body.candidateSetId or body.expectedVersion is not None:
+        approved = {
+            str(item).upper()
+            for item in (provenance.get("approvedStockIds") or list(state.stock_ids))
+            if item
+        }
+        attached_ids = {str(item).upper() for item in state.stock_ids if item}
+        if approved and attached_ids != approved:
+            mismatches.append("approvedStockIds")
+    return mismatches
+
+
+def _raise_phase2_scan_mismatch(
+    *,
+    scan_id: str,
+    mismatches: list[str],
+) -> None:
+    raise HTTPException(
+        status_code=409,
+        detail={
+            "error": "phase2_scan_request_mismatch",
+            "technicalScanId": scan_id,
+            "mismatches": mismatches,
+            "hint": (
+                "Retry with identical candidate-set/trading-day/overrides, or start a "
+                "new research run after the current run reaches a terminal/gated phase. "
+                "Existing immutable scans are preserved."
+            ),
+        },
+    )
+
+
 @router.get("/research-runs/current", response_model=ResearchRunResponse)
 def get_current_research_run(
     user_id: str = Depends(get_effective_user_id),
@@ -940,67 +1032,40 @@ def start_research_run(
             held = ResearchRun.from_persist_payload(claim["run"])
             return ResearchRunResponse(researchRun=held.as_dict())
 
+        # Claim allocates pending_first_pass_job_id before job-row create.
         pending_job_id = claim.get("pending_first_pass_job_id")
-        job_id: str | None = str(pending_job_id) if pending_job_id else None
-        if not job_id:
-            try:
-                job = first_pass_job_service.create_job(
-                    user_id=user_id,
-                    use_membership=True,
-                )
-                job_id = str(job.get("job_id") or job.get("jobId") or "")
-            except FirstPassJobError as exc:
-                if "unavailable" in str(exc):
-                    raise HTTPException(
-                        status_code=503,
-                        detail={"error": str(exc), "operation": exc.operation},
-                    ) from exc
+        if not pending_job_id:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "error": "research_run_job_id_not_allocated",
+                    "retryable": True,
+                },
+            )
+        job_id = str(pending_job_id)
+        try:
+            job = first_pass_job_service.create_job(
+                user_id=user_id,
+                use_membership=True,
+                job_id=job_id,
+            )
+            job_id = str(job.get("job_id") or job.get("jobId") or job_id)
+        except FirstPassJobError as exc:
+            if "unavailable" in str(exc):
                 raise HTTPException(
-                    status_code=400,
+                    status_code=503,
                     detail={"error": str(exc), "operation": exc.operation},
                 ) from exc
-            try:
-                recorded = research_run_store.record_pending_first_pass_job(
-                    user_id, claim_token=claim_token, job_id=job_id
-                )
-            except ResearchRunStoreUnavailable as exc:
-                # Job exists but claim record failed — mark orphan explicitly.
-                research_run_store.mark_orphaned_first_pass_job(
-                    job_id,
-                    user_id=user_id,
-                    authoritative_job_id=None,
-                    reason="pending_record_store_unavailable",
-                )
-                raise _research_run_unavailable(exc) from exc
-            if recorded.get("outcome") == "already_attached":
-                orphan = recorded.get("orphan_job_id")
-                if orphan:
-                    research_run_store.mark_orphaned_first_pass_job(
-                        str(orphan),
-                        user_id=user_id,
-                        authoritative_job_id=str(recorded.get("first_pass_job_id")),
-                        reason="lost_race_after_create",
-                    )
-                return ResearchRunResponse(
-                    researchRun=ResearchRun.from_persist_payload(recorded["run"]).as_dict()
-                )
-            if recorded.get("outcome") == "claim_lost":
-                orphan = recorded.get("orphan_job_id") or job_id
-                if orphan:
-                    research_run_store.mark_orphaned_first_pass_job(
-                        str(orphan),
-                        user_id=user_id,
-                        authoritative_job_id=None,
-                        reason="claim_lost_after_create",
-                    )
-                held = ResearchRun.from_persist_payload(recorded["run"])
-                return ResearchRunResponse(researchRun=held.as_dict())
+            raise HTTPException(
+                status_code=400,
+                detail={"error": str(exc), "operation": exc.operation},
+            ) from exc
 
         try:
             attached = research_run_store.attach_first_pass_job_under_claim(
                 user_id,
                 claim_token=claim_token,
-                job_id=job_id or "",
+                job_id=job_id,
                 notes=[f"Durable first-pass job {job_id} created with research run."],
             )
         except ResearchRunStoreUnavailable as exc:

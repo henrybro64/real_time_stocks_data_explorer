@@ -886,6 +886,8 @@ class ResearchRunStore:
 
         run.job_claim_token = claim_token
         run.job_claim_expires_at = (now + timedelta(seconds=int(lease_seconds))).isoformat()
+        if not run.pending_first_pass_job_id:
+            run.pending_first_pass_job_id = f"fpj_{run.research_run_id}"
         run.updated_at = now.isoformat()
         saved = self._persist_locked(run)
         return {

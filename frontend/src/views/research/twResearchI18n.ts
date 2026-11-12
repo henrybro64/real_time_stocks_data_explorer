@@ -293,13 +293,13 @@ const TW_RESEARCH_ROWS = [
   ],
   [
     "research.tw.watchlistNote",
-    "Fundamental keepers plus technical deferrals. Watchlist inclusion is not a ChatGPT-approved Notion recommendation.",
-    "基本面保留與技術延後。列入觀察清單不是 ChatGPT 核准的 Notion 建議。",
+    "Frozen first-pass universe plus technical deferrals. Watchlist inclusion is not a Notion recommendation.",
+    "凍結的第一輪宇宙與技術延後。列入觀察清單不是 Notion 建議。",
   ],
   [
     "research.tw.watchlistCounts",
-    "Monthly-fail {monthlyFail}; daily not-run {notRun}; monthly incomplete {monthlyIncomplete}; first-pass not selected {firstPassNotSelected}.",
-    "月線未過 {monthlyFail}；日線略過 {notRun}；月線未完備 {monthlyIncomplete}；第一輪未入選 {firstPassNotSelected}。",
+    "Monthly-fail {monthlyFail}; daily not-run {notRun}; monthly incomplete {monthlyIncomplete}; not selected for technical {notSelectedTechnical}; fundamental watch {fundamentalWatch}; insufficient fundamental evidence {insufficientFundamental}.",
+    "月線未過 {monthlyFail}；日線略過 {notRun}；月線未完備 {monthlyIncomplete}；未選入技術計算 {notSelectedTechnical}；基本面觀察 {fundamentalWatch}；基本面證據不足 {insufficientFundamental}。",
   ],
   ["research.tw.colStock", "Stock", "股票"],
   ["research.tw.colMonthly", "Monthly MACD/KD", "月線 MACD/KD"],

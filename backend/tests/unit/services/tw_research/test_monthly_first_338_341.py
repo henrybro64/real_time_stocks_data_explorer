@@ -801,19 +801,76 @@ def test_research_run_job_claim_is_exclusive() -> None:
     research_run_store.begin_phase1("u_claim", trading_day="2024-06-27")
     first = research_run_store.claim_first_pass_job_slot("u_claim", claim_token="tok_a")
     assert first["outcome"] == "claimed"
+    assert first.get("pending_first_pass_job_id")
+    run = research_run_store.get("u_claim")
+    assert run is not None
+    assert first["pending_first_pass_job_id"] == f"fpj_{run.research_run_id}"
     second = research_run_store.claim_first_pass_job_slot("u_claim", claim_token="tok_b")
     assert second["outcome"] == "claim_held"
+    pending_id = str(first["pending_first_pass_job_id"])
     research_run_store.record_pending_first_pass_job(
-        "u_claim", claim_token="tok_a", job_id="fpj_a"
+        "u_claim", claim_token="tok_a", job_id=pending_id
     )
     attached = research_run_store.attach_first_pass_job_under_claim(
-        "u_claim", claim_token="tok_a", job_id="fpj_a"
+        "u_claim", claim_token="tok_a", job_id=pending_id
     )
     assert attached["outcome"] == "attached"
     again = research_run_store.claim_first_pass_job_slot("u_claim", claim_token="tok_c")
     assert again["outcome"] == "already_attached"
-    assert again["first_pass_job_id"] == "fpj_a"
+    assert again["first_pass_job_id"] == pending_id
     research_run_store.disable_test_memory()
+
+
+def test_phase2_scan_request_mismatches_unit() -> None:
+    from app.api.routes.tw_research import _phase2_scan_request_mismatches
+    from app.schemas.tw_research import CandidateTechnicalScanRequest
+    from app.services.tw_research.constants import CALCULATION_VERSION_MONTHLY_FIRST
+    from app.services.tw_research.scan import ScanState, UniverseSelector
+
+    state = ScanState(
+        scan_id="scan_m",
+        trading_day="2024-06-27",
+        universe_version="explicit:1",
+        calculation_version=CALCULATION_VERSION_MONTHLY_FIRST,
+        selector=UniverseSelector(mode="stock_ids", stock_ids=("TW:2330",)),
+        stock_ids=("TW:2330",),
+        candidate_provenance={
+            "candidateSetId": "cs_1",
+            "candidateSetVersion": 1,
+            "approvedStockIds": ["TW:2330"],
+            "dailyOverrideIds": ["TW:2317"],
+            "calculationVersion": CALCULATION_VERSION_MONTHLY_FIRST,
+        },
+    )
+    identical = CandidateTechnicalScanRequest(
+        candidateSetId="cs_1",
+        expectedVersion=1,
+        tradingDay="2024-06-27",
+        dailyOverrideIds=["TW:2317"],
+    )
+    assert _phase2_scan_request_mismatches(state, identical) == []
+
+    versioned = CandidateTechnicalScanRequest(
+        candidateSetId="cs_1",
+        expectedVersion=2,
+        tradingDay="2024-06-27",
+    )
+    assert "candidateSetVersion" in _phase2_scan_request_mismatches(state, versioned)
+
+    day = CandidateTechnicalScanRequest(
+        candidateSetId="cs_1",
+        expectedVersion=1,
+        tradingDay="2024-06-28",
+    )
+    assert "tradingDay" in _phase2_scan_request_mismatches(state, day)
+
+    overrides = CandidateTechnicalScanRequest(
+        candidateSetId="cs_1",
+        expectedVersion=1,
+        tradingDay="2024-06-27",
+        dailyOverrideIds=["TW:2330"],
+    )
+    assert "dailyOverrideIds" in _phase2_scan_request_mismatches(state, overrides)
 
 
 def test_research_run_phase2_claim_attaches_scan() -> None:

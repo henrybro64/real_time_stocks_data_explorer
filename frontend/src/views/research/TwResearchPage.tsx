@@ -45,6 +45,7 @@ import {
   fetchTwResearchFirstPassJob,
   fetchTwResearchFirstPassManifest,
   fetchTwResearchFirstPassProgress,
+  fetchTwResearchFirstPassSnapshot,
   fetchTwResearchFirstPassSymbols,
   fetchTwResearchLatestCandidateSet,
   fetchTwResearchLatestManifest,
@@ -598,6 +599,23 @@ export function TwResearchPage({
   });
 
   const scan = scanQuery.data?.scanId === scanId ? scanQuery.data : null;
+
+  const pinnedFirstPassSnapshotId = useMemo(() => {
+    const fromScan = scan?.candidateProvenance?.firstPassSnapshotId;
+    if (typeof fromScan === "string" && fromScan) return fromScan;
+    if (typeof candidateSetQuery.data?.firstPassSnapshotId === "string") {
+      return candidateSetQuery.data.firstPassSnapshotId;
+    }
+    return firstPassSnapshotId;
+  }, [candidateSetQuery.data?.firstPassSnapshotId, firstPassSnapshotId, scan]);
+
+  const frozenFirstPassQuery = useQuery({
+    queryKey: ["tw-research-first-pass-snapshot", pinnedFirstPassSnapshotId],
+    enabled: Boolean(pinnedFirstPassSnapshotId),
+    queryFn: () => fetchTwResearchFirstPassSnapshot(pinnedFirstPassSnapshotId as string),
+    staleTime: 60_000,
+    retry: false,
+  });
   const progress = progressQuery.data?.scanId === scanId ? progressQuery.data : null;
   const displayStatus = progress?.status ?? scan?.status ?? "";
   const displayProcessed = progress?.processedCount ?? scan?.processedCount ?? 0;
@@ -1043,24 +1061,87 @@ export function TwResearchPage({
     for (const id of scan?.monthlyIncompleteIds ?? []) {
       addReason(String(id), "insufficient_evidence_monthly");
     }
+
+    // Frozen first-pass universe only — never mutable current membership.
     const selected = new Set(
       ((candidateSetQuery.data?.stockIds as string[] | undefined) ?? []).map(String),
     );
-    const membershipIds = Array.isArray(membershipQuery.data?.resolvedStockIds)
-      ? (membershipQuery.data?.resolvedStockIds as string[]).map(String)
-      : Array.isArray(membershipQuery.data?.extraStockIds)
-        ? (membershipQuery.data?.extraStockIds as string[]).map(String)
-        : [];
-    for (const id of membershipIds) {
-      if (!selected.has(id)) {
-        addReason(id, "first_pass_fundamental_not_selected");
+    const frozenIds = Array.isArray(frozenFirstPassQuery.data?.stockIds)
+      ? (frozenFirstPassQuery.data?.stockIds as string[]).map(String)
+      : [];
+    const reasons = (candidateSetQuery.data?.selectionReasons ?? {}) as Record<
+      string,
+      unknown
+    >;
+    const interestingIds = new Set<string>();
+    const reasonInsufficient = new Set<string>();
+    const watchList = reasons.fundamentalWatchIds ?? reasons.watchIds;
+    if (Array.isArray(watchList)) {
+      for (const id of watchList) interestingIds.add(String(id));
+    }
+    for (const [key, value] of Object.entries(reasons)) {
+      if (key === "dailyOverrideIds" || key === "fundamentalWatchIds" || key === "watchIds") {
+        continue;
+      }
+      const text = String(value ?? "").toLowerCase();
+      if (
+        text.includes("insufficient") ||
+        text.includes("unavailable") ||
+        text.includes("incomplete") ||
+        text.includes("missing")
+      ) {
+        reasonInsufficient.add(key);
+        continue;
+      }
+      if (text.includes("watch") || text.includes("promising") || text.includes("attractive")) {
+        interestingIds.add(key);
+      }
+    }
+
+    // Optional completeness hints from already-loaded first-pass evidence JSON.
+    const insufficient = new Set<string>(reasonInsufficient);
+    try {
+      const parsed = firstPassEvidenceText ? JSON.parse(firstPassEvidenceText) : null;
+      const records = Array.isArray(parsed?.records)
+        ? parsed.records
+        : Array.isArray(parsed?.chunk?.rows)
+          ? parsed.chunk.rows
+          : [];
+      for (const row of records) {
+        const id = String(row?.stockId ?? row?.stock_id ?? "");
+        if (!id) continue;
+        const completeness = (row?.completeness ?? row?.evidence?.completeness) as
+          | { identityComplete?: boolean; fundamentalFieldsOk?: number; fieldsOk?: number }
+          | undefined;
+        if (
+          completeness &&
+          (completeness.identityComplete === false ||
+            Number(completeness.fundamentalFieldsOk ?? completeness.fieldsOk ?? 1) <= 0)
+        ) {
+          insufficient.add(id);
+        }
+      }
+    } catch {
+      // Evidence text may be unrelated JSON; ignore parse failures.
+    }
+
+    for (const id of frozenIds) {
+      if (selected.has(id)) continue;
+      if (insufficient.has(id)) {
+        addReason(id, "insufficient_evidence_fundamental");
+      } else if (interestingIds.has(id)) {
+        addReason(id, "fundamentally_interesting_not_selected");
+      } else {
+        // Neutral: not selected for MACD/KD — not an attractiveness claim.
+        addReason(id, "first_pass_not_selected_for_technical");
       }
     }
     return reasonById;
   }, [
+    candidateSetQuery.data?.selectionReasons,
     candidateSetQuery.data?.stockIds,
-    membershipQuery.data?.extraStockIds,
-    membershipQuery.data?.resolvedStockIds,
+    firstPassEvidenceText,
+    frozenFirstPassQuery.data?.stockIds,
     scan?.dailyNotRunByDesignIds,
     scan?.monthlyFailWatchlistIds,
     scan?.monthlyIncompleteIds,
@@ -1879,9 +1960,19 @@ export function TwResearchPage({
                   monthlyFail: Number(scan?.monthlyFailWatchlistCount ?? 0),
                   notRun: Number(scan?.dailyNotRunByDesignCount ?? 0),
                   monthlyIncomplete: Number(scan?.monthlyIncompleteCount ?? 0),
-                  firstPassNotSelected: watchlistIds.filter((id) =>
+                  notSelectedTechnical: watchlistIds.filter((id) =>
                     String(watchlistReasonById.get(id) ?? "").includes(
-                      "first_pass_fundamental_not_selected",
+                      "first_pass_not_selected_for_technical",
+                    ),
+                  ).length,
+                  fundamentalWatch: watchlistIds.filter((id) =>
+                    String(watchlistReasonById.get(id) ?? "").includes(
+                      "fundamentally_interesting_not_selected",
+                    ),
+                  ).length,
+                  insufficientFundamental: watchlistIds.filter((id) =>
+                    String(watchlistReasonById.get(id) ?? "").includes(
+                      "insufficient_evidence_fundamental",
                     ),
                   ).length,
                 })}

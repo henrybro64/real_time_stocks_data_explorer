@@ -16,6 +16,7 @@ import {
   fetchThemeOptions,
   fetchTwResearchBrowserText,
   fetchTwResearchExportManifest,
+  fetchTwResearchFirstPassSnapshot,
   fetchTwResearchFirstPassSymbols,
   fetchTwResearchLatestCandidateSet,
   fetchTwResearchLatestManifest,
@@ -77,6 +78,10 @@ vi.mock("../../services/api/twResearch", async () => {
     createTwResearchTechnicalScanFromCandidateSet: vi.fn(),
     fetchTwResearchFirstPassSymbols: vi.fn(),
     fetchTwResearchFirstPassManifest: vi.fn(),
+    fetchTwResearchFirstPassSnapshot: vi.fn(async () => ({
+      snapshotId: "fps_1",
+      stockIds: [],
+    })),
     fetchTwResearchRunCurrent: vi.fn(async () => {
       throw new ApiError("missing", {
         status: 404,
@@ -1166,6 +1171,10 @@ describe("TwResearchPage watchlist union (#338)", () => {
         kind: "not_found",
       }),
     );
+    vi.mocked(fetchTwResearchFirstPassSnapshot).mockResolvedValue({
+      snapshotId: "fps_1",
+      stockIds: ["TW:2330", "TW:2881", "TW:1101"],
+    });
   });
 
   it("shows de-duplicated monthly-fail and not-run rows with — for missing stage", async () => {
@@ -1178,6 +1187,11 @@ describe("TwResearchPage watchlist union (#338)", () => {
       dailyNotRunByDesignCount: 2,
       monthlyIncompleteIds: ["TW:2303"],
       monthlyIncompleteCount: 1,
+      candidateProvenance: {
+        firstPassSnapshotId: "fps_1",
+        candidateSetId: "cs_1",
+        candidateSetVersion: 1,
+      },
       ledger: [
         {
           stock_id: "TW:2317",
@@ -1207,10 +1221,11 @@ describe("TwResearchPage watchlist union (#338)", () => {
     });
     vi.mocked(createTwResearchScan).mockResolvedValue(scan);
     vi.mocked(fetchTwResearchScan).mockResolvedValue(scan);
+    // Mutable membership includes TW:9999 which must NOT appear on the frozen watchlist.
     vi.mocked(fetchTwResearchMembership).mockResolvedValue({
-      version: 1,
-      resolvedStockIds: ["TW:2330", "TW:2881"],
-      extraStockIds: ["TW:2881"],
+      version: 2,
+      resolvedStockIds: ["TW:2330", "TW:2881", "TW:9999"],
+      extraStockIds: ["TW:2881", "TW:9999"],
     });
     vi.mocked(fetchTwResearchLatestCandidateSet).mockResolvedValue({
       candidateSetId: "cs_1",
@@ -1218,6 +1233,14 @@ describe("TwResearchPage watchlist union (#338)", () => {
       stockIds: ["TW:2330"],
       firstPassSnapshotId: "fps_1",
       firstPassDigest: "d".repeat(64),
+      selectionReasons: {
+        fundamentalWatchIds: ["TW:2881"],
+        "TW:1101": "insufficient_fundamentals",
+      },
+    });
+    vi.mocked(fetchTwResearchFirstPassSnapshot).mockResolvedValue({
+      snapshotId: "fps_1",
+      stockIds: ["TW:2330", "TW:2881", "TW:1101"],
     });
 
     renderPage();
@@ -1232,6 +1255,8 @@ describe("TwResearchPage watchlist union (#338)", () => {
     expect(screen.getByTestId("tw-research-watchlist-row-TW:2454")).toBeInTheDocument();
     expect(screen.getByTestId("tw-research-watchlist-row-TW:2303")).toBeInTheDocument();
     expect(await screen.findByTestId("tw-research-watchlist-row-TW:2881")).toBeInTheDocument();
+    expect(await screen.findByTestId("tw-research-watchlist-row-TW:1101")).toBeInTheDocument();
+    expect(screen.queryByTestId("tw-research-watchlist-row-TW:9999")).not.toBeInTheDocument();
 
     const row2317 = screen.getByTestId("tw-research-watchlist-row-TW:2317");
     expect(row2317).toHaveTextContent("—");
@@ -1242,8 +1267,97 @@ describe("TwResearchPage watchlist union (#338)", () => {
     expect(row2330).toHaveTextContent("daily_waiting_or_not_run+monthly_fail_watchlist");
 
     const row2881 = screen.getByTestId("tw-research-watchlist-row-TW:2881");
-    expect(row2881).toHaveTextContent("first_pass_fundamental_not_selected");
+    expect(row2881).toHaveTextContent("fundamentally_interesting_not_selected");
+    expect(row2881).not.toHaveTextContent("first_pass_fundamental_not_selected");
+
+    const row1101 = screen.getByTestId("tw-research-watchlist-row-TW:1101");
+    expect(row1101).toHaveTextContent("insufficient_evidence_fundamental");
 
     expect(screen.getByTestId("tw-research-watchlist-pagination")).toBeInTheDocument();
+  });
+
+  it("keeps frozen first-pass universe after membership edit and reload", async () => {
+    const scan = queuedScan({
+      status: "completed_processing",
+      candidateProvenance: { firstPassSnapshotId: "fps_frozen" },
+      monthlyFailWatchlistIds: [],
+      dailyNotRunByDesignIds: [],
+      monthlyIncompleteIds: [],
+      ledger: [],
+    });
+    vi.mocked(fetchTwResearchScan).mockResolvedValue(scan);
+    vi.mocked(fetchTwResearchScans).mockResolvedValue({
+      scans: [{ ...summary(), scanId: SCAN_ID }],
+    });
+    vi.mocked(fetchTwResearchMembership).mockResolvedValue({
+      version: 9,
+      resolvedStockIds: ["TW:9999"],
+      extraStockIds: ["TW:9999"],
+    });
+    vi.mocked(fetchTwResearchLatestCandidateSet).mockResolvedValue({
+      candidateSetId: "cs_1",
+      version: 1,
+      stockIds: ["TW:2330"],
+      firstPassSnapshotId: "fps_frozen",
+      firstPassDigest: "d".repeat(64),
+      selectionReasons: {},
+    });
+    vi.mocked(fetchTwResearchFirstPassSnapshot).mockResolvedValue({
+      snapshotId: "fps_frozen",
+      stockIds: ["TW:2330", "TW:2881"],
+    });
+
+    const { unmount } = renderPage({ initialScanId: SCAN_ID });
+    await screen.findByTestId("tw-research-tab-watchlist");
+    fireEvent.click(screen.getByTestId("tw-research-tab-watchlist"));
+    expect(await screen.findByTestId("tw-research-watchlist-row-TW:2881")).toBeInTheDocument();
+    expect(screen.queryByTestId("tw-research-watchlist-row-TW:9999")).not.toBeInTheDocument();
+
+    unmount();
+    renderPage({ initialScanId: SCAN_ID });
+    fireEvent.click(await screen.findByTestId("tw-research-tab-watchlist"));
+    expect(await screen.findByTestId("tw-research-watchlist-row-TW:2881")).toBeInTheDocument();
+    expect(screen.queryByTestId("tw-research-watchlist-row-TW:9999")).not.toBeInTheDocument();
+    expect(fetchTwResearchFirstPassSnapshot).toHaveBeenCalledWith("fps_frozen");
+  });
+
+  it("classifies insufficient fundamental evidence from selection reasons", async () => {
+    const scan = queuedScan({
+      status: "completed_processing",
+      candidateProvenance: { firstPassSnapshotId: "fps_1" },
+      ledger: [],
+    });
+    vi.mocked(fetchTwResearchScan).mockResolvedValue(scan);
+    vi.mocked(fetchTwResearchScans).mockResolvedValue({
+      scans: [{ ...summary(), scanId: SCAN_ID }],
+    });
+    vi.mocked(fetchTwResearchLatestCandidateSet).mockResolvedValue({
+      candidateSetId: "cs_1",
+      version: 1,
+      stockIds: ["TW:2330"],
+      firstPassSnapshotId: "fps_1",
+      firstPassDigest: "d".repeat(64),
+      selectionReasons: {
+        "TW:1216": "insufficient_fundamentals",
+        "TW:1301": "poor_fundamental_quality",
+      },
+    });
+    vi.mocked(fetchTwResearchFirstPassSnapshot).mockResolvedValue({
+      snapshotId: "fps_1",
+      stockIds: ["TW:2330", "TW:1216", "TW:1301"],
+    });
+
+    renderPage({ initialScanId: SCAN_ID });
+    fireEvent.click(await screen.findByTestId("tw-research-tab-watchlist"));
+    expect(await screen.findByTestId("tw-research-watchlist-row-TW:1216")).toHaveTextContent(
+      "insufficient_evidence_fundamental",
+    );
+    // Poor quality without insufficient/unavailable wording stays neutral — never auto-attractive.
+    expect(screen.getByTestId("tw-research-watchlist-row-TW:1301")).toHaveTextContent(
+      "first_pass_not_selected_for_technical",
+    );
+    expect(screen.getByTestId("tw-research-watchlist-row-TW:1301")).not.toHaveTextContent(
+      "fundamentally_interesting",
+    );
   });
 });

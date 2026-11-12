@@ -1937,6 +1937,10 @@ class TwResearchRepository(SessionBoundRepository):
             # Own claim, expired claim, or free slot → take/renew ownership.
             row.job_claim_token = claim_token
             row.job_claim_expires_at = now + timedelta(seconds=int(lease_seconds))
+            # Allocate durable job id in the same txn *before* job-row create so a
+            # crash between create and pending-record can still recover the id.
+            if not row.pending_first_pass_job_id:
+                row.pending_first_pass_job_id = f"fpj_{row.research_run_id}"
             row.revision = int(row.revision or 0) + 1
             row.updated_at = now
             session.commit()
@@ -2277,6 +2281,7 @@ class TwResearchRepository(SessionBoundRepository):
     # --- First-pass resumable jobs (#335) ---
 
     def create_first_pass_job(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Insert a first-pass job; PK conflict returns the existing row (idempotent)."""
         session_factory = self._session_factory()
         with session_factory() as session:
             row = TwResearchFirstPassJob(
@@ -2294,7 +2299,19 @@ class TwResearchRepository(SessionBoundRepository):
                 reserve_cursor=0,
                 notes_json=list(payload.get("notes") or []),
             )
-            session.add(row)
+            try:
+                with session.begin_nested():
+                    session.add(row)
+                    session.flush()
+            except IntegrityError:
+                session.expire_all()
+                existing = session.get(TwResearchFirstPassJob, payload["job_id"])
+                if existing is None:
+                    raise
+                if str(existing.user_id) != str(payload["user_id"]):
+                    raise
+                session.commit()
+                return _first_pass_job_to_dict(existing)
             session.commit()
             session.refresh(row)
             return _first_pass_job_to_dict(row)

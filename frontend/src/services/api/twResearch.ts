@@ -61,6 +61,7 @@ export type TwResearchScanSnapshot = {
     firstPassSnapshotId?: string;
     firstPassDigest?: string;
     approvedStockIds?: string[];
+    dailyOverrideIds?: string[];
     universeVersion?: string;
     calculationVersion?: string;
     tradingDay?: string;
