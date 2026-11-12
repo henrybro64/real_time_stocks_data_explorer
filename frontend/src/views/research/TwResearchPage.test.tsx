@@ -1460,4 +1460,199 @@ describe("TwResearchPage watchlist union (#338)", () => {
     // Expand reuses the page query — no additional ledger-page chip fetches.
     expect(ledgerPageCalls().length).toBe(beforeExpand);
   });
+
+  it("does not keep previous snapshot chip rows under a new snapshot meta", async () => {
+    vi.mocked(fetchTwResearchFirstPassChipEvidence).mockReset();
+    const pendingResolvers: Array<(value: unknown) => void> = [];
+    const newPayload = {
+      snapshotId: "fps_new",
+      total: 1,
+      rows: [
+        {
+          stockId: "TW:NEW1",
+          institutional: { status: "ok" },
+          margin: { status: "ok", balanceLots: 7 },
+          tdcc: { status: "ok" },
+          notBuySignal: true,
+        },
+      ],
+    };
+    vi.mocked(fetchTwResearchScan).mockResolvedValue(
+      queuedScan({
+        status: "completed_processing",
+        candidateProvenance: { firstPassSnapshotId: "fps_old" },
+      }),
+    );
+    vi.mocked(fetchTwResearchScans).mockResolvedValue({
+      scans: [{ ...summary(), scanId: SCAN_ID }],
+    });
+    vi.mocked(fetchTwResearchFirstPassChipEvidence).mockImplementation(async (snapshotId) => {
+      if (snapshotId === "fps_old") {
+        return {
+          snapshotId: "fps_old",
+          total: 1,
+          rows: [
+            {
+              stockId: "TW:OLD1",
+              institutional: { status: "ok", capturedAt: "2024-01-01T00:00:00Z" },
+              margin: { status: "ok", balanceLots: 1 },
+              tdcc: { status: "ok" },
+              notBuySignal: true,
+            },
+          ],
+        };
+      }
+      return await new Promise((resolve) => {
+        pendingResolvers.push(resolve);
+      });
+    });
+
+    const { client } = renderPage({ initialScanId: SCAN_ID });
+    expect(await screen.findByTestId("tw-research-chip-row-TW:OLD1")).toBeInTheDocument();
+    expect(screen.getByTestId("tw-research-chip-evidence-meta")).toHaveTextContent("fps_old");
+
+    vi.mocked(fetchTwResearchScan).mockResolvedValue(
+      queuedScan({
+        status: "completed_processing",
+        candidateProvenance: { firstPassSnapshotId: "fps_new" },
+        ledger: [{ stock_id: "TW:NEW1", stage: "A" }],
+      }),
+    );
+    await client.invalidateQueries({ queryKey: ["tw-research-scan", SCAN_ID] });
+
+    await waitFor(() => {
+      expect(screen.queryByTestId("tw-research-chip-row-TW:OLD1")).not.toBeInTheDocument();
+    });
+    expect(screen.queryByTestId("tw-research-chip-evidence-meta")).not.toBeInTheDocument();
+
+    await waitFor(() => {
+      expect(pendingResolvers.length).toBeGreaterThan(0);
+    });
+    for (const resolve of pendingResolvers.splice(0)) {
+      resolve(newPayload);
+    }
+    expect(await screen.findByTestId("tw-research-chip-row-TW:NEW1")).toBeInTheDocument();
+    expect(screen.getByTestId("tw-research-chip-evidence-meta")).toHaveTextContent("fps_new");
+    expect(screen.queryByTestId("tw-research-chip-row-TW:OLD1")).not.toBeInTheDocument();
+  });
+
+  it("shows loading on ledger page change instead of stock_not_in_first_pass_snapshot", async () => {
+    const user = userEvent.setup();
+    const ledger = Array.from({ length: 26 }, (_, index) => ({
+      stock_id: `TW:${2000 + index}`,
+      stage: "A",
+    }));
+    let resolvePage2: (value: unknown) => void = () => undefined;
+    vi.mocked(fetchTwResearchScan).mockResolvedValue(
+      queuedScan({
+        status: "completed_processing",
+        candidateProvenance: { firstPassSnapshotId: "fps_page" },
+        ledger,
+      }),
+    );
+    vi.mocked(fetchTwResearchScans).mockResolvedValue({
+      scans: [{ ...summary(), scanId: SCAN_ID }],
+    });
+    vi.mocked(fetchTwResearchFirstPassChipEvidence).mockImplementation(
+      async (_snapshotId, options) => {
+        const ids = options?.stockIds ?? [];
+        if (ids.includes("TW:2025")) {
+          return await new Promise((resolve) => {
+            resolvePage2 = resolve;
+          });
+        }
+        return {
+          snapshotId: "fps_page",
+          total: ids.length,
+          rows: ids.map((stockId) => ({
+            stockId,
+            institutional: { status: "ok" },
+            margin: { status: "ok", balanceLots: 1 },
+            tdcc: { status: "ok" },
+            notBuySignal: true,
+          })),
+        };
+      },
+    );
+
+    renderPage({ initialScanId: SCAN_ID });
+    fireEvent.click(await screen.findByTestId("tw-research-tab-progress"));
+    await screen.findByTestId("tw-research-expand-TW:2000");
+
+    const nextButtons = screen.getAllByLabelText(/Next page|下一頁/i);
+    await user.click(nextButtons[nextButtons.length - 1]!);
+    await screen.findByTestId("tw-research-expand-TW:2025");
+    await user.click(screen.getByTestId("tw-research-expand-TW:2025"));
+    const detail = await screen.findByTestId("tw-research-detail-TW:2025");
+    expect(detail.querySelector(".cds--inline-loading")).toBeTruthy();
+    expect(detail.textContent).not.toMatch(/stock_not_in_first_pass_snapshot/);
+
+    resolvePage2({
+      snapshotId: "fps_page",
+      total: 1,
+      rows: [
+        {
+          stockId: "TW:2025",
+          institutional: { status: "ok" },
+          margin: { status: "ok", balanceLots: 9 },
+          tdcc: { status: "ok" },
+          notBuySignal: true,
+        },
+      ],
+    });
+    await waitFor(() => {
+      expect(detail.querySelector('[data-testid="chip-evidence-margin"]')?.textContent).toMatch(
+        /9/,
+      );
+    });
+  });
+
+  it("keeps cached chip rows and shows stale banner on same-key refetch error", async () => {
+    vi.mocked(fetchTwResearchFirstPassChipEvidence).mockReset();
+    let calls = 0;
+    vi.mocked(fetchTwResearchScan).mockResolvedValue(
+      queuedScan({
+        status: "completed_processing",
+        candidateProvenance: { firstPassSnapshotId: "fps_stale" },
+      }),
+    );
+    vi.mocked(fetchTwResearchScans).mockResolvedValue({
+      scans: [{ ...summary(), scanId: SCAN_ID }],
+    });
+    vi.mocked(fetchTwResearchFirstPassChipEvidence).mockImplementation(async () => {
+      calls += 1;
+      if (calls === 1) {
+        return {
+          snapshotId: "fps_stale",
+          total: 1,
+          rows: [
+            {
+              stockId: "TW:2330",
+              institutional: { status: "ok", capturedAt: "2024-06-27T08:00:00Z" },
+              margin: { status: "ok", balanceLots: 11 },
+              tdcc: { status: "ok" },
+              notBuySignal: true,
+            },
+          ],
+        };
+      }
+      throw new ApiError("Request failed: 503", {
+        status: 503,
+        detail: "unavailable",
+        kind: "unavailable",
+      });
+    });
+
+    const { client } = renderPage({ initialScanId: SCAN_ID });
+    expect(await screen.findByTestId("tw-research-chip-row-TW:2330")).toBeInTheDocument();
+    expect(screen.getByTestId("tw-research-chip-evidence-meta")).toHaveTextContent("fps_stale");
+
+    await client.refetchQueries({
+      queryKey: ["tw-research-chip-evidence", "fps_stale"],
+    });
+
+    expect(await screen.findByTestId("tw-research-chip-evidence-stale-banner")).toBeInTheDocument();
+    expect(screen.getByTestId("tw-research-chip-row-TW:2330")).toBeInTheDocument();
+    expect(screen.getByTestId("tw-research-chip-evidence-meta")).toHaveTextContent("fps_stale");
+  });
 });

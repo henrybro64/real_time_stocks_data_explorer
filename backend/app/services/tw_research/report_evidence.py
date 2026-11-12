@@ -146,6 +146,7 @@ def build_report_evidence(
     quality_warnings: list[str] = []
     payload_records = _first_pass_records(first_pass)
     chip_coverage_summary = None
+    chip_gaps = None
     if first_pass is not None:
         first_pass_quality = first_pass.get("qualityStatus")
         if first_pass_quality in {None, ""}:
@@ -163,12 +164,21 @@ def build_report_evidence(
 
         if payload_records:
             chip_coverage_summary = apply_chip_coverage_warnings(
-                payload_records, quality_warnings
+                payload_records,
+                quality_warnings,
+                candidate_stock_ids=list((candidate_set or {}).get("stockIds") or []),
+                full_two_pass=(resolved_mode == "full_two_pass"),
             )
+            chip_gaps = chip_coverage_summary.get("chipGaps")
         elif first_pass.get("snapshotId"):
             # Empty/missing records still block full-two-pass readiness.
             quality_warnings.append("first_pass_chip_fields_missing")
             chip_coverage_summary = summarize_chip_coverage([])
+            chip_gaps = {
+                "counts": {key: {} for key in CHIP_FIELD_KEYS},
+                "items": [],
+                "truncated": False,
+            }
 
     technical_status = (technical_scan or {}).get("status")
     if technical_status == "budget_exhausted":
@@ -320,6 +330,7 @@ def build_report_evidence(
             "watchlistCount": len(watchlist),
             "insufficientEvidenceCount": len(insufficient),
             "qualityWarnings": quality_warnings,
+            "chipGaps": chip_gaps,
             "publishability": publishability,
             "zeroQualifyingIsValid": True,
             "noTopNPadding": True,

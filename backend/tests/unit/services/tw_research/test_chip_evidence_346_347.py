@@ -434,6 +434,174 @@ def test_margin_utilization_unavailable_alone_does_not_block() -> None:
     assert pack["summary"]["publishability"] == "evidence_ready_for_analyst_decision"
 
 
+def test_reasoned_margin_unavailable_does_not_block_universe() -> None:
+    records = []
+    for index in range(300):
+        stock_id = f"TW:{1000 + index}"
+        record = _record(stock_id)
+        if index < 20:
+            record["fields"]["margin"] = {
+                "status": "unavailable",
+                "reason": "not_margin_eligible",
+                "source": "fixture",
+                "source_as_of": "2024-06-24",
+                "value": None,
+            }
+        records.append(record)
+    pack = build_report_evidence(
+        trading_day="2024-06-27",
+        first_pass_snapshot={
+            "snapshot_id": "fps_gaps",
+            "content_digest": "abc",
+            "stock_ids": [row["stockId"] for row in records],
+            "quality_status": "verified_ready",
+            "payload": {"records": records},
+        },
+        candidate_set={
+            "candidateSetId": "cs",
+            "version": 1,
+            "stockIds": ["TW:1020"],
+            "firstPassSnapshotId": "fps_gaps",
+            "firstPassDigest": "abc",
+        },
+        technical_scan={
+            "scanId": "scan",
+            "status": "verified_ready",
+            "stockIds": ["TW:1020"],
+        },
+        ledger_rows=[
+            {
+                "stockId": "TW:1020",
+                "monthly": {"passStatus": "pass"},
+                "daily": {"passStatus": "pass"},
+            }
+        ],
+        mode="full_two_pass",
+    ).as_dict()
+    assert pack["summary"]["publishability"] == "evidence_ready_for_analyst_decision"
+    assert "first_pass_chip_fields_partial" not in pack["summary"]["qualityWarnings"]
+    assert pack["summary"]["chipGaps"]["counts"]["margin"]["unavailable"] == 20
+
+
+def test_candidate_stale_institutional_blocks_full_two_pass() -> None:
+    candidate = _record("TW:2330")
+    candidate["fields"]["institutional_5d"]["status"] = "stale"
+    candidate["fields"]["institutional_5d"]["stale"] = True
+    candidate["fields"]["institutional_5d"]["reason"] = "source_as_of_before_last_completed_session"
+    other = _record("TW:2317")
+    pack = build_report_evidence(
+        trading_day="2024-06-27",
+        first_pass_snapshot={
+            "snapshot_id": "fps_stale_cand",
+            "content_digest": "abc",
+            "stock_ids": ["TW:2330", "TW:2317"],
+            "quality_status": "verified_ready",
+            "payload": {"records": [candidate, other]},
+        },
+        candidate_set={
+            "candidateSetId": "cs",
+            "version": 1,
+            "stockIds": ["TW:2330"],
+            "firstPassSnapshotId": "fps_stale_cand",
+            "firstPassDigest": "abc",
+        },
+        technical_scan={
+            "scanId": "scan",
+            "status": "verified_ready",
+            "stockIds": ["TW:2330"],
+        },
+        ledger_rows=[
+            {
+                "stockId": "TW:2330",
+                "monthly": {"passStatus": "pass"},
+                "daily": {"passStatus": "pass"},
+            }
+        ],
+        mode="full_two_pass",
+    ).as_dict()
+    assert "candidate_chip_fields_stale_or_missing" in pack["summary"]["qualityWarnings"]
+    assert pack["summary"]["publishability"] != "evidence_ready_for_analyst_decision"
+
+
+def test_unavailable_without_reason_blocks() -> None:
+    record = _record("TW:2330")
+    record["fields"]["margin"] = {
+        "status": "unavailable",
+        "reason": None,
+        "source": "fixture",
+        "value": None,
+    }
+    pack = build_report_evidence(
+        trading_day="2024-06-27",
+        first_pass_snapshot={
+            "snapshot_id": "fps_noreason",
+            "content_digest": "abc",
+            "stock_ids": ["TW:2330"],
+            "quality_status": "verified_ready",
+            "payload": {"records": [record]},
+        },
+        candidate_set={
+            "candidateSetId": "cs",
+            "version": 1,
+            "stockIds": ["TW:2330"],
+            "firstPassSnapshotId": "fps_noreason",
+            "firstPassDigest": "abc",
+        },
+        technical_scan={
+            "scanId": "scan",
+            "status": "verified_ready",
+            "stockIds": ["TW:2330"],
+        },
+        ledger_rows=[
+            {
+                "stockId": "TW:2330",
+                "monthly": {"passStatus": "pass"},
+                "daily": {"passStatus": "pass"},
+            }
+        ],
+        mode="full_two_pass",
+    ).as_dict()
+    assert "first_pass_chip_fields_missing" in pack["summary"]["qualityWarnings"]
+    assert pack["summary"]["publishability"] != "evidence_ready_for_analyst_decision"
+
+
+def test_absent_key_on_non_candidate_blocks() -> None:
+    candidate = _record("TW:2330")
+    non_candidate = {"stockId": "TW:2317", "stockName": "x", "nameStatus": "ok", "fields": {}}
+    pack = build_report_evidence(
+        trading_day="2024-06-27",
+        first_pass_snapshot={
+            "snapshot_id": "fps_absent",
+            "content_digest": "abc",
+            "stock_ids": ["TW:2330", "TW:2317"],
+            "quality_status": "verified_ready",
+            "payload": {"records": [candidate, non_candidate]},
+        },
+        candidate_set={
+            "candidateSetId": "cs",
+            "version": 1,
+            "stockIds": ["TW:2330"],
+            "firstPassSnapshotId": "fps_absent",
+            "firstPassDigest": "abc",
+        },
+        technical_scan={
+            "scanId": "scan",
+            "status": "verified_ready",
+            "stockIds": ["TW:2330"],
+        },
+        ledger_rows=[
+            {
+                "stockId": "TW:2330",
+                "monthly": {"passStatus": "pass"},
+                "daily": {"passStatus": "pass"},
+            }
+        ],
+        mode="full_two_pass",
+    ).as_dict()
+    assert "first_pass_chip_fields_missing" in pack["summary"]["qualityWarnings"]
+    assert pack["summary"]["publishability"] != "evidence_ready_for_analyst_decision"
+
+
 def test_candidate_chip_comes_from_frozen_snapshot_not_enrichment() -> None:
     frozen = _record("TW:2330")
     frozen["fields"]["margin"]["value"]["balanceLots"] = 42.0
@@ -494,5 +662,6 @@ def test_report_evidence_includes_chip_handoff_contract() -> None:
     assert pack["firstPass"]["chunkDigests"]
     coverage = summarize_chip_coverage(records)
     assert coverage["recordCount"] == 2
-    # complete_attempted alone is not a free pass when chips are partial.
-    assert "first_pass_chip_fields_partial" in pack["summary"]["qualityWarnings"]
+    # Reasoned partial chips are non-blocking chipGaps (first_pass_only mode).
+    assert "first_pass_chip_fields_partial" not in pack["summary"]["qualityWarnings"]
+    assert pack["summary"]["chipGaps"]["counts"]["institutional_5d"].get("partial", 0) >= 1

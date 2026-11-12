@@ -25,7 +25,7 @@ import {
   TextInput,
   Tile,
 } from "@carbon/react";
-import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 
@@ -642,7 +642,6 @@ export function TwResearchPage({
       }),
     staleTime: 60_000,
     retry: false,
-    placeholderData: keepPreviousData,
   });
 
   useEffect(() => {
@@ -1139,7 +1138,6 @@ export function TwResearchPage({
       }),
     staleTime: 60_000,
     retry: false,
-    placeholderData: keepPreviousData,
   });
   const frozenChipByStockId = useMemo(() => {
     const map = new Map<string, ChipEvidenceRow>();
@@ -1278,7 +1276,6 @@ export function TwResearchPage({
       }),
     staleTime: 60_000,
     retry: false,
-    placeholderData: keepPreviousData,
   });
   const frozenWatchlistChipByStockId = useMemo(() => {
     const map = new Map<string, ChipEvidenceRow>();
@@ -1902,7 +1899,7 @@ export function TwResearchPage({
                         <ChipEvidenceCard
                           row={row as ChipEvidenceRow}
                           staleCacheBanner={
-                            chipEvidenceQueryResult.isError
+                            chipEvidenceQueryResult.isError && chipEvidenceQueryResult.data
                               ? {
                                   capturedAt:
                                     (row.institutional as { capturedAt?: string } | undefined)
@@ -2302,6 +2299,24 @@ export function TwResearchPage({
                                     <p className="cds--helper-text-01">
                                       {t("research.tw.chipEvidenceNeedSnapshot")}
                                     </p>
+                                  ) : frozenWatchlistChipQuery.isPending ? (
+                                    <InlineLoading
+                                      description={t("research.tw.chipEvidenceLoading")}
+                                      status="active"
+                                    />
+                                  ) : frozenWatchlistChipQuery.isError &&
+                                    !frozenWatchlistChipQuery.data ? (
+                                    <RequestStateNotice
+                                      kind={errorToNoticeKind(frozenWatchlistChipQuery.error)}
+                                      scopeLabel={t("research.tw.chipEvidenceTitle")}
+                                      status={toApiError(frozenWatchlistChipQuery.error).status}
+                                      detail={describeResearchFailure(
+                                        frozenWatchlistChipQuery.error,
+                                      )}
+                                      onRetry={() => {
+                                        void frozenWatchlistChipQuery.refetch();
+                                      }}
+                                    />
                                   ) : (
                                     <ChipEvidenceCard
                                       row={
@@ -2614,6 +2629,21 @@ export function TwResearchPage({
                                 <p className="cds--helper-text-01">
                                   {t("research.tw.chipEvidenceNeedSnapshot")}
                                 </p>
+                              ) : frozenPageChipQuery.isPending ? (
+                                <InlineLoading
+                                  description={t("research.tw.chipEvidenceLoading")}
+                                  status="active"
+                                />
+                              ) : frozenPageChipQuery.isError && !frozenPageChipQuery.data ? (
+                                <RequestStateNotice
+                                  kind={errorToNoticeKind(frozenPageChipQuery.error)}
+                                  scopeLabel={t("research.tw.chipEvidenceTitle")}
+                                  status={toApiError(frozenPageChipQuery.error).status}
+                                  detail={describeResearchFailure(frozenPageChipQuery.error)}
+                                  onRetry={() => {
+                                    void frozenPageChipQuery.refetch();
+                                  }}
+                                />
                               ) : (
                                 <ChipEvidenceCard
                                   row={

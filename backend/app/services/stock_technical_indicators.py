@@ -7,13 +7,21 @@ Applies the same coverage gates as the TW research scan.
 
 from __future__ import annotations
 
+import time
 from dataclasses import asdict
-from datetime import date, datetime
+from datetime import date, datetime, time as dt_time, timedelta
+from threading import Lock
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from app.models.stock import StockRecord
 from app.services.daily_price_history_service import daily_price_history_service
-from app.services.market_clock import last_completed_session_date
+from app.services.market_clock import (
+    ensure_tw_holiday_calendars_loaded,
+    is_trading_day,
+    last_completed_session_date,
+    preload_tw_holiday_calendars,
+)
 from app.services.moving_average import completed_daily_candles
 from app.services.quote_service import quote_service
 from app.services.tw_research.constants import (
@@ -35,6 +43,12 @@ from app.services.tw_research.indicators import (
     monthly_macd_kd_snapshot,
     snapshot_from_candles,
 )
+
+_TAIPEI = ZoneInfo("Asia/Taipei")
+_PRELOAD_NEGATIVE_TTL_SECONDS = 600.0
+_preload_lock = Lock()
+# year-tuple → monotonic deadline until which failed preloads are not retried
+_preload_failed_until: dict[tuple[int, ...], float] = {}
 
 
 class StockTechnicalIndicatorsError(Exception):
@@ -70,8 +84,13 @@ def get_stock_technical_indicators(
     candles, missing_upstream_months = _load_stored_candles(
         candles_loader or _default_stored_candles, stock
     )
-    clock = now or datetime.now()
+    clock = now or datetime.now(tz=_TAIPEI)
     completed = completed_daily_candles(candles, "TW", now=clock)
+
+    # Bounded calendar preload once per process per year set (never per-symbol loop).
+    calendar_years = _calendar_years_for_profile(completed, clock)
+    ensure_profile_tw_holiday_calendars(calendar_years)
+
     expect_through = last_completed_session_date(
         "TW", clock, allow_holiday_fetch=False
     )
@@ -128,6 +147,12 @@ def get_stock_technical_indicators(
         missing_upstream_months=bool(missing_upstream_months),
         timeframe="monthly",
     )
+    monthly_payload = _apply_monthly_recency(
+        monthly_payload,
+        monthly_bars=monthly_bars,
+        now=clock,
+        expect_through=expect_through,
+    )
 
     return {
         "stockId": stock.id,
@@ -150,6 +175,48 @@ def get_stock_technical_indicators(
             "Does not start a TW research scan or unbounded upstream backfill.",
         ],
     }
+
+
+def ensure_profile_tw_holiday_calendars(years: list[int] | tuple[int, ...]) -> bool:
+    """Load TW calendars for Profile coverage; preload at most once per year set.
+
+    Negative-caches failed preloads for 10 minutes. Never called inside a
+    per-symbol loop by the Profile path (one call per request).
+    """
+    unique = tuple(sorted({int(year) for year in years}))
+    if not unique:
+        return True
+    if ensure_tw_holiday_calendars_loaded(unique):
+        return True
+    with _preload_lock:
+        if ensure_tw_holiday_calendars_loaded(unique):
+            return True
+        now_m = time.monotonic()
+        failed_until = _preload_failed_until.get(unique, 0.0)
+        if now_m < failed_until:
+            return False
+        result = preload_tw_holiday_calendars(
+            unique, allow_network=True, max_fetches=4
+        )
+        if bool(result.get("ok")) and ensure_tw_holiday_calendars_loaded(unique):
+            _preload_failed_until.pop(unique, None)
+            return True
+        _preload_failed_until[unique] = now_m + _PRELOAD_NEGATIVE_TTL_SECONDS
+        return False
+
+
+def reset_profile_calendar_preload_state_for_tests() -> None:
+    """Clear negative cache between unit tests."""
+    with _preload_lock:
+        _preload_failed_until.clear()
+
+
+def _calendar_years_for_profile(completed_candles, clock: datetime) -> list[int]:
+    years = {_taipei_now(clock).year}
+    for candle in completed_candles:
+        day = candle_date(candle)
+        years.add(day.year)
+    return sorted(years)
 
 
 def _default_stored_candles(stock: StockRecord):
@@ -190,6 +257,79 @@ def _drop_incomplete_trailing_months(daily_candles, monthly_bars):
     return trimmed
 
 
+def _taipei_now(now: datetime) -> datetime:
+    if now.tzinfo is None:
+        return now.replace(tzinfo=_TAIPEI)
+    return now.astimezone(_TAIPEI)
+
+
+def _last_trading_session_of_month(year: int, month: int) -> date | None:
+    """Last TW trading day of ``year``-``month`` (weekday fallback if calendar missing)."""
+    if month == 12:
+        day = date(year, 12, 31)
+    else:
+        day = date(year, month + 1, 1) - timedelta(days=1)
+    for _ in range(31):
+        probe = datetime.combine(day, dt_time.min, tzinfo=_TAIPEI)
+        if is_trading_day("TW", probe, allow_holiday_fetch=False):
+            return day
+        day -= timedelta(days=1)
+    return None
+
+
+def _expected_completed_month(
+    *,
+    now: datetime,
+    expect_through: date | None,
+) -> tuple[int, int] | None:
+    """Latest calendar month strictly before the current Taipei month.
+
+    Requires that month's last trading session ``<= expect_through``. Uses local
+    calendar helpers only (no network). Missing holiday calendars fall back to
+    weekday sessions via ``is_trading_day(..., allow_holiday_fetch=False)``.
+    """
+    local = _taipei_now(now)
+    year, month = local.year, local.month
+    for _ in range(36):
+        if month == 1:
+            year, month = year - 1, 12
+        else:
+            month -= 1
+        last_session = _last_trading_session_of_month(year, month)
+        if last_session is None:
+            continue
+        if expect_through is None or last_session <= expect_through:
+            return (year, month)
+    return None
+
+
+def _apply_monthly_recency(
+    payload: dict[str, Any],
+    *,
+    monthly_bars,
+    now: datetime,
+    expect_through: date | None,
+) -> dict[str, Any]:
+    """Fail monthly quality when the tip month is older than the expected completed month."""
+    if payload.get("quality") != "ok":
+        return payload
+    expected = _expected_completed_month(now=now, expect_through=expect_through)
+    if expected is None or not monthly_bars:
+        return payload
+    last = candle_date(monthly_bars[-1])
+    last_month = (last.year, last.month)
+    if last_month >= expected:
+        return payload
+    expected_label = f"{expected[0]:04d}-{expected[1]:02d}"
+    nulled = _null_snapshot_fields(
+        payload,
+        quality="stale",
+        reason="latest_completed_month_missing",
+    )
+    nulled["expectedMonth"] = expected_label
+    return nulled
+
+
 _NUMERIC_KEYS = (
     "dif",
     "signal",
@@ -202,6 +342,24 @@ _NUMERIC_KEYS = (
     "kdK",
     "kdD",
 )
+
+
+def _null_snapshot_fields(
+    payload: dict[str, Any],
+    *,
+    quality: str,
+    reason: str,
+) -> dict[str, Any]:
+    """Same nulling path as coverage failure: keep asOf/lastBarDate, clear numerics."""
+    out = dict(payload)
+    out["quality"] = quality
+    out["unavailableReason"] = reason
+    out["passStatus"] = None
+    out["pass_status"] = None
+    for key in _NUMERIC_KEYS:
+        out[key] = None
+    out["coverage"] = {"ok": False, "reason": reason}
+    return out
 
 
 def _apply_coverage_to_snapshot(
@@ -246,15 +404,7 @@ def _apply_coverage_to_snapshot(
         quality = "source_incomplete"
         reason = "missing_upstream_months"
 
-    # Null numerics / passStatus; keep asOf/lastBarDate.
-    payload["quality"] = quality
-    payload["unavailableReason"] = reason
-    payload["passStatus"] = None
-    payload["pass_status"] = None
-    for key in _NUMERIC_KEYS:
-        payload[key] = None
-    payload["coverage"] = {"ok": False, "reason": reason}
-    return payload
+    return _null_snapshot_fields(payload, quality=quality, reason=reason)
 
 
 def _snapshot_payload(snapshot) -> dict[str, Any]:

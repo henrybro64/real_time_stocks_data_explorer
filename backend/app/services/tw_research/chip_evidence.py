@@ -136,26 +136,101 @@ def summarize_chip_coverage(records: list[dict[str, Any]]) -> dict[str, Any]:
 def apply_chip_coverage_warnings(
     records: list[dict[str, Any]],
     quality_warnings: list[str],
+    *,
+    candidate_stock_ids: list[str] | None = None,
+    full_two_pass: bool = False,
 ) -> dict[str, Any]:
-    """Append chip-content readiness warnings (#347). Returns coverage summary."""
+    """Append chip-content readiness warnings (#347). Returns coverage + chipGaps.
+
+    Blocking:
+    - ``first_pass_chip_fields_missing`` when any record lacks a gating key
+      (not_fetched) or a gating field is unavailable/partial with empty/None reason.
+    - ``candidate_chip_fields_stale_or_missing`` (full_two_pass only) when any
+      candidate-set stock has a gating field that is stale or not_fetched.
+
+    Reasoned unavailable/partial and stale outside the candidate set are
+    non-blocking and reported in ``chipGaps`` (capped items, sorted by stockId).
+    ``margin_utilization`` remains non-gating.
+    """
     coverage = summarize_chip_coverage(records)
-    field_coverage = coverage.get("fieldCoverage") or {}
-    missing = False
-    partial = False
-    for key in GATING_CHIP_FIELD_KEYS:
-        bucket = field_coverage.get(key) or {}
-        if int(bucket.get("missing") or 0) > 0 or int(bucket.get("not_fetched") or 0) > 0:
-            missing = True
-        if (
-            int(bucket.get("partial") or 0) > 0
-            or int(bucket.get("unavailable") or 0) > 0
-            or int(bucket.get("stale") or 0) > 0
-        ):
-            partial = True
-    if missing and "first_pass_chip_fields_missing" not in quality_warnings:
+    candidate_ids = {
+        str(stock_id).upper()
+        for stock_id in (candidate_stock_ids or [])
+        if stock_id
+    }
+    gap_counts: dict[str, dict[str, int]] = {
+        key: {} for key in GATING_CHIP_FIELD_KEYS
+    }
+    gap_items: list[dict[str, Any]] = []
+    missing_block = False
+    candidate_block = False
+
+    for record in records:
+        stock_id = str(record.get("stockId") or record.get("stock_id") or "")
+        stock_key = stock_id.upper()
+        fields = chip_fields_from_record(record)
+        for key in GATING_CHIP_FIELD_KEYS:
+            payload = fields.get(key)
+            if not isinstance(payload, dict):
+                status = "not_fetched"
+                reason = None
+            else:
+                status = str(payload.get("status") or "unavailable")
+                if bool(payload.get("stale")) and status not in {"not_fetched"}:
+                    status = "stale"
+                reason = payload.get("reason")
+                if reason is not None and str(reason).strip() == "":
+                    reason = None
+
+            if status == "ok":
+                continue
+
+            if status == "not_fetched":
+                missing_block = True
+                if full_two_pass and stock_key in candidate_ids:
+                    candidate_block = True
+            elif status in {"unavailable", "partial"} and reason is None:
+                missing_block = True
+            elif full_two_pass and stock_key in candidate_ids and status == "stale":
+                candidate_block = True
+
+            # Non-blocking reasoned gaps + non-candidate stale → chipGaps.
+            blocking_here = (
+                status == "not_fetched"
+                or (status in {"unavailable", "partial"} and reason is None)
+                or (
+                    full_two_pass
+                    and stock_key in candidate_ids
+                    and status in {"stale", "not_fetched"}
+                )
+            )
+            if not blocking_here:
+                bucket = gap_counts.setdefault(key, {})
+                bucket[status] = int(bucket.get(status) or 0) + 1
+                gap_items.append(
+                    {
+                        "stockId": stock_id,
+                        "field": key,
+                        "status": status,
+                        "reason": reason,
+                    }
+                )
+
+    gap_items.sort(key=lambda item: (str(item.get("stockId") or ""), str(item.get("field"))))
+    truncated = len(gap_items) > 200
+    coverage["chipGaps"] = {
+        "counts": gap_counts,
+        "items": gap_items[:200],
+        "truncated": truncated,
+    }
+
+    if missing_block and "first_pass_chip_fields_missing" not in quality_warnings:
         quality_warnings.append("first_pass_chip_fields_missing")
-    if partial and "first_pass_chip_fields_partial" not in quality_warnings:
-        quality_warnings.append("first_pass_chip_fields_partial")
+    if (
+        candidate_block
+        and "candidate_chip_fields_stale_or_missing" not in quality_warnings
+    ):
+        quality_warnings.append("candidate_chip_fields_stale_or_missing")
     return coverage
 
 

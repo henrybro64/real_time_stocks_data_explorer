@@ -575,11 +575,21 @@ def get_first_pass_chip_evidence(
                 if str(row.get("stockId") or row.get("stock_id") or "").upper() in wanted
             ]
     page = records[offset : offset + limit]
-    reference_day = (
-        payload.get("tradingDay")
-        or payload.get("trading_day")
-        or (str(snap.get("created_at") or "")[:10] or None)
-    )
+    reference_day = payload.get("tradingDay") or payload.get("trading_day")
+    if not reference_day:
+        created_at = snap.get("created_at")
+        if isinstance(created_at, datetime):
+            reference_day = created_at.astimezone(TAIPEI).date().isoformat()
+        elif created_at:
+            try:
+                parsed = datetime.fromisoformat(
+                    str(created_at).replace("Z", "+00:00")
+                )
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=TAIPEI)
+                reference_day = parsed.astimezone(TAIPEI).date().isoformat()
+            except ValueError:
+                reference_day = str(created_at)[:10] or None
     return {
         "snapshotId": snap["snapshot_id"],
         "contentDigest": snap["content_digest"],

@@ -7,6 +7,7 @@ server-supplied ``checksumSha256`` alone.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from app.services.tw_research.constants import (
@@ -18,6 +19,14 @@ from app.services.tw_research.chip_evidence import CHIP_FIELD_KEYS, summarize_ch
 from app.services.tw_research.export import canonical_json_dumps, content_digest, stable_chunk_checksum
 
 FIRST_PASS_TRADING_DAY_FALLBACK = "first_pass_snapshot"
+
+
+class FirstPassChunkDigestError(RuntimeError):
+    """Raised when the envelope recompute disagrees with ``stable_chunk_checksum``."""
+
+    def __init__(self, message: str = "first_pass_chunk_digest_mismatch") -> None:
+        super().__init__(message)
+        self.code = "first_pass_chunk_digest_mismatch"
 
 
 def ordered_first_pass_records(records: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
@@ -154,8 +163,17 @@ def build_first_pass_chunk(
         trading_day=day,
         total_rows=total,
     )
-    # Guard: stable_chunk_checksum must equal independent envelope recompute.
-    assert checksum == recompute_chunk_digest(envelope=envelope, rows=rows)
+    recomputed = recompute_chunk_digest(envelope=envelope, rows=rows)
+    if checksum != recomputed:
+        logging.getLogger(__name__).error(
+            "first_pass_chunk_digest_mismatch chunk_index=%s expected=%s recomputed=%s",
+            chunk_index,
+            checksum,
+            recomputed,
+        )
+        raise FirstPassChunkDigestError(
+            f"first_pass_chunk_digest_mismatch:{chunk_index}"
+        )
     return {
         "snapshotId": snapshot_id,
         "contentDigest": content_digest,

@@ -10,7 +10,9 @@ import pytest
 from app.models.quote import CandleRecord
 from app.services.stock_technical_indicators import (
     StockTechnicalIndicatorsError,
+    ensure_profile_tw_holiday_calendars,
     get_stock_technical_indicators,
+    reset_profile_calendar_preload_state_for_tests,
 )
 from app.services.tw_research.constants import CALCULATION_VERSION
 from app.services.tw_research.indicators import (
@@ -74,9 +76,18 @@ def _is_weekday_session(market, day, allow_holiday_fetch=False) -> bool:  # noqa
 
 
 def _patch_weekday_calendar(monkeypatch) -> None:
+    reset_profile_calendar_preload_state_for_tests()
     monkeypatch.setattr(
         "app.services.tw_research.coverage.ensure_tw_holiday_calendars_loaded",
         lambda years: True,
+    )
+    monkeypatch.setattr(
+        "app.services.stock_technical_indicators.ensure_tw_holiday_calendars_loaded",
+        lambda years: True,
+    )
+    monkeypatch.setattr(
+        "app.services.stock_technical_indicators.is_trading_day",
+        _is_weekday_session,
     )
     monkeypatch.setattr(
         "app.services.tw_research.coverage.is_trading_day",
@@ -110,19 +121,22 @@ def test_fresh_fixture_daily_and_monthly_ok(monkeypatch) -> None:
     assert payload["monthly"]["macdDif"] is not None
     assert payload["daily"]["coverage"]["ok"] is True
     assert payload["monthly"]["coverage"]["ok"] is True
+    # Expected completed month is May 2024 (strictly before current Taipei June).
+    as_of = str(payload["monthly"].get("asOf") or "")
+    assert as_of.startswith("2024-05")
     assert payload["calculationVersion"] == CALCULATION_VERSION
     assert payload["upstreamFetch"] is False
 
 
 def test_stale_when_bars_end_years_ago(monkeypatch) -> None:
     _patch_weekday_calendar(monkeypatch)
-    now = datetime(2024, 6, 28, 16, 0, tzinfo=TZ)
-    expect = date(2024, 6, 28)
+    now = datetime(2026, 11, 12, 16, 0, tzinfo=TZ)
+    expect = date(2026, 11, 12)
     monkeypatch.setattr(
         "app.services.stock_technical_indicators.last_completed_session_date",
         lambda market, now=None, allow_holiday_fetch=True: expect,
     )
-    end = date(2021, 6, 28)  # ~3 years before now
+    end = date(2021, 12, 31)
     candles = _candles_ending(end, sessions=800)
     payload = get_stock_technical_indicators(
         "TW:2330",
@@ -135,6 +149,10 @@ def test_stale_when_bars_end_years_ago(monkeypatch) -> None:
     assert payload["daily"]["passStatus"] is None
     assert payload["daily"]["asOf"] is not None
     assert payload["daily"]["coverage"]["ok"] is False
+    assert payload["monthly"]["quality"] == "stale"
+    assert payload["monthly"]["unavailableReason"] == "latest_completed_month_missing"
+    assert payload["monthly"]["macdDif"] is None
+    assert payload["monthly"]["expectedMonth"] == "2026-10"
 
 
 def test_source_incomplete_when_four_months_missing(monkeypatch) -> None:
@@ -159,15 +177,15 @@ def test_source_incomplete_when_four_months_missing(monkeypatch) -> None:
 
 
 def test_truncated_october_never_partial_month(monkeypatch) -> None:
-    """Store ending 28 Oct with now=3 Nov → September asOf or source_incomplete."""
+    """Store ending 28 Oct with now=3 Nov → monthly stale; expectedMonth=October."""
     _patch_weekday_calendar(monkeypatch)
-    now = datetime(2024, 11, 3, 16, 0, tzinfo=TZ)
-    expect = date(2024, 11, 1)  # Fri before Mon Nov 3 (weekday calendar)
+    now = datetime(2026, 11, 3, 16, 0, tzinfo=TZ)
+    expect = date(2026, 11, 2)  # Mon before Tue Nov 3 (weekday calendar)
     monkeypatch.setattr(
         "app.services.stock_technical_indicators.last_completed_session_date",
         lambda market, now=None, allow_holiday_fetch=True: expect,
     )
-    end = date(2024, 10, 28)
+    end = date(2026, 10, 28)
     candles = _candles_ending(end, sessions=800)
     payload = get_stock_technical_indicators(
         "TW:2330",
@@ -176,13 +194,13 @@ def test_truncated_october_never_partial_month(monkeypatch) -> None:
         now=now,
     )
     monthly = payload["monthly"]
-    as_of = str(monthly.get("asOf") or "")
-    if monthly["quality"] == "ok":
-        assert not as_of.startswith("2024-10"), "must not expose partial October"
-        assert as_of.startswith("2024-09") or as_of < "2024-10"
-    else:
-        assert monthly["quality"] in {"source_incomplete", "stale", "insufficient_history"}
-        assert monthly["macdDif"] is None
+    assert monthly["quality"] == "stale"
+    assert monthly["unavailableReason"] == "latest_completed_month_missing"
+    assert monthly["expectedMonth"] == "2026-10"
+    assert monthly["macdDif"] is None
+    assert monthly["passStatus"] is None
+    as_of = str(monthly.get("asOf") or monthly.get("lastBarDate") or "")
+    assert not as_of.startswith("2026-10"), "must not expose partial October as ok"
 
 
 def test_profile_parity_with_tw_research_snapshots(monkeypatch) -> None:
@@ -260,3 +278,93 @@ def test_us_stock_rejected() -> None:
             candles_loader=lambda _stock: [],
         )
     assert exc.value.code == "unsupported_market"
+
+
+def test_calendar_preload_called_once_across_consecutive_calls(monkeypatch) -> None:
+    reset_profile_calendar_preload_state_for_tests()
+    calls: list[tuple[int, ...]] = []
+
+    monkeypatch.setattr(
+        "app.services.stock_technical_indicators.ensure_tw_holiday_calendars_loaded",
+        lambda years: False,
+    )
+
+    def _preload(years, *, allow_network=True, max_fetches=4):
+        del allow_network, max_fetches
+        key = tuple(sorted(int(y) for y in years))
+        calls.append(key)
+        return {"ok": False, "loaded": [], "missing": list(key), "fetched": 0}
+
+    monkeypatch.setattr(
+        "app.services.stock_technical_indicators.preload_tw_holiday_calendars",
+        _preload,
+    )
+    years = [2024, 2025]
+    for _ in range(5):
+        assert ensure_profile_tw_holiday_calendars(years) is False
+    assert len(calls) == 1
+    assert calls[0] == (2024, 2025)
+
+
+def test_calendar_preload_failure_yields_trading_calendar_unavailable(
+    monkeypatch,
+) -> None:
+    reset_profile_calendar_preload_state_for_tests()
+    monkeypatch.setattr(
+        "app.services.stock_technical_indicators.ensure_tw_holiday_calendars_loaded",
+        lambda years: False,
+    )
+    monkeypatch.setattr(
+        "app.services.stock_technical_indicators.preload_tw_holiday_calendars",
+        lambda years, *, allow_network=True, max_fetches=4: {
+            "ok": False,
+            "loaded": [],
+            "missing": list(years),
+            "fetched": 0,
+        },
+    )
+    # Coverage path also consults ensure_tw_holiday via tw_research.coverage.
+    monkeypatch.setattr(
+        "app.services.tw_research.coverage.ensure_tw_holiday_calendars_loaded",
+        lambda years: False,
+    )
+    now = datetime(2024, 6, 28, 16, 0, tzinfo=TZ)
+    end = date(2024, 6, 28)
+    monkeypatch.setattr(
+        "app.services.stock_technical_indicators.last_completed_session_date",
+        lambda market, now=None, allow_holiday_fetch=True: end,
+    )
+    candles = _candles_ending(end, sessions=800)
+    payload = get_stock_technical_indicators(
+        "TW:2330",
+        stock_loader=lambda _sid: _stock(),
+        candles_loader=lambda _stock: (candles, False),
+        now=now,
+    )
+    assert payload["daily"]["unavailableReason"] == "trading_calendar_unavailable"
+    assert payload["daily"]["macdDif"] is None
+    assert payload["monthly"]["quality"] != "ok"
+    assert payload["monthly"]["unavailableReason"] in {
+        "trading_calendar_unavailable",
+        "latest_completed_month_missing",
+        "source_incomplete",
+        "insufficient_history",
+        "insufficient_monthly_history",
+    }
+    assert payload["monthly"]["macdDif"] is None
+
+
+def test_calendar_present_skips_preload(monkeypatch) -> None:
+    reset_profile_calendar_preload_state_for_tests()
+    preload_calls: list[object] = []
+    monkeypatch.setattr(
+        "app.services.stock_technical_indicators.ensure_tw_holiday_calendars_loaded",
+        lambda years: True,
+    )
+    monkeypatch.setattr(
+        "app.services.stock_technical_indicators.preload_tw_holiday_calendars",
+        lambda years, *, allow_network=True, max_fetches=4: preload_calls.append(years)
+        or {"ok": True, "loaded": list(years), "missing": [], "fetched": 0},
+    )
+    assert ensure_profile_tw_holiday_calendars([2024]) is True
+    assert preload_calls == []
