@@ -13,8 +13,11 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from app.services.market_clock import last_completed_session_date
+
+_TAIPEI = ZoneInfo("Asia/Taipei")
 
 CHIP_FIELD_KEYS = (
     "institutional_5d",
@@ -29,6 +32,13 @@ GATING_CHIP_FIELD_KEYS = (
     "margin",
     "tdcc_holders_ge_400_lots",
 )
+
+# Raw provenance key → format_chip_evidence section key.
+_GATING_FORMATTED_SECTION = {
+    "institutional_5d": "institutional",
+    "margin": "margin",
+    "tdcc_holders_ge_400_lots": "tdcc",
+}
 
 
 def format_chip_evidence(
@@ -133,14 +143,60 @@ def summarize_chip_coverage(records: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def reference_day_from_snapshot(
+    *,
+    trading_day: str | date | None = None,
+    payload: dict[str, Any] | None = None,
+    created_at: Any = None,
+) -> str | None:
+    """Normalize a chip reference day to Asia/Taipei ``YYYY-MM-DD``.
+
+    Preference: explicit ``trading_day``, then payload tradingDay/trading_day,
+    then ``created_at`` converted to Asia/Taipei.
+    """
+    if isinstance(trading_day, date) and not isinstance(trading_day, datetime):
+        return trading_day.isoformat()
+    if trading_day is not None and str(trading_day).strip():
+        return str(trading_day).strip()[:10]
+
+    payload = payload or {}
+    for key in ("tradingDay", "trading_day"):
+        value = payload.get(key)
+        if value is not None and str(value).strip():
+            return str(value).strip()[:10]
+
+    return _created_at_to_taipei_date(created_at)
+
+
+def _created_at_to_taipei_date(created_at: Any) -> str | None:
+    if created_at is None or created_at == "":
+        return None
+    if isinstance(created_at, datetime):
+        parsed = created_at
+    else:
+        try:
+            parsed = datetime.fromisoformat(str(created_at).replace("Z", "+00:00"))
+        except ValueError:
+            text = str(created_at).strip()
+            return text[:10] if text else None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=_TAIPEI)
+    return parsed.astimezone(_TAIPEI).date().isoformat()
+
+
 def apply_chip_coverage_warnings(
     records: list[dict[str, Any]],
     quality_warnings: list[str],
     *,
     candidate_stock_ids: list[str] | None = None,
     full_two_pass: bool = False,
+    reference_day: str | date | None = None,
 ) -> dict[str, Any]:
     """Append chip-content readiness warnings (#347). Returns coverage + chipGaps.
+
+    Classification uses the same ``format_chip_evidence(..., reference_day=)``
+    staleness path as ``symbols[].chipEvidence`` (not raw provenance alone).
+    Explicit raw ``stale: True`` remains honored via that formatter.
 
     Blocking:
     - ``first_pass_chip_fields_missing`` when any record lacks a gating key
@@ -168,17 +224,24 @@ def apply_chip_coverage_warnings(
     for record in records:
         stock_id = str(record.get("stockId") or record.get("stock_id") or "")
         stock_key = stock_id.upper()
-        fields = chip_fields_from_record(record)
+        summary = format_chip_evidence(record, reference_day=reference_day)
+        raw_fields = chip_fields_from_record(record)
         for key in GATING_CHIP_FIELD_KEYS:
-            payload = fields.get(key)
-            if not isinstance(payload, dict):
+            section = summary.get(_GATING_FORMATTED_SECTION[key])
+            if not isinstance(section, dict):
                 status = "not_fetched"
                 reason = None
             else:
-                status = str(payload.get("status") or "unavailable")
-                if bool(payload.get("stale")) and status not in {"not_fetched"}:
+                status = str(section.get("status") or "unavailable")
+                reason = section.get("reason")
+                # Backward compatible: honor explicit raw stale flag.
+                raw = raw_fields.get(key)
+                if (
+                    isinstance(raw, dict)
+                    and bool(raw.get("stale"))
+                    and status not in {"not_fetched", "stale"}
+                ):
                     status = "stale"
-                reason = payload.get("reason")
                 if reason is not None and str(reason).strip() == "":
                     reason = None
 

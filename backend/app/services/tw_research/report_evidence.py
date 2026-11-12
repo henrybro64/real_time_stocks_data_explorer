@@ -22,6 +22,7 @@ from app.services.tw_research.chip_evidence import (
     CHIP_FIELD_KEYS,
     apply_chip_coverage_warnings,
     format_chip_evidence,
+    reference_day_from_snapshot,
     summarize_chip_coverage,
 )
 from app.services.tw_research.constants import (
@@ -147,6 +148,18 @@ def build_report_evidence(
     payload_records = _first_pass_records(first_pass)
     chip_coverage_summary = None
     chip_gaps = None
+    # Resolve reference day before chip gating so readiness uses the same
+    # Asia/Taipei staleness path as symbols[].chipEvidence / chipGaps.
+    first_pass_payload = (
+        (first_pass or {}).get("payload")
+        if isinstance((first_pass or {}).get("payload"), dict)
+        else {}
+    )
+    reference_day = reference_day_from_snapshot(
+        trading_day=trading_day or (first_pass or {}).get("tradingDay"),
+        payload=first_pass_payload,
+        created_at=((first_pass or {}).get("raw") or {}).get("created_at"),
+    )
     if first_pass is not None:
         first_pass_quality = first_pass.get("qualityStatus")
         if first_pass_quality in {None, ""}:
@@ -168,6 +181,7 @@ def build_report_evidence(
                 quality_warnings,
                 candidate_stock_ids=list((candidate_set or {}).get("stockIds") or []),
                 full_two_pass=(resolved_mode == "full_two_pass"),
+                reference_day=reference_day,
             )
             chip_gaps = chip_coverage_summary.get("chipGaps")
         elif first_pass.get("snapshotId"):
@@ -202,13 +216,6 @@ def build_report_evidence(
         publishability = "evidence_ready_for_analyst_decision"
     elif quality_warnings:
         publishability = "incomplete_or_partial_evidence"
-
-    reference_day = (
-        trading_day
-        or (first_pass or {}).get("tradingDay")
-        or ((first_pass or {}).get("payload") or {}).get("tradingDay")
-        or ((first_pass or {}).get("raw") or {}).get("created_at")
-    )
     first_pass_by_id = {
         str(rec.get("stockId") or rec.get("stock_id")): rec
         for rec in payload_records

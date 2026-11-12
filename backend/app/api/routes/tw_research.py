@@ -545,7 +545,10 @@ def get_first_pass_chip_evidence(
     snap = tw_research_repository.get_first_pass_snapshot(snapshot_id, user_id=user_id)
     if snap is None:
         raise HTTPException(status_code=404, detail="first_pass_snapshot_not_found")
-    from app.services.tw_research.chip_evidence import format_chip_evidence
+    from app.services.tw_research.chip_evidence import (
+        format_chip_evidence,
+        reference_day_from_snapshot,
+    )
     from app.services.tw_research.first_pass_chunks import ordered_first_pass_records
 
     payload = snap.get("payload") or {}
@@ -575,21 +578,11 @@ def get_first_pass_chip_evidence(
                 if str(row.get("stockId") or row.get("stock_id") or "").upper() in wanted
             ]
     page = records[offset : offset + limit]
-    reference_day = payload.get("tradingDay") or payload.get("trading_day")
-    if not reference_day:
-        created_at = snap.get("created_at")
-        if isinstance(created_at, datetime):
-            reference_day = created_at.astimezone(TAIPEI).date().isoformat()
-        elif created_at:
-            try:
-                parsed = datetime.fromisoformat(
-                    str(created_at).replace("Z", "+00:00")
-                )
-                if parsed.tzinfo is None:
-                    parsed = parsed.replace(tzinfo=TAIPEI)
-                reference_day = parsed.astimezone(TAIPEI).date().isoformat()
-            except ValueError:
-                reference_day = str(created_at)[:10] or None
+    reference_day = reference_day_from_snapshot(
+        trading_day=payload.get("tradingDay") or payload.get("trading_day"),
+        payload=payload,
+        created_at=snap.get("created_at"),
+    )
     return {
         "snapshotId": snap["snapshot_id"],
         "contentDigest": snap["content_digest"],

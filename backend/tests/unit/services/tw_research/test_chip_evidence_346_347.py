@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from datetime import date, datetime
+
+import pytest
+
 from app.services.tw_research.chip_evidence import format_chip_evidence, summarize_chip_coverage
 from app.services.tw_research.export import content_digest
 from app.services.tw_research.first_pass_chunks import (
@@ -13,6 +17,24 @@ from app.services.tw_research.first_pass_chunks import (
 from app.services.tw_research.report_evidence import build_report_evidence
 
 
+def _is_weekday_session(market, day, allow_holiday_fetch=False) -> bool:  # noqa: ARG001
+    probe = day.date() if isinstance(day, datetime) else day
+    return probe.weekday() < 5
+
+
+def _patch_weekday_calendar(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "app.services.tw_research.chip_evidence.last_completed_session_date",
+        lambda market, now=None, allow_holiday_fetch=True: (
+            now.date() if isinstance(now, datetime) else date.fromisoformat(str(now)[:10])
+        ),
+    )
+    monkeypatch.setattr(
+        "app.services.market_clock.is_trading_day",
+        _is_weekday_session,
+    )
+
+
 def _record(
     stock_id: str,
     *,
@@ -20,8 +42,8 @@ def _record(
     margin_ok: bool = True,
     include_chip: bool = True,
     short_balance=None,
-    source_as_of: str = "2024-06-24",
-    tdcc_prior: str | None = "2024-06-14",
+    source_as_of: str = "2024-06-27",
+    tdcc_prior: str | None = "2024-06-21",
 ) -> dict:
     points = [
         {
@@ -70,7 +92,7 @@ def _record(
             "tdcc_holders_ge_400_lots": {
                 "status": "partial" if sessions < 2 else "ok",
                 "source": "fixture",
-                "source_as_of": "2024-06-21",
+                "source_as_of": source_as_of,
                 "value": {
                     "percent": 41.0,
                     "weeklyChangePercentPoints": 1.0 if tdcc_prior else None,
@@ -89,7 +111,10 @@ def _record(
 
 
 def test_chip_formatter_totals_and_units() -> None:
-    summary = format_chip_evidence(_record("TW:2330", sessions=5), reference_day="2024-06-24")
+    summary = format_chip_evidence(
+        _record("TW:2330", sessions=5, source_as_of="2024-06-24"),
+        reference_day="2024-06-24",
+    )
     assert summary["stockName"] == "台積電"
     assert summary["institutional"]["fiveSessionTotalsStatus"] == "ok"
     assert summary["institutional"]["fiveSessionTotals"]["foreignNetLots"] == sum(
@@ -102,7 +127,7 @@ def test_chip_formatter_totals_and_units() -> None:
 
 
 def test_chip_formatter_partial_totals_omit_null_lots() -> None:
-    record = _record("TW:2330", sessions=5)
+    record = _record("TW:2330", sessions=5, source_as_of="2024-06-24")
     points = list(record["fields"]["institutional_5d"]["value"])
     points[2]["foreignNetLots"] = None
     record["fields"]["institutional_5d"]["value"] = points
@@ -146,7 +171,7 @@ def test_tdcc_prior_week_missing_is_partial_with_null_pp() -> None:
 
 def test_zero_short_balance_is_ok() -> None:
     summary = format_chip_evidence(
-        _record("TW:2330", short_balance=0),
+        _record("TW:2330", short_balance=0, source_as_of="2024-06-24"),
         reference_day="2024-06-24",
     )
     assert summary["margin"]["shortBalanceStatus"] == "ok"
@@ -444,7 +469,7 @@ def test_reasoned_margin_unavailable_does_not_block_universe() -> None:
                 "status": "unavailable",
                 "reason": "not_margin_eligible",
                 "source": "fixture",
-                "source_as_of": "2024-06-24",
+                "source_as_of": "2024-06-27",
                 "value": None,
             }
         records.append(record)
@@ -483,20 +508,24 @@ def test_reasoned_margin_unavailable_does_not_block_universe() -> None:
     assert pack["summary"]["chipGaps"]["counts"]["margin"]["unavailable"] == 20
 
 
-def test_candidate_stale_institutional_blocks_full_two_pass() -> None:
-    candidate = _record("TW:2330")
-    candidate["fields"]["institutional_5d"]["status"] = "stale"
-    candidate["fields"]["institutional_5d"]["stale"] = True
-    candidate["fields"]["institutional_5d"]["reason"] = "source_as_of_before_last_completed_session"
-    other = _record("TW:2317")
+def test_candidate_stale_institutional_blocks_full_two_pass(monkeypatch) -> None:
+    """Production-shaped raw fields (status ok, no injected stale) still gate."""
+    _patch_weekday_calendar(monkeypatch)
+    candidate = _record("TW:2330", source_as_of="2026-10-01")
+    # Keep explicit status=ok — collector never writes stale.
+    candidate["fields"]["institutional_5d"]["status"] = "ok"
+    candidate["fields"]["institutional_5d"].pop("stale", None)
+    candidate["fields"]["margin"]["status"] = "ok"
+    candidate["fields"]["margin"].pop("stale", None)
+    other = _record("TW:2317", source_as_of="2026-11-12")
     pack = build_report_evidence(
-        trading_day="2024-06-27",
+        trading_day="2026-11-12",
         first_pass_snapshot={
             "snapshot_id": "fps_stale_cand",
             "content_digest": "abc",
             "stock_ids": ["TW:2330", "TW:2317"],
             "quality_status": "verified_ready",
-            "payload": {"records": [candidate, other]},
+            "payload": {"records": [candidate, other], "tradingDay": "2026-11-12"},
         },
         candidate_set={
             "candidateSetId": "cs",
@@ -521,6 +550,164 @@ def test_candidate_stale_institutional_blocks_full_two_pass() -> None:
     ).as_dict()
     assert "candidate_chip_fields_stale_or_missing" in pack["summary"]["qualityWarnings"]
     assert pack["summary"]["publishability"] != "evidence_ready_for_analyst_decision"
+    assert pack["symbols"][0]["chipEvidence"]["institutional"]["status"] == "stale"
+
+
+def test_non_candidate_old_source_as_of_is_chip_gap_only(monkeypatch) -> None:
+    _patch_weekday_calendar(monkeypatch)
+    candidate = _record("TW:2330", source_as_of="2026-11-12")
+    non_candidate = _record("TW:2317", source_as_of="2026-10-01")
+    non_candidate["fields"]["institutional_5d"]["status"] = "ok"
+    non_candidate["fields"]["institutional_5d"].pop("stale", None)
+    non_candidate["fields"]["margin"]["status"] = "ok"
+    non_candidate["fields"]["margin"].pop("stale", None)
+    pack = build_report_evidence(
+        trading_day="2026-11-12",
+        first_pass_snapshot={
+            "snapshot_id": "fps_gap_stale",
+            "content_digest": "abc",
+            "stock_ids": ["TW:2330", "TW:2317"],
+            "quality_status": "verified_ready",
+            "payload": {
+                "records": [candidate, non_candidate],
+                "tradingDay": "2026-11-12",
+            },
+        },
+        candidate_set={
+            "candidateSetId": "cs",
+            "version": 1,
+            "stockIds": ["TW:2330"],
+            "firstPassSnapshotId": "fps_gap_stale",
+            "firstPassDigest": "abc",
+        },
+        technical_scan={
+            "scanId": "scan",
+            "status": "verified_ready",
+            "stockIds": ["TW:2330"],
+        },
+        ledger_rows=[
+            {
+                "stockId": "TW:2330",
+                "monthly": {"passStatus": "pass"},
+                "daily": {"passStatus": "pass"},
+            },
+            {
+                "stockId": "TW:2317",
+                "monthly": {"passStatus": "fail"},
+                "daily": {"passStatus": "not_run_by_design"},
+            },
+        ],
+        mode="full_two_pass",
+    ).as_dict()
+    assert pack["summary"]["publishability"] == "evidence_ready_for_analyst_decision"
+    assert "candidate_chip_fields_stale_or_missing" not in pack["summary"]["qualityWarnings"]
+    assert pack["summary"]["chipGaps"]["counts"]["institutional_5d"]["stale"] == 1
+    assert any(
+        item["stockId"] == "TW:2317" and item["field"] == "institutional_5d"
+        for item in pack["summary"]["chipGaps"]["items"]
+    )
+
+
+def test_candidate_tdcc_older_than_10_days_blocks(monkeypatch) -> None:
+    _patch_weekday_calendar(monkeypatch)
+    candidate = _record("TW:2330", source_as_of="2026-11-12")
+    candidate["fields"]["tdcc_holders_ge_400_lots"]["status"] = "ok"
+    candidate["fields"]["tdcc_holders_ge_400_lots"].pop("stale", None)
+    candidate["fields"]["tdcc_holders_ge_400_lots"]["source_as_of"] = "2026-10-01"
+    pack = build_report_evidence(
+        trading_day="2026-11-12",
+        first_pass_snapshot={
+            "snapshot_id": "fps_tdcc_stale",
+            "content_digest": "abc",
+            "stock_ids": ["TW:2330"],
+            "quality_status": "verified_ready",
+            "payload": {"records": [candidate], "tradingDay": "2026-11-12"},
+        },
+        candidate_set={
+            "candidateSetId": "cs",
+            "version": 1,
+            "stockIds": ["TW:2330"],
+            "firstPassSnapshotId": "fps_tdcc_stale",
+            "firstPassDigest": "abc",
+        },
+        technical_scan={
+            "scanId": "scan",
+            "status": "verified_ready",
+            "stockIds": ["TW:2330"],
+        },
+        ledger_rows=[
+            {
+                "stockId": "TW:2330",
+                "monthly": {"passStatus": "pass"},
+                "daily": {"passStatus": "pass"},
+            }
+        ],
+        mode="full_two_pass",
+    ).as_dict()
+    assert "candidate_chip_fields_stale_or_missing" in pack["summary"]["qualityWarnings"]
+    assert pack["summary"]["publishability"] != "evidence_ready_for_analyst_decision"
+    assert pack["symbols"][0]["chipEvidence"]["tdcc"]["status"] == "stale"
+
+
+def test_stale_chip_evidence_consistent_with_gaps_or_warnings(monkeypatch) -> None:
+    _patch_weekday_calendar(monkeypatch)
+    candidate = _record("TW:2330", source_as_of="2026-11-12")
+    non_candidate = _record("TW:2317", source_as_of="2026-10-01")
+    pack = build_report_evidence(
+        trading_day="2026-11-12",
+        first_pass_snapshot={
+            "snapshot_id": "fps_consistent",
+            "content_digest": "abc",
+            "stock_ids": ["TW:2330", "TW:2317"],
+            "quality_status": "verified_ready",
+            "payload": {
+                "records": [candidate, non_candidate],
+                "tradingDay": "2026-11-12",
+            },
+        },
+        candidate_set={
+            "candidateSetId": "cs",
+            "version": 1,
+            "stockIds": ["TW:2330"],
+            "firstPassSnapshotId": "fps_consistent",
+            "firstPassDigest": "abc",
+        },
+        technical_scan={
+            "scanId": "scan",
+            "status": "verified_ready",
+            "stockIds": ["TW:2330"],
+        },
+        ledger_rows=[
+            {
+                "stockId": "TW:2330",
+                "monthly": {"passStatus": "pass"},
+                "daily": {"passStatus": "pass"},
+            },
+            {
+                "stockId": "TW:2317",
+                "monthly": {"passStatus": "fail"},
+                "daily": {"passStatus": "not_run_by_design"},
+            },
+        ],
+        mode="full_two_pass",
+    ).as_dict()
+    warnings = pack["summary"]["qualityWarnings"]
+    gap_stock_ids = {
+        str(item["stockId"]) for item in (pack["summary"].get("chipGaps") or {}).get("items") or []
+    }
+    field_map = {
+        "institutional": "institutional_5d",
+        "margin": "margin",
+        "tdcc": "tdcc_holders_ge_400_lots",
+    }
+    for symbol in pack["symbols"]:
+        chip = symbol.get("chipEvidence") or {}
+        stock_id = str(symbol.get("stockId") or "")
+        for section_key in field_map:
+            section = chip.get(section_key) or {}
+            if section.get("status") != "stale":
+                continue
+            assert stock_id in gap_stock_ids or bool(warnings)
 
 
 def test_unavailable_without_reason_blocks() -> None:

@@ -70,6 +70,13 @@ missing, coverage stays fail-closed with `unavailableReason=trading_calendar_una
 Gating fields: `institutional_5d`, `margin`, `tdcc_holders_ge_400_lots`
 (`margin_utilization` is never gating).
 
+The readiness gate, `summary.chipGaps`, and `symbols[].chipEvidence` all use the
+**same Asia/Taipei reference-day staleness** path (`format_chip_evidence` with
+`reference_day` resolved before gating via `reference_day_from_snapshot`). Raw
+collector payloads typically have `status=ok` and no `stale` flag; staleness is
+derived from `source_as_of` vs the reference day (and explicit raw `stale: true`
+is still honored).
+
 **Blocking warnings**
 
 - `first_pass_chip_fields_missing` — any record lacks a gating key (`not_fetched`),
