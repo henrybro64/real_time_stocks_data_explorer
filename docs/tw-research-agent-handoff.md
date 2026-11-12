@@ -4,6 +4,53 @@ Browser-only, low-token transfer contract for an **external** Agent that may opt
 
 For the analyst-ready evidence pack (Phase-1 universe + Phase-2 candidate technicals), see `POST /api/tw-research/report-evidence` and the labeled Traditional Chinese fixture at `GET /api/tw-research/report-evidence/example-zh-tw` (`exampleOnly: true` — not a live recommendation). ChatGPT makes the two selection/report decisions; the external writer publishes only after explicit approval.
 
+### First-pass chip fields (#347)
+
+Before **Decision 1** (candidate selection) or **Decision 2** (final report), the external analyst must:
+
+1. `GET /api/tw-research/first-pass/snapshots/{snapshotId}/manifest`
+2. Fetch **every** `chunkIndex` listed in `chunkDigests` via `chunkPathTemplate`
+3. **Recompute** each chunk digest independently (do not trust `checksumSha256` alone) and match `manifest.chunkDigests[i]`
+4. Confirm `requiredChipFields` (`institutional_5d`, `margin`, `margin_utilization`, `tdcc_holders_ge_400_lots`) exist on every record (status may be `unavailable`/`partial` — never treat absence as verified-ready)
+5. Confirm no duplicate `chunkIndex` / `stockId`, and the union of chunk `stockIds` equals the snapshot/manifest stock id set when provided
+
+A link-only evidence pack is **not** proof that every chip chunk was consumed. Report evidence exposes this contract under `chipHandoff`. Analyst readiness is gated by chip **content** coverage on `institutional_5d`, `margin`, and `tdcc_holders_ge_400_lots` (`margin_utilization` unavailable-by-design does not block).
+
+#### First-pass chunk checksum canonicalization
+
+Digest = SHA-256 hex of UTF-8 bytes from:
+
+```text
+json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+```
+
+where `payload` is:
+
+```json
+{
+  "schemaVersion": "<RESEARCH_SCHEMA_VERSION>",
+  "kind": "first_pass_ledger",
+  "tradingDay": "<payload.tradingDay or literal first_pass_snapshot>",
+  "chunkIndex": 0,
+  "chunkSize": 25,
+  "totalRows": 300,
+  "totalChunks": 12,
+  "rows": [ /* ordered by stockId ascending */ ]
+}
+```
+
+Envelope keys (also returned as `checksumEnvelope` on each chunk): `schemaVersion`, `kind`, `tradingDay`, `chunkIndex`, `chunkSize`, `totalRows`, `totalChunks`. Empty snapshot ⇒ `chunkCount=0` (not 1). Rows are sorted by `stockId`.
+
+```python
+import hashlib, json
+
+def verify_chunk(manifest_digest: str, envelope: dict, rows: list) -> bool:
+    payload = {**envelope, "rows": rows}
+    body = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    digest = hashlib.sha256(body.encode("utf-8")).hexdigest()
+    return digest == manifest_digest
+```
+
 ## Status vocabulary (do not conflate)
 
 | Status | Owner | Meaning |

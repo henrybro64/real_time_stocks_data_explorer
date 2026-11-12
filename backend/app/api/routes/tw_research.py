@@ -480,23 +480,28 @@ def get_first_pass_snapshot_manifest(
     snap = tw_research_repository.get_first_pass_snapshot(snapshot_id, user_id=user_id)
     if snap is None:
         raise HTTPException(status_code=404, detail="first_pass_snapshot_not_found")
-    records = list((snap.get("payload") or {}).get("records") or [])
-    chunk_size = 25
-    chunk_count = max(1, (len(records) + chunk_size - 1) // chunk_size) if records else 1
-    return {
-        "snapshotId": snap["snapshot_id"],
-        "contentDigest": snap["content_digest"],
-        "universeVersion": snap["universe_version"],
-        "firstPassVersion": snap["first_pass_version"],
-        "recordCount": len(records),
-        "chunkSize": chunk_size,
-        "chunkCount": chunk_count,
-        "chunkPathTemplate": (
-            f"/api/tw-research/first-pass/snapshots/{snapshot_id}/chunk"
-            "?chunkIndex={chunkIndex}"
-        ),
-        "notNotionReportList": True,
-    }
+    from app.core.endpoint_timing import endpoint_timing
+    from app.services.tw_research.first_pass_chunks import build_first_pass_manifest
+
+    payload = snap.get("payload") or {}
+    records = list(payload.get("records") or [])
+    with endpoint_timing(
+        endpoint="GET /api/tw-research/first-pass/snapshots/{id}/manifest",
+        snapshot_id=snap["snapshot_id"],
+        record_count=len(records),
+        calendar_preload_attempted=False,
+    ) as timing:
+        result = build_first_pass_manifest(
+            snapshot_id=snap["snapshot_id"],
+            content_digest=snap["content_digest"],
+            universe_version=snap.get("universe_version"),
+            first_pass_version=snap.get("first_pass_version"),
+            records=records,
+            payload=payload if isinstance(payload, dict) else {},
+        )
+        timing["rows_returned"] = int(result.get("chunkCount") or 0)
+        timing["result"] = result
+        return result
 
 
 @router.get("/first-pass/snapshots/{snapshot_id}/chunk")
@@ -513,21 +518,141 @@ def get_first_pass_snapshot_chunk(
     snap = tw_research_repository.get_first_pass_snapshot(snapshot_id, user_id=user_id)
     if snap is None:
         raise HTTPException(status_code=404, detail="first_pass_snapshot_not_found")
-    records = list((snap.get("payload") or {}).get("records") or [])
-    chunk_size = 25
-    start = chunkIndex * chunk_size
-    end = start + chunk_size
-    if start >= len(records) and chunkIndex > 0:
-        raise HTTPException(status_code=404, detail="chunk_out_of_range")
-    return {
-        "snapshotId": snap["snapshot_id"],
-        "contentDigest": snap["content_digest"],
-        "chunkIndex": chunkIndex,
-        "chunkSize": chunk_size,
-        "records": records[start:end],
-        "truncated": end < len(records),
-        "notNotionReportList": True,
-    }
+    from app.core.endpoint_timing import endpoint_timing
+    from app.services.tw_research.first_pass_chunks import build_first_pass_chunk
+
+    payload = snap.get("payload") or {}
+    records = list(payload.get("records") or [])
+    with endpoint_timing(
+        endpoint="GET /api/tw-research/first-pass/snapshots/{id}/chunk",
+        snapshot_id=snap["snapshot_id"],
+        record_count=len(records),
+        calendar_preload_attempted=False,
+    ) as timing:
+        try:
+            result = build_first_pass_chunk(
+                snapshot_id=snap["snapshot_id"],
+                content_digest=snap["content_digest"],
+                records=records,
+                chunk_index=chunkIndex,
+                payload=payload if isinstance(payload, dict) else {},
+            )
+        except IndexError as exc:
+            raise HTTPException(status_code=404, detail="chunk_out_of_range") from exc
+        timing["rows_returned"] = len(result.get("records") or [])
+        timing["result"] = result
+        return result
+
+
+@router.get("/first-pass/snapshots/{snapshot_id}/chip-evidence")
+def get_first_pass_chip_evidence(
+    snapshot_id: str,
+    user_id: str = Depends(get_effective_user_id),
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=25, ge=1, le=50),
+    q: str | None = Query(default=None),
+    stockIds: str | None = Query(
+        default=None,
+        description="Optional comma-separated stock ids (max 50); filter after ordering.",
+    ),
+) -> dict[str, object]:
+    """Paginated chip summaries from a frozen first-pass snapshot (#346/#347)."""
+    if not tw_research_repository.is_available():
+        raise HTTPException(
+            status_code=503,
+            detail={"error": "durable_store_unavailable"},
+        )
+    snap = tw_research_repository.get_first_pass_snapshot(snapshot_id, user_id=user_id)
+    if snap is None:
+        raise HTTPException(status_code=404, detail="first_pass_snapshot_not_found")
+    from app.core.endpoint_timing import endpoint_timing
+    from app.services.tw_calendar_preload import ensure_tw_calendars_bounded
+    from app.services.tw_research.chip_evidence import (
+        format_chip_evidence,
+        reference_day_from_snapshot,
+        resolve_chip_capture_at,
+    )
+    from app.services.tw_research.first_pass_chunks import ordered_first_pass_records
+
+    payload = snap.get("payload") or {}
+    records = ordered_first_pass_records(list(payload.get("records") or []))
+    query = (q or "").strip().upper()
+    if query:
+        filtered = []
+        for row in records:
+            stock_id = str(row.get("stockId") or "").upper()
+            name = str(row.get("stockName") or "")
+            if query in stock_id or query in name.upper():
+                filtered.append(row)
+        records = filtered
+    # Filter by explicit stockIds after ordering (#346/#347).
+    requested_ids: list[str] = []
+    if stockIds:
+        requested_ids = [
+            item.strip()
+            for item in str(stockIds).split(",")
+            if item and item.strip()
+        ][:50]
+        if requested_ids:
+            wanted = {item.upper() for item in requested_ids}
+            records = [
+                row
+                for row in records
+                if str(row.get("stockId") or row.get("stock_id") or "").upper() in wanted
+            ]
+    page = records[offset : offset + limit]
+    # created_at → payload tradingDay@23:59 (no request tradingDay on this route).
+    capture_at, capture_date_only = resolve_chip_capture_at(
+        created_at=snap.get("created_at"),
+        payload=payload if isinstance(payload, dict) else None,
+    )
+    reference_day = reference_day_from_snapshot(
+        trading_day=payload.get("tradingDay") or payload.get("trading_day"),
+        payload=payload,
+        created_at=snap.get("created_at"),
+    )
+    if reference_day is None and capture_at is not None:
+        reference_day = capture_at.date().isoformat()
+    calendar_known: bool | None = None
+    calendar_preload_attempted = False
+    if reference_day:
+        try:
+            year = int(str(reference_day)[:4])
+        except ValueError:
+            year = None
+        if year is not None:
+            calendar_preload_attempted = True
+            calendar_known = ensure_tw_calendars_bounded([year, year - 1])
+    with endpoint_timing(
+        endpoint="GET /api/tw-research/first-pass/snapshots/{id}/chip-evidence",
+        snapshot_id=snap["snapshot_id"],
+        record_count=len(records),
+        calendar_preload_attempted=calendar_preload_attempted,
+    ) as timing:
+        result = {
+            "snapshotId": snap["snapshot_id"],
+            "contentDigest": snap["content_digest"],
+            "offset": offset,
+            "limit": limit,
+            "total": len(records),
+            "stockIdsFilter": requested_ids or None,
+            "referenceDay": reference_day,
+            "rows": [
+                format_chip_evidence(
+                    row,
+                    reference_day=reference_day,
+                    calendar_known=calendar_known,
+                    capture_at=capture_at,
+                    date_only=capture_date_only,
+                )
+                for row in page
+            ],
+            "notBuySignal": True,
+            "notNotionReportList": True,
+        }
+        timing["rows_returned"] = len(result["rows"])
+        timing["result"] = result
+        return result
 
 
 @router.post("/candidate-sets", response_model=CandidateSetResponse)
@@ -1472,6 +1597,24 @@ def post_report_evidence(
         except ResearchMembershipUnavailable:
             candidate = None
 
+    # Production snapshot dicts omit quality_status. Prefer owning job quality,
+    # else content-based chip gating inside build_report_evidence (#347).
+    if isinstance(first_pass, dict) and not (
+        first_pass.get("quality_status") or first_pass.get("qualityStatus")
+    ):
+        job_id = None
+        payload = first_pass.get("payload") if isinstance(first_pass.get("payload"), dict) else {}
+        raw_job = payload.get("jobId") or payload.get("job_id")
+        if isinstance(raw_job, str) and raw_job:
+            job_id = raw_job
+        if job_id:
+            try:
+                job = tw_research_repository.get_first_pass_job(job_id, user_id=user_id)
+            except Exception:  # noqa: BLE001
+                job = None
+            if isinstance(job, dict) and job.get("quality_status"):
+                first_pass = {**first_pass, "quality_status": job["quality_status"]}
+
     normalized_first = normalize_first_pass_snapshot(first_pass)
     if full_two_pass and isinstance(technical, dict):
         scan_fp_id = provenance.get("firstPassSnapshotId")
@@ -1530,15 +1673,30 @@ def post_report_evidence(
                     },
                 )
 
-    pack = build_report_evidence(
-        trading_day=body.tradingDay,
-        first_pass_snapshot=first_pass,
-        candidate_set=candidate,
-        technical_scan=technical if isinstance(technical, dict) else None,
-        ledger_rows=ledger_rows,
-        mode="full_two_pass" if full_two_pass else "first_pass_only",
-    )
-    return ReportEvidenceResponse(evidence=pack.as_dict())
+    from app.core.endpoint_timing import endpoint_timing
+
+    fp_records = []
+    if isinstance(first_pass, dict):
+        payload = first_pass.get("payload") if isinstance(first_pass.get("payload"), dict) else {}
+        fp_records = list(payload.get("records") or [])
+    with endpoint_timing(
+        endpoint="POST /api/tw-research/report-evidence",
+        snapshot_id=str(first_pass_id) if first_pass_id else None,
+        record_count=len(fp_records),
+        calendar_preload_attempted=True,
+    ) as timing:
+        pack = build_report_evidence(
+            trading_day=body.tradingDay,
+            first_pass_snapshot=first_pass,
+            candidate_set=candidate,
+            technical_scan=technical if isinstance(technical, dict) else None,
+            ledger_rows=ledger_rows,
+            mode="full_two_pass" if full_two_pass else "first_pass_only",
+        )
+        evidence = pack.as_dict()
+        timing["rows_returned"] = len(evidence.get("symbols") or [])
+        timing["result"] = evidence
+        return ReportEvidenceResponse(evidence=evidence)
 
 
 @router.get("/report-evidence/example-zh-tw")

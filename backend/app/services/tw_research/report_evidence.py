@@ -14,16 +14,28 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
+from app.services.tw_calendar_preload import ensure_tw_calendars_bounded
+from app.services.tw_research.chip_evidence import (
+    CHIP_FIELD_KEYS,
+    apply_chip_coverage_warnings,
+    expected_session,
+    format_chip_evidence,
+    reference_day_from_snapshot,
+    resolve_chip_capture_at,
+    summarize_chip_coverage,
+)
 from app.services.tw_research.constants import (
     DAILY_NOT_RUN_BY_DESIGN,
+    EXPORT_CHUNK_SIZE,
     REPORT_EVIDENCE_VERSION,
 )
 from app.services.tw_research.evaluation import derive_stage_progress
 from app.services.tw_research.export import content_digest
+from app.services.tw_research.first_pass_chunks import build_first_pass_manifest
 
 _FIXTURE_PATH = Path(__file__).with_name("report_evidence_fixture_zh_tw.json")
 
@@ -33,6 +45,17 @@ _PARTIAL_STATUSES = frozenset(
         "deferred",
         "budget_exhausted",
         "waiting_for_next_window",
+    }
+)
+
+# complete_attempted is intentionally excluded — durable collection may still
+# have chip gaps; readiness is gated by snapshot content (#347).
+_FIRST_PASS_READY_STATUSES = frozenset(
+    {
+        "verified_ready",
+        "complete",
+        "completed",
+        "ok",
     }
 )
 
@@ -125,18 +148,91 @@ def build_report_evidence(
         )
 
     quality_warnings: list[str] = []
-    first_pass_quality = (first_pass or {}).get("qualityStatus")
-    if first_pass is not None and first_pass_quality in {None, ""}:
-        quality_warnings.append("first_pass_quality_missing")
-    elif first_pass is not None and first_pass_quality in _PARTIAL_STATUSES:
-        quality_warnings.append("first_pass_incomplete_or_partial")
-    elif first_pass is not None and first_pass_quality not in {
-        "verified_ready",
-        "complete",
-        "completed",
-        "ok",
-    }:
-        quality_warnings.append("first_pass_quality_not_verified_ready")
+    payload_records = _first_pass_records(first_pass)
+    chip_coverage_summary = None
+    chip_gaps = None
+    # Resolve reference day before chip gating so readiness uses the same
+    # Asia/Taipei staleness path as symbols[].chipEvidence / chipGaps.
+    first_pass_payload = (
+        (first_pass or {}).get("payload")
+        if isinstance((first_pass or {}).get("payload"), dict)
+        else {}
+    )
+    created_at_raw = (
+        ((first_pass or {}).get("raw") or {}).get("created_at")
+        or (first_pass_snapshot or {}).get("created_at")
+        or (first_pass or {}).get("created_at")
+    )
+    # created_at → request tradingDay@23:59 → payload tradingDay@23:59.
+    capture_at, capture_date_only = resolve_chip_capture_at(
+        created_at=created_at_raw,
+        request_trading_day=trading_day,
+        payload=first_pass_payload,
+    )
+    reference_day = reference_day_from_snapshot(
+        trading_day=trading_day or (first_pass or {}).get("tradingDay"),
+        payload=first_pass_payload,
+        created_at=created_at_raw,
+    )
+    if reference_day is None and capture_at is not None:
+        reference_day = capture_at.date().isoformat()
+    calendar_known = _calendar_known_for_reference_day(reference_day)
+    summary_notes: list[str] = []
+    if first_pass is not None:
+        first_pass_quality = first_pass.get("qualityStatus")
+        if first_pass_quality in {None, ""}:
+            # Production snapshot dicts omit quality_status. Prefer content-based
+            # chip gating when records exist; otherwise keep the missing warning.
+            if not payload_records:
+                quality_warnings.append("first_pass_quality_missing")
+        elif first_pass_quality in _PARTIAL_STATUSES:
+            quality_warnings.append("first_pass_incomplete_or_partial")
+        elif first_pass_quality == "complete_attempted":
+            # Collection finished, but chip content still gates readiness.
+            pass
+        elif first_pass_quality not in _FIRST_PASS_READY_STATUSES:
+            quality_warnings.append("first_pass_quality_not_verified_ready")
+
+        if payload_records:
+            chip_coverage_summary = apply_chip_coverage_warnings(
+                payload_records,
+                quality_warnings,
+                candidate_stock_ids=list((candidate_set or {}).get("stockIds") or []),
+                full_two_pass=(resolved_mode == "full_two_pass"),
+                reference_day=reference_day,
+                calendar_known=calendar_known,
+                capture_at=capture_at,
+                date_only=capture_date_only,
+            )
+            chip_gaps = chip_coverage_summary.get("chipGaps")
+        elif first_pass.get("snapshotId"):
+            # Empty/missing records still block full-two-pass readiness.
+            quality_warnings.append("first_pass_chip_fields_missing")
+            chip_coverage_summary = summarize_chip_coverage([])
+            chip_gaps = {
+                "counts": {key: {} for key in CHIP_FIELD_KEYS},
+                "items": [],
+                "truncated": False,
+            }
+
+        # Report tradingDay later than the snapshot's expected institutional session
+        # is a separate readiness gate — do not mark every field stale for it.
+        if trading_day and capture_at is not None and calendar_known is not False:
+            try:
+                request_day = date.fromisoformat(str(trading_day).strip()[:10])
+            except ValueError:
+                request_day = None
+            expected_inst = expected_session("institutional", capture_at)
+            if (
+                request_day is not None
+                and expected_inst is not None
+                and request_day > expected_inst
+            ):
+                if resolved_mode == "full_two_pass":
+                    if "first_pass_snapshot_predates_trading_day" not in quality_warnings:
+                        quality_warnings.append("first_pass_snapshot_predates_trading_day")
+                else:
+                    summary_notes.append("first_pass_snapshot_predates_trading_day")
 
     technical_status = (technical_scan or {}).get("status")
     if technical_status == "budget_exhausted":
@@ -160,8 +256,22 @@ def build_report_evidence(
         publishability = "evidence_ready_for_analyst_decision"
     elif quality_warnings:
         publishability = "incomplete_or_partial_evidence"
-
-    symbols = [_symbol_evidence_row(row) for row in rows]
+    first_pass_by_id = {
+        str(rec.get("stockId") or rec.get("stock_id")): rec
+        for rec in payload_records
+        if rec.get("stockId") or rec.get("stock_id")
+    }
+    symbols = [
+        _symbol_evidence_row(
+            row,
+            frozen_first_pass=first_pass_by_id.get(str(row.get("stockId") or "")),
+            reference_day=reference_day,
+            calendar_known=calendar_known,
+            capture_at=capture_at,
+            date_only=capture_date_only,
+        )
+        for row in rows
+    ]
     insufficient = [
         row
         for row in symbols
@@ -175,13 +285,78 @@ def build_report_evidence(
     ]
 
     first_pass_ref = None
+    chip_handoff = None
     if first_pass and first_pass.get("snapshotId"):
         snapshot_id = str(first_pass["snapshotId"])
+        raw_payload = first_pass.get("payload") if isinstance(first_pass.get("payload"), dict) else {}
+        manifest = build_first_pass_manifest(
+            snapshot_id=snapshot_id,
+            content_digest=str(first_pass.get("contentDigest") or ""),
+            universe_version=str(
+                (first_pass.get("raw") or {}).get("universe_version")
+                or raw_payload.get("universeVersion")
+                or ""
+            ),
+            first_pass_version=str(
+                (first_pass.get("raw") or {}).get("first_pass_version")
+                or raw_payload.get("firstPassVersion")
+                or ""
+            ),
+            records=payload_records,
+            chunk_size=EXPORT_CHUNK_SIZE,
+            payload=raw_payload,
+            trading_day=(first_pass.get("tradingDay") if isinstance(first_pass.get("tradingDay"), str) else None),
+        )
         first_pass_ref = {
             "snapshotId": snapshot_id,
             "contentDigest": first_pass.get("contentDigest"),
-            "stockCount": int(first_pass.get("universeSize") or len(first_pass.get("stockIds") or [])),
+            "tradingDay": manifest.get("tradingDay"),
+            "stockCount": int(
+                first_pass.get("universeSize") or len(first_pass.get("stockIds") or [])
+            ),
             "manifestPath": f"/api/tw-research/first-pass/snapshots/{snapshot_id}/manifest",
+            "chunkPathTemplate": manifest["chunkPathTemplate"],
+            "chunkCount": manifest["chunkCount"],
+            "chunkDigests": manifest["chunkDigests"],
+            "chipCoverage": manifest["chipCoverage"],
+            "requiredChipFields": list(CHIP_FIELD_KEYS),
+        }
+        chip_handoff = {
+            "requiredFields": list(CHIP_FIELD_KEYS),
+            "units": {
+                "institutional_5d": "lots",
+                "margin": "lots",
+                "tdcc_holders_ge_400_lots": "percent_and_percentage_points",
+            },
+            "verification": {
+                "steps": [
+                    f"GET {first_pass_ref['manifestPath']}",
+                    "GET every chunkIndex in chunkDigests via chunkPathTemplate",
+                    "Recompute sha256(canonical_json({checksumEnvelope..., rows}))",
+                    "Match recomputed digest to manifest.chunkDigests[i]",
+                    "Confirm requiredChipFields exist on every record (status may be unavailable)",
+                ],
+                "statusAfterVerify": "stock_ticker_first_pass_export_verified",
+            },
+            "decisionGuidance": {
+                "decision1_candidateSelection": (
+                    "May use chip + fundamental evidence when choosing technical compute subset."
+                ),
+                "decision2_finalReport": (
+                    "May use chip + fundamental + valuation + price basis + "
+                    "monthly-first/daily MACD/KD; zero selections is valid."
+                ),
+            },
+            "coverage": (
+                chip_coverage_summary
+                if chip_coverage_summary is not None
+                else (
+                    summarize_chip_coverage(payload_records)
+                    if payload_records
+                    else first_pass_ref["chipCoverage"]
+                )
+            ),
+            "notBuySignal": True,
         }
 
     payload = {
@@ -205,9 +380,11 @@ def build_report_evidence(
             "watchlistCount": len(watchlist),
             "insufficientEvidenceCount": len(insufficient),
             "qualityWarnings": quality_warnings,
+            "chipGaps": chip_gaps,
             "publishability": publishability,
             "zeroQualifyingIsValid": True,
             "noTopNPadding": True,
+            "notes": list(summary_notes),
         },
         "pins": {
             "firstPassSnapshotId": (first_pass or {}).get("snapshotId"),
@@ -219,6 +396,7 @@ def build_report_evidence(
             "technicalContentDigest": (technical_scan or {}).get("contentDigest"),
         },
         "firstPass": first_pass_ref,
+        "chipHandoff": chip_handoff,
         "stageProgress": stage,
         "symbols": symbols,
         "analystDecisionSlots": {
@@ -239,6 +417,7 @@ def build_report_evidence(
             "Partial/stale/unknown required fields must not be represented as a "
             "fully verified daily Notion report.",
             "Unchanged contentDigest ⇒ external Agent must not rewrite Notion.",
+            "Retrieve and verify all first-pass chunks (chip fields) before Decision 1/2 (#347).",
         ],
     }
     digest_payload = {key: value for key, value in payload.items() if key != "generatedAt"}
@@ -265,7 +444,38 @@ def _records_from_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
     return {str(row.get("stockId")): _Rec(row) for row in rows if row.get("stockId")}
 
 
-def _symbol_evidence_row(row: dict[str, Any]) -> dict[str, Any]:
+def _first_pass_records(first_pass: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if not first_pass:
+        return []
+    raw_payload = first_pass.get("payload") if isinstance(first_pass.get("payload"), dict) else {}
+    if isinstance(raw_payload.get("records"), list):
+        return [row for row in raw_payload["records"] if isinstance(row, dict)]
+    nested = (first_pass.get("raw") or {}).get("payload")
+    if isinstance(nested, dict) and isinstance(nested.get("records"), list):
+        return [row for row in nested["records"] if isinstance(row, dict)]
+    return []
+
+
+def _calendar_known_for_reference_day(reference_day: str | None) -> bool | None:
+    """Bounded preload once per report-evidence build; None when no reference day."""
+    if not reference_day:
+        return None
+    try:
+        year = int(str(reference_day)[:4])
+    except ValueError:
+        return None
+    return ensure_tw_calendars_bounded([year, year - 1])
+
+
+def _symbol_evidence_row(
+    row: dict[str, Any],
+    *,
+    frozen_first_pass: dict[str, Any] | None = None,
+    reference_day: str | None = None,
+    calendar_known: bool | None = None,
+    capture_at: datetime | None = None,
+    date_only: bool | None = None,
+) -> dict[str, Any]:
     monthly = row.get("monthly") if isinstance(row.get("monthly"), dict) else {}
     daily = row.get("daily") if isinstance(row.get("daily"), dict) else {}
     monthly_pass = monthly.get("passStatus")
@@ -283,6 +493,22 @@ def _symbol_evidence_row(row: dict[str, Any]) -> dict[str, Any]:
     elif monthly_pass == "fail" or daily_exec == DAILY_NOT_RUN_BY_DESIGN:
         bucket = "fundamental_watch_monthly_fail"
 
+    if frozen_first_pass is not None:
+        chip = format_chip_evidence(
+            frozen_first_pass,
+            reference_day=reference_day,
+            calendar_known=calendar_known,
+            capture_at=capture_at,
+            date_only=date_only,
+        )
+    else:
+        chip = {
+            "status": "not_fetched",
+            "reason": "stock_not_in_first_pass_snapshot",
+            "notBuySignal": True,
+        }
+
+    enrichment = row.get("enrichment")
     return {
         "stockId": row.get("stockId"),
         "stockName": row.get("stockName"),
@@ -296,7 +522,10 @@ def _symbol_evidence_row(row: dict[str, Any]) -> dict[str, Any]:
         "relativePriceBasis": row.get("relativePriceBasis")
         or _field_value(row, "relative_price_basis"),
         "week52Position": row.get("week52Position"),
-        "enrichment": row.get("enrichment"),
+        "chipEvidence": chip,
+        "phase2Enrichment": enrichment,
+        # Deprecated alias — prefer phase2Enrichment / chipEvidence.
+        "enrichment": enrichment,
         "provenanceNote": "Values carry source/as-of when present; never fabricate.",
         "analystNarrative": "not_established",
     }

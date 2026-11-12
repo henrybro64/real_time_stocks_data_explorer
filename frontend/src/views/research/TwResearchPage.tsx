@@ -33,6 +33,10 @@ import { useLanguage, type TranslationKey } from "../../app/i18n";
 import { RequestStateNotice, errorToNoticeKind } from "../../components/state/RequestStateNotice";
 import { toApiError } from "../../services/api/client";
 import {
+  ChipEvidenceCard,
+  type ChipEvidenceRow,
+} from "./ChipEvidenceCard";
+import {
   advanceTwResearchRunGate,
   createTwResearchFirstPassJob,
   createTwResearchScan,
@@ -42,6 +46,7 @@ import {
   fetchTwResearchCandidateSet,
   fetchTwResearchExportChunk,
   fetchTwResearchExportManifest,
+  fetchTwResearchFirstPassChipEvidence,
   fetchTwResearchFirstPassChunk,
   fetchTwResearchFirstPassJob,
   fetchTwResearchFirstPassManifest,
@@ -237,6 +242,9 @@ export function TwResearchPage({
   const [evidenceOffset, setEvidenceOffset] = useState(0);
   const [evidenceStatusFilter, setEvidenceStatusFilter] = useState("");
   const [evidenceSearch, setEvidenceSearch] = useState("");
+  const [chipEvidenceOffset, setChipEvidenceOffset] = useState(0);
+  const [chipEvidenceSearch, setChipEvidenceSearch] = useState("");
+  const [chipEvidenceQuery, setChipEvidenceQuery] = useState("");
   const [candidateIdsText, setCandidateIdsText] = useState("");
   const [committedCandidateIdsText, setCommittedCandidateIdsText] = useState("");
   const [candidateSetText, setCandidateSetText] = useState("");
@@ -617,6 +625,28 @@ export function TwResearchPage({
     staleTime: 60_000,
     retry: false,
   });
+
+  const chipEvidenceQueryResult = useQuery({
+    queryKey: [
+      "tw-research-chip-evidence",
+      pinnedFirstPassSnapshotId,
+      chipEvidenceOffset,
+      chipEvidenceQuery,
+    ],
+    enabled: Boolean(pinnedFirstPassSnapshotId),
+    queryFn: () =>
+      fetchTwResearchFirstPassChipEvidence(pinnedFirstPassSnapshotId as string, {
+        offset: chipEvidenceOffset,
+        limit: PAGE_SIZE,
+        q: chipEvidenceQuery || undefined,
+      }),
+    staleTime: 60_000,
+    retry: false,
+  });
+
+  useEffect(() => {
+    setChipEvidenceOffset(0);
+  }, [pinnedFirstPassSnapshotId]);
 
   // Historical scans must use their pinned candidate-set version, not "latest".
   const pinnedCandidateSetId = scan?.candidateProvenance?.candidateSetId;
@@ -1085,6 +1115,38 @@ export function TwResearchPage({
 
   const ledger = (scan?.ledger ?? []) as Array<Record<string, unknown>>;
   const pageRows = ledger.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+  const ledgerPageStockIds = useMemo(
+    () =>
+      pageRows
+        .map((row) => String(row.stock_id ?? row.stockId ?? ""))
+        .filter(Boolean)
+        .slice(0, 50),
+    [pageRows],
+  );
+  const frozenPageChipQuery = useQuery({
+    queryKey: [
+      "tw-research-chip-evidence-page",
+      pinnedFirstPassSnapshotId,
+      ledgerPageStockIds.join(","),
+    ],
+    enabled: Boolean(pinnedFirstPassSnapshotId) && ledgerPageStockIds.length > 0,
+    queryFn: () =>
+      fetchTwResearchFirstPassChipEvidence(pinnedFirstPassSnapshotId as string, {
+        offset: 0,
+        limit: 50,
+        stockIds: ledgerPageStockIds,
+      }),
+    staleTime: 60_000,
+    retry: false,
+  });
+  const frozenChipByStockId = useMemo(() => {
+    const map = new Map<string, ChipEvidenceRow>();
+    for (const row of frozenPageChipQuery.data?.rows ?? []) {
+      const id = String(row.stockId ?? "");
+      if (id) map.set(id, row as ChipEvidenceRow);
+    }
+    return map;
+  }, [frozenPageChipQuery.data]);
   const watchlistReasonById = useMemo(() => {
     const reasonById = new Map<string, string>();
     const addReason = (id: string, reason: string) => {
@@ -1192,6 +1254,37 @@ export function TwResearchPage({
       ),
     [watchlistReasonById],
   );
+  const watchlistPageStockIds = useMemo(
+    () =>
+      watchlistIds
+        .slice((watchlistPage - 1) * PAGE_SIZE, watchlistPage * PAGE_SIZE)
+        .slice(0, 50),
+    [watchlistIds, watchlistPage],
+  );
+  const frozenWatchlistChipQuery = useQuery({
+    queryKey: [
+      "tw-research-chip-evidence-watchlist-page",
+      pinnedFirstPassSnapshotId,
+      watchlistPageStockIds.join(","),
+    ],
+    enabled: Boolean(pinnedFirstPassSnapshotId) && watchlistPageStockIds.length > 0,
+    queryFn: () =>
+      fetchTwResearchFirstPassChipEvidence(pinnedFirstPassSnapshotId as string, {
+        offset: 0,
+        limit: 50,
+        stockIds: watchlistPageStockIds,
+      }),
+    staleTime: 60_000,
+    retry: false,
+  });
+  const frozenWatchlistChipByStockId = useMemo(() => {
+    const map = new Map<string, ChipEvidenceRow>();
+    for (const row of frozenWatchlistChipQuery.data?.rows ?? []) {
+      const id = String(row.stockId ?? "");
+      if (id) map.set(id, row as ChipEvidenceRow);
+    }
+    return map;
+  }, [frozenWatchlistChipQuery.data]);
   const busy =
     createMutation.isPending ||
     batchMutation.isPending ||
@@ -1708,6 +1801,118 @@ export function TwResearchPage({
                 readOnly
                 rows={6}
               />
+              <Tile data-testid="tw-research-chip-evidence">
+                <h3 className="cds--productive-heading-02">{t("research.tw.chipEvidenceTitle")}</h3>
+                <p className="cds--helper-text-01">{t("research.tw.chipEvidenceDescription")}</p>
+                <Stack gap={3} orientation="horizontal">
+                  <TextInput
+                    id="tw-research-chip-search"
+                    labelText={t("research.tw.chipEvidenceSearch")}
+                    value={chipEvidenceSearch}
+                    onChange={(event) => setChipEvidenceSearch(event.target.value)}
+                  />
+                  <Button
+                    kind="ghost"
+                    size="sm"
+                    disabled={!pinnedFirstPassSnapshotId}
+                    onClick={() => {
+                      setChipEvidenceOffset(0);
+                      setChipEvidenceQuery(chipEvidenceSearch.trim());
+                    }}
+                  >
+                    {t("research.tw.chipEvidenceSearchApply")}
+                  </Button>
+                  <Button
+                    kind="ghost"
+                    size="sm"
+                    disabled={!pinnedFirstPassSnapshotId || chipEvidenceOffset <= 0}
+                    onClick={() =>
+                      setChipEvidenceOffset((current) => Math.max(0, current - PAGE_SIZE))
+                    }
+                  >
+                    {t("research.tw.evidencePrev")}
+                  </Button>
+                  <Button
+                    kind="ghost"
+                    size="sm"
+                    disabled={
+                      !pinnedFirstPassSnapshotId ||
+                      !chipEvidenceQueryResult.data ||
+                      chipEvidenceOffset + PAGE_SIZE >=
+                        Number(chipEvidenceQueryResult.data.total ?? 0)
+                    }
+                    onClick={() => setChipEvidenceOffset((current) => current + PAGE_SIZE)}
+                  >
+                    {t("research.tw.evidenceNext")}
+                  </Button>
+                </Stack>
+                {!pinnedFirstPassSnapshotId ? (
+                  <p className="cds--helper-text-01">{t("research.tw.chipEvidenceNeedSnapshot")}</p>
+                ) : null}
+                {chipEvidenceQueryResult.isLoading ? (
+                  <InlineLoading description={t("research.tw.chipEvidenceLoading")} status="active" />
+                ) : null}
+                {chipEvidenceQueryResult.isError && !chipEvidenceQueryResult.data ? (
+                  <RequestStateNotice
+                    kind={errorToNoticeKind(chipEvidenceQueryResult.error)}
+                    scopeLabel={t("research.tw.chipEvidenceTitle")}
+                    status={toApiError(chipEvidenceQueryResult.error).status}
+                    detail={describeResearchFailure(chipEvidenceQueryResult.error)}
+                    onRetry={() => {
+                      void chipEvidenceQueryResult.refetch();
+                    }}
+                  />
+                ) : null}
+                {chipEvidenceQueryResult.isError && chipEvidenceQueryResult.data ? (
+                  <p className="cds--helper-text-01" data-testid="tw-research-chip-evidence-stale-banner">
+                    {t("research.tw.chipEvidenceStaleBanner", {
+                      capturedAt: String(
+                        (chipEvidenceQueryResult.data.rows?.[0] as { institutional?: { capturedAt?: string } } | undefined)
+                          ?.institutional?.capturedAt ?? "—",
+                      ),
+                    })}
+                  </p>
+                ) : null}
+                {chipEvidenceQueryResult.data ? (
+                  <p className="cds--helper-text-01" data-testid="tw-research-chip-evidence-meta">
+                    {t("research.tw.chipEvidenceMeta", {
+                      offset: chipEvidenceOffset,
+                      limit: PAGE_SIZE,
+                      total: Number(chipEvidenceQueryResult.data.total ?? 0),
+                      snapshot: pinnedFirstPassSnapshotId ?? "—",
+                    })}
+                  </p>
+                ) : null}
+                <Stack gap={4}>
+                  {(chipEvidenceQueryResult.data?.rows ?? []).map((row) => {
+                    const stockId = String(row.stockId ?? "");
+                    return (
+                      <div key={stockId || JSON.stringify(row)} data-testid={`tw-research-chip-row-${stockId}`}>
+                        <p className="cds--productive-heading-01">
+                          {formatTwStockLabel(
+                            stockId,
+                            row.stockName as string | undefined,
+                            row.nameStatus as string | undefined,
+                            t("research.tw.nameUnavailable"),
+                          )}
+                        </p>
+                        <ChipEvidenceCard
+                          row={row as ChipEvidenceRow}
+                          staleCacheBanner={
+                            chipEvidenceQueryResult.isError && chipEvidenceQueryResult.data
+                              ? {
+                                  capturedAt:
+                                    (row.institutional as { capturedAt?: string } | undefined)
+                                      ?.capturedAt ?? null,
+                                }
+                              : null
+                          }
+                        />
+                      </div>
+                    );
+                  })}
+                </Stack>
+              </Tile>
               <TextArea
                 id="tw-research-candidate-ids"
                 data-testid="tw-research-candidate-ids"
@@ -2054,9 +2259,6 @@ export function TwResearchPage({
                           row?.technical_stage ?? row?.technicalStage;
                         const dailyValue =
                           daily?.executionStatus ?? daily?.passStatus;
-                        const enrichment = row?.enrichment as
-                          | Record<string, unknown>
-                          | undefined;
                         return (
                           <Fragment key={id}>
                           <TableRow data-testid={`tw-research-watchlist-row-${id}`}>
@@ -2092,24 +2294,68 @@ export function TwResearchPage({
                           {expanded ? (
                             <TableRow>
                               <TableCell colSpan={7}>
-                                <pre
-                                  className="cds--body-compact-01"
-                                  style={{ whiteSpace: "pre-wrap", margin: 0 }}
-                                  data-testid={`tw-research-watchlist-detail-${id}`}
-                                >
-                                  {JSON.stringify(
-                                    {
-                                      reason: watchlistReasonById.get(id) ?? null,
-                                      coverage: row?.coverage ?? null,
-                                      monthly: row?.monthly ?? null,
-                                      daily: row?.daily ?? null,
-                                      enrichment: enrichment ?? null,
-                                      note: "Not a Notion recommendation.",
-                                    },
-                                    null,
-                                    2,
+                                <div data-testid={`tw-research-watchlist-detail-${id}`}>
+                                  {!pinnedFirstPassSnapshotId ? (
+                                    <p className="cds--helper-text-01">
+                                      {t("research.tw.chipEvidenceNeedSnapshot")}
+                                    </p>
+                                  ) : frozenWatchlistChipQuery.isPending ? (
+                                    <InlineLoading
+                                      description={t("research.tw.chipEvidenceLoading")}
+                                      status="active"
+                                    />
+                                  ) : frozenWatchlistChipQuery.isError &&
+                                    !frozenWatchlistChipQuery.data ? (
+                                    <RequestStateNotice
+                                      kind={errorToNoticeKind(frozenWatchlistChipQuery.error)}
+                                      scopeLabel={t("research.tw.chipEvidenceTitle")}
+                                      status={toApiError(frozenWatchlistChipQuery.error).status}
+                                      detail={describeResearchFailure(
+                                        frozenWatchlistChipQuery.error,
+                                      )}
+                                      onRetry={() => {
+                                        void frozenWatchlistChipQuery.refetch();
+                                      }}
+                                    />
+                                  ) : (
+                                    <ChipEvidenceCard
+                                      row={
+                                        frozenWatchlistChipByStockId.get(id) ?? {
+                                          stockId: id,
+                                          status: "not_fetched",
+                                          reason: "stock_not_in_first_pass_snapshot",
+                                          notBuySignal: true,
+                                        }
+                                      }
+                                      staleCacheBanner={
+                                        frozenWatchlistChipQuery.isError &&
+                                        frozenWatchlistChipQuery.data
+                                          ? {
+                                              capturedAt:
+                                                frozenWatchlistChipByStockId.get(id)?.institutional
+                                                  ?.capturedAt ?? null,
+                                            }
+                                          : null
+                                      }
+                                    />
                                   )}
-                                </pre>
+                                  <pre
+                                    className="cds--body-compact-01"
+                                    style={{ whiteSpace: "pre-wrap", margin: 0 }}
+                                  >
+                                    {JSON.stringify(
+                                      {
+                                        reason: watchlistReasonById.get(id) ?? null,
+                                        coverage: row?.coverage ?? null,
+                                        monthly: row?.monthly ?? null,
+                                        daily: row?.daily ?? null,
+                                        note: "Not a Notion recommendation.",
+                                      },
+                                      null,
+                                      2,
+                                    )}
+                                  </pre>
+                                </div>
                               </TableCell>
                             </TableRow>
                           ) : null}
@@ -2378,23 +2624,63 @@ export function TwResearchPage({
                       {expanded ? (
                         <TableRow>
                           <TableCell colSpan={10}>
-                            <pre
-                              className="cds--body-compact-01"
-                              data-testid={`tw-research-detail-${stockId}`}
-                              style={{ whiteSpace: "pre-wrap", margin: 0 }}
-                            >
-                              {JSON.stringify(
-                                {
-                                  coverage: row.coverage ?? null,
-                                  enrichment: row.enrichment ?? null,
-                                  monthly,
-                                  daily,
-                                  readiness: row.readiness ?? null,
-                                },
-                                null,
-                                2,
+                            <div data-testid={`tw-research-detail-${stockId}`}>
+                              {!pinnedFirstPassSnapshotId ? (
+                                <p className="cds--helper-text-01">
+                                  {t("research.tw.chipEvidenceNeedSnapshot")}
+                                </p>
+                              ) : frozenPageChipQuery.isPending ? (
+                                <InlineLoading
+                                  description={t("research.tw.chipEvidenceLoading")}
+                                  status="active"
+                                />
+                              ) : frozenPageChipQuery.isError && !frozenPageChipQuery.data ? (
+                                <RequestStateNotice
+                                  kind={errorToNoticeKind(frozenPageChipQuery.error)}
+                                  scopeLabel={t("research.tw.chipEvidenceTitle")}
+                                  status={toApiError(frozenPageChipQuery.error).status}
+                                  detail={describeResearchFailure(frozenPageChipQuery.error)}
+                                  onRetry={() => {
+                                    void frozenPageChipQuery.refetch();
+                                  }}
+                                />
+                              ) : (
+                                <ChipEvidenceCard
+                                  row={
+                                    frozenChipByStockId.get(stockId) ?? {
+                                      stockId,
+                                      status: "not_fetched",
+                                      reason: "stock_not_in_first_pass_snapshot",
+                                      notBuySignal: true,
+                                    }
+                                  }
+                                  staleCacheBanner={
+                                    frozenPageChipQuery.isError && frozenPageChipQuery.data
+                                      ? {
+                                          capturedAt:
+                                            frozenChipByStockId.get(stockId)?.institutional
+                                              ?.capturedAt ?? null,
+                                        }
+                                      : null
+                                  }
+                                />
                               )}
-                            </pre>
+                              <pre
+                                className="cds--body-compact-01"
+                                style={{ whiteSpace: "pre-wrap", margin: 0 }}
+                              >
+                                {JSON.stringify(
+                                  {
+                                    coverage: row.coverage ?? null,
+                                    monthly,
+                                    daily,
+                                    readiness: row.readiness ?? null,
+                                  },
+                                  null,
+                                  2,
+                                )}
+                              </pre>
+                            </div>
                           </TableCell>
                         </TableRow>
                       ) : null}

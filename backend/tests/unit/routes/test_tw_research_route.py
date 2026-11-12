@@ -819,3 +819,113 @@ def test_candidate_technical_scan_store_unavailable_returns_503_without_scan(
     assert response.json()["detail"]["error"] == "research_run_store_unavailable"
     assert created == []
     research_run_store.disable_test_memory()
+
+
+def test_chip_evidence_returns_rows_for_owner(monkeypatch) -> None:
+    """Frozen first-pass chip-evidence is ownership-scoped (#346/#347)."""
+    monkeypatch.setattr(
+        "app.repositories.tw_research_repository.tw_research_repository.is_available",
+        lambda: True,
+    )
+
+    def _snap(snapshot_id, user_id=None):  # noqa: ANN001
+        del user_id
+        return {
+            "snapshot_id": snapshot_id,
+            "content_digest": "digest_chip",
+            "payload": {
+                "records": [
+                    {
+                        "stockId": "TW:2330",
+                        "stockName": "台積電",
+                        "nameStatus": "ok",
+                        "fields": {
+                            "institutional_5d": {
+                                "status": "ok",
+                                "source_as_of": "2024-06-24",
+                                "value": [
+                                    {
+                                        "date": f"2024-06-{20 + i:02d}",
+                                        "foreignNetLots": 10 + i,
+                                        "trustNetLots": 1,
+                                        "dealerNetLots": -1,
+                                        "totalNetLots": 10 + i,
+                                    }
+                                    for i in range(5)
+                                ],
+                            },
+                            "margin": {
+                                "status": "ok",
+                                "source_as_of": "2024-06-24",
+                                "value": {
+                                    "balanceLots": 100,
+                                    "balanceDeltaLotsApprox5Sessions": 5,
+                                },
+                            },
+                            "margin_utilization": {
+                                "status": "unavailable",
+                                "reason": "unverified",
+                            },
+                            "tdcc_holders_ge_400_lots": {
+                                "status": "ok",
+                                "source_as_of": "2024-06-21",
+                                "value": {
+                                    "percent": 41.0,
+                                    "weeklyChangePercentPoints": 0.5,
+                                    "priorWeekDate": "2024-06-14",
+                                },
+                            },
+                        },
+                    }
+                ]
+            },
+        }
+
+    monkeypatch.setattr(
+        "app.repositories.tw_research_repository.tw_research_repository.get_first_pass_snapshot",
+        _snap,
+    )
+    ok = client.get("/api/tw-research/first-pass/snapshots/fps_chip/chip-evidence")
+    assert ok.status_code == 200, ok.text
+    body = ok.json()
+    assert body["snapshotId"] == "fps_chip"
+    assert body["total"] == 1
+    assert body["rows"][0]["institutional"]["fiveSessionTotalsStatus"] == "ok"
+    assert body["notBuySignal"] is True
+
+    filtered = client.get(
+        "/api/tw-research/first-pass/snapshots/fps_chip/chip-evidence"
+        "?stockIds=TW:9999,TW:2330"
+    )
+    assert filtered.status_code == 200, filtered.text
+    assert filtered.json()["total"] == 1
+    assert filtered.json()["rows"][0]["stockId"] == "TW:2330"
+    assert filtered.json()["stockIdsFilter"] == ["TW:9999", "TW:2330"]
+
+
+def test_chip_evidence_cross_user_returns_404(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.repositories.tw_research_repository.tw_research_repository.is_available",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        "app.repositories.tw_research_repository.tw_research_repository.get_first_pass_snapshot",
+        lambda snapshot_id, user_id=None: None,
+    )
+    from fastapi import HTTPException
+    from app.api.routes import tw_research as tw_routes
+
+    try:
+        tw_routes.get_first_pass_chip_evidence(
+            "fps_secret",
+            user_id="intruder",
+            offset=0,
+            limit=25,
+            q=None,
+            stockIds=None,
+        )
+    except HTTPException as exc:
+        assert exc.status_code == 404
+        assert exc.detail == "first_pass_snapshot_not_found"
+    else:
+        raise AssertionError("Expected HTTPException for cross-user chip evidence")

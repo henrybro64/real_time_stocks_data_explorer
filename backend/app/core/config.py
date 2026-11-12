@@ -128,6 +128,10 @@ class Settings(BaseSettings):
     tw_research_schedule_token: str = Field(default="")
     tw_research_schedule_user_id: str = Field(default="")
     tw_research_schedule_enabled: bool = Field(default=False)
+    # Chip publication-ready times Asia/Taipei (HH:MM). Approximate; institutional
+    # T86 ~15:00–16:00, margin ~21:00–21:30. Override via TW_CHIP_*_READY.
+    tw_chip_institutional_ready: str = Field(default="16:30")
+    tw_chip_margin_ready: str = Field(default="21:30")
     # Backend logging controls.
     log_level: str = Field(default="INFO")
     log_format: str = Field(default="console")
