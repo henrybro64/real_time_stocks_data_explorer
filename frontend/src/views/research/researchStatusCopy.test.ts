@@ -200,6 +200,37 @@ describe("firstPassPlainStatusKey buckets", () => {
     ).toBe("ready_for_candidates");
   });
 
+  it("treats count-free partial list rows with a snapshot as terminal", () => {
+    // Job-list payloads often omit processed/pending counts.
+    expect(
+      firstPassPlainStatusKey({
+        status: "partial",
+        activeSnapshotId: "fps_done",
+      }),
+    ).toBe("ready_for_candidates");
+    expect(
+      jobHistoryOptionLabel(
+        {
+          status: "partial",
+          qualityStatus: "complete_attempted",
+          createdAt: "2026-11-13T02:00:00Z",
+          activeSnapshotId: "fps_done",
+        },
+        ((key: string) => {
+          const map: Record<string, string> = {
+            "research.tw.dateUnknown": "date unknown",
+            "research.tw.plainStatus.ready_for_candidates": "Ready for candidates",
+            "research.tw.plainStatus.paused_manual": "Paused: no collection is running",
+            "research.tw.jobQuality.attempted": "All attempted (may have gaps)",
+            "research.tw.jobQuality.incomplete": "Incomplete",
+          };
+          return map[key] ?? key;
+        }) as never,
+        "en",
+      ),
+    ).toMatch(/Ready for candidates/);
+  });
+
   it("completed 73/73 with only failures is all_failed (terminal)", () => {
     const progress = {
       status: "completed" as const,
@@ -419,12 +450,21 @@ describe("Taipei time formatting", () => {
 });
 
 describe("normalizeFailureClass", () => {
-  it("maps backend failure classes to four investor-facing groups", () => {
+  it("maps backend failure classes to investor-facing groups", () => {
     expect(normalizeFailureClass("timeout")).toBe("transient");
     expect(normalizeFailureClass("transient")).toBe("transient");
     expect(normalizeFailureClass(undefined)).toBe("transient");
     expect(normalizeFailureClass("rate_limited")).toBe("rate_limited");
     expect(normalizeFailureClass("programming_error")).toBe("programming_error");
     expect(normalizeFailureClass("permanent")).toBe("permanent");
+  });
+
+  it("honors retryExhausted over a transient failureClass", () => {
+    expect(normalizeFailureClass("timeout", { retryExhausted: true })).toBe(
+      "retry_exhausted",
+    );
+    expect(normalizeFailureClass("transient", { retryExhausted: false })).toBe(
+      "transient",
+    );
   });
 });

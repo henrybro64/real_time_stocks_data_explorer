@@ -274,6 +274,27 @@ describe("ResearchInvestorSummary", () => {
     expect(text("tw-research-plain-status")).not.toMatch(/沒有可用/);
   });
 
+  it("per-batch reason for retry_exhausted does not promise another automatic retry", async () => {
+    await renderSummary({
+      progress: unfinished,
+      batchResult: {
+        processed: 1,
+        ok: 0,
+        partial: 0,
+        failed: 1,
+        failures: [
+          {
+            stockId: "TW:2330",
+            label: "台積電 (2330)",
+            reasonClass: "retry_exhausted",
+          },
+        ],
+      },
+    });
+    expect(text("tw-research-batch-failure-TW:2330")).toMatch(/已達重試上限/);
+    expect(text("tw-research-batch-failure-TW:2330")).not.toMatch(/將自動重試/);
+  });
+
   it("per-batch reasons for programming_error and permanent classes", async () => {
     await renderSummary({
       progress: unfinished,
@@ -437,6 +458,33 @@ describe("ResearchInvestorSummary", () => {
     expect(screen.getByTestId("tw-research-investor-summary").textContent).not.toMatch(
       /fpj_|fps_|rr_/,
     );
+  });
+
+  it("does not promise automatic collection while browsing a historical unfinished job", async () => {
+    await renderSummary({
+      progress: {
+        status: "running",
+        universeSize: 73,
+        processedCount: 20,
+        pendingCount: 53,
+        cursor: 20,
+        leaseActive: false,
+      },
+      displayedJobId: "fpj_old",
+      runOwnedJobId: "fpj_active",
+      browsingHistorical: true,
+      drain: {
+        armed: true,
+        available: true,
+        lastTickAt: "2026-11-13T03:56:00Z",
+      },
+    });
+    expect(screen.getByTestId("tw-research-plain-status")).toHaveAttribute(
+      "data-bucket",
+      "paused_manual",
+    );
+    expect(text("tw-research-plain-status")).not.toMatch(/自動收集|automatic collection/i);
+    expect(text("tw-research-next-action")).toMatch(/瀏覽/);
   });
 
   it("labels the current research by creation date", async () => {

@@ -123,6 +123,8 @@ function failureReasonKey(reason: FailureReasonClass): TranslationKey {
       return "research.tw.batchFailureReason.programming_error";
     case "permanent":
       return "research.tw.batchFailureReason.permanent";
+    case "retry_exhausted":
+      return "research.tw.batchFailureReason.retry_exhausted";
     default:
       return "research.tw.batchFailureReason.transient";
   }
@@ -145,16 +147,20 @@ export function ResearchInvestorSummary({
   const { t, language } = useLanguage();
   const locale = language === "en" ? "en-US" : "zh-TW";
   const counts = normalizeFirstPassCounts(progress);
+  // Drain only applies to the run-owned job; historical browsing must not
+  // promise automatic collection that drain_first_pass will refuse.
+  const effectiveDrain = browsingHistorical ? null : drain;
+  const effectiveSchedule = browsingHistorical ? null : scheduleEnabled;
   const bucket = firstPassPlainStatusKey(progress, {
-    drain,
-    scheduleEnabled,
+    drain: effectiveDrain,
+    scheduleEnabled: effectiveSchedule,
     now,
     stale,
   });
   const allFailed = bucket === "all_failed";
   const nextAction = firstPassNextActionKey(bucket, {
-    drain,
-    scheduleEnabled,
+    drain: effectiveDrain,
+    scheduleEnabled: effectiveSchedule,
     browsingHistorical,
   });
   const universe = counts?.universe ?? 0;
@@ -163,7 +169,7 @@ export function ResearchInvestorSummary({
     universe > 0 ? Math.min(100, Math.round((processed / universe) * 100)) : 0;
   const nextRetryAt = formatTaipeiDateTime(progress?.nextRetryAt, locale);
   const updatedAt = formatTaipeiDateTime(progress?.updatedAt, locale);
-  const lastTickAt = formatTaipeiDateTime(drain?.lastTickAt, locale);
+  const lastTickAt = formatTaipeiDateTime(effectiveDrain?.lastTickAt, locale);
   const staleTime =
     formatTaipeiDateTime(staleAsOf, locale) ||
     formatTaipeiDateTime(progress?.updatedAt, locale) ||

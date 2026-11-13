@@ -1621,7 +1621,9 @@ export function TwResearchPage({
           String(evidence.nameStatus ?? row.nameStatus ?? ""),
           t("research.tw.nameUnavailable"),
         ),
-        reasonClass: normalizeFailureClass(evidence.failureClass),
+        reasonClass: normalizeFailureClass(evidence.failureClass, {
+          retryExhausted: evidence.retryExhausted === true,
+        }),
       };
     });
     return {
@@ -1706,8 +1708,10 @@ export function TwResearchPage({
                 displayedJobId={firstPassJobId}
                 runOwnedJobId={runOwnedFirstPassJobId}
                 browsingHistorical={browsingHistoricalFirstPassJob}
-                drain={firstPassDrain}
-                scheduleEnabled={scheduleEnabled}
+                drain={browsingHistoricalFirstPassJob ? null : firstPassDrain}
+                scheduleEnabled={
+                  browsingHistoricalFirstPassJob ? null : scheduleEnabled
+                }
                 displayedJobCreatedAt={displayedJobCreatedAt}
                 runOwnedJobCreatedAt={runOwnedJobCreatedAt}
                 batchResult={batchResult}

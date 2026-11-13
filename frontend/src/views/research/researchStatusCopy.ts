@@ -128,11 +128,14 @@ export type PlainStatusOptions = {
 function isTerminalProgress(
   status: string,
   counts: InvestorSummaryCounts | null,
+  hasSnapshot: boolean,
 ): boolean {
   if (status === "failed" || status === "cancelled" || status === "completed") {
     return true;
   }
   if (status === "partial") {
+    // Job-list rows often omit counts; a durable snapshot means the attempt finished.
+    if (hasSnapshot) return true;
     // `partial` is only terminal once every symbol has been attempted.
     return Boolean(counts && counts.universe > 0 && counts.pending === 0);
   }
@@ -174,7 +177,7 @@ export function firstPassPlainStatusKey(
   }
   if (status === "budget_exhausted") return "budget_exhausted";
 
-  const terminal = isTerminalProgress(status, counts);
+  const terminal = isTerminalProgress(status, counts, hasSnapshot);
   if (terminal) {
     // Honesty: HTTP-success jobs with 0 usable rows must not look ready.
     if (jobHasOnlyFailures(counts)) return "all_failed";
@@ -259,31 +262,40 @@ function toDate(iso: unknown): Date | null {
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
+/** Normalize ICU narrow/no-break spaces so UI assertions stay portable across Node builds. */
+function normalizeIntlSpaces(value: string): string {
+  return value.replace(/[\u00a0\u202f\u2007]/g, " ");
+}
+
 /** Locale-aware Asia/Taipei date-time; empty string when `iso` is missing/invalid. */
 export function formatTaipeiDateTime(iso: unknown, locale: string): string {
   const date = toDate(iso);
   if (!date) return "";
-  return new Intl.DateTimeFormat(locale, {
-    timeZone: TAIPEI_TZ,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  }).format(date);
+  return normalizeIntlSpaces(
+    new Intl.DateTimeFormat(locale, {
+      timeZone: TAIPEI_TZ,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    }).format(date),
+  );
 }
 
 /** Locale-aware Asia/Taipei calendar date; empty string when missing/invalid. */
 export function formatTaipeiDate(iso: unknown, locale: string): string {
   const date = toDate(iso);
   if (!date) return "";
-  return new Intl.DateTimeFormat(locale, {
-    timeZone: TAIPEI_TZ,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).format(date);
+  return normalizeIntlSpaces(
+    new Intl.DateTimeFormat(locale, {
+      timeZone: TAIPEI_TZ,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(date),
+  );
 }
 
 /** Failure classes → i18n key suffix for investor-facing per-symbol reasons. */
@@ -291,13 +303,19 @@ export type FailureReasonClass =
   | "transient"
   | "rate_limited"
   | "programming_error"
-  | "permanent";
+  | "permanent"
+  | "retry_exhausted";
 
-export function normalizeFailureClass(raw: unknown): FailureReasonClass {
+export function normalizeFailureClass(
+  raw: unknown,
+  meta?: { retryExhausted?: unknown },
+): FailureReasonClass {
+  if (meta?.retryExhausted === true) return "retry_exhausted";
   const value = String(raw ?? "").trim().toLowerCase();
   if (value === "rate_limited") return "rate_limited";
   if (value === "programming_error") return "programming_error";
   if (value === "permanent") return "permanent";
+  if (value === "retry_exhausted") return "retry_exhausted";
   // timeout / transient / provider_validation / stale / unknown → retryable.
   return "transient";
 }

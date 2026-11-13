@@ -733,6 +733,11 @@ const TW_RESEARCH_ROWS = [
     "資料來源沒有此資料",
   ],
   [
+    "research.tw.batchFailureReason.retry_exhausted",
+    "Retries exhausted; this stock will not be collected again automatically",
+    "已達重試上限，不會再自動收集此股票",
+  ],
+  [
     "research.tw.failuresScheduledRetry",
     "{failed} stocks have failed so far; a retry is scheduled ({time})",
     "目前 {failed} 檔失敗，已排定重試（{time}）",
