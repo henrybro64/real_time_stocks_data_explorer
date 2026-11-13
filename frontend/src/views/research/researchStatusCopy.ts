@@ -301,3 +301,52 @@ export function normalizeFailureClass(raw: unknown): FailureReasonClass {
   // timeout / transient / provider_validation / stale / unknown → retryable.
   return "transient";
 }
+
+/** Map job-list qualityStatus to investor Complete / Partial / Incomplete. */
+export function jobQualityPlainKey(
+  qualityStatus: string | null | undefined,
+): "complete" | "partial" | "incomplete" {
+  const value = String(qualityStatus ?? "").trim().toLowerCase();
+  if (value === "complete_attempted" || value === "verified_ready") {
+    return "complete";
+  }
+  if (
+    value === "incomplete" ||
+    value === "source_incomplete" ||
+    value === "" ||
+    !value
+  ) {
+    return "incomplete";
+  }
+  // partial / processed / and other partial-ish labels
+  return "partial";
+}
+
+export type JobHistoryLabelJob = FirstPassProgressLike & {
+  jobId?: string | null;
+  createdAt?: string | null;
+  qualityStatus?: string | null;
+};
+
+/**
+ * Plain-language job history Select option: date · status · quality.
+ * Raw snake_case status/quality stay out of the visible dropdown.
+ */
+export function jobHistoryOptionLabel(
+  job: JobHistoryLabelJob,
+  // Callers pass the app `t`; keys are built from known plain-status / quality maps.
+  t: (key: never, params?: Record<string, string | number>) => string,
+  language: "en" | "zh-TW",
+): string {
+  const locale = language === "en" ? "en-US" : "zh-TW";
+  const translate = t as (key: string, params?: Record<string, string | number>) => string;
+  const date =
+    formatTaipeiDateTime(job.createdAt, locale) ||
+    translate("research.tw.dateUnknown");
+  // List jobs often omit lease; unfinished running without lease → paused_manual.
+  const bucket = firstPassPlainStatusKey(job);
+  const statusText = translate(`research.tw.plainStatus.${bucket}`, { time: "" });
+  const qualityKey = jobQualityPlainKey(job.qualityStatus);
+  const qualityText = translate(`research.tw.jobQuality.${qualityKey}`);
+  return `${date} · ${statusText} · ${qualityText}`;
+}

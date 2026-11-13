@@ -598,9 +598,39 @@ const TW_RESEARCH_ROWS = [
     "本批 {failed} 檔資料收集失敗，尚無可驗證資料",
   ],
   [
+    "research.tw.batchLeaseHeld",
+    "Another batch is already collecting; please wait",
+    "已有一批資料正在收集中，請稍候再試",
+  ],
+  [
+    "research.tw.batchIncomplete",
+    "This batch did not finish; it will continue on the next run",
+    "本批未完成，將在下一次執行時繼續",
+  ],
+  [
     "research.tw.batchResultSummary",
     "This batch: {processed} processed · {ok} verified · {partial} partial · {failed} failed",
     "本批結果：處理 {processed} 檔 · 已確認 {ok} · 部分完成 {partial} · 失敗 {failed}",
+  ],
+  [
+    "research.tw.jobQuality.complete",
+    "Complete",
+    "完整",
+  ],
+  [
+    "research.tw.jobQuality.partial",
+    "Partial",
+    "部分",
+  ],
+  [
+    "research.tw.jobQuality.incomplete",
+    "Incomplete",
+    "尚未完成",
+  ],
+  [
+    "research.tw.jobHistoryRawStatus",
+    "Raw status · quality: {status} · {qualityStatus}",
+    "原始狀態 · 品質：{status} · {qualityStatus}",
   ],
   [
     "research.tw.batchFailedSymbolsLabel",

@@ -2834,6 +2834,7 @@ class TwResearchRepository(SessionBoundRepository):
         status: str | None = None,
         q: str | None = None,
         completeness: str | None = None,
+        stock_ids: list[str] | None = None,
         offset: int = 0,
         limit: int = 50,
     ) -> list[dict[str, Any]]:
@@ -2844,6 +2845,12 @@ class TwResearchRepository(SessionBoundRepository):
             )
             if status:
                 stmt = stmt.where(TwResearchFirstPassSymbolResult.status == status)
+            if stock_ids:
+                capped = [str(item).strip() for item in stock_ids if str(item).strip()][:50]
+                if capped:
+                    stmt = stmt.where(
+                        TwResearchFirstPassSymbolResult.stock_id.in_(capped)
+                    )
             rows = session.execute(
                 stmt.order_by(TwResearchFirstPassSymbolResult.stock_id)
             ).scalars().all()
@@ -2878,6 +2885,7 @@ class TwResearchRepository(SessionBoundRepository):
         status: str | None = None,
         q: str | None = None,
         completeness: str | None = None,
+        stock_ids: list[str] | None = None,
     ) -> int:
         session_factory = self._session_factory()
         with session_factory() as session:
@@ -2886,6 +2894,12 @@ class TwResearchRepository(SessionBoundRepository):
             )
             if status:
                 stmt = stmt.where(TwResearchFirstPassSymbolResult.status == status)
+            if stock_ids:
+                capped = [str(item).strip() for item in stock_ids if str(item).strip()][:50]
+                if capped:
+                    stmt = stmt.where(
+                        TwResearchFirstPassSymbolResult.stock_id.in_(capped)
+                    )
             rows = session.execute(stmt).scalars().all()
             return sum(
                 1

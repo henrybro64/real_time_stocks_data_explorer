@@ -19,6 +19,8 @@ import {
 
 /** Result of the most recent manual batch only (never cumulative job counts). */
 export type BatchResultView = {
+  /** processed = symbols finished; lease_held / batch_incomplete = no-op HTTP 200. */
+  kind?: "processed" | "lease_held" | "batch_incomplete";
   processed: number;
   ok: number;
   partial: number;
@@ -172,8 +174,10 @@ export function ResearchInvestorSummary({
     counts && counts.failed > 0 && firstPassBucketIsUnfinished(bucket)
       ? counts.failed
       : 0;
+  const batchKind = batchResult?.kind ?? (batchResult ? "processed" : null);
   const batchAllFailed =
     batchResult !== null &&
+    batchKind === "processed" &&
     batchResult.processed > 0 &&
     batchResult.failed === batchResult.processed;
   const plainStatusText = t(plainStatusTranslationKey(bucket), {
@@ -306,40 +310,62 @@ export function ResearchInvestorSummary({
       </p>
       {batchResult ? (
         <div data-testid="tw-research-batch-result">
-          <p className="cds--helper-text-01" data-testid="tw-research-batch-summary">
-            {t("research.tw.batchResultSummary", {
-              processed: batchResult.processed,
-              ok: batchResult.ok,
-              partial: batchResult.partial,
-              failed: batchResult.failed,
-            })}
-          </p>
-          {batchAllFailed ? (
+          {batchKind === "lease_held" ? (
             <p
               className="cds--body-compact-01"
-              data-testid="tw-research-batch-all-failed"
+              data-testid="tw-research-batch-lease-held"
               role="status"
             >
-              {t("research.tw.batchAllFailed", { failed: batchResult.failed })}
+              {t("research.tw.batchLeaseHeld")}
             </p>
           ) : null}
-          {batchResult.failures.length > 0 ? (
-            <div data-testid="tw-research-batch-failed-symbols">
-              <p className="cds--helper-text-01">
-                {t("research.tw.batchFailedSymbolsLabel")}
+          {batchKind === "batch_incomplete" ? (
+            <p
+              className="cds--body-compact-01"
+              data-testid="tw-research-batch-incomplete"
+              role="status"
+            >
+              {t("research.tw.batchIncomplete")}
+            </p>
+          ) : null}
+          {batchKind === "processed" ? (
+            <>
+              <p className="cds--helper-text-01" data-testid="tw-research-batch-summary">
+                {t("research.tw.batchResultSummary", {
+                  processed: batchResult.processed,
+                  ok: batchResult.ok,
+                  partial: batchResult.partial,
+                  failed: batchResult.failed,
+                })}
               </p>
-              <ul>
-                {batchResult.failures.map((failure) => (
-                  <li
-                    key={failure.stockId}
-                    className="cds--helper-text-01"
-                    data-testid={`tw-research-batch-failure-${failure.stockId}`}
-                  >
-                    {failure.label} — {t(failureReasonKey(failure.reasonClass))}
-                  </li>
-                ))}
-              </ul>
-            </div>
+              {batchAllFailed ? (
+                <p
+                  className="cds--body-compact-01"
+                  data-testid="tw-research-batch-all-failed"
+                  role="status"
+                >
+                  {t("research.tw.batchAllFailed", { failed: batchResult.failed })}
+                </p>
+              ) : null}
+              {batchResult.failures.length > 0 ? (
+                <div data-testid="tw-research-batch-failed-symbols">
+                  <p className="cds--helper-text-01">
+                    {t("research.tw.batchFailedSymbolsLabel")}
+                  </p>
+                  <ul>
+                    {batchResult.failures.map((failure) => (
+                      <li
+                        key={failure.stockId}
+                        className="cds--helper-text-01"
+                        data-testid={`tw-research-batch-failure-${failure.stockId}`}
+                      >
+                        {failure.label} — {t(failureReasonKey(failure.reasonClass))}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
+            </>
           ) : null}
         </div>
       ) : null}

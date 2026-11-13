@@ -46,7 +46,7 @@ import {
   researchErrorRawDetail,
 } from "./researchErrorCopy";
 import {
-  formatTaipeiDateTime,
+  jobHistoryOptionLabel,
   normalizeFailureClass,
   type FirstPassProgressLike,
 } from "./researchStatusCopy";
@@ -926,11 +926,13 @@ export function TwResearchPage({
       let failedSymbols: Array<Record<string, unknown>> = [];
       if (Number(counts.failed ?? 0) > 0 && batchIds.length > 0) {
         try {
+          const stockIds = batchIds.slice(0, 50);
           const result = await fetchTwResearchFirstPassSymbols(firstPassJobId, {
             status: "failed",
-            limit: 200,
+            stockIds,
+            limit: Math.min(Math.max(stockIds.length, 1), 50),
           });
-          const wanted = new Set(batchIds);
+          const wanted = new Set(stockIds);
           failedSymbols = (
             Array.isArray(result.records)
               ? (result.records as Array<Record<string, unknown>>)
@@ -1572,6 +1574,29 @@ export function TwResearchPage({
     const partial = Number(counts.partial ?? 0);
     const failed = Number(counts.failed ?? 0);
     const processedInBatch = ok + partial + failed;
+    const emptyFailures: BatchResultView["failures"] = [];
+    if (batchMutationData.leaseHeld === true) {
+      return {
+        kind: "lease_held",
+        processed: 0,
+        ok: 0,
+        partial: 0,
+        failed: 0,
+        failures: emptyFailures,
+      };
+    }
+    const leaseLost = batchMutationData.leaseLost === true;
+    const budgetStopped = batchMutationData.budgetStopped === true;
+    if (leaseLost || (budgetStopped && processedInBatch === 0)) {
+      return {
+        kind: "batch_incomplete",
+        processed: 0,
+        ok: 0,
+        partial: 0,
+        failed: 0,
+        failures: emptyFailures,
+      };
+    }
     if (processedInBatch <= 0) return null;
     const failures = (batchMutationData.failedSymbols ?? []).map((row) => {
       const stockId = String(row.stockId ?? "");
@@ -1587,7 +1612,14 @@ export function TwResearchPage({
         reasonClass: normalizeFailureClass(evidence.failureClass),
       };
     });
-    return { processed: processedInBatch, ok, partial, failed, failures };
+    return {
+      kind: "processed",
+      processed: processedInBatch,
+      ok,
+      partial,
+      failed,
+      failures,
+    };
   }, [batchMutationData, firstPassJobId, t]);
 
   const firstPassBatchDisabledReason: TranslationKey | null = !firstPassJobId
@@ -2069,12 +2101,14 @@ export function TwResearchPage({
                     <SelectItem
                       key={String(job.jobId)}
                       value={String(job.jobId)}
-                      text={`${
-                        formatTaipeiDateTime(
-                          job.createdAt,
-                          language === "en" ? "en-US" : "zh-TW",
-                        ) || t("research.tw.dateUnknown")
-                      } · ${String(job.status ?? "")} · ${String(job.qualityStatus ?? "")}`}
+                      text={jobHistoryOptionLabel(
+                        job as FirstPassProgressLike & {
+                          createdAt?: string | null;
+                          qualityStatus?: string | null;
+                        },
+                        t,
+                        language,
+                      )}
                     />
                   ))}
                 </Select>
@@ -2129,6 +2163,17 @@ export function TwResearchPage({
               </Stack>
               <AdvancedDetailsDisclosure>
                 <p className="cds--helper-text-01">{t("research.tw.historicalJobsLabel")}</p>
+                {selectedFirstPassJob ? (
+                  <p
+                    className="cds--helper-text-01"
+                    data-testid="tw-research-job-history-raw-status"
+                  >
+                    {t("research.tw.jobHistoryRawStatus", {
+                      status: String(selectedFirstPassJob.status ?? ""),
+                      qualityStatus: String(selectedFirstPassJob.qualityStatus ?? ""),
+                    })}
+                  </p>
+                ) : null}
                 <TextArea
                   id="tw-research-membership-json"
                   labelText={t("research.tw.membershipJson")}

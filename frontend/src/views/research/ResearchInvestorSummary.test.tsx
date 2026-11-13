@@ -327,6 +327,61 @@ describe("ResearchInvestorSummary", () => {
     );
   });
 
+  it("no-op batch: leaseHeld shows wait banner", async () => {
+    await renderSummary({
+      progress: unfinished,
+      batchResult: {
+        kind: "lease_held",
+        processed: 0,
+        ok: 0,
+        partial: 0,
+        failed: 0,
+        failures: [],
+      },
+    });
+    expect(text("tw-research-batch-lease-held")).toBe(
+      "已有一批資料正在收集中，請稍候再試",
+    );
+    expect(screen.queryByTestId("tw-research-batch-summary")).not.toBeInTheDocument();
+  });
+
+  it("no-op batch: leaseLost / budgetStopped shows continue-next-run banner", async () => {
+    await renderSummary({
+      progress: unfinished,
+      batchResult: {
+        kind: "batch_incomplete",
+        processed: 0,
+        ok: 0,
+        partial: 0,
+        failed: 0,
+        failures: [],
+      },
+    });
+    expect(text("tw-research-batch-incomplete")).toBe(
+      "本批未完成，將在下一次執行時繼續",
+    );
+  });
+
+  it("no-op batch English leaseHeld copy", async () => {
+    await renderSummary(
+      {
+        progress: unfinished,
+        batchResult: {
+          kind: "lease_held",
+          processed: 0,
+          ok: 0,
+          partial: 0,
+          failed: 0,
+          failures: [],
+        },
+      },
+      "en",
+    );
+    expect(text("tw-research-batch-lease-held")).toBe(
+      "Another batch is already collecting; please wait",
+    );
+  });
+
   it("stale banner replaces collecting_now with last-known-state copy", async () => {
     await renderSummary({
       progress: { ...unfinished, leaseActive: true },

@@ -349,7 +349,8 @@ describe("TwResearchPage investor status scenarios (#350/#351)", () => {
     );
     expect(fetchTwResearchFirstPassSymbols).toHaveBeenCalledWith(JOB_ID, {
       status: "failed",
-      limit: 200,
+      stockIds: batchIds,
+      limit: 10,
     });
     expect(screen.getByTestId("tw-research-batch-failure-TW:2330")).toHaveTextContent(
       "台積電 (2330) — 暫時無法取得，將自動重試",
@@ -534,9 +535,19 @@ describe("TwResearchPage default UI hides internal terms (#351)", () => {
     expect(screen.getByTestId("tw-research-next-action").textContent?.length).toBeGreaterThan(
       10,
     );
-    // Job history option shows a date, not the id.
+    // Job history option shows a date, not the id; no raw snake_case in options.
     const history = screen.getByTestId("tw-research-first-pass-job-history");
     expect(history.textContent).toMatch(/2026/);
+    const options = within(history).getAllByRole("option");
+    expect(options.length).toBeGreaterThan(0);
+    for (const option of options) {
+      const label = option.textContent ?? "";
+      // No raw snake_case API tokens (underscores) in the visible dropdown.
+      expect(label).not.toMatch(/complete_attempted|_/);
+    }
+    // Raw status · quality stays under Advanced only.
+    expect(advanced).toMatch(/running/);
+    expect(advanced).toMatch(/incomplete/);
   }
 
   it("zh-TW", async () => {
@@ -549,6 +560,70 @@ describe("TwResearchPage default UI hides internal terms (#351)", () => {
 });
 
 describe("TwResearchPage request error copy (#350)", () => {
+  it("HTTP 200 leaseHeld shows no-op wait banner", async () => {
+    const user = userEvent.setup();
+    seed({ progress: { leaseActive: false } });
+    vi.mocked(runTwResearchFirstPassBatch).mockResolvedValue({
+      jobId: JOB_ID,
+      status: "running",
+      leaseHeld: true,
+      leaseLost: false,
+      budgetStopped: false,
+      batchIds: [],
+      batchCounts: { ok: 0, partial: 0, failed: 0 },
+      processed: 0,
+    });
+    renderPage();
+    await waitForBucket("paused_manual");
+    await user.click(await screen.findByTestId("tw-research-run-first-pass-batch"));
+    expect(await screen.findByTestId("tw-research-batch-lease-held")).toHaveTextContent(
+      "已有一批資料正在收集中，請稍候再試",
+    );
+    expect(screen.queryByTestId("tw-research-batch-summary")).not.toBeInTheDocument();
+  });
+
+  it("HTTP 200 leaseLost shows batch-incomplete banner", async () => {
+    const user = userEvent.setup();
+    seed({ progress: { leaseActive: false } });
+    vi.mocked(runTwResearchFirstPassBatch).mockResolvedValue({
+      jobId: JOB_ID,
+      status: "running",
+      leaseHeld: false,
+      leaseLost: true,
+      budgetStopped: false,
+      batchIds: ["TW:2330"],
+      batchCounts: { ok: 0, partial: 0, failed: 0 },
+      processed: 0,
+    });
+    renderPage();
+    await waitForBucket("paused_manual");
+    await user.click(await screen.findByTestId("tw-research-run-first-pass-batch"));
+    expect(await screen.findByTestId("tw-research-batch-incomplete")).toHaveTextContent(
+      "本批未完成，將在下一次執行時繼續",
+    );
+  });
+
+  it("HTTP 200 budgetStopped with processed 0 shows batch-incomplete banner", async () => {
+    const user = userEvent.setup();
+    seed({ progress: { leaseActive: false } });
+    vi.mocked(runTwResearchFirstPassBatch).mockResolvedValue({
+      jobId: JOB_ID,
+      status: "running",
+      leaseHeld: false,
+      leaseLost: false,
+      budgetStopped: true,
+      batchIds: [],
+      batchCounts: { ok: 0, partial: 0, failed: 0 },
+      processed: 0,
+    });
+    renderPage();
+    await waitForBucket("paused_manual");
+    await user.click(await screen.findByTestId("tw-research-run-first-pass-batch"));
+    expect(await screen.findByTestId("tw-research-batch-incomplete")).toHaveTextContent(
+      "本批未完成，將在下一次執行時繼續",
+    );
+  });
+
   it("first-pass batch 409 job-failed uses plain copy; raw detail is advanced-only", async () => {
     const user = userEvent.setup();
     seed({ progress: { leaseActive: false } });

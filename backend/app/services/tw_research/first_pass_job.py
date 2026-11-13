@@ -747,15 +747,32 @@ class FirstPassJobService:
         status: str | None = None,
         q: str | None = None,
         completeness: str | None = None,
+        stock_ids: list[str] | None = None,
         offset: int = 0,
         limit: int = 50,
     ) -> dict[str, Any]:
         self.get_job(job_id, user_id=user_id)
+        filtered_ids: list[str] | None = None
+        if stock_ids:
+            seen: set[str] = set()
+            filtered_ids = []
+            for item in stock_ids:
+                cleaned = str(item).strip()
+                if not cleaned:
+                    continue
+                key = cleaned.upper()
+                if key in seen:
+                    continue
+                seen.add(key)
+                filtered_ids.append(cleaned)
+                if len(filtered_ids) >= 50:
+                    break
         rows = self._repo.list_first_pass_symbols(
             job_id,
             status=status,
             q=q,
             completeness=completeness,
+            stock_ids=filtered_ids,
             offset=offset,
             limit=limit,
         )
@@ -764,6 +781,7 @@ class FirstPassJobService:
             status=status,
             q=q,
             completeness=completeness,
+            stock_ids=filtered_ids,
         )
         return {
             "jobId": job_id,
@@ -773,6 +791,7 @@ class FirstPassJobService:
             "statusFilter": status,
             "q": q,
             "completenessFilter": completeness,
+            "stockIdsFilter": filtered_ids,
             "records": [
                 {
                     "stockId": row["stock_id"],

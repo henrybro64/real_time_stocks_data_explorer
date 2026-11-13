@@ -9,6 +9,8 @@ import {
   firstPassPlainStatusKey,
   formatTaipeiDate,
   formatTaipeiDateTime,
+  jobHistoryOptionLabel,
+  jobQualityPlainKey,
   normalizeFailureClass,
   normalizeFirstPassCounts,
 } from "./researchStatusCopy";
@@ -268,6 +270,48 @@ describe("firstPassPlainStatusKey buckets", () => {
     );
     expect(bucket).not.toBe("ready_for_candidates");
     expect(bucket).not.toBe("collecting_now");
+  });
+});
+
+describe("jobHistoryOptionLabel / jobQualityPlainKey", () => {
+  const t = (key: string) => {
+    const map: Record<string, string> = {
+      "research.tw.dateUnknown": "date unknown",
+      "research.tw.plainStatus.paused_manual": "Paused: no collection is running",
+      "research.tw.plainStatus.not_started": "Not started yet",
+      "research.tw.plainStatus.ready_for_candidates": "Ready for candidates",
+      "research.tw.jobQuality.complete": "Complete",
+      "research.tw.jobQuality.partial": "Partial",
+      "research.tw.jobQuality.incomplete": "Incomplete",
+    };
+    return map[key] ?? key;
+  };
+
+  it("maps qualityStatus to Complete / Partial / Incomplete", () => {
+    expect(jobQualityPlainKey("complete_attempted")).toBe("complete");
+    expect(jobQualityPlainKey("verified_ready")).toBe("complete");
+    expect(jobQualityPlainKey("incomplete")).toBe("incomplete");
+    expect(jobQualityPlainKey("processed")).toBe("partial");
+  });
+
+  it("builds plain dropdown labels without snake_case tokens", () => {
+    const label = jobHistoryOptionLabel(
+      {
+        status: "running",
+        qualityStatus: "complete_attempted",
+        createdAt: "2026-11-13T02:00:00Z",
+        cursor: 20,
+        processedCount: 20,
+        universeSize: 73,
+        leaseActive: false,
+      },
+      t as never,
+      "en",
+    );
+    expect(label).toMatch(/2026/);
+    expect(label).toMatch(/Paused: no collection is running/);
+    expect(label).toMatch(/Complete/);
+    expect(label).not.toMatch(/complete_attempted|_/);
   });
 });
 
