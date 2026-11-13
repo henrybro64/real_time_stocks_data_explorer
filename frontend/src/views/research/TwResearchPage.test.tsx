@@ -231,7 +231,7 @@ describe("TwResearchPage operation failures (#328)", () => {
     await user.click(screen.getByTestId("tw-research-create"));
     expect(await screen.findByLabelText("掃描 ID")).toHaveValue(SCAN_ID);
     const manifestError = await screen.findByTestId("tw-research-error-manifest");
-    expect(manifestError).toHaveTextContent("匯出 manifest");
+    expect(manifestError).toHaveTextContent("匯出摘要");
     expect(manifestError).toHaveTextContent("Request failed: 500");
     expect(manifestError).toHaveTextContent("request abc12345");
     expect(screen.queryByTestId("tw-research-error-create")).not.toBeInTheDocument();
@@ -513,7 +513,9 @@ describe("TwResearchPage persisted scans (#327)", () => {
     expect(screen.getByText("TW:2330")).toBeInTheDocument();
     expect(createTwResearchScan).not.toHaveBeenCalled();
     expect(runTwResearchBatch).not.toHaveBeenCalled();
-    expect(screen.getByTestId("tw-research-worker")).toHaveTextContent("沒有有效租約");
+    expect(screen.getByTestId("tw-research-worker")).toHaveTextContent(
+      "目前沒有進行中的處理鎖定",
+    );
   });
 
   it("opens a direct scan link and can switch to another saved scan", async () => {
@@ -571,7 +573,9 @@ describe("TwResearchPage persisted scans (#327)", () => {
       progress({ status: "running", qualityStatus: "source_incomplete", workerActivity: "unknown" }),
     );
     const { client } = renderPage({ initialScanId: SCAN_ID });
-    expect(await screen.findByTestId("tw-research-worker")).toHaveTextContent("沒有有效租約");
+    expect(await screen.findByTestId("tw-research-worker")).toHaveTextContent(
+      "目前沒有進行中的處理鎖定",
+    );
     expect(screen.getByTestId("tw-research-quality")).toHaveTextContent("source_incomplete");
     expect(screen.getByTestId("tw-research-quality")).toHaveTextContent("不是已驗證匯出");
     const progressQuery = client.getQueryCache().find({ queryKey: ["tw-research-progress", SCAN_ID] });
@@ -778,12 +782,12 @@ describe("TwResearchPage persisted scans (#327)", () => {
     expect(await screen.findByTestId("tw-research-tabs")).toBeInTheDocument();
     await user.click(screen.getByTestId("tw-research-tab-progress"));
     expect(await screen.findByLabelText("掃描 ID")).toHaveValue(SCAN_ID);
-    await user.click(screen.getByRole("button", { name: "載入 Agent JSON" }));
+    await user.click(screen.getByRole("button", { name: "載入匯出 JSON（進階）" }));
     await waitFor(() => {
       const area = screen.getByLabelText("瀏覽器可讀匯出 JSON") as HTMLTextAreaElement;
       expect(area.value).toContain("TW:2330");
     });
-    expect(screen.getByText(/Agent 交接 chunk 0／3/)).toBeInTheDocument();
+    expect(screen.getByText(/匯出資料第 0／3 頁/)).toBeInTheDocument();
 
     await user.selectOptions(screen.getByLabelText("最近的掃描"), older);
     expect(await screen.findByLabelText("掃描 ID")).toHaveValue(older);
@@ -791,7 +795,7 @@ describe("TwResearchPage persisted scans (#327)", () => {
       const area = screen.getByLabelText("瀏覽器可讀匯出 JSON") as HTMLTextAreaElement;
       expect(area.value).toBe("");
     });
-    expect(screen.getByText(/Agent 交接 chunk 0／—/)).toBeInTheDocument();
+    expect(screen.getByText(/匯出資料第 0／— 頁/)).toBeInTheDocument();
   });
 
   it("surfaces a recent-scan list failure without hiding cached history", async () => {
@@ -847,7 +851,9 @@ describe("TwResearchPage persisted scans (#327)", () => {
     expect(screen.getByTestId("tw-research-resume")).toBeEnabled();
     expect(screen.getByTestId("tw-research-quality")).toHaveTextContent("source_incomplete");
     expect(screen.getByTestId("tw-research-unresolved")).toHaveTextContent("history_budget_exhausted");
-    expect(screen.getByTestId("tw-research-worker")).toHaveTextContent("沒有 worker 正在處理");
+    expect(screen.getByTestId("tw-research-worker")).toHaveTextContent(
+      "此掃描目前沒有背景處理在執行",
+    );
     expect(createTwResearchScan).not.toHaveBeenCalled();
     expect(runTwResearchBatch).not.toHaveBeenCalled();
   });
@@ -1034,7 +1040,11 @@ describe("TwResearchPage reliability UX (#335–#337)", () => {
     await waitFor(() => {
       expect(draft).toHaveValue("TW:2330\nTW:2303");
     });
-    await user.click(screen.getByRole("button", { name: /儲存分析師候選集|Save analyst candidate set/i }));
+    await user.click(
+      screen.getByRole("button", {
+        name: /儲存要深入分析的股票|Save stocks for deeper analysis/i,
+      }),
+    );
 
     expect(await screen.findByTestId("tw-research-candidate-proposed")).toHaveValue(
       "TW:2330\nTW:2303",
@@ -1210,17 +1220,25 @@ describe("TwResearchPage reliability UX (#335–#337)", () => {
     // Candidate set hydrates the prior snapshot id into local state.
     await waitFor(() => {
       expect(
-        screen.getByRole("button", { name: /載入第一輪 manifest|Load first-pass manifest/i }),
+        screen.getByRole("button", {
+          name: /載入研究資料摘要|Load research data summary/i,
+        }),
       ).toBeEnabled();
     });
 
-    await user.click(screen.getByRole("button", { name: /開始第一輪收集|Start first-pass job/i }));
+    await user.click(
+      screen.getByRole("button", {
+        name: /開始第一輪資料收集|Start first-round data collection/i,
+      }),
+    );
     await waitFor(() => {
       expect(createTwResearchFirstPassJob).toHaveBeenCalled();
     });
     await waitFor(() => {
       expect(
-        screen.getByRole("button", { name: /載入第一輪 manifest|Load first-pass manifest/i }),
+        screen.getByRole("button", {
+          name: /載入研究資料摘要|Load research data summary/i,
+        }),
       ).toBeDisabled();
     });
   });
@@ -1239,10 +1257,16 @@ describe("TwResearchPage reliability UX (#335–#337)", () => {
     renderPage();
     expect(await screen.findByTestId("tw-research-phase-banner")).toBeInTheDocument();
     await waitFor(() => {
-      expect(screen.getByTestId("tw-research-phase-label")).toHaveTextContent(/階段 2|Phase 2/);
+      expect(screen.getByTestId("tw-research-phase-label")).toHaveTextContent(/步驟 2|Step 2/);
     });
+    expect(screen.getByTestId("tw-research-investor-summary")).toBeInTheDocument();
+    expect(screen.getByTestId("tw-research-phase-banner").textContent).not.toMatch(
+      /Notion|CronJob|#\d{3}/,
+    );
     await user.click(
-      screen.getByRole("button", { name: /載入繁中證據範例|Load ZH-TW evidence example/i }),
+      screen.getByRole("button", {
+        name: /載入繁中範例|Load Traditional Chinese example/i,
+      }),
     );
     await waitFor(() => {
       expect(fetchTwResearchReportEvidenceExampleZhTw).toHaveBeenCalled();

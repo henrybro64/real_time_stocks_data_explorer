@@ -37,6 +37,15 @@ import {
   type ChipEvidenceRow,
 } from "./ChipEvidenceCard";
 import {
+  AdvancedDetailsDisclosure,
+  ResearchInvestorSummary,
+} from "./ResearchInvestorSummary";
+import {
+  batchLooksAllFailed,
+  normalizeFirstPassCounts,
+  type FirstPassProgressLike,
+} from "./researchStatusCopy";
+import {
   advanceTwResearchRunGate,
   createTwResearchFirstPassJob,
   createTwResearchScan,
@@ -1414,7 +1423,65 @@ export function TwResearchPage({
       label: "research.tw.errorFirstPassJobs",
       error: firstPassJobsQuery.isFetching ? null : firstPassJobsQuery.error,
     },
+    {
+      key: "first-pass-batch",
+      label: "research.tw.errorFirstPassBatch",
+      error: firstPassBatchMutation.isPending ? null : firstPassBatchMutation.error,
+    },
   ];
+
+  const runOwnedFirstPassJobId =
+    typeof researchRunQuery.data?.firstPassJobId === "string"
+      ? researchRunQuery.data.firstPassJobId
+      : null;
+
+  const browsingHistoricalFirstPassJob = Boolean(
+    firstPassJobId &&
+      runOwnedFirstPassJobId &&
+      String(firstPassJobId) !== String(runOwnedFirstPassJobId),
+  );
+
+  // Progress must match the selected job. Never mix run-owned nested progress
+  // with a historical job the user is only browsing.
+  const investorProgress = useMemo((): FirstPassProgressLike | null => {
+    const jobProgress = firstPassProgressQuery.data as FirstPassProgressLike | undefined;
+    if (browsingHistoricalFirstPassJob) {
+      return jobProgress ?? null;
+    }
+    if (runOwnsSelectedFirstPassJob) {
+      if (
+        jobProgress &&
+        (jobProgress.universeSize != null || jobProgress.processedCount != null)
+      ) {
+        return jobProgress;
+      }
+      const nested = researchRunQuery.data?.firstPassProgress as
+        | FirstPassProgressLike
+        | null
+        | undefined;
+      if (nested) return nested;
+      return jobProgress ?? null;
+    }
+    return jobProgress ?? null;
+  }, [
+    firstPassProgressQuery.data,
+    browsingHistoricalFirstPassJob,
+    runOwnsSelectedFirstPassJob,
+    researchRunQuery.data?.firstPassProgress,
+  ]);
+
+  const investorCounts = normalizeFirstPassCounts(investorProgress);
+  const showBatchAllFailed = batchLooksAllFailed(investorCounts);
+  const firstPassDrain = researchRunQuery.data?.firstPassDrain ?? null;
+  const scheduleEnabled = researchRunQuery.data?.scheduleEnabled ?? null;
+
+  const firstPassBatchDisabledReason: TranslationKey | null = !firstPassJobId
+    ? "research.tw.batchDisabledNeedJob"
+    : firstPassJobIsTerminalFailed
+      ? "research.tw.batchDisabledFailed"
+      : firstPassBatchMutation.isPending
+        ? "research.tw.batchDisabledBusy"
+        : null;
 
   return (
     <Grid className="app-page-grid" fullWidth>
@@ -1451,10 +1518,18 @@ export function TwResearchPage({
                 <p className="cds--helper-text-01" data-testid="tw-research-phase-meta">
                   {t("research.tw.phaseMeta", {
                     status: String(researchRunQuery.data.status ?? "—"),
-                    runId: String(researchRunQuery.data.researchRunId ?? "—"),
                   })}
                 </p>
               ) : null}
+              <ResearchInvestorSummary
+                progress={investorProgress}
+                displayedJobId={firstPassJobId}
+                runOwnedJobId={runOwnedFirstPassJobId}
+                browsingHistorical={browsingHistoricalFirstPassJob}
+                drain={firstPassDrain}
+                scheduleEnabled={scheduleEnabled}
+                showBatchAllFailed={showBatchAllFailed}
+              />
               <Stack gap={2} orientation="horizontal">
                 <Button
                   kind="primary"
@@ -1482,14 +1557,31 @@ export function TwResearchPage({
                 </Button>
               </Stack>
               <p className="cds--helper-text-01">{t("research.tw.evidencePackNote")}</p>
-              {reportEvidenceText ? (
-                <pre
-                  className="cds--body-compact-01"
-                  data-testid="tw-research-report-evidence"
-                  style={{ whiteSpace: "pre-wrap", maxHeight: 240, overflow: "auto" }}
-                >
-                  {reportEvidenceText}
-                </pre>
+              {researchRunQuery.data || reportEvidenceText ? (
+                <AdvancedDetailsDisclosure>
+                  {researchRunQuery.data ? (
+                    <p
+                      className="cds--helper-text-01"
+                      data-testid="tw-research-phase-meta-advanced"
+                    >
+                      {t("research.tw.phaseMetaAdvanced", {
+                        runId: String(researchRunQuery.data.researchRunId ?? "—"),
+                        jobId: String(
+                          runOwnedFirstPassJobId ?? firstPassJobId ?? "—",
+                        ),
+                      })}
+                    </p>
+                  ) : null}
+                  {reportEvidenceText ? (
+                    <pre
+                      className="cds--body-compact-01"
+                      data-testid="tw-research-report-evidence"
+                      style={{ whiteSpace: "pre-wrap", maxHeight: 240, overflow: "auto" }}
+                    >
+                      {reportEvidenceText}
+                    </pre>
+                  ) : null}
+                </AdvancedDetailsDisclosure>
               ) : null}
             </Stack>
           </Tile>
@@ -1699,19 +1791,6 @@ export function TwResearchPage({
                   {t("research.tw.startFirstPass")}
                 </Button>
                 <Button
-                  kind="secondary"
-                  size="sm"
-                  data-testid="tw-research-run-first-pass-batch"
-                  disabled={
-                    !firstPassJobId ||
-                    firstPassBatchMutation.isPending ||
-                    firstPassJobIsTerminalFailed
-                  }
-                  onClick={() => firstPassBatchMutation.mutate()}
-                >
-                  {t("research.tw.runFirstPassBatch")}
-                </Button>
-                <Button
                   kind="tertiary"
                   size="sm"
                   disabled={!firstPassJobId || loadFirstPassEvidenceMutation.isPending}
@@ -1719,15 +1798,45 @@ export function TwResearchPage({
                 >
                   {t("research.tw.loadFirstPassEvidence")}
                 </Button>
-                <Button
-                  kind="tertiary"
-                  size="sm"
-                  disabled={!firstPassSnapshotId || loadFirstPassManifestMutation.isPending}
-                  onClick={() => loadFirstPassManifestMutation.mutate(0)}
-                >
-                  {t("research.tw.loadFirstPassManifest")}
-                </Button>
               </Stack>
+              <AdvancedDetailsDisclosure>
+                <Stack gap={3} orientation="horizontal">
+                  <Button
+                    kind="ghost"
+                    size="sm"
+                    data-testid="tw-research-run-first-pass-batch"
+                    title={
+                      firstPassBatchDisabledReason
+                        ? t(firstPassBatchDisabledReason)
+                        : t("research.tw.runFirstPassBatch")
+                    }
+                    disabled={
+                      !firstPassJobId ||
+                      firstPassBatchMutation.isPending ||
+                      firstPassJobIsTerminalFailed
+                    }
+                    onClick={() => firstPassBatchMutation.mutate()}
+                  >
+                    {t("research.tw.runFirstPassBatch")}
+                  </Button>
+                  <Button
+                    kind="ghost"
+                    size="sm"
+                    disabled={!firstPassSnapshotId || loadFirstPassManifestMutation.isPending}
+                    onClick={() => loadFirstPassManifestMutation.mutate(0)}
+                  >
+                    {t("research.tw.loadFirstPassManifest")}
+                  </Button>
+                </Stack>
+                {firstPassBatchDisabledReason ? (
+                  <p
+                    className="cds--helper-text-01"
+                    data-testid="tw-research-batch-disabled-reason"
+                  >
+                    {t(firstPassBatchDisabledReason)}
+                  </p>
+                ) : null}
+              </AdvancedDetailsDisclosure>
               {firstPassJobIsTerminalFailed ? (
                 <div data-testid="tw-research-first-pass-job-failed">
                   <RequestStateNotice
@@ -1863,27 +1972,30 @@ export function TwResearchPage({
                   {t("research.tw.evidenceNext")}
                 </Button>
               </Stack>
-              <TextArea
-                id="tw-research-membership-json"
-                labelText={t("research.tw.membershipJson")}
-                value={membershipText}
-                readOnly
-                rows={6}
-              />
-              <TextArea
-                id="tw-research-first-pass-progress"
-                labelText={t("research.tw.firstPassProgress")}
-                value={firstPassProgressText}
-                readOnly
-                rows={5}
-              />
-              <TextArea
-                id="tw-research-first-pass-evidence"
-                labelText={t("research.tw.firstPassEvidence")}
-                value={firstPassEvidenceText}
-                readOnly
-                rows={6}
-              />
+              <AdvancedDetailsDisclosure>
+                <p className="cds--helper-text-01">{t("research.tw.historicalJobsLabel")}</p>
+                <TextArea
+                  id="tw-research-membership-json"
+                  labelText={t("research.tw.membershipJson")}
+                  value={membershipText}
+                  readOnly
+                  rows={6}
+                />
+                <TextArea
+                  id="tw-research-first-pass-progress"
+                  labelText={t("research.tw.firstPassProgress")}
+                  value={firstPassProgressText}
+                  readOnly
+                  rows={5}
+                />
+                <TextArea
+                  id="tw-research-first-pass-evidence"
+                  labelText={t("research.tw.firstPassEvidence")}
+                  value={firstPassEvidenceText}
+                  readOnly
+                  rows={6}
+                />
+              </AdvancedDetailsDisclosure>
               <Tile data-testid="tw-research-chip-evidence">
                 <h3 className="cds--productive-heading-02">{t("research.tw.chipEvidenceTitle")}</h3>
                 <p className="cds--helper-text-01">{t("research.tw.chipEvidenceDescription")}</p>
@@ -2432,7 +2544,7 @@ export function TwResearchPage({
                                         coverage: row?.coverage ?? null,
                                         monthly: row?.monthly ?? null,
                                         daily: row?.daily ?? null,
-                                        note: "Not a Notion recommendation.",
+                                        note: t("research.tw.watchlistRowNote"),
                                       },
                                       null,
                                       2,
@@ -2592,9 +2704,15 @@ export function TwResearchPage({
                 ) : null}
                 <p className="cds--helper-text-01">{t("research.tw.targetNote")}</p>
                 {manifestQuery.data ? (
-                  <pre className="cds--body-compact-01" style={{ whiteSpace: "pre-wrap" }}>
-                    {JSON.stringify(manifestQuery.data, null, 2)}
-                  </pre>
+                  <AdvancedDetailsDisclosure>
+                    <pre
+                      className="cds--body-compact-01"
+                      data-testid="tw-research-scan-manifest-json"
+                      style={{ whiteSpace: "pre-wrap" }}
+                    >
+                      {JSON.stringify(manifestQuery.data, null, 2)}
+                    </pre>
+                  </AdvancedDetailsDisclosure>
                 ) : null}
               </Stack>
             </Tile>
@@ -2810,14 +2928,16 @@ export function TwResearchPage({
                   {t("research.tw.loadLatestChunk")}
                 </Button>
               </Stack>
-              <TextArea
-                id="tw-research-latest-manifest-json"
-                data-testid="tw-research-latest-manifest-json"
-                labelText={t("research.tw.latestManifestJson")}
-                value={latestManifestText}
-                readOnly
-                rows={12}
-              />
+              <AdvancedDetailsDisclosure>
+                <TextArea
+                  id="tw-research-latest-manifest-json"
+                  data-testid="tw-research-latest-manifest-json"
+                  labelText={t("research.tw.latestManifestJson")}
+                  value={latestManifestText}
+                  readOnly
+                  rows={12}
+                />
+              </AdvancedDetailsDisclosure>
             </Stack>
           </Tile>
 
@@ -2880,13 +3000,15 @@ export function TwResearchPage({
                   })}
                 </p>
                 <p className="cds--helper-text-01">{t("research.tw.agentHandoffNote")}</p>
-                <TextArea
-                  id="tw-research-agent-json"
-                  labelText={t("research.tw.agentJson")}
-                  value={agentText}
-                  readOnly
-                  rows={16}
-                />
+                <AdvancedDetailsDisclosure>
+                  <TextArea
+                    id="tw-research-agent-json"
+                    labelText={t("research.tw.agentJson")}
+                    value={agentText}
+                    readOnly
+                    rows={16}
+                  />
+                </AdvancedDetailsDisclosure>
               </Stack>
             </Tile>
           ) : null}

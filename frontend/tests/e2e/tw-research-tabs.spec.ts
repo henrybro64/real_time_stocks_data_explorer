@@ -13,11 +13,13 @@ async function openResearchPage(page: import("@playwright/test").Page) {
   await expect(page.getByTestId("tw-research-tabs")).toBeVisible();
 }
 
-test("three tabs switch without inventing Notion publication", async ({ page }) => {
+test("three tabs switch without inventing automatic trading publication", async ({ page }) => {
   await openResearchPage(page);
 
   await expect(page.getByTestId("tw-research-phase-banner")).toBeVisible();
-  await expect(page.getByTestId("tw-research-phase-label")).toContainText(/Phase 4|階段 4/);
+  await expect(page.getByTestId("tw-research-phase-label")).toContainText(/Step 4|步驟 4/);
+  await expect(page.getByTestId("tw-research-investor-summary")).toBeVisible();
+  await expect(page.getByTestId("tw-research-phase-banner")).not.toContainText(/Notion|CronJob|#\d{3}/);
 
   await page.getByTestId("tw-research-tab-watchlist").click();
   await expect(page.getByTestId("tw-research-watchlist")).toBeVisible();
@@ -35,20 +37,24 @@ test("three tabs switch without inventing Notion publication", async ({ page }) 
 
 test("analyst evidence example loads as labeled fixture only", async ({ page }) => {
   await openResearchPage(page);
-  await page.getByRole("button", { name: /Load ZH-TW evidence example|載入繁中證據範例/ }).click();
+  await page
+    .getByRole("button", { name: /Load Traditional Chinese example|載入繁中範例/ })
+    .click();
+  await page.getByTestId("tw-research-advanced-details").locator("summary").first().click();
   await expect(page.getByTestId("tw-research-report-evidence")).toContainText("exampleOnly");
   await expect(page.getByTestId("tw-research-report-evidence")).toContainText("不是即時投資建議");
 });
 
-test("watchlist tab remains available after reload and does not invent Notion picks", async ({
+test("watchlist tab remains available after reload and does not invent trading picks", async ({
   page,
 }) => {
   await openResearchPage(page);
   await page.getByTestId("tw-research-tab-watchlist").click();
   await expect(page.getByTestId("tw-research-watchlist")).toBeVisible();
   await expect(page.getByTestId("tw-research-watchlist")).toContainText(
-    /Not a Notion|不是 Notion|觀察/,
+    /not a trading recommendation|不是交易建議|觀察/,
   );
+  await expect(page.getByTestId("tw-research-watchlist")).not.toContainText(/Notion|#\d{3}/);
   await page.reload();
   await expect(page.getByTestId("tw-research-tabs")).toBeVisible();
   await page.getByTestId("tw-research-tab-watchlist").click();
