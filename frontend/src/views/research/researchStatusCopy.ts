@@ -262,9 +262,15 @@ function toDate(iso: unknown): Date | null {
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
-/** Normalize ICU narrow/no-break spaces so UI assertions stay portable across Node builds. */
+/**
+ * Normalize ICU spacing so formatted times stay portable across Node/ICU builds.
+ * CI Linux often inserts U+2009 thin space (or U+202F) between date and time.
+ */
 function normalizeIntlSpaces(value: string): string {
-  return value.replace(/[\u00a0\u202f\u2007]/g, " ");
+  return value
+    .replace(/[\u00a0\u1680\u2000-\u200a\u202f\u205f\u3000]/g, " ")
+    .replace(/ {2,}/g, " ")
+    .trim();
 }
 
 /** Locale-aware Asia/Taipei date-time; empty string when `iso` is missing/invalid. */

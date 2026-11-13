@@ -289,7 +289,9 @@ describe("TwResearchPage investor status scenarios (#350/#351)", () => {
     });
     renderPage();
     await waitForBucket("paused_auto");
-    expect(status().textContent).toMatch(/^等待下一次自動收集（上次執行 \d{4}\/\d{2}\/\d{2} \d{2}:\d{2}）$/);
+    expect(status().textContent).toMatch(
+      /^等待下一次自動收集（上次執行 \d{4}\/\d{2}\/\d{2}\s+\d{2}:\d{2}）$/,
+    );
   });
 
   it("paused_auto_stale when the drain is armed but has no recent tick", async () => {

@@ -447,6 +447,12 @@ describe("Taipei time formatting", () => {
     expect(formatTaipeiDateTime("garbage", "en-US")).toBe("");
     expect(formatTaipeiDate(undefined, "en-US")).toBe("");
   });
+
+  it("collapses ICU thin/narrow spaces to ASCII space", () => {
+    const zh = formatTaipeiDateTime("2026-11-13T03:56:00Z", "zh-TW");
+    expect(zh).toMatch(/^\d{4}\/\d{2}\/\d{2} \d{2}:\d{2}$/);
+    expect(zh).not.toMatch(/[\u00a0\u2000-\u200a\u202f]/);
+  });
 });
 
 describe("normalizeFailureClass", () => {
