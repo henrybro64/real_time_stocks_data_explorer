@@ -576,7 +576,8 @@ describe("TwResearchPage persisted scans (#327)", () => {
     expect(await screen.findByTestId("tw-research-worker")).toHaveTextContent(
       "目前沒有進行中的處理鎖定",
     );
-    expect(screen.getByTestId("tw-research-quality")).toHaveTextContent("source_incomplete");
+    expect(screen.getByTestId("tw-research-quality")).toHaveTextContent("資料不完整");
+    expect(screen.getByTestId("tw-research-quality")).not.toHaveTextContent("source_incomplete");
     expect(screen.getByTestId("tw-research-quality")).toHaveTextContent("不是已驗證匯出");
     const progressQuery = client.getQueryCache().find({ queryKey: ["tw-research-progress", SCAN_ID] });
     const progressInterval = progressQuery?.options.refetchInterval;
@@ -849,7 +850,8 @@ describe("TwResearchPage persisted scans (#327)", () => {
     expect(await screen.findByTestId("tw-research-budget-exhausted")).toBeInTheDocument();
     expect(screen.getByTestId("tw-research-batch")).toBeDisabled();
     expect(screen.getByTestId("tw-research-resume")).toBeEnabled();
-    expect(screen.getByTestId("tw-research-quality")).toHaveTextContent("source_incomplete");
+    expect(screen.getByTestId("tw-research-quality")).toHaveTextContent("資料不完整");
+    expect(screen.getByTestId("tw-research-quality")).not.toHaveTextContent("source_incomplete");
     expect(screen.getByTestId("tw-research-unresolved")).toHaveTextContent("history_budget_exhausted");
     expect(screen.getByTestId("tw-research-worker")).toHaveTextContent(
       "此掃描目前沒有背景處理在執行",

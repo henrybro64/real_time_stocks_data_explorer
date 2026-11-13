@@ -48,6 +48,8 @@ import {
 import {
   jobHistoryOptionLabel,
   normalizeFailureClass,
+  technicalScanPlainStatusKey,
+  technicalScanQualityPlainKey,
   type FirstPassProgressLike,
 } from "./researchStatusCopy";
 import {
@@ -720,6 +722,16 @@ export function TwResearchPage({
     progress?.sourceIncompleteCount ?? scan?.sourceIncompleteCount ?? 0;
   const displayUnresolved = progress?.unresolvedCount ?? scan?.unresolvedCount ?? 0;
   const displayUnprocessed = progress?.unprocessedCount ?? scan?.unprocessedCount ?? 0;
+  const plainScanStatusText = t(
+    `research.tw.scanStatus.${technicalScanPlainStatusKey(displayStatus, {
+      workerActive: displayWorker === "active",
+    })}` as TranslationKey,
+  );
+  const plainScanQualityText = displayQuality
+    ? t(
+        `research.tw.scanQuality.${technicalScanQualityPlainKey(displayQuality)}` as TranslationKey,
+      )
+    : "";
 
   useEffect(() => {
     if (scan) scanRef.current = scan;
@@ -2803,16 +2815,10 @@ export function TwResearchPage({
           {scan ? (
             <Tile data-testid="tw-research-progress">
               <Stack gap={3}>
-                <TextInput
-                  id="tw-research-scan-id"
-                  labelText={t("research.tw.scanId")}
-                  value={scan.scanId}
-                  readOnly
-                />
                 <p className="cds--body-compact-01" data-testid="tw-research-status-line">
                   {displayStageOrder === "monthly_first"
                     ? t("research.tw.statusLineMonthlyFirst", {
-                        status: displayStatus,
+                        status: plainScanStatusText,
                         processed: displayProcessed,
                         universe: displayUniverse,
                         remaining: displayRemaining,
@@ -2823,7 +2829,7 @@ export function TwResearchPage({
                         target: displayTarget,
                       })
                     : t("research.tw.statusLineDailyFirst", {
-                        status: displayStatus,
+                        status: plainScanStatusText,
                         processed: displayProcessed,
                         universe: displayUniverse,
                         remaining: displayRemaining,
@@ -2892,7 +2898,7 @@ export function TwResearchPage({
                 </p>
                 {displayQuality && displayQuality !== "verified_ready" ? (
                   <p className="cds--helper-text-01" data-testid="tw-research-quality">
-                    {t("research.tw.notVerified", { quality: displayQuality })}
+                    {t("research.tw.notVerified", { quality: plainScanQualityText })}
                   </p>
                 ) : null}
                 {displayQuality === "verified_ready" ? (
@@ -2920,8 +2926,24 @@ export function TwResearchPage({
                   </div>
                 ) : null}
                 <p className="cds--helper-text-01">{t("research.tw.targetNote")}</p>
-                {manifestQuery.data ? (
-                  <AdvancedDetailsDisclosure>
+                <AdvancedDetailsDisclosure>
+                  <TextInput
+                    id="tw-research-scan-id"
+                    data-testid="tw-research-scan-id"
+                    labelText={t("research.tw.scanId")}
+                    value={scan.scanId}
+                    readOnly
+                  />
+                  <p
+                    className="cds--helper-text-01"
+                    data-testid="tw-research-scan-raw-status"
+                  >
+                    {t("research.tw.scanRawStatus", {
+                      status: displayStatus || "—",
+                      quality: displayQuality || "—",
+                    })}
+                  </p>
+                  {manifestQuery.data ? (
                     <pre
                       className="cds--body-compact-01"
                       data-testid="tw-research-scan-manifest-json"
@@ -2929,8 +2951,8 @@ export function TwResearchPage({
                     >
                       {JSON.stringify(manifestQuery.data, null, 2)}
                     </pre>
-                  </AdvancedDetailsDisclosure>
-                ) : null}
+                  ) : null}
+                </AdvancedDetailsDisclosure>
               </Stack>
             </Tile>
           ) : null}

@@ -13,6 +13,8 @@ import {
   jobQualityPlainKey,
   normalizeFailureClass,
   normalizeFirstPassCounts,
+  technicalScanPlainStatusKey,
+  technicalScanQualityPlainKey,
 } from "./researchStatusCopy";
 
 const NOW = Date.parse("2026-11-13T04:00:00Z");
@@ -314,6 +316,36 @@ describe("jobHistoryOptionLabel / jobQualityPlainKey", () => {
     expect(label).toMatch(/All attempted \(may have gaps\)/);
     expect(label).not.toMatch(/Complete/);
     expect(label).not.toMatch(/complete_attempted|_/);
+  });
+});
+
+describe("technicalScanPlainStatusKey / technicalScanQualityPlainKey", () => {
+  it("maps scan statuses including lease-aware running", () => {
+    expect(technicalScanPlainStatusKey("queued")).toBe("not_started");
+    expect(technicalScanPlainStatusKey("pending")).toBe("not_started");
+    expect(technicalScanPlainStatusKey("running", { workerActive: true })).toBe(
+      "collecting_now",
+    );
+    expect(technicalScanPlainStatusKey("running", { workerActive: false })).toBe("paused");
+    expect(technicalScanPlainStatusKey("running")).toBe("paused");
+    expect(technicalScanPlainStatusKey("partial")).toBe("waiting_retry");
+    expect(technicalScanPlainStatusKey("deferred")).toBe("waiting_retry");
+    expect(technicalScanPlainStatusKey("budget_exhausted")).toBe("budget_exhausted");
+    expect(technicalScanPlainStatusKey("completed_processing")).toBe(
+      "processed_not_verified",
+    );
+    expect(technicalScanPlainStatusKey("verified_ready")).toBe("verified");
+    expect(technicalScanPlainStatusKey("failed")).toBe("failed");
+  });
+
+  it("maps scan quality without treating complete_attempted as verified", () => {
+    expect(technicalScanQualityPlainKey("verified_ready")).toBe("verified");
+    expect(technicalScanQualityPlainKey("complete_attempted")).toBe("attempted");
+    expect(technicalScanQualityPlainKey("processed")).toBe("partial");
+    expect(technicalScanQualityPlainKey("partial")).toBe("partial");
+    expect(technicalScanQualityPlainKey("source_incomplete")).toBe("incomplete");
+    expect(technicalScanQualityPlainKey("incomplete")).toBe("incomplete");
+    expect(technicalScanQualityPlainKey("mystery")).toBe("unverified");
   });
 });
 

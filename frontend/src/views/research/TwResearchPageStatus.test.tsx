@@ -15,10 +15,15 @@ import {
   fetchTwResearchFirstPassProgress,
   fetchTwResearchFirstPassSymbols,
   fetchTwResearchRunCurrent,
+  fetchTwResearchScan,
+  fetchTwResearchScanProgress,
   fetchTwResearchScans,
   listTwResearchFirstPassJobs,
+  researchProgressRevision,
   runTwResearchFirstPassBatch,
   type TwResearchRun,
+  type TwResearchScanProgress,
+  type TwResearchScanSnapshot,
 } from "../../services/api/twResearch";
 import { TwResearchPage } from "./TwResearchPage";
 
@@ -30,6 +35,8 @@ vi.mock("../../services/api/twResearch", async () => {
     ...actual,
     fetchThemeOptions: vi.fn(),
     fetchTwResearchScans: vi.fn(async () => ({ scans: [] })),
+    fetchTwResearchScan: vi.fn(),
+    fetchTwResearchScanProgress: vi.fn(),
     fetchTwResearchMembership: vi.fn(async () => {
       throw new ApiError("missing", { status: 404, detail: "x", kind: "not_found" });
     }),
@@ -50,7 +57,9 @@ vi.mock("../../services/api/twResearch", async () => {
 
 const JOB_ID = "fpj_demo";
 const RUN_ID = "rr_demo";
+const SCAN_ID = "scan_demo_completed_processing";
 const FORBIDDEN = /#\d{3}|Notion|CronJob|GitHub|\blease\b|\bworker\b|fpj_|rr_|offset/i;
+const SNAKE_CASE = /\b[a-z]+_[a-z_]+\b/;
 
 function jobRecord(overrides: Record<string, unknown> = {}) {
   return {
@@ -118,7 +127,10 @@ function seed(options: {
   }
 }
 
-function renderPage(language: "zh-TW" | "en" = "zh-TW") {
+function renderPage(
+  language: "zh-TW" | "en" = "zh-TW",
+  options?: { initialScanId?: string | null },
+) {
   window.localStorage.setItem("stock-ticker-language", language);
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
@@ -126,11 +138,60 @@ function renderPage(language: "zh-TW" | "en" = "zh-TW") {
   const view = render(
     <QueryClientProvider client={client}>
       <LanguageProvider>
-        <TwResearchPage />
+        <TwResearchPage initialScanId={options?.initialScanId ?? null} />
       </LanguageProvider>
     </QueryClientProvider>,
   );
   return { ...view, client };
+}
+
+function technicalScanFixture(): {
+  scan: TwResearchScanSnapshot;
+  progress: TwResearchScanProgress;
+} {
+  const base = {
+    scanId: SCAN_ID,
+    tradingDay: "2026-11-13",
+    universeVersion: "tw-starter",
+    status: "completed_processing",
+    qualityStatus: "processed",
+    stageOrder: "monthly_first" as const,
+    cursor: 73,
+    enrichCursor: 0,
+    universeSize: 73,
+    processedCount: 73,
+    remainingCount: 0,
+    targetCount: 10,
+    dayPassCount: 8,
+    monthPassCount: 12,
+    dailyDeferredCount: 2,
+    qualifiedCount: 8,
+    enrichmentsRun: 0,
+    maxEnrichmentsPerRun: 20,
+    upstreamMonthFetches: 10,
+    maxUpstreamMonthFetches: 40,
+    updatedAt: "2026-11-13T08:28:52+08:00",
+    activeSnapshotId: null,
+    workerActivity: "idle" as const,
+    notes: [] as string[],
+    ledger: [] as Array<Record<string, unknown>>,
+    checkpointsEphemeral: true,
+  };
+  return {
+    scan: base,
+    progress: {
+      ...base,
+      includesLedger: false,
+      ledgerRevision: researchProgressRevision({
+        updatedAt: base.updatedAt,
+        status: base.status,
+        qualityStatus: base.qualityStatus,
+        cursor: base.cursor,
+        enrichCursor: base.enrichCursor,
+        processedCount: base.processedCount,
+      }),
+    },
+  };
 }
 
 const status = () => screen.getByTestId("tw-research-plain-status");
@@ -556,6 +617,79 @@ describe("TwResearchPage default UI hides internal terms (#351)", () => {
 
   it("en", async () => {
     await assertPlainDefaultUi("en");
+  });
+
+  async function assertTechnicalScanProgressPlain(language: "zh-TW" | "en") {
+    const { scan, progress } = technicalScanFixture();
+    seed({
+      progress: { leaseActive: false },
+      run: { firstPassDrain: { armed: false, available: false } },
+    });
+    vi.mocked(fetchTwResearchScans).mockResolvedValue({
+      scans: [
+        {
+          scanId: SCAN_ID,
+          tradingDay: scan.tradingDay,
+          universeVersion: scan.universeVersion,
+          status: scan.status,
+          qualityStatus: scan.qualityStatus ?? "processed",
+          targetCount: scan.targetCount,
+          universeSize: scan.universeSize,
+          cursor: scan.cursor,
+          remainingCount: scan.remainingCount,
+          updatedAt: scan.updatedAt ?? "",
+          workerActivity: "idle",
+          selectorMode: "starter_preset",
+          themeKeys: [],
+          stockIds: [],
+        },
+      ],
+    });
+    vi.mocked(fetchTwResearchScan).mockResolvedValue(scan);
+    vi.mocked(fetchTwResearchScanProgress).mockResolvedValue(progress);
+
+    const user = userEvent.setup();
+    const { container } = renderPage(language, { initialScanId: SCAN_ID });
+    await user.click(
+      screen.getByRole("tab", {
+        name: language === "en" ? /Progress & data quality/i : /進度與資料品質/,
+      }),
+    );
+    const tile = await screen.findByTestId("tw-research-progress");
+    expect(screen.getByTestId("tw-research-status-line").textContent).toMatch(
+      language === "en" ? /Processing finished/ : /處理已結束/,
+    );
+    expect(screen.getByTestId("tw-research-quality").textContent).toMatch(
+      language === "en" ? /Partial/ : /部分完成/,
+    );
+
+    const clone = tile.cloneNode(true) as HTMLElement;
+    clone
+      .querySelectorAll('[data-testid="tw-research-advanced-details"]')
+      .forEach((node) => node.remove());
+    const visibleText = clone.textContent ?? "";
+    expect(visibleText).not.toMatch(SNAKE_CASE);
+    expect(visibleText).not.toContain(SCAN_ID);
+
+    const advanced = Array.from(
+      tile.querySelectorAll('[data-testid="tw-research-advanced-details"]'),
+    )
+      .map((node) => node.textContent ?? "")
+      .join(" ");
+    expect(advanced).toMatch(/completed_processing/);
+    expect(advanced).toMatch(/processed/);
+    const scanIdInput = within(tile).getByTestId("tw-research-scan-id");
+    expect(scanIdInput).toHaveValue(SCAN_ID);
+    expect(scanIdInput.closest('[data-testid="tw-research-advanced-details"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="tw-research-scan-id"]')).not.toBeNull();
+  }
+
+  it("technical-scan progress tile hides snake_case and scan id (zh-TW)", async () => {
+    await assertTechnicalScanProgressPlain("zh-TW");
+  });
+
+  it("technical-scan progress tile hides snake_case and scan id (en)", async () => {
+    await assertTechnicalScanProgressPlain("en");
   });
 
   it("complete_attempted never renders Complete/完整 in the default UI", async () => {

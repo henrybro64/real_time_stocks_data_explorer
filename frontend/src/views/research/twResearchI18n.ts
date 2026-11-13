@@ -355,6 +355,76 @@ const TW_RESEARCH_ROWS = [
     "Verified export snapshot is available.",
     "已有驗證匯出快照。",
   ],
+  [
+    "research.tw.scanRawStatus",
+    "Technical status: {status} · {quality}",
+    "技術狀態：{status} · {quality}",
+  ],
+  [
+    "research.tw.scanStatus.not_started",
+    "Not started yet",
+    "尚未開始",
+  ],
+  [
+    "research.tw.scanStatus.collecting_now",
+    "Collecting data now",
+    "正在收集資料",
+  ],
+  [
+    "research.tw.scanStatus.paused",
+    "Paused: no collection is running",
+    "目前暫停：沒有正在執行的收集",
+  ],
+  [
+    "research.tw.scanStatus.waiting_retry",
+    "Waiting before the next retry",
+    "等待下次重試",
+  ],
+  [
+    "research.tw.scanStatus.budget_exhausted",
+    "Historical-data budget is exhausted",
+    "歷史資料預算已用盡",
+  ],
+  [
+    "research.tw.scanStatus.processed_not_verified",
+    "Processing finished (not yet verified)",
+    "處理已結束（尚未驗證）",
+  ],
+  [
+    "research.tw.scanStatus.verified",
+    "Verified and ready to export",
+    "已驗證，可匯出",
+  ],
+  [
+    "research.tw.scanStatus.failed",
+    "Collection failed",
+    "資料收集失敗",
+  ],
+  [
+    "research.tw.scanQuality.verified",
+    "Verified",
+    "已驗證",
+  ],
+  [
+    "research.tw.scanQuality.attempted",
+    "All attempted (may have gaps)",
+    "已全部嘗試（可能仍有缺口）",
+  ],
+  [
+    "research.tw.scanQuality.partial",
+    "Partial",
+    "部分完成",
+  ],
+  [
+    "research.tw.scanQuality.incomplete",
+    "Incomplete data",
+    "資料不完整",
+  ],
+  [
+    "research.tw.scanQuality.unverified",
+    "Unverified",
+    "未驗證",
+  ],
   ["research.tw.updatedAt", "Last saved update {time}.", "最後寫入時間 {time}。"],
   ["research.tw.unresolvedTitle", "Unresolved symbols", "未解決的股票"],
   [

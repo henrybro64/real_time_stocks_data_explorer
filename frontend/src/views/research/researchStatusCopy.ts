@@ -329,6 +329,57 @@ export function jobQualityPlainKey(
   return "partial";
 }
 
+/** Plain-language keys for technical-scan status (#351 progress tile). */
+export type TechnicalScanPlainStatusKey =
+  | "not_started"
+  | "collecting_now"
+  | "paused"
+  | "waiting_retry"
+  | "budget_exhausted"
+  | "processed_not_verified"
+  | "verified"
+  | "failed";
+
+/**
+ * Map technical-scan API status to investor status keys.
+ * `running` is collecting only while a worker/lease is active; otherwise paused.
+ */
+export function technicalScanPlainStatusKey(
+  status: string | null | undefined,
+  options?: { workerActive?: boolean | null },
+): TechnicalScanPlainStatusKey {
+  const value = String(status ?? "").trim().toLowerCase();
+  if (value === "queued" || value === "pending") return "not_started";
+  if (value === "running") {
+    return options?.workerActive ? "collecting_now" : "paused";
+  }
+  if (value === "partial" || value === "deferred") return "waiting_retry";
+  if (value === "budget_exhausted") return "budget_exhausted";
+  if (value === "completed_processing") return "processed_not_verified";
+  if (value === "verified_ready") return "verified";
+  if (value === "failed") return "failed";
+  return "paused";
+}
+
+/** Plain-language keys for technical-scan quality (#351 progress tile). */
+export type TechnicalScanQualityPlainKey =
+  | "verified"
+  | "attempted"
+  | "partial"
+  | "incomplete"
+  | "unverified";
+
+export function technicalScanQualityPlainKey(
+  qualityStatus: string | null | undefined,
+): TechnicalScanQualityPlainKey {
+  const value = String(qualityStatus ?? "").trim().toLowerCase();
+  if (value === "verified_ready") return "verified";
+  if (value === "complete_attempted") return "attempted";
+  if (value === "processed" || value === "partial") return "partial";
+  if (value === "source_incomplete" || value === "incomplete") return "incomplete";
+  return "unverified";
+}
+
 export type JobHistoryLabelJob = FirstPassProgressLike & {
   jobId?: string | null;
   createdAt?: string | null;
