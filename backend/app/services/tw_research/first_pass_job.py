@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
+import threading
 import time
 import uuid
 from collections import Counter
@@ -17,6 +19,7 @@ from typing import Any, Callable
 from app.repositories.tw_research_repository import tw_research_repository
 from app.services.tw_research.constants import FIRST_PASS_VERSION
 from app.services.tw_research.first_pass import (
+    DEFAULT_SYMBOL_DEADLINE_SECONDS,
     FirstPassBatchResult,
     FirstPassSymbolRecord,
     classify_field_reason,
@@ -33,6 +36,15 @@ from app.services.tw_research.fundamentals_watchlist import (
     research_membership_store,
 )
 from app.services.tw_research.universe import UniverseSelector, resolve_universe
+
+
+logger = logging.getLogger(__name__)
+
+# Heartbeat renews the batch lease independently of per-symbol progress so one
+# slow symbol (e.g. TDCC Friday loop) cannot outlive BATCH_LEASE_SECONDS.
+DEFAULT_LEASE_HEARTBEAT_SECONDS = 60.0
+_HEARTBEAT_SLEEP_CHUNK_SECONDS = 0.25
+_HEARTBEAT_JOIN_TIMEOUT_SECONDS = 5.0
 
 
 class FirstPassJobError(RuntimeError):
@@ -224,6 +236,47 @@ def _enrich_symbol_payload(
     return payload
 
 
+def _lease_heartbeat_loop(
+    *,
+    renew: Callable[[], bool],
+    interval_seconds: float,
+    stop_event: threading.Event,
+    lease_lost_event: threading.Event,
+    sleep: Callable[[float], None] | None,
+    job_id: str,
+) -> None:
+    """Renew the batch lease every ``interval_seconds`` until stopped.
+
+    Waits in small chunks so ``stop_event`` ends the thread promptly. A False
+    renew means the lease is gone (expired / generation changed): flag it and
+    exit so the collector stops and nothing is persisted. Infra errors are
+    logged and retried on the next tick (per-symbol renew still fails closed).
+    """
+    while not stop_event.is_set():
+        remaining = interval_seconds
+        while remaining > 0 and not stop_event.is_set():
+            chunk = min(remaining, _HEARTBEAT_SLEEP_CHUNK_SECONDS)
+            if sleep is None:
+                stop_event.wait(chunk)
+            else:
+                sleep(chunk)
+            remaining -= chunk
+        if stop_event.is_set():
+            return
+        try:
+            renewed = bool(renew())
+        except Exception as exc:  # noqa: BLE001 — never kill the heartbeat on one failure
+            logger.warning(
+                "first_pass_lease_heartbeat_error job_id=%s exc_class=%s",
+                job_id,
+                type(exc).__name__,
+            )
+            continue
+        if not renewed:
+            lease_lost_event.set()
+            return
+
+
 class FirstPassJobService:
     def __init__(self, *, repository: Any | None = None) -> None:
         self._repo = repository or tw_research_repository
@@ -354,6 +407,9 @@ class FirstPassJobService:
         collectors: dict[str, Any] | None = None,
         time_budget_seconds: float | None = None,
         monotonic_clock: Callable[[], float] | None = None,
+        lease_heartbeat_seconds: float | None = DEFAULT_LEASE_HEARTBEAT_SECONDS,
+        lease_heartbeat_sleep: Callable[[float], None] | None = None,
+        symbol_deadline_seconds: float | None = DEFAULT_SYMBOL_DEADLINE_SECONDS,
     ) -> dict[str, Any]:
         if not self._repo.is_available():
             raise FirstPassJobError("first_pass_job_store_unavailable")
@@ -448,6 +504,25 @@ class FirstPassJobService:
                 )
             )
 
+        stop_event = threading.Event()
+        lease_lost_event = threading.Event()
+        heartbeat_thread: threading.Thread | None = None
+        if lease_heartbeat_seconds is not None and float(lease_heartbeat_seconds) > 0:
+            heartbeat_thread = threading.Thread(
+                target=_lease_heartbeat_loop,
+                kwargs={
+                    "renew": _renew_lease,
+                    "interval_seconds": float(lease_heartbeat_seconds),
+                    "stop_event": stop_event,
+                    "lease_lost_event": lease_lost_event,
+                    "sleep": lease_heartbeat_sleep,
+                    "job_id": job_id,
+                },
+                name=f"first-pass-lease-heartbeat-{job_id}",
+                daemon=True,
+            )
+            heartbeat_thread.start()
+
         try:
             result = collect_first_pass_batch(
                 batch_ids,
@@ -458,6 +533,8 @@ class FirstPassJobService:
                 monotonic_clock=clock,
                 job_id=job_id,
                 lease_renew=_renew_lease,
+                lease_lost_check=lease_lost_event.is_set,
+                symbol_deadline_seconds=symbol_deadline_seconds,
                 **kwargs,
             )
         except Exception as exc:  # noqa: BLE001 — classify infra vs unexpected
@@ -467,7 +544,11 @@ class FirstPassJobService:
                     operation="run_first_pass_batch",
                 ) from exc
             raise
-        if result.lease_lost:
+        finally:
+            stop_event.set()
+            if heartbeat_thread is not None:
+                heartbeat_thread.join(timeout=_HEARTBEAT_JOIN_TIMEOUT_SECONDS)
+        if result.lease_lost or lease_lost_event.is_set():
             # Lease lost mid-batch — do not persist any symbols from this claim.
             return {
                 "job": claim["job"],
@@ -578,6 +659,7 @@ class FirstPassJobService:
                 job_id,
                 lease_generation=generation,
                 processed_count=processed,
+                terminal_error=systemic_error,
             )
         except Exception as exc:  # noqa: BLE001
             if is_infrastructure_failure(exc):
@@ -586,16 +668,29 @@ class FirstPassJobService:
                     operation="complete_first_pass_batch",
                 ) from exc
             raise
-        job_out = (completed or {}).get("job") or claim["job"]
+        if completed is None:
+            # Generation changed (or job vanished) before the locked complete:
+            # another claimer owns the job now. Never report jobFailed from a
+            # stale view — the systemic error is not applied.
+            return {
+                "job": claim["job"],
+                "batchIds": batch_ids,
+                "leaseHeld": False,
+                "alreadyComplete": False,
+                "waitingForRetry": False,
+                "processed": processed,
+                "durationMs": int(result.duration_ms),
+                "budgetStopped": bool(result.budget_stopped),
+                "releasedUnstarted": len(released_unstarted),
+                "batchCounts": batch_counts,
+                "leaseLost": True,
+                "jobFailed": False,
+                "lastError": None,
+            }
+        job_out = completed["job"]
 
         if systemic_error is not None:
-            failed_job = self._repo.fail_first_pass_job(
-                job_id,
-                user_id=user_id,
-                error=systemic_error,
-                lease_generation=generation,
-            )
-            job_out = failed_job or job_out
+            # Failed atomically inside complete_first_pass_batch (same txn).
             return {
                 "job": job_out,
                 "batchIds": batch_ids,
@@ -608,7 +703,7 @@ class FirstPassJobService:
                 "releasedUnstarted": len(released_unstarted),
                 "batchCounts": batch_counts,
                 "systemicProgrammingError": systemic_error,
-                "jobFailed": True,
+                "jobFailed": job_out.get("status") == "failed",
                 "lastError": systemic_error,
                 "leaseLost": False,
             }

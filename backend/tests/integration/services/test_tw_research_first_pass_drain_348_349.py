@@ -463,3 +463,114 @@ def test_g_systemic_fail_stays_failed_without_snapshot(db_session, monkeypatch) 
     final = service.get_job(job["job_id"], user_id=user_id)
     assert final["status"] == "failed"
     assert final.get("active_snapshot_id") is None
+
+
+def test_h_systemic_terminal_error_is_atomic_and_fenced(db_session, monkeypatch) -> None:
+    """C2: terminal_error fails the job inside the locked complete; races lose cleanly."""
+    del db_session
+    user_id = f"atomic-{uuid4().hex[:8]}"
+    _ensure_user(user_id)
+    service = FirstPassJobService(repository=tw_research_repository)
+    stock_ids = [f"TW:{9000 + i}" for i in range(6)]
+    job = service.create_job(user_id=user_id, stock_ids=stock_ids, use_membership=False)
+    error = "systemic_programming_error:tdcc_holders_ge_400_lots:TypeError"
+
+    claim_a = tw_research_repository.claim_first_pass_batch(job["job_id"], batch_size=3)
+    gen_a = int(claim_a["lease_generation"])
+    assert SessionLocal is not None
+    with SessionLocal() as session:
+        row = session.get(TwResearchFirstPassJob, job["job_id"])
+        row.reserve_expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+        session.commit()
+    claim_b = tw_research_repository.claim_first_pass_batch(job["job_id"], batch_size=3)
+    gen_b = int(claim_b["lease_generation"])
+    assert gen_b > gen_a
+
+    # Stale worker A: fenced out — job must NOT be failed by a stale view.
+    stale = tw_research_repository.complete_first_pass_batch(
+        job["job_id"], lease_generation=gen_a, processed_count=0, terminal_error=error
+    )
+    assert stale is None
+    mid = tw_research_repository.get_first_pass_job(job["job_id"], user_id=user_id)
+    assert mid["status"] == "running"
+    assert not any(str(n).startswith("error:") for n in mid["notes"])
+
+    # Current worker B completes with terminal_error while claimers hammer the job.
+    def _claim() -> dict:
+        return tw_research_repository.claim_first_pass_batch(job["job_id"], batch_size=3)
+
+    def _complete() -> dict | None:
+        return tw_research_repository.complete_first_pass_batch(
+            job["job_id"],
+            lease_generation=gen_b,
+            processed_count=0,
+            terminal_error=error,
+        )
+
+    with ThreadPoolExecutor(max_workers=5) as pool:
+        claim_futs = [pool.submit(_claim) for _ in range(4)]
+        done_fut = pool.submit(_complete)
+        claims = [f.result() for f in claim_futs]
+        done = done_fut.result()
+    assert done is not None and done["job"]["status"] == "failed"
+    # Never a successful lease on a job that is failing/failed.
+    assert all(not c.get("batch_ids") for c in claims)
+    final = tw_research_repository.get_first_pass_job(job["job_id"], user_id=user_id)
+    assert final["status"] == "failed"
+    assert final["notes"].count(f"error:{error}") == 1
+    assert final.get("active_snapshot_id") is None
+    with SessionLocal() as session:
+        row = session.get(TwResearchFirstPassJob, job["job_id"])
+        assert row.reserve_expires_at is None
+
+    # Service path: systemic collector → jobFailed from the atomic complete.
+    monkeypatch.setattr(
+        "app.services.tw_research.first_pass_job.collect_first_pass_batch",
+        _systemic_typeerror_collect,
+    )
+    job2 = service.create_job(
+        user_id=user_id,
+        stock_ids=[f"TW:{9100 + i}" for i in range(10)],
+        use_membership=False,
+    )
+    result = service.run_batch(job2["job_id"], user_id=user_id, batch_size=10)
+    assert result["jobFailed"] is True
+    assert result["leaseLost"] is False
+    assert result["job"]["status"] == "failed"
+    again = service.run_batch(job2["job_id"], user_id=user_id, batch_size=10)
+    assert again["jobFailed"] is True and again["processed"] == 0
+
+
+def test_i_research_run_progress_uses_real_symbol_counts(db_session, monkeypatch) -> None:
+    """C3: firstPassProgress mirrors count_first_pass_symbols, not absent job keys."""
+    del db_session
+    user_id = f"counts-{uuid4().hex[:8]}"
+    _ensure_user(user_id)
+    _arm_drain(monkeypatch, user_id)
+    monkeypatch.setattr(
+        "app.services.tw_research.first_pass_job.collect_first_pass_batch",
+        _instant_collect,
+    )
+    service = FirstPassJobService(repository=tw_research_repository)
+    job = service.create_job(
+        user_id=user_id,
+        stock_ids=[f"TW:{9200 + i}" for i in range(6)],
+        use_membership=False,
+    )
+    store = _fresh_store()
+    store.begin_phase1(user_id, trading_day="2024-06-27")
+    store.attach_first_pass_job(user_id, first_pass_job_id=job["job_id"])
+
+    service.run_batch(job["job_id"], user_id=user_id, batch_size=4)
+    counts = tw_research_repository.count_first_pass_symbols(job["job_id"])
+    assert counts["total"] == 4
+
+    run = store.reconcile(user_id)
+    assert run is not None
+    progress = (run.dimensions or {}).get("firstPassProgress") or {}
+    assert progress["processed"] == counts["total"] == 4
+    assert progress["total"] == 6
+    assert progress["okCount"] == counts["ok"]
+    assert progress["partialCount"] == counts["partial"]
+    assert progress["failedCount"] == counts["failed"]
+    assert progress["okCount"] + progress["partialCount"] + progress["failedCount"] == 4

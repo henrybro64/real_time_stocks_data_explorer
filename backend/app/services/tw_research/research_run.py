@@ -16,6 +16,7 @@ first-pass job and technical-scan rows — clients cannot assert status.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from threading import Lock
@@ -951,18 +952,33 @@ class ResearchRunStore:
         last_error, last_error_class, next_retry_at = _job_error_fields(job)
         prior_progress = dict(run.dimensions.get("firstPassProgress") or {})
         prior_last_error = prior_progress.get("lastError")
-        run.dimensions["firstPassProgress"] = {
-            "status": status,
-            "processed": int(
+        counts = self._count_first_pass_symbols(run.first_pass_job_id)
+        if counts is not None:
+            # Real per-symbol counts from the durable table — job rows never
+            # carry ok/partial/failed tallies (#349 C3).
+            processed = int(counts.get("total") or 0)
+            ok_count = int(counts.get("ok") or 0)
+            partial_count = int(counts.get("partial") or 0)
+            failed_count = int(counts.get("failed") or 0)
+        else:
+            processed = int(
                 job.get("processed_count")
                 or job.get("processedCount")
                 or job.get("cursor")
                 or 0
-            ),
+            )
+            ok_count = int(job.get("ok_count") or job.get("okCount") or 0)
+            partial_count = int(
+                job.get("partial_count") or job.get("partialCount") or 0
+            )
+            failed_count = int(job.get("failed_count") or job.get("failedCount") or 0)
+        run.dimensions["firstPassProgress"] = {
+            "status": status,
+            "processed": processed,
             "total": int(job.get("universe_size") or job.get("universeSize") or 0),
-            "okCount": int(job.get("ok_count") or job.get("okCount") or 0),
-            "partialCount": int(job.get("partial_count") or job.get("partialCount") or 0),
-            "failedCount": int(job.get("failed_count") or job.get("failedCount") or 0),
+            "okCount": ok_count,
+            "partialCount": partial_count,
+            "failedCount": failed_count,
             "nextRetryAt": next_retry_at,
             "lastError": last_error,
             "lastErrorClass": last_error_class,
@@ -1167,6 +1183,31 @@ class ResearchRunStore:
         from app.repositories.tw_research_repository import tw_research_repository
 
         return tw_research_repository.get_first_pass_job(job_id, user_id=user_id)
+
+    def _count_first_pass_symbols(self, job_id: str | None) -> dict[str, int] | None:
+        """Durable per-status symbol counts, or None when unavailable/unsupported.
+
+        In-memory test repositories that do not implement
+        ``count_first_pass_symbols`` (or that raise) fall back to job-dict keys.
+        """
+        if not job_id:
+            return None
+        if self._test_memory is not None:
+            repo: Any = self._repository
+        else:
+            from app.repositories.tw_research_repository import tw_research_repository
+
+            repo = tw_research_repository
+        counter = getattr(repo, "count_first_pass_symbols", None) if repo else None
+        if not callable(counter):
+            return None
+        try:
+            counts = counter(job_id)
+        except Exception:  # noqa: BLE001 — progress is best-effort, never fail reconcile
+            return None
+        if not isinstance(counts, Mapping) or "total" not in counts:
+            return None
+        return {str(k): int(v) for k, v in counts.items()}
 
     def _load_scan(self, user_id: str, scan_id: str | None) -> dict[str, Any] | None:
         if not scan_id:

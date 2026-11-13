@@ -28,7 +28,7 @@ The service only accepts `range_name=`. Every TDCC fetch raised `TypeError`, sto
 When the same `(field, ExcClass)` programming_error hits **≥3 symbols and ≥50%** of finished symbols in a batch:
 
 1. Persist the symbol rows.
-2. Mark the job **`failed`** with `systemic_programming_error:<field>:<ExcClass>`.
+2. Mark the job **`failed`** with `systemic_programming_error:<field>:<ExcClass>` — **atomically** (see "Atomic systemic failure" below).
 3. Do **not** build or activate a snapshot.
 4. Research-run reconcile maps the run to **`failed`**, sets `schedule_enabled=false`, and appends `first_pass_drain_disarmed_systemic_programming_error`.
 
@@ -74,6 +74,27 @@ Worst-case per-symbol wall time is bounded by the provider timeouts first-pass c
 A single slow ownership call can approach ~60 s. The **60 s batch budget** stops *before* starting another symbol once elapsed ≥ budget, and **lease renewal after each finished symbol** resets `reserve_expires_at` so a 250 s wall-clock path across renewals cannot leave a stale lease that another worker reclaims mid-persist. If renewal returns false (`leaseLost`), the batch stops and persists nothing.
 
 Failed jobs are **terminal**: `claim_first_pass_batch` returns `terminal_failed` without mutating status/lease; manual batches return **409** `first_pass_job_failed`.
+
+### Lease heartbeat (60 s) + symbol soft deadline
+
+Per-symbol renewal is not enough when a single symbol is slow (TDCC portal walks up to ~55 Fridays serially). `run_batch` therefore starts a **daemon heartbeat thread** after the claim:
+
+- Every `lease_heartbeat_seconds` (default **60 s**) it calls `renew_first_pass_lease` for the claimed generation; the wait is chunked so the thread stops promptly.
+- Renew returns `False` → the thread sets a `lease_lost` event. `collect_first_pass_batch` checks `lease_lost_check()` **before and after every symbol** (and still honors per-symbol `lease_renew`); on loss it releases the remaining ids and `run_batch` returns `leaseLost=true`, `jobFailed=false`, persisting nothing.
+- The thread is always stopped and joined in a `finally`, so no heartbeat threads leak across batches.
+- Tests inject `lease_heartbeat_seconds` and `lease_heartbeat_sleep` (no real 60 s sleeps).
+
+**Symbol soft deadline** (`symbol_deadline_seconds`, default **240 s**, bounded under the 300 s lease): applies to the slow ownership (TDCC) step only. The deadline is exposed to `tw_ownership_concentration_service` via a scoped context; the Friday loop, foreign-probe loop and portal retry loop raise `CollectorDeadlineExceeded` between iterations. If the loader still returns after the deadline, the field is overwritten as unavailable. Either way the field reason is `collector_deadline_exceeded` (classified as a retryable **timeout**) and peer fields (institutional, margin, valuation, …) are untouched.
+
+### Atomic systemic failure
+
+`complete_first_pass_batch(..., terminal_error=...)` performs the systemic circuit-breaker transition in the **same locked transaction** as lease release: after the generation check it sets `status=failed`, appends `error:<terminal_error>` (notes capped at 50), clears the lease (`reserve_expires_at=None`), sets the cursor from the first missing symbol, and **skips** terminal-status resolution (no `running`/`deferred`/`completed` is ever committed). `run_batch` computes the systemic error *before* completing and no longer calls `fail_first_pass_job` on this path (the method remains). A generation mismatch returns `None` → `leaseLost=true`, `jobFailed=false` (a stale worker cannot fail someone else's job).
+
+### Sanitized `programming_error` tracebacks
+
+`log_isolated_fault` never passes `exc_info`/the exception to `logging`. For `programming_error` it logs `traceback_sanitized` (via `app.core.log_sanitize.sanitize_traceback`: per-line URL query stripping + authorization/bearer/token/api_key redaction, capped at 4000 chars) in `extra`. `JsonLogFormatter` / `ConsoleLogFormatter` also sanitize any `exc_info` rendered through `formatException`, and surface `traceback_sanitized` as `exception` when present. Frame lines and the exception class name stay visible; query tokens and headers do not.
+
+`firstPassProgress` (`okCount`/`partialCount`/`failedCount`/`processed`) now reads real per-status counts from `count_first_pass_symbols` during reconcile, falling back to job-dict keys only when the repository lacks/raises on that method (in-memory stubs).
 
 ### Arm only when drain can run
 

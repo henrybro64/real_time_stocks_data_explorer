@@ -19,7 +19,9 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import Literal
@@ -108,6 +110,49 @@ _PORTAL_HEADERS = {
     "User-Agent": "stock-ticker-tw-ownership/1",
     "Referer": _TDCC_PORTAL_URL,
 }
+
+
+class CollectorDeadlineExceeded(Exception):
+    """Soft per-symbol collector deadline elapsed during ownership acquisition.
+
+    Deliberately **not** an ``OSError``/``ValueError``/``RuntimeError`` so the
+    upstream-unavailable handlers do not swallow it; first-pass catches it and
+    records ``collector_deadline_exceeded`` on the field only.
+    """
+
+
+# (deadline_monotonic, clock) for the active ownership acquisition, if any.
+_COLLECTOR_DEADLINE: ContextVar[tuple[float, Callable[[], float]] | None] = ContextVar(
+    "tw_ownership_collector_deadline", default=None
+)
+
+
+@contextmanager
+def collector_deadline_scope(
+    deadline_monotonic: float | None,
+    monotonic_clock: Callable[[], float] | None = None,
+) -> Iterator[None]:
+    """Bound ownership network loops (Fridays/probes/retries) to a soft deadline."""
+    if deadline_monotonic is None:
+        yield
+        return
+    token = _COLLECTOR_DEADLINE.set(
+        (float(deadline_monotonic), monotonic_clock or time.monotonic)
+    )
+    try:
+        yield
+    finally:
+        _COLLECTOR_DEADLINE.reset(token)
+
+
+def check_collector_deadline() -> None:
+    """Raise ``CollectorDeadlineExceeded`` when the active soft deadline elapsed."""
+    active = _COLLECTOR_DEADLINE.get()
+    if active is None:
+        return
+    deadline, clock = active
+    if clock() >= deadline:
+        raise CollectorDeadlineExceeded("collector_deadline_exceeded")
 
 
 class ForeignOwnershipSchemaError(ValueError):
@@ -234,7 +279,14 @@ class TwOwnershipConcentrationService:
         stock_id: str,
         *,
         range_name: OwnershipRange = "1Y",
+        deadline_monotonic: float | None = None,
+        monotonic_clock: Callable[[], float] | None = None,
     ) -> TaiwanOwnershipConcentrationResult:
+        if deadline_monotonic is not None:
+            with collector_deadline_scope(deadline_monotonic, monotonic_clock):
+                return self.get_ownership_concentration(
+                    stock_id, range_name=range_name
+                )
         requested_range = _normalize_range(range_name)
         now = self._now_provider()
         cache_key = (stock_id, requested_range)
@@ -546,6 +598,7 @@ class TwOwnershipConcentrationService:
         saw_no_data = False
 
         for tdcc_iso in tdcc_dates:
+            check_collector_deadline()
             try:
                 tdcc_date = date.fromisoformat(tdcc_iso)
             except ValueError:
@@ -567,6 +620,7 @@ class TwOwnershipConcentrationService:
                     if probes_used >= self._max_foreign_probes:
                         null_reason = "probe_budget_exhausted"
                         break
+                    check_collector_deadline()
                     probes_used += 1
                     try:
                         payload_map = self._foreign_ownership_fetcher(probe_date, board)
@@ -1054,6 +1108,7 @@ def _portal_request_with_retries(
     attempts = max(_PORTAL_RETRIES + 1, 1)
     last_error: Exception | None = None
     for attempt in range(attempts):
+        check_collector_deadline()
         try:
             if method == "GET":
                 response = client.get(url)
@@ -1133,6 +1188,8 @@ def _portal_history_with_client(
 
     points: list[TdccConcentrationPoint] = []
     for point_date in selected:
+        # Friday loop can run ~55 serial POSTs — stop between Fridays on deadline.
+        check_collector_deadline()
         if token is None:
             raise RuntimeError(_UPSTREAM_UNAVAILABLE_ERROR)
         sca = point_date.replace("-", "")

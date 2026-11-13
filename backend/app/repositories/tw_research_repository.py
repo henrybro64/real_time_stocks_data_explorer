@@ -2714,7 +2714,17 @@ class TwResearchRepository(SessionBoundRepository):
         *,
         lease_generation: int,
         processed_count: int,
+        terminal_error: str | None = None,
     ) -> dict[str, Any] | None:
+        """Release the batch lease and advance the cursor in one locked txn.
+
+        When ``terminal_error`` is set (systemic programming_error breaker) the
+        same transaction also marks the job ``failed`` and appends
+        ``error:<terminal_error>`` — no intermediate running/deferred/completed
+        status is ever committed, so a concurrent claim cannot slip in between
+        "batch complete" and "job failed". A generation mismatch returns
+        ``None`` before any mutation (lease lost; job is not failed).
+        """
         session_factory = self._session_factory()
         with session_factory() as session:
             now = datetime.now(timezone.utc)
@@ -2733,7 +2743,13 @@ class TwResearchRepository(SessionBoundRepository):
             row.reserve_cursor = cursor
             row.reserve_expires_at = None
             row.updated_at = now
-            if row.status not in {"failed", "cancelled"}:
+            if terminal_error is not None:
+                if row.status != "cancelled":
+                    row.status = "failed"
+                    notes = list(row.notes_json or [])
+                    notes.append(f"error:{terminal_error}")
+                    row.notes_json = notes[-50:]
+            elif row.status not in {"failed", "cancelled"}:
                 if cursor >= len(stock_ids):
                     cooling = _first_pass_cooling_retry_count(session, job_id, stock_ids)
                     if cooling:

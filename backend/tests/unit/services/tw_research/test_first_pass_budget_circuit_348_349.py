@@ -754,3 +754,588 @@ def test_malformed_institutional_rows_do_not_escape(monkeypatch) -> None:
         assert inst.reason is not None
         assert row.fields["margin"].status in {"ok", "partial"}
         assert row.fields["tdcc_holders_ge_400_lots"].status in {"ok", "partial"}
+
+
+# ---------------------------------------------------------------------------
+# Codex P2 follow-ups (C1 sanitized tracebacks, C2 atomic systemic failure,
+# C3 real progress counts, C4 lease heartbeat + symbol soft deadline)
+# ---------------------------------------------------------------------------
+
+_SECRET_URL_MESSAGE = (
+    "bad call GET https://chip.example/tdcc?token=abc&q=1 "
+    "Authorization: Bearer xyz"
+)
+
+
+def _raise_secret_typeerror() -> None:
+    raise TypeError(_SECRET_URL_MESSAGE)
+
+
+def test_sanitize_log_text_and_traceback_helpers() -> None:
+    from app.core.log_sanitize import sanitize_log_text, sanitize_traceback
+
+    raw = _SECRET_URL_MESSAGE + " " + "x" * 400
+    short = sanitize_log_text(raw)
+    assert len(short) <= 200
+    assert "abc" not in short and "xyz" not in short and "?" not in short
+    full = sanitize_log_text(raw, limit=None)
+    assert len(full) > 200
+    assert "<redacted>" in full and "xyz" not in full
+
+    tb = "\n".join(
+        [
+            "Traceback (most recent call last):",
+            '  File "x.py", line 1, in f',
+            f"TypeError: {_SECRET_URL_MESSAGE}",
+        ]
+    )
+    cleaned = sanitize_traceback(tb)
+    assert "TypeError" in cleaned and 'File "x.py"' in cleaned
+    assert "abc" not in cleaned and "xyz" not in cleaned
+    assert len(sanitize_traceback("a\n" * 5000, max_chars=100)) == 100
+
+
+def test_log_isolated_fault_programming_error_never_logs_raw_exc_info(caplog) -> None:
+    import json
+    import logging
+
+    from app.core.logging import ConsoleLogFormatter, JsonLogFormatter
+
+    caplog.set_level(logging.WARNING, logger="app.services.tw_research.first_pass")
+    try:
+        _raise_secret_typeerror()
+    except TypeError as exc:
+        log_isolated_fault(
+            stock_id="TW:2330",
+            stage="tdcc_holders_ge_400_lots",
+            source="tw_ownership_concentration_service",
+            exc=exc,
+            reason=provider_exception_reason(exc),
+            job_id="fpj_tb",
+        )
+    record = next(
+        r for r in caplog.records if "first_pass_isolated_fault" in r.getMessage()
+    )
+    # The original exception/traceback object must never reach logging.
+    assert not record.exc_info
+    traceback_text = getattr(record, "traceback_sanitized", "")
+    assert "TypeError" in traceback_text
+    assert 'File "' in traceback_text and "_raise_secret_typeerror" in traceback_text
+    assert len(traceback_text) <= 4000
+
+    json_line = JsonLogFormatter().format(record)
+    console_line = ConsoleLogFormatter().format(record)
+    for rendered in (json_line, console_line):
+        assert "abc" not in rendered
+        assert "xyz" not in rendered
+        assert "token=" not in rendered.lower()
+        assert "TypeError" in rendered
+        assert "_raise_secret_typeerror" in rendered
+    payload = json.loads(json_line)
+    assert "TypeError" in payload["exception"]
+    assert "traceback_sanitized" not in payload
+
+
+def test_formatters_sanitize_raw_exc_info_from_other_loggers() -> None:
+    import json
+    import logging
+    import sys
+
+    from app.core.logging import ConsoleLogFormatter, JsonLogFormatter
+
+    try:
+        _raise_secret_typeerror()
+    except TypeError:
+        exc_info = sys.exc_info()
+    record = logging.LogRecord(
+        "other.logger", logging.ERROR, __file__, 1, "boom", (), exc_info
+    )
+    json_line = JsonLogFormatter().format(record)
+    console_line = ConsoleLogFormatter().format(record)
+    for rendered in (json_line, console_line):
+        assert "abc" not in rendered and "xyz" not in rendered
+        assert "TypeError" in rendered
+        assert "_raise_secret_typeerror" in rendered
+    assert "TypeError" in json.loads(json_line)["exception"]
+
+
+def test_systemic_batch_completes_atomically_with_terminal_error(monkeypatch) -> None:
+    _, repo = _install_job_repo(monkeypatch, "owner-atomic")
+    from app.services.tw_research.first_pass_job import FirstPassJobService
+
+    def _boom(*_a, **_k):
+        raise AssertionError("fail_first_pass_job must not run on the systemic path")
+
+    monkeypatch.setattr(repo, "fail_first_pass_job", _boom)
+    seen: dict = {}
+    real_complete = repo.complete_first_pass_batch
+
+    def spy_complete(job_id, **kwargs):
+        seen.update(kwargs)
+        return real_complete(job_id, **kwargs)
+
+    monkeypatch.setattr(repo, "complete_first_pass_batch", spy_complete)
+
+    service = FirstPassJobService(repository=repo)
+    job = service.create_job(
+        user_id="owner-atomic",
+        stock_ids=[f"TW:{2300 + i}" for i in range(10)],
+        use_membership=False,
+    )
+    result = service.run_batch(
+        job["job_id"],
+        user_id="owner-atomic",
+        batch_size=10,
+        collectors=_typeerror_collectors(),
+    )
+    systemic = "systemic_programming_error:tdcc_holders_ge_400_lots:TypeError"
+    assert seen["terminal_error"] == systemic
+    assert result["jobFailed"] is True
+    assert result["leaseLost"] is False
+    assert result["systemicProgrammingError"] == systemic
+    assert result["job"]["status"] == "failed"
+    assert result["job"]["notes"].count(f"error:{systemic}") == 1
+    stored = repo.get_first_pass_job(job["job_id"], user_id="owner-atomic")
+    assert stored["status"] == "failed"
+    assert stored["active_snapshot_id"] is None
+    repo.clear_session_factory_override()
+
+
+def test_complete_with_terminal_error_is_single_locked_transition(monkeypatch) -> None:
+    session_local, repo = _install_job_repo(monkeypatch, "owner-term")
+    from app.db.models import TwResearchFirstPassJob
+    from app.services.tw_research.first_pass_job import FirstPassJobService
+
+    service = FirstPassJobService(repository=repo)
+    job = service.create_job(
+        user_id="owner-term",
+        stock_ids=["TW:2330", "TW:2317", "TW:2454"],
+        use_membership=False,
+    )
+    claim = repo.claim_first_pass_batch(job["job_id"], batch_size=3)
+    gen = int(claim["lease_generation"])
+    assert repo.upsert_first_pass_symbol(
+        job_id=job["job_id"],
+        stock_id="TW:2330",
+        status="ok",
+        payload={"stockId": "TW:2330"},
+        lease_generation=gen,
+    )
+    done = repo.complete_first_pass_batch(
+        job["job_id"],
+        lease_generation=gen,
+        processed_count=1,
+        terminal_error="systemic_programming_error:x:TypeError",
+    )
+    assert done is not None
+    assert done["job"]["status"] == "failed"
+    assert done["job"]["cursor"] == 1  # first missing index
+    assert done["job"]["notes"][-1] == "error:systemic_programming_error:x:TypeError"
+    with session_local() as session:
+        row = session.get(TwResearchFirstPassJob, job["job_id"])
+        assert row.reserve_expires_at is None
+        assert row.reserve_cursor == 1
+        assert row.status == "failed"
+    # A later claim sees a terminal failed job — never re-leases it.
+    again = repo.claim_first_pass_batch(job["job_id"], batch_size=3)
+    assert again.get("terminal_failed") is True
+    repo.clear_session_factory_override()
+
+
+def test_systemic_generation_mismatch_reports_lease_lost_not_job_failed(
+    monkeypatch,
+) -> None:
+    session_local, repo = _install_job_repo(monkeypatch, "owner-race")
+    from app.db.models import TwResearchFirstPassJob
+    from app.services.tw_research.first_pass_job import FirstPassJobService
+
+    monkeypatch.setattr(
+        repo,
+        "fail_first_pass_job",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("not expected")),
+    )
+    real_complete = repo.complete_first_pass_batch
+
+    def raced_complete(job_id, **kwargs):
+        # Another worker re-claims (bumps generation) just before we complete.
+        with session_local() as session:
+            row = session.get(TwResearchFirstPassJob, job_id)
+            row.lease_generation = int(row.lease_generation) + 1
+            session.commit()
+        return real_complete(job_id, **kwargs)
+
+    monkeypatch.setattr(repo, "complete_first_pass_batch", raced_complete)
+    service = FirstPassJobService(repository=repo)
+    job = service.create_job(
+        user_id="owner-race",
+        stock_ids=[f"TW:{2400 + i}" for i in range(10)],
+        use_membership=False,
+    )
+    result = service.run_batch(
+        job["job_id"],
+        user_id="owner-race",
+        batch_size=10,
+        collectors=_typeerror_collectors(),
+    )
+    # Upserts happened before the race; counts stay reportable but the job is
+    # NOT failed because the terminal write was fenced out.
+    assert result["leaseLost"] is True
+    assert result["jobFailed"] is False
+    stored = repo.get_first_pass_job(job["job_id"], user_id="owner-race")
+    assert stored["status"] != "failed"
+    assert not any(str(n).startswith("error:") for n in stored["notes"])
+    repo.clear_session_factory_override()
+
+
+def test_reconcile_uses_real_symbol_counts_from_repository(monkeypatch) -> None:
+    _, repo = _install_job_repo(monkeypatch, "owner-counts")
+    from app.services.tw_research.first_pass_job import FirstPassJobService
+    from app.services.tw_research.research_run import ResearchRunStore
+
+    def ownership_loader(stock_id: str):
+        if stock_id.endswith("1"):
+            raise TimeoutError("upstream timed out")
+        return _good_own()
+
+    store = ResearchRunStore(repository=repo)
+    store.clear_for_tests()
+    service = FirstPassJobService(repository=repo)
+    job = service.create_job(
+        user_id="owner-counts",
+        stock_ids=[f"TW:{2500 + i}" for i in range(6)],
+        use_membership=False,
+    )
+    store.begin_phase1("owner-counts", trading_day="2024-06-27")
+    store.attach_first_pass_job("owner-counts", first_pass_job_id=job["job_id"])
+    collectors = _base_collectors()
+    collectors["ownership_loader"] = ownership_loader
+    service.run_batch(
+        job["job_id"],
+        user_id="owner-counts",
+        batch_size=3,
+        collectors=collectors,
+    )
+    db_counts = repo.count_first_pass_symbols(job["job_id"])
+    assert db_counts["total"] == 3
+    run = store.reconcile("owner-counts")
+    progress = run.dimensions["firstPassProgress"]
+    assert progress["processed"] == db_counts["total"] == 3
+    assert progress["total"] == 6
+    assert progress["okCount"] == db_counts["ok"]
+    assert progress["partialCount"] == db_counts["partial"]
+    assert progress["failedCount"] == db_counts["failed"]
+    assert progress["okCount"] + progress["partialCount"] + progress["failedCount"] == 3
+    assert progress["failedCount"] >= 1
+    store.disable_test_memory()
+    repo.clear_session_factory_override()
+
+
+@pytest.mark.parametrize("variant", ["missing", "raises"])
+def test_reconcile_falls_back_to_job_dict_without_usable_counter(variant) -> None:
+    from app.services.tw_research.research_run import ResearchRunStore
+
+    class _Repo:
+        def is_available(self) -> bool:
+            return True
+
+        def get_first_pass_job(self, job_id, *, user_id):
+            return {
+                "job_id": job_id,
+                "status": "running",
+                "universe_size": 9,
+                "processed_count": 4,
+                "ok_count": 2,
+                "partial_count": 1,
+                "failed_count": 1,
+            }
+
+    repo = _Repo()
+    if variant == "raises":
+
+        def _raise(_job_id):
+            raise RuntimeError("db down")
+
+        repo.count_first_pass_symbols = _raise  # type: ignore[attr-defined]
+    store = ResearchRunStore(repository=repo)  # type: ignore[arg-type]
+    store.clear_for_tests()
+    store.begin_phase1("u1", trading_day="2024-06-27")
+    store.attach_first_pass_job("u1", first_pass_job_id="fpj_stub")
+    run = store.reconcile("u1")
+    progress = run.dimensions["firstPassProgress"]
+    assert (progress["processed"], progress["total"]) == (4, 9)
+    assert (progress["okCount"], progress["partialCount"], progress["failedCount"]) == (
+        2,
+        1,
+        1,
+    )
+    store.disable_test_memory()
+
+
+def _wait_until(predicate, *, timeout: float = 5.0) -> bool:
+    import time as _time
+
+    end = _time.monotonic() + timeout
+    while _time.monotonic() < end:
+        if predicate():
+            return True
+        _time.sleep(0.002)
+    return False
+
+
+def test_heartbeat_renews_lease_during_one_slow_symbol_and_cleans_up(
+    monkeypatch,
+) -> None:
+    import threading
+    import time
+
+    _, repo = _install_job_repo(monkeypatch, "user-hb")
+    from app.services.tw_research.first_pass_job import FirstPassJobService
+
+    baseline_threads = threading.active_count()
+    heartbeat_renews = {"n": 0}
+
+    def fake_renew(*_a, **_k) -> bool:
+        if threading.current_thread().name.startswith("first-pass-lease-heartbeat"):
+            heartbeat_renews["n"] += 1
+        return True
+
+    monkeypatch.setattr(repo, "renew_first_pass_lease", fake_renew)
+    seen_at_loader_exit: dict = {}
+
+    def slow_ownership(_sid: str):
+        # Simulates a >400s symbol: it only finishes once the heartbeat has
+        # renewed at least five times (no real 60s sleeps).
+        assert _wait_until(lambda: heartbeat_renews["n"] >= 5)
+        seen_at_loader_exit["n"] = heartbeat_renews["n"]
+        return _good_own()
+
+    service = FirstPassJobService(repository=repo)
+    job = service.create_job(
+        user_id="user-hb", stock_ids=["TW:2330"], use_membership=False
+    )
+    result = service.run_batch(
+        job["job_id"],
+        user_id="user-hb",
+        batch_size=1,
+        collectors=_base_collectors(ownership_loader=slow_ownership),
+        lease_heartbeat_seconds=0.01,
+        lease_heartbeat_sleep=lambda _s: time.sleep(0.001),
+        symbol_deadline_seconds=None,
+    )
+    assert seen_at_loader_exit["n"] >= 5
+    assert result["processed"] == 1
+    assert result["leaseLost"] is False
+    assert not any(
+        t.name.startswith("first-pass-lease-heartbeat") for t in threading.enumerate()
+    )
+    assert threading.active_count() == baseline_threads
+    repo.clear_session_factory_override()
+
+
+def test_heartbeat_renew_false_sets_lease_lost_without_persist(monkeypatch) -> None:
+    import threading
+    import time
+
+    _, repo = _install_job_repo(monkeypatch, "user-hb-lost")
+    from app.services.tw_research.first_pass_job import FirstPassJobService
+
+    baseline_threads = threading.active_count()
+    heartbeat_false = {"seen": False}
+
+    def fake_renew(*_a, **_k) -> bool:
+        if threading.current_thread().name.startswith("first-pass-lease-heartbeat"):
+            heartbeat_false["seen"] = True
+            return False
+        return True  # per-symbol renew alone would not notice
+
+    monkeypatch.setattr(repo, "renew_first_pass_lease", fake_renew)
+
+    def slow_ownership(_sid: str):
+        assert _wait_until(lambda: heartbeat_false["seen"])
+        return _good_own()
+
+    service = FirstPassJobService(repository=repo)
+    job = service.create_job(
+        user_id="user-hb-lost",
+        stock_ids=["TW:2330", "TW:2317", "TW:2454"],
+        use_membership=False,
+    )
+    result = service.run_batch(
+        job["job_id"],
+        user_id="user-hb-lost",
+        batch_size=3,
+        collectors=_base_collectors(ownership_loader=slow_ownership),
+        lease_heartbeat_seconds=0.01,
+        lease_heartbeat_sleep=lambda _s: time.sleep(0.001),
+        symbol_deadline_seconds=None,
+    )
+    assert result["leaseLost"] is True
+    assert result["jobFailed"] is False
+    assert result["processed"] == 0
+    assert repo.list_first_pass_symbols(job["job_id"], limit=50) == []
+    assert threading.active_count() == baseline_threads
+    repo.clear_session_factory_override()
+
+
+def test_collect_stops_on_lease_lost_check_before_and_after_symbols() -> None:
+    calls: list[str] = []
+
+    def stock_loader(stock_id: str):
+        calls.append(stock_id)
+        return _stock_loader(stock_id)
+
+    state = {"lost": False}
+
+    def lease_lost_check() -> bool:
+        return state["lost"]
+
+    def ownership_loader(_sid: str):
+        state["lost"] = True  # heartbeat flags loss while symbol #1 is running
+        return _good_own()
+
+    result = collect_first_pass_batch(
+        ["TW:2330", "TW:2317", "TW:2454"],
+        universe_version="uv",
+        stock_loader=stock_loader,
+        candles_loader=lambda _s: _candles(),
+        institutional_loader=lambda *_a, **_k: _good_inst(),
+        margin_loader=lambda *_a, **_k: _good_margin(),
+        ownership_loader=ownership_loader,
+        key_stats_loader=_key_stats,
+        lease_renew=lambda: True,
+        lease_lost_check=lease_lost_check,
+    )
+    assert result.lease_lost is True
+    assert calls == ["TW:2330"]
+    assert result.released_unstarted == ["TW:2317", "TW:2454"]
+
+    # Already lost before the first symbol → nothing starts.
+    calls.clear()
+    pre = collect_first_pass_batch(
+        ["TW:2330", "TW:2317"],
+        universe_version="uv",
+        stock_loader=stock_loader,
+        lease_lost_check=lambda: True,
+    )
+    assert pre.lease_lost is True
+    assert calls == []
+    assert pre.released_unstarted == ["TW:2330", "TW:2317"]
+
+
+def test_symbol_deadline_marks_only_ownership_field_unavailable() -> None:
+    clock = _FakeClock()
+
+    def slow_ownership(_sid: str):
+        clock.advance(300.0)  # > 240s soft deadline
+        return _good_own()
+
+    def fast_ownership(_sid: str):
+        clock.advance(1.0)
+        return _good_own()
+
+    result = collect_first_pass_batch(
+        ["TW:2330"],
+        universe_version="uv",
+        stock_loader=_stock_loader,
+        candles_loader=lambda _s: _candles(),
+        institutional_loader=lambda *_a, **_k: _good_inst(),
+        margin_loader=lambda *_a, **_k: _good_margin(),
+        ownership_loader=slow_ownership,
+        key_stats_loader=_key_stats,
+        monotonic_clock=clock,
+        symbol_deadline_seconds=240,
+    )
+    fields = result.records[0].fields
+    tdcc = fields["tdcc_holders_ge_400_lots"]
+    assert tdcc.status == "unavailable"
+    assert tdcc.reason == "collector_deadline_exceeded"
+    assert classify_field_reason(tdcc.reason) == "timeout"
+    assert fields["institutional_5d"].status == "ok"
+    assert fields["margin"].status in {"ok", "partial"}
+
+    fast = collect_first_pass_batch(
+        ["TW:2330"],
+        universe_version="uv",
+        stock_loader=_stock_loader,
+        candles_loader=lambda _s: _candles(),
+        institutional_loader=lambda *_a, **_k: _good_inst(),
+        margin_loader=lambda *_a, **_k: _good_margin(),
+        ownership_loader=fast_ownership,
+        key_stats_loader=_key_stats,
+        monotonic_clock=clock,
+        symbol_deadline_seconds=240,
+    )
+    assert fast.records[0].fields["tdcc_holders_ge_400_lots"].status in {"ok", "partial"}
+
+
+def test_collector_deadline_exception_becomes_retryable_field_reason() -> None:
+    from app.services.tw_ownership_concentration_service import (
+        CollectorDeadlineExceeded,
+    )
+
+    def ownership_loader(_sid: str):
+        raise CollectorDeadlineExceeded("collector_deadline_exceeded")
+
+    result = collect_first_pass_batch(
+        ["TW:2330"],
+        universe_version="uv",
+        stock_loader=_stock_loader,
+        candles_loader=lambda _s: _candles(),
+        institutional_loader=lambda *_a, **_k: _good_inst(),
+        margin_loader=lambda *_a, **_k: _good_margin(),
+        ownership_loader=ownership_loader,
+        key_stats_loader=_key_stats,
+    )
+    record = result.records[0]
+    tdcc = record.fields["tdcc_holders_ge_400_lots"]
+    assert tdcc.reason == "collector_deadline_exceeded"
+    assert record.error == "collector_deadline_exceeded"  # retryable transient
+    assert record.fields["institutional_5d"].status == "ok"
+
+
+def test_portal_friday_loop_stops_at_soft_deadline(monkeypatch) -> None:
+    from datetime import date
+
+    import app.services.tw_ownership_concentration_service as svc
+
+    clock = _FakeClock()
+    posts = {"n": 0}
+
+    class _Resp:
+        text = "<html/>"
+
+    def fake_request(_client, *, method, **_kwargs):
+        if method == "POST":
+            posts["n"] += 1
+            clock.advance(100.0)
+        return _Resp()
+
+    fridays = [f"2024-06-{day:02d}" for day in (28, 21, 14, 7)] + [
+        f"2024-05-{day:02d}" for day in (31, 24, 17, 10)
+    ]
+    monkeypatch.setattr(svc, "_portal_request_with_retries", fake_request)
+    monkeypatch.setattr(svc, "extract_tdcc_synchronizer_token", lambda _t: "tok")
+    monkeypatch.setattr(svc, "extract_tdcc_available_dates", lambda _t: fridays)
+    monkeypatch.setattr(svc, "parse_tdcc_qry_stock_html", lambda *_a, **_k: None)
+
+    with svc.collector_deadline_scope(clock() + 240.0, clock):
+        with pytest.raises(svc.CollectorDeadlineExceeded):
+            svc._portal_history_with_client(
+                object(),  # type: ignore[arg-type]
+                symbol="2330",
+                start_date=date(2024, 1, 1),
+                end_date=date(2024, 6, 30),
+                max_weeks=8,
+            )
+    assert posts["n"] == 3  # 0s, 100s, 200s → at 300s the loop stops
+
+    # No scope → unbounded as before.
+    posts["n"] = 0
+    points = svc._portal_history_with_client(
+        object(),  # type: ignore[arg-type]
+        symbol="2330",
+        start_date=date(2024, 1, 1),
+        end_date=date(2024, 6, 30),
+        max_weeks=8,
+    )
+    assert points == [] and posts["n"] == 8
