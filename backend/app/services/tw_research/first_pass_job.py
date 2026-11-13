@@ -366,7 +366,27 @@ class FirstPassJobService:
             "budgetStopped": False,
             "releasedUnstarted": 0,
             "batchCounts": {"ok": 0, "partial": 0, "failed": 0},
+            "leaseLost": False,
+            "jobFailed": False,
+            "lastError": None,
         }
+        if claim.get("terminal_failed"):
+            job_out = claim["job"]
+            return {
+                "job": job_out,
+                "batchIds": [],
+                "leaseHeld": False,
+                "alreadyComplete": False,
+                "waitingForRetry": False,
+                "processed": 0,
+                "jobFailed": True,
+                "lastError": _last_error_from_job(job_out),
+                "durationMs": 0,
+                "budgetStopped": False,
+                "releasedUnstarted": 0,
+                "batchCounts": {"ok": 0, "partial": 0, "failed": 0},
+                "leaseLost": False,
+            }
         if claim.get("lease_held"):
             return {
                 "job": claim["job"],
@@ -419,6 +439,15 @@ class FirstPassJobService:
                     prior["relativePriceBasis"] = relative_basis
                 previous_fields_by_stock[stock_id] = prior
         clock = monotonic_clock or time.monotonic
+
+        def _renew_lease() -> bool:
+            return bool(
+                self._repo.renew_first_pass_lease(
+                    job_id,
+                    lease_generation=generation,
+                )
+            )
+
         try:
             result = collect_first_pass_batch(
                 batch_ids,
@@ -428,6 +457,7 @@ class FirstPassJobService:
                 time_budget_seconds=time_budget_seconds,
                 monotonic_clock=clock,
                 job_id=job_id,
+                lease_renew=_renew_lease,
                 **kwargs,
             )
         except Exception as exc:  # noqa: BLE001 — classify infra vs unexpected
@@ -437,6 +467,23 @@ class FirstPassJobService:
                     operation="run_first_pass_batch",
                 ) from exc
             raise
+        if result.lease_lost:
+            # Lease lost mid-batch — do not persist any symbols from this claim.
+            return {
+                "job": claim["job"],
+                "batchIds": batch_ids,
+                "leaseHeld": False,
+                "alreadyComplete": False,
+                "waitingForRetry": False,
+                "processed": 0,
+                "durationMs": int(result.duration_ms),
+                "budgetStopped": bool(result.budget_stopped),
+                "releasedUnstarted": len(result.released_unstarted),
+                "batchCounts": {"ok": 0, "partial": 0, "failed": 0},
+                "leaseLost": True,
+                "jobFailed": False,
+                "lastError": None,
+            }
         processed = 0
         lease_rejected = 0
         batch_counts = {"ok": 0, "partial": 0, "failed": 0}
@@ -561,6 +608,9 @@ class FirstPassJobService:
                 "releasedUnstarted": len(released_unstarted),
                 "batchCounts": batch_counts,
                 "systemicProgrammingError": systemic_error,
+                "jobFailed": True,
+                "lastError": systemic_error,
+                "leaseLost": False,
             }
 
         # Finalize only when every symbol is terminal (ok/partial/exhausted), not
@@ -580,6 +630,9 @@ class FirstPassJobService:
             "budgetStopped": bool(result.budget_stopped),
             "releasedUnstarted": len(released_unstarted),
             "batchCounts": batch_counts,
+            "leaseLost": False,
+            "jobFailed": False,
+            "lastError": None,
         }
 
     def list_symbols(
@@ -635,6 +688,8 @@ class FirstPassJobService:
 
     def _maybe_finalize(self, job_id: str, *, user_id: str) -> dict[str, Any] | None:
         job = self.get_job(job_id, user_id=user_id)
+        if job.get("status") in {"failed", "cancelled"}:
+            return job
         if job.get("active_snapshot_id"):
             return job
         payloads = self._repo.list_first_pass_snapshot_payloads(job_id)
@@ -716,6 +771,21 @@ def _display_label(payload: dict[str, Any], stock_id: str) -> str:
     if name and name_status != "unavailable":
         return f"{name} ({short_id})"
     return f"名稱不可用 ({short_id})"
+
+
+def _last_error_from_job(job: dict[str, Any] | None) -> str | None:
+    if not isinstance(job, dict):
+        return None
+    explicit = job.get("last_error") or job.get("lastError")
+    if explicit:
+        return str(explicit)
+    for note in reversed(list(job.get("notes") or [])):
+        text = str(note or "")
+        if text.startswith("error:"):
+            return text[len("error:") :]
+        if text.startswith("systemic_programming_error:"):
+            return text
+    return None
 
 
 def _systemic_programming_error(

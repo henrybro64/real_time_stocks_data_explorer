@@ -949,6 +949,8 @@ class ResearchRunStore:
             or job.get("first_pass_snapshot_id")
         )
         last_error, last_error_class, next_retry_at = _job_error_fields(job)
+        prior_progress = dict(run.dimensions.get("firstPassProgress") or {})
+        prior_last_error = prior_progress.get("lastError")
         run.dimensions["firstPassProgress"] = {
             "status": status,
             "processed": int(
@@ -986,12 +988,13 @@ class ResearchRunStore:
             run.phase = "phase1_first_pass"
             run.status = "failed"
             run.dimensions["fundamentals"] = "failed"
-            if last_error:
+            if last_error and last_error != prior_last_error:
                 run.append_note(f"lastError:{last_error}")
             # Systemic programming_error disarms drain.
             if last_error and str(last_error).startswith("systemic_programming_error:"):
                 run.schedule_enabled = False
-                run.append_note("first_pass_drain_disarmed_systemic_programming_error")
+                if "first_pass_drain_disarmed_systemic_programming_error" not in run.notes:
+                    run.append_note("first_pass_drain_disarmed_systemic_programming_error")
             return
         if status in {"completed", "partial"} and snapshot_id:
             run.phase = "awaiting_analyst_candidate_selection"

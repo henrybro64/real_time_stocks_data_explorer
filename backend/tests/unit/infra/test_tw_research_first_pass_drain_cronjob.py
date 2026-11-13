@@ -47,9 +47,9 @@ def test_first_pass_drain_cronjob_yaml_parses() -> None:
     text = _CRON.read_text(encoding="utf-8")
     assert '"maxBatches":1' in text or '"maxBatches": 1' in text
     assert '"batchSize":5' in text or '"batchSize": 5' in text
-    assert '"timeBudgetSeconds":90' in text or '"timeBudgetSeconds": 90' in text
+    assert '"timeBudgetSeconds":60' in text or '"timeBudgetSeconds": 60' in text
     assert "--max-time 150" in text
-    assert "budget 90" in text.lower() or "90 s" in text or "90s" in text
+    assert "budget 60" in text.lower() or "60 s" in text or "60s" in text
 
 
 def test_auth_secret_example_lists_drain_keys() -> None:

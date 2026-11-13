@@ -47,15 +47,33 @@ Start Research already creates a durable job but required browser batch clicks. 
 
 | Setting | Default | Role |
 | --- | --- | --- |
-| `timeBudgetSeconds` | **90** | Stop before starting the next symbol once elapsed ≥ budget; release unstarted ids (attempts unchanged) |
+| `timeBudgetSeconds` | **60** | Stop before starting the next symbol once elapsed ≥ budget; release unstarted ids (attempts unchanged) |
 | `batchSize` | **5** | Symbols claimed per tick |
+| `maxBatches` | **1** | Batches per drain tick |
 | curl `--max-time` | **150** | CronJob HTTP client ceiling |
 | `activeDeadlineSeconds` | **180** | Kubernetes Job deadline |
-| Batch lease | **300 s** | `BATCH_LEASE_SECONDS` |
+| Batch lease | **300 s** | `BATCH_LEASE_SECONDS`; **renewed after each finished symbol** |
 
-Hierarchy: **budget 90 s < curl 150 s < lease 300 s**.
+Hierarchy: **budget 60 s < curl 150 s < lease 300 s** (with per-symbol lease renewal).
 
-Drain and manual `POST /first-pass/jobs/{id}/batches` both default to the 90 s budget. Returned batch fields include `durationMs`, `budgetStopped`, `releasedUnstarted`, and `batchCounts` `{ok, partial, failed}`.
+Drain and manual `POST /first-pass/jobs/{id}/batches` both default to the 60 s budget. Returned batch fields include `durationMs`, `budgetStopped`, `releasedUnstarted`, `batchCounts` `{ok, partial, failed}`, and `leaseLost` when renewal fails mid-batch (nothing persisted).
+
+#### Why budget + renewal keeps a batch safe
+
+Worst-case per-symbol wall time is bounded by the provider timeouts first-pass collectors use:
+
+| Collector / path | Constant | Timeout |
+| --- | --- | --- |
+| TWSE/TPEx chip (institutional / margin via `tw_provider`) | `_REQUEST_TIMEOUT_SECONDS` | **5 s** |
+| TDCC ownership portal HTTP | `_PORTAL_TIMEOUT_SECONDS` | **30 s** |
+| TDCC ownership secondary fetch | `timeout_seconds=` in ownership service | **60 s** |
+| Key stats / valuation | `_TIMEOUT` in `key_stats_service` | **15 s** |
+| Profitability Yahoo HTTP (optional) | `_HTTP_TIMEOUT_SECONDS` | **8 s** |
+| Profitability yfinance future | `_YFINANCE_TIMEOUT_SECONDS` | **12 s** |
+
+A single slow ownership call can approach ~60 s. The **60 s batch budget** stops *before* starting another symbol once elapsed ≥ budget, and **lease renewal after each finished symbol** resets `reserve_expires_at` so a 250 s wall-clock path across renewals cannot leave a stale lease that another worker reclaims mid-persist. If renewal returns false (`leaseLost`), the batch stops and persists nothing.
+
+Failed jobs are **terminal**: `claim_first_pass_batch` returns `terminal_failed` without mutating status/lease; manual batches return **409** `first_pass_job_failed`.
 
 ### Arm only when drain can run
 
@@ -79,7 +97,7 @@ Otherwise attach leaves it false and notes `first_pass_drain_unavailable_for_use
 - Caller-supplied `jobId` is accepted **only** when it equals the run's non-null authoritative `first_pass_job_id`. Resume without an attached job is refused (409).
 - No Notion writes, no Phase-2 auto-start, no candidate auto-selection.
 - Never auto-resumes the three historical pending jobs without Start Research attach + `schedule_enabled`.
-- CronJob tick: `maxBatches=1`, `batchSize=5`, `timeBudgetSeconds=90`, curl `--max-time 150`, `activeDeadlineSeconds=180`.
+- CronJob tick: `maxBatches=1`, `batchSize=5`, `timeBudgetSeconds=60`, curl `--max-time 150`, `activeDeadlineSeconds=180`.
 - Cron schedule remains **`*/5 * * * *`** with **`suspend: true`** (do not unsuspend without explicit approval).
 
 ## Operator section

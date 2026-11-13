@@ -83,6 +83,16 @@ const TW_RESEARCH_ROWS = [
   ["research.tw.resetMembership", "Reset to starter", "重設為起始預設"],
   ["research.tw.startFirstPass", "Start first-pass job", "開始第一輪收集"],
   ["research.tw.runFirstPassBatch", "Run first-pass batch", "執行第一輪批次"],
+  [
+    "research.tw.firstPassJobFailed",
+    "First-pass job failed and cannot run more batches.",
+    "第一輪工作已失敗，無法再執行批次。",
+  ],
+  [
+    "research.tw.firstPassJobLastError",
+    "Last error: {error}",
+    "最後錯誤：{error}",
+  ],
   ["research.tw.loadFirstPassEvidence", "Load first-pass evidence page", "載入第一輪證據"],
   ["research.tw.loadFirstPassManifest", "Load first-pass manifest", "載入第一輪 manifest"],
   ["research.tw.saveCandidateSet", "Save analyst candidate set", "儲存分析師候選集"],

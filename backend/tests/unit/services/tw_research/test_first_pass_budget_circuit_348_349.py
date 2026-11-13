@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -337,6 +337,21 @@ def test_programming_error_field_only_is_partial_with_peers_ok(monkeypatch) -> N
     repo.clear_session_factory_override()
 
 
+def _typeerror_ownership(_stock_id: str):
+    raise TypeError("unexpected keyword argument 'range'")
+
+
+def _typeerror_collectors() -> dict:
+    return {
+        "stock_loader": _stock_loader,
+        "candles_loader": lambda _s: _candles(),
+        "institutional_loader": lambda *_a, **_k: _good_inst(),
+        "margin_loader": lambda *_a, **_k: _good_margin(),
+        "ownership_loader": _typeerror_ownership,
+        "key_stats_loader": _key_stats,
+    }
+
+
 def test_systemic_typeerror_fails_job_and_disarms_drain(monkeypatch) -> None:
     _, repo = _install_job_repo(monkeypatch, "owner")
     from app.services.tw_research.first_pass_job import FirstPassJobService
@@ -351,9 +366,6 @@ def test_systemic_typeerror_fails_job_and_disarms_drain(monkeypatch) -> None:
     )
     research_run_store.clear_for_tests()
     research_run_store.begin_phase1("owner", trading_day="2024-06-27")
-
-    def ownership_loader(_stock_id: str):
-        raise TypeError("unexpected keyword argument 'range'")
 
     stock_ids = [f"TW:{2000 + i}" for i in range(10)]
     service = FirstPassJobService(repository=repo)
@@ -374,14 +386,7 @@ def test_systemic_typeerror_fails_job_and_disarms_drain(monkeypatch) -> None:
         job["job_id"],
         user_id="owner",
         batch_size=10,
-        collectors={
-            "stock_loader": _stock_loader,
-            "candles_loader": lambda _s: _candles(),
-            "institutional_loader": lambda *_a, **_k: _good_inst(),
-            "margin_loader": lambda *_a, **_k: _good_margin(),
-            "ownership_loader": ownership_loader,
-            "key_stats_loader": _key_stats,
-        },
+        collectors=_typeerror_collectors(),
     )
     assert result["job"]["status"] == "failed"
     assert result["job"].get("active_snapshot_id") is None
@@ -398,6 +403,184 @@ def test_systemic_typeerror_fails_job_and_disarms_drain(monkeypatch) -> None:
     assert progress.get("lastError") == systemic
     assert "first_pass_drain_disarmed_systemic_programming_error" in run.notes
     research_run_store.disable_test_memory()
+    repo.clear_session_factory_override()
+
+
+def test_failed_job_rerun_is_job_failed_without_snapshot(monkeypatch) -> None:
+    """Final-batch breaker → next run_batch is terminal; _maybe_finalize early-outs."""
+    _, repo = _install_job_repo(monkeypatch, "owner-rerun")
+    from app.services.tw_research.first_pass_job import FirstPassJobService
+
+    stock_ids = [f"TW:{2100 + i}" for i in range(10)]
+    service = FirstPassJobService(repository=repo)
+    job = service.create_job(
+        user_id="owner-rerun",
+        stock_ids=stock_ids,
+        use_membership=False,
+    )
+    first = service.run_batch(
+        job["job_id"],
+        user_id="owner-rerun",
+        batch_size=10,
+        collectors=_typeerror_collectors(),
+    )
+    assert first["job"]["status"] == "failed"
+    assert first.get("jobFailed") is True
+    assert first["job"].get("active_snapshot_id") is None
+    cursor_after = int(first["job"].get("cursor") or 0)
+    gen_after = int(first["job"].get("lease_generation") or 0)
+    reserve_after = int(first["job"].get("reserve_cursor") or 0)
+
+    second = service.run_batch(
+        job["job_id"],
+        user_id="owner-rerun",
+        batch_size=10,
+        collectors=_typeerror_collectors(),
+    )
+    assert second.get("jobFailed") is True
+    assert second["processed"] == 0
+    assert second["job"]["status"] == "failed"
+    assert second["job"].get("active_snapshot_id") is None
+    assert second.get("batchIds") == []
+    assert int(second["job"].get("cursor") or 0) == cursor_after
+    assert int(second["job"].get("lease_generation") or 0) == gen_after
+    assert int(second["job"].get("reserve_cursor") or 0) == reserve_after
+    assert repo.get_first_pass_job(job["job_id"], user_id="owner-rerun")[
+        "active_snapshot_id"
+    ] is None
+    repo.clear_session_factory_override()
+
+
+def test_reconcile_last_error_note_dedup_after_systemic_fail(monkeypatch) -> None:
+    _, repo = _install_job_repo(monkeypatch, "owner-dedup")
+    from app.services.tw_research.first_pass_job import FirstPassJobService
+
+    monkeypatch.setattr(
+        "app.services.tw_research.research_run.settings.tw_research_first_pass_drain_enabled",
+        True,
+    )
+    monkeypatch.setattr(
+        "app.services.tw_research.research_run.settings.tw_research_first_pass_drain_user_id",
+        "owner-dedup",
+    )
+    research_run_store.clear_for_tests()
+    research_run_store.begin_phase1("owner-dedup", trading_day="2024-06-27")
+
+    stock_ids = [f"TW:{2200 + i}" for i in range(10)]
+    service = FirstPassJobService(repository=repo)
+    job = service.create_job(
+        user_id="owner-dedup",
+        stock_ids=stock_ids,
+        use_membership=False,
+    )
+    research_run_store.attach_first_pass_job(
+        "owner-dedup", first_pass_job_id=job["job_id"]
+    )
+    monkeypatch.setattr(
+        research_run_store,
+        "_load_first_pass_job",
+        lambda user, job_id: repo.get_first_pass_job(job_id, user_id=user),
+    )
+
+    result = service.run_batch(
+        job["job_id"],
+        user_id="owner-dedup",
+        batch_size=10,
+        collectors=_typeerror_collectors(),
+    )
+    systemic = result.get("systemicProgrammingError")
+    assert systemic is not None
+
+    for _ in range(5):
+        run = research_run_store.reconcile("owner-dedup")
+        assert run is not None
+        assert run.status == "failed"
+
+    run = research_run_store.get("owner-dedup")
+    assert run is not None
+    last_error_notes = [n for n in run.notes if str(n).startswith("lastError:")]
+    assert last_error_notes == [f"lastError:{systemic}"]
+    assert (
+        run.notes.count("first_pass_drain_disarmed_systemic_programming_error") == 1
+    )
+    research_run_store.disable_test_memory()
+    repo.clear_session_factory_override()
+
+
+def test_lease_renew_extends_and_blocks_concurrent_claim(monkeypatch) -> None:
+    _, repo = _install_job_repo(monkeypatch, "user-lease")
+    import app.repositories.tw_research_repository as repo_mod
+    from app.services.tw_research.first_pass_job import FirstPassJobService
+
+    clock = {"now": datetime(2024, 6, 27, 12, 0, 0, tzinfo=timezone.utc)}
+
+    class _ClockDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):  # noqa: ANN001
+            current = clock["now"]
+            return current if tz is None else current.astimezone(tz)
+
+    monkeypatch.setattr(repo_mod, "datetime", _ClockDateTime)
+
+    service = FirstPassJobService(repository=repo)
+    job = service.create_job(
+        user_id="user-lease",
+        stock_ids=["TW:2330", "TW:2317"],
+        use_membership=False,
+    )
+    claim = repo.claim_first_pass_batch(
+        job["job_id"],
+        batch_size=2,
+        lease_seconds=BATCH_LEASE_SECONDS,
+    )
+    assert claim is not None
+    assert claim.get("lease_held") is False
+    gen = int(claim["lease_generation"])
+    assert len(claim["batch_ids"]) == 2
+
+    clock["now"] = clock["now"] + timedelta(seconds=250)
+    assert repo.renew_first_pass_lease(job["job_id"], lease_generation=gen) is True
+    held = repo.claim_first_pass_batch(job["job_id"], batch_size=2)
+    assert held is not None
+    assert held.get("lease_held") is True
+
+    clock["now"] = clock["now"] + timedelta(seconds=250)
+    assert repo.renew_first_pass_lease(job["job_id"], lease_generation=gen) is True
+    held2 = repo.claim_first_pass_batch(job["job_id"], batch_size=2)
+    assert held2 is not None
+    assert held2.get("lease_held") is True
+    repo.clear_session_factory_override()
+
+
+def test_lease_renew_false_stops_batch_without_persist(monkeypatch) -> None:
+    _, repo = _install_job_repo(monkeypatch, "user-lease-lost")
+    from app.services.tw_research.first_pass_job import FirstPassJobService
+
+    renew_calls = {"n": 0}
+
+    def fake_renew(*_a, **_k) -> bool:
+        renew_calls["n"] += 1
+        # Fail renew after the first finished symbol.
+        return False
+
+    monkeypatch.setattr(repo, "renew_first_pass_lease", fake_renew)
+
+    service = FirstPassJobService(repository=repo)
+    job = service.create_job(
+        user_id="user-lease-lost",
+        stock_ids=["TW:2330", "TW:2317", "TW:2454"],
+        use_membership=False,
+    )
+    result = service.run_batch(
+        job["job_id"],
+        user_id="user-lease-lost",
+        batch_size=3,
+        collectors=_base_collectors(),
+    )
+    assert result.get("leaseLost") is True
+    assert result["processed"] == 0
+    assert renew_calls["n"] >= 1
+    assert repo.list_first_pass_symbols(job["job_id"], limit=50) == []
     repo.clear_session_factory_override()
 
 

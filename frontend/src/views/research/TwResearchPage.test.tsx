@@ -894,6 +894,41 @@ describe("TwResearchPage reliability UX (#335–#337)", () => {
     );
   });
 
+  it("disables run-first-pass-batch when the selected job has failed", async () => {
+    const systemic =
+      "systemic_programming_error:tdcc_holders_ge_400_lots:TypeError";
+    vi.mocked(listTwResearchFirstPassJobs).mockResolvedValue([
+      {
+        jobId: "fpj_failed",
+        status: "failed",
+        qualityStatus: "incomplete",
+        activeSnapshotId: null,
+        notes: [`error:${systemic}`],
+        lastError: systemic,
+      },
+    ]);
+    vi.mocked(fetchTwResearchRunCurrent).mockResolvedValue({
+      researchRunId: "rr_failed",
+      userId: "u1",
+      phase: "phase1_first_pass",
+      status: "failed",
+      firstPassJobId: "fpj_failed",
+      firstPassProgress: {
+        status: "failed",
+        lastError: systemic,
+      },
+    } as never);
+    renderPage();
+    await waitFor(() => {
+      expect(listTwResearchFirstPassJobs).toHaveBeenCalled();
+    });
+    const batchButton = await screen.findByTestId("tw-research-run-first-pass-batch");
+    expect(batchButton).toBeDisabled();
+    expect(
+      await screen.findByTestId("tw-research-first-pass-job-failed"),
+    ).toBeInTheDocument();
+  });
+
   it("shows backend unavailable for HTTP 503 instead of empty job history", async () => {
     vi.mocked(listTwResearchFirstPassJobs).mockRejectedValue(
       new ApiError("Request failed: 503", {

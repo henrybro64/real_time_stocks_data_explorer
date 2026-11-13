@@ -362,6 +362,14 @@ def run_first_pass_job_batch(
                 "message": str(exc),
             },
         ) from exc
+    if result.get("jobFailed"):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "first_pass_job_failed",
+                "lastError": result.get("lastError"),
+            },
+        )
     payload = _camel_job(result["job"])
     payload["batchIds"] = result["batchIds"]
     payload["processed"] = result["processed"]
@@ -376,6 +384,7 @@ def run_first_pass_job_batch(
         "partial": 0,
         "failed": 0,
     }
+    payload["leaseLost"] = bool(result.get("leaseLost"))
     return FirstPassJobResponse(job=payload)
 
 

@@ -192,6 +192,7 @@ class FirstPassBatchResult:
     budget_stopped: bool = False
     released_unstarted: list[str] = field(default_factory=list)
     duration_ms: int = 0
+    lease_lost: bool = False
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -206,6 +207,7 @@ class FirstPassBatchResult:
             "budgetStopped": self.budget_stopped,
             "releasedUnstarted": list(self.released_unstarted),
             "durationMs": self.duration_ms,
+            "leaseLost": self.lease_lost,
         }
 
 
@@ -427,6 +429,7 @@ def collect_first_pass_batch(
     time_budget_seconds: float | None = None,
     monotonic_clock: Callable[[], float] | None = None,
     job_id: str | None = None,
+    lease_renew: Callable[[], bool] | None = None,
 ) -> FirstPassBatchResult:
     """Collect first-pass evidence for a **deduplicated** ID list.
 
@@ -439,6 +442,9 @@ def collect_first_pass_batch(
     When ``time_budget_seconds`` is set, stop **before** starting a symbol once
     elapsed time reaches the budget; unstarted ids are returned in
     ``released_unstarted`` (attempts unchanged).
+
+    When ``lease_renew`` is set, call it after each finished symbol. If it returns
+    False the batch stops with ``lease_lost`` (caller must not persist).
     """
     deduped = dedupe_stock_ids(stock_ids)
     loader = stock_loader or quote_service.get_catalog_stock
@@ -451,6 +457,7 @@ def collect_first_pass_batch(
     clock = monotonic_clock or time.monotonic
     started_at = clock()
     budget_stopped = False
+    lease_lost = False
     released_unstarted: list[str] = []
 
     for index, stock_id in enumerate(deduped):
@@ -504,6 +511,10 @@ def collect_first_pass_batch(
             )
             failed.completeness = _symbol_completeness(failed)
             records.append(failed)
+        if lease_renew is not None and not lease_renew():
+            lease_lost = True
+            released_unstarted = list(deduped[index + 1 :])
+            break
 
     duration_ms = int(max(0.0, (clock() - started_at) * 1000.0))
     coverage = _coverage_summary(records)
@@ -520,6 +531,10 @@ def collect_first_pass_batch(
             f"time_budget_stopped after {len(records)} symbols; "
             f"{len(released_unstarted)} released unstarted."
         )
+    if lease_lost:
+        notes.append(
+            f"lease_lost after {len(records)} symbols; caller must not persist."
+        )
     return FirstPassBatchResult(
         first_pass_version=FIRST_PASS_VERSION,
         universe_version=version,
@@ -532,6 +547,7 @@ def collect_first_pass_batch(
         budget_stopped=budget_stopped,
         released_unstarted=released_unstarted,
         duration_ms=duration_ms,
+        lease_lost=lease_lost,
     )
 
 

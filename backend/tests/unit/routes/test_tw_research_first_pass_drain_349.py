@@ -94,3 +94,39 @@ def test_pause_resume_route_maps_conflict_to_409(monkeypatch) -> None:
     detail = response.json()["detail"]
     assert detail["error"] == "research_run_revision_conflict"
     assert "requires_attached_job" in detail["reason"]
+
+
+def test_batch_route_returns_409_when_job_failed(monkeypatch) -> None:
+    systemic = "systemic_programming_error:tdcc_holders_ge_400_lots:TypeError"
+
+    def fake_run_batch(job_id, *, user_id, **_kwargs):  # noqa: ANN001
+        assert job_id == "fpj_x"
+        return {
+            "job": {
+                "job_id": job_id,
+                "user_id": user_id,
+                "status": "failed",
+                "notes": [f"error:{systemic}"],
+                "active_snapshot_id": None,
+            },
+            "batchIds": [],
+            "processed": 0,
+            "leaseHeld": False,
+            "alreadyComplete": False,
+            "jobFailed": True,
+            "lastError": systemic,
+            "leaseLost": False,
+        }
+
+    monkeypatch.setattr(
+        "app.api.routes.tw_research.first_pass_job_service.run_batch",
+        fake_run_batch,
+    )
+    response = client.post(
+        "/api/tw-research/first-pass/jobs/fpj_x/batches",
+        json={"batchSize": 5},
+    )
+    assert response.status_code == 409
+    detail = response.json()["detail"]
+    assert detail["error"] == "first_pass_job_failed"
+    assert detail["lastError"] == systemic

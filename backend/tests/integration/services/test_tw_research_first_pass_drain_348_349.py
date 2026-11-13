@@ -16,6 +16,7 @@ import pytest
 from app.db.models import TwResearchFirstPassJob, User
 from app.db.session import SessionLocal
 from app.repositories.tw_research_repository import BATCH_LEASE_SECONDS, tw_research_repository
+from app.services.tw_research.enrichment import ProvenanceField
 from app.services.tw_research.first_pass import FirstPassBatchResult, FirstPassSymbolRecord
 from app.services.tw_research.first_pass_drain import drain_authorized_first_pass
 from app.services.tw_research.first_pass_job import FirstPassJobService
@@ -61,7 +62,7 @@ def _fake_collect(ids, **kwargs):  # noqa: ANN001
     clock = kwargs.get("monotonic_clock")
     budget = kwargs.get("time_budget_seconds")
     if budget is not None and clock is not None and len(ids) > 3:
-        # Mirror unit fake: ~40s/symbol under 90s budget → 3 finished.
+        # Mirror unit fake: ~40s/symbol under budget → stop mid-batch.
         started = clock()
         kept = []
         for sid in ids:
@@ -164,7 +165,7 @@ def test_a_drain_ticks_complete_73_symbol_universe(db_session, monkeypatch) -> N
             dry_run=False,
             max_batches=1,
             batch_size=5,
-            time_budget_seconds=90,
+            time_budget_seconds=60,
         )
         ticks += 1
         if result.outcome in {"job_completed", "already_complete"}:
@@ -376,7 +377,7 @@ def test_f_300_symbol_tick_bound(db_session, monkeypatch) -> None:
             dry_run=False,
             max_batches=1,
             batch_size=5,
-            time_budget_seconds=90,
+            time_budget_seconds=60,
         )
         ticks += 1
         if result.outcome in {"job_completed", "already_complete"}:
@@ -385,3 +386,80 @@ def test_f_300_symbol_tick_bound(db_session, monkeypatch) -> None:
     final = service.get_job(job["job_id"], user_id=user_id)
     assert final["status"] in {"completed", "partial"}
     assert tw_research_repository.count_first_pass_symbols(job["job_id"])["total"] == 300
+
+
+def _systemic_typeerror_collect(ids, **kwargs):  # noqa: ANN001
+    records = [
+        FirstPassSymbolRecord(
+            stock_id=sid,
+            stock_name=sid,
+            name_status="ok",
+            name_source="catalog",
+            exchange="TWSE",
+            market="TW",
+            sector_theme_keys=[],
+            completeness={"fieldsOk": 0, "fieldsUnavailable": 1},
+            fields={
+                "tdcc_holders_ge_400_lots": ProvenanceField(
+                    field="tdcc_holders_ge_400_lots",
+                    status="unavailable",
+                    source="fixture",
+                    reason="programming_error:TypeError",
+                ),
+            },
+        )
+        for sid in ids
+    ]
+    return FirstPassBatchResult(
+        first_pass_version="first-pass-v1",
+        universe_version=kwargs.get("universe_version") or f"explicit:{len(ids)}",
+        requested_count=len(ids),
+        collected_count=len(records),
+        deduped_count=len(records),
+        records=records,
+        coverage_summary={},
+        notes=[],
+    )
+
+
+def test_g_systemic_fail_stays_failed_without_snapshot(db_session, monkeypatch) -> None:
+    del db_session
+    user_id = f"sysfail-{uuid4().hex[:8]}"
+    _ensure_user(user_id)
+    _arm_drain(monkeypatch, user_id)
+    monkeypatch.setattr(
+        "app.services.tw_research.first_pass_job.collect_first_pass_batch",
+        _systemic_typeerror_collect,
+    )
+
+    stock_ids = [f"TW:{8000 + i}" for i in range(10)]
+    service = FirstPassJobService(repository=tw_research_repository)
+    job = service.create_job(user_id=user_id, stock_ids=stock_ids, use_membership=False)
+    store = _drain_store()
+    store.begin_phase1(user_id, trading_day="2024-06-27")
+    store.attach_first_pass_job(user_id, first_pass_job_id=job["job_id"])
+
+    first = service.run_batch(job["job_id"], user_id=user_id, batch_size=10)
+    assert first["job"]["status"] == "failed"
+    assert first.get("jobFailed") is True
+    assert first["job"].get("active_snapshot_id") is None
+    systemic = first.get("systemicProgrammingError")
+    assert systemic and systemic.startswith("systemic_programming_error:")
+
+    for _ in range(2):
+        again = service.run_batch(job["job_id"], user_id=user_id, batch_size=10)
+        assert again.get("jobFailed") is True
+        assert again["processed"] == 0
+        assert again["job"]["status"] == "failed"
+        assert again["job"].get("active_snapshot_id") is None
+
+    run = store.reconcile(user_id)
+    assert run is not None
+    assert run.status == "failed"
+    assert run.schedule_enabled is False
+    progress = (run.dimensions or {}).get("firstPassProgress") or {}
+    assert progress.get("lastError") == systemic
+    assert "first_pass_drain_disarmed_systemic_programming_error" in run.notes
+    final = service.get_job(job["job_id"], user_id=user_id)
+    assert final["status"] == "failed"
+    assert final.get("active_snapshot_id") is None

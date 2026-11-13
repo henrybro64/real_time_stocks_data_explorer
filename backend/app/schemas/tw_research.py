@@ -124,10 +124,10 @@ class FirstPassDrainRequest(BaseModel):
     """Internal durable first-pass drain tick (#349). Token auth; disabled by default."""
 
     dryRun: bool = False
-    maxBatches: int = Field(default=3, ge=1, le=8)
+    maxBatches: int = Field(default=1, ge=1, le=8)
     batchSize: int = Field(default=5, ge=1, le=25)
-    # Wall-clock budget per batch (budget 90 < curl 150 < lease 300).
-    timeBudgetSeconds: float = Field(default=90, ge=30, le=120)
+    # Wall-clock budget per batch (budget 60 < curl 150 < lease 300; renew per symbol).
+    timeBudgetSeconds: float = Field(default=60, ge=30, le=120)
     jobId: str | None = None
 
 
@@ -248,7 +248,7 @@ class FirstPassJobBatchRequest(BaseModel):
     batchSize: int = Field(default=5, ge=1, le=25)
     includeNonofficialMargins: bool = False
     # Same default as drain — sits behind the ~150s frontend proxy.
-    timeBudgetSeconds: float = Field(default=90, ge=30, le=120)
+    timeBudgetSeconds: float = Field(default=60, ge=30, le=120)
 
 
 class FirstPassJobResponse(BaseModel):

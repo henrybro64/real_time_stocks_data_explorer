@@ -2514,6 +2514,16 @@ class TwResearchRepository(SessionBoundRepository):
             ).scalar_one_or_none()
             if row is None:
                 return None
+            # Terminal jobs are never reclaimable — commit nothing, leave status/lease.
+            if row.status in {"failed", "cancelled"}:
+                return {
+                    "batch_ids": [],
+                    "job": _first_pass_job_to_dict(row),
+                    "already_complete": False,
+                    "lease_held": False,
+                    "terminal_failed": True,
+                    "lease_generation": int(row.lease_generation or 0),
+                }
             stock_ids = list(row.stock_ids_json or [])
             lease_until = _as_utc(row.reserve_expires_at)
             cursor = int(row.cursor or 0)
@@ -2561,7 +2571,8 @@ class TwResearchRepository(SessionBoundRepository):
                         "lease_generation": int(row.lease_generation or 0),
                     }
                 # Match complete_first_pass_batch: exhausted symbol failures ⇒ partial.
-                row.status = _resolve_first_pass_terminal_status(session, job_id)
+                if row.status not in {"failed", "cancelled"}:
+                    row.status = _resolve_first_pass_terminal_status(session, job_id)
                 session.commit()
                 return {
                     "batch_ids": [],
@@ -2593,10 +2604,11 @@ class TwResearchRepository(SessionBoundRepository):
                     break
             if not batch_ids:
                 cooling = _first_pass_cooling_retry_count(session, job_id, stock_ids)
-                if cooling:
-                    row.status = "deferred"
-                else:
-                    row.status = _resolve_first_pass_terminal_status(session, job_id)
+                if row.status not in {"failed", "cancelled"}:
+                    if cooling:
+                        row.status = "deferred"
+                    else:
+                        row.status = _resolve_first_pass_terminal_status(session, job_id)
                 row.reserve_cursor = cursor
                 row.reserve_expires_at = None
                 session.commit()
@@ -2721,19 +2733,47 @@ class TwResearchRepository(SessionBoundRepository):
             row.reserve_cursor = cursor
             row.reserve_expires_at = None
             row.updated_at = now
-            if cursor >= len(stock_ids):
-                cooling = _first_pass_cooling_retry_count(session, job_id, stock_ids)
-                if cooling:
-                    row.status = "deferred"
+            if row.status not in {"failed", "cancelled"}:
+                if cursor >= len(stock_ids):
+                    cooling = _first_pass_cooling_retry_count(session, job_id, stock_ids)
+                    if cooling:
+                        row.status = "deferred"
+                    else:
+                        row.status = _resolve_first_pass_terminal_status(session, job_id)
                 else:
-                    row.status = _resolve_first_pass_terminal_status(session, job_id)
-            else:
-                row.status = "running"
+                    row.status = "running"
             session.commit()
             return {
                 "job": _first_pass_job_to_dict(row),
                 "processed_count": processed_count,
             }
+
+    def renew_first_pass_lease(
+        self,
+        job_id: str,
+        *,
+        lease_generation: int,
+        lease_seconds: int = BATCH_LEASE_SECONDS,
+    ) -> bool:
+        """Extend an active lease when generation still matches and lease not expired."""
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            now = datetime.now(timezone.utc)
+            result = session.execute(
+                update(TwResearchFirstPassJob)
+                .where(
+                    TwResearchFirstPassJob.job_id == job_id,
+                    TwResearchFirstPassJob.lease_generation == int(lease_generation),
+                    TwResearchFirstPassJob.reserve_expires_at > now,
+                )
+                .values(
+                    reserve_expires_at=now
+                    + timedelta(seconds=max(1, int(lease_seconds))),
+                    updated_at=now,
+                )
+            )
+            session.commit()
+            return int(result.rowcount or 0) == 1
 
     def fail_first_pass_job(
         self,

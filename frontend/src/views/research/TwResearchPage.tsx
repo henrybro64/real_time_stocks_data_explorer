@@ -836,6 +836,51 @@ export function TwResearchPage({
     },
   });
 
+  const selectedFirstPassJob = useMemo(() => {
+    if (!firstPassJobId) return null;
+    return (
+      firstPassJobs.find((job) => String(job.jobId ?? "") === firstPassJobId) ?? null
+    );
+  }, [firstPassJobId, firstPassJobs]);
+
+  const firstPassJobTerminalStatus = useMemo(() => {
+    const fromRun = researchRunQuery.data?.firstPassProgress;
+    const runStatus =
+      fromRun && typeof fromRun === "object"
+        ? String((fromRun as Record<string, unknown>).status ?? "")
+        : "";
+    const progressStatus = String(firstPassProgressQuery.data?.status ?? "");
+    const jobStatus = String(selectedFirstPassJob?.status ?? "");
+    return runStatus || progressStatus || jobStatus;
+  }, [
+    researchRunQuery.data?.firstPassProgress,
+    firstPassProgressQuery.data?.status,
+    selectedFirstPassJob?.status,
+  ]);
+
+  const firstPassJobIsTerminalFailed =
+    firstPassJobTerminalStatus === "failed" ||
+    firstPassJobTerminalStatus === "cancelled";
+
+  const firstPassJobLastError = useMemo(() => {
+    const fromRun = researchRunQuery.data?.firstPassProgress;
+    if (fromRun && typeof fromRun === "object") {
+      const err = (fromRun as Record<string, unknown>).lastError;
+      if (typeof err === "string" && err.trim()) return err;
+    }
+    const fromJob = selectedFirstPassJob?.lastError;
+    if (typeof fromJob === "string" && fromJob.trim()) return fromJob;
+    const notes = selectedFirstPassJob?.notes;
+    if (Array.isArray(notes)) {
+      for (let i = notes.length - 1; i >= 0; i -= 1) {
+        const note = String(notes[i] ?? "");
+        if (note.startsWith("error:")) return note.slice("error:".length);
+        if (note.startsWith("systemic_programming_error:")) return note;
+      }
+    }
+    return "";
+  }, [researchRunQuery.data?.firstPassProgress, selectedFirstPassJob]);
+
   const firstPassBatchMutation = useMutation({
     mutationFn: async () => {
       if (!firstPassJobId) throw new Error("missing_first_pass_job");
@@ -1638,7 +1683,12 @@ export function TwResearchPage({
                 <Button
                   kind="secondary"
                   size="sm"
-                  disabled={!firstPassJobId || firstPassBatchMutation.isPending}
+                  data-testid="tw-research-run-first-pass-batch"
+                  disabled={
+                    !firstPassJobId ||
+                    firstPassBatchMutation.isPending ||
+                    firstPassJobIsTerminalFailed
+                  }
                   onClick={() => firstPassBatchMutation.mutate()}
                 >
                   {t("research.tw.runFirstPassBatch")}
@@ -1660,6 +1710,21 @@ export function TwResearchPage({
                   {t("research.tw.loadFirstPassManifest")}
                 </Button>
               </Stack>
+              {firstPassJobIsTerminalFailed ? (
+                <div data-testid="tw-research-first-pass-job-failed">
+                  <RequestStateNotice
+                    kind="error"
+                    scopeLabel={t("research.tw.firstPassJobFailed")}
+                    detail={
+                      firstPassJobLastError
+                        ? t("research.tw.firstPassJobLastError", {
+                            error: firstPassJobLastError,
+                          })
+                        : t("research.tw.firstPassJobFailed")
+                    }
+                  />
+                </div>
+              ) : null}
               {firstPassJobsQuery.isError ? (
                 <div data-testid="tw-research-first-pass-jobs-unavailable">
                   <RequestStateNotice

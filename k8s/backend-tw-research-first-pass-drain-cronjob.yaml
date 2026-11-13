@@ -10,7 +10,8 @@ spec:
   # Does NOT unsuspend the technical-scan schedule CronJob (#330).
   suspend: true
   # Every 5 minutes every day (Asia/Taipei). Still suspend:true until enabled.
-  # Timing hierarchy: budget 90s < curl --max-time 150s < lease 300s.
+  # Timing hierarchy: budget 60s < curl --max-time 150s < lease 300s.
+  # Lease renews after each finished symbol so a slow symbol cannot starve reclaim.
   # activeDeadlineSeconds 180 bounds the Job above curl but still under lease.
   schedule: "*/5 * * * *"
   timeZone: Asia/Taipei
@@ -53,10 +54,10 @@ spec:
                     echo "TW_RESEARCH_FIRST_PASS_DRAIN_TOKEN unset; drain tick skipped"
                     exit 0
                   fi
-                  # budget 90s < curl 150s < lease 300s
+                  # budget 60s < curl 150s < lease 300s (renew per symbol)
                   curl --fail --show-error --silent --max-time 150 \
                     -X POST \
                     -H "Content-Type: application/json" \
                     -H "X-Tw-Research-First-Pass-Drain-Token: ${TW_RESEARCH_FIRST_PASS_DRAIN_TOKEN}" \
-                    -d '{"dryRun":false,"maxBatches":1,"batchSize":5,"timeBudgetSeconds":90}' \
+                    -d '{"dryRun":false,"maxBatches":1,"batchSize":5,"timeBudgetSeconds":60}' \
                     http://stock-ticker-backend:8000/api/tw-research/first-pass/drain

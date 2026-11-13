@@ -64,9 +64,9 @@ def drain_authorized_first_pass(
     user_id: str,
     enabled: bool,
     dry_run: bool = False,
-    max_batches: int = 3,
+    max_batches: int = 1,
     batch_size: int = 5,
-    time_budget_seconds: float = 90,
+    time_budget_seconds: float = 60,
     job_id: str | None = None,
 ) -> FirstPassDrainResult:
     """Run up to ``max_batches`` leased first-pass batches for one authorized run.
@@ -302,6 +302,12 @@ def drain_authorized_first_pass(
             )
 
         last_job = result.get("job") if isinstance(result.get("job"), dict) else last_job
+        if result.get("jobFailed"):
+            stop_reason = "job_failed"
+            break
+        if result.get("leaseLost"):
+            stop_reason = "lease_lost"
+            break
         if result.get("leaseHeld"):
             lease_held = True
             stop_reason = "lease_held"
