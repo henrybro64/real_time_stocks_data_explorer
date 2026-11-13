@@ -7,6 +7,7 @@ from typing import Any
 
 from app.core.config import settings
 from app.core.diagnostics import current_log_context
+from app.core.log_sanitize import sanitize_traceback
 
 
 _CONFIGURED = False
@@ -44,7 +45,14 @@ class ContextFieldsFilter(logging.Filter):
         return True
 
 
-class JsonLogFormatter(logging.Formatter):
+class _SanitizedExceptionFormatter(logging.Formatter):
+    """Never emit raw tracebacks — provider URLs may carry query tokens/headers."""
+
+    def formatException(self, ei) -> str:  # noqa: ANN001, N802
+        return sanitize_traceback(super().formatException(ei))
+
+
+class JsonLogFormatter(_SanitizedExceptionFormatter):
     def format(self, record: logging.LogRecord) -> str:
         payload: dict[str, Any] = {
             "timestamp": datetime.fromtimestamp(
@@ -56,12 +64,15 @@ class JsonLogFormatter(logging.Formatter):
             "message": record.getMessage(),
         }
         payload.update(_log_fields(record))
+        pre_sanitized = payload.pop("traceback_sanitized", None)
         if record.exc_info:
             payload["exception"] = self.formatException(record.exc_info)
+        elif pre_sanitized:
+            payload["exception"] = sanitize_traceback(pre_sanitized)
         return json.dumps(payload, ensure_ascii=False, default=str)
 
 
-class ConsoleLogFormatter(logging.Formatter):
+class ConsoleLogFormatter(_SanitizedExceptionFormatter):
     def format(self, record: logging.LogRecord) -> str:
         timestamp = datetime.fromtimestamp(
             record.created,
@@ -69,6 +80,7 @@ class ConsoleLogFormatter(logging.Formatter):
         ).isoformat(timespec="milliseconds")
         fields = _log_fields(record)
         event = fields.pop("event", None)
+        pre_sanitized = fields.pop("traceback_sanitized", None)
         parts = [timestamp, record.levelname, record.name]
         if event:
             parts.append(str(event))
@@ -81,6 +93,8 @@ class ConsoleLogFormatter(logging.Formatter):
         )
         if record.exc_info:
             parts.append(f"exception={self.formatException(record.exc_info)!r}")
+        elif pre_sanitized:
+            parts.append(f"exception={sanitize_traceback(pre_sanitized)!r}")
         return " ".join(parts)
 
 

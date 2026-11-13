@@ -8,12 +8,18 @@ fabricated. Yahoo profitability is opt-in only.
 
 from __future__ import annotations
 
+import logging
 import re
+import time
+import traceback
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Literal
 
+logger = logging.getLogger(__name__)
+
+from app.core.log_sanitize import sanitize_log_text, sanitize_traceback
 from app.models.quote import CandleRecord
 from app.models.stock import StockRecord
 from app.services.daily_price_history_service import daily_price_history_service
@@ -28,7 +34,9 @@ from app.services.tw_margin_short_service import (
     tw_margin_short_service,
 )
 from app.services.tw_ownership_concentration_service import (
+    CollectorDeadlineExceeded,
     TaiwanOwnershipConcentrationResult,
+    collector_deadline_scope,
     tw_ownership_concentration_service,
 )
 from app.services.tw_research.constants import (
@@ -59,7 +67,12 @@ KeyStatsLoader = Callable[[str], dict[str, object] | None]
 ProfitabilityLoader = Callable[[str], dict[str, object] | None]
 ThemeKeysLoader = Callable[[str], list[str]]
 
+COLLECTOR_DEADLINE_EXCEEDED_REASON = "collector_deadline_exceeded"
+# Soft per-symbol wall-clock limit for the slow ownership (TDCC Friday) step.
+DEFAULT_SYMBOL_DEADLINE_SECONDS = 240.0
+
 # Permanent / non-retryable field reason markers (substring match, lowercased).
+# programming_error is a distinct class (see classify_field_reason) — not listed here.
 _PERMANENT_FIELD_REASON_MARKERS = (
     "adapter_missing",
     "adapter_not_implemented",
@@ -184,6 +197,10 @@ class FirstPassBatchResult:
     records: list[FirstPassSymbolRecord]
     coverage_summary: dict[str, Any]
     notes: list[str]
+    budget_stopped: bool = False
+    released_unstarted: list[str] = field(default_factory=list)
+    duration_ms: int = 0
+    lease_lost: bool = False
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -195,11 +212,17 @@ class FirstPassBatchResult:
             "records": [record.as_dict() for record in self.records],
             "coverageSummary": self.coverage_summary,
             "notes": list(self.notes),
+            "budgetStopped": self.budget_stopped,
+            "releasedUnstarted": list(self.released_unstarted),
+            "durationMs": self.duration_ms,
+            "leaseLost": self.lease_lost,
         }
 
 
 def provider_exception_reason(exc: BaseException) -> str:
     """Classify a provider exception into a durable, machine-readable reason."""
+    if isinstance(exc, CollectorDeadlineExceeded):
+        return COLLECTOR_DEADLINE_EXCEEDED_REASON
     name = type(exc).__name__
     text = str(exc)
     lower = f"{name} {text}".lower()
@@ -214,6 +237,12 @@ def provider_exception_reason(exc: BaseException) -> str:
     except (TypeError, ValueError):
         status_int = None
 
+    # TypeError/AttributeError are almost always local contract bugs (wrong kwargs,
+    # None attribute) — not provider blips. Check *before* message heuristics so a
+    # TypeError whose text mentions "timeout"/"connection" is not misclassified as
+    # transient (#348).
+    if isinstance(exc, (TypeError, AttributeError)):
+        return f"programming_error:{name}"
     if status_int == 429 or "429" in lower or "rate limit" in lower or "too many requests" in lower:
         suffix = f":retry_after={retry_after}" if retry_after is not None else ""
         return f"rate_limited:HTTP429:{name}{suffix}"
@@ -230,11 +259,61 @@ def provider_exception_reason(exc: BaseException) -> str:
     return f"symbol_error:{name}"
 
 
+def sanitize_exception_text(text: str, *, limit: int = 200) -> str:
+    """Strip URL query strings and truncate — never log tokens/headers."""
+    return sanitize_log_text(text, limit=limit)
+
+
+def log_isolated_fault(
+    *,
+    stock_id: str,
+    stage: str,
+    source: str,
+    exc: BaseException,
+    reason: str,
+    job_id: str | None = None,
+) -> None:
+    """Emit one sanitized WARNING for an isolated collector/enrichment fault.
+
+    Never passes ``exc_info`` / the original exception to ``logging``: raw
+    tracebacks can embed provider URLs with query tokens. For programming
+    errors a sanitized, length-capped traceback travels in ``extra`` instead.
+    """
+    programming = classify_field_reason(reason) == "programming_error"
+    safe = sanitize_exception_text(str(exc))
+    extra: dict[str, Any] = {
+        "stock_id": stock_id,
+        "stage": stage,
+        "field": stage,
+        "source": source,
+        "exc_class": type(exc).__name__,
+        "reason": reason,
+        "job_id": job_id,
+        "fault_detail": safe,
+    }
+    if programming:
+        extra["traceback_sanitized"] = sanitize_traceback(
+            "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+        )
+    logger.warning(
+        "first_pass_isolated_fault %s",
+        safe,
+        extra=extra,
+        exc_info=False,
+    )
+
+
 def classify_field_reason(reason: str | None) -> str:
     """Map a ProvenanceField reason to a durable failure class."""
     text = str(reason or "").strip().lower()
     if not text:
         return "unknown"
+    # Distinct class — never auto-retried, not lumped into permanent markers.
+    if text.startswith("programming_error:"):
+        return "programming_error"
+    # Soft per-symbol deadline: retry on a later claim (treated like a timeout).
+    if text.startswith(COLLECTOR_DEADLINE_EXCEEDED_REASON):
+        return "timeout"
     if any(marker in text for marker in _PERMANENT_FIELD_REASON_MARKERS):
         return "permanent"
     if text.startswith("rate_limited") or "429" in text or "rate limit" in text:
@@ -358,6 +437,12 @@ def collect_first_pass_batch(
     include_nonofficial_margins: bool = False,
     now: datetime | None = None,
     previous_fields_by_stock: Mapping[str, Mapping[str, Any]] | None = None,
+    time_budget_seconds: float | None = None,
+    monotonic_clock: Callable[[], float] | None = None,
+    job_id: str | None = None,
+    lease_renew: Callable[[], bool] | None = None,
+    lease_lost_check: Callable[[], bool] | None = None,
+    symbol_deadline_seconds: float | None = DEFAULT_SYMBOL_DEADLINE_SECONDS,
 ) -> FirstPassBatchResult:
     """Collect first-pass evidence for a **deduplicated** ID list.
 
@@ -366,6 +451,20 @@ def collect_first_pass_batch(
 
     Per-symbol failures are isolated: one stock raising does not abort the batch.
     Previously successful fields may be reused to avoid repeating expensive fetches.
+
+    When ``time_budget_seconds`` is set, stop **before** starting a symbol once
+    elapsed time reaches the budget; unstarted ids are returned in
+    ``released_unstarted`` (attempts unchanged).
+
+    When ``lease_renew`` is set, call it after each finished symbol. If it returns
+    False the batch stops with ``lease_lost`` (caller must not persist).
+
+    ``lease_lost_check`` (e.g. a heartbeat thread's event) is consulted before
+    and after every symbol; when it reports True the remaining ids are released.
+
+    ``symbol_deadline_seconds`` is a soft per-symbol limit applied to the slow
+    ownership step: once elapsed, that field becomes unavailable with
+    ``collector_deadline_exceeded`` while peer fields are unaffected.
     """
     deduped = dedupe_stock_ids(stock_ids)
     loader = stock_loader or quote_service.get_catalog_stock
@@ -375,8 +474,23 @@ def collect_first_pass_batch(
     calculation_now = now
     prior_map = previous_fields_by_stock or {}
     records: list[FirstPassSymbolRecord] = []
+    clock = monotonic_clock or time.monotonic
+    started_at = clock()
+    budget_stopped = False
+    lease_lost = False
+    released_unstarted: list[str] = []
 
-    for stock_id in deduped:
+    for index, stock_id in enumerate(deduped):
+        if lease_lost_check is not None and lease_lost_check():
+            lease_lost = True
+            released_unstarted = list(deduped[index:])
+            break
+        if time_budget_seconds is not None:
+            elapsed = clock() - started_at
+            if elapsed >= float(time_budget_seconds):
+                budget_stopped = True
+                released_unstarted = list(deduped[index:])
+                break
         try:
             records.append(
                 _collect_one(
@@ -393,12 +507,24 @@ def collect_first_pass_batch(
                     captured_at=captured_at,
                     now=calculation_now,
                     previous_fields=prior_map.get(stock_id),
+                    job_id=job_id,
+                    symbol_deadline_seconds=symbol_deadline_seconds,
+                    clock=clock,
                 )
             )
         except Exception as exc:  # noqa: BLE001 — isolate unexpected per-symbol faults
             if is_infrastructure_failure(exc):
                 # PostgreSQL / lease / persistence must fail closed.
                 raise
+            reason = provider_exception_reason(exc)
+            log_isolated_fault(
+                stock_id=stock_id,
+                stage="symbol",
+                source="collect_first_pass_batch",
+                exc=exc,
+                reason=reason,
+                job_id=job_id,
+            )
             failed = FirstPassSymbolRecord(
                 stock_id=stock_id,
                 stock_name=None,
@@ -407,12 +533,35 @@ def collect_first_pass_batch(
                 exchange=None,
                 market=None,
                 sector_theme_keys=[],
-                error=provider_exception_reason(exc),
+                error=reason,
             )
             failed.completeness = _symbol_completeness(failed)
             records.append(failed)
+        renew_failed = lease_renew is not None and not lease_renew()
+        if renew_failed or (lease_lost_check is not None and lease_lost_check()):
+            lease_lost = True
+            released_unstarted = list(deduped[index + 1 :])
+            break
 
+    duration_ms = int(max(0.0, (clock() - started_at) * 1000.0))
     coverage = _coverage_summary(records)
+    notes = [
+        "First-pass is candidate-independent evidence for the external analyst.",
+        "Technical MACD/KD second-pass is intentionally not invoked here.",
+        "Missing PEG/revenue/OCF/debt never become fabricated values.",
+        "include_nonofficial_margins defaults false to avoid unbounded Yahoo fan-out.",
+        "Stock Ticker does not decide Notion report inclusion from this pack.",
+        "Per-symbol acquisition faults are isolated; batch continues for peers.",
+    ]
+    if budget_stopped:
+        notes.append(
+            f"time_budget_stopped after {len(records)} symbols; "
+            f"{len(released_unstarted)} released unstarted."
+        )
+    if lease_lost:
+        notes.append(
+            f"lease_lost after {len(records)} symbols; caller must not persist."
+        )
     return FirstPassBatchResult(
         first_pass_version=FIRST_PASS_VERSION,
         universe_version=version,
@@ -421,14 +570,11 @@ def collect_first_pass_batch(
         deduped_count=len(deduped),
         records=records,
         coverage_summary=coverage,
-        notes=[
-            "First-pass is candidate-independent evidence for the external analyst.",
-            "Technical MACD/KD second-pass is intentionally not invoked here.",
-            "Missing PEG/revenue/OCF/debt never become fabricated values.",
-            "include_nonofficial_margins defaults false to avoid unbounded Yahoo fan-out.",
-            "Stock Ticker does not decide Notion report inclusion from this pack.",
-            "Per-symbol acquisition faults are isolated; batch continues for peers.",
-        ],
+        notes=notes,
+        budget_stopped=budget_stopped,
+        released_unstarted=released_unstarted,
+        duration_ms=duration_ms,
+        lease_lost=lease_lost,
     )
 
 
@@ -468,6 +614,9 @@ def _collect_one(
     captured_at: str,
     now: datetime | None,
     previous_fields: Mapping[str, Any] | None = None,
+    job_id: str | None = None,
+    symbol_deadline_seconds: float | None = None,
+    clock: Callable[[], float] | None = None,
 ) -> FirstPassSymbolRecord:
     stock = stock_loader(stock_id)
     if stock is None:
@@ -527,11 +676,13 @@ def _collect_one(
             "tdcc_holders_ge_400_lots",
             "tw_ownership_concentration_service",
             "tdcc_weekly",
-            lambda: _enrich_ownership(
+            lambda: _enrich_ownership_with_deadline(
                 scratch,
                 stock.id,
                 loader=ownership_loader,
                 captured_at=captured_at,
+                deadline_seconds=symbol_deadline_seconds,
+                clock=clock or time.monotonic,
             ),
         ),
         (
@@ -568,13 +719,22 @@ def _collect_one(
         except Exception as exc:  # noqa: BLE001 — isolate per source
             if is_infrastructure_failure(exc):
                 raise
+            reason = provider_exception_reason(exc)
+            log_isolated_fault(
+                stock_id=stock.id,
+                stage=field_name,
+                source=source,
+                exc=exc,
+                reason=reason,
+                job_id=job_id,
+            )
             scratch.fields[field_name] = ProvenanceField(
                 field=field_name,
                 status="unavailable",
                 source=source,
                 captured_at=captured_at,
                 freshness_class=freshness_class,
-                reason=provider_exception_reason(exc),
+                reason=reason,
             )
 
     # Explicit not-implemented / unavailable fundamentals (no fabrication).
@@ -693,13 +853,22 @@ def _collect_one(
         except Exception as exc:  # noqa: BLE001 — isolate candle retrieval
             if is_infrastructure_failure(exc):
                 raise
+            reason = provider_exception_reason(exc)
+            log_isolated_fault(
+                stock_id=stock.id,
+                stage="latest_completed_close",
+                source="daily_price_history_service",
+                exc=exc,
+                reason=reason,
+                job_id=job_id,
+            )
             scratch.fields["latest_completed_close"] = ProvenanceField(
                 field="latest_completed_close",
                 status="unavailable",
                 source="daily_price_history_service",
                 captured_at=captured_at,
                 freshness_class="quote_or_eod_day",
-                reason=provider_exception_reason(exc),
+                reason=reason,
             )
             candles = []
         else:
@@ -758,13 +927,22 @@ def _collect_one(
         except Exception as exc:  # noqa: BLE001 — isolate price-basis calculation
             if is_infrastructure_failure(exc):
                 raise
+            reason = provider_exception_reason(exc)
+            log_isolated_fault(
+                stock_id=stock.id,
+                stage="relative_price_basis",
+                source="tw_research.price_basis",
+                exc=exc,
+                reason=reason,
+                job_id=job_id,
+            )
             scratch.fields["relative_price_basis"] = ProvenanceField(
                 field="relative_price_basis",
                 status="unavailable",
                 source="tw_research.price_basis",
                 captured_at=captured_at,
                 freshness_class="computed",
-                reason=provider_exception_reason(exc),
+                reason=reason,
             )
 
     # Cheap trend summary only — not second-pass MACD/KD.
@@ -784,6 +962,44 @@ def _collect_one(
         record.error = transient
     record.completeness = _symbol_completeness(record)
     return record
+
+
+def _enrich_ownership_with_deadline(
+    scratch: EnrichmentResult,
+    stock_id: str,
+    *,
+    loader: OwnershipLoader,
+    captured_at: str,
+    deadline_seconds: float | None,
+    clock: Callable[[], float],
+) -> None:
+    """Run the ownership step under a soft deadline.
+
+    The deadline is exposed to the ownership service (Friday/probe/retry loops
+    stop between iterations). If the loader still returns after the deadline
+    elapsed, the field is overwritten as unavailable so a slow symbol never
+    claims fresh evidence it exceeded the budget for. Peer fields are untouched.
+    """
+    if deadline_seconds is None:
+        _enrich_ownership(
+            scratch, stock_id, loader=loader, captured_at=captured_at
+        )
+        return
+    started = clock()
+    deadline_at = started + float(deadline_seconds)
+    with collector_deadline_scope(deadline_at, clock):
+        _enrich_ownership(
+            scratch, stock_id, loader=loader, captured_at=captured_at
+        )
+    if clock() - started >= float(deadline_seconds):
+        scratch.fields["tdcc_holders_ge_400_lots"] = ProvenanceField(
+            field="tdcc_holders_ge_400_lots",
+            status="unavailable",
+            source="tw_ownership_concentration_service",
+            captured_at=captured_at,
+            freshness_class="tdcc_weekly",
+            reason=COLLECTOR_DEADLINE_EXCEEDED_REASON,
+        )
 
 
 def _apply_margins(
@@ -881,7 +1097,11 @@ def _default_margin(stock_id: str, days: int) -> TaiwanMarginShortResult:
 
 
 def _default_ownership(stock_id: str) -> TaiwanOwnershipConcentrationResult:
-    return tw_ownership_concentration_service.get_ownership_concentration(stock_id, range="3M")
+    # Service kw is ``range_name`` (not ``range``). Wrong kw → TypeError on every
+    # live first-pass symbol (#348).
+    return tw_ownership_concentration_service.get_ownership_concentration(
+        stock_id, range_name="3M"
+    )
 
 
 def _default_key_stats(stock_id: str) -> dict[str, object] | None:

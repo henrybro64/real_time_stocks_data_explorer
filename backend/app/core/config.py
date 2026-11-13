@@ -128,6 +128,11 @@ class Settings(BaseSettings):
     tw_research_schedule_token: str = Field(default="")
     tw_research_schedule_user_id: str = Field(default="")
     tw_research_schedule_enabled: bool = Field(default=False)
+    # Durable first-pass drain for managed research runs (#349). Separate from the
+    # technical-scan schedule (#330). Disabled until token + CronJob approval.
+    tw_research_first_pass_drain_token: str = Field(default="")
+    tw_research_first_pass_drain_user_id: str = Field(default="")
+    tw_research_first_pass_drain_enabled: bool = Field(default=False)
     # Chip publication-ready times Asia/Taipei (HH:MM). Approximate; institutional
     # T86 ~15:00–16:00, margin ~21:00–21:30. Override via TW_CHIP_*_READY.
     tw_chip_institutional_ready: str = Field(default="16:30")

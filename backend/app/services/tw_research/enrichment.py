@@ -180,10 +180,23 @@ def enrich_qualified_symbol(
             ),
         ),
     ]
+    from app.services.tw_research.first_pass import (
+        log_isolated_fault,
+        provider_exception_reason,
+    )
+
     for field_name, source, freshness_class, action in steps:
         try:
             action()
         except Exception as exc:  # noqa: BLE001 — isolate per enrichment source
+            reason = provider_exception_reason(exc)
+            log_isolated_fault(
+                stock_id=result.stock_id,
+                stage=field_name,
+                source=source,
+                exc=exc,
+                reason=reason,
+            )
             _set_field(
                 result,
                 field=field_name,
@@ -191,7 +204,8 @@ def enrich_qualified_symbol(
                 source=source,
                 captured_at=captured_at,
                 freshness_class=freshness_class,
-                reason=f"symbol_error:{type(exc).__name__}",
+                # Align with first-pass: TypeError/AttributeError → programming_error (#348).
+                reason=reason,
             )
 
     # PEG is never reverse-engineered from a mismatched PE period.
@@ -247,7 +261,11 @@ def _default_margin(stock_id: str, days: int) -> TaiwanMarginShortResult:
 
 
 def _default_ownership(stock_id: str) -> TaiwanOwnershipConcentrationResult:
-    return tw_ownership_concentration_service.get_ownership_concentration(stock_id, range="3M")
+    # Service kw is ``range_name`` (not ``range``). Wrong kw → TypeError on every
+    # live enrichment/first-pass ownership fetch (#348).
+    return tw_ownership_concentration_service.get_ownership_concentration(
+        stock_id, range_name="3M"
+    )
 
 
 def _default_key_stats(stock_id: str) -> dict[str, object] | None:

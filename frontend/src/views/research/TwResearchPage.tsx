@@ -836,6 +836,69 @@ export function TwResearchPage({
     },
   });
 
+  const selectedFirstPassJob = useMemo(() => {
+    if (!firstPassJobId) return null;
+    return (
+      firstPassJobs.find((job) => String(job.jobId ?? "") === firstPassJobId) ?? null
+    );
+  }, [firstPassJobId, firstPassJobs]);
+
+  const runOwnsSelectedFirstPassJob = useMemo(() => {
+    const runJobId = researchRunQuery.data?.firstPassJobId;
+    return Boolean(
+      firstPassJobId &&
+        runJobId &&
+        String(runJobId) === String(firstPassJobId),
+    );
+  }, [firstPassJobId, researchRunQuery.data?.firstPassJobId]);
+
+  const firstPassJobTerminalStatus = useMemo(() => {
+    // Use research-run progress only when it describes the currently selected job.
+    if (runOwnsSelectedFirstPassJob) {
+      const runStatus = researchRunQuery.data?.firstPassProgress?.status;
+      if (typeof runStatus === "string" && runStatus.trim()) {
+        return runStatus;
+      }
+    }
+    const progressStatus = firstPassProgressQuery.data?.status;
+    if (typeof progressStatus === "string" && progressStatus.trim()) {
+      return progressStatus;
+    }
+    const jobStatus = selectedFirstPassJob?.status;
+    return typeof jobStatus === "string" ? jobStatus : "";
+  }, [
+    runOwnsSelectedFirstPassJob,
+    researchRunQuery.data?.firstPassProgress?.status,
+    firstPassProgressQuery.data?.status,
+    selectedFirstPassJob?.status,
+  ]);
+
+  const firstPassJobIsTerminalFailed =
+    firstPassJobTerminalStatus === "failed" ||
+    firstPassJobTerminalStatus === "cancelled";
+
+  const firstPassJobLastError = useMemo(() => {
+    if (runOwnsSelectedFirstPassJob) {
+      const err = researchRunQuery.data?.firstPassProgress?.lastError;
+      if (typeof err === "string" && err.trim()) return err;
+    }
+    const fromJob = selectedFirstPassJob?.lastError;
+    if (typeof fromJob === "string" && fromJob.trim()) return fromJob;
+    const notes = selectedFirstPassJob?.notes;
+    if (Array.isArray(notes)) {
+      for (let i = notes.length - 1; i >= 0; i -= 1) {
+        const note = String(notes[i] ?? "");
+        if (note.startsWith("error:")) return note.slice("error:".length);
+        if (note.startsWith("systemic_programming_error:")) return note;
+      }
+    }
+    return "";
+  }, [
+    runOwnsSelectedFirstPassJob,
+    researchRunQuery.data?.firstPassProgress?.lastError,
+    selectedFirstPassJob,
+  ]);
+
   const firstPassBatchMutation = useMutation({
     mutationFn: async () => {
       if (!firstPassJobId) throw new Error("missing_first_pass_job");
@@ -1638,7 +1701,12 @@ export function TwResearchPage({
                 <Button
                   kind="secondary"
                   size="sm"
-                  disabled={!firstPassJobId || firstPassBatchMutation.isPending}
+                  data-testid="tw-research-run-first-pass-batch"
+                  disabled={
+                    !firstPassJobId ||
+                    firstPassBatchMutation.isPending ||
+                    firstPassJobIsTerminalFailed
+                  }
                   onClick={() => firstPassBatchMutation.mutate()}
                 >
                   {t("research.tw.runFirstPassBatch")}
@@ -1660,6 +1728,21 @@ export function TwResearchPage({
                   {t("research.tw.loadFirstPassManifest")}
                 </Button>
               </Stack>
+              {firstPassJobIsTerminalFailed ? (
+                <div data-testid="tw-research-first-pass-job-failed">
+                  <RequestStateNotice
+                    kind="error"
+                    scopeLabel={t("research.tw.firstPassJobFailed")}
+                    detail={
+                      firstPassJobLastError
+                        ? t("research.tw.firstPassJobLastError", {
+                            error: firstPassJobLastError,
+                          })
+                        : t("research.tw.firstPassJobFailed")
+                    }
+                  />
+                </div>
+              ) : null}
               {firstPassJobsQuery.isError ? (
                 <div data-testid="tw-research-first-pass-jobs-unavailable">
                   <RequestStateNotice

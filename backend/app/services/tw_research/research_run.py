@@ -16,12 +16,14 @@ first-pass job and technical-scan rows — clients cannot assert status.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from threading import Lock
 from typing import Any, Literal, Protocol
 from uuid import uuid4
 
+from app.core.config import settings
 from app.services.tw_research.constants import (
     RESEARCH_RUN_JOB_CLAIM_LEASE_SECONDS,
     RESEARCH_RUN_PHASE2_CLAIM_LEASE_SECONDS,
@@ -29,6 +31,19 @@ from app.services.tw_research.constants import (
     WAITING_FOR_NEXT_WINDOW,
 )
 from app.services.tw_research.evaluation import map_recoverable_status
+
+
+def first_pass_drain_availability(user_id: str) -> tuple[bool, str | None]:
+    """Whether durable first-pass drain may be armed for this user.
+
+    Returns ``(available, reason)``. Reason is set when unavailable.
+    """
+    if not bool(settings.tw_research_first_pass_drain_enabled):
+        return False, "first_pass_drain_globally_disabled"
+    owner = str(settings.tw_research_first_pass_drain_user_id or "").strip()
+    if not owner or str(user_id or "").strip() != owner:
+        return False, "first_pass_drain_unavailable_for_user"
+    return True, None
 
 ResearchRunPhase = Literal[
     "phase1_first_pass",
@@ -78,9 +93,20 @@ class ResearchRunGateError(Exception):
 class ResearchRunConflict(Exception):
     """Raised when an optimistic concurrency write loses (HTTP 409)."""
 
-    def __init__(self, message: str = "research_run_revision_conflict") -> None:
+    def __init__(
+        self,
+        message: str = "research_run_revision_conflict",
+        *,
+        reason: str | None = None,
+    ) -> None:
         super().__init__(message)
-        self.reason = "revision_conflict"
+        # Prefer an explicit machine-readable reason; fall back to message text
+        # for drain-control conflicts that are not revision races (#349).
+        self.reason = reason or (
+            "revision_conflict"
+            if message == "research_run_revision_conflict"
+            else str(message)
+        )
 
 
 def _orphan_job_id_if_not_pending(
@@ -146,6 +172,7 @@ class ResearchRun:
         payload["tradingDay"] = payload.pop("trading_day")
         payload["createdAt"] = payload.pop("created_at")
         payload["updatedAt"] = payload.pop("updated_at")
+        # scheduleEnabled = first-pass-drain armed (not the #330 technical schedule).
         payload["scheduleEnabled"] = payload.pop("schedule_enabled")
         payload["jobClaimToken"] = payload.pop("job_claim_token")
         payload["jobClaimExpiresAt"] = payload.pop("job_claim_expires_at")
@@ -153,6 +180,18 @@ class ResearchRun:
         payload["phase2ClaimToken"] = payload.pop("phase2_claim_token")
         payload["phase2ClaimExpiresAt"] = payload.pop("phase2_claim_expires_at")
         payload["pendingTechnicalScanId"] = payload.pop("pending_technical_scan_id")
+        available, reason = first_pass_drain_availability(self.user_id)
+        drain_meta = dict(self.dimensions.get("firstPassDrain") or {})
+        payload["firstPassDrain"] = {
+            "armed": bool(self.schedule_enabled),
+            "available": bool(available),
+            "reason": None if available else reason,
+            "lastTickAt": drain_meta.get("lastTickAt"),
+            "lastOutcome": drain_meta.get("lastOutcome"),
+        }
+        progress = self.dimensions.get("firstPassProgress")
+        if isinstance(progress, dict):
+            payload["firstPassProgress"] = dict(progress)
         payload["notNotionPublisher"] = True
         payload["cronjobRemainsSuspended"] = True
         payload["durable"] = True
@@ -334,9 +373,84 @@ class ResearchRunStore:
             run.first_pass_job_id = first_pass_job_id
             run.status = "running"
             run.phase = "phase1_first_pass"
+            available, reason = first_pass_drain_availability(user_id)
+            run.schedule_enabled = bool(available)
             run.dimensions["fundamentals"] = "in_progress"
             for note in notes or []:
                 run.append_note(note)
+            if available:
+                run.append_note(
+                    "First-pass drain authorized for this research-run job only."
+                )
+            else:
+                run.append_note(str(reason))
+            run.updated_at = datetime.now(UTC).isoformat()
+            return self._persist_locked(run)
+
+    def set_first_pass_drain_enabled(
+        self,
+        user_id: str,
+        *,
+        enabled: bool,
+        notes: list[str] | None = None,
+    ) -> ResearchRun:
+        """Pause/resume durable first-pass drain for the active research run (#349).
+
+        Never enables the technical-scan CronJob or Notion publishing.
+        Resume requires Phase-1 with an attached authoritative job so historical
+        orphan job ids cannot be armed without Start Research attach.
+        """
+        with self._lock:
+            run = self._require_locked(user_id)
+            if enabled:
+                available, reason = first_pass_drain_availability(user_id)
+                if not available:
+                    raise ResearchRunConflict(
+                        str(reason),
+                        reason=str(reason),
+                    )
+                if run.phase != "phase1_first_pass":
+                    raise ResearchRunConflict(
+                        f"first_pass_drain_resume_requires_phase1:{run.phase}",
+                        reason=f"first_pass_drain_resume_requires_phase1:{run.phase}",
+                    )
+                if not run.first_pass_job_id:
+                    raise ResearchRunConflict(
+                        "first_pass_drain_resume_requires_attached_job",
+                        reason="first_pass_drain_resume_requires_attached_job",
+                    )
+                if str(run.status or "") in {"failed", "budget_exhausted", "cancelled"}:
+                    raise ResearchRunConflict(
+                        f"first_pass_drain_resume_blocked_status:{run.status}",
+                        reason=f"first_pass_drain_resume_blocked_status:{run.status}",
+                    )
+            run.schedule_enabled = bool(enabled)
+            run.append_note(
+                "First-pass drain enabled."
+                if enabled
+                else "First-pass drain paused by operator."
+            )
+            for note in notes or []:
+                run.append_note(note)
+            run.updated_at = datetime.now(UTC).isoformat()
+            return self._persist_locked(run)
+
+    def record_first_pass_drain_tick(
+        self,
+        user_id: str,
+        *,
+        last_tick_at: str,
+        last_outcome: str,
+    ) -> ResearchRun | None:
+        """Best-effort tick telemetry on the research run (#349)."""
+        with self._lock:
+            run = self._load_locked(user_id)
+            if run is None:
+                return None
+            meta = dict(run.dimensions.get("firstPassDrain") or {})
+            meta["lastTickAt"] = last_tick_at
+            meta["lastOutcome"] = last_outcome
+            run.dimensions["firstPassDrain"] = meta
             run.updated_at = datetime.now(UTC).isoformat()
             return self._persist_locked(run)
 
@@ -574,9 +688,18 @@ class ResearchRunStore:
                 run.job_claim_expires_at = None
                 run.status = "running"
                 run.phase = "phase1_first_pass"
+                # Arm drain only when globally enabled and user is the drain owner.
+                available, reason = first_pass_drain_availability(user_id)
+                run.schedule_enabled = bool(available)
                 run.dimensions["fundamentals"] = "in_progress"
                 for note in notes or []:
                     run.append_note(note)
+                if available:
+                    run.append_note(
+                        "First-pass drain authorized for this research-run job only."
+                    )
+                else:
+                    run.append_note(str(reason))
                 run.updated_at = datetime.now(UTC).isoformat()
                 saved = self._persist_locked(run)
                 return {
@@ -826,6 +949,41 @@ class ResearchRunStore:
             or job.get("activeSnapshotId")
             or job.get("first_pass_snapshot_id")
         )
+        last_error, last_error_class, next_retry_at = _job_error_fields(job)
+        prior_progress = dict(run.dimensions.get("firstPassProgress") or {})
+        prior_last_error = prior_progress.get("lastError")
+        counts = self._count_first_pass_symbols(run.first_pass_job_id)
+        if counts is not None:
+            # Real per-symbol counts from the durable table — job rows never
+            # carry ok/partial/failed tallies (#349 C3).
+            processed = int(counts.get("total") or 0)
+            ok_count = int(counts.get("ok") or 0)
+            partial_count = int(counts.get("partial") or 0)
+            failed_count = int(counts.get("failed") or 0)
+        else:
+            processed = int(
+                job.get("processed_count")
+                or job.get("processedCount")
+                or job.get("cursor")
+                or 0
+            )
+            ok_count = int(job.get("ok_count") or job.get("okCount") or 0)
+            partial_count = int(
+                job.get("partial_count") or job.get("partialCount") or 0
+            )
+            failed_count = int(job.get("failed_count") or job.get("failedCount") or 0)
+        run.dimensions["firstPassProgress"] = {
+            "status": status,
+            "processed": processed,
+            "total": int(job.get("universe_size") or job.get("universeSize") or 0),
+            "okCount": ok_count,
+            "partialCount": partial_count,
+            "failedCount": failed_count,
+            "nextRetryAt": next_retry_at,
+            "lastError": last_error,
+            "lastErrorClass": last_error_class,
+            "updatedAt": job.get("updated_at") or job.get("updatedAt"),
+        }
         if status in {"running", "pending", "queued"}:
             run.phase = "phase1_first_pass"
             run.status = "running"
@@ -846,11 +1004,20 @@ class ResearchRunStore:
             run.phase = "phase1_first_pass"
             run.status = "failed"
             run.dimensions["fundamentals"] = "failed"
+            if last_error and last_error != prior_last_error:
+                run.append_note(f"lastError:{last_error}")
+            # Systemic programming_error disarms drain.
+            if last_error and str(last_error).startswith("systemic_programming_error:"):
+                run.schedule_enabled = False
+                if "first_pass_drain_disarmed_systemic_programming_error" not in run.notes:
+                    run.append_note("first_pass_drain_disarmed_systemic_programming_error")
             return
         if status in {"completed", "partial"} and snapshot_id:
             run.phase = "awaiting_analyst_candidate_selection"
             run.status = "gated"
             run.first_pass_snapshot_id = str(snapshot_id)
+            # Stop auto-drain at the analyst candidate gate (#349).
+            run.schedule_enabled = False
             run.dimensions["fundamentals"] = (
                 "partial" if status == "partial" else "complete_or_partial"
             )
@@ -860,6 +1027,7 @@ class ResearchRunStore:
             run.phase = "phase1_first_pass"
             run.status = "running"
             run.dimensions["fundamentals"] = "in_progress"
+
 
     def _reconcile_from_scan_locked(self, run: ResearchRun) -> None:
         scan = self._load_scan(run.user_id, run.technical_scan_id)
@@ -1016,6 +1184,31 @@ class ResearchRunStore:
 
         return tw_research_repository.get_first_pass_job(job_id, user_id=user_id)
 
+    def _count_first_pass_symbols(self, job_id: str | None) -> dict[str, int] | None:
+        """Durable per-status symbol counts, or None when unavailable/unsupported.
+
+        In-memory test repositories that do not implement
+        ``count_first_pass_symbols`` (or that raise) fall back to job-dict keys.
+        """
+        if not job_id:
+            return None
+        if self._test_memory is not None:
+            repo: Any = self._repository
+        else:
+            from app.repositories.tw_research_repository import tw_research_repository
+
+            repo = tw_research_repository
+        counter = getattr(repo, "count_first_pass_symbols", None) if repo else None
+        if not callable(counter):
+            return None
+        try:
+            counts = counter(job_id)
+        except Exception:  # noqa: BLE001 — progress is best-effort, never fail reconcile
+            return None
+        if not isinstance(counts, Mapping) or "total" not in counts:
+            return None
+        return {str(k): int(v) for k, v in counts.items()}
+
     def _load_scan(self, user_id: str, scan_id: str | None) -> dict[str, Any] | None:
         if not scan_id:
             return None
@@ -1038,6 +1231,32 @@ class ResearchRunStore:
         if row.get("user_id") not in {None, user_id}:
             return None
         return row
+
+
+def _job_error_fields(job: dict[str, Any]) -> tuple[str | None, str | None, str | None]:
+    last_error = job.get("last_error") or job.get("lastError")
+    if not last_error:
+        notes = list(job.get("notes") or [])
+        for note in reversed(notes):
+            text = str(note or "")
+            if text.startswith("error:"):
+                last_error = text[len("error:") :]
+                break
+            if text.startswith("systemic_programming_error:"):
+                last_error = text
+                break
+    last_error_class = job.get("last_error_class") or job.get("lastErrorClass")
+    next_retry_at = job.get("next_retry_at") or job.get("nextRetryAt")
+    if not last_error_class and last_error:
+        if str(last_error).startswith("systemic_programming_error:"):
+            last_error_class = "programming_error"
+        else:
+            last_error_class = str(last_error).split(":", 1)[0]
+    return (
+        str(last_error) if last_error else None,
+        str(last_error_class) if last_error_class else None,
+        next_retry_at if next_retry_at else None,
+    )
 
 
 research_run_store = ResearchRunStore()

@@ -512,6 +512,27 @@ export async function createTwResearchTechnicalScanFromCandidateSet(body?: {
   return response.scan;
 }
 
+export type TwResearchFirstPassProgress = {
+  status?: string;
+  processed?: number;
+  total?: number;
+  okCount?: number;
+  partialCount?: number;
+  failedCount?: number;
+  nextRetryAt?: string | null;
+  lastError?: string | null;
+  lastErrorClass?: string | null;
+  updatedAt?: string | null;
+};
+
+export type TwResearchFirstPassDrain = {
+  armed: boolean;
+  available: boolean;
+  reason?: string | null;
+  lastTickAt?: string | null;
+  lastOutcome?: string | null;
+};
+
 export type TwResearchRun = {
   researchRunId: string;
   userId: string;
@@ -527,6 +548,8 @@ export type TwResearchRun = {
   dimensions?: Record<string, unknown>;
   notes?: string[];
   scheduleEnabled?: boolean;
+  firstPassProgress?: TwResearchFirstPassProgress | null;
+  firstPassDrain?: TwResearchFirstPassDrain | null;
   notNotionPublisher?: boolean;
   cronjobRemainsSuspended?: boolean;
   durable?: boolean;
