@@ -443,6 +443,30 @@ def get_first_pass_job_symbols(
     limit: int = Query(default=50, ge=1, le=200),
 ) -> FirstPassJobSymbolsResponse:
     stock_ids = _parse_stock_ids_query(stockIds, max_ids=50)
+    # Present but empty (whitespace/commas only) → empty page, not unfiltered.
+    if stockIds is not None and not stock_ids:
+        try:
+            first_pass_job_service.get_job(job_id, user_id=user_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except FirstPassJobError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail={"error": str(exc), "operation": exc.operation},
+            ) from exc
+        return FirstPassJobSymbolsResponse(
+            result={
+                "jobId": job_id,
+                "offset": offset,
+                "limit": limit,
+                "total": 0,
+                "statusFilter": status,
+                "q": q,
+                "completenessFilter": completeness,
+                "stockIdsFilter": [],
+                "records": [],
+            }
+        )
     try:
         result = first_pass_job_service.list_symbols(
             job_id,

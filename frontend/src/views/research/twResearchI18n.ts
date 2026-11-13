@@ -618,6 +618,11 @@ const TW_RESEARCH_ROWS = [
     "完整",
   ],
   [
+    "research.tw.jobQuality.attempted",
+    "All attempted (may have gaps)",
+    "已全部嘗試（可能仍有缺口）",
+  ],
+  [
     "research.tw.jobQuality.partial",
     "Partial",
     "部分",

@@ -302,13 +302,20 @@ export function normalizeFailureClass(raw: unknown): FailureReasonClass {
   return "transient";
 }
 
-/** Map job-list qualityStatus to investor Complete / Partial / Incomplete. */
+/**
+ * Map job-list qualityStatus to investor quality labels.
+ * Backend sets `complete_attempted` on every finished first-pass job
+ * (including failed/partial rows), so it must not read as "Complete".
+ */
 export function jobQualityPlainKey(
   qualityStatus: string | null | undefined,
-): "complete" | "partial" | "incomplete" {
+): "complete" | "attempted" | "partial" | "incomplete" {
   const value = String(qualityStatus ?? "").trim().toLowerCase();
-  if (value === "complete_attempted" || value === "verified_ready") {
+  if (value === "verified_ready") {
     return "complete";
+  }
+  if (value === "complete_attempted") {
+    return "attempted";
   }
   if (
     value === "incomplete" ||

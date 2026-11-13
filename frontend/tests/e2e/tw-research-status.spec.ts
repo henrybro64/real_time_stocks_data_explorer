@@ -237,6 +237,12 @@ test("ready for candidates once a snapshot exists", async ({ page }) => {
   await expect(page.getByTestId("tw-research-next-action")).toContainText(
     "儲存要深入分析的股票",
   );
+  // complete_attempted must not read as "完整"/"Complete" in the job dropdown.
+  const history = page.getByTestId("tw-research-first-pass-job-history");
+  await expect(history).toBeVisible();
+  const optionText = await history.locator("option").allTextContents();
+  expect(optionText.join("\n")).toMatch(/已全部嘗試/);
+  expect(optionText.join("\n")).not.toMatch(/完整|Complete|complete_attempted/);
 });
 
 test("English copy for paused_manual", async ({ page }) => {

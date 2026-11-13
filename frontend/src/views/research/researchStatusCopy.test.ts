@@ -281,14 +281,15 @@ describe("jobHistoryOptionLabel / jobQualityPlainKey", () => {
       "research.tw.plainStatus.not_started": "Not started yet",
       "research.tw.plainStatus.ready_for_candidates": "Ready for candidates",
       "research.tw.jobQuality.complete": "Complete",
+      "research.tw.jobQuality.attempted": "All attempted (may have gaps)",
       "research.tw.jobQuality.partial": "Partial",
       "research.tw.jobQuality.incomplete": "Incomplete",
     };
     return map[key] ?? key;
   };
 
-  it("maps qualityStatus to Complete / Partial / Incomplete", () => {
-    expect(jobQualityPlainKey("complete_attempted")).toBe("complete");
+  it("maps qualityStatus to Complete / Attempted / Partial / Incomplete", () => {
+    expect(jobQualityPlainKey("complete_attempted")).toBe("attempted");
     expect(jobQualityPlainKey("verified_ready")).toBe("complete");
     expect(jobQualityPlainKey("incomplete")).toBe("incomplete");
     expect(jobQualityPlainKey("processed")).toBe("partial");
@@ -310,7 +311,8 @@ describe("jobHistoryOptionLabel / jobQualityPlainKey", () => {
     );
     expect(label).toMatch(/2026/);
     expect(label).toMatch(/Paused: no collection is running/);
-    expect(label).toMatch(/Complete/);
+    expect(label).toMatch(/All attempted \(may have gaps\)/);
+    expect(label).not.toMatch(/Complete/);
     expect(label).not.toMatch(/complete_attempted|_/);
   });
 });

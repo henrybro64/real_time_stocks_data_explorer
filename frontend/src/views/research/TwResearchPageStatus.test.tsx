@@ -557,6 +557,45 @@ describe("TwResearchPage default UI hides internal terms (#351)", () => {
   it("en", async () => {
     await assertPlainDefaultUi("en");
   });
+
+  it("complete_attempted never renders Complete/完整 in the default UI", async () => {
+    seed({
+      job: {
+        status: "completed",
+        qualityStatus: "complete_attempted",
+        activeSnapshotId: "fps_1",
+        cursor: 73,
+      },
+      progress: {
+        status: "completed",
+        qualityStatus: "complete_attempted",
+        cursor: 73,
+        processedCount: 73,
+        pendingCount: 0,
+        okCount: 65,
+        partialCount: 5,
+        failedCount: 3,
+        activeSnapshotId: "fps_1",
+      },
+      run: {
+        phase: "awaiting_candidate_selection",
+        status: "first_pass_ready",
+        firstPassSnapshotId: "fps_1",
+      },
+    });
+    renderPage("zh-TW");
+    await waitForBucket("ready_for_candidates");
+    const history = screen.getByTestId("tw-research-first-pass-job-history");
+    const options = within(history).getAllByRole("option");
+    expect(options.length).toBeGreaterThan(0);
+    for (const option of options) {
+      const label = option.textContent ?? "";
+      // Standalone Complete/完整 only — ignore substrings like 不完整.
+      expect(label).not.toMatch(/(?<![不])完整|\bComplete\b/);
+      expect(label).toMatch(/已全部嘗試/);
+      expect(label).not.toMatch(/complete_attempted|_/);
+    }
+  });
 });
 
 describe("TwResearchPage request error copy (#350)", () => {
