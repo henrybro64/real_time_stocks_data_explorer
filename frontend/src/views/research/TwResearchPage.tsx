@@ -843,17 +843,32 @@ export function TwResearchPage({
     );
   }, [firstPassJobId, firstPassJobs]);
 
+  const runOwnsSelectedFirstPassJob = useMemo(() => {
+    const runJobId = researchRunQuery.data?.firstPassJobId;
+    return Boolean(
+      firstPassJobId &&
+        runJobId &&
+        String(runJobId) === String(firstPassJobId),
+    );
+  }, [firstPassJobId, researchRunQuery.data?.firstPassJobId]);
+
   const firstPassJobTerminalStatus = useMemo(() => {
-    const fromRun = researchRunQuery.data?.firstPassProgress;
-    const runStatus =
-      fromRun && typeof fromRun === "object"
-        ? String((fromRun as Record<string, unknown>).status ?? "")
-        : "";
-    const progressStatus = String(firstPassProgressQuery.data?.status ?? "");
-    const jobStatus = String(selectedFirstPassJob?.status ?? "");
-    return runStatus || progressStatus || jobStatus;
+    // Use research-run progress only when it describes the currently selected job.
+    if (runOwnsSelectedFirstPassJob) {
+      const runStatus = researchRunQuery.data?.firstPassProgress?.status;
+      if (typeof runStatus === "string" && runStatus.trim()) {
+        return runStatus;
+      }
+    }
+    const progressStatus = firstPassProgressQuery.data?.status;
+    if (typeof progressStatus === "string" && progressStatus.trim()) {
+      return progressStatus;
+    }
+    const jobStatus = selectedFirstPassJob?.status;
+    return typeof jobStatus === "string" ? jobStatus : "";
   }, [
-    researchRunQuery.data?.firstPassProgress,
+    runOwnsSelectedFirstPassJob,
+    researchRunQuery.data?.firstPassProgress?.status,
     firstPassProgressQuery.data?.status,
     selectedFirstPassJob?.status,
   ]);
@@ -863,9 +878,8 @@ export function TwResearchPage({
     firstPassJobTerminalStatus === "cancelled";
 
   const firstPassJobLastError = useMemo(() => {
-    const fromRun = researchRunQuery.data?.firstPassProgress;
-    if (fromRun && typeof fromRun === "object") {
-      const err = (fromRun as Record<string, unknown>).lastError;
+    if (runOwnsSelectedFirstPassJob) {
+      const err = researchRunQuery.data?.firstPassProgress?.lastError;
       if (typeof err === "string" && err.trim()) return err;
     }
     const fromJob = selectedFirstPassJob?.lastError;
@@ -879,7 +893,11 @@ export function TwResearchPage({
       }
     }
     return "";
-  }, [researchRunQuery.data?.firstPassProgress, selectedFirstPassJob]);
+  }, [
+    runOwnsSelectedFirstPassJob,
+    researchRunQuery.data?.firstPassProgress?.lastError,
+    selectedFirstPassJob,
+  ]);
 
   const firstPassBatchMutation = useMutation({
     mutationFn: async () => {

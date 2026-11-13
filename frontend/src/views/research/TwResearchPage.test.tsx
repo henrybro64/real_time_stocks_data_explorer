@@ -894,7 +894,7 @@ describe("TwResearchPage reliability UX (#335–#337)", () => {
     );
   });
 
-  it("disables run-first-pass-batch when the selected job has failed", async () => {
+  it("disables run-first-pass-batch when the run's own job is failed", async () => {
     const systemic =
       "systemic_programming_error:tdcc_holders_ge_400_lots:TypeError";
     vi.mocked(listTwResearchFirstPassJobs).mockResolvedValue([
@@ -917,16 +917,63 @@ describe("TwResearchPage reliability UX (#335–#337)", () => {
         status: "failed",
         lastError: systemic,
       },
-    } as never);
+    });
     renderPage();
     await waitFor(() => {
       expect(listTwResearchFirstPassJobs).toHaveBeenCalled();
     });
     const batchButton = await screen.findByTestId("tw-research-run-first-pass-batch");
     expect(batchButton).toBeDisabled();
+    const failedNotice = await screen.findByTestId("tw-research-first-pass-job-failed");
+    expect(failedNotice).toBeInTheDocument();
+    expect(failedNotice).toHaveTextContent(systemic);
+  });
+
+  it("keeps run-first-pass-batch enabled for a standalone job when run progress is failed", async () => {
+    const user = userEvent.setup();
+    const systemic =
+      "systemic_programming_error:tdcc_holders_ge_400_lots:TypeError";
+    vi.mocked(listTwResearchFirstPassJobs).mockResolvedValue([
+      {
+        jobId: "fpj_run_failed",
+        status: "failed",
+        qualityStatus: "incomplete",
+        activeSnapshotId: null,
+        notes: [`error:${systemic}`],
+        lastError: systemic,
+      },
+      {
+        jobId: "fpj_standalone",
+        status: "running",
+        qualityStatus: "incomplete",
+        activeSnapshotId: null,
+      },
+    ]);
+    vi.mocked(fetchTwResearchRunCurrent).mockResolvedValue({
+      researchRunId: "rr_failed",
+      userId: "u1",
+      phase: "phase1_first_pass",
+      status: "failed",
+      firstPassJobId: "fpj_run_failed",
+      firstPassProgress: {
+        status: "failed",
+        lastError: systemic,
+      },
+    });
+    renderPage();
+    const history = await screen.findByTestId("tw-research-first-pass-job-history");
+    await waitFor(() => {
+      expect(history).toHaveValue("fpj_run_failed");
+    });
+    await user.selectOptions(history, "fpj_standalone");
+    await waitFor(() => {
+      expect(history).toHaveValue("fpj_standalone");
+    });
+    const batchButton = await screen.findByTestId("tw-research-run-first-pass-batch");
+    expect(batchButton).toBeEnabled();
     expect(
-      await screen.findByTestId("tw-research-first-pass-job-failed"),
-    ).toBeInTheDocument();
+      screen.queryByTestId("tw-research-first-pass-job-failed"),
+    ).not.toBeInTheDocument();
   });
 
   it("shows backend unavailable for HTTP 503 instead of empty job history", async () => {
