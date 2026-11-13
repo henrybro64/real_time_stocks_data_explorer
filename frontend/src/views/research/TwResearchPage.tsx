@@ -39,10 +39,15 @@ import {
 import {
   AdvancedDetailsDisclosure,
   ResearchInvestorSummary,
+  type BatchResultView,
 } from "./ResearchInvestorSummary";
 import {
-  batchLooksAllFailed,
-  normalizeFirstPassCounts,
+  researchErrorCopy,
+  researchErrorRawDetail,
+} from "./researchErrorCopy";
+import {
+  formatTaipeiDateTime,
+  normalizeFailureClass,
   type FirstPassProgressLike,
 } from "./researchStatusCopy";
 import {
@@ -216,7 +221,7 @@ function workerActivityLabelKey(
 export function TwResearchPage({
   initialScanId = null,
 }: Readonly<{ initialScanId?: string | null }>) {
-  const { t } = useLanguage();
+  const { t, language } = useLanguage();
   const router = useRouter();
   const queryClient = useQueryClient();
   const [mode, setMode] = useState<TwResearchUniverseMode>("starter_preset");
@@ -909,11 +914,35 @@ export function TwResearchPage({
   ]);
 
   const firstPassBatchMutation = useMutation({
-    mutationFn: async () => {
+    mutationFn: async (): Promise<
+      Record<string, unknown> & { failedSymbols: Array<Record<string, unknown>> }
+    > => {
       if (!firstPassJobId) throw new Error("missing_first_pass_job");
-      return runTwResearchFirstPassBatch(firstPassJobId, 10);
+      const job = await runTwResearchFirstPassBatch(firstPassJobId, 10);
+      // Per-batch failure detail: look up only this batch's failed symbols so the
+      // banner never mixes in cumulative job failures.
+      const counts = (job.batchCounts ?? {}) as { failed?: number };
+      const batchIds = Array.isArray(job.batchIds) ? job.batchIds.map(String) : [];
+      let failedSymbols: Array<Record<string, unknown>> = [];
+      if (Number(counts.failed ?? 0) > 0 && batchIds.length > 0) {
+        try {
+          const result = await fetchTwResearchFirstPassSymbols(firstPassJobId, {
+            status: "failed",
+            limit: 200,
+          });
+          const wanted = new Set(batchIds);
+          failedSymbols = (
+            Array.isArray(result.records)
+              ? (result.records as Array<Record<string, unknown>>)
+              : []
+          ).filter((row) => wanted.has(String(row.stockId ?? "")));
+        } catch {
+          failedSymbols = [];
+        }
+      }
+      return { ...job, failedSymbols };
     },
-    onSuccess: (job) => {
+    onSuccess: ({ failedSymbols: _failedSymbols, ...job }) => {
       setFirstPassProgressText(JSON.stringify(job, null, 2));
       const snapshotId =
         typeof job.activeSnapshotId === "string" && job.activeSnapshotId
@@ -1428,7 +1457,29 @@ export function TwResearchPage({
       label: "research.tw.errorFirstPassBatch",
       error: firstPassBatchMutation.isPending ? null : firstPassBatchMutation.error,
     },
+    {
+      key: "research-run",
+      label: "research.tw.errorResearchRun",
+      error: researchRunQuery.isFetching ? null : researchRunQuery.error,
+    },
+    {
+      key: "first-pass-progress",
+      label: "research.tw.errorFirstPassProgress",
+      error: firstPassProgressQuery.isFetching ? null : firstPassProgressQuery.error,
+    },
   ];
+  const plainLanguageErrorKeys = new Set([
+    "first-pass-batch",
+    "research-run",
+    "first-pass-progress",
+  ]);
+
+  const chipEvidenceTotal = Number(chipEvidenceQueryResult.data?.total ?? 0);
+  const chipEvidenceRangeText = t("research.tw.chipEvidenceMeta", {
+    from: chipEvidenceTotal > 0 ? chipEvidenceOffset + 1 : 0,
+    to: Math.min(chipEvidenceOffset + PAGE_SIZE, chipEvidenceTotal),
+    total: chipEvidenceTotal,
+  });
 
   const runOwnedFirstPassJobId =
     typeof researchRunQuery.data?.firstPassJobId === "string"
@@ -1449,16 +1500,22 @@ export function TwResearchPage({
       return jobProgress ?? null;
     }
     if (runOwnsSelectedFirstPassJob) {
-      if (
-        jobProgress &&
-        (jobProgress.universeSize != null || jobProgress.processedCount != null)
-      ) {
-        return jobProgress;
-      }
       const nested = researchRunQuery.data?.firstPassProgress as
         | FirstPassProgressLike
         | null
         | undefined;
+      if (
+        jobProgress &&
+        (jobProgress.universeSize != null || jobProgress.processedCount != null)
+      ) {
+        // Run-owned job: fill retry time / last error from the run's progress
+        // when the job progress payload lacks them.
+        return {
+          ...jobProgress,
+          nextRetryAt: jobProgress.nextRetryAt ?? nested?.nextRetryAt ?? null,
+          lastError: jobProgress.lastError ?? nested?.lastError ?? null,
+        };
+      }
       if (nested) return nested;
       return jobProgress ?? null;
     }
@@ -1470,10 +1527,68 @@ export function TwResearchPage({
     researchRunQuery.data?.firstPassProgress,
   ]);
 
-  const investorCounts = normalizeFirstPassCounts(investorProgress);
-  const showBatchAllFailed = batchLooksAllFailed(investorCounts);
   const firstPassDrain = researchRunQuery.data?.firstPassDrain ?? null;
   const scheduleEnabled = researchRunQuery.data?.scheduleEnabled ?? null;
+
+  // A failed refetch with cached data means we only know the last state.
+  const progressRefreshFailed =
+    firstPassProgressQuery.isError && Boolean(firstPassProgressQuery.data);
+  const runRefreshFailed = researchRunQuery.isError && Boolean(researchRunQuery.data);
+  const investorStale = progressRefreshFailed || runRefreshFailed;
+  const staleDataUpdatedAt = progressRefreshFailed
+    ? firstPassProgressQuery.dataUpdatedAt
+    : researchRunQuery.dataUpdatedAt;
+  const investorStaleAsOf =
+    investorStale && staleDataUpdatedAt
+      ? new Date(staleDataUpdatedAt).toISOString()
+      : null;
+
+  const displayedJobCreatedAt =
+    typeof selectedFirstPassJob?.createdAt === "string"
+      ? selectedFirstPassJob.createdAt
+      : null;
+  const runOwnedJobCreatedAt = useMemo(() => {
+    const fromList = firstPassJobs.find(
+      (job) => String(job.jobId ?? "") === String(runOwnedFirstPassJobId ?? ""),
+    )?.createdAt;
+    if (typeof fromList === "string") return fromList;
+    const fromRun = researchRunQuery.data?.createdAt;
+    return typeof fromRun === "string" ? fromRun : null;
+  }, [firstPassJobs, runOwnedFirstPassJobId, researchRunQuery.data?.createdAt]);
+
+  // "This batch" banner comes only from the latest batch mutation result.
+  const batchMutationData = firstPassBatchMutation.data;
+  const batchResult = useMemo((): BatchResultView | null => {
+    if (!batchMutationData) return null;
+    if (String(batchMutationData.jobId ?? "") !== String(firstPassJobId ?? "")) {
+      return null;
+    }
+    const counts = (batchMutationData.batchCounts ?? {}) as {
+      ok?: number;
+      partial?: number;
+      failed?: number;
+    };
+    const ok = Number(counts.ok ?? 0);
+    const partial = Number(counts.partial ?? 0);
+    const failed = Number(counts.failed ?? 0);
+    const processedInBatch = ok + partial + failed;
+    if (processedInBatch <= 0) return null;
+    const failures = (batchMutationData.failedSymbols ?? []).map((row) => {
+      const stockId = String(row.stockId ?? "");
+      const evidence = (row.evidence ?? {}) as Record<string, unknown>;
+      return {
+        stockId,
+        label: formatTwStockLabel(
+          stockId,
+          String(evidence.stockName ?? row.stockName ?? ""),
+          String(evidence.nameStatus ?? row.nameStatus ?? ""),
+          t("research.tw.nameUnavailable"),
+        ),
+        reasonClass: normalizeFailureClass(evidence.failureClass),
+      };
+    });
+    return { processed: processedInBatch, ok, partial, failed, failures };
+  }, [batchMutationData, firstPassJobId, t]);
 
   const firstPassBatchDisabledReason: TranslationKey | null = !firstPassJobId
     ? "research.tw.batchDisabledNeedJob"
@@ -1496,6 +1611,27 @@ export function TwResearchPage({
           {operationErrors.map((failure) => {
             if (!failure.error) return null;
             const apiError = toApiError(failure.error);
+            if (plainLanguageErrorKeys.has(failure.key)) {
+              const copy = researchErrorCopy(failure.error, language);
+              return (
+                <div key={failure.key} data-testid={`tw-research-error-${failure.key}`}>
+                  <RequestStateNotice
+                    kind={errorToNoticeKind(apiError)}
+                    scopeLabel={t(failure.label)}
+                    status={apiError.status}
+                    override={{ title: copy.title, nextAction: copy.nextAction }}
+                  />
+                  <AdvancedDetailsDisclosure>
+                    <p
+                      className="cds--helper-text-01"
+                      data-testid={`tw-research-error-${failure.key}-raw`}
+                    >
+                      {researchErrorRawDetail(failure.error)}
+                    </p>
+                  </AdvancedDetailsDisclosure>
+                </div>
+              );
+            }
             return (
               <div key={failure.key} data-testid={`tw-research-error-${failure.key}`}>
                 <RequestStateNotice
@@ -1528,7 +1664,11 @@ export function TwResearchPage({
                 browsingHistorical={browsingHistoricalFirstPassJob}
                 drain={firstPassDrain}
                 scheduleEnabled={scheduleEnabled}
-                showBatchAllFailed={showBatchAllFailed}
+                displayedJobCreatedAt={displayedJobCreatedAt}
+                runOwnedJobCreatedAt={runOwnedJobCreatedAt}
+                batchResult={batchResult}
+                stale={investorStale}
+                staleAsOf={investorStaleAsOf}
               />
               <Stack gap={2} orientation="horizontal">
                 <Button
@@ -1557,7 +1697,7 @@ export function TwResearchPage({
                 </Button>
               </Stack>
               <p className="cds--helper-text-01">{t("research.tw.evidencePackNote")}</p>
-              {researchRunQuery.data || reportEvidenceText ? (
+              {researchRunQuery.data || reportEvidenceText || browsingHistoricalFirstPassJob ? (
                 <AdvancedDetailsDisclosure>
                   {researchRunQuery.data ? (
                     <p
@@ -1569,6 +1709,16 @@ export function TwResearchPage({
                         jobId: String(
                           runOwnedFirstPassJobId ?? firstPassJobId ?? "—",
                         ),
+                      })}
+                    </p>
+                  ) : null}
+                  {browsingHistoricalFirstPassJob ? (
+                    <p
+                      className="cds--helper-text-01"
+                      data-testid="tw-research-browsed-job-advanced"
+                    >
+                      {t("research.tw.browsedJobAdvanced", {
+                        jobId: String(firstPassJobId ?? "—"),
                       })}
                     </p>
                   ) : null}
@@ -1919,7 +2069,12 @@ export function TwResearchPage({
                     <SelectItem
                       key={String(job.jobId)}
                       value={String(job.jobId)}
-                      text={`${String(job.jobId)} · ${String(job.status ?? "")} · ${String(job.qualityStatus ?? "")}`}
+                      text={`${
+                        formatTaipeiDateTime(
+                          job.createdAt,
+                          language === "en" ? "en-US" : "zh-TW",
+                        ) || t("research.tw.dateUnknown")
+                      } · ${String(job.status ?? "")} · ${String(job.qualityStatus ?? "")}`}
                     />
                   ))}
                 </Select>
@@ -2070,13 +2225,21 @@ export function TwResearchPage({
                 ) : null}
                 {chipEvidenceQueryResult.data ? (
                   <p className="cds--helper-text-01" data-testid="tw-research-chip-evidence-meta">
-                    {t("research.tw.chipEvidenceMeta", {
-                      offset: chipEvidenceOffset,
-                      limit: PAGE_SIZE,
-                      total: Number(chipEvidenceQueryResult.data.total ?? 0),
-                      snapshot: pinnedFirstPassSnapshotId ?? "—",
-                    })}
+                    {chipEvidenceRangeText}
                   </p>
+                ) : null}
+                {chipEvidenceQueryResult.data ? (
+                  <AdvancedDetailsDisclosure>
+                    <p
+                      className="cds--helper-text-01"
+                      data-testid="tw-research-chip-evidence-meta-advanced"
+                    >
+                      {t("research.tw.chipEvidenceMetaAdvanced", {
+                        limit: PAGE_SIZE,
+                        snapshot: pinnedFirstPassSnapshotId ?? "—",
+                      })}
+                    </p>
+                  </AdvancedDetailsDisclosure>
                 ) : null}
                 <Stack gap={4}>
                   {(chipEvidenceQueryResult.data?.rows ?? []).map((row) => {
@@ -2631,9 +2794,6 @@ export function TwResearchPage({
                   <div data-testid="tw-research-candidate-provenance">
                     <p className="cds--helper-text-01">
                       {t("research.tw.candidateProvenanceLine", {
-                        candidateSetId: scan.candidateProvenance.candidateSetId,
-                        version: String(scan.candidateProvenance.candidateSetVersion ?? ""),
-                        snapshotId: scan.candidateProvenance.firstPassSnapshotId ?? "",
                         count: String(
                           scan.candidateProvenance.approvedStockIds?.length ??
                             scan.stockIds?.length ??
@@ -2641,13 +2801,25 @@ export function TwResearchPage({
                         ),
                       })}
                     </p>
-                    {scan.candidateProvenance.firstPassDigest ? (
-                      <p className="cds--helper-text-01">
-                        {t("research.tw.candidateProvenanceDigest", {
-                          digest: `${scan.candidateProvenance.firstPassDigest.slice(0, 12)}…`,
+                    <AdvancedDetailsDisclosure>
+                      <p
+                        className="cds--helper-text-01"
+                        data-testid="tw-research-candidate-provenance-advanced"
+                      >
+                        {t("research.tw.candidateProvenanceAdvanced", {
+                          candidateSetId: scan.candidateProvenance.candidateSetId,
+                          version: String(scan.candidateProvenance.candidateSetVersion ?? ""),
+                          snapshotId: scan.candidateProvenance.firstPassSnapshotId ?? "",
                         })}
                       </p>
-                    ) : null}
+                      {scan.candidateProvenance.firstPassDigest ? (
+                        <p className="cds--helper-text-01">
+                          {t("research.tw.candidateProvenanceDigest", {
+                            digest: `${scan.candidateProvenance.firstPassDigest.slice(0, 12)}…`,
+                          })}
+                        </p>
+                      ) : null}
+                    </AdvancedDetailsDisclosure>
                   </div>
                 ) : null}
                 <p className="cds--helper-text-01">

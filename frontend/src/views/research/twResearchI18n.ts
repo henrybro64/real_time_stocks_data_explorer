@@ -137,8 +137,13 @@ const TW_RESEARCH_ROWS = [
   ],
   [
     "research.tw.candidateProvenanceLine",
-    "Candidate set {candidateSetId} v{version} · snapshot {snapshotId} · {count} approved IDs",
-    "候選集 {candidateSetId} v{version} · 快照 {snapshotId} · {count} 個核准代號",
+    "{count} stocks approved for deeper analysis",
+    "已核准 {count} 檔進一步分析的股票",
+  ],
+  [
+    "research.tw.candidateProvenanceAdvanced",
+    "Candidate set {candidateSetId} v{version} · snapshot {snapshotId}",
+    "候選集 {candidateSetId} v{version} · 快照 {snapshotId}",
   ],
   [
     "research.tw.candidateProvenanceDigest",
@@ -217,8 +222,13 @@ const TW_RESEARCH_ROWS = [
   ],
   [
     "research.tw.chipEvidenceMeta",
-    "Showing offset {offset}, page size {limit}, total {total} · snapshot {snapshot}",
-    "顯示 offset {offset}、每頁 {limit}、共 {total} · 快照 {snapshot}",
+    "Items {from}–{to} of {total}",
+    "第 {from}–{to} 筆，共 {total} 筆",
+  ],
+  [
+    "research.tw.chipEvidenceMetaAdvanced",
+    "Snapshot id: {snapshot} · page size {limit}",
+    "快照編號：{snapshot} · 每頁 {limit} 筆",
   ],
   ["research.tw.stageLabels", "Workflow stages", "流程階段"],
   [
@@ -412,8 +422,8 @@ const TW_RESEARCH_ROWS = [
   ],
   [
     "research.tw.phaseMeta",
-    "Status: {status}. Progress is saved so you can reload later.",
-    "狀態：{status}。進度已儲存，重新整理後仍可繼續。",
+    "Status: {status}. Progress is saved.",
+    "狀態：{status}。進度已儲存。",
   ],
   [
     "research.tw.phaseMetaAdvanced",
@@ -468,9 +478,24 @@ const TW_RESEARCH_ROWS = [
     "尚未開始處理 — 工作已建立，但還沒有任何股票被處理。",
   ],
   [
-    "research.tw.plainStatus.collecting",
-    "Collecting data. Some symbols are still pending.",
-    "資料收集中，仍有股票待處理。",
+    "research.tw.plainStatus.collecting_now",
+    "Collecting data (this batch in progress)",
+    "正在收集資料（本批進行中）",
+  ],
+  [
+    "research.tw.plainStatus.paused_auto",
+    "Waiting for the next automatic collection (last run {time})",
+    "等待下一次自動收集（上次執行 {time}）",
+  ],
+  [
+    "research.tw.plainStatus.paused_auto_stale",
+    "Automatic collection is on, but there is no recent run record",
+    "自動收集已啟用，但最近沒有執行紀錄",
+  ],
+  [
+    "research.tw.plainStatus.paused_manual",
+    "Paused: no collection is running",
+    "目前暫停：沒有正在執行的收集",
   ],
   [
     "research.tw.plainStatus.waiting_retry",
@@ -513,9 +538,24 @@ const TW_RESEARCH_ROWS = [
     "下一步：目前沒有自動收集。請用進階手動批次作備援，或等自動收集啟用後再開始研究。",
   ],
   [
-    "research.tw.nextAction.collecting",
-    "Next: wait for collection to finish. Reloading this page is safe.",
-    "下一步：等待收集完成。重新整理頁面不會中斷進度。",
+    "research.tw.nextAction.collecting_now",
+    "Next: wait for this batch to finish. Reloading this page is safe while collection continues.",
+    "下一步：等待這一批完成。收集進行中，重新整理頁面不會中斷進度。",
+  ],
+  [
+    "research.tw.nextAction.paused_auto",
+    "Next: nothing to do. Collection continues at the next automatic run.",
+    "下一步：不需要操作，系統會在下一次自動收集時繼續。",
+  ],
+  [
+    "research.tw.nextAction.paused_auto_stale",
+    "Next: automatic collection may not be working. Use the advanced manual batch as a fallback, or check again later.",
+    "下一步：自動收集可能沒有運作。可使用進階手動批次作備援，或稍後再回來查看。",
+  ],
+  [
+    "research.tw.nextAction.paused_manual",
+    "Next: nothing is collecting right now. Use the advanced manual batch to continue, or start research again.",
+    "下一步：目前沒有任何收集在執行。請用進階手動批次繼續，或重新開始研究。",
   ],
   [
     "research.tw.nextAction.waiting_retry",
@@ -554,8 +594,65 @@ const TW_RESEARCH_ROWS = [
   ],
   [
     "research.tw.batchAllFailed",
-    "This batch collected no usable evidence ({failed}/{processed} failed). HTTP success is not the same as verified data.",
-    "本批沒有可用的驗證資料（{failed}/{processed} 失敗）。連線成功不代表資料已驗證。",
+    "{failed} stocks in this batch failed to collect, and there is no verifiable data yet",
+    "本批 {failed} 檔資料收集失敗，尚無可驗證資料",
+  ],
+  [
+    "research.tw.batchResultSummary",
+    "This batch: {processed} processed · {ok} verified · {partial} partial · {failed} failed",
+    "本批結果：處理 {processed} 檔 · 已確認 {ok} · 部分完成 {partial} · 失敗 {failed}",
+  ],
+  [
+    "research.tw.batchFailedSymbolsLabel",
+    "Failed in this batch",
+    "本批失敗的股票",
+  ],
+  [
+    "research.tw.batchFailureReason.transient",
+    "Temporarily unavailable; will retry automatically",
+    "暫時無法取得，將自動重試",
+  ],
+  [
+    "research.tw.batchFailureReason.rate_limited",
+    "Data source rate-limited; retry later",
+    "資料來源限流，稍後重試",
+  ],
+  [
+    "research.tw.batchFailureReason.programming_error",
+    "System error; stopped and needs a fix",
+    "系統錯誤，已停止並需要修復",
+  ],
+  [
+    "research.tw.batchFailureReason.permanent",
+    "The data source has no data for this stock",
+    "資料來源沒有此資料",
+  ],
+  [
+    "research.tw.failuresScheduledRetry",
+    "{failed} stocks have failed so far; a retry is scheduled ({time})",
+    "目前 {failed} 檔失敗，已排定重試（{time}）",
+  ],
+  [
+    "research.tw.failuresSoFar",
+    "{failed} stocks have failed so far",
+    "目前 {failed} 檔失敗",
+  ],
+  [
+    "research.tw.staleLastKnown",
+    "Last known state ({time}); may be out of date",
+    "以下為最後已知狀態（{time}），可能已過時",
+  ],
+  ["research.tw.errorResearchRun", "Research status", "研究狀態"],
+  ["research.tw.errorFirstPassProgress", "Collection progress", "收集進度"],
+  [
+    "research.tw.dateUnknown",
+    "date unknown",
+    "日期不明",
+  ],
+  [
+    "research.tw.progressAria",
+    "Research progress {pct}%",
+    "研究進度 {pct}%",
   ],
   [
     "research.tw.nextRetryAt",
@@ -564,13 +661,13 @@ const TW_RESEARCH_ROWS = [
   ],
   [
     "research.tw.browsingHistoricalNote",
-    "Browsing saved job {displayedJobId}. Active research job remains {runOwnedJobId}.",
-    "正在瀏覽已儲存工作 {displayedJobId}。目前研究工作仍是 {runOwnedJobId}。",
+    "Browsing a saved job created {displayedDate}. The current research (created {runOwnedDate}) is unchanged.",
+    "正在瀏覽 {displayedDate} 建立的已儲存工作。目前研究（建立於 {runOwnedDate}）不受影響。",
   ],
   [
     "research.tw.browsedJobLabel",
-    "Browsing job: {jobId}",
-    "瀏覽中的工作：{jobId}",
+    "Browsing saved job (created {date})",
+    "瀏覽中的已儲存工作（建立於 {date}）",
   ],
   [
     "research.tw.glossaryTitle",
@@ -604,8 +701,13 @@ const TW_RESEARCH_ROWS = [
   ],
   [
     "research.tw.activeJobLabel",
-    "Active research job: {jobId}",
-    "目前研究工作：{jobId}",
+    "Current research (created {date})",
+    "目前研究（建立於 {date}）",
+  ],
+  [
+    "research.tw.browsedJobAdvanced",
+    "Browsed first-round job id: {jobId}.",
+    "瀏覽中的第一輪工作編號：{jobId}。",
   ],
   [
     "research.tw.historicalJobsLabel",

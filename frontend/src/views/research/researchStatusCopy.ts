@@ -14,6 +14,10 @@ export type FirstPassProgressLike = {
   activeSnapshotId?: string | null;
   nextRetryAt?: string | null;
   updatedAt?: string | null;
+  /** Additive (#350/#351): a batch lease is currently held by a live worker. */
+  leaseActive?: boolean | null;
+  leaseExpiresAt?: string | null;
+  lastError?: string | null;
   // Research-run nested progress shape
   processed?: number | null;
   total?: number | null;
@@ -23,7 +27,12 @@ export type FirstPassDrainLike = {
   armed?: boolean | null;
   available?: boolean | null;
   reason?: string | null;
+  lastTickAt?: string | null;
+  lastOutcome?: string | null;
 };
+
+/** A drain tick older than this no longer counts as "recently ran". */
+export const DRAIN_TICK_FRESH_MS = 15 * 60 * 1000;
 
 export type InvestorSummaryCounts = {
   universe: number;
@@ -74,21 +83,83 @@ export function batchLooksAllFailed(counts: InvestorSummaryCounts | null): boole
   );
 }
 
+/**
+ * Automatic collection is promised only by `firstPassDrain` (armed + available).
+ * `scheduleEnabled` is a legacy fallback used solely when the drain block is absent.
+ */
 export function drainAllowsAutomaticCollection(
   drain: FirstPassDrainLike | null | undefined,
   scheduleEnabled?: boolean | null,
 ): boolean {
-  if (scheduleEnabled === true) return true;
-  return Boolean(drain?.armed && drain?.available);
+  if (drain) return Boolean(drain.armed && drain.available);
+  return scheduleEnabled === true;
+}
+
+export type NowLike = number | Date | (() => number | Date);
+
+function nowMs(now: NowLike | undefined): number {
+  const value = typeof now === "function" ? now() : now;
+  if (value instanceof Date) return value.getTime();
+  if (typeof value === "number") return value;
+  return Date.now();
+}
+
+/** True when the drain reported a tick within {@link DRAIN_TICK_FRESH_MS}. */
+export function drainTickIsFresh(
+  drain: FirstPassDrainLike | null | undefined,
+  now?: NowLike,
+): boolean {
+  const raw = drain?.lastTickAt;
+  if (typeof raw !== "string" || !raw.trim()) return false;
+  const tick = Date.parse(raw);
+  if (!Number.isFinite(tick)) return false;
+  return nowMs(now) - tick <= DRAIN_TICK_FRESH_MS;
+}
+
+export type PlainStatusOptions = {
+  drain?: FirstPassDrainLike | null;
+  /** Legacy fallback; consulted only when `drain` is absent. */
+  scheduleEnabled?: boolean | null;
+  now?: NowLike;
+  /** Last known state could not be refreshed: never claim collection is live. */
+  stale?: boolean;
+};
+
+function isTerminalProgress(
+  status: string,
+  counts: InvestorSummaryCounts | null,
+): boolean {
+  if (status === "failed" || status === "cancelled" || status === "completed") {
+    return true;
+  }
+  if (status === "partial") {
+    // `partial` is only terminal once every symbol has been attempted.
+    return Boolean(counts && counts.universe > 0 && counts.pending === 0);
+  }
+  return false;
+}
+
+/** Every attempted symbol failed and nothing verified/partial exists. */
+export function jobHasOnlyFailures(counts: InvestorSummaryCounts | null): boolean {
+  if (!counts) return false;
+  return (
+    counts.processed > 0 &&
+    counts.failed > 0 &&
+    counts.ok === 0 &&
+    counts.partial === 0
+  );
 }
 
 /**
  * Map durable job status into investor-facing buckets.
- * Never label "running" when nothing has been processed yet.
- * All-failed processed batches override to `all_failed` (not ready / collecting).
+ *
+ * - `collecting_now` only when a live batch lease is held (and the data is fresh).
+ * - Unfinished work with no lease is `paused_*`, never "collecting".
+ * - Cumulative `all_failed` is reserved for terminal jobs with ok+partial == 0.
  */
 export function firstPassPlainStatusKey(
   progress: FirstPassProgressLike | null | undefined,
+  options: PlainStatusOptions = {},
 ): string {
   const status = String(progress?.status ?? "").trim().toLowerCase();
   const counts = normalizeFirstPassCounts(progress);
@@ -98,12 +169,23 @@ export function firstPassPlainStatusKey(
 
   if (!status) return "idle";
 
-  // Honesty: HTTP-success batches with 0 usable rows must not look ready.
-  if (batchLooksAllFailed(counts)) return "all_failed";
-
-  if (status === "failed" || status === "cancelled") return "failed";
-  if (status === "deferred") return "waiting_retry";
+  if (status === "failed" || status === "cancelled") {
+    return jobHasOnlyFailures(counts) ? "all_failed" : "failed";
+  }
   if (status === "budget_exhausted") return "budget_exhausted";
+
+  const terminal = isTerminalProgress(status, counts);
+  if (terminal) {
+    // Honesty: HTTP-success jobs with 0 usable rows must not look ready.
+    if (jobHasOnlyFailures(counts)) return "all_failed";
+    if (hasSnapshot) return "ready_for_candidates";
+    // Completed but no snapshot yet: fall through to lease/drain based copy.
+  }
+
+  const leaseActive = Boolean(progress?.leaseActive) && !options.stale;
+  if (leaseActive) return "collecting_now";
+
+  if (status === "deferred") return "waiting_retry";
   if (
     status === "pending" ||
     status === "queued" ||
@@ -113,12 +195,25 @@ export function firstPassPlainStatusKey(
   ) {
     return "not_started";
   }
-  if (status === "completed" || status === "partial") {
-    if (hasSnapshot) return "ready_for_candidates";
-    return "collecting";
+
+  if (drainAllowsAutomaticCollection(options.drain, options.scheduleEnabled)) {
+    return drainTickIsFresh(options.drain, options.now)
+      ? "paused_auto"
+      : "paused_auto_stale";
   }
-  if (status === "running") return "collecting";
-  return "collecting";
+  return "paused_manual";
+}
+
+/** True while the job still has symbols to collect (retry-scheduled included). */
+export function firstPassBucketIsUnfinished(bucket: string): boolean {
+  return (
+    bucket === "collecting_now" ||
+    bucket === "paused_auto" ||
+    bucket === "paused_auto_stale" ||
+    bucket === "paused_manual" ||
+    bucket === "waiting_retry" ||
+    bucket === "not_started"
+  );
 }
 
 export type NextActionOptions = {
@@ -128,24 +223,81 @@ export type NextActionOptions = {
 };
 
 /**
- * Investor next-action key. Must not promise automatic collection unless drain/schedule says so.
+ * Investor next-action key. Must not promise automatic collection unless drain says so.
  */
 export function firstPassNextActionKey(
   bucket: string,
   options: NextActionOptions = {},
 ): string {
   if (options.browsingHistorical) return "browsing_historical";
-  if (bucket === "all_failed") return "all_failed";
-  if (bucket === "failed") return "failed";
-  if (bucket === "budget_exhausted") return "budget_exhausted";
-  if (bucket === "idle") return "idle";
-  if (bucket === "ready_for_candidates") return "ready_for_candidates";
-  if (bucket === "waiting_retry") return "waiting_retry";
-  if (bucket === "collecting") return "collecting";
-  if (bucket === "not_started") {
-    return drainAllowsAutomaticCollection(options.drain, options.scheduleEnabled)
-      ? "not_started_auto"
-      : "not_started_manual";
+  switch (bucket) {
+    case "all_failed":
+    case "failed":
+    case "budget_exhausted":
+    case "idle":
+    case "ready_for_candidates":
+    case "waiting_retry":
+    case "collecting_now":
+    case "paused_auto":
+    case "paused_auto_stale":
+    case "paused_manual":
+      return bucket;
+    case "not_started":
+      return drainAllowsAutomaticCollection(options.drain, options.scheduleEnabled)
+        ? "not_started_auto"
+        : "not_started_manual";
+    default:
+      return "default";
   }
-  return "default";
+}
+
+const TAIPEI_TZ = "Asia/Taipei";
+
+function toDate(iso: unknown): Date | null {
+  if (typeof iso !== "string" || !iso.trim()) return null;
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+/** Locale-aware Asia/Taipei date-time; empty string when `iso` is missing/invalid. */
+export function formatTaipeiDateTime(iso: unknown, locale: string): string {
+  const date = toDate(iso);
+  if (!date) return "";
+  return new Intl.DateTimeFormat(locale, {
+    timeZone: TAIPEI_TZ,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(date);
+}
+
+/** Locale-aware Asia/Taipei calendar date; empty string when missing/invalid. */
+export function formatTaipeiDate(iso: unknown, locale: string): string {
+  const date = toDate(iso);
+  if (!date) return "";
+  return new Intl.DateTimeFormat(locale, {
+    timeZone: TAIPEI_TZ,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(date);
+}
+
+/** Failure classes → i18n key suffix for investor-facing per-symbol reasons. */
+export type FailureReasonClass =
+  | "transient"
+  | "rate_limited"
+  | "programming_error"
+  | "permanent";
+
+export function normalizeFailureClass(raw: unknown): FailureReasonClass {
+  const value = String(raw ?? "").trim().toLowerCase();
+  if (value === "rate_limited") return "rate_limited";
+  if (value === "programming_error") return "programming_error";
+  if (value === "permanent") return "permanent";
+  // timeout / transient / provider_validation / stale / unknown → retryable.
+  return "transient";
 }

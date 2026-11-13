@@ -1615,7 +1615,7 @@ describe("TwResearchPage watchlist union (#338)", () => {
 
     const { client } = renderPage({ initialScanId: SCAN_ID });
     expect(await screen.findByTestId("tw-research-chip-row-TW:OLD1")).toBeInTheDocument();
-    expect(screen.getByTestId("tw-research-chip-evidence-meta")).toHaveTextContent("fps_old");
+    expect(screen.getByTestId("tw-research-chip-evidence-meta-advanced")).toHaveTextContent("fps_old");
 
     vi.mocked(fetchTwResearchScan).mockResolvedValue(
       queuedScan({
@@ -1630,6 +1630,9 @@ describe("TwResearchPage watchlist union (#338)", () => {
       expect(screen.queryByTestId("tw-research-chip-row-TW:OLD1")).not.toBeInTheDocument();
     });
     expect(screen.queryByTestId("tw-research-chip-evidence-meta")).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("tw-research-chip-evidence-meta-advanced"),
+    ).not.toBeInTheDocument();
 
     await waitFor(() => {
       expect(pendingResolvers.length).toBeGreaterThan(0);
@@ -1638,7 +1641,7 @@ describe("TwResearchPage watchlist union (#338)", () => {
       resolve(newPayload);
     }
     expect(await screen.findByTestId("tw-research-chip-row-TW:NEW1")).toBeInTheDocument();
-    expect(screen.getByTestId("tw-research-chip-evidence-meta")).toHaveTextContent("fps_new");
+    expect(screen.getByTestId("tw-research-chip-evidence-meta-advanced")).toHaveTextContent("fps_new");
     expect(screen.queryByTestId("tw-research-chip-row-TW:OLD1")).not.toBeInTheDocument();
   });
 
@@ -1751,7 +1754,7 @@ describe("TwResearchPage watchlist union (#338)", () => {
 
     const { client } = renderPage({ initialScanId: SCAN_ID });
     expect(await screen.findByTestId("tw-research-chip-row-TW:2330")).toBeInTheDocument();
-    expect(screen.getByTestId("tw-research-chip-evidence-meta")).toHaveTextContent("fps_stale");
+    expect(screen.getByTestId("tw-research-chip-evidence-meta-advanced")).toHaveTextContent("fps_stale");
 
     await client.refetchQueries({
       queryKey: ["tw-research-chip-evidence", "fps_stale"],
@@ -1759,6 +1762,6 @@ describe("TwResearchPage watchlist union (#338)", () => {
 
     expect(await screen.findByTestId("tw-research-chip-evidence-stale-banner")).toBeInTheDocument();
     expect(screen.getByTestId("tw-research-chip-row-TW:2330")).toBeInTheDocument();
-    expect(screen.getByTestId("tw-research-chip-evidence-meta")).toHaveTextContent("fps_stale");
+    expect(screen.getByTestId("tw-research-chip-evidence-meta-advanced")).toHaveTextContent("fps_stale");
   });
 });

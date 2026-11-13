@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -2919,6 +2919,36 @@ class TwResearchRepository(SessionBoundRepository):
                 "pending": counts.get("pending", 0),
             }
 
+    def earliest_first_pass_next_retry_at(self, job_id: str) -> str | None:
+        """Earliest durable ``nextRetryAt`` among retry-scheduled symbol rows.
+
+        One aggregate query over the (job_id, stock_id) index. Extracts
+        ``payload_json['nextRetryAt']`` through SQLAlchemy's portable JSON path
+        (JSONB ``->>`` on Postgres, ``json_extract`` on SQLite) and takes
+        ``min`` (writers always emit UTC ISO-8601, which orders lexically).
+        Exhausted / permanent failures never carry a retry time.
+        """
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            next_retry = TwResearchFirstPassSymbolResult.payload_json[
+                "nextRetryAt"
+            ].as_string()
+            exhausted = TwResearchFirstPassSymbolResult.payload_json[
+                "retryExhausted"
+            ].as_boolean()
+            earliest = session.execute(
+                select(func.min(next_retry)).where(
+                    TwResearchFirstPassSymbolResult.job_id == job_id,
+                    TwResearchFirstPassSymbolResult.status.in_(("failed", "deferred")),
+                    next_retry.is_not(None),
+                    or_(exhausted.is_(None), exhausted.is_(False)),
+                )
+            ).scalar_one_or_none()
+        if not earliest:
+            return None
+        parsed = _parse_iso_utc(earliest)
+        return parsed.isoformat() if parsed is not None else None
+
     def set_first_pass_job_snapshot(
         self, job_id: str, *, snapshot_id: str, quality_status: str
     ) -> dict[str, Any] | None:
@@ -2982,6 +3012,11 @@ def _first_pass_job_to_dict(row: TwResearchFirstPassJob) -> dict[str, Any]:
         "cursor": int(row.cursor or 0),
         "reserve_cursor": int(row.reserve_cursor or 0),
         "lease_generation": int(row.lease_generation or 0),
+        "reserve_expires_at": (
+            row.reserve_expires_at.isoformat()
+            if hasattr(row.reserve_expires_at, "isoformat")
+            else None
+        ),
         "active_snapshot_id": row.active_snapshot_id,
         "notes": list(row.notes_json or []),
         "created_at": row.created_at.isoformat()
