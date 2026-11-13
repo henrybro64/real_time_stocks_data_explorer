@@ -14,6 +14,7 @@ import threading
 import time
 import uuid
 from collections import Counter
+from datetime import UTC, datetime
 from typing import Any, Callable
 
 from app.repositories.tw_research_repository import tw_research_repository
@@ -209,7 +210,7 @@ def _enrich_symbol_payload(
             or failure_class == "permanent"
             or failure_class == "programming_error"
         )
-        from datetime import UTC, datetime, timedelta
+        from datetime import timedelta
 
         payload["attemptCount"] = attempts
         payload["failureClass"] = failure_class
@@ -377,6 +378,9 @@ class FirstPassJobService:
         universe_size = int(job["universe_size"])
         processed = int(counts["total"])
         pending = max(0, universe_size - processed)
+        lease_expires = _parse_utc(job.get("reserve_expires_at"))
+        lease_active = lease_expires is not None and lease_expires > datetime.now(UTC)
+        next_retry_at = self._repo.earliest_first_pass_next_retry_at(job_id)
         return {
             "jobId": job["job_id"],
             "status": job["status"],
@@ -391,6 +395,11 @@ class FirstPassJobService:
             "deferredCount": counts["deferred"],
             "activeSnapshotId": job["active_snapshot_id"],
             "universeDigest": job["universe_digest"],
+            # Additive honesty fields (#350/#351): live lease vs paused.
+            "leaseActive": lease_active,
+            "leaseExpiresAt": lease_expires.isoformat() if lease_expires else None,
+            "updatedAt": job.get("updated_at"),
+            "nextRetryAt": next_retry_at,
             "notes": [
                 "status=completed means all symbols were attempted, not that every field is filled.",
                 "qualityStatus remains incomplete until an immutable snapshot is finalized.",
@@ -738,15 +747,32 @@ class FirstPassJobService:
         status: str | None = None,
         q: str | None = None,
         completeness: str | None = None,
+        stock_ids: list[str] | None = None,
         offset: int = 0,
         limit: int = 50,
     ) -> dict[str, Any]:
         self.get_job(job_id, user_id=user_id)
+        filtered_ids: list[str] | None = None
+        if stock_ids:
+            seen: set[str] = set()
+            filtered_ids = []
+            for item in stock_ids:
+                cleaned = str(item).strip()
+                if not cleaned:
+                    continue
+                key = cleaned.upper()
+                if key in seen:
+                    continue
+                seen.add(key)
+                filtered_ids.append(cleaned)
+                if len(filtered_ids) >= 50:
+                    break
         rows = self._repo.list_first_pass_symbols(
             job_id,
             status=status,
             q=q,
             completeness=completeness,
+            stock_ids=filtered_ids,
             offset=offset,
             limit=limit,
         )
@@ -755,6 +781,7 @@ class FirstPassJobService:
             status=status,
             q=q,
             completeness=completeness,
+            stock_ids=filtered_ids,
         )
         return {
             "jobId": job_id,
@@ -764,6 +791,7 @@ class FirstPassJobService:
             "statusFilter": status,
             "q": q,
             "completenessFilter": completeness,
+            "stockIdsFilter": filtered_ids,
             "records": [
                 {
                     "stockId": row["stock_id"],
@@ -856,6 +884,24 @@ class FirstPassJobService:
             snapshot_id=saved["snapshot_id"],
             quality_status=quality,
         )
+
+
+def _parse_utc(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        text = str(value).strip()
+        if not text:
+            return None
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
 
 
 def _display_label(payload: dict[str, Any], stock_id: str) -> str:

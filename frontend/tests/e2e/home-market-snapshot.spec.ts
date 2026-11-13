@@ -25,6 +25,8 @@ test("market snapshot stacks cards on mobile", async ({ page }) => {
 
   const fxCard = page.getByTestId("market-snapshot-fx");
   const wtiCard = page.getByTestId("market-snapshot-wti");
+  await expect(fxCard).toBeVisible();
+  await expect(wtiCard).toBeVisible();
   const fxBox = await fxCard.boundingBox();
   const wtiBox = await wtiCard.boundingBox();
 
@@ -40,6 +42,8 @@ test("market snapshot shows two-column layout on desktop", async ({ page }) => {
 
   const fxCard = page.getByTestId("market-snapshot-fx");
   const wtiCard = page.getByTestId("market-snapshot-wti");
+  await expect(fxCard).toBeVisible();
+  await expect(wtiCard).toBeVisible();
   const fxBox = await fxCard.boundingBox();
   const wtiBox = await wtiCard.boundingBox();
 

@@ -396,6 +396,7 @@ export async function fetchTwResearchFirstPassSymbols(
     status?: string;
     q?: string;
     completeness?: string;
+    stockIds?: string[];
     offset?: number;
     limit?: number;
   },
@@ -404,6 +405,9 @@ export async function fetchTwResearchFirstPassSymbols(
   if (params?.status) query.set("status", params.status);
   if (params?.q) query.set("q", params.q);
   if (params?.completeness) query.set("completeness", params.completeness);
+  if (params?.stockIds && params.stockIds.length > 0) {
+    query.set("stockIds", params.stockIds.slice(0, 50).join(","));
+  }
   if (params?.offset != null) query.set("offset", String(params.offset));
   if (params?.limit != null) query.set("limit", String(params.limit));
   const suffix = query.size ? `?${query.toString()}` : "";

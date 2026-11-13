@@ -381,6 +381,17 @@ type E2eAuthStatus = {
   user: E2eAuthUser | null;
 };
 
+export type E2eTwResearchFirstPassFixture = {
+  /** null → GET research-runs/current returns 404 (first-time). */
+  researchRun: Record<string, unknown> | null;
+  jobs: Array<Record<string, unknown>>;
+  progress: Record<string, unknown> | null;
+  /** Optional POST /batches response for the active job. */
+  batchResult?: Record<string, unknown> | null;
+  /** Optional GET .../symbols result (for failed-batch name lookup). */
+  symbolsResult?: Record<string, unknown> | null;
+};
+
 type E2eMockState = {
   authStatus: E2eAuthStatus;
   /** When true, /api/auth/status aborts so the UI shows the unreachable gate (#285). */
@@ -394,6 +405,7 @@ type E2eMockState = {
   nextPositionId: number;
   realizedTrades: RealizedTradeRow[];
   nextRealizedTradeId: number;
+  twResearchFirstPass: E2eTwResearchFirstPassFixture | null;
 };
 
 const pagesWithApiMocks = new WeakSet<Page>();
@@ -423,6 +435,7 @@ function getState(page: Page): E2eMockState {
       nextPositionId: 1,
       realizedTrades: [],
       nextRealizedTradeId: 1,
+      twResearchFirstPass: null,
     };
     pageStates.set(page, state);
   }
@@ -447,6 +460,15 @@ export function setE2eAuthenticatedUser(page: Page, user: E2eAuthUser) {
     user: { ...user },
   };
   state.authStatusDown = false;
+}
+
+/** Override first-pass jobs / progress / run for TW research status E2E (#350/#351). */
+export function setE2eTwResearchFirstPass(
+  page: Page,
+  fixture: E2eTwResearchFirstPassFixture | null,
+) {
+  const state = getState(page);
+  state.twResearchFirstPass = fixture;
 }
 
 export function setE2eAuthStatusDown(page: Page, down: boolean) {
@@ -1092,6 +1114,14 @@ export async function installE2eApiMocks(page: Page): Promise<void> {
         await fulfillJson(route, { detail: "Not authenticated" }, 401);
         return;
       }
+      if (state.twResearchFirstPass) {
+        if (state.twResearchFirstPass.researchRun === null) {
+          await fulfillJson(route, { detail: "research_run_not_found" }, 404);
+          return;
+        }
+        await fulfillJson(route, { researchRun: state.twResearchFirstPass.researchRun });
+        return;
+      }
       await fulfillJson(route, {
         researchRun: {
           researchRunId: "rr_e2e",
@@ -1162,6 +1192,10 @@ export async function installE2eApiMocks(page: Page): Promise<void> {
       return;
     }
     if (path === "/api/tw-research/first-pass/jobs" && request.method() === "GET") {
+      if (state.twResearchFirstPass) {
+        await fulfillJson(route, { jobs: state.twResearchFirstPass.jobs });
+        return;
+      }
       await fulfillJson(route, {
         jobs: [
           {
@@ -1170,9 +1204,58 @@ export async function installE2eApiMocks(page: Page): Promise<void> {
             qualityStatus: "complete_attempted",
             activeSnapshotId: "e2e-fps",
             universeSize: 1,
+            createdAt: "2026-11-13T02:00:00Z",
           },
         ],
       });
+      return;
+    }
+    if (
+      path.match(/^\/api\/tw-research\/first-pass\/jobs\/[^/]+\/progress$/) &&
+      request.method() === "GET"
+    ) {
+      if (state.twResearchFirstPass?.progress) {
+        await fulfillJson(route, { progress: state.twResearchFirstPass.progress });
+        return;
+      }
+      if (state.twResearchFirstPass) {
+        await fulfillJson(route, { detail: "first_pass_progress_not_found" }, 404);
+        return;
+      }
+      await route.continue();
+      return;
+    }
+    if (
+      path.match(/^\/api\/tw-research\/first-pass\/jobs\/[^/]+\/batches$/) &&
+      request.method() === "POST"
+    ) {
+      if (state.twResearchFirstPass?.batchResult) {
+        await fulfillJson(route, { job: state.twResearchFirstPass.batchResult });
+        return;
+      }
+      await route.continue();
+      return;
+    }
+    if (
+      path.match(/^\/api\/tw-research\/first-pass\/jobs\/[^/]+\/symbols$/) &&
+      request.method() === "GET"
+    ) {
+      if (state.twResearchFirstPass?.symbolsResult) {
+        await fulfillJson(route, { result: state.twResearchFirstPass.symbolsResult });
+        return;
+      }
+      if (state.twResearchFirstPass) {
+        await fulfillJson(route, {
+          result: {
+            jobId: "fpj_e2e",
+            records: [],
+            total: 0,
+            stockIdsFilter: null,
+          },
+        });
+        return;
+      }
+      await route.continue();
       return;
     }
     if (

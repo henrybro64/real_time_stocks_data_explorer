@@ -21,6 +21,8 @@ type Props = Readonly<{
   onRetry?: () => void;
   scopeLabel: string;
   status?: number | null;
+  /** Plain-language title + next step that replace the generic copy (#350/#351). */
+  override?: Readonly<{ title: string; nextAction: string }> | null;
 }>;
 
 type NoticeCopy = Readonly<{
@@ -259,6 +261,7 @@ export function RequestStateNotice({
   onRetry,
   scopeLabel,
   status = null,
+  override = null,
 }: Props) {
   const { language, t } = useLanguage();
   const scope = language === "en" ? scopeLabel.toLowerCase() : scopeLabel;
@@ -278,8 +281,8 @@ export function RequestStateNotice({
         .join(" ")}
       role={kind === "stale" ? "status" : "alert"}
     >
-      <p className="app-state-notice-title">{current.title}</p>
-      <p className="app-state-notice-body">{current.body}</p>
+      <p className="app-state-notice-title">{override ? override.title : current.title}</p>
+      <p className="app-state-notice-body">{override ? override.nextAction : current.body}</p>
       {kind === "auth" && current.action ? (
         <Link className="app-state-notice-action" href="/login">
           {current.action}

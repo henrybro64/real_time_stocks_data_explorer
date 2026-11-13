@@ -37,6 +37,22 @@ import {
   type ChipEvidenceRow,
 } from "./ChipEvidenceCard";
 import {
+  AdvancedDetailsDisclosure,
+  ResearchInvestorSummary,
+  type BatchResultView,
+} from "./ResearchInvestorSummary";
+import {
+  researchErrorCopy,
+  researchErrorRawDetail,
+} from "./researchErrorCopy";
+import {
+  jobHistoryOptionLabel,
+  normalizeFailureClass,
+  technicalScanPlainStatusKey,
+  technicalScanQualityPlainKey,
+  type FirstPassProgressLike,
+} from "./researchStatusCopy";
+import {
   advanceTwResearchRunGate,
   createTwResearchFirstPassJob,
   createTwResearchScan,
@@ -207,7 +223,7 @@ function workerActivityLabelKey(
 export function TwResearchPage({
   initialScanId = null,
 }: Readonly<{ initialScanId?: string | null }>) {
-  const { t } = useLanguage();
+  const { t, language } = useLanguage();
   const router = useRouter();
   const queryClient = useQueryClient();
   const [mode, setMode] = useState<TwResearchUniverseMode>("starter_preset");
@@ -706,6 +722,16 @@ export function TwResearchPage({
     progress?.sourceIncompleteCount ?? scan?.sourceIncompleteCount ?? 0;
   const displayUnresolved = progress?.unresolvedCount ?? scan?.unresolvedCount ?? 0;
   const displayUnprocessed = progress?.unprocessedCount ?? scan?.unprocessedCount ?? 0;
+  const plainScanStatusText = t(
+    `research.tw.scanStatus.${technicalScanPlainStatusKey(displayStatus, {
+      workerActive: displayWorker === "active",
+    })}` as TranslationKey,
+  );
+  const plainScanQualityText = displayQuality
+    ? t(
+        `research.tw.scanQuality.${technicalScanQualityPlainKey(displayQuality)}` as TranslationKey,
+      )
+    : "";
 
   useEffect(() => {
     if (scan) scanRef.current = scan;
@@ -900,11 +926,37 @@ export function TwResearchPage({
   ]);
 
   const firstPassBatchMutation = useMutation({
-    mutationFn: async () => {
+    mutationFn: async (): Promise<
+      Record<string, unknown> & { failedSymbols: Array<Record<string, unknown>> }
+    > => {
       if (!firstPassJobId) throw new Error("missing_first_pass_job");
-      return runTwResearchFirstPassBatch(firstPassJobId, 10);
+      const job = await runTwResearchFirstPassBatch(firstPassJobId, 10);
+      // Per-batch failure detail: look up only this batch's failed symbols so the
+      // banner never mixes in cumulative job failures.
+      const counts = (job.batchCounts ?? {}) as { failed?: number };
+      const batchIds = Array.isArray(job.batchIds) ? job.batchIds.map(String) : [];
+      let failedSymbols: Array<Record<string, unknown>> = [];
+      if (Number(counts.failed ?? 0) > 0 && batchIds.length > 0) {
+        try {
+          const stockIds = batchIds.slice(0, 50);
+          const result = await fetchTwResearchFirstPassSymbols(firstPassJobId, {
+            status: "failed",
+            stockIds,
+            limit: Math.min(Math.max(stockIds.length, 1), 50),
+          });
+          const wanted = new Set(stockIds);
+          failedSymbols = (
+            Array.isArray(result.records)
+              ? (result.records as Array<Record<string, unknown>>)
+              : []
+          ).filter((row) => wanted.has(String(row.stockId ?? "")));
+        } catch {
+          failedSymbols = [];
+        }
+      }
+      return { ...job, failedSymbols };
     },
-    onSuccess: (job) => {
+    onSuccess: ({ failedSymbols: _failedSymbols, ...job }) => {
       setFirstPassProgressText(JSON.stringify(job, null, 2));
       const snapshotId =
         typeof job.activeSnapshotId === "string" && job.activeSnapshotId
@@ -1414,7 +1466,183 @@ export function TwResearchPage({
       label: "research.tw.errorFirstPassJobs",
       error: firstPassJobsQuery.isFetching ? null : firstPassJobsQuery.error,
     },
+    {
+      key: "first-pass-batch",
+      label: "research.tw.errorFirstPassBatch",
+      error: firstPassBatchMutation.isPending ? null : firstPassBatchMutation.error,
+    },
+    {
+      key: "research-run",
+      label: "research.tw.errorResearchRun",
+      error: researchRunQuery.isFetching ? null : researchRunQuery.error,
+    },
+    {
+      key: "first-pass-progress",
+      label: "research.tw.errorFirstPassProgress",
+      error: firstPassProgressQuery.isFetching ? null : firstPassProgressQuery.error,
+    },
   ];
+  const plainLanguageErrorKeys = new Set([
+    "first-pass-batch",
+    "research-run",
+    "first-pass-progress",
+  ]);
+
+  const chipEvidenceTotal = Number(chipEvidenceQueryResult.data?.total ?? 0);
+  const chipEvidenceRangeText = t("research.tw.chipEvidenceMeta", {
+    from: chipEvidenceTotal > 0 ? chipEvidenceOffset + 1 : 0,
+    to: Math.min(chipEvidenceOffset + PAGE_SIZE, chipEvidenceTotal),
+    total: chipEvidenceTotal,
+  });
+
+  const runOwnedFirstPassJobId =
+    typeof researchRunQuery.data?.firstPassJobId === "string"
+      ? researchRunQuery.data.firstPassJobId
+      : null;
+
+  const browsingHistoricalFirstPassJob = Boolean(
+    firstPassJobId &&
+      runOwnedFirstPassJobId &&
+      String(firstPassJobId) !== String(runOwnedFirstPassJobId),
+  );
+
+  // Progress must match the selected job. Never mix run-owned nested progress
+  // with a historical job the user is only browsing.
+  const investorProgress = useMemo((): FirstPassProgressLike | null => {
+    const jobProgress = firstPassProgressQuery.data as FirstPassProgressLike | undefined;
+    if (browsingHistoricalFirstPassJob) {
+      return jobProgress ?? null;
+    }
+    if (runOwnsSelectedFirstPassJob) {
+      const nested = researchRunQuery.data?.firstPassProgress as
+        | FirstPassProgressLike
+        | null
+        | undefined;
+      if (
+        jobProgress &&
+        (jobProgress.universeSize != null || jobProgress.processedCount != null)
+      ) {
+        // Run-owned job: fill retry time / last error from the run's progress
+        // when the job progress payload lacks them.
+        return {
+          ...jobProgress,
+          nextRetryAt: jobProgress.nextRetryAt ?? nested?.nextRetryAt ?? null,
+          lastError: jobProgress.lastError ?? nested?.lastError ?? null,
+        };
+      }
+      if (nested) return nested;
+      return jobProgress ?? null;
+    }
+    return jobProgress ?? null;
+  }, [
+    firstPassProgressQuery.data,
+    browsingHistoricalFirstPassJob,
+    runOwnsSelectedFirstPassJob,
+    researchRunQuery.data?.firstPassProgress,
+  ]);
+
+  const firstPassDrain = researchRunQuery.data?.firstPassDrain ?? null;
+  const scheduleEnabled = researchRunQuery.data?.scheduleEnabled ?? null;
+
+  // A failed refetch with cached data means we only know the last state.
+  const progressRefreshFailed =
+    firstPassProgressQuery.isError && Boolean(firstPassProgressQuery.data);
+  const runRefreshFailed = researchRunQuery.isError && Boolean(researchRunQuery.data);
+  const investorStale = progressRefreshFailed || runRefreshFailed;
+  const staleDataUpdatedAt = progressRefreshFailed
+    ? firstPassProgressQuery.dataUpdatedAt
+    : researchRunQuery.dataUpdatedAt;
+  const investorStaleAsOf =
+    investorStale && staleDataUpdatedAt
+      ? new Date(staleDataUpdatedAt).toISOString()
+      : null;
+
+  const displayedJobCreatedAt =
+    typeof selectedFirstPassJob?.createdAt === "string"
+      ? selectedFirstPassJob.createdAt
+      : null;
+  const runOwnedJobCreatedAt = useMemo(() => {
+    const fromList = firstPassJobs.find(
+      (job) => String(job.jobId ?? "") === String(runOwnedFirstPassJobId ?? ""),
+    )?.createdAt;
+    if (typeof fromList === "string") return fromList;
+    const fromRun = researchRunQuery.data?.createdAt;
+    return typeof fromRun === "string" ? fromRun : null;
+  }, [firstPassJobs, runOwnedFirstPassJobId, researchRunQuery.data?.createdAt]);
+
+  // "This batch" banner comes only from the latest batch mutation result.
+  const batchMutationData = firstPassBatchMutation.data;
+  const batchResult = useMemo((): BatchResultView | null => {
+    if (!batchMutationData) return null;
+    if (String(batchMutationData.jobId ?? "") !== String(firstPassJobId ?? "")) {
+      return null;
+    }
+    const counts = (batchMutationData.batchCounts ?? {}) as {
+      ok?: number;
+      partial?: number;
+      failed?: number;
+    };
+    const ok = Number(counts.ok ?? 0);
+    const partial = Number(counts.partial ?? 0);
+    const failed = Number(counts.failed ?? 0);
+    const processedInBatch = ok + partial + failed;
+    const emptyFailures: BatchResultView["failures"] = [];
+    if (batchMutationData.leaseHeld === true) {
+      return {
+        kind: "lease_held",
+        processed: 0,
+        ok: 0,
+        partial: 0,
+        failed: 0,
+        failures: emptyFailures,
+      };
+    }
+    const leaseLost = batchMutationData.leaseLost === true;
+    const budgetStopped = batchMutationData.budgetStopped === true;
+    if (leaseLost || (budgetStopped && processedInBatch === 0)) {
+      return {
+        kind: "batch_incomplete",
+        processed: 0,
+        ok: 0,
+        partial: 0,
+        failed: 0,
+        failures: emptyFailures,
+      };
+    }
+    if (processedInBatch <= 0) return null;
+    const failures = (batchMutationData.failedSymbols ?? []).map((row) => {
+      const stockId = String(row.stockId ?? "");
+      const evidence = (row.evidence ?? {}) as Record<string, unknown>;
+      return {
+        stockId,
+        label: formatTwStockLabel(
+          stockId,
+          String(evidence.stockName ?? row.stockName ?? ""),
+          String(evidence.nameStatus ?? row.nameStatus ?? ""),
+          t("research.tw.nameUnavailable"),
+        ),
+        reasonClass: normalizeFailureClass(evidence.failureClass, {
+          retryExhausted: evidence.retryExhausted === true,
+        }),
+      };
+    });
+    return {
+      kind: "processed",
+      processed: processedInBatch,
+      ok,
+      partial,
+      failed,
+      failures,
+    };
+  }, [batchMutationData, firstPassJobId, t]);
+
+  const firstPassBatchDisabledReason: TranslationKey | null = !firstPassJobId
+    ? "research.tw.batchDisabledNeedJob"
+    : firstPassJobIsTerminalFailed
+      ? "research.tw.batchDisabledFailed"
+      : firstPassBatchMutation.isPending
+        ? "research.tw.batchDisabledBusy"
+        : null;
 
   return (
     <Grid className="app-page-grid" fullWidth>
@@ -1429,6 +1657,27 @@ export function TwResearchPage({
           {operationErrors.map((failure) => {
             if (!failure.error) return null;
             const apiError = toApiError(failure.error);
+            if (plainLanguageErrorKeys.has(failure.key)) {
+              const copy = researchErrorCopy(failure.error, language);
+              return (
+                <div key={failure.key} data-testid={`tw-research-error-${failure.key}`}>
+                  <RequestStateNotice
+                    kind={errorToNoticeKind(apiError)}
+                    scopeLabel={t(failure.label)}
+                    status={apiError.status}
+                    override={{ title: copy.title, nextAction: copy.nextAction }}
+                  />
+                  <AdvancedDetailsDisclosure>
+                    <p
+                      className="cds--helper-text-01"
+                      data-testid={`tw-research-error-${failure.key}-raw`}
+                    >
+                      {researchErrorRawDetail(failure.error)}
+                    </p>
+                  </AdvancedDetailsDisclosure>
+                </div>
+              );
+            }
             return (
               <div key={failure.key} data-testid={`tw-research-error-${failure.key}`}>
                 <RequestStateNotice
@@ -1451,10 +1700,24 @@ export function TwResearchPage({
                 <p className="cds--helper-text-01" data-testid="tw-research-phase-meta">
                   {t("research.tw.phaseMeta", {
                     status: String(researchRunQuery.data.status ?? "—"),
-                    runId: String(researchRunQuery.data.researchRunId ?? "—"),
                   })}
                 </p>
               ) : null}
+              <ResearchInvestorSummary
+                progress={investorProgress}
+                displayedJobId={firstPassJobId}
+                runOwnedJobId={runOwnedFirstPassJobId}
+                browsingHistorical={browsingHistoricalFirstPassJob}
+                drain={browsingHistoricalFirstPassJob ? null : firstPassDrain}
+                scheduleEnabled={
+                  browsingHistoricalFirstPassJob ? null : scheduleEnabled
+                }
+                displayedJobCreatedAt={displayedJobCreatedAt}
+                runOwnedJobCreatedAt={runOwnedJobCreatedAt}
+                batchResult={batchResult}
+                stale={investorStale}
+                staleAsOf={investorStaleAsOf}
+              />
               <Stack gap={2} orientation="horizontal">
                 <Button
                   kind="primary"
@@ -1482,14 +1745,41 @@ export function TwResearchPage({
                 </Button>
               </Stack>
               <p className="cds--helper-text-01">{t("research.tw.evidencePackNote")}</p>
-              {reportEvidenceText ? (
-                <pre
-                  className="cds--body-compact-01"
-                  data-testid="tw-research-report-evidence"
-                  style={{ whiteSpace: "pre-wrap", maxHeight: 240, overflow: "auto" }}
-                >
-                  {reportEvidenceText}
-                </pre>
+              {researchRunQuery.data || reportEvidenceText || browsingHistoricalFirstPassJob ? (
+                <AdvancedDetailsDisclosure>
+                  {researchRunQuery.data ? (
+                    <p
+                      className="cds--helper-text-01"
+                      data-testid="tw-research-phase-meta-advanced"
+                    >
+                      {t("research.tw.phaseMetaAdvanced", {
+                        runId: String(researchRunQuery.data.researchRunId ?? "—"),
+                        jobId: String(
+                          runOwnedFirstPassJobId ?? firstPassJobId ?? "—",
+                        ),
+                      })}
+                    </p>
+                  ) : null}
+                  {browsingHistoricalFirstPassJob ? (
+                    <p
+                      className="cds--helper-text-01"
+                      data-testid="tw-research-browsed-job-advanced"
+                    >
+                      {t("research.tw.browsedJobAdvanced", {
+                        jobId: String(firstPassJobId ?? "—"),
+                      })}
+                    </p>
+                  ) : null}
+                  {reportEvidenceText ? (
+                    <pre
+                      className="cds--body-compact-01"
+                      data-testid="tw-research-report-evidence"
+                      style={{ whiteSpace: "pre-wrap", maxHeight: 240, overflow: "auto" }}
+                    >
+                      {reportEvidenceText}
+                    </pre>
+                  ) : null}
+                </AdvancedDetailsDisclosure>
               ) : null}
             </Stack>
           </Tile>
@@ -1699,19 +1989,6 @@ export function TwResearchPage({
                   {t("research.tw.startFirstPass")}
                 </Button>
                 <Button
-                  kind="secondary"
-                  size="sm"
-                  data-testid="tw-research-run-first-pass-batch"
-                  disabled={
-                    !firstPassJobId ||
-                    firstPassBatchMutation.isPending ||
-                    firstPassJobIsTerminalFailed
-                  }
-                  onClick={() => firstPassBatchMutation.mutate()}
-                >
-                  {t("research.tw.runFirstPassBatch")}
-                </Button>
-                <Button
                   kind="tertiary"
                   size="sm"
                   disabled={!firstPassJobId || loadFirstPassEvidenceMutation.isPending}
@@ -1719,15 +1996,45 @@ export function TwResearchPage({
                 >
                   {t("research.tw.loadFirstPassEvidence")}
                 </Button>
-                <Button
-                  kind="tertiary"
-                  size="sm"
-                  disabled={!firstPassSnapshotId || loadFirstPassManifestMutation.isPending}
-                  onClick={() => loadFirstPassManifestMutation.mutate(0)}
-                >
-                  {t("research.tw.loadFirstPassManifest")}
-                </Button>
               </Stack>
+              <AdvancedDetailsDisclosure>
+                <Stack gap={3} orientation="horizontal">
+                  <Button
+                    kind="ghost"
+                    size="sm"
+                    data-testid="tw-research-run-first-pass-batch"
+                    title={
+                      firstPassBatchDisabledReason
+                        ? t(firstPassBatchDisabledReason)
+                        : t("research.tw.runFirstPassBatch")
+                    }
+                    disabled={
+                      !firstPassJobId ||
+                      firstPassBatchMutation.isPending ||
+                      firstPassJobIsTerminalFailed
+                    }
+                    onClick={() => firstPassBatchMutation.mutate()}
+                  >
+                    {t("research.tw.runFirstPassBatch")}
+                  </Button>
+                  <Button
+                    kind="ghost"
+                    size="sm"
+                    disabled={!firstPassSnapshotId || loadFirstPassManifestMutation.isPending}
+                    onClick={() => loadFirstPassManifestMutation.mutate(0)}
+                  >
+                    {t("research.tw.loadFirstPassManifest")}
+                  </Button>
+                </Stack>
+                {firstPassBatchDisabledReason ? (
+                  <p
+                    className="cds--helper-text-01"
+                    data-testid="tw-research-batch-disabled-reason"
+                  >
+                    {t(firstPassBatchDisabledReason)}
+                  </p>
+                ) : null}
+              </AdvancedDetailsDisclosure>
               {firstPassJobIsTerminalFailed ? (
                 <div data-testid="tw-research-first-pass-job-failed">
                   <RequestStateNotice
@@ -1810,7 +2117,14 @@ export function TwResearchPage({
                     <SelectItem
                       key={String(job.jobId)}
                       value={String(job.jobId)}
-                      text={`${String(job.jobId)} · ${String(job.status ?? "")} · ${String(job.qualityStatus ?? "")}`}
+                      text={jobHistoryOptionLabel(
+                        job as FirstPassProgressLike & {
+                          createdAt?: string | null;
+                          qualityStatus?: string | null;
+                        },
+                        t,
+                        language,
+                      )}
                     />
                   ))}
                 </Select>
@@ -1863,27 +2177,41 @@ export function TwResearchPage({
                   {t("research.tw.evidenceNext")}
                 </Button>
               </Stack>
-              <TextArea
-                id="tw-research-membership-json"
-                labelText={t("research.tw.membershipJson")}
-                value={membershipText}
-                readOnly
-                rows={6}
-              />
-              <TextArea
-                id="tw-research-first-pass-progress"
-                labelText={t("research.tw.firstPassProgress")}
-                value={firstPassProgressText}
-                readOnly
-                rows={5}
-              />
-              <TextArea
-                id="tw-research-first-pass-evidence"
-                labelText={t("research.tw.firstPassEvidence")}
-                value={firstPassEvidenceText}
-                readOnly
-                rows={6}
-              />
+              <AdvancedDetailsDisclosure>
+                <p className="cds--helper-text-01">{t("research.tw.historicalJobsLabel")}</p>
+                {selectedFirstPassJob ? (
+                  <p
+                    className="cds--helper-text-01"
+                    data-testid="tw-research-job-history-raw-status"
+                  >
+                    {t("research.tw.jobHistoryRawStatus", {
+                      status: String(selectedFirstPassJob.status ?? ""),
+                      qualityStatus: String(selectedFirstPassJob.qualityStatus ?? ""),
+                    })}
+                  </p>
+                ) : null}
+                <TextArea
+                  id="tw-research-membership-json"
+                  labelText={t("research.tw.membershipJson")}
+                  value={membershipText}
+                  readOnly
+                  rows={6}
+                />
+                <TextArea
+                  id="tw-research-first-pass-progress"
+                  labelText={t("research.tw.firstPassProgress")}
+                  value={firstPassProgressText}
+                  readOnly
+                  rows={5}
+                />
+                <TextArea
+                  id="tw-research-first-pass-evidence"
+                  labelText={t("research.tw.firstPassEvidence")}
+                  value={firstPassEvidenceText}
+                  readOnly
+                  rows={6}
+                />
+              </AdvancedDetailsDisclosure>
               <Tile data-testid="tw-research-chip-evidence">
                 <h3 className="cds--productive-heading-02">{t("research.tw.chipEvidenceTitle")}</h3>
                 <p className="cds--helper-text-01">{t("research.tw.chipEvidenceDescription")}</p>
@@ -1958,13 +2286,21 @@ export function TwResearchPage({
                 ) : null}
                 {chipEvidenceQueryResult.data ? (
                   <p className="cds--helper-text-01" data-testid="tw-research-chip-evidence-meta">
-                    {t("research.tw.chipEvidenceMeta", {
-                      offset: chipEvidenceOffset,
-                      limit: PAGE_SIZE,
-                      total: Number(chipEvidenceQueryResult.data.total ?? 0),
-                      snapshot: pinnedFirstPassSnapshotId ?? "—",
-                    })}
+                    {chipEvidenceRangeText}
                   </p>
+                ) : null}
+                {chipEvidenceQueryResult.data ? (
+                  <AdvancedDetailsDisclosure>
+                    <p
+                      className="cds--helper-text-01"
+                      data-testid="tw-research-chip-evidence-meta-advanced"
+                    >
+                      {t("research.tw.chipEvidenceMetaAdvanced", {
+                        limit: PAGE_SIZE,
+                        snapshot: pinnedFirstPassSnapshotId ?? "—",
+                      })}
+                    </p>
+                  </AdvancedDetailsDisclosure>
                 ) : null}
                 <Stack gap={4}>
                   {(chipEvidenceQueryResult.data?.rows ?? []).map((row) => {
@@ -2432,7 +2768,7 @@ export function TwResearchPage({
                                         coverage: row?.coverage ?? null,
                                         monthly: row?.monthly ?? null,
                                         daily: row?.daily ?? null,
-                                        note: "Not a Notion recommendation.",
+                                        note: t("research.tw.watchlistRowNote"),
                                       },
                                       null,
                                       2,
@@ -2483,16 +2819,10 @@ export function TwResearchPage({
           {scan ? (
             <Tile data-testid="tw-research-progress">
               <Stack gap={3}>
-                <TextInput
-                  id="tw-research-scan-id"
-                  labelText={t("research.tw.scanId")}
-                  value={scan.scanId}
-                  readOnly
-                />
                 <p className="cds--body-compact-01" data-testid="tw-research-status-line">
                   {displayStageOrder === "monthly_first"
                     ? t("research.tw.statusLineMonthlyFirst", {
-                        status: displayStatus,
+                        status: plainScanStatusText,
                         processed: displayProcessed,
                         universe: displayUniverse,
                         remaining: displayRemaining,
@@ -2503,7 +2833,7 @@ export function TwResearchPage({
                         target: displayTarget,
                       })
                     : t("research.tw.statusLineDailyFirst", {
-                        status: displayStatus,
+                        status: plainScanStatusText,
                         processed: displayProcessed,
                         universe: displayUniverse,
                         remaining: displayRemaining,
@@ -2519,9 +2849,6 @@ export function TwResearchPage({
                   <div data-testid="tw-research-candidate-provenance">
                     <p className="cds--helper-text-01">
                       {t("research.tw.candidateProvenanceLine", {
-                        candidateSetId: scan.candidateProvenance.candidateSetId,
-                        version: String(scan.candidateProvenance.candidateSetVersion ?? ""),
-                        snapshotId: scan.candidateProvenance.firstPassSnapshotId ?? "",
                         count: String(
                           scan.candidateProvenance.approvedStockIds?.length ??
                             scan.stockIds?.length ??
@@ -2529,13 +2856,25 @@ export function TwResearchPage({
                         ),
                       })}
                     </p>
-                    {scan.candidateProvenance.firstPassDigest ? (
-                      <p className="cds--helper-text-01">
-                        {t("research.tw.candidateProvenanceDigest", {
-                          digest: `${scan.candidateProvenance.firstPassDigest.slice(0, 12)}…`,
+                    <AdvancedDetailsDisclosure>
+                      <p
+                        className="cds--helper-text-01"
+                        data-testid="tw-research-candidate-provenance-advanced"
+                      >
+                        {t("research.tw.candidateProvenanceAdvanced", {
+                          candidateSetId: scan.candidateProvenance.candidateSetId,
+                          version: String(scan.candidateProvenance.candidateSetVersion ?? ""),
+                          snapshotId: scan.candidateProvenance.firstPassSnapshotId ?? "",
                         })}
                       </p>
-                    ) : null}
+                      {scan.candidateProvenance.firstPassDigest ? (
+                        <p className="cds--helper-text-01">
+                          {t("research.tw.candidateProvenanceDigest", {
+                            digest: `${scan.candidateProvenance.firstPassDigest.slice(0, 12)}…`,
+                          })}
+                        </p>
+                      ) : null}
+                    </AdvancedDetailsDisclosure>
                   </div>
                 ) : null}
                 <p className="cds--helper-text-01">
@@ -2563,7 +2902,7 @@ export function TwResearchPage({
                 </p>
                 {displayQuality && displayQuality !== "verified_ready" ? (
                   <p className="cds--helper-text-01" data-testid="tw-research-quality">
-                    {t("research.tw.notVerified", { quality: displayQuality })}
+                    {t("research.tw.notVerified", { quality: plainScanQualityText })}
                   </p>
                 ) : null}
                 {displayQuality === "verified_ready" ? (
@@ -2591,11 +2930,33 @@ export function TwResearchPage({
                   </div>
                 ) : null}
                 <p className="cds--helper-text-01">{t("research.tw.targetNote")}</p>
-                {manifestQuery.data ? (
-                  <pre className="cds--body-compact-01" style={{ whiteSpace: "pre-wrap" }}>
-                    {JSON.stringify(manifestQuery.data, null, 2)}
-                  </pre>
-                ) : null}
+                <AdvancedDetailsDisclosure>
+                  <TextInput
+                    id="tw-research-scan-id"
+                    data-testid="tw-research-scan-id"
+                    labelText={t("research.tw.scanId")}
+                    value={scan.scanId}
+                    readOnly
+                  />
+                  <p
+                    className="cds--helper-text-01"
+                    data-testid="tw-research-scan-raw-status"
+                  >
+                    {t("research.tw.scanRawStatus", {
+                      status: displayStatus || "—",
+                      quality: displayQuality || "—",
+                    })}
+                  </p>
+                  {manifestQuery.data ? (
+                    <pre
+                      className="cds--body-compact-01"
+                      data-testid="tw-research-scan-manifest-json"
+                      style={{ whiteSpace: "pre-wrap" }}
+                    >
+                      {JSON.stringify(manifestQuery.data, null, 2)}
+                    </pre>
+                  ) : null}
+                </AdvancedDetailsDisclosure>
               </Stack>
             </Tile>
           ) : null}
@@ -2810,14 +3171,16 @@ export function TwResearchPage({
                   {t("research.tw.loadLatestChunk")}
                 </Button>
               </Stack>
-              <TextArea
-                id="tw-research-latest-manifest-json"
-                data-testid="tw-research-latest-manifest-json"
-                labelText={t("research.tw.latestManifestJson")}
-                value={latestManifestText}
-                readOnly
-                rows={12}
-              />
+              <AdvancedDetailsDisclosure>
+                <TextArea
+                  id="tw-research-latest-manifest-json"
+                  data-testid="tw-research-latest-manifest-json"
+                  labelText={t("research.tw.latestManifestJson")}
+                  value={latestManifestText}
+                  readOnly
+                  rows={12}
+                />
+              </AdvancedDetailsDisclosure>
             </Stack>
           </Tile>
 
@@ -2880,13 +3243,15 @@ export function TwResearchPage({
                   })}
                 </p>
                 <p className="cds--helper-text-01">{t("research.tw.agentHandoffNote")}</p>
-                <TextArea
-                  id="tw-research-agent-json"
-                  labelText={t("research.tw.agentJson")}
-                  value={agentText}
-                  readOnly
-                  rows={16}
-                />
+                <AdvancedDetailsDisclosure>
+                  <TextArea
+                    id="tw-research-agent-json"
+                    labelText={t("research.tw.agentJson")}
+                    value={agentText}
+                    readOnly
+                    rows={16}
+                  />
+                </AdvancedDetailsDisclosure>
               </Stack>
             </Tile>
           ) : null}

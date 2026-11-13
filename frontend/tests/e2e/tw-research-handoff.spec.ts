@@ -106,6 +106,12 @@ test("authenticated browser reads the verified manifest and matching chunk", asy
 
   await page.getByTestId("tw-research-load-latest-manifest").click();
   const jsonArea = page.getByTestId("tw-research-latest-manifest-json");
+  // Manifest JSON lives under Advanced (collapsed by default for ordinary investors).
+  await page
+    .locator(
+      '[data-testid="tw-research-advanced-details"]:has([data-testid="tw-research-latest-manifest-json"]) summary',
+    )
+    .click();
   await expect(jsonArea).toBeVisible();
   await expect.poll(async () => jsonArea.inputValue()).toContain(E2E_TW_RESEARCH_HANDOFF.snapshotId);
   await expect.poll(async () => jsonArea.inputValue()).toContain("contentDigest");

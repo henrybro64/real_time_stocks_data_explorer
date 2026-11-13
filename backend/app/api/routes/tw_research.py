@@ -435,9 +435,38 @@ def get_first_pass_job_symbols(
     status: str | None = Query(default=None),
     q: str | None = Query(default=None),
     completeness: str | None = Query(default=None),
+    stockIds: str | None = Query(
+        default=None,
+        description="Optional comma-separated stock ids (max 50); filter in SQL.",
+    ),
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=50, ge=1, le=200),
 ) -> FirstPassJobSymbolsResponse:
+    stock_ids = _parse_stock_ids_query(stockIds, max_ids=50)
+    # Present but empty (whitespace/commas only) → empty page, not unfiltered.
+    if stockIds is not None and not stock_ids:
+        try:
+            first_pass_job_service.get_job(job_id, user_id=user_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except FirstPassJobError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail={"error": str(exc), "operation": exc.operation},
+            ) from exc
+        return FirstPassJobSymbolsResponse(
+            result={
+                "jobId": job_id,
+                "offset": offset,
+                "limit": limit,
+                "total": 0,
+                "statusFilter": status,
+                "q": q,
+                "completenessFilter": completeness,
+                "stockIdsFilter": [],
+                "records": [],
+            }
+        )
     try:
         result = first_pass_job_service.list_symbols(
             job_id,
@@ -445,6 +474,7 @@ def get_first_pass_job_symbols(
             status=status,
             q=q,
             completeness=completeness,
+            stock_ids=stock_ids or None,
             offset=offset,
             limit=limit,
         )
@@ -2240,6 +2270,30 @@ def _call_or_http(action: Callable[[], T]) -> T:
                 "message": str(exc),
             },
         ) from exc
+
+
+def _parse_stock_ids_query(
+    stock_ids: str | None,
+    *,
+    max_ids: int = 50,
+) -> list[str]:
+    """Parse comma-separated stock ids, dedupe (order-preserving), cap at max_ids."""
+    if not stock_ids:
+        return []
+    seen: set[str] = set()
+    out: list[str] = []
+    for item in str(stock_ids).split(","):
+        cleaned = item.strip()
+        if not cleaned:
+            continue
+        key = cleaned.upper()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(cleaned)
+        if len(out) >= max_ids:
+            break
+    return out
 
 
 def _camel_job(job: dict[str, object]) -> dict[str, object]:
