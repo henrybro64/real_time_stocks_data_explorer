@@ -2,7 +2,7 @@
 
 ## Goal
 
-Make the served frontend build identity verifiable (git SHA + build time) without relying on runtime ConfigMap alone.
+Make the served frontend build identity verifiable (git SHA + build time) without relying on runtime ConfigMap alone. Detect a dirty or stale node checkout before trusting the served markers.
 
 ## Bake into the image
 
@@ -19,18 +19,35 @@ docker build \
 
 `frontend/Dockerfile` sets `ENV NEXT_PUBLIC_BUILD_SHA` / `NEXT_PUBLIC_BUILD_TIME` **before** `npm run build`.
 
-`scripts/deploy-k3s.sh` passes `--build-arg BUILD_SHA` / `BUILD_TIME` (from git HEAD, or override via `BUILD_SHA` / `BUILD_TIME` env).
+`scripts/deploy-k3s.sh` passes `--build-arg BUILD_SHA` / `BUILD_TIME` (from git HEAD, or override via `BUILD_SHA` / `BUILD_TIME` env). When `BUILD_SHA` is unset and `git status --porcelain` is non-empty, the script appends `-dirty` so a dirty working tree cannot look like a clean published SHA.
 
 ## Verify (read-only)
 
 - UI: open **進階資訊** on TW research → `data-testid="tw-research-build-version"`.
 - HTTP: `GET /api/version` → `{ "sha": "…", "buildTime": "…" }`.
-- Post-deploy: `scripts/verify-k3s-post-deploy.sh` compares served SHA to `EXPECTED_BUILD_SHA` (default: `git rev-parse --short HEAD`) and **fails** on `unknown` or mismatch.
+- Post-deploy: `scripts/verify-k3s-post-deploy.sh`:
+  - Compares served SHA to `EXPECTED_BUILD_SHA` (default: local `git rev-parse --short HEAD`) and **fails** on `unknown` or mismatch.
+  - Runs a read-only `git fetch --quiet origin main` (skips with a warning if offline) and prints `origin/main`'s short SHA.
+  - When `EXPECTED_BUILD_SHA` is **unset**: **fails** if served SHA differs from `origin/main`; **warns** (does not fail) when served matches local HEAD but HEAD is behind `origin/main`.
+  - Set `EXPECTED_BUILD_SHA` explicitly to pin a non-main SHA for intentional branch deploys.
 
-If SHA is `unknown` or an old commit, the cluster is serving a stale `:local` (or otherwise outdated) image.
+## Phase A (owner, manual)
+
+On the node that built/serves the image, before trusting verify:
+
+```bash
+cd /path/to/real_time_stocks_data_explorer
+git fetch --quiet origin main
+git rev-parse --short HEAD
+git rev-parse --short origin/main
+git status --porcelain   # must be empty for a clean BUILD_SHA (no -dirty)
+# Optional pin:
+# EXPECTED_BUILD_SHA=$(git rev-parse --short HEAD) ./scripts/verify-k3s-post-deploy.sh
+```
 
 ## Explicit non-goals / safety
 
 - No production deploy, Pod restart, cache purge, or CronJob enablement without separate approval.
 - Research first-pass CronJob stays suspended.
 - ConfigMap injection of `NEXT_PUBLIC_*` at runtime does **not** change the baked build markers.
+- Do not run deploy/verify from automated agents unless the owner asks.

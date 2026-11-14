@@ -1,4 +1,4 @@
-import { apiUrl, requestJson, requestJsonWithBody } from "./client";
+import { ApiError, apiUrl, requestJson, requestJsonWithBody, toApiError } from "./client";
 
 export type TwResearchUniverseMode = "starter_preset" | "theme_keys" | "stock_ids";
 
@@ -405,16 +405,44 @@ export async function deleteTwResearchFirstPassJob(
   );
 }
 
+function deletionStatusFromGone(error: unknown): Record<string, unknown> | null {
+  const api = toApiError(error);
+  if (api.status !== 410) return null;
+  const body =
+    api.body && typeof api.body === "object"
+      ? (api.body as Record<string, unknown>)
+      : {};
+  return { gone: true, ...body };
+}
+
 export async function fetchTwResearchFirstPassDeletionStatus(jobId: string) {
-  return requestJson<Record<string, unknown>>(
-    `/tw-research/first-pass/jobs/${encodeURIComponent(jobId)}/deletion`,
-  );
+  try {
+    return await requestJson<Record<string, unknown>>(
+      `/tw-research/first-pass/jobs/${encodeURIComponent(jobId)}/deletion`,
+    );
+  } catch (error) {
+    const gone = deletionStatusFromGone(error);
+    if (gone) return gone;
+    throw error instanceof ApiError ? error : toApiError(error);
+  }
 }
 
 export async function fetchTwResearchRunDeletionPreview() {
   return requestJson<Record<string, unknown>>(
     "/tw-research/research-runs/current/deletion-preview",
   );
+}
+
+export async function fetchTwResearchRunDeletionStatus() {
+  try {
+    return await requestJson<Record<string, unknown>>(
+      "/tw-research/research-runs/current/deletion",
+    );
+  } catch (error) {
+    const gone = deletionStatusFromGone(error);
+    if (gone) return gone;
+    throw error instanceof ApiError ? error : toApiError(error);
+  }
 }
 
 export async function deleteTwResearchRunCurrent(previewToken: string) {

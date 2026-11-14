@@ -1641,6 +1641,35 @@ def research_run_deletion_preview(
     }
 
 
+@router.get("/research-runs/current/deletion")
+def research_run_deletion_status(
+    user_id: str = Depends(get_effective_user_id),
+) -> Response:
+    """Full-run deletion lifecycle status; 410 + tombstone after hard delete (#355)."""
+    try:
+        status = first_pass_job_service.research_run_deletion_status(user_id=user_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except FirstPassJobError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={"error": str(exc), "operation": exc.operation},
+        ) from exc
+    payload = {
+        "researchRunId": status.get("research_run_id"),
+        "gone": bool(status.get("gone")),
+        "deletionState": status.get("deletion_state"),
+        "deletionError": status.get("deletion_error"),
+        "outcome": status.get("outcome"),
+        "counts": status.get("counts"),
+        "completedAt": status.get("completed_at"),
+        "auditId": status.get("audit_id"),
+    }
+    if status.get("gone"):
+        return JSONResponse(status_code=410, content=payload)
+    return JSONResponse(status_code=200, content=payload)
+
+
 @router.delete("/research-runs/current")
 def delete_current_research_run(
     user_id: str = Depends(get_effective_user_id),

@@ -255,3 +255,182 @@ def test_archive_restore_hides_from_default_list() -> None:
     assert any(str(j["job_id"]) == job_id for j in with_arch)
     restored = svc.archive_job(job_id, user_id=user_id, archived=False)
     assert restored.get("archived_at") in (None, "")
+
+
+def _assert_no_orphan_rows(user_id: str) -> None:
+    """Consistency: no dangling FK-ish references after a delete (#355)."""
+    assert SessionLocal is not None
+    with SessionLocal() as session:
+        orphan_symbols = session.execute(
+            text(
+                """
+                SELECT COUNT(*) FROM tw_research_first_pass_symbol_results s
+                WHERE NOT EXISTS (
+                  SELECT 1 FROM tw_research_first_pass_jobs j WHERE j.job_id = s.job_id
+                )
+                """
+            )
+        ).scalar_one()
+        assert int(orphan_symbols or 0) == 0
+        orphan_cands = session.execute(
+            text(
+                """
+                SELECT COUNT(*) FROM tw_research_candidate_sets c
+                WHERE c.user_id = :uid
+                  AND c.first_pass_snapshot_id IS NOT NULL
+                  AND NOT EXISTS (
+                    SELECT 1 FROM tw_research_first_pass_snapshots snap
+                    WHERE snap.snapshot_id = c.first_pass_snapshot_id
+                  )
+                """
+            ),
+            {"uid": user_id},
+        ).scalar_one()
+        assert int(orphan_cands or 0) == 0
+
+
+def test_deletion_status_completes_after_bound_without_job_list() -> None:
+    """GET deletion status alone completes after the quiescence bound (#355)."""
+    user_id = f"u_stat_{uuid4().hex[:10]}"
+    _ensure_user(user_id)
+    svc = _service()
+    job = svc.create_job(
+        user_id=user_id,
+        stock_ids=["TW:2330", "TW:2454"],
+        use_membership=False,
+    )
+    job_id = str(job["job_id"])
+    assert SessionLocal is not None
+    with SessionLocal() as session:
+        row = session.get(TwResearchFirstPassJob, job_id)
+        assert row is not None
+        row.status = "running"
+        row.reserve_cursor = 1
+        row.cursor = 0
+        row.reserve_expires_at = datetime.now(timezone.utc) + timedelta(seconds=120)
+        session.commit()
+
+    preview = svc.deletion_preview(job_id, user_id=user_id)
+    first = svc.delete_job(
+        job_id, user_id=user_id, preview_token=preview["preview_token"]
+    )
+    assert first["outcome"] == "requested"
+
+    # Bound not yet passed → still present.
+    mid = svc.deletion_status(job_id, user_id=user_id)
+    assert mid.get("gone") is False
+    assert mid.get("deletion_state") == "requested"
+
+    with SessionLocal() as session:
+        row = session.get(TwResearchFirstPassJob, job_id)
+        assert row is not None
+        # Past 2× lease — must still complete (never fail for wall time alone).
+        row.deletion_requested_at = datetime.now(timezone.utc) - timedelta(
+            seconds=BATCH_LEASE_SECONDS * 2 + 5
+        )
+        session.commit()
+
+    status = svc.deletion_status(job_id, user_id=user_id)
+    assert status.get("gone") is True
+    assert status.get("outcome") == "deleted"
+    assert not _job_exists(job_id)
+    assert _count_symbols(job_id) == 0
+
+    with SessionLocal() as session:
+        audits = list(
+            session.execute(
+                select(TwResearchDeletionAudit).where(
+                    TwResearchDeletionAudit.user_id == user_id,
+                    TwResearchDeletionAudit.entity_id == job_id,
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(audits) == 1
+        assert audits[0].outcome == "deleted"
+    _assert_no_orphan_rows(user_id)
+
+
+def test_forced_delete_exception_marks_failed_then_retry_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user_id = f"u_fail_{uuid4().hex[:10]}"
+    _ensure_user(user_id)
+    svc = _service()
+    job = svc.create_job(
+        user_id=user_id, stock_ids=["TW:2330"], use_membership=False
+    )
+    job_id = str(job["job_id"])
+    assert SessionLocal is not None
+    with SessionLocal() as session:
+        session.add(
+            TwResearchFirstPassSymbolResult(
+                job_id=job_id,
+                stock_id="TW:2330",
+                status="ok",
+                payload_json={},
+                lease_generation=0,
+            )
+        )
+        row = session.get(TwResearchFirstPassJob, job_id)
+        assert row is not None
+        row.status = "running"
+        row.reserve_expires_at = datetime.now(timezone.utc) + timedelta(seconds=60)
+        session.commit()
+
+    preview = svc.deletion_preview(job_id, user_id=user_id)
+    first = svc.delete_job(
+        job_id, user_id=user_id, preview_token=preview["preview_token"]
+    )
+    assert first["outcome"] == "requested"
+    with SessionLocal() as session:
+        row = session.get(TwResearchFirstPassJob, job_id)
+        assert row is not None
+        row.deletion_requested_at = datetime.now(timezone.utc) - timedelta(
+            seconds=BATCH_LEASE_SECONDS + 5
+        )
+        session.commit()
+
+    from sqlalchemy.orm import Session as SaSession
+
+    original_delete = SaSession.delete
+
+    def _fail_delete(self, instance):  # noqa: ANN001
+        if isinstance(instance, TwResearchFirstPassJob):
+            raise RuntimeError("forced_delete_boom")
+        return original_delete(self, instance)
+
+    monkeypatch.setattr(SaSession, "delete", _fail_delete)
+    preview2 = svc.deletion_preview(job_id, user_id=user_id)
+    failed = svc.delete_job(
+        job_id, user_id=user_id, preview_token=preview2["preview_token"]
+    )
+    assert failed["outcome"] == "conflict"
+    assert _job_exists(job_id)
+    with SessionLocal() as session:
+        row = session.get(TwResearchFirstPassJob, job_id)
+        assert row is not None
+        assert row.deletion_state == "failed"
+        assert row.deletion_error == "RuntimeError"
+        assert _count_symbols(job_id) == 1
+
+    monkeypatch.setattr(SaSession, "delete", original_delete)
+    with SessionLocal() as session:
+        row = session.get(TwResearchFirstPassJob, job_id)
+        assert row is not None
+        row.deletion_state = "requested"
+        row.deletion_error = None
+        row.deletion_requested_at = datetime.now(timezone.utc) - timedelta(
+            seconds=BATCH_LEASE_SECONDS + 5
+        )
+        session.commit()
+    preview3 = svc.deletion_preview(job_id, user_id=user_id)
+    ok = svc.delete_job(
+        job_id, user_id=user_id, preview_token=preview3["preview_token"]
+    )
+    assert ok["outcome"] == "deleted"
+    assert not _job_exists(job_id)
+    assert _count_symbols(job_id) == 0
+    _assert_no_orphan_rows(user_id)
+

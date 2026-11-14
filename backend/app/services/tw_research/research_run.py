@@ -293,6 +293,16 @@ class ResearchRunStore:
 
     def reconcile(self, user_id: str) -> ResearchRun | None:
         """Derive phase/status from durable first-pass job + technical scan rows."""
+        # Lazy-complete pending deletions before reconcile (#355).
+        try:
+            from app.repositories.tw_research_repository import tw_research_repository
+
+            if tw_research_repository.is_available():
+                tw_research_repository.try_complete_pending_first_pass_deletions(
+                    user_id, limit=3
+                )
+        except Exception:  # noqa: BLE001 — reconcile must not fail on GC
+            pass
         with self._lock:
             run = self._load_locked(user_id)
             if run is None:

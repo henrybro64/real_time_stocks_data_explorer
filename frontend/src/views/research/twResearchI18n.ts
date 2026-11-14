@@ -523,6 +523,46 @@ const TW_RESEARCH_ROWS = [
   ],
   ["research.tw.retryDelete", "Retry deletion", "重試刪除"],
   [
+    "research.tw.deletionState.requested",
+    "Stopping and deleting",
+    "正在停止並刪除",
+  ],
+  [
+    "research.tw.deletionState.failed",
+    "Delete failed (retry)",
+    "刪除失敗（可重試）",
+  ],
+  [
+    "research.tw.deleteJobGone",
+    "Permanently deleted. Rows removed: {counts}",
+    "已永久刪除。已移除列數：{counts}",
+  ],
+  [
+    "research.tw.deleteFullRunRequested",
+    "Stopping research and preparing deletion… Usually finishes within about 5 minutes.",
+    "正在停止研究並準備刪除…通常約 5 分鐘內完成。",
+  ],
+  [
+    "research.tw.cancelJobModalTitle",
+    "Cancel this job?",
+    "取消此工作？",
+  ],
+  [
+    "research.tw.archiveJobModalTitle",
+    "Archive this job?",
+    "封存此工作？",
+  ],
+  [
+    "research.tw.confirmModalCancel",
+    "Keep working",
+    "繼續保留",
+  ],
+  [
+    "research.tw.confirmModalConfirm",
+    "Confirm",
+    "確認",
+  ],
+  [
     "research.tw.blocker.run_owned_requires_full_run_delete",
     "This job belongs to the active research — use Delete entire research.",
     "此工作屬於目前研究 — 請使用「刪除整筆研究」。",

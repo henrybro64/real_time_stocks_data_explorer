@@ -74,6 +74,7 @@ import {
   fetchTwResearchFirstPassChunk,
   fetchTwResearchFirstPassDeletionPreview,
   fetchTwResearchFirstPassDeletionStatus,
+  fetchTwResearchRunDeletionStatus,
   fetchTwResearchFirstPassJob,
   fetchTwResearchFirstPassManifest,
   fetchTwResearchFirstPassProgress,
@@ -436,7 +437,43 @@ export function TwResearchPage({
   const [deletePreview, setDeletePreview] = useState<Record<string, unknown> | null>(
     null,
   );
-  const [pendingDeletionJobId, setPendingDeletionJobId] = useState<string | null>(null);
+  const PENDING_JOB_DELETION_KEY = "tw-research-pending-deletion-job";
+  const PENDING_RUN_DELETION_KEY = "tw-research-pending-deletion-run";
+  const readSession = (key: string): string | null => {
+    try {
+      return sessionStorage.getItem(key);
+    } catch {
+      return null;
+    }
+  };
+  const writeSession = (key: string, value: string | null) => {
+    try {
+      if (value == null) sessionStorage.removeItem(key);
+      else sessionStorage.setItem(key, value);
+    } catch {
+      /* ignore quota / private mode */
+    }
+  };
+  const [pendingDeletionJobId, setPendingDeletionJobIdState] = useState<string | null>(
+    () => (typeof window === "undefined" ? null : readSession(PENDING_JOB_DELETION_KEY)),
+  );
+  const [pendingFullRunDeletion, setPendingFullRunDeletionState] = useState(false);
+  const setPendingDeletionJobId = (jobId: string | null) => {
+    setPendingDeletionJobIdState(jobId);
+    writeSession(PENDING_JOB_DELETION_KEY, jobId);
+  };
+  const setPendingFullRunDeletion = (pending: boolean) => {
+    setPendingFullRunDeletionState(pending);
+    writeSession(PENDING_RUN_DELETION_KEY, pending ? "1" : null);
+  };
+  const [confirmModal, setConfirmModal] = useState<"cancel" | "archive" | null>(null);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (readSession(PENDING_RUN_DELETION_KEY) === "1") {
+      setPendingFullRunDeletionState(true);
+    }
+  }, []);
 
   const firstPassJobsQuery = useQuery({
     queryKey: ["tw-research-first-pass-jobs", includeArchivedJobs],
@@ -571,16 +608,31 @@ export function TwResearchPage({
       setDeleteModalOpen(false);
       setDeletePreview(null);
       if (result.deletionState === "requested") {
-        setJobManageMessage(t("research.tw.deleteJobRequested"));
-        if (deleteModalMode === "job" && firstPassJobId) {
-          setPendingDeletionJobId(firstPassJobId);
+        if (deleteModalMode === "full_run") {
+          setPendingFullRunDeletion(true);
+          setJobManageMessage(t("research.tw.deleteFullRunRequested"));
+        } else {
+          setJobManageMessage(t("research.tw.deleteJobRequested"));
+          if (firstPassJobId) setPendingDeletionJobId(firstPassJobId);
         }
       } else if (result.deleted) {
+        const counts = result.counts;
+        const countsText =
+          counts && typeof counts === "object"
+            ? Object.entries(counts as Record<string, unknown>)
+                .map(([k, v]) => `${k}=${String(v)}`)
+                .join(", ")
+            : "";
         setPendingDeletionJobId(null);
+        setPendingFullRunDeletion(false);
         setFirstPassJobId(null);
         setFirstPassProgressText("");
         setFirstPassSnapshotId(null);
-        setJobManageMessage(null);
+        setJobManageMessage(
+          countsText
+            ? t("research.tw.deleteJobGone", { counts: countsText })
+            : null,
+        );
       }
       invalidateJobQueries();
     } catch (error) {
@@ -622,21 +674,14 @@ export function TwResearchPage({
       return;
     }
     if (!firstPassJobId) return;
-    const confirmKey =
-      action === "cancel"
-        ? "research.tw.cancelJobConfirm"
-        : action === "archive"
-          ? "research.tw.archiveJobConfirm"
-          : null;
-    if (confirmKey && !window.confirm(t(confirmKey))) return;
+    if (action === "cancel" || action === "archive") {
+      setConfirmModal(action);
+      return;
+    }
     setJobManageBusy(true);
     setJobManageMessage(null);
     try {
-      if (action === "cancel") {
-        await cancelTwResearchFirstPassJob(firstPassJobId);
-      } else if (action === "archive") {
-        await archiveTwResearchFirstPassJob(firstPassJobId);
-      } else if (action === "unarchive") {
+      if (action === "unarchive") {
         await unarchiveTwResearchFirstPassJob(firstPassJobId);
       }
       invalidateJobQueries();
@@ -649,21 +694,62 @@ export function TwResearchPage({
     }
   };
 
+  const confirmManageModal = async () => {
+    if (!confirmModal || !firstPassJobId || jobManageBusy) return;
+    setJobManageBusy(true);
+    setJobManageMessage(null);
+    try {
+      if (confirmModal === "cancel") {
+        await cancelTwResearchFirstPassJob(firstPassJobId);
+      } else if (confirmModal === "archive") {
+        await archiveTwResearchFirstPassJob(firstPassJobId);
+      }
+      setConfirmModal(null);
+      invalidateJobQueries();
+    } catch (error) {
+      const detail =
+        error instanceof Error ? error.message : String(error ?? "error");
+      setJobManageMessage(detail);
+      setConfirmModal(null);
+    } finally {
+      setJobManageBusy(false);
+    }
+  };
+
+  const formatTombstoneCounts = (counts: unknown): string => {
+    if (!counts || typeof counts !== "object") return "";
+    return Object.entries(counts as Record<string, unknown>)
+      .map(([k, v]) => `${k}=${String(v)}`)
+      .join(", ");
+  };
+
   useEffect(() => {
     if (!pendingDeletionJobId) return;
     let cancelled = false;
+    const deletedJobId = pendingDeletionJobId;
     const tick = async () => {
       try {
-        const status = await fetchTwResearchFirstPassDeletionStatus(pendingDeletionJobId);
+        const status = await fetchTwResearchFirstPassDeletionStatus(deletedJobId);
         if (cancelled) return;
         if (status.gone || status.outcome === "deleted") {
           setPendingDeletionJobId(null);
-          setJobManageMessage(null);
-          if (firstPassJobId === pendingDeletionJobId) {
+          const countsText = formatTombstoneCounts(status.counts);
+          setJobManageMessage(
+            countsText
+              ? t("research.tw.deleteJobGone", { counts: countsText })
+              : t("research.tw.deleteJobGone", { counts: "—" }),
+          );
+          if (firstPassJobId === deletedJobId) {
             setFirstPassJobId(null);
             setFirstPassProgressText("");
             setFirstPassSnapshotId(null);
           }
+          void queryClient.removeQueries({
+            queryKey: ["tw-research-first-pass-progress", deletedJobId],
+          });
+          void queryClient.removeQueries({
+            queryKey: ["tw-research-first-pass-symbols", deletedJobId],
+          });
           invalidateJobQueries();
           return;
         }
@@ -691,6 +777,52 @@ export function TwResearchPage({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- poll only while pending id set
   }, [pendingDeletionJobId]);
+
+  useEffect(() => {
+    if (!pendingFullRunDeletion) return;
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const status = await fetchTwResearchRunDeletionStatus();
+        if (cancelled) return;
+        if (status.gone || status.outcome === "deleted") {
+          setPendingFullRunDeletion(false);
+          setPendingDeletionJobId(null);
+          setFirstPassJobId(null);
+          setFirstPassProgressText("");
+          setFirstPassSnapshotId(null);
+          const countsText = formatTombstoneCounts(status.counts);
+          setJobManageMessage(
+            countsText
+              ? t("research.tw.deleteJobGone", { counts: countsText })
+              : t("research.tw.deleteJobGone", { counts: "—" }),
+          );
+          invalidateJobQueries();
+          return;
+        }
+        if (status.deletionState === "failed" || status.deletionError) {
+          setJobManageMessage(
+            t("research.tw.deleteJobFailed", {
+              reason: blockerReasonText([
+                String(status.deletionError || "unknown"),
+              ]),
+            }),
+          );
+        } else {
+          setJobManageMessage(t("research.tw.deleteFullRunRequested"));
+        }
+      } catch {
+        if (!cancelled) setPendingFullRunDeletion(false);
+      }
+    };
+    void tick();
+    const id = window.setInterval(() => void tick(), 5_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- poll only while pending full-run
+  }, [pendingFullRunDeletion]);
 
   useEffect(() => {
     if (firstPassJobsQuery.isError) {
@@ -2481,6 +2613,42 @@ export function TwResearchPage({
                   ) : null}
                 </Stack>
               ) : null}
+              <ComposedModal
+                open={confirmModal != null}
+                onClose={() => setConfirmModal(null)}
+                size="sm"
+                data-testid="tw-research-confirm-modal"
+              >
+                <ModalHeader
+                  title={t(
+                    confirmModal === "archive"
+                      ? "research.tw.archiveJobModalTitle"
+                      : "research.tw.cancelJobModalTitle",
+                  )}
+                />
+                <ModalBody>
+                  <p className="cds--body-compact-01">
+                    {t(
+                      confirmModal === "archive"
+                        ? "research.tw.archiveJobConfirm"
+                        : "research.tw.cancelJobConfirm",
+                    )}
+                  </p>
+                </ModalBody>
+                <ModalFooter>
+                  <Button kind="secondary" onClick={() => setConfirmModal(null)}>
+                    {t("research.tw.confirmModalCancel")}
+                  </Button>
+                  <Button
+                    kind={confirmModal === "archive" ? "primary" : "danger"}
+                    disabled={jobManageBusy}
+                    data-testid="tw-research-confirm-modal-confirm"
+                    onClick={() => void confirmManageModal()}
+                  >
+                    {t("research.tw.confirmModalConfirm")}
+                  </Button>
+                </ModalFooter>
+              </ComposedModal>
               <ComposedModal
                 open={deleteModalOpen}
                 onClose={() => {

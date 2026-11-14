@@ -632,6 +632,12 @@ class TwResearchFirstPassJob(Base):
             "user_id",
             "updated_at",
         ),
+        Index(
+            "ix_tw_research_first_pass_jobs_user_archived",
+            "user_id",
+            "archived_at",
+            "updated_at",
+        ),
     )
 
     job_id: Mapped[str] = mapped_column(String(64), primary_key=True)

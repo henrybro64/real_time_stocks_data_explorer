@@ -868,7 +868,10 @@ def test_persist_failure_marks_scan_failed(monkeypatch) -> None:
         def is_available(self) -> bool:
             return True
 
-        def upsert_scan(self, payload):  # noqa: ANN001
+        def update_scan(self, payload):  # noqa: ANN001
+            raise RuntimeError("disk full")
+
+        def create_scan(self, payload):  # noqa: ANN001
             raise RuntimeError("disk full")
 
     assert persist_scan_fn(state, repository=BrokenRepo()) is False  # type: ignore[arg-type]
@@ -1588,7 +1591,7 @@ def test_create_scan_raises_when_durable_scan_write_fails(monkeypatch) -> None:
     def _boom(*_args, **_kwargs):  # noqa: ANN001
         raise RuntimeError("simulated postgres write failure")
 
-    monkeypatch.setattr(repo, "upsert_scan", _boom)
+    monkeypatch.setattr(repo, "create_scan", _boom)
 
     service = TwResearchScanService(
         history_loader=lambda stock, limit, *, max_month_fetches: ([], 0),
@@ -1689,7 +1692,7 @@ def test_finalize_does_not_advertise_verified_when_scan_pointer_write_fails(
         raise RuntimeError("scan pointer write failed")
 
     # Setup writes already committed; fail only the post-snapshot scan pointer update.
-    monkeypatch.setattr(repo, "upsert_scan", _fail_pointer)
+    monkeypatch.setattr(repo, "update_scan", _fail_pointer)
 
     result = finalize_verified_snapshot(state, repository=repo, user_id="user-1")
     assert result is None

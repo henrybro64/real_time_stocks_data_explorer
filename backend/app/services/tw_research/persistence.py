@@ -92,13 +92,22 @@ def persist_scan(
     *,
     repository: TwResearchRepository | None = None,
     user_id: str | None = None,
+    create: bool = False,
 ) -> bool:
-    """Persist scan metadata. Returns False when a configured DB write fails."""
+    """Persist scan metadata.
+
+    ``create=True`` inserts a new row (create_scan path only).
+    Otherwise update-only — never resurrects a deleted/fenced scan (#355).
+    """
     repo = repository or tw_research_repository
     if not repo.is_available():
         return True
     try:
-        repo.upsert_scan(scan_row_payload(state, user_id=user_id))
+        payload = scan_row_payload(state, user_id=user_id)
+        if create:
+            repo.create_scan(payload)
+        else:
+            repo.update_scan(payload)
         return True
     except Exception as exc:  # noqa: BLE001 — surface without crashing the batch loop
         logger.warning("tw_research persist_scan failed for %s", state.scan_id, exc_info=True)

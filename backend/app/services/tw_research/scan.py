@@ -710,7 +710,7 @@ class TwResearchScanService:
             self._scans[state.scan_id] = state
         try:
             # Notes + candidate provenance are included in this first durable write.
-            self._persist_scan(state)
+            self._persist_scan(state, create=True)
             for record in state.records.values():
                 self._persist_symbol(state, record)
         except TwResearchDurableStoreError:
@@ -2344,7 +2344,7 @@ class TwResearchScanService:
             )
         ]
 
-    def _persist_scan(self, state: ScanState) -> None:
+    def _persist_scan(self, state: ScanState, *, create: bool = False) -> None:
         if not self._persist:
             return
         from app.repositories.tw_research_repository import tw_research_repository
@@ -2356,7 +2356,7 @@ class TwResearchScanService:
                 scan_id=state.scan_id,
                 operation="persist_scan",
             )
-        if not persist_scan(state, user_id=state.user_id):
+        if not persist_scan(state, user_id=state.user_id, create=create):
             raise TwResearchDurableStoreError(
                 "Durable scan write failed.",
                 scan_id=state.scan_id,

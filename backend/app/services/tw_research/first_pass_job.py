@@ -447,6 +447,14 @@ class FirstPassJobService:
             raise KeyError("research_run_not_found")
         return preview
 
+    def research_run_deletion_status(self, *, user_id: str) -> dict[str, Any]:
+        if not self._repo.is_available():
+            raise FirstPassJobError("first_pass_job_store_unavailable")
+        status = self._repo.get_research_run_deletion_status(user_id=user_id)
+        if status is None:
+            raise KeyError("research_run_not_found")
+        return status
+
     def delete_research_run(
         self, *, user_id: str, preview_token: str
     ) -> dict[str, Any]:

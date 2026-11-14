@@ -408,6 +408,7 @@ export type JobHistoryLabelJob = FirstPassProgressLike & {
   jobId?: string | null;
   createdAt?: string | null;
   qualityStatus?: string | null;
+  deletionState?: string | null;
 };
 
 /**
@@ -425,6 +426,13 @@ export function jobHistoryOptionLabel(
   const date =
     formatTaipeiDateTime(job.createdAt, locale) ||
     translate("research.tw.dateUnknown");
+  const deletionState = String(job.deletionState ?? "").trim().toLowerCase();
+  if (deletionState === "requested") {
+    return `${date} · ${translate("research.tw.deletionState.requested")}`;
+  }
+  if (deletionState === "failed") {
+    return `${date} · ${translate("research.tw.deletionState.failed")}`;
+  }
   // List jobs often omit lease; unfinished running without lease → paused_manual.
   const bucket = firstPassPlainStatusKey(job);
   const statusText = translate(`research.tw.plainStatus.${bucket}`, { time: "" });
