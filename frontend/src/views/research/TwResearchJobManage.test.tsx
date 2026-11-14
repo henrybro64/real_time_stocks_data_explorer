@@ -229,9 +229,9 @@ describe("TwResearchJobManage", () => {
   it("blocked 409 shows reason and keeps job selected", async () => {
     const user = userEvent.setup();
     vi.mocked(deleteTwResearchFirstPassJob).mockRejectedValue(
-      new ApiError("Request failed: 409 - snapshot_shared_with_other_job", {
+      new ApiError("Request failed: 409 - snapshot_referenced_by_candidate_set", {
         status: 409,
-        detail: "snapshot_shared_with_other_job",
+        detail: "snapshot_referenced_by_candidate_set",
         kind: "validation",
       }),
     );
@@ -240,7 +240,7 @@ describe("TwResearchJobManage", () => {
     await user.click(await screen.findByTestId("tw-research-delete-modal-confirm"));
     await waitFor(() => {
       expect(screen.getByTestId("tw-research-job-manage-message").textContent).toMatch(
-        /shared|共用/,
+        /selection|選股/,
       );
     });
     expect(screen.getByTestId("tw-research-job-delete")).toBeInTheDocument();

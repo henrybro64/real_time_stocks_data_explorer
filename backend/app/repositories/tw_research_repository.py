@@ -2766,13 +2766,10 @@ class TwResearchRepository(SessionBoundRepository):
                     or 0
                 )
                 if other_job_refs > 0:
+                    # Shared snapshots are retained, not hard-blocked: this job
+                    # can still be deleted; the snapshot stays until the last
+                    # referencing job is removed (#355).
                     snapshot_shared = True
-                    blockers.append(
-                        {
-                            "code": "snapshot_shared_with_other_job",
-                            "detail": f"other_jobs={other_job_refs}",
-                        }
-                    )
                     retained.append(
                         {
                             "code": "first_pass_snapshot",
@@ -2822,7 +2819,7 @@ class TwResearchRepository(SessionBoundRepository):
                             }
                         )
                         break
-                if not blockers:
+                if not blockers and not snapshot_shared:
                     snapshot_owned = True
 
             lease_until = _as_utc(row.reserve_expires_at)
@@ -2946,10 +2943,10 @@ class TwResearchRepository(SessionBoundRepository):
                 "deletion_in_progress",  # allowed to proceed toward completion
             }
         }
-        # Shared/referenced snapshot or scan provenance always blocks standalone delete.
+        # Referenced snapshot / scan provenance blocks standalone delete.
+        # Shared-with-other-job is retained-only (job may delete; snapshot stays).
         hard_blockers = blocking_codes - set()
         if hard_blockers & {
-            "snapshot_shared_with_other_job",
             "snapshot_referenced_by_candidate_set",
             "snapshot_referenced_by_research_run",
             "scan_provenance_references_snapshot",

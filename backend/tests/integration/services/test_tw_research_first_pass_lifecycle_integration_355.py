@@ -508,6 +508,8 @@ def _seed_snapshot(session, *, user_id: str, snapshot_id: str, digest: str) -> N
             stock_ids_json=["TW:2330"],
         )
     )
+    # Flush so later candidate-set inserts see the FK target in-order.
+    session.flush()
 
 
 def test_cancelled_scan_unclaimable_during_full_run_quiesce() -> None:
