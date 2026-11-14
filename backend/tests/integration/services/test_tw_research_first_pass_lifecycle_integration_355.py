@@ -834,6 +834,8 @@ def test_full_run_delete_completed_closure_counts_exact() -> None:
                 notes_json=[],
             )
         )
+        # Flush scan before dependents that FK to scan_id.
+        session.flush()
         session.add(
             TwResearchSymbolResult(
                 scan_id=scan_id,
