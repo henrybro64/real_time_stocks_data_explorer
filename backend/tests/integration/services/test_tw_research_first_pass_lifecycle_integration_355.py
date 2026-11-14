@@ -667,6 +667,82 @@ def test_cancelled_scan_unclaimable_during_full_run_quiesce() -> None:
     _assert_no_orphan_rows(user_id)
 
 
+def test_terminal_scan_enrichment_fenced_during_full_run_deletion() -> None:
+    """verified_ready scans with enrich leases must cancel so claims stay fenced."""
+    user_id = f"u_termscan_{uuid4().hex[:10]}"
+    _ensure_user(user_id)
+    svc = _service()
+    job = svc.create_job(
+        user_id=user_id, stock_ids=["TW:2330"], use_membership=False
+    )
+    job_id = str(job["job_id"])
+    scan_id = f"scan_{uuid4().hex[:16]}"
+    assert SessionLocal is not None
+    with SessionLocal() as session:
+        session.add(
+            TwResearchScan(
+                scan_id=scan_id,
+                user_id=user_id,
+                trading_day="2024-06-28",
+                universe_version="uv",
+                calculation_version="cv",
+                enrichment_version="ev",
+                selector_json={"mode": "stock_ids"},
+                stock_ids_json=["TW:2330", "TW:2454"],
+                status="verified_ready",
+                quality_status="processed",
+                cursor=2,
+                reserve_cursor=2,
+                reserve_expires_at=None,
+                enrich_cursor=0,
+                enrich_reserve_ids_json=["TW:2330"],
+                enrich_reserve_expires_at=datetime.now(timezone.utc)
+                + timedelta(seconds=120),
+                enrich_lease_generation=3,
+                scan_lease_generation=5,
+                budget_windows_opened=0,
+                target_count=10,
+                upstream_month_fetches=0,
+                max_upstream_month_fetches=20,
+                enrichments_run=0,
+                max_enrichments_per_run=10,
+                day_pass_ids_json=[],
+                qualified_ids_json=["TW:2330"],
+                notes_json=[],
+            )
+        )
+        session.add(
+            TwResearchResearchRun(
+                user_id=user_id,
+                research_run_id=f"rr_{uuid4().hex[:20]}",
+                version="v1",
+                phase="phase2_technical",
+                status="evidence_ready",
+                first_pass_job_id=job_id,
+                technical_scan_id=scan_id,
+                gates_json={},
+                dimensions_json={},
+                notes_json=[],
+                schedule_enabled=False,
+            )
+        )
+        session.commit()
+
+    preview = svc.research_run_deletion_preview(user_id=user_id)
+    first = svc.delete_research_run(
+        user_id=user_id, preview_token=preview["preview_token"]
+    )
+    assert first["outcome"] == "requested"
+    with SessionLocal() as session:
+        scan = session.get(TwResearchScan, scan_id)
+        assert scan is not None
+        assert scan.status == "cancelled"
+
+    enrich = tw_research_repository.claim_enrichment_batch(scan_id, batch_size=1)
+    assert enrich is not None and enrich.get("cancelled") is True
+    assert enrich.get("batch_ids") == []
+
+
 def test_full_run_delete_completed_closure_counts_exact() -> None:
     user_id = f"u_full_{uuid4().hex[:10]}"
     _ensure_user(user_id)

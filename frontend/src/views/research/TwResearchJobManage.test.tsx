@@ -319,4 +319,45 @@ describe("TwResearchJobManage", () => {
       );
     });
   });
+
+  it("keeps polling after a transient deletion-status failure", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTimeAsync });
+    vi.mocked(deleteTwResearchFirstPassJob).mockResolvedValue({
+      deletionState: "requested",
+    });
+    let statusCalls = 0;
+    vi.mocked(fetchTwResearchFirstPassDeletionStatus).mockImplementation(async () => {
+      statusCalls += 1;
+      if (statusCalls === 1) {
+        throw new ApiError("Request failed: 503", {
+          status: 503,
+          detail: "unavailable",
+          kind: "unavailable",
+        });
+      }
+      return {
+        gone: true,
+        outcome: "deleted",
+        counts: { tw_research_first_pass_jobs: 1 },
+      };
+    });
+    renderPage("en");
+    await user.click(await screen.findByTestId("tw-research-job-delete"));
+    await user.click(await screen.findByTestId("tw-research-delete-modal-confirm"));
+    await waitFor(() => {
+      expect(fetchTwResearchFirstPassDeletionStatus).toHaveBeenCalled();
+    });
+    expect(sessionStorage.getItem(PENDING_JOB_KEY)).toBe(JOB_ID);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_500);
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId("tw-research-job-manage-message").textContent).toMatch(
+        /Permanently deleted|已永久刪除/,
+      );
+    });
+    expect(statusCalls).toBeGreaterThanOrEqual(2);
+    vi.useRealTimers();
+  });
 });

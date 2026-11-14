@@ -71,13 +71,16 @@ _TERMINAL_OR_GATED_PHASES = frozenset(
         "complete_evidence_ready",
     }
 )
-_JOB_TERMINAL = frozenset({"completed", "partial", "failed", "budget_exhausted"})
+_JOB_TERMINAL = frozenset(
+    {"completed", "partial", "failed", "budget_exhausted", "cancelled"}
+)
 _SCAN_TERMINAL = frozenset(
     {
         "completed_processing",
         "verified_ready",
         "failed",
         "budget_exhausted",
+        "cancelled",
     }
 )
 
@@ -901,11 +904,17 @@ class ResearchRunStore:
     def _is_active_nonterminal(self, run: ResearchRun) -> bool:
         if run.phase not in _ACTIVE_PHASES:
             return False
-        if run.status in {"failed", "budget_exhausted", "evidence_ready", "gated"}:
+        if run.status in {
+            "failed",
+            "budget_exhausted",
+            "cancelled",
+            "evidence_ready",
+            "gated",
+        }:
             # gated with active phase shouldn't happen after reconcile, but treat as terminal-ish
             if run.phase in _TERMINAL_OR_GATED_PHASES:
                 return False
-            if run.status in {"failed", "budget_exhausted"}:
+            if run.status in {"failed", "budget_exhausted", "cancelled"}:
                 return False
         if run.phase == "phase1_first_pass":
             return run.status in {
@@ -1022,6 +1031,14 @@ class ResearchRunStore:
                 if "first_pass_drain_disarmed_systemic_programming_error" not in run.notes:
                     run.append_note("first_pass_drain_disarmed_systemic_programming_error")
             return
+        if status == "cancelled":
+            run.phase = "phase1_first_pass"
+            run.status = "cancelled"
+            run.schedule_enabled = False
+            run.dimensions["fundamentals"] = "cancelled"
+            if "first_pass_job_cancelled" not in run.notes:
+                run.append_note("first_pass_job_cancelled")
+            return
         if status in {"completed", "partial"} and snapshot_id:
             run.phase = "awaiting_analyst_candidate_selection"
             run.status = "gated"
@@ -1072,6 +1089,14 @@ class ResearchRunStore:
             run.phase = "phase2_technical"
             run.status = "failed"
             run.dimensions["monthlyTechnical"] = "failed"
+            return
+        if status == "cancelled":
+            run.phase = "phase2_technical"
+            run.status = "cancelled"
+            run.schedule_enabled = False
+            run.dimensions["monthlyTechnical"] = "cancelled"
+            if "technical_scan_cancelled" not in run.notes:
+                run.append_note("technical_scan_cancelled")
             return
         if status in {"completed_processing", "verified_ready"}:
             run.phase = "awaiting_analyst_report_decision"

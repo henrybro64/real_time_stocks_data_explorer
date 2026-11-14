@@ -442,6 +442,12 @@ class FirstPassJobService:
     def research_run_deletion_preview(self, *, user_id: str) -> dict[str, Any]:
         if not self._repo.is_available():
             raise FirstPassJobError("first_pass_job_store_unavailable")
+        # Lazy GC before a read-only preview — must stay outside the preview
+        # helper so the completer cannot re-enter itself (#355 review).
+        try:
+            self._repo.try_complete_pending_first_pass_deletions(user_id, limit=3)
+        except Exception:  # noqa: BLE001 — preview must not fail on GC
+            logger.exception("research_run_deletion_preview_gc_failed")
         preview = self._repo.build_research_run_deletion_preview(user_id=user_id)
         if preview is None:
             raise KeyError("research_run_not_found")

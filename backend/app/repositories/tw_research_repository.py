@@ -2643,7 +2643,13 @@ class TwResearchRepository(SessionBoundRepository):
                 .with_for_update()
             ).scalar_one_or_none()
             if run is not None and str(run.first_pass_job_id or "") == str(job_id):
+                # Propagate cancel into the managed run so begin_phase1 can
+                # replace it instead of returning a stuck running run (#355).
                 run.schedule_enabled = False
+                run.status = "cancelled"
+                notes = list(run.notes_json or [])
+                notes.append("first_pass_job_cancelled_by_user")
+                run.notes_json = notes[-50:]
                 run.updated_at = now
             session.commit()
             return _first_pass_job_to_dict(row)
@@ -3701,13 +3707,12 @@ class TwResearchRepository(SessionBoundRepository):
         *,
         user_id: str,
     ) -> dict[str, Any] | None:
-        """Read-only closure inventory for deleting the current research run (#355 PR-D)."""
-        # Lazy-complete when quiescent before returning preview (#355).
-        try:
-            self.try_complete_pending_first_pass_deletions(user_id, limit=3)
-        except Exception:  # noqa: BLE001
-            logger.exception("research_run_deletion_preview_gc_failed")
+        """Read-only closure inventory for deleting the current research run (#355 PR-D).
 
+        Must not call try_complete_pending_first_pass_deletions — that completer
+        resumes full-run deletion via this preview and would recurse (#355 review).
+        Callers that want lazy GC should invoke the completer separately.
+        """
         session_factory = self._session_factory()
         with session_factory() as session:
             run = session.execute(
@@ -3962,12 +3967,10 @@ class TwResearchRepository(SessionBoundRepository):
                     scan.reserve_expires_at = None
                     if hasattr(scan, "enrich_reserve_expires_at"):
                         scan.enrich_reserve_expires_at = None
-                    if str(scan.status) not in {
-                        "completed_processing",
-                        "verified_ready",
-                        "failed",
-                        "cancelled",
-                    }:
+                    # Always fence as cancelled — terminal scans can still hold
+                    # enrichment leases; leaving completed_processing/verified_ready
+                    # would allow claim_enrichment_batch to re-admit work (#355).
+                    if str(scan.status) != "cancelled":
                         scan.status = "cancelled"
                     scan.updated_at = now
                 if active:

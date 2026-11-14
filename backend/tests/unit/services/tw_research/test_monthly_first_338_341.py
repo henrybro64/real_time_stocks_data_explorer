@@ -410,6 +410,60 @@ def test_begin_phase1_preserves_revision_when_replacing_gated_run() -> None:
     research_run_store.disable_test_memory()
 
 
+def test_cancelled_first_pass_job_lets_begin_phase1_start_fresh() -> None:
+    """Cancelled authoritative jobs must not permanently block Start Research (#355)."""
+
+    class _Repo:
+        def __init__(self) -> None:
+            self.job = {
+                "status": "cancelled",
+                "active_snapshot_id": None,
+                "job_id": "fpj_cancelled",
+            }
+
+        def is_available(self) -> bool:
+            return True
+
+        def get_research_run(self, user_id: str):  # noqa: ANN001
+            return None
+
+        def upsert_research_run(self, payload):  # noqa: ANN001
+            return {**payload, "revision": int(payload.get("revision") or 0) + 1}
+
+        def get_first_pass_job(self, job_id, *, user_id=None):  # noqa: ANN001
+            del job_id, user_id
+            return self.job
+
+        def get_scan(self, scan_id):  # noqa: ANN001
+            del scan_id
+            return None
+
+        def count_first_pass_symbol_results(self, job_id):  # noqa: ANN001
+            del job_id
+            return None
+
+    research_run_store.clear_for_tests()
+    first = research_run_store.begin_phase1("u_cancel", trading_day="2024-06-27")
+    research_run_store.attach_first_pass_job("u_cancel", first_pass_job_id="fpj_cancelled")
+
+    repo = _Repo()
+    store = ResearchRunStore(repository=repo)
+    store.clear_for_tests()
+    store._test_memory = {"u_cancel": research_run_store.get("u_cancel")}  # type: ignore[dict-item]
+    store._repository = repo
+
+    reconciled = store.reconcile("u_cancel")
+    assert reconciled is not None
+    assert reconciled.status == "cancelled"
+    assert reconciled.schedule_enabled is False
+
+    replacement = store.begin_phase1("u_cancel", trading_day="2024-06-28")
+    assert replacement.research_run_id != first.research_run_id
+    assert replacement.status == "queued"
+    assert replacement.first_pass_job_id is None
+    research_run_store.disable_test_memory()
+
+
 def test_claim_lost_does_not_orphan_pending_recovery_job_id() -> None:
     from app.services.tw_research.research_run import _orphan_job_id_if_not_pending
 

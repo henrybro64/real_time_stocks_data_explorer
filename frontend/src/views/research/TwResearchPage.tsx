@@ -486,7 +486,9 @@ export function TwResearchPage({
   const invalidateJobQueries = () => {
     void queryClient.invalidateQueries({ queryKey: ["tw-research-first-pass-jobs"] });
     void queryClient.invalidateQueries({ queryKey: ["tw-research-run-current"] });
-    void queryClient.invalidateQueries({ queryKey: ["tw-research-candidate-set"] });
+    void queryClient.invalidateQueries({
+      queryKey: ["tw-research-candidate-set-latest"],
+    });
     void queryClient.invalidateQueries({ queryKey: ["tw-research-scans"] });
     void queryClient.invalidateQueries({ queryKey: ["tw-research-scan"] });
     void queryClient.invalidateQueries({ queryKey: ["tw-research-progress"] });
@@ -500,6 +502,17 @@ export function TwResearchPage({
         queryKey: ["tw-research-first-pass-symbols", firstPassJobId],
       });
     }
+  };
+
+  const clearCandidateLocalStateAfterDeletion = () => {
+    setCandidateSetVersion(0);
+    setCandidateSetText("");
+    setCandidateIdsText("");
+    setCommittedCandidateIdsText("");
+    setCandidateSetConflict(null);
+    void queryClient.removeQueries({
+      queryKey: ["tw-research-candidate-set-latest"],
+    });
   };
 
   const blockerReasonText = (codes: string[]): string => {
@@ -628,6 +641,9 @@ export function TwResearchPage({
         setFirstPassJobId(null);
         setFirstPassProgressText("");
         setFirstPassSnapshotId(null);
+        if (deleteModalMode === "full_run") {
+          clearCandidateLocalStateAfterDeletion();
+        }
         setJobManageMessage(
           countsText
             ? t("research.tw.deleteJobGone", { counts: countsText })
@@ -764,9 +780,12 @@ export function TwResearchPage({
         } else {
           setJobManageMessage(t("research.tw.deleteJobRequested"));
         }
-      } catch {
-        // 404 from other users / missing — stop polling.
-        if (!cancelled) setPendingDeletionJobId(null);
+      } catch (error) {
+        // Only stop on confirmed missing job; keep polling through transient 5xx/network.
+        const api = toApiError(error);
+        if (!cancelled && api.status === 404) {
+          setPendingDeletionJobId(null);
+        }
       }
     };
     void tick();
@@ -791,6 +810,7 @@ export function TwResearchPage({
           setFirstPassJobId(null);
           setFirstPassProgressText("");
           setFirstPassSnapshotId(null);
+          clearCandidateLocalStateAfterDeletion();
           const countsText = formatTombstoneCounts(status.counts);
           setJobManageMessage(
             countsText
@@ -811,8 +831,11 @@ export function TwResearchPage({
         } else {
           setJobManageMessage(t("research.tw.deleteFullRunRequested"));
         }
-      } catch {
-        if (!cancelled) setPendingFullRunDeletion(false);
+      } catch (error) {
+        const api = toApiError(error);
+        if (!cancelled && api.status === 404) {
+          setPendingFullRunDeletion(false);
+        }
       }
     };
     void tick();
