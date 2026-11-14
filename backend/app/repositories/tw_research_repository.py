@@ -252,6 +252,8 @@ _SCAN_STATUS_RANK = {
     "completed_processing": 4,
     "verified_ready": 5,
     "failed": 6,
+    # Sticky terminal: never overwritten by rank comparison (#355 round-2).
+    "cancelled": 7,
 }
 
 
@@ -345,7 +347,8 @@ class TwResearchRepository(SessionBoundRepository):
                 if key == "status":
                     current = str(row.status)
                     incoming = str(value)
-                    if current == "failed":
+                    # Sticky terminals: never reopen a failed/cancelled scan (#355).
+                    if current in {"failed", "cancelled"}:
                         continue
                     if _SCAN_STATUS_RANK.get(incoming, -1) >= _SCAN_STATUS_RANK.get(
                         current, -1
@@ -453,6 +456,20 @@ class TwResearchRepository(SessionBoundRepository):
             ).scalar_one_or_none()
             if row is None:
                 return None
+            if str(row.status) == "cancelled":
+                # Deletion quiescence: never reclaim or bump generation (#355).
+                return {
+                    "batch_ids": [],
+                    "scan": _scan_to_dict(row),
+                    "already_complete": False,
+                    "lease_held": False,
+                    "admission_denied": False,
+                    "cancelled": True,
+                    "reserved_from": int(row.cursor or 0),
+                    "lease_generation": int(
+                        getattr(row, "scan_lease_generation", 0) or 0
+                    ),
+                }
             stock_ids = list(row.stock_ids_json or [])
             lease_until = _as_utc(getattr(row, "reserve_expires_at", None))
             reserve_cursor = int(getattr(row, "reserve_cursor", 0) or 0)
@@ -631,6 +648,19 @@ class TwResearchRepository(SessionBoundRepository):
             ).scalar_one_or_none()
             if row is None:
                 return None
+            if str(row.status) == "cancelled":
+                return {
+                    "batch_ids": [],
+                    "remaining_budget": max(
+                        0, int(row.max_enrichments_per_run) - int(row.enrichments_run)
+                    ),
+                    "scan": _scan_to_dict(row),
+                    "lease_held": False,
+                    "cancelled": True,
+                    "lease_generation": int(
+                        getattr(row, "enrich_lease_generation", 0) or 0
+                    ),
+                }
             now = datetime.now(timezone.utc)
             lease_until = _as_utc(getattr(row, "enrich_reserve_expires_at", None))
             reserved = list(getattr(row, "enrich_reserve_ids_json", None) or [])
@@ -4006,6 +4036,20 @@ class TwResearchRepository(SessionBoundRepository):
                         session.delete(exp)
                         counts["tw_research_export_snapshots"] += 1
                     for scan in scans:
+                        session.add(
+                            TwResearchDeletionAudit(
+                                id=f"tda_{uuid.uuid4().hex[:24]}",
+                                user_id=user_id,
+                                entity_type="technical_scan",
+                                entity_id=scan.scan_id,
+                                category="research_run",
+                                requested_at=now,
+                                completed_at=now,
+                                outcome="deleted",
+                                counts_json={},
+                                error_code=None,
+                            )
+                        )
                         session.delete(scan)  # CASCADE symbol results
                         counts["tw_research_scans"] += 1
                     counts["tw_research_symbol_results"] = inv["symbol_result_count"]

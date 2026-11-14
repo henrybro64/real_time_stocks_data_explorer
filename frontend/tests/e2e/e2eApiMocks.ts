@@ -390,6 +390,16 @@ export type E2eTwResearchFirstPassFixture = {
   batchResult?: Record<string, unknown> | null;
   /** Optional GET .../symbols result (for failed-batch name lookup). */
   symbolsResult?: Record<string, unknown> | null;
+  /** Optional deletion preview for a first-pass job. */
+  deletionPreview?: Record<string, unknown> | null;
+  /** Optional DELETE job response (200 deleted or 202 requested). */
+  deleteJobResult?: Record<string, unknown> | null;
+  /** Optional GET .../deletion status responses (polled in order). */
+  deletionStatusQueue?: Array<Record<string, unknown>>;
+  /** Optional full-run deletion preview. */
+  runDeletionPreview?: Record<string, unknown> | null;
+  /** Optional DELETE research-runs/current response. */
+  deleteRunResult?: Record<string, unknown> | null;
 };
 
 type E2eMockState = {
@@ -1256,6 +1266,103 @@ export async function installE2eApiMocks(page: Page): Promise<void> {
         return;
       }
       await route.continue();
+      return;
+    }
+    if (
+      path.match(/^\/api\/tw-research\/first-pass\/jobs\/[^/]+\/deletion-preview$/) &&
+      request.method() === "GET"
+    ) {
+      if (state.twResearchFirstPass?.deletionPreview) {
+        await fulfillJson(route, state.twResearchFirstPass.deletionPreview);
+        return;
+      }
+      await fulfillJson(route, {
+        previewToken: "e2e-tok",
+        closure: { tw_research_first_pass_jobs: 1 },
+        retained: [],
+        blockers: [],
+      });
+      return;
+    }
+    if (
+      path.match(/^\/api\/tw-research\/first-pass\/jobs\/[^/]+\/deletion$/) &&
+      request.method() === "GET"
+    ) {
+      const queue = state.twResearchFirstPass?.deletionStatusQueue;
+      if (queue && queue.length > 0) {
+        const next = queue.shift()!;
+        const status = next.gone ? 410 : 200;
+        await fulfillJson(route, next, status);
+        return;
+      }
+      await fulfillJson(route, { gone: true, outcome: "deleted", counts: {} }, 410);
+      return;
+    }
+    if (
+      path.match(/^\/api\/tw-research\/first-pass\/jobs\/[^/]+$/) &&
+      request.method() === "DELETE"
+    ) {
+      const result = state.twResearchFirstPass?.deleteJobResult ?? { deleted: true };
+      const status = result.deletionState === "requested" ? 202 : 200;
+      if (result.deleted && state.twResearchFirstPass) {
+        state.twResearchFirstPass.jobs = [];
+      }
+      await fulfillJson(route, result, status);
+      return;
+    }
+    if (
+      path.match(/^\/api\/tw-research\/first-pass\/jobs\/[^/]+\/archive$/) &&
+      request.method() === "POST"
+    ) {
+      if (state.twResearchFirstPass) {
+        state.twResearchFirstPass.jobs = state.twResearchFirstPass.jobs.map((job) => ({
+          ...job,
+          archivedAt: "2026-11-14T01:00:00Z",
+        }));
+        await fulfillJson(route, { job: state.twResearchFirstPass.jobs[0] ?? {} });
+        return;
+      }
+      await fulfillJson(route, { job: {} });
+      return;
+    }
+    if (
+      path.match(/^\/api\/tw-research\/first-pass\/jobs\/[^/]+\/unarchive$/) &&
+      request.method() === "POST"
+    ) {
+      if (state.twResearchFirstPass) {
+        state.twResearchFirstPass.jobs = state.twResearchFirstPass.jobs.map((job) => ({
+          ...job,
+          archivedAt: null,
+        }));
+        await fulfillJson(route, { job: state.twResearchFirstPass.jobs[0] ?? {} });
+        return;
+      }
+      await fulfillJson(route, { job: {} });
+      return;
+    }
+    if (
+      path === "/api/tw-research/research-runs/current/deletion-preview" &&
+      request.method() === "GET"
+    ) {
+      await fulfillJson(
+        route,
+        state.twResearchFirstPass?.runDeletionPreview ?? {
+          previewToken: "e2e-run-tok",
+          closure: { tw_research_research_runs: 1 },
+          retained: [],
+          blockers: [],
+        },
+      );
+      return;
+    }
+    if (
+      path === "/api/tw-research/research-runs/current" &&
+      request.method() === "DELETE"
+    ) {
+      const result =
+        state.twResearchFirstPass?.deleteRunResult ?? { deleted: true };
+      const status = result.deletionState === "requested" ? 202 : 200;
+      await fulfillJson(route, result, status);
       return;
     }
     if (
