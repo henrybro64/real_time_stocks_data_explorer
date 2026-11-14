@@ -349,6 +349,17 @@ def drain_authorized_first_pass(
         except ResearchRunStoreUnavailable:
             reconciled = run
 
+    # Lazy-complete pending deletions after drain work (#355).
+    try:
+        from app.repositories.tw_research_repository import tw_research_repository
+
+        if tw_research_repository.is_available():
+            tw_research_repository.try_complete_pending_first_pass_deletions(
+                owner, limit=3
+            )
+    except Exception:  # noqa: BLE001 — drain must not fail on GC
+        notes.append("pending_deletion_gc_failed")
+
     # Best-effort tick telemetry — must not fail the drain tick.
     try:
         research_run_store.record_first_pass_drain_tick(

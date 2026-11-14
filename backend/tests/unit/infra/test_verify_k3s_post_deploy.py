@@ -81,6 +81,11 @@ if [[ "$args" == *"get endpointslices"* ]]; then
   fi
   exit 0
 fi
+if [[ "$args" == *"/api/version"* ]]; then
+  # Served build markers (#357). Default SHA matches EXPECTED_BUILD_SHA in tests.
+  printf '{"sha":"%s","buildTime":"2026-11-14T00:00:00Z"}\n' "${FAKE_SERVED_BUILD_SHA:-testsha}"
+  exit 0
+fi
 if [[ "$args" == *"stock-ticker-frontend:3000"* ]]; then
   if [[ "${FAKE_FRONTEND_DOWN:-}" == "1" ]]; then
     echo "urllib.error.URLError: <urlopen error [Errno 111] Connection refused>" >&2
@@ -209,10 +214,14 @@ def _run_verify(tmp_path: Path, **fake_env: str) -> subprocess.CompletedProcess[
     kubectl = tmp_path / "kubectl"
     kubectl.write_text(_FAKE_KUBECTL, encoding="utf-8")
     kubectl.chmod(0o755)
+    # Pin EXPECTED_BUILD_SHA so origin/main drift on feature branches does not
+    # fail these unit tests; production verify leaves it unset (#357).
     env = {
         **os.environ,
         "KUBECTL_CMD": str(kubectl),
         "NAMESPACE": "stock-ticker",
+        "EXPECTED_BUILD_SHA": "testsha",
+        "FAKE_SERVED_BUILD_SHA": "testsha",
         **fake_env,
     }
     return subprocess.run(

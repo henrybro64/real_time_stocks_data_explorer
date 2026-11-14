@@ -145,6 +145,17 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Resolve build identity
+        id: build_identity
+        env:
+          PUBLISH_SHA: ${{ needs.decide.outputs.sha }}
+        run: |
+          set -euo pipefail
+          # Match deploy-k3s.sh / verify-k3s-post-deploy.sh short-SHA convention (#357).
+          short_sha="$(printf '%s' "${PUBLISH_SHA}" | cut -c1-12)"
+          printf 'build_sha=%s\n' "${short_sha}" >> "${GITHUB_OUTPUT}"
+          printf 'build_time=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "${GITHUB_OUTPUT}"
+
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
@@ -154,6 +165,11 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # Frontend /api/version needs BUILD_SHA at image build time (#357).
+          # Backend Dockerfile ignores unused build-args.
+          build-args: |
+            BUILD_SHA=${{ steps.build_identity.outputs.build_sha }}
+            BUILD_TIME=${{ steps.build_identity.outputs.build_time }}
           # Registry cache stays within packages:write (GHA cache needs actions:write).
           # :buildcache is a Buildx layer cache on the same package, not a runnable app tag.
           cache-from: type=registry,ref=${{ steps.image.outputs.name }}:buildcache

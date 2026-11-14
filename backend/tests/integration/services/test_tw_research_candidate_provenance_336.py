@@ -168,7 +168,8 @@ def test_postgres_candidate_scan_persist_failure_fails_closed() -> None:
     }
 
     class BoomService(TwResearchScanService):
-        def _persist_scan(self, state):  # type: ignore[no-untyped-def]
+        def _persist_scan(self, state, *, create: bool = False):  # type: ignore[no-untyped-def]
+            del create
             raise TwResearchDurableStoreError(
                 "Durable scan write failed.",
                 scan_id=state.scan_id,

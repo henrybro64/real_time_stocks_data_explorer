@@ -2,9 +2,15 @@ ARG NODE_BASE_IMAGE=node:20-bookworm-slim
 FROM ${NODE_BASE_IMAGE}
 
 ARG BACKEND_PROXY_URL=http://stock-ticker-backend:8000
+# Baked at image build time — Next inlines NEXT_PUBLIC_* during `next build` (#357).
+# Runtime ConfigMap alone cannot change these values.
+ARG BUILD_SHA=unknown
+ARG BUILD_TIME=unknown
 
 ENV NEXT_TELEMETRY_DISABLED=1 \
-    BACKEND_PROXY_URL=${BACKEND_PROXY_URL}
+    BACKEND_PROXY_URL=${BACKEND_PROXY_URL} \
+    NEXT_PUBLIC_BUILD_SHA=${BUILD_SHA} \
+    NEXT_PUBLIC_BUILD_TIME=${BUILD_TIME}
 
 WORKDIR /app/frontend
 

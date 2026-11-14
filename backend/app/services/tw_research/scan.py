@@ -122,6 +122,7 @@ ScanStatus = Literal[
     "completed_processing",
     "verified_ready",
     "failed",
+    "cancelled",
 ]
 QualityStatus = Literal[
     "processed",
@@ -710,7 +711,7 @@ class TwResearchScanService:
             self._scans[state.scan_id] = state
         try:
             # Notes + candidate provenance are included in this first durable write.
-            self._persist_scan(state)
+            self._persist_scan(state, create=True)
             for record in state.records.values():
                 self._persist_symbol(state, record)
         except TwResearchDurableStoreError:
@@ -1171,6 +1172,13 @@ class TwResearchScanService:
             state = self.get_scan(scan_id)
             if state is None:
                 raise KeyError(f"Unknown scan_id: {scan_id}")
+            if state.status == "cancelled":
+                raise TwResearchConflictError(
+                    "Technical scan was cancelled and cannot accept batches.",
+                    scan_id=scan_id,
+                    operation="run_batch",
+                    code="technical_scan_cancelled",
+                )
             if state.status == "budget_exhausted":
                 # Do not silently burn zero-budget claims as HTTP 200 progress.
                 raise TwResearchConflictError(
@@ -1679,6 +1687,13 @@ class TwResearchScanService:
             state = self.get_scan(scan_id)
             if state is None:
                 raise KeyError(f"Unknown scan_id: {scan_id}")
+            if state.status == "cancelled":
+                raise TwResearchConflictError(
+                    "Technical scan was cancelled and cannot accept enrichment batches.",
+                    scan_id=scan_id,
+                    operation="run_enrichment_batch",
+                    code="technical_scan_cancelled",
+                )
             self._remember_checkpoints(state)
             batch_ids, remaining_budget = self._claim_enrichment_ids(
                 state, batch_size=batch_size
@@ -2130,6 +2145,13 @@ class TwResearchScanService:
                 scan_id=state.scan_id,
                 operation="claim_scan_batch",
             )
+        if claimed.get("cancelled"):
+            raise TwResearchConflictError(
+                "Technical scan was cancelled and cannot accept batches.",
+                scan_id=state.scan_id,
+                operation="run_batch",
+                code="technical_scan_cancelled",
+            )
         if claimed.get("admission_denied"):
             raise TwResearchAdmissionError(
                 "Too many in-flight Taiwan research batches; retry after a lease expires.",
@@ -2188,6 +2210,13 @@ class TwResearchScanService:
                 "Durable scan row missing for enrichment claim.",
                 scan_id=state.scan_id,
                 operation="claim_enrichment_batch",
+            )
+        if claimed.get("cancelled"):
+            raise TwResearchConflictError(
+                "Technical scan was cancelled and cannot accept enrichment batches.",
+                scan_id=state.scan_id,
+                operation="run_enrichment_batch",
+                code="technical_scan_cancelled",
             )
         self._hydrate_state_from_durable(state)
         with self._lock:
@@ -2344,7 +2373,7 @@ class TwResearchScanService:
             )
         ]
 
-    def _persist_scan(self, state: ScanState) -> None:
+    def _persist_scan(self, state: ScanState, *, create: bool = False) -> None:
         if not self._persist:
             return
         from app.repositories.tw_research_repository import tw_research_repository
@@ -2356,7 +2385,7 @@ class TwResearchScanService:
                 scan_id=state.scan_id,
                 operation="persist_scan",
             )
-        if not persist_scan(state, user_id=state.user_id):
+        if not persist_scan(state, user_id=state.user_id, create=create):
             raise TwResearchDurableStoreError(
                 "Durable scan write failed.",
                 scan_id=state.scan_id,

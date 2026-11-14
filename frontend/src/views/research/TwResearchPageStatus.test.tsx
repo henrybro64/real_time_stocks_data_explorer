@@ -52,13 +52,28 @@ vi.mock("../../services/api/twResearch", async () => {
     runTwResearchFirstPassBatch: vi.fn(),
     advanceTwResearchRunGate: vi.fn(async () => ({})),
     startTwResearchRun: vi.fn(),
+    fetchTwResearchFirstPassDeletionPreview: vi.fn(async () => ({
+      previewToken: "tok",
+      closure: { tw_research_first_pass_jobs: 1 },
+      retained: [],
+      blockers: [],
+    })),
+    fetchTwResearchRunDeletionPreview: vi.fn(async () => ({
+      previewToken: "tok-run",
+      closure: { tw_research_research_runs: 1 },
+      retained: [],
+      blockers: [],
+    })),
+    archiveTwResearchFirstPassJob: vi.fn(async () => ({})),
+    cancelTwResearchFirstPassJob: vi.fn(async () => ({})),
   };
 });
 
 const JOB_ID = "fpj_demo";
 const RUN_ID = "rr_demo";
 const SCAN_ID = "scan_demo_completed_processing";
-const FORBIDDEN = /#\d{3}|Notion|CronJob|GitHub|\blease\b|\bworker\b|fpj_|rr_|offset/i;
+const FORBIDDEN =
+  /#\d{3}|Notion|CronJob|GitHub|\blease\b|\bworker\b|fpj_|rr_|offset|enrichment|\buniverse\b|snapshot|宇宙|候選集|快照|游標|\bJSON\b/i;
 const SNAKE_CASE = /\b[a-z]+_[a-z_]+\b/;
 
 function jobRecord(overrides: Record<string, unknown> = {}) {
@@ -619,6 +634,57 @@ describe("TwResearchPage default UI hides internal terms (#351)", () => {
 
   it("en", async () => {
     await assertPlainDefaultUi("en");
+  });
+
+  async function assertTabsManageDialogsAndEmpty(language: "zh-TW" | "en") {
+    seed({});
+    const user = userEvent.setup();
+    const { container } = renderPage(language);
+
+    await waitForBucket("paused_manual");
+    for (const tab of [
+      language === "en" ? /Research progress/i : /研究進度/,
+      language === "en" ? /Watchlist/i : /觀察/,
+      language === "en" ? /Progress & data quality/i : /進度與資料品質/,
+      language === "en" ? /Evidence/i : /證據/,
+    ]) {
+      const tabEl = screen.queryByRole("tab", { name: tab });
+      if (tabEl) await user.click(tabEl);
+    }
+
+    expect(await screen.findByTestId("tw-research-job-delete")).toBeInTheDocument();
+    expect(screen.getByTestId("tw-research-job-archive")).toBeInTheDocument();
+    expect(screen.getByTestId("tw-research-job-cancel")).toBeInTheDocument();
+
+    await user.click(screen.getByTestId("tw-research-job-archive"));
+    expect(await screen.findByTestId("tw-research-confirm-modal")).toBeInTheDocument();
+    await user.click(screen.getByText(language === "en" ? "Keep working" : "繼續保留"));
+
+    await user.click(screen.getByTestId("tw-research-job-delete"));
+    expect(await screen.findByTestId("tw-research-delete-modal")).toBeInTheDocument();
+    await user.click(screen.getByText(language === "en" ? "Keep data" : "保留資料"));
+
+    const clone = container.cloneNode(true) as HTMLElement;
+    clone
+      .querySelectorAll('[data-testid="tw-research-advanced-details"]')
+      .forEach((node) => node.remove());
+    const visible = clone.textContent ?? "";
+    expect(visible).not.toMatch(FORBIDDEN);
+    expect(visible).not.toMatch(SNAKE_CASE);
+
+    cleanup();
+    seed({ run: null });
+    vi.mocked(listTwResearchFirstPassJobs).mockResolvedValue([]);
+    renderPage(language);
+    expect(await screen.findByTestId("tw-research-first-pass-jobs-empty")).toBeInTheDocument();
+  }
+
+  it("tabs + manage dialogs + empty (zh-TW)", async () => {
+    await assertTabsManageDialogsAndEmpty("zh-TW");
+  });
+
+  it("tabs + manage dialogs + empty (en)", async () => {
+    await assertTabsManageDialogsAndEmpty("en");
   });
 
   async function assertTechnicalScanProgressPlain(language: "zh-TW" | "en") {

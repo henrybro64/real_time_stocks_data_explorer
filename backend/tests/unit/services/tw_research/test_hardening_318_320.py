@@ -868,7 +868,10 @@ def test_persist_failure_marks_scan_failed(monkeypatch) -> None:
         def is_available(self) -> bool:
             return True
 
-        def upsert_scan(self, payload):  # noqa: ANN001
+        def update_scan(self, payload):  # noqa: ANN001
+            raise RuntimeError("disk full")
+
+        def create_scan(self, payload):  # noqa: ANN001
             raise RuntimeError("disk full")
 
     assert persist_scan_fn(state, repository=BrokenRepo()) is False  # type: ignore[arg-type]
@@ -1588,7 +1591,7 @@ def test_create_scan_raises_when_durable_scan_write_fails(monkeypatch) -> None:
     def _boom(*_args, **_kwargs):  # noqa: ANN001
         raise RuntimeError("simulated postgres write failure")
 
-    monkeypatch.setattr(repo, "upsert_scan", _boom)
+    monkeypatch.setattr(repo, "create_scan", _boom)
 
     service = TwResearchScanService(
         history_loader=lambda stock, limit, *, max_month_fetches: ([], 0),
@@ -1689,7 +1692,7 @@ def test_finalize_does_not_advertise_verified_when_scan_pointer_write_fails(
         raise RuntimeError("scan pointer write failed")
 
     # Setup writes already committed; fail only the post-snapshot scan pointer update.
-    monkeypatch.setattr(repo, "upsert_scan", _fail_pointer)
+    monkeypatch.setattr(repo, "update_scan", _fail_pointer)
 
     result = finalize_verified_snapshot(state, repository=repo, user_id="user-1")
     assert result is None
@@ -1701,3 +1704,143 @@ def test_finalize_does_not_advertise_verified_when_scan_pointer_write_fails(
     assert durable is not None
     assert durable["status"] == "completed_processing"
     assert durable.get("active_snapshot_id") is None
+
+
+def test_update_scan_keeps_cancelled_sticky(monkeypatch) -> None:
+    factory = install_in_memory_sessionlocal(monkeypatch)
+    repo = TwResearchRepository()
+    repo.set_session_factory_override(factory)
+    service = TwResearchScanService(
+        history_loader=lambda stock, limit, *, max_month_fetches: ([], 0),
+        stock_loader=lambda stock_id: _tw(stock_id),
+        persist=True,
+    )
+    monkeypatch.setattr(
+        "app.repositories.tw_research_repository.tw_research_repository",
+        repo,
+    )
+    monkeypatch.setattr(
+        "app.services.tw_research.persistence.tw_research_repository",
+        repo,
+    )
+    state = service.create_scan(
+        UniverseSelector(mode="stock_ids", stock_ids=("TW:2330",)),
+        trading_day="2024-06-28",
+        user_id="user-1",
+    )
+    payload = dict(repo.get_scan(state.scan_id) or {})
+    payload["status"] = "cancelled"
+    repo.update_scan(payload)
+    payload["status"] = "running"
+    repo.update_scan(payload)
+    durable = repo.get_scan(state.scan_id)
+    assert durable is not None
+    assert durable["status"] == "cancelled"
+
+
+def test_claim_scan_batch_cancelled_does_not_bump_generation(monkeypatch) -> None:
+    factory = install_in_memory_sessionlocal(monkeypatch)
+    repo = TwResearchRepository()
+    repo.set_session_factory_override(factory)
+    monkeypatch.setattr(
+        "app.repositories.tw_research_repository.tw_research_repository",
+        repo,
+    )
+    monkeypatch.setattr(
+        "app.services.tw_research.persistence.tw_research_repository",
+        repo,
+    )
+    service = TwResearchScanService(
+        history_loader=lambda stock, limit, *, max_month_fetches: ([], 0),
+        stock_loader=lambda stock_id: _tw(stock_id),
+        persist=True,
+    )
+    state = service.create_scan(
+        UniverseSelector(mode="stock_ids", stock_ids=("TW:2330", "TW:2454")),
+        trading_day="2024-06-28",
+        user_id="user-1",
+    )
+    payload = dict(repo.get_scan(state.scan_id) or {})
+    payload["status"] = "cancelled"
+    repo.update_scan(payload)
+    from app.db.models import TwResearchScan
+
+    with factory() as session:
+        row = session.get(TwResearchScan, state.scan_id)
+        assert row is not None
+        row.scan_lease_generation = 4
+        row.enrich_lease_generation = 2
+        session.commit()
+    claimed = repo.claim_scan_batch(
+        state.scan_id,
+        batch_size=1,
+        terminal_statuses={"completed_processing", "verified_ready"},
+    )
+    assert claimed is not None
+    assert claimed.get("cancelled") is True
+    assert claimed.get("batch_ids") == []
+    assert claimed.get("lease_generation") == 4
+    enrich = repo.claim_enrichment_batch(state.scan_id, batch_size=1)
+    assert enrich is not None
+    assert enrich.get("cancelled") is True
+    assert enrich.get("lease_generation") == 2
+    durable = repo.get_scan(state.scan_id)
+    assert durable is not None
+    assert durable["scan_lease_generation"] == 4
+    assert durable["enrich_lease_generation"] == 2
+
+
+def test_create_scan_refuses_deleted_technical_scan_audit(monkeypatch) -> None:
+    from datetime import timezone
+
+    from app.db.models import TwResearchDeletionAudit
+    from app.services.tw_research.scan import TwResearchDurableStoreError
+
+    factory = install_in_memory_sessionlocal(monkeypatch)
+    repo = TwResearchRepository()
+    repo.set_session_factory_override(factory)
+    scan_id = "scan_deleted_fence"
+    with factory() as session:
+        session.add(
+            TwResearchDeletionAudit(
+                id="tda_fence_test",
+                user_id="user-1",
+                entity_type="technical_scan",
+                entity_id=scan_id,
+                category="research_run",
+                requested_at=datetime.now(timezone.utc),
+                completed_at=datetime.now(timezone.utc),
+                outcome="deleted",
+                counts_json={},
+                error_code=None,
+            )
+        )
+        session.commit()
+    try:
+        repo.create_scan(
+            {
+                "scan_id": scan_id,
+                "user_id": "user-1",
+                "trading_day": "2024-06-28",
+                "universe_version": "u1",
+                "calculation_version": "v1",
+                "enrichment_version": "e1",
+                "selector_json": {"mode": "stock_ids"},
+                "stock_ids_json": ["TW:2330"],
+                "status": "queued",
+                "quality_status": "processed",
+                "cursor": 0,
+                "enrich_cursor": 0,
+                "target_count": 10,
+                "upstream_month_fetches": 0,
+                "max_upstream_month_fetches": 10,
+                "enrichments_run": 0,
+                "max_enrichments_per_run": 10,
+                "day_pass_ids_json": [],
+                "qualified_ids_json": [],
+                "notes_json": [],
+            }
+        )
+        raise AssertionError("expected scan_missing_or_fenced")
+    except TwResearchDurableStoreError as exc:
+        assert "scan_missing_or_fenced" in str(exc)

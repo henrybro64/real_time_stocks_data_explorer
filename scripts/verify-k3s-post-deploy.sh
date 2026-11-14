@@ -177,7 +177,73 @@ else
 fi
 
 echo
-echo "== Running image IDs (informational; :local tags do not carry a git SHA) =="
+echo "== Frontend build version (#357) =="
+# NEXT_PUBLIC_BUILD_* is baked at image build time. Fail when the served SHA
+# does not match the SHA we expect (git HEAD unless EXPECTED_BUILD_SHA is set).
+local_head_sha="$(git -C "${ROOT_DIR}" rev-parse --short HEAD 2>/dev/null || true)"
+expected_sha_explicit="${EXPECTED_BUILD_SHA:-}"
+expected_sha="${expected_sha_explicit:-${local_head_sha}}"
+
+# Read-only fetch of origin/main for stale-checkout detection (skip if offline).
+origin_main_sha=""
+if git -C "${ROOT_DIR}" fetch --quiet origin main 2>/dev/null; then
+  origin_main_sha="$(git -C "${ROOT_DIR}" rev-parse --short origin/main 2>/dev/null || true)"
+  if [[ -n "${origin_main_sha}" ]]; then
+    note "origin/main short SHA: ${origin_main_sha}"
+  fi
+else
+  note "skipping origin/main fetch (offline or no remote access)"
+fi
+
+version_json="$(
+  ${KUBECTL_CMD} -n "${NAMESPACE}" exec -i deploy/stock-ticker-backend -c backend -- \
+    python - http://stock-ticker-frontend:3000/api/version <<'PY' 2>/dev/null || true
+import sys
+import urllib.request
+try:
+    print(urllib.request.urlopen(sys.argv[1], timeout=10).read().decode("utf-8", "replace"))
+except Exception as exc:
+    print(f"ERROR:{exc}")
+    sys.exit(1)
+PY
+)"
+if [[ -z "${version_json}" || "${version_json}" == ERROR:* ]]; then
+  fail "could not read frontend /api/version (${version_json:-empty})"
+else
+  served_sha="$(
+    printf '%s' "${version_json}" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("sha",""))' 2>/dev/null || true
+  )"
+  # Compare without a trailing -dirty suffix for equality checks.
+  served_sha_base="${served_sha%-dirty}"
+  expected_sha_base="${expected_sha%-dirty}"
+  note "served /api/version: ${version_json}"
+  if [[ -z "${served_sha}" || "${served_sha}" == "unknown" ]]; then
+    fail "frontend BUILD_SHA is unknown — image was built without --build-arg BUILD_SHA"
+  elif [[ -n "${expected_sha}" && "${served_sha}" != "${expected_sha}" && "${served_sha_base}" != "${expected_sha_base}" && "${served_sha}" != "${expected_sha:0:${#served_sha}}" && "${expected_sha}" != "${served_sha:0:${#expected_sha}}" ]]; then
+    fail "frontend BUILD_SHA mismatch: served=${served_sha} expected=${expected_sha}"
+  else
+    pass "frontend BUILD_SHA matches expected (${served_sha})"
+  fi
+  # When EXPECTED_BUILD_SHA is unset, also compare against origin/main.
+  if [[ -z "${expected_sha_explicit}" && -n "${origin_main_sha}" ]]; then
+    if [[ "${served_sha_base}" != "${origin_main_sha}" && "${served_sha_base}" != "${origin_main_sha:0:${#served_sha_base}}" && "${origin_main_sha}" != "${served_sha_base:0:${#origin_main_sha}}" ]]; then
+      fail "frontend BUILD_SHA differs from origin/main: served=${served_sha} origin/main=${origin_main_sha} (set EXPECTED_BUILD_SHA to override)"
+    fi
+    if [[ -n "${local_head_sha}" && "${served_sha_base}" == "${local_head_sha}" ]]; then
+      if ! git -C "${ROOT_DIR}" merge-base --is-ancestor HEAD origin/main 2>/dev/null \
+        || [[ "$(git -C "${ROOT_DIR}" rev-parse HEAD 2>/dev/null)" != "$(git -C "${ROOT_DIR}" rev-parse origin/main 2>/dev/null)" ]]; then
+        # Warn when local HEAD matches served but is behind origin/main.
+        if git -C "${ROOT_DIR}" merge-base --is-ancestor HEAD origin/main 2>/dev/null \
+          && [[ "$(git -C "${ROOT_DIR}" rev-parse HEAD)" != "$(git -C "${ROOT_DIR}" rev-parse origin/main)" ]]; then
+          note "WARNING: served SHA matches local HEAD but HEAD is behind origin/main (${origin_main_sha})"
+        fi
+      fi
+    fi
+  fi
+fi
+
+echo
+echo "== Running image IDs (informational) =="
 note "deploy-k3s.sh restarts backend/worker/frontend after a local import (#303)."
 for deploy in stock-ticker-backend stock-ticker-backend-worker stock-ticker-frontend; do
   image_id="$(

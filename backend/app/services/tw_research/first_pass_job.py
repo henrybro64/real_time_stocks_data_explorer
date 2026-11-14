@@ -367,10 +367,109 @@ class FirstPassJobService:
             raise KeyError("first_pass_job_not_found")
         return job
 
-    def list_jobs(self, *, user_id: str, limit: int = 20) -> list[dict[str, Any]]:
+    def list_jobs(
+        self,
+        *,
+        user_id: str,
+        limit: int = 20,
+        include_archived: bool = False,
+    ) -> list[dict[str, Any]]:
         if not self._repo.is_available():
             raise FirstPassJobError("first_pass_job_store_unavailable")
-        return self._repo.list_first_pass_jobs(user_id, limit=max(1, min(limit, 50)))
+        # Lazy-complete pending deletions before listing (#355).
+        try:
+            self._repo.try_complete_pending_first_pass_deletions(user_id, limit=3)
+        except Exception:  # noqa: BLE001 — listing must not fail on GC
+            logger.exception("pending_first_pass_deletion_gc_failed")
+        return self._repo.list_first_pass_jobs(
+            user_id,
+            limit=max(1, min(limit, 50)),
+            include_archived=include_archived,
+        )
+
+    def cancel_job(self, job_id: str, *, user_id: str) -> dict[str, Any]:
+        if not self._repo.is_available():
+            raise FirstPassJobError("first_pass_job_store_unavailable")
+        job = self._repo.cancel_first_pass_job(job_id, user_id=user_id)
+        if job is None:
+            raise KeyError("first_pass_job_not_found")
+        return job
+
+    def archive_job(
+        self, job_id: str, *, user_id: str, archived: bool = True
+    ) -> dict[str, Any]:
+        if not self._repo.is_available():
+            raise FirstPassJobError("first_pass_job_store_unavailable")
+        try:
+            job = self._repo.set_first_pass_job_archived(
+                job_id, user_id=user_id, archived=archived
+            )
+        except ValueError as exc:
+            raise FirstPassJobError(str(exc), operation="archive_first_pass_job") from exc
+        if job is None:
+            raise KeyError("first_pass_job_not_found")
+        return job
+
+    def deletion_preview(self, job_id: str, *, user_id: str) -> dict[str, Any]:
+        if not self._repo.is_available():
+            raise FirstPassJobError("first_pass_job_store_unavailable")
+        preview = self._repo.build_first_pass_deletion_preview(job_id, user_id=user_id)
+        if preview is None:
+            raise KeyError("first_pass_job_not_found")
+        return preview
+
+    def delete_job(
+        self, job_id: str, *, user_id: str, preview_token: str
+    ) -> dict[str, Any]:
+        if not self._repo.is_available():
+            raise FirstPassJobError("first_pass_job_store_unavailable")
+        if not preview_token or not str(preview_token).strip():
+            raise FirstPassJobError(
+                "preview_token_required", operation="delete_first_pass_job"
+            )
+        return self._repo.request_first_pass_job_deletion(
+            job_id, user_id=user_id, preview_token=str(preview_token).strip()
+        )
+
+    def deletion_status(self, job_id: str, *, user_id: str) -> dict[str, Any]:
+        if not self._repo.is_available():
+            raise FirstPassJobError("first_pass_job_store_unavailable")
+        status = self._repo.get_first_pass_deletion_status(job_id, user_id=user_id)
+        if status is None:
+            raise KeyError("first_pass_job_not_found")
+        return status
+
+    def research_run_deletion_preview(self, *, user_id: str) -> dict[str, Any]:
+        if not self._repo.is_available():
+            raise FirstPassJobError("first_pass_job_store_unavailable")
+        # Read-only: do not run lazy GC here. Completers run from list/reconcile/
+        # drain/status so a preview never deletes the run as a side effect (#355).
+        preview = self._repo.build_research_run_deletion_preview(user_id=user_id)
+        if preview is None:
+            raise KeyError("research_run_not_found")
+        return preview
+
+    def research_run_deletion_status(self, *, user_id: str) -> dict[str, Any]:
+        if not self._repo.is_available():
+            raise FirstPassJobError("first_pass_job_store_unavailable")
+        status = self._repo.get_research_run_deletion_status(user_id=user_id)
+        if status is None:
+            raise KeyError("research_run_not_found")
+        return status
+
+    def delete_research_run(
+        self, *, user_id: str, preview_token: str
+    ) -> dict[str, Any]:
+        if not self._repo.is_available():
+            raise FirstPassJobError("first_pass_job_store_unavailable")
+        if not preview_token or not str(preview_token).strip():
+            raise FirstPassJobError(
+                "preview_token_required", operation="delete_research_run"
+            )
+        return self._repo.request_research_run_deletion(
+            user_id=user_id,
+            preview_token=str(preview_token).strip(),
+        )
 
     def progress(self, job_id: str, *, user_id: str) -> dict[str, Any]:
         job = self.get_job(job_id, user_id=user_id)

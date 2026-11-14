@@ -52,6 +52,8 @@ export class ApiError extends Error {
   readonly requestId: string | null;
   readonly status: number | null;
   readonly retryAfterSeconds: number | null;
+  /** Parsed JSON body when present (e.g. 410 tombstone payloads). */
+  readonly body: unknown | null;
 
   constructor(
     message: string,
@@ -61,6 +63,7 @@ export class ApiError extends Error {
       kind: ApiErrorKind;
       requestId?: string | null;
       retryAfterSeconds?: number | null;
+      body?: unknown | null;
     },
   ) {
     super(message);
@@ -70,6 +73,7 @@ export class ApiError extends Error {
     this.kind = options.kind;
     this.requestId = options.requestId ?? null;
     this.retryAfterSeconds = options.retryAfterSeconds ?? null;
+    this.body = options.body ?? null;
   }
 }
 
@@ -206,20 +210,23 @@ export function stockDetailRetryDelayMs(failureCount: number, error?: unknown): 
 }
 
 /** FastAPI error bodies: `detail` as string, validation array, or object. */
-async function failedRequestDetail(response: Response): Promise<string | null> {
+async function failedRequestPayload(
+  response: Response,
+): Promise<{ detail: string | null; body: unknown | null }> {
   try {
     const payload = (await response.json()) as { detail?: unknown };
-    const detail = payload.detail;
-    if (typeof detail === "string") {
-      return detail;
+    const detailRaw = payload.detail;
+    let detail: string | null = null;
+    if (typeof detailRaw === "string") {
+      detail = detailRaw;
+    } else if (detailRaw != null) {
+      detail = JSON.stringify(detailRaw);
     }
-    if (detail != null) {
-      return JSON.stringify(detail);
-    }
+    return { detail, body: payload };
   } catch {
     /* ignore non-JSON body */
   }
-  return null;
+  return { detail: null, body: null };
 }
 
 /** Parse HTTP Retry-After (delay-seconds or HTTP-date) into whole seconds. */
@@ -256,7 +263,7 @@ function safeRequestId(value: string | null): string | null {
 }
 
 async function failedRequestError(response: Response): Promise<ApiError> {
-  const detail = await failedRequestDetail(response);
+  const { detail, body } = await failedRequestPayload(response);
   const message = detail ? `Request failed: ${response.status} - ${detail}` : `Request failed: ${response.status}`;
   const retryAfterHeader = headerValue(response, "Retry-After");
   return new ApiError(message, {
@@ -265,6 +272,7 @@ async function failedRequestError(response: Response): Promise<ApiError> {
     kind: classifyApiErrorKind(response.status, detail, message),
     requestId: safeRequestId(headerValue(response, "X-Request-ID")),
     retryAfterSeconds: parseRetryAfterSeconds(retryAfterHeader),
+    body,
   });
 }
 

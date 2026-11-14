@@ -171,9 +171,22 @@ build_images() {
 
   if ! is_registry_image "${FRONTEND_IMAGE}"; then
     pull_docker_image_with_retry "${frontend_base}"
-    echo "Building frontend image: ${FRONTEND_IMAGE}"
+    # Bake git SHA + build time into NEXT_PUBLIC_* at `next build` (#357).
+    # Runtime ConfigMap cannot rewrite these; unknown SHA means the deploy
+    # path forgot --build-arg or an old image is still being served.
+    local frontend_build_sha="${BUILD_SHA:-$(git -C "${ROOT_DIR}" rev-parse --short HEAD 2>/dev/null || echo unknown)}"
+    if [[ -z "${BUILD_SHA:-}" ]] && [[ -n "$(git -C "${ROOT_DIR}" status --porcelain 2>/dev/null || true)" ]]; then
+      # Dirty working tree must not look like a clean published SHA (#357).
+      if [[ "${frontend_build_sha}" != unknown ]] && [[ "${frontend_build_sha}" != *-dirty ]]; then
+        frontend_build_sha="${frontend_build_sha}-dirty"
+      fi
+    fi
+    local frontend_build_time="${BUILD_TIME:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
+    echo "Building frontend image: ${FRONTEND_IMAGE} (BUILD_SHA=${frontend_build_sha})"
     docker build \
       --build-arg "NODE_BASE_IMAGE=${frontend_base}" \
+      --build-arg "BUILD_SHA=${frontend_build_sha}" \
+      --build-arg "BUILD_TIME=${frontend_build_time}" \
       -t "${FRONTEND_IMAGE}" \
       -f "${ROOT_DIR}/frontend/Dockerfile" \
       "${ROOT_DIR}"

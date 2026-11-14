@@ -130,8 +130,8 @@ export function ChipEvidenceCard({ row, staleCacheBanner }: Props) {
       <div className="app-section-stack" data-testid="chip-evidence-card">
         <p className="cds--helper-text-01" data-testid="chip-evidence-not-in-snapshot">
           {zh
-            ? "此標的不在釘選的第一階段快照中。"
-            : "Symbol is not in the pinned first-pass snapshot."}
+            ? "此標的不在釘選的第一輪資料中。"
+            : "Symbol is not in the pinned first-round data."}
         </p>
       </div>
     );
@@ -247,8 +247,8 @@ export function ChipEvidenceCard({ row, staleCacheBanner }: Props) {
         <p className="cds--helper-text-01">
           {tdcc?.limitation ||
             (zh
-              ? "TDCC 週資料是持股快照，不是即時買賣。"
-              : "TDCC weekly holdings are not a real-time trade feed.")}
+              ? "TDCC 週資料是當週持股狀態，不是即時買賣。"
+              : "TDCC weekly holdings are as of that week, not a real-time trade feed.")}
         </p>
       </section>
     </div>

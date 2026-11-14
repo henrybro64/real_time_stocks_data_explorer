@@ -929,3 +929,59 @@ def test_chip_evidence_cross_user_returns_404(monkeypatch) -> None:
         assert exc.detail == "first_pass_snapshot_not_found"
     else:
         raise AssertionError("Expected HTTPException for cross-user chip evidence")
+
+
+def test_cancelled_scan_batch_endpoints_return_409(monkeypatch) -> None:
+    """Cancelled technical scans refuse batch/enrichment with technical_scan_cancelled."""
+    from app.db.init_ids import DEFAULT_USER_ID
+    from app.services.tw_research import scan as scan_module
+    from tests.support import stock_record
+
+    catalog = {
+        "TW:2330": stock_record(
+            "TW:2330",
+            market="TW",
+            symbol="2330",
+            name="台積電",
+            exchange="TWSE",
+            currency="TWD",
+            timezone="Asia/Taipei",
+        )
+    }
+    service = scan_module.TwResearchScanService(
+        history_loader=lambda stock, limit, *, max_month_fetches: ([], 0),
+        stock_loader=lambda stock_id: catalog.get(stock_id),
+        persist=False,
+    )
+    monkeypatch.setattr(
+        "app.api.routes.tw_research.tw_research_scan_service",
+        service,
+    )
+    created = client.post(
+        "/api/tw-research/scans",
+        json={
+            "universe": {"mode": "stock_ids", "stockIds": ["TW:2330"]},
+            "targetCount": 10,
+            "tradingDay": "2024-06-28",
+        },
+    )
+    assert created.status_code == 200
+    scan_id = created.json()["scan"]["scanId"]
+    state = service.get_scan(scan_id)
+    assert state is not None
+    state.user_id = DEFAULT_USER_ID
+    state.status = "cancelled"
+
+    batch = client.post(
+        "/api/tw-research/scans/batches",
+        json={"scanId": scan_id, "batchSize": 1},
+    )
+    assert batch.status_code == 409
+    assert batch.json()["detail"]["error"] == "technical_scan_cancelled"
+
+    enrich = client.post(
+        "/api/tw-research/scans/enrichment-batches",
+        json={"scanId": scan_id, "batchSize": 1},
+    )
+    assert enrich.status_code == 409
+    assert enrich.json()["detail"]["error"] == "technical_scan_cancelled"
