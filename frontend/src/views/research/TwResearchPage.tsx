@@ -3,8 +3,12 @@
 import {
   Button,
   Column,
+  ComposedModal,
   Grid,
   InlineLoading,
+  ModalBody,
+  ModalFooter,
+  ModalHeader,
   Pagination,
   Select,
   SelectItem,
@@ -54,9 +58,13 @@ import {
 } from "./researchStatusCopy";
 import {
   advanceTwResearchRunGate,
+  archiveTwResearchFirstPassJob,
+  cancelTwResearchFirstPassJob,
   createTwResearchFirstPassJob,
   createTwResearchScan,
   createTwResearchTechnicalScanFromCandidateSet,
+  deleteTwResearchFirstPassJob,
+  deleteTwResearchRunCurrent,
   fetchThemeOptions,
   fetchTwResearchBrowserText,
   fetchTwResearchCandidateSet,
@@ -64,6 +72,8 @@ import {
   fetchTwResearchExportManifest,
   fetchTwResearchFirstPassChipEvidence,
   fetchTwResearchFirstPassChunk,
+  fetchTwResearchFirstPassDeletionPreview,
+  fetchTwResearchFirstPassDeletionStatus,
   fetchTwResearchFirstPassJob,
   fetchTwResearchFirstPassManifest,
   fetchTwResearchFirstPassProgress,
@@ -74,11 +84,13 @@ import {
   fetchTwResearchMembership,
   fetchTwResearchReportEvidenceExampleZhTw,
   fetchTwResearchRunCurrent,
+  fetchTwResearchRunDeletionPreview,
   fetchTwResearchScan,
   fetchTwResearchScanProgress,
   fetchTwResearchScans,
   fetchTwResearchSnapshotChunk,
   listTwResearchFirstPassJobs,
+  unarchiveTwResearchFirstPassJob,
   postTwResearchReportEvidence,
   previewTwResearchMembership,
   researchProgressRevision,
@@ -416,14 +428,269 @@ export function TwResearchPage({
   const [expandedLedgerIds, setExpandedLedgerIds] = useState<Record<string, boolean>>({});
 
   const [firstPassJobsStale, setFirstPassJobsStale] = useState(false);
+  const [includeArchivedJobs, setIncludeArchivedJobs] = useState(false);
+  const [jobManageBusy, setJobManageBusy] = useState(false);
+  const [jobManageMessage, setJobManageMessage] = useState<string | null>(null);
+  const [deleteModalOpen, setDeleteModalOpen] = useState(false);
+  const [deleteModalMode, setDeleteModalMode] = useState<"job" | "full_run">("job");
+  const [deletePreview, setDeletePreview] = useState<Record<string, unknown> | null>(
+    null,
+  );
+  const [pendingDeletionJobId, setPendingDeletionJobId] = useState<string | null>(null);
 
   const firstPassJobsQuery = useQuery({
-    queryKey: ["tw-research-first-pass-jobs"],
-    queryFn: async () => listTwResearchFirstPassJobs(20),
+    queryKey: ["tw-research-first-pass-jobs", includeArchivedJobs],
+    queryFn: async () => listTwResearchFirstPassJobs(20, includeArchivedJobs),
     staleTime: 15_000,
     // Avoid hammering an unavailable Postgres; manual retry is available.
     retry: false,
   });
+
+  const invalidateJobQueries = () => {
+    void queryClient.invalidateQueries({ queryKey: ["tw-research-first-pass-jobs"] });
+    void queryClient.invalidateQueries({ queryKey: ["tw-research-run-current"] });
+    void queryClient.invalidateQueries({ queryKey: ["tw-research-candidate-set"] });
+    void queryClient.invalidateQueries({ queryKey: ["tw-research-scans"] });
+    void queryClient.invalidateQueries({ queryKey: ["tw-research-scan"] });
+    void queryClient.invalidateQueries({ queryKey: ["tw-research-progress"] });
+    void queryClient.invalidateQueries({ queryKey: ["tw-research-manifest"] });
+    void queryClient.invalidateQueries({ queryKey: ["tw-research-chip-evidence"] });
+    if (firstPassJobId) {
+      void queryClient.invalidateQueries({
+        queryKey: ["tw-research-first-pass-progress", firstPassJobId],
+      });
+      void queryClient.invalidateQueries({
+        queryKey: ["tw-research-first-pass-symbols", firstPassJobId],
+      });
+    }
+  };
+
+  const blockerReasonText = (codes: string[]): string => {
+    if (codes.length === 0) return t("research.tw.blocker.unknown");
+    return codes
+      .map((code) => {
+        const key = `research.tw.blocker.${code}` as TranslationKey;
+        const translated = t(key);
+        return translated === key ? t("research.tw.blocker.unknown") : translated;
+      })
+      .join(" · ");
+  };
+
+  const closureCounts = (preview: Record<string, unknown> | null) => {
+    const closure =
+      preview && typeof preview.closure === "object" && preview.closure
+        ? (preview.closure as Record<string, unknown>)
+        : {};
+    return {
+      jobs: Number(closure.tw_research_first_pass_jobs ?? 0),
+      symbols: Number(closure.tw_research_first_pass_symbol_results ?? 0),
+      snapshots: Number(closure.tw_research_first_pass_snapshots ?? 0),
+      candidates: Number(closure.tw_research_candidate_sets ?? 0),
+      scans: Number(closure.tw_research_scans ?? 0),
+      exports: Number(closure.tw_research_export_snapshots ?? 0),
+    };
+  };
+
+  const openDeletePreview = async (mode: "job" | "full_run") => {
+    if (jobManageBusy) return;
+    if (mode === "job" && !firstPassJobId) return;
+    setJobManageBusy(true);
+    setJobManageMessage(null);
+    try {
+      if (mode === "full_run") {
+        const preview = await fetchTwResearchRunDeletionPreview();
+        setDeletePreview(preview);
+        setDeleteModalMode("full_run");
+      } else {
+        const preview = await fetchTwResearchFirstPassDeletionPreview(
+          firstPassJobId as string,
+        );
+        if (preview.requiresFullRunDelete) {
+          const full = await fetchTwResearchRunDeletionPreview();
+          setDeletePreview(full);
+          setDeleteModalMode("full_run");
+        } else {
+          setDeletePreview(preview);
+          setDeleteModalMode("job");
+        }
+      }
+      setDeleteModalOpen(true);
+    } catch (error) {
+      const detail =
+        error instanceof Error ? error.message : String(error ?? "error");
+      setJobManageMessage(detail);
+    } finally {
+      setJobManageBusy(false);
+    }
+  };
+
+  const confirmDeleteFromModal = async () => {
+    if (!deletePreview || jobManageBusy) return;
+    const token = String(deletePreview.previewToken ?? "");
+    if (!token) {
+      setJobManageMessage(t("research.tw.blocker.preview_stale"));
+      return;
+    }
+    const blockerCodes = Array.isArray(deletePreview.blockers)
+      ? deletePreview.blockers.map((b) =>
+          typeof b === "object" && b && "code" in b
+            ? String((b as { code: string }).code)
+            : String(b),
+        )
+      : [];
+    const hardBlock = blockerCodes.filter((code) => code !== "deletion_in_progress");
+    if (deleteModalMode === "job" && hardBlock.length > 0) {
+      if (hardBlock.includes("run_owned_requires_full_run_delete")) {
+        setDeleteModalOpen(false);
+        await openDeletePreview("full_run");
+        return;
+      }
+      setJobManageMessage(
+        t("research.tw.deleteJobBlocked", {
+          reason: blockerReasonText(hardBlock),
+        }),
+      );
+      setDeleteModalOpen(false);
+      return;
+    }
+    if (deleteModalMode === "full_run" && hardBlock.length > 0) {
+      setJobManageMessage(
+        t("research.tw.deleteJobBlocked", {
+          reason: blockerReasonText(hardBlock),
+        }),
+      );
+      setDeleteModalOpen(false);
+      return;
+    }
+    setJobManageBusy(true);
+    try {
+      const result =
+        deleteModalMode === "full_run"
+          ? await deleteTwResearchRunCurrent(token)
+          : await deleteTwResearchFirstPassJob(firstPassJobId as string, token);
+      setDeleteModalOpen(false);
+      setDeletePreview(null);
+      if (result.deletionState === "requested") {
+        setJobManageMessage(t("research.tw.deleteJobRequested"));
+        if (deleteModalMode === "job" && firstPassJobId) {
+          setPendingDeletionJobId(firstPassJobId);
+        }
+      } else if (result.deleted) {
+        setPendingDeletionJobId(null);
+        setFirstPassJobId(null);
+        setFirstPassProgressText("");
+        setFirstPassSnapshotId(null);
+        setJobManageMessage(null);
+      }
+      invalidateJobQueries();
+    } catch (error) {
+      const api = toApiError(error);
+      const detail = String(api.detail || api.message || "unknown");
+      const codeMatch = detail.match(
+        /run_owned_requires_full_run_delete|snapshot_shared_with_other_job|snapshot_referenced_by_candidate_set|snapshot_referenced_by_research_run|scan_provenance_references_snapshot|preview_stale|legacy_unowned|worker_quiescence_timeout|deletion_in_progress/,
+      );
+      setJobManageMessage(
+        t("research.tw.deleteJobFailed", {
+          reason: blockerReasonText([codeMatch?.[0] || "unknown"]),
+        }),
+      );
+      setDeleteModalOpen(false);
+    } finally {
+      setJobManageBusy(false);
+    }
+  };
+
+  const runJobManage = async (
+    action: "cancel" | "archive" | "unarchive" | "delete" | "delete_full_run" | "retry_delete",
+  ) => {
+    if (jobManageBusy) return;
+    if (action === "delete") {
+      await openDeletePreview("job");
+      return;
+    }
+    if (action === "delete_full_run") {
+      await openDeletePreview("full_run");
+      return;
+    }
+    if (action === "retry_delete") {
+      if (pendingDeletionJobId) {
+        setFirstPassJobId(pendingDeletionJobId);
+        await openDeletePreview("job");
+      } else {
+        await openDeletePreview("full_run");
+      }
+      return;
+    }
+    if (!firstPassJobId) return;
+    const confirmKey =
+      action === "cancel"
+        ? "research.tw.cancelJobConfirm"
+        : action === "archive"
+          ? "research.tw.archiveJobConfirm"
+          : null;
+    if (confirmKey && !window.confirm(t(confirmKey))) return;
+    setJobManageBusy(true);
+    setJobManageMessage(null);
+    try {
+      if (action === "cancel") {
+        await cancelTwResearchFirstPassJob(firstPassJobId);
+      } else if (action === "archive") {
+        await archiveTwResearchFirstPassJob(firstPassJobId);
+      } else if (action === "unarchive") {
+        await unarchiveTwResearchFirstPassJob(firstPassJobId);
+      }
+      invalidateJobQueries();
+    } catch (error) {
+      const detail =
+        error instanceof Error ? error.message : String(error ?? "error");
+      setJobManageMessage(detail);
+    } finally {
+      setJobManageBusy(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!pendingDeletionJobId) return;
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const status = await fetchTwResearchFirstPassDeletionStatus(pendingDeletionJobId);
+        if (cancelled) return;
+        if (status.gone || status.outcome === "deleted") {
+          setPendingDeletionJobId(null);
+          setJobManageMessage(null);
+          if (firstPassJobId === pendingDeletionJobId) {
+            setFirstPassJobId(null);
+            setFirstPassProgressText("");
+            setFirstPassSnapshotId(null);
+          }
+          invalidateJobQueries();
+          return;
+        }
+        if (status.deletionState === "failed" || status.deletionError) {
+          setJobManageMessage(
+            t("research.tw.deleteJobFailed", {
+              reason: blockerReasonText([
+                String(status.deletionError || "worker_quiescence_timeout"),
+              ]),
+            }),
+          );
+        } else {
+          setJobManageMessage(t("research.tw.deleteJobRequested"));
+        }
+      } catch {
+        // 404 from other users / missing — stop polling.
+        if (!cancelled) setPendingDeletionJobId(null);
+      }
+    };
+    void tick();
+    const id = window.setInterval(() => void tick(), 5_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- poll only while pending id set
+  }, [pendingDeletionJobId]);
 
   useEffect(() => {
     if (firstPassJobsQuery.isError) {
@@ -2081,6 +2348,16 @@ export function TwResearchPage({
                   {t("research.tw.firstPassJobsEmpty")}
                 </p>
               ) : null}
+              <label className="cds--label" htmlFor="tw-research-show-archived">
+                <input
+                  id="tw-research-show-archived"
+                  data-testid="tw-research-show-archived"
+                  type="checkbox"
+                  checked={includeArchivedJobs}
+                  onChange={(event) => setIncludeArchivedJobs(event.target.checked)}
+                />{" "}
+                {t("research.tw.showArchivedJobs")}
+              </label>
               {firstPassJobs.length > 0 ? (
                 <Select
                   id="tw-research-first-pass-job-history"
@@ -2129,6 +2406,151 @@ export function TwResearchPage({
                   ))}
                 </Select>
               ) : null}
+              {firstPassJobId ? (
+                <Stack gap={3} orientation="horizontal">
+                  <Button
+                    size="sm"
+                    kind="ghost"
+                    disabled={jobManageBusy}
+                    data-testid="tw-research-job-cancel"
+                    onClick={() => void runJobManage("cancel")}
+                  >
+                    {t("research.tw.cancelJob")}
+                  </Button>
+                  {selectedFirstPassJob?.archivedAt ? (
+                    <Button
+                      size="sm"
+                      kind="ghost"
+                      disabled={jobManageBusy}
+                      data-testid="tw-research-job-unarchive"
+                      onClick={() => void runJobManage("unarchive")}
+                    >
+                      {t("research.tw.unarchiveJob")}
+                    </Button>
+                  ) : (
+                    <Button
+                      size="sm"
+                      kind="ghost"
+                      disabled={jobManageBusy}
+                      data-testid="tw-research-job-archive"
+                      onClick={() => void runJobManage("archive")}
+                    >
+                      {t("research.tw.archiveJob")}
+                    </Button>
+                  )}
+                  <Button
+                    size="sm"
+                    kind="danger--ghost"
+                    disabled={jobManageBusy}
+                    data-testid="tw-research-job-delete"
+                    onClick={() => void runJobManage("delete")}
+                  >
+                    {t("research.tw.deleteJob")}
+                  </Button>
+                  <Button
+                    size="sm"
+                    kind="danger--ghost"
+                    disabled={jobManageBusy}
+                    data-testid="tw-research-delete-full-run"
+                    onClick={() => void runJobManage("delete_full_run")}
+                  >
+                    {t("research.tw.deleteFullResearch")}
+                  </Button>
+                </Stack>
+              ) : null}
+              {jobManageMessage ? (
+                <Stack gap={2} orientation="horizontal">
+                  <p
+                    className="cds--helper-text-01"
+                    data-testid="tw-research-job-manage-message"
+                  >
+                    {jobManageMessage}
+                  </p>
+                  {String(jobManageMessage).includes("失敗") ||
+                  String(jobManageMessage).toLowerCase().includes("failed") ||
+                  String(jobManageMessage).toLowerCase().includes("retry") ? (
+                    <Button
+                      size="sm"
+                      kind="ghost"
+                      disabled={jobManageBusy}
+                      data-testid="tw-research-retry-delete"
+                      onClick={() => void runJobManage("retry_delete")}
+                    >
+                      {t("research.tw.retryDelete")}
+                    </Button>
+                  ) : null}
+                </Stack>
+              ) : null}
+              <ComposedModal
+                open={deleteModalOpen}
+                onClose={() => {
+                  setDeleteModalOpen(false);
+                  setDeletePreview(null);
+                }}
+                size="md"
+                data-testid="tw-research-delete-modal"
+              >
+                <ModalHeader
+                  title={t(
+                    deleteModalMode === "full_run"
+                      ? "research.tw.deleteModalFullRunTitle"
+                      : "research.tw.deleteModalTitle",
+                  )}
+                />
+                <ModalBody>
+                  <p className="cds--body-compact-01">{t("research.tw.deleteModalIntro")}</p>
+                  {deletePreview ? (
+                    <>
+                      <p
+                        className="cds--helper-text-01"
+                        data-testid="tw-research-delete-closure"
+                      >
+                        {t("research.tw.deleteModalClosure", closureCounts(deletePreview))}
+                      </p>
+                      {Array.isArray(deletePreview.retained) &&
+                      deletePreview.retained.length > 0 ? (
+                        <p className="cds--helper-text-01">
+                          {t("research.tw.deleteModalRetained", {
+                            items: deletePreview.retained
+                              .map((item) => {
+                                if (typeof item === "object" && item && "code" in item) {
+                                  const code = String((item as { code: string }).code);
+                                  if (code === "first_pass_snapshot") {
+                                    return language === "en"
+                                      ? "shared first-round data"
+                                      : "共用的第一輪資料";
+                                  }
+                                  return code;
+                                }
+                                return String(item);
+                              })
+                              .join(", "),
+                          })}
+                        </p>
+                      ) : null}
+                    </>
+                  ) : null}
+                </ModalBody>
+                <ModalFooter>
+                  <Button
+                    kind="secondary"
+                    onClick={() => {
+                      setDeleteModalOpen(false);
+                      setDeletePreview(null);
+                    }}
+                  >
+                    {t("research.tw.deleteModalCancel")}
+                  </Button>
+                  <Button
+                    kind="danger"
+                    disabled={jobManageBusy}
+                    data-testid="tw-research-delete-modal-confirm"
+                    onClick={() => void confirmDeleteFromModal()}
+                  >
+                    {t("research.tw.deleteModalConfirm")}
+                  </Button>
+                </ModalFooter>
+              </ComposedModal>
               <Stack gap={3} orientation="horizontal">
                 <TextInput
                   id="tw-research-evidence-search"
@@ -2142,11 +2564,11 @@ export function TwResearchPage({
                   value={evidenceStatusFilter}
                   onChange={(event) => setEvidenceStatusFilter(event.target.value)}
                 >
-                  <SelectItem value="" text="all" />
-                  <SelectItem value="ok" text="ok" />
-                  <SelectItem value="partial" text="partial" />
-                  <SelectItem value="failed" text="failed" />
-                  <SelectItem value="deferred" text="deferred" />
+                  <SelectItem value="" text={t("research.tw.evidenceStatusAll")} />
+                  <SelectItem value="ok" text={t("research.tw.evidenceStatusOk")} />
+                  <SelectItem value="partial" text={t("research.tw.evidenceStatusPartial")} />
+                  <SelectItem value="failed" text={t("research.tw.evidenceStatusFailed")} />
+                  <SelectItem value="deferred" text={t("research.tw.evidenceStatusDeferred")} />
                 </Select>
                 <Button
                   kind="ghost"
@@ -3180,6 +3602,15 @@ export function TwResearchPage({
                   readOnly
                   rows={12}
                 />
+                <p
+                  className="cds--helper-text-01"
+                  data-testid="tw-research-build-version"
+                >
+                  {t("research.tw.buildVersion", {
+                    sha: process.env.NEXT_PUBLIC_BUILD_SHA || "unknown",
+                    time: process.env.NEXT_PUBLIC_BUILD_TIME || "unknown",
+                  })}
+                </p>
               </AdvancedDetailsDisclosure>
             </Stack>
           </Tile>

@@ -58,7 +58,8 @@ vi.mock("../../services/api/twResearch", async () => {
 const JOB_ID = "fpj_demo";
 const RUN_ID = "rr_demo";
 const SCAN_ID = "scan_demo_completed_processing";
-const FORBIDDEN = /#\d{3}|Notion|CronJob|GitHub|\blease\b|\bworker\b|fpj_|rr_|offset/i;
+const FORBIDDEN =
+  /#\d{3}|Notion|CronJob|GitHub|\blease\b|\bworker\b|fpj_|rr_|offset|enrichment|\buniverse\b|snapshot|宇宙|候選集|快照|游標|\bJSON\b/i;
 const SNAKE_CASE = /\b[a-z]+_[a-z_]+\b/;
 
 function jobRecord(overrides: Record<string, unknown> = {}) {

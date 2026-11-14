@@ -642,7 +642,7 @@ class TwResearchFirstPassJob(Base):
     first_pass_version: Mapped[str] = mapped_column(String(64), nullable=False)
     stock_ids_json: Mapped[list] = mapped_column(JSON, nullable=False)
     selector_json: Mapped[dict] = mapped_column(JSON, nullable=False)
-    # pending|running|completed|partial|failed|deferred
+    # pending|running|completed|partial|failed|deferred|cancelled
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     # data completeness (independent of processing status)
     quality_status: Mapped[str] = mapped_column(String(32), nullable=False)
@@ -657,6 +657,18 @@ class TwResearchFirstPassJob(Base):
     )
     active_snapshot_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     notes_json: Mapped[list] = mapped_column(JSON, nullable=False)
+    # Soft-hide from default job list (#355). Null = visible.
+    archived_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    # requested|failed|None — durable deletion lifecycle for running jobs (#355).
+    deletion_state: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    deletion_requested_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    deletion_error: Mapped[str | None] = mapped_column(String(256), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
@@ -668,6 +680,34 @@ class TwResearchFirstPassJob(Base):
         onupdate=func.now(),
         nullable=False,
     )
+
+
+class TwResearchDeletionAudit(Base):
+    """Sanitized deletion tombstone — no FK to deleted entities (#355)."""
+
+    __tablename__ = "tw_research_deletion_audit"
+    __table_args__ = (
+        Index(
+            "ix_tw_research_deletion_audit_user_requested",
+            "user_id",
+            "requested_at",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    entity_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    entity_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    category: Mapped[str] = mapped_column(String(64), nullable=False)
+    requested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    outcome: Mapped[str] = mapped_column(String(64), nullable=False)
+    counts_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    error_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
 
 class TwResearchFirstPassSymbolResult(Base):

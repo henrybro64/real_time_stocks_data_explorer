@@ -229,7 +229,7 @@ describe("TwResearchPage operation failures (#328)", () => {
     renderPage();
 
     await user.click(screen.getByTestId("tw-research-create"));
-    expect(await screen.findByLabelText("掃描 ID")).toHaveValue(SCAN_ID);
+    expect(await screen.findByLabelText("研究紀錄編號")).toHaveValue(SCAN_ID);
     const manifestError = await screen.findByTestId("tw-research-error-manifest");
     expect(manifestError).toHaveTextContent("匯出摘要");
     expect(manifestError).toHaveTextContent("Request failed: 500");
@@ -242,7 +242,7 @@ describe("TwResearchPage operation failures (#328)", () => {
     await waitFor(() => {
       expect(screen.queryByTestId("tw-research-error-manifest")).not.toBeInTheDocument();
     });
-    expect(screen.getByLabelText("掃描 ID")).toHaveValue(SCAN_ID);
+    expect(screen.getByLabelText("研究紀錄編號")).toHaveValue(SCAN_ID);
   });
 
   it("does not create a second scan for the same selection", async () => {
@@ -261,7 +261,7 @@ describe("TwResearchPage operation failures (#328)", () => {
     expect(createTwResearchScan).toHaveBeenCalledTimes(1);
 
     releaseCreate(queuedScan());
-    expect(await screen.findByLabelText("掃描 ID")).toHaveValue(SCAN_ID);
+    expect(await screen.findByLabelText("研究紀錄編號")).toHaveValue(SCAN_ID);
     await user.click(screen.getByTestId("tw-research-create"));
     expect(createTwResearchScan).toHaveBeenCalledTimes(1);
     expect(screen.getByTestId("tw-research-existing-scan")).toBeInTheDocument();
@@ -283,7 +283,7 @@ describe("TwResearchPage operation failures (#328)", () => {
     await user.click(screen.getByTestId("tw-research-create"));
     expect(await screen.findByTestId("tw-research-error-create")).toHaveTextContent("建立掃描");
     await user.click(screen.getByTestId("tw-research-create"));
-    expect(await screen.findByLabelText("掃描 ID")).toHaveValue(SCAN_ID);
+    expect(await screen.findByLabelText("研究紀錄編號")).toHaveValue(SCAN_ID);
     expect(screen.queryByTestId("tw-research-error-create")).not.toBeInTheDocument();
   });
 
@@ -300,7 +300,7 @@ describe("TwResearchPage operation failures (#328)", () => {
     );
     renderPage();
     await user.click(screen.getByTestId("tw-research-create"));
-    expect(await screen.findByLabelText("掃描 ID")).toHaveValue(SCAN_ID);
+    expect(await screen.findByLabelText("研究紀錄編號")).toHaveValue(SCAN_ID);
 
     await user.click(screen.getByTestId("tw-research-batch"));
     expect(await screen.findByText(/已處理 10\/73/)).toBeInTheDocument();
@@ -331,14 +331,14 @@ describe("TwResearchPage operation failures (#328)", () => {
     );
     renderPage();
     await user.click(screen.getByTestId("tw-research-create"));
-    expect(await screen.findByLabelText("掃描 ID")).toHaveValue(SCAN_ID);
+    expect(await screen.findByLabelText("研究紀錄編號")).toHaveValue(SCAN_ID);
 
     await user.click(screen.getByTestId("tw-research-batch"));
     const batchError = await screen.findByTestId("tw-research-error-batch");
     expect(batchError).toHaveTextContent("掃描批次");
     expect(batchError).toHaveTextContent("503");
     expect(await screen.findByText(/已處理 4\/73/)).toBeInTheDocument();
-    expect(screen.getByLabelText("掃描 ID")).toHaveValue(SCAN_ID);
+    expect(screen.getByLabelText("研究紀錄編號")).toHaveValue(SCAN_ID);
   });
 
   it("keeps the previous scan when the batch and the follow-up read both fail", async () => {
@@ -353,13 +353,13 @@ describe("TwResearchPage operation failures (#328)", () => {
     );
     renderPage();
     await user.click(screen.getByTestId("tw-research-create"));
-    expect(await screen.findByLabelText("掃描 ID")).toHaveValue(SCAN_ID);
+    expect(await screen.findByLabelText("研究紀錄編號")).toHaveValue(SCAN_ID);
 
     await user.click(screen.getByTestId("tw-research-batch"));
     const batchError = await screen.findByTestId("tw-research-error-batch");
     expect(batchError).toHaveTextContent("掃描批次");
     expect(batchError).toHaveTextContent("Request failed: 500");
-    expect(screen.getByLabelText("掃描 ID")).toHaveValue(SCAN_ID);
+    expect(screen.getByLabelText("研究紀錄編號")).toHaveValue(SCAN_ID);
     expect(screen.getByText(/已處理 0\/73/)).toBeInTheDocument();
     expect(screen.queryByTestId("tw-research-error-refresh")).not.toBeInTheDocument();
   });
@@ -392,14 +392,14 @@ describe("TwResearchPage operation failures (#328)", () => {
     );
     renderPage();
     await user.click(screen.getByTestId("tw-research-create"));
-    expect(await screen.findByLabelText("掃描 ID")).toHaveValue(SCAN_ID);
+    expect(await screen.findByLabelText("研究紀錄編號")).toHaveValue(SCAN_ID);
 
     await user.click(screen.getByTestId("tw-research-batch"));
     const batchError = await screen.findByTestId("tw-research-error-batch");
     expect(batchError).toHaveTextContent("掃描批次");
     expect(batchError).toHaveTextContent("503");
     expect(await screen.findByText(/已處理 4\/73/)).toBeInTheDocument();
-    expect(screen.getByLabelText("掃描 ID")).toHaveValue(SCAN_ID);
+    expect(screen.getByLabelText("研究紀錄編號")).toHaveValue(SCAN_ID);
   });
 
   it("keeps the scan on screen while a batch request is still running", async () => {
@@ -413,12 +413,12 @@ describe("TwResearchPage operation failures (#328)", () => {
     );
     renderPage();
     await user.click(screen.getByTestId("tw-research-create"));
-    expect(await screen.findByLabelText("掃描 ID")).toHaveValue(SCAN_ID);
+    expect(await screen.findByLabelText("研究紀錄編號")).toHaveValue(SCAN_ID);
 
     await user.click(screen.getByTestId("tw-research-batch"));
     expect(await screen.findByText("處理中…")).toBeInTheDocument();
     expect(screen.getByTestId("tw-research-create")).toBeDisabled();
-    expect(screen.getByLabelText("掃描 ID")).toHaveValue(SCAN_ID);
+    expect(screen.getByLabelText("研究紀錄編號")).toHaveValue(SCAN_ID);
 
     releaseBatch(queuedScan({ status: "running", processedCount: 5, remainingCount: 68, cursor: 5 }));
     expect(await screen.findByText(/已處理 5\/73/)).toBeInTheDocument();
@@ -509,7 +509,7 @@ describe("TwResearchPage persisted scans (#327)", () => {
   it("restores the newest saved scan without creating one", async () => {
     vi.mocked(fetchTwResearchScans).mockResolvedValue({ scans: [summary()] });
     renderPage();
-    expect(await screen.findByLabelText("掃描 ID")).toHaveValue(SCAN_ID);
+    expect(await screen.findByLabelText("研究紀錄編號")).toHaveValue(SCAN_ID);
     expect(screen.getByText("TW:2330")).toBeInTheDocument();
     expect(createTwResearchScan).not.toHaveBeenCalled();
     expect(runTwResearchBatch).not.toHaveBeenCalled();
@@ -533,11 +533,11 @@ describe("TwResearchPage persisted scans (#327)", () => {
       }),
     );
     renderPage({ initialScanId: SCAN_ID });
-    expect(await screen.findByLabelText("掃描 ID")).toHaveValue(SCAN_ID);
+    expect(await screen.findByLabelText("研究紀錄編號")).toHaveValue(SCAN_ID);
     expect(createTwResearchScan).not.toHaveBeenCalled();
 
     await user.selectOptions(screen.getByLabelText("最近的掃描"), older);
-    expect(await screen.findByLabelText("掃描 ID")).toHaveValue(older);
+    expect(await screen.findByLabelText("研究紀錄編號")).toHaveValue(older);
     expect(fetchTwResearchScan).toHaveBeenCalledWith(older);
     expect(runTwResearchBatch).not.toHaveBeenCalled();
   });
@@ -550,7 +550,7 @@ describe("TwResearchPage persisted scans (#327)", () => {
     const { client } = renderPage({ initialScanId: SCAN_ID });
     expect(await screen.findByText("TW:2330")).toBeInTheDocument();
     await client.refetchQueries({ queryKey: ["tw-research-progress", SCAN_ID] });
-    expect(screen.getByLabelText("掃描 ID")).toHaveValue(SCAN_ID);
+    expect(screen.getByLabelText("研究紀錄編號")).toHaveValue(SCAN_ID);
     expect(screen.getByText("TW:2330")).toBeInTheDocument();
     expect(await screen.findByTestId("tw-research-stale")).toBeInTheDocument();
     expect(runTwResearchBatch).not.toHaveBeenCalled();
@@ -614,7 +614,7 @@ describe("TwResearchPage persisted scans (#327)", () => {
       progress({ scanId: id }),
     );
     const { client } = renderPage({ initialScanId: SCAN_ID });
-    expect(await screen.findByLabelText("掃描 ID")).toHaveValue(SCAN_ID);
+    expect(await screen.findByLabelText("研究紀錄編號")).toHaveValue(SCAN_ID);
     await client.refetchQueries({ queryKey: ["tw-research-scans"] });
     await waitFor(() => {
       const history = screen.getByTestId("tw-research-history") as HTMLSelectElement;
@@ -623,7 +623,7 @@ describe("TwResearchPage persisted scans (#327)", () => {
       );
     });
     expect(screen.getByTestId("tw-research-history")).toHaveValue(SCAN_ID);
-    expect(screen.getByLabelText("掃描 ID")).toHaveValue(SCAN_ID);
+    expect(screen.getByLabelText("研究紀錄編號")).toHaveValue(SCAN_ID);
     expect(createTwResearchScan).not.toHaveBeenCalled();
     expect(runTwResearchBatch).not.toHaveBeenCalled();
   });
@@ -650,7 +650,7 @@ describe("TwResearchPage persisted scans (#327)", () => {
       .mockResolvedValueOnce(unchanged)
       .mockResolvedValueOnce(changed);
     const { client } = renderPage({ initialScanId: SCAN_ID });
-    expect(await screen.findByLabelText("掃描 ID")).toHaveValue(SCAN_ID);
+    expect(await screen.findByLabelText("研究紀錄編號")).toHaveValue(SCAN_ID);
     const afterInitial = vi.mocked(fetchTwResearchScan).mock.calls.length;
     await client.refetchQueries({ queryKey: ["tw-research-progress", SCAN_ID] });
     expect(vi.mocked(fetchTwResearchScan).mock.calls.length).toBe(afterInitial);
@@ -677,7 +677,7 @@ describe("TwResearchPage persisted scans (#327)", () => {
       scans: [summary({ tradingDay: taipeiTradingDay() })],
     });
     renderPage();
-    expect(await screen.findByLabelText("掃描 ID")).toHaveValue(SCAN_ID);
+    expect(await screen.findByLabelText("研究紀錄編號")).toHaveValue(SCAN_ID);
     await user.click(screen.getByTestId("tw-research-create"));
     expect(createTwResearchScan).not.toHaveBeenCalled();
     expect(screen.getByTestId("tw-research-existing-scan")).toBeInTheDocument();
@@ -692,12 +692,12 @@ describe("TwResearchPage persisted scans (#327)", () => {
       queuedScan({ scanId: "new-scan-for-today-aaaaaaaa", tradingDay: taipeiTradingDay() }),
     );
     renderPage({ initialScanId: SCAN_ID });
-    expect(await screen.findByLabelText("掃描 ID")).toHaveValue(SCAN_ID);
+    expect(await screen.findByLabelText("研究紀錄編號")).toHaveValue(SCAN_ID);
     await user.click(screen.getByTestId("tw-research-create"));
     await waitFor(() => {
       expect(createTwResearchScan).toHaveBeenCalledTimes(1);
     });
-    expect(await screen.findByLabelText("掃描 ID")).toHaveValue("new-scan-for-today-aaaaaaaa");
+    expect(await screen.findByLabelText("研究紀錄編號")).toHaveValue("new-scan-for-today-aaaaaaaa");
     expect(screen.queryByTestId("tw-research-existing-scan")).not.toBeInTheDocument();
   });
 
@@ -728,7 +728,7 @@ describe("TwResearchPage persisted scans (#327)", () => {
       .mockResolvedValueOnce({ qualityStatus: "processed" })
       .mockResolvedValueOnce({ qualityStatus: "verified_ready", snapshotId: "snap-1" });
     const { client } = renderPage({ initialScanId: SCAN_ID });
-    expect(await screen.findByLabelText("掃描 ID")).toHaveValue(SCAN_ID);
+    expect(await screen.findByLabelText("研究紀錄編號")).toHaveValue(SCAN_ID);
     await waitFor(() => {
       expect(fetchTwResearchExportManifest).toHaveBeenCalled();
     });
@@ -782,8 +782,8 @@ describe("TwResearchPage persisted scans (#327)", () => {
     renderPage({ initialScanId: SCAN_ID });
     expect(await screen.findByTestId("tw-research-tabs")).toBeInTheDocument();
     await user.click(screen.getByTestId("tw-research-tab-progress"));
-    expect(await screen.findByLabelText("掃描 ID")).toHaveValue(SCAN_ID);
-    await user.click(screen.getByRole("button", { name: "載入匯出 JSON（進階）" }));
+    expect(await screen.findByLabelText("研究紀錄編號")).toHaveValue(SCAN_ID);
+    await user.click(screen.getByRole("button", { name: "載入匯出（進階）" }));
     await waitFor(() => {
       const area = screen.getByLabelText("瀏覽器可讀匯出 JSON") as HTMLTextAreaElement;
       expect(area.value).toContain("TW:2330");
@@ -791,7 +791,7 @@ describe("TwResearchPage persisted scans (#327)", () => {
     expect(screen.getByText(/匯出資料第 0／3 頁/)).toBeInTheDocument();
 
     await user.selectOptions(screen.getByLabelText("最近的掃描"), older);
-    expect(await screen.findByLabelText("掃描 ID")).toHaveValue(older);
+    expect(await screen.findByLabelText("研究紀錄編號")).toHaveValue(older);
     await waitFor(() => {
       const area = screen.getByLabelText("瀏覽器可讀匯出 JSON") as HTMLTextAreaElement;
       expect(area.value).toBe("");
@@ -810,14 +810,14 @@ describe("TwResearchPage persisted scans (#327)", () => {
         }),
       );
     const { client } = renderPage();
-    expect(await screen.findByLabelText("掃描 ID")).toHaveValue(SCAN_ID);
+    expect(await screen.findByLabelText("研究紀錄編號")).toHaveValue(SCAN_ID);
     expect(screen.getByTestId("tw-research-history")).toBeInTheDocument();
     await client.refetchQueries({ queryKey: ["tw-research-scans"] });
     const listError = await screen.findByTestId("tw-research-error-list");
     expect(listError).toHaveTextContent("最近的掃描");
     expect(listError).toHaveTextContent("503");
     expect(screen.getByTestId("tw-research-history")).toHaveValue(SCAN_ID);
-    expect(screen.getByLabelText("掃描 ID")).toHaveValue(SCAN_ID);
+    expect(screen.getByLabelText("研究紀錄編號")).toHaveValue(SCAN_ID);
   });
 
   it("shows a budget-exhausted scan as unfinished and not resumable", async () => {
@@ -1150,7 +1150,7 @@ describe("TwResearchPage reliability UX (#335–#337)", () => {
         expect.objectContaining({ expectedVersion: 3, targetCount: 10 }),
       );
     });
-    expect(await screen.findByLabelText("掃描 ID")).toHaveValue("scan_from_candidates");
+    expect(await screen.findByLabelText("研究紀錄編號")).toHaveValue("scan_from_candidates");
     expect(await screen.findByTestId("tw-research-candidate-provenance")).toHaveTextContent(
       /cs_abc/,
     );
@@ -1367,7 +1367,7 @@ describe("TwResearchPage watchlist union (#338)", () => {
 
     renderPage();
     await user.click(screen.getByTestId("tw-research-create"));
-    expect(await screen.findByLabelText("掃描 ID")).toHaveValue(SCAN_ID);
+    expect(await screen.findByLabelText("研究紀錄編號")).toHaveValue(SCAN_ID);
 
     await user.click(screen.getByTestId("tw-research-tab-watchlist"));
     expect(await screen.findByTestId("tw-research-watchlist")).toBeInTheDocument();

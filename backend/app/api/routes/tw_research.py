@@ -14,6 +14,7 @@ from typing import Any, TypeVar
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response
+from fastapi.responses import JSONResponse
 
 from app.api.deps import get_effective_user_id
 from app.core.config import settings
@@ -298,11 +299,16 @@ def preview_research_membership(
 @router.get("/first-pass/jobs", response_model=FirstPassJobListResponse)
 def list_first_pass_jobs(
     limit: int = Query(default=20, ge=1, le=50),
+    include_archived: bool = Query(default=False, alias="includeArchived"),
     user_id: str = Depends(get_effective_user_id),
 ) -> FirstPassJobListResponse:
-    """Ownership-scoped recent first-pass jobs for UI restore after refresh (#335)."""
+    """Ownership-scoped recent first-pass jobs for UI restore after refresh (#335/#355)."""
     try:
-        jobs = first_pass_job_service.list_jobs(user_id=user_id, limit=limit)
+        jobs = first_pass_job_service.list_jobs(
+            user_id=user_id,
+            limit=limit,
+            include_archived=include_archived,
+        )
     except FirstPassJobError as exc:
         raise HTTPException(
             status_code=503,
@@ -386,6 +392,186 @@ def run_first_pass_job_batch(
     }
     payload["leaseLost"] = bool(result.get("leaseLost"))
     return FirstPassJobResponse(job=payload)
+
+
+@router.post("/first-pass/jobs/{job_id}/cancel", response_model=FirstPassJobResponse)
+def cancel_first_pass_job(
+    job_id: str,
+    user_id: str = Depends(get_effective_user_id),
+) -> FirstPassJobResponse:
+    """Cancel a first-pass job and fence active leases (#355). Idempotent."""
+    try:
+        job = first_pass_job_service.cancel_job(job_id, user_id=user_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except FirstPassJobError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={"error": str(exc), "operation": exc.operation},
+        ) from exc
+    return FirstPassJobResponse(job=_camel_job(job))
+
+
+@router.post("/first-pass/jobs/{job_id}/archive", response_model=FirstPassJobResponse)
+def archive_first_pass_job(
+    job_id: str,
+    user_id: str = Depends(get_effective_user_id),
+) -> FirstPassJobResponse:
+    """Soft-hide a job from the default list (#355). Idempotent."""
+    try:
+        job = first_pass_job_service.archive_job(job_id, user_id=user_id, archived=True)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except FirstPassJobError as exc:
+        status = 409 if "lease_active" in str(exc) else 503
+        raise HTTPException(
+            status_code=status,
+            detail={"error": str(exc), "operation": exc.operation},
+        ) from exc
+    return FirstPassJobResponse(job=_camel_job(job))
+
+
+@router.post("/first-pass/jobs/{job_id}/unarchive", response_model=FirstPassJobResponse)
+def unarchive_first_pass_job(
+    job_id: str,
+    user_id: str = Depends(get_effective_user_id),
+) -> FirstPassJobResponse:
+    """Restore an archived job to the default list (#355). Idempotent."""
+    try:
+        job = first_pass_job_service.archive_job(job_id, user_id=user_id, archived=False)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except FirstPassJobError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={"error": str(exc), "operation": exc.operation},
+        ) from exc
+    return FirstPassJobResponse(job=_camel_job(job))
+
+
+@router.get("/first-pass/jobs/{job_id}/deletion-preview")
+def first_pass_job_deletion_preview(
+    job_id: str,
+    user_id: str = Depends(get_effective_user_id),
+) -> dict[str, Any]:
+    """Read-only dependency inventory before hard delete (#355)."""
+    try:
+        preview = first_pass_job_service.deletion_preview(job_id, user_id=user_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except FirstPassJobError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={"error": str(exc), "operation": exc.operation},
+        ) from exc
+    return {
+        "jobId": preview.get("job_id"),
+        "category": preview.get("category"),
+        "closure": preview.get("closure"),
+        "retained": preview.get("retained"),
+        "blockers": preview.get("blockers"),
+        "requiresFullRunDelete": preview.get("requires_full_run_delete"),
+        "previewToken": preview.get("preview_token"),
+        "status": preview.get("status"),
+        "leaseActive": preview.get("lease_active"),
+        "deletionState": preview.get("deletion_state"),
+        "archivedAt": preview.get("archived_at"),
+        "symbolCount": preview.get("symbol_count"),
+        "runOwned": preview.get("run_owned"),
+        "activeSnapshotId": preview.get("active_snapshot_id"),
+    }
+
+
+@router.delete("/first-pass/jobs/{job_id}")
+def delete_first_pass_job(
+    job_id: str,
+    user_id: str = Depends(get_effective_user_id),
+    x_deletion_preview_token: str | None = Header(
+        default=None, alias="X-Deletion-Preview-Token"
+    ),
+) -> Response:
+    """Hard-delete an eligible job, or request deletion for a running job (#355)."""
+    try:
+        result = first_pass_job_service.delete_job(
+            job_id,
+            user_id=user_id,
+            preview_token=x_deletion_preview_token or "",
+        )
+    except FirstPassJobError as exc:
+        code = 400 if "preview_token" in str(exc) else 503
+        raise HTTPException(
+            status_code=code,
+            detail={"error": str(exc), "operation": exc.operation},
+        ) from exc
+    outcome = str(result.get("outcome") or "")
+    if outcome == "not_found":
+        raise HTTPException(status_code=404, detail="first_pass_job_not_found")
+    if outcome == "conflict":
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": str(result.get("code") or "deletion_conflict"),
+                "preview": result.get("preview"),
+                "job": (
+                    _camel_job(result["job"])
+                    if isinstance(result.get("job"), dict)
+                    else None
+                ),
+            },
+        )
+    if outcome == "requested":
+        return JSONResponse(
+            status_code=202,
+            content={
+                "deletionState": "requested",
+                "job": _camel_job(result["job"])
+                if isinstance(result.get("job"), dict)
+                else None,
+                "quiesceAfter": result.get("quiesce_after"),
+                "auditId": result.get("audit_id"),
+            },
+        )
+    # deleted
+    return JSONResponse(
+        status_code=200,
+        content={
+            "deleted": True,
+            "idempotent": bool(result.get("idempotent")),
+            "counts": result.get("counts") or {},
+            "auditId": result.get("audit_id"),
+        },
+    )
+
+
+@router.get("/first-pass/jobs/{job_id}/deletion")
+def first_pass_job_deletion_status(
+    job_id: str,
+    user_id: str = Depends(get_effective_user_id),
+) -> Response:
+    """Deletion lifecycle status; 410 + tombstone after hard delete (#355)."""
+    try:
+        status = first_pass_job_service.deletion_status(job_id, user_id=user_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except FirstPassJobError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={"error": str(exc), "operation": exc.operation},
+        ) from exc
+    payload = {
+        "jobId": status.get("job_id"),
+        "gone": bool(status.get("gone")),
+        "deletionState": status.get("deletion_state"),
+        "deletionError": status.get("deletion_error"),
+        "status": status.get("status"),
+        "outcome": status.get("outcome"),
+        "counts": status.get("counts"),
+        "completedAt": status.get("completed_at"),
+        "auditId": status.get("audit_id"),
+    }
+    if status.get("gone"):
+        return JSONResponse(status_code=410, content=payload)
+    return JSONResponse(status_code=200, content=payload)
 
 
 @router.get("/first-pass/jobs/{job_id}", response_model=FirstPassJobResponse)
@@ -1427,6 +1613,86 @@ def get_current_research_run(
     return ResearchRunResponse(researchRun=run.as_dict())
 
 
+@router.get("/research-runs/current/deletion-preview")
+def research_run_deletion_preview(
+    user_id: str = Depends(get_effective_user_id),
+) -> dict[str, Any]:
+    """Read-only closure inventory before deleting the current research run (#355)."""
+    try:
+        preview = first_pass_job_service.research_run_deletion_preview(user_id=user_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except FirstPassJobError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={"error": str(exc), "operation": exc.operation},
+        ) from exc
+    return {
+        "researchRunId": preview.get("research_run_id"),
+        "category": preview.get("category"),
+        "closure": preview.get("closure"),
+        "retained": preview.get("retained"),
+        "blockers": preview.get("blockers"),
+        "requiresFullRunDelete": True,
+        "previewToken": preview.get("preview_token"),
+        "jobIds": preview.get("job_ids"),
+        "needsQuiesce": preview.get("needs_quiesce"),
+        "deletionRequested": preview.get("deletion_requested"),
+    }
+
+
+@router.delete("/research-runs/current")
+def delete_current_research_run(
+    user_id: str = Depends(get_effective_user_id),
+    x_deletion_preview_token: str | None = Header(
+        default=None, alias="X-Deletion-Preview-Token"
+    ),
+) -> Response:
+    """Hard-delete the current research run and uniquely owned dependencies (#355 PR-D)."""
+    try:
+        result = first_pass_job_service.delete_research_run(
+            user_id=user_id,
+            preview_token=x_deletion_preview_token or "",
+        )
+    except FirstPassJobError as exc:
+        code = 400 if "preview_token" in str(exc) else 503
+        raise HTTPException(
+            status_code=code,
+            detail={"error": str(exc), "operation": exc.operation},
+        ) from exc
+    outcome = str(result.get("outcome") or "")
+    if outcome == "not_found":
+        raise HTTPException(status_code=404, detail="research_run_not_found")
+    if outcome == "conflict":
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": str(result.get("code") or "deletion_conflict"),
+                "preview": result.get("preview"),
+            },
+        )
+    if outcome == "requested":
+        return JSONResponse(
+            status_code=202,
+            content={
+                "deletionState": "requested",
+                "researchRunId": result.get("research_run_id"),
+                "quiesceAfter": result.get("quiesce_after"),
+                "auditId": result.get("audit_id"),
+            },
+        )
+    return JSONResponse(
+        status_code=200,
+        content={
+            "deleted": True,
+            "idempotent": bool(result.get("idempotent")),
+            "counts": result.get("counts") or {},
+            "auditId": result.get("audit_id"),
+            "researchRunId": result.get("research_run_id"),
+        },
+    )
+
+
 @router.post("/research-runs/first-pass-drain", response_model=ResearchRunResponse)
 def set_research_run_first_pass_drain(
     body: ResearchRunDrainControlRequest,
@@ -2314,6 +2580,10 @@ def _camel_job(job: dict[str, object]) -> dict[str, object]:
         "leaseGeneration": job.get("lease_generation"),
         "activeSnapshotId": job.get("active_snapshot_id"),
         "notes": job.get("notes"),
+        "archivedAt": job.get("archived_at"),
+        "deletionState": job.get("deletion_state"),
+        "deletionRequestedAt": job.get("deletion_requested_at"),
+        "deletionError": job.get("deletion_error"),
         "createdAt": job.get("created_at"),
         "updatedAt": job.get("updated_at"),
     }

@@ -345,11 +345,83 @@ export async function previewTwResearchMembership(body: Record<string, unknown>)
   return response.membership;
 }
 
-export async function listTwResearchFirstPassJobs(limit = 20) {
+export async function listTwResearchFirstPassJobs(
+  limit = 20,
+  includeArchived = false,
+) {
+  const params = new URLSearchParams({
+    limit: String(limit),
+    includeArchived: includeArchived ? "true" : "false",
+  });
   const response = await requestJson<{ jobs: Record<string, unknown>[] }>(
-    `/tw-research/first-pass/jobs?limit=${encodeURIComponent(String(limit))}`,
+    `/tw-research/first-pass/jobs?${params.toString()}`,
   );
   return response.jobs;
+}
+
+export async function cancelTwResearchFirstPassJob(jobId: string) {
+  const response = await requestJsonWithBody<{ job: Record<string, unknown> }>(
+    `/tw-research/first-pass/jobs/${encodeURIComponent(jobId)}/cancel`,
+    "POST",
+    {},
+  );
+  return response.job;
+}
+
+export async function archiveTwResearchFirstPassJob(jobId: string) {
+  const response = await requestJsonWithBody<{ job: Record<string, unknown> }>(
+    `/tw-research/first-pass/jobs/${encodeURIComponent(jobId)}/archive`,
+    "POST",
+    {},
+  );
+  return response.job;
+}
+
+export async function unarchiveTwResearchFirstPassJob(jobId: string) {
+  const response = await requestJsonWithBody<{ job: Record<string, unknown> }>(
+    `/tw-research/first-pass/jobs/${encodeURIComponent(jobId)}/unarchive`,
+    "POST",
+    {},
+  );
+  return response.job;
+}
+
+export async function fetchTwResearchFirstPassDeletionPreview(jobId: string) {
+  return requestJson<Record<string, unknown>>(
+    `/tw-research/first-pass/jobs/${encodeURIComponent(jobId)}/deletion-preview`,
+  );
+}
+
+export async function deleteTwResearchFirstPassJob(
+  jobId: string,
+  previewToken: string,
+) {
+  return requestJson<Record<string, unknown>>(
+    `/tw-research/first-pass/jobs/${encodeURIComponent(jobId)}`,
+    {
+      method: "DELETE",
+      headers: { "X-Deletion-Preview-Token": previewToken },
+    },
+  );
+}
+
+export async function fetchTwResearchFirstPassDeletionStatus(jobId: string) {
+  return requestJson<Record<string, unknown>>(
+    `/tw-research/first-pass/jobs/${encodeURIComponent(jobId)}/deletion`,
+  );
+}
+
+export async function fetchTwResearchRunDeletionPreview() {
+  return requestJson<Record<string, unknown>>(
+    "/tw-research/research-runs/current/deletion-preview",
+  );
+}
+
+export async function deleteTwResearchRunCurrent(previewToken: string) {
+  return requestJson<Record<string, unknown>>("/tw-research/research-runs/current", {
+    method: "DELETE",
+    headers: { "X-Deletion-Preview-Token": previewToken },
+  });
 }
 
 export async function createTwResearchFirstPassJob(body?: {

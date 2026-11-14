@@ -177,7 +177,40 @@ else
 fi
 
 echo
-echo "== Running image IDs (informational; :local tags do not carry a git SHA) =="
+echo "== Frontend build version (#357) =="
+# NEXT_PUBLIC_BUILD_* is baked at image build time. Fail when the served SHA
+# does not match the SHA we expect (git HEAD unless EXPECTED_BUILD_SHA is set).
+expected_sha="${EXPECTED_BUILD_SHA:-$(git -C "${ROOT_DIR}" rev-parse --short HEAD 2>/dev/null || true)}"
+version_json="$(
+  ${KUBECTL_CMD} -n "${NAMESPACE}" exec -i deploy/stock-ticker-backend -c backend -- \
+    python - http://stock-ticker-frontend:3000/api/version <<'PY' 2>/dev/null || true
+import sys
+import urllib.request
+try:
+    print(urllib.request.urlopen(sys.argv[1], timeout=10).read().decode("utf-8", "replace"))
+except Exception as exc:
+    print(f"ERROR:{exc}")
+    sys.exit(1)
+PY
+)"
+if [[ -z "${version_json}" || "${version_json}" == ERROR:* ]]; then
+  fail "could not read frontend /api/version (${version_json:-empty})"
+else
+  served_sha="$(
+    printf '%s' "${version_json}" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("sha",""))' 2>/dev/null || true
+  )"
+  note "served /api/version: ${version_json}"
+  if [[ -z "${served_sha}" || "${served_sha}" == "unknown" ]]; then
+    fail "frontend BUILD_SHA is unknown — image was built without --build-arg BUILD_SHA"
+  elif [[ -n "${expected_sha}" && "${served_sha}" != "${expected_sha}" && "${served_sha}" != "${expected_sha:0:${#served_sha}}" && "${expected_sha}" != "${served_sha:0:${#expected_sha}}" ]]; then
+    fail "frontend BUILD_SHA mismatch: served=${served_sha} expected=${expected_sha}"
+  else
+    pass "frontend BUILD_SHA matches expected (${served_sha})"
+  fi
+fi
+
+echo
+echo "== Running image IDs (informational) =="
 note "deploy-k3s.sh restarts backend/worker/frontend after a local import (#303)."
 for deploy in stock-ticker-backend stock-ticker-backend-worker stock-ticker-frontend; do
   image_id="$(

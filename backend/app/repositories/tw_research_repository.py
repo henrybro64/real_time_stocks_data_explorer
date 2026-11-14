@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -9,9 +10,12 @@ from sqlalchemy import func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+logger = logging.getLogger(__name__)
+
 from app.db.models import (
     TwResearchCandidateSet,
     TwResearchCoordinationLock,
+    TwResearchDeletionAudit,
     TwResearchExportSnapshot,
     TwResearchFirstPassJob,
     TwResearchFirstPassSnapshot,
@@ -2485,16 +2489,1105 @@ class TwResearchRepository(SessionBoundRepository):
                 return None
             return _first_pass_job_to_dict(row)
 
-    def list_first_pass_jobs(self, user_id: str, *, limit: int = 20) -> list[dict[str, Any]]:
+    def list_first_pass_jobs(
+        self,
+        user_id: str,
+        *,
+        limit: int = 20,
+        include_archived: bool = False,
+    ) -> list[dict[str, Any]]:
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            stmt = select(TwResearchFirstPassJob).where(
+                TwResearchFirstPassJob.user_id == user_id
+            )
+            if not include_archived:
+                stmt = stmt.where(TwResearchFirstPassJob.archived_at.is_(None))
+            rows = session.execute(
+                stmt.order_by(TwResearchFirstPassJob.updated_at.desc()).limit(limit)
+            ).scalars().all()
+            return [_first_pass_job_to_dict(row) for row in rows]
+
+    def cancel_first_pass_job(
+        self,
+        job_id: str,
+        *,
+        user_id: str,
+    ) -> dict[str, Any] | None:
+        """Mark job cancelled and fence active leases (#355). Idempotent."""
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            now = datetime.now(timezone.utc)
+            row = session.execute(
+                select(TwResearchFirstPassJob)
+                .where(
+                    TwResearchFirstPassJob.job_id == job_id,
+                    TwResearchFirstPassJob.user_id == user_id,
+                )
+                .with_for_update()
+            ).scalar_one_or_none()
+            if row is None:
+                return None
+            if row.status == "cancelled" and not row.deletion_state:
+                # Already cancelled — still return current row (idempotent).
+                return _first_pass_job_to_dict(row)
+            row.status = "cancelled"
+            row.reserve_expires_at = None
+            row.lease_generation = int(row.lease_generation or 0) + 1
+            notes = list(row.notes_json or [])
+            notes.append("cancelled_by_user")
+            row.notes_json = notes[-50:]
+            row.updated_at = now
+            # Disarm drain when this job is the run-owned authoritative job.
+            run = session.execute(
+                select(TwResearchResearchRun)
+                .where(TwResearchResearchRun.user_id == user_id)
+                .with_for_update()
+            ).scalar_one_or_none()
+            if run is not None and str(run.first_pass_job_id or "") == str(job_id):
+                run.schedule_enabled = False
+                run.updated_at = now
+            session.commit()
+            return _first_pass_job_to_dict(row)
+
+    def set_first_pass_job_archived(
+        self,
+        job_id: str,
+        *,
+        user_id: str,
+        archived: bool,
+    ) -> dict[str, Any] | None:
+        """Soft-hide / restore a job in the default list (#355). Idempotent."""
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            now = datetime.now(timezone.utc)
+            row = session.execute(
+                select(TwResearchFirstPassJob)
+                .where(
+                    TwResearchFirstPassJob.job_id == job_id,
+                    TwResearchFirstPassJob.user_id == user_id,
+                )
+                .with_for_update()
+            ).scalar_one_or_none()
+            if row is None:
+                return None
+            if archived:
+                if row.archived_at is not None:
+                    return _first_pass_job_to_dict(row)
+                # Refuse archive while actively leased and still running.
+                lease_until = _as_utc(row.reserve_expires_at)
+                if (
+                    row.status in {"pending", "running", "deferred"}
+                    and lease_until is not None
+                    and lease_until > now
+                ):
+                    raise ValueError("job_lease_active_cancel_first")
+                row.archived_at = now
+            else:
+                if row.archived_at is None:
+                    return _first_pass_job_to_dict(row)
+                row.archived_at = None
+            row.updated_at = now
+            session.commit()
+            return _first_pass_job_to_dict(row)
+
+    def build_first_pass_deletion_preview(
+        self,
+        job_id: str,
+        *,
+        user_id: str,
+    ) -> dict[str, Any] | None:
+        """Read-only dependency inventory for hard delete (#355)."""
+        import hashlib
+        import json
+
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            row = session.execute(
+                select(TwResearchFirstPassJob).where(
+                    TwResearchFirstPassJob.job_id == job_id,
+                    TwResearchFirstPassJob.user_id == user_id,
+                )
+            ).scalar_one_or_none()
+            if row is None:
+                return None
+            now = datetime.now(timezone.utc)
+            symbol_count = int(
+                session.execute(
+                    select(func.count())
+                    .select_from(TwResearchFirstPassSymbolResult)
+                    .where(TwResearchFirstPassSymbolResult.job_id == job_id)
+                ).scalar_one()
+                or 0
+            )
+            run = session.execute(
+                select(TwResearchResearchRun).where(
+                    TwResearchResearchRun.user_id == user_id
+                )
+            ).scalar_one_or_none()
+            run_owned = bool(
+                run is not None
+                and (
+                    str(run.first_pass_job_id or "") == str(job_id)
+                    or str(run.pending_first_pass_job_id or "") == str(job_id)
+                )
+            )
+            snapshot_id = row.active_snapshot_id
+            blockers: list[dict[str, str]] = []
+            retained: list[dict[str, str]] = []
+            snapshot_owned = False
+            snapshot_shared = False
+            candidate_refs = 0
+            other_job_refs = 0
+            if snapshot_id:
+                other_job_refs = int(
+                    session.execute(
+                        select(func.count())
+                        .select_from(TwResearchFirstPassJob)
+                        .where(
+                            TwResearchFirstPassJob.active_snapshot_id == snapshot_id,
+                            TwResearchFirstPassJob.job_id != job_id,
+                        )
+                    ).scalar_one()
+                    or 0
+                )
+                candidate_refs = int(
+                    session.execute(
+                        select(func.count())
+                        .select_from(TwResearchCandidateSet)
+                        .where(
+                            TwResearchCandidateSet.first_pass_snapshot_id == snapshot_id
+                        )
+                    ).scalar_one()
+                    or 0
+                )
+                if other_job_refs > 0:
+                    snapshot_shared = True
+                    blockers.append(
+                        {
+                            "code": "snapshot_shared_with_other_job",
+                            "detail": f"other_jobs={other_job_refs}",
+                        }
+                    )
+                    retained.append(
+                        {
+                            "code": "first_pass_snapshot",
+                            "detail": snapshot_id,
+                        }
+                    )
+                if candidate_refs > 0:
+                    blockers.append(
+                        {
+                            "code": "snapshot_referenced_by_candidate_set",
+                            "detail": f"candidate_sets={candidate_refs}",
+                        }
+                    )
+                    retained.append(
+                        {
+                            "code": "first_pass_snapshot",
+                            "detail": snapshot_id,
+                        }
+                    )
+                if (
+                    run is not None
+                    and str(run.first_pass_snapshot_id or "") == str(snapshot_id)
+                ):
+                    blockers.append(
+                        {
+                            "code": "snapshot_referenced_by_research_run",
+                            "detail": str(run.research_run_id),
+                        }
+                    )
+                # Scan provenance lives in selector/notes JSON — best-effort match.
+                scan_hits = session.execute(
+                    select(TwResearchScan).where(TwResearchScan.user_id == user_id)
+                ).scalars().all()
+                for scan in scan_hits:
+                    blob = json.dumps(
+                        {
+                            "selector": scan.selector_json or {},
+                            "notes": list(scan.notes_json or []),
+                        },
+                        default=str,
+                    )
+                    if snapshot_id and snapshot_id in blob:
+                        blockers.append(
+                            {
+                                "code": "scan_provenance_references_snapshot",
+                                "detail": scan.scan_id,
+                            }
+                        )
+                        break
+                if not blockers:
+                    snapshot_owned = True
+
+            lease_until = _as_utc(row.reserve_expires_at)
+            lease_active = lease_until is not None and lease_until > now
+            if row.deletion_state == "requested":
+                blockers.append(
+                    {
+                        "code": "deletion_in_progress",
+                        "detail": "awaiting_worker_quiescence",
+                    }
+                )
+
+            status = str(row.status or "")
+            if run_owned:
+                category = "run_owned"
+            elif status in {"running"} or lease_active:
+                category = "running"
+            elif status in {"pending"} and symbol_count == 0:
+                category = "pending"
+            elif status in {"completed", "partial", "failed", "cancelled", "deferred"}:
+                # Orphan = not run-owned and not pending with zero work.
+                category = "orphan" if not run_owned else "run_owned"
+                if status in {"completed", "partial", "failed", "cancelled"}:
+                    category = "completed" if not run_owned else "run_owned"
+            else:
+                category = "orphan"
+
+            requires_full_run = run_owned
+            if run_owned:
+                blockers.append(
+                    {
+                        "code": "run_owned_requires_full_run_delete",
+                        "detail": str(run.research_run_id if run else ""),
+                    }
+                )
+
+            closure = {
+                "tw_research_first_pass_jobs": 1,
+                "tw_research_first_pass_symbol_results": symbol_count,
+                "tw_research_first_pass_snapshots": 1 if snapshot_owned else 0,
+            }
+            token_payload = {
+                "jobId": job_id,
+                "userId": user_id,
+                "category": category,
+                "closure": closure,
+                "blockers": [b["code"] for b in blockers],
+                "snapshotId": snapshot_id,
+                "leaseGeneration": int(row.lease_generation or 0),
+                "status": status,
+                "deletionState": row.deletion_state,
+            }
+            preview_token = hashlib.sha256(
+                json.dumps(token_payload, sort_keys=True, separators=(",", ":")).encode(
+                    "utf-8"
+                )
+            ).hexdigest()
+            return {
+                "job_id": job_id,
+                "category": category,
+                "closure": closure,
+                "retained": retained,
+                "blockers": blockers,
+                "requires_full_run_delete": requires_full_run,
+                "preview_token": preview_token,
+                "status": status,
+                "lease_active": lease_active,
+                "lease_expires_at": (
+                    lease_until.isoformat() if lease_until is not None else None
+                ),
+                "deletion_state": row.deletion_state,
+                "archived_at": (
+                    row.archived_at.isoformat()
+                    if hasattr(row.archived_at, "isoformat") and row.archived_at
+                    else None
+                ),
+                "active_snapshot_id": snapshot_id,
+                "snapshot_owned": snapshot_owned,
+                "snapshot_shared": snapshot_shared,
+                "symbol_count": symbol_count,
+                "run_owned": run_owned,
+                "lease_generation": int(row.lease_generation or 0),
+            }
+
+    def request_first_pass_job_deletion(
+        self,
+        job_id: str,
+        *,
+        user_id: str,
+        preview_token: str,
+    ) -> dict[str, Any]:
+        """Start or complete hard delete depending on quiescence (#355).
+
+        Returns a dict with keys: outcome (deleted|requested|conflict|not_found),
+        plus payload fields for the HTTP layer.
+        """
+        import hashlib
+        import json
+        import uuid
+
+        preview = self.build_first_pass_deletion_preview(job_id, user_id=user_id)
+        if preview is None:
+            return {"outcome": "not_found"}
+        if preview["preview_token"] != preview_token:
+            return {
+                "outcome": "conflict",
+                "code": "preview_stale",
+                "preview": preview,
+            }
+        if preview["requires_full_run_delete"] or preview["run_owned"]:
+            return {
+                "outcome": "conflict",
+                "code": "run_owned_requires_full_run_delete",
+                "preview": preview,
+            }
+        blocking_codes = {
+            b["code"]
+            for b in preview["blockers"]
+            if b["code"]
+            not in {
+                "deletion_in_progress",  # allowed to proceed toward completion
+            }
+        }
+        # Shared/referenced snapshot or scan provenance always blocks standalone delete.
+        hard_blockers = blocking_codes - set()
+        if hard_blockers & {
+            "snapshot_shared_with_other_job",
+            "snapshot_referenced_by_candidate_set",
+            "snapshot_referenced_by_research_run",
+            "scan_provenance_references_snapshot",
+        }:
+            return {
+                "outcome": "conflict",
+                "code": next(iter(hard_blockers)),
+                "preview": preview,
+            }
+
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            now = datetime.now(timezone.utc)
+            row = session.execute(
+                select(TwResearchFirstPassJob)
+                .where(
+                    TwResearchFirstPassJob.job_id == job_id,
+                    TwResearchFirstPassJob.user_id == user_id,
+                )
+                .with_for_update()
+            ).scalar_one_or_none()
+            if row is None:
+                # Idempotent: prior delete may have completed.
+                tombstone = session.execute(
+                    select(TwResearchDeletionAudit)
+                    .where(
+                        TwResearchDeletionAudit.user_id == user_id,
+                        TwResearchDeletionAudit.entity_type == "first_pass_job",
+                        TwResearchDeletionAudit.entity_id == job_id,
+                        TwResearchDeletionAudit.outcome == "deleted",
+                    )
+                    .order_by(TwResearchDeletionAudit.completed_at.desc())
+                    .limit(1)
+                ).scalar_one_or_none()
+                if tombstone is not None:
+                    return {
+                        "outcome": "deleted",
+                        "idempotent": True,
+                        "counts": dict(tombstone.counts_json or {}),
+                        "audit_id": tombstone.id,
+                    }
+                return {"outcome": "not_found"}
+
+            # Stale preview: lease generation or status changed since GET preview.
+            if int(row.lease_generation or 0) != int(
+                preview.get("lease_generation") or 0
+            ) or str(row.status or "") != str(preview.get("status") or ""):
+                session.rollback()
+                return {
+                    "outcome": "conflict",
+                    "code": "preview_stale",
+                    "preview": preview,
+                }
+
+            lease_until = _as_utc(row.reserve_expires_at)
+            lease_active = lease_until is not None and lease_until > now
+            needs_quiesce = (
+                row.deletion_state != "requested"
+                and (
+                    row.status == "running"
+                    or lease_active
+                    or int(row.reserve_cursor or 0) > int(row.cursor or 0)
+                )
+            )
+
+            # Running / leased: request deletion, fence, return 202 path.
+            if needs_quiesce:
+                prev_lease_until = lease_until
+                row.deletion_state = "requested"
+                row.deletion_requested_at = now
+                row.deletion_error = None
+                row.status = "cancelled"
+                row.reserve_expires_at = None
+                row.lease_generation = int(row.lease_generation or 0) + 1
+                notes = list(row.notes_json or [])
+                notes.append("deletion_requested_by_user")
+                row.notes_json = notes[-50:]
+                row.updated_at = now
+                run = session.execute(
+                    select(TwResearchResearchRun)
+                    .where(TwResearchResearchRun.user_id == user_id)
+                    .with_for_update()
+                ).scalar_one_or_none()
+                if run is not None and str(run.first_pass_job_id or "") == str(job_id):
+                    run.schedule_enabled = False
+                    run.updated_at = now
+                audit = TwResearchDeletionAudit(
+                    id=f"tda_{uuid.uuid4().hex[:24]}",
+                    user_id=user_id,
+                    entity_type="first_pass_job",
+                    entity_id=job_id,
+                    category=str(preview.get("category") or "running"),
+                    requested_at=now,
+                    completed_at=None,
+                    outcome="requested",
+                    counts_json={"pending": True},
+                    error_code=None,
+                )
+                session.add(audit)
+                session.commit()
+                quiesce_at = prev_lease_until or (
+                    now + timedelta(seconds=BATCH_LEASE_SECONDS)
+                )
+                return {
+                    "outcome": "requested",
+                    "deletion_state": "requested",
+                    "job": _first_pass_job_to_dict(row),
+                    "audit_id": audit.id,
+                    "quiesce_after": quiesce_at.isoformat(),
+                }
+
+            # Already requested: only hard-delete once quiescent.
+            if row.deletion_state == "requested":
+                requested_at = _as_utc(row.deletion_requested_at) or now
+                bound = requested_at + timedelta(seconds=BATCH_LEASE_SECONDS)
+                if now < bound:
+                    return {
+                        "outcome": "requested",
+                        "deletion_state": "requested",
+                        "job": _first_pass_job_to_dict(row),
+                        "quiesce_after": bound.isoformat(),
+                    }
+                # Timed out waiting beyond 2× lease window.
+                if now > bound + timedelta(seconds=BATCH_LEASE_SECONDS):
+                    row.deletion_state = "failed"
+                    row.deletion_error = "worker_quiescence_timeout"
+                    row.updated_at = now
+                    session.commit()
+                    return {
+                        "outcome": "conflict",
+                        "code": "worker_quiescence_timeout",
+                        "job": _first_pass_job_to_dict(row),
+                    }
+
+            # Immediate hard delete path (pending/completed/orphan, quiescent).
+            symbol_count = int(
+                session.execute(
+                    select(func.count())
+                    .select_from(TwResearchFirstPassSymbolResult)
+                    .where(TwResearchFirstPassSymbolResult.job_id == job_id)
+                ).scalar_one()
+                or 0
+            )
+            snapshot_id = row.active_snapshot_id
+            snapshot_deleted = 0
+            if snapshot_id and preview.get("snapshot_owned"):
+                other = int(
+                    session.execute(
+                        select(func.count())
+                        .select_from(TwResearchFirstPassJob)
+                        .where(
+                            TwResearchFirstPassJob.active_snapshot_id == snapshot_id,
+                            TwResearchFirstPassJob.job_id != job_id,
+                        )
+                    ).scalar_one()
+                    or 0
+                )
+                cand = int(
+                    session.execute(
+                        select(func.count())
+                        .select_from(TwResearchCandidateSet)
+                        .where(
+                            TwResearchCandidateSet.first_pass_snapshot_id == snapshot_id
+                        )
+                    ).scalar_one()
+                    or 0
+                )
+                if other == 0 and cand == 0:
+                    snap = session.get(TwResearchFirstPassSnapshot, snapshot_id)
+                    if snap is not None and snap.user_id == user_id:
+                        session.delete(snap)
+                        snapshot_deleted = 1
+
+            run = session.execute(
+                select(TwResearchResearchRun)
+                .where(TwResearchResearchRun.user_id == user_id)
+                .with_for_update()
+            ).scalar_one_or_none()
+            if run is not None:
+                if str(run.pending_first_pass_job_id or "") == str(job_id):
+                    run.pending_first_pass_job_id = None
+                if str(run.first_pass_job_id or "") == str(job_id):
+                    session.rollback()
+                    return {
+                        "outcome": "conflict",
+                        "code": "run_owned_requires_full_run_delete",
+                        "preview": preview,
+                    }
+                run.updated_at = now
+
+            counts = {
+                "tw_research_first_pass_jobs": 1,
+                "tw_research_first_pass_symbol_results": symbol_count,
+                "tw_research_first_pass_snapshots": snapshot_deleted,
+            }
+            audit = TwResearchDeletionAudit(
+                id=f"tda_{uuid.uuid4().hex[:24]}",
+                user_id=user_id,
+                entity_type="first_pass_job",
+                entity_id=job_id,
+                category=str(preview.get("category") or "orphan"),
+                requested_at=_as_utc(row.deletion_requested_at) or now,
+                completed_at=now,
+                outcome="deleted",
+                counts_json=counts,
+                error_code=None,
+            )
+            session.add(audit)
+            session.delete(row)  # CASCADE symbol results
+            session.commit()
+            return {
+                "outcome": "deleted",
+                "idempotent": False,
+                "counts": counts,
+                "audit_id": audit.id,
+            }
+
+    def get_first_pass_deletion_status(
+        self,
+        job_id: str,
+        *,
+        user_id: str,
+    ) -> dict[str, Any] | None:
+        """Lifecycle status or tombstone after hard delete (#355)."""
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            row = session.execute(
+                select(TwResearchFirstPassJob).where(
+                    TwResearchFirstPassJob.job_id == job_id,
+                    TwResearchFirstPassJob.user_id == user_id,
+                )
+            ).scalar_one_or_none()
+            if row is not None:
+                return {
+                    "job_id": job_id,
+                    "status": row.status,
+                    "deletion_state": row.deletion_state,
+                    "deletion_requested_at": (
+                        row.deletion_requested_at.isoformat()
+                        if hasattr(row.deletion_requested_at, "isoformat")
+                        and row.deletion_requested_at
+                        else None
+                    ),
+                    "deletion_error": row.deletion_error,
+                    "gone": False,
+                }
+            tombstone = session.execute(
+                select(TwResearchDeletionAudit)
+                .where(
+                    TwResearchDeletionAudit.user_id == user_id,
+                    TwResearchDeletionAudit.entity_type == "first_pass_job",
+                    TwResearchDeletionAudit.entity_id == job_id,
+                )
+                .order_by(TwResearchDeletionAudit.requested_at.desc())
+                .limit(1)
+            ).scalar_one_or_none()
+            if tombstone is None:
+                return None
+            return {
+                "job_id": job_id,
+                "gone": True,
+                "outcome": tombstone.outcome,
+                "counts": dict(tombstone.counts_json or {}),
+                "completed_at": (
+                    tombstone.completed_at.isoformat()
+                    if hasattr(tombstone.completed_at, "isoformat")
+                    and tombstone.completed_at
+                    else None
+                ),
+                "audit_id": tombstone.id,
+            }
+
+    def try_complete_pending_first_pass_deletions(
+        self,
+        user_id: str,
+        *,
+        limit: int = 5,
+    ) -> list[dict[str, Any]]:
+        """Lazy completer for deletion_state=requested jobs (#355)."""
         session_factory = self._session_factory()
         with session_factory() as session:
             rows = session.execute(
                 select(TwResearchFirstPassJob)
-                .where(TwResearchFirstPassJob.user_id == user_id)
-                .order_by(TwResearchFirstPassJob.updated_at.desc())
+                .where(
+                    TwResearchFirstPassJob.user_id == user_id,
+                    TwResearchFirstPassJob.deletion_state == "requested",
+                )
+                .order_by(TwResearchFirstPassJob.deletion_requested_at.asc())
                 .limit(limit)
             ).scalars().all()
-            return [_first_pass_job_to_dict(row) for row in rows]
+            job_ids = [r.job_id for r in rows]
+        results: list[dict[str, Any]] = []
+        for jid in job_ids:
+            preview = self.build_first_pass_deletion_preview(jid, user_id=user_id)
+            if preview is None:
+                continue
+            # Skip run-owned — those complete via full-run deletion (#355 PR-D).
+            if preview.get("run_owned") or preview.get("requires_full_run_delete"):
+                continue
+            # Use current preview token so stale-token does not block lazy GC.
+            results.append(
+                self.request_first_pass_job_deletion(
+                    jid,
+                    user_id=user_id,
+                    preview_token=preview["preview_token"],
+                )
+            )
+        # Resume full-run deletions that were waiting on worker quiescence.
+        try:
+            run_preview = self.build_research_run_deletion_preview(user_id=user_id)
+            if run_preview and run_preview.get("deletion_requested"):
+                results.append(
+                    self.request_research_run_deletion(
+                        user_id=user_id,
+                        preview_token=str(run_preview.get("preview_token") or ""),
+                    )
+                )
+        except Exception:  # noqa: BLE001
+            logger.exception("pending_research_run_deletion_gc_failed")
+        return results
+
+    def build_research_run_deletion_preview(
+        self,
+        *,
+        user_id: str,
+    ) -> dict[str, Any] | None:
+        """Read-only closure inventory for deleting the current research run (#355 PR-D)."""
+        import hashlib
+        import json
+
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            run = session.execute(
+                select(TwResearchResearchRun)
+                .where(TwResearchResearchRun.user_id == user_id)
+                .with_for_update()
+            ).scalar_one_or_none()
+            if run is None:
+                return None
+            now = datetime.now(timezone.utc)
+            job_ids = [
+                jid
+                for jid in {
+                    str(run.first_pass_job_id or ""),
+                    str(run.pending_first_pass_job_id or ""),
+                }
+                if jid
+            ]
+            jobs = []
+            if job_ids:
+                jobs = list(
+                    session.execute(
+                        select(TwResearchFirstPassJob).where(
+                            TwResearchFirstPassJob.user_id == user_id,
+                            TwResearchFirstPassJob.job_id.in_(job_ids),
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+            symbol_count = 0
+            needs_quiesce = False
+            snapshot_ids: set[str] = set()
+            for job in jobs:
+                symbol_count += int(
+                    session.execute(
+                        select(func.count())
+                        .select_from(TwResearchFirstPassSymbolResult)
+                        .where(TwResearchFirstPassSymbolResult.job_id == job.job_id)
+                    ).scalar_one()
+                    or 0
+                )
+                lease_until = _as_utc(job.reserve_expires_at)
+                if (
+                    job.status == "running"
+                    or (lease_until is not None and lease_until > now)
+                    or job.deletion_state == "requested"
+                ):
+                    needs_quiesce = True
+                if job.active_snapshot_id:
+                    snapshot_ids.add(str(job.active_snapshot_id))
+            if run.first_pass_snapshot_id:
+                snapshot_ids.add(str(run.first_pass_snapshot_id))
+
+            blockers: list[dict[str, str]] = []
+            retained: list[dict[str, str]] = []
+            # Snapshots shared with jobs outside this run cannot be deleted.
+            shared_snapshots = 0
+            for sid in snapshot_ids:
+                other = int(
+                    session.execute(
+                        select(func.count())
+                        .select_from(TwResearchFirstPassJob)
+                        .where(
+                            TwResearchFirstPassJob.active_snapshot_id == sid,
+                            TwResearchFirstPassJob.user_id == user_id,
+                            ~TwResearchFirstPassJob.job_id.in_(job_ids or ["__none__"]),
+                        )
+                    ).scalar_one()
+                    or 0
+                )
+                if other > 0:
+                    shared_snapshots += 1
+                    blockers.append(
+                        {
+                            "code": "snapshot_shared_with_other_job",
+                            "detail": sid,
+                        }
+                    )
+                    retained.append({"code": "first_pass_snapshot", "detail": sid})
+
+            candidate_id = str(run.candidate_set_id or "")
+            scan_id = str(run.technical_scan_id or "")
+            pending_scan = str(run.pending_technical_scan_id or "")
+            scan_ids = [sid for sid in {scan_id, pending_scan} if sid]
+            export_count = 0
+            if scan_ids:
+                export_count = int(
+                    session.execute(
+                        select(func.count())
+                        .select_from(TwResearchExportSnapshot)
+                        .where(TwResearchExportSnapshot.scan_id.in_(scan_ids))
+                    ).scalar_one()
+                    or 0
+                )
+
+            deletion_requested = False
+            pending_audit = session.execute(
+                select(TwResearchDeletionAudit)
+                .where(
+                    TwResearchDeletionAudit.user_id == user_id,
+                    TwResearchDeletionAudit.entity_type == "research_run",
+                    TwResearchDeletionAudit.entity_id == run.research_run_id,
+                    TwResearchDeletionAudit.outcome == "requested",
+                )
+                .order_by(TwResearchDeletionAudit.requested_at.desc())
+                .limit(1)
+            ).scalar_one_or_none()
+            if pending_audit is not None:
+                deletion_requested = True
+                needs_quiesce = True
+
+            closure = {
+                "tw_research_research_runs": 1,
+                "tw_research_first_pass_jobs": len(jobs),
+                "tw_research_first_pass_symbol_results": symbol_count,
+                "tw_research_first_pass_snapshots": max(
+                    0, len(snapshot_ids) - shared_snapshots
+                ),
+                "tw_research_candidate_sets": 1 if candidate_id else 0,
+                "tw_research_scans": len(scan_ids),
+                "tw_research_export_snapshots": export_count,
+            }
+            token_payload = {
+                "researchRunId": run.research_run_id,
+                "userId": user_id,
+                "jobIds": sorted(job_ids),
+                "closure": closure,
+                "blockers": [b["code"] for b in blockers],
+                "version": run.version,
+            }
+            preview_token = hashlib.sha256(
+                json.dumps(token_payload, sort_keys=True, separators=(",", ":")).encode(
+                    "utf-8"
+                )
+            ).hexdigest()
+            return {
+                "research_run_id": run.research_run_id,
+                "category": "research_run",
+                "closure": closure,
+                "retained": retained,
+                "blockers": blockers,
+                "requires_full_run_delete": True,
+                "preview_token": preview_token,
+                "job_ids": job_ids,
+                "needs_quiesce": needs_quiesce,
+                "deletion_requested": deletion_requested,
+                "candidate_set_id": candidate_id or None,
+                "technical_scan_ids": scan_ids,
+                "snapshot_ids": sorted(snapshot_ids),
+                "version": run.version,
+            }
+
+    def request_research_run_deletion(
+        self,
+        *,
+        user_id: str,
+        preview_token: str,
+    ) -> dict[str, Any]:
+        """Delete the current research run and its uniquely owned closure (#355 PR-D)."""
+        import uuid
+
+        preview = self.build_research_run_deletion_preview(user_id=user_id)
+        if preview is None:
+            return {"outcome": "not_found"}
+        if not preview_token or preview_token != preview.get("preview_token"):
+            return {
+                "outcome": "conflict",
+                "code": "preview_stale",
+                "preview": preview,
+            }
+        if preview.get("blockers"):
+            # Shared snapshot etc. — refuse rather than partial delete.
+            return {
+                "outcome": "conflict",
+                "code": str(preview["blockers"][0].get("code") or "deletion_conflict"),
+                "preview": preview,
+            }
+
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            now = datetime.now(timezone.utc)
+            run = session.execute(
+                select(TwResearchResearchRun)
+                .where(TwResearchResearchRun.user_id == user_id)
+                .with_for_update()
+            ).scalar_one_or_none()
+            if run is None:
+                tombstone = session.execute(
+                    select(TwResearchDeletionAudit)
+                    .where(
+                        TwResearchDeletionAudit.user_id == user_id,
+                        TwResearchDeletionAudit.entity_type == "research_run",
+                        TwResearchDeletionAudit.outcome == "deleted",
+                    )
+                    .order_by(TwResearchDeletionAudit.requested_at.desc())
+                    .limit(1)
+                ).scalar_one_or_none()
+                if tombstone is not None:
+                    return {
+                        "outcome": "deleted",
+                        "idempotent": True,
+                        "counts": dict(tombstone.counts_json or {}),
+                        "audit_id": tombstone.id,
+                    }
+                return {"outcome": "not_found"}
+
+            job_ids = [
+                jid
+                for jid in {
+                    str(run.first_pass_job_id or ""),
+                    str(run.pending_first_pass_job_id or ""),
+                }
+                if jid
+            ]
+            jobs = []
+            if job_ids:
+                jobs = list(
+                    session.execute(
+                        select(TwResearchFirstPassJob)
+                        .where(
+                            TwResearchFirstPassJob.user_id == user_id,
+                            TwResearchFirstPassJob.job_id.in_(job_ids),
+                        )
+                        .with_for_update()
+                    )
+                    .scalars()
+                    .all()
+                )
+
+            needs_quiesce = False
+            for job in jobs:
+                lease_until = _as_utc(job.reserve_expires_at)
+                lease_active = lease_until is not None and lease_until > now
+                if (
+                    job.deletion_state != "requested"
+                    and (
+                        job.status == "running"
+                        or lease_active
+                        or int(job.reserve_cursor or 0) > int(job.cursor or 0)
+                    )
+                ):
+                    needs_quiesce = True
+                    job.deletion_state = "requested"
+                    job.deletion_requested_at = now
+                    job.deletion_error = None
+                    job.status = "cancelled"
+                    job.reserve_expires_at = None
+                    job.lease_generation = int(job.lease_generation or 0) + 1
+                    notes = list(job.notes_json or [])
+                    notes.append("deletion_requested_via_full_run")
+                    job.notes_json = notes[-50:]
+                    job.updated_at = now
+                elif job.deletion_state == "requested":
+                    requested_at = _as_utc(job.deletion_requested_at) or now
+                    bound = requested_at + timedelta(seconds=BATCH_LEASE_SECONDS)
+                    if now < bound:
+                        needs_quiesce = True
+
+            run.schedule_enabled = False
+            run.updated_at = now
+
+            if needs_quiesce:
+                audit = TwResearchDeletionAudit(
+                    id=f"tda_{uuid.uuid4().hex[:24]}",
+                    user_id=user_id,
+                    entity_type="research_run",
+                    entity_id=run.research_run_id,
+                    category="research_run",
+                    requested_at=now,
+                    completed_at=None,
+                    outcome="requested",
+                    counts_json={"pending": True, "jobIds": job_ids},
+                    error_code=None,
+                )
+                session.add(audit)
+                session.commit()
+                return {
+                    "outcome": "requested",
+                    "deletion_state": "requested",
+                    "research_run_id": run.research_run_id,
+                    "audit_id": audit.id,
+                    "quiesce_after": (
+                        now + timedelta(seconds=BATCH_LEASE_SECONDS)
+                    ).isoformat(),
+                }
+
+            # Physical delete of uniquely owned closure.
+            counts: dict[str, int] = {
+                "tw_research_research_runs": 0,
+                "tw_research_first_pass_jobs": 0,
+                "tw_research_first_pass_symbol_results": 0,
+                "tw_research_first_pass_snapshots": 0,
+                "tw_research_candidate_sets": 0,
+                "tw_research_scans": 0,
+                "tw_research_export_snapshots": 0,
+            }
+            snapshot_ids = set(preview.get("snapshot_ids") or [])
+            scan_ids = list(preview.get("technical_scan_ids") or [])
+            candidate_id = preview.get("candidate_set_id")
+
+            if scan_ids:
+                exports = list(
+                    session.execute(
+                        select(TwResearchExportSnapshot).where(
+                            TwResearchExportSnapshot.scan_id.in_(scan_ids)
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                for exp in exports:
+                    session.delete(exp)
+                    counts["tw_research_export_snapshots"] += 1
+                for sid in scan_ids:
+                    scan = session.get(TwResearchScan, sid)
+                    if scan is not None and (
+                        scan.user_id is None or scan.user_id == user_id
+                    ):
+                        # Refuse legacy unowned scans.
+                        if scan.user_id is None:
+                            session.rollback()
+                            return {
+                                "outcome": "conflict",
+                                "code": "legacy_unowned",
+                                "preview": preview,
+                            }
+                        session.delete(scan)  # CASCADE scan symbol rows
+                        counts["tw_research_scans"] += 1
+
+            # Clear run pointers before deleting FK-protected candidates/snapshots.
+            run.first_pass_job_id = None
+            run.pending_first_pass_job_id = None
+            run.first_pass_snapshot_id = None
+            run.candidate_set_id = None
+            run.candidate_set_version = None
+            run.technical_scan_id = None
+            run.pending_technical_scan_id = None
+            run.schedule_enabled = False
+            session.flush()
+
+            if candidate_id:
+                cand = session.get(TwResearchCandidateSet, candidate_id)
+                if cand is not None and cand.user_id == user_id:
+                    session.delete(cand)
+                    counts["tw_research_candidate_sets"] += 1
+                    session.flush()
+
+            for job in jobs:
+                sym = int(
+                    session.execute(
+                        select(func.count())
+                        .select_from(TwResearchFirstPassSymbolResult)
+                        .where(TwResearchFirstPassSymbolResult.job_id == job.job_id)
+                    ).scalar_one()
+                    or 0
+                )
+                counts["tw_research_first_pass_symbol_results"] += sym
+                session.delete(job)
+                counts["tw_research_first_pass_jobs"] += 1
+            session.flush()
+
+            for sid in snapshot_ids:
+                still_ref = int(
+                    session.execute(
+                        select(func.count())
+                        .select_from(TwResearchFirstPassJob)
+                        .where(TwResearchFirstPassJob.active_snapshot_id == sid)
+                    ).scalar_one()
+                    or 0
+                )
+                cand_ref = int(
+                    session.execute(
+                        select(func.count())
+                        .select_from(TwResearchCandidateSet)
+                        .where(
+                            TwResearchCandidateSet.first_pass_snapshot_id == sid
+                        )
+                    ).scalar_one()
+                    or 0
+                )
+                if still_ref == 0 and cand_ref == 0:
+                    snap = session.get(TwResearchFirstPassSnapshot, sid)
+                    if snap is not None and snap.user_id == user_id:
+                        session.delete(snap)
+                        counts["tw_research_first_pass_snapshots"] += 1
+
+            research_run_id = run.research_run_id
+            session.delete(run)
+            counts["tw_research_research_runs"] = 1
+
+            audit = TwResearchDeletionAudit(
+                id=f"tda_{uuid.uuid4().hex[:24]}",
+                user_id=user_id,
+                entity_type="research_run",
+                entity_id=research_run_id,
+                category="research_run",
+                requested_at=now,
+                completed_at=now,
+                outcome="deleted",
+                counts_json=counts,
+                error_code=None,
+            )
+            session.add(audit)
+            session.commit()
+            return {
+                "outcome": "deleted",
+                "idempotent": False,
+                "counts": counts,
+                "audit_id": audit.id,
+                "research_run_id": research_run_id,
+            }
 
     def claim_first_pass_batch(
         self,
@@ -2514,8 +3607,8 @@ class TwResearchRepository(SessionBoundRepository):
             ).scalar_one_or_none()
             if row is None:
                 return None
-            # Terminal jobs are never reclaimable — commit nothing, leave status/lease.
-            if row.status in {"failed", "cancelled"}:
+            # Terminal / deleting jobs are never reclaimable (#349/#355).
+            if row.status in {"failed", "cancelled"} or row.deletion_state:
                 return {
                     "batch_ids": [],
                     "job": _first_pass_job_to_dict(row),
@@ -2781,6 +3874,8 @@ class TwResearchRepository(SessionBoundRepository):
                     TwResearchFirstPassJob.job_id == job_id,
                     TwResearchFirstPassJob.lease_generation == int(lease_generation),
                     TwResearchFirstPassJob.reserve_expires_at > now,
+                    TwResearchFirstPassJob.deletion_state.is_(None),
+                    TwResearchFirstPassJob.status.notin_(["failed", "cancelled"]),
                 )
                 .values(
                     reserve_expires_at=now
@@ -3033,6 +4128,20 @@ def _first_pass_job_to_dict(row: TwResearchFirstPassJob) -> dict[str, Any]:
         ),
         "active_snapshot_id": row.active_snapshot_id,
         "notes": list(row.notes_json or []),
+        "archived_at": (
+            row.archived_at.isoformat()
+            if getattr(row, "archived_at", None) is not None
+            and hasattr(row.archived_at, "isoformat")
+            else None
+        ),
+        "deletion_state": getattr(row, "deletion_state", None),
+        "deletion_requested_at": (
+            row.deletion_requested_at.isoformat()
+            if getattr(row, "deletion_requested_at", None) is not None
+            and hasattr(row.deletion_requested_at, "isoformat")
+            else None
+        ),
+        "deletion_error": getattr(row, "deletion_error", None),
         "created_at": row.created_at.isoformat()
         if hasattr(row.created_at, "isoformat")
         else str(row.created_at),
