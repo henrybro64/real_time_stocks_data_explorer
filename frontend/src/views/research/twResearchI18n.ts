@@ -118,9 +118,64 @@ const TW_RESEARCH_ROWS = [
     "要接續這個收集工作嗎？目前 {done}/{total} 已完成，{pending} 待收集。已完成的結果會保留。",
   ],
   [
+    "research.tw.resumeCollectionModalTitle",
+    "Resume this collection",
+    "接續這個收集工作",
+  ],
+  [
     "research.tw.adoptConflict",
     "Cannot resume: {reason}",
     "無法接續：{reason}",
+  ],
+  [
+    "research.tw.adoptConflictGeneric",
+    "Cannot resume this collection right now. See advanced detail for the technical code.",
+    "目前無法接續這個收集工作。技術代碼請見進階資訊。",
+  ],
+  [
+    "research.tw.adopt.reason.research_run_retained",
+    "An active research run is already in progress. Finish or cancel it before resuming this collection.",
+    "目前已有進行中的研究流程。請先完成或取消後，再接續這個收集工作。",
+  ],
+  [
+    "research.tw.adopt.reason.first_pass_job_lease_active",
+    "This collection is currently leased by a worker. Wait for the lease to expire, then try again.",
+    "這個收集工作目前正被工作者租用中。請等租約結束後再試。",
+  ],
+  [
+    "research.tw.adopt.reason.first_pass_job_archived",
+    "This collection has been archived and cannot be resumed.",
+    "這個收集工作已封存，無法接續。",
+  ],
+  [
+    "research.tw.adopt.reason.first_pass_job_nothing_pending",
+    "There is nothing left to collect for this job.",
+    "這個工作已沒有待收集的標的。",
+  ],
+  [
+    "research.tw.adopt.reason.first_pass_job_universe_digest_mismatch",
+    "The universe for this job no longer matches. Refresh the job list and try again.",
+    "這個工作的標的集合已變更。請重新整理工作清單後再試。",
+  ],
+  [
+    "research.tw.adopt.reason.first_pass_job_deletion_in_progress",
+    "This collection is being deleted and cannot be resumed.",
+    "這個收集工作正在刪除中，無法接續。",
+  ],
+  [
+    "research.tw.adopt.reason.first_pass_job_not_eligible_status",
+    "This collection is not in a resumable status.",
+    "這個收集工作目前的狀態無法接續。",
+  ],
+  [
+    "research.tw.adopt.reason.first_pass_job_already_attached",
+    "This collection is already attached to the research run.",
+    "這個收集工作已連結到目前的研究流程。",
+  ],
+  [
+    "research.tw.adoptConflictDetail",
+    "Technical code: {code}",
+    "技術代碼：{code}",
   ],
   [
     "research.tw.startFirstPassHint",

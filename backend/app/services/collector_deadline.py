@@ -80,3 +80,31 @@ def capped_request_timeout_seconds(configured: float) -> float:
     if remaining <= _MIN_USEFUL_TIMEOUT_SECONDS:
         raise CollectorDeadlineExceeded("collector_deadline_exceeded")
     return min(configured_f, remaining)
+
+
+def sleep_respecting_collector_deadline(
+    sleep_seconds: float,
+    *,
+    sleep: Callable[[float], None] | None = None,
+) -> None:
+    """Sleep for retry backoff without consuming the collector deadline floor.
+
+    If ``remaining`` is set and ``sleep_seconds >= remaining - 1s``, do **not**
+    sleep — raise ``CollectorDeadlineExceeded`` so the field becomes
+    ``collector_deadline_exceeded`` (retryable). Otherwise sleep
+    ``min(sleep_seconds, remaining - 1s)``.
+    """
+    sleeper = sleep or time.sleep
+    delay = max(0.0, float(sleep_seconds))
+    remaining = remaining_collector_deadline_seconds()
+    if remaining is None:
+        if delay > 0:
+            sleeper(delay)
+        return
+    # Leave at least 1s so a follow-up request could still be attempted.
+    if delay >= remaining - _MIN_USEFUL_TIMEOUT_SECONDS:
+        raise CollectorDeadlineExceeded("collector_deadline_exceeded")
+    capped = min(delay, remaining - _MIN_USEFUL_TIMEOUT_SECONDS)
+    if capped <= 0:
+        raise CollectorDeadlineExceeded("collector_deadline_exceeded")
+    sleeper(capped)

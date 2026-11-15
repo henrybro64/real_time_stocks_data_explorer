@@ -597,10 +597,47 @@ def _set_valuation_fields(
     return merged
 
 
+def _fetch_official_pe_json(
+    url: str,
+    *,
+    provider_name: str,
+    resource_id: str,
+) -> object | None:
+    """Fetch a TWSE/TPEx PE day file via ``http_client`` (#360).
+
+    Uses deadline-capped per-request timeouts and provider budget counters.
+    ``CollectorDeadlineExceeded`` propagates so First-Pass can mark the field
+    unavailable; other fetch failures return ``None``.
+    """
+    from app.services.collector_deadline import CollectorDeadlineExceeded
+    from app.services.http_client import HttpFetchError, fetch_json
+
+    try:
+        return fetch_json(
+            url,
+            headers={
+                "User-Agent": _BROWSER_USER_AGENT,
+                "Accept": "application/json,text/plain,*/*",
+            },
+            timeout_seconds=float(_TIMEOUT),
+            retries=0,
+            provider_name=provider_name,
+            operation_name="official_pe_day",
+            resource_id=resource_id,
+            retry_rate_limits=False,
+        )
+    except CollectorDeadlineExceeded:
+        raise
+    except (HttpFetchError, TimeoutError, ValueError, json.JSONDecodeError):
+        return None
+
+
 @lru_cache(maxsize=32)
 def _fetch_twse_daily_pe_snapshot(target_day: date) -> tuple[dict[str, dict[str, object]], str | None] | None:
-    payload = _http_get_any(
-        f"{_TWSE_DAILY_PE_URL}?{urlencode({'date': target_day.strftime('%Y%m%d'), 'selectType': 'ALL', 'response': 'json'})}"
+    payload = _fetch_official_pe_json(
+        f"{_TWSE_DAILY_PE_URL}?{urlencode({'date': target_day.strftime('%Y%m%d'), 'selectType': 'ALL', 'response': 'json'})}",
+        provider_name="twse_pe",
+        resource_id=target_day.isoformat(),
     )
     if not isinstance(payload, dict) or str(payload.get("stat", "")).strip().upper() != "OK":
         return None
@@ -637,8 +674,10 @@ def _fetch_twse_daily_pe_snapshot(target_day: date) -> tuple[dict[str, dict[str,
 
 @lru_cache(maxsize=32)
 def _fetch_tpex_daily_pe_snapshot(target_day: date) -> tuple[dict[str, dict[str, object]], str | None] | None:
-    payload = _http_get_any(
-        f"{_TPEX_DAILY_PE_URL}?{urlencode({'date': target_day.strftime('%Y/%m/%d'), 'response': 'json'})}"
+    payload = _fetch_official_pe_json(
+        f"{_TPEX_DAILY_PE_URL}?{urlencode({'date': target_day.strftime('%Y/%m/%d'), 'response': 'json'})}",
+        provider_name="tpex_pe",
+        resource_id=target_day.isoformat(),
     )
     if not isinstance(payload, dict) or str(payload.get("stat", "")).strip().lower() != "ok":
         return None

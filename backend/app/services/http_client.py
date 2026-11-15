@@ -629,7 +629,22 @@ def _request_with_retries(
                     "response_classification": classification,
                 },
             )
-            time.sleep(sleep_seconds)
+            # Never sleep past the collector deadline floor (#360).
+            # Pass this module's ``time.sleep`` so existing test monkeypatches apply.
+            try:
+                from app.services.collector_deadline import (
+                    CollectorDeadlineExceeded,
+                    sleep_respecting_collector_deadline,
+                )
+
+                sleep_respecting_collector_deadline(sleep_seconds, sleep=time.sleep)
+            except Exception as deadline_exc:  # noqa: BLE001
+                from app.services.collector_deadline import CollectorDeadlineExceeded
+
+                if isinstance(deadline_exc, CollectorDeadlineExceeded):
+                    record_provider_budget_event(effective_provider, timeouts=1)
+                    raise
+                time.sleep(sleep_seconds)
             continue
 
     if (

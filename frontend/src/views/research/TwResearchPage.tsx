@@ -467,7 +467,10 @@ export function TwResearchPage({
     setPendingFullRunDeletionState(pending);
     writeSession(PENDING_RUN_DELETION_KEY, pending ? "1" : null);
   };
-  const [confirmModal, setConfirmModal] = useState<"cancel" | "archive" | null>(null);
+  const [confirmModal, setConfirmModal] = useState<
+    "cancel" | "archive" | "adopt" | null
+  >(null);
+  const [adoptConflictCode, setAdoptConflictCode] = useState<string | null>(null);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -1269,6 +1272,28 @@ export function TwResearchPage({
 
   const [adoptErrorMessage, setAdoptErrorMessage] = useState<string | null>(null);
 
+  const ADOPT_REASON_I18N: Record<string, TranslationKey> = {
+    research_run_retained: "research.tw.adopt.reason.research_run_retained",
+    first_pass_job_lease_active: "research.tw.adopt.reason.first_pass_job_lease_active",
+    first_pass_job_archived: "research.tw.adopt.reason.first_pass_job_archived",
+    first_pass_job_nothing_pending:
+      "research.tw.adopt.reason.first_pass_job_nothing_pending",
+    first_pass_job_universe_digest_mismatch:
+      "research.tw.adopt.reason.first_pass_job_universe_digest_mismatch",
+    first_pass_job_deletion_in_progress:
+      "research.tw.adopt.reason.first_pass_job_deletion_in_progress",
+    first_pass_job_not_eligible_status:
+      "research.tw.adopt.reason.first_pass_job_not_eligible_status",
+    first_pass_job_already_attached:
+      "research.tw.adopt.reason.first_pass_job_already_attached",
+  };
+
+  const adoptConflictPlainMessage = (reason: string): string => {
+    const key = ADOPT_REASON_I18N[reason];
+    if (key) return t(key);
+    return t("research.tw.adoptConflictGeneric");
+  };
+
   const executionMessageFromState = (state: string): string | null => {
     if (state === "executor_unavailable" || state === "job_created") {
       return t("research.tw.execution.executorUnavailable");
@@ -1348,18 +1373,36 @@ export function TwResearchPage({
       adoptTwResearchFirstPassJob(payload),
     onSuccess: (run) => {
       setAdoptErrorMessage(null);
+      setAdoptConflictCode(null);
+      setConfirmModal(null);
       applyManagedStartResult(run);
       setFirstPassProgressText(JSON.stringify(run, null, 2));
     },
     onError: (error) => {
       const api = toApiError(error);
-      const detail =
+      const reason =
         typeof api.detail === "object" && api.detail && "reason" in (api.detail as object)
-          ? String((api.detail as { reason?: string }).reason ?? api.message)
-          : api.message;
-      setAdoptErrorMessage(t("research.tw.adoptConflict", { reason: detail }));
+          ? String((api.detail as { reason?: string }).reason ?? "")
+          : "";
+      const code = reason || api.message;
+      setAdoptConflictCode(code);
+      setAdoptErrorMessage(adoptConflictPlainMessage(code));
+      setConfirmModal(null);
     },
   });
+
+  const confirmAdoptModal = () => {
+    if (!firstPassJobId || adoptFirstPassMutation.isPending) return;
+    const job = selectedFirstPassJob as
+      | (FirstPassProgressLike & { universeDigest?: string; universe_digest?: string })
+      | null;
+    const digest = String(job?.universeDigest ?? job?.universe_digest ?? "");
+    if (!digest) return;
+    adoptFirstPassMutation.mutate({
+      jobId: firstPassJobId,
+      confirmUniverseDigest: digest,
+    });
+  };
 
   const createStandaloneFirstPassMutation = useMutation({
     mutationFn: async () => createTwResearchFirstPassJob({ useMembership: true }),
@@ -2668,46 +2711,33 @@ export function TwResearchPage({
                     data-testid="tw-research-adopt-first-pass"
                     disabled={adoptFirstPassMutation.isPending}
                     onClick={() => {
-                      const digest = String(
-                        selectedFirstPassJob.universeDigest ??
-                          selectedFirstPassJob.universe_digest ??
-                          "",
-                      );
-                      const universe = Number(
-                        selectedFirstPassJob.universeSize ??
-                          (Array.isArray(selectedFirstPassJob.stockIds)
-                            ? selectedFirstPassJob.stockIds.length
-                            : 0),
-                      );
-                      const done = Number(
-                        selectedFirstPassJob.cursor ??
-                          selectedFirstPassJob.processedCount ??
-                          0,
-                      );
-                      const pending = Math.max(0, universe - done);
-                      const ok = window.confirm(
-                        t("research.tw.resumeCollectionConfirm", {
-                          done: String(done),
-                          total: String(universe || "?"),
-                          pending: String(pending),
-                        }),
-                      );
-                      if (!ok || !firstPassJobId || !digest) return;
-                      adoptFirstPassMutation.mutate({
-                        jobId: firstPassJobId,
-                        confirmUniverseDigest: digest,
-                      });
+                      setAdoptErrorMessage(null);
+                      setAdoptConflictCode(null);
+                      setConfirmModal("adopt");
                     }}
                   >
                     {t("research.tw.resumeCollection")}
                   </Button>
                   {adoptErrorMessage ? (
-                    <p
-                      className="cds--helper-text-01"
-                      data-testid="tw-research-adopt-error"
-                    >
-                      {adoptErrorMessage}
-                    </p>
+                    <Stack gap={1}>
+                      <p
+                        className="cds--helper-text-01"
+                        data-testid="tw-research-adopt-error"
+                      >
+                        {adoptErrorMessage}
+                      </p>
+                      {adoptConflictCode &&
+                      !ADOPT_REASON_I18N[adoptConflictCode] ? (
+                        <p
+                          className="cds--label-01"
+                          data-testid="tw-research-adopt-error-detail"
+                        >
+                          {t("research.tw.adoptConflictDetail", {
+                            code: adoptConflictCode,
+                          })}
+                        </p>
+                      ) : null}
+                    </Stack>
                   ) : null}
                 </Stack>
               ) : null}
@@ -2794,18 +2824,55 @@ export function TwResearchPage({
               >
                 <ModalHeader
                   title={t(
-                    confirmModal === "archive"
-                      ? "research.tw.archiveJobModalTitle"
-                      : "research.tw.cancelJobModalTitle",
+                    confirmModal === "adopt"
+                      ? "research.tw.resumeCollectionModalTitle"
+                      : confirmModal === "archive"
+                        ? "research.tw.archiveJobModalTitle"
+                        : "research.tw.cancelJobModalTitle",
                   )}
                 />
                 <ModalBody>
                   <p className="cds--body-compact-01">
-                    {t(
-                      confirmModal === "archive"
-                        ? "research.tw.archiveJobConfirm"
-                        : "research.tw.cancelJobConfirm",
-                    )}
+                    {confirmModal === "adopt"
+                      ? (() => {
+                          const progress = firstPassProgressQuery.data as
+                            | (FirstPassProgressLike & { jobId?: string })
+                            | undefined;
+                          const progressMatches =
+                            progress &&
+                            String(progress.jobId ?? "") === String(firstPassJobId ?? "");
+                          const jobMeta = selectedFirstPassJob as
+                            | (FirstPassProgressLike & {
+                                universeSize?: number;
+                                stockIds?: string[];
+                              })
+                            | null;
+                          const universe = Number(
+                            (progressMatches ? progress?.universeSize : undefined) ??
+                              jobMeta?.universeSize ??
+                              (Array.isArray(jobMeta?.stockIds)
+                                ? jobMeta?.stockIds.length
+                                : 0),
+                          );
+                          const done = progressMatches
+                            ? Number(progress?.okCount ?? 0) +
+                              Number(progress?.partialCount ?? 0) +
+                              Number(progress?.failedCount ?? 0)
+                            : Number(
+                                jobMeta?.processedCount ?? jobMeta?.okCount ?? 0,
+                              );
+                          const pending = Math.max(0, universe - done);
+                          return t("research.tw.resumeCollectionConfirm", {
+                            done: String(done),
+                            total: String(universe || "?"),
+                            pending: String(pending),
+                          });
+                        })()
+                      : t(
+                          confirmModal === "archive"
+                            ? "research.tw.archiveJobConfirm"
+                            : "research.tw.cancelJobConfirm",
+                        )}
                   </p>
                 </ModalBody>
                 <ModalFooter>
@@ -2813,10 +2880,24 @@ export function TwResearchPage({
                     {t("research.tw.confirmModalCancel")}
                   </Button>
                   <Button
-                    kind={confirmModal === "archive" ? "primary" : "danger"}
-                    disabled={jobManageBusy}
+                    kind={
+                      confirmModal === "cancel"
+                        ? "danger"
+                        : "primary"
+                    }
+                    disabled={
+                      confirmModal === "adopt"
+                        ? adoptFirstPassMutation.isPending
+                        : jobManageBusy
+                    }
                     data-testid="tw-research-confirm-modal-confirm"
-                    onClick={() => void confirmManageModal()}
+                    onClick={() => {
+                      if (confirmModal === "adopt") {
+                        confirmAdoptModal();
+                        return;
+                      }
+                      void confirmManageModal();
+                    }}
                   >
                     {t("research.tw.confirmModalConfirm")}
                   </Button>

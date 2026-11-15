@@ -46,7 +46,7 @@ This branch does **not** unsuspend
 
 | Layer | Budget | Notes |
 |---|---|---|
-| Soft per-symbol deadline (all providers) | 45s | ContextVar; each HTTP timeout capped to remaining; skip if ≤1s left |
+| Soft per-symbol deadline (all providers) | 45s | ContextVar; each HTTP **phase** timeout capped to remaining; skip if ≤1s left |
 | Batch wall-clock budget | 60s | Stop before starting the next symbol |
 | Drain curl `--max-time` | 150s | CronJob HTTP client |
 | k8s Job `activeDeadlineSeconds` | 180s | Bounds the curl Job |
@@ -54,17 +54,29 @@ This branch does **not** unsuspend
 
 Worst case for one drain tick: batch budget 60s + one in-flight symbol ≤45s = **≤105s**, which is under curl 150s < Job 180s < lease 300s.
 
+**httpx timeouts are per phase** (connect/read/write/pool). Each phase is capped to
+`min(configured, remaining_deadline)` via `capped_request_timeout_seconds` before
+the request starts. Retry sleeps use `sleep_respecting_collector_deadline`: if the
+intended sleep would leave ≤1s (or overrun), the sleep is skipped and
+`CollectorDeadlineExceeded` is raised instead. Never start a request that cannot
+finish before the deadline.
+
 ### Per-provider hard timeouts (first-pass path)
 
 | Provider / step | Configured timeout | Max attempts | Worst-case (timeout×attempts + backoff) | Notes |
 |---|---|---|---|
 | Catalog / identity | local | 1 | ~0 | No HTTP |
 | Stored candles / 52w peek | local PG | 1 | ~0 | No upstream month fetch |
-| Institutional day heal | 8s (TWSE/TPEx client) | ≤ recent_days probes | bounded by symbol deadline | Store-first; live only when stale |
-| Margin day heal | 8s | ≤ recent_days probes | bounded by symbol deadline | Store-first (#360) |
-| PE day snapshot | 8s | 1 per board (lru) | ≤8s first symbol / board | In-process cache |
+| Institutional day heal | 8s (TWSE/TPEx client) | ≤ recent_days probes | bounded by symbol deadline (≤45s) | Store-first; live only when stale |
+| Margin day heal | 8s | ≤ recent_days probes | bounded by symbol deadline (≤45s) | Store-first (#360) |
+| PE day snapshot (`twse_pe` / `tpex_pe`) | 15s | 1 per board (lru) | ≤15s first symbol / board, else cache | Via `http_client.fetch_json`; deadline-capped |
 | TDCC open-data CSV | **min(20s, remaining)** | **2** | ≤40s but still inside 45s symbol deadline | Process singleflight + publication-date key |
-| TDCC portal Friday | 30s | 2 retries / Friday | Cut by symbol deadline between loops | Inherently per-symbol |
+| TDCC portal Friday GET/POST | **min(30s, remaining)** per request | 3 attempts / Friday (2 retries) | Cut by symbol deadline; retry sleep also deadline-aware | Cookie session; per-request `httpx.Timeout` |
+
+**Per-symbol worst case:** every provider step shares one 45s deadline. Slow early
+steps shrink later timeouts; when remaining ≤1s later steps skip as
+`collector_deadline_exceeded`. So one symbol is always **≤45s**, and
+batch 60s + one symbol ≤45s = **≤105s** < curl 150s < Job 180s < lease 300s.
 
 A Python soft deadline cannot interrupt blocked I/O; hard request timeouts + remaining-time caps prevent starting work that cannot finish.
 

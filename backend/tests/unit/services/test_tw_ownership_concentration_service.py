@@ -650,7 +650,7 @@ def test_missing_synchronizer_token_fails_closed(monkeypatch: pytest.MonkeyPatch
         def __exit__(self, *args):
             return False
 
-        def get(self, _url: str):
+        def get(self, _url: str, **_kwargs):
             return _FakeResponse("<html><body>no token here</body></html>")
 
         def post(self, *_args, **_kwargs):
@@ -782,7 +782,7 @@ def test_portal_request_retries_transient_status(monkeypatch: pytest.MonkeyPatch
         def __init__(self) -> None:
             self.calls = 0
 
-        def get(self, _url: str):
+        def get(self, _url: str, **_kwargs):
             self.calls += 1
             if self.calls < 3:
                 return _Resp(503)

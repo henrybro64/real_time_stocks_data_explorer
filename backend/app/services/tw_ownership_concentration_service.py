@@ -1136,13 +1136,15 @@ def _fetch_tdcc_portal_history(
     Uses a persistent ``httpx.Client`` so SYNCHRONIZER cookies survive across
     GET/POST. Each exchange applies the same bounded exponential backoff +
     Retry-After policy as ``http_client`` (stateless ``fetch_text`` cannot keep
-    the CSRF session).
+    the CSRF session). Per-request timeouts are capped to the remaining
+    collector deadline (#360).
     """
-    timeout = httpx.Timeout(_PORTAL_TIMEOUT_SECONDS)
     try:
         with httpx.Client(
             follow_redirects=True,
-            timeout=timeout,
+            # Default is overridden on every get/post with a deadline-capped
+            # httpx.Timeout — keep a finite client default as a safety net.
+            timeout=httpx.Timeout(_PORTAL_TIMEOUT_SECONDS),
             verify=True,
             headers=_PORTAL_HEADERS,
         ) as client:
@@ -1153,6 +1155,8 @@ def _fetch_tdcc_portal_history(
                 end_date=end_date,
                 max_weeks=max_weeks,
             )
+    except CollectorDeadlineExceeded:
+        raise
     except HttpFetchError as exc:
         raise RuntimeError(_UPSTREAM_UNAVAILABLE_ERROR) from exc
     except httpx.HTTPError as exc:
@@ -1168,15 +1172,20 @@ def _portal_request_with_retries(
     resource_id: str | None = None,
 ) -> httpx.Response:
     """Retry transient portal failures while preserving the cookie jar."""
+    from app.services.collector_deadline import sleep_respecting_collector_deadline
+
     attempts = max(_PORTAL_RETRIES + 1, 1)
     last_error: Exception | None = None
     for attempt in range(attempts):
         check_collector_deadline()
         try:
+            request_timeout = httpx.Timeout(
+                capped_request_timeout_seconds(_PORTAL_TIMEOUT_SECONDS)
+            )
             if method == "GET":
-                response = client.get(url)
+                response = client.get(url, timeout=request_timeout)
             else:
-                response = client.post(url, data=data)
+                response = client.post(url, data=data, timeout=request_timeout)
             if response.status_code in _PORTAL_RETRYABLE_STATUS_CODES:
                 retry_after = parse_retry_after_seconds(response.headers.get("retry-after"))
                 raise HttpFetchError(
@@ -1188,6 +1197,8 @@ def _portal_request_with_retries(
                 )
             response.raise_for_status()
             return response
+        except CollectorDeadlineExceeded:
+            raise
         except (httpx.HTTPError, HttpFetchError) as exc:
             last_error = exc
             status_code = None
@@ -1213,7 +1224,8 @@ def _portal_request_with_retries(
                 attempt + 1,
                 sleep_seconds,
             )
-            time.sleep(sleep_seconds)
+            # Pass this module's ``time.sleep`` so test monkeypatches apply.
+            sleep_respecting_collector_deadline(sleep_seconds, sleep=time.sleep)
     assert last_error is not None
     raise last_error
 

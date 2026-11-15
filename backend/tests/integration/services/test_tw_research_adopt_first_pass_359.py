@@ -185,3 +185,170 @@ def test_gated_run_is_retained() -> None:
     assert before is not None and after is not None
     assert after["first_pass_job_id"] == "fpj_other_gated"
     assert after["revision"] == before["revision"]
+
+
+def test_concurrent_start_and_adopt_no_500_single_run() -> None:
+    """Concurrent managed Start + adopt → no 500, one run, job attached ≤ once."""
+    user_id = f"u_race_start_{uuid4().hex[:8]}"
+    _ensure_user(user_id)
+    digest = "digest-start-adopt"
+    job_id = _seed_partial_job(user_id, digest=digest)
+    results: list[object] = []
+
+    def start_worker() -> None:
+        try:
+            results.append(("start", research_run_store.begin_phase1(user_id)))
+        except Exception as exc:  # noqa: BLE001
+            results.append(("start", exc))
+
+    def adopt_worker() -> None:
+        try:
+            results.append(
+                (
+                    "adopt",
+                    research_run_store.adopt_standalone_first_pass_job(
+                        user_id,
+                        job_id=job_id,
+                        confirm_universe_digest=digest,
+                    ),
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            results.append(("adopt", exc))
+
+    threads = [Thread(target=start_worker), Thread(target=adopt_worker)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+
+    assert len(results) == 2
+    # Never a raw 500 / unexpected exception type from the race.
+    for _label, item in results:
+        assert not isinstance(item, Exception) or isinstance(
+            item, (ResearchRunConflict, KeyError)
+        )
+
+    assert SessionLocal is not None
+    with SessionLocal() as session:
+        runs = session.execute(
+            select(TwResearchResearchRun).where(
+                TwResearchResearchRun.user_id == user_id
+            )
+        ).scalars().all()
+        assert len(runs) == 1
+        attached = [
+            r for r in runs if str(r.first_pass_job_id or "") == str(job_id)
+        ]
+        assert len(attached) <= 1
+
+
+def test_replace_failed_run_gets_fresh_identity() -> None:
+    user_id = f"u_replace_{uuid4().hex[:8]}"
+    _ensure_user(user_id)
+    digest = "digest-replace"
+    job_id = _seed_partial_job(user_id, digest=digest)
+    old_run_id = f"rr_old_{uuid4().hex[:12]}"
+    assert SessionLocal is not None
+    with SessionLocal() as session:
+        now = datetime.now(timezone.utc)
+        session.add(
+            TwResearchResearchRun(
+                user_id=user_id,
+                research_run_id=old_run_id,
+                version="research-run-v1",
+                phase="phase1_first_pass",
+                status="failed",
+                first_pass_job_id="fpj_old_failed",
+                first_pass_snapshot_id="fps_stale",
+                candidate_set_id=None,
+                technical_scan_id=None,
+                gates_json={"candidateSelection": "approved"},
+                dimensions_json={
+                    "fundamentals": "failed",
+                    "firstPassDrain": {"lastTickAt": "2024-01-01T00:00:00+00:00"},
+                },
+                notes_json=["prior failure"],
+                schedule_enabled=False,
+                revision=3,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        session.commit()
+
+    run = research_run_store.adopt_standalone_first_pass_job(
+        user_id,
+        job_id=job_id,
+        confirm_universe_digest=digest,
+    )
+    assert run.first_pass_job_id == job_id
+    assert run.research_run_id != old_run_id
+    assert run.first_pass_snapshot_id is None
+    assert run.gates.get("candidateSelection") == "pending"
+    assert run.dimensions.get("fundamentals") == "in_progress"
+    # Drain telemetry may be retained.
+    assert (run.dimensions.get("firstPassDrain") or {}).get("lastTickAt")
+
+
+def test_adopt_allows_transient_failed_with_retries() -> None:
+    """Job whose only unfinished work is retry-scheduled failures is adoptable."""
+    user_id = f"u_retry_{uuid4().hex[:8]}"
+    _ensure_user(user_id)
+    digest = "digest-retry"
+    job_id = f"fpj_retry_{uuid4().hex[:16]}"
+    stock_ids = ["TW:8046", "TW:8100"]
+    assert SessionLocal is not None
+    with SessionLocal() as session:
+        now = datetime.now(timezone.utc)
+        session.add(
+            TwResearchFirstPassJob(
+                job_id=job_id,
+                user_id=user_id,
+                universe_version="explicit:2",
+                universe_digest=digest,
+                membership_version=0,
+                first_pass_version="test",
+                stock_ids_json=stock_ids,
+                selector_json={"mode": "stock_ids", "stockIds": stock_ids},
+                status="partial",
+                quality_status="incomplete",
+                cursor=1,
+                notes_json=[],
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        session.add(
+            TwResearchFirstPassSymbolResult(
+                job_id=job_id,
+                stock_id="TW:8046",
+                status="ok",
+                payload_json={"stockId": "TW:8046", "fields": {}},
+                lease_generation=0,
+                updated_at=now,
+            )
+        )
+        session.add(
+            TwResearchFirstPassSymbolResult(
+                job_id=job_id,
+                stock_id="TW:8100",
+                status="failed",
+                payload_json={
+                    "stockId": "TW:8100",
+                    "retryExhausted": False,
+                    "failureClass": "timeout",
+                    "nextRetryAt": "2099-01-01T00:00:00+00:00",
+                },
+                lease_generation=0,
+                updated_at=now,
+            )
+        )
+        session.commit()
+
+    run = research_run_store.adopt_standalone_first_pass_job(
+        user_id,
+        job_id=job_id,
+        confirm_universe_digest=digest,
+    )
+    assert run.first_pass_job_id == job_id

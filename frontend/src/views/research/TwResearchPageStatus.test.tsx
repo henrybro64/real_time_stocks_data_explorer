@@ -18,6 +18,7 @@ import {
   fetchTwResearchScan,
   fetchTwResearchScanProgress,
   fetchTwResearchScans,
+  adoptTwResearchFirstPassJob,
   listTwResearchFirstPassJobs,
   researchProgressRevision,
   runTwResearchFirstPassBatch,
@@ -52,6 +53,7 @@ vi.mock("../../services/api/twResearch", async () => {
     runTwResearchFirstPassBatch: vi.fn(),
     advanceTwResearchRunGate: vi.fn(async () => ({})),
     startTwResearchRun: vi.fn(),
+    adoptTwResearchFirstPassJob: vi.fn(),
     fetchTwResearchFirstPassDeletionPreview: vi.fn(async () => ({
       previewToken: "tok",
       closure: { tw_research_first_pass_jobs: 1 },
@@ -935,5 +937,106 @@ describe("TwResearchPage polling guard (#350)", () => {
     // And polling is actually bounded by (not far below) those intervals.
     expect(runCalls).toBeGreaterThan(runBefore);
     expect(progressCalls).toBeGreaterThan(progressBefore);
+  });
+});
+
+describe("TwResearchPage adopt resume (#359)", () => {
+  const ADOPT_REASONS = [
+    "research_run_retained",
+    "first_pass_job_lease_active",
+    "first_pass_job_archived",
+    "first_pass_job_nothing_pending",
+    "first_pass_job_universe_digest_mismatch",
+    "first_pass_job_deletion_in_progress",
+    "first_pass_job_not_eligible_status",
+    "first_pass_job_already_attached",
+  ] as const;
+
+  function seedStandaloneEligible() {
+    seed({
+      run: null,
+      job: {
+        status: "partial",
+        universeDigest: "digest-73",
+        universeSize: 73,
+        stockIds: Array.from({ length: 73 }, (_, i) => `TW:${8000 + i}`),
+      },
+      progress: {
+        status: "partial",
+        universeSize: 73,
+        processedCount: 1,
+        pendingCount: 72,
+        okCount: 1,
+        partialCount: 0,
+        failedCount: 0,
+        cursor: 99,
+      },
+    });
+  }
+
+  it("modal confirm sends adopt request with universe digest", async () => {
+    const user = userEvent.setup();
+    seedStandaloneEligible();
+    vi.mocked(adoptTwResearchFirstPassJob).mockResolvedValue(
+      runRecord({ firstPassJobId: JOB_ID, status: "running" }),
+    );
+    renderPage("zh-TW");
+    const resume = await screen.findByTestId("tw-research-adopt-first-pass");
+    await user.click(resume);
+    const modal = await screen.findByTestId("tw-research-confirm-modal");
+    // Progress API counts (ok+partial+failed), not cursor.
+    expect(modal).toHaveTextContent("1/73");
+    expect(modal).toHaveTextContent("72");
+    expect(modal).not.toHaveTextContent("99/73");
+    await user.click(screen.getByTestId("tw-research-confirm-modal-confirm"));
+    await waitFor(() => {
+      expect(adoptTwResearchFirstPassJob).toHaveBeenCalledWith({
+        jobId: JOB_ID,
+        confirmUniverseDigest: "digest-73",
+      });
+    });
+  });
+
+  it.each(ADOPT_REASONS)(
+    "maps 409 %s to a plain sentence without snake_case",
+    async (reason) => {
+      const user = userEvent.setup();
+      seedStandaloneEligible();
+      vi.mocked(adoptTwResearchFirstPassJob).mockRejectedValue(
+        new ApiError("conflict", {
+          status: 409,
+          detail: { error: reason, reason },
+          kind: "unknown",
+        }),
+      );
+      renderPage("en");
+      await user.click(await screen.findByTestId("tw-research-adopt-first-pass"));
+      await user.click(await screen.findByTestId("tw-research-confirm-modal-confirm"));
+      const err = await screen.findByTestId("tw-research-adopt-error");
+      expect(err.textContent).toBeTruthy();
+      expect(err.textContent).not.toMatch(SNAKE_CASE);
+      expect(err.textContent).not.toContain(reason);
+      expect(screen.queryByTestId("tw-research-adopt-error-detail")).toBeNull();
+    },
+  );
+
+  it("unknown 409 reason shows generic copy; raw code only in detail", async () => {
+    const user = userEvent.setup();
+    seedStandaloneEligible();
+    vi.mocked(adoptTwResearchFirstPassJob).mockRejectedValue(
+      new ApiError("conflict", {
+        status: 409,
+        detail: { error: "weird_new_reason", reason: "weird_new_reason" },
+        kind: "unknown",
+      }),
+    );
+    renderPage("en");
+    await user.click(await screen.findByTestId("tw-research-adopt-first-pass"));
+    await user.click(await screen.findByTestId("tw-research-confirm-modal-confirm"));
+    const err = await screen.findByTestId("tw-research-adopt-error");
+    expect(err.textContent).not.toMatch(SNAKE_CASE);
+    expect(err.textContent).not.toContain("weird_new_reason");
+    const detail = await screen.findByTestId("tw-research-adopt-error-detail");
+    expect(detail).toHaveTextContent("weird_new_reason");
   });
 });

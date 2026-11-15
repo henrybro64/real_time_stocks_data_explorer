@@ -2334,10 +2334,48 @@ class TwResearchRepository(SessionBoundRepository):
         """Atomically adopt an eligible standalone first-pass job (#359).
 
         One locked transaction: ``SELECT … FOR UPDATE`` the user's research-run
-        row (insert if absent) and the job row; validate; attach; commit.
+        row first (insert if absent), then the job row; validate; attach; commit.
         Raises ``KeyError`` (404) or ``ResearchRunConflict`` (409) with a
         machine-readable reason and performs ZERO mutation on rejection.
+
+        When a concurrent Start inserts the run row during our insert, the
+        IntegrityError is rolled back and the whole transaction is retried once
+        (never 500).
         """
+        from app.services.tw_research.research_run import ResearchRunConflict
+
+        last_integrity: IntegrityError | None = None
+        for attempt in range(2):
+            try:
+                return self._adopt_first_pass_job_into_run_once(
+                    user_id,
+                    job_id=job_id,
+                    expected_universe_digest=expected_universe_digest,
+                )
+            except IntegrityError as exc:
+                last_integrity = exc
+                if attempt == 0:
+                    continue
+                # Second insert collision should be unreachable after retry
+                # (existing-run path). Convert to a conflict — never 500.
+                raise ResearchRunConflict(
+                    "research_run_retained",
+                    reason="research_run_retained",
+                ) from last_integrity
+        raise ResearchRunConflict(
+            "research_run_retained",
+            reason="research_run_retained",
+        )
+
+    def _adopt_first_pass_job_into_run_once(
+        self,
+        user_id: str,
+        *,
+        job_id: str,
+        expected_universe_digest: str,
+    ) -> dict[str, Any]:
+        from uuid import uuid4
+
         from app.services.tw_research.constants import RESEARCH_RUN_VERSION
         from app.services.tw_research.research_run import (
             ResearchRunConflict,
@@ -2346,9 +2384,31 @@ class TwResearchRepository(SessionBoundRepository):
 
         eligible_status = frozenset({"pending", "running", "deferred", "partial"})
         terminal_replaceable = frozenset({"failed", "cancelled", "budget_exhausted"})
+        default_gates = {
+            "candidateSelection": "pending",
+            "reportDecision": "blocked_until_phase2",
+            "notionPublication": "external_only_never_auto",
+        }
+        default_dimensions = {
+            "fundamentals": "in_progress",
+            "monthlyTechnical": "not_started",
+            "dailyTechnical": "not_started",
+            "chipEnrichment": "not_started",
+            "snapshot": "not_started",
+            "externalPublication": "not_started",
+        }
         session_factory = self._session_factory()
         with session_factory() as session:
             now = datetime.now(timezone.utc)
+            # Lock order (must match Start/claim path): research_runs FOR UPDATE
+            # first, then first_pass_jobs FOR UPDATE. Prevents A-B/B-A deadlocks
+            # with concurrent managed Start.
+            run = session.execute(
+                select(TwResearchResearchRun)
+                .where(TwResearchResearchRun.user_id == user_id)
+                .with_for_update()
+            ).scalar_one_or_none()
+
             job = session.execute(
                 select(TwResearchFirstPassJob)
                 .where(TwResearchFirstPassJob.job_id == job_id)
@@ -2356,12 +2416,6 @@ class TwResearchRepository(SessionBoundRepository):
             ).scalar_one_or_none()
             if job is None or str(job.user_id) != str(user_id):
                 raise KeyError("first_pass_job_not_found")
-
-            run = session.execute(
-                select(TwResearchResearchRun)
-                .where(TwResearchResearchRun.user_id == user_id)
-                .with_for_update()
-            ).scalar_one_or_none()
 
             # Idempotent: already attached to this run.
             if run is not None and str(run.first_pass_job_id or "") == str(job_id):
@@ -2402,17 +2456,9 @@ class TwResearchRepository(SessionBoundRepository):
 
             stock_ids = list(job.stock_ids_json or [])
             universe_size = len(stock_ids)
-            done_rows = session.execute(
-                select(func.count())
-                .select_from(TwResearchFirstPassSymbolResult)
-                .where(
-                    TwResearchFirstPassSymbolResult.job_id == job_id,
-                    TwResearchFirstPassSymbolResult.status.in_(
-                        ("ok", "partial", "failed")
-                    ),
-                )
-            ).scalar_one()
-            done_count = int(done_rows or 0)
+            # Done = ok/partial + failed that are retry-exhausted or permanent.
+            # Transient failed rows with retries still scheduled count as pending.
+            done_count = _count_first_pass_finished_symbols(session, job_id)
             if universe_size <= 0 or done_count >= universe_size:
                 raise ResearchRunConflict(
                     "first_pass_job_nothing_pending",
@@ -2459,9 +2505,13 @@ class TwResearchRepository(SessionBoundRepository):
             else:
                 notes.append(str(reason))
 
-            if run is None:
-                from uuid import uuid4
+            dims = dict(default_dimensions)
+            if run is not None:
+                prev_drain = (run.dimensions_json or {}).get("firstPassDrain")
+                if prev_drain is not None:
+                    dims["firstPassDrain"] = prev_drain
 
+            if run is None:
                 run = TwResearchResearchRun(
                     user_id=user_id,
                     research_run_id=f"rr_{uuid4().hex[:20]}",
@@ -2474,37 +2524,48 @@ class TwResearchRepository(SessionBoundRepository):
                     candidate_set_id=None,
                     candidate_set_version=None,
                     technical_scan_id=None,
-                    gates_json={
-                        "candidateSelection": "pending",
-                        "reportDecision": "blocked_until_phase2",
-                        "notionPublication": "external_only_never_auto",
-                    },
-                    dimensions_json={
-                        "fundamentals": "in_progress",
-                        "monthlyTechnical": "not_started",
-                        "dailyTechnical": "not_started",
-                        "chipEnrichment": "not_started",
-                        "snapshot": "not_started",
-                        "externalPublication": "not_started",
-                    },
+                    pending_first_pass_job_id=None,
+                    pending_technical_scan_id=None,
+                    job_claim_token=None,
+                    job_claim_expires_at=None,
+                    phase2_claim_token=None,
+                    phase2_claim_expires_at=None,
+                    gates_json=dict(default_gates),
+                    dimensions_json=dims,
                     notes_json=notes[-50:],
                     schedule_enabled=bool(available),
                     revision=1,
                     created_at=now,
                     updated_at=now,
                 )
-                session.add(run)
+                try:
+                    with session.begin_nested():
+                        session.add(run)
+                        session.flush()
+                except IntegrityError:
+                    session.rollback()
+                    raise
             else:
+                # Replace a terminal run with a fresh identity (same user PK).
+                run.research_run_id = f"rr_{uuid4().hex[:20]}"
+                run.version = RESEARCH_RUN_VERSION
                 run.phase = "phase1_first_pass"
                 run.status = "running"
+                run.trading_day = None
                 run.first_pass_job_id = job_id
+                run.first_pass_snapshot_id = None
+                run.candidate_set_id = None
+                run.candidate_set_version = None
+                run.technical_scan_id = None
                 run.pending_first_pass_job_id = None
+                run.pending_technical_scan_id = None
                 run.job_claim_token = None
                 run.job_claim_expires_at = None
-                run.schedule_enabled = bool(available)
-                dims = dict(run.dimensions_json or {})
-                dims["fundamentals"] = "in_progress"
+                run.phase2_claim_token = None
+                run.phase2_claim_expires_at = None
+                run.gates_json = dict(default_gates)
                 run.dimensions_json = dims
+                run.schedule_enabled = bool(available)
                 note_list = list(run.notes_json or [])
                 note_list.extend(notes)
                 run.notes_json = note_list[-50:]
@@ -5093,6 +5154,40 @@ def _count_first_pass_status(session: Session, job_id: str, status: str) -> int:
         )
     ).scalar_one()
     return int(total or 0)
+
+
+def _count_first_pass_finished_symbols(session: Session, job_id: str) -> int:
+    """Count symbols that no longer need collection for adopt eligibility (#359).
+
+    ``ok`` / ``partial`` always count as done. ``failed`` counts as done only
+    when ``retryExhausted`` is true or ``failureClass`` is permanent /
+    programming_error. Transient failed rows with retries scheduled remain
+    pending (adoption allowed).
+    """
+    ok_partial = session.execute(
+        select(func.count())
+        .select_from(TwResearchFirstPassSymbolResult)
+        .where(
+            TwResearchFirstPassSymbolResult.job_id == job_id,
+            TwResearchFirstPassSymbolResult.status.in_(("ok", "partial")),
+        )
+    ).scalar_one()
+    finished = int(ok_partial or 0)
+    failed_rows = session.execute(
+        select(TwResearchFirstPassSymbolResult).where(
+            TwResearchFirstPassSymbolResult.job_id == job_id,
+            TwResearchFirstPassSymbolResult.status == "failed",
+        )
+    ).scalars().all()
+    for row in failed_rows:
+        payload = dict(row.payload_json or {})
+        failure_class = str(payload.get("failureClass") or "")
+        if payload.get("retryExhausted") or failure_class in {
+            "permanent",
+            "programming_error",
+        }:
+            finished += 1
+    return finished
 
 
 def _resolve_first_pass_terminal_status(session: Session, job_id: str) -> str:
