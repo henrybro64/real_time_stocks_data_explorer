@@ -98,9 +98,39 @@ const TW_RESEARCH_ROWS = [
     "正在進行資料收集（已取得租約）。",
   ],
   [
+    "research.tw.execution.executorNotTicking",
+    "Collection is authorized, but the drain executor has not ticked recently. Wait or contact the operator — this is not active collecting.",
+    "已授權收集，但自動排程最近沒有執行。請稍候或聯絡管理員（這不是正在收集）。",
+  ],
+  [
+    "research.tw.startResearchViewProgress",
+    "View progress",
+    "查看進度",
+  ],
+  [
+    "research.tw.resumeCollection",
+    "Resume this collection",
+    "接續這個收集工作",
+  ],
+  [
+    "research.tw.resumeCollectionConfirm",
+    "Resume collection for {done}/{total} completed ({pending} remaining)? Existing results are kept.",
+    "要接續這個收集工作嗎？目前 {done}/{total} 已完成，{pending} 待收集。已完成的結果會保留。",
+  ],
+  [
+    "research.tw.adoptConflict",
+    "Cannot resume: {reason}",
+    "無法接續：{reason}",
+  ],
+  [
     "research.tw.startFirstPassHint",
     "Starts the managed research run and first-round job. Creating a job row alone does not mean collection is running.",
     "會啟動受管理的研究流程與第一輪工作。僅建立工作紀錄不代表已在收集。",
+  ],
+  [
+    "research.tw.createStandaloneFirstPassAdvanced",
+    "Create standalone first-pass job (advanced)",
+    "建立獨立第一輪工作（進階）",
   ],
   [
     "research.tw.runFirstPassBatch",

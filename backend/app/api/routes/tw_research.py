@@ -331,9 +331,12 @@ def create_first_pass_job(
             use_membership=body.useMembership,
         )
     except FirstPassJobError as exc:
+        code = 503 if "unavailable" in str(exc) else 400
+        if str(exc) == "too_many_active_jobs":
+            code = 409
         raise HTTPException(
-            status_code=503 if "unavailable" in str(exc) else 400,
-            detail={"error": str(exc), "operation": exc.operation},
+            status_code=code,
+            detail={"error": str(exc), "operation": exc.operation, "reason": str(exc)},
         ) from exc
     return FirstPassJobResponse(job=_camel_job(job))
 
@@ -1363,16 +1366,23 @@ def _research_run_response(run: ResearchRun) -> ResearchRunResponse:
     from app.repositories.tw_research_repository import tw_research_repository
 
     job = None
+    counts = None
     if run.first_pass_job_id and tw_research_repository.is_available():
         try:
             job = tw_research_repository.get_first_pass_job(
                 run.first_pass_job_id, user_id=run.user_id
             )
+            counts = tw_research_repository.count_first_pass_symbols(
+                run.first_pass_job_id
+            )
         except Exception:  # noqa: BLE001 — response must still return the run
             job = None
+            counts = None
     return ResearchRunResponse(
         researchRun=run.as_dict(),
-        execution=classify_first_pass_execution(run, job=job),
+        execution=classify_first_pass_execution(
+            run, job=job, symbol_counts=counts
+        ),
     )
 
 

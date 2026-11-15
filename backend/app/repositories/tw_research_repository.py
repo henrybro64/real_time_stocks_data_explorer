@@ -2324,6 +2324,201 @@ class TwResearchRepository(SessionBoundRepository):
                 "first_pass_job_id": job_id,
             }
 
+    def adopt_first_pass_job_into_run(
+        self,
+        user_id: str,
+        *,
+        job_id: str,
+        expected_universe_digest: str,
+    ) -> dict[str, Any]:
+        """Atomically adopt an eligible standalone first-pass job (#359).
+
+        One locked transaction: ``SELECT … FOR UPDATE`` the user's research-run
+        row (insert if absent) and the job row; validate; attach; commit.
+        Raises ``KeyError`` (404) or ``ResearchRunConflict`` (409) with a
+        machine-readable reason and performs ZERO mutation on rejection.
+        """
+        from app.services.tw_research.constants import RESEARCH_RUN_VERSION
+        from app.services.tw_research.research_run import (
+            ResearchRunConflict,
+            first_pass_drain_availability,
+        )
+
+        eligible_status = frozenset({"pending", "running", "deferred", "partial"})
+        terminal_replaceable = frozenset({"failed", "cancelled", "budget_exhausted"})
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            now = datetime.now(timezone.utc)
+            job = session.execute(
+                select(TwResearchFirstPassJob)
+                .where(TwResearchFirstPassJob.job_id == job_id)
+                .with_for_update()
+            ).scalar_one_or_none()
+            if job is None or str(job.user_id) != str(user_id):
+                raise KeyError("first_pass_job_not_found")
+
+            run = session.execute(
+                select(TwResearchResearchRun)
+                .where(TwResearchResearchRun.user_id == user_id)
+                .with_for_update()
+            ).scalar_one_or_none()
+
+            # Idempotent: already attached to this run.
+            if run is not None and str(run.first_pass_job_id or "") == str(job_id):
+                session.commit()
+                return {
+                    "outcome": "already_attached",
+                    "run": _research_run_to_dict(run),
+                    "first_pass_job_id": job_id,
+                }
+
+            if job.deletion_state:
+                raise ResearchRunConflict(
+                    "first_pass_job_deletion_in_progress",
+                    reason="first_pass_job_deletion_in_progress",
+                )
+            if job.archived_at is not None:
+                raise ResearchRunConflict(
+                    "first_pass_job_archived",
+                    reason="first_pass_job_archived",
+                )
+            if str(job.status or "") not in eligible_status:
+                raise ResearchRunConflict(
+                    "first_pass_job_not_eligible_status",
+                    reason="first_pass_job_not_eligible_status",
+                )
+            lease_until = _as_utc(job.reserve_expires_at)
+            if lease_until is not None and lease_until > now:
+                raise ResearchRunConflict(
+                    "first_pass_job_lease_active",
+                    reason="first_pass_job_lease_active",
+                )
+            digest = str(job.universe_digest or "")
+            if digest != str(expected_universe_digest or ""):
+                raise ResearchRunConflict(
+                    "first_pass_job_universe_digest_mismatch",
+                    reason="first_pass_job_universe_digest_mismatch",
+                )
+
+            stock_ids = list(job.stock_ids_json or [])
+            universe_size = len(stock_ids)
+            done_rows = session.execute(
+                select(func.count())
+                .select_from(TwResearchFirstPassSymbolResult)
+                .where(
+                    TwResearchFirstPassSymbolResult.job_id == job_id,
+                    TwResearchFirstPassSymbolResult.status.in_(
+                        ("ok", "partial", "failed")
+                    ),
+                )
+            ).scalar_one()
+            done_count = int(done_rows or 0)
+            if universe_size <= 0 or done_count >= universe_size:
+                raise ResearchRunConflict(
+                    "first_pass_job_nothing_pending",
+                    reason="first_pass_job_nothing_pending",
+                )
+
+            if run is not None:
+                if (
+                    run.pending_first_pass_job_id
+                    and str(run.pending_first_pass_job_id) == str(job_id)
+                ):
+                    raise ResearchRunConflict(
+                        "first_pass_job_already_attached",
+                        reason="first_pass_job_already_attached",
+                    )
+                phase = str(run.phase or "")
+                status = str(run.status or "")
+                has_pointers = bool(run.candidate_set_id or run.technical_scan_id)
+                gated_phase = phase in {
+                    "awaiting_analyst_candidate_selection",
+                    "awaiting_analyst_report_decision",
+                    "complete_evidence_ready",
+                }
+                replaceable = (
+                    status in terminal_replaceable
+                    and not has_pointers
+                    and not gated_phase
+                )
+                if not replaceable:
+                    raise ResearchRunConflict(
+                        "research_run_retained",
+                        reason="research_run_retained",
+                    )
+
+            available, reason = first_pass_drain_availability(user_id)
+            notes = [
+                f"Adopted standalone first-pass job {job_id}.",
+                "Preserved existing per-symbol evidence; remaining symbols stay pending.",
+            ]
+            if available:
+                notes.append(
+                    "First-pass drain authorized for this research-run job only."
+                )
+            else:
+                notes.append(str(reason))
+
+            if run is None:
+                from uuid import uuid4
+
+                run = TwResearchResearchRun(
+                    user_id=user_id,
+                    research_run_id=f"rr_{uuid4().hex[:20]}",
+                    version=RESEARCH_RUN_VERSION,
+                    phase="phase1_first_pass",
+                    status="running",
+                    trading_day=None,
+                    first_pass_job_id=job_id,
+                    first_pass_snapshot_id=None,
+                    candidate_set_id=None,
+                    candidate_set_version=None,
+                    technical_scan_id=None,
+                    gates_json={
+                        "candidateSelection": "pending",
+                        "reportDecision": "blocked_until_phase2",
+                        "notionPublication": "external_only_never_auto",
+                    },
+                    dimensions_json={
+                        "fundamentals": "in_progress",
+                        "monthlyTechnical": "not_started",
+                        "dailyTechnical": "not_started",
+                        "chipEnrichment": "not_started",
+                        "snapshot": "not_started",
+                        "externalPublication": "not_started",
+                    },
+                    notes_json=notes[-50:],
+                    schedule_enabled=bool(available),
+                    revision=1,
+                    created_at=now,
+                    updated_at=now,
+                )
+                session.add(run)
+            else:
+                run.phase = "phase1_first_pass"
+                run.status = "running"
+                run.first_pass_job_id = job_id
+                run.pending_first_pass_job_id = None
+                run.job_claim_token = None
+                run.job_claim_expires_at = None
+                run.schedule_enabled = bool(available)
+                dims = dict(run.dimensions_json or {})
+                dims["fundamentals"] = "in_progress"
+                run.dimensions_json = dims
+                note_list = list(run.notes_json or [])
+                note_list.extend(notes)
+                run.notes_json = note_list[-50:]
+                run.revision = int(run.revision or 0) + 1
+                run.updated_at = now
+
+            session.commit()
+            session.refresh(run)
+            return {
+                "outcome": "adopted",
+                "run": _research_run_to_dict(run),
+                "first_pass_job_id": job_id,
+            }
+
     def mark_first_pass_job_orphaned(
         self,
         job_id: str,

@@ -33,10 +33,13 @@ from app.services.tw_margin_short_service import (
     TaiwanMarginShortResult,
     tw_margin_short_service,
 )
-from app.services.tw_ownership_concentration_service import (
+from app.services.collector_deadline import (
     CollectorDeadlineExceeded,
-    TaiwanOwnershipConcentrationResult,
+    check_collector_deadline,
     collector_deadline_scope,
+)
+from app.services.tw_ownership_concentration_service import (
+    TaiwanOwnershipConcentrationResult,
     tw_ownership_concentration_service,
 )
 from app.services.tw_research.constants import (
@@ -666,6 +669,12 @@ def _collect_one(
 
     # Reuse enrichment step helpers via a temporary EnrichmentResult.
     scratch = EnrichmentResult(stock_id=stock.id, qualified=True)
+    mono = clock or time.monotonic
+    deadline_at = (
+        mono() + float(symbol_deadline_seconds)
+        if symbol_deadline_seconds is not None
+        else None
+    )
     steps: list[tuple[str, str, str, Callable[[], None]]] = [
         (
             "institutional_5d",
@@ -694,13 +703,15 @@ def _collect_one(
             "tdcc_holders_ge_400_lots",
             "tw_ownership_concentration_service",
             "tdcc_weekly",
+            # Nested ownership deadline still overwrites if the loader returns
+            # after the budget (soft deadline cannot interrupt blocked I/O).
             lambda: _enrich_ownership_with_deadline(
                 scratch,
                 stock.id,
                 loader=ownership_loader,
                 captured_at=captured_at,
                 deadline_seconds=symbol_deadline_seconds,
-                clock=clock or time.monotonic,
+                clock=mono,
             ),
         ),
         (
@@ -715,45 +726,61 @@ def _collect_one(
             ),
         ),
     ]
-    for field_name, source, freshness_class, action in steps:
-        reused = None
-        prior_raw = prior_fields.get(field_name)
-        if isinstance(prior_raw, Mapping):
-            reused = _provenance_from_mapping(field_name, prior_raw)
-        if reused is not None:
-            scratch.fields[field_name] = reused
-            # Valuation helper may also set official_pb / yield siblings — keep those too.
-            for sibling in ("official_pb", "official_dividend_yield", "ttm_eps"):
-                sibling_raw = prior_fields.get(sibling)
-                if sibling in scratch.fields:
-                    continue
-                if isinstance(sibling_raw, Mapping):
-                    sibling_reused = _provenance_from_mapping(sibling, sibling_raw)
-                    if sibling_reused is not None:
-                        scratch.fields[sibling] = sibling_reused
-            continue
-        try:
-            action()
-        except Exception as exc:  # noqa: BLE001 — isolate per source
-            if is_infrastructure_failure(exc):
-                raise
-            reason = provider_exception_reason(exc)
-            log_isolated_fault(
-                stock_id=stock.id,
-                stage=field_name,
-                source=source,
-                exc=exc,
-                reason=reason,
-                job_id=job_id,
-            )
-            scratch.fields[field_name] = ProvenanceField(
-                field=field_name,
-                status="unavailable",
-                source=source,
-                captured_at=captured_at,
-                freshness_class=freshness_class,
-                reason=reason,
-            )
+    with collector_deadline_scope(deadline_at, mono):
+        for field_name, source, freshness_class, action in steps:
+            reused = None
+            prior_raw = prior_fields.get(field_name)
+            if isinstance(prior_raw, Mapping):
+                reused = _provenance_from_mapping(field_name, prior_raw)
+            if reused is not None:
+                scratch.fields[field_name] = reused
+                # Valuation helper may also set official_pb / yield siblings.
+                for sibling in ("official_pb", "official_dividend_yield", "ttm_eps"):
+                    sibling_raw = prior_fields.get(sibling)
+                    if sibling in scratch.fields:
+                        continue
+                    if isinstance(sibling_raw, Mapping):
+                        sibling_reused = _provenance_from_mapping(sibling, sibling_raw)
+                        if sibling_reused is not None:
+                            scratch.fields[sibling] = sibling_reused
+                continue
+            try:
+                check_collector_deadline()
+                action()
+            except CollectorDeadlineExceeded:
+                scratch.fields[field_name] = ProvenanceField(
+                    field=field_name,
+                    status="unavailable",
+                    source=source,
+                    captured_at=captured_at,
+                    freshness_class=freshness_class,
+                    reason=COLLECTOR_DEADLINE_EXCEEDED_REASON,
+                )
+                continue
+            except Exception as exc:  # noqa: BLE001 — isolate per source
+                if is_infrastructure_failure(exc):
+                    raise
+                reason = provider_exception_reason(exc)
+                if reason == COLLECTOR_DEADLINE_EXCEEDED_REASON or isinstance(
+                    exc, CollectorDeadlineExceeded
+                ):
+                    reason = COLLECTOR_DEADLINE_EXCEEDED_REASON
+                log_isolated_fault(
+                    stock_id=stock.id,
+                    stage=field_name,
+                    source=source,
+                    exc=exc,
+                    reason=reason,
+                    job_id=job_id,
+                )
+                scratch.fields[field_name] = ProvenanceField(
+                    field=field_name,
+                    status="unavailable",
+                    source=source,
+                    captured_at=captured_at,
+                    freshness_class=freshness_class,
+                    reason=reason,
+                )
 
     # Explicit not-implemented / unavailable fundamentals (no fabrication).
     # official_pb / official_dividend_yield may already be set by _enrich_valuation
@@ -867,7 +894,19 @@ def _collect_one(
             record.relative_price_basis = dict(prior_basis_field["value"])
     else:
         try:
+            if deadline_at is not None:
+                check_collector_deadline()
             candles = list(candles_loader(stock) or [])
+        except CollectorDeadlineExceeded:
+            scratch.fields["latest_completed_close"] = ProvenanceField(
+                field="latest_completed_close",
+                status="unavailable",
+                source="daily_price_history_service",
+                captured_at=captured_at,
+                freshness_class="quote_or_eod_day",
+                reason=COLLECTOR_DEADLINE_EXCEEDED_REASON,
+            )
+            candles = []
         except Exception as exc:  # noqa: BLE001 — isolate candle retrieval
             if is_infrastructure_failure(exc):
                 raise

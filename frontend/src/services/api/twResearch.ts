@@ -637,37 +637,6 @@ export type TwResearchFirstPassDrain = {
   lastOutcome?: string | null;
 };
 
-export type TwResearchRun = {
-  researchRunId: string;
-  userId: string;
-  phase: string;
-  status: string;
-  tradingDay?: string | null;
-  firstPassJobId?: string | null;
-  firstPassSnapshotId?: string | null;
-  candidateSetId?: string | null;
-  candidateSetVersion?: number | null;
-  technicalScanId?: string | null;
-  gates?: Record<string, unknown>;
-  dimensions?: Record<string, unknown>;
-  notes?: string[];
-  scheduleEnabled?: boolean;
-  firstPassProgress?: TwResearchFirstPassProgress | null;
-  firstPassDrain?: TwResearchFirstPassDrain | null;
-  notNotionPublisher?: boolean;
-  cronjobRemainsSuspended?: boolean;
-  durable?: boolean;
-  createdAt?: string;
-  updatedAt?: string;
-};
-
-export async function fetchTwResearchRunCurrent() {
-  const response = await requestJson<{ researchRun: TwResearchRun }>(
-    "/tw-research/research-runs/current",
-  );
-  return response.researchRun;
-}
-
 export type TwResearchExecutionStatus = {
   state?: string;
   authorized?: boolean;
@@ -685,6 +654,42 @@ export type TwResearchExecutionStatus = {
   pendingCount?: number | null;
   notes?: string[];
 };
+
+export type TwResearchRun = {
+  researchRunId: string;
+  userId: string;
+  phase: string;
+  status: string;
+  tradingDay?: string | null;
+  firstPassJobId?: string | null;
+  firstPassSnapshotId?: string | null;
+  candidateSetId?: string | null;
+  candidateSetVersion?: number | null;
+  technicalScanId?: string | null;
+  gates?: Record<string, unknown>;
+  dimensions?: Record<string, unknown>;
+  notes?: string[];
+  scheduleEnabled?: boolean;
+  firstPassProgress?: TwResearchFirstPassProgress | null;
+  firstPassDrain?: TwResearchFirstPassDrain | null;
+  execution?: TwResearchExecutionStatus | null;
+  notNotionPublisher?: boolean;
+  cronjobRemainsSuspended?: boolean;
+  durable?: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+};
+
+export async function fetchTwResearchRunCurrent() {
+  const response = await requestJson<{
+    researchRun: TwResearchRun;
+    execution?: TwResearchExecutionStatus | null;
+  }>("/tw-research/research-runs/current");
+  return {
+    ...response.researchRun,
+    execution: response.execution ?? response.researchRun.execution ?? null,
+  };
+}
 
 export type TwResearchRunStartResult = TwResearchRun & {
   execution?: TwResearchExecutionStatus | null;
@@ -707,7 +712,7 @@ export async function startTwResearchRun(body?: {
 
 export async function adoptTwResearchFirstPassJob(body: {
   jobId: string;
-  confirmUniverseDigest?: string;
+  confirmUniverseDigest: string;
 }): Promise<TwResearchRunStartResult> {
   const response = await requestJsonWithBody<{
     researchRun: TwResearchRun;

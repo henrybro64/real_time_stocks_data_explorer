@@ -316,9 +316,10 @@ class ResearchRunAdoptFirstPassRequest(BaseModel):
     """Explicit safe adoption of an eligible standalone first-pass job (#359)."""
 
     jobId: str = Field(min_length=1, max_length=64)
-    confirmUniverseDigest: str | None = Field(
-        default=None,
-        description="Optional expected universe digest; rejects on mismatch.",
+    confirmUniverseDigest: str = Field(
+        min_length=1,
+        max_length=128,
+        description="Required expected universe digest; rejects on mismatch.",
     )
 
 

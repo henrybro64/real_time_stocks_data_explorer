@@ -52,7 +52,11 @@ vi.mock("../../services/api/twResearch", async () => {
     fetchTwResearchLatestManifest: vi.fn(),
     fetchTwResearchSnapshotChunk: vi.fn(),
     createTwResearchScan: vi.fn(),
-    createTwResearchFirstPassJob: vi.fn(),
+    createTwResearchFirstPassJob: vi.fn(async () => ({
+      jobId: "fpj_standalone",
+      status: "pending",
+    })),
+    adoptTwResearchFirstPassJob: vi.fn(),
     resolveTwResearchUniverse: vi.fn(),
     runTwResearchBatch: vi.fn(),
     runTwResearchEnrichmentBatch: vi.fn(),
@@ -1241,12 +1245,10 @@ describe("TwResearchPage reliability UX (#335–#337)", () => {
     });
 
     await user.click(
-      screen.getByRole("button", {
-        name: /開始第一輪資料收集|Start first-round data collection/i,
-      }),
+      screen.getByTestId("tw-research-start-full-research"),
     );
     await waitFor(() => {
-      expect(startTwResearchRun).toHaveBeenCalled();
+      expect(startTwResearchRun).toHaveBeenCalledTimes(1);
     });
     await waitFor(() => {
       expect(
@@ -1255,6 +1257,31 @@ describe("TwResearchPage reliability UX (#335–#337)", () => {
         }),
       ).toBeDisabled();
     });
+  });
+
+  it("shows a single primary Start CTA and execution status from the current run", async () => {
+    vi.mocked(fetchTwResearchRunCurrent).mockResolvedValue({
+      researchRunId: "rr_live",
+      userId: "u1",
+      phase: "phase1_first_pass",
+      status: "running",
+      firstPassJobId: "fpj_live",
+      durable: true,
+      cronjobRemainsSuspended: true,
+      notNotionPublisher: true,
+      execution: {
+        state: "executor_unavailable",
+        authorized: false,
+        drainAvailable: false,
+      },
+    });
+    renderPage();
+    expect(await screen.findByTestId("tw-research-start-full-research")).toBeInTheDocument();
+    expect(screen.queryAllByTestId("tw-research-start-full-research")).toHaveLength(1);
+    // Advanced standalone create is behind disclosure, not a second primary Start.
+    expect(
+      await screen.findByTestId("tw-research-execution-status"),
+    ).toHaveTextContent(/自動收集尚未可用|automatic collection is not available/i);
   });
 
   it("shows phase banner and loads ZH-TW evidence example (#339/#340/#341)", async () => {

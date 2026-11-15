@@ -895,7 +895,7 @@ def test_tdcc_open_data_csv_is_cached_within_process(monkeypatch) -> None:
 
     def fake_fetch_text(*_a, **_k) -> str:
         calls["n"] += 1
-        return "date,code\n2026-07-04,2330\n"
+        return "資料日期,證券代號\n2026-07-04,2330\n"
 
     monkeypatch.setattr(own_mod, "fetch_text", fake_fetch_text)
     first = own_mod._fetch_tdcc_open_data_csv()

@@ -102,6 +102,8 @@ import {
   runTwResearchEnrichmentBatch,
   runTwResearchFirstPassBatch,
   saveTwResearchMembership,
+  adoptTwResearchFirstPassJob,
+  createTwResearchFirstPassJob,
   startTwResearchRun,
   submitTwResearchCandidateSet,
   twResearchCsvUrl,
@@ -1265,9 +1267,29 @@ export function TwResearchPage({
     },
   });
 
-  const [executionStatusMessage, setExecutionStatusMessage] = useState<string | null>(
-    null,
-  );
+  const [adoptErrorMessage, setAdoptErrorMessage] = useState<string | null>(null);
+
+  const executionMessageFromState = (state: string): string | null => {
+    if (state === "executor_unavailable" || state === "job_created") {
+      return t("research.tw.execution.executorUnavailable");
+    }
+    if (state === "executor_not_ticking") {
+      return t("research.tw.execution.executorNotTicking");
+    }
+    if (state === "execution_authorized") {
+      return t("research.tw.execution.authorizedWaiting");
+    }
+    if (state === "actively_collecting") {
+      return t("research.tw.execution.activelyCollecting");
+    }
+    return null;
+  };
+
+  // Derive execution honesty from the live research-run query (survives refresh).
+  const executionStatusMessage = useMemo(() => {
+    const state = String(researchRunQuery.data?.execution?.state ?? "");
+    return executionMessageFromState(state);
+  }, [researchRunQuery.data?.execution?.state, language, t]);
 
   const applyManagedStartResult = (run: {
     firstPassJobId?: string | null;
@@ -1286,22 +1308,30 @@ export function TwResearchPage({
       setFirstPassEvidenceText("");
       setEvidenceOffset(0);
     }
-    const state = String(run.execution?.state ?? "");
-    if (state === "executor_unavailable" || state === "job_created") {
-      setExecutionStatusMessage(t("research.tw.execution.executorUnavailable"));
-    } else if (state === "execution_authorized") {
-      setExecutionStatusMessage(t("research.tw.execution.authorizedWaiting"));
-    } else if (state === "actively_collecting") {
-      setExecutionStatusMessage(t("research.tw.execution.activelyCollecting"));
-    } else {
-      setExecutionStatusMessage(null);
-    }
     void queryClient.invalidateQueries({ queryKey: ["tw-research-run-current"] });
     void queryClient.invalidateQueries({ queryKey: ["tw-research-first-pass-jobs"] });
   };
 
+  const runIsActiveNonTerminal = useMemo(() => {
+    const run = researchRunQuery.data;
+    if (!run) return false;
+    const status = String(run.status ?? "");
+    const phase = String(run.phase ?? "");
+    if (["failed", "cancelled", "budget_exhausted"].includes(status)) return false;
+    if (
+      phase === "awaiting_analyst_candidate_selection" ||
+      phase === "awaiting_analyst_report_decision" ||
+      phase === "complete_evidence_ready" ||
+      status === "gated" ||
+      status === "evidence_ready"
+    ) {
+      return true;
+    }
+    return Boolean(run.firstPassJobId) || status === "running" || status === "queued";
+  }, [researchRunQuery.data]);
+
   // Canonical ordinary-path Start (#359): managed research-run, not standalone job.
-  const startFirstPassMutation = useMutation({
+  const startFullResearchMutation = useMutation({
     mutationFn: async () =>
       startTwResearchRun({
         phase: "phase1_first_pass",
@@ -1310,6 +1340,35 @@ export function TwResearchPage({
     onSuccess: (run) => {
       applyManagedStartResult(run);
       setFirstPassProgressText(JSON.stringify(run, null, 2));
+    },
+  });
+
+  const adoptFirstPassMutation = useMutation({
+    mutationFn: async (payload: { jobId: string; confirmUniverseDigest: string }) =>
+      adoptTwResearchFirstPassJob(payload),
+    onSuccess: (run) => {
+      setAdoptErrorMessage(null);
+      applyManagedStartResult(run);
+      setFirstPassProgressText(JSON.stringify(run, null, 2));
+    },
+    onError: (error) => {
+      const api = toApiError(error);
+      const detail =
+        typeof api.detail === "object" && api.detail && "reason" in (api.detail as object)
+          ? String((api.detail as { reason?: string }).reason ?? api.message)
+          : api.message;
+      setAdoptErrorMessage(t("research.tw.adoptConflict", { reason: detail }));
+    },
+  });
+
+  const createStandaloneFirstPassMutation = useMutation({
+    mutationFn: async () => createTwResearchFirstPassJob({ useMembership: true }),
+    onSuccess: (job) => {
+      if (typeof job.jobId === "string") {
+        setFirstPassJobId(job.jobId);
+      }
+      setFirstPassProgressText(JSON.stringify(job, null, 2));
+      void queryClient.invalidateQueries({ queryKey: ["tw-research-first-pass-jobs"] });
     },
   });
 
@@ -1430,17 +1489,6 @@ export function TwResearchPage({
         queryKey: ["tw-research-first-pass-progress", firstPassJobId],
       });
       void queryClient.invalidateQueries({ queryKey: ["tw-research-first-pass-jobs"] });
-    },
-  });
-
-  const startFullResearchMutation = useMutation({
-    mutationFn: async () =>
-      startTwResearchRun({
-        phase: "phase1_first_pass",
-        tradingDay: taipeiTradingDay(),
-      }),
-    onSuccess: (run) => {
-      applyManagedStartResult(run);
     },
   });
 
@@ -2169,12 +2217,16 @@ export function TwResearchPage({
                   size="sm"
                   data-testid="tw-research-start-full-research"
                   disabled={
-                    startFullResearchMutation.isPending ||
-                    startFirstPassMutation.isPending
+                    startFullResearchMutation.isPending || runIsActiveNonTerminal
                   }
-                  onClick={() => startFullResearchMutation.mutate()}
+                  onClick={() => {
+                    if (runIsActiveNonTerminal) return;
+                    startFullResearchMutation.mutate();
+                  }}
                 >
-                  {t("research.tw.startFullResearch")}
+                  {runIsActiveNonTerminal
+                    ? t("research.tw.startResearchViewProgress")
+                    : t("research.tw.startFullResearch")}
                 </Button>
                 <Button
                   kind="tertiary"
@@ -2193,6 +2245,14 @@ export function TwResearchPage({
                   {t("research.tw.loadEvidenceExample")}
                 </Button>
               </Stack>
+              {executionStatusMessage ? (
+                <p
+                  className="cds--helper-text-01"
+                  data-testid="tw-research-execution-status"
+                >
+                  {executionStatusMessage}
+                </p>
+              ) : null}
               <p className="cds--helper-text-01">{t("research.tw.evidencePackNote")}</p>
               {researchRunQuery.data || reportEvidenceText || browsingHistoricalFirstPassJob ? (
                 <AdvancedDetailsDisclosure>
@@ -2430,18 +2490,6 @@ export function TwResearchPage({
               </div>
               <Stack gap={3} orientation="horizontal">
                 <Button
-                  kind="primary"
-                  size="sm"
-                  data-testid="tw-research-start-first-pass"
-                  disabled={
-                    startFirstPassMutation.isPending ||
-                    startFullResearchMutation.isPending
-                  }
-                  onClick={() => startFirstPassMutation.mutate()}
-                >
-                  {t("research.tw.startFirstPass")}
-                </Button>
-                <Button
                   kind="tertiary"
                   size="sm"
                   disabled={!firstPassJobId || loadFirstPassEvidenceMutation.isPending}
@@ -2451,16 +2499,21 @@ export function TwResearchPage({
                 </Button>
               </Stack>
               <p className="cds--helper-text-01">{t("research.tw.startFirstPassHint")}</p>
-              {executionStatusMessage ? (
-                <p
-                  className="cds--helper-text-01"
-                  data-testid="tw-research-execution-status"
-                >
-                  {executionStatusMessage}
-                </p>
-              ) : null}
               <AdvancedDetailsDisclosure>
                 <Stack gap={3} orientation="horizontal">
+                  <Button
+                    kind="ghost"
+                    size="sm"
+                    data-testid="tw-research-start-first-pass"
+                    disabled={
+                      createStandaloneFirstPassMutation.isPending ||
+                      startFullResearchMutation.isPending ||
+                      runIsActiveNonTerminal
+                    }
+                    onClick={() => createStandaloneFirstPassMutation.mutate()}
+                  >
+                    {t("research.tw.createStandaloneFirstPassAdvanced")}
+                  </Button>
                   <Button
                     kind="ghost"
                     size="sm"
@@ -2567,6 +2620,7 @@ export function TwResearchPage({
                     const next = event.target.value;
                     if (!next) return;
                     setFirstPassJobId(next);
+                    setAdoptErrorMessage(null);
                     const match = firstPassJobs.find((job) => String(job.jobId) === next);
                     if (match) {
                       setFirstPassProgressText(JSON.stringify(match, null, 2));
@@ -2600,6 +2654,62 @@ export function TwResearchPage({
                     />
                   ))}
                 </Select>
+              ) : null}
+              {selectedFirstPassJob &&
+              !runOwnsSelectedFirstPassJob &&
+              !runIsActiveNonTerminal &&
+              ["pending", "running", "deferred", "partial"].includes(
+                String(selectedFirstPassJob.status ?? ""),
+              ) ? (
+                <Stack gap={2}>
+                  <Button
+                    kind="secondary"
+                    size="sm"
+                    data-testid="tw-research-adopt-first-pass"
+                    disabled={adoptFirstPassMutation.isPending}
+                    onClick={() => {
+                      const digest = String(
+                        selectedFirstPassJob.universeDigest ??
+                          selectedFirstPassJob.universe_digest ??
+                          "",
+                      );
+                      const universe = Number(
+                        selectedFirstPassJob.universeSize ??
+                          (Array.isArray(selectedFirstPassJob.stockIds)
+                            ? selectedFirstPassJob.stockIds.length
+                            : 0),
+                      );
+                      const done = Number(
+                        selectedFirstPassJob.cursor ??
+                          selectedFirstPassJob.processedCount ??
+                          0,
+                      );
+                      const pending = Math.max(0, universe - done);
+                      const ok = window.confirm(
+                        t("research.tw.resumeCollectionConfirm", {
+                          done: String(done),
+                          total: String(universe || "?"),
+                          pending: String(pending),
+                        }),
+                      );
+                      if (!ok || !firstPassJobId || !digest) return;
+                      adoptFirstPassMutation.mutate({
+                        jobId: firstPassJobId,
+                        confirmUniverseDigest: digest,
+                      });
+                    }}
+                  >
+                    {t("research.tw.resumeCollection")}
+                  </Button>
+                  {adoptErrorMessage ? (
+                    <p
+                      className="cds--helper-text-01"
+                      data-testid="tw-research-adopt-error"
+                    >
+                      {adoptErrorMessage}
+                    </p>
+                  ) : null}
+                </Stack>
               ) : null}
               {firstPassJobId ? (
                 <Stack gap={3} orientation="horizontal">

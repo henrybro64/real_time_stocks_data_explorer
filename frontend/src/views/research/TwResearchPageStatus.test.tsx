@@ -603,12 +603,16 @@ describe("TwResearchPage default UI hides internal terms (#351)", () => {
     expect(advanced).toMatch(/fpj_demo/);
     expect(advanced).toMatch(/rr_demo/);
 
-    // Start action, summary counts and next action are present.
+    // One primary Start/Resume CTA: active run shows View progress (#359).
     expect(
       screen.getByRole("button", {
-        name: language === "en" ? "Start research" : "開始研究",
+        name:
+          language === "en"
+            ? /Start research|View progress/
+            : /開始研究|查看進度/,
       }),
     ).toBeInTheDocument();
+    expect(screen.getAllByTestId("tw-research-start-full-research")).toHaveLength(1);
     expect(screen.getByTestId("tw-research-investor-counts").textContent).toMatch(/73/);
     expect(screen.getByTestId("tw-research-next-action").textContent?.length).toBeGreaterThan(
       10,

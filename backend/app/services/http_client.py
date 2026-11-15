@@ -116,6 +116,8 @@ _PROVIDER_NAMES_BY_HOST = {
 logger = logging.getLogger(__name__)
 HttpMethod = Literal["GET", "POST"]
 _thread_state = threading.local()
+_provider_budget_lock = threading.Lock()
+_provider_budget: dict[str, dict[str, float | int]] = {}
 
 
 def clear_last_http_fetch_error() -> None:
@@ -152,6 +154,58 @@ def set_provider_request_spacing(hook: Callable[[str], None] | None) -> None:
 
 def get_provider_request_spacing() -> Callable[[str], None] | None:
     return getattr(_thread_state, "provider_spacing_hook", None)
+
+
+def reset_provider_request_budget() -> None:
+    """Clear process-local per-provider request counters (#360)."""
+    with _provider_budget_lock:
+        _provider_budget.clear()
+
+
+def snapshot_provider_request_budget() -> dict[str, dict[str, float | int]]:
+    """Return a copy of per-provider request/timeout/retry/cache counters."""
+    with _provider_budget_lock:
+        return {
+            provider: dict(stats) for provider, stats in _provider_budget.items()
+        }
+
+
+def record_provider_budget_event(
+    provider: str,
+    *,
+    requests: int = 0,
+    timeouts: int = 0,
+    retries: int = 0,
+    rate_limited: int = 0,
+    cache_hits: int = 0,
+    cache_misses: int = 0,
+    bytes_downloaded: int = 0,
+    latency_ms: float = 0.0,
+) -> None:
+    """Accumulate sanitized per-provider counters (no secrets / URLs)."""
+    key = str(provider or "unknown")
+    with _provider_budget_lock:
+        row = _provider_budget.setdefault(
+            key,
+            {
+                "requests": 0,
+                "timeouts": 0,
+                "retries": 0,
+                "rate_limited": 0,
+                "cache_hits": 0,
+                "cache_misses": 0,
+                "bytes": 0,
+                "latency_ms_total": 0.0,
+            },
+        )
+        row["requests"] = int(row["requests"]) + int(requests)
+        row["timeouts"] = int(row["timeouts"]) + int(timeouts)
+        row["retries"] = int(row["retries"]) + int(retries)
+        row["rate_limited"] = int(row["rate_limited"]) + int(rate_limited)
+        row["cache_hits"] = int(row["cache_hits"]) + int(cache_hits)
+        row["cache_misses"] = int(row["cache_misses"]) + int(cache_misses)
+        row["bytes"] = int(row["bytes"]) + int(bytes_downloaded)
+        row["latency_ms_total"] = float(row["latency_ms_total"]) + float(latency_ms)
 
 
 def classify_http_failure(
@@ -403,7 +457,6 @@ def _request_with_retries(
     if data is not None and json_body is not None:
         raise ValueError("data and json_body are mutually exclusive")
     started_at = perf_counter()
-    timeout = httpx.Timeout(timeout_seconds)
     attempts = max(retries + 1, 1)
     effective_retryable = (
         _RETRYABLE_STATUS_CODES
@@ -425,6 +478,23 @@ def _request_with_retries(
 
     for attempt in range(attempts):
         attempts_executed = attempt + 1
+        # Cap each attempt to the remaining First-Pass collector deadline (#360).
+        try:
+            from app.services.collector_deadline import (
+                CollectorDeadlineExceeded,
+                capped_request_timeout_seconds,
+            )
+
+            attempt_timeout = capped_request_timeout_seconds(timeout_seconds)
+        except Exception as deadline_exc:  # noqa: BLE001
+            # Import / deadline miss: fail closed only for explicit deadline.
+            from app.services.collector_deadline import CollectorDeadlineExceeded
+
+            if isinstance(deadline_exc, CollectorDeadlineExceeded):
+                record_provider_budget_event(effective_provider, timeouts=1)
+                raise
+            attempt_timeout = float(timeout_seconds)
+        timeout = httpx.Timeout(attempt_timeout)
         # Clear prior-attempt response metadata so a later network timeout cannot
         # inherit an earlier 401/429 and misclassify the final failure.
         last_status_code = None
@@ -437,6 +507,11 @@ def _request_with_retries(
                 raise
             except Exception as spacing_exc:  # noqa: BLE001 - never block HTTP
                 logger.debug("Provider spacing hook failed: %s", spacing_exc)
+        record_provider_budget_event(
+            effective_provider,
+            requests=1,
+            retries=1 if attempt > 0 else 0,
+        )
         try:
             response = _send_http_request(
                 method,
@@ -465,6 +540,14 @@ def _request_with_retries(
                     retry_after_seconds=retry_after,
                 )
             response.raise_for_status()
+            duration = elapsed_ms(started_at)
+            body_len = len(response.content or b"")
+            record_provider_budget_event(
+                effective_provider,
+                bytes_downloaded=body_len,
+                latency_ms=float(duration),
+                rate_limited=1 if response.status_code == 429 else 0,
+            )
             logger.debug(
                 "External HTTP request completed",
                 extra={
@@ -477,12 +560,14 @@ def _request_with_retries(
                     "status_code": response.status_code,
                     "content_type": last_content_type,
                     "attempts": attempt + 1,
-                    "duration_ms": elapsed_ms(started_at),
+                    "duration_ms": duration,
                 },
             )
             return response
         except (httpx.HTTPError, HttpFetchError) as exc:
             last_error = exc
+            if isinstance(exc, (httpx.TimeoutException, httpx.ConnectTimeout, httpx.ReadTimeout)):
+                record_provider_budget_event(effective_provider, timeouts=1)
             if isinstance(exc, httpx.RemoteProtocolError):
                 remote_protocol_failures += 1
             if isinstance(exc, httpx.HTTPStatusError):

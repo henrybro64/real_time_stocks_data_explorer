@@ -19,16 +19,22 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Callable, Iterator
-from contextlib import contextmanager
-from contextvars import ContextVar
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
+import threading
 from typing import Literal
 
 import httpx
 
 from app.models.quote import CandleRecord
+from app.services.collector_deadline import (
+    CollectorDeadlineExceeded,
+    capped_request_timeout_seconds,
+    check_collector_deadline,
+    collector_deadline_scope,
+    remaining_collector_deadline_seconds,
+)
 from app.services.http_client import (
     HttpFetchError,
     capped_retry_sleep_seconds,
@@ -91,8 +97,14 @@ _CLOSE_LOOKBACK_DAYS = 10
 _TDCC_OPEN_DATA_URL = "https://smart.tdcc.com.tw/opendata/getOD.ashx"
 # Open-data id=1-5 is a weekly market-wide CSV. Cache once per process so a
 # First-Pass batch does not re-download the same file for every symbol (#360).
+# Keyed by publication date when parseable; TTL is an upper bound. Cross-pod
+# PostgreSQL snapshot sharing is a documented follow-up.
 _TDCC_OPEN_DATA_CACHE_TTL_SECONDS = 6 * 60 * 60
-_tdcc_open_data_cache: tuple[float, str] | None = None
+_TDCC_OPEN_DATA_TIMEOUT_SECONDS = 20.0
+_TDCC_OPEN_DATA_MAX_ATTEMPTS = 2
+_tdcc_open_data_lock = threading.Lock()
+# (fetched_monotonic, publication_date_or_empty, csv_body)
+_tdcc_open_data_cache: tuple[float, str, str] | None = None
 _TDCC_PORTAL_URL = "https://www.tdcc.com.tw/portal/zh/smWeb/qryStock"
 _TWSE_MI_QFIIS_URL = "https://www.twse.com.tw/rwd/zh/fund/MI_QFIIS"
 _TPEX_QFII_URL = "https://www.tpex.org.tw/www/zh-tw/insti/qfii"
@@ -116,47 +128,13 @@ _PORTAL_HEADERS = {
 }
 
 
-class CollectorDeadlineExceeded(Exception):
-    """Soft per-symbol collector deadline elapsed during ownership acquisition.
-
-    Deliberately **not** an ``OSError``/``ValueError``/``RuntimeError`` so the
-    upstream-unavailable handlers do not swallow it; first-pass catches it and
-    records ``collector_deadline_exceeded`` on the field only.
-    """
-
-
-# (deadline_monotonic, clock) for the active ownership acquisition, if any.
-_COLLECTOR_DEADLINE: ContextVar[tuple[float, Callable[[], float]] | None] = ContextVar(
-    "tw_ownership_collector_deadline", default=None
+# Re-export deadline helpers for existing first-pass / test imports.
+__all_deadline_exports__ = (
+    "CollectorDeadlineExceeded",
+    "check_collector_deadline",
+    "collector_deadline_scope",
+    "remaining_collector_deadline_seconds",
 )
-
-
-@contextmanager
-def collector_deadline_scope(
-    deadline_monotonic: float | None,
-    monotonic_clock: Callable[[], float] | None = None,
-) -> Iterator[None]:
-    """Bound ownership network loops (Fridays/probes/retries) to a soft deadline."""
-    if deadline_monotonic is None:
-        yield
-        return
-    token = _COLLECTOR_DEADLINE.set(
-        (float(deadline_monotonic), monotonic_clock or time.monotonic)
-    )
-    try:
-        yield
-    finally:
-        _COLLECTOR_DEADLINE.reset(token)
-
-
-def check_collector_deadline() -> None:
-    """Raise ``CollectorDeadlineExceeded`` when the active soft deadline elapsed."""
-    active = _COLLECTOR_DEADLINE.get()
-    if active is None:
-        return
-    deadline, clock = active
-    if clock() >= deadline:
-        raise CollectorDeadlineExceeded("collector_deadline_exceeded")
 
 
 class ForeignOwnershipSchemaError(ValueError):
@@ -1059,30 +1037,91 @@ def _optional_float(value: object) -> float | None:
 def clear_tdcc_open_data_cache() -> None:
     """Drop the process-local open-data CSV cache (tests / forced refresh)."""
     global _tdcc_open_data_cache
-    _tdcc_open_data_cache = None
+    with _tdcc_open_data_lock:
+        _tdcc_open_data_cache = None
+
+
+def _parse_tdcc_open_data_publication_date(csv_body: str) -> str:
+    """Best-effort publication date from the CSV header or first data row."""
+    for line in csv_body.splitlines()[:5]:
+        cells = [cell.strip().strip('"') for cell in line.split(",")]
+        for cell in cells:
+            if len(cell) >= 8 and cell[:4].isdigit():
+                normalized = cell.replace("/", "-")
+                if len(normalized) >= 10 and normalized[4] == "-" and normalized[7] == "-":
+                    return normalized[:10]
+                digits = "".join(ch for ch in cell if ch.isdigit())
+                if len(digits) >= 8:
+                    return f"{digits[0:4]}-{digits[4:6]}-{digits[6:8]}"
+    return ""
 
 
 def _fetch_tdcc_open_data_csv() -> str:
-    """Fetch TDCC open-data id=1-5 once per TTL window within this process."""
+    """Fetch TDCC open-data id=1-5 once per TTL/publication within this process.
+
+    Singleflight via module lock so concurrent symbols share one download.
+    Timeout is capped to ``min(20s, remaining collector deadline)`` with at
+    most two attempts inside the symbol deadline (#360).
+    """
     global _tdcc_open_data_cache
-    now = time.monotonic()
-    cached = _tdcc_open_data_cache
-    if cached is not None:
-        cached_at, body = cached
-        if now - cached_at < _TDCC_OPEN_DATA_CACHE_TTL_SECONDS:
-            return body
-    body = fetch_text(
-        _TDCC_OPEN_DATA_URL,
-        params={"id": "1-5"},
-        timeout_seconds=60.0,
-        retries=1,
-        encoding="utf-8-sig",
-        provider_name="tdcc",
-        operation_name="tdcc_shareholding_open_data",
-        resource_id="1-5",
-    )
-    _tdcc_open_data_cache = (now, body)
-    return body
+    with _tdcc_open_data_lock:
+        now = time.monotonic()
+        cached = _tdcc_open_data_cache
+        if cached is not None:
+            cached_at, _pub, body = cached
+            if now - cached_at < _TDCC_OPEN_DATA_CACHE_TTL_SECONDS:
+                try:
+                    from app.services.http_client import record_provider_budget_event
+
+                    record_provider_budget_event("tdcc", cache_hits=1)
+                except Exception:  # noqa: BLE001
+                    pass
+                return body
+
+        last_error: Exception | None = None
+        body = ""
+        for attempt in range(_TDCC_OPEN_DATA_MAX_ATTEMPTS):
+            check_collector_deadline()
+            try:
+                timeout = capped_request_timeout_seconds(_TDCC_OPEN_DATA_TIMEOUT_SECONDS)
+            except CollectorDeadlineExceeded:
+                raise
+            # Retries=0: we own the attempt loop so the deadline can stop us.
+            try:
+                body = fetch_text(
+                    _TDCC_OPEN_DATA_URL,
+                    params={"id": "1-5"},
+                    timeout_seconds=timeout,
+                    retries=0,
+                    encoding="utf-8-sig",
+                    provider_name="tdcc",
+                    operation_name="tdcc_shareholding_open_data",
+                    resource_id="1-5",
+                )
+                break
+            except (OSError, RuntimeError, HttpFetchError, CollectorDeadlineExceeded) as exc:
+                last_error = exc
+                if isinstance(exc, CollectorDeadlineExceeded):
+                    raise
+                if attempt + 1 >= _TDCC_OPEN_DATA_MAX_ATTEMPTS:
+                    raise
+                continue
+        else:
+            if last_error is not None:
+                raise last_error
+            raise RuntimeError("tdcc_open_data_fetch_failed")
+
+        publication = _parse_tdcc_open_data_publication_date(body)
+        if (
+            cached is not None
+            and publication
+            and cached[1]
+            and publication != cached[1]
+        ):
+            # Publication moved — keep the fresh body (already fetched).
+            pass
+        _tdcc_open_data_cache = (time.monotonic(), publication, body)
+        return body
 
 
 def _fetch_tdcc_portal_history(

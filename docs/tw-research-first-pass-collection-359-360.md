@@ -46,11 +46,27 @@ This branch does **not** unsuspend
 
 | Layer | Budget | Notes |
 |---|---|---|
-| Soft per-symbol ownership deadline | 45s | Cooperative; cannot interrupt blocked I/O |
+| Soft per-symbol deadline (all providers) | 45s | ContextVar; each HTTP timeout capped to remaining; skip if ≤1s left |
 | Batch wall-clock budget | 60s | Stop before starting the next symbol |
 | Drain curl `--max-time` | 150s | CronJob HTTP client |
 | k8s Job `activeDeadlineSeconds` | 180s | Bounds the curl Job |
 | Batch lease | 300s | Renewed per finished symbol + heartbeat |
+
+Worst case for one drain tick: batch budget 60s + one in-flight symbol ≤45s = **≤105s**, which is under curl 150s < Job 180s < lease 300s.
+
+### Per-provider hard timeouts (first-pass path)
+
+| Provider / step | Configured timeout | Max attempts | Worst-case (timeout×attempts + backoff) | Notes |
+|---|---|---|---|
+| Catalog / identity | local | 1 | ~0 | No HTTP |
+| Stored candles / 52w peek | local PG | 1 | ~0 | No upstream month fetch |
+| Institutional day heal | 8s (TWSE/TPEx client) | ≤ recent_days probes | bounded by symbol deadline | Store-first; live only when stale |
+| Margin day heal | 8s | ≤ recent_days probes | bounded by symbol deadline | Store-first (#360) |
+| PE day snapshot | 8s | 1 per board (lru) | ≤8s first symbol / board | In-process cache |
+| TDCC open-data CSV | **min(20s, remaining)** | **2** | ≤40s but still inside 45s symbol deadline | Process singleflight + publication-date key |
+| TDCC portal Friday | 30s | 2 retries / Friday | Cut by symbol deadline between loops | Inherently per-symbol |
+
+A Python soft deadline cannot interrupt blocked I/O; hard request timeouts + remaining-time caps prevent starting work that cannot finish.
 
 ## Crash-safe persistence (#360)
 
@@ -90,10 +106,17 @@ fields are reused via `previous_fields` / `_merge_preserved_ok_fields`.
 | TDCC portal Fridays | N× per stock | still per stock (no official bulk history) |
 | PE day file | 1× per board per process | unchanged (`lru_cache`) |
 
+### Fixture-measured request budget (offline mocks)
+
+From `test_first_pass_request_budget_360.py` (no live providers):
+
+| Universe | TDCC open-data downloads | Margin live HTTP (warm PG store) |
+|---|---|---|
+| 73 | 1 | 0 |
+| 300 | 1 | 0 |
+
 ## Follow-ups
 
-- #361: single CTA / stepper UI simplification (both Start buttons already call
-  managed `research-runs/start`; visual merge is #361).
+- #361: stepper / control-audit polish (ordinary UI already has one primary Start).
 - Multi-Pod singleflight for MI/margin day-file refresh.
-- Measured 73 / 300+ request-budget benchmark fixtures (no production crawl).
-- Optional PG persistence of TDCC open-data snapshots (beyond process TTL).
+- Persist TDCC open-data snapshots in PostgreSQL for cross-pod sharing.
