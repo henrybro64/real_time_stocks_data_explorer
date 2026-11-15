@@ -4,6 +4,7 @@ import {
   ApiError,
   RANKINGS_REQUEST_TIMEOUT_DETAIL,
   RANKINGS_REQUEST_TIMEOUT_MS,
+  apiErrorDetailReason,
   fetchQuotes,
   fetchRankings,
   requestJson,
@@ -661,6 +662,59 @@ describe("fetchQuotes", () => {
     expect(firstUrl).toContain("US%3AS0");
     expect(firstUrl).not.toContain("US%3AS100");
     expect(secondUrl).toContain("US%3AS100");
+  });
+});
+
+describe("apiErrorDetailReason (HTTP 409 body shape)", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("reads reason from body.detail after real client normalization", async () => {
+    const detailObj = {
+      error: "research_run_retained",
+      reason: "research_run_retained",
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ detail: detailObj }), {
+          status: 409,
+          headers: { "content-type": "application/json" },
+        }),
+      ),
+    );
+    let caught: unknown;
+    try {
+      await requestJson("/tw-research/research-runs/current/adopt-first-pass");
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(ApiError);
+    const api = caught as ApiError;
+    expect(typeof api.detail).toBe("string");
+    expect(api.detail).toContain("research_run_retained");
+    expect(apiErrorDetailReason(api)).toBe("research_run_retained");
+  });
+
+  it.each([
+    "research_run_retained",
+    "concurrent_update_retry",
+    "first_pass_job_lease_active",
+    "first_pass_job_archived",
+    "first_pass_job_nothing_pending",
+    "first_pass_job_universe_digest_mismatch",
+    "first_pass_job_deletion_in_progress",
+    "first_pass_job_not_eligible_status",
+  ] as const)("extracts %s from stringified detail fallback", (reason) => {
+    const detail = JSON.stringify({ error: reason, reason });
+    const api = new ApiError(`Request failed: 409 - ${detail}`, {
+      status: 409,
+      detail,
+      kind: "unknown",
+      body: null,
+    });
+    expect(apiErrorDetailReason(api)).toBe(reason);
   });
 });
 

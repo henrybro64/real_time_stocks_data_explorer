@@ -35,13 +35,23 @@ def collector_deadline_scope(
     deadline_monotonic: float | None,
     monotonic_clock: Callable[[], float] | None = None,
 ) -> Iterator[None]:
-    """Bound provider steps to a soft deadline (checked between iterations)."""
+    """Bound provider steps to a soft deadline (checked between iterations).
+
+    Nested scopes **never extend** a parent deadline: the effective deadline is
+    ``min(requested, parent)`` and the parent monotonic clock is reused so nested
+    TDCC/ownership work cannot reset a fresh 45s budget after earlier steps.
+    """
     if deadline_monotonic is None:
         yield
         return
-    token = _COLLECTOR_DEADLINE.set(
-        (float(deadline_monotonic), monotonic_clock or time.monotonic)
-    )
+    parent = _COLLECTOR_DEADLINE.get()
+    clock = monotonic_clock or time.monotonic
+    effective = float(deadline_monotonic)
+    if parent is not None:
+        parent_deadline, parent_clock = parent
+        clock = parent_clock
+        effective = min(effective, float(parent_deadline))
+    token = _COLLECTOR_DEADLINE.set((effective, clock))
     try:
         yield
     finally:

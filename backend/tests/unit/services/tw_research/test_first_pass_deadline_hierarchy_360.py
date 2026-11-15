@@ -244,6 +244,151 @@ def test_pe_fetch_timeout_capped_to_remaining_deadline(monkeypatch) -> None:
     key_stats_service.clear_official_pe_snapshot_cache()
 
 
+def test_nested_ownership_deadline_cannot_extend_parent() -> None:
+    """Ownership starting at T=40s of a 45s budget must not get a fresh 45s."""
+    clock = {"now": 0.0}
+    ownership_timeouts: list[float] = []
+
+    def mono() -> float:
+        return clock["now"]
+
+    def slow_institutional(*_a, **_k):
+        clock["now"] += 20.0
+        return _good_inst()
+
+    def slow_margin(*_a, **_k):
+        clock["now"] += 20.0
+        return _good_margin()
+
+    def ownership_loader(*_a, **_k):
+        # Mimic HTTP caps: only remaining time is available.
+        remaining = 45.0 - clock["now"]
+        ownership_timeouts.append(remaining)
+        if remaining <= 1.0:
+            raise CollectorDeadlineExceeded("collector_deadline_exceeded")
+        # Would formerly get ~45s nested; remaining should be ~5s.
+        clock["now"] += min(45.0, remaining)
+        return _good_own()
+
+    result = collect_first_pass_batch(
+        ["TW:2330"],
+        stock_loader=_stock_loader,
+        candles_loader=lambda _s: _candles(),
+        institutional_loader=slow_institutional,
+        margin_loader=slow_margin,
+        ownership_loader=ownership_loader,
+        key_stats_loader=_key_stats,
+        symbol_deadline_seconds=45.0,
+        monotonic_clock=mono,
+        time_budget_seconds=90.0,
+    )
+    assert ownership_timeouts
+    assert ownership_timeouts[0] == pytest.approx(5.0)
+    assert clock["now"] <= 45.0 + 1e-6
+    fields = result.records[0].fields
+    ownership = fields.get("tdcc_holders_ge_400_lots")
+    assert ownership is not None
+    # Consumed the remaining 5s → deadline overwrite or ok within budget.
+    assert ownership.status in {"ok", "partial", "unavailable"}
+
+
+def test_nested_deadline_scope_never_extends_parent() -> None:
+    clock = {"now": 100.0}
+
+    def mono() -> float:
+        return clock["now"]
+
+    with collector_deadline_scope(100.0 + 5.0, mono):
+        # Nested request of +45s must clamp to parent (+5s).
+        with collector_deadline_scope(100.0 + 45.0, mono):
+            assert capped_request_timeout_seconds(20.0) == pytest.approx(5.0)
+            clock["now"] = 103.0  # 2s remaining on parent
+            assert capped_request_timeout_seconds(20.0) == pytest.approx(2.0)
+            clock["now"] = 104.5
+            with pytest.raises(CollectorDeadlineExceeded):
+                capped_request_timeout_seconds(20.0)
+
+
+def test_nested_deadline_shorter_than_parent_is_honored() -> None:
+    clock = {"now": 100.0}
+
+    def mono() -> float:
+        return clock["now"]
+
+    with collector_deadline_scope(100.0 + 45.0, mono):
+        with collector_deadline_scope(100.0 + 3.0, mono):
+            assert capped_request_timeout_seconds(20.0) == pytest.approx(3.0)
+
+
+def test_candles_participate_in_shared_symbol_deadline() -> None:
+    """Prior providers consume the budget; candle loader must not start."""
+    clock = {"now": 0.0}
+    candle_calls = {"n": 0}
+
+    def mono() -> float:
+        return clock["now"]
+
+    def consume(*_a, **_k):
+        clock["now"] += 23.0
+        return _good_inst()
+
+    def candles_loader(_stock):
+        candle_calls["n"] += 1
+        raise AssertionError("candles must not start after deadline")
+
+    def slow_margin(*_a, **_k):
+        clock["now"] += 23.0
+        return _good_margin()
+
+    result = collect_first_pass_batch(
+        ["TW:2330"],
+        stock_loader=_stock_loader,
+        candles_loader=candles_loader,
+        institutional_loader=consume,
+        margin_loader=slow_margin,
+        ownership_loader=lambda *_a, **_k: _good_own(),
+        key_stats_loader=_key_stats,
+        symbol_deadline_seconds=45.0,
+        monotonic_clock=mono,
+        time_budget_seconds=90.0,
+    )
+    assert candle_calls["n"] == 0
+    fields = result.records[0].fields
+    assert fields["latest_completed_close"].reason == COLLECTOR_DEADLINE_EXCEEDED_REASON
+    assert fields["relative_price_basis"].reason == COLLECTOR_DEADLINE_EXCEEDED_REASON
+    # Prior successful fields remain.
+    assert fields["institutional_5d"].status in {"ok", "partial", "unavailable"}
+
+
+def test_candle_loader_past_deadline_does_not_invent_valid_price_basis() -> None:
+    clock = {"now": 0.0}
+
+    def mono() -> float:
+        return clock["now"]
+
+    def candles_loader(_stock):
+        clock["now"] = 50.0  # return after absolute deadline
+        return _candles()
+
+    result = collect_first_pass_batch(
+        ["TW:2330"],
+        stock_loader=_stock_loader,
+        candles_loader=candles_loader,
+        institutional_loader=lambda *_a, **_k: _good_inst(),
+        margin_loader=lambda *_a, **_k: _good_margin(),
+        ownership_loader=lambda *_a, **_k: _good_own(),
+        key_stats_loader=_key_stats,
+        symbol_deadline_seconds=45.0,
+        monotonic_clock=mono,
+        time_budget_seconds=90.0,
+    )
+    fields = result.records[0].fields
+    # Soft deadline cannot interrupt blocked I/O; late return is overwritten.
+    assert fields["latest_completed_close"].reason == COLLECTOR_DEADLINE_EXCEEDED_REASON
+    assert fields["relative_price_basis"].status == "unavailable"
+    assert fields["relative_price_basis"].reason == COLLECTOR_DEADLINE_EXCEEDED_REASON
+
+
 def test_worst_case_single_symbol_all_providers_slow_on_fake_clock() -> None:
     """All providers slow → single symbol still ≤45s on a fake clock.
 

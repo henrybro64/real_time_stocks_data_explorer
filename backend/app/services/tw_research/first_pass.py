@@ -703,14 +703,14 @@ def _collect_one(
             "tdcc_holders_ge_400_lots",
             "tw_ownership_concentration_service",
             "tdcc_weekly",
-            # Nested ownership deadline still overwrites if the loader returns
-            # after the budget (soft deadline cannot interrupt blocked I/O).
+            # Nested ownership uses the same absolute deadline (never extends).
+            # Soft deadline cannot interrupt blocked I/O; late returns are overwritten.
             lambda: _enrich_ownership_with_deadline(
                 scratch,
                 stock.id,
                 loader=ownership_loader,
                 captured_at=captured_at,
-                deadline_seconds=symbol_deadline_seconds,
+                deadline_at=deadline_at,
                 clock=mono,
             ),
         ),
@@ -893,11 +893,19 @@ def _collect_one(
         ):
             record.relative_price_basis = dict(prior_basis_field["value"])
     else:
+        # Candle history participates in the same absolute per-symbol deadline.
+        # Soft deadline cannot interrupt blocked I/O inside the loader; we still
+        # refuse to start when remaining time is exhausted and mark fields honestly.
+        candle_deadline_hit = False
         try:
-            if deadline_at is not None:
+            with collector_deadline_scope(deadline_at, mono):
                 check_collector_deadline()
-            candles = list(candles_loader(stock) or [])
+                candles = list(candles_loader(stock) or [])
+            # Soft deadline cannot interrupt blocked I/O; overwrite late returns.
+            if deadline_at is not None and mono() >= float(deadline_at):
+                raise CollectorDeadlineExceeded(COLLECTOR_DEADLINE_EXCEEDED_REASON)
         except CollectorDeadlineExceeded:
+            candle_deadline_hit = True
             scratch.fields["latest_completed_close"] = ProvenanceField(
                 field="latest_completed_close",
                 status="unavailable",
@@ -955,52 +963,63 @@ def _collect_one(
                     reason="stored_history_empty_or_incomplete",
                 )
 
-        pe_value = None
-        pe_field = scratch.fields.get("official_pe")
-        if pe_field is not None and isinstance(pe_field.value, dict):
-            raw_pe = pe_field.value.get("peRatio")
-            if isinstance(raw_pe, (int, float)):
-                pe_value = float(raw_pe)
-
-        try:
-            basis: RelativePriceBasisEvidence = evaluate_relative_price_basis(
-                candles,
-                market="TW",
-                now=now,
-                official_pe=pe_value,
-            )
-            record.relative_price_basis = basis.as_dict()
-            scratch.fields["relative_price_basis"] = ProvenanceField(
-                field="relative_price_basis",
-                status="ok" if basis.category != "insufficient_data" else "unavailable",
-                source="tw_research.price_basis",
-                source_as_of=basis.as_of,
-                captured_at=captured_at,
-                freshness_class="computed",
-                reason=None if basis.category != "insufficient_data" else basis.rationale,
-                # Store the full evidence object so retries can reuse it verbatim.
-                value=basis.as_dict(),
-            )
-        except Exception as exc:  # noqa: BLE001 — isolate price-basis calculation
-            if is_infrastructure_failure(exc):
-                raise
-            reason = provider_exception_reason(exc)
-            log_isolated_fault(
-                stock_id=stock.id,
-                stage="relative_price_basis",
-                source="tw_research.price_basis",
-                exc=exc,
-                reason=reason,
-                job_id=job_id,
-            )
+        if candle_deadline_hit:
+            # Do not compute a "valid" price basis from an incomplete candle fetch.
             scratch.fields["relative_price_basis"] = ProvenanceField(
                 field="relative_price_basis",
                 status="unavailable",
                 source="tw_research.price_basis",
                 captured_at=captured_at,
                 freshness_class="computed",
-                reason=reason,
+                reason=COLLECTOR_DEADLINE_EXCEEDED_REASON,
             )
+        else:
+            pe_value = None
+            pe_field = scratch.fields.get("official_pe")
+            if pe_field is not None and isinstance(pe_field.value, dict):
+                raw_pe = pe_field.value.get("peRatio")
+                if isinstance(raw_pe, (int, float)):
+                    pe_value = float(raw_pe)
+
+            try:
+                basis: RelativePriceBasisEvidence = evaluate_relative_price_basis(
+                    candles,
+                    market="TW",
+                    now=now,
+                    official_pe=pe_value,
+                )
+                record.relative_price_basis = basis.as_dict()
+                scratch.fields["relative_price_basis"] = ProvenanceField(
+                    field="relative_price_basis",
+                    status="ok" if basis.category != "insufficient_data" else "unavailable",
+                    source="tw_research.price_basis",
+                    source_as_of=basis.as_of,
+                    captured_at=captured_at,
+                    freshness_class="computed",
+                    reason=None if basis.category != "insufficient_data" else basis.rationale,
+                    # Store the full evidence object so retries can reuse it verbatim.
+                    value=basis.as_dict(),
+                )
+            except Exception as exc:  # noqa: BLE001 — isolate price-basis calculation
+                if is_infrastructure_failure(exc):
+                    raise
+                reason = provider_exception_reason(exc)
+                log_isolated_fault(
+                    stock_id=stock.id,
+                    stage="relative_price_basis",
+                    source="tw_research.price_basis",
+                    exc=exc,
+                    reason=reason,
+                    job_id=job_id,
+                )
+                scratch.fields["relative_price_basis"] = ProvenanceField(
+                    field="relative_price_basis",
+                    status="unavailable",
+                    source="tw_research.price_basis",
+                    captured_at=captured_at,
+                    freshness_class="computed",
+                    reason=reason,
+                )
 
     # Cheap trend summary only — not second-pass MACD/KD.
     scratch.fields["second_pass_macd_kd"] = ProvenanceField(
@@ -1027,28 +1046,28 @@ def _enrich_ownership_with_deadline(
     *,
     loader: OwnershipLoader,
     captured_at: str,
-    deadline_seconds: float | None,
+    deadline_at: float | None,
     clock: Callable[[], float],
 ) -> None:
-    """Run the ownership step under a soft deadline.
+    """Run the ownership step under the shared absolute soft deadline.
 
+    Nested scopes never extend a parent (see ``collector_deadline_scope``).
     The deadline is exposed to the ownership service (Friday/probe/retry loops
     stop between iterations). If the loader still returns after the deadline
     elapsed, the field is overwritten as unavailable so a slow symbol never
     claims fresh evidence it exceeded the budget for. Peer fields are untouched.
     """
-    if deadline_seconds is None:
+    if deadline_at is None:
         _enrich_ownership(
             scratch, stock_id, loader=loader, captured_at=captured_at
         )
         return
-    started = clock()
-    deadline_at = started + float(deadline_seconds)
-    with collector_deadline_scope(deadline_at, clock):
+    absolute_deadline = float(deadline_at)
+    with collector_deadline_scope(absolute_deadline, clock):
         _enrich_ownership(
             scratch, stock_id, loader=loader, captured_at=captured_at
         )
-    if clock() - started >= float(deadline_seconds):
+    if clock() >= absolute_deadline:
         scratch.fields["tdcc_holders_ge_400_lots"] = ProvenanceField(
             field="tdcc_holders_ge_400_lots",
             status="unavailable",

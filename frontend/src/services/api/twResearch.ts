@@ -676,6 +676,10 @@ export type TwResearchRun = {
   notNotionPublisher?: boolean;
   cronjobRemainsSuspended?: boolean;
   durable?: boolean;
+  /** Creation claim for attaching a First-Pass Job (idempotent Start reclaim). */
+  jobClaimToken?: string | null;
+  jobClaimExpiresAt?: string | null;
+  pendingFirstPassJobId?: string | null;
   createdAt?: string;
   updatedAt?: string;
 };

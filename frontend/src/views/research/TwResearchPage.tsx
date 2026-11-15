@@ -35,7 +35,7 @@ import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 
 import { useLanguage, type TranslationKey } from "../../app/i18n";
 import { RequestStateNotice, errorToNoticeKind } from "../../components/state/RequestStateNotice";
-import { toApiError } from "../../services/api/client";
+import { apiErrorDetailReason, toApiError } from "../../services/api/client";
 import {
   ChipEvidenceCard,
   type ChipEvidenceRow,
@@ -285,6 +285,22 @@ export function TwResearchPage({
   const scanRef = useRef<TwResearchScanSnapshot | null>(null);
   const scanIdRef = useRef<string | null>(scanId);
   const createGuard = useRef(false);
+  /** Bumps on every First-Pass Job selection change to drop stale async responses. */
+  const firstPassSelectionGenRef = useRef(0);
+  const firstPassJobIdRef = useRef<string | null>(null);
+  firstPassJobIdRef.current = firstPassJobId;
+
+  const clearFirstPassEvidenceState = () => {
+    setFirstPassSnapshotId(null);
+    setFirstPassDigest(null);
+    setFirstPassEvidenceText("");
+    setEvidenceOffset(0);
+    setEvidenceStatusFilter("");
+    setEvidenceSearch("");
+    setChipEvidenceOffset(0);
+    setChipEvidenceSearch("");
+    setChipEvidenceQuery("");
+  };
 
   const refreshManifest = (id: string | null) => {
     if (!id) {
@@ -1008,6 +1024,9 @@ export function TwResearchPage({
 
   useEffect(() => {
     if (!firstPassProgressQuery.data) return;
+    // Query key is scoped to firstPassJobId. Only promote a nonempty snapshot
+    // here — clearing stale evidence is done on job create/switch so a refresh
+    // of the same job does not wipe a valid snapshot/digest mid-session.
     setFirstPassProgressText(JSON.stringify(firstPassProgressQuery.data, null, 2));
     const snapshotId = firstPassProgressQuery.data.activeSnapshotId;
     if (typeof snapshotId === "string" && snapshotId) {
@@ -1328,11 +1347,9 @@ export function TwResearchPage({
     } | null;
   }) => {
     if (run.firstPassJobId) {
+      firstPassSelectionGenRef.current += 1;
       setFirstPassJobId(run.firstPassJobId);
-      setFirstPassSnapshotId(null);
-      setFirstPassDigest(null);
-      setFirstPassEvidenceText("");
-      setEvidenceOffset(0);
+      clearFirstPassEvidenceState();
     }
     void queryClient.invalidateQueries({ queryKey: ["tw-research-run-current"] });
     void queryClient.invalidateQueries({ queryKey: ["tw-research-first-pass-jobs"] });
@@ -1353,8 +1370,34 @@ export function TwResearchPage({
     ) {
       return true;
     }
-    return Boolean(run.firstPassJobId) || status === "running" || status === "queued";
+    // Queued/running without an attached First-Pass Job is recoverable via
+    // idempotent Start (creation-claim reclaim). Do not treat it as executable
+    // work already in progress — otherwise Start stays disabled forever.
+    if (!run.firstPassJobId) {
+      return false;
+    }
+    return (
+      status === "running" ||
+      status === "queued" ||
+      status === "partial" ||
+      status === "deferred"
+    );
   }, [researchRunQuery.data]);
+
+  const startRetryHint = useMemo(() => {
+    const run = researchRunQuery.data;
+    if (!run || run.firstPassJobId) return null;
+    const status = String(run.status ?? "");
+    if (status !== "queued" && status !== "running") return null;
+    const expiresRaw = run.jobClaimExpiresAt;
+    if (typeof expiresRaw === "string" && expiresRaw.trim()) {
+      const expiresMs = Date.parse(expiresRaw);
+      if (Number.isFinite(expiresMs) && expiresMs > Date.now()) {
+        return t("research.tw.startWaitingCreationClaim");
+      }
+    }
+    return t("research.tw.startRetryIncompleteJob");
+  }, [researchRunQuery.data, language, t]);
 
   // Canonical ordinary-path Start (#359): managed research-run, not standalone job.
   const startFullResearchMutation = useMutation({
@@ -1381,13 +1424,10 @@ export function TwResearchPage({
     },
     onError: (error) => {
       const api = toApiError(error);
-      const reason =
-        typeof api.detail === "object" && api.detail && "reason" in (api.detail as object)
-          ? String((api.detail as { reason?: string }).reason ?? "")
-          : "";
-      const code = reason || api.message;
+      const reason = apiErrorDetailReason(api) ?? "";
+      const code = reason || "unknown";
       setAdoptConflictCode(code);
-      setAdoptErrorMessage(adoptConflictPlainMessage(code));
+      setAdoptErrorMessage(adoptConflictPlainMessage(reason));
       setConfirmModal(null);
     },
   });
@@ -1404,11 +1444,14 @@ export function TwResearchPage({
   const createStandaloneFirstPassMutation = useMutation({
     mutationFn: async () => createTwResearchFirstPassJob({ useMembership: true }),
     onSuccess: (job) => {
+      firstPassSelectionGenRef.current += 1;
+      clearFirstPassEvidenceState();
       if (typeof job.jobId === "string") {
         setFirstPassJobId(job.jobId);
       }
       setFirstPassProgressText(JSON.stringify(job, null, 2));
       void queryClient.invalidateQueries({ queryKey: ["tw-research-first-pass-jobs"] });
+      void queryClient.invalidateQueries({ queryKey: ["tw-research-first-pass-progress"] });
     },
   });
 
@@ -1569,14 +1612,23 @@ export function TwResearchPage({
   const loadFirstPassEvidenceMutation = useMutation({
     mutationFn: async (offset: number) => {
       if (!firstPassJobId) throw new Error("missing_first_pass_job");
-      return fetchTwResearchFirstPassSymbols(firstPassJobId, {
+      const jobId = firstPassJobId;
+      const selectionGen = firstPassSelectionGenRef.current;
+      const result = await fetchTwResearchFirstPassSymbols(jobId, {
         offset,
         limit: PAGE_SIZE,
         status: evidenceStatusFilter || undefined,
         q: evidenceSearch.trim() || undefined,
       });
+      return { result, jobId, offset, selectionGen };
     },
-    onSuccess: (result, offset) => {
+    onSuccess: ({ result, jobId, offset, selectionGen }) => {
+      if (
+        firstPassSelectionGenRef.current !== selectionGen ||
+        firstPassJobIdRef.current !== jobId
+      ) {
+        return;
+      }
       setEvidenceOffset(offset);
       const records = Array.isArray(result.records) ? result.records : [];
       const labeled = records.map((row) => {
@@ -1609,14 +1661,25 @@ export function TwResearchPage({
   const loadFirstPassManifestMutation = useMutation({
     mutationFn: async (chunkIndex: number) => {
       if (!firstPassSnapshotId) throw new Error("missing_first_pass_snapshot");
-      const manifest = await fetchTwResearchFirstPassManifest(firstPassSnapshotId);
-      const chunk = await fetchTwResearchFirstPassChunk(firstPassSnapshotId, chunkIndex);
-      setFirstPassDigest(
-        typeof manifest.contentDigest === "string" ? manifest.contentDigest : null,
-      );
-      return { manifest, chunk, chunkIndex };
+      const snapshotId = firstPassSnapshotId;
+      const jobId = firstPassJobId;
+      const selectionGen = firstPassSelectionGenRef.current;
+      const manifest = await fetchTwResearchFirstPassManifest(snapshotId);
+      const chunk = await fetchTwResearchFirstPassChunk(snapshotId, chunkIndex);
+      return { manifest, chunk, chunkIndex, snapshotId, jobId, selectionGen };
     },
     onSuccess: (payload) => {
+      if (
+        firstPassSelectionGenRef.current !== payload.selectionGen ||
+        firstPassJobIdRef.current !== payload.jobId
+      ) {
+        return;
+      }
+      setFirstPassDigest(
+        typeof payload.manifest.contentDigest === "string"
+          ? payload.manifest.contentDigest
+          : null,
+      );
       setFirstPassEvidenceText(JSON.stringify(payload, null, 2));
     },
   });
@@ -1625,6 +1688,24 @@ export function TwResearchPage({
     mutationFn: async () => {
       if (!firstPassSnapshotId || !firstPassDigest) {
         throw new Error("missing_first_pass_snapshot_or_digest");
+      }
+      // When a First-Pass Job is selected, refuse mismatched snapshot provenance
+      // so candidate submissions cannot silently use another job's evidence.
+      if (firstPassJobId) {
+        const progressSnap = firstPassProgressQuery.data?.activeSnapshotId;
+        if (
+          progressSnap &&
+          String(progressSnap) !== String(firstPassSnapshotId)
+        ) {
+          throw new Error("snapshot_job_mismatch");
+        }
+        const listedJob = firstPassJobs.find(
+          (job) => String(job.jobId ?? "") === String(firstPassJobId),
+        );
+        const listedSnap = listedJob?.activeSnapshotId;
+        if (listedSnap && String(listedSnap) !== String(firstPassSnapshotId)) {
+          throw new Error("snapshot_job_mismatch");
+        }
       }
       setCandidateSetConflict(null);
       return submitTwResearchCandidateSet({
@@ -2292,6 +2373,14 @@ export function TwResearchPage({
                   {t("research.tw.loadEvidenceExample")}
                 </Button>
               </Stack>
+              {startRetryHint ? (
+                <p
+                  className="cds--helper-text-01"
+                  data-testid="tw-research-start-retry-hint"
+                >
+                  {startRetryHint}
+                </p>
+              ) : null}
               {executionStatusMessage ? (
                 <p
                   className="cds--helper-text-01"
@@ -2666,20 +2755,29 @@ export function TwResearchPage({
                   onChange={(event) => {
                     const next = event.target.value;
                     if (!next) return;
+                    firstPassSelectionGenRef.current += 1;
+                    const selectionGen = firstPassSelectionGenRef.current;
                     setFirstPassJobId(next);
+                    clearFirstPassEvidenceState();
                     setAdoptErrorMessage(null);
+                    setAdoptConflictCode(null);
                     const match = firstPassJobs.find((job) => String(job.jobId) === next);
                     if (match) {
                       setFirstPassProgressText(JSON.stringify(match, null, 2));
-                      setFirstPassSnapshotId(
-                        typeof match.activeSnapshotId === "string"
-                          ? match.activeSnapshotId
-                          : null,
-                      );
+                      if (
+                        typeof match.activeSnapshotId === "string" &&
+                        match.activeSnapshotId
+                      ) {
+                        setFirstPassSnapshotId(match.activeSnapshotId);
+                      }
                     } else {
                       void fetchTwResearchFirstPassJob(next).then((job) => {
+                        if (firstPassSelectionGenRef.current !== selectionGen) return;
                         setFirstPassProgressText(JSON.stringify(job, null, 2));
-                        if (typeof job.activeSnapshotId === "string") {
+                        if (
+                          typeof job.activeSnapshotId === "string" &&
+                          job.activeSnapshotId
+                        ) {
                           setFirstPassSnapshotId(job.activeSnapshotId);
                         }
                       });

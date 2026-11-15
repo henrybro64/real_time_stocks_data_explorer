@@ -108,6 +108,16 @@ const TW_RESEARCH_ROWS = [
     "查看進度",
   ],
   [
+    "research.tw.startRetryIncompleteJob",
+    "Research run was saved but no collection job is attached yet. You can safely press Start again to finish setup.",
+    "研究流程已儲存，但尚未附上收集工作。可再次按下「開始研究」安全完成建立。",
+  ],
+  [
+    "research.tw.startWaitingCreationClaim",
+    "Job creation is still in progress. Wait a moment, then press Start again if it does not finish.",
+    "正在建立收集工作，請稍候；若未完成可再次按下「開始研究」。",
+  ],
+  [
     "research.tw.resumeCollection",
     "Resume this collection",
     "接續這個收集工作",
