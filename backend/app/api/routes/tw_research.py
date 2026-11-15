@@ -121,6 +121,39 @@ from app.services.tw_research.research_run import (
 TAIPEI = ZoneInfo("Asia/Taipei")
 T = TypeVar("T")
 
+_PG_LOCK_CONTENTION_CODES = frozenset({"40P01", "55P03"})
+
+
+def _is_pg_lock_contention(exc: BaseException) -> bool:
+    """True for PostgreSQL deadlock (40P01) or lock_not_available (55P03)."""
+    from sqlalchemy.exc import OperationalError
+
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, OperationalError):
+            orig = getattr(current, "orig", None)
+            pgcode = getattr(orig, "pgcode", None) or getattr(orig, "sqlstate", None)
+            if pgcode in _PG_LOCK_CONTENTION_CODES:
+                return True
+            text = f"{current} {orig or ''}".lower()
+            if "deadlock" in text or "lock not available" in text:
+                return True
+        current = current.__cause__ or current.__context__  # type: ignore[assignment]
+    return False
+
+
+def _http_concurrent_update_retry(exc: BaseException) -> HTTPException:
+    return HTTPException(
+        status_code=409,
+        detail={
+            "error": "concurrent_update_retry",
+            "reason": "concurrent_update_retry",
+        },
+    )
+
+
 router = APIRouter(
     prefix="/tw-research",
     tags=["tw-research"],
@@ -413,6 +446,10 @@ def cancel_first_pass_job(
             status_code=503,
             detail={"error": str(exc), "operation": exc.operation},
         ) from exc
+    except Exception as exc:  # noqa: BLE001 — map lock contention only
+        if _is_pg_lock_contention(exc):
+            raise _http_concurrent_update_retry(exc) from exc
+        raise
     return FirstPassJobResponse(job=_camel_job(job))
 
 
@@ -507,6 +544,10 @@ def delete_first_pass_job(
             status_code=code,
             detail={"error": str(exc), "operation": exc.operation},
         ) from exc
+    except Exception as exc:  # noqa: BLE001 — map lock contention only
+        if _is_pg_lock_contention(exc):
+            raise _http_concurrent_update_retry(exc) from exc
+        raise
     outcome = str(result.get("outcome") or "")
     if outcome == "not_found":
         raise HTTPException(status_code=404, detail="first_pass_job_not_found")
@@ -1907,6 +1948,8 @@ def adopt_first_pass_job_into_research_run(
             confirm_universe_digest=body.confirmUniverseDigest,
         )
     except ResearchRunStoreUnavailable as exc:
+        if _is_pg_lock_contention(exc):
+            raise _http_concurrent_update_retry(exc) from exc
         raise _research_run_unavailable(exc) from exc
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -1915,6 +1958,10 @@ def adopt_first_pass_job_into_research_run(
             status_code=409,
             detail={"error": str(exc.reason or exc), "reason": exc.reason},
         ) from exc
+    except Exception as exc:  # noqa: BLE001 — map lock contention only
+        if _is_pg_lock_contention(exc):
+            raise _http_concurrent_update_retry(exc) from exc
+        raise
     return _research_run_response(run)
 
 

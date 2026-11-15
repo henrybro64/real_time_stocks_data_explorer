@@ -1,4 +1,10 @@
-"""PostgreSQL persistence for Taiwan research scans and export snapshots (#318)."""
+"""PostgreSQL persistence for Taiwan research scans and export snapshots (#318).
+
+Lock order (when a transaction locks both tables): always
+``tw_research_research_runs`` ``FOR UPDATE`` first, then
+``tw_research_first_pass_jobs`` ``FOR UPDATE``. Matches managed Start/claim
+and adopt paths so concurrent cancel/delete/adopt cannot deadlock (A-B / B-A).
+"""
 
 from __future__ import annotations
 
@@ -2872,6 +2878,12 @@ class TwResearchRepository(SessionBoundRepository):
         session_factory = self._session_factory()
         with session_factory() as session:
             now = datetime.now(timezone.utc)
+            # Lock order: research_runs → first_pass_jobs (see module docstring).
+            run = session.execute(
+                select(TwResearchResearchRun)
+                .where(TwResearchResearchRun.user_id == user_id)
+                .with_for_update()
+            ).scalar_one_or_none()
             row = session.execute(
                 select(TwResearchFirstPassJob)
                 .where(
@@ -2893,11 +2905,6 @@ class TwResearchRepository(SessionBoundRepository):
             row.notes_json = notes[-50:]
             row.updated_at = now
             # Disarm drain when this job is the run-owned authoritative job.
-            run = session.execute(
-                select(TwResearchResearchRun)
-                .where(TwResearchResearchRun.user_id == user_id)
-                .with_for_update()
-            ).scalar_one_or_none()
             if run is not None and str(run.first_pass_job_id or "") == str(job_id):
                 # Propagate cancel into the managed run so begin_phase1 can
                 # replace it instead of returning a stuck running run (#355).
@@ -3216,6 +3223,12 @@ class TwResearchRepository(SessionBoundRepository):
         session_factory = self._session_factory()
         with session_factory() as session:
             now = datetime.now(timezone.utc)
+            # Lock order: research_runs → first_pass_jobs (see module docstring).
+            run = session.execute(
+                select(TwResearchResearchRun)
+                .where(TwResearchResearchRun.user_id == user_id)
+                .with_for_update()
+            ).scalar_one_or_none()
             row = session.execute(
                 select(TwResearchFirstPassJob)
                 .where(
@@ -3281,11 +3294,6 @@ class TwResearchRepository(SessionBoundRepository):
                 notes.append("deletion_requested_by_user")
                 row.notes_json = notes[-50:]
                 row.updated_at = now
-                run = session.execute(
-                    select(TwResearchResearchRun)
-                    .where(TwResearchResearchRun.user_id == user_id)
-                    .with_for_update()
-                ).scalar_one_or_none()
                 if run is not None and str(run.first_pass_job_id or "") == str(job_id):
                     run.schedule_enabled = False
                     run.updated_at = now
@@ -3368,11 +3376,7 @@ class TwResearchRepository(SessionBoundRepository):
                             session.delete(snap)
                             snapshot_deleted = 1
 
-                run = session.execute(
-                    select(TwResearchResearchRun)
-                    .where(TwResearchResearchRun.user_id == user_id)
-                    .with_for_update()
-                ).scalar_one_or_none()
+                # ``run`` already locked at transaction start (lock order).
                 if run is not None:
                     if str(run.pending_first_pass_job_id or "") == str(job_id):
                         run.pending_first_pass_job_id = None

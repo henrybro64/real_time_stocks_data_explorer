@@ -220,7 +220,7 @@ def test_pe_fetch_timeout_capped_to_remaining_deadline(monkeypatch) -> None:
     """PE day-file fetch under a 3s remaining deadline uses timeout ≤3s."""
     from app.services import key_stats_service
 
-    key_stats_service._fetch_twse_daily_pe_snapshot.cache_clear()
+    key_stats_service.clear_official_pe_snapshot_cache()
     captured: list[float] = []
 
     def fake_send(method, url, **kwargs):  # noqa: ANN001
@@ -241,7 +241,7 @@ def test_pe_fetch_timeout_capped_to_remaining_deadline(monkeypatch) -> None:
         key_stats_service._fetch_twse_daily_pe_snapshot(date(2024, 6, 28))
     assert captured
     assert captured[0] <= 3.0 + 1e-6
-    key_stats_service._fetch_twse_daily_pe_snapshot.cache_clear()
+    key_stats_service.clear_official_pe_snapshot_cache()
 
 
 def test_worst_case_single_symbol_all_providers_slow_on_fake_clock() -> None:

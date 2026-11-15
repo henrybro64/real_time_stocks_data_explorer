@@ -352,3 +352,74 @@ def test_adopt_allows_transient_failed_with_retries() -> None:
         confirm_universe_digest=digest,
     )
     assert run.first_pass_job_id == job_id
+
+
+def test_concurrent_adopt_and_cancel_no_500() -> None:
+    """Adopt + cancel the same job concurrently → no 500; final state consistent."""
+    from sqlalchemy.exc import OperationalError
+
+    for _ in range(10):
+        user_id = f"u_ac_{uuid4().hex[:8]}"
+        _ensure_user(user_id)
+        digest = "digest-adopt-cancel"
+        job_id = _seed_partial_job(user_id, digest=digest)
+        results: list[object] = []
+
+        def adopt_worker() -> None:
+            try:
+                results.append(
+                    (
+                        "adopt",
+                        research_run_store.adopt_standalone_first_pass_job(
+                            user_id,
+                            job_id=job_id,
+                            confirm_universe_digest=digest,
+                        ),
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001
+                results.append(("adopt", exc))
+
+        def cancel_worker() -> None:
+            try:
+                results.append(
+                    (
+                        "cancel",
+                        tw_research_repository.cancel_first_pass_job(
+                            job_id, user_id=user_id
+                        ),
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001
+                results.append(("cancel", exc))
+
+        threads = [Thread(target=adopt_worker), Thread(target=cancel_worker)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=30)
+
+        assert len(results) == 2
+        for _label, item in results:
+            # Deadlocks must not escape as raw OperationalError / 500.
+            assert not isinstance(item, OperationalError)
+            if isinstance(item, Exception):
+                assert isinstance(item, (ResearchRunConflict, KeyError))
+
+        assert SessionLocal is not None
+        with SessionLocal() as session:
+            job = session.get(TwResearchFirstPassJob, job_id)
+            assert job is not None
+            run = session.execute(
+                select(TwResearchResearchRun).where(
+                    TwResearchResearchRun.user_id == user_id
+                )
+            ).scalar_one_or_none()
+            if str(job.status) == "cancelled":
+                # Cancel won (possibly after adopt): run cancelled if attached.
+                if run is not None and str(run.first_pass_job_id or "") == str(job_id):
+                    assert str(run.status) == "cancelled"
+            else:
+                # Adopt won without cancel finishing the job: run points at job.
+                assert run is not None
+                assert str(run.first_pass_job_id or "") == str(job_id)

@@ -5,10 +5,11 @@ from __future__ import annotations
 import json
 import math
 import os
+import threading
 import time
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
-from functools import lru_cache
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
@@ -35,6 +36,53 @@ _YFINANCE_INFO_TTL_SECONDS = 15 * 60
 _YFINANCE_INFO_MAX_SIZE = 512
 _YFINANCE_PRELOAD_WORKERS = 8
 _yfinance_info_cache: dict[str, tuple[float, dict[str, object] | None]] = {}
+
+# Official PE day-file cache: success + definitive no-data only (never timeouts).
+_PE_CACHE_MAXSIZE = 32
+_PE_NO_DATA = object()
+_pe_snapshot_cache: OrderedDict[
+    tuple[str, str],
+    tuple[dict[str, dict[str, object]], str | None] | object,
+] = OrderedDict()
+_pe_snapshot_cache_lock = threading.Lock()
+
+
+class _PeFetchTransient(Exception):
+    """Upstream PE day-file fetch failed transiently — do not cache."""
+
+
+def clear_official_pe_snapshot_cache() -> None:
+    """Reset the TWSE/TPEx PE day-file cache (tests / process recycle)."""
+    with _pe_snapshot_cache_lock:
+        _pe_snapshot_cache.clear()
+
+
+def _pe_cache_get(
+    board: str, target_day: date
+) -> tuple[bool, tuple[dict[str, dict[str, object]], str | None] | None]:
+    key = (board, target_day.isoformat())
+    with _pe_snapshot_cache_lock:
+        if key not in _pe_snapshot_cache:
+            return False, None
+        _pe_snapshot_cache.move_to_end(key)
+        value = _pe_snapshot_cache[key]
+        if value is _PE_NO_DATA:
+            return True, None
+        return True, value  # type: ignore[return-value]
+
+
+def _pe_cache_set(
+    board: str,
+    target_day: date,
+    value: tuple[dict[str, dict[str, object]], str | None] | object,
+) -> None:
+    key = (board, target_day.isoformat())
+    with _pe_snapshot_cache_lock:
+        if key in _pe_snapshot_cache:
+            _pe_snapshot_cache.move_to_end(key)
+        _pe_snapshot_cache[key] = value
+        while len(_pe_snapshot_cache) > _PE_CACHE_MAXSIZE:
+            _pe_snapshot_cache.popitem(last=False)
 
 
 def _yahoo_chart(symbol: str, interval: str, range_name: str) -> dict | None:
@@ -193,25 +241,62 @@ def _iso_date_only(iso: str) -> str | None:
 
 
 def _http_get_json_url(url: str) -> dict | None:
+    from app.services.collector_deadline import (
+        CollectorDeadlineExceeded,
+        capped_request_timeout_seconds,
+    )
+    from app.services.http_client import record_provider_budget_event
+
     request = Request(url)
     request.add_header("User-Agent", _BROWSER_USER_AGENT)
     request.add_header("Accept", "application/json,text/plain,*/*")
     try:
-        with urlopen(request, timeout=_TIMEOUT) as response:
-            data = json.load(response)
+        timeout = capped_request_timeout_seconds(float(_TIMEOUT))
+        started = time.perf_counter()
+        record_provider_budget_event("finnhub", requests=1)
+        with urlopen(request, timeout=timeout) as response:
+            raw = response.read()
+            data = json.loads(raw)
+            record_provider_budget_event(
+                "finnhub",
+                bytes_downloaded=len(raw) if isinstance(raw, (bytes, bytearray)) else 0,
+                latency_ms=(time.perf_counter() - started) * 1000.0,
+            )
             return data if isinstance(data, dict) else None
+    except CollectorDeadlineExceeded:
+        raise
     except (HTTPError, URLError, TimeoutError, ValueError, json.JSONDecodeError):
+        record_provider_budget_event("finnhub", timeouts=1)
         return None
 
 
 def _http_get_any(url: str) -> object | None:
+    from app.services.collector_deadline import (
+        CollectorDeadlineExceeded,
+        capped_request_timeout_seconds,
+    )
+    from app.services.http_client import record_provider_budget_event
+
     request = Request(url)
     request.add_header("User-Agent", _BROWSER_USER_AGENT)
     request.add_header("Accept", "application/json,text/plain,*/*")
     try:
-        with urlopen(request, timeout=_TIMEOUT) as response:
-            return json.load(response)
+        timeout = capped_request_timeout_seconds(float(_TIMEOUT))
+        started = time.perf_counter()
+        record_provider_budget_event("finnhub", requests=1)
+        with urlopen(request, timeout=timeout) as response:
+            raw = response.read()
+            data = json.loads(raw)
+            record_provider_budget_event(
+                "finnhub",
+                bytes_downloaded=len(raw) if isinstance(raw, (bytes, bytearray)) else 0,
+                latency_ms=(time.perf_counter() - started) * 1000.0,
+            )
+            return data
+    except CollectorDeadlineExceeded:
+        raise
     except (HTTPError, URLError, TimeoutError, ValueError, json.JSONDecodeError):
+        record_provider_budget_event("finnhub", timeouts=1)
         return None
 
 
@@ -602,12 +687,12 @@ def _fetch_official_pe_json(
     *,
     provider_name: str,
     resource_id: str,
-) -> object | None:
+) -> object:
     """Fetch a TWSE/TPEx PE day file via ``http_client`` (#360).
 
     Uses deadline-capped per-request timeouts and provider budget counters.
-    ``CollectorDeadlineExceeded`` propagates so First-Pass can mark the field
-    unavailable; other fetch failures return ``None``.
+    ``CollectorDeadlineExceeded`` propagates. Transient HTTP failures raise
+    ``_PeFetchTransient`` so callers do not cache them.
     """
     from app.services.collector_deadline import CollectorDeadlineExceeded
     from app.services.http_client import HttpFetchError, fetch_json
@@ -628,18 +713,29 @@ def _fetch_official_pe_json(
         )
     except CollectorDeadlineExceeded:
         raise
-    except (HttpFetchError, TimeoutError, ValueError, json.JSONDecodeError):
+    except (HttpFetchError, TimeoutError, ValueError, json.JSONDecodeError) as exc:
+        raise _PeFetchTransient(str(exc)) from exc
+
+
+def _fetch_twse_daily_pe_snapshot(
+    target_day: date,
+) -> tuple[dict[str, dict[str, object]], str | None] | None:
+    hit, cached = _pe_cache_get("twse", target_day)
+    if hit:
+        return cached
+    try:
+        payload = _fetch_official_pe_json(
+            f"{_TWSE_DAILY_PE_URL}?{urlencode({'date': target_day.strftime('%Y%m%d'), 'selectType': 'ALL', 'response': 'json'})}",
+            provider_name="twse_pe",
+            resource_id=target_day.isoformat(),
+        )
+    except _PeFetchTransient:
         return None
-
-
-@lru_cache(maxsize=32)
-def _fetch_twse_daily_pe_snapshot(target_day: date) -> tuple[dict[str, dict[str, object]], str | None] | None:
-    payload = _fetch_official_pe_json(
-        f"{_TWSE_DAILY_PE_URL}?{urlencode({'date': target_day.strftime('%Y%m%d'), 'selectType': 'ALL', 'response': 'json'})}",
-        provider_name="twse_pe",
-        resource_id=target_day.isoformat(),
-    )
-    if not isinstance(payload, dict) or str(payload.get("stat", "")).strip().upper() != "OK":
+    if not isinstance(payload, dict):
+        return None
+    if str(payload.get("stat", "")).strip().upper() != "OK":
+        # Definitive no-data (holiday / empty day file) — cache the miss.
+        _pe_cache_set("twse", target_day, _PE_NO_DATA)
         return None
 
     fields = payload.get("fields")
@@ -669,17 +765,29 @@ def _fetch_twse_daily_pe_snapshot(target_day: date) -> tuple[dict[str, dict[str,
             "pbRatio": pb_ratio,
             "dividendYieldPercent": div_yield,
         }
-    return parsed_rows, _yyyymmdd_to_iso(payload.get("date"))
+    snapshot = (parsed_rows, _yyyymmdd_to_iso(payload.get("date")))
+    _pe_cache_set("twse", target_day, snapshot)
+    return snapshot
 
 
-@lru_cache(maxsize=32)
-def _fetch_tpex_daily_pe_snapshot(target_day: date) -> tuple[dict[str, dict[str, object]], str | None] | None:
-    payload = _fetch_official_pe_json(
-        f"{_TPEX_DAILY_PE_URL}?{urlencode({'date': target_day.strftime('%Y/%m/%d'), 'response': 'json'})}",
-        provider_name="tpex_pe",
-        resource_id=target_day.isoformat(),
-    )
-    if not isinstance(payload, dict) or str(payload.get("stat", "")).strip().lower() != "ok":
+def _fetch_tpex_daily_pe_snapshot(
+    target_day: date,
+) -> tuple[dict[str, dict[str, object]], str | None] | None:
+    hit, cached = _pe_cache_get("tpex", target_day)
+    if hit:
+        return cached
+    try:
+        payload = _fetch_official_pe_json(
+            f"{_TPEX_DAILY_PE_URL}?{urlencode({'date': target_day.strftime('%Y/%m/%d'), 'response': 'json'})}",
+            provider_name="tpex_pe",
+            resource_id=target_day.isoformat(),
+        )
+    except _PeFetchTransient:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    if str(payload.get("stat", "")).strip().lower() != "ok":
+        _pe_cache_set("tpex", target_day, _PE_NO_DATA)
         return None
 
     tables = payload.get("tables")
@@ -707,7 +815,9 @@ def _fetch_tpex_daily_pe_snapshot(target_day: date) -> tuple[dict[str, dict[str,
             "peStatus": pe_status,
             "priceUsed": None,
         }
-    return parsed_rows, _yyyymmdd_to_iso(payload.get("date"))
+    snapshot = (parsed_rows, _yyyymmdd_to_iso(payload.get("date")))
+    _pe_cache_set("tpex", target_day, snapshot)
+    return snapshot
 
 
 def _apply_tw_official_valuation(

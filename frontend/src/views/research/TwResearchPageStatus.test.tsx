@@ -943,6 +943,7 @@ describe("TwResearchPage polling guard (#350)", () => {
 describe("TwResearchPage adopt resume (#359)", () => {
   const ADOPT_REASONS = [
     "research_run_retained",
+    "concurrent_update_retry",
     "first_pass_job_lease_active",
     "first_pass_job_archived",
     "first_pass_job_nothing_pending",
@@ -1038,5 +1039,33 @@ describe("TwResearchPage adopt resume (#359)", () => {
     expect(err.textContent).not.toContain("weird_new_reason");
     const detail = await screen.findByTestId("tw-research-adopt-error-detail");
     expect(detail).toHaveTextContent("weird_new_reason");
+  });
+
+  it("disables confirm when the selected job has no universe digest", async () => {
+    const user = userEvent.setup();
+    vi.mocked(adoptTwResearchFirstPassJob).mockClear();
+    seed({
+      run: null,
+      job: {
+        status: "partial",
+        universeSize: 73,
+        stockIds: Array.from({ length: 73 }, (_, i) => `TW:${8000 + i}`),
+      },
+      progress: {
+        status: "partial",
+        universeSize: 73,
+        processedCount: 1,
+        pendingCount: 72,
+        okCount: 1,
+        partialCount: 0,
+        failedCount: 0,
+      },
+    });
+    renderPage("en");
+    await user.click(await screen.findByTestId("tw-research-adopt-first-pass"));
+    const confirm = await screen.findByTestId("tw-research-confirm-modal-confirm");
+    expect(confirm).toBeDisabled();
+    expect(await screen.findByTestId("tw-research-adopt-missing-digest")).toBeInTheDocument();
+    expect(adoptTwResearchFirstPassJob).not.toHaveBeenCalled();
   });
 });

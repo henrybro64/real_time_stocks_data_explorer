@@ -1274,6 +1274,7 @@ export function TwResearchPage({
 
   const ADOPT_REASON_I18N: Record<string, TranslationKey> = {
     research_run_retained: "research.tw.adopt.reason.research_run_retained",
+    concurrent_update_retry: "research.tw.adopt.reason.concurrent_update_retry",
     first_pass_job_lease_active: "research.tw.adopt.reason.first_pass_job_lease_active",
     first_pass_job_archived: "research.tw.adopt.reason.first_pass_job_archived",
     first_pass_job_nothing_pending:
@@ -1393,14 +1394,10 @@ export function TwResearchPage({
 
   const confirmAdoptModal = () => {
     if (!firstPassJobId || adoptFirstPassMutation.isPending) return;
-    const job = selectedFirstPassJob as
-      | (FirstPassProgressLike & { universeDigest?: string; universe_digest?: string })
-      | null;
-    const digest = String(job?.universeDigest ?? job?.universe_digest ?? "");
-    if (!digest) return;
+    if (!selectedAdoptDigest) return;
     adoptFirstPassMutation.mutate({
       jobId: firstPassJobId,
-      confirmUniverseDigest: digest,
+      confirmUniverseDigest: selectedAdoptDigest,
     });
   };
 
@@ -1421,6 +1418,13 @@ export function TwResearchPage({
       firstPassJobs.find((job) => String(job.jobId ?? "") === firstPassJobId) ?? null
     );
   }, [firstPassJobId, firstPassJobs]);
+
+  const selectedAdoptDigest = useMemo(() => {
+    const job = selectedFirstPassJob as
+      | (FirstPassProgressLike & { universeDigest?: string; universe_digest?: string })
+      | null;
+    return String(job?.universeDigest ?? job?.universe_digest ?? "").trim();
+  }, [selectedFirstPassJob]);
 
   const runOwnsSelectedFirstPassJob = useMemo(() => {
     const runJobId = researchRunQuery.data?.firstPassJobId;
@@ -2874,6 +2878,14 @@ export function TwResearchPage({
                             : "research.tw.cancelJobConfirm",
                         )}
                   </p>
+                  {confirmModal === "adopt" && !selectedAdoptDigest ? (
+                    <p
+                      className="cds--helper-text-01"
+                      data-testid="tw-research-adopt-missing-digest"
+                    >
+                      {t("research.tw.adoptMissingDigest")}
+                    </p>
+                  ) : null}
                 </ModalBody>
                 <ModalFooter>
                   <Button kind="secondary" onClick={() => setConfirmModal(null)}>
@@ -2887,7 +2899,7 @@ export function TwResearchPage({
                     }
                     disabled={
                       confirmModal === "adopt"
-                        ? adoptFirstPassMutation.isPending
+                        ? adoptFirstPassMutation.isPending || !selectedAdoptDigest
                         : jobManageBusy
                     }
                     data-testid="tw-research-confirm-modal-confirm"

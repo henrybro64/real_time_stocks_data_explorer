@@ -134,8 +134,18 @@ const TW_RESEARCH_ROWS = [
   ],
   [
     "research.tw.adopt.reason.research_run_retained",
-    "An active research run is already in progress. Finish or cancel it before resuming this collection.",
-    "目前已有進行中的研究流程。請先完成或取消後，再接續這個收集工作。",
+    "Your current research run already has progress (running or with candidates/scan). Finish, cancel, or delete it before resuming this collection.",
+    "目前的研究流程已有進度（進行中或已有候選/掃描）。請先完成、取消或刪除，再接續這個收集工作。",
+  ],
+  [
+    "research.tw.adopt.reason.concurrent_update_retry",
+    "Another operation is in progress. Please try again shortly.",
+    "另一個操作正在進行，請稍後再試。",
+  ],
+  [
+    "research.tw.adoptMissingDigest",
+    "This job has no universe digest, so resume cannot be confirmed. Refresh the job list.",
+    "這個工作沒有宇宙摘要，無法確認接續。請重新整理工作清單。",
   ],
   [
     "research.tw.adopt.reason.first_pass_job_lease_active",

@@ -69,14 +69,18 @@ finish before the deadline.
 | Stored candles / 52w peek | local PG | 1 | ~0 | No upstream month fetch |
 | Institutional day heal | 8s (TWSE/TPEx client) | ≤ recent_days probes | bounded by symbol deadline (≤45s) | Store-first; live only when stale |
 | Margin day heal | 8s | ≤ recent_days probes | bounded by symbol deadline (≤45s) | Store-first (#360) |
-| PE day snapshot (`twse_pe` / `tpex_pe`) | 15s | 1 per board (lru) | ≤15s first symbol / board, else cache | Via `http_client.fetch_json`; deadline-capped |
+| PE day snapshot (`twse_pe` / `tpex_pe`) | 15s | 1 per board | ≤15s first symbol / board, else cache | Via `http_client.fetch_json`; caches success + definitive no-data only (never timeouts) |
 | TDCC open-data CSV | **min(20s, remaining)** | **2** | ≤40s but still inside 45s symbol deadline | Process singleflight + publication-date key |
 | TDCC portal Friday GET/POST | **min(30s, remaining)** per request | 3 attempts / Friday (2 retries) | Cut by symbol deadline; retry sleep also deadline-aware | Cookie session; per-request `httpx.Timeout` |
 
-**Per-symbol worst case:** every provider step shares one 45s deadline. Slow early
-steps shrink later timeouts; when remaining ≤1s later steps skip as
-`collector_deadline_exceeded`. So one symbol is always **≤45s**, and
-batch 60s + one symbol ≤45s = **≤105s** < curl 150s < Job 180s < lease 300s.
+**Per-symbol budget intent:** every provider step shares one 45s soft deadline.
+Each request **phase** is capped to the remaining deadline, and no new request or
+retry sleep starts once remaining ≤1s (`collector_deadline_exceeded`). A trickling
+response can still overrun slightly because httpx read timeouts are **per read**,
+not a hard wall-clock interrupt. The **hard backstops** are: batch budget check
+before each symbol (60s), curl `--max-time` **150s**, Job `activeDeadlineSeconds`
+**180s**, and lease fencing (**300s**). Soft intent remains
+batch 60s + one symbol ≤45s ≈ **≤105s** under those hard caps.
 
 A Python soft deadline cannot interrupt blocked I/O; hard request timeouts + remaining-time caps prevent starting work that cannot finish.
 

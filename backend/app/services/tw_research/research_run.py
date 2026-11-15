@@ -424,6 +424,8 @@ class ResearchRunStore:
 
         if self._test_memory is None and tw_research_repository.is_available():
             try:
+                from sqlalchemy.exc import OperationalError
+
                 result = tw_research_repository.adopt_first_pass_job_into_run(
                     user_id,
                     job_id=str(job_id),
@@ -432,6 +434,9 @@ class ResearchRunStore:
             except ResearchRunConflict:
                 raise
             except KeyError:
+                raise
+            except OperationalError:
+                # Deadlock / lock_not_available → route maps to 409 retry.
                 raise
             except Exception as exc:  # noqa: BLE001
                 raise ResearchRunStoreUnavailable(
