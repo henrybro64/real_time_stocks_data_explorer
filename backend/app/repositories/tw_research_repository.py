@@ -2876,6 +2876,8 @@ class TwResearchRepository(SessionBoundRepository):
     ) -> dict[str, Any] | None:
         """Mark job cancelled and fence active leases (#355). Idempotent."""
         session_factory = self._session_factory()
+        run_synced = False
+        result: dict[str, Any] | None = None
         with session_factory() as session:
             now = datetime.now(timezone.utc)
             # Lock order: research_runs → first_pass_jobs (see module docstring).
@@ -2896,14 +2898,16 @@ class TwResearchRepository(SessionBoundRepository):
                 return None
             if row.status == "cancelled" and not row.deletion_state:
                 # Already cancelled — still return current row (idempotent).
-                return _first_pass_job_to_dict(row)
-            row.status = "cancelled"
-            row.reserve_expires_at = None
-            row.lease_generation = int(row.lease_generation or 0) + 1
-            notes = list(row.notes_json or [])
-            notes.append("cancelled_by_user")
-            row.notes_json = notes[-50:]
-            row.updated_at = now
+                result = _first_pass_job_to_dict(row)
+            else:
+                row.status = "cancelled"
+                row.reserve_expires_at = None
+                row.lease_generation = int(row.lease_generation or 0) + 1
+                notes = list(row.notes_json or [])
+                notes.append("cancelled_by_user")
+                row.notes_json = notes[-50:]
+                row.updated_at = now
+                result = None  # refresh after commit
             # Disarm drain when this job is the run-owned authoritative job.
             if run is not None and str(run.first_pass_job_id or "") == str(job_id):
                 # Propagate cancel into the managed run so begin_phase1 can
@@ -2914,8 +2918,42 @@ class TwResearchRepository(SessionBoundRepository):
                 notes.append("first_pass_job_cancelled_by_user")
                 run.notes_json = notes[-50:]
                 run.updated_at = now
+                run_synced = True
             session.commit()
-            return _first_pass_job_to_dict(row)
+            if result is None:
+                session.refresh(row)
+                result = _first_pass_job_to_dict(row)
+
+        if not run_synced:
+            # Adopt may have inserted+attached the run while we waited on the
+            # job lock (run was absent at first SELECT). Sync in a follow-up
+            # transaction that locks research_runs only — never job-then-run.
+            self._sync_cancelled_first_pass_job_into_run(user_id=user_id, job_id=job_id)
+        return result
+
+    def _sync_cancelled_first_pass_job_into_run(
+        self, *, user_id: str, job_id: str
+    ) -> None:
+        """If the user's run points at a cancelled job, mark the run cancelled."""
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            now = datetime.now(timezone.utc)
+            run = session.execute(
+                select(TwResearchResearchRun)
+                .where(TwResearchResearchRun.user_id == user_id)
+                .with_for_update()
+            ).scalar_one_or_none()
+            if run is None or str(run.first_pass_job_id or "") != str(job_id):
+                return
+            if str(run.status or "") == "cancelled" and not bool(run.schedule_enabled):
+                return
+            run.schedule_enabled = False
+            run.status = "cancelled"
+            notes = list(run.notes_json or [])
+            notes.append("first_pass_job_cancelled_by_user")
+            run.notes_json = notes[-50:]
+            run.updated_at = now
+            session.commit()
 
     def set_first_pass_job_archived(
         self,
