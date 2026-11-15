@@ -35,6 +35,7 @@ from app.schemas.tw_research import (
     FirstPassJobProgressResponse,
     FirstPassJobResponse,
     FirstPassJobSymbolsResponse,
+    ResearchRunAdoptFirstPassRequest,
     ResearchRunDrainControlRequest,
     RejectedStockResponse,
     RelativePriceBasisRequest,
@@ -1356,6 +1357,25 @@ def _research_run_unavailable(exc: ResearchRunStoreUnavailable) -> HTTPException
     )
 
 
+def _research_run_response(run: ResearchRun) -> ResearchRunResponse:
+    """Attach honest execution readiness alongside the durable run (#359)."""
+    from app.services.tw_research.execution_status import classify_first_pass_execution
+    from app.repositories.tw_research_repository import tw_research_repository
+
+    job = None
+    if run.first_pass_job_id and tw_research_repository.is_available():
+        try:
+            job = tw_research_repository.get_first_pass_job(
+                run.first_pass_job_id, user_id=run.user_id
+            )
+        except Exception:  # noqa: BLE001 — response must still return the run
+            job = None
+    return ResearchRunResponse(
+        researchRun=run.as_dict(),
+        execution=classify_first_pass_execution(run, job=job),
+    )
+
+
 def _phase2_effective_daily_overrides(
     *,
     candidate_set_daily_override_ids: list[str] | None,
@@ -1610,7 +1630,7 @@ def get_current_research_run(
         ) from exc
     if run is None:
         raise HTTPException(status_code=404, detail="research_run_not_found")
-    return ResearchRunResponse(researchRun=run.as_dict())
+    return _research_run_response(run)
 
 
 @router.get("/research-runs/current/deletion-preview")
@@ -1774,7 +1794,7 @@ def start_research_run(
         if run.first_pass_job_id or (
             run.phase == "phase2_technical" and run.technical_scan_id
         ):
-            return ResearchRunResponse(researchRun=run.as_dict())
+            return _research_run_response(run)
 
         from uuid import uuid4
 
@@ -1791,11 +1811,11 @@ def start_research_run(
         outcome = str(claim.get("outcome") or "")
         if outcome == "already_attached":
             attached = ResearchRun.from_persist_payload(claim["run"])
-            return ResearchRunResponse(researchRun=attached.as_dict())
+            return _research_run_response(attached)
         if outcome == "claim_held":
             # Another pod owns creation; return current run for safe retry.
             held = ResearchRun.from_persist_payload(claim["run"])
-            return ResearchRunResponse(researchRun=held.as_dict())
+            return _research_run_response(held)
 
         # Claim allocates pending_first_pass_job_id before job-row create.
         pending_job_id = claim.get("pending_first_pass_job_id")
@@ -1846,7 +1866,7 @@ def start_research_run(
                     reason=str(attached.get("outcome")),
                 )
         run = ResearchRun.from_persist_payload(attached["run"])
-        return ResearchRunResponse(researchRun=run.as_dict())
+        return _research_run_response(run)
     if body.phase == "phase2_technical":
         raise HTTPException(
             status_code=400,
@@ -1856,6 +1876,36 @@ def start_research_run(
             },
         )
     raise HTTPException(status_code=400, detail="unsupported_phase")
+
+
+@router.post(
+    "/research-runs/adopt-first-pass-job",
+    response_model=ResearchRunResponse,
+)
+def adopt_first_pass_job_into_research_run(
+    body: ResearchRunAdoptFirstPassRequest,
+    user_id: str = Depends(get_effective_user_id),
+) -> ResearchRunResponse:
+    """Explicitly adopt an eligible standalone first-pass job (#359).
+
+    Never silently auto-adopts historical jobs. Preserves persisted evidence.
+    """
+    try:
+        run = research_run_store.adopt_standalone_first_pass_job(
+            user_id,
+            job_id=str(body.jobId).strip(),
+            confirm_universe_digest=body.confirmUniverseDigest,
+        )
+    except ResearchRunStoreUnavailable as exc:
+        raise _research_run_unavailable(exc) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ResearchRunConflict as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"error": str(exc.reason or exc), "reason": exc.reason},
+        ) from exc
+    return _research_run_response(run)
 
 
 @router.post("/research-runs/gate", response_model=ResearchRunResponse)

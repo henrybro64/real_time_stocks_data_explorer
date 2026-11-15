@@ -4366,9 +4366,14 @@ class TwResearchRepository(SessionBoundRepository):
         payload: dict[str, Any],
         lease_generation: int,
     ) -> bool:
-        """Persist one symbol result if lease generation is still current."""
+        """Persist one symbol result if lease generation + expiry are still current.
+
+        Checks both lease generation fencing and ``reserve_expires_at`` so a
+        stale worker after restart cannot finalize under an expired lease (#360).
+        """
         session_factory = self._session_factory()
         with session_factory() as session:
+            now = datetime.now(timezone.utc)
             job = session.execute(
                 select(TwResearchFirstPassJob)
                 .where(TwResearchFirstPassJob.job_id == job_id)
@@ -4378,13 +4383,17 @@ class TwResearchRepository(SessionBoundRepository):
                 return False
             if int(job.lease_generation or 0) != int(lease_generation):
                 return False
+            if job.deletion_state or job.status in {"failed", "cancelled"}:
+                return False
+            lease_until = _as_utc(job.reserve_expires_at)
+            if lease_until is None or lease_until <= now:
+                return False
             existing = session.execute(
                 select(TwResearchFirstPassSymbolResult).where(
                     TwResearchFirstPassSymbolResult.job_id == job_id,
                     TwResearchFirstPassSymbolResult.stock_id == stock_id,
                 )
             ).scalars().first()
-            now = datetime.now(timezone.utc)
             if existing is None:
                 session.add(
                     TwResearchFirstPassSymbolResult(

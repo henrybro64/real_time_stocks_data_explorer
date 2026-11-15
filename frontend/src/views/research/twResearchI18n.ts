@@ -83,6 +83,26 @@ const TW_RESEARCH_ROWS = [
   ["research.tw.resetMembership", "Reset to starter", "重設為起始預設"],
   ["research.tw.startFirstPass", "Start first-round data collection", "開始第一輪資料收集"],
   [
+    "research.tw.execution.executorUnavailable",
+    "Job ready, but automatic collection is not available yet. Progress will wait until the executor is enabled, or use the advanced manual batch as a fallback.",
+    "工作已建立，但自動收集尚未可用。啟用執行器前會暫停；必要時可使用進階手動批次作為備援。",
+  ],
+  [
+    "research.tw.execution.authorizedWaiting",
+    "Collection authorized. Waiting for the next worker tick — this is not idle failure.",
+    "已授權收集，正在等待下一次工作排程（這不是失敗）。",
+  ],
+  [
+    "research.tw.execution.activelyCollecting",
+    "Collection is actively leased and running.",
+    "正在進行資料收集（已取得租約）。",
+  ],
+  [
+    "research.tw.startFirstPassHint",
+    "Starts the managed research run and first-round job. Creating a job row alone does not mean collection is running.",
+    "會啟動受管理的研究流程與第一輪工作。僅建立工作紀錄不代表已在收集。",
+  ],
+  [
     "research.tw.runFirstPassBatch",
     "Manual batch (advanced fallback)",
     "手動批次（進階備援）",

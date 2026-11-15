@@ -10,9 +10,10 @@ spec:
   # Does NOT unsuspend the technical-scan schedule CronJob (#330).
   suspend: true
   # Every 5 minutes every day (Asia/Taipei). Still suspend:true until enabled.
-  # Timing hierarchy: budget 60s < curl --max-time 150s < lease 300s.
+  # Timing hierarchy (#360): symbol soft deadline 45s < budget 60s
+  # < curl --max-time 150s < activeDeadlineSeconds 180s < lease 300s.
   # Lease renews after each finished symbol so a slow symbol cannot starve reclaim.
-  # activeDeadlineSeconds 180 bounds the Job above curl but still under lease.
+  # Symbols persist incrementally; already-committed rows survive Job kill.
   schedule: "*/5 * * * *"
   timeZone: Asia/Taipei
   concurrencyPolicy: Forbid

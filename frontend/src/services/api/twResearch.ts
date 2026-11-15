@@ -668,17 +668,55 @@ export async function fetchTwResearchRunCurrent() {
   return response.researchRun;
 }
 
+export type TwResearchExecutionStatus = {
+  state?: string;
+  authorized?: boolean;
+  scheduleEnabled?: boolean;
+  drainAvailable?: boolean;
+  drainBlocker?: string | null;
+  blocker?: string | null;
+  nextAction?: string | null;
+  jobId?: string | null;
+  jobStatus?: string | null;
+  leaseActive?: boolean;
+  leaseExpiresAt?: string | null;
+  universeSize?: number | null;
+  processedCount?: number | null;
+  pendingCount?: number | null;
+  notes?: string[];
+};
+
+export type TwResearchRunStartResult = TwResearchRun & {
+  execution?: TwResearchExecutionStatus | null;
+};
+
 export async function startTwResearchRun(body?: {
   phase?: "phase1_first_pass";
   tradingDay?: string;
   notes?: string[];
-}) {
-  const response = await requestJsonWithBody<{ researchRun: TwResearchRun }>(
-    "/tw-research/research-runs/start",
-    "POST",
-    body ?? { phase: "phase1_first_pass" },
-  );
-  return response.researchRun;
+}): Promise<TwResearchRunStartResult> {
+  const response = await requestJsonWithBody<{
+    researchRun: TwResearchRun;
+    execution?: TwResearchExecutionStatus | null;
+  }>("/tw-research/research-runs/start", "POST", body ?? { phase: "phase1_first_pass" });
+  return {
+    ...response.researchRun,
+    execution: response.execution ?? null,
+  };
+}
+
+export async function adoptTwResearchFirstPassJob(body: {
+  jobId: string;
+  confirmUniverseDigest?: string;
+}): Promise<TwResearchRunStartResult> {
+  const response = await requestJsonWithBody<{
+    researchRun: TwResearchRun;
+    execution?: TwResearchExecutionStatus | null;
+  }>("/tw-research/research-runs/adopt-first-pass-job", "POST", body);
+  return {
+    ...response.researchRun,
+    execution: response.execution ?? null,
+  };
 }
 
 export async function advanceTwResearchRunGate(params?: {

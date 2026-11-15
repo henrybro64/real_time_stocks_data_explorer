@@ -34,6 +34,7 @@ import {
   researchScanListRefetchInterval,
   researchScanRefetchInterval,
   runTwResearchBatch,
+  startTwResearchRun,
   submitTwResearchCandidateSet,
   type TwResearchScanProgress,
   type TwResearchScanSnapshot,
@@ -1201,10 +1202,21 @@ describe("TwResearchPage reliability UX (#335–#337)", () => {
       firstPassSnapshotId: "snap_old",
       firstPassDigest: "a".repeat(64),
     });
-    vi.mocked(createTwResearchFirstPassJob).mockResolvedValue({
-      jobId: "fpj_new",
+    // Canonical Start (#359) uses managed research-runs/start, not standalone jobs.
+    vi.mocked(startTwResearchRun).mockResolvedValue({
+      researchRunId: "rr_new",
+      userId: "u1",
+      phase: "phase1_first_pass",
       status: "running",
-      qualityStatus: "incomplete",
+      firstPassJobId: "fpj_new",
+      durable: true,
+      cronjobRemainsSuspended: true,
+      notNotionPublisher: true,
+      execution: {
+        state: "executor_unavailable",
+        authorized: false,
+        drainAvailable: false,
+      },
     });
     vi.mocked(listTwResearchFirstPassJobs).mockResolvedValue([
       {
@@ -1234,7 +1246,7 @@ describe("TwResearchPage reliability UX (#335–#337)", () => {
       }),
     );
     await waitFor(() => {
-      expect(createTwResearchFirstPassJob).toHaveBeenCalled();
+      expect(startTwResearchRun).toHaveBeenCalled();
     });
     await waitFor(() => {
       expect(

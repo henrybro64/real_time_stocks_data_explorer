@@ -68,8 +68,11 @@ ProfitabilityLoader = Callable[[str], dict[str, object] | None]
 ThemeKeysLoader = Callable[[str], list[str]]
 
 COLLECTOR_DEADLINE_EXCEEDED_REASON = "collector_deadline_exceeded"
-# Soft per-symbol wall-clock limit for the slow ownership (TDCC Friday) step.
-DEFAULT_SYMBOL_DEADLINE_SECONDS = 240.0
+# Soft per-symbol wall-clock limit for the slow ownership (TDCC) step (#360).
+# Hierarchy: symbol (45s) < batch budget (60s) < curl (150s) < k8s Job (180s)
+# < lease (300s). A Python soft deadline cannot interrupt blocked I/O; keep the
+# ownership loop cooperative so one stock cannot exhaust the CronJob tick.
+DEFAULT_SYMBOL_DEADLINE_SECONDS = 45.0
 
 # Permanent / non-retryable field reason markers (substring match, lowercased).
 # programming_error is a distinct class (see classify_field_reason) — not listed here.
@@ -443,6 +446,7 @@ def collect_first_pass_batch(
     lease_renew: Callable[[], bool] | None = None,
     lease_lost_check: Callable[[], bool] | None = None,
     symbol_deadline_seconds: float | None = DEFAULT_SYMBOL_DEADLINE_SECONDS,
+    on_symbol_collected: Callable[[FirstPassSymbolRecord], bool] | None = None,
 ) -> FirstPassBatchResult:
     """Collect first-pass evidence for a **deduplicated** ID list.
 
@@ -457,14 +461,21 @@ def collect_first_pass_batch(
     ``released_unstarted`` (attempts unchanged).
 
     When ``lease_renew`` is set, call it after each finished symbol. If it returns
-    False the batch stops with ``lease_lost`` (caller must not persist).
+    False the batch stops with ``lease_lost`` and that symbol is **not** handed to
+    ``on_symbol_collected`` (another worker may own the lease).
 
     ``lease_lost_check`` (e.g. a heartbeat thread's event) is consulted before
-    and after every symbol; when it reports True the remaining ids are released.
+    every symbol and again after collection, before renew/persist; when it
+    reports True the remaining ids are released without persisting the
+    in-flight symbol.
 
     ``symbol_deadline_seconds`` is a soft per-symbol limit applied to the slow
     ownership step: once elapsed, that field becomes unavailable with
     ``collector_deadline_exceeded`` while peer fields are unaffected.
+
+    ``on_symbol_collected`` runs only after a successful lease renew/check for
+    crash-safe incremental persistence (#360). Return False to stop the batch
+    (upsert fence / generation mismatch).
     """
     deduped = dedupe_stock_ids(stock_ids)
     loader = stock_loader or quote_service.get_catalog_stock
@@ -537,11 +548,17 @@ def collect_first_pass_batch(
             )
             failed.completeness = _symbol_completeness(failed)
             records.append(failed)
+        # Renew/check **before** incremental persist so a lost lease never writes.
         renew_failed = lease_renew is not None and not lease_renew()
         if renew_failed or (lease_lost_check is not None and lease_lost_check()):
             lease_lost = True
             released_unstarted = list(deduped[index + 1 :])
             break
+        if on_symbol_collected is not None and records:
+            if not on_symbol_collected(records[-1]):
+                lease_lost = True
+                released_unstarted = list(deduped[index + 1 :])
+                break
 
     duration_ms = int(max(0.0, (clock() - started_at) * 1000.0))
     coverage = _coverage_summary(records)
@@ -560,7 +577,8 @@ def collect_first_pass_batch(
         )
     if lease_lost:
         notes.append(
-            f"lease_lost after {len(records)} symbols; caller must not persist."
+            f"lease_lost after {len(records)} symbols; "
+            "unfenced in-flight symbol was not persisted."
         )
     return FirstPassBatchResult(
         first_pass_version=FIRST_PASS_VERSION,

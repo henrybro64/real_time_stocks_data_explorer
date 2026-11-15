@@ -89,6 +89,10 @@ _MAX_TDCC_WEEKS = 55
 # Nearest-prior weekly close window (calendar days).
 _CLOSE_LOOKBACK_DAYS = 10
 _TDCC_OPEN_DATA_URL = "https://smart.tdcc.com.tw/opendata/getOD.ashx"
+# Open-data id=1-5 is a weekly market-wide CSV. Cache once per process so a
+# First-Pass batch does not re-download the same file for every symbol (#360).
+_TDCC_OPEN_DATA_CACHE_TTL_SECONDS = 6 * 60 * 60
+_tdcc_open_data_cache: tuple[float, str] | None = None
 _TDCC_PORTAL_URL = "https://www.tdcc.com.tw/portal/zh/smWeb/qryStock"
 _TWSE_MI_QFIIS_URL = "https://www.twse.com.tw/rwd/zh/fund/MI_QFIIS"
 _TPEX_QFII_URL = "https://www.tpex.org.tw/www/zh-tw/insti/qfii"
@@ -552,16 +556,7 @@ class TwOwnershipConcentrationService:
         by_date = {point.date: point for point in portal_points}
 
         try:
-            open_data_csv = fetch_text(
-                _TDCC_OPEN_DATA_URL,
-                params={"id": "1-5"},
-                timeout_seconds=60.0,
-                retries=1,
-                encoding="utf-8-sig",
-                provider_name="tdcc",
-                operation_name="tdcc_shareholding_open_data",
-                resource_id="1-5",
-            )
+            open_data_csv = _fetch_tdcc_open_data_csv()
             for point in parse_tdcc_shareholding_csv(open_data_csv, symbol=symbol):
                 if _date_in_range(point.date, start_date=start_date, end_date=end_date):
                     by_date[point.date] = point
@@ -1059,6 +1054,35 @@ def _optional_float(value: object) -> float | None:
         return float(value)  # type: ignore[arg-type]
     except (TypeError, ValueError):
         return None
+
+
+def clear_tdcc_open_data_cache() -> None:
+    """Drop the process-local open-data CSV cache (tests / forced refresh)."""
+    global _tdcc_open_data_cache
+    _tdcc_open_data_cache = None
+
+
+def _fetch_tdcc_open_data_csv() -> str:
+    """Fetch TDCC open-data id=1-5 once per TTL window within this process."""
+    global _tdcc_open_data_cache
+    now = time.monotonic()
+    cached = _tdcc_open_data_cache
+    if cached is not None:
+        cached_at, body = cached
+        if now - cached_at < _TDCC_OPEN_DATA_CACHE_TTL_SECONDS:
+            return body
+    body = fetch_text(
+        _TDCC_OPEN_DATA_URL,
+        params={"id": "1-5"},
+        timeout_seconds=60.0,
+        retries=1,
+        encoding="utf-8-sig",
+        provider_name="tdcc",
+        operation_name="tdcc_shareholding_open_data",
+        resource_id="1-5",
+    )
+    _tdcc_open_data_cache = (now, body)
+    return body
 
 
 def _fetch_tdcc_portal_history(

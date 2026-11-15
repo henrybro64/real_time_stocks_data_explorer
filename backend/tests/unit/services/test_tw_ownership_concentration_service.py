@@ -885,3 +885,25 @@ def test_tpex_malformed_tables_envelope_raises_schema_error() -> None:
     with pytest.raises(ForeignOwnershipSchemaError, match="tables_not_list"):
         parse_tpex_qfii_foreign_ownership({"stat": "OK", "tables": {"bad": True}})
 
+
+
+def test_tdcc_open_data_csv_is_cached_within_process(monkeypatch) -> None:
+    from app.services import tw_ownership_concentration_service as own_mod
+
+    own_mod.clear_tdcc_open_data_cache()
+    calls = {"n": 0}
+
+    def fake_fetch_text(*_a, **_k) -> str:
+        calls["n"] += 1
+        return "date,code\n2026-07-04,2330\n"
+
+    monkeypatch.setattr(own_mod, "fetch_text", fake_fetch_text)
+    first = own_mod._fetch_tdcc_open_data_csv()
+    second = own_mod._fetch_tdcc_open_data_csv()
+    assert first == second
+    assert calls["n"] == 1
+    own_mod.clear_tdcc_open_data_cache()
+    third = own_mod._fetch_tdcc_open_data_csv()
+    assert third == first
+    assert calls["n"] == 2
+    own_mod.clear_tdcc_open_data_cache()

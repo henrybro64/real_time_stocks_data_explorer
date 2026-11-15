@@ -400,6 +400,86 @@ class ResearchRunStore:
             run.updated_at = datetime.now(UTC).isoformat()
             return self._persist_locked(run)
 
+    def adopt_standalone_first_pass_job(
+        self,
+        user_id: str,
+        *,
+        job_id: str,
+        confirm_universe_digest: str | None = None,
+        job_loader: Any | None = None,
+    ) -> ResearchRun:
+        """Explicitly adopt an eligible standalone first-pass job (#359).
+
+        Validates ownership, deletion/lease state, and optional universe digest.
+        Does not silently adopt arbitrary historical jobs — caller must pass
+        the concrete job id. Preserves already-persisted symbol evidence.
+        """
+        from app.repositories.tw_research_repository import tw_research_repository
+
+        loader = job_loader or (
+            (
+                lambda jid, *, user_id=None: tw_research_repository.get_first_pass_job(
+                    jid, user_id=user_id
+                )
+            )
+            if tw_research_repository.is_available()
+            else None
+        )
+        if loader is None:
+            raise ResearchRunStoreUnavailable("first_pass_job_store_unavailable")
+        job = loader(job_id, user_id=user_id)
+        if job is None:
+            raise KeyError("first_pass_job_not_found")
+        if job.get("deletion_state") or job.get("deletionState"):
+            raise ResearchRunConflict(
+                "first_pass_job_deletion_in_progress",
+                reason="first_pass_job_deletion_in_progress",
+            )
+        status = str(job.get("status") or "")
+        if status == "cancelled":
+            raise ResearchRunConflict(
+                "first_pass_job_cancelled",
+                reason="first_pass_job_cancelled",
+            )
+        lease_expires = job.get("reserve_expires_at") or job.get("reserveExpiresAt")
+        if lease_expires:
+            try:
+                parsed = datetime.fromisoformat(
+                    str(lease_expires).replace("Z", "+00:00")
+                )
+                if parsed > datetime.now(UTC):
+                    raise ResearchRunConflict(
+                        "first_pass_job_lease_active",
+                        reason="first_pass_job_lease_active",
+                    )
+            except ValueError:
+                pass
+        digest = str(job.get("universe_digest") or job.get("universeDigest") or "")
+        if confirm_universe_digest and digest and confirm_universe_digest != digest:
+            raise ResearchRunConflict(
+                "first_pass_job_universe_digest_mismatch",
+                reason="first_pass_job_universe_digest_mismatch",
+            )
+
+        # Reconcile without nesting locks into begin_phase1/attach.
+        existing = self.reconcile(user_id)
+        if existing is not None and self._is_active_nonterminal(existing):
+            if str(existing.first_pass_job_id or "") == str(job_id):
+                return existing
+            raise ResearchRunConflict(
+                "research_run_already_has_active_job",
+                reason="research_run_already_has_active_job",
+            )
+        self.begin_phase1(user_id)
+        return self.attach_first_pass_job(
+            user_id,
+            first_pass_job_id=str(job_id),
+            notes=[
+                f"Adopted standalone first-pass job {job_id}.",
+                "Preserved existing per-symbol evidence; remaining symbols stay pending.",
+            ],
+        )
+
     def set_first_pass_drain_enabled(
         self,
         user_id: str,

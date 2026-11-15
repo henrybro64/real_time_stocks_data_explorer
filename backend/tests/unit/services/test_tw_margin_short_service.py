@@ -1803,3 +1803,146 @@ def test_core_request_succeeded_treats_auth_and_rate_limit_as_hard_failures() ->
     assert _core_request_succeeded(auth, absent) is False
     assert _core_request_succeeded(rate, absent) is False
     assert _core_request_succeeded(auth, rate) is False
+
+
+class FakeMarginShortStore:
+    def __init__(self, rows_by_key: dict[tuple[str, str], list] | None = None) -> None:
+        self.rows_by_key = rows_by_key or {}
+        self.list_history_calls = 0
+        self.upsert_calls: list[dict] = []
+        self.available = True
+
+    def is_available(self) -> bool:
+        return self.available
+
+    def list_history(self, *, market: str, symbol: str, limit: int):
+        self.list_history_calls += 1
+        rows = sorted(
+            self.rows_by_key.get((market, symbol), []),
+            key=lambda row: row.date,
+            reverse=True,
+        )
+        return rows[: max(limit, 1)]
+
+    def upsert_records(self, *, market: str, source: str, records: list) -> object:
+        self.upsert_calls.append(
+            {"market": market, "source": source, "records": list(records)}
+        )
+        return {"inserted": len(records), "updated": 0}
+
+
+def _margin_stored_row(
+    *,
+    market: str = "TWSE",
+    symbol: str = "1303",
+    trade_date: date,
+    margin_balance_lots: float = 31_000.0,
+    name: str = "南亞",
+):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        market=market,
+        symbol=symbol,
+        date=trade_date,
+        name=name,
+        close_price=185.0,
+        margin_balance_lots=margin_balance_lots,
+        short_margin_balance_lots=100.0,
+        borrowed_short_balance_lots=12_000.0,
+        borrowed_short_balance_change_lots=10.0,
+        borrowed_short_balance_change_amount_10k=20,
+        source="test-store",
+    )
+
+
+def test_service_serves_margin_history_from_store_without_live_fetches() -> None:
+    stock = stock_record(
+        "TW:1303",
+        market="TW",
+        symbol="1303",
+        name="南亞",
+        exchange="TWSE",
+        currency="TWD",
+        timezone="Asia/Taipei",
+    )
+    store = FakeMarginShortStore(
+        {
+            ("TWSE", "1303"): [
+                _margin_stored_row(trade_date=date(2026, 7, 8), margin_balance_lots=31_339.0),
+                _margin_stored_row(trade_date=date(2026, 7, 7), margin_balance_lots=31_000.0),
+            ]
+        }
+    )
+    live_calls: list[date] = []
+
+    service = TaiwanMarginShortService(
+        quote_source=FakeQuoteSource(stock),
+        twse_margin_fetcher=lambda d: live_calls.append(d) or {"stat": "查無資料"},
+        twse_borrowed_short_fetcher=lambda d: live_calls.append(d) or {"stat": "查無資料"},
+        twse_close_fetcher=lambda d: live_calls.append(d) or {"stat": "查無資料"},
+        now_provider=lambda: datetime(2026, 7, 10, 1, 0, tzinfo=UTC),
+        store=store,
+    )
+
+    result = service.get_margin_short("TW:1303", days=90)
+
+    assert live_calls == []
+    assert store.list_history_calls == 1
+    assert store.upsert_calls == []
+    assert [item.date for item in result.history] == ["2026-07-07", "2026-07-08"]
+    assert result.summary is not None
+    assert result.summary.margin_balance_lots == pytest.approx(31_339.0)
+    assert result.source.startswith("Persisted ")
+
+
+def test_service_bounded_live_heals_empty_margin_store() -> None:
+    stock = stock_record(
+        "TW:1303",
+        market="TW",
+        symbol="1303",
+        name="南亞",
+        exchange="TWSE",
+        currency="TWD",
+        timezone="Asia/Taipei",
+    )
+    store = FakeMarginShortStore()
+    twse_margin_payloads = {
+        date(2026, 7, 8): {
+            "date": "20260708",
+            "fields": ["placeholder"],
+            "data": [["1303", "南亞", "0", "0", "0", "31,000", "31,339", "0", "0", "0", "0", "0", "0", "0", "0", ""]],
+        },
+    }
+    twse_short_payloads = {
+        date(2026, 7, 8): {
+            "date": "20260708",
+            "fields": ["placeholder"],
+            "data": [["1303", "南亞", "0", "0", "0", "0", "0", "0", "12,204,000", "0", "0", "0", "12,345,000", "0", " "]],
+        },
+    }
+    close_payloads = {
+        date(2026, 7, 8): {
+            "date": "20260708",
+            "fields": _TWSE_CLOSE_FIELDS,
+            "data": [["1303", "南亞", "0", "0", "0", "0", "185", "0", "集中市場"]],
+        },
+    }
+
+    service = TaiwanMarginShortService(
+        quote_source=FakeQuoteSource(stock),
+        twse_margin_fetcher=lambda d: twse_margin_payloads.get(d, {"stat": "查無資料", "data": []}),
+        twse_borrowed_short_fetcher=lambda d: twse_short_payloads.get(
+            d, {"stat": "查無資料", "data": []}
+        ),
+        twse_close_fetcher=lambda d: close_payloads.get(d, {"stat": "查無資料", "data": []}),
+        now_provider=lambda: datetime(2026, 7, 10, 1, 0, tzinfo=UTC),
+        store=store,
+    )
+
+    result = service.get_margin_short("TW:1303", days=1)
+
+    assert result.latest_date == "2026-07-08"
+    assert len(store.upsert_calls) == 1
+    assert store.upsert_calls[0]["market"] == "TWSE"
+    assert result.source.startswith("TWSE")
