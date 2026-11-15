@@ -827,3 +827,109 @@ def test_get_key_statistics_returns_empty_quote_fields_on_cold_cache(monkeypatch
     assert payload["lastPrice"] is None
     assert payload["previousClose"] is None
     assert payload["volume"] is None
+
+
+def test_pe_snapshot_does_not_cache_transient_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    from datetime import date
+
+    from app.services import key_stats_service
+
+    key_stats_service.clear_official_pe_snapshot_cache()
+    calls = {"n": 0}
+
+    def fake_fetch(*_a, **_k):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise key_stats_service._PeFetchTransient("timeout")
+        return {
+            "stat": "OK",
+            "date": "20240628",
+            "fields": ["證券代號", "本益比", "收盤價", "股價淨值比", "殖利率(%)"],
+            "data": [["2330", "20", "100", "1.5", "2.0"]],
+        }
+
+    monkeypatch.setattr(key_stats_service, "_fetch_official_pe_json", fake_fetch)
+    day = date(2024, 6, 28)
+    assert key_stats_service._fetch_twse_daily_pe_snapshot(day) is None
+    second = key_stats_service._fetch_twse_daily_pe_snapshot(day)
+    assert second is not None
+    assert "2330" in second[0]
+    assert calls["n"] == 2
+    # Third call hits the success cache.
+    assert key_stats_service._fetch_twse_daily_pe_snapshot(day) is not None
+    assert calls["n"] == 2
+    key_stats_service.clear_official_pe_snapshot_cache()
+
+
+def test_pe_snapshot_caches_definitive_no_data(monkeypatch: pytest.MonkeyPatch) -> None:
+    from datetime import date
+
+    from app.services import key_stats_service
+
+    key_stats_service.clear_official_pe_snapshot_cache()
+    calls = {"n": 0}
+
+    def fake_fetch(*_a, **_k):
+        calls["n"] += 1
+        return {"stat": "抱歉，查無資料！"}
+
+    monkeypatch.setattr(key_stats_service, "_fetch_official_pe_json", fake_fetch)
+    day = date(2024, 1, 1)
+    assert key_stats_service._fetch_twse_daily_pe_snapshot(day) is None
+    assert key_stats_service._fetch_twse_daily_pe_snapshot(day) is None
+    assert calls["n"] == 1
+    key_stats_service.clear_official_pe_snapshot_cache()
+
+
+def test_pe_snapshot_deadline_exceeded_not_cached(monkeypatch: pytest.MonkeyPatch) -> None:
+    from datetime import date
+
+    from app.services import key_stats_service
+    from app.services.collector_deadline import CollectorDeadlineExceeded
+
+    key_stats_service.clear_official_pe_snapshot_cache()
+    calls = {"n": 0}
+
+    def fake_fetch(*_a, **_k):
+        calls["n"] += 1
+        raise CollectorDeadlineExceeded("collector_deadline_exceeded")
+
+    monkeypatch.setattr(key_stats_service, "_fetch_official_pe_json", fake_fetch)
+    day = date(2024, 6, 28)
+    with pytest.raises(CollectorDeadlineExceeded):
+        key_stats_service._fetch_twse_daily_pe_snapshot(day)
+    with pytest.raises(CollectorDeadlineExceeded):
+        key_stats_service._fetch_twse_daily_pe_snapshot(day)
+    assert calls["n"] == 2
+    key_stats_service.clear_official_pe_snapshot_cache()
+
+
+def test_finnhub_http_timeout_capped_to_remaining_deadline(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.services import key_stats_service
+    from app.services.collector_deadline import collector_deadline_scope
+
+    captured: list[float] = []
+
+    class _Resp:
+        def read(self):
+            return b'{"ok":true}'
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    def fake_urlopen(request, timeout=None):  # noqa: ANN001
+        del request
+        captured.append(float(timeout))
+        return _Resp()
+
+    monkeypatch.setattr(key_stats_service, "urlopen", fake_urlopen)
+    clock = {"now": 100.0}
+    with collector_deadline_scope(100.0 + 3.0, lambda: clock["now"]):
+        assert key_stats_service._http_get_json_url("https://finnhub.io/api/v1/x") == {
+            "ok": True
+        }
+    assert captured
+    assert captured[0] <= 3.0 + 1e-6

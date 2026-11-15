@@ -276,6 +276,48 @@ async function failedRequestError(response: Response): Promise<ApiError> {
   });
 }
 
+/**
+ * Extract a structured conflict/error ``reason`` from an ApiError.
+ *
+ * Real HTTP failures stringify object ``detail`` into ``ApiError.detail`` and
+ * keep the original payload on ``ApiError.body`` (see ``failedRequestPayload``).
+ * Prefer ``body.detail.reason``; fall back to parsing a JSON-stringified detail.
+ */
+export function apiErrorDetailReason(error: unknown): string | null {
+  const api = error instanceof ApiError ? error : toApiError(error);
+  const body = api.body;
+  if (body && typeof body === "object" && !Array.isArray(body)) {
+    const fromBody = reasonFromDetailValue(
+      (body as { detail?: unknown }).detail,
+    );
+    if (fromBody) return fromBody;
+  }
+  return reasonFromDetailValue(api.detail);
+}
+
+function reasonFromDetailValue(value: unknown): string | null {
+  if (value == null) return null;
+  if (typeof value === "object" && !Array.isArray(value)) {
+    const reason = (value as { reason?: unknown }).reason;
+    if (typeof reason === "string" && reason.trim()) {
+      return reason.trim();
+    }
+    return null;
+  }
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) {
+      return null;
+    }
+    try {
+      return reasonFromDetailValue(JSON.parse(trimmed) as unknown);
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
 export function toApiError(error: unknown): ApiError {
   if (error instanceof ApiError) {
     return error;

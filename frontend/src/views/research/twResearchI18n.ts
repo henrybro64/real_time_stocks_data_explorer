@@ -83,6 +83,131 @@ const TW_RESEARCH_ROWS = [
   ["research.tw.resetMembership", "Reset to starter", "重設為起始預設"],
   ["research.tw.startFirstPass", "Start first-round data collection", "開始第一輪資料收集"],
   [
+    "research.tw.execution.executorUnavailable",
+    "Job ready, but automatic collection is not available yet. Progress will wait until the executor is enabled, or use the advanced manual batch as a fallback.",
+    "工作已建立，但自動收集尚未可用。啟用執行器前會暫停；必要時可使用進階手動批次作為備援。",
+  ],
+  [
+    "research.tw.execution.authorizedWaiting",
+    "Collection authorized. Waiting for the next worker tick — this is not idle failure.",
+    "已授權收集，正在等待下一次工作排程（這不是失敗）。",
+  ],
+  [
+    "research.tw.execution.activelyCollecting",
+    "Collection is actively leased and running.",
+    "正在進行資料收集（已取得租約）。",
+  ],
+  [
+    "research.tw.execution.executorNotTicking",
+    "Collection is authorized, but the drain executor has not ticked recently. Wait or contact the operator — this is not active collecting.",
+    "已授權收集，但自動排程最近沒有執行。請稍候或聯絡管理員（這不是正在收集）。",
+  ],
+  [
+    "research.tw.startResearchViewProgress",
+    "View progress",
+    "查看進度",
+  ],
+  [
+    "research.tw.startRetryIncompleteJob",
+    "Research run was saved but no collection job is attached yet. You can safely press Start again to finish setup.",
+    "研究流程已儲存，但尚未附上收集工作。可再次按下「開始研究」安全完成建立。",
+  ],
+  [
+    "research.tw.startWaitingCreationClaim",
+    "Job creation is still in progress. Wait a moment, then press Start again if it does not finish.",
+    "正在建立收集工作，請稍候；若未完成可再次按下「開始研究」。",
+  ],
+  [
+    "research.tw.resumeCollection",
+    "Resume this collection",
+    "接續這個收集工作",
+  ],
+  [
+    "research.tw.resumeCollectionConfirm",
+    "Resume collection for {done}/{total} completed ({pending} remaining)? Existing results are kept.",
+    "要接續這個收集工作嗎？目前 {done}/{total} 已完成，{pending} 待收集。已完成的結果會保留。",
+  ],
+  [
+    "research.tw.resumeCollectionModalTitle",
+    "Resume this collection",
+    "接續這個收集工作",
+  ],
+  [
+    "research.tw.adoptConflict",
+    "Cannot resume: {reason}",
+    "無法接續：{reason}",
+  ],
+  [
+    "research.tw.adoptConflictGeneric",
+    "Cannot resume this collection right now. See advanced detail for the technical code.",
+    "目前無法接續這個收集工作。技術代碼請見進階資訊。",
+  ],
+  [
+    "research.tw.adopt.reason.research_run_retained",
+    "Your current research run already has progress (running or with candidates/scan). Finish, cancel, or delete it before resuming this collection.",
+    "目前的研究流程已有進度（進行中或已有候選/掃描）。請先完成、取消或刪除，再接續這個收集工作。",
+  ],
+  [
+    "research.tw.adopt.reason.concurrent_update_retry",
+    "Another operation is in progress. Please try again shortly.",
+    "另一個操作正在進行，請稍後再試。",
+  ],
+  [
+    "research.tw.adoptMissingDigest",
+    "This job has no universe digest, so resume cannot be confirmed. Refresh the job list.",
+    "這個工作沒有宇宙摘要，無法確認接續。請重新整理工作清單。",
+  ],
+  [
+    "research.tw.adopt.reason.first_pass_job_lease_active",
+    "This collection is currently leased by a worker. Wait for the lease to expire, then try again.",
+    "這個收集工作目前正被工作者租用中。請等租約結束後再試。",
+  ],
+  [
+    "research.tw.adopt.reason.first_pass_job_archived",
+    "This collection has been archived and cannot be resumed.",
+    "這個收集工作已封存，無法接續。",
+  ],
+  [
+    "research.tw.adopt.reason.first_pass_job_nothing_pending",
+    "There is nothing left to collect for this job.",
+    "這個工作已沒有待收集的標的。",
+  ],
+  [
+    "research.tw.adopt.reason.first_pass_job_universe_digest_mismatch",
+    "The universe for this job no longer matches. Refresh the job list and try again.",
+    "這個工作的標的集合已變更。請重新整理工作清單後再試。",
+  ],
+  [
+    "research.tw.adopt.reason.first_pass_job_deletion_in_progress",
+    "This collection is being deleted and cannot be resumed.",
+    "這個收集工作正在刪除中，無法接續。",
+  ],
+  [
+    "research.tw.adopt.reason.first_pass_job_not_eligible_status",
+    "This collection is not in a resumable status.",
+    "這個收集工作目前的狀態無法接續。",
+  ],
+  [
+    "research.tw.adopt.reason.first_pass_job_already_attached",
+    "This collection is already attached to the research run.",
+    "這個收集工作已連結到目前的研究流程。",
+  ],
+  [
+    "research.tw.adoptConflictDetail",
+    "Technical code: {code}",
+    "技術代碼：{code}",
+  ],
+  [
+    "research.tw.startFirstPassHint",
+    "Starts the managed research run and first-round job. Creating a job row alone does not mean collection is running.",
+    "會啟動受管理的研究流程與第一輪工作。僅建立工作紀錄不代表已在收集。",
+  ],
+  [
+    "research.tw.createStandaloneFirstPassAdvanced",
+    "Create standalone first-pass job (advanced)",
+    "建立獨立第一輪工作（進階）",
+  ],
+  [
     "research.tw.runFirstPassBatch",
     "Manual batch (advanced fallback)",
     "手動批次（進階備援）",

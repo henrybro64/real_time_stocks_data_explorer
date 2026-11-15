@@ -1,4 +1,10 @@
-"""PostgreSQL persistence for Taiwan research scans and export snapshots (#318)."""
+"""PostgreSQL persistence for Taiwan research scans and export snapshots (#318).
+
+Lock order (when a transaction locks both tables): always
+``tw_research_research_runs`` ``FOR UPDATE`` first, then
+``tw_research_first_pass_jobs`` ``FOR UPDATE``. Matches managed Start/claim
+and adopt paths so concurrent cancel/delete/adopt cannot deadlock (A-B / B-A).
+"""
 
 from __future__ import annotations
 
@@ -2324,6 +2330,262 @@ class TwResearchRepository(SessionBoundRepository):
                 "first_pass_job_id": job_id,
             }
 
+    def adopt_first_pass_job_into_run(
+        self,
+        user_id: str,
+        *,
+        job_id: str,
+        expected_universe_digest: str,
+    ) -> dict[str, Any]:
+        """Atomically adopt an eligible standalone first-pass job (#359).
+
+        One locked transaction: ``SELECT … FOR UPDATE`` the user's research-run
+        row first (insert if absent), then the job row; validate; attach; commit.
+        Raises ``KeyError`` (404) or ``ResearchRunConflict`` (409) with a
+        machine-readable reason and performs ZERO mutation on rejection.
+
+        When a concurrent Start inserts the run row during our insert, the
+        IntegrityError is rolled back and the whole transaction is retried once
+        (never 500).
+        """
+        from app.services.tw_research.research_run import ResearchRunConflict
+
+        last_integrity: IntegrityError | None = None
+        for attempt in range(2):
+            try:
+                return self._adopt_first_pass_job_into_run_once(
+                    user_id,
+                    job_id=job_id,
+                    expected_universe_digest=expected_universe_digest,
+                )
+            except IntegrityError as exc:
+                last_integrity = exc
+                if attempt == 0:
+                    continue
+                # Second insert collision should be unreachable after retry
+                # (existing-run path). Convert to a conflict — never 500.
+                raise ResearchRunConflict(
+                    "research_run_retained",
+                    reason="research_run_retained",
+                ) from last_integrity
+        raise ResearchRunConflict(
+            "research_run_retained",
+            reason="research_run_retained",
+        )
+
+    def _adopt_first_pass_job_into_run_once(
+        self,
+        user_id: str,
+        *,
+        job_id: str,
+        expected_universe_digest: str,
+    ) -> dict[str, Any]:
+        from uuid import uuid4
+
+        from app.services.tw_research.constants import RESEARCH_RUN_VERSION
+        from app.services.tw_research.research_run import (
+            ResearchRunConflict,
+            first_pass_drain_availability,
+        )
+
+        eligible_status = frozenset({"pending", "running", "deferred", "partial"})
+        terminal_replaceable = frozenset({"failed", "cancelled", "budget_exhausted"})
+        default_gates = {
+            "candidateSelection": "pending",
+            "reportDecision": "blocked_until_phase2",
+            "notionPublication": "external_only_never_auto",
+        }
+        default_dimensions = {
+            "fundamentals": "in_progress",
+            "monthlyTechnical": "not_started",
+            "dailyTechnical": "not_started",
+            "chipEnrichment": "not_started",
+            "snapshot": "not_started",
+            "externalPublication": "not_started",
+        }
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            now = datetime.now(timezone.utc)
+            # Lock order (must match Start/claim path): research_runs FOR UPDATE
+            # first, then first_pass_jobs FOR UPDATE. Prevents A-B/B-A deadlocks
+            # with concurrent managed Start.
+            run = session.execute(
+                select(TwResearchResearchRun)
+                .where(TwResearchResearchRun.user_id == user_id)
+                .with_for_update()
+            ).scalar_one_or_none()
+
+            job = session.execute(
+                select(TwResearchFirstPassJob)
+                .where(TwResearchFirstPassJob.job_id == job_id)
+                .with_for_update()
+            ).scalar_one_or_none()
+            if job is None or str(job.user_id) != str(user_id):
+                raise KeyError("first_pass_job_not_found")
+
+            # Idempotent: already attached to this run.
+            if run is not None and str(run.first_pass_job_id or "") == str(job_id):
+                session.commit()
+                return {
+                    "outcome": "already_attached",
+                    "run": _research_run_to_dict(run),
+                    "first_pass_job_id": job_id,
+                }
+
+            if job.deletion_state:
+                raise ResearchRunConflict(
+                    "first_pass_job_deletion_in_progress",
+                    reason="first_pass_job_deletion_in_progress",
+                )
+            if job.archived_at is not None:
+                raise ResearchRunConflict(
+                    "first_pass_job_archived",
+                    reason="first_pass_job_archived",
+                )
+            if str(job.status or "") not in eligible_status:
+                raise ResearchRunConflict(
+                    "first_pass_job_not_eligible_status",
+                    reason="first_pass_job_not_eligible_status",
+                )
+            lease_until = _as_utc(job.reserve_expires_at)
+            if lease_until is not None and lease_until > now:
+                raise ResearchRunConflict(
+                    "first_pass_job_lease_active",
+                    reason="first_pass_job_lease_active",
+                )
+            digest = str(job.universe_digest or "")
+            if digest != str(expected_universe_digest or ""):
+                raise ResearchRunConflict(
+                    "first_pass_job_universe_digest_mismatch",
+                    reason="first_pass_job_universe_digest_mismatch",
+                )
+
+            stock_ids = list(job.stock_ids_json or [])
+            universe_size = len(stock_ids)
+            # Done = ok/partial + failed that are retry-exhausted or permanent.
+            # Transient failed rows with retries still scheduled count as pending.
+            done_count = _count_first_pass_finished_symbols(session, job_id)
+            if universe_size <= 0 or done_count >= universe_size:
+                raise ResearchRunConflict(
+                    "first_pass_job_nothing_pending",
+                    reason="first_pass_job_nothing_pending",
+                )
+
+            if run is not None:
+                if (
+                    run.pending_first_pass_job_id
+                    and str(run.pending_first_pass_job_id) == str(job_id)
+                ):
+                    raise ResearchRunConflict(
+                        "first_pass_job_already_attached",
+                        reason="first_pass_job_already_attached",
+                    )
+                phase = str(run.phase or "")
+                status = str(run.status or "")
+                has_pointers = bool(run.candidate_set_id or run.technical_scan_id)
+                gated_phase = phase in {
+                    "awaiting_analyst_candidate_selection",
+                    "awaiting_analyst_report_decision",
+                    "complete_evidence_ready",
+                }
+                replaceable = (
+                    status in terminal_replaceable
+                    and not has_pointers
+                    and not gated_phase
+                )
+                if not replaceable:
+                    raise ResearchRunConflict(
+                        "research_run_retained",
+                        reason="research_run_retained",
+                    )
+
+            available, reason = first_pass_drain_availability(user_id)
+            notes = [
+                f"Adopted standalone first-pass job {job_id}.",
+                "Preserved existing per-symbol evidence; remaining symbols stay pending.",
+            ]
+            if available:
+                notes.append(
+                    "First-pass drain authorized for this research-run job only."
+                )
+            else:
+                notes.append(str(reason))
+
+            dims = dict(default_dimensions)
+            if run is not None:
+                prev_drain = (run.dimensions_json or {}).get("firstPassDrain")
+                if prev_drain is not None:
+                    dims["firstPassDrain"] = prev_drain
+
+            if run is None:
+                run = TwResearchResearchRun(
+                    user_id=user_id,
+                    research_run_id=f"rr_{uuid4().hex[:20]}",
+                    version=RESEARCH_RUN_VERSION,
+                    phase="phase1_first_pass",
+                    status="running",
+                    trading_day=None,
+                    first_pass_job_id=job_id,
+                    first_pass_snapshot_id=None,
+                    candidate_set_id=None,
+                    candidate_set_version=None,
+                    technical_scan_id=None,
+                    pending_first_pass_job_id=None,
+                    pending_technical_scan_id=None,
+                    job_claim_token=None,
+                    job_claim_expires_at=None,
+                    phase2_claim_token=None,
+                    phase2_claim_expires_at=None,
+                    gates_json=dict(default_gates),
+                    dimensions_json=dims,
+                    notes_json=notes[-50:],
+                    schedule_enabled=bool(available),
+                    revision=1,
+                    created_at=now,
+                    updated_at=now,
+                )
+                try:
+                    with session.begin_nested():
+                        session.add(run)
+                        session.flush()
+                except IntegrityError:
+                    session.rollback()
+                    raise
+            else:
+                # Replace a terminal run with a fresh identity (same user PK).
+                run.research_run_id = f"rr_{uuid4().hex[:20]}"
+                run.version = RESEARCH_RUN_VERSION
+                run.phase = "phase1_first_pass"
+                run.status = "running"
+                run.trading_day = None
+                run.first_pass_job_id = job_id
+                run.first_pass_snapshot_id = None
+                run.candidate_set_id = None
+                run.candidate_set_version = None
+                run.technical_scan_id = None
+                run.pending_first_pass_job_id = None
+                run.pending_technical_scan_id = None
+                run.job_claim_token = None
+                run.job_claim_expires_at = None
+                run.phase2_claim_token = None
+                run.phase2_claim_expires_at = None
+                run.gates_json = dict(default_gates)
+                run.dimensions_json = dims
+                run.schedule_enabled = bool(available)
+                note_list = list(run.notes_json or [])
+                note_list.extend(notes)
+                run.notes_json = note_list[-50:]
+                run.revision = int(run.revision or 0) + 1
+                run.updated_at = now
+
+            session.commit()
+            session.refresh(run)
+            return {
+                "outcome": "adopted",
+                "run": _research_run_to_dict(run),
+                "first_pass_job_id": job_id,
+            }
+
     def mark_first_pass_job_orphaned(
         self,
         job_id: str,
@@ -2614,8 +2876,16 @@ class TwResearchRepository(SessionBoundRepository):
     ) -> dict[str, Any] | None:
         """Mark job cancelled and fence active leases (#355). Idempotent."""
         session_factory = self._session_factory()
+        run_synced = False
+        result: dict[str, Any] | None = None
         with session_factory() as session:
             now = datetime.now(timezone.utc)
+            # Lock order: research_runs → first_pass_jobs (see module docstring).
+            run = session.execute(
+                select(TwResearchResearchRun)
+                .where(TwResearchResearchRun.user_id == user_id)
+                .with_for_update()
+            ).scalar_one_or_none()
             row = session.execute(
                 select(TwResearchFirstPassJob)
                 .where(
@@ -2628,20 +2898,17 @@ class TwResearchRepository(SessionBoundRepository):
                 return None
             if row.status == "cancelled" and not row.deletion_state:
                 # Already cancelled — still return current row (idempotent).
-                return _first_pass_job_to_dict(row)
-            row.status = "cancelled"
-            row.reserve_expires_at = None
-            row.lease_generation = int(row.lease_generation or 0) + 1
-            notes = list(row.notes_json or [])
-            notes.append("cancelled_by_user")
-            row.notes_json = notes[-50:]
-            row.updated_at = now
+                result = _first_pass_job_to_dict(row)
+            else:
+                row.status = "cancelled"
+                row.reserve_expires_at = None
+                row.lease_generation = int(row.lease_generation or 0) + 1
+                notes = list(row.notes_json or [])
+                notes.append("cancelled_by_user")
+                row.notes_json = notes[-50:]
+                row.updated_at = now
+                result = None  # refresh after commit
             # Disarm drain when this job is the run-owned authoritative job.
-            run = session.execute(
-                select(TwResearchResearchRun)
-                .where(TwResearchResearchRun.user_id == user_id)
-                .with_for_update()
-            ).scalar_one_or_none()
             if run is not None and str(run.first_pass_job_id or "") == str(job_id):
                 # Propagate cancel into the managed run so begin_phase1 can
                 # replace it instead of returning a stuck running run (#355).
@@ -2651,8 +2918,42 @@ class TwResearchRepository(SessionBoundRepository):
                 notes.append("first_pass_job_cancelled_by_user")
                 run.notes_json = notes[-50:]
                 run.updated_at = now
+                run_synced = True
             session.commit()
-            return _first_pass_job_to_dict(row)
+            if result is None:
+                session.refresh(row)
+                result = _first_pass_job_to_dict(row)
+
+        if not run_synced:
+            # Adopt may have inserted+attached the run while we waited on the
+            # job lock (run was absent at first SELECT). Sync in a follow-up
+            # transaction that locks research_runs only — never job-then-run.
+            self._sync_cancelled_first_pass_job_into_run(user_id=user_id, job_id=job_id)
+        return result
+
+    def _sync_cancelled_first_pass_job_into_run(
+        self, *, user_id: str, job_id: str
+    ) -> None:
+        """If the user's run points at a cancelled job, mark the run cancelled."""
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            now = datetime.now(timezone.utc)
+            run = session.execute(
+                select(TwResearchResearchRun)
+                .where(TwResearchResearchRun.user_id == user_id)
+                .with_for_update()
+            ).scalar_one_or_none()
+            if run is None or str(run.first_pass_job_id or "") != str(job_id):
+                return
+            if str(run.status or "") == "cancelled" and not bool(run.schedule_enabled):
+                return
+            run.schedule_enabled = False
+            run.status = "cancelled"
+            notes = list(run.notes_json or [])
+            notes.append("first_pass_job_cancelled_by_user")
+            run.notes_json = notes[-50:]
+            run.updated_at = now
+            session.commit()
 
     def set_first_pass_job_archived(
         self,
@@ -2960,6 +3261,12 @@ class TwResearchRepository(SessionBoundRepository):
         session_factory = self._session_factory()
         with session_factory() as session:
             now = datetime.now(timezone.utc)
+            # Lock order: research_runs → first_pass_jobs (see module docstring).
+            run = session.execute(
+                select(TwResearchResearchRun)
+                .where(TwResearchResearchRun.user_id == user_id)
+                .with_for_update()
+            ).scalar_one_or_none()
             row = session.execute(
                 select(TwResearchFirstPassJob)
                 .where(
@@ -3025,11 +3332,6 @@ class TwResearchRepository(SessionBoundRepository):
                 notes.append("deletion_requested_by_user")
                 row.notes_json = notes[-50:]
                 row.updated_at = now
-                run = session.execute(
-                    select(TwResearchResearchRun)
-                    .where(TwResearchResearchRun.user_id == user_id)
-                    .with_for_update()
-                ).scalar_one_or_none()
                 if run is not None and str(run.first_pass_job_id or "") == str(job_id):
                     run.schedule_enabled = False
                     run.updated_at = now
@@ -3112,11 +3414,7 @@ class TwResearchRepository(SessionBoundRepository):
                             session.delete(snap)
                             snapshot_deleted = 1
 
-                run = session.execute(
-                    select(TwResearchResearchRun)
-                    .where(TwResearchResearchRun.user_id == user_id)
-                    .with_for_update()
-                ).scalar_one_or_none()
+                # ``run`` already locked at transaction start (lock order).
                 if run is not None:
                     if str(run.pending_first_pass_job_id or "") == str(job_id):
                         run.pending_first_pass_job_id = None
@@ -4366,9 +4664,14 @@ class TwResearchRepository(SessionBoundRepository):
         payload: dict[str, Any],
         lease_generation: int,
     ) -> bool:
-        """Persist one symbol result if lease generation is still current."""
+        """Persist one symbol result if lease generation + expiry are still current.
+
+        Checks both lease generation fencing and ``reserve_expires_at`` so a
+        stale worker after restart cannot finalize under an expired lease (#360).
+        """
         session_factory = self._session_factory()
         with session_factory() as session:
+            now = datetime.now(timezone.utc)
             job = session.execute(
                 select(TwResearchFirstPassJob)
                 .where(TwResearchFirstPassJob.job_id == job_id)
@@ -4378,13 +4681,17 @@ class TwResearchRepository(SessionBoundRepository):
                 return False
             if int(job.lease_generation or 0) != int(lease_generation):
                 return False
+            if job.deletion_state or job.status in {"failed", "cancelled"}:
+                return False
+            lease_until = _as_utc(job.reserve_expires_at)
+            if lease_until is None or lease_until <= now:
+                return False
             existing = session.execute(
                 select(TwResearchFirstPassSymbolResult).where(
                     TwResearchFirstPassSymbolResult.job_id == job_id,
                     TwResearchFirstPassSymbolResult.stock_id == stock_id,
                 )
             ).scalars().first()
-            now = datetime.now(timezone.utc)
             if existing is None:
                 session.add(
                     TwResearchFirstPassSymbolResult(
@@ -4889,6 +5196,40 @@ def _count_first_pass_status(session: Session, job_id: str, status: str) -> int:
         )
     ).scalar_one()
     return int(total or 0)
+
+
+def _count_first_pass_finished_symbols(session: Session, job_id: str) -> int:
+    """Count symbols that no longer need collection for adopt eligibility (#359).
+
+    ``ok`` / ``partial`` always count as done. ``failed`` counts as done only
+    when ``retryExhausted`` is true or ``failureClass`` is permanent /
+    programming_error. Transient failed rows with retries scheduled remain
+    pending (adoption allowed).
+    """
+    ok_partial = session.execute(
+        select(func.count())
+        .select_from(TwResearchFirstPassSymbolResult)
+        .where(
+            TwResearchFirstPassSymbolResult.job_id == job_id,
+            TwResearchFirstPassSymbolResult.status.in_(("ok", "partial")),
+        )
+    ).scalar_one()
+    finished = int(ok_partial or 0)
+    failed_rows = session.execute(
+        select(TwResearchFirstPassSymbolResult).where(
+            TwResearchFirstPassSymbolResult.job_id == job_id,
+            TwResearchFirstPassSymbolResult.status == "failed",
+        )
+    ).scalars().all()
+    for row in failed_rows:
+        payload = dict(row.payload_json or {})
+        failure_class = str(payload.get("failureClass") or "")
+        if payload.get("retryExhausted") or failure_class in {
+            "permanent",
+            "programming_error",
+        }:
+            finished += 1
+    return finished
 
 
 def _resolve_first_pass_terminal_status(session: Session, job_id: str) -> str:

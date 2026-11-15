@@ -33,10 +33,13 @@ from app.services.tw_margin_short_service import (
     TaiwanMarginShortResult,
     tw_margin_short_service,
 )
-from app.services.tw_ownership_concentration_service import (
+from app.services.collector_deadline import (
     CollectorDeadlineExceeded,
-    TaiwanOwnershipConcentrationResult,
+    check_collector_deadline,
     collector_deadline_scope,
+)
+from app.services.tw_ownership_concentration_service import (
+    TaiwanOwnershipConcentrationResult,
     tw_ownership_concentration_service,
 )
 from app.services.tw_research.constants import (
@@ -68,8 +71,11 @@ ProfitabilityLoader = Callable[[str], dict[str, object] | None]
 ThemeKeysLoader = Callable[[str], list[str]]
 
 COLLECTOR_DEADLINE_EXCEEDED_REASON = "collector_deadline_exceeded"
-# Soft per-symbol wall-clock limit for the slow ownership (TDCC Friday) step.
-DEFAULT_SYMBOL_DEADLINE_SECONDS = 240.0
+# Soft per-symbol wall-clock limit for the slow ownership (TDCC) step (#360).
+# Hierarchy: symbol (45s) < batch budget (60s) < curl (150s) < k8s Job (180s)
+# < lease (300s). A Python soft deadline cannot interrupt blocked I/O; keep the
+# ownership loop cooperative so one stock cannot exhaust the CronJob tick.
+DEFAULT_SYMBOL_DEADLINE_SECONDS = 45.0
 
 # Permanent / non-retryable field reason markers (substring match, lowercased).
 # programming_error is a distinct class (see classify_field_reason) — not listed here.
@@ -443,6 +449,7 @@ def collect_first_pass_batch(
     lease_renew: Callable[[], bool] | None = None,
     lease_lost_check: Callable[[], bool] | None = None,
     symbol_deadline_seconds: float | None = DEFAULT_SYMBOL_DEADLINE_SECONDS,
+    on_symbol_collected: Callable[[FirstPassSymbolRecord], bool] | None = None,
 ) -> FirstPassBatchResult:
     """Collect first-pass evidence for a **deduplicated** ID list.
 
@@ -457,14 +464,21 @@ def collect_first_pass_batch(
     ``released_unstarted`` (attempts unchanged).
 
     When ``lease_renew`` is set, call it after each finished symbol. If it returns
-    False the batch stops with ``lease_lost`` (caller must not persist).
+    False the batch stops with ``lease_lost`` and that symbol is **not** handed to
+    ``on_symbol_collected`` (another worker may own the lease).
 
     ``lease_lost_check`` (e.g. a heartbeat thread's event) is consulted before
-    and after every symbol; when it reports True the remaining ids are released.
+    every symbol and again after collection, before renew/persist; when it
+    reports True the remaining ids are released without persisting the
+    in-flight symbol.
 
     ``symbol_deadline_seconds`` is a soft per-symbol limit applied to the slow
     ownership step: once elapsed, that field becomes unavailable with
     ``collector_deadline_exceeded`` while peer fields are unaffected.
+
+    ``on_symbol_collected`` runs only after a successful lease renew/check for
+    crash-safe incremental persistence (#360). Return False to stop the batch
+    (upsert fence / generation mismatch).
     """
     deduped = dedupe_stock_ids(stock_ids)
     loader = stock_loader or quote_service.get_catalog_stock
@@ -537,11 +551,17 @@ def collect_first_pass_batch(
             )
             failed.completeness = _symbol_completeness(failed)
             records.append(failed)
+        # Renew/check **before** incremental persist so a lost lease never writes.
         renew_failed = lease_renew is not None and not lease_renew()
         if renew_failed or (lease_lost_check is not None and lease_lost_check()):
             lease_lost = True
             released_unstarted = list(deduped[index + 1 :])
             break
+        if on_symbol_collected is not None and records:
+            if not on_symbol_collected(records[-1]):
+                lease_lost = True
+                released_unstarted = list(deduped[index + 1 :])
+                break
 
     duration_ms = int(max(0.0, (clock() - started_at) * 1000.0))
     coverage = _coverage_summary(records)
@@ -560,7 +580,8 @@ def collect_first_pass_batch(
         )
     if lease_lost:
         notes.append(
-            f"lease_lost after {len(records)} symbols; caller must not persist."
+            f"lease_lost after {len(records)} symbols; "
+            "unfenced in-flight symbol was not persisted."
         )
     return FirstPassBatchResult(
         first_pass_version=FIRST_PASS_VERSION,
@@ -648,6 +669,12 @@ def _collect_one(
 
     # Reuse enrichment step helpers via a temporary EnrichmentResult.
     scratch = EnrichmentResult(stock_id=stock.id, qualified=True)
+    mono = clock or time.monotonic
+    deadline_at = (
+        mono() + float(symbol_deadline_seconds)
+        if symbol_deadline_seconds is not None
+        else None
+    )
     steps: list[tuple[str, str, str, Callable[[], None]]] = [
         (
             "institutional_5d",
@@ -676,13 +703,15 @@ def _collect_one(
             "tdcc_holders_ge_400_lots",
             "tw_ownership_concentration_service",
             "tdcc_weekly",
+            # Nested ownership uses the same absolute deadline (never extends).
+            # Soft deadline cannot interrupt blocked I/O; late returns are overwritten.
             lambda: _enrich_ownership_with_deadline(
                 scratch,
                 stock.id,
                 loader=ownership_loader,
                 captured_at=captured_at,
-                deadline_seconds=symbol_deadline_seconds,
-                clock=clock or time.monotonic,
+                deadline_at=deadline_at,
+                clock=mono,
             ),
         ),
         (
@@ -697,45 +726,61 @@ def _collect_one(
             ),
         ),
     ]
-    for field_name, source, freshness_class, action in steps:
-        reused = None
-        prior_raw = prior_fields.get(field_name)
-        if isinstance(prior_raw, Mapping):
-            reused = _provenance_from_mapping(field_name, prior_raw)
-        if reused is not None:
-            scratch.fields[field_name] = reused
-            # Valuation helper may also set official_pb / yield siblings — keep those too.
-            for sibling in ("official_pb", "official_dividend_yield", "ttm_eps"):
-                sibling_raw = prior_fields.get(sibling)
-                if sibling in scratch.fields:
-                    continue
-                if isinstance(sibling_raw, Mapping):
-                    sibling_reused = _provenance_from_mapping(sibling, sibling_raw)
-                    if sibling_reused is not None:
-                        scratch.fields[sibling] = sibling_reused
-            continue
-        try:
-            action()
-        except Exception as exc:  # noqa: BLE001 — isolate per source
-            if is_infrastructure_failure(exc):
-                raise
-            reason = provider_exception_reason(exc)
-            log_isolated_fault(
-                stock_id=stock.id,
-                stage=field_name,
-                source=source,
-                exc=exc,
-                reason=reason,
-                job_id=job_id,
-            )
-            scratch.fields[field_name] = ProvenanceField(
-                field=field_name,
-                status="unavailable",
-                source=source,
-                captured_at=captured_at,
-                freshness_class=freshness_class,
-                reason=reason,
-            )
+    with collector_deadline_scope(deadline_at, mono):
+        for field_name, source, freshness_class, action in steps:
+            reused = None
+            prior_raw = prior_fields.get(field_name)
+            if isinstance(prior_raw, Mapping):
+                reused = _provenance_from_mapping(field_name, prior_raw)
+            if reused is not None:
+                scratch.fields[field_name] = reused
+                # Valuation helper may also set official_pb / yield siblings.
+                for sibling in ("official_pb", "official_dividend_yield", "ttm_eps"):
+                    sibling_raw = prior_fields.get(sibling)
+                    if sibling in scratch.fields:
+                        continue
+                    if isinstance(sibling_raw, Mapping):
+                        sibling_reused = _provenance_from_mapping(sibling, sibling_raw)
+                        if sibling_reused is not None:
+                            scratch.fields[sibling] = sibling_reused
+                continue
+            try:
+                check_collector_deadline()
+                action()
+            except CollectorDeadlineExceeded:
+                scratch.fields[field_name] = ProvenanceField(
+                    field=field_name,
+                    status="unavailable",
+                    source=source,
+                    captured_at=captured_at,
+                    freshness_class=freshness_class,
+                    reason=COLLECTOR_DEADLINE_EXCEEDED_REASON,
+                )
+                continue
+            except Exception as exc:  # noqa: BLE001 — isolate per source
+                if is_infrastructure_failure(exc):
+                    raise
+                reason = provider_exception_reason(exc)
+                if reason == COLLECTOR_DEADLINE_EXCEEDED_REASON or isinstance(
+                    exc, CollectorDeadlineExceeded
+                ):
+                    reason = COLLECTOR_DEADLINE_EXCEEDED_REASON
+                log_isolated_fault(
+                    stock_id=stock.id,
+                    stage=field_name,
+                    source=source,
+                    exc=exc,
+                    reason=reason,
+                    job_id=job_id,
+                )
+                scratch.fields[field_name] = ProvenanceField(
+                    field=field_name,
+                    status="unavailable",
+                    source=source,
+                    captured_at=captured_at,
+                    freshness_class=freshness_class,
+                    reason=reason,
+                )
 
     # Explicit not-implemented / unavailable fundamentals (no fabrication).
     # official_pb / official_dividend_yield may already be set by _enrich_valuation
@@ -848,8 +893,28 @@ def _collect_one(
         ):
             record.relative_price_basis = dict(prior_basis_field["value"])
     else:
+        # Candle history participates in the same absolute per-symbol deadline.
+        # Soft deadline cannot interrupt blocked I/O inside the loader; we still
+        # refuse to start when remaining time is exhausted and mark fields honestly.
+        candle_deadline_hit = False
         try:
-            candles = list(candles_loader(stock) or [])
+            with collector_deadline_scope(deadline_at, mono):
+                check_collector_deadline()
+                candles = list(candles_loader(stock) or [])
+            # Soft deadline cannot interrupt blocked I/O; overwrite late returns.
+            if deadline_at is not None and mono() >= float(deadline_at):
+                raise CollectorDeadlineExceeded(COLLECTOR_DEADLINE_EXCEEDED_REASON)
+        except CollectorDeadlineExceeded:
+            candle_deadline_hit = True
+            scratch.fields["latest_completed_close"] = ProvenanceField(
+                field="latest_completed_close",
+                status="unavailable",
+                source="daily_price_history_service",
+                captured_at=captured_at,
+                freshness_class="quote_or_eod_day",
+                reason=COLLECTOR_DEADLINE_EXCEEDED_REASON,
+            )
+            candles = []
         except Exception as exc:  # noqa: BLE001 — isolate candle retrieval
             if is_infrastructure_failure(exc):
                 raise
@@ -898,52 +963,63 @@ def _collect_one(
                     reason="stored_history_empty_or_incomplete",
                 )
 
-        pe_value = None
-        pe_field = scratch.fields.get("official_pe")
-        if pe_field is not None and isinstance(pe_field.value, dict):
-            raw_pe = pe_field.value.get("peRatio")
-            if isinstance(raw_pe, (int, float)):
-                pe_value = float(raw_pe)
-
-        try:
-            basis: RelativePriceBasisEvidence = evaluate_relative_price_basis(
-                candles,
-                market="TW",
-                now=now,
-                official_pe=pe_value,
-            )
-            record.relative_price_basis = basis.as_dict()
-            scratch.fields["relative_price_basis"] = ProvenanceField(
-                field="relative_price_basis",
-                status="ok" if basis.category != "insufficient_data" else "unavailable",
-                source="tw_research.price_basis",
-                source_as_of=basis.as_of,
-                captured_at=captured_at,
-                freshness_class="computed",
-                reason=None if basis.category != "insufficient_data" else basis.rationale,
-                # Store the full evidence object so retries can reuse it verbatim.
-                value=basis.as_dict(),
-            )
-        except Exception as exc:  # noqa: BLE001 — isolate price-basis calculation
-            if is_infrastructure_failure(exc):
-                raise
-            reason = provider_exception_reason(exc)
-            log_isolated_fault(
-                stock_id=stock.id,
-                stage="relative_price_basis",
-                source="tw_research.price_basis",
-                exc=exc,
-                reason=reason,
-                job_id=job_id,
-            )
+        if candle_deadline_hit:
+            # Do not compute a "valid" price basis from an incomplete candle fetch.
             scratch.fields["relative_price_basis"] = ProvenanceField(
                 field="relative_price_basis",
                 status="unavailable",
                 source="tw_research.price_basis",
                 captured_at=captured_at,
                 freshness_class="computed",
-                reason=reason,
+                reason=COLLECTOR_DEADLINE_EXCEEDED_REASON,
             )
+        else:
+            pe_value = None
+            pe_field = scratch.fields.get("official_pe")
+            if pe_field is not None and isinstance(pe_field.value, dict):
+                raw_pe = pe_field.value.get("peRatio")
+                if isinstance(raw_pe, (int, float)):
+                    pe_value = float(raw_pe)
+
+            try:
+                basis: RelativePriceBasisEvidence = evaluate_relative_price_basis(
+                    candles,
+                    market="TW",
+                    now=now,
+                    official_pe=pe_value,
+                )
+                record.relative_price_basis = basis.as_dict()
+                scratch.fields["relative_price_basis"] = ProvenanceField(
+                    field="relative_price_basis",
+                    status="ok" if basis.category != "insufficient_data" else "unavailable",
+                    source="tw_research.price_basis",
+                    source_as_of=basis.as_of,
+                    captured_at=captured_at,
+                    freshness_class="computed",
+                    reason=None if basis.category != "insufficient_data" else basis.rationale,
+                    # Store the full evidence object so retries can reuse it verbatim.
+                    value=basis.as_dict(),
+                )
+            except Exception as exc:  # noqa: BLE001 — isolate price-basis calculation
+                if is_infrastructure_failure(exc):
+                    raise
+                reason = provider_exception_reason(exc)
+                log_isolated_fault(
+                    stock_id=stock.id,
+                    stage="relative_price_basis",
+                    source="tw_research.price_basis",
+                    exc=exc,
+                    reason=reason,
+                    job_id=job_id,
+                )
+                scratch.fields["relative_price_basis"] = ProvenanceField(
+                    field="relative_price_basis",
+                    status="unavailable",
+                    source="tw_research.price_basis",
+                    captured_at=captured_at,
+                    freshness_class="computed",
+                    reason=reason,
+                )
 
     # Cheap trend summary only — not second-pass MACD/KD.
     scratch.fields["second_pass_macd_kd"] = ProvenanceField(
@@ -970,28 +1046,28 @@ def _enrich_ownership_with_deadline(
     *,
     loader: OwnershipLoader,
     captured_at: str,
-    deadline_seconds: float | None,
+    deadline_at: float | None,
     clock: Callable[[], float],
 ) -> None:
-    """Run the ownership step under a soft deadline.
+    """Run the ownership step under the shared absolute soft deadline.
 
+    Nested scopes never extend a parent (see ``collector_deadline_scope``).
     The deadline is exposed to the ownership service (Friday/probe/retry loops
     stop between iterations). If the loader still returns after the deadline
     elapsed, the field is overwritten as unavailable so a slow symbol never
     claims fresh evidence it exceeded the budget for. Peer fields are untouched.
     """
-    if deadline_seconds is None:
+    if deadline_at is None:
         _enrich_ownership(
             scratch, stock_id, loader=loader, captured_at=captured_at
         )
         return
-    started = clock()
-    deadline_at = started + float(deadline_seconds)
-    with collector_deadline_scope(deadline_at, clock):
+    absolute_deadline = float(deadline_at)
+    with collector_deadline_scope(absolute_deadline, clock):
         _enrich_ownership(
             scratch, stock_id, loader=loader, captured_at=captured_at
         )
-    if clock() - started >= float(deadline_seconds):
+    if clock() >= absolute_deadline:
         scratch.fields["tdcc_holders_ge_400_lots"] = ProvenanceField(
             field="tdcc_holders_ge_400_lots",
             status="unavailable",

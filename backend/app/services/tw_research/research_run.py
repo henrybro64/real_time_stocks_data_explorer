@@ -400,6 +400,182 @@ class ResearchRunStore:
             run.updated_at = datetime.now(UTC).isoformat()
             return self._persist_locked(run)
 
+    def adopt_standalone_first_pass_job(
+        self,
+        user_id: str,
+        *,
+        job_id: str,
+        confirm_universe_digest: str,
+        job_loader: Any | None = None,
+    ) -> ResearchRun:
+        """Explicitly adopt an eligible standalone first-pass job (#359).
+
+        Production path: one locked PostgreSQL transaction in the repository.
+        Test-memory path: same eligibility rules under the process lock.
+        """
+        from app.repositories.tw_research_repository import tw_research_repository
+
+        digest = str(confirm_universe_digest or "").strip()
+        if not digest:
+            raise ResearchRunConflict(
+                "first_pass_job_universe_digest_mismatch",
+                reason="first_pass_job_universe_digest_mismatch",
+            )
+
+        if self._test_memory is None and tw_research_repository.is_available():
+            try:
+                from sqlalchemy.exc import OperationalError
+
+                result = tw_research_repository.adopt_first_pass_job_into_run(
+                    user_id,
+                    job_id=str(job_id),
+                    expected_universe_digest=digest,
+                )
+            except ResearchRunConflict:
+                raise
+            except KeyError:
+                raise
+            except OperationalError:
+                # Deadlock / lock_not_available → route maps to 409 retry.
+                raise
+            except Exception as exc:  # noqa: BLE001
+                raise ResearchRunStoreUnavailable(
+                    "first_pass_job_store_unavailable"
+                ) from exc
+            return ResearchRun.from_persist_payload(result["run"])
+
+        # In-memory unit-test path (mirrors repository eligibility).
+        loader = job_loader
+        if loader is None:
+            raise ResearchRunStoreUnavailable("first_pass_job_store_unavailable")
+        job = loader(job_id, user_id=user_id)
+        if job is None:
+            raise KeyError("first_pass_job_not_found")
+        with self._lock:
+            existing = self._load_locked(user_id)
+            if existing is not None and str(existing.first_pass_job_id or "") == str(
+                job_id
+            ):
+                return existing
+            if job.get("deletion_state") or job.get("deletionState"):
+                raise ResearchRunConflict(
+                    "first_pass_job_deletion_in_progress",
+                    reason="first_pass_job_deletion_in_progress",
+                )
+            if job.get("archived_at") or job.get("archivedAt"):
+                raise ResearchRunConflict(
+                    "first_pass_job_archived",
+                    reason="first_pass_job_archived",
+                )
+            status = str(job.get("status") or "")
+            if status not in {"pending", "running", "deferred", "partial"}:
+                raise ResearchRunConflict(
+                    "first_pass_job_not_eligible_status",
+                    reason="first_pass_job_not_eligible_status",
+                )
+            lease_expires = job.get("reserve_expires_at") or job.get("reserveExpiresAt")
+            if lease_expires:
+                try:
+                    parsed = datetime.fromisoformat(
+                        str(lease_expires).replace("Z", "+00:00")
+                    )
+                    if parsed > datetime.now(UTC):
+                        raise ResearchRunConflict(
+                            "first_pass_job_lease_active",
+                            reason="first_pass_job_lease_active",
+                        )
+                except ValueError:
+                    pass
+            job_digest = str(
+                job.get("universe_digest") or job.get("universeDigest") or ""
+            )
+            if job_digest != digest:
+                raise ResearchRunConflict(
+                    "first_pass_job_universe_digest_mismatch",
+                    reason="first_pass_job_universe_digest_mismatch",
+                )
+            universe_size = int(
+                job.get("universe_size")
+                or job.get("universeSize")
+                or len(job.get("stock_ids") or job.get("stockIds") or [])
+                or 0
+            )
+            done = int(
+                job.get("done_count")
+                or job.get("doneCount")
+                or job.get("cursor")
+                or 0
+            )
+            if universe_size > 0 and done >= universe_size:
+                raise ResearchRunConflict(
+                    "first_pass_job_nothing_pending",
+                    reason="first_pass_job_nothing_pending",
+                )
+            if existing is not None:
+                if str(existing.pending_first_pass_job_id or "") == str(job_id):
+                    raise ResearchRunConflict(
+                        "first_pass_job_already_attached",
+                        reason="first_pass_job_already_attached",
+                    )
+                phase = str(existing.phase or "")
+                run_status = str(existing.status or "")
+                has_pointers = bool(
+                    existing.candidate_set_id or existing.technical_scan_id
+                )
+                gated_phase = phase in {
+                    "awaiting_analyst_candidate_selection",
+                    "awaiting_analyst_report_decision",
+                    "complete_evidence_ready",
+                }
+                replaceable = (
+                    run_status in {"failed", "cancelled", "budget_exhausted"}
+                    and not has_pointers
+                    and not gated_phase
+                )
+                if not replaceable:
+                    raise ResearchRunConflict(
+                        "research_run_retained",
+                        reason="research_run_retained",
+                    )
+            # Create/replace under the same lock (test memory).
+            now = datetime.now(UTC).isoformat()
+            carry = int(existing.revision or 0) if existing is not None else 0
+            available, reason = first_pass_drain_availability(user_id)
+            run = ResearchRun(
+                research_run_id=f"rr_{uuid4().hex[:20]}",
+                user_id=user_id,
+                phase="phase1_first_pass",
+                status="running",
+                first_pass_job_id=str(job_id),
+                schedule_enabled=bool(available),
+                gates={
+                    "candidateSelection": "pending",
+                    "reportDecision": "blocked_until_phase2",
+                    "notionPublication": "external_only_never_auto",
+                },
+                dimensions={
+                    "fundamentals": "in_progress",
+                    "monthlyTechnical": "not_started",
+                    "dailyTechnical": "not_started",
+                    "chipEnrichment": "not_started",
+                    "snapshot": "not_started",
+                    "externalPublication": "not_started",
+                },
+                notes=[
+                    f"Adopted standalone first-pass job {job_id}.",
+                    "Preserved existing per-symbol evidence; remaining symbols stay pending.",
+                    (
+                        "First-pass drain authorized for this research-run job only."
+                        if available
+                        else str(reason)
+                    ),
+                ],
+                created_at=now,
+                updated_at=now,
+                revision=carry,
+            )
+            return self._persist_locked(run)
+
     def set_first_pass_drain_enabled(
         self,
         user_id: str,

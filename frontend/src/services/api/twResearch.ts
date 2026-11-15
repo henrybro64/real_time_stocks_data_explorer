@@ -637,6 +637,24 @@ export type TwResearchFirstPassDrain = {
   lastOutcome?: string | null;
 };
 
+export type TwResearchExecutionStatus = {
+  state?: string;
+  authorized?: boolean;
+  scheduleEnabled?: boolean;
+  drainAvailable?: boolean;
+  drainBlocker?: string | null;
+  blocker?: string | null;
+  nextAction?: string | null;
+  jobId?: string | null;
+  jobStatus?: string | null;
+  leaseActive?: boolean;
+  leaseExpiresAt?: string | null;
+  universeSize?: number | null;
+  processedCount?: number | null;
+  pendingCount?: number | null;
+  notes?: string[];
+};
+
 export type TwResearchRun = {
   researchRunId: string;
   userId: string;
@@ -654,31 +672,60 @@ export type TwResearchRun = {
   scheduleEnabled?: boolean;
   firstPassProgress?: TwResearchFirstPassProgress | null;
   firstPassDrain?: TwResearchFirstPassDrain | null;
+  execution?: TwResearchExecutionStatus | null;
   notNotionPublisher?: boolean;
   cronjobRemainsSuspended?: boolean;
   durable?: boolean;
+  /** Creation claim for attaching a First-Pass Job (idempotent Start reclaim). */
+  jobClaimToken?: string | null;
+  jobClaimExpiresAt?: string | null;
+  pendingFirstPassJobId?: string | null;
   createdAt?: string;
   updatedAt?: string;
 };
 
 export async function fetchTwResearchRunCurrent() {
-  const response = await requestJson<{ researchRun: TwResearchRun }>(
-    "/tw-research/research-runs/current",
-  );
-  return response.researchRun;
+  const response = await requestJson<{
+    researchRun: TwResearchRun;
+    execution?: TwResearchExecutionStatus | null;
+  }>("/tw-research/research-runs/current");
+  return {
+    ...response.researchRun,
+    execution: response.execution ?? response.researchRun.execution ?? null,
+  };
 }
+
+export type TwResearchRunStartResult = TwResearchRun & {
+  execution?: TwResearchExecutionStatus | null;
+};
 
 export async function startTwResearchRun(body?: {
   phase?: "phase1_first_pass";
   tradingDay?: string;
   notes?: string[];
-}) {
-  const response = await requestJsonWithBody<{ researchRun: TwResearchRun }>(
-    "/tw-research/research-runs/start",
-    "POST",
-    body ?? { phase: "phase1_first_pass" },
-  );
-  return response.researchRun;
+}): Promise<TwResearchRunStartResult> {
+  const response = await requestJsonWithBody<{
+    researchRun: TwResearchRun;
+    execution?: TwResearchExecutionStatus | null;
+  }>("/tw-research/research-runs/start", "POST", body ?? { phase: "phase1_first_pass" });
+  return {
+    ...response.researchRun,
+    execution: response.execution ?? null,
+  };
+}
+
+export async function adoptTwResearchFirstPassJob(body: {
+  jobId: string;
+  confirmUniverseDigest: string;
+}): Promise<TwResearchRunStartResult> {
+  const response = await requestJsonWithBody<{
+    researchRun: TwResearchRun;
+    execution?: TwResearchExecutionStatus | null;
+  }>("/tw-research/research-runs/adopt-first-pass-job", "POST", body);
+  return {
+    ...response.researchRun,
+    execution: response.execution ?? null,
+  };
 }
 
 export async function advanceTwResearchRunGate(params?: {

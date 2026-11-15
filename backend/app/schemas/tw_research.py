@@ -312,8 +312,21 @@ class ResearchRunStartRequest(BaseModel):
     notes: list[str] = Field(default_factory=list)
 
 
+class ResearchRunAdoptFirstPassRequest(BaseModel):
+    """Explicit safe adoption of an eligible standalone first-pass job (#359)."""
+
+    jobId: str = Field(min_length=1, max_length=64)
+    confirmUniverseDigest: str = Field(
+        min_length=1,
+        max_length=128,
+        description="Required expected universe digest; rejects on mismatch.",
+    )
+
+
 class ResearchRunResponse(BaseModel):
     researchRun: dict[str, Any]
+    # Additive honesty block: distinguishes job created vs execution authorized (#359).
+    execution: dict[str, Any] | None = None
 
 
 class ReportEvidenceRequest(BaseModel):

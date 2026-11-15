@@ -303,6 +303,35 @@ class FirstPassJobService:
             if existing is not None:
                 return existing
 
+        # Cap concurrent active jobs per owner (#359 P3): at most 1 running
+        # managed-style job plus a small number of pending standalone jobs.
+        try:
+            active_jobs = self._repo.list_first_pass_jobs(user_id, limit=50) or []
+        except Exception:  # noqa: BLE001
+            active_jobs = []
+        running = [
+            j
+            for j in active_jobs
+            if str(j.get("status") or "") == "running"
+            and not (j.get("archived_at") or j.get("archivedAt"))
+        ]
+        pending = [
+            j
+            for j in active_jobs
+            if str(j.get("status") or "") == "pending"
+            and not (j.get("archived_at") or j.get("archivedAt"))
+        ]
+        if len(running) >= 1 and not job_id:
+            raise FirstPassJobError(
+                "too_many_active_jobs",
+                operation="create_first_pass_job",
+            )
+        if len(pending) >= 3 and not job_id:
+            raise FirstPassJobError(
+                "too_many_active_jobs",
+                operation="create_first_pass_job",
+            )
+
         membership_version = 0
         notes: list[str] = []
         if stock_ids:
@@ -631,53 +660,14 @@ class FirstPassJobService:
             )
             heartbeat_thread.start()
 
-        try:
-            result = collect_first_pass_batch(
-                batch_ids,
-                universe_version=job["universe_version"],
-                include_nonofficial_margins=include_nonofficial_margins,
-                previous_fields_by_stock=previous_fields_by_stock,
-                time_budget_seconds=time_budget_seconds,
-                monotonic_clock=clock,
-                job_id=job_id,
-                lease_renew=_renew_lease,
-                lease_lost_check=lease_lost_event.is_set,
-                symbol_deadline_seconds=symbol_deadline_seconds,
-                **kwargs,
-            )
-        except Exception as exc:  # noqa: BLE001 — classify infra vs unexpected
-            if is_infrastructure_failure(exc):
-                raise FirstPassJobError(
-                    "first_pass_infrastructure_unavailable",
-                    operation="run_first_pass_batch",
-                ) from exc
-            raise
-        finally:
-            stop_event.set()
-            if heartbeat_thread is not None:
-                heartbeat_thread.join(timeout=_HEARTBEAT_JOIN_TIMEOUT_SECONDS)
-        if result.lease_lost or lease_lost_event.is_set():
-            # Lease lost mid-batch — do not persist any symbols from this claim.
-            return {
-                "job": claim["job"],
-                "batchIds": batch_ids,
-                "leaseHeld": False,
-                "alreadyComplete": False,
-                "waitingForRetry": False,
-                "processed": 0,
-                "durationMs": int(result.duration_ms),
-                "budgetStopped": bool(result.budget_stopped),
-                "releasedUnstarted": len(result.released_unstarted),
-                "batchCounts": {"ok": 0, "partial": 0, "failed": 0},
-                "leaseLost": True,
-                "jobFailed": False,
-                "lastError": None,
-            }
         processed = 0
         lease_rejected = 0
         batch_counts = {"ok": 0, "partial": 0, "failed": 0}
         persisted_payloads: list[tuple[FirstPassSymbolRecord, str, dict[str, Any]]] = []
-        for record in result.records:
+
+        def _persist_symbol_now(record: FirstPassSymbolRecord) -> bool:
+            """Crash-safe incremental persist after each collected symbol (#360)."""
+            nonlocal processed, lease_rejected
             status = _symbol_status(record)
             previous_payload = previous_payloads.get(record.stock_id)
             if previous_payload is None:
@@ -707,10 +697,8 @@ class FirstPassJobService:
                     payload["retryExhausted"] = True
                     payload["nextRetryAt"] = None
                 elif top_error and top_class != "permanent":
-                    # Keep symbol-level transient failures (may have empty fields).
                     payload["error"] = top_error
                 else:
-                    # Transient field faults were restored/cleared by merge.
                     payload["error"] = None
                     pe = (payload.get("fields") or {}).get("official_pe") or {}
                     if (
@@ -746,14 +734,85 @@ class FirstPassJobService:
                 if status in batch_counts:
                     batch_counts[status] += 1
                 persisted_payloads.append((record, status, payload))
-            else:
-                lease_rejected += 1
+                return True
+            lease_rejected += 1
+            lease_lost_event.set()
+            return False
 
+        try:
+            from app.services.http_client import (
+                reset_provider_request_budget,
+                snapshot_provider_request_budget,
+            )
+
+            reset_provider_request_budget()
+            result = collect_first_pass_batch(
+                batch_ids,
+                universe_version=job["universe_version"],
+                include_nonofficial_margins=include_nonofficial_margins,
+                previous_fields_by_stock=previous_fields_by_stock,
+                time_budget_seconds=time_budget_seconds,
+                monotonic_clock=clock,
+                job_id=job_id,
+                lease_renew=_renew_lease,
+                lease_lost_check=lease_lost_event.is_set,
+                symbol_deadline_seconds=symbol_deadline_seconds,
+                on_symbol_collected=_persist_symbol_now,
+                **kwargs,
+            )
+            logger.info(
+                "First-pass batch provider budget",
+                extra={
+                    "event": "tw_research.first_pass.provider_budget",
+                    "job_id": job_id,
+                    "batch_size": len(batch_ids),
+                    "providers": snapshot_provider_request_budget(),
+                },
+            )
+        except Exception as exc:  # noqa: BLE001 — classify infra vs unexpected
+            if is_infrastructure_failure(exc):
+                raise FirstPassJobError(
+                    "first_pass_infrastructure_unavailable",
+                    operation="run_first_pass_batch",
+                ) from exc
+            raise
+        finally:
+            stop_event.set()
+            if heartbeat_thread is not None:
+                heartbeat_thread.join(timeout=_HEARTBEAT_JOIN_TIMEOUT_SECONDS)
+
+        # Already-persisted symbols survive lease loss / pod crash (#360).
         if lease_rejected and processed == 0 and result.records:
             raise FirstPassJobError(
                 "first_pass_lease_generation_mismatch",
                 operation="persist_first_pass_symbol",
             )
+        if (result.lease_lost or lease_lost_event.is_set()) and processed == 0:
+            return {
+                "job": claim["job"],
+                "batchIds": batch_ids,
+                "leaseHeld": False,
+                "alreadyComplete": False,
+                "waitingForRetry": False,
+                "processed": 0,
+                "durationMs": int(result.duration_ms),
+                "budgetStopped": bool(result.budget_stopped),
+                "releasedUnstarted": len(result.released_unstarted),
+                "batchCounts": {"ok": 0, "partial": 0, "failed": 0},
+                "leaseLost": True,
+                "jobFailed": False,
+                "lastError": None,
+            }
+
+        # Fallback persist for collectors / test doubles that return records
+        # without invoking on_symbol_collected (lease still held).
+        if not (result.lease_lost or lease_lost_event.is_set()):
+            already = {rec.stock_id for rec, _status, _payload in persisted_payloads}
+            for record in result.records:
+                if record.stock_id in already:
+                    continue
+                if not _persist_symbol_now(record):
+                    break
 
         # Unstarted claimed ids are released by complete_first_pass_batch resetting
         # the reserve to the first missing index — attempts stay unchanged.

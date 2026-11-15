@@ -1228,7 +1228,10 @@ def test_evidence_search_matches_name_and_sector(monkeypatch) -> None:
         stock_ids=["TW:2330", "TW:2454"],
         use_membership=False,
     )
-    tw_research_repository.upsert_first_pass_symbol(
+    claim = tw_research_repository.claim_first_pass_batch(job["job_id"], batch_size=10)
+    assert claim is not None
+    gen = int(claim["lease_generation"])
+    assert tw_research_repository.upsert_first_pass_symbol(
         job_id=job["job_id"],
         stock_id="TW:2330",
         status="ok",
@@ -1239,9 +1242,9 @@ def test_evidence_search_matches_name_and_sector(monkeypatch) -> None:
             "sectorThemeKeys": ["semiconductor"],
             "completeness": {"fieldsOk": 3, "fieldsUnavailable": 1},
         },
-        lease_generation=0,
+        lease_generation=gen,
     )
-    tw_research_repository.upsert_first_pass_symbol(
+    assert tw_research_repository.upsert_first_pass_symbol(
         job_id=job["job_id"],
         stock_id="TW:2454",
         status="partial",
@@ -1252,7 +1255,7 @@ def test_evidence_search_matches_name_and_sector(monkeypatch) -> None:
             "sectorThemeKeys": ["ic-design"],
             "completeness": {"fieldsOk": 1, "fieldsUnavailable": 4},
         },
-        lease_generation=0,
+        lease_generation=gen,
     )
     found = service.list_symbols(
         job["job_id"], user_id="user-search", q="台積", offset=0, limit=10
@@ -2114,14 +2117,17 @@ def test_first_pass_claim_keeps_partial_when_symbol_failures_exhausted(monkeypat
         use_membership=False,
     )
     job_id = job["job_id"]
-    tw_research_repository.upsert_first_pass_symbol(
+    claim = tw_research_repository.claim_first_pass_batch(job_id, batch_size=10)
+    assert claim is not None
+    gen = int(claim["lease_generation"])
+    assert tw_research_repository.upsert_first_pass_symbol(
         job_id=job_id,
         stock_id="TW:2330",
         status="ok",
         payload={"stockId": "TW:2330", "retryExhausted": False},
-        lease_generation=0,
+        lease_generation=gen,
     )
-    tw_research_repository.upsert_first_pass_symbol(
+    assert tw_research_repository.upsert_first_pass_symbol(
         job_id=job_id,
         stock_id="TW:2454",
         status="failed",
@@ -2130,10 +2136,10 @@ def test_first_pass_claim_keeps_partial_when_symbol_failures_exhausted(monkeypat
             "retryExhausted": True,
             "failureClass": "permanent",
         },
-        lease_generation=0,
+        lease_generation=gen,
     )
     completed = tw_research_repository.complete_first_pass_batch(
-        job_id, lease_generation=0, processed_count=2
+        job_id, lease_generation=gen, processed_count=2
     )
     assert completed is not None
     assert completed["job"]["status"] == "partial"

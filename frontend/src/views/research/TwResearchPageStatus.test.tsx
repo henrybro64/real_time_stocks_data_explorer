@@ -18,9 +18,11 @@ import {
   fetchTwResearchScan,
   fetchTwResearchScanProgress,
   fetchTwResearchScans,
+  adoptTwResearchFirstPassJob,
   listTwResearchFirstPassJobs,
   researchProgressRevision,
   runTwResearchFirstPassBatch,
+  startTwResearchRun,
   type TwResearchRun,
   type TwResearchScanProgress,
   type TwResearchScanSnapshot,
@@ -52,6 +54,7 @@ vi.mock("../../services/api/twResearch", async () => {
     runTwResearchFirstPassBatch: vi.fn(),
     advanceTwResearchRunGate: vi.fn(async () => ({})),
     startTwResearchRun: vi.fn(),
+    adoptTwResearchFirstPassJob: vi.fn(),
     fetchTwResearchFirstPassDeletionPreview: vi.fn(async () => ({
       previewToken: "tok",
       closure: { tw_research_first_pass_jobs: 1 },
@@ -603,12 +606,16 @@ describe("TwResearchPage default UI hides internal terms (#351)", () => {
     expect(advanced).toMatch(/fpj_demo/);
     expect(advanced).toMatch(/rr_demo/);
 
-    // Start action, summary counts and next action are present.
+    // One primary Start/Resume CTA: active run shows View progress (#359).
     expect(
       screen.getByRole("button", {
-        name: language === "en" ? "Start research" : "開始研究",
+        name:
+          language === "en"
+            ? /Start research|View progress/
+            : /開始研究|查看進度/,
       }),
     ).toBeInTheDocument();
+    expect(screen.getAllByTestId("tw-research-start-full-research")).toHaveLength(1);
     expect(screen.getByTestId("tw-research-investor-counts").textContent).toMatch(/73/);
     expect(screen.getByTestId("tw-research-next-action").textContent?.length).toBeGreaterThan(
       10,
@@ -931,5 +938,253 @@ describe("TwResearchPage polling guard (#350)", () => {
     // And polling is actually bounded by (not far below) those intervals.
     expect(runCalls).toBeGreaterThan(runBefore);
     expect(progressCalls).toBeGreaterThan(progressBefore);
+  });
+});
+
+describe("TwResearchPage adopt resume (#359)", () => {
+  const ADOPT_REASONS = [
+    "research_run_retained",
+    "concurrent_update_retry",
+    "first_pass_job_lease_active",
+    "first_pass_job_archived",
+    "first_pass_job_nothing_pending",
+    "first_pass_job_universe_digest_mismatch",
+    "first_pass_job_deletion_in_progress",
+    "first_pass_job_not_eligible_status",
+    "first_pass_job_already_attached",
+  ] as const;
+
+  function seedStandaloneEligible() {
+    seed({
+      run: null,
+      job: {
+        status: "partial",
+        universeDigest: "digest-73",
+        universeSize: 73,
+        stockIds: Array.from({ length: 73 }, (_, i) => `TW:${8000 + i}`),
+      },
+      progress: {
+        status: "partial",
+        universeSize: 73,
+        processedCount: 1,
+        pendingCount: 72,
+        okCount: 1,
+        partialCount: 0,
+        failedCount: 0,
+        cursor: 99,
+      },
+    });
+  }
+
+  it("modal confirm sends adopt request with universe digest", async () => {
+    const user = userEvent.setup();
+    seedStandaloneEligible();
+    vi.mocked(adoptTwResearchFirstPassJob).mockResolvedValue(
+      runRecord({ firstPassJobId: JOB_ID, status: "running" }),
+    );
+    renderPage("zh-TW");
+    const resume = await screen.findByTestId("tw-research-adopt-first-pass");
+    await user.click(resume);
+    const modal = await screen.findByTestId("tw-research-confirm-modal");
+    // Progress API counts (ok+partial+failed), not cursor.
+    expect(modal).toHaveTextContent("1/73");
+    expect(modal).toHaveTextContent("72");
+    expect(modal).not.toHaveTextContent("99/73");
+    await user.click(screen.getByTestId("tw-research-confirm-modal-confirm"));
+    await waitFor(() => {
+      expect(adoptTwResearchFirstPassJob).toHaveBeenCalledWith({
+        jobId: JOB_ID,
+        confirmUniverseDigest: "digest-73",
+      });
+    });
+  });
+
+  /** Match real HTTP client normalization (detail stringified; body keeps object). */
+  function httpConflictApiError(reason: string): ApiError {
+    const detailObj = { error: reason, reason };
+    const detail = JSON.stringify(detailObj);
+    return new ApiError(`Request failed: 409 - ${detail}`, {
+      status: 409,
+      detail,
+      kind: "unknown",
+      body: { detail: detailObj },
+    });
+  }
+
+  it.each(ADOPT_REASONS)(
+    "maps 409 %s to a plain sentence without snake_case",
+    async (reason) => {
+      const user = userEvent.setup();
+      seedStandaloneEligible();
+      vi.mocked(adoptTwResearchFirstPassJob).mockRejectedValue(
+        httpConflictApiError(reason),
+      );
+      renderPage("en");
+      await user.click(await screen.findByTestId("tw-research-adopt-first-pass"));
+      await user.click(await screen.findByTestId("tw-research-confirm-modal-confirm"));
+      const err = await screen.findByTestId("tw-research-adopt-error");
+      expect(err.textContent).toBeTruthy();
+      expect(err.textContent).not.toMatch(SNAKE_CASE);
+      expect(err.textContent).not.toContain(reason);
+      expect(screen.queryByTestId("tw-research-adopt-error-detail")).toBeNull();
+    },
+  );
+
+  it("unknown 409 reason shows generic copy; raw code only in detail", async () => {
+    const user = userEvent.setup();
+    seedStandaloneEligible();
+    vi.mocked(adoptTwResearchFirstPassJob).mockRejectedValue(
+      httpConflictApiError("weird_new_reason"),
+    );
+    renderPage("en");
+    await user.click(await screen.findByTestId("tw-research-adopt-first-pass"));
+    await user.click(await screen.findByTestId("tw-research-confirm-modal-confirm"));
+    const err = await screen.findByTestId("tw-research-adopt-error");
+    expect(err.textContent).not.toMatch(SNAKE_CASE);
+    expect(err.textContent).not.toContain("weird_new_reason");
+    const detail = await screen.findByTestId("tw-research-adopt-error-detail");
+    expect(detail).toHaveTextContent("weird_new_reason");
+  });
+
+  it("disables confirm when the selected job has no universe digest", async () => {
+    const user = userEvent.setup();
+    vi.mocked(adoptTwResearchFirstPassJob).mockClear();
+    seed({
+      run: null,
+      job: {
+        status: "partial",
+        universeSize: 73,
+        stockIds: Array.from({ length: 73 }, (_, i) => `TW:${8000 + i}`),
+      },
+      progress: {
+        status: "partial",
+        universeSize: 73,
+        processedCount: 1,
+        pendingCount: 72,
+        okCount: 1,
+        partialCount: 0,
+        failedCount: 0,
+      },
+    });
+    renderPage("en");
+    await user.click(await screen.findByTestId("tw-research-adopt-first-pass"));
+    const confirm = await screen.findByTestId("tw-research-confirm-modal-confirm");
+    expect(confirm).toBeDisabled();
+    expect(await screen.findByTestId("tw-research-adopt-missing-digest")).toBeInTheDocument();
+    expect(adoptTwResearchFirstPassJob).not.toHaveBeenCalled();
+  });
+});
+
+describe("TwResearchPage Start retry when queued without job (#365)", () => {
+  beforeEach(() => {
+    vi.mocked(fetchThemeOptions).mockResolvedValue([]);
+    vi.mocked(fetchTwResearchScans).mockResolvedValue({ scans: [] });
+    vi.mocked(fetchTwResearchScan).mockRejectedValue(
+      new ApiError("missing", { status: 404, detail: "x", kind: "not_found" }),
+    );
+    vi.mocked(startTwResearchRun).mockReset();
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it("keeps Start enabled when run is queued without firstPassJobId", async () => {
+    seed({
+      run: {
+        status: "queued",
+        phase: "phase1_first_pass",
+        firstPassJobId: null,
+        jobClaimExpiresAt: null,
+      },
+      job: { jobId: "fpj_other", status: "completed", activeSnapshotId: "snap_old" },
+      progress: { jobId: "fpj_other", status: "completed", activeSnapshotId: "snap_old" },
+    });
+    renderPage("en");
+    const start = await screen.findByTestId("tw-research-start-full-research");
+    await waitFor(() => {
+      expect(start).toBeEnabled();
+    });
+    expect(start).toHaveTextContent(/Start research/i);
+    expect(await screen.findByTestId("tw-research-start-retry-hint")).toBeInTheDocument();
+  });
+
+  it("shows waiting hint while creation claim is still active", async () => {
+    const future = new Date(Date.now() + 60_000).toISOString();
+    seed({
+      run: {
+        status: "queued",
+        phase: "phase1_first_pass",
+        firstPassJobId: null,
+        jobClaimToken: "tok",
+        jobClaimExpiresAt: future,
+      },
+    });
+    renderPage("en");
+    expect(await screen.findByTestId("tw-research-start-retry-hint")).toHaveTextContent(
+      /still in progress|正在建立/i,
+    );
+    expect(await screen.findByTestId("tw-research-start-full-research")).toBeEnabled();
+  });
+
+  it("allows a second Start after incomplete first attempt", async () => {
+    const user = userEvent.setup();
+    seed({
+      run: {
+        status: "queued",
+        phase: "phase1_first_pass",
+        firstPassJobId: null,
+      },
+    });
+    vi.mocked(startTwResearchRun)
+      .mockResolvedValueOnce(
+        runRecord({
+          status: "queued",
+          firstPassJobId: null,
+          jobClaimExpiresAt: null,
+        }),
+      )
+      .mockResolvedValueOnce(
+        runRecord({
+          status: "running",
+          firstPassJobId: "fpj_recovered",
+          execution: {
+            state: "executor_unavailable",
+            authorized: false,
+            drainAvailable: false,
+          },
+        }),
+      );
+    renderPage("en");
+    const start = await screen.findByTestId("tw-research-start-full-research");
+    await user.click(start);
+    await waitFor(() => {
+      expect(startTwResearchRun).toHaveBeenCalledTimes(1);
+    });
+    // Still no attached job → Start remains the recovery action.
+    await waitFor(() => {
+      expect(start).toBeEnabled();
+    });
+    await user.click(start);
+    await waitFor(() => {
+      expect(startTwResearchRun).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  it("disables Start when an authoritative job is attached", async () => {
+    seed({
+      run: {
+        status: "queued",
+        phase: "phase1_first_pass",
+        firstPassJobId: JOB_ID,
+      },
+    });
+    renderPage("en");
+    const start = await screen.findByTestId("tw-research-start-full-research");
+    await waitFor(() => {
+      expect(start).toBeDisabled();
+    });
+    expect(start).toHaveTextContent(/View progress|查看進度/i);
+    expect(screen.queryByTestId("tw-research-start-retry-hint")).toBeNull();
   });
 });

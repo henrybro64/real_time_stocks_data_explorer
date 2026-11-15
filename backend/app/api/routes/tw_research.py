@@ -35,6 +35,7 @@ from app.schemas.tw_research import (
     FirstPassJobProgressResponse,
     FirstPassJobResponse,
     FirstPassJobSymbolsResponse,
+    ResearchRunAdoptFirstPassRequest,
     ResearchRunDrainControlRequest,
     RejectedStockResponse,
     RelativePriceBasisRequest,
@@ -119,6 +120,39 @@ from app.services.tw_research.research_run import (
 
 TAIPEI = ZoneInfo("Asia/Taipei")
 T = TypeVar("T")
+
+_PG_LOCK_CONTENTION_CODES = frozenset({"40P01", "55P03"})
+
+
+def _is_pg_lock_contention(exc: BaseException) -> bool:
+    """True for PostgreSQL deadlock (40P01) or lock_not_available (55P03)."""
+    from sqlalchemy.exc import OperationalError
+
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, OperationalError):
+            orig = getattr(current, "orig", None)
+            pgcode = getattr(orig, "pgcode", None) or getattr(orig, "sqlstate", None)
+            if pgcode in _PG_LOCK_CONTENTION_CODES:
+                return True
+            text = f"{current} {orig or ''}".lower()
+            if "deadlock" in text or "lock not available" in text:
+                return True
+        current = current.__cause__ or current.__context__  # type: ignore[assignment]
+    return False
+
+
+def _http_concurrent_update_retry(exc: BaseException) -> HTTPException:
+    return HTTPException(
+        status_code=409,
+        detail={
+            "error": "concurrent_update_retry",
+            "reason": "concurrent_update_retry",
+        },
+    )
+
 
 router = APIRouter(
     prefix="/tw-research",
@@ -330,9 +364,12 @@ def create_first_pass_job(
             use_membership=body.useMembership,
         )
     except FirstPassJobError as exc:
+        code = 503 if "unavailable" in str(exc) else 400
+        if str(exc) == "too_many_active_jobs":
+            code = 409
         raise HTTPException(
-            status_code=503 if "unavailable" in str(exc) else 400,
-            detail={"error": str(exc), "operation": exc.operation},
+            status_code=code,
+            detail={"error": str(exc), "operation": exc.operation, "reason": str(exc)},
         ) from exc
     return FirstPassJobResponse(job=_camel_job(job))
 
@@ -409,6 +446,10 @@ def cancel_first_pass_job(
             status_code=503,
             detail={"error": str(exc), "operation": exc.operation},
         ) from exc
+    except Exception as exc:  # noqa: BLE001 — map lock contention only
+        if _is_pg_lock_contention(exc):
+            raise _http_concurrent_update_retry(exc) from exc
+        raise
     return FirstPassJobResponse(job=_camel_job(job))
 
 
@@ -503,6 +544,10 @@ def delete_first_pass_job(
             status_code=code,
             detail={"error": str(exc), "operation": exc.operation},
         ) from exc
+    except Exception as exc:  # noqa: BLE001 — map lock contention only
+        if _is_pg_lock_contention(exc):
+            raise _http_concurrent_update_retry(exc) from exc
+        raise
     outcome = str(result.get("outcome") or "")
     if outcome == "not_found":
         raise HTTPException(status_code=404, detail="first_pass_job_not_found")
@@ -1356,6 +1401,32 @@ def _research_run_unavailable(exc: ResearchRunStoreUnavailable) -> HTTPException
     )
 
 
+def _research_run_response(run: ResearchRun) -> ResearchRunResponse:
+    """Attach honest execution readiness alongside the durable run (#359)."""
+    from app.services.tw_research.execution_status import classify_first_pass_execution
+    from app.repositories.tw_research_repository import tw_research_repository
+
+    job = None
+    counts = None
+    if run.first_pass_job_id and tw_research_repository.is_available():
+        try:
+            job = tw_research_repository.get_first_pass_job(
+                run.first_pass_job_id, user_id=run.user_id
+            )
+            counts = tw_research_repository.count_first_pass_symbols(
+                run.first_pass_job_id
+            )
+        except Exception:  # noqa: BLE001 — response must still return the run
+            job = None
+            counts = None
+    return ResearchRunResponse(
+        researchRun=run.as_dict(),
+        execution=classify_first_pass_execution(
+            run, job=job, symbol_counts=counts
+        ),
+    )
+
+
 def _phase2_effective_daily_overrides(
     *,
     candidate_set_daily_override_ids: list[str] | None,
@@ -1610,7 +1681,7 @@ def get_current_research_run(
         ) from exc
     if run is None:
         raise HTTPException(status_code=404, detail="research_run_not_found")
-    return ResearchRunResponse(researchRun=run.as_dict())
+    return _research_run_response(run)
 
 
 @router.get("/research-runs/current/deletion-preview")
@@ -1774,7 +1845,7 @@ def start_research_run(
         if run.first_pass_job_id or (
             run.phase == "phase2_technical" and run.technical_scan_id
         ):
-            return ResearchRunResponse(researchRun=run.as_dict())
+            return _research_run_response(run)
 
         from uuid import uuid4
 
@@ -1791,11 +1862,11 @@ def start_research_run(
         outcome = str(claim.get("outcome") or "")
         if outcome == "already_attached":
             attached = ResearchRun.from_persist_payload(claim["run"])
-            return ResearchRunResponse(researchRun=attached.as_dict())
+            return _research_run_response(attached)
         if outcome == "claim_held":
             # Another pod owns creation; return current run for safe retry.
             held = ResearchRun.from_persist_payload(claim["run"])
-            return ResearchRunResponse(researchRun=held.as_dict())
+            return _research_run_response(held)
 
         # Claim allocates pending_first_pass_job_id before job-row create.
         pending_job_id = claim.get("pending_first_pass_job_id")
@@ -1846,7 +1917,7 @@ def start_research_run(
                     reason=str(attached.get("outcome")),
                 )
         run = ResearchRun.from_persist_payload(attached["run"])
-        return ResearchRunResponse(researchRun=run.as_dict())
+        return _research_run_response(run)
     if body.phase == "phase2_technical":
         raise HTTPException(
             status_code=400,
@@ -1856,6 +1927,42 @@ def start_research_run(
             },
         )
     raise HTTPException(status_code=400, detail="unsupported_phase")
+
+
+@router.post(
+    "/research-runs/adopt-first-pass-job",
+    response_model=ResearchRunResponse,
+)
+def adopt_first_pass_job_into_research_run(
+    body: ResearchRunAdoptFirstPassRequest,
+    user_id: str = Depends(get_effective_user_id),
+) -> ResearchRunResponse:
+    """Explicitly adopt an eligible standalone first-pass job (#359).
+
+    Never silently auto-adopts historical jobs. Preserves persisted evidence.
+    """
+    try:
+        run = research_run_store.adopt_standalone_first_pass_job(
+            user_id,
+            job_id=str(body.jobId).strip(),
+            confirm_universe_digest=body.confirmUniverseDigest,
+        )
+    except ResearchRunStoreUnavailable as exc:
+        if _is_pg_lock_contention(exc):
+            raise _http_concurrent_update_retry(exc) from exc
+        raise _research_run_unavailable(exc) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ResearchRunConflict as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"error": str(exc.reason or exc), "reason": exc.reason},
+        ) from exc
+    except Exception as exc:  # noqa: BLE001 — map lock contention only
+        if _is_pg_lock_contention(exc):
+            raise _http_concurrent_update_retry(exc) from exc
+        raise
+    return _research_run_response(run)
 
 
 @router.post("/research-runs/gate", response_model=ResearchRunResponse)

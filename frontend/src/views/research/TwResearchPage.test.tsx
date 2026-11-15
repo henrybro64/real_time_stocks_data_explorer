@@ -34,6 +34,7 @@ import {
   researchScanListRefetchInterval,
   researchScanRefetchInterval,
   runTwResearchBatch,
+  startTwResearchRun,
   submitTwResearchCandidateSet,
   type TwResearchScanProgress,
   type TwResearchScanSnapshot,
@@ -51,7 +52,11 @@ vi.mock("../../services/api/twResearch", async () => {
     fetchTwResearchLatestManifest: vi.fn(),
     fetchTwResearchSnapshotChunk: vi.fn(),
     createTwResearchScan: vi.fn(),
-    createTwResearchFirstPassJob: vi.fn(),
+    createTwResearchFirstPassJob: vi.fn(async () => ({
+      jobId: "fpj_standalone",
+      status: "pending",
+    })),
+    adoptTwResearchFirstPassJob: vi.fn(),
     resolveTwResearchUniverse: vi.fn(),
     runTwResearchBatch: vi.fn(),
     runTwResearchEnrichmentBatch: vi.fn(),
@@ -1201,10 +1206,21 @@ describe("TwResearchPage reliability UX (#335–#337)", () => {
       firstPassSnapshotId: "snap_old",
       firstPassDigest: "a".repeat(64),
     });
-    vi.mocked(createTwResearchFirstPassJob).mockResolvedValue({
-      jobId: "fpj_new",
+    // Canonical Start (#359) uses managed research-runs/start, not standalone jobs.
+    vi.mocked(startTwResearchRun).mockResolvedValue({
+      researchRunId: "rr_new",
+      userId: "u1",
+      phase: "phase1_first_pass",
       status: "running",
-      qualityStatus: "incomplete",
+      firstPassJobId: "fpj_new",
+      durable: true,
+      cronjobRemainsSuspended: true,
+      notNotionPublisher: true,
+      execution: {
+        state: "executor_unavailable",
+        authorized: false,
+        drainAvailable: false,
+      },
     });
     vi.mocked(listTwResearchFirstPassJobs).mockResolvedValue([
       {
@@ -1229,10 +1245,59 @@ describe("TwResearchPage reliability UX (#335–#337)", () => {
     });
 
     await user.click(
-      screen.getByRole("button", {
-        name: /開始第一輪資料收集|Start first-round data collection/i,
-      }),
+      screen.getByTestId("tw-research-start-full-research"),
     );
+    await waitFor(() => {
+      expect(startTwResearchRun).toHaveBeenCalledTimes(1);
+    });
+    await waitFor(() => {
+      expect(
+        screen.getByRole("button", {
+          name: /載入研究資料摘要|Load research data summary/i,
+        }),
+      ).toBeDisabled();
+    });
+  });
+
+  it("clears stale evidence when creating a standalone First-Pass Job (#365)", async () => {
+    const user = userEvent.setup();
+    vi.mocked(listTwResearchFirstPassJobs).mockResolvedValue([
+      {
+        jobId: "fpj_old",
+        status: "completed",
+        qualityStatus: "verified_ready",
+        activeSnapshotId: "snap_old",
+      },
+    ]);
+    vi.mocked(createTwResearchFirstPassJob).mockResolvedValue({
+      jobId: "fpj_new_standalone",
+      status: "pending",
+      activeSnapshotId: null,
+    });
+    vi.mocked(submitTwResearchCandidateSet).mockClear();
+
+    renderPage();
+    await waitFor(() => {
+      expect(screen.getByTestId("tw-research-first-pass-job-history")).toHaveValue(
+        "fpj_old",
+      );
+    });
+    await waitFor(() => {
+      expect(
+        screen.getByRole("button", {
+          name: /載入研究資料摘要|Load research data summary/i,
+        }),
+      ).toBeEnabled();
+    });
+
+    const disclosures = screen.getAllByTestId("tw-research-advanced-details");
+    for (const disclosure of disclosures) {
+      const details = disclosure as HTMLDetailsElement;
+      if (!details.open) {
+        fireEvent.click(details.querySelector("summary")!);
+      }
+    }
+    await user.click(screen.getByTestId("tw-research-start-first-pass"));
     await waitFor(() => {
       expect(createTwResearchFirstPassJob).toHaveBeenCalled();
     });
@@ -1243,6 +1308,126 @@ describe("TwResearchPage reliability UX (#335–#337)", () => {
         }),
       ).toBeDisabled();
     });
+    expect(submitTwResearchCandidateSet).not.toHaveBeenCalled();
+  });
+
+  it("clears evidence when switching historical First-Pass Jobs (#365)", async () => {
+    const user = userEvent.setup();
+    vi.mocked(listTwResearchFirstPassJobs).mockResolvedValue([
+      {
+        jobId: "fpj_a",
+        status: "completed",
+        qualityStatus: "verified_ready",
+        activeSnapshotId: "snap_a",
+      },
+      {
+        jobId: "fpj_b",
+        status: "pending",
+        qualityStatus: "incomplete",
+        activeSnapshotId: null,
+      },
+    ]);
+    renderPage();
+    const history = await screen.findByTestId("tw-research-first-pass-job-history");
+    await waitFor(() => {
+      expect(history).toHaveValue("fpj_a");
+    });
+    await waitFor(() => {
+      expect(
+        screen.getByRole("button", {
+          name: /載入研究資料摘要|Load research data summary/i,
+        }),
+      ).toBeEnabled();
+    });
+    await user.selectOptions(history, "fpj_b");
+    await waitFor(() => {
+      expect(history).toHaveValue("fpj_b");
+    });
+    await waitFor(() => {
+      expect(
+        screen.getByRole("button", {
+          name: /載入研究資料摘要|Load research data summary/i,
+        }),
+      ).toBeDisabled();
+    });
+  });
+
+  it("ignores late evidence responses after switching jobs (#365)", async () => {
+    const user = userEvent.setup();
+    let resolveEvidence: ((value: unknown) => void) | null = null;
+    vi.mocked(listTwResearchFirstPassJobs).mockResolvedValue([
+      {
+        jobId: "fpj_a",
+        status: "completed",
+        qualityStatus: "verified_ready",
+        activeSnapshotId: "snap_a",
+      },
+      {
+        jobId: "fpj_b",
+        status: "pending",
+        qualityStatus: "incomplete",
+        activeSnapshotId: null,
+      },
+    ]);
+    vi.mocked(fetchTwResearchFirstPassSymbols).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveEvidence = resolve;
+        }),
+    );
+    renderPage();
+    const history = await screen.findByTestId("tw-research-first-pass-job-history");
+    await waitFor(() => {
+      expect(history).toHaveValue("fpj_a");
+    });
+    await user.click(
+      screen.getByRole("button", {
+        name: /載入第一輪證據|Load first-round evidence/i,
+      }),
+    );
+    await waitFor(() => {
+      expect(fetchTwResearchFirstPassSymbols).toHaveBeenCalled();
+    });
+    await user.selectOptions(history, "fpj_b");
+    await waitFor(() => {
+      expect(history).toHaveValue("fpj_b");
+    });
+    expect(resolveEvidence).toBeTruthy();
+    resolveEvidence!({
+      total: 1,
+      records: [{ stockId: "TW:2330", evidence: { stockName: "LATE_FROM_A" } }],
+    });
+    await waitFor(() => {
+      const evidenceBox = document.getElementById(
+        "tw-research-first-pass-evidence",
+      ) as HTMLTextAreaElement | null;
+      expect(evidenceBox?.value ?? "").not.toContain("LATE_FROM_A");
+    });
+  });
+
+  it("shows a single primary Start CTA and execution status from the current run", async () => {
+    vi.mocked(fetchTwResearchRunCurrent).mockResolvedValue({
+      researchRunId: "rr_live",
+      userId: "u1",
+      phase: "phase1_first_pass",
+      status: "running",
+      firstPassJobId: "fpj_live",
+      durable: true,
+      cronjobRemainsSuspended: true,
+      notNotionPublisher: true,
+      execution: {
+        state: "executor_unavailable",
+        authorized: false,
+        drainAvailable: false,
+      },
+    });
+    renderPage();
+    expect(await screen.findByTestId("tw-research-start-full-research")).toBeInTheDocument();
+    expect(screen.queryAllByTestId("tw-research-start-full-research")).toHaveLength(1);
+    // Advanced standalone create is behind disclosure, not a second primary Start.
+    expect(
+      await screen.findByTestId("tw-research-execution-status"),
+    ).toHaveTextContent(/自動收集尚未可用|automatic collection is not available/i);
   });
 
   it("shows phase banner and loads ZH-TW evidence example (#339/#340/#341)", async () => {

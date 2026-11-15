@@ -17,16 +17,18 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 import logging
 import math
+from operator import attrgetter
 from time import perf_counter
-from typing import TYPE_CHECKING, Callable, Literal
+from typing import TYPE_CHECKING, Callable, Literal, Protocol
 
 from app.core.diagnostics import elapsed_ms
 from app.services.http_client import HttpFetchError
 from app.services.taiwan_history_scan import (
     RESULT_CACHE_TTL,
+    calendar_window_for_weekdays,
     candidate_start_date,
     collect_dated_history,
     get_cached_or_compute,
@@ -51,10 +53,16 @@ from app.services.taiwan_market_data import (
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
+    from app.db.models import TaiwanMarginShortDaily
     from app.services.quote_service import QuoteService
 
 _DEFAULT_HISTORY_DAYS = 90
 _RESULT_CACHE_TTL = RESULT_CACHE_TTL
+
+# Read-path policy (#360 / mirror #105 institutional): prefer
+# taiwan_margin_short_daily. Live fallback is bounded to the scheduler recent
+# weekday window — never a multi-month walk when the store is wired.
+_PERSISTED_SOURCE_PREFIX = "Persisted "
 
 _TWSE_MARGIN_URL = "https://www.twse.com.tw/rwd/zh/marginTrading/MI_MARGN"
 _TWSE_BORROWED_SHORT_URL = "https://www.twse.com.tw/rwd/zh/marginTrading/TWT93U"
@@ -99,6 +107,26 @@ class TaiwanMarginShortRecord:
     borrowed_short_balance_lots: float | None
     borrowed_short_balance_change_lots: float | None
     borrowed_short_balance_change_amount_10k: int | None
+
+
+class MarginShortDailyStore(Protocol):
+    def is_available(self) -> bool: ...
+
+    def list_history(
+        self,
+        *,
+        market: str,
+        symbol: str,
+        limit: int,
+    ) -> list[TaiwanMarginShortDaily]: ...
+
+    def upsert_records(
+        self,
+        *,
+        market: str,
+        source: str,
+        records: list[TaiwanMarginShortRecord],
+    ) -> object: ...
 
 
 EmptyReason = Literal["not_published", "no_data_for_stock"]
@@ -302,6 +330,8 @@ class TaiwanMarginShortService:
         tpex_margin_fetcher: PayloadFetcher | None = None,
         tpex_borrowed_short_fetcher: PayloadFetcher | None = None,
         now_provider: NowProvider | None = None,
+        store: MarginShortDailyStore | None = None,
+        use_default_store: bool = True,
     ) -> None:
         self._quote_source = quote_source or _default_quote_source()
         self._twse_margin_fetcher = twse_margin_fetcher or _fetch_twse_margin_payload
@@ -314,6 +344,8 @@ class TaiwanMarginShortService:
             tpex_borrowed_short_fetcher or _fetch_tpex_borrowed_short_payload
         )
         self._now_provider = now_provider or _utc_now
+        self._store = store
+        self._use_default_store = use_default_store and store is None
         self._result_cache = {}
         self._close_fetch_enabled = True
 
@@ -339,86 +371,24 @@ class TaiwanMarginShortService:
                 unknown_market_error=_UNKNOWN_TW_MARKET_ERROR,
             )
             self._close_fetch_enabled = True
-            diagnostics = _ScanDiagnostics()
+            start_date = candidate_start_date(now)
+            store = self._resolve_store()
+            store_ready = store is not None and store.is_available()
 
-            def fetch_day(current_date: date) -> tuple[TaiwanMarginShortRecord | None, bool]:
-                lookup = self._fetch_record_for_day(
-                    market,
-                    current_date,
-                    symbol,
+            if store_ready:
+                return self._compute_store_first(
                     stock_id=stock.id,
+                    market=market,
+                    symbol=symbol,
+                    requested_days=requested_days,
+                    start_date=start_date,
                 )
-                diagnostics.note_day(
-                    margin=lookup.margin_outcome,
-                    borrowed=lookup.borrowed_outcome,
-                    record=lookup.record,
-                    request_succeeded=lookup.request_succeeded,
-                )
-                return lookup.record, lookup.request_succeeded
-
-            history, successful_fetches = collect_dated_history(
+            return self._compute_live_only(
+                stock_id=stock.id,
+                market=market,
+                symbol=symbol,
                 requested_days=requested_days,
-                start_date=candidate_start_date(now),
-                fetch_day=fetch_day,
-                record_date=lambda record: record.date,
-            )
-            # Soft-empty days (holiday / unpublished / symbol absent) count as
-            # successful probes. Hard failures mixed into an otherwise empty
-            # window must still raise — never return a normal empty history.
-            if not history and (
-                successful_fetches == 0 or diagnostics.hard_failure_count > 0
-            ):
-                error_message = _upstream_error_for_scan(diagnostics)
-                logger.warning(
-                    "Taiwan margin-short scan produced no usable days",
-                    extra={
-                        "event": "tw_margin_short.scan_failed",
-                        "stock_id": stock.id,
-                        "symbol": symbol,
-                        "exchange": market,
-                        "attempts": diagnostics.attempts,
-                        "successful_days": diagnostics.successful_days,
-                        "records_produced": diagnostics.records_produced,
-                        "soft_empty_days": diagnostics.soft_empty_days,
-                        "official_no_data_days": diagnostics.official_no_data_days,
-                        "symbol_absent_days": diagnostics.symbol_absent_days,
-                        "http_errors": diagnostics.http_errors,
-                        "auth_denied": diagnostics.auth_denied,
-                        "rate_limited": diagnostics.rate_limited,
-                        "schema_errors": diagnostics.schema_errors,
-                        "parse_errors": diagnostics.parse_errors,
-                        "unexpected_content": diagnostics.unexpected_content,
-                        "error_detail": error_message,
-                    },
-                )
-                raise RuntimeError(error_message)
-            logger.info(
-                "Taiwan margin-short scan completed",
-                extra={
-                    "event": "tw_margin_short.scan_completed",
-                    "stock_id": stock.id,
-                    "symbol": symbol,
-                    "exchange": market,
-                    "attempts": diagnostics.attempts,
-                    "successful_days": diagnostics.successful_days,
-                    "records_produced": diagnostics.records_produced,
-                    "soft_empty_days": diagnostics.soft_empty_days,
-                    "official_no_data_days": diagnostics.official_no_data_days,
-                    "symbol_absent_days": diagnostics.symbol_absent_days,
-                    "schema_errors": diagnostics.schema_errors,
-                    "parse_errors": diagnostics.parse_errors,
-                    "http_errors": diagnostics.http_errors,
-                    "auth_denied": diagnostics.auth_denied,
-                    "rate_limited": diagnostics.rate_limited,
-                    "unexpected_content": diagnostics.unexpected_content,
-                },
-            )
-            return self._to_result(
-                stock.id,
-                symbol,
-                market,
-                history,
-                empty_reason=_empty_reason_for_scan(diagnostics, history),
+                start_date=start_date,
             )
 
         return get_cached_or_compute(
@@ -429,6 +399,271 @@ class TaiwanMarginShortService:
             compute=compute,
         )
 
+    def _compute_store_first(
+        self,
+        *,
+        stock_id: str,
+        market: TWBoard,
+        symbol: str,
+        requested_days: int,
+        start_date: date,
+    ) -> TaiwanMarginShortResult:
+        stored = self._load_stored_history(
+            market=market,
+            symbol=symbol,
+            requested_days=requested_days,
+        )
+        if _stored_history_is_fresh(stored, start_date=start_date):
+            return self._to_result(
+                stock_id,
+                symbol,
+                market,
+                list(reversed(stored)),
+                served_from_store_only=True,
+            )
+
+        live_history, successful_fetches, diagnostics = self._collect_live_fallback(
+            market=market,
+            symbol=symbol,
+            stock_id=stock_id,
+            requested_days=requested_days,
+            start_date=start_date,
+        )
+        if live_history:
+            self._persist_live_fallback(market=market, records=live_history)
+        history = _merge_history(stored, live_history, requested_days=requested_days)
+        if not history and (
+            successful_fetches == 0 or diagnostics.hard_failure_count > 0
+        ):
+            error_message = _upstream_error_for_scan(diagnostics)
+            logger.warning(
+                "Taiwan margin-short scan produced no usable days",
+                extra={
+                    "event": "tw_margin_short.scan_failed",
+                    "stock_id": stock_id,
+                    "symbol": symbol,
+                    "exchange": market,
+                    "attempts": diagnostics.attempts,
+                    "successful_days": diagnostics.successful_days,
+                    "records_produced": diagnostics.records_produced,
+                    "soft_empty_days": diagnostics.soft_empty_days,
+                    "official_no_data_days": diagnostics.official_no_data_days,
+                    "symbol_absent_days": diagnostics.symbol_absent_days,
+                    "http_errors": diagnostics.http_errors,
+                    "auth_denied": diagnostics.auth_denied,
+                    "rate_limited": diagnostics.rate_limited,
+                    "schema_errors": diagnostics.schema_errors,
+                    "parse_errors": diagnostics.parse_errors,
+                    "unexpected_content": diagnostics.unexpected_content,
+                    "error_detail": error_message,
+                },
+            )
+            raise RuntimeError(error_message)
+        logger.info(
+            "Taiwan margin-short store-first scan completed",
+            extra={
+                "event": "tw_margin_short.scan_completed",
+                "stock_id": stock_id,
+                "symbol": symbol,
+                "exchange": market,
+                "served_from_store_only": not live_history,
+                "attempts": diagnostics.attempts,
+                "successful_days": diagnostics.successful_days,
+                "records_produced": diagnostics.records_produced,
+            },
+        )
+        return self._to_result(
+            stock_id,
+            symbol,
+            market,
+            list(reversed(history)),
+            empty_reason=_empty_reason_for_scan(diagnostics, history),
+            served_from_store_only=not live_history,
+        )
+
+    def _compute_live_only(
+        self,
+        *,
+        stock_id: str,
+        market: TWBoard,
+        symbol: str,
+        requested_days: int,
+        start_date: date,
+    ) -> TaiwanMarginShortResult:
+        diagnostics = _ScanDiagnostics()
+
+        def fetch_day(current_date: date) -> tuple[TaiwanMarginShortRecord | None, bool]:
+            lookup = self._fetch_record_for_day(
+                market,
+                current_date,
+                symbol,
+                stock_id=stock_id,
+            )
+            diagnostics.note_day(
+                margin=lookup.margin_outcome,
+                borrowed=lookup.borrowed_outcome,
+                record=lookup.record,
+                request_succeeded=lookup.request_succeeded,
+            )
+            return lookup.record, lookup.request_succeeded
+
+        history, successful_fetches = collect_dated_history(
+            requested_days=requested_days,
+            start_date=start_date,
+            fetch_day=fetch_day,
+            record_date=attrgetter("date"),
+        )
+        # Soft-empty days (holiday / unpublished / symbol absent) count as
+        # successful probes. Hard failures mixed into an otherwise empty
+        # window must still raise — never return a normal empty history.
+        if not history and (
+            successful_fetches == 0 or diagnostics.hard_failure_count > 0
+        ):
+            error_message = _upstream_error_for_scan(diagnostics)
+            logger.warning(
+                "Taiwan margin-short scan produced no usable days",
+                extra={
+                    "event": "tw_margin_short.scan_failed",
+                    "stock_id": stock_id,
+                    "symbol": symbol,
+                    "exchange": market,
+                    "attempts": diagnostics.attempts,
+                    "successful_days": diagnostics.successful_days,
+                    "records_produced": diagnostics.records_produced,
+                    "soft_empty_days": diagnostics.soft_empty_days,
+                    "official_no_data_days": diagnostics.official_no_data_days,
+                    "symbol_absent_days": diagnostics.symbol_absent_days,
+                    "http_errors": diagnostics.http_errors,
+                    "auth_denied": diagnostics.auth_denied,
+                    "rate_limited": diagnostics.rate_limited,
+                    "schema_errors": diagnostics.schema_errors,
+                    "parse_errors": diagnostics.parse_errors,
+                    "unexpected_content": diagnostics.unexpected_content,
+                    "error_detail": error_message,
+                },
+            )
+            raise RuntimeError(error_message)
+        logger.info(
+            "Taiwan margin-short scan completed",
+            extra={
+                "event": "tw_margin_short.scan_completed",
+                "stock_id": stock_id,
+                "symbol": symbol,
+                "exchange": market,
+                "attempts": diagnostics.attempts,
+                "successful_days": diagnostics.successful_days,
+                "records_produced": diagnostics.records_produced,
+                "soft_empty_days": diagnostics.soft_empty_days,
+                "official_no_data_days": diagnostics.official_no_data_days,
+                "symbol_absent_days": diagnostics.symbol_absent_days,
+                "schema_errors": diagnostics.schema_errors,
+                "parse_errors": diagnostics.parse_errors,
+                "http_errors": diagnostics.http_errors,
+                "auth_denied": diagnostics.auth_denied,
+                "rate_limited": diagnostics.rate_limited,
+                "unexpected_content": diagnostics.unexpected_content,
+            },
+        )
+        return self._to_result(
+            stock_id,
+            symbol,
+            market,
+            history,
+            empty_reason=_empty_reason_for_scan(diagnostics, history),
+        )
+
+    def _resolve_store(self) -> MarginShortDailyStore | None:
+        if self._store is not None:
+            return self._store
+        if not self._use_default_store:
+            return None
+        from app.repositories.taiwan_market_daily_repository import (
+            taiwan_margin_short_daily_repository,
+        )
+
+        return taiwan_margin_short_daily_repository
+
+    def _load_stored_history(
+        self,
+        *,
+        market: TWBoard,
+        symbol: str,
+        requested_days: int,
+    ) -> list[TaiwanMarginShortRecord]:
+        store = self._resolve_store()
+        if store is None or not store.is_available():
+            return []
+        try:
+            rows = store.list_history(
+                market=market,
+                symbol=symbol,
+                limit=requested_days,
+            )
+        except Exception:  # noqa: BLE001 - store outages fall back to bounded live
+            return []
+        records = [_record_from_stored_row(row) for row in rows]
+        records.reverse()
+        return _dedupe_history_by_date(records)
+
+    def _persist_live_fallback(
+        self,
+        *,
+        market: TWBoard,
+        records: Sequence[TaiwanMarginShortRecord],
+    ) -> None:
+        """Best-effort heal of the store from bounded live rows (never fails the read)."""
+        if not records:
+            return
+        store = self._resolve_store()
+        if store is None or not store.is_available():
+            return
+        try:
+            store.upsert_records(
+                market=market,
+                source=_source_for_market(market),
+                records=list(records),
+            )
+        except Exception:  # noqa: BLE001 - store healing must not block detail reads
+            return
+
+    def _collect_live_fallback(
+        self,
+        *,
+        market: TWBoard,
+        symbol: str,
+        stock_id: str,
+        requested_days: int,
+        start_date: date,
+    ) -> tuple[list[TaiwanMarginShortRecord], int, _ScanDiagnostics]:
+        diagnostics = _ScanDiagnostics()
+        recent_weekdays = _read_path_window_days()
+
+        def fetch_day(current_date: date) -> tuple[TaiwanMarginShortRecord | None, bool]:
+            lookup = self._fetch_record_for_day(
+                market,
+                current_date,
+                symbol,
+                stock_id=stock_id,
+            )
+            diagnostics.note_day(
+                margin=lookup.margin_outcome,
+                borrowed=lookup.borrowed_outcome,
+                record=lookup.record,
+                request_succeeded=lookup.request_succeeded,
+            )
+            return lookup.record, lookup.request_succeeded
+
+        history, successful_fetches = collect_dated_history(
+            requested_days=requested_days,
+            start_date=start_date,
+            fetch_day=fetch_day,
+            record_date=attrgetter("date"),
+            window_days=calendar_window_for_weekdays(recent_weekdays),
+            weekday_limit=recent_weekdays,
+        )
+        history.reverse()
+        return history, successful_fetches, diagnostics
+
     def _to_result(
         self,
         stock_id: str,
@@ -437,6 +672,7 @@ class TaiwanMarginShortService:
         history: list[TaiwanMarginShortRecord],
         *,
         empty_reason: EmptyReason | None = None,
+        served_from_store_only: bool = False,
     ) -> TaiwanMarginShortResult:
         ordered = list(reversed(history))
         latest = ordered[-1] if ordered else None
@@ -447,7 +683,7 @@ class TaiwanMarginShortService:
             latest_date=latest.date if latest is not None else None,
             summary=latest,
             history=tuple(ordered),
-            source=_source_for_market(market),
+            source=_response_source(market, served_from_store_only=served_from_store_only),
             empty_reason=empty_reason if not ordered else None,
         )
 
@@ -1870,6 +2106,79 @@ def margin_short_source_for_market(market: TaiwanMarket) -> str:
 
 def _source_for_market(market: TaiwanMarket) -> str:
     return _TPEX_SOURCE if market == "TPEx" else _TWSE_SOURCE
+
+
+def _response_source(market: TaiwanMarket, *, served_from_store_only: bool) -> str:
+    base = _source_for_market(market)
+    if served_from_store_only:
+        return f"{_PERSISTED_SOURCE_PREFIX}{base}"
+    return base
+
+
+def _read_path_window_days() -> int:
+    """Freshness + live probe window; aligned with the #97 recent refresh window."""
+    from app.core.config import settings
+
+    return max(settings.taiwan_market_data_refresh_recent_days, 1)
+
+
+def _record_from_stored_row(row: TaiwanMarginShortDaily) -> TaiwanMarginShortRecord:
+    return TaiwanMarginShortRecord(
+        date=row.date.isoformat(),
+        symbol=row.symbol,
+        name=row.name or "",
+        close_price=row.close_price,
+        margin_balance_lots=row.margin_balance_lots,
+        short_margin_balance_lots=row.short_margin_balance_lots,
+        borrowed_short_balance_lots=row.borrowed_short_balance_lots,
+        borrowed_short_balance_change_lots=row.borrowed_short_balance_change_lots,
+        borrowed_short_balance_change_amount_10k=(
+            row.borrowed_short_balance_change_amount_10k
+        ),
+    )
+
+
+def _stored_history_is_fresh(
+    history: Sequence[TaiwanMarginShortRecord],
+    *,
+    start_date: date,
+    max_age_days: int | None = None,
+) -> bool:
+    if not history:
+        return False
+    try:
+        latest_date = date.fromisoformat(history[-1].date)
+    except ValueError:
+        return False
+    age_days = max_age_days if max_age_days is not None else _read_path_window_days()
+    return latest_date >= start_date - timedelta(days=age_days)
+
+
+def _dedupe_history_by_date(
+    history: Sequence[TaiwanMarginShortRecord],
+) -> list[TaiwanMarginShortRecord]:
+    by_date: dict[str, TaiwanMarginShortRecord] = {}
+    for record in history:
+        by_date[record.date] = record
+    return [by_date[key] for key in sorted(by_date)]
+
+
+def _merge_history(
+    stored: Sequence[TaiwanMarginShortRecord],
+    live: Sequence[TaiwanMarginShortRecord],
+    *,
+    requested_days: int,
+) -> list[TaiwanMarginShortRecord]:
+    """Merge store + bounded live rows; live wins on the same trading date."""
+    by_date: dict[str, TaiwanMarginShortRecord] = {
+        record.date: record for record in stored
+    }
+    for record in live:
+        by_date[record.date] = record
+    merged = [by_date[key] for key in sorted(by_date)]
+    if len(merged) <= requested_days:
+        return merged
+    return merged[-requested_days:]
 
 
 def _utc_now() -> datetime:
