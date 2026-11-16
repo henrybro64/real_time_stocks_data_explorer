@@ -1887,3 +1887,121 @@ describe("TwResearchPage one primary CTA per stage (#361)", () => {
     },
   );
 });
+describe("TwResearchPage stage-4 flow (#361)", () => {
+  beforeEach(() => {
+    vi.mocked(fetchThemeOptions).mockResolvedValue([]);
+    vi.mocked(listTwResearchFirstPassJobs).mockResolvedValue([
+      {
+        jobId: "fpj_stage4",
+        status: "completed",
+        qualityStatus: "complete_attempted",
+        activeSnapshotId: "fps_stage4",
+      },
+    ]);
+    vi.mocked(fetchTwResearchScans).mockResolvedValue({ scans: [] });
+    vi.mocked(fetchTwResearchMembership).mockRejectedValue(
+      new ApiError("missing", {
+        status: 404,
+        detail: "membership_not_found",
+        kind: "not_found",
+      }),
+    );
+  });
+
+  it("approve → start technical → shows phase2 message without legacy scan controls", async () => {
+    const user = userEvent.setup();
+    vi.mocked(fetchTwResearchRunCurrent)
+      .mockResolvedValueOnce({
+        researchRunId: "rr_stage4",
+        userId: "u1",
+        phase: "awaiting_analyst_candidate_selection",
+        status: "gated",
+        firstPassJobId: "fpj_stage4",
+        firstPassSnapshotId: "fps_stage4",
+        gates: { candidateSelection: "pending" },
+      } as never)
+      .mockResolvedValueOnce({
+        researchRunId: "rr_stage4",
+        userId: "u1",
+        phase: "awaiting_analyst_candidate_selection",
+        status: "gated",
+        firstPassJobId: "fpj_stage4",
+        firstPassSnapshotId: "fps_stage4",
+        gates: { candidateSelection: "approved" },
+        phase2Execution: { state: "awaiting_technical_start" },
+      } as never)
+      .mockResolvedValue({
+        researchRunId: "rr_stage4",
+        userId: "u1",
+        phase: "phase2_technical",
+        status: "running",
+        firstPassJobId: "fpj_stage4",
+        firstPassSnapshotId: "fps_stage4",
+        technicalScanId: "scan_stage4",
+        gates: { candidateSelection: "approved" },
+        phase2Execution: { state: "actively_analyzing" },
+      } as never);
+    vi.mocked(fetchTwResearchLatestCandidateSet).mockResolvedValue({
+      version: 2,
+      stockIds: ["TW:2330"],
+      firstPassSnapshotId: "fps_stage4",
+      firstPassDigest: "e".repeat(64),
+    });
+    vi.mocked(submitTwResearchCandidateSet).mockResolvedValue({
+      version: 3,
+      stockIds: ["TW:2330"],
+      firstPassSnapshotId: "fps_stage4",
+      firstPassDigest: "e".repeat(64),
+    });
+    vi.mocked(createTwResearchTechnicalScanFromCandidateSet).mockResolvedValue({
+      scanId: "scan_stage4",
+      tradingDay: "2024-06-28",
+      universeVersion: "explicit:1",
+      status: "queued",
+      cursor: 0,
+      universeSize: 1,
+      processedCount: 0,
+      remainingCount: 1,
+      targetCount: 10,
+      dayPassCount: 0,
+      notes: [],
+      ledger: [],
+      checkpointsEphemeral: false,
+      stockIds: ["TW:2330"],
+    });
+    vi.mocked(fetchTwResearchScan).mockResolvedValue(
+      queuedScan({ scanId: "scan_stage4", status: "queued", universeSize: 1, remainingCount: 1 }),
+    );
+    vi.mocked(fetchTwResearchScanProgress).mockResolvedValue(
+      progress({ scanId: "scan_stage4", status: "queued", universeSize: 1, remainingCount: 1 }),
+    );
+
+    renderPage();
+    expect(screen.queryByTestId("tw-research-create")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("tw-research-batch")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("tw-research-history")).not.toBeInTheDocument();
+
+    await waitFor(() => {
+      expect(screen.getByTestId("tw-research-approve-candidates")).toBeEnabled();
+    });
+    await user.click(screen.getByTestId("tw-research-approve-candidates"));
+    await waitFor(() => {
+      expect(submitTwResearchCandidateSet).toHaveBeenCalled();
+    });
+
+    // After approval refetch, Start technical becomes available.
+    await waitFor(() => {
+      expect(screen.getByTestId("tw-research-start-technical-from-candidates")).toBeEnabled();
+    });
+    await user.click(screen.getByTestId("tw-research-start-technical-from-candidates"));
+    await waitFor(() => {
+      expect(createTwResearchTechnicalScanFromCandidateSet).toHaveBeenCalled();
+    });
+    expect(await screen.findByTestId("tw-research-phase2-execution-status")).toHaveTextContent(
+      /分析中|Analyzing/,
+    );
+    expect(screen.queryByTestId("tw-research-create")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("tw-research-batch")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("tw-research-history")).not.toBeInTheDocument();
+  });
+});
