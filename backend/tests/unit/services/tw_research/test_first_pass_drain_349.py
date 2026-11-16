@@ -51,6 +51,11 @@ def test_drain_skips_when_globally_disabled(monkeypatch) -> None:
         dry_run=True,
     )
     assert result.outcome == "skipped_disabled"
+    assert result.preflight is not None
+    assert "availability" in result.preflight
+    # Call-arg enabled=False skips work; availability flags still reflect settings.
+    assert "drainEnabledConfigured" in result.preflight["availability"]
+    assert "drainTokenConfigured" in result.preflight["availability"]
 
 
 def test_drain_skips_when_schedule_not_authorized(monkeypatch) -> None:

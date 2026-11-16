@@ -8,6 +8,7 @@ never drains historical orphan jobs that are not run-owned.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -21,6 +22,8 @@ from app.services.tw_research.research_run import (
     first_pass_drain_availability,
     research_run_store,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -82,6 +85,13 @@ def _availability_flags(*, user_id: str) -> dict[str, Any]:
     }
 
 
+def _dry_run_availability_preflight(*, dry_run: bool, user_id: str) -> dict[str, Any] | None:
+    """Attach availability flags (booleans + reason only) on dry-run early exits."""
+    if not dry_run:
+        return None
+    return {"availability": _availability_flags(user_id=user_id)}
+
+
 def _build_dry_run_preflight(
     run: ResearchRun,
     *,
@@ -95,6 +105,7 @@ def _build_dry_run_preflight(
     ok_count = partial_count = failed_count = pending_count = None
     lease_active = False
     last_tick_at = None
+    preflight_errors: list[str] = []
     if isinstance(run.dimensions, dict):
         meta = run.dimensions.get("firstPassDrain")
         if isinstance(meta, dict) and isinstance(meta.get("lastTickAt"), str):
@@ -114,6 +125,11 @@ def _build_dry_run_preflight(
                 lease_active = parsed > datetime.now(UTC)
             except ValueError:
                 lease_active = False
+    except Exception:  # noqa: BLE001 — preflight stays best-effort
+        logger.warning("dry_run_preflight job_lookup_failed job_id=%s", job_id)
+        preflight_errors.append("job_lookup_failed")
+
+    try:
         from app.repositories.tw_research_repository import tw_research_repository
 
         if tw_research_repository.is_available():
@@ -130,8 +146,10 @@ def _build_dry_run_preflight(
                         0, int(universe_size) - ok_count - partial_count - failed_count
                     )
     except Exception:  # noqa: BLE001 — preflight stays best-effort
-        pass
-    return {
+        logger.warning("dry_run_preflight counts_unavailable job_id=%s", job_id)
+        preflight_errors.append("counts_unavailable")
+
+    payload: dict[str, Any] = {
         "availability": flags,
         "researchRunId": run.research_run_id,
         "jobId": job_id,
@@ -148,6 +166,9 @@ def _build_dry_run_preflight(
         "estimatedProviderCallsNextBatch": None,
         "estimatedProviderCallsReason": "provider_call_estimate_not_instrumented_per_batch",
     }
+    if preflight_errors:
+        payload["preflightErrors"] = preflight_errors
+    return payload
 
 
 def drain_authorized_first_pass(
@@ -181,6 +202,7 @@ def drain_authorized_first_pass(
             user_id="",
             notes=notes + ["TW_RESEARCH_FIRST_PASS_DRAIN_USER_ID is empty."],
             dry_run=dry_run,
+            preflight=_dry_run_availability_preflight(dry_run=dry_run, user_id=""),
         )
     if not enabled:
         return FirstPassDrainResult(
@@ -188,6 +210,7 @@ def drain_authorized_first_pass(
             user_id=owner,
             notes=notes + ["tw_research_first_pass_drain_enabled=false."],
             dry_run=dry_run,
+            preflight=_dry_run_availability_preflight(dry_run=dry_run, user_id=owner),
         )
 
     try:
@@ -198,6 +221,7 @@ def drain_authorized_first_pass(
             user_id=owner,
             notes=notes + [str(exc)],
             dry_run=dry_run,
+            preflight=_dry_run_availability_preflight(dry_run=dry_run, user_id=owner),
         )
     if run is None:
         return FirstPassDrainResult(
@@ -205,6 +229,7 @@ def drain_authorized_first_pass(
             user_id=owner,
             notes=notes + ["No durable research_run for owner."],
             dry_run=dry_run,
+            preflight=_dry_run_availability_preflight(dry_run=dry_run, user_id=owner),
         )
 
     authoritative = str(run.first_pass_job_id or "") or None
@@ -226,6 +251,7 @@ def drain_authorized_first_pass(
                 "Historical overlapping jobs are not auto-drained (#349).",
             ],
             dry_run=dry_run,
+            preflight=_dry_run_availability_preflight(dry_run=dry_run, user_id=owner),
         )
     if requested and authoritative and requested != authoritative:
         return FirstPassDrainResult(
@@ -242,6 +268,7 @@ def drain_authorized_first_pass(
                 "Historical overlapping jobs are not auto-drained (#349).",
             ],
             dry_run=dry_run,
+            preflight=_dry_run_availability_preflight(dry_run=dry_run, user_id=owner),
         )
 
     target_job = authoritative
@@ -255,6 +282,7 @@ def drain_authorized_first_pass(
             schedule_enabled=bool(run.schedule_enabled),
             notes=notes + ["Research run has no first_pass_job_id yet."],
             dry_run=dry_run,
+            preflight=_dry_run_availability_preflight(dry_run=dry_run, user_id=owner),
         )
 
     if dry_run:
