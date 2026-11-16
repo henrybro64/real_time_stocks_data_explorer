@@ -355,7 +355,7 @@ class TechnicalIndicatorSnapshot(BaseModel):
 class TechnicalInsufficientHistory(BaseModel):
     reason: str
     requiredBars: int
-    availableBars: int
+    availableBars: int | None = None
     timeframe: str
 
 
@@ -385,6 +385,7 @@ class TechnicalResultsResponse(BaseModel):
     remainingCount: int = 0
     analyzedCount: int = 0
     insufficientHistoryCount: int = 0
+    waitingForHistoryCount: int = 0
     phase2Execution: dict[str, Any] | None = None
     candidates: list[TechnicalResultCandidate] = Field(default_factory=list)
     requiredBars: dict[str, int] = Field(default_factory=dict)

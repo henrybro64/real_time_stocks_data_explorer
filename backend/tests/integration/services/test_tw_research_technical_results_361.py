@@ -178,3 +178,63 @@ def test_technical_results_reads_persisted_records(db_session) -> None:
     assert by_id["TW:2330"]["monthly"]["dif"] == 1.25
     assert by_id["TW:2454"]["daily"] is None
     assert by_id["TW:2454"]["dailyNotRunReason"] == "monthly_gate_failed"
+
+
+def test_technical_results_get_twice_leaves_revision_unchanged(
+    db_session, monkeypatch
+) -> None:
+    """GET technical-results is read-only: no reconcile persist / revision bump."""
+    del db_session
+    if not tw_research_repository.is_available():
+        pytest.skip("tw_research durable store unavailable")
+
+    from app.api.deps import get_effective_user_id
+    from app.main import app
+    from fastapi.testclient import TestClient
+
+    user_id = f"p2rev-{uuid4().hex[:8]}"
+    _ensure_user(user_id)
+
+    service = TwResearchScanService(
+        history_loader=lambda *_a, **_k: ([], 0),
+        stock_loader=lambda stock_id: _tw(stock_id),
+        persist=True,
+    )
+    state = service.create_scan(
+        UniverseSelector(mode="stock_ids", stock_ids=("TW:2330",)),
+        trading_day="2024-06-28",
+        user_id=user_id,
+        now=datetime(2024, 6, 28, 16, 0, tzinfo=TZ),
+    )
+    monkeypatch.setattr(
+        "app.services.tw_research.scan.tw_research_scan_service",
+        service,
+    )
+
+    store = research_run_store
+    store.begin_phase1(user_id, trading_day="2024-06-28")
+    with store._lock:  # noqa: SLF001
+        locked = store._require_locked(user_id)
+        locked.phase = "phase2_technical"
+        locked.status = "running"
+        locked.gates["candidateSelection"] = "approved"
+        locked.technical_scan_id = state.scan_id
+        store._persist_locked(locked)
+
+    before = store.get(user_id)
+    assert before is not None
+    revision_before = int(before.revision)
+
+    app.dependency_overrides[get_effective_user_id] = lambda: user_id
+    try:
+        client = TestClient(app)
+        first = client.get("/api/tw-research/research-runs/technical-results")
+        assert first.status_code == 200, first.text
+        second = client.get("/api/tw-research/research-runs/technical-results")
+        assert second.status_code == 200, second.text
+    finally:
+        app.dependency_overrides.pop(get_effective_user_id, None)
+
+    after = store.get(user_id)
+    assert after is not None
+    assert int(after.revision) == revision_before

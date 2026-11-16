@@ -26,6 +26,15 @@ from app.services.tw_research.constants import (
 )
 from app.services.tw_research.scan import ScanState, SymbolScanRecord
 
+_PHASE2_TERMINAL_STATES = frozenset({"completed", "failed", "cancelled"})
+_BUDGET_RELATED_REASONS = frozenset(
+    {
+        HISTORY_BUDGET_EXHAUSTED_REASON,
+        "budget_exhausted",
+        "history_budget_exhausted",
+    }
+)
+
 
 def _as_float(value: object) -> float | None:
     if value is None:
@@ -78,12 +87,54 @@ def _indicator_payload(raw: object) -> dict[str, Any] | None:
     }
 
 
+def _is_budget_related_reason(reason: str | None) -> bool:
+    return bool(reason) and str(reason) in _BUDGET_RELATED_REASONS
+
+
+def _phase2_treats_budget_as_insufficient(
+    phase2_execution: dict[str, Any] | None,
+) -> bool:
+    """True when budget exhaustion should surface as insufficient_history.
+
+    Waiting-for-budget (non-terminal, non-cap) stays ``waiting_for_history``.
+    Completed / failed / cancelled / daily-cap-reached keep insufficient_history.
+    """
+    if not isinstance(phase2_execution, dict):
+        return False
+    state = str(phase2_execution.get("state") or "")
+    if state in _PHASE2_TERMINAL_STATES:
+        return True
+    blocker = str(phase2_execution.get("blocker") or "")
+    if blocker == "phase2_budget_cap_reached":
+        return True
+    if state == "waiting_for_budget_window" and blocker in {
+        "phase2_budget_cap_reached",
+        "budget_cap_reached",
+    }:
+        return True
+    return False
+
+
+def _coverage_budget_reason(coverage: dict[str, Any] | None) -> str | None:
+    if not isinstance(coverage, dict):
+        return None
+    for timeframe in ("monthly", "daily"):
+        frame = coverage.get(timeframe)
+        if not isinstance(frame, dict):
+            continue
+        reason = str(frame.get("reason") or "")
+        if _is_budget_related_reason(reason):
+            return reason
+    return None
+
+
 def _insufficient_history(
     *,
     timeframe: str,
     payload: dict[str, Any] | None,
     coverage: dict[str, Any] | None,
     rejection_reason: str | None,
+    include_budget_exhausted: bool,
 ) -> dict[str, Any] | None:
     required = (
         MIN_MONTHLY_BARS_FOR_MACD_KD
@@ -96,10 +147,12 @@ def _insufficient_history(
     if isinstance(payload, dict):
         if str(payload.get("quality") or "") == "insufficient_history":
             reason = "insufficient_history"
-            available = _as_int(payload.get("barCount"))
+            if "barCount" in payload:
+                available = _as_int(payload.get("barCount"))
         elif str(payload.get("executionStatus") or "") == "insufficient_history":
             reason = "insufficient_history"
-            available = _as_int(payload.get("barCount"))
+            if "barCount" in payload:
+                available = _as_int(payload.get("barCount"))
 
     if isinstance(coverage, dict):
         frame = coverage.get(timeframe)
@@ -107,18 +160,24 @@ def _insufficient_history(
             cov_reason = str(frame.get("reason") or "")
             if cov_reason in {"insufficient_history", "insufficient_monthly_history"}:
                 reason = reason or cov_reason
-                if available is None:
+                if available is None and "barCount" in frame:
+                    available = _as_int(frame.get("barCount"))
+            elif include_budget_exhausted and _is_budget_related_reason(cov_reason):
+                reason = reason or cov_reason
+                if available is None and "barCount" in frame:
                     available = _as_int(frame.get("barCount"))
 
-    if rejection_reason == HISTORY_BUDGET_EXHAUSTED_REASON and timeframe == "monthly":
-        reason = reason or HISTORY_BUDGET_EXHAUSTED_REASON
+    if include_budget_exhausted and _is_budget_related_reason(rejection_reason):
+        if timeframe == "monthly":
+            reason = reason or HISTORY_BUDGET_EXHAUSTED_REASON
 
     if reason is None:
         return None
     return {
         "reason": reason,
         "requiredBars": required,
-        "availableBars": available if available is not None else 0,
+        # Unknown bar counts stay null (never coerce to 0).
+        "availableBars": available,
         "timeframe": timeframe,
     }
 
@@ -139,10 +198,13 @@ def _overall_stage_result(
     daily: dict[str, Any] | None,
     rejection_reason: str | None,
     insufficient: dict[str, Any] | None,
+    waiting_for_history: bool,
 ) -> str:
+    if waiting_for_history:
+        return "waiting_for_history"
     if insufficient is not None:
         return "insufficient_history"
-    if rejection_reason == HISTORY_BUDGET_EXHAUSTED_REASON:
+    if _is_budget_related_reason(rejection_reason):
         return "insufficient_history"
     stage = str(technical_stage or "") or None
     if stage == TECHNICAL_STAGE_DAILY_PASS:
@@ -162,7 +224,6 @@ def _overall_stage_result(
     if stage == TECHNICAL_STAGE_DEFERRED:
         return "deferred"
     if stage in {TECHNICAL_STAGE_PENDING, None, ""}:
-        # Monthly quality may already mark insufficient without a stage.
         if isinstance(monthly, dict) and str(monthly.get("quality") or "") == (
             "insufficient_history"
         ):
@@ -175,6 +236,8 @@ def _overall_stage_result(
 
 def map_symbol_technical_result(
     record: SymbolScanRecord | dict[str, Any],
+    *,
+    phase2_execution: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Map one persisted symbol record to the Stage-4 results row shape."""
     stock_id = str(_record_field(record, "stock_id", "stockId") or "")
@@ -195,19 +258,32 @@ def map_symbol_technical_result(
     daily_full = _indicator_payload(daily_raw)
     not_run_reason = _daily_not_run_reason(daily_full)
 
-    insufficient = _insufficient_history(
-        timeframe="monthly",
-        payload=monthly,
-        coverage=coverage,
-        rejection_reason=rejection_reason,
+    budget_signal = _is_budget_related_reason(rejection_reason) or bool(
+        _coverage_budget_reason(coverage)
     )
-    if insufficient is None:
+    treat_budget_as_insufficient = _phase2_treats_budget_as_insufficient(
+        phase2_execution
+    )
+    waiting_for_history = bool(budget_signal and not treat_budget_as_insufficient)
+
+    insufficient = None
+    if not waiting_for_history:
         insufficient = _insufficient_history(
-            timeframe="daily",
-            payload=daily_full,
+            timeframe="monthly",
+            payload=monthly,
             coverage=coverage,
             rejection_reason=rejection_reason,
+            include_budget_exhausted=treat_budget_as_insufficient or not budget_signal,
         )
+        if insufficient is None:
+            insufficient = _insufficient_history(
+                timeframe="daily",
+                payload=daily_full,
+                coverage=coverage,
+                rejection_reason=rejection_reason,
+                include_budget_exhausted=treat_budget_as_insufficient
+                or not budget_signal,
+            )
 
     # Daily not-run-by-design: null indicators + notRunReason (never a fail).
     if not_run_reason is not None:
@@ -221,20 +297,20 @@ def map_symbol_technical_result(
         daily=daily_full,
         rejection_reason=rejection_reason,
         insufficient=insufficient,
+        waiting_for_history=waiting_for_history,
     )
 
-    row: dict[str, Any] = {
+    return {
         "stockId": stock_id,
         "name": str(name) if name else None,
         "monthly": monthly,
         "daily": daily_out,
         "overallStageResult": overall,
         "technicalStage": technical_stage,
-        "insufficientHistory": insufficient,
+        "insufficientHistory": None if waiting_for_history else insufficient,
         "rejectionReason": rejection_reason,
         "dailyNotRunReason": not_run_reason,
     }
-    return row
 
 
 def build_technical_results_payload(
@@ -259,34 +335,42 @@ def build_technical_results_payload(
                     "technicalStage": TECHNICAL_STAGE_PENDING,
                     "insufficientHistory": None,
                     "rejectionReason": None,
+                    "dailyNotRunReason": None,
                 }
             )
             continue
-        rows.append(map_symbol_technical_result(record))
+        rows.append(
+            map_symbol_technical_result(record, phase2_execution=phase2_execution)
+        )
 
+    # Prefer row-derived counts; fall back to phase2Execution only when no rows.
     analyzed = 0
     insufficient_count = 0
-    for row in rows:
-        if row.get("overallStageResult") == "pending":
-            continue
-        analyzed += 1
-        if row.get("insufficientHistory") is not None or row.get(
-            "overallStageResult"
-        ) == "insufficient_history":
-            insufficient_count += 1
-
-    # Prefer honesty-block counters when present.
-    if isinstance(phase2_execution, dict):
-        if phase2_execution.get("analyzedCount") is not None:
-            try:
+    waiting_count = 0
+    if rows:
+        for row in rows:
+            overall = str(row.get("overallStageResult") or "")
+            if overall == "pending":
+                continue
+            analyzed += 1
+            if overall == "waiting_for_history":
+                waiting_count += 1
+            elif (
+                row.get("insufficientHistory") is not None
+                or overall == "insufficient_history"
+            ):
+                insufficient_count += 1
+    elif isinstance(phase2_execution, dict):
+        try:
+            if phase2_execution.get("analyzedCount") is not None:
                 analyzed = int(phase2_execution["analyzedCount"])
-            except (TypeError, ValueError):
-                pass
-        if phase2_execution.get("insufficientHistoryCount") is not None:
-            try:
+        except (TypeError, ValueError):
+            pass
+        try:
+            if phase2_execution.get("insufficientHistoryCount") is not None:
                 insufficient_count = int(phase2_execution["insufficientHistoryCount"])
-            except (TypeError, ValueError):
-                pass
+        except (TypeError, ValueError):
+            pass
 
     price_basis = snap.get("priceBasis")
     if not price_basis and rows:
@@ -308,6 +392,7 @@ def build_technical_results_payload(
         "remainingCount": int(snap.get("remainingCount") or 0),
         "analyzedCount": analyzed,
         "insufficientHistoryCount": insufficient_count,
+        "waitingForHistoryCount": waiting_count,
         "phase2Execution": phase2_execution,
         "candidates": rows,
         "requiredBars": {

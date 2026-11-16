@@ -701,7 +701,7 @@ export type TwResearchTechnicalIndicatorSnapshot = {
 export type TwResearchTechnicalInsufficientHistory = {
   reason: string;
   requiredBars: number;
-  availableBars: number;
+  availableBars?: number | null;
   timeframe: string;
 };
 
@@ -730,6 +730,7 @@ export type TwResearchTechnicalResults = {
   remainingCount?: number;
   analyzedCount?: number;
   insufficientHistoryCount?: number;
+  waitingForHistoryCount?: number;
   phase2Execution?: TwResearchPhase2ExecutionStatus | null;
   candidates: TwResearchTechnicalResultCandidate[];
   requiredBars?: { monthly?: number; daily?: number };

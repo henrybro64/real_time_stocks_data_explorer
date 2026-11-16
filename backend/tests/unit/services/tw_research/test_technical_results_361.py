@@ -2,14 +2,27 @@
 
 from __future__ import annotations
 
+from fastapi.testclient import TestClient
+
+from app.db.init_ids import DEFAULT_USER_ID
+from app.main import app
 from app.services.tw_research.constants import (
     DAILY_NOT_RUN_BY_DESIGN,
+    HISTORY_BUDGET_EXHAUSTED_REASON,
     MIN_MONTHLY_BARS_FOR_MACD_KD,
     TECHNICAL_STAGE_DAILY_NOT_RUN,
     TECHNICAL_STAGE_DAILY_PASS,
 )
-from app.services.tw_research.scan import SymbolScanRecord
-from app.services.tw_research.technical_results import map_symbol_technical_result
+from app.services.tw_research.research_run import research_run_store
+from app.services.tw_research.scan import SymbolScanRecord, TwResearchScanService
+from app.services.tw_research.technical_results import (
+    build_technical_results_payload,
+    map_symbol_technical_result,
+)
+from app.services.tw_research.universe import UniverseSelector
+from tests.support import stock_record
+
+client = TestClient(app)
 
 
 def test_map_ok_dual_pass_row() -> None:
@@ -92,6 +105,25 @@ def test_map_insufficient_history() -> None:
     assert row["daily"] is None
 
 
+def test_map_insufficient_history_unknown_available_bars() -> None:
+    record = SymbolScanRecord(
+        stock_id="TW:2303",
+        stage="rejected",
+        readiness="rejected",
+        technical_stage="monthly_unknown",
+        monthly={
+            "quality": "insufficient_history",
+            "passStatus": "unknown",
+            "timeframe": "monthly",
+        },
+        daily=None,
+    )
+    row = map_symbol_technical_result(record)
+    assert row["overallStageResult"] == "insufficient_history"
+    assert row["insufficientHistory"]["availableBars"] is None
+    assert row["insufficientHistory"]["requiredBars"] == MIN_MONTHLY_BARS_FOR_MACD_KD
+
+
 def test_map_daily_not_run_by_design() -> None:
     record = SymbolScanRecord(
         stock_id="TW:2303",
@@ -131,3 +163,185 @@ def test_map_daily_not_run_by_design() -> None:
     assert row["daily"] is None
     assert row["dailyNotRunReason"] == "monthly_gate_failed"
     assert row["monthly"]["passStatus"] == "fail"
+
+
+def test_budget_exhausted_waiting_while_phase2_active() -> None:
+    record = SymbolScanRecord(
+        stock_id="TW:2330",
+        stage="rejected",
+        readiness="rejected",
+        rejection_reason=HISTORY_BUDGET_EXHAUSTED_REASON,
+        technical_stage="deferred",
+        monthly=None,
+        daily=None,
+    )
+    row = map_symbol_technical_result(
+        record,
+        phase2_execution={"state": "waiting_for_budget_window", "blocker": None},
+    )
+    assert row["overallStageResult"] == "waiting_for_history"
+    assert row["insufficientHistory"] is None
+
+
+def test_budget_exhausted_insufficient_when_phase2_completed() -> None:
+    record = SymbolScanRecord(
+        stock_id="TW:2330",
+        stage="rejected",
+        readiness="rejected",
+        rejection_reason=HISTORY_BUDGET_EXHAUSTED_REASON,
+        technical_stage="deferred",
+        monthly=None,
+        daily=None,
+    )
+    row = map_symbol_technical_result(
+        record, phase2_execution={"state": "completed"}
+    )
+    assert row["overallStageResult"] == "insufficient_history"
+    assert row["insufficientHistory"]["reason"] == HISTORY_BUDGET_EXHAUSTED_REASON
+    assert row["insufficientHistory"]["availableBars"] is None
+
+
+def test_budget_exhausted_insufficient_when_daily_cap_reached() -> None:
+    record = SymbolScanRecord(
+        stock_id="TW:2330",
+        stage="rejected",
+        readiness="rejected",
+        rejection_reason=HISTORY_BUDGET_EXHAUSTED_REASON,
+        monthly=None,
+        daily=None,
+    )
+    row = map_symbol_technical_result(
+        record,
+        phase2_execution={
+            "state": "waiting_for_budget_window",
+            "blocker": "phase2_budget_cap_reached",
+        },
+    )
+    assert row["overallStageResult"] == "insufficient_history"
+    assert row["insufficientHistory"]["reason"] == HISTORY_BUDGET_EXHAUSTED_REASON
+
+
+def test_counts_prefer_rows_over_phase2_execution() -> None:
+    catalog = {
+        "TW:2330": stock_record(
+            "TW:2330",
+            market="TW",
+            symbol="2330",
+            name="台積電",
+            exchange="TWSE",
+            currency="TWD",
+            timezone="Asia/Taipei",
+        ),
+        "TW:2454": stock_record(
+            "TW:2454",
+            market="TW",
+            symbol="2454",
+            name="聯發科",
+            exchange="TWSE",
+            currency="TWD",
+            timezone="Asia/Taipei",
+        ),
+    }
+    service = TwResearchScanService(
+        history_loader=lambda *_a, **_k: ([], 0),
+        stock_loader=catalog.get,
+        persist=False,
+    )
+    state = service.create_scan(
+        UniverseSelector(mode="stock_ids", stock_ids=("TW:2330", "TW:2454")),
+        trading_day="2024-06-28",
+    )
+    state.records["TW:2330"] = SymbolScanRecord(
+        stock_id="TW:2330",
+        stage="rejected",
+        readiness="rejected",
+        rejection_reason=HISTORY_BUDGET_EXHAUSTED_REASON,
+    )
+    state.records["TW:2454"] = SymbolScanRecord(
+        stock_id="TW:2454",
+        stage="rejected",
+        readiness="rejected",
+        monthly={
+            "quality": "insufficient_history",
+            "barCount": 10,
+            "passStatus": "unknown",
+            "timeframe": "monthly",
+        },
+    )
+    class _Run:
+        research_run_id = "rr_counts"
+
+    payload = build_technical_results_payload(
+        run=_Run(),
+        state=state,
+        phase2_execution={
+            "state": "actively_analyzing",
+            "analyzedCount": 99,
+            "insufficientHistoryCount": 99,
+        },
+    )
+    assert payload["analyzedCount"] == 2
+    assert payload["waitingForHistoryCount"] == 1
+    assert payload["insufficientHistoryCount"] == 1
+
+
+def test_technical_results_endpoint_does_not_bump_revision(monkeypatch) -> None:
+    research_run_store.clear_for_tests()
+    catalog = {
+        "TW:2330": stock_record(
+            "TW:2330",
+            market="TW",
+            symbol="2330",
+            name="台積電",
+            exchange="TWSE",
+            currency="TWD",
+            timezone="Asia/Taipei",
+        )
+    }
+    service = TwResearchScanService(
+        history_loader=lambda *_a, **_k: ([], 0),
+        stock_loader=catalog.get,
+        persist=False,
+    )
+    state = service.create_scan(
+        UniverseSelector(mode="stock_ids", stock_ids=("TW:2330",)),
+        trading_day="2024-06-28",
+        user_id=DEFAULT_USER_ID,
+    )
+    monkeypatch.setattr(
+        "app.services.tw_research.scan.tw_research_scan_service",
+        service,
+    )
+    research_run_store.begin_phase1(DEFAULT_USER_ID, trading_day="2024-06-28")
+    with research_run_store._lock:  # noqa: SLF001
+        locked = research_run_store._require_locked(DEFAULT_USER_ID)
+        locked.phase = "phase2_technical"
+        locked.status = "running"
+        locked.gates["candidateSelection"] = "approved"
+        locked.technical_scan_id = state.scan_id
+        research_run_store._persist_locked(locked)
+
+    before = research_run_store.get(DEFAULT_USER_ID)
+    assert before is not None
+    revision_before = int(before.revision)
+
+    # Spy: get must be used (read-only); reconcile would bump revision.
+    reconcile_calls = {"n": 0}
+    real_reconcile = research_run_store.reconcile
+
+    def counting_reconcile(user_id: str):
+        reconcile_calls["n"] += 1
+        return real_reconcile(user_id)
+
+    monkeypatch.setattr(research_run_store, "reconcile", counting_reconcile)
+
+    first = client.get("/api/tw-research/research-runs/technical-results")
+    assert first.status_code == 200, first.text
+    second = client.get("/api/tw-research/research-runs/technical-results")
+    assert second.status_code == 200, second.text
+    assert reconcile_calls["n"] == 0
+
+    after = research_run_store.get(DEFAULT_USER_ID)
+    assert after is not None
+    assert int(after.revision) == revision_before
+    research_run_store.disable_test_memory()

@@ -2,6 +2,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { LanguageProvider } from "../../app/i18n";
+import { ApiError } from "../../services/api/client";
 import type { TwResearchTechnicalResults } from "../../services/api/twResearch";
 import {
   TechnicalResultsPanel,
@@ -18,7 +19,7 @@ afterEach(() => {
 
 async function renderPanel(
   results: TwResearchTechnicalResults | null,
-  opts?: { empty?: boolean; language?: "en" | "zh-TW" },
+  opts?: { empty?: boolean; language?: "en" | "zh-TW"; error?: unknown },
 ) {
   window.localStorage.setItem("stock-ticker-language", opts?.language ?? "zh-TW");
   const view = render(
@@ -26,6 +27,7 @@ async function renderPanel(
       <TechnicalResultsPanel
         results={results}
         empty={opts?.empty}
+        error={opts?.error}
         phase2Message="分析中…"
       />
     </LanguageProvider>,
@@ -110,6 +112,28 @@ const sampleResults: TwResearchTechnicalResults = {
       daily: null,
       dailyNotRunReason: "monthly_gate_failed",
     },
+    {
+      stockId: "TW:2317",
+      name: "鴻海",
+      overallStageResult: "waiting_for_history",
+      monthly: null,
+      daily: null,
+      rejectionReason: "history_budget_exhausted",
+      insufficientHistory: null,
+    },
+    {
+      stockId: "TW:2382",
+      name: "廣達",
+      overallStageResult: "insufficient_history",
+      monthly: null,
+      daily: null,
+      insufficientHistory: {
+        reason: "history_budget_exhausted",
+        requiredBars: 35,
+        availableBars: null,
+        timeframe: "monthly",
+      },
+    },
   ],
 };
 
@@ -121,17 +145,33 @@ describe("TechnicalResultsPanel (#361)", () => {
 
   it("renders values with 2 decimals", async () => {
     await renderPanel(sampleResults);
-    // Desktop table + mobile cards both render in the DOM.
     expect(screen.getAllByText(/DIF 1\.23/).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/Signal 0\.99/).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/OSC 0\.25/).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/K 72\.16/).length).toBeGreaterThan(0);
   });
 
-  it("shows insufficient-history reason", async () => {
+  it("shows insufficient-history reason with known bars", async () => {
     await renderPanel(sampleResults);
     const reasons = screen.getAllByTestId("tw-research-tech-insufficient-reason");
-    expect(reasons[0]).toHaveTextContent("歷史資料不足：需要 35 根，現有 12 根");
+    expect(
+      reasons.some((el) => el.textContent?.includes("歷史資料不足：需要 35 根，現有 12 根")),
+    ).toBe(true);
+  });
+
+  it("shows insufficient-history unknown available bars", async () => {
+    await renderPanel(sampleResults);
+    const reasons = screen.getAllByTestId("tw-research-tech-insufficient-reason");
+    expect(
+      reasons.some((el) =>
+        el.textContent?.includes("歷史資料不足：需要 35 根，現有筆數未知"),
+      ),
+    ).toBe(true);
+  });
+
+  it("shows waiting-for-history chip/text", async () => {
+    await renderPanel(sampleResults);
+    expect(screen.getAllByText("等待歷史資料預算").length).toBeGreaterThan(0);
   });
 
   it("shows daily-not-run reason", async () => {
@@ -140,10 +180,33 @@ describe("TechnicalResultsPanel (#361)", () => {
     expect(reasons[0]).toHaveTextContent("未執行：月線未通過");
   });
 
-  it("shows empty state", async () => {
-    await renderPanel(null, { empty: true });
+  it("shows empty state for 404 / no data", async () => {
+    await renderPanel(null, {
+      empty: true,
+      error: new ApiError("missing", {
+        status: 404,
+        detail: "technical_scan_not_found",
+        kind: "not_found",
+      }),
+    });
     expect(screen.getByTestId("tw-research-technical-results-empty")).toHaveTextContent(
       /尚無技術分析結果/,
     );
+    expect(screen.queryByTestId("tw-research-technical-results-error")).not.toBeInTheDocument();
+  });
+
+  it("shows error notification for 503 without empty state", async () => {
+    await renderPanel(null, {
+      empty: true,
+      error: new ApiError("unavailable", {
+        status: 503,
+        detail: "technical_scan_lookup_failed",
+        kind: "server",
+      }),
+    });
+    expect(screen.getByTestId("tw-research-technical-results-error")).toHaveTextContent(
+      /暫時無法載入技術結果/,
+    );
+    expect(screen.queryByTestId("tw-research-technical-results-empty")).not.toBeInTheDocument();
   });
 });

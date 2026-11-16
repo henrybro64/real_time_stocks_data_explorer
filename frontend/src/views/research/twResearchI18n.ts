@@ -385,9 +385,19 @@ const TW_RESEARCH_ROWS = [
     "歷史資料不足：需要 {required} 根，現有 {available} 根",
   ],
   [
+    "research.tw.technicalResults.insufficientHistoryUnknown",
+    "Insufficient history: need {required} bars, available unknown",
+    "歷史資料不足：需要 {required} 根，現有筆數未知",
+  ],
+  [
     "research.tw.technicalResults.dailyNotRun",
     "Not run: monthly did not pass",
     "未執行：月線未通過",
+  ],
+  [
+    "research.tw.technicalResults.loadError",
+    "Unable to load technical results right now; will retry automatically.",
+    "暫時無法載入技術結果，稍後自動重試",
   ],
   ["research.tw.technicalResults.result.pass", "Pass", "通過"],
   ["research.tw.technicalResults.result.fail", "Fail", "未通過"],
@@ -395,6 +405,11 @@ const TW_RESEARCH_ROWS = [
     "research.tw.technicalResults.result.insufficient_history",
     "Insufficient history",
     "歷史不足",
+  ],
+  [
+    "research.tw.technicalResults.result.waiting_for_history",
+    "Waiting for history budget",
+    "等待歷史資料預算",
   ],
   [
     "research.tw.technicalResults.result.daily_not_run",

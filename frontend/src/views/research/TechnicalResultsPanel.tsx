@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  InlineNotification,
   Stack,
   Table,
   TableBody,
@@ -14,6 +15,7 @@ import {
 } from "@carbon/react";
 
 import { useLanguage, type TranslationKey } from "../../app/i18n";
+import { ApiError, toApiError } from "../../services/api/client";
 import type {
   TwResearchTechnicalIndicatorSnapshot,
   TwResearchTechnicalResultCandidate,
@@ -39,6 +41,11 @@ export function insufficientHistoryReasonText(
 ): string | null {
   const info = row.insufficientHistory;
   if (!info) return null;
+  if (info.availableBars == null) {
+    return t("research.tw.technicalResults.insufficientHistoryUnknown", {
+      required: info.requiredBars,
+    });
+  }
   return t("research.tw.technicalResults.insufficientHistory", {
     required: info.requiredBars,
     available: info.availableBars,
@@ -55,14 +62,20 @@ export function dailyNotRunReasonText(
   return t("research.tw.technicalResults.dailyNotRun");
 }
 
+export function isTechnicalResultsNotFound(error: unknown): boolean {
+  const apiError = error instanceof ApiError ? error : toApiError(error);
+  return apiError.status === 404;
+}
+
 function passChipKind(
   result: string,
-): "green" | "red" | "gray" | "blue" | "purple" {
+): "green" | "red" | "gray" | "blue" | "purple" | "teal" {
   if (result === "pass") return "green";
   if (result === "fail" || result === "monthly_fail" || result === "daily_fail") {
     return "red";
   }
   if (result === "insufficient_history") return "purple";
+  if (result === "waiting_for_history") return "teal";
   if (result === "daily_not_run") return "blue";
   return "gray";
 }
@@ -71,6 +84,7 @@ const RESULT_LABEL_KEYS: Record<string, TranslationKey> = {
   pass: "research.tw.technicalResults.result.pass",
   fail: "research.tw.technicalResults.result.fail",
   insufficient_history: "research.tw.technicalResults.result.insufficient_history",
+  waiting_for_history: "research.tw.technicalResults.result.waiting_for_history",
   daily_not_run: "research.tw.technicalResults.result.daily_not_run",
   monthly_pass: "research.tw.technicalResults.result.monthly_pass",
   monthly_fail: "research.tw.technicalResults.result.monthly_fail",
@@ -175,6 +189,11 @@ function ResultCard({
           {dailyNotRun}
         </p>
       ) : null}
+      {row.overallStageResult === "waiting_for_history" ? (
+        <p className={styles.reason} data-testid="tw-research-tech-waiting-reason">
+          {passChipLabel("waiting_for_history", t)}
+        </p>
+      ) : null}
     </article>
   );
 }
@@ -183,15 +202,20 @@ export type TechnicalResultsPanelProps = {
   results: TwResearchTechnicalResults | null | undefined;
   phase2Message?: string | null;
   empty?: boolean;
+  error?: unknown;
 };
 
 export function TechnicalResultsPanel({
   results,
   phase2Message,
   empty = false,
+  error = null,
 }: TechnicalResultsPanelProps) {
   const { t } = useLanguage();
   const candidates = results?.candidates ?? [];
+  const showError = Boolean(error) && !isTechnicalResultsNotFound(error);
+  const showEmpty =
+    !showError && (empty || (!results && !error) || candidates.length === 0);
 
   return (
     <Tile data-testid="tw-research-technical-results">
@@ -212,14 +236,26 @@ export function TechnicalResultsPanel({
             {phase2Message}
           </p>
         ) : null}
-        {empty || candidates.length === 0 ? (
+        {showError ? (
+          <div data-testid="tw-research-technical-results-error">
+            <InlineNotification
+              kind="error"
+              lowContrast
+              hideCloseButton
+              title=""
+              subtitle={t("research.tw.technicalResults.loadError")}
+            />
+          </div>
+        ) : null}
+        {showEmpty ? (
           <p
             className="cds--body-compact-01"
             data-testid="tw-research-technical-results-empty"
           >
             {t("research.tw.technicalResults.empty")}
           </p>
-        ) : (
+        ) : null}
+        {!showError && !showEmpty ? (
           <>
             <div className={styles.desktopTable} data-testid="tw-research-technical-results-table">
               <TableContainer>
@@ -327,7 +363,7 @@ export function TechnicalResultsPanel({
               ))}
             </div>
           </>
-        )}
+        ) : null}
       </Stack>
     </Tile>
   );

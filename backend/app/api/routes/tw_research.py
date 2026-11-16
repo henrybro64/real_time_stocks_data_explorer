@@ -1869,6 +1869,7 @@ def get_technical_results(
 ) -> TechnicalResultsResponse:
     """Stage-4 read model: persisted MACD/KD rows for the run-owned scan (#361).
 
+    Read-only: uses ``research_run_store.get`` (no reconcile persist / revision bump).
     Never recomputes indicators or calls providers. Empty/404 when no technical
     scan is attached; refuses foreign-owned scans.
     """
@@ -1877,14 +1878,9 @@ def get_technical_results(
     from app.services.tw_research.technical_results import build_technical_results_payload
 
     try:
-        run = research_run_store.reconcile(user_id)
+        run = research_run_store.get(user_id)
     except ResearchRunStoreUnavailable as exc:
         raise _research_run_unavailable(exc) from exc
-    except ResearchRunConflict as exc:
-        raise HTTPException(
-            status_code=409,
-            detail={"error": "research_run_revision_conflict", "reason": exc.reason},
-        ) from exc
     if run is None:
         raise HTTPException(status_code=404, detail="research_run_not_found")
     scan_id = str(run.technical_scan_id or "").strip()
@@ -1893,7 +1889,9 @@ def get_technical_results(
 
     try:
         state = tw_research_scan_service.get_scan(scan_id)
-    except Exception as exc:  # noqa: BLE001 — map lookup failures to 404/503
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="technical_scan_not_found") from exc
+    except Exception as exc:  # noqa: BLE001 — unexpected lookup failures stay 503
         raise HTTPException(
             status_code=503,
             detail={"error": "technical_scan_lookup_failed", "reason": type(exc).__name__},

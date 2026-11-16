@@ -3475,9 +3475,9 @@ export function TwResearchPage({
               phase2Message={
                 showPhase2ExecutionMessage ? phase2ExecutionMessage : null
               }
+              error={technicalResultsQuery.error}
               empty={
-                technicalResultsQuery.isError ||
-                (!technicalResultsQuery.data && !technicalResultsQuery.isFetching)
+                !technicalResultsQuery.isFetching && !technicalResultsQuery.data
               }
             />
           ) : null}
