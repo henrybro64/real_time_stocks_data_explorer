@@ -1493,6 +1493,18 @@ export function TwResearchPage({
     );
   }, [researchRunQuery.data]);
 
+  const candidateSelectionApproved = useMemo(() => {
+    const gate = researchRunQuery.data?.gates?.candidateSelection;
+    return String(gate ?? "") === "approved";
+  }, [researchRunQuery.data?.gates?.candidateSelection]);
+
+  const managedRunBlocksLegacyScan = useMemo(() => {
+    const run = researchRunQuery.data;
+    if (!run?.researchRunId) return false;
+    const status = String(run.status ?? "");
+    return !["cancelled", "failed"].includes(status);
+  }, [researchRunQuery.data]);
+
   const runIsActiveNonTerminal = useMemo(() => {
     const run = researchRunQuery.data;
     if (!run) return false;
@@ -3446,6 +3458,7 @@ export function TwResearchPage({
                 <Button
                   kind="primary"
                   size="sm"
+                  data-testid="tw-research-approve-candidates"
                   disabled={
                     !firstPassSnapshotId ||
                     !firstPassDigest ||
@@ -3460,14 +3473,28 @@ export function TwResearchPage({
                   size="sm"
                   data-testid="tw-research-start-technical-from-candidates"
                   disabled={
+                    !candidateSelectionApproved ||
                     candidateSetVersion <= 0 ||
                     startTechnicalFromCandidateMutation.isPending
+                  }
+                  title={
+                    candidateSelectionApproved
+                      ? t("research.tw.startTechnicalFromCandidates")
+                      : t("research.tw.technicalNeedsCandidateApproval")
                   }
                   onClick={() => startTechnicalFromCandidateMutation.mutate()}
                 >
                   {t("research.tw.startTechnicalFromCandidates")}
                 </Button>
               </Stack>
+              {!candidateSelectionApproved ? (
+                <p
+                  className="cds--helper-text-01"
+                  data-testid="tw-research-technical-gate-hint"
+                >
+                  {t("research.tw.technicalNeedsCandidateApproval")}
+                </p>
+              ) : null}
               {candidateSetText ? (
                 <TextArea
                   id="tw-research-candidate-set-json"
@@ -3563,8 +3590,9 @@ export function TwResearchPage({
                           key: "create",
                           kind: "ghost" as const,
                           label: "research.tw.createScan" as const,
-                          disabled: busy,
+                          disabled: busy || managedRunBlocksLegacyScan,
                           onClick: () => {
+                            if (managedRunBlocksLegacyScan) return;
                             if (createGuard.current || createMutation.isPending) return;
                             const persisted = (listQuery.data?.scans ?? []).find(
                               (item) =>
@@ -3598,6 +3626,7 @@ export function TwResearchPage({
                           label: "research.tw.runBatch" as const,
                           disabled:
                             busy ||
+                            managedRunBlocksLegacyScan ||
                             !scanId ||
                             (displayStatus !== "" &&
                               !ACTIVE_SCAN_STATUSES.has(displayStatus)),
@@ -3639,6 +3668,14 @@ export function TwResearchPage({
                       </Button>
                     ))}
                   </Stack>
+                  {managedRunBlocksLegacyScan ? (
+                    <p
+                      className="cds--helper-text-01"
+                      data-testid="tw-research-legacy-scan-blocked"
+                    >
+                      {t("research.tw.legacyScanBlockedByManagedRun")}
+                    </p>
+                  ) : null}
                   {keptExistingScan ? (
                     <p
                       className="cds--helper-text-01"

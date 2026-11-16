@@ -258,7 +258,21 @@ const TW_RESEARCH_ROWS = [
     "Load research data summary (advanced)",
     "載入研究資料摘要（進階）",
   ],
-  ["research.tw.saveCandidateSet", "Save stocks for deeper analysis", "儲存要深入分析的股票"],
+  [
+    "research.tw.saveCandidateSet",
+    "Approve and save stocks for deeper analysis",
+    "核准並儲存要深入分析的股票",
+  ],
+  [
+    "research.tw.technicalNeedsCandidateApproval",
+    "Technical analysis stays locked until you approve and save a candidate selection above.",
+    "請先在上方核准並儲存候選股票，才能開始技術分析。",
+  ],
+  [
+    "research.tw.legacyScanBlockedByManagedRun",
+    "A managed research run is active. Use approved-candidate technical start above instead of creating a standalone scan.",
+    "目前有進行中的研究。請使用上方「核准候選後開始技術分析」，不要另建獨立掃描。",
+  ],
   ["research.tw.candidateIds", "Stock IDs for deeper analysis (one per line)", "深入分析股票代號（每行一個）"],
   [
     "research.tw.candidateVersion",
@@ -287,8 +301,8 @@ const TW_RESEARCH_ROWS = [
   ],
   [
     "research.tw.startTechnicalFromCandidates",
-    "Start technical scan from saved selection",
-    "從已儲存選取啟動技術掃描",
+    "Start technical analysis from approved selection",
+    "從已核准選取開始技術分析",
   ],
   [
     "research.tw.candidateProvenanceLine",

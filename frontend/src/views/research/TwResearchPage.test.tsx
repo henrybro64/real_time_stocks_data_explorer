@@ -880,6 +880,15 @@ describe("TwResearchPage reliability UX (#335–#337)", () => {
         kind: "not_found",
       }),
     );
+    vi.mocked(fetchTwResearchRunCurrent).mockReset();
+    vi.mocked(fetchTwResearchRunCurrent).mockRejectedValue(
+      new ApiError("missing", {
+        status: 404,
+        detail: "research_run_not_found",
+        kind: "not_found",
+      }),
+    );
+    vi.mocked(startTwResearchRun).mockReset();
   });
 
   it("formats Traditional Chinese stock labels without inventing names", () => {
@@ -1091,6 +1100,14 @@ describe("TwResearchPage reliability UX (#335–#337)", () => {
 
   it("starts a technical scan from the approved candidate set only", async () => {
     const user = userEvent.setup();
+    vi.mocked(fetchTwResearchRunCurrent).mockResolvedValue({
+      researchRunId: "rr_gate",
+      status: "gated",
+      phase: "awaiting_analyst_candidate_selection",
+      gates: { candidateSelection: "approved" },
+      firstPassJobId: "fpj_gate",
+      scheduleEnabled: false,
+    } as never);
     vi.mocked(fetchTwResearchLatestCandidateSet).mockResolvedValue({
       version: 3,
       stockIds: ["TW:2330", "TW:2454"],
