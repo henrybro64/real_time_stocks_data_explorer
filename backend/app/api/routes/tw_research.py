@@ -49,6 +49,7 @@ from app.schemas.tw_research import (
     ResearchRunResponse,
     ResearchRunStartRequest,
     ResolvedUniverseResponse,
+    TechnicalResultsResponse,
     ResumeBudgetWindowRequest,
     RunBatchRequest,
     RunEnrichmentBatchRequest,
@@ -1857,6 +1858,63 @@ def get_current_research_run(
     if run is None:
         raise HTTPException(status_code=404, detail="research_run_not_found")
     return _research_run_response(run)
+
+
+@router.get(
+    "/research-runs/technical-results",
+    response_model=TechnicalResultsResponse,
+)
+def get_technical_results(
+    user_id: str = Depends(get_effective_user_id),
+) -> TechnicalResultsResponse:
+    """Stage-4 read model: persisted MACD/KD rows for the run-owned scan (#361).
+
+    Never recomputes indicators or calls providers. Empty/404 when no technical
+    scan is attached; refuses foreign-owned scans.
+    """
+    from app.services.tw_research.execution_status import classify_phase2_execution
+    from app.services.tw_research.scan import tw_research_scan_service
+    from app.services.tw_research.technical_results import build_technical_results_payload
+
+    try:
+        run = research_run_store.reconcile(user_id)
+    except ResearchRunStoreUnavailable as exc:
+        raise _research_run_unavailable(exc) from exc
+    except ResearchRunConflict as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"error": "research_run_revision_conflict", "reason": exc.reason},
+        ) from exc
+    if run is None:
+        raise HTTPException(status_code=404, detail="research_run_not_found")
+    scan_id = str(run.technical_scan_id or "").strip()
+    if not scan_id:
+        raise HTTPException(status_code=404, detail="technical_scan_not_found")
+
+    try:
+        state = tw_research_scan_service.get_scan(scan_id)
+    except Exception as exc:  # noqa: BLE001 — map lookup failures to 404/503
+        raise HTTPException(
+            status_code=503,
+            detail={"error": "technical_scan_lookup_failed", "reason": type(exc).__name__},
+        ) from exc
+    if state is None:
+        raise HTTPException(status_code=404, detail="technical_scan_not_found")
+    owner = getattr(state, "user_id", None)
+    if owner not in {None, user_id} and str(owner) != str(user_id):
+        raise HTTPException(
+            status_code=403,
+            detail={"error": "foreign_technical_scan", "technicalScanId": scan_id},
+        )
+
+    scan_payload = state.snapshot()
+    scan_payload["reserve_expires_at"] = getattr(state, "reserve_expires_at", None)
+    scan_payload["user_id"] = getattr(state, "user_id", None)
+    phase2 = classify_phase2_execution(run, scan=scan_payload, scan_state=state)
+    payload = build_technical_results_payload(
+        run=run, state=state, phase2_execution=phase2
+    )
+    return TechnicalResultsResponse.model_validate(payload)
 
 
 @router.get("/research-runs/current/deletion-preview")
