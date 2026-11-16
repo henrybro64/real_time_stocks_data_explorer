@@ -412,6 +412,30 @@ describe("TwResearchPage persisted scans (#327)", () => {
         remainingCount: id === historical ? 0 : 63,
       }),
     );
+    vi.mocked(fetchTwResearchTechnicalResults).mockImplementation(async (id?: string | null) => ({
+      technicalScanId: String(id ?? managed),
+      scanStatus: "verified_ready",
+      tradingDay: "2024-06-20",
+      viewingHistorical: id === historical,
+      isCurrentRunScan: id === managed,
+      candidates: [
+        {
+          stockId: id === historical ? "TW:2454" : "TW:2330",
+          overallStageResult: "pass",
+          monthly: {
+            asOf: "2024-05-31",
+            dif: id === historical ? 7.77 : 1.11,
+            signal: 1,
+            osc: 1,
+            k: 60,
+            d: 55,
+            barCount: 40,
+            quality: "ok",
+            passStatus: "pass",
+          },
+        },
+      ],
+    }));
     renderPage({ initialScanId: historical });
     expect(await screen.findByLabelText("研究紀錄編號")).toHaveValue(historical);
     await waitFor(() => {
@@ -420,6 +444,14 @@ describe("TwResearchPage persisted scans (#327)", () => {
     expect(screen.getByLabelText("研究紀錄編號")).toHaveValue(historical);
     expect(fetchTwResearchScan).toHaveBeenCalledWith(historical);
     expect(fetchTwResearchScan).not.toHaveBeenCalledWith(managed);
+    await waitFor(() => {
+      expect(fetchTwResearchTechnicalResults).toHaveBeenCalledWith(historical);
+    });
+    expect(await screen.findByTestId("tw-research-single-flow")).toBeInTheDocument();
+    expect(screen.getByTestId("tw-research-flow-stage-1")).toBeInTheDocument();
+    expect(screen.getByTestId("tw-research-technical-results-historical-badge")).toBeInTheDocument();
+    expect(screen.getByTestId("tw-research-technical-results")).toHaveTextContent("7.77");
+    expect(screen.getByTestId("tw-research-technical-results")).not.toHaveTextContent("1.11");
   });
 
   it("keeps the last ledger when a progress read fails", async () => {

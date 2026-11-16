@@ -705,6 +705,20 @@ export type TwResearchTechnicalInsufficientHistory = {
   timeframe: string;
 };
 
+export type TwResearchTechnicalPassComponent = {
+  component: string;
+  value?: number | null;
+  threshold: string;
+  passed?: boolean | null;
+  missing?: boolean;
+};
+
+export type TwResearchTechnicalPassEvaluation = {
+  passStatus?: string | null;
+  quality?: string | null;
+  components?: TwResearchTechnicalPassComponent[];
+};
+
 export type TwResearchTechnicalResultCandidate = {
   stockId: string;
   name?: string | null;
@@ -715,6 +729,8 @@ export type TwResearchTechnicalResultCandidate = {
   insufficientHistory?: TwResearchTechnicalInsufficientHistory | null;
   rejectionReason?: string | null;
   dailyNotRunReason?: string | null;
+  monthlyPassEvaluation?: TwResearchTechnicalPassEvaluation | null;
+  dailyPassEvaluation?: TwResearchTechnicalPassEvaluation | null;
 };
 
 /** GET /research-runs/technical-results (#361). */
@@ -725,20 +741,30 @@ export type TwResearchTechnicalResults = {
   tradingDay?: string | null;
   calculationVersion?: string | null;
   priceBasis?: string | null;
+  scanUpdatedAt?: string | null;
   universeSize?: number;
   processedCount?: number;
   remainingCount?: number;
   analyzedCount?: number;
+  errorCount?: number;
+  pendingCount?: number;
   insufficientHistoryCount?: number;
   waitingForHistoryCount?: number;
+  viewingHistorical?: boolean;
+  isCurrentRunScan?: boolean;
   phase2Execution?: TwResearchPhase2ExecutionStatus | null;
+  passRule?: Record<string, unknown> | null;
   candidates: TwResearchTechnicalResultCandidate[];
   requiredBars?: { monthly?: number; daily?: number };
 };
 
-export async function fetchTwResearchTechnicalResults() {
+export async function fetchTwResearchTechnicalResults(scanId?: string | null) {
+  const qs =
+    typeof scanId === "string" && scanId.trim()
+      ? `?scanId=${encodeURIComponent(scanId.trim())}`
+      : "";
   return requestJson<TwResearchTechnicalResults>(
-    "/tw-research/research-runs/technical-results",
+    `/tw-research/research-runs/technical-results${qs}`,
   );
 }
 

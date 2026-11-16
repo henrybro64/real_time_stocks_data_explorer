@@ -728,11 +728,12 @@ describe("TwResearchPage default UI hides internal terms (#351)", () => {
 
     const user = userEvent.setup();
     const { container } = renderPage(language, { initialScanId: SCAN_ID });
-    await user.click(
-      screen.getByRole("tab", {
-        name: language === "en" ? /Progress & data quality/i : /進度與資料品質/,
-      }),
-    );
+    // Single-flow layout: progress is a secondary disclosure, not a tab panel.
+    const progressToggle = screen.getByTestId("tw-research-tab-progress");
+    const details = progressToggle.closest("details");
+    if (details && !details.open) {
+      await user.click(progressToggle);
+    }
     const tile = await screen.findByTestId("tw-research-progress");
     expect(screen.getByTestId("tw-research-status-line").textContent).toMatch(
       language === "en" ? /Processing finished/ : /處理已結束/,

@@ -34,6 +34,38 @@ _BUDGET_RELATED_REASONS = frozenset(
         "history_budget_exhausted",
     }
 )
+# Rows that represent a completed indicator evaluation (not waiting/error/pending).
+_VERIFIED_INDICATOR_RESULTS = frozenset(
+    {
+        "pass",
+        "fail",
+        "monthly_pass",
+        "monthly_fail",
+        "daily_not_run",
+        "monthly_unknown",
+        "daily_unknown",
+        "deferred",
+    }
+)
+_PASS_RULE_META = {
+    "macdHistogramConvention": "OSC = DIF − Signal (MACD histogram)",
+    "macdFormula": "DIF = EMA12(close) − EMA26(close); Signal = EMA9(DIF)",
+    "kdFormula": "KD(9,3,3): RSV from 9-bar high/low; K/D smoothed",
+    "componentsTested": [
+        {"component": "dif", "threshold": "> 0"},
+        {"component": "osc", "threshold": "> 0", "note": "histogram = DIF − Signal"},
+        {"component": "k", "threshold": "> 50"},
+        {"component": "d", "threshold": "> 50"},
+    ],
+    "passRule": "DIF > 0 AND OSC > 0 AND K > 50 AND D > 50 (per timeframe)",
+    "monthlyAsOfPolicy": (
+        "Last fully completed calendar month only; the current incomplete "
+        "month is never treated as a verified monthly bar."
+    ),
+    "priceBasisPolicy": "unadjusted_close",
+    "sourceProviderPersisted": False,
+    "historyRangePersisted": False,
+}
 
 
 def _as_float(value: object) -> float | None:
@@ -196,6 +228,68 @@ def _daily_not_run_reason(daily: dict[str, Any] | None) -> str | None:
     return None
 
 
+def _component_eval(
+    *,
+    name: str,
+    value: float | None,
+    threshold: str,
+    passed: bool | None,
+) -> dict[str, Any]:
+    return {
+        "component": name,
+        "value": value,
+        "threshold": threshold,
+        "passed": passed,
+        "missing": value is None,
+    }
+
+
+def _pass_evaluation(payload: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Numerical pass/fail components from a persisted snapshot (no recompute)."""
+    if not isinstance(payload, dict):
+        return None
+    dif = _as_float(payload.get("dif"))
+    osc = _as_float(payload.get("osc"))
+    k_value = _as_float(payload.get("k"))
+    d_value = _as_float(payload.get("d"))
+    quality = str(payload.get("quality") or "")
+    if quality and quality != "ok":
+        return {
+            "passStatus": str(payload.get("passStatus") or "unknown"),
+            "quality": quality,
+            "components": [
+                _component_eval(name="dif", value=dif, threshold="> 0", passed=None),
+                _component_eval(name="osc", value=osc, threshold="> 0", passed=None),
+                _component_eval(name="k", value=k_value, threshold="> 50", passed=None),
+                _component_eval(name="d", value=d_value, threshold="> 50", passed=None),
+            ],
+        }
+    if None in (dif, osc, k_value, d_value):
+        return {
+            "passStatus": str(payload.get("passStatus") or "unknown"),
+            "quality": quality or None,
+            "components": [
+                _component_eval(name="dif", value=dif, threshold="> 0", passed=None),
+                _component_eval(name="osc", value=osc, threshold="> 0", passed=None),
+                _component_eval(name="k", value=k_value, threshold="> 50", passed=None),
+                _component_eval(name="d", value=d_value, threshold="> 50", passed=None),
+            ],
+        }
+    assert dif is not None and osc is not None and k_value is not None and d_value is not None
+    components = [
+        _component_eval(name="dif", value=dif, threshold="> 0", passed=dif > 0),
+        _component_eval(name="osc", value=osc, threshold="> 0", passed=osc > 0),
+        _component_eval(name="k", value=k_value, threshold="> 50", passed=k_value > 50),
+        _component_eval(name="d", value=d_value, threshold="> 50", passed=d_value > 50),
+    ]
+    overall_pass = all(bool(item["passed"]) for item in components)
+    return {
+        "passStatus": str(payload.get("passStatus") or ("pass" if overall_pass else "fail")),
+        "quality": quality or "ok",
+        "components": components,
+    }
+
+
 def _overall_stage_result(
     *,
     technical_stage: str | None,
@@ -309,6 +403,15 @@ def map_symbol_technical_result(
         waiting_for_history=waiting_for_history,
     )
 
+    monthly_eval = _pass_evaluation(monthly) if monthly is not None else None
+    daily_eval = (
+        None
+        if not_run_reason is not None
+        else _pass_evaluation(daily_full)
+        if daily_full is not None
+        else None
+    )
+
     return {
         "stockId": stock_id,
         "name": str(name) if name else None,
@@ -319,16 +422,20 @@ def map_symbol_technical_result(
         "insufficientHistory": None if waiting_for_history else insufficient,
         "rejectionReason": rejection_reason,
         "dailyNotRunReason": not_run_reason,
+        "monthlyPassEvaluation": monthly_eval,
+        "dailyPassEvaluation": daily_eval,
     }
 
 
 def build_technical_results_payload(
     *,
-    run: Any,
+    run: Any | None,
     state: ScanState,
     phase2_execution: dict[str, Any] | None,
+    viewing_historical: bool = False,
+    is_current_run_scan: bool = True,
 ) -> dict[str, Any]:
-    """Assemble the GET technical-results response body from a owned scan."""
+    """Assemble the GET technical-results response body from an owned scan."""
     snap = state.snapshot()
     rows: list[dict[str, Any]] = []
     for stock_id in state.stock_ids:
@@ -345,6 +452,8 @@ def build_technical_results_payload(
                     "insufficientHistory": None,
                     "rejectionReason": None,
                     "dailyNotRunReason": None,
+                    "monthlyPassEvaluation": None,
+                    "dailyPassEvaluation": None,
                 }
             )
             continue
@@ -353,22 +462,32 @@ def build_technical_results_payload(
         )
 
     # Prefer row-derived counts; fall back to phase2Execution only when no rows.
+    # analyzedCount = verified indicator evaluations only (not waiting/error/pending).
     analyzed = 0
+    error_count = 0
     insufficient_count = 0
     waiting_count = 0
+    pending_count = 0
     if rows:
         for row in rows:
             overall = str(row.get("overallStageResult") or "")
             if overall == "pending":
+                pending_count += 1
                 continue
-            analyzed += 1
             if overall == "waiting_for_history":
                 waiting_count += 1
-            elif (
+                continue
+            if overall == "error":
+                error_count += 1
+                continue
+            if (
                 row.get("insufficientHistory") is not None
                 or overall == "insufficient_history"
             ):
                 insufficient_count += 1
+                continue
+            if overall in _VERIFIED_INDICATOR_RESULTS:
+                analyzed += 1
     elif isinstance(phase2_execution, dict):
         try:
             if phase2_execution.get("analyzedCount") is not None:
@@ -389,20 +508,28 @@ def build_technical_results_payload(
     if not price_basis:
         price_basis = PRICE_BASIS
 
+    scan_updated_at = snap.get("updatedAt") or getattr(state, "updated_at", None)
+
     return {
-        "researchRunId": getattr(run, "research_run_id", None),
+        "researchRunId": getattr(run, "research_run_id", None) if run is not None else None,
         "technicalScanId": state.scan_id,
         "scanStatus": str(snap.get("status") or state.status),
         "tradingDay": state.trading_day,
         "calculationVersion": state.calculation_version,
         "priceBasis": price_basis,
+        "scanUpdatedAt": scan_updated_at,
         "universeSize": len(state.stock_ids),
         "processedCount": int(snap.get("processedCount") or 0),
         "remainingCount": int(snap.get("remainingCount") or 0),
         "analyzedCount": analyzed,
+        "errorCount": error_count,
+        "pendingCount": pending_count,
         "insufficientHistoryCount": insufficient_count,
         "waitingForHistoryCount": waiting_count,
-        "phase2Execution": phase2_execution,
+        "viewingHistorical": bool(viewing_historical),
+        "isCurrentRunScan": bool(is_current_run_scan),
+        "phase2Execution": phase2_execution if is_current_run_scan else None,
+        "passRule": dict(_PASS_RULE_META),
         "candidates": rows,
         "requiredBars": {
             "monthly": MIN_MONTHLY_BARS_FOR_MACD_KD,

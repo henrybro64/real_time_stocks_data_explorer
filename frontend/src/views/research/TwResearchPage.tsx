@@ -13,11 +13,6 @@ import {
   Select,
   SelectItem,
   Stack,
-  Tab,
-  TabList,
-  TabPanel,
-  TabPanels,
-  Tabs,
   Table,
   TableBody,
   TableCell,
@@ -1132,29 +1127,63 @@ export function TwResearchPage({
 
   const scan = scanQuery.data?.scanId === scanId ? scanQuery.data : null;
 
+  // Results identity follows the selected scan (historical ?scan= or managed).
+  const technicalResultsScanId = useMemo(() => {
+    if (initialScanId && initialScanId !== researchRunQuery.data?.technicalScanId) {
+      return scanId ?? initialScanId;
+    }
+    return scanId ?? researchRunQuery.data?.technicalScanId ?? null;
+  }, [initialScanId, researchRunQuery.data?.technicalScanId, scanId]);
+
+  const viewingHistoricalTechnicalResults = Boolean(
+    technicalResultsScanId &&
+      researchRunQuery.data?.technicalScanId &&
+      technicalResultsScanId !== researchRunQuery.data.technicalScanId,
+  );
+
   const technicalResultsQuery = useQuery({
     queryKey: [
       "tw-research-technical-results",
-      researchRunQuery.data?.technicalScanId,
-      progressQuery.data?.status,
-      progressQuery.data?.processedCount,
+      technicalResultsScanId,
+      viewingHistoricalTechnicalResults
+        ? "historical"
+        : progressQuery.data?.status,
+      viewingHistoricalTechnicalResults
+        ? null
+        : progressQuery.data?.processedCount,
     ],
-    queryFn: () => fetchTwResearchTechnicalResults(),
-    enabled: Boolean(researchRunQuery.data?.technicalScanId),
+    queryFn: ({ queryKey }) => {
+      const id = queryKey[1];
+      return fetchTwResearchTechnicalResults(
+        typeof id === "string" && id ? id : null,
+      );
+    },
+    enabled: Boolean(technicalResultsScanId),
     staleTime: 5_000,
     refetchInterval: (query) => {
+      if (viewingHistoricalTechnicalResults) return false;
       const state = String(
         query.state.data?.phase2Execution?.state ??
           researchRunQuery.data?.phase2Execution?.state ??
           "",
       );
-      if (state === "actively_analyzing" || state === "waiting_for_budget_window") {
+      if (
+        state === "actively_analyzing" ||
+        state === "between_batches" ||
+        state === "waiting_for_budget_window"
+      ) {
         return 8_000;
       }
       return false;
     },
     retry: false,
   });
+
+  // Drop stale responses that no longer match the selected scan identity.
+  const technicalResults =
+    technicalResultsQuery.data?.technicalScanId === technicalResultsScanId
+      ? technicalResultsQuery.data
+      : undefined;
 
   const pinnedFirstPassSnapshotId = useMemo(() => {
     const fromScan = scan?.candidateProvenance?.firstPassSnapshotId;
@@ -1417,6 +1446,8 @@ export function TwResearchPage({
         return t("research.tw.phase2Execution.executorNotTicking");
       case "actively_analyzing":
         return t("research.tw.phase2Execution.activelyAnalyzing");
+      case "between_batches":
+        return t("research.tw.phase2Execution.betweenBatches");
       case "waiting_for_budget_window":
         return t("research.tw.phase2Execution.waitingForBudgetWindow");
       case "paused":
@@ -2477,19 +2508,30 @@ export function TwResearchPage({
           </Tile>
 
           <div data-testid="tw-research-tabs">
-          <Tabs>
-            <TabList aria-label={t("research.tw.tabsAria")} contained>
-              <Tab data-testid="tw-research-tab-evidence">{t("research.tw.tabEvidence")}</Tab>
-              <Tab data-testid="tw-research-tab-watchlist">{t("research.tw.tabWatchlist")}</Tab>
-              <Tab data-testid="tw-research-tab-progress">{t("research.tw.tabProgress")}</Tab>
-            </TabList>
-            <TabPanels>
-              <TabPanel>
+          <div
+            data-testid="tw-research-single-flow"
+            aria-label={t("research.tw.flow.aria")}
+          >
+          <p className="cds--helper-text-01" data-testid="tw-research-flow-current">
+            {t("research.tw.flow.currentStage")}:{" "}
+            {researchUiStage === "select_scope"
+              ? t("research.tw.flow.stage1")
+              : researchUiStage === "collecting"
+                ? t("research.tw.flow.stage2")
+                : researchUiStage === "awaiting_candidate_selection"
+                  ? t("research.tw.flow.stage3")
+                  : t("research.tw.flow.stage4")}
+          </p>
                 <Stack gap={6}>
+          <section
+            data-testid="tw-research-flow-stage-1"
+            aria-current={researchUiStage === "select_scope" ? "step" : undefined}
+          >
+          <span data-testid="tw-research-tab-evidence" hidden />
           <Tile data-testid="tw-research-fundamentals">
             <Stack gap={4}>
               <div>
-                <h2 className="cds--productive-heading-03">{t("research.tw.fundamentalsTitle")}</h2>
+                <h2 className="cds--productive-heading-03">{t("research.tw.flow.stage1")}</h2>
                 <p className="cds--helper-text-01">{t("research.tw.fundamentalsNote")}</p>
                 <p className="cds--helper-text-01">{t("research.tw.stageHint")}</p>
               </div>
@@ -2672,6 +2714,20 @@ export function TwResearchPage({
                   />
                 </Stack>
               </div>
+            </Stack>
+          </Tile>
+          </section>
+
+          <section
+            data-testid="tw-research-flow-stage-2"
+            aria-current={researchUiStage === "collecting" ? "step" : undefined}
+          >
+          <Tile data-testid="tw-research-collect-check">
+            <Stack gap={4}>
+              <div>
+                <h2 className="cds--productive-heading-03">{t("research.tw.flow.stage2")}</h2>
+                <p className="cds--helper-text-01">{t("research.tw.startFirstPassHint")}</p>
+              </div>
               <Stack gap={3} orientation="horizontal">
                 <Button
                   kind="tertiary"
@@ -2682,7 +2738,6 @@ export function TwResearchPage({
                   {t("research.tw.loadFirstPassEvidence")}
                 </Button>
               </Stack>
-              <p className="cds--helper-text-01">{t("research.tw.startFirstPassHint")}</p>
               <AdvancedDetailsDisclosure>
                 <Stack gap={3} orientation="horizontal">
                   <Button
@@ -3334,6 +3389,21 @@ export function TwResearchPage({
                   })}
                 </Stack>
               </Tile>
+            </Stack>
+          </Tile>
+          </section>
+
+          <section
+            data-testid="tw-research-flow-stage-3"
+            aria-current={
+              researchUiStage === "awaiting_candidate_selection" ? "step" : undefined
+            }
+          >
+          <Tile data-testid="tw-research-pick-candidates">
+            <Stack gap={4}>
+              <div>
+                <h2 className="cds--productive-heading-03">{t("research.tw.flow.stage3")}</h2>
+              </div>
               <TextArea
                 id="tw-research-candidate-ids"
                 data-testid="tw-research-candidate-ids"
@@ -3462,40 +3532,59 @@ export function TwResearchPage({
                 </p>
               ) : null}
               {candidateSetText ? (
-                <TextArea
-                  id="tw-research-candidate-set-json"
-                  labelText={t("research.tw.saveCandidateSet")}
-                  value={candidateSetText}
-                  readOnly
-                  rows={4}
-                />
+                <AdvancedDetailsDisclosure>
+                  <TextArea
+                    id="tw-research-candidate-set-json"
+                    labelText={t("research.tw.saveCandidateSet")}
+                    value={candidateSetText}
+                    readOnly
+                    rows={4}
+                  />
+                </AdvancedDetailsDisclosure>
               ) : null}
             </Stack>
           </Tile>
+          </section>
 
-          {researchRunQuery.data?.technicalScanId ||
+          <section
+            data-testid="tw-research-flow-stage-4"
+            aria-current={
+              researchUiStage === "technical_analysis" ||
+              researchUiStage === "results"
+                ? "step"
+                : undefined
+            }
+          >
+          <h2 className="cds--productive-heading-03">{t("research.tw.flow.stage4")}</h2>
+
+          {technicalResultsScanId ||
           researchUiStage === "technical_analysis" ||
           researchUiStage === "results" ? (
             <TechnicalResultsPanel
-              results={technicalResultsQuery.data}
+              results={technicalResults}
               phase2Message={
-                showPhase2ExecutionMessage ? phase2ExecutionMessage : null
+                viewingHistoricalTechnicalResults
+                  ? null
+                  : showPhase2ExecutionMessage
+                    ? phase2ExecutionMessage
+                    : null
               }
               error={technicalResultsQuery.error}
               empty={
-                !technicalResultsQuery.isFetching && !technicalResultsQuery.data
+                !technicalResultsQuery.isFetching && !technicalResults
               }
+              viewingHistorical={viewingHistoricalTechnicalResults}
             />
           ) : null}
-
-                </Stack>
-              </TabPanel>
-              <TabPanel>
 
           <Tile data-testid="tw-research-watchlist">
             <Stack gap={3}>
               <div>
-                <h2 className="cds--productive-heading-03">{t("research.tw.tabWatchlist")}</h2>
+                <h2 className="cds--productive-heading-03">
+                  <span data-testid="tw-research-tab-watchlist">
+                    {t("research.tw.tabWatchlist")}
+                  </span>
+                </h2>
                 <p className="cds--helper-text-01">{t("research.tw.watchlistNote")}</p>
               </div>
               <p className="cds--body-compact-01" data-testid="tw-research-watchlist-counts">
@@ -3671,9 +3760,13 @@ export function TwResearchPage({
               />
             </Stack>
           </Tile>
-              </TabPanel>
-              <TabPanel>
-                <Stack gap={6}>
+
+          <AdvancedDetailsDisclosure>
+            <div data-testid="tw-research-tab-progress">
+              <h3 className="cds--productive-heading-02">
+                {t("research.tw.flow.secondaryProgress")}
+              </h3>
+            </div>
           {(scanQuery.isError || progressQuery.isError) && scan ? (
             <div data-testid="tw-research-stale">
               <RequestStateNotice
@@ -4149,10 +4242,10 @@ export function TwResearchPage({
               </Stack>
             </Tile>
           ) : null}
+          </AdvancedDetailsDisclosure>
+          </section>
                 </Stack>
-              </TabPanel>
-            </TabPanels>
-          </Tabs>
+          </div>
           </div>
         </Stack>
       </Column>

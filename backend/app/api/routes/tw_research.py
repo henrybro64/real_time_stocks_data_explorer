@@ -1865,13 +1865,21 @@ def get_current_research_run(
     response_model=TechnicalResultsResponse,
 )
 def get_technical_results(
+    scan_id: str | None = Query(
+        None,
+        alias="scanId",
+        description="Optional owned scan id for historical read-only results.",
+    ),
     user_id: str = Depends(get_effective_user_id),
 ) -> TechnicalResultsResponse:
-    """Stage-4 read model: persisted MACD/KD rows for the run-owned scan (#361).
+    """Stage-4 read model: persisted MACD/KD rows for an owned technical scan (#361).
 
     Read-only: uses ``research_run_store.get`` (no reconcile persist / revision bump).
-    Never recomputes indicators or calls providers. Empty/404 when no technical
-    scan is attached; refuses foreign-owned scans.
+    Never recomputes indicators or calls providers. Never attaches a historical
+    scan to the active research run.
+
+    - Without ``scanId``: current run's ``technical_scan_id``.
+    - With ``scanId``: that scan when owned by the caller (historical view).
     """
     from app.services.tw_research.execution_status import classify_phase2_execution
     from app.services.tw_research.scan import tw_research_scan_service
@@ -1881,14 +1889,23 @@ def get_technical_results(
         run = research_run_store.get(user_id)
     except ResearchRunStoreUnavailable as exc:
         raise _research_run_unavailable(exc) from exc
-    if run is None:
-        raise HTTPException(status_code=404, detail="research_run_not_found")
-    scan_id = str(run.technical_scan_id or "").strip()
-    if not scan_id:
-        raise HTTPException(status_code=404, detail="technical_scan_not_found")
+
+    requested = str(scan_id or "").strip() or None
+    current_scan_id = (
+        str(run.technical_scan_id or "").strip() if run is not None else ""
+    ) or None
+
+    if requested:
+        resolved_scan_id = requested
+    else:
+        if run is None:
+            raise HTTPException(status_code=404, detail="research_run_not_found")
+        if not current_scan_id:
+            raise HTTPException(status_code=404, detail="technical_scan_not_found")
+        resolved_scan_id = current_scan_id
 
     try:
-        state = tw_research_scan_service.get_scan(scan_id)
+        state = tw_research_scan_service.get_scan(resolved_scan_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="technical_scan_not_found") from exc
     except Exception as exc:  # noqa: BLE001 — unexpected lookup failures stay 503
@@ -1902,15 +1919,28 @@ def get_technical_results(
     if owner not in {None, user_id} and str(owner) != str(user_id):
         raise HTTPException(
             status_code=403,
-            detail={"error": "foreign_technical_scan", "technicalScanId": scan_id},
+            detail={
+                "error": "foreign_technical_scan",
+                "technicalScanId": resolved_scan_id,
+            },
         )
 
-    scan_payload = state.snapshot()
-    scan_payload["reserve_expires_at"] = getattr(state, "reserve_expires_at", None)
-    scan_payload["user_id"] = getattr(state, "user_id", None)
-    phase2 = classify_phase2_execution(run, scan=scan_payload, scan_state=state)
+    is_current = bool(current_scan_id) and resolved_scan_id == current_scan_id
+    viewing_historical = bool(requested) and not is_current
+
+    phase2 = None
+    if run is not None and is_current:
+        scan_payload = state.snapshot()
+        scan_payload["reserve_expires_at"] = getattr(state, "reserve_expires_at", None)
+        scan_payload["user_id"] = getattr(state, "user_id", None)
+        phase2 = classify_phase2_execution(run, scan=scan_payload, scan_state=state)
+
     payload = build_technical_results_payload(
-        run=run, state=state, phase2_execution=phase2
+        run=run,
+        state=state,
+        phase2_execution=phase2,
+        viewing_historical=viewing_historical,
+        is_current_run_scan=is_current,
     )
     return TechnicalResultsResponse.model_validate(payload)
 

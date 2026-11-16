@@ -18,6 +18,7 @@ import { useLanguage, type TranslationKey } from "../../app/i18n";
 import { ApiError, toApiError } from "../../services/api/client";
 import type {
   TwResearchTechnicalIndicatorSnapshot,
+  TwResearchTechnicalPassEvaluation,
   TwResearchTechnicalResultCandidate,
   TwResearchTechnicalResults,
 } from "../../services/api/twResearch";
@@ -108,16 +109,34 @@ function passChipLabel(
   return key ? t(key) : result;
 }
 
+function formatPassEvaluation(
+  evaluation: TwResearchTechnicalPassEvaluation | null | undefined,
+): string | null {
+  const components = evaluation?.components;
+  if (!Array.isArray(components) || components.length === 0) return null;
+  return components
+    .map((item) => {
+      const value =
+        item.value == null || item.missing ? "—" : formatIndicatorValue(item.value);
+      const mark =
+        item.passed == null ? "?" : item.passed ? "✓" : "✗";
+      return `${item.component.toUpperCase()} ${value} ${item.threshold} ${mark}`;
+    })
+    .join(" · ");
+}
+
 function IndicatorBlock({
   label,
   snapshot,
   asOfLabel,
   emptyReason,
+  evaluation,
 }: {
   label: string;
   snapshot: TwResearchTechnicalIndicatorSnapshot | null | undefined;
   asOfLabel: string;
   emptyReason: string | null;
+  evaluation?: TwResearchTechnicalPassEvaluation | null;
 }) {
   if (!snapshot) {
     return (
@@ -132,6 +151,7 @@ function IndicatorBlock({
       </div>
     );
   }
+  const evalText = formatPassEvaluation(evaluation);
   return (
     <div className={styles.indicatorBlock} data-testid="tw-research-tech-indicator">
       <div className={styles.indicatorLabel}>{label}</div>
@@ -145,8 +165,15 @@ function IndicatorBlock({
         <span>K {formatIndicatorValue(snapshot.k)}</span>
         <span>D {formatIndicatorValue(snapshot.d)}</span>
       </div>
+      {evalText ? (
+        <div className={styles.bars} data-testid="tw-research-tech-pass-eval">
+          {evalText}
+        </div>
+      ) : null}
       <div className={styles.bars}>
         bars {snapshot.barCount != null ? String(snapshot.barCount) : "—"}
+        {snapshot.priceBasis ? ` · ${snapshot.priceBasis}` : ""}
+        {snapshot.calculationVersion ? ` · ${snapshot.calculationVersion}` : ""}
       </div>
     </div>
   );
@@ -178,12 +205,14 @@ function ResultCard({
         snapshot={row.monthly}
         asOfLabel={t("research.tw.technicalResults.asOfMonth")}
         emptyReason={insufficient}
+        evaluation={row.monthlyPassEvaluation}
       />
       <IndicatorBlock
         label={t("research.tw.technicalResults.daily")}
         snapshot={row.daily}
         asOfLabel={t("research.tw.technicalResults.asOfDate")}
         emptyReason={dailyNotRun ?? insufficient}
+        evaluation={row.dailyPassEvaluation}
       />
       {insufficient ? (
         <p className={styles.reason} data-testid="tw-research-tech-insufficient-reason">
@@ -209,6 +238,7 @@ export type TechnicalResultsPanelProps = {
   phase2Message?: string | null;
   empty?: boolean;
   error?: unknown;
+  viewingHistorical?: boolean;
 };
 
 export function TechnicalResultsPanel({
@@ -216,12 +246,24 @@ export function TechnicalResultsPanel({
   phase2Message,
   empty = false,
   error = null,
+  viewingHistorical = false,
 }: TechnicalResultsPanelProps) {
   const { t } = useLanguage();
   const candidates = results?.candidates ?? [];
   const showError = Boolean(error) && !isTechnicalResultsNotFound(error);
   const showEmpty =
     !showError && (empty || (!results && !error) || candidates.length === 0);
+  const passRule = results?.passRule;
+  const histogramNote =
+    typeof passRule?.macdHistogramConvention === "string"
+      ? passRule.macdHistogramConvention
+      : null;
+  const passRuleText =
+    typeof passRule?.passRule === "string" ? passRule.passRule : null;
+  const monthlyPolicy =
+    typeof passRule?.monthlyAsOfPolicy === "string"
+      ? passRule.monthlyAsOfPolicy
+      : null;
 
   return (
     <Tile data-testid="tw-research-technical-results">
@@ -234,6 +276,55 @@ export function TechnicalResultsPanel({
             {t("research.tw.technicalResults.subtitle")}
           </p>
         </div>
+        {results ? (
+          <div
+            className="cds--helper-text-01"
+            data-testid="tw-research-technical-results-identity"
+          >
+            <p>
+              {t("research.tw.technicalResults.scanIdentity", {
+                scanId: results.technicalScanId,
+                tradingDay: results.tradingDay ?? "—",
+              })}
+            </p>
+            {viewingHistorical || results.viewingHistorical ? (
+              <p data-testid="tw-research-technical-results-historical-badge">
+                {t("research.tw.technicalResults.viewingHistorical")}
+              </p>
+            ) : null}
+            <p data-testid="tw-research-technical-results-meta">
+              {t("research.tw.technicalResults.calcMeta", {
+                version: results.calculationVersion ?? "—",
+                priceBasis: results.priceBasis ?? "—",
+                updatedAt: results.scanUpdatedAt ?? "—",
+              })}
+            </p>
+            <p data-testid="tw-research-technical-results-counts">
+              {t("research.tw.technicalResults.counts", {
+                analyzed: Number(results.analyzedCount ?? 0),
+                errors: Number(results.errorCount ?? 0),
+                waiting: Number(results.waitingForHistoryCount ?? 0),
+                insufficient: Number(results.insufficientHistoryCount ?? 0),
+                pending: Number(results.pendingCount ?? 0),
+                processed: Number(results.processedCount ?? 0),
+              })}
+            </p>
+            {histogramNote ? (
+              <p data-testid="tw-research-technical-results-histogram">{histogramNote}</p>
+            ) : null}
+            {passRuleText ? (
+              <p data-testid="tw-research-technical-results-pass-rule">{passRuleText}</p>
+            ) : null}
+            {monthlyPolicy ? (
+              <p data-testid="tw-research-technical-results-monthly-policy">
+                {monthlyPolicy}
+              </p>
+            ) : null}
+            <p data-testid="tw-research-technical-results-provenance-limits">
+              {t("research.tw.technicalResults.provenanceLimits")}
+            </p>
+          </div>
+        ) : null}
         {phase2Message ? (
           <p
             className="cds--helper-text-01"
@@ -279,6 +370,8 @@ export function TechnicalResultsPanel({
                     {candidates.map((row) => {
                       const insufficient = insufficientHistoryReasonText(row, t);
                       const dailyNotRun = dailyNotRunReasonText(row, t);
+                      const monthlyEval = formatPassEvaluation(row.monthlyPassEvaluation);
+                      const dailyEval = formatPassEvaluation(row.dailyPassEvaluation);
                       return (
                         <TableRow
                           key={row.stockId}
@@ -302,6 +395,14 @@ export function TechnicalResultsPanel({
                                   K {formatIndicatorValue(row.monthly.k)} / D{" "}
                                   {formatIndicatorValue(row.monthly.d)}
                                 </div>
+                                {monthlyEval ? (
+                                  <div
+                                    className={styles.reason}
+                                    data-testid="tw-research-tech-pass-eval"
+                                  >
+                                    {monthlyEval}
+                                  </div>
+                                ) : null}
                               </div>
                             ) : (
                               <div>
@@ -333,6 +434,14 @@ export function TechnicalResultsPanel({
                                   K {formatIndicatorValue(row.daily.k)} / D{" "}
                                   {formatIndicatorValue(row.daily.d)}
                                 </div>
+                                {dailyEval ? (
+                                  <div
+                                    className={styles.reason}
+                                    data-testid="tw-research-tech-pass-eval"
+                                  >
+                                    {dailyEval}
+                                  </div>
+                                ) : null}
                               </div>
                             ) : (
                               <div>

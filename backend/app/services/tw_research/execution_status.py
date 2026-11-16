@@ -22,6 +22,11 @@ _PHASE2_TERMINAL_OK = frozenset({"completed_processing", "verified_ready"})
 _PHASE2_ACTIVE = frozenset({"queued", "running", "partial"})
 
 
+def _phase2_now() -> datetime:
+    """Injectable UTC clock for lease / drain freshness (tests)."""
+    return datetime.now(UTC)
+
+
 def _parse_iso(value: object) -> datetime | None:
     if not isinstance(value, str) or not value.strip():
         return None
@@ -267,9 +272,9 @@ def classify_phase2_execution(
             drain_meta = raw
     last_tick_at = phase2_meta.get("lastTickAt") or drain_meta.get("lastTickAt")
     last_tick = _parse_iso(last_tick_at)
+    now = _phase2_now()
     drain_fresh = (
-        last_tick is not None
-        and datetime.now(UTC) - last_tick <= _DRAIN_STALE_AFTER
+        last_tick is not None and now - last_tick <= _DRAIN_STALE_AFTER
     )
     last_outcome = str(phase2_meta.get("lastOutcome") or "")
 
@@ -288,7 +293,7 @@ def classify_phase2_execution(
         parsed_lease = _parse_iso(lease_expires) if lease_expires else None
         if parsed_lease is not None:
             lease_expires_at = parsed_lease.isoformat()
-            lease_active = parsed_lease > datetime.now(UTC)
+            lease_active = parsed_lease > now
         try:
             universe_size = int(
                 scan.get("universeSize")
@@ -412,15 +417,24 @@ def classify_phase2_execution(
         blocker = drain_reason or "first_pass_drain_unavailable"
         next_action = "wait_for_executor"
     elif lease_active and scan_status in _PHASE2_ACTIVE:
+        # Only a live worker lease proves analysis is currently executing.
         state = "actively_analyzing"
         blocker = None
         next_action = "poll_progress"
-    elif drain_fresh and (
-        (processed is not None and int(processed) > 0) or scan_status == "running"
+    elif (
+        available
+        and drain_fresh
+        and scan_status in _PHASE2_ACTIVE
+        and (
+            (remaining is not None and remaining > 0)
+            or has_technical_work is True
+            or (processed is not None and int(processed) > 0)
+        )
     ):
-        state = "actively_analyzing"
+        # Recent drain tick without a live lease → between batches, not active.
+        state = "between_batches"
         blocker = None
-        next_action = "poll_progress"
+        next_action = "waiting_for_next_batch"
     elif available and last_tick is None:
         state = "technical_scan_created"
         blocker = None

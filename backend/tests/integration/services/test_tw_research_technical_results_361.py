@@ -238,3 +238,118 @@ def test_technical_results_get_twice_leaves_revision_unchanged(
     after = store.get(user_id)
     assert after is not None
     assert int(after.revision) == revision_before
+
+
+def test_historical_scan_results_do_not_leak_current_scan_values(
+    db_session, monkeypatch
+) -> None:
+    """Two owned scans with different MACD values must not cross-display."""
+    del db_session
+    if not tw_research_repository.is_available():
+        pytest.skip("tw_research durable store unavailable")
+
+    from app.api.deps import get_effective_user_id
+    from app.main import app
+    from fastapi.testclient import TestClient
+
+    user_id = f"p2hist-{uuid4().hex[:8]}"
+    _ensure_user(user_id)
+
+    service = TwResearchScanService(
+        history_loader=lambda *_a, **_k: ([], 0),
+        stock_loader=lambda stock_id: _tw(stock_id),
+        persist=True,
+    )
+    current = service.create_scan(
+        UniverseSelector(mode="stock_ids", stock_ids=("TW:2330",)),
+        trading_day="2024-06-28",
+        user_id=user_id,
+        now=datetime(2024, 6, 28, 16, 0, tzinfo=TZ),
+    )
+    historical = service.create_scan(
+        UniverseSelector(mode="stock_ids", stock_ids=("TW:2454",)),
+        trading_day="2024-06-20",
+        user_id=user_id,
+        now=datetime(2024, 6, 20, 16, 0, tzinfo=TZ),
+    )
+    persist_symbol(
+        current,
+        SymbolScanRecord(
+            stock_id="TW:2330",
+            stage="B",
+            readiness="technically_qualified",
+            technical_stage=TECHNICAL_STAGE_DAILY_PASS,
+            monthly={
+                "asOf": "2024-05-31",
+                "dif": 1.11,
+                "signal": 0.5,
+                "osc": 0.61,
+                "k": 60.0,
+                "d": 55.0,
+                "barCount": 40,
+                "quality": "ok",
+                "passStatus": "pass",
+                "timeframe": "monthly",
+            },
+        ),
+    )
+    persist_symbol(
+        historical,
+        SymbolScanRecord(
+            stock_id="TW:2454",
+            stage="B",
+            readiness="technically_qualified",
+            technical_stage=TECHNICAL_STAGE_DAILY_PASS,
+            monthly={
+                "asOf": "2024-04-30",
+                "dif": 7.77,
+                "signal": 1.0,
+                "osc": 6.77,
+                "k": 80.0,
+                "d": 70.0,
+                "barCount": 40,
+                "quality": "ok",
+                "passStatus": "pass",
+                "timeframe": "monthly",
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        "app.services.tw_research.scan.tw_research_scan_service",
+        service,
+    )
+    store = research_run_store
+    store.begin_phase1(user_id, trading_day="2024-06-28")
+    with store._lock:  # noqa: SLF001
+        locked = store._require_locked(user_id)
+        locked.phase = "phase2_technical"
+        locked.status = "running"
+        locked.gates["candidateSelection"] = "approved"
+        locked.technical_scan_id = current.scan_id
+        store._persist_locked(locked)
+
+    app.dependency_overrides[get_effective_user_id] = lambda: user_id
+    try:
+        client = TestClient(app)
+        hist = client.get(
+            f"/api/tw-research/research-runs/technical-results?scanId={historical.scan_id}"
+        )
+        assert hist.status_code == 200, hist.text
+        hist_body = hist.json()
+        assert hist_body["technicalScanId"] == historical.scan_id
+        assert hist_body["viewingHistorical"] is True
+        assert hist_body["candidates"][0]["monthly"]["dif"] == 7.77
+        assert hist_body["phase2Execution"] is None
+
+        cur = client.get("/api/tw-research/research-runs/technical-results")
+        assert cur.status_code == 200, cur.text
+        cur_body = cur.json()
+        assert cur_body["technicalScanId"] == current.scan_id
+        assert cur_body["candidates"][0]["monthly"]["dif"] == 1.11
+
+        # Must not reattach historical scan onto the run.
+        after = store.get(user_id)
+        assert after is not None
+        assert after.technical_scan_id == current.scan_id
+    finally:
+        app.dependency_overrides.pop(get_effective_user_id, None)

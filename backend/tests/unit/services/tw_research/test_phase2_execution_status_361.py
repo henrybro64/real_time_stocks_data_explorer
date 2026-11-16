@@ -79,7 +79,7 @@ def test_executor_not_ticking_when_stale(monkeypatch) -> None:
     assert result["state"] == "executor_not_ticking"
 
 
-def test_actively_analyzing_with_fresh_tick(monkeypatch) -> None:
+def test_fresh_tick_without_lease_is_between_batches(monkeypatch) -> None:
     monkeypatch.setattr(
         "app.services.tw_research.execution_status.first_pass_drain_availability",
         lambda user_id: (True, None),
@@ -97,7 +97,64 @@ def test_actively_analyzing_with_fresh_tick(monkeypatch) -> None:
             "universeSize": 5,
         },
     )
+    assert result["state"] == "between_batches"
+    assert result["leaseActive"] is False
+
+
+def test_actively_analyzing_requires_live_lease(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.services.tw_research.execution_status.first_pass_drain_availability",
+        lambda user_id: (True, None),
+    )
+    clock = datetime(2024, 6, 28, 4, 0, tzinfo=UTC)
+    monkeypatch.setattr(
+        "app.services.tw_research.execution_status._phase2_now",
+        lambda: clock,
+    )
+    result = classify_phase2_execution(
+        _run(
+            dimensions={
+                "firstPassDrain": {"lastTickAt": clock.isoformat()}
+            }
+        ),
+        scan={
+            "status": "running",
+            "remainingCount": 3,
+            "processedCount": 2,
+            "universeSize": 5,
+            "reserveExpiresAt": "2024-06-28T04:10:00+00:00",
+        },
+    )
     assert result["state"] == "actively_analyzing"
+    assert result["leaseActive"] is True
+
+
+def test_expired_lease_not_actively_analyzing(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.services.tw_research.execution_status.first_pass_drain_availability",
+        lambda user_id: (True, None),
+    )
+    clock = datetime(2024, 6, 28, 4, 0, tzinfo=UTC)
+    monkeypatch.setattr(
+        "app.services.tw_research.execution_status._phase2_now",
+        lambda: clock,
+    )
+    result = classify_phase2_execution(
+        _run(
+            dimensions={
+                "firstPassDrain": {"lastTickAt": clock.isoformat()}
+            }
+        ),
+        scan={
+            "status": "running",
+            "remainingCount": 3,
+            "processedCount": 2,
+            "universeSize": 5,
+            "reserveExpiresAt": "2024-06-28T03:50:00+00:00",
+        },
+    )
+    assert result["state"] == "between_batches"
+    assert result["leaseActive"] is False
 
 
 def test_waiting_for_budget_window(monkeypatch) -> None:

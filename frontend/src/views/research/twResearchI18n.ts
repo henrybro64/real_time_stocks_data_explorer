@@ -305,9 +305,54 @@ const TW_RESEARCH_ROWS = [
     "分析中…技術分析正在背景執行。可關閉此頁，進度會自動儲存。",
   ],
   [
+    "research.tw.phase2Execution.betweenBatches",
+    "Between batches… A recent worker tick finished; waiting for the next batch. This is not an active lease.",
+    "批次之間…最近一次背景執行已結束，等待下一批。這不是正在執行中的鎖定。",
+  ],
+  [
     "research.tw.phase2Execution.waitingForBudgetWindow",
     "Waiting for a historical-data budget window. If today's window cap was reached, technical analysis continues on the next trading day.",
     "等待歷史資料預算視窗。若今日視窗已達上限，技術分析會在下一個交易日繼續。",
+  ],
+  [
+    "research.tw.flow.stage1",
+    "1. Choose research stocks",
+    "1. 選擇研究股票",
+  ],
+  [
+    "research.tw.flow.stage2",
+    "2. Collect and check market data",
+    "2. 收集與檢查市場資料",
+  ],
+  [
+    "research.tw.flow.stage3",
+    "3. Pick stocks for deeper analysis",
+    "3. 挑選深入分析股票",
+  ],
+  [
+    "research.tw.flow.stage4",
+    "4. Technical analysis and research results",
+    "4. 技術分析與研究結果",
+  ],
+  [
+    "research.tw.flow.currentStage",
+    "Current stage",
+    "目前階段",
+  ],
+  [
+    "research.tw.flow.aria",
+    "Research workflow stages",
+    "研究流程階段",
+  ],
+  [
+    "research.tw.flow.secondaryHistory",
+    "Past research records",
+    "過往研究紀錄",
+  ],
+  [
+    "research.tw.flow.secondaryProgress",
+    "Progress and data quality (details)",
+    "進度與資料品質（細節）",
   ],
   [
     "research.tw.phase2Execution.completed",
@@ -398,6 +443,31 @@ const TW_RESEARCH_ROWS = [
     "research.tw.technicalResults.loadError",
     "Unable to load technical results right now; will retry automatically.",
     "暫時無法載入技術結果，稍後自動重試",
+  ],
+  [
+    "research.tw.technicalResults.scanIdentity",
+    "Scan {scanId} · research day {tradingDay}",
+    "掃描 {scanId} · 研究日 {tradingDay}",
+  ],
+  [
+    "research.tw.technicalResults.viewingHistorical",
+    "Viewing a historical scan (not the current managed run).",
+    "正在檢視歷史掃描（非目前管理中的研究流程）。",
+  ],
+  [
+    "research.tw.technicalResults.calcMeta",
+    "Calculation version {version} · price basis {priceBasis} · scan updated {updatedAt}",
+    "計算版本 {version} · 價格基準 {priceBasis} · 掃描更新 {updatedAt}",
+  ],
+  [
+    "research.tw.technicalResults.counts",
+    "Verified indicators {analyzed} · errors {errors} · waiting for budget {waiting} · insufficient history {insufficient} · pending {pending} · processed {processed}",
+    "已驗證指標 {analyzed} · 錯誤 {errors} · 等待預算 {waiting} · 歷史不足 {insufficient} · 待處理 {pending} · 已處理 {processed}",
+  ],
+  [
+    "research.tw.technicalResults.provenanceLimits",
+    "Provider/source and full history date ranges are not persisted on indicator snapshots; missing fields stay blank.",
+    "供應來源與完整歷史區間未持久化在指標快照中；缺漏欄位保持空白，不會臆造。",
   ],
   ["research.tw.technicalResults.result.pass", "Pass", "通過"],
   ["research.tw.technicalResults.result.fail", "Fail", "未通過"],

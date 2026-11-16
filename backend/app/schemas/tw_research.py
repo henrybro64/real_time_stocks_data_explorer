@@ -359,6 +359,20 @@ class TechnicalInsufficientHistory(BaseModel):
     timeframe: str
 
 
+class TechnicalPassComponent(BaseModel):
+    component: str
+    value: float | None = None
+    threshold: str
+    passed: bool | None = None
+    missing: bool = False
+
+
+class TechnicalPassEvaluation(BaseModel):
+    passStatus: str | None = None
+    quality: str | None = None
+    components: list[TechnicalPassComponent] = Field(default_factory=list)
+
+
 class TechnicalResultCandidate(BaseModel):
     stockId: str
     name: str | None = None
@@ -369,10 +383,12 @@ class TechnicalResultCandidate(BaseModel):
     insufficientHistory: TechnicalInsufficientHistory | None = None
     rejectionReason: str | None = None
     dailyNotRunReason: str | None = None
+    monthlyPassEvaluation: TechnicalPassEvaluation | None = None
+    dailyPassEvaluation: TechnicalPassEvaluation | None = None
 
 
 class TechnicalResultsResponse(BaseModel):
-    """Stage-4 read model for the current run's technical scan (#361)."""
+    """Stage-4 read model for a user-owned technical scan (#361)."""
 
     researchRunId: str | None = None
     technicalScanId: str
@@ -380,13 +396,19 @@ class TechnicalResultsResponse(BaseModel):
     tradingDay: str | None = None
     calculationVersion: str | None = None
     priceBasis: str | None = None
+    scanUpdatedAt: str | None = None
     universeSize: int = 0
     processedCount: int = 0
     remainingCount: int = 0
     analyzedCount: int = 0
+    errorCount: int = 0
+    pendingCount: int = 0
     insufficientHistoryCount: int = 0
     waitingForHistoryCount: int = 0
+    viewingHistorical: bool = False
+    isCurrentRunScan: bool = True
     phase2Execution: dict[str, Any] | None = None
+    passRule: dict[str, Any] | None = None
     candidates: list[TechnicalResultCandidate] = Field(default_factory=list)
     requiredBars: dict[str, int] = Field(default_factory=dict)
 
