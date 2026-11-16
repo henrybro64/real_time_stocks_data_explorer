@@ -391,9 +391,13 @@ export function ResearchInvestorSummary({
 export function AdvancedDetailsDisclosure({
   children,
   defaultOpen = false,
+  titleKey = "research.tw.advancedTitle",
+  hintKey = "research.tw.advancedHint",
 }: {
   children: ReactNode;
   defaultOpen?: boolean;
+  titleKey?: TranslationKey;
+  hintKey?: TranslationKey;
 }) {
   const { t } = useLanguage();
   return (
@@ -402,10 +406,8 @@ export function AdvancedDetailsDisclosure({
       open={defaultOpen || undefined}
       style={{ marginTop: 8 }}
     >
-      <summary className="cds--productive-heading-01">
-        {t("research.tw.advancedTitle")}
-      </summary>
-      <p className="cds--helper-text-01">{t("research.tw.advancedHint")}</p>
+      <summary className="cds--productive-heading-01">{t(titleKey)}</summary>
+      <p className="cds--helper-text-01">{t(hintKey)}</p>
       {children}
     </details>
   );

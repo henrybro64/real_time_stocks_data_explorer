@@ -31,6 +31,21 @@ const TW_RESEARCH_ROWS = [
     "輸出目標（不放寬通過條件）",
   ],
   ["research.tw.createScan", "Create scan", "建立掃描"],
+  [
+    "research.tw.technicalPrimaryHint",
+    "For ordinary research, start technical analysis only after you approve candidates above. Standalone create-scan controls stay in advanced tools.",
+    "一般研究請先在上方核准候選股票後再開始技術分析。獨立「建立掃描」僅保留在進階工具。",
+  ],
+  [
+    "research.tw.advancedLegacyScanTools",
+    "Advanced: legacy scan tools",
+    "進階：舊版掃描工具",
+  ],
+  [
+    "research.tw.advancedLegacyScanToolsNote",
+    "Operator fallback only. Prefer the approved-candidate technical start above so research stays on one managed workflow.",
+    "僅供維運備援。請優先使用上方「核准候選後開始技術分析」，維持單一研究流程。",
+  ],
   ["research.tw.runBatch", "Run scan batch", "執行掃描批次"],
   ["research.tw.resumeBudget", "Resume budget window", "恢復歷史預算視窗"],
   [
@@ -84,23 +99,28 @@ const TW_RESEARCH_ROWS = [
   ["research.tw.startFirstPass", "Start first-round data collection", "開始第一輪資料收集"],
   [
     "research.tw.execution.executorUnavailable",
-    "Job ready, but automatic collection is not available yet. Progress will wait until the executor is enabled, or use the advanced manual batch as a fallback.",
-    "工作已建立，但自動收集尚未可用。啟用執行器前會暫停；必要時可使用進階手動批次作為備援。",
+    "Automatic collection is not available yet. Saved progress is kept. Press Start again after collection is enabled, or wait — do not expect new data until then.",
+    "自動收集尚未可用，已儲存的進度會保留。啟用後請再按「開始研究」，或稍候；在此之前不會有新資料。",
+  ],
+  [
+    "research.tw.execution.jobCreated",
+    "Research is ready. Press Start again to begin automatic collection when it is available.",
+    "研究已就緒。自動收集可用時，請再按「開始研究」開始。",
   ],
   [
     "research.tw.execution.authorizedWaiting",
-    "Collection authorized. Waiting for the next worker tick — this is not idle failure.",
-    "已授權收集，正在等待下一次工作排程（這不是失敗）。",
+    "Collection is authorized and waiting for the next automatic run. This is normal — not a failure.",
+    "已授權收集，正在等待下一次自動執行。這是正常狀態，不是失敗。",
   ],
   [
     "research.tw.execution.activelyCollecting",
-    "Collection is actively leased and running.",
-    "正在進行資料收集（已取得租約）。",
+    "Collection is running in the background. You can close this page; progress is saved.",
+    "正在背景收集資料。可關閉此頁，進度會自動儲存。",
   ],
   [
     "research.tw.execution.executorNotTicking",
-    "Collection is authorized, but the drain executor has not ticked recently. Wait or contact the operator — this is not active collecting.",
-    "已授權收集，但自動排程最近沒有執行。請稍候或聯絡管理員（這不是正在收集）。",
+    "Collection is authorized, but no automatic run has started yet. Wait a few minutes, then refresh — this is not active collecting.",
+    "已授權收集，但自動執行尚未開始。請稍候數分鐘後重新整理（這不是正在收集）。",
   ],
   [
     "research.tw.startResearchViewProgress",
@@ -907,13 +927,13 @@ const TW_RESEARCH_ROWS = [
   ],
   [
     "research.tw.nextAction.not_started_auto",
-    "Next: wait for automatic collection. Use the advanced manual batch only as a fallback.",
-    "下一步：等待自動收集。進階手動批次僅作備援。",
+    "Next: wait for automatic collection. Reloading this page is safe.",
+    "下一步：等待自動收集。重新整理頁面不會中斷進度。",
   ],
   [
     "research.tw.nextAction.not_started_manual",
-    "Next: automatic collection is not active right now. Use the advanced manual batch as a fallback, or start research again after automatic collection is enabled.",
-    "下一步：目前沒有自動收集。請用進階手動批次作備援，或等自動收集啟用後再開始研究。",
+    "Next: automatic collection is not active. Press Start again after it is enabled, or wait.",
+    "下一步：目前沒有自動收集。啟用後請再按「開始研究」，或稍候。",
   ],
   [
     "research.tw.nextAction.collecting_now",
@@ -927,13 +947,13 @@ const TW_RESEARCH_ROWS = [
   ],
   [
     "research.tw.nextAction.paused_auto_stale",
-    "Next: automatic collection may not be working. Use the advanced manual batch as a fallback, or check again later.",
-    "下一步：自動收集可能沒有運作。可使用進階手動批次作備援，或稍後再回來查看。",
+    "Next: automatic collection may not be working. Wait a few minutes and refresh, or press Start again.",
+    "下一步：自動收集可能沒有運作。請稍候數分鐘後重新整理，或再按「開始研究」。",
   ],
   [
     "research.tw.nextAction.paused_manual",
-    "Next: nothing is collecting right now. Use the advanced manual batch to continue, or start research again.",
-    "下一步：目前沒有任何收集在執行。請用進階手動批次繼續，或重新開始研究。",
+    "Next: nothing is collecting right now. Press Start again when automatic collection is available.",
+    "下一步：目前沒有任何收集在執行。自動收集可用時請再按「開始研究」。",
   ],
   [
     "research.tw.nextAction.waiting_retry",

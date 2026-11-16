@@ -111,8 +111,8 @@ describe("ResearchInvestorSummary", () => {
     });
     expect(text("tw-research-plain-status")).toBe("目前暫停：沒有正在執行的收集");
     expect(text("tw-research-plain-status")).not.toMatch(/正在收集/);
-    expect(text("tw-research-next-action")).not.toMatch(/重新整理/);
-    expect(text("tw-research-next-action")).toMatch(/手動批次/);
+    expect(text("tw-research-next-action")).toMatch(/開始研究/);
+    expect(text("tw-research-next-action")).not.toMatch(/手動批次/);
   });
 
   it("paused_manual English copy", async () => {
@@ -121,7 +121,8 @@ describe("ResearchInvestorSummary", () => {
       "en",
     );
     expect(text("tw-research-plain-status")).toBe("Paused: no collection is running");
-    expect(text("tw-research-next-action")).not.toMatch(/reload/i);
+    expect(text("tw-research-next-action")).toMatch(/Start again|Press Start/i);
+    expect(text("tw-research-next-action")).not.toMatch(/manual batch/i);
   });
 
   it("paused_auto shows the last run formatted in Taipei time, not raw ISO", async () => {

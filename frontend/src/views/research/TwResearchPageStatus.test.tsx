@@ -1171,7 +1171,7 @@ describe("TwResearchPage Start retry when queued without job (#365)", () => {
     });
   });
 
-  it("disables Start when an authoritative job is attached and armed", async () => {
+  it("shows View progress (enabled) when an authoritative job is attached and armed", async () => {
     seed({
       run: {
         status: "queued",
@@ -1188,7 +1188,7 @@ describe("TwResearchPage Start retry when queued without job (#365)", () => {
     renderPage("en");
     const start = await screen.findByTestId("tw-research-start-full-research");
     await waitFor(() => {
-      expect(start).toBeDisabled();
+      expect(start).toBeEnabled();
     });
     expect(start).toHaveTextContent(/View progress|查看進度/i);
     expect(screen.queryByTestId("tw-research-start-retry-hint")).toBeNull();
@@ -1237,9 +1237,9 @@ describe("TwResearchPage Start retry when queued without job (#365)", () => {
     });
     expect(
       await screen.findByTestId("tw-research-execution-status"),
-    ).toHaveTextContent(/has not ticked|沒有執行/i);
+    ).toHaveTextContent(/no automatic run has started|尚未開始/i);
     expect(screen.getByTestId("tw-research-execution-status")).not.toHaveTextContent(
-      /actively collecting|正在進行資料收集/i,
+      /actively collecting|正在背景收集|正在進行資料收集/i,
     );
   });
 });

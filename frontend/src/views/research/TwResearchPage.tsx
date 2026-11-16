@@ -1432,8 +1432,11 @@ export function TwResearchPage({
   };
 
   const executionMessageFromState = (state: string): string | null => {
-    if (state === "executor_unavailable" || state === "job_created") {
+    if (state === "executor_unavailable") {
       return t("research.tw.execution.executorUnavailable");
+    }
+    if (state === "job_created") {
+      return t("research.tw.execution.jobCreated");
     }
     if (state === "executor_not_ticking") {
       return t("research.tw.execution.executorNotTicking");
@@ -2416,11 +2419,14 @@ export function TwResearchPage({
                   kind="primary"
                   size="sm"
                   data-testid="tw-research-start-full-research"
-                  disabled={
-                    startFullResearchMutation.isPending || runIsActiveNonTerminal
-                  }
+                  disabled={startFullResearchMutation.isPending}
                   onClick={() => {
-                    if (runIsActiveNonTerminal) return;
+                    if (runIsActiveNonTerminal) {
+                      document
+                        .querySelector('[data-testid="tw-research-investor-summary"]')
+                        ?.scrollIntoView({ behavior: "smooth", block: "start" });
+                      return;
+                    }
                     startFullResearchMutation.mutate();
                   }}
                 >
@@ -3542,98 +3548,116 @@ export function TwResearchPage({
                 <SelectItem value="10" text="10" />
                 <SelectItem value="20" text="20" />
               </Select>
-              <Stack gap={3} orientation="horizontal">
-                {(
-                  [
-                    {
-                      key: "create",
-                      kind: "primary" as const,
-                      label: "research.tw.createScan" as const,
-                      disabled: busy,
-                      onClick: () => {
-                        if (createGuard.current || createMutation.isPending) return;
-                        const persisted = (listQuery.data?.scans ?? []).find(
-                          (item) =>
-                            ACTIVE_SCAN_STATUSES.has(item.status) &&
-                            item.tradingDay === requestedTradingDay &&
-                            researchSelectionKey({
-                              mode: item.selectorMode,
-                              targetCount: item.targetCount,
-                              stockIds: item.stockIds,
-                              themeKeys: item.themeKeys,
-                            }) === selectionKey,
-                        );
-                        if (persisted) {
-                          setScanId(persisted.scanId);
-                          setActiveSelectionKey(selectionKey);
-                          setKeptExistingScan(true);
-                          return;
-                        }
-                        if (scanId && selectionKey === activeSelectionKey) {
-                          setKeptExistingScan(true);
-                          return;
-                        }
-                        createGuard.current = true;
-                        setKeptExistingScan(false);
-                        createMutation.mutate(selectionKey);
-                      },
-                    },
-                    {
-                      key: "batch",
-                      kind: "secondary" as const,
-                      label: "research.tw.runBatch" as const,
-                      disabled:
-                        busy ||
-                        !scanId ||
-                        (displayStatus !== "" && !ACTIVE_SCAN_STATUSES.has(displayStatus)),
-                      onClick: () => batchMutation.mutate(),
-                    },
-                    {
-                      key: "resume",
-                      kind: "tertiary" as const,
-                      label: "research.tw.resumeBudget" as const,
-                      disabled: busy || !scanId || displayStatus !== "budget_exhausted",
-                      onClick: () => resumeMutation.mutate(),
-                    },
-                    {
-                      key: "enrich",
-                      kind: "tertiary" as const,
-                      label: "research.tw.runEnrichment" as const,
-                      disabled: busy || !scanId,
-                      onClick: () => enrichMutation.mutate(),
-                    },
-                    {
-                      key: "refresh",
-                      kind: "ghost" as const,
-                      label: "research.tw.refresh" as const,
-                      disabled: busy || !scanId,
-                      onClick: () => refreshMutation.mutate(),
-                    },
-                  ]
-                ).map((action) => (
-                  <Button
-                    key={action.key}
-                    size="md"
-                    kind={action.kind}
-                    disabled={action.disabled}
-                    data-testid={`tw-research-${action.key}`}
-                    onClick={action.onClick}
-                  >
-                    {t(action.label)}
-                  </Button>
-                ))}
-              </Stack>
-              {keptExistingScan ? (
-                <p className="cds--helper-text-01" data-testid="tw-research-existing-scan">
-                  {t("research.tw.existingScanKept")}
-                </p>
-              ) : null}
-              {displayStatus === "budget_exhausted" ? (
-                <p className="cds--helper-text-01" data-testid="tw-research-budget-exhausted">
-                  {t("research.tw.budgetExhausted")}
-                </p>
-              ) : null}
-              {busy ? <InlineLoading description={t("research.tw.working")} /> : null}
+              <p className="cds--helper-text-01" data-testid="tw-research-technical-primary-hint">
+                {t("research.tw.technicalPrimaryHint")}
+              </p>
+              <AdvancedDetailsDisclosure
+                titleKey="research.tw.advancedLegacyScanTools"
+                hintKey="research.tw.advancedLegacyScanToolsNote"
+              >
+                <Stack gap={3}>
+                  <Stack gap={3} orientation="horizontal">
+                    {(
+                      [
+                        {
+                          key: "create",
+                          kind: "ghost" as const,
+                          label: "research.tw.createScan" as const,
+                          disabled: busy,
+                          onClick: () => {
+                            if (createGuard.current || createMutation.isPending) return;
+                            const persisted = (listQuery.data?.scans ?? []).find(
+                              (item) =>
+                                ACTIVE_SCAN_STATUSES.has(item.status) &&
+                                item.tradingDay === requestedTradingDay &&
+                                researchSelectionKey({
+                                  mode: item.selectorMode,
+                                  targetCount: item.targetCount,
+                                  stockIds: item.stockIds,
+                                  themeKeys: item.themeKeys,
+                                }) === selectionKey,
+                            );
+                            if (persisted) {
+                              setScanId(persisted.scanId);
+                              setActiveSelectionKey(selectionKey);
+                              setKeptExistingScan(true);
+                              return;
+                            }
+                            if (scanId && selectionKey === activeSelectionKey) {
+                              setKeptExistingScan(true);
+                              return;
+                            }
+                            createGuard.current = true;
+                            setKeptExistingScan(false);
+                            createMutation.mutate(selectionKey);
+                          },
+                        },
+                        {
+                          key: "batch",
+                          kind: "ghost" as const,
+                          label: "research.tw.runBatch" as const,
+                          disabled:
+                            busy ||
+                            !scanId ||
+                            (displayStatus !== "" &&
+                              !ACTIVE_SCAN_STATUSES.has(displayStatus)),
+                          onClick: () => batchMutation.mutate(),
+                        },
+                        {
+                          key: "resume",
+                          kind: "ghost" as const,
+                          label: "research.tw.resumeBudget" as const,
+                          disabled:
+                            busy || !scanId || displayStatus !== "budget_exhausted",
+                          onClick: () => resumeMutation.mutate(),
+                        },
+                        {
+                          key: "enrich",
+                          kind: "ghost" as const,
+                          label: "research.tw.runEnrichment" as const,
+                          disabled: busy || !scanId,
+                          onClick: () => enrichMutation.mutate(),
+                        },
+                        {
+                          key: "refresh",
+                          kind: "ghost" as const,
+                          label: "research.tw.refresh" as const,
+                          disabled: busy || !scanId,
+                          onClick: () => refreshMutation.mutate(),
+                        },
+                      ]
+                    ).map((action) => (
+                      <Button
+                        key={action.key}
+                        size="md"
+                        kind={action.kind}
+                        disabled={action.disabled}
+                        data-testid={`tw-research-${action.key}`}
+                        onClick={action.onClick}
+                      >
+                        {t(action.label)}
+                      </Button>
+                    ))}
+                  </Stack>
+                  {keptExistingScan ? (
+                    <p
+                      className="cds--helper-text-01"
+                      data-testid="tw-research-existing-scan"
+                    >
+                      {t("research.tw.existingScanKept")}
+                    </p>
+                  ) : null}
+                  {displayStatus === "budget_exhausted" ? (
+                    <p
+                      className="cds--helper-text-01"
+                      data-testid="tw-research-budget-exhausted"
+                    >
+                      {t("research.tw.budgetExhausted")}
+                    </p>
+                  ) : null}
+                  {busy ? <InlineLoading description={t("research.tw.working")} /> : null}
+                </Stack>
+              </AdvancedDetailsDisclosure>
             </Stack>
           </Tile>
 
