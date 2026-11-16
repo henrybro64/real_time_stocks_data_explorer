@@ -174,6 +174,24 @@ describe("TechnicalResultsPanel (#361)", () => {
     expect(screen.getAllByText("等待歷史資料預算").length).toBeGreaterThan(0);
   });
 
+  it("shows symbol-error chip instead of pending", async () => {
+    await renderPanel({
+      ...sampleResults,
+      candidates: [
+        {
+          stockId: "TW:2303",
+          name: "聯電",
+          overallStageResult: "error",
+          rejectionReason: "symbol_error:TimeoutError",
+          monthly: null,
+          daily: null,
+        },
+      ],
+    });
+    expect(screen.getAllByText("標的錯誤").length).toBeGreaterThan(0);
+    expect(screen.queryByText("待分析")).not.toBeInTheDocument();
+  });
+
   it("shows daily-not-run reason", async () => {
     await renderPanel(sampleResults);
     const reasons = screen.getAllByTestId("tw-research-tech-daily-not-run-reason");

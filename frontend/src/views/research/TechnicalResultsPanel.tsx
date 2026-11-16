@@ -71,7 +71,12 @@ function passChipKind(
   result: string,
 ): "green" | "red" | "gray" | "blue" | "purple" | "teal" {
   if (result === "pass") return "green";
-  if (result === "fail" || result === "monthly_fail" || result === "daily_fail") {
+  if (
+    result === "fail" ||
+    result === "monthly_fail" ||
+    result === "daily_fail" ||
+    result === "error"
+  ) {
     return "red";
   }
   if (result === "insufficient_history") return "purple";
@@ -83,6 +88,7 @@ function passChipKind(
 const RESULT_LABEL_KEYS: Record<string, TranslationKey> = {
   pass: "research.tw.technicalResults.result.pass",
   fail: "research.tw.technicalResults.result.fail",
+  error: "research.tw.technicalResults.result.error",
   insufficient_history: "research.tw.technicalResults.result.insufficient_history",
   waiting_for_history: "research.tw.technicalResults.result.waiting_for_history",
   daily_not_run: "research.tw.technicalResults.result.daily_not_run",

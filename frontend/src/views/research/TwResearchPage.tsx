@@ -1300,10 +1300,16 @@ export function TwResearchPage({
 
   useEffect(() => {
     const techId = researchRunQuery.data?.technicalScanId;
-    if (typeof techId === "string" && techId && techId !== scanId) {
-      setScanId(techId);
+    if (typeof techId !== "string" || !techId || techId === scanId) {
+      return;
     }
-  }, [researchRunQuery.data?.technicalScanId, scanId]);
+    // Preserve an explicitly requested historical scan from ?scan= / initialScanId.
+    // Adopt the managed run-owned scan only when no scan was requested.
+    if (initialScanId && initialScanId !== techId) {
+      return;
+    }
+    setScanId(techId);
+  }, [researchRunQuery.data?.technicalScanId, scanId, initialScanId]);
 
   useEffect(() => {
     if (!scanId || typeof window === "undefined") return;

@@ -402,6 +402,11 @@ const TW_RESEARCH_ROWS = [
   ["research.tw.technicalResults.result.pass", "Pass", "通過"],
   ["research.tw.technicalResults.result.fail", "Fail", "未通過"],
   [
+    "research.tw.technicalResults.result.error",
+    "Symbol error",
+    "標的錯誤",
+  ],
+  [
     "research.tw.technicalResults.result.insufficient_history",
     "Insufficient history",
     "歷史不足",

@@ -202,6 +202,9 @@ _BASE_DRAIN_NOTES = (
     "Phase-2 drains only an already-attached run-owned technical scan after approval.",
 )
 _BLOCKED_RUN_STATUSES = frozenset({"failed", "budget_exhausted", "cancelled"})
+# Phase-2 may still resume a daily budget window after run status is
+# ``budget_exhausted`` (recoverable until failed/cancelled).
+_PHASE2_BLOCKED_RUN_STATUSES = frozenset({"failed", "cancelled"})
 _TERMINAL_JOB_STATUSES = frozenset(
     {"completed", "partial", "failed", "budget_exhausted"}
 )
@@ -477,7 +480,7 @@ def _build_phase2_step(run: ResearchRun, *, batch_size: int) -> dict[str, Any]:
         "budgetCap": PHASE2_MAX_BUDGET_WINDOWS_PER_DAY,
         "coverage": None,
     }
-    if str(run.status or "") in _BLOCKED_RUN_STATUSES:
+    if str(run.status or "") in _PHASE2_BLOCKED_RUN_STATUSES:
         step["reason"] = f"run_status_{run.status}"
         return step
     if not _phase2_enabled(run):
@@ -997,11 +1000,13 @@ def _dry_run_outcome_for_run(
 ) -> str:
     if _phase1_eligible(run, target_job=target_job):
         return "dry_run_ready"
-    if str(run.status or "") in _BLOCKED_RUN_STATUSES:
-        return "dry_run_run_status_blocked"
     step = phase2_step or {}
+    # Recoverable Phase-2 budget exhaustion can still resume — prefer that over
+    # treating run.status=budget_exhausted as a hard block.
     if step.get("action") in {"run_technical_batch", "resume_budget_and_run"}:
         return "dry_run_phase2_ready"
+    if str(run.status or "") in _BLOCKED_RUN_STATUSES:
+        return "dry_run_run_status_blocked"
     if _candidate_approved(run) and run.technical_scan_id:
         return "dry_run_phase2_ready"
     if run.phase == "phase1_first_pass" and not run.schedule_enabled:

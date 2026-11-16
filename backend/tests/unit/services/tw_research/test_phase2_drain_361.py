@@ -145,6 +145,69 @@ def test_phase2_tick_runs_one_batch_when_approved(monkeypatch) -> None:
     assert result.as_dict()["phase2AutoStart"] is False
 
 
+def test_run_status_budget_exhausted_still_resumes(monkeypatch) -> None:
+    """Reconciled run.status=budget_exhausted must not block Phase-2 resume."""
+    _enable(monkeypatch)
+    _approved_phase2_run()
+    with research_run_store._lock:  # noqa: SLF001
+        locked = research_run_store._require_locked("owner")
+        locked.status = "budget_exhausted"
+        research_run_store._persist_locked(locked)
+
+    resumes: list[str] = []
+    batches: list[str] = []
+    state = _fake_scan(
+        scan_id="scan_owned",
+        user_id="owner",
+        status="budget_exhausted",
+        cursor=1,
+        remaining=2,
+        stock_ids=("TW:2330", "TW:2454", "TW:2303"),
+        records={
+            "TW:2330": _Rec(),
+            "TW:2454": _Rec(rejection_reason=HISTORY_BUDGET_EXHAUSTED_REASON),
+        },
+        budget_windows_opened=1,
+    )
+    monkeypatch.setattr(
+        "app.services.tw_research.first_pass_drain.tw_research_scan_service.get_scan",
+        lambda scan_id: state,
+    )
+
+    def resume(scan_id, **_kwargs):
+        resumes.append(scan_id)
+        state.status = "running"
+        state.budget_windows_opened = 2
+        state.records["TW:2454"] = _Rec()
+        return state
+
+    def batch(scan_id, **_kwargs):
+        batches.append(scan_id)
+        state.cursor = 3
+        state.status = "running"
+        return state
+
+    monkeypatch.setattr(
+        "app.services.tw_research.first_pass_drain.tw_research_scan_service.resume_budget_window",
+        resume,
+    )
+    monkeypatch.setattr(
+        "app.services.tw_research.first_pass_drain.tw_research_scan_service.run_batch",
+        batch,
+    )
+    monkeypatch.setattr(
+        research_run_store,
+        "reconcile",
+        lambda user_id: research_run_store.get(user_id),
+    )
+
+    result = drain_authorized_first_pass(user_id="owner", enabled=True, dry_run=False)
+    assert resumes == ["scan_owned"]
+    assert batches == ["scan_owned"]
+    assert result.outcome == "phase2_batch_ran"
+    assert "budget_window_resumed" in result.notes
+
+
 def test_budget_exhausted_resumes_once_then_batch(monkeypatch) -> None:
     _enable(monkeypatch)
     _approved_phase2_run()

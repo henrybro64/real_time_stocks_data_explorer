@@ -347,41 +347,79 @@ describe("TwResearchPage persisted scans (#327)", () => {
     );
   });
 
-  it("attaches the run-owned technical scan id when the research run provides it", async () => {
+  it("attaches the run-owned technical scan id when no scan was requested", async () => {
     const user = userEvent.setup();
-    const older = "ddbbf9c7-9fb2-447e-a393-780b6da27611";
+    const managed = "ddbbf9c7-9fb2-447e-a393-780b6da27611";
     vi.mocked(fetchTwResearchRunCurrent).mockResolvedValue({
       researchRunId: "rr_tech",
       userId: "u1",
       phase: "phase2_technical",
       status: "running",
-      technicalScanId: older,
+      technicalScanId: managed,
       gates: { candidateSelection: "approved" },
       phase2Execution: { state: "actively_analyzing" },
     } as never);
     vi.mocked(fetchTwResearchScan).mockImplementation(async (id: string) =>
       queuedScan({
         scanId: id,
-        status: id === older ? "running" : "queued",
-        processedCount: id === older ? 10 : 0,
-        remainingCount: id === older ? 63 : 73,
+        status: id === managed ? "running" : "queued",
+        processedCount: id === managed ? 10 : 0,
+        remainingCount: id === managed ? 63 : 73,
       }),
     );
     vi.mocked(fetchTwResearchScanProgress).mockImplementation(async (id: string) =>
       progress({
         scanId: id,
-        status: id === older ? "running" : "queued",
-        processedCount: id === older ? 10 : 0,
-        remainingCount: id === older ? 63 : 73,
+        status: id === managed ? "running" : "queued",
+        processedCount: id === managed ? 10 : 0,
+        remainingCount: id === managed ? 63 : 73,
       }),
     );
-    renderPage({ initialScanId: SCAN_ID });
+    renderPage({ initialScanId: null });
     await user.click(await screen.findByTestId("tw-research-tab-progress"));
     await waitFor(() => {
-      expect(screen.getByLabelText("研究紀錄編號")).toHaveValue(older);
+      expect(screen.getByLabelText("研究紀錄編號")).toHaveValue(managed);
     });
-    expect(fetchTwResearchScan).toHaveBeenCalledWith(older);
+    expect(fetchTwResearchScan).toHaveBeenCalledWith(managed);
     expect(screen.queryByTestId("tw-research-history")).not.toBeInTheDocument();
+  });
+
+  it("preserves an explicitly requested historical scan over the run-owned scan", async () => {
+    const historical = SCAN_ID;
+    const managed = "ddbbf9c7-9fb2-447e-a393-780b6da27611";
+    vi.mocked(fetchTwResearchRunCurrent).mockResolvedValue({
+      researchRunId: "rr_tech",
+      userId: "u1",
+      phase: "phase2_technical",
+      status: "running",
+      technicalScanId: managed,
+      gates: { candidateSelection: "approved" },
+      phase2Execution: { state: "actively_analyzing" },
+    } as never);
+    vi.mocked(fetchTwResearchScan).mockImplementation(async (id: string) =>
+      queuedScan({
+        scanId: id,
+        status: id === historical ? "verified_ready" : "running",
+        processedCount: id === historical ? 73 : 10,
+        remainingCount: id === historical ? 0 : 63,
+      }),
+    );
+    vi.mocked(fetchTwResearchScanProgress).mockImplementation(async (id: string) =>
+      progress({
+        scanId: id,
+        status: id === historical ? "verified_ready" : "running",
+        processedCount: id === historical ? 73 : 10,
+        remainingCount: id === historical ? 0 : 63,
+      }),
+    );
+    renderPage({ initialScanId: historical });
+    expect(await screen.findByLabelText("研究紀錄編號")).toHaveValue(historical);
+    await waitFor(() => {
+      expect(fetchTwResearchRunCurrent).toHaveBeenCalled();
+    });
+    expect(screen.getByLabelText("研究紀錄編號")).toHaveValue(historical);
+    expect(fetchTwResearchScan).toHaveBeenCalledWith(historical);
+    expect(fetchTwResearchScan).not.toHaveBeenCalledWith(managed);
   });
 
   it("keeps the last ledger when a progress read fails", async () => {

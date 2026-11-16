@@ -165,6 +165,22 @@ def test_map_daily_not_run_by_design() -> None:
     assert row["monthly"]["passStatus"] == "fail"
 
 
+def test_map_symbol_error_is_error_not_pending() -> None:
+    record = SymbolScanRecord(
+        stock_id="TW:2303",
+        stage="A",
+        readiness="processed",
+        rejection_reason="symbol_error:TimeoutError",
+        technical_stage=None,
+        monthly=None,
+        daily=None,
+    )
+    row = map_symbol_technical_result(record)
+    assert row["overallStageResult"] == "error"
+    assert row["rejectionReason"] == "symbol_error:TimeoutError"
+    assert row["insufficientHistory"] is None
+
+
 def test_budget_exhausted_waiting_while_phase2_active() -> None:
     record = SymbolScanRecord(
         stock_id="TW:2330",

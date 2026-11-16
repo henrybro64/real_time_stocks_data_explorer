@@ -91,6 +91,11 @@ def _is_budget_related_reason(reason: str | None) -> bool:
     return bool(reason) and str(reason) in _BUDGET_RELATED_REASONS
 
 
+def _is_symbol_error_reason(reason: str | None) -> bool:
+    text = str(reason or "")
+    return text.startswith("symbol_error:") or text == "symbol_error"
+
+
 def _phase2_treats_budget_as_insufficient(
     phase2_execution: dict[str, Any] | None,
 ) -> bool:
@@ -206,6 +211,10 @@ def _overall_stage_result(
         return "insufficient_history"
     if _is_budget_related_reason(rejection_reason):
         return "insufficient_history"
+    # Persisted loader/indicator failures are terminal for the symbol (no retry
+    # via schedule_has_technical_work) — never label them pending.
+    if _is_symbol_error_reason(rejection_reason):
+        return "error"
     stage = str(technical_stage or "") or None
     if stage == TECHNICAL_STAGE_DAILY_PASS:
         return "pass"
