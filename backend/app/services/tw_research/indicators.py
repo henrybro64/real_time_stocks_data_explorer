@@ -16,7 +16,7 @@ Conventions (documented for reference matching):
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from typing import Literal
 
 from app.models.quote import CandleRecord
@@ -33,6 +33,9 @@ from app.services.tw_research.constants import (
     MIN_MONTHLY_BARS_FOR_MACD_KD,
     PRICE_BASIS,
 )
+
+# Matches scan history flight-key provider family (no extra provider calls).
+_HISTORY_SOURCE_PROVIDER = "tw_default"
 
 PassStatus = Literal["pass", "fail", "unknown"]
 QualityStatus = Literal["ok", "insufficient_history", "unavailable"]
@@ -52,6 +55,12 @@ class MacdKdSnapshot:
     calculation_version: str
     bar_count: int
     timeframe: Literal["daily", "monthly"]
+    # Provenance captured at calculation time from the in-memory candle series
+    # (no extra provider calls). Older persisted rows may omit these fields.
+    source_provider: str | None = None
+    first_bar_as_of: str | None = None
+    last_bar_as_of: str | None = None
+    calculated_at: str | None = None
 
 
 @dataclass(frozen=True)
@@ -225,14 +234,25 @@ def snapshot_from_candles(
     timeframe: Literal["daily", "monthly"],
     min_bars: int,
 ) -> MacdKdSnapshot:
+    calculated_at = datetime.now(UTC).isoformat()
     if not candles:
-        return _empty_snapshot(timeframe=timeframe, quality="unavailable", bar_count=0)
+        return _empty_snapshot(
+            timeframe=timeframe,
+            quality="unavailable",
+            bar_count=0,
+            calculated_at=calculated_at,
+        )
+    first_bar = _candle_date(candles[0]).isoformat()
+    last_bar = _candle_date(candles[-1]).isoformat()
     if len(candles) < min_bars:
         return _empty_snapshot(
             timeframe=timeframe,
             quality="insufficient_history",
             bar_count=len(candles),
-            as_of=_candle_date(candles[-1]).isoformat(),
+            as_of=last_bar,
+            first_bar_as_of=first_bar,
+            last_bar_as_of=last_bar,
+            calculated_at=calculated_at,
         )
 
     closes = [float(candle.close) for candle in candles]
@@ -247,7 +267,10 @@ def snapshot_from_candles(
             timeframe=timeframe,
             quality="insufficient_history",
             bar_count=len(candles),
-            as_of=_candle_date(candles[-1]).isoformat(),
+            as_of=last_bar,
+            first_bar_as_of=first_bar,
+            last_bar_as_of=last_bar,
+            calculated_at=calculated_at,
         )
 
     dif, signal, osc = latest_macd
@@ -255,7 +278,7 @@ def snapshot_from_candles(
     quality: QualityStatus = "ok"
     pass_status = evaluate_pass(dif=dif, osc=osc, k=k_value, d=d_value, quality=quality)
     return MacdKdSnapshot(
-        as_of=_candle_date(candles[-1]).isoformat(),
+        as_of=last_bar,
         dif=dif,
         signal=signal,
         osc=osc,
@@ -267,6 +290,10 @@ def snapshot_from_candles(
         calculation_version=CALCULATION_VERSION,
         bar_count=len(candles),
         timeframe=timeframe,
+        source_provider=_HISTORY_SOURCE_PROVIDER,
+        first_bar_as_of=first_bar,
+        last_bar_as_of=last_bar,
+        calculated_at=calculated_at,
     )
 
 
@@ -334,6 +361,9 @@ def _empty_snapshot(
     quality: QualityStatus,
     bar_count: int,
     as_of: str | None = None,
+    first_bar_as_of: str | None = None,
+    last_bar_as_of: str | None = None,
+    calculated_at: str | None = None,
 ) -> MacdKdSnapshot:
     return MacdKdSnapshot(
         as_of=as_of,
@@ -348,6 +378,10 @@ def _empty_snapshot(
         calculation_version=CALCULATION_VERSION,
         bar_count=bar_count,
         timeframe=timeframe,
+        source_provider=_HISTORY_SOURCE_PROVIDER if bar_count else None,
+        first_bar_as_of=first_bar_as_of,
+        last_bar_as_of=last_bar_as_of,
+        calculated_at=calculated_at or datetime.now(UTC).isoformat(),
     )
 
 

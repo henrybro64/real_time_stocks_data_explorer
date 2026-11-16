@@ -131,12 +131,14 @@ function IndicatorBlock({
   asOfLabel,
   emptyReason,
   evaluation,
+  unavailableLabel,
 }: {
   label: string;
   snapshot: TwResearchTechnicalIndicatorSnapshot | null | undefined;
   asOfLabel: string;
   emptyReason: string | null;
   evaluation?: TwResearchTechnicalPassEvaluation | null;
+  unavailableLabel: string;
 }) {
   if (!snapshot) {
     return (
@@ -175,6 +177,16 @@ function IndicatorBlock({
         {snapshot.priceBasis ? ` · ${snapshot.priceBasis}` : ""}
         {snapshot.calculationVersion ? ` · ${snapshot.calculationVersion}` : ""}
       </div>
+      <div className={styles.bars} data-testid="tw-research-tech-provenance">
+        {snapshot.sourceProvider
+          ? `source ${snapshot.sourceProvider}`
+          : `source ${unavailableLabel}`}
+        {" · "}
+        {snapshot.firstBarAsOf && snapshot.lastBarAsOf
+          ? `range ${snapshot.firstBarAsOf} → ${snapshot.lastBarAsOf}`
+          : `range ${unavailableLabel}`}
+        {snapshot.calculatedAt ? ` · calc ${snapshot.calculatedAt}` : ""}
+      </div>
     </div>
   );
 }
@@ -188,6 +200,7 @@ function ResultCard({
 }) {
   const insufficient = insufficientHistoryReasonText(row, t);
   const dailyNotRun = dailyNotRunReasonText(row, t);
+  const unavailable = t("research.tw.technicalResults.provenanceUnavailable");
   return (
     <article
       className={styles.card}
@@ -206,6 +219,7 @@ function ResultCard({
         asOfLabel={t("research.tw.technicalResults.asOfMonth")}
         emptyReason={insufficient}
         evaluation={row.monthlyPassEvaluation}
+        unavailableLabel={unavailable}
       />
       <IndicatorBlock
         label={t("research.tw.technicalResults.daily")}
@@ -213,6 +227,7 @@ function ResultCard({
         asOfLabel={t("research.tw.technicalResults.asOfDate")}
         emptyReason={dailyNotRun ?? insufficient}
         evaluation={row.dailyPassEvaluation}
+        unavailableLabel={unavailable}
       />
       {insufficient ? (
         <p className={styles.reason} data-testid="tw-research-tech-insufficient-reason">
@@ -301,8 +316,13 @@ export function TechnicalResultsPanel({
             </p>
             <p data-testid="tw-research-technical-results-counts">
               {t("research.tw.technicalResults.counts", {
-                analyzed: Number(results.analyzedCount ?? 0),
+                calculated: Number(
+                  results.calculatedCount ?? results.analyzedCount ?? 0,
+                ),
+                verified: Number(results.verifiedCount ?? 0),
                 errors: Number(results.errorCount ?? 0),
+                deferred: Number(results.deferredCount ?? 0),
+                unknown: Number(results.unknownCount ?? 0),
                 waiting: Number(results.waitingForHistoryCount ?? 0),
                 insufficient: Number(results.insufficientHistoryCount ?? 0),
                 pending: Number(results.pendingCount ?? 0),

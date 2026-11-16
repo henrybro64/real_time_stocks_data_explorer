@@ -461,13 +461,33 @@ const TW_RESEARCH_ROWS = [
   ],
   [
     "research.tw.technicalResults.counts",
-    "Verified indicators {analyzed} · errors {errors} · waiting for budget {waiting} · insufficient history {insufficient} · pending {pending} · processed {processed}",
-    "已驗證指標 {analyzed} · 錯誤 {errors} · 等待預算 {waiting} · 歷史不足 {insufficient} · 待處理 {pending} · 已處理 {processed}",
+    "Calculated {calculated} · verified {verified} · errors {errors} · deferred {deferred} · unknown {unknown} · waiting for budget {waiting} · insufficient history {insufficient} · pending {pending} · processed {processed}",
+    "已計算 {calculated} · 已驗證 {verified} · 錯誤 {errors} · 延後 {deferred} · 未知 {unknown} · 等待預算 {waiting} · 歷史不足 {insufficient} · 待處理 {pending} · 已處理 {processed}",
   ],
   [
     "research.tw.technicalResults.provenanceLimits",
-    "Provider/source and full history date ranges are not persisted on indicator snapshots; missing fields stay blank.",
-    "供應來源與完整歷史區間未持久化在指標快照中；缺漏欄位保持空白，不會臆造。",
+    "Provider/source and history bar ranges appear when the snapshot persisted them; older rows show unavailable and stay blank (never invented).",
+    "供應來源與歷史根區間僅在快照已儲存時顯示；較舊紀錄會標示不可用並保持空白（不會臆造）。",
+  ],
+  [
+    "research.tw.technicalResults.provenanceUnavailable",
+    "Unavailable on this saved snapshot",
+    "此已存快照不可用",
+  ],
+  [
+    "research.tw.membershipNoChanges",
+    "No unsaved membership changes",
+    "研究股票清單沒有未儲存變更",
+  ],
+  [
+    "research.tw.membershipAdvancedTitle",
+    "Membership tools",
+    "研究股票工具",
+  ],
+  [
+    "research.tw.membershipAdvancedHint",
+    "Reload, preview, or reset the stock selection. Everyday research only needs Save when you change the list.",
+    "可重新載入、預覽或重設研究股票清單。一般流程只要在變更後按「儲存」即可。",
   ],
   ["research.tw.technicalResults.result.pass", "Pass", "通過"],
   ["research.tw.technicalResults.result.fail", "Fail", "未通過"],

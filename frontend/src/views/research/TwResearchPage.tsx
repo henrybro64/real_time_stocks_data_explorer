@@ -2546,39 +2546,51 @@ export function TwResearchPage({
               </p>
               <Stack gap={3} orientation="horizontal">
                 <Button
-                  kind="tertiary"
-                  size="sm"
-                  disabled={membershipQuery.isFetching}
-                  onClick={() => void membershipQuery.refetch()}
-                >
-                  {t("research.tw.loadMembership")}
-                </Button>
-                <Button
-                  kind="tertiary"
-                  size="sm"
-                  disabled={previewMembershipMutation.isPending}
-                  onClick={() => previewMembershipMutation.mutate()}
-                >
-                  {t("research.tw.previewMembership")}
-                </Button>
-                <Button
                   kind={membershipSaveIsPrimary ? "primary" : "tertiary"}
                   size="sm"
                   data-testid="tw-research-save-membership"
-                  disabled={saveMembershipMutation.isPending}
+                  disabled={saveMembershipMutation.isPending || !membershipHasUnsavedChanges}
                   onClick={() => saveMembershipMutation.mutate()}
+                  title={
+                    membershipHasUnsavedChanges
+                      ? t("research.tw.saveMembership")
+                      : t("research.tw.membershipNoChanges")
+                  }
                 >
                   {t("research.tw.saveMembership")}
                 </Button>
-                <Button
-                  kind="danger--tertiary"
-                  size="sm"
-                  disabled={resetMembershipMutation.isPending}
-                  onClick={() => resetMembershipMutation.mutate()}
-                >
-                  {t("research.tw.resetMembership")}
-                </Button>
               </Stack>
+              <AdvancedDetailsDisclosure
+                titleKey="research.tw.membershipAdvancedTitle"
+                hintKey="research.tw.membershipAdvancedHint"
+              >
+                <Stack gap={3} orientation="horizontal">
+                  <Button
+                    kind="ghost"
+                    size="sm"
+                    disabled={membershipQuery.isFetching}
+                    onClick={() => void membershipQuery.refetch()}
+                  >
+                    {t("research.tw.loadMembership")}
+                  </Button>
+                  <Button
+                    kind="ghost"
+                    size="sm"
+                    disabled={previewMembershipMutation.isPending}
+                    onClick={() => previewMembershipMutation.mutate()}
+                  >
+                    {t("research.tw.previewMembership")}
+                  </Button>
+                  <Button
+                    kind="danger--tertiary"
+                    size="sm"
+                    disabled={resetMembershipMutation.isPending}
+                    onClick={() => resetMembershipMutation.mutate()}
+                  >
+                    {t("research.tw.resetMembership")}
+                  </Button>
+                </Stack>
+              </AdvancedDetailsDisclosure>
               <div data-testid="tw-research-sector-editor">
                 <h3 className="cds--productive-heading-02">{t("research.tw.sectorEditor")}</h3>
                 <Stack gap={3}>

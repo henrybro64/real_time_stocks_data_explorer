@@ -536,7 +536,7 @@ def test_historical_scan_id_query_returns_requested_scan(monkeypatch) -> None:
     research_run_store.disable_test_memory()
 
 
-def test_foreign_historical_scan_is_forbidden(monkeypatch) -> None:
+def test_foreign_historical_scan_is_not_found(monkeypatch) -> None:
     research_run_store.clear_for_tests()
     catalog = {
         "TW:2330": stock_record(
@@ -567,5 +567,219 @@ def test_foreign_historical_scan_is_forbidden(monkeypatch) -> None:
     response = client.get(
         f"/api/tw-research/research-runs/technical-results?scanId={foreign.scan_id}"
     )
-    assert response.status_code == 403
+    # Same 404 as missing — do not leak scan existence across users.
+    assert response.status_code == 404
+    assert response.json()["detail"] == "technical_scan_not_found"
     research_run_store.disable_test_memory()
+
+
+def test_ownerless_historical_scan_is_not_found(monkeypatch) -> None:
+    research_run_store.clear_for_tests()
+    catalog = {
+        "TW:2330": stock_record(
+            "TW:2330",
+            market="TW",
+            symbol="2330",
+            name="台積電",
+            exchange="TWSE",
+            currency="TWD",
+            timezone="Asia/Taipei",
+        )
+    }
+    service = TwResearchScanService(
+        history_loader=lambda *_a, **_k: ([], 0),
+        stock_loader=catalog.get,
+        persist=False,
+    )
+    ownerless = service.create_scan(
+        UniverseSelector(mode="stock_ids", stock_ids=("TW:2330",)),
+        trading_day="2024-06-28",
+        user_id=None,
+    )
+    assert getattr(ownerless, "user_id", None) in {None, ""}
+    monkeypatch.setattr(
+        "app.services.tw_research.scan.tw_research_scan_service",
+        service,
+    )
+    response = client.get(
+        f"/api/tw-research/research-runs/technical-results?scanId={ownerless.scan_id}"
+    )
+    assert response.status_code == 404
+    research_run_store.disable_test_memory()
+
+
+def test_historical_scan_without_active_run(monkeypatch) -> None:
+    research_run_store.clear_for_tests()
+    catalog = {
+        "TW:2454": stock_record(
+            "TW:2454",
+            market="TW",
+            symbol="2454",
+            name="聯發科",
+            exchange="TWSE",
+            currency="TWD",
+            timezone="Asia/Taipei",
+        )
+    }
+    service = TwResearchScanService(
+        history_loader=lambda *_a, **_k: ([], 0),
+        stock_loader=catalog.get,
+        persist=False,
+    )
+    historical = service.create_scan(
+        UniverseSelector(mode="stock_ids", stock_ids=("TW:2454",)),
+        trading_day="2024-06-20",
+        user_id=DEFAULT_USER_ID,
+    )
+    historical.records["TW:2454"] = SymbolScanRecord(
+        stock_id="TW:2454",
+        stage="B",
+        readiness="technically_qualified",
+        technical_stage=TECHNICAL_STAGE_DAILY_PASS,
+        monthly={
+            "asOf": "2024-05-31",
+            "dif": 4.44,
+            "signal": 1.0,
+            "osc": 3.44,
+            "k": 70.0,
+            "d": 60.0,
+            "barCount": 40,
+            "quality": "ok",
+            "passStatus": "pass",
+            "timeframe": "monthly",
+        },
+    )
+    monkeypatch.setattr(
+        "app.services.tw_research.scan.tw_research_scan_service",
+        service,
+    )
+    assert research_run_store.get(DEFAULT_USER_ID) is None
+    response = client.get(
+        f"/api/tw-research/research-runs/technical-results?scanId={historical.scan_id}"
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["technicalScanId"] == historical.scan_id
+    assert body["viewingHistorical"] is True
+    assert body["candidates"][0]["monthly"]["dif"] == 4.44
+    research_run_store.disable_test_memory()
+
+
+def test_count_buckets_are_non_overlapping() -> None:
+    catalog = {
+        "TW:2330": stock_record(
+            "TW:2330",
+            market="TW",
+            symbol="2330",
+            name="台積電",
+            exchange="TWSE",
+            currency="TWD",
+            timezone="Asia/Taipei",
+        ),
+        "TW:2454": stock_record(
+            "TW:2454",
+            market="TW",
+            symbol="2454",
+            name="聯發科",
+            exchange="TWSE",
+            currency="TWD",
+            timezone="Asia/Taipei",
+        ),
+        "TW:2303": stock_record(
+            "TW:2303",
+            market="TW",
+            symbol="2303",
+            name="聯電",
+            exchange="TWSE",
+            currency="TWD",
+            timezone="Asia/Taipei",
+        ),
+        "TW:2317": stock_record(
+            "TW:2317",
+            market="TW",
+            symbol="2317",
+            name="鴻海",
+            exchange="TWSE",
+            currency="TWD",
+            timezone="Asia/Taipei",
+        ),
+    }
+    service = TwResearchScanService(
+        history_loader=lambda *_a, **_k: ([], 0),
+        stock_loader=catalog.get,
+        persist=False,
+    )
+    state = service.create_scan(
+        UniverseSelector(
+            mode="stock_ids",
+            stock_ids=("TW:2330", "TW:2454", "TW:2303", "TW:2317"),
+        ),
+        trading_day="2024-06-28",
+    )
+    state.records["TW:2330"] = SymbolScanRecord(
+        stock_id="TW:2330",
+        stage="B",
+        readiness="technically_qualified",
+        technical_stage=TECHNICAL_STAGE_DAILY_PASS,
+        monthly={
+            "quality": "ok",
+            "passStatus": "pass",
+            "dif": 1.0,
+            "signal": 0.5,
+            "osc": 0.5,
+            "k": 60.0,
+            "d": 55.0,
+            "barCount": 40,
+            "timeframe": "monthly",
+        },
+        daily={
+            "quality": "ok",
+            "passStatus": "pass",
+            "dif": 1.0,
+            "signal": 0.5,
+            "osc": 0.5,
+            "k": 60.0,
+            "d": 55.0,
+            "barCount": 100,
+            "timeframe": "daily",
+        },
+    )
+    state.records["TW:2454"] = SymbolScanRecord(
+        stock_id="TW:2454",
+        stage="rejected",
+        readiness="processed",
+        rejection_reason="symbol_error:TimeoutError",
+    )
+    state.records["TW:2303"] = SymbolScanRecord(
+        stock_id="TW:2303",
+        stage="rejected",
+        readiness="rejected",
+        technical_stage="deferred",
+        rejection_reason=HISTORY_BUDGET_EXHAUSTED_REASON,
+    )
+    # TW:2317 left pending (no record)
+
+    class _Run:
+        research_run_id = "rr_buckets"
+
+    payload = build_technical_results_payload(
+        run=_Run(),
+        state=state,
+        phase2_execution={"state": "actively_analyzing"},
+    )
+    assert payload["verifiedCount"] == 1
+    assert payload["calculatedCount"] == 1
+    assert payload["analyzedCount"] == 1
+    assert payload["errorCount"] == 1
+    assert payload["waitingForHistoryCount"] == 1
+    assert payload["pendingCount"] == 1
+    assert (
+        payload["verifiedCount"]
+        + payload["errorCount"]
+        + payload["waitingForHistoryCount"]
+        + payload["insufficientHistoryCount"]
+        + payload["deferredCount"]
+        + payload["unknownCount"]
+        + payload["pendingCount"]
+        == payload["universeSize"]
+    )

@@ -1915,15 +1915,12 @@ def get_technical_results(
         ) from exc
     if state is None:
         raise HTTPException(status_code=404, detail="technical_scan_not_found")
+    # Strict ownership: ownerless and foreign scans are not readable. Use the same
+    # 404 as missing so scan existence is not leaked across users.
     owner = getattr(state, "user_id", None)
-    if owner not in {None, user_id} and str(owner) != str(user_id):
-        raise HTTPException(
-            status_code=403,
-            detail={
-                "error": "foreign_technical_scan",
-                "technicalScanId": resolved_scan_id,
-            },
-        )
+    owner_text = str(owner).strip() if owner is not None else ""
+    if not owner_text or owner_text != str(user_id):
+        raise HTTPException(status_code=404, detail="technical_scan_not_found")
 
     is_current = bool(current_scan_id) and resolved_scan_id == current_scan_id
     viewing_historical = bool(requested) and not is_current

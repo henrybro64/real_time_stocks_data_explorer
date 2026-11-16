@@ -34,19 +34,20 @@ _BUDGET_RELATED_REASONS = frozenset(
         "history_budget_exhausted",
     }
 )
-# Rows that represent a completed indicator evaluation (not waiting/error/pending).
-_VERIFIED_INDICATOR_RESULTS = frozenset(
+# Completed numerical (or intentional not-run) indicator calculations.
+_CALCULATED_INDICATOR_RESULTS = frozenset(
     {
         "pass",
         "fail",
         "monthly_pass",
         "monthly_fail",
         "daily_not_run",
-        "monthly_unknown",
-        "daily_unknown",
-        "deferred",
     }
 )
+# Evidence-complete outcomes with defined pass/fail (or intentional daily skip).
+_VERIFIED_INDICATOR_RESULTS = frozenset({"pass", "fail", "daily_not_run"})
+_UNKNOWN_INDICATOR_RESULTS = frozenset({"monthly_unknown", "daily_unknown"})
+_DEFERRED_INDICATOR_RESULTS = frozenset({"deferred"})
 _PASS_RULE_META = {
     "macdHistogramConvention": "OSC = DIF − Signal (MACD histogram)",
     "macdFormula": "DIF = EMA12(close) − EMA26(close); Signal = EMA9(DIF)",
@@ -63,8 +64,9 @@ _PASS_RULE_META = {
         "month is never treated as a verified monthly bar."
     ),
     "priceBasisPolicy": "unadjusted_close",
-    "sourceProviderPersisted": False,
-    "historyRangePersisted": False,
+    # New calculations persist provider + bar range; older rows may be unavailable.
+    "sourceProviderPersisted": "when_present_on_snapshot",
+    "historyRangePersisted": "when_present_on_snapshot",
 }
 
 
@@ -101,6 +103,10 @@ def _record_field(record: SymbolScanRecord | dict[str, Any], *names: str) -> Any
 def _indicator_payload(raw: object) -> dict[str, Any] | None:
     if not isinstance(raw, dict):
         return None
+    first_bar = raw.get("firstBarAsOf")
+    last_bar = raw.get("lastBarAsOf")
+    provider = raw.get("sourceProvider")
+    calculated_at = raw.get("calculatedAt")
     return {
         "asOf": raw.get("asOf"),
         "dif": _as_float(raw.get("dif")),
@@ -116,6 +122,14 @@ def _indicator_payload(raw: object) -> dict[str, Any] | None:
         "calculationVersion": raw.get("calculationVersion"),
         "timeframe": raw.get("timeframe"),
         "reason": raw.get("reason"),
+        "sourceProvider": str(provider) if provider else None,
+        "firstBarAsOf": str(first_bar) if first_bar else None,
+        "lastBarAsOf": str(last_bar) if last_bar else None,
+        "calculatedAt": str(calculated_at) if calculated_at else None,
+        "sourceProviderStatus": "available" if provider else "unavailable",
+        "historyRangeStatus": (
+            "available" if first_bar and last_bar else "unavailable"
+        ),
     }
 
 
@@ -461,37 +475,45 @@ def build_technical_results_payload(
             map_symbol_technical_result(record, phase2_execution=phase2_execution)
         )
 
-    # Prefer row-derived counts; fall back to phase2Execution only when no rows.
-    # analyzedCount = verified indicator evaluations only (not waiting/error/pending).
-    analyzed = 0
+    # Prefer row-derived non-overlapping counts; fall back only when no rows.
+    calculated = 0
+    verified = 0
     error_count = 0
     insufficient_count = 0
     waiting_count = 0
     pending_count = 0
+    deferred_count = 0
+    unknown_count = 0
     if rows:
         for row in rows:
             overall = str(row.get("overallStageResult") or "")
             if overall == "pending":
                 pending_count += 1
-                continue
-            if overall == "waiting_for_history":
+            elif overall == "waiting_for_history":
                 waiting_count += 1
-                continue
-            if overall == "error":
+            elif overall == "error":
                 error_count += 1
-                continue
-            if (
+            elif (
                 row.get("insufficientHistory") is not None
                 or overall == "insufficient_history"
             ):
                 insufficient_count += 1
-                continue
-            if overall in _VERIFIED_INDICATOR_RESULTS:
-                analyzed += 1
+            elif overall in _DEFERRED_INDICATOR_RESULTS:
+                deferred_count += 1
+            elif overall in _UNKNOWN_INDICATOR_RESULTS:
+                unknown_count += 1
+            elif overall in _CALCULATED_INDICATOR_RESULTS:
+                calculated += 1
+                if overall in _VERIFIED_INDICATOR_RESULTS:
+                    verified += 1
+            else:
+                # Unclassified outcomes stay pending for reconciliation honesty.
+                pending_count += 1
     elif isinstance(phase2_execution, dict):
         try:
             if phase2_execution.get("analyzedCount") is not None:
-                analyzed = int(phase2_execution["analyzedCount"])
+                calculated = int(phase2_execution["analyzedCount"])
+                verified = calculated
         except (TypeError, ValueError):
             pass
         try:
@@ -509,6 +531,35 @@ def build_technical_results_payload(
         price_basis = PRICE_BASIS
 
     scan_updated_at = snap.get("updatedAt") or getattr(state, "updated_at", None)
+    def _row_has_provider(row: dict[str, Any]) -> bool:
+        monthly = row.get("monthly")
+        daily = row.get("daily")
+        return bool(
+            (isinstance(monthly, dict) and monthly.get("sourceProvider"))
+            or (isinstance(daily, dict) and daily.get("sourceProvider"))
+        )
+
+    def _row_has_range(row: dict[str, Any]) -> bool:
+        monthly = row.get("monthly")
+        daily = row.get("daily")
+        return bool(
+            (
+                isinstance(monthly, dict)
+                and monthly.get("firstBarAsOf")
+                and monthly.get("lastBarAsOf")
+            )
+            or (
+                isinstance(daily, dict)
+                and daily.get("firstBarAsOf")
+                and daily.get("lastBarAsOf")
+            )
+        )
+
+    any_provider = any(_row_has_provider(row) for row in rows)
+    any_range = any(_row_has_range(row) for row in rows)
+    pass_rule = dict(_PASS_RULE_META)
+    pass_rule["sourceProviderPersisted"] = bool(any_provider)
+    pass_rule["historyRangePersisted"] = bool(any_range)
 
     return {
         "researchRunId": getattr(run, "research_run_id", None) if run is not None else None,
@@ -521,15 +572,20 @@ def build_technical_results_payload(
         "universeSize": len(state.stock_ids),
         "processedCount": int(snap.get("processedCount") or 0),
         "remainingCount": int(snap.get("remainingCount") or 0),
-        "analyzedCount": analyzed,
+        # analyzedCount kept as calculatedCount alias for existing consumers.
+        "analyzedCount": calculated,
+        "calculatedCount": calculated,
+        "verifiedCount": verified,
         "errorCount": error_count,
         "pendingCount": pending_count,
+        "deferredCount": deferred_count,
+        "unknownCount": unknown_count,
         "insufficientHistoryCount": insufficient_count,
         "waitingForHistoryCount": waiting_count,
         "viewingHistorical": bool(viewing_historical),
         "isCurrentRunScan": bool(is_current_run_scan),
         "phase2Execution": phase2_execution if is_current_run_scan else None,
-        "passRule": dict(_PASS_RULE_META),
+        "passRule": pass_rule,
         "candidates": rows,
         "requiredBars": {
             "monthly": MIN_MONTHLY_BARS_FOR_MACD_KD,

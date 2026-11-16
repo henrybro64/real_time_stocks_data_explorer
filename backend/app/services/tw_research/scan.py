@@ -2506,6 +2506,10 @@ def _snapshot_dict(snapshot: MacdKdSnapshot) -> dict[str, Any]:
         "calculationVersion": snapshot.calculation_version,
         "barCount": snapshot.bar_count,
         "timeframe": snapshot.timeframe,
+        "sourceProvider": snapshot.source_provider,
+        "firstBarAsOf": snapshot.first_bar_as_of,
+        "lastBarAsOf": snapshot.last_bar_as_of,
+        "calculatedAt": snapshot.calculated_at,
     }
 
 

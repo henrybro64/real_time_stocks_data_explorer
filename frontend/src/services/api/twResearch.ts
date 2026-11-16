@@ -696,6 +696,12 @@ export type TwResearchTechnicalIndicatorSnapshot = {
   calculationVersion?: string | null;
   timeframe?: string | null;
   reason?: string | null;
+  sourceProvider?: string | null;
+  firstBarAsOf?: string | null;
+  lastBarAsOf?: string | null;
+  calculatedAt?: string | null;
+  sourceProviderStatus?: string | null;
+  historyRangeStatus?: string | null;
 };
 
 export type TwResearchTechnicalInsufficientHistory = {
@@ -746,8 +752,12 @@ export type TwResearchTechnicalResults = {
   processedCount?: number;
   remainingCount?: number;
   analyzedCount?: number;
+  calculatedCount?: number;
+  verifiedCount?: number;
   errorCount?: number;
   pendingCount?: number;
+  deferredCount?: number;
+  unknownCount?: number;
   insufficientHistoryCount?: number;
   waitingForHistoryCount?: number;
   viewingHistorical?: boolean;
