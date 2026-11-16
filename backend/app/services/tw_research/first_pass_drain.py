@@ -1,9 +1,14 @@
-"""Durable opt-in First-Pass job drain for managed research runs (#349).
+"""Durable opt-in First-Pass / Phase-2 drain for managed research runs (#349/#361).
 
-Drains only the authoritative ``research_run.first_pass_job_id`` when
-``schedule_enabled`` is true. Reuses existing leased ``run_batch`` machinery.
-Never advances analyst gates, never starts Phase-2, never writes Notion, and
-never drains historical orphan jobs that are not run-owned.
+Phase-1: drains only the authoritative ``research_run.first_pass_job_id`` when
+``schedule_enabled`` is true. Reuses leased first-pass ``run_batch``.
+
+Phase-2: when candidate selection is approved and a run-owned
+``technical_scan_id`` is already attached, drains ONE bounded technical batch
+via ``tw_research_scan_service.run_batch``. Does not require ``schedule_enabled``
+(Phase-1 disarm clears it at the candidate gate). Never auto-creates technical
+scans, never writes Notion, never auto-starts Phase-2 without an attached scan,
+and never drains orphan/foreign jobs or scans.
 """
 
 from __future__ import annotations
@@ -14,6 +19,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from app.core.config import settings
+from app.services.tw_research.constants import DEFAULT_RUN_TIMEOUT_SECONDS, SCAN_BATCH_SIZE
 from app.services.tw_research.first_pass_job import FirstPassJobError, first_pass_job_service
 from app.services.tw_research.research_run import (
     ResearchRun,
@@ -21,6 +27,10 @@ from app.services.tw_research.research_run import (
     ResearchRunStoreUnavailable,
     first_pass_drain_availability,
     research_run_store,
+)
+from app.services.tw_research.scan import (
+    TwResearchConflictError,
+    tw_research_scan_service,
 )
 
 logger = logging.getLogger(__name__)
@@ -33,6 +43,7 @@ class FirstPassDrainResult:
     user_id: str
     research_run_id: str | None = None
     job_id: str | None = None
+    technical_scan_id: str | None = None
     phase: str | None = None
     status: str | None = None
     schedule_enabled: bool = False
@@ -52,6 +63,7 @@ class FirstPassDrainResult:
             "userId": self.user_id,
             "researchRunId": self.research_run_id,
             "jobId": self.job_id,
+            "technicalScanId": self.technical_scan_id,
             "phase": self.phase,
             "status": self.status,
             "scheduleEnabled": self.schedule_enabled,
@@ -175,14 +187,17 @@ def _build_dry_run_preflight(
 
 
 _BASE_DRAIN_NOTES = (
-    "Drains only the research-run owned first-pass job.",
+    "Drains only the research-run owned first-pass job or attached technical scan.",
     "Never resumes orphan/historical pending jobs without schedule_enabled.",
-    "Stops at awaiting_analyst_candidate_selection; no Notion / Phase-2.",
+    "Phase-1 stops at awaiting_analyst_candidate_selection; no Notion auto-publish.",
+    "Phase-2 drains only an already-attached run-owned technical scan after approval.",
 )
 _BLOCKED_RUN_STATUSES = frozenset({"failed", "budget_exhausted", "cancelled"})
 _TERMINAL_JOB_STATUSES = frozenset(
     {"completed", "partial", "failed", "budget_exhausted"}
 )
+_PHASE2_TERMINAL_SCAN = frozenset({"completed_processing", "verified_ready"})
+_PHASE2_BLOCKED_SCAN = frozenset({"cancelled", "failed"})
 
 
 def _early_skip(
@@ -193,7 +208,9 @@ def _early_skip(
     dry_run: bool,
     run: ResearchRun | None = None,
     job_id: str | None = None,
+    technical_scan_id: str | None = None,
     schedule_enabled: bool | None = None,
+    preflight: dict[str, Any] | None = None,
 ) -> FirstPassDrainResult:
     """Shared early-exit builder (dry-run attaches availability flags only)."""
     enabled = (
@@ -201,17 +218,23 @@ def _early_skip(
         if schedule_enabled is None and run is not None
         else bool(schedule_enabled)
     )
+    scan_id = technical_scan_id
+    if scan_id is None and run is not None:
+        scan_id = str(run.technical_scan_id or "") or None
     return FirstPassDrainResult(
         outcome=outcome,
         user_id=owner,
         research_run_id=run.research_run_id if run is not None else None,
         job_id=job_id,
+        technical_scan_id=scan_id,
         phase=run.phase if run is not None else None,
         status=run.status if run is not None else None,
         schedule_enabled=enabled,
         notes=notes,
         dry_run=dry_run,
-        preflight=_dry_run_availability_preflight(dry_run=dry_run, user_id=owner),
+        preflight=preflight
+        if preflight is not None
+        else _dry_run_availability_preflight(dry_run=dry_run, user_id=owner),
     )
 
 
@@ -262,14 +285,410 @@ def _resolve_authoritative_job(
     return authoritative, None
 
 
-def _dry_run_outcome_for_run(run: ResearchRun) -> str:
-    if not run.schedule_enabled:
+
+def _candidate_approved(run: ResearchRun) -> bool:
+    return str((run.gates or {}).get("candidateSelection") or "") == "approved"
+
+
+def _phase1_eligible(run: ResearchRun, *, target_job: str | None) -> bool:
+    return bool(
+        run.schedule_enabled
+        and run.phase == "phase1_first_pass"
+        and target_job
+        and str(run.status or "") not in _BLOCKED_RUN_STATUSES
+    )
+
+
+def _lease_still_active(reserve_expires_at: object) -> bool:
+    if not isinstance(reserve_expires_at, str) or not reserve_expires_at.strip():
+        return False
+    try:
+        parsed = datetime.fromisoformat(
+            reserve_expires_at.replace("Z", _ISO_Z_UTC_SUFFIX)
+        )
+    except ValueError:
+        return False
+    return parsed > datetime.now(UTC)
+
+
+def _build_phase2_step(run: ResearchRun, *, batch_size: int) -> dict[str, Any]:
+    """Read-only Phase-2 step the drain would take (#362). No leases / writes."""
+    scan_id = str(run.technical_scan_id or "") or None
+    step: dict[str, Any] = {
+        "action": "skip",
+        "technicalScanId": scan_id,
+        "remainingCount": None,
+        "scanStatus": None,
+        "reason": "phase2_not_eligible",
+        "batchSize": max(1, min(int(batch_size), SCAN_BATCH_SIZE)),
+    }
+    if str(run.status or "") in _BLOCKED_RUN_STATUSES:
+        step["reason"] = f"run_status_{run.status}"
+        return step
+    if not _candidate_approved(run):
+        step["reason"] = "not_approved"
+        return step
+    if not scan_id:
+        step["reason"] = "no_technical_scan"
+        return step
+    try:
+        state = tw_research_scan_service.get_scan(scan_id)
+    except Exception:  # noqa: BLE001 — preflight stays best-effort
+        logger.warning("phase2_preflight scan_lookup_failed scan_id=%s", scan_id)
+        step["reason"] = "scan_lookup_failed"
+        return step
+    if state is None:
+        step["reason"] = "scan_missing"
+        return step
+    snap = state.snapshot()
+    step["scanStatus"] = str(snap.get("status") or "") or None
+    step["remainingCount"] = int(snap.get("remainingCount") or 0)
+    if str(state.user_id or "") != str(run.user_id or ""):
+        step["reason"] = "foreign_scan"
+        return step
+    status = str(state.status or "")
+    if status in _PHASE2_BLOCKED_SCAN:
+        step["reason"] = f"scan_{status}"
+        return step
+    if status == "budget_exhausted":
+        step["reason"] = "waiting_for_budget_window"
+        return step
+    if status in _PHASE2_TERMINAL_SCAN or int(snap.get("remainingCount") or 0) <= 0:
+        step["reason"] = "already_complete"
+        return step
+    step["action"] = "run_technical_batch"
+    step["reason"] = "phase2_eligible"
+    return step
+
+
+def _phase2_preflight_payload(
+    run: ResearchRun,
+    *,
+    job_id: str | None,
+    batch_size: int,
+) -> dict[str, Any]:
+    """Dry-run preflight with Phase-2 step; reuses Phase-1 job snapshot when present."""
+    if job_id:
+        payload = _build_dry_run_preflight(run, job_id=job_id, batch_size=batch_size)
+    else:
+        payload = {
+            "availability": _availability_flags(user_id=run.user_id),
+            "researchRunId": run.research_run_id,
+            "jobId": None,
+            "scheduleEnabled": bool(run.schedule_enabled),
+            "batchSize": int(batch_size),
+            "lastTickAt": None,
+        }
+        if isinstance(run.dimensions, dict):
+            meta = run.dimensions.get("firstPassDrain")
+            if isinstance(meta, dict) and isinstance(meta.get("lastTickAt"), str):
+                payload["lastTickAt"] = meta.get("lastTickAt")
+    payload["phase2Step"] = _build_phase2_step(run, batch_size=batch_size)
+    payload["technicalScanId"] = str(run.technical_scan_id or "") or None
+    payload["candidateSelection"] = (run.gates or {}).get("candidateSelection")
+    return payload
+
+
+def _record_drain_tick(owner: str, *, stop_reason: str, notes: list[str]) -> None:
+    try:
+        research_run_store.record_first_pass_drain_tick(
+            owner,
+            last_tick_at=datetime.now(UTC).isoformat(),
+            last_outcome=stop_reason,
+        )
+    except Exception as exc:  # noqa: BLE001
+        notes.append(f"tick_telemetry_failed:{type(exc).__name__}")
+
+
+def _run_phase2_technical_batch(
+    *,
+    owner: str,
+    run: ResearchRun,
+    notes: list[str],
+    batch_size: int,
+    time_budget_seconds: float,
+) -> FirstPassDrainResult:
+    """Run exactly one leased technical batch for the run-owned scan."""
+    step = _build_phase2_step(run, batch_size=batch_size)
+    scan_id = step.get("technicalScanId")
+    reason = str(step.get("reason") or "")
+    action = str(step.get("action") or "skip")
+
+    if str(run.status or "") == "cancelled" or reason.startswith("run_status_cancelled"):
+        return FirstPassDrainResult(
+            outcome="skipped_run_status",
+            user_id=owner,
+            research_run_id=run.research_run_id,
+            technical_scan_id=str(scan_id) if scan_id else None,
+            phase=run.phase,
+            status=run.status,
+            schedule_enabled=bool(run.schedule_enabled),
+            notes=notes + [f"Research run status is {run.status}; Phase-2 refused."],
+            dry_run=False,
+        )
+    if reason == "not_approved":
+        return FirstPassDrainResult(
+            outcome="skipped_phase2_not_approved",
+            user_id=owner,
+            research_run_id=run.research_run_id,
+            technical_scan_id=str(scan_id) if scan_id else None,
+            phase=run.phase,
+            status=run.status,
+            schedule_enabled=bool(run.schedule_enabled),
+            notes=notes + ["candidateSelection gate is not approved."],
+            dry_run=False,
+        )
+    if reason == "no_technical_scan":
+        return FirstPassDrainResult(
+            outcome="skipped_phase2_no_scan",
+            user_id=owner,
+            research_run_id=run.research_run_id,
+            phase=run.phase,
+            status=run.status,
+            schedule_enabled=bool(run.schedule_enabled),
+            notes=notes + ["No technical_scan_id attached to research run."],
+            dry_run=False,
+        )
+    if reason == "scan_missing":
+        return FirstPassDrainResult(
+            outcome="skipped_phase2_scan_missing",
+            user_id=owner,
+            research_run_id=run.research_run_id,
+            technical_scan_id=str(scan_id) if scan_id else None,
+            phase=run.phase,
+            status=run.status,
+            schedule_enabled=bool(run.schedule_enabled),
+            notes=notes + [f"Technical scan {scan_id} not found."],
+            dry_run=False,
+        )
+    if reason == "foreign_scan":
+        return FirstPassDrainResult(
+            outcome="skipped_phase2_foreign_scan",
+            user_id=owner,
+            research_run_id=run.research_run_id,
+            technical_scan_id=str(scan_id) if scan_id else None,
+            phase=run.phase,
+            status=run.status,
+            schedule_enabled=bool(run.schedule_enabled),
+            notes=notes + ["Refused foreign technical scan not owned by run user."],
+            dry_run=False,
+        )
+    if reason.startswith("scan_"):
+        return FirstPassDrainResult(
+            outcome="skipped_phase2_scan_blocked",
+            user_id=owner,
+            research_run_id=run.research_run_id,
+            technical_scan_id=str(scan_id) if scan_id else None,
+            phase=run.phase,
+            status=run.status,
+            schedule_enabled=bool(run.schedule_enabled),
+            notes=notes + [f"Scan status blocked: {step.get('scanStatus')}"],
+            dry_run=False,
+        )
+    if reason == "waiting_for_budget_window":
+        _record_drain_tick(owner, stop_reason="phase2_waiting_for_budget", notes=notes)
+        return FirstPassDrainResult(
+            outcome="phase2_waiting_for_budget",
+            user_id=owner,
+            research_run_id=run.research_run_id,
+            technical_scan_id=str(scan_id) if scan_id else None,
+            phase=run.phase,
+            status=run.status,
+            schedule_enabled=bool(run.schedule_enabled),
+            waiting_for_retry=True,
+            notes=notes + ["Scan budget exhausted; waiting for resume window."],
+            dry_run=False,
+        )
+    if reason == "already_complete":
+        _record_drain_tick(owner, stop_reason="phase2_already_complete", notes=notes)
+        try:
+            research_run_store.reconcile(owner)
+        except (ResearchRunStoreUnavailable, ResearchRunConflict):
+            pass
+        return FirstPassDrainResult(
+            outcome="phase2_already_complete",
+            user_id=owner,
+            research_run_id=run.research_run_id,
+            technical_scan_id=str(scan_id) if scan_id else None,
+            phase=run.phase,
+            status=run.status,
+            schedule_enabled=bool(run.schedule_enabled),
+            already_complete=True,
+            notes=notes + ["Technical scan already complete."],
+            dry_run=False,
+        )
+    if action != "run_technical_batch":
+        return FirstPassDrainResult(
+            outcome="skipped_phase2_not_ready",
+            user_id=owner,
+            research_run_id=run.research_run_id,
+            technical_scan_id=str(scan_id) if scan_id else None,
+            phase=run.phase,
+            status=run.status,
+            schedule_enabled=bool(run.schedule_enabled),
+            notes=notes + [f"Phase-2 not eligible: {reason}"],
+            dry_run=False,
+        )
+
+    assert scan_id is not None
+    before = tw_research_scan_service.get_scan(str(scan_id))
+    cursor_before = int(getattr(before, "cursor", 0) or 0) if before else 0
+    timeout = max(5, min(int(float(time_budget_seconds)), DEFAULT_RUN_TIMEOUT_SECONDS))
+    capped_batch = max(1, min(int(batch_size), SCAN_BATCH_SIZE))
+    try:
+        result_state = tw_research_scan_service.run_batch(
+            str(scan_id),
+            batch_size=capped_batch,
+            timeout_seconds=timeout,
+        )
+    except KeyError as exc:
+        return FirstPassDrainResult(
+            outcome="failed_phase2_scan_not_found",
+            user_id=owner,
+            research_run_id=run.research_run_id,
+            technical_scan_id=str(scan_id),
+            phase=run.phase,
+            status=run.status,
+            schedule_enabled=bool(run.schedule_enabled),
+            notes=notes + [str(exc)],
+            dry_run=False,
+        )
+    except TwResearchConflictError as exc:
+        code = getattr(exc, "code", None) or "conflict"
+        if code == "budget_resume_required":
+            _record_drain_tick(owner, stop_reason="phase2_waiting_for_budget", notes=notes)
+            return FirstPassDrainResult(
+                outcome="phase2_waiting_for_budget",
+                user_id=owner,
+                research_run_id=run.research_run_id,
+                technical_scan_id=str(scan_id),
+                phase=run.phase,
+                status=run.status,
+                schedule_enabled=bool(run.schedule_enabled),
+                waiting_for_retry=True,
+                notes=notes + [f"{code}:{exc}"],
+                dry_run=False,
+            )
+        if code == "technical_scan_cancelled":
+            return FirstPassDrainResult(
+                outcome="skipped_phase2_scan_blocked",
+                user_id=owner,
+                research_run_id=run.research_run_id,
+                technical_scan_id=str(scan_id),
+                phase=run.phase,
+                status=run.status,
+                schedule_enabled=bool(run.schedule_enabled),
+                notes=notes + [f"{code}:{exc}"],
+                dry_run=False,
+            )
+        return FirstPassDrainResult(
+            outcome="failed_phase2_batch",
+            user_id=owner,
+            research_run_id=run.research_run_id,
+            technical_scan_id=str(scan_id),
+            phase=run.phase,
+            status=run.status,
+            schedule_enabled=bool(run.schedule_enabled),
+            notes=notes + [f"{code}:{exc}"],
+            dry_run=False,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("phase2_technical_batch_failed scan_id=%s", scan_id)
+        return FirstPassDrainResult(
+            outcome="failed_phase2_batch",
+            user_id=owner,
+            research_run_id=run.research_run_id,
+            technical_scan_id=str(scan_id),
+            phase=run.phase,
+            status=run.status,
+            schedule_enabled=bool(run.schedule_enabled),
+            notes=notes + [f"{type(exc).__name__}:{exc}"],
+            dry_run=False,
+        )
+
+    after_snap = result_state.snapshot()
+    cursor_after = int(getattr(result_state, "cursor", 0) or after_snap.get("cursor") or 0)
+    status_after = str(getattr(result_state, "status", "") or after_snap.get("status") or "")
+    symbols = max(0, cursor_after - cursor_before)
+    lease_held = False
+    if symbols == 0 and status_after not in _PHASE2_TERMINAL_SCAN:
+        if _lease_still_active(getattr(result_state, "reserve_expires_at", None)):
+            lease_held = True
+        elif int(after_snap.get("remainingCount") or 0) > 0:
+            lease_held = True
+
+    already_complete = status_after in _PHASE2_TERMINAL_SCAN
+    if lease_held:
+        stop_reason = "phase2_lease_held"
+    elif already_complete:
+        stop_reason = "phase2_already_complete"
+    elif status_after == "budget_exhausted":
+        stop_reason = "phase2_waiting_for_budget"
+    else:
+        stop_reason = "phase2_batch_ran"
+
+    try:
+        reconciled = research_run_store.reconcile(owner)
+    except ResearchRunStoreUnavailable as exc:
+        notes.append(f"reconcile_failed:{exc}")
+        reconciled = run
+    except ResearchRunConflict as exc:
+        notes.append(f"reconcile_conflict:{exc}")
+        try:
+            reconciled = research_run_store.get(owner) or run
+        except ResearchRunStoreUnavailable:
+            reconciled = run
+
+    _record_drain_tick(owner, stop_reason=stop_reason, notes=notes)
+    try:
+        reconciled = research_run_store.get(owner) or reconciled
+    except ResearchRunStoreUnavailable:
+        pass
+
+    batches_run = 1 if (symbols > 0 or already_complete) and not lease_held else 0
+    if stop_reason == "phase2_batch_ran":
+        batches_run = 1
+
+    return FirstPassDrainResult(
+        outcome=stop_reason,
+        user_id=owner,
+        research_run_id=(reconciled.research_run_id if reconciled else run.research_run_id),
+        technical_scan_id=str(scan_id),
+        phase=(reconciled.phase if reconciled else run.phase),
+        status=(reconciled.status if reconciled else run.status),
+        schedule_enabled=bool(
+            reconciled.schedule_enabled if reconciled else run.schedule_enabled
+        ),
+        batches_run=batches_run,
+        symbols_processed=symbols,
+        waiting_for_retry=stop_reason == "phase2_waiting_for_budget",
+        lease_held=lease_held,
+        already_complete=already_complete,
+        notes=notes + [f"stop={stop_reason}", f"scanStatus={status_after}"],
+        dry_run=False,
+    )
+
+
+def _dry_run_outcome_for_run(
+    run: ResearchRun,
+    *,
+    target_job: str | None,
+    phase2_step: dict[str, Any] | None = None,
+) -> str:
+    if _phase1_eligible(run, target_job=target_job):
+        return "dry_run_ready"
+    if str(run.status or "") in _BLOCKED_RUN_STATUSES:
+        return "dry_run_run_status_blocked"
+    step = phase2_step or {}
+    if step.get("action") == "run_technical_batch":
+        return "dry_run_phase2_ready"
+    if _candidate_approved(run) and run.technical_scan_id:
+        return "dry_run_phase2_ready"
+    if run.phase == "phase1_first_pass" and not run.schedule_enabled:
         return "dry_run_not_authorized"
     if run.phase != "phase1_first_pass":
         return "dry_run_past_phase1_gate"
-    if str(run.status or "") in _BLOCKED_RUN_STATUSES:
-        return "dry_run_run_status_blocked"
-    return "dry_run_ready"
+    return "dry_run_not_authorized"
 
 
 def _live_drain_guard(
@@ -279,6 +698,16 @@ def _live_drain_guard(
     target_job: str,
     notes: list[str],
 ) -> FirstPassDrainResult | None:
+    """Refuse Phase-1 work when schedule/phase/status blocks it."""
+    if str(run.status or "") in _BLOCKED_RUN_STATUSES:
+        return _early_skip(
+            outcome="skipped_run_status",
+            owner=owner,
+            run=run,
+            job_id=target_job,
+            notes=notes + [f"Research run status is {run.status}; drain refused."],
+            dry_run=False,
+        )
     if not run.schedule_enabled:
         return _early_skip(
             outcome="skipped_not_authorized",
@@ -297,16 +726,7 @@ def _live_drain_guard(
             run=run,
             job_id=target_job,
             notes=notes
-            + [f"Phase is {run.phase}; drain stops at analyst candidate selection."],
-            dry_run=False,
-        )
-    if str(run.status or "") in _BLOCKED_RUN_STATUSES:
-        return _early_skip(
-            outcome="skipped_run_status",
-            owner=owner,
-            run=run,
-            job_id=target_job,
-            notes=notes + [f"Research run status is {run.status}; drain refused."],
+            + [f"Phase is {run.phase}; Phase-1 drain stops at analyst candidate selection."],
             dry_run=False,
         )
     return None
@@ -545,14 +965,13 @@ def drain_authorized_first_pass(
     time_budget_seconds: float = 60,
     job_id: str | None = None,
 ) -> FirstPassDrainResult:
-    """Run up to ``max_batches`` leased first-pass batches for one authorized run.
+    """Run up to ``max_batches`` leased first-pass batches, or one Phase-2 technical batch.
 
     Refuses work when:
     - global drain flag is false
     - research run missing / store unavailable
-    - ``schedule_enabled`` is false (not explicitly authorized)
-    - job is not the run's authoritative ``first_pass_job_id``
-    - phase is past Phase-1 (already gated / Phase-2)
+    - Phase-1: ``schedule_enabled`` is false, or job is not authoritative
+    - Phase-2: candidates not approved, no attached scan, foreign/cancelled scan
     """
     owner = str(user_id or "").strip()
     notes: list[str] = list(_BASE_DRAIN_NOTES)
@@ -589,39 +1008,122 @@ def drain_authorized_first_pass(
         )
 
     requested = str(job_id).strip() if job_id else None
-    target_job, refused = _resolve_authoritative_job(
-        run, owner=owner, requested=requested, notes=notes, dry_run=dry_run
-    )
-    if refused is not None:
-        return refused
-    assert target_job is not None
+    target_job: str | None = None
+    # Resolve authoritative job when Phase-1 may apply or caller passed job_id.
+    if run.first_pass_job_id or requested:
+        target_job, refused = _resolve_authoritative_job(
+            run, owner=owner, requested=requested, notes=notes, dry_run=dry_run
+        )
+        if refused is not None:
+            # Non-authoritative explicit job_id always refuses; missing job only
+            # blocks when Phase-1 would otherwise run.
+            if requested or _phase1_eligible(run, target_job=run.first_pass_job_id):
+                # If Phase-2 can still run and refusal is only missing job without
+                # requested id, fall through — but skipped_no_job has no requested.
+                if refused.outcome == "skipped_non_authoritative_job":
+                    return refused
+                if refused.outcome == "skipped_no_job" and requested:
+                    return refused
+            if refused.outcome == "skipped_non_authoritative_job":
+                return refused
+            if refused.outcome == "skipped_no_job" and not (
+                _candidate_approved(run) or run.technical_scan_id
+            ):
+                return refused
+        # refused is skipped_no_job while Phase-2 may still apply → continue
+
+    phase2_step = _build_phase2_step(run, batch_size=batch_size)
+    phase1_ok = _phase1_eligible(run, target_job=target_job)
 
     if dry_run:
+        preflight = _phase2_preflight_payload(
+            run, job_id=target_job or run.first_pass_job_id, batch_size=batch_size
+        )
         return FirstPassDrainResult(
-            outcome=_dry_run_outcome_for_run(run),
+            outcome=_dry_run_outcome_for_run(
+                run, target_job=target_job, phase2_step=phase2_step
+            ),
             user_id=owner,
             research_run_id=run.research_run_id,
-            job_id=target_job,
+            job_id=target_job or run.first_pass_job_id,
+            technical_scan_id=run.technical_scan_id,
             phase=run.phase,
             status=run.status,
             schedule_enabled=bool(run.schedule_enabled),
             notes=notes + ["Dry run — no batches claimed; no writes."],
             dry_run=True,
-            preflight=_build_dry_run_preflight(
-                run, job_id=str(target_job), batch_size=batch_size
-            ),
+            preflight=preflight,
         )
 
-    blocked = _live_drain_guard(run, owner=owner, target_job=target_job, notes=notes)
-    if blocked is not None:
-        return blocked
+    if phase1_ok:
+        assert target_job is not None
+        blocked = _live_drain_guard(run, owner=owner, target_job=target_job, notes=notes)
+        if blocked is not None:
+            return blocked
+        return _run_drain_batches(
+            owner=owner,
+            run=run,
+            target_job=target_job,
+            notes=notes,
+            max_batches=max_batches,
+            batch_size=batch_size,
+            time_budget_seconds=time_budget_seconds,
+        )
 
-    return _run_drain_batches(
+    # Phase-2 path: approved + attached scan (or honest skip outcomes).
+    if _candidate_approved(run) or run.technical_scan_id or str(run.status or "") == "cancelled":
+        if phase2_step.get("action") == "run_technical_batch" or phase2_step.get(
+            "reason"
+        ) in {
+            "not_approved",
+            "no_technical_scan",
+            "scan_missing",
+            "foreign_scan",
+            "waiting_for_budget_window",
+            "already_complete",
+        } or str(phase2_step.get("reason") or "").startswith("scan_") or str(
+            phase2_step.get("reason") or ""
+        ).startswith("run_status_"):
+            return _run_phase2_technical_batch(
+                owner=owner,
+                run=run,
+                notes=notes,
+                batch_size=batch_size,
+                time_budget_seconds=time_budget_seconds,
+            )
+
+    if target_job:
+        blocked = _live_drain_guard(run, owner=owner, target_job=target_job, notes=notes)
+        if blocked is not None:
+            return blocked
+    if str(run.status or "") in _BLOCKED_RUN_STATUSES:
+        return _early_skip(
+            outcome="skipped_run_status",
+            owner=owner,
+            run=run,
+            job_id=target_job or run.first_pass_job_id,
+            notes=notes + [f"Research run status is {run.status}; drain refused."],
+            dry_run=False,
+        )
+    if run.phase != "phase1_first_pass":
+        return _early_skip(
+            outcome="skipped_past_phase1_gate",
+            owner=owner,
+            run=run,
+            job_id=target_job or run.first_pass_job_id,
+            notes=notes
+            + [
+                f"Phase is {run.phase}; Phase-1 drain stops at analyst gate "
+                "(Phase-2 requires approved candidates + attached technical scan)."
+            ],
+            dry_run=False,
+        )
+    return _early_skip(
+        outcome="skipped_not_authorized",
         owner=owner,
         run=run,
-        target_job=target_job,
-        notes=notes,
-        max_batches=max_batches,
-        batch_size=batch_size,
-        time_budget_seconds=time_budget_seconds,
+        job_id=target_job or run.first_pass_job_id,
+        schedule_enabled=bool(run.schedule_enabled),
+        notes=notes + ["schedule_enabled=false — Start Research sets this; pause clears it."],
+        dry_run=False,
     )

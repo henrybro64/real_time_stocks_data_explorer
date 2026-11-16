@@ -1,8 +1,8 @@
-"""Honest First-Pass execution readiness for managed research starts (#359).
+"""Honest First-Pass / Phase-2 execution readiness for managed research (#359/#361).
 
-A job row insert alone is never "collection started". This helper classifies
-whether drain is authorized, whether a worker can claim work, and what the UI
-should show next.
+A job or technical-scan row insert alone is never "work started". These helpers
+classify whether drain is authorized, whether a worker can claim work, and what
+the UI should show next.
 """
 
 from __future__ import annotations
@@ -16,6 +16,8 @@ from app.services.tw_research.research_run import (
 )
 
 _DRAIN_STALE_AFTER = timedelta(minutes=15)
+_PHASE2_TERMINAL_OK = frozenset({"completed_processing", "verified_ready"})
+_PHASE2_ACTIVE = frozenset({"queued", "running", "partial"})
 
 
 def _parse_iso(value: object) -> datetime | None:
@@ -173,5 +175,171 @@ def classify_first_pass_execution(
         "notes": [
             "HTTP 200 / job insert is not proof that collection is running.",
             "schedule_enabled alone is not proof an active worker holds a lease.",
+        ],
+    }
+
+
+def classify_phase2_execution(
+    run: ResearchRun,
+    *,
+    scan: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Honest Phase-2 technical execution block for managed research runs (#361).
+
+    Returns ``None`` when the run has no technical scan and candidates are not
+    approved — Stage 4 has nothing to classify yet.
+    """
+    approved = str((run.gates or {}).get("candidateSelection") or "") == "approved"
+    scan_id = str(run.technical_scan_id or "") or None
+    if not approved and not scan_id:
+        return None
+
+    available, drain_reason = first_pass_drain_availability(run.user_id)
+    if approved and not scan_id:
+        return {
+            "state": "awaiting_technical_start",
+            "authorized": False,
+            "drainAvailable": available,
+            "drainBlocker": drain_reason,
+            "drainLastTickAt": None,
+            "drainFresh": None,
+            "blocker": None,
+            "nextAction": "start_technical_scan",
+            "technicalScanId": None,
+            "scanStatus": None,
+            "leaseActive": False,
+            "leaseExpiresAt": None,
+            "universeSize": None,
+            "processedCount": None,
+            "remainingCount": None,
+            "candidateSelection": (run.gates or {}).get("candidateSelection"),
+            "notes": [
+                "Candidate approval alone does not start technical analysis.",
+                "Press Start technical analysis to attach a run-owned scan.",
+            ],
+        }
+    drain_meta = {}
+    if isinstance(run.dimensions, dict):
+        raw = run.dimensions.get("firstPassDrain")
+        if isinstance(raw, dict):
+            drain_meta = raw
+    last_tick_at = drain_meta.get("lastTickAt")
+    last_tick = _parse_iso(last_tick_at)
+    drain_fresh = (
+        last_tick is not None
+        and datetime.now(UTC) - last_tick <= _DRAIN_STALE_AFTER
+    )
+
+    scan_status = ""
+    lease_active = False
+    lease_expires_at = None
+    remaining = None
+    universe_size = None
+    processed = None
+    if scan is not None:
+        scan_status = str(scan.get("status") or "")
+        lease_expires = scan.get("reserve_expires_at") or scan.get("reserveExpiresAt")
+        parsed_lease = _parse_iso(lease_expires) if lease_expires else None
+        if parsed_lease is not None:
+            lease_expires_at = parsed_lease.isoformat()
+            lease_active = parsed_lease > datetime.now(UTC)
+        try:
+            universe_size = int(
+                scan.get("universeSize")
+                if scan.get("universeSize") is not None
+                else scan.get("universe_size")
+                if scan.get("universe_size") is not None
+                else len(scan.get("stockIds") or scan.get("stock_ids") or [])
+            )
+        except (TypeError, ValueError):
+            universe_size = None
+        try:
+            if scan.get("remainingCount") is not None:
+                remaining = int(scan.get("remainingCount"))
+            elif scan.get("remaining_count") is not None:
+                remaining = int(scan.get("remaining_count"))
+            elif universe_size is not None and scan.get("cursor") is not None:
+                remaining = max(0, universe_size - int(scan.get("cursor") or 0))
+        except (TypeError, ValueError):
+            remaining = None
+        try:
+            if scan.get("processedCount") is not None:
+                processed = int(scan.get("processedCount"))
+            elif scan.get("processed_count") is not None:
+                processed = int(scan.get("processed_count"))
+            elif universe_size is not None and remaining is not None:
+                processed = max(0, universe_size - remaining)
+        except (TypeError, ValueError):
+            processed = None
+
+    run_status = str(run.status or "")
+
+    if run_status == "cancelled" or scan_status == "cancelled":
+        state = "failed"
+        blocker = "cancelled"
+        next_action = "inspect_errors_or_retry"
+    elif run_status == "failed" or scan_status == "failed":
+        state = "failed"
+        blocker = "phase2_failed"
+        next_action = "inspect_errors_or_retry"
+    elif scan_status == "budget_exhausted" or run_status == "budget_exhausted":
+        state = "waiting_for_budget_window"
+        blocker = "budget_exhausted"
+        next_action = "resume_budget_or_wait"
+    elif scan_status in _PHASE2_TERMINAL_OK or str(run.phase or "") in {
+        "awaiting_analyst_report_decision",
+        "complete_evidence_ready",
+    }:
+        state = "completed"
+        blocker = None
+        next_action = "review_evidence"
+    elif not available:
+        state = "executor_unavailable"
+        blocker = drain_reason or "first_pass_drain_unavailable"
+        next_action = "wait_for_executor"
+    elif lease_active and scan_status in _PHASE2_ACTIVE:
+        state = "actively_analyzing"
+        blocker = None
+        next_action = "poll_progress"
+    elif drain_fresh and (
+        (processed is not None and int(processed) > 0) or scan_status == "running"
+    ):
+        state = "actively_analyzing"
+        blocker = None
+        next_action = "poll_progress"
+    elif available and last_tick is None:
+        # Attached scan, drain can run, but no tick yet — do not imply analysis ran.
+        state = "technical_scan_created"
+        blocker = None
+        next_action = "waiting_for_drain_tick"
+    elif available and not drain_fresh:
+        state = "executor_not_ticking"
+        blocker = "first_pass_drain_not_ticking"
+        next_action = "wait_or_contact_operator"
+    else:
+        state = "technical_scan_created"
+        blocker = None
+        next_action = "waiting_for_drain_tick"
+
+    return {
+        "state": state,
+        "authorized": bool(approved and scan_id and available),
+        "drainAvailable": available,
+        "drainBlocker": drain_reason,
+        "drainLastTickAt": last_tick_at if isinstance(last_tick_at, str) else None,
+        "drainFresh": bool(drain_fresh) if available else None,
+        "blocker": blocker,
+        "nextAction": next_action,
+        "technicalScanId": scan_id,
+        "scanStatus": scan_status or None,
+        "leaseActive": lease_active,
+        "leaseExpiresAt": lease_expires_at,
+        "universeSize": universe_size,
+        "processedCount": processed,
+        "remainingCount": remaining,
+        "candidateSelection": (run.gates or {}).get("candidateSelection"),
+        "notes": [
+            "Attaching a technical scan is not proof that analysis is running.",
+            "Phase-2 drain reuses the First-Pass drain CronJob token/owner/flag.",
         ],
     }

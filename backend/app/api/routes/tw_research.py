@@ -1552,9 +1552,13 @@ def _start_phase1_research_run(
 
 
 def _research_run_response(run: ResearchRun) -> ResearchRunResponse:
-    """Attach honest execution readiness alongside the durable run (#359)."""
-    from app.services.tw_research.execution_status import classify_first_pass_execution
+    """Attach honest execution readiness alongside the durable run (#359/#361)."""
+    from app.services.tw_research.execution_status import (
+        classify_first_pass_execution,
+        classify_phase2_execution,
+    )
     from app.repositories.tw_research_repository import tw_research_repository
+    from app.services.tw_research.scan import tw_research_scan_service
 
     job = None
     counts = None
@@ -1569,11 +1573,27 @@ def _research_run_response(run: ResearchRun) -> ResearchRunResponse:
         except Exception:  # noqa: BLE001 — response must still return the run
             job = None
             counts = None
+    scan_payload = None
+    if run.technical_scan_id:
+        try:
+            state = tw_research_scan_service.get_scan(str(run.technical_scan_id))
+            if state is not None and getattr(state, "user_id", None) in {
+                None,
+                run.user_id,
+            }:
+                scan_payload = state.snapshot()
+                scan_payload["reserve_expires_at"] = getattr(
+                    state, "reserve_expires_at", None
+                )
+                scan_payload["user_id"] = getattr(state, "user_id", None)
+        except Exception:  # noqa: BLE001 — response must still return the run
+            scan_payload = None
     return ResearchRunResponse(
         researchRun=run.as_dict(),
         execution=classify_first_pass_execution(
             run, job=job, symbol_counts=counts
         ),
+        phase2Execution=classify_phase2_execution(run, scan=scan_payload),
     )
 
 

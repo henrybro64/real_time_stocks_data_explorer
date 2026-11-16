@@ -329,6 +329,8 @@ class ResearchRunResponse(BaseModel):
     researchRun: dict[str, Any]
     # Additive honesty block: distinguishes job created vs execution authorized (#359).
     execution: dict[str, Any] | None = None
+    # Phase-2 technical honesty: scan attach ≠ analysis running (#361).
+    phase2Execution: dict[str, Any] | None = None
 
 
 class ReportEvidenceRequest(BaseModel):
