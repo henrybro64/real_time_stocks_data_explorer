@@ -137,6 +137,10 @@ def _arm_drain(monkeypatch, user_id: str) -> None:
         "app.services.tw_research.research_run.settings.tw_research_first_pass_drain_user_id",
         user_id,
     )
+    monkeypatch.setattr(
+        "app.services.tw_research.research_run.settings.tw_research_first_pass_drain_token",
+        "integration-test-drain-token",
+    )
 
 
 def test_a_drain_ticks_complete_73_symbol_universe(db_session, monkeypatch) -> None:

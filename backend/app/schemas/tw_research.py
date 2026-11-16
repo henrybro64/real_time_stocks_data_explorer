@@ -149,6 +149,8 @@ class FirstPassDrainResponse(BaseModel):
     stopsAtAnalystGate: bool = True
     notionWrites: bool = False
     phase2AutoStart: bool = False
+    # Read-only preflight payload when dryRun=true (#362). Never includes secrets.
+    preflight: dict[str, Any] | None = None
 
 
 class ResearchRunDrainControlRequest(BaseModel):

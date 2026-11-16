@@ -10,6 +10,16 @@ from app.services.tw_research.research_run import research_run_store
 
 def setup_function() -> None:
     research_run_store.clear_for_tests()
+    # Process-memory tests must inject job lookup (fail-closed re-arm #366).
+    research_run_store.set_first_pass_job_lookup_for_tests(
+        lambda job_id, user_id="owner": {
+            "job_id": job_id,
+            "user_id": user_id,
+            "status": "pending",
+            "deletion_state": None,
+            "archived_at": None,
+        }
+    )
 
 
 def teardown_function() -> None:
@@ -25,6 +35,10 @@ def _enable_drain_for_owner(monkeypatch: pytest.MonkeyPatch, user_id: str = "own
         "app.services.tw_research.research_run.settings.tw_research_first_pass_drain_user_id",
         user_id,
     )
+    monkeypatch.setattr(
+        "app.services.tw_research.research_run.settings.tw_research_first_pass_drain_token",
+        "unit-test-drain-token",
+    )
 
 
 def test_drain_skips_when_globally_disabled(monkeypatch) -> None:
@@ -37,6 +51,11 @@ def test_drain_skips_when_globally_disabled(monkeypatch) -> None:
         dry_run=True,
     )
     assert result.outcome == "skipped_disabled"
+    assert result.preflight is not None
+    assert "availability" in result.preflight
+    # Call-arg enabled=False skips work; availability flags still reflect settings.
+    assert "drainEnabledConfigured" in result.preflight["availability"]
+    assert "drainTokenConfigured" in result.preflight["availability"]
 
 
 def test_drain_skips_when_schedule_not_authorized(monkeypatch) -> None:
@@ -51,8 +70,10 @@ def test_drain_skips_when_schedule_not_authorized(monkeypatch) -> None:
         dry_run=True,
         job_id=run.first_pass_job_id,
     )
-    assert result.outcome == "skipped_not_authorized"
+    assert result.outcome == "dry_run_not_authorized"
     assert result.schedule_enabled is False
+    assert result.preflight is not None
+    assert result.preflight["availability"]["drainTokenConfigured"] is True
 
 
 def test_attach_authorizes_drain_and_dry_run_ready(monkeypatch) -> None:
@@ -78,6 +99,10 @@ def test_attach_does_not_arm_for_non_owner(monkeypatch) -> None:
     monkeypatch.setattr(
         "app.services.tw_research.research_run.settings.tw_research_first_pass_drain_user_id",
         "drain-owner",
+    )
+    monkeypatch.setattr(
+        "app.services.tw_research.research_run.settings.tw_research_first_pass_drain_token",
+        "unit-test-drain-token",
     )
     research_run_store.begin_phase1("other", trading_day="2024-06-27")
     run = research_run_store.attach_first_pass_job("other", first_pass_job_id="fpj_x")

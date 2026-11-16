@@ -1171,12 +1171,18 @@ describe("TwResearchPage Start retry when queued without job (#365)", () => {
     });
   });
 
-  it("disables Start when an authoritative job is attached", async () => {
+  it("disables Start when an authoritative job is attached and armed", async () => {
     seed({
       run: {
         status: "queued",
         phase: "phase1_first_pass",
         firstPassJobId: JOB_ID,
+        scheduleEnabled: true,
+        execution: {
+          state: "execution_authorized",
+          authorized: true,
+          drainAvailable: true,
+        },
       },
     });
     renderPage("en");
@@ -1186,5 +1192,54 @@ describe("TwResearchPage Start retry when queued without job (#365)", () => {
     });
     expect(start).toHaveTextContent(/View progress|查看進度/i);
     expect(screen.queryByTestId("tw-research-start-retry-hint")).toBeNull();
+  });
+
+  it("keeps Start enabled to re-arm when job exists but schedule is off (#366)", async () => {
+    const user = userEvent.setup();
+    seed({
+      run: {
+        status: "running",
+        phase: "phase1_first_pass",
+        firstPassJobId: JOB_ID,
+        scheduleEnabled: false,
+        execution: {
+          state: "executor_unavailable",
+          authorized: false,
+          drainAvailable: false,
+          blocker: "first_pass_drain_globally_disabled",
+        },
+      },
+    });
+    const armed = runRecord({
+      status: "running",
+      firstPassJobId: JOB_ID,
+      scheduleEnabled: true,
+      execution: {
+        state: "executor_not_ticking",
+        authorized: true,
+        drainAvailable: true,
+      },
+    });
+    vi.mocked(startTwResearchRun).mockResolvedValue(armed);
+    renderPage("en");
+    const start = await screen.findByTestId("tw-research-start-full-research");
+    await waitFor(() => {
+      expect(start).toBeEnabled();
+    });
+    const hint = await screen.findByTestId("tw-research-start-retry-hint");
+    expect(hint).toHaveTextContent(/automatic collection is not available|自動收集尚未可用/i);
+    expect(hint).not.toHaveTextContent(/actively|collecting|正在進行/i);
+    // After Start succeeds, refetch returns armed-but-not-ticking.
+    vi.mocked(fetchTwResearchRunCurrent).mockResolvedValue(armed);
+    await user.click(start);
+    await waitFor(() => {
+      expect(startTwResearchRun).toHaveBeenCalled();
+    });
+    expect(
+      await screen.findByTestId("tw-research-execution-status"),
+    ).toHaveTextContent(/has not ticked|沒有執行/i);
+    expect(screen.getByTestId("tw-research-execution-status")).not.toHaveTextContent(
+      /actively collecting|正在進行資料收集/i,
+    );
   });
 });

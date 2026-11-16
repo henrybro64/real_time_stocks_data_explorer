@@ -16,9 +16,10 @@ first-pass job and technical-scan rows — clients cannot assert status.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
+import logging
 from threading import Lock
 from typing import Any, Literal, Protocol
 from uuid import uuid4
@@ -32,17 +33,42 @@ from app.services.tw_research.constants import (
 )
 from app.services.tw_research.evaluation import map_recoverable_status
 
+logger = logging.getLogger(__name__)
+
+# Same eligibility set as standalone adoption (#359 / repository).
+_REARM_ELIGIBLE_JOB_STATUS = frozenset({"pending", "running", "deferred", "partial"})
+_ISO_Z_UTC_SUFFIX = "+00:00"
+
+
+def _parse_iso_utc(value: str) -> datetime:
+    return datetime.fromisoformat(str(value).replace("Z", _ISO_Z_UTC_SUFFIX))
+
+
+def _ineligible_rearm_job_status_reason(status: str) -> str | None:
+    if status in _REARM_ELIGIBLE_JOB_STATUS:
+        return None
+    if status == "completed":
+        return "first_pass_job_nothing_pending"
+    if status in {"cancelled", "failed", "budget_exhausted"}:
+        return f"first_pass_drain_resume_blocked_job_status:{status}"
+    return "first_pass_job_not_eligible_status"
+
 
 def first_pass_drain_availability(user_id: str) -> tuple[bool, str | None]:
     """Whether durable first-pass drain may be armed for this user.
 
     Returns ``(available, reason)``. Reason is set when unavailable.
+    Requires the feature flag, matching owner user id, and a configured
+    drain token (token value is never logged or returned).
     """
     if not bool(settings.tw_research_first_pass_drain_enabled):
         return False, "first_pass_drain_globally_disabled"
     owner = str(settings.tw_research_first_pass_drain_user_id or "").strip()
     if not owner or str(user_id or "").strip() != owner:
         return False, "first_pass_drain_unavailable_for_user"
+    token = str(settings.tw_research_first_pass_drain_token or "").strip()
+    if not token:
+        return False, "first_pass_drain_token_unconfigured"
     return True, None
 
 ResearchRunPhase = Literal[
@@ -284,6 +310,10 @@ class ResearchRunStore:
         self._repository = repository
         self._lock = Lock()
         self._test_memory: dict[str, ResearchRun] | None = None
+        # Injectable job lookup for unit tests (defaults to first_pass_job_service.get_job).
+        self._first_pass_job_lookup: (
+            Callable[[str], dict[str, Any]] | Callable[..., dict[str, Any]] | None
+        ) = None
 
     def get(self, user_id: str) -> ResearchRun | None:
         with self._lock:
@@ -476,9 +506,7 @@ class ResearchRunStore:
             lease_expires = job.get("reserve_expires_at") or job.get("reserveExpiresAt")
             if lease_expires:
                 try:
-                    parsed = datetime.fromisoformat(
-                        str(lease_expires).replace("Z", "+00:00")
-                    )
+                    parsed = _parse_iso_utc(str(lease_expires))
                     if parsed > datetime.now(UTC):
                         raise ResearchRunConflict(
                             "first_pass_job_lease_active",
@@ -598,21 +626,9 @@ class ResearchRunStore:
                         str(reason),
                         reason=str(reason),
                     )
-                if run.phase != "phase1_first_pass":
-                    raise ResearchRunConflict(
-                        f"first_pass_drain_resume_requires_phase1:{run.phase}",
-                        reason=f"first_pass_drain_resume_requires_phase1:{run.phase}",
-                    )
-                if not run.first_pass_job_id:
-                    raise ResearchRunConflict(
-                        "first_pass_drain_resume_requires_attached_job",
-                        reason="first_pass_drain_resume_requires_attached_job",
-                    )
-                if str(run.status or "") in {"failed", "budget_exhausted", "cancelled"}:
-                    raise ResearchRunConflict(
-                        f"first_pass_drain_resume_blocked_status:{run.status}",
-                        reason=f"first_pass_drain_resume_blocked_status:{run.status}",
-                    )
+                block = self._rearm_block_reason_locked(run)
+                if block is not None:
+                    raise ResearchRunConflict(block, reason=block)
             run.schedule_enabled = bool(enabled)
             run.append_note(
                 "First-pass drain enabled."
@@ -623,6 +639,114 @@ class ResearchRunStore:
                 run.append_note(note)
             run.updated_at = datetime.now(UTC).isoformat()
             return self._persist_locked(run)
+
+    def set_first_pass_job_lookup_for_tests(
+        self,
+        lookup: Callable[..., dict[str, Any]] | None,
+    ) -> None:
+        """Inject job lookup for unit tests (must accept job_id, user_id=...)."""
+        self._first_pass_job_lookup = lookup
+
+    def maybe_rearm_first_pass_drain_on_start(self, user_id: str) -> ResearchRun:
+        """Idempotent Start/Resume re-arm when the executor becomes available (#366).
+
+        For an eligible Phase-1 run that already owns an authoritative First-Pass
+        Job with ``schedule_enabled=false``, re-check drain availability and arm
+        the same run/job. Never creates duplicate runs/jobs or adopts standalone
+        historical jobs. If the executor is still unavailable, leaves scheduling
+        disabled and returns the run unchanged (truthful execution status is
+        derived by the caller).
+
+        Concurrent Start: on OCC conflict, reload once; if already armed (or no
+        longer eligible), return the authoritative row. Retry re-arm once, then
+        surface the conflict.
+        """
+        with self._lock:
+            run = self._require_locked(user_id)
+            changed = self._reconcile_locked(run)
+            if changed:
+                run = self._persist_locked(run)
+            try:
+                return self._maybe_rearm_first_pass_drain_locked(run)
+            except ResearchRunConflict:
+                run = self._require_locked(user_id)
+                if bool(run.schedule_enabled):
+                    return run
+                available, _reason = first_pass_drain_availability(user_id)
+                if not available or self._rearm_block_reason_locked(run) is not None:
+                    return run
+                try:
+                    return self._maybe_rearm_first_pass_drain_locked(run)
+                except ResearchRunConflict:
+                    run = self._require_locked(user_id)
+                    if bool(run.schedule_enabled):
+                        return run
+                    raise
+
+    def _rearm_block_reason_locked(self, run: ResearchRun) -> str | None:
+        if run.phase != "phase1_first_pass":
+            return f"first_pass_drain_resume_requires_phase1:{run.phase}"
+        if not run.first_pass_job_id:
+            return "first_pass_drain_resume_requires_attached_job"
+        if str(run.status or "") in {"failed", "budget_exhausted", "cancelled"}:
+            return f"first_pass_drain_resume_blocked_status:{run.status}"
+        return self._job_rearm_block_reason(
+            user_id=run.user_id, job_id=str(run.first_pass_job_id)
+        )
+
+    def _lookup_job_for_rearm(self, *, user_id: str, job_id: str) -> dict[str, Any]:
+        if self._first_pass_job_lookup is not None:
+            return self._first_pass_job_lookup(job_id, user_id=user_id)
+        from app.services.tw_research.first_pass_job import first_pass_job_service
+
+        return first_pass_job_service.get_job(job_id, user_id=user_id)
+
+    def _job_rearm_block_reason(self, *, user_id: str, job_id: str) -> str | None:
+        """Refuse re-arm for ineligible/missing/foreign/deleting jobs (fail closed)."""
+        from app.services.tw_research.first_pass_job import FirstPassJobError
+
+        try:
+            job = self._lookup_job_for_rearm(user_id=user_id, job_id=job_id)
+        except KeyError:
+            return "first_pass_job_not_found_for_rearm"
+        except FirstPassJobError:
+            logger.warning(
+                "first_pass_job_store_unavailable_for_rearm job_id=%s", job_id
+            )
+            return "first_pass_job_store_unavailable_for_rearm"
+        except Exception:  # noqa: BLE001 — fail closed on any lookup failure
+            logger.exception(
+                "first_pass_job_store_unavailable_for_rearm job_id=%s", job_id
+            )
+            return "first_pass_job_store_unavailable_for_rearm"
+
+        job_owner = str(job.get("user_id") or job.get("userId") or "")
+        if job_owner and job_owner != str(user_id):
+            return "first_pass_job_not_found_for_rearm"
+        if job.get("archived_at") or job.get("archivedAt"):
+            return "first_pass_job_archived"
+        deletion_state = str(
+            job.get("deletion_state") or job.get("deletionState") or ""
+        ).strip()
+        if deletion_state:
+            return "first_pass_job_deletion_in_progress"
+        return _ineligible_rearm_job_status_reason(str(job.get("status") or ""))
+
+    def _maybe_rearm_first_pass_drain_locked(self, run: ResearchRun) -> ResearchRun:
+        if bool(run.schedule_enabled):
+            return run
+        available, _reason = first_pass_drain_availability(run.user_id)
+        if not available:
+            return run
+        block = self._rearm_block_reason_locked(run)
+        if block is not None:
+            return run
+        run.schedule_enabled = True
+        run.append_note(
+            "First-pass drain re-armed on Start after executor became available."
+        )
+        run.updated_at = datetime.now(UTC).isoformat()
+        return self._persist_locked(run)
 
     def record_first_pass_drain_tick(
         self,
@@ -1025,10 +1149,12 @@ class ResearchRunStore:
         """Enable isolated in-memory backend for unit tests (never for production)."""
         with self._lock:
             self._test_memory = {}
+            self._first_pass_job_lookup = None
 
     def disable_test_memory(self) -> None:
         with self._lock:
             self._test_memory = None
+            self._first_pass_job_lookup = None
 
     def uses_durable_backend(self) -> bool:
         """False only when unit tests enable the in-memory ledger."""
@@ -1300,9 +1426,7 @@ class ResearchRunStore:
         expires = None
         if run.job_claim_expires_at:
             try:
-                expires = datetime.fromisoformat(
-                    str(run.job_claim_expires_at).replace("Z", "+00:00")
-                )
+                expires = _parse_iso_utc(str(run.job_claim_expires_at))
             except ValueError:
                 expires = None
         held_by_other = (
@@ -1352,9 +1476,7 @@ class ResearchRunStore:
         expires = None
         if run.phase2_claim_expires_at:
             try:
-                expires = datetime.fromisoformat(
-                    str(run.phase2_claim_expires_at).replace("Z", "+00:00")
-                )
+                expires = _parse_iso_utc(str(run.phase2_claim_expires_at))
             except ValueError:
                 expires = None
         held_by_other = (

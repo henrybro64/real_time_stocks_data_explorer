@@ -226,6 +226,143 @@ function displayText(value: unknown): string {
   return "";
 }
 
+function appendWatchlistReason(
+  reasonById: Map<string, string>,
+  id: string,
+  reason: string,
+): void {
+  const prior = reasonById.get(id);
+  reasonById.set(id, prior ? `${prior}+${reason}` : reason);
+}
+
+function classifySelectionReasons(reasons: Record<string, unknown>): {
+  interestingIds: Set<string>;
+  insufficientIds: Set<string>;
+} {
+  const interestingIds = new Set<string>();
+  const insufficientIds = new Set<string>();
+  const watchList = reasons.fundamentalWatchIds ?? reasons.watchIds;
+  if (Array.isArray(watchList)) {
+    for (const id of watchList) interestingIds.add(String(id));
+  }
+  for (const [key, value] of Object.entries(reasons)) {
+    if (key === "dailyOverrideIds" || key === "fundamentalWatchIds" || key === "watchIds") {
+      continue;
+    }
+    const text = String(value ?? "").toLowerCase();
+    if (
+      text.includes("insufficient") ||
+      text.includes("unavailable") ||
+      text.includes("incomplete") ||
+      text.includes("missing")
+    ) {
+      insufficientIds.add(key);
+      continue;
+    }
+    if (text.includes("watch") || text.includes("promising") || text.includes("attractive")) {
+      interestingIds.add(key);
+    }
+  }
+  return { interestingIds, insufficientIds };
+}
+
+function insufficientIdsFromEvidenceText(evidenceText: string | null | undefined): Set<string> {
+  const insufficient = new Set<string>();
+  if (!evidenceText) return insufficient;
+  try {
+    const parsed = JSON.parse(evidenceText);
+    const records = Array.isArray(parsed?.records)
+      ? parsed.records
+      : Array.isArray(parsed?.chunk?.rows)
+        ? parsed.chunk.rows
+        : [];
+    for (const row of records) {
+      const id = String(row?.stockId ?? row?.stock_id ?? "");
+      if (!id) continue;
+      const completeness = (row?.completeness ?? row?.evidence?.completeness) as
+        | { identityComplete?: boolean; fundamentalFieldsOk?: number; fieldsOk?: number }
+        | undefined;
+      if (
+        completeness &&
+        (completeness.identityComplete === false ||
+          Number(completeness.fundamentalFieldsOk ?? completeness.fieldsOk ?? 1) <= 0)
+      ) {
+        insufficient.add(id);
+      }
+    }
+  } catch {
+    // Evidence text may be unrelated JSON; ignore parse failures.
+  }
+  return insufficient;
+}
+
+function buildWatchlistReasonById(input: {
+  dailyNotRunByDesignIds?: string[] | null;
+  monthlyFailWatchlistIds?: string[] | null;
+  monthlyIncompleteIds?: string[] | null;
+  frozenStockIds?: string[] | null;
+  selectedStockIds?: string[] | null;
+  selectionReasons?: Record<string, unknown> | null;
+  firstPassEvidenceText?: string | null;
+}): Map<string, string> {
+  const reasonById = new Map<string, string>();
+  for (const id of input.dailyNotRunByDesignIds ?? []) {
+    appendWatchlistReason(reasonById, String(id), "daily_waiting_or_not_run");
+  }
+  for (const id of input.monthlyFailWatchlistIds ?? []) {
+    appendWatchlistReason(reasonById, String(id), "monthly_fail_watchlist");
+  }
+  for (const id of input.monthlyIncompleteIds ?? []) {
+    appendWatchlistReason(reasonById, String(id), "insufficient_evidence_monthly");
+  }
+
+  const selected = new Set((input.selectedStockIds ?? []).map(String));
+  const { interestingIds, insufficientIds } = classifySelectionReasons(
+    (input.selectionReasons ?? {}) as Record<string, unknown>,
+  );
+  const insufficient = new Set<string>([
+    ...insufficientIds,
+    ...insufficientIdsFromEvidenceText(input.firstPassEvidenceText),
+  ]);
+
+  for (const id of (input.frozenStockIds ?? []).map(String)) {
+    if (selected.has(id)) continue;
+    if (insufficient.has(id)) {
+      appendWatchlistReason(reasonById, id, "insufficient_evidence_fundamental");
+    } else if (interestingIds.has(id)) {
+      appendWatchlistReason(reasonById, id, "fundamentally_interesting_not_selected");
+    } else {
+      appendWatchlistReason(reasonById, id, "first_pass_not_selected_for_technical");
+    }
+  }
+  return reasonById;
+}
+
+function deletionBlockerCodes(preview: {
+  blockers?: unknown;
+} | null): string[] {
+  if (!preview || !Array.isArray(preview.blockers)) return [];
+  return preview.blockers.map((b) =>
+    typeof b === "object" && b && "code" in b
+      ? String((b as { code: string }).code)
+      : String(b),
+  );
+}
+
+function formatDeletionCounts(counts: unknown): string {
+  if (!counts || typeof counts !== "object") return "";
+  return Object.entries(counts as Record<string, unknown>)
+    .map(([k, v]) => `${k}=${String(v)}`)
+    .join(", ");
+}
+
+function deletionFailureReasonCode(detail: string): string {
+  const codeMatch = detail.match(
+    /run_owned_requires_full_run_delete|snapshot_shared_with_other_job|snapshot_referenced_by_candidate_set|snapshot_referenced_by_research_run|scan_provenance_references_snapshot|preview_stale|legacy_unowned|worker_quiescence_timeout|deletion_in_progress/,
+  );
+  return codeMatch?.[0] || "unknown";
+}
+
 function workerActivityLabelKey(
   activity: "active" | "unknown" | "idle",
 ): TranslationKey {
@@ -601,29 +738,18 @@ export function TwResearchPage({
       setJobManageMessage(t("research.tw.blocker.preview_stale"));
       return;
     }
-    const blockerCodes = Array.isArray(deletePreview.blockers)
-      ? deletePreview.blockers.map((b) =>
-          typeof b === "object" && b && "code" in b
-            ? String((b as { code: string }).code)
-            : String(b),
-        )
-      : [];
-    const hardBlock = blockerCodes.filter((code) => code !== "deletion_in_progress");
-    if (deleteModalMode === "job" && hardBlock.length > 0) {
-      if (hardBlock.includes("run_owned_requires_full_run_delete")) {
+    const hardBlock = deletionBlockerCodes(deletePreview).filter(
+      (code) => code !== "deletion_in_progress",
+    );
+    if (hardBlock.length > 0) {
+      if (
+        deleteModalMode === "job" &&
+        hardBlock.includes("run_owned_requires_full_run_delete")
+      ) {
         setDeleteModalOpen(false);
         await openDeletePreview("full_run");
         return;
       }
-      setJobManageMessage(
-        t("research.tw.deleteJobBlocked", {
-          reason: blockerReasonText(hardBlock),
-        }),
-      );
-      setDeleteModalOpen(false);
-      return;
-    }
-    if (deleteModalMode === "full_run" && hardBlock.length > 0) {
       setJobManageMessage(
         t("research.tw.deleteJobBlocked", {
           reason: blockerReasonText(hardBlock),
@@ -649,13 +775,7 @@ export function TwResearchPage({
           if (firstPassJobId) setPendingDeletionJobId(firstPassJobId);
         }
       } else if (result.deleted) {
-        const counts = result.counts;
-        const countsText =
-          counts && typeof counts === "object"
-            ? Object.entries(counts as Record<string, unknown>)
-                .map(([k, v]) => `${k}=${String(v)}`)
-                .join(", ")
-            : "";
+        const countsText = formatDeletionCounts(result.counts);
         setPendingDeletionJobId(null);
         setPendingFullRunDeletion(false);
         setFirstPassJobId(null);
@@ -674,12 +794,9 @@ export function TwResearchPage({
     } catch (error) {
       const api = toApiError(error);
       const detail = String(api.detail || api.message || "unknown");
-      const codeMatch = detail.match(
-        /run_owned_requires_full_run_delete|snapshot_shared_with_other_job|snapshot_referenced_by_candidate_set|snapshot_referenced_by_research_run|scan_provenance_references_snapshot|preview_stale|legacy_unowned|worker_quiescence_timeout|deletion_in_progress/,
-      );
       setJobManageMessage(
         t("research.tw.deleteJobFailed", {
-          reason: blockerReasonText([codeMatch?.[0] || "unknown"]),
+          reason: blockerReasonText([deletionFailureReasonCode(detail)]),
         }),
       );
       setDeleteModalOpen(false);
@@ -1355,6 +1472,24 @@ export function TwResearchPage({
     void queryClient.invalidateQueries({ queryKey: ["tw-research-first-pass-jobs"] });
   };
 
+  const runNeedsDrainRearm = useMemo(() => {
+    const run = researchRunQuery.data;
+    if (!run?.firstPassJobId) return false;
+    if (String(run.phase ?? "") !== "phase1_first_pass") return false;
+    if (["failed", "cancelled", "budget_exhausted"].includes(String(run.status ?? ""))) {
+      return false;
+    }
+    // Job exists but drain is not armed — Start/Resume can re-arm (#366).
+    if (run.scheduleEnabled === true) return false;
+    const execState = String(run.execution?.state ?? "");
+    return (
+      execState === "executor_unavailable" ||
+      execState === "job_created" ||
+      run.scheduleEnabled === false ||
+      run.scheduleEnabled == null
+    );
+  }, [researchRunQuery.data]);
+
   const runIsActiveNonTerminal = useMemo(() => {
     const run = researchRunQuery.data;
     if (!run) return false;
@@ -1376,17 +1511,30 @@ export function TwResearchPage({
     if (!run.firstPassJobId) {
       return false;
     }
+    // Attached job with schedule_enabled=false must keep Start clickable so
+    // the user can re-arm after the executor becomes available (#366).
+    if (runNeedsDrainRearm) {
+      return false;
+    }
     return (
       status === "running" ||
       status === "queued" ||
       status === "partial" ||
       status === "deferred"
     );
-  }, [researchRunQuery.data]);
+  }, [researchRunQuery.data, runNeedsDrainRearm]);
 
   const startRetryHint = useMemo(() => {
     const run = researchRunQuery.data;
-    if (!run || run.firstPassJobId) return null;
+    if (!run) return null;
+    if (runNeedsDrainRearm) {
+      const execState = String(run.execution?.state ?? "");
+      if (execState === "executor_unavailable") {
+        return t("research.tw.startWaitingExecutorThenRetry");
+      }
+      return t("research.tw.startRearmWhenExecutorReady");
+    }
+    if (run.firstPassJobId) return null;
     const status = String(run.status ?? "");
     if (status !== "queued" && status !== "running") return null;
     const expiresRaw = run.jobClaimExpiresAt;
@@ -1397,7 +1545,7 @@ export function TwResearchPage({
       }
     }
     return t("research.tw.startRetryIncompleteJob");
-  }, [researchRunQuery.data, language, t]);
+  }, [researchRunQuery.data, runNeedsDrainRearm, language, t]);
 
   // Canonical ordinary-path Start (#359): managed research-run, not standalone job.
   const startFullResearchMutation = useMutation({
@@ -1883,106 +2031,30 @@ export function TwResearchPage({
     }
     return map;
   }, [frozenPageChipQuery.data]);
-  const watchlistReasonById = useMemo(() => {
-    const reasonById = new Map<string, string>();
-    const addReason = (id: string, reason: string) => {
-      const prior = reasonById.get(id);
-      reasonById.set(id, prior ? `${prior}+${reason}` : reason);
-    };
-    for (const id of scan?.dailyNotRunByDesignIds ?? []) {
-      addReason(String(id), "daily_waiting_or_not_run");
-    }
-    for (const id of scan?.monthlyFailWatchlistIds ?? []) {
-      addReason(String(id), "monthly_fail_watchlist");
-    }
-    for (const id of scan?.monthlyIncompleteIds ?? []) {
-      addReason(String(id), "insufficient_evidence_monthly");
-    }
-
-    // Frozen first-pass universe + scan-pinned candidate set (not latest).
-    const selected = new Set(
-      ((watchlistCandidateSet?.stockIds as string[] | undefined) ?? []).map(String),
-    );
-    const frozenIds = Array.isArray(frozenFirstPassQuery.data?.stockIds)
-      ? (frozenFirstPassQuery.data?.stockIds as string[]).map(String)
-      : [];
-    const reasons = (watchlistCandidateSet?.selectionReasons ?? {}) as Record<
-      string,
-      unknown
-    >;
-    const interestingIds = new Set<string>();
-    const reasonInsufficient = new Set<string>();
-    const watchList = reasons.fundamentalWatchIds ?? reasons.watchIds;
-    if (Array.isArray(watchList)) {
-      for (const id of watchList) interestingIds.add(String(id));
-    }
-    for (const [key, value] of Object.entries(reasons)) {
-      if (key === "dailyOverrideIds" || key === "fundamentalWatchIds" || key === "watchIds") {
-        continue;
-      }
-      const text = String(value ?? "").toLowerCase();
-      if (
-        text.includes("insufficient") ||
-        text.includes("unavailable") ||
-        text.includes("incomplete") ||
-        text.includes("missing")
-      ) {
-        reasonInsufficient.add(key);
-        continue;
-      }
-      if (text.includes("watch") || text.includes("promising") || text.includes("attractive")) {
-        interestingIds.add(key);
-      }
-    }
-
-    // Optional completeness hints from already-loaded first-pass evidence JSON.
-    const insufficient = new Set<string>(reasonInsufficient);
-    try {
-      const parsed = firstPassEvidenceText ? JSON.parse(firstPassEvidenceText) : null;
-      const records = Array.isArray(parsed?.records)
-        ? parsed.records
-        : Array.isArray(parsed?.chunk?.rows)
-          ? parsed.chunk.rows
-          : [];
-      for (const row of records) {
-        const id = String(row?.stockId ?? row?.stock_id ?? "");
-        if (!id) continue;
-        const completeness = (row?.completeness ?? row?.evidence?.completeness) as
-          | { identityComplete?: boolean; fundamentalFieldsOk?: number; fieldsOk?: number }
-          | undefined;
-        if (
-          completeness &&
-          (completeness.identityComplete === false ||
-            Number(completeness.fundamentalFieldsOk ?? completeness.fieldsOk ?? 1) <= 0)
-        ) {
-          insufficient.add(id);
-        }
-      }
-    } catch {
-      // Evidence text may be unrelated JSON; ignore parse failures.
-    }
-
-    for (const id of frozenIds) {
-      if (selected.has(id)) continue;
-      if (insufficient.has(id)) {
-        addReason(id, "insufficient_evidence_fundamental");
-      } else if (interestingIds.has(id)) {
-        addReason(id, "fundamentally_interesting_not_selected");
-      } else {
-        // Neutral: not selected for MACD/KD — not an attractiveness claim.
-        addReason(id, "first_pass_not_selected_for_technical");
-      }
-    }
-    return reasonById;
-  }, [
-    firstPassEvidenceText,
-    frozenFirstPassQuery.data?.stockIds,
-    scan?.dailyNotRunByDesignIds,
-    scan?.monthlyFailWatchlistIds,
-    scan?.monthlyIncompleteIds,
-    watchlistCandidateSet?.selectionReasons,
-    watchlistCandidateSet?.stockIds,
-  ]);
+  const watchlistReasonById = useMemo(
+    () =>
+      buildWatchlistReasonById({
+        dailyNotRunByDesignIds: scan?.dailyNotRunByDesignIds,
+        monthlyFailWatchlistIds: scan?.monthlyFailWatchlistIds,
+        monthlyIncompleteIds: scan?.monthlyIncompleteIds,
+        frozenStockIds: Array.isArray(frozenFirstPassQuery.data?.stockIds)
+          ? (frozenFirstPassQuery.data?.stockIds as string[])
+          : [],
+        selectedStockIds: (watchlistCandidateSet?.stockIds as string[] | undefined) ?? [],
+        selectionReasons: (watchlistCandidateSet?.selectionReasons ??
+          {}) as Record<string, unknown>,
+        firstPassEvidenceText,
+      }),
+    [
+      firstPassEvidenceText,
+      frozenFirstPassQuery.data?.stockIds,
+      scan?.dailyNotRunByDesignIds,
+      scan?.monthlyFailWatchlistIds,
+      scan?.monthlyIncompleteIds,
+      watchlistCandidateSet?.selectionReasons,
+      watchlistCandidateSet?.stockIds,
+    ],
+  );
   const watchlistIds = useMemo(
     () =>
       Array.from(watchlistReasonById.keys()).sort((left, right) =>
