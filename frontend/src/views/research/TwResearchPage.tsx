@@ -40,6 +40,7 @@ import {
   ChipEvidenceCard,
   type ChipEvidenceRow,
 } from "./ChipEvidenceCard";
+import { TechnicalResultsPanel } from "./TechnicalResultsPanel";
 import {
   AdvancedDetailsDisclosure,
   ResearchInvestorSummary,
@@ -86,6 +87,7 @@ import {
   fetchTwResearchScan,
   fetchTwResearchScanProgress,
   fetchTwResearchScans,
+  fetchTwResearchTechnicalResults,
   fetchTwResearchSnapshotChunk,
   listTwResearchFirstPassJobs,
   unarchiveTwResearchFirstPassJob,
@@ -1129,6 +1131,30 @@ export function TwResearchPage({
   });
 
   const scan = scanQuery.data?.scanId === scanId ? scanQuery.data : null;
+
+  const technicalResultsQuery = useQuery({
+    queryKey: [
+      "tw-research-technical-results",
+      researchRunQuery.data?.technicalScanId,
+      progressQuery.data?.status,
+      progressQuery.data?.processedCount,
+    ],
+    queryFn: () => fetchTwResearchTechnicalResults(),
+    enabled: Boolean(researchRunQuery.data?.technicalScanId),
+    staleTime: 5_000,
+    refetchInterval: (query) => {
+      const state = String(
+        query.state.data?.phase2Execution?.state ??
+          researchRunQuery.data?.phase2Execution?.state ??
+          "",
+      );
+      if (state === "actively_analyzing" || state === "waiting_for_budget_window") {
+        return 8_000;
+      }
+      return false;
+    },
+    retry: false,
+  });
 
   const pinnedFirstPassSnapshotId = useMemo(() => {
     const fromScan = scan?.candidateProvenance?.firstPassSnapshotId;
@@ -3440,6 +3466,21 @@ export function TwResearchPage({
               ) : null}
             </Stack>
           </Tile>
+
+          {researchRunQuery.data?.technicalScanId ||
+          researchUiStage === "technical_analysis" ||
+          researchUiStage === "results" ? (
+            <TechnicalResultsPanel
+              results={technicalResultsQuery.data}
+              phase2Message={
+                showPhase2ExecutionMessage ? phase2ExecutionMessage : null
+              }
+              empty={
+                technicalResultsQuery.isError ||
+                (!technicalResultsQuery.data && !technicalResultsQuery.isFetching)
+              }
+            />
+          ) : null}
 
                 </Stack>
               </TabPanel>

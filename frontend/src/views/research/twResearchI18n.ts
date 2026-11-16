@@ -335,6 +335,103 @@ const TW_RESEARCH_ROWS = [
     "技術分析上一輪沒有進度，正在等待重試。",
   ],
   [
+    "research.tw.technicalResults.title",
+    "Technical results",
+    "技術分析結果",
+  ],
+  [
+    "research.tw.technicalResults.subtitle",
+    "Monthly and daily MACD/KD from the run-owned technical scan. Values are persisted; nothing is recomputed here.",
+    "來自本輪技術掃描的月線／日線 MACD/KD。數值為已儲存結果，此處不會重新計算。",
+  ],
+  [
+    "research.tw.technicalResults.empty",
+    "No technical results yet. Approve candidates and start technical analysis first.",
+    "尚無技術分析結果。請先核准候選並開始技術分析。",
+  ],
+  [
+    "research.tw.technicalResults.monthly",
+    "Monthly MACD / KD",
+    "月線 MACD / KD",
+  ],
+  [
+    "research.tw.technicalResults.daily",
+    "Daily MACD / KD",
+    "日線 MACD / KD",
+  ],
+  [
+    "research.tw.technicalResults.asOfMonth",
+    "As of month",
+    "截至月份",
+  ],
+  [
+    "research.tw.technicalResults.asOfDate",
+    "As of date",
+    "截至日期",
+  ],
+  [
+    "research.tw.technicalResults.result",
+    "Result",
+    "結果",
+  ],
+  [
+    "research.tw.technicalResults.bars",
+    "Bars used",
+    "使用根數",
+  ],
+  [
+    "research.tw.technicalResults.insufficientHistory",
+    "Insufficient history: need {required} bars, have {available}",
+    "歷史資料不足：需要 {required} 根，現有 {available} 根",
+  ],
+  [
+    "research.tw.technicalResults.dailyNotRun",
+    "Not run: monthly did not pass",
+    "未執行：月線未通過",
+  ],
+  ["research.tw.technicalResults.result.pass", "Pass", "通過"],
+  ["research.tw.technicalResults.result.fail", "Fail", "未通過"],
+  [
+    "research.tw.technicalResults.result.insufficient_history",
+    "Insufficient history",
+    "歷史不足",
+  ],
+  [
+    "research.tw.technicalResults.result.daily_not_run",
+    "Daily not run",
+    "日線未執行",
+  ],
+  [
+    "research.tw.technicalResults.result.monthly_pass",
+    "Monthly pass",
+    "月線通過",
+  ],
+  [
+    "research.tw.technicalResults.result.monthly_fail",
+    "Monthly fail",
+    "月線未通過",
+  ],
+  [
+    "research.tw.technicalResults.result.pending",
+    "Pending",
+    "待分析",
+  ],
+  [
+    "research.tw.technicalResults.result.deferred",
+    "Deferred",
+    "延後",
+  ],
+  [
+    "research.tw.technicalResults.result.monthly_unknown",
+    "Monthly unknown",
+    "月線未知",
+  ],
+  [
+    "research.tw.technicalResults.result.daily_unknown",
+    "Daily unknown",
+    "日線未知",
+  ],
+  [
     "research.tw.candidateProvenanceLine",
     "{count} stocks approved for deeper analysis",
     "已核准 {count} 檔進一步分析的股票",

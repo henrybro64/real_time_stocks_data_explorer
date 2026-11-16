@@ -39,6 +39,9 @@ vi.mock("../../services/api/twResearch", async () => {
     fetchTwResearchScans: vi.fn(async () => ({ scans: [] })),
     fetchTwResearchScan: vi.fn(),
     fetchTwResearchScanProgress: vi.fn(),
+    fetchTwResearchTechnicalResults: vi.fn(async () => {
+      throw new ApiError("missing", { status: 404, detail: "x", kind: "not_found" });
+    }),
     fetchTwResearchMembership: vi.fn(async () => {
       throw new ApiError("missing", { status: 404, detail: "x", kind: "not_found" });
     }),

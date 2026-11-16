@@ -672,9 +672,74 @@ export type TwResearchPhase2ExecutionStatus = {
   universeSize?: number | null;
   processedCount?: number | null;
   remainingCount?: number | null;
+  analyzedCount?: number | null;
+  insufficientHistoryCount?: number | null;
+  hasTechnicalWork?: boolean | null;
+  phase2Enabled?: boolean | null;
   candidateSelection?: string | null;
   notes?: string[];
 };
+
+/** Persisted MACD/KD snapshot on a Stage-4 results row (#361). */
+export type TwResearchTechnicalIndicatorSnapshot = {
+  asOf?: string | null;
+  dif?: number | null;
+  signal?: number | null;
+  osc?: number | null;
+  k?: number | null;
+  d?: number | null;
+  barCount?: number | null;
+  quality?: string | null;
+  passStatus?: string | null;
+  executionStatus?: string | null;
+  priceBasis?: string | null;
+  calculationVersion?: string | null;
+  timeframe?: string | null;
+  reason?: string | null;
+};
+
+export type TwResearchTechnicalInsufficientHistory = {
+  reason: string;
+  requiredBars: number;
+  availableBars: number;
+  timeframe: string;
+};
+
+export type TwResearchTechnicalResultCandidate = {
+  stockId: string;
+  name?: string | null;
+  monthly?: TwResearchTechnicalIndicatorSnapshot | null;
+  daily?: TwResearchTechnicalIndicatorSnapshot | null;
+  overallStageResult: string;
+  technicalStage?: string | null;
+  insufficientHistory?: TwResearchTechnicalInsufficientHistory | null;
+  rejectionReason?: string | null;
+  dailyNotRunReason?: string | null;
+};
+
+/** GET /research-runs/technical-results (#361). */
+export type TwResearchTechnicalResults = {
+  researchRunId?: string | null;
+  technicalScanId: string;
+  scanStatus: string;
+  tradingDay?: string | null;
+  calculationVersion?: string | null;
+  priceBasis?: string | null;
+  universeSize?: number;
+  processedCount?: number;
+  remainingCount?: number;
+  analyzedCount?: number;
+  insufficientHistoryCount?: number;
+  phase2Execution?: TwResearchPhase2ExecutionStatus | null;
+  candidates: TwResearchTechnicalResultCandidate[];
+  requiredBars?: { monthly?: number; daily?: number };
+};
+
+export async function fetchTwResearchTechnicalResults() {
+  return requestJson<TwResearchTechnicalResults>(
+    "/tw-research/research-runs/technical-results",
+  );
+}
 
 export type TwResearchRun = {
   researchRunId: string;

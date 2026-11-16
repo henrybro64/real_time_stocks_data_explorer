@@ -27,6 +27,7 @@ import {
   fetchTwResearchScan,
   fetchTwResearchScanProgress,
   fetchTwResearchScans,
+  fetchTwResearchTechnicalResults,
   fetchTwResearchSnapshotChunk,
   listTwResearchFirstPassJobs,
   researchProgressRevision,
@@ -67,6 +68,13 @@ vi.mock("../../services/api/twResearch", async () => {
     fetchTwResearchScan: vi.fn(),
     fetchTwResearchScanProgress: vi.fn(),
     fetchTwResearchScans: vi.fn(async () => ({ scans: [] })),
+    fetchTwResearchTechnicalResults: vi.fn(async () => {
+      throw new ApiError("missing", {
+        status: 404,
+        detail: "technical_scan_not_found",
+        kind: "not_found",
+      });
+    }),
     fetchTwResearchExportManifest: vi.fn(),
     fetchTwResearchBrowserText: vi.fn(),
     fetchTwResearchExportChunk: vi.fn(),
@@ -1975,6 +1983,20 @@ describe("TwResearchPage stage-4 flow (#361)", () => {
     vi.mocked(fetchTwResearchScanProgress).mockResolvedValue(
       progress({ scanId: "scan_stage4", status: "queued", universeSize: 1, remainingCount: 1 }),
     );
+    vi.mocked(fetchTwResearchTechnicalResults).mockResolvedValue({
+      technicalScanId: "scan_stage4",
+      scanStatus: "queued",
+      candidates: [
+        {
+          stockId: "TW:2330",
+          name: "台積電",
+          overallStageResult: "pending",
+          monthly: null,
+          daily: null,
+        },
+      ],
+      phase2Execution: { state: "actively_analyzing" },
+    });
 
     renderPage();
     expect(screen.queryByTestId("tw-research-create")).not.toBeInTheDocument();
@@ -2000,6 +2022,7 @@ describe("TwResearchPage stage-4 flow (#361)", () => {
     expect(await screen.findByTestId("tw-research-phase2-execution-status")).toHaveTextContent(
       /分析中|Analyzing/,
     );
+    expect(await screen.findByTestId("tw-research-technical-results")).toBeInTheDocument();
     expect(screen.queryByTestId("tw-research-create")).not.toBeInTheDocument();
     expect(screen.queryByTestId("tw-research-batch")).not.toBeInTheDocument();
     expect(screen.queryByTestId("tw-research-history")).not.toBeInTheDocument();
