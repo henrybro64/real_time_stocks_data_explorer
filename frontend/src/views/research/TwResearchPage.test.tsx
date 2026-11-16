@@ -1752,3 +1752,138 @@ describe("TwResearchPage watchlist union (#338)", () => {
     expect(screen.getByTestId("tw-research-chip-evidence-meta-advanced")).toHaveTextContent("fps_stale");
   });
 });
+describe("TwResearchPage one primary CTA per stage (#361)", () => {
+  beforeEach(() => {
+    vi.mocked(fetchThemeOptions).mockResolvedValue([]);
+    vi.mocked(listTwResearchFirstPassJobs).mockResolvedValue([]);
+    vi.mocked(fetchTwResearchLatestCandidateSet).mockRejectedValue(
+      new ApiError("missing", {
+        status: 404,
+        detail: "candidate_set_not_found",
+        kind: "not_found",
+      }),
+    );
+    vi.mocked(fetchTwResearchMembership).mockRejectedValue(
+      new ApiError("missing", {
+        status: 404,
+        detail: "membership_not_found",
+        kind: "not_found",
+      }),
+    );
+    vi.mocked(fetchTwResearchScans).mockResolvedValue({ scans: [] });
+  });
+
+  const STAGE_CTA_TEST_IDS = [
+    "tw-research-start-full-research",
+    "tw-research-save-membership",
+    "tw-research-approve-candidates",
+    "tw-research-start-technical-from-candidates",
+  ] as const;
+
+  function countStagePrimaryButtons(container: HTMLElement): number {
+    return STAGE_CTA_TEST_IDS.filter((id) => {
+      const el = container.querySelector(`[data-testid="${id}"]`);
+      return Boolean(el?.classList.contains("cds--btn--primary"));
+    }).length;
+  }
+
+  const fixtures: Array<{ name: string; run: TwResearchRun | null }> = [
+    { name: "select_scope", run: null },
+    {
+      name: "collecting",
+      run: {
+        researchRunId: "rr_collect",
+        userId: "u1",
+        phase: "phase1_first_pass",
+        status: "running",
+        firstPassJobId: "fpj_1",
+        scheduleEnabled: true,
+        execution: { state: "actively_collecting" },
+      },
+    },
+    {
+      name: "awaiting_candidate_selection",
+      run: {
+        researchRunId: "rr_await",
+        userId: "u1",
+        phase: "awaiting_analyst_candidate_selection",
+        status: "gated",
+        firstPassJobId: "fpj_1",
+        firstPassSnapshotId: "fps_1",
+        gates: { candidateSelection: "pending" },
+      },
+    },
+    {
+      name: "technical_analysis",
+      run: {
+        researchRunId: "rr_tech",
+        userId: "u1",
+        phase: "awaiting_analyst_candidate_selection",
+        status: "gated",
+        firstPassJobId: "fpj_1",
+        firstPassSnapshotId: "fps_1",
+        gates: { candidateSelection: "approved" },
+        phase2Execution: { state: "awaiting_technical_start" },
+      },
+    },
+    {
+      name: "results",
+      run: {
+        researchRunId: "rr_done",
+        userId: "u1",
+        phase: "complete_evidence_ready",
+        status: "evidence_ready",
+        firstPassJobId: "fpj_1",
+        technicalScanId: SCAN_ID,
+        gates: { candidateSelection: "approved" },
+        phase2Execution: { state: "completed" },
+      },
+    },
+  ];
+
+  it("derives expected stages from run fixtures", () => {
+    expect(deriveResearchUiStage(null)).toBe("select_scope");
+    expect(deriveResearchUiStage(fixtures[1]!.run)).toBe("collecting");
+    expect(deriveResearchUiStage(fixtures[2]!.run)).toBe("awaiting_candidate_selection");
+    expect(deriveResearchUiStage(fixtures[3]!.run)).toBe("technical_analysis");
+    expect(deriveResearchUiStage(fixtures[4]!.run)).toBe("results");
+  });
+
+  it.each(fixtures)(
+    "shows exactly one visible primary button for stage $name",
+    async ({ run }) => {
+      if (run) {
+        vi.mocked(fetchTwResearchRunCurrent).mockResolvedValue(run as never);
+      } else {
+        vi.mocked(fetchTwResearchRunCurrent).mockRejectedValue(
+          new ApiError("missing", {
+            status: 404,
+            detail: "research_run_not_found",
+            kind: "not_found",
+          }),
+        );
+      }
+      if (run?.firstPassSnapshotId) {
+        vi.mocked(fetchTwResearchLatestCandidateSet).mockResolvedValue({
+          version: 1,
+          stockIds: ["TW:2330"],
+          firstPassSnapshotId: String(run.firstPassSnapshotId),
+          firstPassDigest: "d".repeat(64),
+        });
+      }
+      if (run?.technicalScanId) {
+        vi.mocked(fetchTwResearchScan).mockResolvedValue(
+          queuedScan({ scanId: String(run.technicalScanId), status: "verified_ready" }),
+        );
+        vi.mocked(fetchTwResearchScanProgress).mockResolvedValue(
+          progress({ scanId: String(run.technicalScanId), status: "verified_ready" }),
+        );
+      }
+      const { container } = renderPage();
+      expect(await screen.findByTestId("tw-research-page")).toBeInTheDocument();
+      await waitFor(() => {
+        expect(countStagePrimaryButtons(container)).toBe(1);
+      });
+    },
+  );
+});
