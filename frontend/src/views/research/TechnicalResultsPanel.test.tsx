@@ -198,6 +198,70 @@ describe("TechnicalResultsPanel (#361)", () => {
     expect(reasons[0]).toHaveTextContent("未執行：月線未通過");
   });
 
+  it("shows daily-skipped count separately from calculated/verified", async () => {
+    await renderPanel({
+      ...sampleResults,
+      calculatedCount: 2,
+      verifiedCount: 2,
+      dailySkippedCount: 1,
+      errorCount: 0,
+      deferredCount: 0,
+      unknownCount: 0,
+      waitingForHistoryCount: 1,
+      insufficientHistoryCount: 2,
+      pendingCount: 0,
+      processedCount: 5,
+    });
+    const counts = screen.getByTestId("tw-research-technical-results-counts");
+    expect(counts).toHaveTextContent(/已計算 2/);
+    expect(counts).toHaveTextContent(/已驗證 2/);
+    expect(counts).toHaveTextContent(/日線略過 1/);
+  });
+
+  it("shows provenance unavailable for missing source and known source when present", async () => {
+    await renderPanel({
+      ...sampleResults,
+      candidates: [
+        {
+          stockId: "TW:2330",
+          name: "台積電",
+          overallStageResult: "pass",
+          monthly: {
+            asOf: "2024-06",
+            dif: 1.2,
+            signal: 0.9,
+            osc: 0.3,
+            k: 70,
+            d: 60,
+            barCount: 40,
+            quality: "ok",
+            passStatus: "pass",
+            sourceProvider: "twse",
+            historyCacheLocation: "postgresql_daily_price_bars",
+            historyOrigin: "postgresql_cache",
+            firstBarAsOf: "2020-01-01",
+            lastBarAsOf: "2024-05-31",
+          },
+          daily: {
+            asOf: "2024-06-28",
+            dif: 2,
+            signal: 1,
+            osc: 1,
+            k: 75,
+            d: 65,
+            barCount: 100,
+            quality: "ok",
+            passStatus: "pass",
+          },
+        },
+      ],
+    });
+    const blocks = screen.getAllByTestId("tw-research-tech-provenance");
+    expect(blocks[0]).toHaveTextContent(/source twse/);
+    expect(blocks[0]).toHaveTextContent(/cache postgresql_daily_price_bars/);
+    expect(blocks[1]).toHaveTextContent(/source 此已存快照不可用/);
+  });
+
   it("shows empty state for 404 / no data", async () => {
     await renderPanel(null, {
       empty: true,

@@ -351,11 +351,14 @@ class TechnicalIndicatorSnapshot(BaseModel):
     timeframe: str | None = None
     reason: str | None = None
     sourceProvider: str | None = None
+    historyCacheLocation: str | None = None
+    historyOrigin: str | None = None
     firstBarAsOf: str | None = None
     lastBarAsOf: str | None = None
     calculatedAt: str | None = None
     sourceProviderStatus: str | None = None
     historyRangeStatus: str | None = None
+    historyCacheStatus: str | None = None
 
 
 class TechnicalInsufficientHistory(BaseModel):
@@ -409,6 +412,7 @@ class TechnicalResultsResponse(BaseModel):
     analyzedCount: int = 0
     calculatedCount: int = 0
     verifiedCount: int = 0
+    dailySkippedCount: int = 0
     errorCount: int = 0
     pendingCount: int = 0
     deferredCount: int = 0

@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from datetime import datetime as stdlib_datetime
 import logging
 import math
 import threading
 import time
+from typing import Literal
 from zoneinfo import ZoneInfo
 
 from app.models.quote import CandleRecord, QuoteRecord
@@ -20,6 +22,39 @@ from app.services.market_clock import is_market_open, is_trading_day, market_ses
 from app.services.quote_redis_cache import get_cached_quote
 
 logger = logging.getLogger(__name__)
+
+# Verified upstream labels written by ``_persist`` — never the flight-key family.
+_KNOWN_UPSTREAM_SOURCES = frozenset({"twse", "tpex", "yahoo"})
+_POSTGRES_CACHE_LOCATION = "postgresql_daily_price_bars"
+HistoryOrigin = Literal[
+    "postgresql_cache",
+    "upstream_fetch",
+    "mixed",
+    "unknown",
+]
+
+
+@dataclass(frozen=True)
+class HistoryProvenance:
+    """Honest attribution for OHLCV used by technical indicators (#361).
+
+    ``source_provider`` is the upstream feed when known (twse/tpex/yahoo).
+    ``history_cache_location`` is where bars were read from when known.
+    ``history_origin`` summarizes cache vs upstream without inventing a feed name.
+    """
+
+    source_provider: str | None
+    history_cache_location: str | None
+    history_origin: HistoryOrigin
+
+
+def exchange_upstream_source(stock: StockRecord) -> str:
+    """Map exchange to the upstream label used when persisting bars."""
+    if stock.exchange == "TWSE":
+        return "twse"
+    if stock.exchange == "TPEx":
+        return "tpex"
+    return "yahoo"
 
 _DAILY_RANGES = frozenset({"1W", "1M", "3M", "6M", "1Y", "MAX"})
 _RANGE_LIMITS = {
@@ -147,6 +182,70 @@ class DailyPriceHistoryService:
         if candle_limit > 0 and len(merged) > candle_limit:
             merged = merged[-candle_limit:]
         return merged, bool(missing)
+
+    def resolve_history_provenance(
+        self,
+        stock: StockRecord,
+        *,
+        months_fetched: int,
+        limit: int = 800,
+    ) -> HistoryProvenance:
+        """Attribute OHLCV without extra upstream requests (#361).
+
+        Prefer distinct ``DailyPriceBar.source`` values already in PostgreSQL.
+        When this turn fetched upstream months and the store has no readable
+        source yet, use the exchange→feed mapping that ``_persist`` would write
+        (the fetch that just ran). Never report the flight-key family
+        ``tw_default`` as a verified provider.
+        """
+        stored_sources: set[str] = set()
+        try:
+            if self._repo.is_available():
+                stored_sources = {
+                    source.lower()
+                    for source in self._repo.distinct_sources(
+                        market=stock.market,
+                        symbol=stock.symbol,
+                        limit=max(limit, 40),
+                    )
+                }
+        except Exception as exc:  # noqa: BLE001 - provenance must not break scans
+            logger.debug(
+                "Daily price bar source read failed; provenance stays unknown",
+                extra={
+                    "event": "daily_price_history.provenance.read_failed",
+                    "stock_id": stock.id,
+                    "error_type": type(exc).__name__,
+                },
+            )
+            stored_sources = set()
+
+        known = {source for source in stored_sources if source in _KNOWN_UPSTREAM_SOURCES}
+        cache_location = _POSTGRES_CACHE_LOCATION if stored_sources else None
+        source_provider: str | None
+        if len(known) == 1:
+            source_provider = next(iter(known))
+        elif months_fetched > 0 and not known:
+            # Fresh upstream this turn; same label ``_persist`` stamps.
+            source_provider = exchange_upstream_source(stock)
+        else:
+            # Mixed known feeds, only unknown labels, or no evidence.
+            source_provider = None
+
+        if months_fetched > 0 and cache_location:
+            origin: HistoryOrigin = "mixed"
+        elif months_fetched > 0:
+            origin = "upstream_fetch"
+        elif cache_location:
+            origin = "postgresql_cache"
+        else:
+            origin = "unknown"
+
+        return HistoryProvenance(
+            source_provider=source_provider,
+            history_cache_location=cache_location,
+            history_origin=origin,
+        )
 
     def refresh_closed_current_month(self, stock: StockRecord, provider) -> bool:
         """After the close, fill the last completed session's month for one symbol."""

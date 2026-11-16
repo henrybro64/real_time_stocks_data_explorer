@@ -697,11 +697,14 @@ export type TwResearchTechnicalIndicatorSnapshot = {
   timeframe?: string | null;
   reason?: string | null;
   sourceProvider?: string | null;
+  historyCacheLocation?: string | null;
+  historyOrigin?: string | null;
   firstBarAsOf?: string | null;
   lastBarAsOf?: string | null;
   calculatedAt?: string | null;
   sourceProviderStatus?: string | null;
   historyRangeStatus?: string | null;
+  historyCacheStatus?: string | null;
 };
 
 export type TwResearchTechnicalInsufficientHistory = {
@@ -754,6 +757,7 @@ export type TwResearchTechnicalResults = {
   analyzedCount?: number;
   calculatedCount?: number;
   verifiedCount?: number;
+  dailySkippedCount?: number;
   errorCount?: number;
   pendingCount?: number;
   deferredCount?: number;

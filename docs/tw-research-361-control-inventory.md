@@ -1,6 +1,6 @@
 # TW Research #361 — control inventory (Stage-4)
 
-Visible controls on `/research/tw` **before** (`main@c623e509`) vs **after** (`feature/361-362-tw-research-e2e` @ `bc944fb1`+).
+Visible controls on `/research/tw` **before** (`main@c623e509`) vs **after** (`feature/361-362-tw-research-e2e` @ `33eef72d`+ targeted review).
 
 Scope: ordinary investor UI testids / primary CTAs. Advanced job-manage and modals listed only when stage-relevant.
 
@@ -115,5 +115,5 @@ Current stage is announced by `tw-research-flow-current`. Progress / raw JSON li
 
 - One-primary-CTA rule per `TwResearchUiStage`
 - Stage-4 technical-results API (scan-scoped) + panel
-- Count breakdown: calculated / verified / error / deferred / unknown / waiting / insufficient / pending
-- Provenance fields when snapshots persist them; otherwise explicit unavailable
+- Count breakdown: calculated / verified / daily-skipped / error / deferred / unknown / waiting / insufficient / pending (non-overlapping; intentional daily skip ≠ verified)
+- Provenance: upstream feed (`twse`/`tpex`/`yahoo`) separate from PostgreSQL cache location; `tw_default` never shown as a verified provider; missing → unavailable

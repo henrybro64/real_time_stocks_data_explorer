@@ -770,11 +770,13 @@ def test_count_buckets_are_non_overlapping() -> None:
     assert payload["verifiedCount"] == 1
     assert payload["calculatedCount"] == 1
     assert payload["analyzedCount"] == 1
+    assert payload["dailySkippedCount"] == 0
     assert payload["errorCount"] == 1
     assert payload["waitingForHistoryCount"] == 1
     assert payload["pendingCount"] == 1
     assert (
-        payload["verifiedCount"]
+        payload["calculatedCount"]
+        + payload["dailySkippedCount"]
         + payload["errorCount"]
         + payload["waitingForHistoryCount"]
         + payload["insufficientHistoryCount"]
@@ -783,3 +785,193 @@ def test_count_buckets_are_non_overlapping() -> None:
         + payload["pendingCount"]
         == payload["universeSize"]
     )
+
+
+def test_tw_default_source_provider_projected_as_unavailable() -> None:
+    record = SymbolScanRecord(
+        stock_id="TW:2330",
+        stage="B",
+        readiness="technically_qualified",
+        technical_stage=TECHNICAL_STAGE_DAILY_PASS,
+        monthly={
+            "quality": "ok",
+            "passStatus": "pass",
+            "dif": 1.0,
+            "signal": 0.5,
+            "osc": 0.5,
+            "k": 60.0,
+            "d": 55.0,
+            "barCount": 40,
+            "sourceProvider": "tw_default",
+            "firstBarAsOf": "2020-01-01",
+            "lastBarAsOf": "2024-05-31",
+            "timeframe": "monthly",
+        },
+        daily={
+            "quality": "ok",
+            "passStatus": "pass",
+            "dif": 1.0,
+            "signal": 0.5,
+            "osc": 0.5,
+            "k": 60.0,
+            "d": 55.0,
+            "barCount": 100,
+            "sourceProvider": "twse",
+            "historyCacheLocation": "postgresql_daily_price_bars",
+            "historyOrigin": "postgresql_cache",
+            "firstBarAsOf": "2023-01-01",
+            "lastBarAsOf": "2024-06-28",
+            "timeframe": "daily",
+        },
+    )
+    row = map_symbol_technical_result(record)
+    assert row["monthly"]["sourceProvider"] is None
+    assert row["monthly"]["sourceProviderStatus"] == "unavailable"
+    assert row["monthly"]["historyRangeStatus"] == "available"
+    assert row["daily"]["sourceProvider"] == "twse"
+    assert row["daily"]["historyCacheLocation"] == "postgresql_daily_price_bars"
+    assert row["daily"]["historyOrigin"] == "postgresql_cache"
+    assert row["daily"]["sourceProviderStatus"] == "available"
+
+
+def test_daily_not_run_excluded_from_calculated_and_verified() -> None:
+    catalog = {
+        "TW:2330": stock_record(
+            "TW:2330",
+            market="TW",
+            symbol="2330",
+            name="台積電",
+            exchange="TWSE",
+            currency="TWD",
+            timezone="Asia/Taipei",
+        ),
+        "TW:2303": stock_record(
+            "TW:2303",
+            market="TW",
+            symbol="2303",
+            name="聯電",
+            exchange="TWSE",
+            currency="TWD",
+            timezone="Asia/Taipei",
+        ),
+        "TW:2454": stock_record(
+            "TW:2454",
+            market="TW",
+            symbol="2454",
+            name="聯發科",
+            exchange="TWSE",
+            currency="TWD",
+            timezone="Asia/Taipei",
+        ),
+    }
+    service = TwResearchScanService(
+        history_loader=lambda *_a, **_k: ([], 0),
+        stock_loader=catalog.get,
+        persist=False,
+    )
+    state = service.create_scan(
+        UniverseSelector(
+            mode="stock_ids",
+            stock_ids=("TW:2330", "TW:2303", "TW:2454"),
+        ),
+        trading_day="2024-06-28",
+    )
+    state.records["TW:2330"] = SymbolScanRecord(
+        stock_id="TW:2330",
+        stage="B",
+        readiness="technically_qualified",
+        technical_stage=TECHNICAL_STAGE_DAILY_PASS,
+        monthly={
+            "quality": "ok",
+            "passStatus": "pass",
+            "dif": 1.0,
+            "osc": 0.5,
+            "k": 60.0,
+            "d": 55.0,
+            "barCount": 40,
+            "timeframe": "monthly",
+        },
+        daily={
+            "quality": "ok",
+            "passStatus": "pass",
+            "dif": 1.0,
+            "osc": 0.5,
+            "k": 60.0,
+            "d": 55.0,
+            "barCount": 100,
+            "timeframe": "daily",
+        },
+    )
+    state.records["TW:2303"] = SymbolScanRecord(
+        stock_id="TW:2303",
+        stage="A",
+        readiness="processed",
+        technical_stage=TECHNICAL_STAGE_DAILY_NOT_RUN,
+        monthly={
+            "quality": "ok",
+            "passStatus": "fail",
+            "dif": -1.0,
+            "osc": -0.5,
+            "k": 20.0,
+            "d": 25.0,
+            "barCount": 40,
+            "timeframe": "monthly",
+        },
+        daily={
+            "executionStatus": DAILY_NOT_RUN_BY_DESIGN,
+            "reason": "monthly_gate_failed",
+            "quality": "unavailable",
+            "barCount": 0,
+            "timeframe": "daily",
+        },
+    )
+    state.records["TW:2454"] = SymbolScanRecord(
+        stock_id="TW:2454",
+        stage="B",
+        readiness="processed",
+        technical_stage="daily_fail",
+        monthly={
+            "quality": "ok",
+            "passStatus": "pass",
+            "dif": 1.0,
+            "osc": 0.5,
+            "k": 60.0,
+            "d": 55.0,
+            "barCount": 40,
+            "timeframe": "monthly",
+        },
+        daily={
+            "quality": "ok",
+            "passStatus": "fail",
+            "dif": -0.2,
+            "osc": -0.1,
+            "k": 40.0,
+            "d": 45.0,
+            "barCount": 100,
+            "timeframe": "daily",
+        },
+    )
+
+    class _Run:
+        research_run_id = "rr_skip"
+
+    payload = build_technical_results_payload(run=_Run(), state=state, phase2_execution=None)
+    assert payload["verifiedCount"] == 2  # pass + fail
+    assert payload["calculatedCount"] == 2
+    assert payload["dailySkippedCount"] == 1
+    assert payload["analyzedCount"] == payload["calculatedCount"]
+    assert (
+        payload["calculatedCount"]
+        + payload["dailySkippedCount"]
+        + payload["errorCount"]
+        + payload["waitingForHistoryCount"]
+        + payload["insufficientHistoryCount"]
+        + payload["deferredCount"]
+        + payload["unknownCount"]
+        + payload["pendingCount"]
+        == payload["universeSize"]
+    )
+    by_id = {row["stockId"]: row for row in payload["candidates"]}
+    assert by_id["TW:2330"]["overallStageResult"] == "pass"
+    assert by_id["TW:2454"]["overallStageResult"] == "fail"
+    assert by_id["TW:2303"]["overallStageResult"] == "daily_not_run"

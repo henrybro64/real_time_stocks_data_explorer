@@ -461,13 +461,13 @@ const TW_RESEARCH_ROWS = [
   ],
   [
     "research.tw.technicalResults.counts",
-    "Calculated {calculated} · verified {verified} · errors {errors} · deferred {deferred} · unknown {unknown} · waiting for budget {waiting} · insufficient history {insufficient} · pending {pending} · processed {processed}",
-    "已計算 {calculated} · 已驗證 {verified} · 錯誤 {errors} · 延後 {deferred} · 未知 {unknown} · 等待預算 {waiting} · 歷史不足 {insufficient} · 待處理 {pending} · 已處理 {processed}",
+    "Calculated {calculated} · verified {verified} · daily skipped {dailySkipped} · errors {errors} · deferred {deferred} · unknown {unknown} · waiting for budget {waiting} · insufficient history {insufficient} · pending {pending} · processed {processed}",
+    "已計算 {calculated} · 已驗證 {verified} · 日線略過 {dailySkipped} · 錯誤 {errors} · 延後 {deferred} · 未知 {unknown} · 等待預算 {waiting} · 歷史不足 {insufficient} · 待處理 {pending} · 已處理 {processed}",
   ],
   [
     "research.tw.technicalResults.provenanceLimits",
-    "Provider/source and history bar ranges appear when the snapshot persisted them; older rows show unavailable and stay blank (never invented).",
-    "供應來源與歷史根區間僅在快照已儲存時顯示；較舊紀錄會標示不可用並保持空白（不會臆造）。",
+    "Upstream feed (twse/tpex/yahoo) is separate from PostgreSQL cache location. Values appear only when persisted; placeholders like tw_default and older rows show unavailable (never invented).",
+    "上游來源（twse/tpex/yahoo）與 PostgreSQL 快取位置分開顯示。僅在已儲存時出現；tw_default 等佔位與較舊紀錄會標示不可用（不會臆造）。",
   ],
   [
     "research.tw.technicalResults.provenanceUnavailable",

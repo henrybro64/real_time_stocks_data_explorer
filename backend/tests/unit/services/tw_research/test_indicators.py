@@ -173,3 +173,60 @@ def test_newly_listed_short_history_stock_is_unknown_not_rejected() -> None:
     assert snap.quality == "insufficient_history"
     assert snap.pass_status == "unknown"
     assert snap.bar_count < MIN_DAILY_BARS_FOR_MACD_KD
+
+
+def test_macd_kd_matches_independent_accelerating_fixture() -> None:
+    """Expected floats computed offline (raw EMA/RSV math), not via app helpers."""
+    closes: list[float] = []
+    value = 100.0
+    for index in range(50):
+        value += 0.2 + index * 0.05
+        closes.append(value)
+    candles = _daily_candles(closes, end=datetime(2024, 6, 28, 13, 30, tzinfo=TZ))
+    macd = compute_macd_series([float(c.close) for c in candles])
+    kd = compute_kd_series(
+        [float(c.high) for c in candles],
+        [float(c.low) for c in candles],
+        [float(c.close) for c in candles],
+    )
+    assert macd[-1] is not None and kd[-1] is not None
+    dif, signal, osc = macd[-1]
+    k_value, d_value = kd[-1]
+    # Offline independent expectations (see review fixture script).
+    # Offline independent expectations using the same ±1 high/low as _daily_candles.
+    expected_dif = 12.692486589962925
+    expected_signal = 11.495522164396807
+    expected_osc = 1.1969644255661187
+    expected_k = 95.22646541690982
+    expected_d = 95.02294723066527
+    assert abs(dif - expected_dif) <= MACD_VALUE_TOLERANCE
+    assert abs(signal - expected_signal) <= MACD_VALUE_TOLERANCE
+    assert abs(osc - expected_osc) <= MACD_VALUE_TOLERANCE
+    assert abs(osc - (dif - signal)) <= MACD_VALUE_TOLERANCE
+    assert abs(k_value - expected_k) <= KD_VALUE_TOLERANCE
+    assert abs(d_value - expected_d) <= KD_VALUE_TOLERANCE
+    assert evaluate_pass(
+        dif=dif, osc=osc, k=k_value, d=d_value, quality="ok"
+    ) == "pass"
+
+
+def test_linear_series_osc_is_zero_not_scaled() -> None:
+    closes = [float(index) for index in range(1, 61)]
+    macd = compute_macd_series(closes)
+    assert macd[-1] is not None
+    dif, signal, osc = macd[-1]
+    assert abs(dif - 7.0) <= MACD_VALUE_TOLERANCE
+    assert abs(signal - 7.0) <= MACD_VALUE_TOLERANCE
+    assert abs(osc) <= MACD_VALUE_TOLERANCE
+    assert evaluate_pass(dif=dif, osc=osc, k=80.0, d=80.0, quality="ok") == "fail"
+
+
+def test_snapshot_does_not_invent_tw_default_provider() -> None:
+    candles = _daily_candles([100.0 + index for index in range(40)])
+    snap = daily_macd_kd_snapshot(
+        candles,
+        now=datetime.fromisoformat(candles[-1].time) + timedelta(days=1),
+    )
+    assert snap.source_provider is None
+    assert snap.history_cache_location is None
+    assert snap.history_origin is None

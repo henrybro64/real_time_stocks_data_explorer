@@ -34,20 +34,24 @@ _BUDGET_RELATED_REASONS = frozenset(
         "history_budget_exhausted",
     }
 )
-# Completed numerical (or intentional not-run) indicator calculations.
+# Completed numerical indicator calculations (at least one timeframe evaluated).
+# Intentional daily skip is NOT calculated — see ``_DAILY_SKIPPED_RESULTS``.
 _CALCULATED_INDICATOR_RESULTS = frozenset(
     {
         "pass",
         "fail",
         "monthly_pass",
         "monthly_fail",
-        "daily_not_run",
     }
 )
-# Evidence-complete outcomes with defined pass/fail (or intentional daily skip).
-_VERIFIED_INDICATOR_RESULTS = frozenset({"pass", "fail", "daily_not_run"})
+# Full monthly+daily evidence with defined pass/fail (never intentional skip).
+_VERIFIED_INDICATOR_RESULTS = frozenset({"pass", "fail"})
+# Monthly evaluation finished; daily intentionally not run (not an error).
+_DAILY_SKIPPED_RESULTS = frozenset({"daily_not_run"})
 _UNKNOWN_INDICATOR_RESULTS = frozenset({"monthly_unknown", "daily_unknown"})
 _DEFERRED_INDICATOR_RESULTS = frozenset({"deferred"})
+# Flight-key family / non-feed labels must never surface as verified providers.
+_NON_PROVIDER_LABELS = frozenset({"tw_default", "unknown", "unavailable", ""})
 _PASS_RULE_META = {
     "macdHistogramConvention": "OSC = DIF − Signal (MACD histogram)",
     "macdFormula": "DIF = EMA12(close) − EMA26(close); Signal = EMA9(DIF)",
@@ -67,6 +71,7 @@ _PASS_RULE_META = {
     # New calculations persist provider + bar range; older rows may be unavailable.
     "sourceProviderPersisted": "when_present_on_snapshot",
     "historyRangePersisted": "when_present_on_snapshot",
+    "historyCacheLocationPersisted": "when_present_on_snapshot",
 }
 
 
@@ -100,13 +105,29 @@ def _record_field(record: SymbolScanRecord | dict[str, Any], *names: str) -> Any
     return None
 
 
+def _verified_source_provider(raw: object) -> str | None:
+    """Return a real upstream feed label, or None when missing/placeholder."""
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    if not text or text.lower() in _NON_PROVIDER_LABELS:
+        return None
+    return text
+
+
 def _indicator_payload(raw: object) -> dict[str, Any] | None:
     if not isinstance(raw, dict):
         return None
     first_bar = raw.get("firstBarAsOf")
     last_bar = raw.get("lastBarAsOf")
-    provider = raw.get("sourceProvider")
+    provider = _verified_source_provider(raw.get("sourceProvider"))
+    cache_location = raw.get("historyCacheLocation")
+    history_origin = raw.get("historyOrigin")
     calculated_at = raw.get("calculatedAt")
+    cache_text = str(cache_location).strip() if cache_location else None
+    origin_text = str(history_origin).strip() if history_origin else None
+    if origin_text and origin_text.lower() in _NON_PROVIDER_LABELS:
+        origin_text = None
     return {
         "asOf": raw.get("asOf"),
         "dif": _as_float(raw.get("dif")),
@@ -122,7 +143,9 @@ def _indicator_payload(raw: object) -> dict[str, Any] | None:
         "calculationVersion": raw.get("calculationVersion"),
         "timeframe": raw.get("timeframe"),
         "reason": raw.get("reason"),
-        "sourceProvider": str(provider) if provider else None,
+        "sourceProvider": provider,
+        "historyCacheLocation": cache_text or None,
+        "historyOrigin": origin_text,
         "firstBarAsOf": str(first_bar) if first_bar else None,
         "lastBarAsOf": str(last_bar) if last_bar else None,
         "calculatedAt": str(calculated_at) if calculated_at else None,
@@ -130,6 +153,7 @@ def _indicator_payload(raw: object) -> dict[str, Any] | None:
         "historyRangeStatus": (
             "available" if first_bar and last_bar else "unavailable"
         ),
+        "historyCacheStatus": "available" if cache_text else "unavailable",
     }
 
 
@@ -478,6 +502,7 @@ def build_technical_results_payload(
     # Prefer row-derived non-overlapping counts; fall back only when no rows.
     calculated = 0
     verified = 0
+    daily_skipped = 0
     error_count = 0
     insufficient_count = 0
     waiting_count = 0
@@ -502,6 +527,8 @@ def build_technical_results_payload(
                 deferred_count += 1
             elif overall in _UNKNOWN_INDICATOR_RESULTS:
                 unknown_count += 1
+            elif overall in _DAILY_SKIPPED_RESULTS:
+                daily_skipped += 1
             elif overall in _CALCULATED_INDICATOR_RESULTS:
                 calculated += 1
                 if overall in _VERIFIED_INDICATOR_RESULTS:
@@ -576,6 +603,7 @@ def build_technical_results_payload(
         "analyzedCount": calculated,
         "calculatedCount": calculated,
         "verifiedCount": verified,
+        "dailySkippedCount": daily_skipped,
         "errorCount": error_count,
         "pendingCount": pending_count,
         "deferredCount": deferred_count,

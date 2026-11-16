@@ -34,9 +34,6 @@ from app.services.tw_research.constants import (
     PRICE_BASIS,
 )
 
-# Matches scan history flight-key provider family (no extra provider calls).
-_HISTORY_SOURCE_PROVIDER = "tw_default"
-
 PassStatus = Literal["pass", "fail", "unknown"]
 QualityStatus = Literal["ok", "insufficient_history", "unavailable"]
 
@@ -55,9 +52,12 @@ class MacdKdSnapshot:
     calculation_version: str
     bar_count: int
     timeframe: Literal["daily", "monthly"]
-    # Provenance captured at calculation time from the in-memory candle series
-    # (no extra provider calls). Older persisted rows may omit these fields.
+    # Provenance is stamped by the scan layer from PostgreSQL bar ``source`` /
+    # exchange mapping — never a flight-key family like ``tw_default``.
+    # Older persisted rows may omit these fields.
     source_provider: str | None = None
+    history_cache_location: str | None = None
+    history_origin: str | None = None
     first_bar_as_of: str | None = None
     last_bar_as_of: str | None = None
     calculated_at: str | None = None
@@ -290,7 +290,9 @@ def snapshot_from_candles(
         calculation_version=CALCULATION_VERSION,
         bar_count=len(candles),
         timeframe=timeframe,
-        source_provider=_HISTORY_SOURCE_PROVIDER,
+        source_provider=None,
+        history_cache_location=None,
+        history_origin=None,
         first_bar_as_of=first_bar,
         last_bar_as_of=last_bar,
         calculated_at=calculated_at,
@@ -378,7 +380,9 @@ def _empty_snapshot(
         calculation_version=CALCULATION_VERSION,
         bar_count=bar_count,
         timeframe=timeframe,
-        source_provider=_HISTORY_SOURCE_PROVIDER if bar_count else None,
+        source_provider=None,
+        history_cache_location=None,
+        history_origin=None,
         first_bar_as_of=first_bar_as_of,
         last_bar_as_of=last_bar_as_of,
         calculated_at=calculated_at or datetime.now(UTC).isoformat(),

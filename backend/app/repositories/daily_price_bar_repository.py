@@ -43,6 +43,22 @@ class DailyPriceBarRepository(SessionBoundRepository):
             ).scalars()
             return list(reversed(list(rows)))
 
+    def distinct_sources(
+        self,
+        *,
+        market: str,
+        symbol: str,
+        limit: int,
+    ) -> set[str]:
+        """Return distinct non-empty ``source`` values among the newest ``limit`` bars.
+
+        Read-only; never contacts upstream providers.
+        """
+        if limit <= 0:
+            return set()
+        rows = self.list_bars(market=market, symbol=symbol, limit=limit)
+        return {str(row.source).strip() for row in rows if str(row.source or "").strip()}
+
     def latest_date(self, *, market: str, symbol: str) -> date | None:
         session_factory = self._session_factory()
         with session_factory() as session:

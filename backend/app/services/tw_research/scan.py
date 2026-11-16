@@ -32,7 +32,10 @@ from zoneinfo import ZoneInfo
 
 from app.models.quote import CandleRecord
 from app.models.stock import StockRecord
-from app.services.daily_price_history_service import daily_price_history_service
+from app.services.daily_price_history_service import (
+    HistoryProvenance,
+    daily_price_history_service,
+)
 from app.services.moving_average import completed_daily_candles
 from app.services.quote_service import quote_service
 from app.services.tw_research.constants import (
@@ -1368,6 +1371,11 @@ class TwResearchScanService:
         budget_blocked = (
             months_used == 0 and remaining_budget <= 0 and not candles
         ) or (not candles and remaining_after <= 0 and months_used == 0)
+        history_provenance = daily_price_history_service.resolve_history_provenance(
+            stock,
+            months_fetched=months_used,
+            limit=PREFERRED_DAILY_HISTORY_LIMIT,
+        )
 
         if is_monthly_first_calculation(state.calculation_version):
             record, monthly_coverage_ok = self._evaluate_monthly_first_symbol(
@@ -1382,6 +1390,7 @@ class TwResearchScanService:
                 daily_coverage=daily_coverage,
                 daily_coverage_payload=daily_coverage_payload,
                 budget_blocked=budget_blocked,
+                history_provenance=history_provenance,
             )
         else:
             record, monthly_coverage_ok = self._evaluate_daily_first_symbol(
@@ -1396,6 +1405,7 @@ class TwResearchScanService:
                 daily_coverage=daily_coverage,
                 daily_coverage_payload=daily_coverage_payload,
                 budget_blocked=budget_blocked,
+                history_provenance=history_provenance,
             )
 
         if record.readiness == "rejected":
@@ -1448,6 +1458,7 @@ class TwResearchScanService:
         daily_coverage: Any,
         daily_coverage_payload: dict[str, Any],
         budget_blocked: bool,
+        history_provenance: HistoryProvenance | None = None,
     ) -> tuple[SymbolScanRecord, bool]:
         """Legacy Stage A daily → Stage B monthly for day-pass symbols."""
         del daily_coverage  # payload already normalized
@@ -1458,7 +1469,7 @@ class TwResearchScanService:
             readiness="processed",
             stock_name=display_name,
             name_status=name_status,
-            daily=_snapshot_dict(daily),
+            daily=_snapshot_dict(daily, history_provenance=history_provenance),
             checkpoint=checkpoint.as_tuple(),
             coverage={"daily": daily_coverage_payload},
         )
@@ -1480,7 +1491,9 @@ class TwResearchScanService:
                 )
                 monthly_coverage_ok = monthly_coverage.ok
                 record.stage = "B"
-                record.monthly = _snapshot_dict(monthly)
+                record.monthly = _snapshot_dict(
+                    monthly, history_provenance=history_provenance
+                )
                 self._attach_stage_b_levels(record, completed)
                 record.coverage = {
                     **(record.coverage or {}),
@@ -1516,6 +1529,7 @@ class TwResearchScanService:
         daily_coverage: Any,
         daily_coverage_payload: dict[str, Any],
         budget_blocked: bool,
+        history_provenance: HistoryProvenance | None = None,
     ) -> tuple[SymbolScanRecord, bool]:
         """Candidate #338 Stage A monthly → Stage B daily (continuation policy)."""
         from app.services.tw_research.constants import DAILY_NOT_RUN_BY_DESIGN
@@ -1568,7 +1582,7 @@ class TwResearchScanService:
             technical_stage=monthly_stage,
             stock_name=display_name,
             name_status=name_status,
-            monthly=_snapshot_dict(monthly),
+            monthly=_snapshot_dict(monthly, history_provenance=history_provenance),
             daily=None,
             checkpoint=checkpoint.as_tuple(),
             coverage={
@@ -1631,7 +1645,7 @@ class TwResearchScanService:
             record.technical_stage = TECHNICAL_STAGE_DAILY_FAIL
         else:
             record.technical_stage = TECHNICAL_STAGE_DAILY_UNKNOWN
-        daily_payload = _snapshot_dict(daily)
+        daily_payload = _snapshot_dict(daily, history_provenance=history_provenance)
         if analyst_override and not monthly_eligible:
             daily_payload = {
                 **daily_payload,
@@ -2491,7 +2505,18 @@ def _calculation_now(trading_day: str, *, override: datetime | None) -> datetime
     return datetime.combine(day, dt_time(14, 0), tzinfo=TAIPEI)
 
 
-def _snapshot_dict(snapshot: MacdKdSnapshot) -> dict[str, Any]:
+def _snapshot_dict(
+    snapshot: MacdKdSnapshot,
+    *,
+    history_provenance: HistoryProvenance | None = None,
+) -> dict[str, Any]:
+    source_provider = snapshot.source_provider
+    cache_location = snapshot.history_cache_location
+    history_origin = snapshot.history_origin
+    if history_provenance is not None:
+        source_provider = history_provenance.source_provider
+        cache_location = history_provenance.history_cache_location
+        history_origin = history_provenance.history_origin
     return {
         "asOf": snapshot.as_of,
         "dif": snapshot.dif,
@@ -2506,7 +2531,9 @@ def _snapshot_dict(snapshot: MacdKdSnapshot) -> dict[str, Any]:
         "calculationVersion": snapshot.calculation_version,
         "barCount": snapshot.bar_count,
         "timeframe": snapshot.timeframe,
-        "sourceProvider": snapshot.source_provider,
+        "sourceProvider": source_provider,
+        "historyCacheLocation": cache_location,
+        "historyOrigin": history_origin,
         "firstBarAsOf": snapshot.first_bar_as_of,
         "lastBarAsOf": snapshot.last_bar_as_of,
         "calculatedAt": snapshot.calculated_at,

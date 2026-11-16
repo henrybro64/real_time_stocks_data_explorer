@@ -353,3 +353,185 @@ def test_historical_scan_results_do_not_leak_current_scan_values(
         assert after.technical_scan_id == current.scan_id
     finally:
         app.dependency_overrides.pop(get_effective_user_id, None)
+
+
+def test_three_candidate_pg_api_consistency_and_counts(db_session) -> None:
+    """Deterministic 3-candidate scan: identities, numbers, skip vs verified counts."""
+    del db_session
+    if not tw_research_repository.is_available():
+        pytest.skip("tw_research durable store unavailable")
+
+    user_id = f"p2tri-{uuid4().hex[:8]}"
+    _ensure_user(user_id)
+    service = TwResearchScanService(
+        history_loader=lambda *_a, **_k: ([], 0),
+        stock_loader=lambda stock_id: _tw(stock_id),
+        persist=True,
+    )
+    state = service.create_scan(
+        UniverseSelector(
+            mode="stock_ids",
+            stock_ids=("TW:2330", "TW:2454", "TW:2303"),
+        ),
+        trading_day="2024-06-28",
+        user_id=user_id,
+        now=datetime(2024, 6, 28, 16, 0, tzinfo=TZ),
+    )
+    persist_symbol(
+        state,
+        SymbolScanRecord(
+            stock_id="TW:2330",
+            stage="B",
+            readiness="technically_qualified",
+            technical_stage=TECHNICAL_STAGE_DAILY_PASS,
+            stock_name="2330",
+            monthly={
+                "asOf": "2024-05-31",
+                "dif": 1.25,
+                "signal": 0.9,
+                "osc": 0.35,
+                "k": 70.0,
+                "d": 60.0,
+                "barCount": 48,
+                "quality": "ok",
+                "passStatus": "pass",
+                "priceBasis": "unadjusted_close",
+                "calculationVersion": "macd12-26-9_kd9-3-3_monthly_first_v1",
+                "sourceProvider": "twse",
+                "historyCacheLocation": "postgresql_daily_price_bars",
+                "historyOrigin": "postgresql_cache",
+                "firstBarAsOf": "2020-01-01",
+                "lastBarAsOf": "2024-05-31",
+                "calculatedAt": "2024-06-28T06:00:00+00:00",
+                "timeframe": "monthly",
+            },
+            daily={
+                "asOf": "2024-06-28",
+                "dif": 2.0,
+                "signal": 1.0,
+                "osc": 1.0,
+                "k": 75.0,
+                "d": 65.0,
+                "barCount": 100,
+                "quality": "ok",
+                "passStatus": "pass",
+                "sourceProvider": "twse",
+                "historyCacheLocation": "postgresql_daily_price_bars",
+                "historyOrigin": "postgresql_cache",
+                "firstBarAsOf": "2023-01-03",
+                "lastBarAsOf": "2024-06-28",
+                "timeframe": "daily",
+            },
+        ),
+        repository=tw_research_repository,
+    )
+    persist_symbol(
+        state,
+        SymbolScanRecord(
+            stock_id="TW:2454",
+            stage="B",
+            readiness="processed",
+            technical_stage="daily_fail",
+            stock_name="2454",
+            monthly={
+                "asOf": "2024-05-31",
+                "dif": 0.8,
+                "signal": 0.4,
+                "osc": 0.4,
+                "k": 55.0,
+                "d": 52.0,
+                "barCount": 40,
+                "quality": "ok",
+                "passStatus": "pass",
+                "sourceProvider": "tw_default",
+                "timeframe": "monthly",
+            },
+            daily={
+                "asOf": "2024-06-28",
+                "dif": -0.2,
+                "signal": 0.1,
+                "osc": -0.3,
+                "k": 40.0,
+                "d": 45.0,
+                "barCount": 90,
+                "quality": "ok",
+                "passStatus": "fail",
+                "sourceProvider": "tw_default",
+                "timeframe": "daily",
+            },
+        ),
+        repository=tw_research_repository,
+    )
+    persist_symbol(
+        state,
+        SymbolScanRecord(
+            stock_id="TW:2303",
+            stage="A",
+            readiness="processed",
+            technical_stage=TECHNICAL_STAGE_DAILY_NOT_RUN,
+            stock_name="2303",
+            monthly={
+                "asOf": "2024-05-31",
+                "dif": -1.0,
+                "signal": -0.5,
+                "osc": -0.5,
+                "k": 15.0,
+                "d": 20.0,
+                "barCount": 40,
+                "quality": "ok",
+                "passStatus": "fail",
+                "sourceProvider": "tpex",
+                "historyOrigin": "mixed",
+                "timeframe": "monthly",
+            },
+            daily={
+                "executionStatus": DAILY_NOT_RUN_BY_DESIGN,
+                "reason": "monthly_gate_failed",
+                "quality": "unavailable",
+                "barCount": 0,
+                "timeframe": "daily",
+            },
+        ),
+        repository=tw_research_repository,
+    )
+    payload = scan_row_payload(state, user_id=user_id)
+    payload["status"] = "verified_ready"
+    payload["cursor"] = 3
+    tw_research_repository.upsert_scan(payload)
+
+    loaded = service.get_scan(state.scan_id)
+    assert loaded is not None
+    body = build_technical_results_payload(
+        run=None, state=loaded, phase2_execution={"state": "completed"}
+    )
+    assert body["technicalScanId"] == state.scan_id
+    assert body["universeSize"] == 3
+    assert body["verifiedCount"] == 2
+    assert body["calculatedCount"] == 2
+    assert body["dailySkippedCount"] == 1
+    assert (
+        body["calculatedCount"]
+        + body["dailySkippedCount"]
+        + body["errorCount"]
+        + body["waitingForHistoryCount"]
+        + body["insufficientHistoryCount"]
+        + body["deferredCount"]
+        + body["unknownCount"]
+        + body["pendingCount"]
+        == body["universeSize"]
+    )
+    by_id = {row["stockId"]: row for row in body["candidates"]}
+    assert set(by_id) == {"TW:2330", "TW:2454", "TW:2303"}
+    assert by_id["TW:2330"]["overallStageResult"] == "pass"
+    assert by_id["TW:2330"]["monthly"]["dif"] == 1.25
+    assert by_id["TW:2330"]["daily"]["osc"] == 1.0
+    assert by_id["TW:2330"]["monthly"]["sourceProvider"] == "twse"
+    assert by_id["TW:2330"]["monthly"]["historyCacheLocation"] == (
+        "postgresql_daily_price_bars"
+    )
+    assert by_id["TW:2454"]["overallStageResult"] == "fail"
+    assert by_id["TW:2454"]["monthly"]["sourceProvider"] is None
+    assert by_id["TW:2454"]["monthly"]["sourceProviderStatus"] == "unavailable"
+    assert by_id["TW:2303"]["overallStageResult"] == "daily_not_run"
+    assert by_id["TW:2303"]["daily"] is None
+    assert by_id["TW:2303"]["monthly"]["sourceProvider"] == "tpex"

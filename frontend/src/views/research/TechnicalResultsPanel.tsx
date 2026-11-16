@@ -182,6 +182,12 @@ function IndicatorBlock({
           ? `source ${snapshot.sourceProvider}`
           : `source ${unavailableLabel}`}
         {" · "}
+        {snapshot.historyCacheLocation
+          ? `cache ${snapshot.historyCacheLocation}`
+          : `cache ${unavailableLabel}`}
+        {" · "}
+        {snapshot.historyOrigin ? `origin ${snapshot.historyOrigin}` : null}
+        {snapshot.historyOrigin ? " · " : null}
         {snapshot.firstBarAsOf && snapshot.lastBarAsOf
           ? `range ${snapshot.firstBarAsOf} → ${snapshot.lastBarAsOf}`
           : `range ${unavailableLabel}`}
@@ -320,6 +326,7 @@ export function TechnicalResultsPanel({
                   results.calculatedCount ?? results.analyzedCount ?? 0,
                 ),
                 verified: Number(results.verifiedCount ?? 0),
+                dailySkipped: Number(results.dailySkippedCount ?? 0),
                 errors: Number(results.errorCount ?? 0),
                 deferred: Number(results.deferredCount ?? 0),
                 unknown: Number(results.unknownCount ?? 0),
