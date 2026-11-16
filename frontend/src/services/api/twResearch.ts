@@ -655,6 +655,27 @@ export type TwResearchExecutionStatus = {
   notes?: string[];
 };
 
+/** Honest Phase-2 technical execution block (#361). Prefer over implying analysis ran. */
+export type TwResearchPhase2ExecutionStatus = {
+  state?: string;
+  authorized?: boolean;
+  drainAvailable?: boolean;
+  drainBlocker?: string | null;
+  drainLastTickAt?: string | null;
+  drainFresh?: boolean | null;
+  blocker?: string | null;
+  nextAction?: string | null;
+  technicalScanId?: string | null;
+  scanStatus?: string | null;
+  leaseActive?: boolean;
+  leaseExpiresAt?: string | null;
+  universeSize?: number | null;
+  processedCount?: number | null;
+  remainingCount?: number | null;
+  candidateSelection?: string | null;
+  notes?: string[];
+};
+
 export type TwResearchRun = {
   researchRunId: string;
   userId: string;
@@ -673,6 +694,8 @@ export type TwResearchRun = {
   firstPassProgress?: TwResearchFirstPassProgress | null;
   firstPassDrain?: TwResearchFirstPassDrain | null;
   execution?: TwResearchExecutionStatus | null;
+  /** Phase-2 technical honesty; fall back to `execution` only for phase1 messages. */
+  phase2Execution?: TwResearchPhase2ExecutionStatus | null;
   notNotionPublisher?: boolean;
   cronjobRemainsSuspended?: boolean;
   durable?: boolean;
@@ -688,15 +711,19 @@ export async function fetchTwResearchRunCurrent() {
   const response = await requestJson<{
     researchRun: TwResearchRun;
     execution?: TwResearchExecutionStatus | null;
+    phase2Execution?: TwResearchPhase2ExecutionStatus | null;
   }>("/tw-research/research-runs/current");
   return {
     ...response.researchRun,
     execution: response.execution ?? response.researchRun.execution ?? null,
+    phase2Execution:
+      response.phase2Execution ?? response.researchRun.phase2Execution ?? null,
   };
 }
 
 export type TwResearchRunStartResult = TwResearchRun & {
   execution?: TwResearchExecutionStatus | null;
+  phase2Execution?: TwResearchPhase2ExecutionStatus | null;
 };
 
 export async function startTwResearchRun(body?: {
@@ -707,10 +734,12 @@ export async function startTwResearchRun(body?: {
   const response = await requestJsonWithBody<{
     researchRun: TwResearchRun;
     execution?: TwResearchExecutionStatus | null;
+    phase2Execution?: TwResearchPhase2ExecutionStatus | null;
   }>("/tw-research/research-runs/start", "POST", body ?? { phase: "phase1_first_pass" });
   return {
     ...response.researchRun,
     execution: response.execution ?? null,
+    phase2Execution: response.phase2Execution ?? null,
   };
 }
 
@@ -721,10 +750,12 @@ export async function adoptTwResearchFirstPassJob(body: {
   const response = await requestJsonWithBody<{
     researchRun: TwResearchRun;
     execution?: TwResearchExecutionStatus | null;
+    phase2Execution?: TwResearchPhase2ExecutionStatus | null;
   }>("/tw-research/research-runs/adopt-first-pass-job", "POST", body);
   return {
     ...response.researchRun,
     execution: response.execution ?? null,
+    phase2Execution: response.phase2Execution ?? null,
   };
 }
 

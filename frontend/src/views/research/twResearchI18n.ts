@@ -31,21 +31,6 @@ const TW_RESEARCH_ROWS = [
     "輸出目標（不放寬通過條件）",
   ],
   ["research.tw.createScan", "Create scan", "建立掃描"],
-  [
-    "research.tw.technicalPrimaryHint",
-    "For ordinary research, start technical analysis only after you approve candidates above. Standalone create-scan controls stay in advanced tools.",
-    "一般研究請先在上方核准候選股票後再開始技術分析。獨立「建立掃描」僅保留在進階工具。",
-  ],
-  [
-    "research.tw.advancedLegacyScanTools",
-    "Advanced: legacy scan tools",
-    "進階：舊版掃描工具",
-  ],
-  [
-    "research.tw.advancedLegacyScanToolsNote",
-    "Operator fallback only. Prefer the approved-candidate technical start above so research stays on one managed workflow.",
-    "僅供維運備援。請優先使用上方「核准候選後開始技術分析」，維持單一研究流程。",
-  ],
   ["research.tw.runBatch", "Run scan batch", "執行掃描批次"],
   ["research.tw.resumeBudget", "Resume budget window", "恢復歷史預算視窗"],
   [
@@ -268,11 +253,6 @@ const TW_RESEARCH_ROWS = [
     "Technical analysis stays locked until you approve and save a candidate selection above.",
     "請先在上方核准並儲存候選股票，才能開始技術分析。",
   ],
-  [
-    "research.tw.legacyScanBlockedByManagedRun",
-    "A managed research run is active. Use approved-candidate technical start above instead of creating a standalone scan.",
-    "目前有進行中的研究。請使用上方「核准候選後開始技術分析」，不要另建獨立掃描。",
-  ],
   ["research.tw.candidateIds", "Stock IDs for deeper analysis (one per line)", "深入分析股票代號（每行一個）"],
   [
     "research.tw.candidateVersion",
@@ -301,8 +281,48 @@ const TW_RESEARCH_ROWS = [
   ],
   [
     "research.tw.startTechnicalFromCandidates",
-    "Start technical analysis from approved selection",
-    "從已核准選取開始技術分析",
+    "Start technical analysis",
+    "開始技術分析",
+  ],
+  [
+    "research.tw.phase2Execution.technicalScanCreated",
+    "Technical analysis is queued and waiting for background execution. Creating the scan does not mean analysis has started.",
+    "技術分析已就緒，等待背景執行。建立掃描不代表已開始分析。",
+  ],
+  [
+    "research.tw.phase2Execution.executorUnavailable",
+    "Automatic technical analysis is not available yet. Saved progress is kept. Wait until the executor is enabled — do not assume analysis ran.",
+    "自動技術分析尚未可用，已儲存的進度會保留。請等到執行器啟用；在此之前請勿假設已分析。",
+  ],
+  [
+    "research.tw.phase2Execution.executorNotTicking",
+    "Technical analysis is authorized, but no automatic run has started yet. Wait a few minutes, then refresh — this is not active analyzing.",
+    "已授權技術分析，但自動執行尚未開始。請稍候數分鐘後重新整理（這不是正在分析）。",
+  ],
+  [
+    "research.tw.phase2Execution.activelyAnalyzing",
+    "Analyzing… Technical analysis is running in the background. You can close this page; progress is saved.",
+    "分析中…技術分析正在背景執行。可關閉此頁，進度會自動儲存。",
+  ],
+  [
+    "research.tw.phase2Execution.waitingForBudgetWindow",
+    "Waiting for a historical-data budget window before technical analysis can continue.",
+    "等待歷史資料預算視窗後才能繼續技術分析。",
+  ],
+  [
+    "research.tw.phase2Execution.completed",
+    "Technical analysis completed.",
+    "已完成",
+  ],
+  [
+    "research.tw.phase2Execution.failed",
+    "Technical analysis failed. Review progress details before retrying.",
+    "技術分析失敗。請先查看進度細節再重試。",
+  ],
+  [
+    "research.tw.phase2Execution.awaitingTechnicalStart",
+    "Candidates are approved. Press Start technical analysis when you are ready.",
+    "候選已核准。準備好後請按下「開始技術分析」。",
   ],
   [
     "research.tw.candidateProvenanceLine",
