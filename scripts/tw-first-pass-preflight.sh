@@ -52,6 +52,8 @@ else
           TW_RESEARCH_FIRST_PASS_DRAIN_TOKEN|TW_RESEARCH_FIRST_PASS_DRAIN_USER_ID|TW_RESEARCH_FIRST_PASS_DRAIN_ENABLED)
             echo "present: ${key}"
             ;;
+          *)
+            ;;
         esac
       done
 fi

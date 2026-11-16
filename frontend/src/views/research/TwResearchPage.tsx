@@ -226,6 +226,118 @@ function displayText(value: unknown): string {
   return "";
 }
 
+function appendWatchlistReason(
+  reasonById: Map<string, string>,
+  id: string,
+  reason: string,
+): void {
+  const prior = reasonById.get(id);
+  reasonById.set(id, prior ? `${prior}+${reason}` : reason);
+}
+
+function classifySelectionReasons(reasons: Record<string, unknown>): {
+  interestingIds: Set<string>;
+  insufficientIds: Set<string>;
+} {
+  const interestingIds = new Set<string>();
+  const insufficientIds = new Set<string>();
+  const watchList = reasons.fundamentalWatchIds ?? reasons.watchIds;
+  if (Array.isArray(watchList)) {
+    for (const id of watchList) interestingIds.add(String(id));
+  }
+  for (const [key, value] of Object.entries(reasons)) {
+    if (key === "dailyOverrideIds" || key === "fundamentalWatchIds" || key === "watchIds") {
+      continue;
+    }
+    const text = String(value ?? "").toLowerCase();
+    if (
+      text.includes("insufficient") ||
+      text.includes("unavailable") ||
+      text.includes("incomplete") ||
+      text.includes("missing")
+    ) {
+      insufficientIds.add(key);
+      continue;
+    }
+    if (text.includes("watch") || text.includes("promising") || text.includes("attractive")) {
+      interestingIds.add(key);
+    }
+  }
+  return { interestingIds, insufficientIds };
+}
+
+function insufficientIdsFromEvidenceText(evidenceText: string | null | undefined): Set<string> {
+  const insufficient = new Set<string>();
+  if (!evidenceText) return insufficient;
+  try {
+    const parsed = JSON.parse(evidenceText);
+    const records = Array.isArray(parsed?.records)
+      ? parsed.records
+      : Array.isArray(parsed?.chunk?.rows)
+        ? parsed.chunk.rows
+        : [];
+    for (const row of records) {
+      const id = String(row?.stockId ?? row?.stock_id ?? "");
+      if (!id) continue;
+      const completeness = (row?.completeness ?? row?.evidence?.completeness) as
+        | { identityComplete?: boolean; fundamentalFieldsOk?: number; fieldsOk?: number }
+        | undefined;
+      if (
+        completeness &&
+        (completeness.identityComplete === false ||
+          Number(completeness.fundamentalFieldsOk ?? completeness.fieldsOk ?? 1) <= 0)
+      ) {
+        insufficient.add(id);
+      }
+    }
+  } catch {
+    // Evidence text may be unrelated JSON; ignore parse failures.
+  }
+  return insufficient;
+}
+
+function buildWatchlistReasonById(input: {
+  dailyNotRunByDesignIds?: string[] | null;
+  monthlyFailWatchlistIds?: string[] | null;
+  monthlyIncompleteIds?: string[] | null;
+  frozenStockIds?: string[] | null;
+  selectedStockIds?: string[] | null;
+  selectionReasons?: Record<string, unknown> | null;
+  firstPassEvidenceText?: string | null;
+}): Map<string, string> {
+  const reasonById = new Map<string, string>();
+  for (const id of input.dailyNotRunByDesignIds ?? []) {
+    appendWatchlistReason(reasonById, String(id), "daily_waiting_or_not_run");
+  }
+  for (const id of input.monthlyFailWatchlistIds ?? []) {
+    appendWatchlistReason(reasonById, String(id), "monthly_fail_watchlist");
+  }
+  for (const id of input.monthlyIncompleteIds ?? []) {
+    appendWatchlistReason(reasonById, String(id), "insufficient_evidence_monthly");
+  }
+
+  const selected = new Set((input.selectedStockIds ?? []).map(String));
+  const { interestingIds, insufficientIds } = classifySelectionReasons(
+    (input.selectionReasons ?? {}) as Record<string, unknown>,
+  );
+  const insufficient = new Set<string>([
+    ...insufficientIds,
+    ...insufficientIdsFromEvidenceText(input.firstPassEvidenceText),
+  ]);
+
+  for (const id of (input.frozenStockIds ?? []).map(String)) {
+    if (selected.has(id)) continue;
+    if (insufficient.has(id)) {
+      appendWatchlistReason(reasonById, id, "insufficient_evidence_fundamental");
+    } else if (interestingIds.has(id)) {
+      appendWatchlistReason(reasonById, id, "fundamentally_interesting_not_selected");
+    } else {
+      appendWatchlistReason(reasonById, id, "first_pass_not_selected_for_technical");
+    }
+  }
+  return reasonById;
+}
+
 function workerActivityLabelKey(
   activity: "active" | "unknown" | "idle",
 ): TranslationKey {
@@ -1914,106 +2026,30 @@ export function TwResearchPage({
     }
     return map;
   }, [frozenPageChipQuery.data]);
-  const watchlistReasonById = useMemo(() => {
-    const reasonById = new Map<string, string>();
-    const addReason = (id: string, reason: string) => {
-      const prior = reasonById.get(id);
-      reasonById.set(id, prior ? `${prior}+${reason}` : reason);
-    };
-    for (const id of scan?.dailyNotRunByDesignIds ?? []) {
-      addReason(String(id), "daily_waiting_or_not_run");
-    }
-    for (const id of scan?.monthlyFailWatchlistIds ?? []) {
-      addReason(String(id), "monthly_fail_watchlist");
-    }
-    for (const id of scan?.monthlyIncompleteIds ?? []) {
-      addReason(String(id), "insufficient_evidence_monthly");
-    }
-
-    // Frozen first-pass universe + scan-pinned candidate set (not latest).
-    const selected = new Set(
-      ((watchlistCandidateSet?.stockIds as string[] | undefined) ?? []).map(String),
-    );
-    const frozenIds = Array.isArray(frozenFirstPassQuery.data?.stockIds)
-      ? (frozenFirstPassQuery.data?.stockIds as string[]).map(String)
-      : [];
-    const reasons = (watchlistCandidateSet?.selectionReasons ?? {}) as Record<
-      string,
-      unknown
-    >;
-    const interestingIds = new Set<string>();
-    const reasonInsufficient = new Set<string>();
-    const watchList = reasons.fundamentalWatchIds ?? reasons.watchIds;
-    if (Array.isArray(watchList)) {
-      for (const id of watchList) interestingIds.add(String(id));
-    }
-    for (const [key, value] of Object.entries(reasons)) {
-      if (key === "dailyOverrideIds" || key === "fundamentalWatchIds" || key === "watchIds") {
-        continue;
-      }
-      const text = String(value ?? "").toLowerCase();
-      if (
-        text.includes("insufficient") ||
-        text.includes("unavailable") ||
-        text.includes("incomplete") ||
-        text.includes("missing")
-      ) {
-        reasonInsufficient.add(key);
-        continue;
-      }
-      if (text.includes("watch") || text.includes("promising") || text.includes("attractive")) {
-        interestingIds.add(key);
-      }
-    }
-
-    // Optional completeness hints from already-loaded first-pass evidence JSON.
-    const insufficient = new Set<string>(reasonInsufficient);
-    try {
-      const parsed = firstPassEvidenceText ? JSON.parse(firstPassEvidenceText) : null;
-      const records = Array.isArray(parsed?.records)
-        ? parsed.records
-        : Array.isArray(parsed?.chunk?.rows)
-          ? parsed.chunk.rows
-          : [];
-      for (const row of records) {
-        const id = String(row?.stockId ?? row?.stock_id ?? "");
-        if (!id) continue;
-        const completeness = (row?.completeness ?? row?.evidence?.completeness) as
-          | { identityComplete?: boolean; fundamentalFieldsOk?: number; fieldsOk?: number }
-          | undefined;
-        if (
-          completeness &&
-          (completeness.identityComplete === false ||
-            Number(completeness.fundamentalFieldsOk ?? completeness.fieldsOk ?? 1) <= 0)
-        ) {
-          insufficient.add(id);
-        }
-      }
-    } catch {
-      // Evidence text may be unrelated JSON; ignore parse failures.
-    }
-
-    for (const id of frozenIds) {
-      if (selected.has(id)) continue;
-      if (insufficient.has(id)) {
-        addReason(id, "insufficient_evidence_fundamental");
-      } else if (interestingIds.has(id)) {
-        addReason(id, "fundamentally_interesting_not_selected");
-      } else {
-        // Neutral: not selected for MACD/KD — not an attractiveness claim.
-        addReason(id, "first_pass_not_selected_for_technical");
-      }
-    }
-    return reasonById;
-  }, [
-    firstPassEvidenceText,
-    frozenFirstPassQuery.data?.stockIds,
-    scan?.dailyNotRunByDesignIds,
-    scan?.monthlyFailWatchlistIds,
-    scan?.monthlyIncompleteIds,
-    watchlistCandidateSet?.selectionReasons,
-    watchlistCandidateSet?.stockIds,
-  ]);
+  const watchlistReasonById = useMemo(
+    () =>
+      buildWatchlistReasonById({
+        dailyNotRunByDesignIds: scan?.dailyNotRunByDesignIds,
+        monthlyFailWatchlistIds: scan?.monthlyFailWatchlistIds,
+        monthlyIncompleteIds: scan?.monthlyIncompleteIds,
+        frozenStockIds: Array.isArray(frozenFirstPassQuery.data?.stockIds)
+          ? (frozenFirstPassQuery.data?.stockIds as string[])
+          : [],
+        selectedStockIds: (watchlistCandidateSet?.stockIds as string[] | undefined) ?? [],
+        selectionReasons: (watchlistCandidateSet?.selectionReasons ??
+          {}) as Record<string, unknown>,
+        firstPassEvidenceText,
+      }),
+    [
+      firstPassEvidenceText,
+      frozenFirstPassQuery.data?.stockIds,
+      scan?.dailyNotRunByDesignIds,
+      scan?.monthlyFailWatchlistIds,
+      scan?.monthlyIncompleteIds,
+      watchlistCandidateSet?.selectionReasons,
+      watchlistCandidateSet?.stockIds,
+    ],
+  );
   const watchlistIds = useMemo(
     () =>
       Array.from(watchlistReasonById.keys()).sort((left, right) =>

@@ -1401,6 +1401,31 @@ def _research_run_unavailable(exc: ResearchRunStoreUnavailable) -> HTTPException
     )
 
 
+def _maybe_rearm_first_pass_on_start(user_id: str) -> ResearchRunResponse:
+    """Re-arm drain on Start; concurrent armed run returns 200 instead of 409."""
+    try:
+        run = research_run_store.maybe_rearm_first_pass_drain_on_start(user_id)
+    except ResearchRunStoreUnavailable as exc:
+        raise _research_run_unavailable(exc) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ResearchRunConflict as exc:
+        try:
+            current = research_run_store.get(user_id)
+        except ResearchRunStoreUnavailable:
+            current = None
+        if current is not None and bool(current.schedule_enabled):
+            return _research_run_response(current)
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "research_run_revision_conflict",
+                "reason": exc.reason,
+            },
+        ) from exc
+    return _research_run_response(run)
+
+
 def _research_run_response(run: ResearchRun) -> ResearchRunResponse:
     """Attach honest execution readiness alongside the durable run (#359)."""
     from app.services.tw_research.execution_status import classify_first_pass_execution
@@ -1848,29 +1873,7 @@ def start_research_run(
             run.phase == "phase2_technical" and run.technical_scan_id
         ):
             if run.first_pass_job_id and run.phase == "phase1_first_pass":
-                try:
-                    run = research_run_store.maybe_rearm_first_pass_drain_on_start(
-                        user_id
-                    )
-                except ResearchRunStoreUnavailable as exc:
-                    raise _research_run_unavailable(exc) from exc
-                except KeyError as exc:
-                    raise HTTPException(status_code=404, detail=str(exc)) from exc
-                except ResearchRunConflict as exc:
-                    # Concurrent Start that already armed the same run → 200.
-                    try:
-                        current = research_run_store.get(user_id)
-                    except ResearchRunStoreUnavailable:
-                        current = None
-                    if current is not None and bool(current.schedule_enabled):
-                        return _research_run_response(current)
-                    raise HTTPException(
-                        status_code=409,
-                        detail={
-                            "error": "research_run_revision_conflict",
-                            "reason": exc.reason,
-                        },
-                    ) from exc
+                return _maybe_rearm_first_pass_on_start(user_id)
             return _research_run_response(run)
 
         from uuid import uuid4
@@ -1887,29 +1890,7 @@ def start_research_run(
 
         outcome = str(claim.get("outcome") or "")
         if outcome == "already_attached":
-            try:
-                rearmed = research_run_store.maybe_rearm_first_pass_drain_on_start(
-                    user_id
-                )
-            except ResearchRunStoreUnavailable as exc:
-                raise _research_run_unavailable(exc) from exc
-            except KeyError as exc:
-                raise HTTPException(status_code=404, detail=str(exc)) from exc
-            except ResearchRunConflict as exc:
-                try:
-                    current = research_run_store.get(user_id)
-                except ResearchRunStoreUnavailable:
-                    current = None
-                if current is not None and bool(current.schedule_enabled):
-                    return _research_run_response(current)
-                raise HTTPException(
-                    status_code=409,
-                    detail={
-                        "error": "research_run_revision_conflict",
-                        "reason": exc.reason,
-                    },
-                ) from exc
-            return _research_run_response(rearmed)
+            return _maybe_rearm_first_pass_on_start(user_id)
         if outcome == "claim_held":
             # Another pod owns creation; return current run for safe retry.
             held = ResearchRun.from_persist_payload(claim["run"])

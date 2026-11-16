@@ -37,6 +37,21 @@ logger = logging.getLogger(__name__)
 
 # Same eligibility set as standalone adoption (#359 / repository).
 _REARM_ELIGIBLE_JOB_STATUS = frozenset({"pending", "running", "deferred", "partial"})
+_ISO_Z_UTC_SUFFIX = "+00:00"
+
+
+def _parse_iso_utc(value: str) -> datetime:
+    return datetime.fromisoformat(str(value).replace("Z", _ISO_Z_UTC_SUFFIX))
+
+
+def _ineligible_rearm_job_status_reason(status: str) -> str | None:
+    if status in _REARM_ELIGIBLE_JOB_STATUS:
+        return None
+    if status == "completed":
+        return "first_pass_job_nothing_pending"
+    if status in {"cancelled", "failed", "budget_exhausted"}:
+        return f"first_pass_drain_resume_blocked_job_status:{status}"
+    return "first_pass_job_not_eligible_status"
 
 
 def first_pass_drain_availability(user_id: str) -> tuple[bool, str | None]:
@@ -491,9 +506,7 @@ class ResearchRunStore:
             lease_expires = job.get("reserve_expires_at") or job.get("reserveExpiresAt")
             if lease_expires:
                 try:
-                    parsed = datetime.fromisoformat(
-                        str(lease_expires).replace("Z", "+00:00")
-                    )
+                    parsed = _parse_iso_utc(str(lease_expires))
                     if parsed > datetime.now(UTC):
                         raise ResearchRunConflict(
                             "first_pass_job_lease_active",
@@ -717,14 +730,7 @@ class ResearchRunStore:
         ).strip()
         if deletion_state:
             return "first_pass_job_deletion_in_progress"
-        status = str(job.get("status") or "")
-        if status not in _REARM_ELIGIBLE_JOB_STATUS:
-            if status == "completed":
-                return "first_pass_job_nothing_pending"
-            if status in {"cancelled", "failed", "budget_exhausted"}:
-                return f"first_pass_drain_resume_blocked_job_status:{status}"
-            return "first_pass_job_not_eligible_status"
-        return None
+        return _ineligible_rearm_job_status_reason(str(job.get("status") or ""))
 
     def _maybe_rearm_first_pass_drain_locked(self, run: ResearchRun) -> ResearchRun:
         if bool(run.schedule_enabled):
@@ -1420,9 +1426,7 @@ class ResearchRunStore:
         expires = None
         if run.job_claim_expires_at:
             try:
-                expires = datetime.fromisoformat(
-                    str(run.job_claim_expires_at).replace("Z", "+00:00")
-                )
+                expires = _parse_iso_utc(str(run.job_claim_expires_at))
             except ValueError:
                 expires = None
         held_by_other = (
@@ -1472,9 +1476,7 @@ class ResearchRunStore:
         expires = None
         if run.phase2_claim_expires_at:
             try:
-                expires = datetime.fromisoformat(
-                    str(run.phase2_claim_expires_at).replace("Z", "+00:00")
-                )
+                expires = _parse_iso_utc(str(run.phase2_claim_expires_at))
             except ValueError:
                 expires = None
         held_by_other = (
