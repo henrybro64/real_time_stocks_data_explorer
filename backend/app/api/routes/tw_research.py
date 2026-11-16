@@ -1426,6 +1426,131 @@ def _maybe_rearm_first_pass_on_start(user_id: str) -> ResearchRunResponse:
     return _research_run_response(run)
 
 
+def _create_first_pass_job_for_start(*, user_id: str, job_id: str) -> str:
+    try:
+        job = first_pass_job_service.create_job(
+            user_id=user_id,
+            use_membership=True,
+            job_id=job_id,
+        )
+        return str(job.get("job_id") or job.get("jobId") or job_id)
+    except FirstPassJobError as exc:
+        if "unavailable" in str(exc):
+            raise HTTPException(
+                status_code=503,
+                detail={"error": str(exc), "operation": exc.operation},
+            ) from exc
+        raise HTTPException(
+            status_code=400,
+            detail={"error": str(exc), "operation": exc.operation},
+        ) from exc
+
+
+def _attach_created_first_pass_job(
+    *,
+    user_id: str,
+    claim_token: str,
+    job_id: str,
+) -> ResearchRunResponse:
+    try:
+        attached = research_run_store.attach_first_pass_job_under_claim(
+            user_id,
+            claim_token=claim_token,
+            job_id=job_id,
+            notes=[f"Durable first-pass job {job_id} created with research run."],
+        )
+    except ResearchRunStoreUnavailable as exc:
+        raise _research_run_unavailable(exc) from exc
+    if attached.get("outcome") in {"already_attached", "claim_lost"}:
+        orphan = attached.get("orphan_job_id")
+        if orphan:
+            research_run_store.mark_orphaned_first_pass_job(
+                str(orphan),
+                user_id=user_id,
+                authoritative_job_id=str(attached.get("first_pass_job_id") or "")
+                or None,
+                reason=str(attached.get("outcome")),
+            )
+    run = ResearchRun.from_persist_payload(attached["run"])
+    return _research_run_response(run)
+
+
+def _resume_existing_phase1_run(*, user_id: str, run: ResearchRun) -> ResearchRunResponse | None:
+    """Return a response when the run already has work attached; else None."""
+    if not (
+        run.first_pass_job_id
+        or (run.phase == "phase2_technical" and run.technical_scan_id)
+    ):
+        return None
+    if run.first_pass_job_id and run.phase == "phase1_first_pass":
+        return _maybe_rearm_first_pass_on_start(user_id)
+    return _research_run_response(run)
+
+
+def _claim_and_create_phase1_job(*, user_id: str) -> ResearchRunResponse:
+    from uuid import uuid4
+
+    claim_token = f"claim_{uuid4().hex[:20]}"
+    try:
+        claim = research_run_store.claim_first_pass_job_slot(
+            user_id, claim_token=claim_token
+        )
+    except ResearchRunStoreUnavailable as exc:
+        raise _research_run_unavailable(exc) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    outcome = str(claim.get("outcome") or "")
+    if outcome == "already_attached":
+        return _maybe_rearm_first_pass_on_start(user_id)
+    if outcome == "claim_held":
+        held = ResearchRun.from_persist_payload(claim["run"])
+        return _research_run_response(held)
+
+    pending_job_id = claim.get("pending_first_pass_job_id")
+    if not pending_job_id:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "research_run_job_id_not_allocated",
+                "retryable": True,
+            },
+        )
+    job_id = _create_first_pass_job_for_start(
+        user_id=user_id, job_id=str(pending_job_id)
+    )
+    return _attach_created_first_pass_job(
+        user_id=user_id, claim_token=claim_token, job_id=job_id
+    )
+
+
+def _start_phase1_research_run(
+    *,
+    user_id: str,
+    trading_day: str | None,
+    notes: list[str],
+) -> ResearchRunResponse:
+    """Create or resume the managed Phase-1 run + First-Pass job (#366 re-arm)."""
+    try:
+        run = research_run_store.begin_phase1(
+            user_id,
+            trading_day=trading_day,
+            notes=notes,
+        )
+    except ResearchRunStoreUnavailable as exc:
+        raise _research_run_unavailable(exc) from exc
+    except ResearchRunConflict as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"error": "research_run_revision_conflict", "reason": exc.reason},
+        ) from exc
+
+    resumed = _resume_existing_phase1_run(user_id=user_id, run=run)
+    if resumed is not None:
+        return resumed
+    return _claim_and_create_phase1_job(user_id=user_id)
+
+
 def _research_run_response(run: ResearchRun) -> ResearchRunResponse:
     """Attach honest execution readiness alongside the durable run (#359)."""
     from app.services.tw_research.execution_status import classify_first_pass_execution
@@ -1853,99 +1978,11 @@ def start_research_run(
     Cross-pod idempotent via DB-fenced job claim (not process locks).
     """
     if body.phase == "phase1_first_pass":
-        try:
-            run = research_run_store.begin_phase1(
-                user_id,
-                trading_day=body.tradingDay,
-                notes=list(body.notes or []),
-            )
-        except ResearchRunStoreUnavailable as exc:
-            raise _research_run_unavailable(exc) from exc
-        except ResearchRunConflict as exc:
-            raise HTTPException(
-                status_code=409,
-                detail={"error": "research_run_revision_conflict", "reason": exc.reason},
-            ) from exc
-        # Active run already has a job (or is mid-phase2). For Phase-1 with an
-        # attached job, Start/Resume may re-arm drain when the executor is now
-        # available (#366) — never creates a duplicate job.
-        if run.first_pass_job_id or (
-            run.phase == "phase2_technical" and run.technical_scan_id
-        ):
-            if run.first_pass_job_id and run.phase == "phase1_first_pass":
-                return _maybe_rearm_first_pass_on_start(user_id)
-            return _research_run_response(run)
-
-        from uuid import uuid4
-
-        claim_token = f"claim_{uuid4().hex[:20]}"
-        try:
-            claim = research_run_store.claim_first_pass_job_slot(
-                user_id, claim_token=claim_token
-            )
-        except ResearchRunStoreUnavailable as exc:
-            raise _research_run_unavailable(exc) from exc
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-        outcome = str(claim.get("outcome") or "")
-        if outcome == "already_attached":
-            return _maybe_rearm_first_pass_on_start(user_id)
-        if outcome == "claim_held":
-            # Another pod owns creation; return current run for safe retry.
-            held = ResearchRun.from_persist_payload(claim["run"])
-            return _research_run_response(held)
-
-        # Claim allocates pending_first_pass_job_id before job-row create.
-        pending_job_id = claim.get("pending_first_pass_job_id")
-        if not pending_job_id:
-            raise HTTPException(
-                status_code=503,
-                detail={
-                    "error": "research_run_job_id_not_allocated",
-                    "retryable": True,
-                },
-            )
-        job_id = str(pending_job_id)
-        try:
-            job = first_pass_job_service.create_job(
-                user_id=user_id,
-                use_membership=True,
-                job_id=job_id,
-            )
-            job_id = str(job.get("job_id") or job.get("jobId") or job_id)
-        except FirstPassJobError as exc:
-            if "unavailable" in str(exc):
-                raise HTTPException(
-                    status_code=503,
-                    detail={"error": str(exc), "operation": exc.operation},
-                ) from exc
-            raise HTTPException(
-                status_code=400,
-                detail={"error": str(exc), "operation": exc.operation},
-            ) from exc
-
-        try:
-            attached = research_run_store.attach_first_pass_job_under_claim(
-                user_id,
-                claim_token=claim_token,
-                job_id=job_id,
-                notes=[f"Durable first-pass job {job_id} created with research run."],
-            )
-        except ResearchRunStoreUnavailable as exc:
-            raise _research_run_unavailable(exc) from exc
-        if attached.get("outcome") in {"already_attached", "claim_lost"}:
-            orphan = attached.get("orphan_job_id")
-            if orphan:
-                research_run_store.mark_orphaned_first_pass_job(
-                    str(orphan),
-                    user_id=user_id,
-                    authoritative_job_id=str(attached.get("first_pass_job_id") or "")
-                    or None,
-                    reason=str(attached.get("outcome")),
-                )
-        run = ResearchRun.from_persist_payload(attached["run"])
-        return _research_run_response(run)
+        return _start_phase1_research_run(
+            user_id=user_id,
+            trading_day=body.tradingDay,
+            notes=list(body.notes or []),
+        )
     if body.phase == "phase2_technical":
         raise HTTPException(
             status_code=400,
@@ -2461,6 +2498,28 @@ def get_latest_verified_manifest(
     return ExportManifestResponse(manifest=manifest)
 
 
+def _filter_export_snapshot_rows(rows: list[dict], *, kind: str) -> list[dict]:
+    if kind == "qualified":
+        return [
+            row
+            for row in rows
+            if (row.get("daily") or {}).get("passStatus") == "pass"
+            and (row.get("monthly") or {}).get("passStatus") == "pass"
+        ]
+    if kind == "enriched":
+        return [row for row in rows if row.get("enrichment")]
+    return rows
+
+
+def _frozen_export_timestamp(snapshot: dict) -> str:
+    manifest = dict(snapshot.get("manifest_json") or {})
+    frozen = manifest.get("finalizedAt") or manifest.get("generatedAt")
+    if frozen:
+        return str(frozen)
+    frozen_at = snapshot["finalized_at"]
+    return frozen_at.isoformat() if hasattr(frozen_at, "isoformat") else str(frozen_at)
+
+
 @router.get(
     "/exports/snapshots/{snapshot_id}/chunk",
     response_model=ExportChunkResponse,
@@ -2484,29 +2543,15 @@ def get_verified_snapshot_chunk(
         or snapshot.get("user_id") != user_id
     ):
         raise HTTPException(status_code=404, detail=f"Unknown snapshot_id: {snapshot_id}")
-    rows = list(snapshot.get("ledger_json") or [])
-    if kind == "qualified":
-        rows = [
-            row
-            for row in rows
-            if (row.get("daily") or {}).get("passStatus") == "pass"
-            and (row.get("monthly") or {}).get("passStatus") == "pass"
-        ]
-    elif kind == "enriched":
-        rows = [row for row in rows if row.get("enrichment")]
+    rows = _filter_export_snapshot_rows(
+        list(snapshot.get("ledger_json") or []), kind=kind
+    )
     # Prefer the exact frozen string stored at finalize time so digests stay stable
     # across DB round-trips (SQLite/Postgres datetime serialization can differ).
-    manifest = dict(snapshot.get("manifest_json") or {})
-    frozen = manifest.get("finalizedAt") or manifest.get("generatedAt")
-    if not frozen:
-        frozen_at = snapshot["finalized_at"]
-        frozen = (
-            frozen_at.isoformat() if hasattr(frozen_at, "isoformat") else str(frozen_at)
-        )
+    frozen = _frozen_export_timestamp(snapshot)
     # After scan retention, FK scan_id may be NULL; use the frozen manifest id.
-    frozen_scan_id = (
-        manifest.get("scanId") or snapshot.get("scan_id") or ""
-    )
+    manifest = dict(snapshot.get("manifest_json") or {})
+    frozen_scan_id = manifest.get("scanId") or snapshot.get("scan_id") or ""
     chunk = _call_or_http(
         lambda: build_export_chunk_from_rows(
             rows,

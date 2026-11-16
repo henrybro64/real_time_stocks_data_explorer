@@ -338,6 +338,31 @@ function buildWatchlistReasonById(input: {
   return reasonById;
 }
 
+function deletionBlockerCodes(preview: {
+  blockers?: unknown;
+} | null): string[] {
+  if (!preview || !Array.isArray(preview.blockers)) return [];
+  return preview.blockers.map((b) =>
+    typeof b === "object" && b && "code" in b
+      ? String((b as { code: string }).code)
+      : String(b),
+  );
+}
+
+function formatDeletionCounts(counts: unknown): string {
+  if (!counts || typeof counts !== "object") return "";
+  return Object.entries(counts as Record<string, unknown>)
+    .map(([k, v]) => `${k}=${String(v)}`)
+    .join(", ");
+}
+
+function deletionFailureReasonCode(detail: string): string {
+  const codeMatch = detail.match(
+    /run_owned_requires_full_run_delete|snapshot_shared_with_other_job|snapshot_referenced_by_candidate_set|snapshot_referenced_by_research_run|scan_provenance_references_snapshot|preview_stale|legacy_unowned|worker_quiescence_timeout|deletion_in_progress/,
+  );
+  return codeMatch?.[0] || "unknown";
+}
+
 function workerActivityLabelKey(
   activity: "active" | "unknown" | "idle",
 ): TranslationKey {
@@ -713,29 +738,18 @@ export function TwResearchPage({
       setJobManageMessage(t("research.tw.blocker.preview_stale"));
       return;
     }
-    const blockerCodes = Array.isArray(deletePreview.blockers)
-      ? deletePreview.blockers.map((b) =>
-          typeof b === "object" && b && "code" in b
-            ? String((b as { code: string }).code)
-            : String(b),
-        )
-      : [];
-    const hardBlock = blockerCodes.filter((code) => code !== "deletion_in_progress");
-    if (deleteModalMode === "job" && hardBlock.length > 0) {
-      if (hardBlock.includes("run_owned_requires_full_run_delete")) {
+    const hardBlock = deletionBlockerCodes(deletePreview).filter(
+      (code) => code !== "deletion_in_progress",
+    );
+    if (hardBlock.length > 0) {
+      if (
+        deleteModalMode === "job" &&
+        hardBlock.includes("run_owned_requires_full_run_delete")
+      ) {
         setDeleteModalOpen(false);
         await openDeletePreview("full_run");
         return;
       }
-      setJobManageMessage(
-        t("research.tw.deleteJobBlocked", {
-          reason: blockerReasonText(hardBlock),
-        }),
-      );
-      setDeleteModalOpen(false);
-      return;
-    }
-    if (deleteModalMode === "full_run" && hardBlock.length > 0) {
       setJobManageMessage(
         t("research.tw.deleteJobBlocked", {
           reason: blockerReasonText(hardBlock),
@@ -761,13 +775,7 @@ export function TwResearchPage({
           if (firstPassJobId) setPendingDeletionJobId(firstPassJobId);
         }
       } else if (result.deleted) {
-        const counts = result.counts;
-        const countsText =
-          counts && typeof counts === "object"
-            ? Object.entries(counts as Record<string, unknown>)
-                .map(([k, v]) => `${k}=${String(v)}`)
-                .join(", ")
-            : "";
+        const countsText = formatDeletionCounts(result.counts);
         setPendingDeletionJobId(null);
         setPendingFullRunDeletion(false);
         setFirstPassJobId(null);
@@ -786,12 +794,9 @@ export function TwResearchPage({
     } catch (error) {
       const api = toApiError(error);
       const detail = String(api.detail || api.message || "unknown");
-      const codeMatch = detail.match(
-        /run_owned_requires_full_run_delete|snapshot_shared_with_other_job|snapshot_referenced_by_candidate_set|snapshot_referenced_by_research_run|scan_provenance_references_snapshot|preview_stale|legacy_unowned|worker_quiescence_timeout|deletion_in_progress/,
-      );
       setJobManageMessage(
         t("research.tw.deleteJobFailed", {
-          reason: blockerReasonText([codeMatch?.[0] || "unknown"]),
+          reason: blockerReasonText([deletionFailureReasonCode(detail)]),
         }),
       );
       setDeleteModalOpen(false);
