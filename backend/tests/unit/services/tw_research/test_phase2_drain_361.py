@@ -3,11 +3,17 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from zoneinfo import ZoneInfo
 
-from app.services.tw_research.constants import HISTORY_BUDGET_EXHAUSTED_REASON
+from app.services.tw_research.constants import (
+    HISTORY_BUDGET_EXHAUSTED_REASON,
+    PHASE2_MAX_BUDGET_WINDOWS_PER_DAY,
+)
 from app.services.tw_research.first_pass_drain import drain_authorized_first_pass
 from app.services.tw_research.research_run import research_run_store
 from app.services.tw_research.scan import TwResearchConflictError
+
+TAIPEI = ZoneInfo("Asia/Taipei")
 
 
 def setup_function() -> None:
@@ -201,12 +207,18 @@ def test_budget_exhausted_resumes_once_then_batch(monkeypatch) -> None:
 def test_budget_cap_reached_no_resume(monkeypatch) -> None:
     _enable(monkeypatch)
     _approved_phase2_run()
+    day = "2024-06-27"
+    monkeypatch.setattr(
+        "app.services.tw_research.first_pass_drain._phase2_now",
+        lambda: datetime(2024, 6, 27, 12, 0, tzinfo=TAIPEI),
+    )
     with research_run_store._lock:  # noqa: SLF001
         locked = research_run_store._require_locked("owner")
         locked.dimensions["phase2Drain"] = {
             "enabled": True,
-            "windowsByTradingDay": {"2024-06-27": 24},
-            "windowsOpened": 24,
+            "windowsByTradingDay": {day: PHASE2_MAX_BUDGET_WINDOWS_PER_DAY},
+            "windowBaselineByDay": {day: 0},
+            "windowsOpened": PHASE2_MAX_BUDGET_WINDOWS_PER_DAY,
         }
         research_run_store._persist_locked(locked)
 
@@ -218,7 +230,129 @@ def test_budget_cap_reached_no_resume(monkeypatch) -> None:
             user_id="owner",
             status="budget_exhausted",
             remaining=2,
-            budget_windows_opened=24,
+            budget_windows_opened=PHASE2_MAX_BUDGET_WINDOWS_PER_DAY,
+            stock_ids=("TW:2330", "TW:2454"),
+            records={
+                "TW:2330": _Rec(rejection_reason=HISTORY_BUDGET_EXHAUSTED_REASON),
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        "app.services.tw_research.first_pass_drain.tw_research_scan_service.resume_budget_window",
+        lambda scan_id, **_k: resumes.append(scan_id),
+    )
+    result = drain_authorized_first_pass(user_id="owner", enabled=True, dry_run=False)
+    assert result.outcome == "phase2_budget_cap_reached"
+    assert resumes == []
+
+
+def test_budget_cap_resets_next_calendar_day(monkeypatch) -> None:
+    """Cap on Asia/Taipei day D blocks resume; same scan on D+1 is allowed."""
+    _enable(monkeypatch)
+    _approved_phase2_run()
+    clock = {"now": datetime(2024, 6, 27, 15, 0, tzinfo=TAIPEI)}
+    monkeypatch.setattr(
+        "app.services.tw_research.first_pass_drain._phase2_now",
+        lambda: clock["now"],
+    )
+    day_d = "2024-06-27"
+    with research_run_store._lock:  # noqa: SLF001
+        locked = research_run_store._require_locked("owner")
+        locked.dimensions["phase2Drain"] = {
+            "enabled": True,
+            "windowsByTradingDay": {day_d: PHASE2_MAX_BUDGET_WINDOWS_PER_DAY},
+            "windowBaselineByDay": {day_d: 10},
+            "windowsOpened": PHASE2_MAX_BUDGET_WINDOWS_PER_DAY,
+        }
+        research_run_store._persist_locked(locked)
+
+    state = _fake_scan(
+        scan_id="scan_owned",
+        user_id="owner",
+        status="budget_exhausted",
+        remaining=2,
+        # lifetime opened; today = opened - baseline(10) = 24 on day D
+        budget_windows_opened=10 + PHASE2_MAX_BUDGET_WINDOWS_PER_DAY,
+        stock_ids=("TW:2330", "TW:2454"),
+        records={
+            "TW:2330": _Rec(rejection_reason=HISTORY_BUDGET_EXHAUSTED_REASON),
+        },
+        trading_day="2024-06-20",  # scan trading day must not drive the cap key
+    )
+    resumes: list[str] = []
+
+    def resume(scan_id, **_kwargs):
+        resumes.append(scan_id)
+        state.status = "running"
+        state.budget_windows_opened = int(state.budget_windows_opened) + 1
+        state.records["TW:2330"] = _Rec()
+        return state
+
+    monkeypatch.setattr(
+        "app.services.tw_research.first_pass_drain.tw_research_scan_service.get_scan",
+        lambda scan_id: state,
+    )
+    monkeypatch.setattr(
+        "app.services.tw_research.first_pass_drain.tw_research_scan_service.resume_budget_window",
+        resume,
+    )
+    monkeypatch.setattr(
+        "app.services.tw_research.first_pass_drain.tw_research_scan_service.run_batch",
+        lambda scan_id, **_k: state,
+    )
+    monkeypatch.setattr(
+        research_run_store,
+        "reconcile",
+        lambda user_id: research_run_store.get(user_id),
+    )
+
+    blocked = drain_authorized_first_pass(user_id="owner", enabled=True, dry_run=False)
+    assert blocked.outcome == "phase2_budget_cap_reached"
+    assert resumes == []
+
+    clock["now"] = datetime(2024, 6, 28, 9, 0, tzinfo=TAIPEI)
+    allowed = drain_authorized_first_pass(user_id="owner", enabled=True, dry_run=False)
+    assert resumes == ["scan_owned"]
+    assert allowed.outcome in {"phase2_batch_ran", "phase2_no_progress", "phase2_lease_held"}
+    run = research_run_store.get("owner")
+    assert run is not None
+    meta = (run.dimensions or {}).get("phase2Drain") or {}
+    assert meta.get("windowBaselineByDay", {}).get("2024-06-28") == (
+        10 + PHASE2_MAX_BUDGET_WINDOWS_PER_DAY
+    )
+
+
+def test_windows_today_prefers_scan_over_failed_telemetry(monkeypatch) -> None:
+    """Telemetry undercount must not drop below scan-derived windows_today."""
+    _enable(monkeypatch)
+    _approved_phase2_run()
+    day = "2024-06-27"
+    monkeypatch.setattr(
+        "app.services.tw_research.first_pass_drain._phase2_now",
+        lambda: datetime(2024, 6, 27, 12, 0, tzinfo=TAIPEI),
+    )
+    baseline = 5
+    opened = baseline + PHASE2_MAX_BUDGET_WINDOWS_PER_DAY
+    with research_run_store._lock:  # noqa: SLF001
+        locked = research_run_store._require_locked("owner")
+        locked.dimensions["phase2Drain"] = {
+            "enabled": True,
+            # Telemetry lost / undercounted vs scan.
+            "windowsByTradingDay": {day: 0},
+            "windowBaselineByDay": {day: baseline},
+            "windowsOpened": 0,
+        }
+        research_run_store._persist_locked(locked)
+
+    resumes: list[str] = []
+    monkeypatch.setattr(
+        "app.services.tw_research.first_pass_drain.tw_research_scan_service.get_scan",
+        lambda scan_id: _fake_scan(
+            scan_id=scan_id,
+            user_id="owner",
+            status="budget_exhausted",
+            remaining=2,
+            budget_windows_opened=opened,
             stock_ids=("TW:2330", "TW:2454"),
             records={
                 "TW:2330": _Rec(rejection_reason=HISTORY_BUDGET_EXHAUSTED_REASON),
@@ -406,6 +540,88 @@ def test_phase2_cancelled_run_no_work(monkeypatch) -> None:
     result = drain_authorized_first_pass(user_id="owner", enabled=True, dry_run=False)
     assert result.outcome == "skipped_run_status"
     assert called["n"] == 0
+
+
+def test_phase2_lease_held_idempotent(monkeypatch) -> None:
+    _enable(monkeypatch)
+    _approved_phase2_run()
+    monkeypatch.setattr(
+        "app.services.tw_research.first_pass_drain.tw_research_scan_service.get_scan",
+        lambda scan_id: _fake_scan(
+            scan_id=scan_id, user_id="owner", status="running", cursor=1, remaining=3
+        ),
+    )
+
+    def lease_held_batch(scan_id, **_kwargs):
+        # Cursor unchanged + remaining work + active lease → lease_held.
+        return _fake_scan(
+            scan_id=scan_id,
+            user_id="owner",
+            status="running",
+            cursor=1,
+            remaining=3,
+            reserve_expires_at=(datetime.now(UTC) + timedelta(minutes=5)).isoformat(),
+        )
+
+    monkeypatch.setattr(
+        "app.services.tw_research.first_pass_drain.tw_research_scan_service.run_batch",
+        lease_held_batch,
+    )
+    monkeypatch.setattr(
+        research_run_store,
+        "reconcile",
+        lambda user_id: research_run_store.get(user_id),
+    )
+    first = drain_authorized_first_pass(user_id="owner", enabled=True, dry_run=False)
+    second = drain_authorized_first_pass(user_id="owner", enabled=True, dry_run=False)
+    assert first.outcome == "phase2_lease_held"
+    assert second.outcome == "phase2_lease_held"
+    assert first.lease_held is True
+    assert second.lease_held is True
+    assert first.symbols_processed == 0
+    assert second.symbols_processed == 0
+
+
+def test_phase1_preferred_over_phase2_same_tick(monkeypatch) -> None:
+    _enable(monkeypatch)
+    research_run_store.begin_phase1("owner", trading_day="2024-06-27")
+    research_run_store.attach_first_pass_job("owner", first_pass_job_id="fpj_live")
+    with research_run_store._lock:  # noqa: SLF001
+        locked = research_run_store._require_locked("owner")
+        locked.gates["candidateSelection"] = "approved"
+        locked.technical_scan_id = "scan_owned"
+        research_run_store._persist_locked(locked)
+
+    fp_calls: list[str] = []
+    tech_calls: list[str] = []
+
+    def fp_batch(job_id, *, user_id, batch_size=10, **_kwargs):
+        fp_calls.append(job_id)
+        return {
+            "job": {"status": "running", "job_id": job_id},
+            "batchIds": ["TW:2330"],
+            "processed": 1,
+        }
+
+    monkeypatch.setattr(
+        "app.services.tw_research.first_pass_drain.first_pass_job_service.run_batch",
+        fp_batch,
+    )
+    monkeypatch.setattr(
+        "app.services.tw_research.first_pass_drain.tw_research_scan_service.run_batch",
+        lambda scan_id, **_k: tech_calls.append(scan_id),
+    )
+    monkeypatch.setattr(
+        research_run_store,
+        "_load_first_pass_job",
+        lambda _user, _job: {"status": "running"},
+    )
+    result = drain_authorized_first_pass(user_id="owner", enabled=True, dry_run=False)
+    assert fp_calls == ["fpj_live"]
+    assert tech_calls == []
+    assert result.job_id == "fpj_live"
+    assert result.technical_scan_id is None
+    assert "phase2" not in str(result.outcome or "")
 
 
 def test_run_batch_budget_resume_required_resumes_once(monkeypatch) -> None:

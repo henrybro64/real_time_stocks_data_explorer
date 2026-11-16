@@ -794,17 +794,62 @@ class ResearchRunStore:
             run.updated_at = datetime.now(UTC).isoformat()
             return self._persist_locked(run)
 
+    @staticmethod
+    def _prune_phase2_day_map(by_day: dict[str, Any], *, keep: int = 7) -> dict[str, Any]:
+        """Keep the most recent ``keep`` ISO-date keys (lexicographic)."""
+        if len(by_day) <= keep:
+            return dict(by_day)
+        keys = sorted(str(k) for k in by_day.keys())
+        drop = set(keys[:-keep])
+        return {k: v for k, v in by_day.items() if str(k) not in drop}
+
+    def ensure_phase2_window_baseline(
+        self,
+        user_id: str,
+        *,
+        calendar_day: str,
+        budget_windows_opened: int,
+    ) -> ResearchRun | None:
+        """Record scan ``budget_windows_opened`` at first resume of an Asia/Taipei day.
+
+        Subsequent same-day resumes reuse the stored baseline so
+        ``windows_today = budget_windows_opened − baseline``.
+        """
+        day = str(calendar_day or "").strip() or "_unknown"
+        with self._lock:
+            run = self._load_locked(user_id)
+            if run is None:
+                return None
+            meta = dict(run.dimensions.get("phase2Drain") or {})
+            baselines = dict(meta.get("windowBaselineByDay") or {})
+            if day in baselines:
+                return run
+            try:
+                baselines[day] = int(budget_windows_opened)
+            except (TypeError, ValueError):
+                baselines[day] = 0
+            meta["windowBaselineByDay"] = self._prune_phase2_day_map(baselines)
+            run.dimensions["phase2Drain"] = meta
+            run.updated_at = datetime.now(UTC).isoformat()
+            return self._persist_locked(run)
+
     def record_phase2_drain_tick(
         self,
         user_id: str,
         *,
         last_tick_at: str,
         last_outcome: str,
+        calendar_day: str | None = None,
         trading_day: str | None = None,
         windows_opened_delta: int = 0,
         coverage: dict[str, Any] | None = None,
     ) -> ResearchRun | None:
-        """Best-effort Phase-2 drain telemetry (#361)."""
+        """Best-effort Phase-2 drain telemetry (#361).
+
+        ``windowsByTradingDay`` is keyed by the CURRENT Asia/Taipei calendar day
+        (``calendar_day``), not the scan/run trading day. Pruned to the last 7
+        day keys on write.
+        """
         with self._lock:
             run = self._load_locked(user_id)
             if run is None:
@@ -813,14 +858,17 @@ class ResearchRunStore:
             meta["lastTickAt"] = last_tick_at
             meta["lastOutcome"] = last_outcome
             if windows_opened_delta:
-                day = str(trading_day or run.trading_day or "") or "_unknown"
+                day = (
+                    str(calendar_day or trading_day or "").strip()
+                    or "_unknown"
+                )
                 by_day = dict(meta.get("windowsByTradingDay") or {})
                 try:
                     prior = int(by_day.get(day) or 0)
                 except (TypeError, ValueError):
                     prior = 0
                 by_day[day] = prior + int(windows_opened_delta)
-                meta["windowsByTradingDay"] = by_day
+                meta["windowsByTradingDay"] = self._prune_phase2_day_map(by_day)
                 try:
                     total = int(meta.get("windowsOpened") or 0)
                 except (TypeError, ValueError):

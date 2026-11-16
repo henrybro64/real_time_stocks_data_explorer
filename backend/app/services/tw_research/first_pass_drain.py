@@ -17,6 +17,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from app.core.config import settings
 from app.services.tw_research.constants import (
@@ -42,6 +43,7 @@ from app.services.tw_research.scheduler import schedule_has_technical_work
 
 logger = logging.getLogger(__name__)
 _ISO_Z_UTC_SUFFIX = "+00:00"
+_TAIPEI = ZoneInfo("Asia/Taipei")
 
 
 @dataclass
@@ -331,16 +333,86 @@ def _lease_still_active(reserve_expires_at: object) -> bool:
     return parsed > datetime.now(UTC)
 
 
-def _phase2_windows_for_day(run: ResearchRun, trading_day: str | None) -> int:
+def _phase2_now() -> datetime:
+    """Injectable Asia/Taipei clock for Phase-2 daily window caps (tests)."""
+    return datetime.now(_TAIPEI)
+
+
+def _phase2_calendar_day(*, now: datetime | None = None) -> str:
+    """CURRENT Asia/Taipei calendar date (not scan/run trading_day)."""
+    current = now if now is not None else _phase2_now()
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=_TAIPEI)
+    else:
+        current = current.astimezone(_TAIPEI)
+    return current.date().isoformat()
+
+
+def _phase2_windows_for_day(run: ResearchRun, calendar_day: str | None) -> int:
+    """Telemetry counter for one Asia/Taipei calendar day."""
     meta = _phase2_meta(run)
     by_day = meta.get("windowsByTradingDay")
     if not isinstance(by_day, dict):
         return 0
-    day = str(trading_day or "") or "_unknown"
+    day = str(calendar_day or "") or "_unknown"
     try:
         return int(by_day.get(day) or 0)
     except (TypeError, ValueError):
         return 0
+
+
+def _phase2_scan_windows_today(
+    run: ResearchRun,
+    state: ScanState,
+    *,
+    calendar_day: str | None = None,
+) -> int | None:
+    """Authoritative windows opened today from scan ``budget_windows_opened``.
+
+    Returns ``None`` when the scan field is missing so callers fall back to
+    telemetry. Without a per-day baseline yet, today's scan-derived count is 0.
+    """
+    if not hasattr(state, "budget_windows_opened"):
+        return None
+    raw = getattr(state, "budget_windows_opened", None)
+    if raw is None:
+        return None
+    try:
+        opened = int(raw)
+    except (TypeError, ValueError):
+        return None
+    day = calendar_day or _phase2_calendar_day()
+    meta = _phase2_meta(run)
+    baselines = meta.get("windowBaselineByDay")
+    if not isinstance(baselines, dict) or day not in baselines:
+        return 0
+    try:
+        baseline = int(baselines[day])
+    except (TypeError, ValueError):
+        return 0
+    return max(0, opened - baseline)
+
+
+def _phase2_windows_today(
+    run: ResearchRun,
+    state: ScanState | None = None,
+    *,
+    calendar_day: str | None = None,
+) -> int:
+    """Windows opened on the CURRENT Asia/Taipei day for the daily cap.
+
+    Prefer scan-derived ``budget_windows_opened − baseline``; fall back to
+    telemetry when the scan field is missing. When both exist, take the max so
+    a telemetry persist failure cannot undercount below the scan value.
+    """
+    day = calendar_day or _phase2_calendar_day()
+    telemetry = _phase2_windows_for_day(run, day)
+    if state is None:
+        return telemetry
+    scan_windows = _phase2_scan_windows_today(run, state, calendar_day=day)
+    if scan_windows is None:
+        return telemetry
+    return max(scan_windows, telemetry)
 
 
 def _phase2_scan_is_complete(state: ScanState) -> bool:
@@ -430,15 +502,10 @@ def _build_phase2_step(run: ResearchRun, *, batch_size: int) -> dict[str, Any]:
     step["scanStatus"] = str(snap.get("status") or "") or None
     step["remainingCount"] = int(snap.get("remainingCount") or 0)
     step["coverage"] = _coverage_counts(state)
-    trading_day = str(getattr(state, "trading_day", None) or run.trading_day or "")
-    windows_today = _phase2_windows_for_day(run, trading_day)
-    # Prefer durable scan counter when present (same-day reopen bound).
-    try:
-        scan_windows = int(getattr(state, "budget_windows_opened", 0) or 0)
-    except (TypeError, ValueError):
-        scan_windows = 0
-    windows_today = max(windows_today, scan_windows)
+    calendar_day = _phase2_calendar_day()
+    windows_today = _phase2_windows_today(run, state, calendar_day=calendar_day)
     step["windowsOpenedToday"] = windows_today
+    step["calendarDay"] = calendar_day
     if str(state.user_id or "") != str(run.user_id or ""):
         step["reason"] = "foreign_scan"
         return step
@@ -512,10 +579,12 @@ def _record_drain_tick(
     *,
     stop_reason: str,
     notes: list[str],
+    calendar_day: str | None = None,
     trading_day: str | None = None,
     windows_opened_delta: int = 0,
     coverage: dict[str, Any] | None = None,
 ) -> None:
+    day = calendar_day or trading_day or _phase2_calendar_day()
     try:
         research_run_store.record_first_pass_drain_tick(
             owner,
@@ -529,7 +598,7 @@ def _record_drain_tick(
             owner,
             last_tick_at=datetime.now(UTC).isoformat(),
             last_outcome=stop_reason,
-            trading_day=trading_day,
+            calendar_day=day,
             windows_opened_delta=int(windows_opened_delta or 0),
             coverage=coverage,
         )
@@ -626,7 +695,7 @@ def _run_phase2_technical_batch(
             owner,
             stop_reason="phase2_budget_cap_reached",
             notes=notes,
-            trading_day=None,
+            calendar_day=str(step.get("calendarDay") or "") or _phase2_calendar_day(),
             windows_opened_delta=0,
             coverage=coverage,
         )
@@ -635,8 +704,8 @@ def _run_phase2_technical_batch(
             waiting_for_retry=True,
             notes=notes
             + [
-                "Phase-2 budget window cap reached for this trading day; "
-                "continues next trading day.",
+                "Phase-2 budget window cap reached for this Asia/Taipei day; "
+                "continues next calendar day.",
                 f"windowsOpenedToday={step.get('windowsOpenedToday')}",
             ],
             **_base(),
@@ -680,20 +749,19 @@ def _run_phase2_technical_batch(
             notes=notes + [f"Technical scan {scan_id} not found."],
             **_base(),
         )
-    trading_day = str(getattr(before, "trading_day", None) or run.trading_day or "")
+    calendar_day = _phase2_calendar_day()
     cursor_before = int(getattr(before, "cursor", 0) or 0)
     windows_delta = 0
     resumed_this_tick = False
 
     def _maybe_resume(state: ScanState, *, force: bool = False) -> ScanState:
-        nonlocal windows_delta, resumed_this_tick, before
+        nonlocal windows_delta, resumed_this_tick, before, run
         if resumed_this_tick and not force:
             return state
         if not (_phase2_needs_budget_resume(state) or force):
             return state
-        windows_today = max(
-            _phase2_windows_for_day(run, trading_day),
-            int(getattr(state, "budget_windows_opened", 0) or 0),
+        windows_today = _phase2_windows_today(
+            run, state, calendar_day=calendar_day
         )
         if windows_today >= PHASE2_MAX_BUDGET_WINDOWS_PER_DAY:
             raise TwResearchConflictError(
@@ -702,6 +770,20 @@ def _run_phase2_technical_batch(
                 operation="resume_budget_window",
                 code="phase2_budget_cap_reached",
             )
+        # Persist per-day baseline from scan counter at first resume of the day.
+        try:
+            opened_raw = getattr(state, "budget_windows_opened", None)
+            if opened_raw is not None:
+                opened_before = int(opened_raw)
+                refreshed = research_run_store.ensure_phase2_window_baseline(
+                    owner,
+                    calendar_day=calendar_day,
+                    budget_windows_opened=opened_before,
+                )
+                if refreshed is not None:
+                    run = refreshed
+        except (TypeError, ValueError, ResearchRunStoreUnavailable, ResearchRunConflict):
+            pass
         state = tw_research_scan_service.resume_budget_window(str(scan_id))
         windows_delta += 1
         resumed_this_tick = True
@@ -720,7 +802,7 @@ def _run_phase2_technical_batch(
                     owner,
                     stop_reason="phase2_budget_cap_reached",
                     notes=notes,
-                    trading_day=trading_day,
+                    calendar_day=calendar_day,
                     windows_opened_delta=windows_delta,
                     coverage=_coverage_counts(before),
                 )
@@ -766,7 +848,7 @@ def _run_phase2_technical_batch(
                         owner,
                         stop_reason="phase2_budget_cap_reached",
                         notes=notes,
-                        trading_day=trading_day,
+                        calendar_day=calendar_day,
                         windows_opened_delta=windows_delta,
                         coverage=_coverage_counts(before),
                     )
@@ -794,7 +876,7 @@ def _run_phase2_technical_batch(
                 owner,
                 stop_reason="phase2_waiting_for_budget",
                 notes=notes,
-                trading_day=trading_day,
+                calendar_day=calendar_day,
                 windows_opened_delta=windows_delta,
                 coverage=_coverage_counts(before),
             )
@@ -862,7 +944,7 @@ def _run_phase2_technical_batch(
         owner,
         stop_reason=stop_reason,
         notes=notes,
-        trading_day=trading_day,
+        calendar_day=calendar_day,
         windows_opened_delta=windows_delta,
         coverage=coverage,
     )
