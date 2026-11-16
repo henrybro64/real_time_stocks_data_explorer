@@ -48,8 +48,14 @@ Activation is **not** a full deploy: patch the Secret, then `kubectl rollout res
 
 1. Set CronJob `suspend: true`.
 2. `POST /tw-research/research-runs/first-pass-drain` with `enabled=false`.
+   This clears Phase-1 `schedule_enabled` **and** Phase-2 `dimensions.phase2Drain.enabled`
+   so neither managed drain path claims new work.
 3. Optionally set `TW_RESEARCH_FIRST_PASS_DRAIN_ENABLED=false` in Secret + restart backend.
-4. Keep Research Run / First-Pass Job / symbol rows.
+4. Keep Research Run / First-Pass Job / technical scan / symbol rows.
+5. To resume later: set Secret/flag back if needed, then
+   `POST /tw-research/research-runs/first-pass-drain` with `enabled=true`
+   (re-arms the current phase only — Phase-1 needs an attached job; Phase-2 needs
+   an approved run-owned technical scan).
 
 ## Historical standalone job
 

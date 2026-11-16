@@ -2781,11 +2781,15 @@ class TwResearchRepository(SessionBoundRepository):
             dims = dict(row.dimensions_json or {})
             dims["monthlyTechnical"] = "in_progress"
             dims["dailyTechnical"] = "pending_monthly_gate"
+            phase2 = dict(dims.get("phase2Drain") or {})
+            phase2["enabled"] = True
+            dims["phase2Drain"] = phase2
             row.dimensions_json = dims
             note_list = list(row.notes_json or [])
             for note in list(notes or []) + [
                 "Phase-2 monthly-first technical started from approved candidates only.",
                 "Stops for analyst report decision; no Notion write.",
+                "Phase-2 drain armed for the First-Pass CronJob path.",
             ]:
                 note_list.append(note)
             row.notes_json = note_list[-50:]

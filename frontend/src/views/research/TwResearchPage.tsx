@@ -1387,6 +1387,10 @@ export function TwResearchPage({
         return t("research.tw.phase2Execution.activelyAnalyzing");
       case "waiting_for_budget_window":
         return t("research.tw.phase2Execution.waitingForBudgetWindow");
+      case "paused":
+        return t("research.tw.phase2Execution.paused");
+      case "waiting_for_retry":
+        return t("research.tw.phase2Execution.waitingForRetry");
       case "completed":
         return t("research.tw.phase2Execution.completed");
       case "failed":

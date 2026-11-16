@@ -306,8 +306,8 @@ const TW_RESEARCH_ROWS = [
   ],
   [
     "research.tw.phase2Execution.waitingForBudgetWindow",
-    "Waiting for a historical-data budget window before technical analysis can continue.",
-    "等待歷史資料預算視窗後才能繼續技術分析。",
+    "Waiting for a historical-data budget window. If today's window cap was reached, technical analysis continues on the next trading day.",
+    "等待歷史資料預算視窗。若今日視窗已達上限，技術分析會在下一個交易日繼續。",
   ],
   [
     "research.tw.phase2Execution.completed",
@@ -323,6 +323,16 @@ const TW_RESEARCH_ROWS = [
     "research.tw.phase2Execution.awaitingTechnicalStart",
     "Candidates are approved. Press Start technical analysis when you are ready.",
     "候選已核准。準備好後請按下「開始技術分析」。",
+  ],
+  [
+    "research.tw.phase2Execution.paused",
+    "Technical analysis is paused. Resume drain when you are ready — nothing is running in the background.",
+    "技術分析已暫停。準備好後請恢復背景執行；目前沒有在背景分析。",
+  ],
+  [
+    "research.tw.phase2Execution.waitingForRetry",
+    "Technical analysis made no progress on the last tick and is waiting to retry.",
+    "技術分析上一輪沒有進度，正在等待重試。",
   ],
   [
     "research.tw.candidateProvenanceLine",

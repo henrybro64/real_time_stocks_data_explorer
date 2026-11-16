@@ -1574,6 +1574,7 @@ def _research_run_response(run: ResearchRun) -> ResearchRunResponse:
             job = None
             counts = None
     scan_payload = None
+    scan_state = None
     if run.technical_scan_id:
         try:
             state = tw_research_scan_service.get_scan(str(run.technical_scan_id))
@@ -1581,6 +1582,7 @@ def _research_run_response(run: ResearchRun) -> ResearchRunResponse:
                 None,
                 run.user_id,
             }:
+                scan_state = state
                 scan_payload = state.snapshot()
                 scan_payload["reserve_expires_at"] = getattr(
                     state, "reserve_expires_at", None
@@ -1588,12 +1590,15 @@ def _research_run_response(run: ResearchRun) -> ResearchRunResponse:
                 scan_payload["user_id"] = getattr(state, "user_id", None)
         except Exception:  # noqa: BLE001 — response must still return the run
             scan_payload = None
+            scan_state = None
     return ResearchRunResponse(
         researchRun=run.as_dict(),
         execution=classify_first_pass_execution(
             run, job=job, symbol_counts=counts
         ),
-        phase2Execution=classify_phase2_execution(run, scan=scan_payload),
+        phase2Execution=classify_phase2_execution(
+            run, scan=scan_payload, scan_state=scan_state
+        ),
     )
 
 
@@ -1968,7 +1973,7 @@ def set_research_run_first_pass_drain(
     body: ResearchRunDrainControlRequest,
     user_id: str = Depends(get_effective_user_id),
 ) -> ResearchRunResponse:
-    """Pause or resume durable first-pass drain for the active research run (#349)."""
+    """Pause or resume durable First-Pass / Phase-2 drain for the active run (#349/#361)."""
     try:
         run = research_run_store.set_first_pass_drain_enabled(
             user_id,
@@ -1984,7 +1989,7 @@ def set_research_run_first_pass_drain(
             status_code=409,
             detail={"error": "research_run_revision_conflict", "reason": exc.reason},
         ) from exc
-    return ResearchRunResponse(researchRun=run.as_dict())
+    return _research_run_response(run)
 
 
 @router.post("/research-runs/start", response_model=ResearchRunResponse)

@@ -19,7 +19,12 @@ from datetime import UTC, datetime
 from typing import Any
 
 from app.core.config import settings
-from app.services.tw_research.constants import DEFAULT_RUN_TIMEOUT_SECONDS, SCAN_BATCH_SIZE
+from app.services.tw_research.constants import (
+    DEFAULT_RUN_TIMEOUT_SECONDS,
+    HISTORY_BUDGET_EXHAUSTED_REASON,
+    PHASE2_MAX_BUDGET_WINDOWS_PER_DAY,
+    SCAN_BATCH_SIZE,
+)
 from app.services.tw_research.first_pass_job import FirstPassJobError, first_pass_job_service
 from app.services.tw_research.research_run import (
     ResearchRun,
@@ -29,9 +34,11 @@ from app.services.tw_research.research_run import (
     research_run_store,
 )
 from app.services.tw_research.scan import (
+    ScanState,
     TwResearchConflictError,
     tw_research_scan_service,
 )
+from app.services.tw_research.scheduler import schedule_has_technical_work
 
 logger = logging.getLogger(__name__)
 _ISO_Z_UTC_SUFFIX = "+00:00"
@@ -299,6 +306,19 @@ def _phase1_eligible(run: ResearchRun, *, target_job: str | None) -> bool:
     )
 
 
+def _phase2_meta(run: ResearchRun) -> dict[str, Any]:
+    raw = (run.dimensions or {}).get("phase2Drain")
+    return dict(raw) if isinstance(raw, dict) else {}
+
+
+def _phase2_enabled(run: ResearchRun) -> bool:
+    """Explicit pause flag; missing key stays armed for legacy attached scans."""
+    meta = _phase2_meta(run)
+    if "enabled" not in meta:
+        return True
+    return bool(meta.get("enabled"))
+
+
 def _lease_still_active(reserve_expires_at: object) -> bool:
     if not isinstance(reserve_expires_at, str) or not reserve_expires_at.strip():
         return False
@@ -311,8 +331,68 @@ def _lease_still_active(reserve_expires_at: object) -> bool:
     return parsed > datetime.now(UTC)
 
 
+def _phase2_windows_for_day(run: ResearchRun, trading_day: str | None) -> int:
+    meta = _phase2_meta(run)
+    by_day = meta.get("windowsByTradingDay")
+    if not isinstance(by_day, dict):
+        return 0
+    day = str(trading_day or "") or "_unknown"
+    try:
+        return int(by_day.get(day) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _phase2_scan_is_complete(state: ScanState) -> bool:
+    """Same completion gate as the legacy scheduler (#330/#361)."""
+    status = str(getattr(state, "status", "") or "")
+    if status not in _PHASE2_TERMINAL_SCAN:
+        return False
+    return not schedule_has_technical_work(state)
+
+
+def _phase2_needs_budget_resume(state: ScanState) -> bool:
+    status = str(getattr(state, "status", "") or "")
+    if status == "budget_exhausted":
+        return True
+    if schedule_has_technical_work(state) and status in _PHASE2_TERMINAL_SCAN:
+        return True
+    return False
+
+
+def _coverage_counts(state: ScanState) -> dict[str, int]:
+    analyzed = 0
+    insufficient = 0
+    deferred = 0
+    failed = 0
+    pending = 0
+    for stock_id in getattr(state, "stock_ids", ()) or ():
+        record = (getattr(state, "records", {}) or {}).get(stock_id)
+        if record is None:
+            pending += 1
+            continue
+        reason = str(getattr(record, "rejection_reason", "") or "")
+        readiness = str(getattr(record, "readiness", "") or "")
+        if reason == HISTORY_BUDGET_EXHAUSTED_REASON:
+            insufficient += 1
+        elif readiness == "failed" or reason:
+            failed += 1
+            analyzed += 1
+        else:
+            analyzed += 1
+        if str(getattr(state, "status", "") or "") == "deferred":
+            deferred += 1
+    return {
+        "analyzed": analyzed,
+        "insufficientHistory": insufficient,
+        "deferred": deferred,
+        "failed": failed,
+        "pending": pending,
+    }
+
+
 def _build_phase2_step(run: ResearchRun, *, batch_size: int) -> dict[str, Any]:
-    """Read-only Phase-2 step the drain would take (#362). No leases / writes."""
+    """Read-only Phase-2 step the drain would take (#362/#361). No leases / writes."""
     scan_id = str(run.technical_scan_id or "") or None
     step: dict[str, Any] = {
         "action": "skip",
@@ -321,9 +401,15 @@ def _build_phase2_step(run: ResearchRun, *, batch_size: int) -> dict[str, Any]:
         "scanStatus": None,
         "reason": "phase2_not_eligible",
         "batchSize": max(1, min(int(batch_size), SCAN_BATCH_SIZE)),
+        "windowsOpenedToday": None,
+        "budgetCap": PHASE2_MAX_BUDGET_WINDOWS_PER_DAY,
+        "coverage": None,
     }
     if str(run.status or "") in _BLOCKED_RUN_STATUSES:
         step["reason"] = f"run_status_{run.status}"
+        return step
+    if not _phase2_enabled(run):
+        step["reason"] = "phase2_paused"
         return step
     if not _candidate_approved(run):
         step["reason"] = "not_approved"
@@ -343,6 +429,16 @@ def _build_phase2_step(run: ResearchRun, *, batch_size: int) -> dict[str, Any]:
     snap = state.snapshot()
     step["scanStatus"] = str(snap.get("status") or "") or None
     step["remainingCount"] = int(snap.get("remainingCount") or 0)
+    step["coverage"] = _coverage_counts(state)
+    trading_day = str(getattr(state, "trading_day", None) or run.trading_day or "")
+    windows_today = _phase2_windows_for_day(run, trading_day)
+    # Prefer durable scan counter when present (same-day reopen bound).
+    try:
+        scan_windows = int(getattr(state, "budget_windows_opened", 0) or 0)
+    except (TypeError, ValueError):
+        scan_windows = 0
+    windows_today = max(windows_today, scan_windows)
+    step["windowsOpenedToday"] = windows_today
     if str(state.user_id or "") != str(run.user_id or ""):
         step["reason"] = "foreign_scan"
         return step
@@ -350,14 +446,35 @@ def _build_phase2_step(run: ResearchRun, *, batch_size: int) -> dict[str, Any]:
     if status in _PHASE2_BLOCKED_SCAN:
         step["reason"] = f"scan_{status}"
         return step
-    if status == "budget_exhausted":
-        step["reason"] = "waiting_for_budget_window"
-        return step
-    if status in _PHASE2_TERMINAL_SCAN or int(snap.get("remainingCount") or 0) <= 0:
+    if _phase2_scan_is_complete(state):
         step["reason"] = "already_complete"
+        step["action"] = "skip"
         return step
-    step["action"] = "run_technical_batch"
-    step["reason"] = "phase2_eligible"
+    if _phase2_needs_budget_resume(state):
+        if windows_today >= PHASE2_MAX_BUDGET_WINDOWS_PER_DAY:
+            step["action"] = "skip"
+            step["reason"] = "budget_cap_reached"
+            return step
+        step["action"] = "resume_budget_and_run"
+        step["reason"] = "phase2_eligible_resume"
+        return step
+    if schedule_has_technical_work(state) or status in {
+        "queued",
+        "running",
+        "partial",
+    }:
+        step["action"] = "run_technical_batch"
+        step["reason"] = "phase2_eligible"
+        return step
+    # Terminal-looking but not complete — treat as needing resume if work remains.
+    if schedule_has_technical_work(state):
+        if windows_today >= PHASE2_MAX_BUDGET_WINDOWS_PER_DAY:
+            step["reason"] = "budget_cap_reached"
+            return step
+        step["action"] = "resume_budget_and_run"
+        step["reason"] = "phase2_eligible_resume"
+        return step
+    step["reason"] = "already_complete"
     return step
 
 
@@ -386,10 +503,19 @@ def _phase2_preflight_payload(
     payload["phase2Step"] = _build_phase2_step(run, batch_size=batch_size)
     payload["technicalScanId"] = str(run.technical_scan_id or "") or None
     payload["candidateSelection"] = (run.gates or {}).get("candidateSelection")
+    payload["phase2Enabled"] = _phase2_enabled(run)
     return payload
 
 
-def _record_drain_tick(owner: str, *, stop_reason: str, notes: list[str]) -> None:
+def _record_drain_tick(
+    owner: str,
+    *,
+    stop_reason: str,
+    notes: list[str],
+    trading_day: str | None = None,
+    windows_opened_delta: int = 0,
+    coverage: dict[str, Any] | None = None,
+) -> None:
     try:
         research_run_store.record_first_pass_drain_tick(
             owner,
@@ -398,6 +524,32 @@ def _record_drain_tick(owner: str, *, stop_reason: str, notes: list[str]) -> Non
         )
     except Exception as exc:  # noqa: BLE001
         notes.append(f"tick_telemetry_failed:{type(exc).__name__}")
+    try:
+        research_run_store.record_phase2_drain_tick(
+            owner,
+            last_tick_at=datetime.now(UTC).isoformat(),
+            last_outcome=stop_reason,
+            trading_day=trading_day,
+            windows_opened_delta=int(windows_opened_delta or 0),
+            coverage=coverage,
+        )
+    except Exception as exc:  # noqa: BLE001
+        notes.append(f"phase2_tick_telemetry_failed:{type(exc).__name__}")
+
+
+def _run_one_technical_batch(
+    *,
+    scan_id: str,
+    batch_size: int,
+    time_budget_seconds: float,
+):
+    timeout = max(5, min(int(float(time_budget_seconds)), DEFAULT_RUN_TIMEOUT_SECONDS))
+    capped_batch = max(1, min(int(batch_size), SCAN_BATCH_SIZE))
+    return tw_research_scan_service.run_batch(
+        str(scan_id),
+        batch_size=capped_batch,
+        timeout_seconds=timeout,
+    )
 
 
 def _run_phase2_technical_batch(
@@ -408,222 +560,289 @@ def _run_phase2_technical_batch(
     batch_size: int,
     time_budget_seconds: float,
 ) -> FirstPassDrainResult:
-    """Run exactly one leased technical batch for the run-owned scan."""
+    """Run at most one resume + one leased technical batch for the run-owned scan."""
     step = _build_phase2_step(run, batch_size=batch_size)
     scan_id = step.get("technicalScanId")
     reason = str(step.get("reason") or "")
     action = str(step.get("action") or "skip")
 
+    def _base(**extra: Any) -> dict[str, Any]:
+        return {
+            "user_id": owner,
+            "research_run_id": run.research_run_id,
+            "technical_scan_id": str(scan_id) if scan_id else None,
+            "phase": run.phase,
+            "status": run.status,
+            "schedule_enabled": bool(run.schedule_enabled),
+            "dry_run": False,
+            **extra,
+        }
+
     if str(run.status or "") == "cancelled" or reason.startswith("run_status_cancelled"):
         return FirstPassDrainResult(
             outcome="skipped_run_status",
-            user_id=owner,
-            research_run_id=run.research_run_id,
-            technical_scan_id=str(scan_id) if scan_id else None,
-            phase=run.phase,
-            status=run.status,
-            schedule_enabled=bool(run.schedule_enabled),
             notes=notes + [f"Research run status is {run.status}; Phase-2 refused."],
-            dry_run=False,
+            **_base(),
+        )
+    if reason == "phase2_paused":
+        return FirstPassDrainResult(
+            outcome="skipped_phase2_paused",
+            notes=notes + ["Phase-2 drain paused (phase2Drain.enabled=false)."],
+            **_base(),
         )
     if reason == "not_approved":
         return FirstPassDrainResult(
             outcome="skipped_phase2_not_approved",
-            user_id=owner,
-            research_run_id=run.research_run_id,
-            technical_scan_id=str(scan_id) if scan_id else None,
-            phase=run.phase,
-            status=run.status,
-            schedule_enabled=bool(run.schedule_enabled),
             notes=notes + ["candidateSelection gate is not approved."],
-            dry_run=False,
+            **_base(),
         )
     if reason == "no_technical_scan":
         return FirstPassDrainResult(
             outcome="skipped_phase2_no_scan",
-            user_id=owner,
-            research_run_id=run.research_run_id,
-            phase=run.phase,
-            status=run.status,
-            schedule_enabled=bool(run.schedule_enabled),
             notes=notes + ["No technical_scan_id attached to research run."],
-            dry_run=False,
+            **_base(technical_scan_id=None),
         )
     if reason == "scan_missing":
         return FirstPassDrainResult(
             outcome="skipped_phase2_scan_missing",
-            user_id=owner,
-            research_run_id=run.research_run_id,
-            technical_scan_id=str(scan_id) if scan_id else None,
-            phase=run.phase,
-            status=run.status,
-            schedule_enabled=bool(run.schedule_enabled),
             notes=notes + [f"Technical scan {scan_id} not found."],
-            dry_run=False,
+            **_base(),
         )
     if reason == "foreign_scan":
         return FirstPassDrainResult(
             outcome="skipped_phase2_foreign_scan",
-            user_id=owner,
-            research_run_id=run.research_run_id,
-            technical_scan_id=str(scan_id) if scan_id else None,
-            phase=run.phase,
-            status=run.status,
-            schedule_enabled=bool(run.schedule_enabled),
             notes=notes + ["Refused foreign technical scan not owned by run user."],
-            dry_run=False,
+            **_base(),
         )
     if reason.startswith("scan_"):
         return FirstPassDrainResult(
             outcome="skipped_phase2_scan_blocked",
-            user_id=owner,
-            research_run_id=run.research_run_id,
-            technical_scan_id=str(scan_id) if scan_id else None,
-            phase=run.phase,
-            status=run.status,
-            schedule_enabled=bool(run.schedule_enabled),
             notes=notes + [f"Scan status blocked: {step.get('scanStatus')}"],
-            dry_run=False,
+            **_base(),
         )
-    if reason == "waiting_for_budget_window":
-        _record_drain_tick(owner, stop_reason="phase2_waiting_for_budget", notes=notes)
+    if reason == "budget_cap_reached":
+        coverage = step.get("coverage") if isinstance(step.get("coverage"), dict) else None
+        _record_drain_tick(
+            owner,
+            stop_reason="phase2_budget_cap_reached",
+            notes=notes,
+            trading_day=None,
+            windows_opened_delta=0,
+            coverage=coverage,
+        )
         return FirstPassDrainResult(
-            outcome="phase2_waiting_for_budget",
-            user_id=owner,
-            research_run_id=run.research_run_id,
-            technical_scan_id=str(scan_id) if scan_id else None,
-            phase=run.phase,
-            status=run.status,
-            schedule_enabled=bool(run.schedule_enabled),
+            outcome="phase2_budget_cap_reached",
             waiting_for_retry=True,
-            notes=notes + ["Scan budget exhausted; waiting for resume window."],
-            dry_run=False,
+            notes=notes
+            + [
+                "Phase-2 budget window cap reached for this trading day; "
+                "continues next trading day.",
+                f"windowsOpenedToday={step.get('windowsOpenedToday')}",
+            ],
+            **_base(),
         )
     if reason == "already_complete":
-        _record_drain_tick(owner, stop_reason="phase2_already_complete", notes=notes)
+        coverage = step.get("coverage") if isinstance(step.get("coverage"), dict) else {}
+        _record_drain_tick(
+            owner,
+            stop_reason="phase2_already_complete",
+            notes=notes,
+            coverage=coverage,
+        )
         try:
             research_run_store.reconcile(owner)
         except (ResearchRunStoreUnavailable, ResearchRunConflict):
             pass
         return FirstPassDrainResult(
             outcome="phase2_already_complete",
-            user_id=owner,
-            research_run_id=run.research_run_id,
-            technical_scan_id=str(scan_id) if scan_id else None,
-            phase=run.phase,
-            status=run.status,
-            schedule_enabled=bool(run.schedule_enabled),
             already_complete=True,
-            notes=notes + ["Technical scan already complete."],
-            dry_run=False,
+            notes=notes
+            + [
+                "Technical scan complete for scheduler work predicate.",
+                f"analyzed={coverage.get('analyzed')}",
+                f"insufficientHistory={coverage.get('insufficientHistory')}",
+            ],
+            **_base(),
         )
-    if action != "run_technical_batch":
+
+    if action not in {"run_technical_batch", "resume_budget_and_run"}:
         return FirstPassDrainResult(
             outcome="skipped_phase2_not_ready",
-            user_id=owner,
-            research_run_id=run.research_run_id,
-            technical_scan_id=str(scan_id) if scan_id else None,
-            phase=run.phase,
-            status=run.status,
-            schedule_enabled=bool(run.schedule_enabled),
             notes=notes + [f"Phase-2 not eligible: {reason}"],
-            dry_run=False,
+            **_base(),
         )
 
     assert scan_id is not None
     before = tw_research_scan_service.get_scan(str(scan_id))
-    cursor_before = int(getattr(before, "cursor", 0) or 0) if before else 0
-    timeout = max(5, min(int(float(time_budget_seconds)), DEFAULT_RUN_TIMEOUT_SECONDS))
-    capped_batch = max(1, min(int(batch_size), SCAN_BATCH_SIZE))
+    if before is None:
+        return FirstPassDrainResult(
+            outcome="skipped_phase2_scan_missing",
+            notes=notes + [f"Technical scan {scan_id} not found."],
+            **_base(),
+        )
+    trading_day = str(getattr(before, "trading_day", None) or run.trading_day or "")
+    cursor_before = int(getattr(before, "cursor", 0) or 0)
+    windows_delta = 0
+    resumed_this_tick = False
+
+    def _maybe_resume(state: ScanState, *, force: bool = False) -> ScanState:
+        nonlocal windows_delta, resumed_this_tick, before
+        if resumed_this_tick and not force:
+            return state
+        if not (_phase2_needs_budget_resume(state) or force):
+            return state
+        windows_today = max(
+            _phase2_windows_for_day(run, trading_day),
+            int(getattr(state, "budget_windows_opened", 0) or 0),
+        )
+        if windows_today >= PHASE2_MAX_BUDGET_WINDOWS_PER_DAY:
+            raise TwResearchConflictError(
+                "Phase-2 daily budget window cap reached.",
+                scan_id=str(scan_id),
+                operation="resume_budget_window",
+                code="phase2_budget_cap_reached",
+            )
+        state = tw_research_scan_service.resume_budget_window(str(scan_id))
+        windows_delta += 1
+        resumed_this_tick = True
+        notes.append("budget_window_resumed")
+        before = state
+        return state
+
+    if action == "resume_budget_and_run":
+        try:
+            before = _maybe_resume(before, force=True)
+            cursor_before = int(getattr(before, "cursor", 0) or 0)
+        except TwResearchConflictError as exc:
+            code = getattr(exc, "code", None) or "conflict"
+            if code in {"phase2_budget_cap_reached", "budget_cap_reached"}:
+                _record_drain_tick(
+                    owner,
+                    stop_reason="phase2_budget_cap_reached",
+                    notes=notes,
+                    trading_day=trading_day,
+                    windows_opened_delta=windows_delta,
+                    coverage=_coverage_counts(before),
+                )
+                return FirstPassDrainResult(
+                    outcome="phase2_budget_cap_reached",
+                    waiting_for_retry=True,
+                    notes=notes + [f"{code}:{exc}"],
+                    **_base(),
+                )
+            return FirstPassDrainResult(
+                outcome="failed_phase2_batch",
+                notes=notes + [f"{code}:{exc}"],
+                **_base(),
+            )
+
     try:
-        result_state = tw_research_scan_service.run_batch(
-            str(scan_id),
-            batch_size=capped_batch,
-            timeout_seconds=timeout,
+        result_state = _run_one_technical_batch(
+            scan_id=str(scan_id),
+            batch_size=batch_size,
+            time_budget_seconds=time_budget_seconds,
         )
     except KeyError as exc:
         return FirstPassDrainResult(
             outcome="failed_phase2_scan_not_found",
-            user_id=owner,
-            research_run_id=run.research_run_id,
-            technical_scan_id=str(scan_id),
-            phase=run.phase,
-            status=run.status,
-            schedule_enabled=bool(run.schedule_enabled),
             notes=notes + [str(exc)],
-            dry_run=False,
+            **_base(),
         )
     except TwResearchConflictError as exc:
         code = getattr(exc, "code", None) or "conflict"
-        if code == "budget_resume_required":
-            _record_drain_tick(owner, stop_reason="phase2_waiting_for_budget", notes=notes)
+        if code == "budget_resume_required" and not resumed_this_tick:
+            try:
+                before = _maybe_resume(before, force=True)
+                cursor_before = int(getattr(before, "cursor", 0) or 0)
+                result_state = _run_one_technical_batch(
+                    scan_id=str(scan_id),
+                    batch_size=batch_size,
+                    time_budget_seconds=time_budget_seconds,
+                )
+            except TwResearchConflictError as resume_exc:
+                rcode = getattr(resume_exc, "code", None) or "conflict"
+                if rcode in {"phase2_budget_cap_reached", "budget_cap_reached"}:
+                    _record_drain_tick(
+                        owner,
+                        stop_reason="phase2_budget_cap_reached",
+                        notes=notes,
+                        trading_day=trading_day,
+                        windows_opened_delta=windows_delta,
+                        coverage=_coverage_counts(before),
+                    )
+                    return FirstPassDrainResult(
+                        outcome="phase2_budget_cap_reached",
+                        waiting_for_retry=True,
+                        notes=notes + [f"{rcode}:{resume_exc}"],
+                        **_base(),
+                    )
+                return FirstPassDrainResult(
+                    outcome="failed_phase2_batch",
+                    notes=notes + [f"{rcode}:{resume_exc}"],
+                    **_base(),
+                )
+            except Exception as resume_exc:  # noqa: BLE001
+                logger.exception("phase2_resume_then_batch_failed scan_id=%s", scan_id)
+                return FirstPassDrainResult(
+                    outcome="failed_phase2_batch",
+                    notes=notes + [f"{type(resume_exc).__name__}:{resume_exc}"],
+                    **_base(),
+                )
+        elif code == "budget_resume_required":
+            # Already resumed once this tick — do not loop.
+            _record_drain_tick(
+                owner,
+                stop_reason="phase2_waiting_for_budget",
+                notes=notes,
+                trading_day=trading_day,
+                windows_opened_delta=windows_delta,
+                coverage=_coverage_counts(before),
+            )
             return FirstPassDrainResult(
                 outcome="phase2_waiting_for_budget",
-                user_id=owner,
-                research_run_id=run.research_run_id,
-                technical_scan_id=str(scan_id),
-                phase=run.phase,
-                status=run.status,
-                schedule_enabled=bool(run.schedule_enabled),
                 waiting_for_retry=True,
-                notes=notes + [f"{code}:{exc}"],
-                dry_run=False,
+                notes=notes + [f"{code}:{exc}", "resume_already_attempted_this_tick"],
+                **_base(),
             )
-        if code == "technical_scan_cancelled":
+        elif code == "technical_scan_cancelled":
             return FirstPassDrainResult(
                 outcome="skipped_phase2_scan_blocked",
-                user_id=owner,
-                research_run_id=run.research_run_id,
-                technical_scan_id=str(scan_id),
-                phase=run.phase,
-                status=run.status,
-                schedule_enabled=bool(run.schedule_enabled),
                 notes=notes + [f"{code}:{exc}"],
-                dry_run=False,
+                **_base(),
             )
-        return FirstPassDrainResult(
-            outcome="failed_phase2_batch",
-            user_id=owner,
-            research_run_id=run.research_run_id,
-            technical_scan_id=str(scan_id),
-            phase=run.phase,
-            status=run.status,
-            schedule_enabled=bool(run.schedule_enabled),
-            notes=notes + [f"{code}:{exc}"],
-            dry_run=False,
-        )
+        else:
+            return FirstPassDrainResult(
+                outcome="failed_phase2_batch",
+                notes=notes + [f"{code}:{exc}"],
+                **_base(),
+            )
     except Exception as exc:  # noqa: BLE001
         logger.exception("phase2_technical_batch_failed scan_id=%s", scan_id)
         return FirstPassDrainResult(
             outcome="failed_phase2_batch",
-            user_id=owner,
-            research_run_id=run.research_run_id,
-            technical_scan_id=str(scan_id),
-            phase=run.phase,
-            status=run.status,
-            schedule_enabled=bool(run.schedule_enabled),
             notes=notes + [f"{type(exc).__name__}:{exc}"],
-            dry_run=False,
+            **_base(),
         )
 
     after_snap = result_state.snapshot()
     cursor_after = int(getattr(result_state, "cursor", 0) or after_snap.get("cursor") or 0)
     status_after = str(getattr(result_state, "status", "") or after_snap.get("status") or "")
     symbols = max(0, cursor_after - cursor_before)
-    lease_held = False
-    if symbols == 0 and status_after not in _PHASE2_TERMINAL_SCAN:
-        if _lease_still_active(getattr(result_state, "reserve_expires_at", None)):
-            lease_held = True
-        elif int(after_snap.get("remainingCount") or 0) > 0:
-            lease_held = True
+    coverage = _coverage_counts(result_state)
+    lease_held = symbols == 0 and _lease_still_active(
+        getattr(result_state, "reserve_expires_at", None)
+    )
+    already_complete = _phase2_scan_is_complete(result_state)
 
-    already_complete = status_after in _PHASE2_TERMINAL_SCAN
     if lease_held:
         stop_reason = "phase2_lease_held"
     elif already_complete:
         stop_reason = "phase2_already_complete"
-    elif status_after == "budget_exhausted":
-        stop_reason = "phase2_waiting_for_budget"
+    elif symbols == 0:
+        stop_reason = "phase2_no_progress"
+    elif status_after == "budget_exhausted" and schedule_has_technical_work(result_state):
+        # Batch hit budget again; next tick may resume (cap permitting).
+        stop_reason = "phase2_batch_ran"
     else:
         stop_reason = "phase2_batch_ran"
 
@@ -639,16 +858,34 @@ def _run_phase2_technical_batch(
         except ResearchRunStoreUnavailable:
             reconciled = run
 
-    _record_drain_tick(owner, stop_reason=stop_reason, notes=notes)
+    _record_drain_tick(
+        owner,
+        stop_reason=stop_reason,
+        notes=notes,
+        trading_day=trading_day,
+        windows_opened_delta=windows_delta,
+        coverage=coverage,
+    )
     try:
         reconciled = research_run_store.get(owner) or reconciled
     except ResearchRunStoreUnavailable:
         pass
 
-    batches_run = 1 if (symbols > 0 or already_complete) and not lease_held else 0
-    if stop_reason == "phase2_batch_ran":
-        batches_run = 1
+    batches_run = 1 if symbols > 0 or stop_reason == "phase2_batch_ran" else 0
+    if stop_reason in {"phase2_lease_held", "phase2_no_progress"}:
+        batches_run = 0
+    if already_complete and symbols == 0:
+        batches_run = 0
 
+    extra_notes = [
+        f"stop={stop_reason}",
+        f"scanStatus={status_after}",
+        f"windowsOpenedDelta={windows_delta}",
+        f"analyzed={coverage.get('analyzed')}",
+        f"insufficientHistory={coverage.get('insufficientHistory')}",
+        f"deferred={coverage.get('deferred')}",
+        f"failed={coverage.get('failed')}",
+    ]
     return FirstPassDrainResult(
         outcome=stop_reason,
         user_id=owner,
@@ -661,10 +898,11 @@ def _run_phase2_technical_batch(
         ),
         batches_run=batches_run,
         symbols_processed=symbols,
-        waiting_for_retry=stop_reason == "phase2_waiting_for_budget",
+        waiting_for_retry=stop_reason
+        in {"phase2_waiting_for_budget", "phase2_budget_cap_reached", "phase2_no_progress"},
         lease_held=lease_held,
         already_complete=already_complete,
-        notes=notes + [f"stop={stop_reason}", f"scanStatus={status_after}"],
+        notes=notes + extra_notes,
         dry_run=False,
     )
 
@@ -680,7 +918,7 @@ def _dry_run_outcome_for_run(
     if str(run.status or "") in _BLOCKED_RUN_STATUSES:
         return "dry_run_run_status_blocked"
     step = phase2_step or {}
-    if step.get("action") == "run_technical_batch":
+    if step.get("action") in {"run_technical_batch", "resume_budget_and_run"}:
         return "dry_run_phase2_ready"
     if _candidate_approved(run) and run.technical_scan_id:
         return "dry_run_phase2_ready"
@@ -1071,16 +1309,24 @@ def drain_authorized_first_pass(
         )
 
     # Phase-2 path: approved + attached scan (or honest skip outcomes).
-    if _candidate_approved(run) or run.technical_scan_id or str(run.status or "") == "cancelled":
-        if phase2_step.get("action") == "run_technical_batch" or phase2_step.get(
-            "reason"
-        ) in {
+    if (
+        _candidate_approved(run)
+        or run.technical_scan_id
+        or str(run.status or "") == "cancelled"
+        or not _phase2_enabled(run)
+    ):
+        if phase2_step.get("action") in {
+            "run_technical_batch",
+            "resume_budget_and_run",
+        } or phase2_step.get("reason") in {
             "not_approved",
             "no_technical_scan",
             "scan_missing",
             "foreign_scan",
             "waiting_for_budget_window",
             "already_complete",
+            "phase2_paused",
+            "budget_cap_reached",
         } or str(phase2_step.get("reason") or "").startswith("scan_") or str(
             phase2_step.get("reason") or ""
         ).startswith("run_status_"):

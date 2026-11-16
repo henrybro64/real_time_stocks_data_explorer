@@ -75,6 +75,8 @@ DEFAULT_MAX_UPSTREAM_MONTH_FETCHES = 40
 # #329: each explicit resume opens another bounded month-fetch window.
 DEFAULT_BUDGET_WINDOW_MONTH_FETCHES = 40
 MAX_UPSTREAM_MONTH_FETCHES_CAP = 200
+# #361 Phase-2 drain: auto-reopen history windows per scan trading day (bounded).
+PHASE2_MAX_BUDGET_WINDOWS_PER_DAY = 24
 # Cluster-wide concurrent scan-batch leases (manual + scheduled). Not a universe cap.
 DEFAULT_MAX_IN_FLIGHT_SCAN_BATCHES = 2
 # Cross-pod history single-flight lease (#329). Short enough to recover after pod crash,
