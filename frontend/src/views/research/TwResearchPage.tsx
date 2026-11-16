@@ -1355,6 +1355,24 @@ export function TwResearchPage({
     void queryClient.invalidateQueries({ queryKey: ["tw-research-first-pass-jobs"] });
   };
 
+  const runNeedsDrainRearm = useMemo(() => {
+    const run = researchRunQuery.data;
+    if (!run?.firstPassJobId) return false;
+    if (String(run.phase ?? "") !== "phase1_first_pass") return false;
+    if (["failed", "cancelled", "budget_exhausted"].includes(String(run.status ?? ""))) {
+      return false;
+    }
+    // Job exists but drain is not armed — Start/Resume can re-arm (#366).
+    if (run.scheduleEnabled === true) return false;
+    const execState = String(run.execution?.state ?? "");
+    return (
+      execState === "executor_unavailable" ||
+      execState === "job_created" ||
+      run.scheduleEnabled === false ||
+      run.scheduleEnabled == null
+    );
+  }, [researchRunQuery.data]);
+
   const runIsActiveNonTerminal = useMemo(() => {
     const run = researchRunQuery.data;
     if (!run) return false;
@@ -1376,17 +1394,30 @@ export function TwResearchPage({
     if (!run.firstPassJobId) {
       return false;
     }
+    // Attached job with schedule_enabled=false must keep Start clickable so
+    // the user can re-arm after the executor becomes available (#366).
+    if (runNeedsDrainRearm) {
+      return false;
+    }
     return (
       status === "running" ||
       status === "queued" ||
       status === "partial" ||
       status === "deferred"
     );
-  }, [researchRunQuery.data]);
+  }, [researchRunQuery.data, runNeedsDrainRearm]);
 
   const startRetryHint = useMemo(() => {
     const run = researchRunQuery.data;
-    if (!run || run.firstPassJobId) return null;
+    if (!run) return null;
+    if (runNeedsDrainRearm) {
+      const execState = String(run.execution?.state ?? "");
+      if (execState === "executor_unavailable") {
+        return t("research.tw.startWaitingExecutorThenRetry");
+      }
+      return t("research.tw.startRearmWhenExecutorReady");
+    }
+    if (run.firstPassJobId) return null;
     const status = String(run.status ?? "");
     if (status !== "queued" && status !== "running") return null;
     const expiresRaw = run.jobClaimExpiresAt;
@@ -1397,7 +1428,7 @@ export function TwResearchPage({
       }
     }
     return t("research.tw.startRetryIncompleteJob");
-  }, [researchRunQuery.data, language, t]);
+  }, [researchRunQuery.data, runNeedsDrainRearm, language, t]);
 
   // Canonical ordinary-path Start (#359): managed research-run, not standalone job.
   const startFullResearchMutation = useMutation({

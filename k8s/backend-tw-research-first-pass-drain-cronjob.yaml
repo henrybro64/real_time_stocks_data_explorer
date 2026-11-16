@@ -3,11 +3,16 @@ kind: CronJob
 metadata:
   name: stock-ticker-tw-research-first-pass-drain
 spec:
-  # Suspended until Henry explicitly enables durable first-pass drain (#349).
-  # Prerequisites: #348 TypeError fix, configured drain token + owner user id,
-  # TW_RESEARCH_FIRST_PASS_DRAIN_ENABLED=true on the API, and a Start Research
-  # action that sets research_run.schedule_enabled=true for the owned job.
+  # Suspended until Henry explicitly enables durable first-pass drain (#349/#362).
+  # Prerequisites (all required for honest "executor available"):
+  #   1) Secret stock-ticker-backend-auth key TW_RESEARCH_FIRST_PASS_DRAIN_TOKEN
+  #   2) Backend env TW_RESEARCH_FIRST_PASS_DRAIN_ENABLED=true
+  #   3) Backend env TW_RESEARCH_FIRST_PASS_DRAIN_USER_ID=<owner user id>
+  #   4) This CronJob suspend=false (operator-approved only)
+  #   5) Managed Start/Resume sets research_run.schedule_enabled=true for the
+  #      owned job (#366 re-arms the same run after executor becomes available)
   # Does NOT unsuspend the technical-scan schedule CronJob (#330).
+  # concurrencyPolicy: Forbid — at most one drain Job at a time.
   suspend: true
   # Every 5 minutes every day (Asia/Taipei). Still suspend:true until enabled.
   # Timing hierarchy (#360): symbol soft deadline 45s < budget 60s

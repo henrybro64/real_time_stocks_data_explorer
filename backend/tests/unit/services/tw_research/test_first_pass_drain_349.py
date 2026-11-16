@@ -25,6 +25,10 @@ def _enable_drain_for_owner(monkeypatch: pytest.MonkeyPatch, user_id: str = "own
         "app.services.tw_research.research_run.settings.tw_research_first_pass_drain_user_id",
         user_id,
     )
+    monkeypatch.setattr(
+        "app.services.tw_research.research_run.settings.tw_research_first_pass_drain_token",
+        "unit-test-drain-token",
+    )
 
 
 def test_drain_skips_when_globally_disabled(monkeypatch) -> None:
@@ -78,6 +82,10 @@ def test_attach_does_not_arm_for_non_owner(monkeypatch) -> None:
     monkeypatch.setattr(
         "app.services.tw_research.research_run.settings.tw_research_first_pass_drain_user_id",
         "drain-owner",
+    )
+    monkeypatch.setattr(
+        "app.services.tw_research.research_run.settings.tw_research_first_pass_drain_token",
+        "unit-test-drain-token",
     )
     research_run_store.begin_phase1("other", trading_day="2024-06-27")
     run = research_run_store.attach_first_pass_job("other", first_pass_job_id="fpj_x")

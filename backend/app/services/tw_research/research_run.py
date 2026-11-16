@@ -37,12 +37,17 @@ def first_pass_drain_availability(user_id: str) -> tuple[bool, str | None]:
     """Whether durable first-pass drain may be armed for this user.
 
     Returns ``(available, reason)``. Reason is set when unavailable.
+    Requires the feature flag, matching owner user id, and a configured
+    drain token (token value is never logged or returned).
     """
     if not bool(settings.tw_research_first_pass_drain_enabled):
         return False, "first_pass_drain_globally_disabled"
     owner = str(settings.tw_research_first_pass_drain_user_id or "").strip()
     if not owner or str(user_id or "").strip() != owner:
         return False, "first_pass_drain_unavailable_for_user"
+    token = str(settings.tw_research_first_pass_drain_token or "").strip()
+    if not token:
+        return False, "first_pass_drain_token_unconfigured"
     return True, None
 
 ResearchRunPhase = Literal[
@@ -598,21 +603,9 @@ class ResearchRunStore:
                         str(reason),
                         reason=str(reason),
                     )
-                if run.phase != "phase1_first_pass":
-                    raise ResearchRunConflict(
-                        f"first_pass_drain_resume_requires_phase1:{run.phase}",
-                        reason=f"first_pass_drain_resume_requires_phase1:{run.phase}",
-                    )
-                if not run.first_pass_job_id:
-                    raise ResearchRunConflict(
-                        "first_pass_drain_resume_requires_attached_job",
-                        reason="first_pass_drain_resume_requires_attached_job",
-                    )
-                if str(run.status or "") in {"failed", "budget_exhausted", "cancelled"}:
-                    raise ResearchRunConflict(
-                        f"first_pass_drain_resume_blocked_status:{run.status}",
-                        reason=f"first_pass_drain_resume_blocked_status:{run.status}",
-                    )
+                block = self._rearm_block_reason_locked(run)
+                if block is not None:
+                    raise ResearchRunConflict(block, reason=block)
             run.schedule_enabled = bool(enabled)
             run.append_note(
                 "First-pass drain enabled."
@@ -623,6 +616,80 @@ class ResearchRunStore:
                 run.append_note(note)
             run.updated_at = datetime.now(UTC).isoformat()
             return self._persist_locked(run)
+
+    def maybe_rearm_first_pass_drain_on_start(self, user_id: str) -> ResearchRun:
+        """Idempotent Start/Resume re-arm when the executor becomes available (#366).
+
+        For an eligible Phase-1 run that already owns an authoritative First-Pass
+        Job with ``schedule_enabled=false``, re-check drain availability and arm
+        the same run/job. Never creates duplicate runs/jobs or adopts standalone
+        historical jobs. If the executor is still unavailable, leaves scheduling
+        disabled and returns the run unchanged (truthful execution status is
+        derived by the caller).
+        """
+        with self._lock:
+            run = self._require_locked(user_id)
+            changed = self._reconcile_locked(run)
+            if changed:
+                run = self._persist_locked(run)
+            return self._maybe_rearm_first_pass_drain_locked(run)
+
+    def _rearm_block_reason_locked(self, run: ResearchRun) -> str | None:
+        if run.phase != "phase1_first_pass":
+            return f"first_pass_drain_resume_requires_phase1:{run.phase}"
+        if not run.first_pass_job_id:
+            return "first_pass_drain_resume_requires_attached_job"
+        if str(run.status or "") in {"failed", "budget_exhausted", "cancelled"}:
+            return f"first_pass_drain_resume_blocked_status:{run.status}"
+        job_block = self._job_rearm_block_reason(
+            user_id=run.user_id, job_id=str(run.first_pass_job_id)
+        )
+        return job_block
+
+    def _job_rearm_block_reason(self, *, user_id: str, job_id: str) -> str | None:
+        """Refuse re-arm for cancelled/archived/deleting/terminal jobs.
+
+        Process-memory unit tests skip the job-row lookup (run-level checks only).
+        """
+        if self._test_memory is not None:
+            return None
+        try:
+            from app.services.tw_research.first_pass_job import (
+                FirstPassJobError,
+                first_pass_job_service,
+            )
+
+            job = first_pass_job_service.get_job(job_id, user_id=user_id)
+        except FirstPassJobError:
+            return "first_pass_job_not_found_for_rearm"
+        except Exception:  # noqa: BLE001 — store blip: keep run-level checks only
+            return None
+        if job.get("archived_at") or job.get("archivedAt"):
+            return "first_pass_job_archived"
+        if job.get("deletion_pending") or job.get("deletionPending"):
+            return "first_pass_job_deletion_in_progress"
+        status = str(job.get("status") or "")
+        if status in {"cancelled", "failed", "budget_exhausted"}:
+            return f"first_pass_drain_resume_blocked_job_status:{status}"
+        if status == "completed":
+            return "first_pass_job_nothing_pending"
+        return None
+
+    def _maybe_rearm_first_pass_drain_locked(self, run: ResearchRun) -> ResearchRun:
+        if bool(run.schedule_enabled):
+            return run
+        available, _reason = first_pass_drain_availability(run.user_id)
+        if not available:
+            return run
+        block = self._rearm_block_reason_locked(run)
+        if block is not None:
+            return run
+        run.schedule_enabled = True
+        run.append_note(
+            "First-pass drain re-armed on Start after executor became available."
+        )
+        run.updated_at = datetime.now(UTC).isoformat()
+        return self._persist_locked(run)
 
     def record_first_pass_drain_tick(
         self,

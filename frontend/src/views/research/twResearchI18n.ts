@@ -118,6 +118,16 @@ const TW_RESEARCH_ROWS = [
     "正在建立收集工作，請稍候；若未完成可再次按下「開始研究」。",
   ],
   [
+    "research.tw.startWaitingExecutorThenRetry",
+    "Collection job is ready, but automatic collection is not available yet. After the operator enables the executor, press Start again to authorize this same job.",
+    "收集工作已就緒，但自動收集尚未可用。管理員啟用執行器後，請再次按下「開始研究」授權同一個工作。",
+  ],
+  [
+    "research.tw.startRearmWhenExecutorReady",
+    "Press Start again to authorize automatic collection for this existing job (no duplicate job will be created).",
+    "請再次按下「開始研究」授權這個既有工作的自動收集（不會建立重複工作）。",
+  ],
+  [
     "research.tw.resumeCollection",
     "Resume this collection",
     "接續這個收集工作",

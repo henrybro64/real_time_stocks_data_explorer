@@ -364,6 +364,10 @@ def test_systemic_typeerror_fails_job_and_disarms_drain(monkeypatch) -> None:
         "app.services.tw_research.research_run.settings.tw_research_first_pass_drain_user_id",
         "owner",
     )
+    monkeypatch.setattr(
+        "app.services.tw_research.research_run.settings.tw_research_first_pass_drain_token",
+        "unit-test-drain-token",
+    )
     research_run_store.clear_for_tests()
     research_run_store.begin_phase1("owner", trading_day="2024-06-27")
 
@@ -462,6 +466,10 @@ def test_reconcile_last_error_note_dedup_after_systemic_fail(monkeypatch) -> Non
     monkeypatch.setattr(
         "app.services.tw_research.research_run.settings.tw_research_first_pass_drain_user_id",
         "owner-dedup",
+    )
+    monkeypatch.setattr(
+        "app.services.tw_research.research_run.settings.tw_research_first_pass_drain_token",
+        "unit-test-drain-token",
     )
     research_run_store.clear_for_tests()
     research_run_store.begin_phase1("owner-dedup", trading_day="2024-06-27")
