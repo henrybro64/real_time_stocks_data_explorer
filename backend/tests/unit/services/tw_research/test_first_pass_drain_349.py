@@ -10,6 +10,16 @@ from app.services.tw_research.research_run import research_run_store
 
 def setup_function() -> None:
     research_run_store.clear_for_tests()
+    # Process-memory tests must inject job lookup (fail-closed re-arm #366).
+    research_run_store.set_first_pass_job_lookup_for_tests(
+        lambda job_id, user_id="owner": {
+            "job_id": job_id,
+            "user_id": user_id,
+            "status": "pending",
+            "deletion_state": None,
+            "archived_at": None,
+        }
+    )
 
 
 def teardown_function() -> None:
@@ -55,8 +65,10 @@ def test_drain_skips_when_schedule_not_authorized(monkeypatch) -> None:
         dry_run=True,
         job_id=run.first_pass_job_id,
     )
-    assert result.outcome == "skipped_not_authorized"
+    assert result.outcome == "dry_run_not_authorized"
     assert result.schedule_enabled is False
+    assert result.preflight is not None
+    assert result.preflight["availability"]["drainTokenConfigured"] is True
 
 
 def test_attach_authorizes_drain_and_dry_run_ready(monkeypatch) -> None:

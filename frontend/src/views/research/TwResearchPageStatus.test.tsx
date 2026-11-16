@@ -1210,27 +1210,36 @@ describe("TwResearchPage Start retry when queued without job (#365)", () => {
         },
       },
     });
-    vi.mocked(startTwResearchRun).mockResolvedValue(
-      runRecord({
-        status: "running",
-        firstPassJobId: JOB_ID,
-        scheduleEnabled: true,
-        execution: {
-          state: "execution_authorized",
-          authorized: true,
-          drainAvailable: true,
-        },
-      }),
-    );
+    const armed = runRecord({
+      status: "running",
+      firstPassJobId: JOB_ID,
+      scheduleEnabled: true,
+      execution: {
+        state: "executor_not_ticking",
+        authorized: true,
+        drainAvailable: true,
+      },
+    });
+    vi.mocked(startTwResearchRun).mockResolvedValue(armed);
     renderPage("en");
     const start = await screen.findByTestId("tw-research-start-full-research");
     await waitFor(() => {
       expect(start).toBeEnabled();
     });
-    expect(await screen.findByTestId("tw-research-start-retry-hint")).toBeInTheDocument();
+    const hint = await screen.findByTestId("tw-research-start-retry-hint");
+    expect(hint).toHaveTextContent(/automatic collection is not available|自動收集尚未可用/i);
+    expect(hint).not.toHaveTextContent(/actively|collecting|正在進行/i);
+    // After Start succeeds, refetch returns armed-but-not-ticking.
+    vi.mocked(fetchTwResearchRunCurrent).mockResolvedValue(armed);
     await user.click(start);
     await waitFor(() => {
       expect(startTwResearchRun).toHaveBeenCalled();
     });
+    expect(
+      await screen.findByTestId("tw-research-execution-status"),
+    ).toHaveTextContent(/has not ticked|沒有執行/i);
+    expect(screen.getByTestId("tw-research-execution-status")).not.toHaveTextContent(
+      /actively collecting|正在進行資料收集/i,
+    );
   });
 });

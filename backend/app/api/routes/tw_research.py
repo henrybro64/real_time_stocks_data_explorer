@@ -1857,6 +1857,13 @@ def start_research_run(
                 except KeyError as exc:
                     raise HTTPException(status_code=404, detail=str(exc)) from exc
                 except ResearchRunConflict as exc:
+                    # Concurrent Start that already armed the same run → 200.
+                    try:
+                        current = research_run_store.get(user_id)
+                    except ResearchRunStoreUnavailable:
+                        current = None
+                    if current is not None and bool(current.schedule_enabled):
+                        return _research_run_response(current)
                     raise HTTPException(
                         status_code=409,
                         detail={
@@ -1884,8 +1891,24 @@ def start_research_run(
                 rearmed = research_run_store.maybe_rearm_first_pass_drain_on_start(
                     user_id
                 )
-            except (ResearchRunStoreUnavailable, KeyError, ResearchRunConflict):
-                rearmed = ResearchRun.from_persist_payload(claim["run"])
+            except ResearchRunStoreUnavailable as exc:
+                raise _research_run_unavailable(exc) from exc
+            except KeyError as exc:
+                raise HTTPException(status_code=404, detail=str(exc)) from exc
+            except ResearchRunConflict as exc:
+                try:
+                    current = research_run_store.get(user_id)
+                except ResearchRunStoreUnavailable:
+                    current = None
+                if current is not None and bool(current.schedule_enabled):
+                    return _research_run_response(current)
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "error": "research_run_revision_conflict",
+                        "reason": exc.reason,
+                    },
+                ) from exc
             return _research_run_response(rearmed)
         if outcome == "claim_held":
             # Another pod owns creation; return current run for safe retry.

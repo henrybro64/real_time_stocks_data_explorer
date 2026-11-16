@@ -3,9 +3,12 @@
 ## What the code does now
 
 - Managed `POST /tw-research/research-runs/start` re-arms an eligible Phase-1 run that already owns a First-Pass Job when the executor becomes available (`schedule_enabled=true` on the **same** run/job).
+- Job re-arm is fail-closed: missing/foreign jobs, store errors, `deletion_state` set, archived, or non-eligible status block re-arm.
 - `first_pass_drain_availability` requires: flag enabled, matching owner user id, **and** a configured drain token (value never logged).
 - UI keeps the ordinary Start/Resume clickable when a job exists but drain is not armed, with truthful executor hints.
+- `POST /tw-research/first-pass/drain` with `dryRun=true` returns a read-only preflight (availability booleans, run/job ids, counts, lease flag, batch size, last tick). It does not lease or call providers.
 - k3s CronJob remains `suspend: true` in git; activation is operator-only.
+- Helper: `scripts/tw-first-pass-preflight.sh` (read-only kubectl + optional read-only psql).
 
 ## Timing hierarchy (unchanged)
 
@@ -17,23 +20,36 @@
 | Job `activeDeadlineSeconds` | 180s |
 | Batch lease | 300s |
 
-`concurrencyPolicy: Forbid` prevents overlapping drain Jobs.
+`concurrencyPolicy: Forbid` → at most one drain Job; expected throughput ≤ batch size per 5-minute tick until measured otherwise.
 
-## Safe rollout (do not execute without separate approval)
+Until the first successful tick, UI execution state is `executor_not_ticking` (authorized but not collecting).
 
-1. Confirm disposable/preflight checks (health, image tag, Secret **key presence** only — never print values).
-2. Set backend env: `TW_RESEARCH_FIRST_PASS_DRAIN_ENABLED=true`, `TW_RESEARCH_FIRST_PASS_DRAIN_USER_ID=<owner>`, token via Secret.
-3. Deploy backend so availability checks see the new config.
-4. Create a **disposable** managed Start (or re-arm an existing eligible managed run with Start). Confirm `schedule_enabled=true` in PostgreSQL.
-5. Unsuspend **only** `stock-ticker-tw-research-first-pass-drain` after dry-run/smoke approval.
-6. Watch tick telemetry (`firstPassDrain.lastTickAt`), per-symbol rows, 429s, CPU/RSS.
-7. Confirm stop at `awaiting_analyst_candidate_selection` (no Phase-2 / Notion).
+## Recommended Secret layout
+
+Put all three keys in Secret `stock-ticker-backend-auth`:
+
+- `TW_RESEARCH_FIRST_PASS_DRAIN_TOKEN`
+- `TW_RESEARCH_FIRST_PASS_DRAIN_USER_ID`
+- `TW_RESEARCH_FIRST_PASS_DRAIN_ENABLED`
+
+Activation is **not** a full deploy: patch the Secret, then `kubectl rollout restart deploy/stock-ticker-backend` so pods reload env.
+
+## Safe rollout order (separate explicit approval required)
+
+1. Configure Secret keys (never print values) + confirm with `scripts/tw-first-pass-preflight.sh`.
+2. `kubectl rollout restart deploy/stock-ticker-backend`.
+3. User Start/Resume on the managed run (re-arms `schedule_enabled=true`).
+4. Preflight dry-run: `POST /api/tw-research/first-pass/drain` with `{"dryRun":true}` and drain token header.
+5. One manual tick: `kubectl create job --from=cronjob/stock-ticker-tw-research-first-pass-drain ...`.
+6. Verify symbol counts rise in PostgreSQL / UI.
+7. Only then unsuspend the CronJob.
 
 ## Rollback
 
-1. Set CronJob `suspend: true` (or pause via `POST /research-runs/first-pass-drain` with `enabled=false`).
-2. Optionally set `TW_RESEARCH_FIRST_PASS_DRAIN_ENABLED=false`.
-3. Do **not** delete Research Run / First-Pass Job rows or symbol evidence.
+1. Set CronJob `suspend: true`.
+2. `POST /tw-research/research-runs/first-pass-drain` with `enabled=false`.
+3. Optionally set `TW_RESEARCH_FIRST_PASS_DRAIN_ENABLED=false` in Secret + restart backend.
+4. Keep Research Run / First-Pass Job / symbol rows.
 
 ## Historical standalone job
 

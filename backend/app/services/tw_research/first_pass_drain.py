@@ -12,10 +12,13 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
+from app.core.config import settings
 from app.services.tw_research.first_pass_job import FirstPassJobError, first_pass_job_service
 from app.services.tw_research.research_run import (
+    ResearchRun,
     ResearchRunConflict,
     ResearchRunStoreUnavailable,
+    first_pass_drain_availability,
     research_run_store,
 )
 
@@ -36,9 +39,11 @@ class FirstPassDrainResult:
     already_complete: bool = False
     dry_run: bool = False
     notes: list[str] = field(default_factory=list)
+    # Read-only preflight fields (#362). Never include secret values.
+    preflight: dict[str, Any] | None = None
 
     def as_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "outcome": self.outcome,
             "userId": self.user_id,
             "researchRunId": self.research_run_id,
@@ -57,6 +62,92 @@ class FirstPassDrainResult:
             "notionWrites": False,
             "phase2AutoStart": False,
         }
+        if self.preflight is not None:
+            payload["preflight"] = dict(self.preflight)
+        return payload
+
+
+def _availability_flags(*, user_id: str) -> dict[str, Any]:
+    """Booleans only — never return token/owner values."""
+    enabled = bool(settings.tw_research_first_pass_drain_enabled)
+    owner_configured = bool(str(settings.tw_research_first_pass_drain_user_id or "").strip())
+    token_configured = bool(str(settings.tw_research_first_pass_drain_token or "").strip())
+    available, reason = first_pass_drain_availability(user_id)
+    return {
+        "drainEnabledConfigured": enabled,
+        "drainOwnerConfigured": owner_configured,
+        "drainTokenConfigured": token_configured,
+        "available": bool(available),
+        "reason": reason,
+    }
+
+
+def _build_dry_run_preflight(
+    run: ResearchRun,
+    *,
+    job_id: str,
+    batch_size: int,
+) -> dict[str, Any]:
+    """Read-only job/run snapshot for dry-run. No leases, no provider calls."""
+    flags = _availability_flags(user_id=run.user_id)
+    job_status = None
+    universe_size = None
+    ok_count = partial_count = failed_count = pending_count = None
+    lease_active = False
+    last_tick_at = None
+    if isinstance(run.dimensions, dict):
+        meta = run.dimensions.get("firstPassDrain")
+        if isinstance(meta, dict) and isinstance(meta.get("lastTickAt"), str):
+            last_tick_at = meta.get("lastTickAt")
+    try:
+        job = first_pass_job_service.get_job(job_id, user_id=run.user_id)
+        job_status = str(job.get("status") or "") or None
+        universe_size = job.get("universe_size") or job.get("universeSize")
+        if universe_size is None:
+            ids = job.get("stock_ids") or job.get("stockIds") or []
+            if isinstance(ids, list):
+                universe_size = len(ids)
+        lease_until = job.get("reserve_expires_at") or job.get("reserveExpiresAt")
+        if isinstance(lease_until, str) and lease_until.strip():
+            try:
+                parsed = datetime.fromisoformat(lease_until.replace("Z", "+00:00"))
+                lease_active = parsed > datetime.now(UTC)
+            except ValueError:
+                lease_active = False
+        from app.repositories.tw_research_repository import tw_research_repository
+
+        if tw_research_repository.is_available():
+            counts = tw_research_repository.count_first_pass_symbols(job_id)
+            if isinstance(counts, dict):
+                ok_count = int(counts.get("ok") or 0)
+                partial_count = int(counts.get("partial") or 0)
+                failed_count = int(counts.get("failed") or 0)
+                total = int(counts.get("total") or 0)
+                if universe_size is None and total:
+                    universe_size = total
+                if universe_size is not None:
+                    pending_count = max(
+                        0, int(universe_size) - ok_count - partial_count - failed_count
+                    )
+    except Exception:  # noqa: BLE001 — preflight stays best-effort
+        pass
+    return {
+        "availability": flags,
+        "researchRunId": run.research_run_id,
+        "jobId": job_id,
+        "scheduleEnabled": bool(run.schedule_enabled),
+        "jobStatus": job_status,
+        "universeSize": universe_size,
+        "okCount": ok_count,
+        "partialCount": partial_count,
+        "failedCount": failed_count,
+        "pendingCount": pending_count,
+        "leaseActive": lease_active,
+        "batchSize": int(batch_size),
+        "lastTickAt": last_tick_at,
+        "estimatedProviderCallsNextBatch": None,
+        "estimatedProviderCallsReason": "provider_call_estimate_not_instrumented_per_batch",
+    }
 
 
 def drain_authorized_first_pass(
@@ -166,6 +257,31 @@ def drain_authorized_first_pass(
             dry_run=dry_run,
         )
 
+    if dry_run:
+        # Read-only preflight (#362): no lease, no provider calls, no writes.
+        preflight = _build_dry_run_preflight(
+            run, job_id=str(target_job), batch_size=batch_size
+        )
+        outcome = "dry_run_ready"
+        if not run.schedule_enabled:
+            outcome = "dry_run_not_authorized"
+        elif run.phase != "phase1_first_pass":
+            outcome = "dry_run_past_phase1_gate"
+        elif str(run.status or "") in {"failed", "budget_exhausted", "cancelled"}:
+            outcome = "dry_run_run_status_blocked"
+        return FirstPassDrainResult(
+            outcome=outcome,
+            user_id=owner,
+            research_run_id=run.research_run_id,
+            job_id=target_job,
+            phase=run.phase,
+            status=run.status,
+            schedule_enabled=bool(run.schedule_enabled),
+            notes=notes + ["Dry run — no batches claimed; no writes."],
+            dry_run=True,
+            preflight=preflight,
+        )
+
     if not run.schedule_enabled:
         return FirstPassDrainResult(
             outcome="skipped_not_authorized",
@@ -179,7 +295,7 @@ def drain_authorized_first_pass(
             + [
                 "schedule_enabled=false — Start Research sets this; pause clears it.",
             ],
-            dry_run=dry_run,
+            dry_run=False,
         )
 
     if run.phase != "phase1_first_pass":
@@ -195,7 +311,7 @@ def drain_authorized_first_pass(
             + [
                 f"Phase is {run.phase}; drain stops at analyst candidate selection.",
             ],
-            dry_run=dry_run,
+            dry_run=False,
         )
 
     # Do not keep draining failed / exhausted runs even if still in phase1.
@@ -209,20 +325,7 @@ def drain_authorized_first_pass(
             status=run.status,
             schedule_enabled=bool(run.schedule_enabled),
             notes=notes + [f"Research run status is {run.status}; drain refused."],
-            dry_run=dry_run,
-        )
-
-    if dry_run:
-        return FirstPassDrainResult(
-            outcome="dry_run_ready",
-            user_id=owner,
-            research_run_id=run.research_run_id,
-            job_id=target_job,
-            phase=run.phase,
-            status=run.status,
-            schedule_enabled=True,
-            notes=notes + ["Dry run — no batches claimed."],
-            dry_run=True,
+            dry_run=False,
         )
 
     batches_run = 0
