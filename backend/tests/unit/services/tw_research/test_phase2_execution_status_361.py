@@ -196,6 +196,69 @@ def test_failed_cancelled(monkeypatch) -> None:
     assert result["state"] == "failed"
 
 
+def test_active_lease_beats_executor_unavailable(monkeypatch) -> None:
+    """Unavailable scheduling must not hide an in-flight Phase-2 lease (#362)."""
+    monkeypatch.setattr(
+        "app.services.tw_research.execution_status.first_pass_drain_availability",
+        lambda user_id: (False, "first_pass_drain_globally_disabled"),
+    )
+    clock = datetime(2024, 6, 28, 4, 0, tzinfo=UTC)
+    monkeypatch.setattr(
+        "app.services.tw_research.execution_status._phase2_now",
+        lambda: clock,
+    )
+    result = classify_phase2_execution(
+        _run(
+            dimensions={
+                "firstPassDrain": {"lastTickAt": clock.isoformat()},
+                "phase2Drain": {"enabled": True},
+            }
+        ),
+        scan={
+            "status": "running",
+            "remainingCount": 3,
+            "processedCount": 2,
+            "universeSize": 5,
+            "reserveExpiresAt": "2024-06-28T04:10:00+00:00",
+        },
+    )
+    assert result["state"] == "actively_analyzing"
+    assert result["state"] != "executor_unavailable"
+    assert result["leaseActive"] is True
+    assert result["authorized"] is False
+    assert result["drainAvailable"] is False
+    assert result["processedCount"] == 2
+    assert result["remainingCount"] == 3
+    assert result["blocker"] == "first_pass_drain_globally_disabled"
+    assert result["nextAction"] == "poll_progress"
+
+
+def test_expired_lease_with_unavailable_executor_is_unavailable(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.services.tw_research.execution_status.first_pass_drain_availability",
+        lambda user_id: (False, "first_pass_drain_globally_disabled"),
+    )
+    clock = datetime(2024, 6, 28, 4, 0, tzinfo=UTC)
+    monkeypatch.setattr(
+        "app.services.tw_research.execution_status._phase2_now",
+        lambda: clock,
+    )
+    result = classify_phase2_execution(
+        _run(),
+        scan={
+            "status": "running",
+            "remainingCount": 3,
+            "processedCount": 2,
+            "universeSize": 5,
+            "reserveExpiresAt": "2024-06-28T03:50:00+00:00",
+        },
+    )
+    assert result["leaseActive"] is False
+    assert result["state"] == "executor_unavailable"
+    assert result["authorized"] is False
+    assert result["processedCount"] == 2
+
+
 def test_paused_scheduling_keeps_active_lease_and_progress(monkeypatch) -> None:
     """phase2Enabled=false must not hide an in-flight worker or wipe counts (#362)."""
     monkeypatch.setattr(

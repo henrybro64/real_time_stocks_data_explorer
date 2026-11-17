@@ -2190,4 +2190,32 @@ describe("TwResearchPage stage-4 flow (#361)", () => {
     expect(screen.queryByTestId("tw-research-batch")).not.toBeInTheDocument();
     expect(screen.queryByTestId("tw-research-history")).not.toBeInTheDocument();
   });
+
+  it("does not claim Phase-2 stopped when lease is active but executor unavailable (#362)", async () => {
+    window.localStorage.setItem("stock-ticker-language", "en");
+    vi.mocked(fetchTwResearchRunCurrent).mockResolvedValue({
+      researchRunId: "rr_lease_unavail",
+      userId: "u1",
+      phase: "phase2_technical",
+      status: "running",
+      firstPassJobId: "fpj_1",
+      technicalScanId: SCAN_ID,
+      gates: { candidateSelection: "approved" },
+      phase2Execution: {
+        state: "actively_analyzing",
+        authorized: false,
+        drainAvailable: false,
+        leaseActive: true,
+        phase2Enabled: true,
+        processedCount: 2,
+        remainingCount: 3,
+        blocker: "first_pass_drain_globally_disabled",
+      },
+    } as never);
+    renderPage();
+    const status = await screen.findByTestId("tw-research-phase2-execution-status");
+    expect(status).toHaveTextContent(/lease is still active|may be finishing/i);
+    expect(status).not.toHaveTextContent(/not available yet/i);
+    expect(status).not.toHaveTextContent(/nothing is running/i);
+  });
 });

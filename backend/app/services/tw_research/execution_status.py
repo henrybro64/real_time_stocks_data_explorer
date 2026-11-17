@@ -472,15 +472,20 @@ def classify_phase2_execution(
             state = "waiting_for_retry"
             blocker = "phase2_no_progress"
             next_action = "wait_for_retry_window"
+    elif lease_active and scan_status in _PHASE2_ACTIVE:
+        # Live lease = claimed batch may still be running. Scheduling availability
+        # is orthogonal — do not hide the lease behind executor_unavailable (#362).
+        # Lease is not absolute proof the worker is healthy; UI should poll progress.
+        state = "actively_analyzing"
+        next_action = "poll_progress"
+        if not available:
+            blocker = drain_reason or "first_pass_drain_unavailable"
+        else:
+            blocker = None
     elif not available:
         state = "executor_unavailable"
         blocker = drain_reason or "first_pass_drain_unavailable"
         next_action = "wait_for_executor"
-    elif lease_active and scan_status in _PHASE2_ACTIVE:
-        # Only a live worker lease proves analysis is currently executing.
-        state = "actively_analyzing"
-        blocker = None
-        next_action = "poll_progress"
     elif (
         available
         and drain_fresh
@@ -512,7 +517,9 @@ def classify_phase2_execution(
     if scan_id and not phase2_enabled:
         if state == "actively_analyzing":
             # Lease still held — pause only blocks future drain claims.
-            blocker = "phase2_scheduling_paused"
+            # Prefer explicit pause blocker when executor is otherwise available.
+            if available or blocker is None:
+                blocker = "phase2_scheduling_paused"
             next_action = "poll_progress"
         elif state not in {"completed", "failed", "waiting_for_budget_window"}:
             state = "paused"
@@ -548,6 +555,8 @@ def classify_phase2_execution(
             "Phase-2 drain reuses the First-Pass drain CronJob token/owner/flag.",
             "Terminal scan status alone is not complete while history work remains.",
             "phase2Enabled=false pauses future scheduling; an active lease may still finish.",
+            "A live lease means a batch was claimed — not that the worker is healthy.",
+            "Executor unavailable blocks new claims; it does not erase an in-flight lease.",
         ],
     }
 

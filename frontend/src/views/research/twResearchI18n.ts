@@ -396,8 +396,18 @@ const TW_RESEARCH_ROWS = [
   ],
   [
     "research.tw.phase2Execution.activelyAnalyzing",
-    "Analyzing… Technical analysis is running in the background. You can close this page; progress is saved.",
-    "分析中…技術分析正在背景執行。可關閉此頁，進度會自動儲存。",
+    "Analyzing… A technical batch lease is active. Refresh for progress — a lease is not proof the worker is healthy. You can close this page; progress is saved.",
+    "分析中…技術分析批次鎖定仍有效。請重新整理查看進度（鎖定不代表執行器完全健康）。可關閉此頁，進度會自動儲存。",
+  ],
+  [
+    "research.tw.phase2Execution.activelyAnalyzingSchedulingUnavailable",
+    "A technical batch lease is still active, so work may be finishing. New automatic batches cannot start until the executor is available again. Saved progress is kept — refresh to check.",
+    "技術分析批次鎖定仍有效，可能還在完成中。在執行器再次可用前，不會開始新的自動批次。已儲存的進度會保留；請重新整理查看。",
+  ],
+  [
+    "research.tw.phase2Execution.activelyAnalyzingSchedulingPaused",
+    "A technical batch lease is still active, so work may be finishing. Future automatic batches are paused until you resume. Saved progress is kept — refresh to check.",
+    "技術分析批次鎖定仍有效，可能還在完成中。未來的自動批次已暫停，需手動恢復後才會再開始。已儲存的進度會保留；請重新整理查看。",
   ],
   [
     "research.tw.phase2Execution.betweenBatches",

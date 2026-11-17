@@ -1602,7 +1602,15 @@ export function TwResearchPage({
     t,
   ]);
 
-  const phase2MessageFromState = (state: string): string | null => {
+  const phase2MessageFromState = (
+    state: string,
+    exec?: {
+      drainAvailable?: boolean | null;
+      phase2Enabled?: boolean | null;
+      leaseActive?: boolean | null;
+      blocker?: string | null;
+    } | null,
+  ): string | null => {
     switch (state) {
       case "technical_scan_created":
         return t("research.tw.phase2Execution.technicalScanCreated");
@@ -1612,8 +1620,18 @@ export function TwResearchPage({
         return t("research.tw.phase2Execution.executorUnavailable");
       case "executor_not_ticking":
         return t("research.tw.phase2Execution.executorNotTicking");
-      case "actively_analyzing":
+      case "actively_analyzing": {
+        // Lease may still finish; do not claim the batch stopped (#362).
+        if (exec?.phase2Enabled === false || exec?.blocker === "phase2_scheduling_paused") {
+          return t("research.tw.phase2Execution.activelyAnalyzingSchedulingPaused");
+        }
+        if (exec?.drainAvailable === false) {
+          return t(
+            "research.tw.phase2Execution.activelyAnalyzingSchedulingUnavailable",
+          );
+        }
         return t("research.tw.phase2Execution.activelyAnalyzing");
+      }
       case "between_batches":
         return t("research.tw.phase2Execution.betweenBatches");
       case "waiting_for_budget_window":
@@ -1632,9 +1650,10 @@ export function TwResearchPage({
   };
 
   const phase2ExecutionMessage = useMemo(() => {
-    const state = String(researchRunQuery.data?.phase2Execution?.state ?? "");
-    return phase2MessageFromState(state);
-  }, [researchRunQuery.data?.phase2Execution?.state, language, t]);
+    const exec = researchRunQuery.data?.phase2Execution;
+    const state = String(exec?.state ?? "");
+    return phase2MessageFromState(state, exec);
+  }, [researchRunQuery.data?.phase2Execution, language, t]);
 
   const showPhase2ExecutionMessage = Boolean(
     researchRunQuery.data?.phase2Execution ||
