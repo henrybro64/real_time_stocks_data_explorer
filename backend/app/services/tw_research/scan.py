@@ -1365,8 +1365,10 @@ class TwResearchScanService:
             )
 
         # Process lock + durable cross-pod history flight (#329).
+        # Fetch stats travel explicitly with the load result — never reuse a
+        # prior symbol's ContextVar stash after a failed/partial load.
         with _history_flight_lock(stock_id):
-            candles, months_used = self._load_history_single_flight(
+            candles, months_used, fetch_stats = self._load_history_single_flight(
                 state,
                 stock,
                 remaining_budget=remaining_budget,
@@ -1401,8 +1403,6 @@ class TwResearchScanService:
         budget_blocked = (
             months_used == 0 and remaining_budget <= 0 and not candles
         ) or (not candles and remaining_after <= 0 and months_used == 0)
-        fetch_stats = _LAST_HISTORY_FETCH_STATS.get()
-        _LAST_HISTORY_FETCH_STATS.set(None)
         first_bar = completed[0].time[:10] if completed else None
         last_bar = completed[-1].time[:10] if completed else None
         history_provenance = daily_price_history_service.resolve_history_provenance(
@@ -1958,13 +1958,37 @@ class TwResearchScanService:
             )
         return cleared
 
+    def _invoke_history_loader(
+        self,
+        stock: StockRecord,
+        limit: int,
+        *,
+        max_month_fetches: int,
+    ) -> tuple[list[CandleRecord], int, HistoryFetchStats | None]:
+        """Call the injected HistoryLoader and capture per-call fetch stats.
+
+        Clears any prior ContextVar stash before the call so a failed previous
+        symbol cannot leak into this one. Custom loaders that do not publish
+        stats yield ``None`` (unknown provenance) rather than inherited data.
+        """
+        _LAST_HISTORY_FETCH_STATS.set(None)
+        try:
+            candles, months_used = self._history_loader(
+                stock, limit, max_month_fetches=max_month_fetches
+            )
+            stats = _LAST_HISTORY_FETCH_STATS.get()
+            return candles, months_used, stats
+        finally:
+            # Always drop thread-local stash — stats travel via the return value.
+            _LAST_HISTORY_FETCH_STATS.set(None)
+
     def _load_history_single_flight(
         self,
         state: ScanState,
         stock: StockRecord,
         *,
         remaining_budget: int,
-    ) -> tuple[list[CandleRecord], int]:
+    ) -> tuple[list[CandleRecord], int, HistoryFetchStats | None]:
         """Deduplicate compatible upstream OHLCV backfills across pods (#329).
 
         Short DB transactions acquire/renew/complete a fenced lease. Waiting
@@ -1972,16 +1996,20 @@ class TwResearchScanService:
         proof of coverage — waiters validate persisted bars first and only then
         load with budget 0. Incomplete ready/incomplete markers force
         re-coordination before any positive upstream budget is spent.
+
+        Returns ``(candles, months_attempted, fetch_stats)``. ``fetch_stats`` is
+        ``None`` when the loader did not publish verified metadata.
         """
         limit = PREFERRED_DAILY_HISTORY_LIMIT
         if not self._persist:
-            return self._history_loader(
+            return self._invoke_history_loader(
                 stock, limit, max_month_fetches=remaining_budget
             )
 
         from app.repositories.tw_research_repository import tw_research_repository
 
         if not tw_research_repository.is_available():
+            _LAST_HISTORY_FETCH_STATS.set(None)
             raise TwResearchDurableStoreError(
                 "Durable history flight coordination requires PostgreSQL.",
                 scan_id=state.scan_id,
@@ -1992,7 +2020,7 @@ class TwResearchScanService:
         if stored_history_covers_requirement(
             stock, limit=limit, expect_through=state.trading_day
         ):
-            return self._history_loader(stock, limit, max_month_fetches=0)
+            return self._invoke_history_loader(stock, limit, max_month_fetches=0)
 
         flight_key, compatibility = history_flight_identity(
             stock.id,
@@ -2014,6 +2042,7 @@ class TwResearchScanService:
                     lease_seconds=HISTORY_FLIGHT_LEASE_SECONDS,
                 )
             except Exception as exc:  # noqa: BLE001
+                _LAST_HISTORY_FETCH_STATS.set(None)
                 raise TwResearchDurableStoreError(
                     f"History flight acquire failed ({type(exc).__name__}).",
                     scan_id=state.scan_id,
@@ -2028,7 +2057,7 @@ class TwResearchScanService:
                 if stored_history_covers_requirement(
                     stock, limit=limit, expect_through=state.trading_day
                 ):
-                    return self._history_loader(stock, limit, max_month_fetches=0)
+                    return self._invoke_history_loader(stock, limit, max_month_fetches=0)
                 # Misleading/expired ready without coverage — keep waiting or reclaim.
             if time.monotonic() >= deadline:
                 try:
@@ -2040,6 +2069,7 @@ class TwResearchScanService:
                         lease_seconds=HISTORY_FLIGHT_LEASE_SECONDS,
                     )
                 except Exception as exc:  # noqa: BLE001
+                    _LAST_HISTORY_FETCH_STATS.set(None)
                     raise TwResearchDurableStoreError(
                         f"History flight acquire failed ({type(exc).__name__}).",
                         scan_id=state.scan_id,
@@ -2050,6 +2080,7 @@ class TwResearchScanService:
                     break
                 # Still busy without validated coverage: do not persist a
                 # definitive source_incomplete outcome for a temporary wait.
+                _LAST_HISTORY_FETCH_STATS.set(None)
                 raise TwResearchHistoryCoordinationError(
                     "History flight wait timed out without ownership or "
                     "validated coverage; retry after the leader finishes.",
@@ -2060,6 +2091,7 @@ class TwResearchScanService:
             sleep_for = min(sleep_for * 2, HISTORY_FLIGHT_POLL_MAX_SECONDS)
 
         if acquired_generation is None:
+            _LAST_HISTORY_FETCH_STATS.set(None)
             raise TwResearchHistoryCoordinationError(
                 "History flight acquired without a generation; retry reclaim.",
                 scan_id=state.scan_id,
@@ -2109,8 +2141,9 @@ class TwResearchScanService:
         coverage_complete = False
         candles: list[CandleRecord] = []
         months_used = 0
+        fetch_stats: HistoryFetchStats | None = None
         try:
-            candles, months_used = self._history_loader(
+            candles, months_used, fetch_stats = self._invoke_history_loader(
                 stock, limit, max_month_fetches=remaining_budget
             )
             success = True
@@ -2150,13 +2183,15 @@ class TwResearchScanService:
         if renew_state["stale"]:
             # Ownership lost during fetch: do not return a coordinated success
             # that would drive screening/persistence under a stolen lease.
+            # Loader stats (if any) are discarded with the failed coordination.
+            _LAST_HISTORY_FETCH_STATS.set(None)
             raise TwResearchHistoryCoordinationError(
                 "History flight lease lost or uncertain during upstream fetch; "
                 "retry after reclaim.",
                 scan_id=state.scan_id,
                 stock_id=stock.id,
             )
-        return candles, months_used
+        return candles, months_used, fetch_stats
 
     def _claim_batch_ids(self, state: ScanState, *, batch_size: int) -> list[str] | None:
         """Reserve next symbol slice; None means already complete.
