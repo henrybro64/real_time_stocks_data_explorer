@@ -1304,7 +1304,7 @@ describe("TwResearchPage Start retry when queued without job (#365)", () => {
     expect(select).not.toHaveValue("fpj_older_history");
   });
 
-  it("distinguishes new Job created from resumed Job on Start (#362)", async () => {
+  it("shows identity-only startOutcome for job_created with run id and Taipei time (#362)", async () => {
     const user = userEvent.setup();
     seed({
       run: null,
@@ -1312,11 +1312,15 @@ describe("TwResearchPage Start retry when queued without job (#365)", () => {
     });
     vi.mocked(startTwResearchRun).mockResolvedValue({
       ...runRecord({
+        researchRunId: "rr_brand_new",
+        createdAt: "2026-11-13T02:00:00Z",
         firstPassJobId: "fpj_brand_new",
         execution: {
-          state: "executor_unavailable",
+          state: "job_created",
           authorized: false,
-          drainAvailable: false,
+          drainAvailable: true,
+          processedCount: 0,
+          universeSize: 73,
         },
       }),
       startOutcome: "job_created",
@@ -1324,8 +1328,136 @@ describe("TwResearchPage Start retry when queued without job (#365)", () => {
     renderPage("zh-TW");
     const start = await screen.findByTestId("tw-research-start-full-research");
     await user.click(start);
+    const outcome = await screen.findByTestId("tw-research-start-outcome");
+    expect(outcome).toHaveTextContent(/已建立新的研究與收集工作（rr_brand_new/);
+    expect(outcome).toHaveTextContent(/建立於 2026\/11\/13/);
+    expect(outcome).not.toHaveTextContent(/尚未啟用|背景處理服務/);
+  });
+
+  it("shows identity-only startOutcome for job_resumed with progress (#362)", async () => {
+    const user = userEvent.setup();
+    seed({
+      run: {
+        status: "running",
+        firstPassJobId: JOB_ID,
+        scheduleEnabled: false,
+        createdAt: "2026-11-10T04:00:00Z",
+        execution: {
+          state: "job_created",
+          authorized: false,
+          drainAvailable: true,
+          processedCount: 12,
+          universeSize: 73,
+        },
+      },
+    });
+    vi.mocked(startTwResearchRun).mockResolvedValue({
+      ...runRecord({
+        researchRunId: "rr_resumed",
+        createdAt: "2026-11-10T04:00:00Z",
+        firstPassJobId: JOB_ID,
+        scheduleEnabled: true,
+        execution: {
+          state: "executor_not_ticking",
+          authorized: true,
+          drainAvailable: true,
+          processedCount: 12,
+          universeSize: 73,
+        },
+      }),
+      startOutcome: "job_resumed",
+    });
+    renderPage("zh-TW");
+    await user.click(await screen.findByTestId("tw-research-start-full-research"));
+    const outcome = await screen.findByTestId("tw-research-start-outcome");
+    expect(outcome).toHaveTextContent(/已接續現有研究（rr_resumed/);
+    expect(outcome).toHaveTextContent(/建立於 2026\/11\/10/);
+    expect(outcome).toHaveTextContent(/已處理 12\/73/);
+    expect(outcome).not.toHaveTextContent(/尚未啟用|背景處理服務/);
+  });
+
+  it("shows identity-only startOutcome for drain_rearmed (#362)", async () => {
+    const user = userEvent.setup();
+    seed({
+      run: {
+        status: "running",
+        firstPassJobId: JOB_ID,
+        scheduleEnabled: false,
+        execution: {
+          state: "executor_unavailable",
+          authorized: false,
+          drainAvailable: false,
+        },
+      },
+    });
+    vi.mocked(startTwResearchRun).mockResolvedValue({
+      ...runRecord({
+        firstPassJobId: JOB_ID,
+        scheduleEnabled: true,
+        execution: {
+          state: "executor_not_ticking",
+          authorized: true,
+          drainAvailable: true,
+        },
+      }),
+      startOutcome: "drain_rearmed",
+    });
+    renderPage("zh-TW");
+    await user.click(await screen.findByTestId("tw-research-start-full-research"));
     expect(await screen.findByTestId("tw-research-start-outcome")).toHaveTextContent(
-      /已建立新的收集工作/,
+      /已重新授權現有研究的自動收集/,
     );
+  });
+
+  it("job_created execution with drain available uses awaitingStartToArm, not not-enabled (#362)", async () => {
+    seed({
+      run: {
+        status: "running",
+        phase: "phase1_first_pass",
+        firstPassJobId: JOB_ID,
+        scheduleEnabled: false,
+        execution: {
+          state: "job_created",
+          authorized: false,
+          drainAvailable: true,
+          processedCount: 0,
+          universeSize: 73,
+        },
+      },
+      progress: { processedCount: 0, universeSize: 73, pendingCount: 73 },
+    });
+    renderPage("en");
+    const status = await screen.findByTestId("tw-research-execution-status");
+    expect(status).toHaveTextContent(/Collection is ready\. Press Start to authorize/i);
+    expect(status).not.toHaveTextContent(/not enabled|background processing service is not enabled/i);
+    expect(status).toHaveTextContent(/0\/73/);
+    expect(status).toHaveTextContent(/Last progress: —/);
+  });
+
+  it("appends 0/73 and empty lastTickAt on executor_unavailable (#362)", async () => {
+    seed({
+      run: {
+        status: "running",
+        phase: "phase1_first_pass",
+        firstPassJobId: JOB_ID,
+        scheduleEnabled: false,
+        execution: {
+          state: "executor_unavailable",
+          authorized: false,
+          drainAvailable: false,
+          processedCount: 0,
+          universeSize: 73,
+          drainLastTickAt: null,
+        },
+        firstPassDrain: { armed: false, available: false, lastTickAt: null },
+      },
+      progress: { processedCount: 0, universeSize: 73, pendingCount: 73, cursor: 0 },
+    });
+    renderPage("zh-TW");
+    const status = await screen.findByTestId("tw-research-execution-status");
+    expect(status).toHaveTextContent(/研究尚未開始：背景處理服務尚未啟用/);
+    expect(status).toHaveTextContent(/0\/73/);
+    expect(status).toHaveTextContent(/最後進度：—/);
+    expect(status).not.toHaveTextContent(/正在背景收集|正在進行資料收集/);
   });
 });

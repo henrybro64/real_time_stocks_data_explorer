@@ -1306,7 +1306,7 @@ describe("TwResearchPage reliability UX (#335–#337)", () => {
     // Advanced standalone create is behind disclosure, not a second primary Start.
     expect(
       await screen.findByTestId("tw-research-execution-status"),
-    ).toHaveTextContent(/自動收集尚未可用|automatic collection is not available/i);
+    ).toHaveTextContent(/研究尚未開始：背景處理服務尚未啟用|background processing service is not enabled/i);
   });
 
   it("shows phase banner and loads ZH-TW evidence example (#339/#340/#341)", async () => {

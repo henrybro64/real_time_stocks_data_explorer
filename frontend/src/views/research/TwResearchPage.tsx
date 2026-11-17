@@ -46,6 +46,7 @@ import {
   researchErrorRawDetail,
 } from "./researchErrorCopy";
 import {
+  formatTaipeiDateTime,
   jobHistoryOptionLabel,
   normalizeFailureClass,
   technicalScanPlainStatusKey,
@@ -1430,15 +1431,43 @@ export function TwResearchPage({
     return t("research.tw.adoptConflictGeneric");
   };
 
-  const executionMessageFromState = (state: string): string | null => {
+  const executionProgressAppendix = (opts: {
+    processed?: number | null;
+    total?: number | null;
+    lastTickAt?: string | null;
+  }): string => {
+    const locale = language === "en" ? "en-US" : "zh-TW";
+    const processed = Number(opts.processed ?? 0);
+    const total = Number(opts.total ?? 0);
+    const lastTickAt =
+      formatTaipeiDateTime(opts.lastTickAt, locale) || "—";
+    return t("research.tw.execution.progressAppendix", {
+      processed,
+      total,
+      lastTickAt,
+    });
+  };
+
+  const executionMessageFromState = (
+    state: string,
+    progress?: {
+      processed?: number | null;
+      total?: number | null;
+      lastTickAt?: string | null;
+    },
+  ): string | null => {
+    const withProgress = (base: string): string => {
+      if (!progress) return base;
+      return `${base} ${executionProgressAppendix(progress)}`;
+    };
     if (state === "executor_unavailable") {
-      return t("research.tw.execution.executorUnavailable");
+      return withProgress(t("research.tw.execution.executorUnavailable"));
     }
     if (state === "job_created") {
-      return t("research.tw.execution.jobCreated");
+      return withProgress(t("research.tw.execution.awaitingStartToArm"));
     }
     if (state === "executor_not_ticking") {
-      return t("research.tw.execution.executorNotTicking");
+      return withProgress(t("research.tw.execution.executorNotTicking"));
     }
     if (state === "execution_authorized") {
       return t("research.tw.execution.authorizedWaiting");
@@ -1451,9 +1480,29 @@ export function TwResearchPage({
 
   // Derive execution honesty from the live research-run query (survives refresh).
   const executionStatusMessage = useMemo(() => {
-    const state = String(researchRunQuery.data?.execution?.state ?? "");
-    return executionMessageFromState(state);
-  }, [researchRunQuery.data?.execution?.state, language, t]);
+    const run = researchRunQuery.data;
+    const state = String(run?.execution?.state ?? "");
+    const nested = run?.firstPassProgress as FirstPassProgressLike | undefined;
+    const processed =
+      run?.execution?.processedCount ?? nested?.processedCount ?? 0;
+    const total =
+      run?.execution?.universeSize ?? nested?.universeSize ?? 0;
+    const lastTickAt =
+      run?.execution?.drainLastTickAt ??
+      run?.firstPassDrain?.lastTickAt ??
+      null;
+    return executionMessageFromState(state, {
+      processed,
+      total,
+      lastTickAt,
+    });
+  }, [
+    researchRunQuery.data?.execution,
+    researchRunQuery.data?.firstPassProgress,
+    researchRunQuery.data?.firstPassDrain?.lastTickAt,
+    language,
+    t,
+  ]);
 
   const phase2MessageFromState = (state: string): string | null => {
     switch (state) {
@@ -1498,14 +1547,24 @@ export function TwResearchPage({
   const [startOutcomeMessage, setStartOutcomeMessage] = useState<string | null>(null);
 
   const applyManagedStartResult = (run: {
+    researchRunId?: string | null;
+    createdAt?: string | null;
     firstPassJobId?: string | null;
     startOutcome?: string | null;
+    firstPassProgress?: {
+      processed?: number | null;
+      total?: number | null;
+      processedCount?: number | null;
+      universeSize?: number | null;
+    } | null;
     execution?: {
       state?: string;
       blocker?: string | null;
       nextAction?: string | null;
       authorized?: boolean;
       drainAvailable?: boolean;
+      processedCount?: number | null;
+      universeSize?: number | null;
     } | null;
   }) => {
     if (run.firstPassJobId) {
@@ -1514,12 +1573,41 @@ export function TwResearchPage({
       clearFirstPassEvidenceState();
     }
     const outcome = String(run.startOutcome ?? "");
+    const locale = language === "en" ? "en-US" : "zh-TW";
+    const researchRunId = String(run.researchRunId ?? "");
+    const createdAt =
+      formatTaipeiDateTime(run.createdAt, locale) || "—";
+    const nestedProgress = run.firstPassProgress;
+    const processed = Number(
+      run.execution?.processedCount ??
+        nestedProgress?.processedCount ??
+        nestedProgress?.processed ??
+        0,
+    );
+    const total = Number(
+      run.execution?.universeSize ??
+        nestedProgress?.universeSize ??
+        nestedProgress?.total ??
+        0,
+    );
     if (outcome === "job_created") {
-      setStartOutcomeMessage(t("research.tw.execution.jobCreated"));
+      setStartOutcomeMessage(
+        t("research.tw.startOutcome.jobCreated", {
+          researchRunId,
+          createdAt,
+        }),
+      );
     } else if (outcome === "drain_rearmed") {
-      setStartOutcomeMessage(t("research.tw.execution.drainRearmed"));
+      setStartOutcomeMessage(t("research.tw.startOutcome.drainRearmed"));
     } else if (outcome === "job_resumed") {
-      setStartOutcomeMessage(t("research.tw.execution.jobResumed"));
+      setStartOutcomeMessage(
+        t("research.tw.startOutcome.jobResumed", {
+          researchRunId,
+          createdAt,
+          processed,
+          total,
+        }),
+      );
     } else {
       setStartOutcomeMessage(null);
     }

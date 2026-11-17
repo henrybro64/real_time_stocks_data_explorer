@@ -88,19 +88,29 @@ const TW_RESEARCH_ROWS = [
     "研究尚未開始：背景處理服務尚未啟用。已儲存的進度會保留。啟用後請再按「開始研究」；在此之前不會有新資料。",
   ],
   [
-    "research.tw.execution.jobCreated",
-    "A new collection job was created. Automatic collection starts only after the background service is enabled.",
-    "已建立新的收集工作。背景服務啟用後才會開始自動收集。",
+    "research.tw.execution.awaitingStartToArm",
+    "Collection is ready. Press Start to authorize automatic collection.",
+    "收集工作已就緒，請按「開始研究」授權自動收集。",
   ],
   [
-    "research.tw.execution.jobResumed",
-    "Resumed the existing collection job. Automatic collection continues only when the background service is enabled.",
-    "已接續現有的收集工作。背景服務啟用後才會繼續自動收集。",
+    "research.tw.execution.progressAppendix",
+    "{processed}/{total}. Last progress: {lastTickAt}",
+    "{processed}/{total}。最後進度：{lastTickAt}",
   ],
   [
-    "research.tw.execution.drainRearmed",
-    "Collection was re-authorized for the existing job. Waiting for the next automatic run.",
-    "已為現有工作重新授權收集，正在等待下一次自動執行。",
+    "research.tw.startOutcome.jobCreated",
+    "Created a new research and collection job ({researchRunId}, created {createdAt}).",
+    "已建立新的研究與收集工作（{researchRunId}，建立於 {createdAt}）。",
+  ],
+  [
+    "research.tw.startOutcome.jobResumed",
+    "Resumed existing research ({researchRunId}, created {createdAt}, processed {processed}/{total}).",
+    "已接續現有研究（{researchRunId}，建立於 {createdAt}，已處理 {processed}/{total}）。",
+  ],
+  [
+    "research.tw.startOutcome.drainRearmed",
+    "Re-authorized automatic collection for the existing research.",
+    "已重新授權現有研究的自動收集。",
   ],
   [
     "research.tw.firstPassJobHistoryPendingOption",

@@ -643,6 +643,7 @@ export type TwResearchExecutionStatus = {
   scheduleEnabled?: boolean;
   drainAvailable?: boolean;
   drainBlocker?: string | null;
+  drainLastTickAt?: string | null;
   blocker?: string | null;
   nextAction?: string | null;
   jobId?: string | null;
