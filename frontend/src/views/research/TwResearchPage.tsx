@@ -528,6 +528,8 @@ export function TwResearchPage({
   });
 
   const [reportEvidenceText, setReportEvidenceText] = useState("");
+  // Example-only panel — never overwrites live export or first-pass evidence (#361).
+  const [exampleEvidenceText, setExampleEvidenceText] = useState("");
   const [expandedLedgerIds, setExpandedLedgerIds] = useState<Record<string, boolean>>({});
 
   const [firstPassJobsStale, setFirstPassJobsStale] = useState(false);
@@ -1454,10 +1456,17 @@ export function TwResearchPage({
       processed?: number | null;
       total?: number | null;
       lastProgressAt?: string | null;
+      nextRetryAt?: string | null;
     },
   ): string | null => {
     const withProgress = (base: string): string => {
-      if (!progress) return base;
+      if (
+        !progress ||
+        typeof progress.processed !== "number" ||
+        typeof progress.total !== "number"
+      ) {
+        return base;
+      }
       return `${base} ${executionProgressAppendix(progress)}`;
     };
     if (state === "executor_unavailable") {
@@ -1473,13 +1482,24 @@ export function TwResearchPage({
       return withProgress(t("research.tw.execution.stalled"));
     }
     if (state === "execution_authorized") {
+      // Waiting for the next authorized batch — distinct from retry / stall.
       return t("research.tw.execution.authorizedWaiting");
     }
     if (state === "actively_collecting") {
       return t("research.tw.execution.activelyCollecting");
     }
     if (state === "waiting_for_retry") {
-      return withProgress(t("research.tw.execution.executorNotTicking"));
+      const retryLabel = formatTaipeiDateTime(
+        progress?.nextRetryAt,
+        language === "en" ? "en-US" : "zh-TW",
+      );
+      if (retryLabel) {
+        return withProgress(
+          t("research.tw.execution.waitingForRetry", { time: retryLabel }),
+        );
+      }
+      // Never invent a retry time when the server did not schedule one.
+      return withProgress(t("research.tw.execution.waitingForRetryNoTime"));
     }
     return null;
   };
@@ -1489,20 +1509,33 @@ export function TwResearchPage({
     const run = researchRunQuery.data;
     const state = String(run?.execution?.state ?? "");
     const nested = run?.firstPassProgress as FirstPassProgressLike | undefined;
+    const processedRaw =
+      run?.execution?.processedCount ?? nested?.processedCount ?? null;
+    const totalRaw = run?.execution?.universeSize ?? nested?.universeSize ?? null;
     const processed =
-      run?.execution?.processedCount ?? nested?.processedCount ?? 0;
+      typeof processedRaw === "number" && Number.isFinite(processedRaw)
+        ? processedRaw
+        : null;
     const total =
-      run?.execution?.universeSize ?? nested?.universeSize ?? 0;
+      typeof totalRaw === "number" && Number.isFinite(totalRaw) ? totalRaw : null;
     // Prefer authoritative symbol-persist time; never invent from job.updated_at.
     const lastProgressAt = run?.execution?.lastDataProgressAt ?? null;
+    // Authoritative retry schedule only — never invent from local clock.
+    const jobProgress = firstPassProgressQuery.data as FirstPassProgressLike | undefined;
+    const nextRetryAt =
+      (typeof jobProgress?.nextRetryAt === "string" ? jobProgress.nextRetryAt : null) ??
+      (typeof nested?.nextRetryAt === "string" ? nested.nextRetryAt : null) ??
+      null;
     return executionMessageFromState(state, {
       processed,
       total,
       lastProgressAt,
+      nextRetryAt,
     });
   }, [
     researchRunQuery.data?.execution,
     researchRunQuery.data?.firstPassProgress,
+    firstPassProgressQuery.data,
     language,
     t,
   ]);
@@ -2145,7 +2178,8 @@ export function TwResearchPage({
   const loadEvidenceExampleMutation = useMutation({
     mutationFn: async () => fetchTwResearchReportEvidenceExampleZhTw(),
     onSuccess: (example) => {
-      setReportEvidenceText(JSON.stringify(example, null, 2));
+      // Write only to the example panel — never clobber live research evidence.
+      setExampleEvidenceText(JSON.stringify(example, null, 2));
     },
   });
 
@@ -2767,14 +2801,6 @@ export function TwResearchPage({
                 >
                   {t("research.tw.exportReportEvidence")}
                 </Button>
-                <Button
-                  kind="ghost"
-                  size="sm"
-                  disabled={loadEvidenceExampleMutation.isPending}
-                  onClick={() => loadEvidenceExampleMutation.mutate()}
-                >
-                  {t("research.tw.loadEvidenceExample")}
-                </Button>
               </Stack>
               {startRetryHint ? (
                 <p
@@ -2846,6 +2872,34 @@ export function TwResearchPage({
                   ) : null}
                 </AdvancedDetailsDisclosure>
               ) : null}
+              <AdvancedDetailsDisclosure
+                titleKey="research.tw.exampleHelpTitle"
+                hintKey="research.tw.exampleHelpHint"
+              >
+                <div data-testid="tw-research-example-help">
+                  <p className="cds--helper-text-01">
+                    {t("research.tw.loadEvidenceExampleNote")}
+                  </p>
+                  <Button
+                    kind="ghost"
+                    size="sm"
+                    data-testid="tw-research-load-evidence-example"
+                    disabled={loadEvidenceExampleMutation.isPending}
+                    onClick={() => loadEvidenceExampleMutation.mutate()}
+                  >
+                    {t("research.tw.loadEvidenceExample")}
+                  </Button>
+                  {exampleEvidenceText ? (
+                    <pre
+                      className="cds--body-compact-01"
+                      data-testid="tw-research-example-evidence"
+                      style={{ whiteSpace: "pre-wrap", maxHeight: 240, overflow: "auto" }}
+                    >
+                      {exampleEvidenceText}
+                    </pre>
+                  ) : null}
+                </div>
+              </AdvancedDetailsDisclosure>
             </Stack>
           </Tile>
 

@@ -173,9 +173,34 @@ const TW_RESEARCH_ROWS = [
     "已授權收集，但自動執行尚未開始。請稍候數分鐘後重新整理（這不是正在收集）。若持續不變，需由維運確認背景服務。",
   ],
   [
+    "research.tw.execution.waitingForRetry",
+    "Collection paused after a rate limit or temporary error. Scheduled retry: {time}. This is waiting to retry — not an executor failure.",
+    "因速率限制或暫時錯誤而暫停收集。已排定重試：{time}。這是等待重試，不是執行器故障。",
+  ],
+  [
+    "research.tw.execution.waitingForRetryNoTime",
+    "Collection paused after a rate limit or temporary error and is waiting to retry. Retry time appears when the server schedules one — this is not an executor failure.",
+    "因速率限制或暫時錯誤而暫停收集，正在等待重試。重試時間會在伺服器排定後顯示——這不是執行器故障。",
+  ],
+  [
     "research.tw.execution.stalled",
     "Collection paused mid-way: no recent automatic run and no active batch. Saved progress is kept. Refresh later, or ask an operator to verify the background service.",
     "收集中途暫停：沒有近期自動執行，也沒有進行中的批次。已儲存的進度會保留。請稍後重新整理，或請維運確認背景服務。",
+  ],
+  [
+    "research.tw.exampleHelpTitle",
+    "Help / example only (not live research)",
+    "說明／範例專區（非即時研究）",
+  ],
+  [
+    "research.tw.exampleHelpHint",
+    "Example JSON is for format reference only. It never replaces PostgreSQL-backed research evidence or your current selection.",
+    "範例 JSON 僅供格式參考，不會覆寫 PostgreSQL 研究證據或目前選取狀態。",
+  ],
+  [
+    "research.tw.loadEvidenceExampleNote",
+    "Loads a Traditional Chinese sample into the example panel below. Live export and first-pass evidence stay unchanged.",
+    "將繁中範例載入下方範例面板。即時匯出與第一輪證據不會被更動。",
   ],
   [
     "research.tw.startResearchViewProgress",

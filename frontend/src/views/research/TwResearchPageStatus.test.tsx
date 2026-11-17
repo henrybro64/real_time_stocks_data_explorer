@@ -1550,6 +1550,163 @@ describe("TwResearchPage Start retry when queued without job (#365)", () => {
     expect(status).toHaveTextContent(/3\/73/);
   });
 
+  it("waiting_for_retry uses scheduled nextRetryAt and is not executor failure (#362)", async () => {
+    seed({
+      run: {
+        status: "waiting_for_next_window",
+        firstPassJobId: JOB_ID,
+        scheduleEnabled: true,
+        execution: {
+          state: "waiting_for_retry",
+          authorized: true,
+          drainAvailable: true,
+          processedCount: 12,
+          universeSize: 73,
+          lastDataProgressAt: "2026-11-17T03:10:00Z",
+        },
+        // Nested progress supplies authoritative retry time after refresh.
+        firstPassProgress: {
+          nextRetryAt: "2026-11-13T04:30:00Z",
+          processedCount: 12,
+          universeSize: 73,
+        },
+      },
+      progress: {
+        status: "deferred",
+        processedCount: 12,
+        universeSize: 73,
+        nextRetryAt: "2026-11-13T04:30:00Z",
+      },
+    });
+    renderPage("en");
+    const status = await screen.findByTestId("tw-research-execution-status");
+    await waitFor(() => {
+      expect(status).toHaveTextContent(/Scheduled retry:.*2026/);
+    });
+    expect(status).toHaveTextContent(/waiting to retry|rate limit|temporary error/i);
+    expect(status).not.toHaveTextContent(/no automatic run has started/i);
+    expect(status).not.toHaveTextContent(/background service/i);
+    expect(status).toHaveTextContent(/12\/73/);
+  });
+
+  it("waiting_for_retry without nextRetryAt does not invent a time (#362)", async () => {
+    seed({
+      run: {
+        status: "waiting_for_next_window",
+        firstPassJobId: JOB_ID,
+        scheduleEnabled: true,
+        execution: {
+          state: "waiting_for_retry",
+          authorized: true,
+          drainAvailable: true,
+          processedCount: 4,
+          universeSize: 73,
+        },
+        firstPassProgress: { nextRetryAt: null },
+      },
+      progress: {
+        status: "deferred",
+        processedCount: 4,
+        universeSize: 73,
+        nextRetryAt: null,
+      },
+    });
+    renderPage("zh-TW");
+    const status = await screen.findByTestId("tw-research-execution-status");
+    expect(status).toHaveTextContent(/等待重試/);
+    expect(status).toHaveTextContent(/不是執行器故障/);
+    expect(status).not.toHaveTextContent(/已排定重試：\d{4}/);
+    expect(status).not.toHaveTextContent(/自動執行尚未開始/);
+  });
+
+  it("execution_authorized stays distinct from waiting_for_retry (#362)", async () => {
+    seed({
+      run: {
+        status: "running",
+        firstPassJobId: JOB_ID,
+        scheduleEnabled: true,
+        execution: {
+          state: "execution_authorized",
+          authorized: true,
+          drainAvailable: true,
+          processedCount: 0,
+          universeSize: 73,
+        },
+      },
+      progress: { processedCount: 0, universeSize: 73, nextRetryAt: null },
+    });
+    renderPage("en");
+    const status = await screen.findByTestId("tw-research-execution-status");
+    expect(status).toHaveTextContent(/authorized and waiting for the next automatic run/i);
+    expect(status).not.toHaveTextContent(/rate limit|temporary error|Scheduled retry/i);
+    expect(status).not.toHaveTextContent(/no automatic run has started/i);
+  });
+
+  it("executor_not_ticking stays distinct from waiting_for_retry (#362)", async () => {
+    seed({
+      run: {
+        status: "running",
+        firstPassJobId: JOB_ID,
+        scheduleEnabled: true,
+        execution: {
+          state: "executor_not_ticking",
+          authorized: true,
+          drainAvailable: true,
+          processedCount: 0,
+          universeSize: 73,
+        },
+      },
+    });
+    renderPage("en");
+    const status = await screen.findByTestId("tw-research-execution-status");
+    expect(status).toHaveTextContent(/no automatic run has started/i);
+    expect(status).not.toHaveTextContent(/Scheduled retry|rate limit|temporary error/i);
+  });
+
+  it("stalled stays distinct from waiting_for_retry (#362)", async () => {
+    seed({
+      run: {
+        status: "running",
+        firstPassJobId: JOB_ID,
+        scheduleEnabled: true,
+        execution: {
+          state: "stalled",
+          authorized: true,
+          drainAvailable: true,
+          processedCount: 10,
+          universeSize: 73,
+          lastDataProgressAt: "2026-11-17T02:00:00Z",
+        },
+      },
+      progress: { processedCount: 10, universeSize: 73 },
+    });
+    renderPage("en");
+    const stalled = await screen.findByTestId("tw-research-execution-status");
+    expect(stalled).toHaveTextContent(/paused mid-way/i);
+    expect(stalled).not.toHaveTextContent(/Scheduled retry|rate limit/i);
+  });
+
+  it("executor_unavailable stays distinct from waiting_for_retry (#362)", async () => {
+    seed({
+      run: {
+        status: "running",
+        firstPassJobId: JOB_ID,
+        scheduleEnabled: false,
+        execution: {
+          state: "executor_unavailable",
+          authorized: false,
+          drainAvailable: false,
+          processedCount: 0,
+          universeSize: 73,
+        },
+      },
+    });
+    renderPage("zh-TW");
+    const status = await screen.findByTestId("tw-research-execution-status");
+    expect(status).toHaveTextContent(/背景處理服務尚未啟用/);
+    expect(status).not.toHaveTextContent(/等待重試|速率限制/);
+  });
+
   it("keeps selected historical job and shows retry on 404 detail load (#362 P2-A)", async () => {
     seed({
       run: {

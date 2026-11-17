@@ -56,9 +56,15 @@ def classify_first_pass_execution(
     *,
     job: dict[str, Any] | None = None,
     symbol_counts: dict[str, Any] | None = None,
+    symbol_counts_available: bool = True,
     last_data_progress_at: str | None = None,
 ) -> dict[str, Any]:
-    """Return an additive execution block for Start / current-run responses."""
+    """Return an additive execution block for Start / current-run responses.
+
+    ``symbol_counts_available=False`` means the authoritative symbol-count read
+    failed: leave processed/pending null rather than inventing 0/N from missing
+    job aggregates.
+    """
     available, drain_reason = first_pass_drain_availability(run.user_id)
     job_status = ""
     lease_active = False
@@ -86,30 +92,36 @@ def classify_first_pass_execution(
             stock_ids = job.get("stock_ids") or job.get("stockIds") or []
             if isinstance(stock_ids, list):
                 universe_size = len(stock_ids)
-        counts = symbol_counts
-        if counts is None:
-            # Prefer explicit aggregates over cursor (cursor is a watermark).
-            counts = {
-                "ok": job.get("okCount") or job.get("ok_count"),
-                "partial": job.get("partialCount") or job.get("partial_count"),
-                "failed": job.get("failedCount") or job.get("failed_count"),
-                "total": job.get("symbolTotal") or job.get("symbol_total"),
-            }
         try:
             universe_size_i = int(universe_size) if universe_size is not None else None
         except (TypeError, ValueError):
             universe_size_i = None
         universe_size = universe_size_i
-        if universe_size_i is not None:
-            try:
-                ok = int(counts.get("ok") or 0) if isinstance(counts, dict) else 0
-                partial = int(counts.get("partial") or 0) if isinstance(counts, dict) else 0
-                failed = int(counts.get("failed") or 0) if isinstance(counts, dict) else 0
-                processed = ok + partial + failed
-                pending = max(0, universe_size_i - processed)
-            except (TypeError, ValueError):
-                processed = None
-                pending = None
+        if symbol_counts_available:
+            counts = symbol_counts
+            if counts is None:
+                # Prefer explicit aggregates over cursor (cursor is a watermark).
+                counts = {
+                    "ok": job.get("okCount") or job.get("ok_count"),
+                    "partial": job.get("partialCount") or job.get("partial_count"),
+                    "failed": job.get("failedCount") or job.get("failed_count"),
+                    "total": job.get("symbolTotal") or job.get("symbol_total"),
+                }
+            if universe_size_i is not None:
+                try:
+                    ok = int(counts.get("ok") or 0) if isinstance(counts, dict) else 0
+                    partial = (
+                        int(counts.get("partial") or 0) if isinstance(counts, dict) else 0
+                    )
+                    failed = (
+                        int(counts.get("failed") or 0) if isinstance(counts, dict) else 0
+                    )
+                    processed = ok + partial + failed
+                    pending = max(0, universe_size_i - processed)
+                except (TypeError, ValueError):
+                    processed = None
+                    pending = None
+        # else: count read failed — keep processed/pending null (no fabricated 0/N).
 
     drain_meta = {}
     if isinstance(run.dimensions, dict):

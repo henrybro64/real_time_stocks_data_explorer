@@ -8,6 +8,7 @@ explicit budgets.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from datetime import datetime
 from typing import Any, TypeVar
@@ -18,6 +19,8 @@ from fastapi.responses import JSONResponse
 
 from app.api.deps import get_effective_user_id
 from app.core.config import settings
+
+logger = logging.getLogger(__name__)
 from app.schemas.tw_research import (
     CandidateSetResponse,
     CandidateSetSubmitRequest,
@@ -1601,6 +1604,19 @@ def _start_phase1_research_run(
     return _claim_and_create_phase1_job(user_id=user_id)
 
 
+def _log_research_run_read_failure(field: str, *, job_id: str | None, exc: Exception) -> None:
+    """Bounded, sanitized log for isolated First-Pass status reads (#361/#362)."""
+    safe_job = None
+    if isinstance(job_id, str) and job_id.strip():
+        safe_job = job_id.strip()[:64]
+    logger.warning(
+        "tw_research_run_response_read_failed field=%s job_id=%s err_type=%s",
+        field,
+        safe_job,
+        type(exc).__name__,
+    )
+
+
 def _research_run_response(
     run: ResearchRun,
     *,
@@ -1617,22 +1633,39 @@ def _research_run_response(
     job = None
     counts = None
     last_data_progress_at = None
-    if run.first_pass_job_id and tw_research_repository.is_available():
+    # True unless the authoritative count query raised; False must not invent 0/N.
+    symbol_counts_available = True
+    job_id = run.first_pass_job_id
+    if job_id and tw_research_repository.is_available():
         try:
             job = tw_research_repository.get_first_pass_job(
-                run.first_pass_job_id, user_id=run.user_id
+                job_id, user_id=run.user_id
             )
-            counts = tw_research_repository.count_first_pass_symbols(
-                run.first_pass_job_id
+        except Exception as exc:  # noqa: BLE001 — isolate; keep other reads
+            _log_research_run_read_failure(
+                "get_first_pass_job", job_id=job_id, exc=exc
             )
+            job = None
+        try:
+            counts = tw_research_repository.count_first_pass_symbols(job_id)
+        except Exception as exc:  # noqa: BLE001 — isolate; keep job / progress
+            _log_research_run_read_failure(
+                "count_first_pass_symbols", job_id=job_id, exc=exc
+            )
+            counts = None
+            symbol_counts_available = False
+        try:
             last_data_progress_at = (
                 tw_research_repository.latest_first_pass_symbol_data_progress_at(
-                    run.first_pass_job_id
+                    job_id
                 )
             )
-        except Exception:  # noqa: BLE001 — response must still return the run
-            job = None
-            counts = None
+        except Exception as exc:  # noqa: BLE001 — isolate; keep job / counts
+            _log_research_run_read_failure(
+                "latest_first_pass_symbol_data_progress_at",
+                job_id=job_id,
+                exc=exc,
+            )
             last_data_progress_at = None
     scan_payload = None
     scan_state = None
@@ -1658,6 +1691,7 @@ def _research_run_response(
             run,
             job=job,
             symbol_counts=counts,
+            symbol_counts_available=symbol_counts_available,
             last_data_progress_at=last_data_progress_at,
         ),
         phase2Execution=classify_phase2_execution(

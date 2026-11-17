@@ -23,6 +23,7 @@ import {
   fetchTwResearchLatestManifest,
   fetchTwResearchMembership,
   fetchTwResearchReportEvidenceExampleZhTw,
+  postTwResearchReportEvidence,
   fetchTwResearchRunCurrent,
   fetchTwResearchScan,
   fetchTwResearchScanProgress,
@@ -1309,7 +1310,7 @@ describe("TwResearchPage reliability UX (#335–#337)", () => {
     ).toHaveTextContent(/研究尚未開始：背景處理服務尚未啟用|background processing service is not enabled/i);
   });
 
-  it("shows phase banner and loads ZH-TW evidence example (#339/#340/#341)", async () => {
+  it("shows phase banner and keeps demo example out of the primary Start row (#339/#361)", async () => {
     const user = userEvent.setup();
     vi.mocked(fetchTwResearchRunCurrent).mockResolvedValue({
       researchRunId: "rr_test",
@@ -1320,6 +1321,11 @@ describe("TwResearchPage reliability UX (#335–#337)", () => {
       cronjobRemainsSuspended: true,
       notNotionPublisher: true,
     });
+    // Seed live export text so we can prove example load does not overwrite it.
+    vi.mocked(postTwResearchReportEvidence).mockResolvedValue({
+      liveExport: true,
+      snapshotId: "live-fp",
+    } as never);
     renderPage();
     expect(await screen.findByTestId("tw-research-phase-banner")).toBeInTheDocument();
     await waitFor(() => {
@@ -1329,15 +1335,32 @@ describe("TwResearchPage reliability UX (#335–#337)", () => {
     expect(screen.getByTestId("tw-research-phase-banner").textContent).not.toMatch(
       /Notion|CronJob|#\d{3}/,
     );
+    // Primary Start remains the dominant research action; demo is Help-only.
+    const start = screen.getByTestId("tw-research-start-full-research");
+    expect(start).toBeInTheDocument();
+    const help = await screen.findByTestId("tw-research-example-help");
+    const exampleBtn = screen.getByTestId("tw-research-load-evidence-example");
+    expect(help).toContainElement(exampleBtn);
+    expect(start.closest("[data-testid='tw-research-example-help']")).toBeNull();
+    expect(help.textContent).toMatch(/範例|example|Help/i);
+
     await user.click(
-      screen.getByRole("button", {
-        name: /載入繁中範例|Load Traditional Chinese example/i,
-      }),
+      screen.getByRole("button", { name: /匯出證據摘要|Export evidence summary/i }),
     );
+    expect(await screen.findByTestId("tw-research-report-evidence")).toHaveTextContent(
+      "liveExport",
+    );
+
+    await user.click(exampleBtn);
     await waitFor(() => {
       expect(fetchTwResearchReportEvidenceExampleZhTw).toHaveBeenCalled();
     });
-    expect(await screen.findByTestId("tw-research-report-evidence")).toHaveTextContent(
+    expect(await screen.findByTestId("tw-research-example-evidence")).toHaveTextContent(
+      "exampleOnly",
+    );
+    // Live export evidence must remain untouched.
+    expect(screen.getByTestId("tw-research-report-evidence")).toHaveTextContent("liveExport");
+    expect(screen.getByTestId("tw-research-report-evidence")).not.toHaveTextContent(
       "exampleOnly",
     );
   });

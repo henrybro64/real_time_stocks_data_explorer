@@ -184,6 +184,28 @@ def test_missing_last_data_progress_at_stays_null(monkeypatch) -> None:
     assert result["lastDataProgressAt"] is None
 
 
+def test_symbol_counts_unavailable_does_not_fabricate_processed(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.services.tw_research.execution_status.first_pass_drain_availability",
+        lambda user_id: (False, "first_pass_drain_globally_disabled"),
+    )
+    result = classify_first_pass_execution(
+        _run(),
+        job={
+            "status": "pending",
+            "universe_size": 73,
+            "ok_count": 10,
+            "partial_count": 0,
+            "failed_count": 0,
+        },
+        symbol_counts=None,
+        symbol_counts_available=False,
+    )
+    assert result["universeSize"] == 73
+    assert result["processedCount"] is None
+    assert result["pendingCount"] is None
+
+
 def test_running_status_without_lease_is_not_actively_collecting(monkeypatch) -> None:
     monkeypatch.setattr(
         "app.services.tw_research.execution_status.first_pass_drain_availability",
