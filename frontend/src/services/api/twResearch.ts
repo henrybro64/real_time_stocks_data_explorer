@@ -679,8 +679,11 @@ export type TwResearchPhase2ExecutionStatus = {
   universeSize?: number | null;
   processedCount?: number | null;
   remainingCount?: number | null;
+  /** Evaluated indicator rows only — excludes failed / insufficient / pending. */
   analyzedCount?: number | null;
   insufficientHistoryCount?: number | null;
+  failedCount?: number | null;
+  pendingCount?: number | null;
   hasTechnicalWork?: boolean | null;
   phase2Enabled?: boolean | null;
   candidateSelection?: string | null;

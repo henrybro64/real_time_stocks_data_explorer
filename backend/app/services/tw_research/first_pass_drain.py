@@ -436,6 +436,11 @@ def _phase2_needs_budget_resume(state: ScanState) -> bool:
 
 
 def _coverage_counts(state: ScanState) -> dict[str, int]:
+    """Mutually exclusive Phase-2 symbol buckets for drain coverage (#361/#362).
+
+    ``analyzed`` is evaluated indicator work only — never failed, insufficient,
+    or pending rows (avoids double-counting in success-rate style ratios).
+    """
     analyzed = 0
     insufficient = 0
     deferred = 0
@@ -448,11 +453,10 @@ def _coverage_counts(state: ScanState) -> dict[str, int]:
             continue
         reason = str(getattr(record, "rejection_reason", "") or "")
         readiness = str(getattr(record, "readiness", "") or "")
-        if reason == HISTORY_BUDGET_EXHAUSTED_REASON:
+        if reason == HISTORY_BUDGET_EXHAUSTED_REASON or readiness == "source_incomplete":
             insufficient += 1
-        elif readiness == "failed" or reason:
+        elif readiness == "rejected" or reason:
             failed += 1
-            analyzed += 1
         else:
             analyzed += 1
         if str(getattr(state, "status", "") or "") == "deferred":

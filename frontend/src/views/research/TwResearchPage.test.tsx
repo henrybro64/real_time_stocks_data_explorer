@@ -1950,6 +1950,76 @@ describe("TwResearchPage one primary CTA per stage (#361)", () => {
     expect(deriveResearchUiStage(fixtures[4]!.run)).toBe("results");
   });
 
+  it("keeps failed/cancelled First-Pass with persisted job on collecting (#362)", () => {
+    expect(
+      deriveResearchUiStage({
+        researchRunId: "rr_failed",
+        userId: "u1",
+        phase: "phase1_first_pass",
+        status: "failed",
+        firstPassJobId: "fpj_failed",
+      }),
+    ).toBe("collecting");
+    expect(
+      deriveResearchUiStage({
+        researchRunId: "rr_cancelled",
+        userId: "u1",
+        phase: "phase1_first_pass",
+        status: "cancelled",
+        firstPassSnapshotId: "fps_1",
+      }),
+    ).toBe("collecting");
+  });
+
+  it("maps failed First-Pass without persisted evidence to select_scope (#362)", () => {
+    expect(
+      deriveResearchUiStage({
+        researchRunId: "rr_empty_fail",
+        userId: "u1",
+        phase: "phase1_first_pass",
+        status: "failed",
+      }),
+    ).toBe("select_scope");
+  });
+
+  it("keeps failed Phase-2 on technical_analysis for persisted scan evidence (#362)", () => {
+    expect(
+      deriveResearchUiStage({
+        researchRunId: "rr_p2_fail",
+        userId: "u1",
+        phase: "phase2_technical",
+        status: "failed",
+        technicalScanId: SCAN_ID,
+        gates: { candidateSelection: "approved" },
+        phase2Execution: { state: "failed" },
+      }),
+    ).toBe("technical_analysis");
+  });
+
+  it("does not present failed/cancelled runs as successful results (#362)", () => {
+    expect(
+      deriveResearchUiStage({
+        researchRunId: "rr_false_results",
+        userId: "u1",
+        phase: "complete_evidence_ready",
+        status: "failed",
+        firstPassJobId: "fpj_1",
+        technicalScanId: SCAN_ID,
+        gates: { candidateSelection: "approved" },
+        phase2Execution: { state: "completed" },
+      }),
+    ).toBe("technical_analysis");
+    expect(
+      deriveResearchUiStage({
+        researchRunId: "rr_cancelled_results",
+        userId: "u1",
+        phase: "awaiting_analyst_report_decision",
+        status: "cancelled",
+        firstPassJobId: "fpj_1",
+      }),
+    ).toBe("collecting");
+  });
+
   it.each(fixtures)(
     "shows exactly one visible primary button for stage $name",
     async ({ run }) => {

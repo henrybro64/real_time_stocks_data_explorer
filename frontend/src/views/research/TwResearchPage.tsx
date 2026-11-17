@@ -135,6 +135,29 @@ export function deriveResearchUiStage(
   const status = String(run.status ?? "");
   const approved = String(run.gates?.candidateSelection ?? "") === "approved";
   const phase2State = String(run.phase2Execution?.state ?? "");
+  const hasPersistedFirstPass = Boolean(
+    run.firstPassJobId || run.firstPassSnapshotId,
+  );
+  const failedOrCancelled =
+    ["failed", "cancelled"].includes(status) || phase2State === "failed";
+
+  // Failure/cancel must win over results — never present as a successful Stage-4 (#362).
+  if (failedOrCancelled) {
+    if (
+      phase === "phase2_technical" ||
+      phase2State === "failed" ||
+      (approved && run.technicalScanId)
+    ) {
+      return "technical_analysis";
+    }
+    if (phase === "phase1_first_pass") {
+      return hasPersistedFirstPass ? "collecting" : "select_scope";
+    }
+    if (hasPersistedFirstPass) {
+      return "collecting";
+    }
+    return "select_scope";
+  }
 
   if (
     phase === "awaiting_analyst_report_decision" ||
@@ -154,7 +177,6 @@ export function deriveResearchUiStage(
     return "awaiting_candidate_selection";
   }
   if (phase === "phase1_first_pass") {
-    if (["failed", "cancelled"].includes(status)) return "select_scope";
     return "collecting";
   }
   return "select_scope";

@@ -295,6 +295,8 @@ def classify_phase2_execution(
             "remainingCount": None,
             "analyzedCount": None,
             "insufficientHistoryCount": None,
+            "failedCount": None,
+            "pendingCount": None,
             "candidateSelection": (run.gates or {}).get("candidateSelection"),
             "phase2Enabled": phase2_enabled,
             "notes": [
@@ -303,33 +305,8 @@ def classify_phase2_execution(
             ],
         }
 
-    if scan_id and not phase2_enabled:
-        return {
-            "state": "paused",
-            "authorized": False,
-            "drainAvailable": available,
-            "drainBlocker": drain_reason,
-            "drainLastTickAt": phase2_meta.get("lastTickAt")
-            if isinstance(phase2_meta.get("lastTickAt"), str)
-            else None,
-            "drainFresh": None,
-            "blocker": "phase2_paused",
-            "nextAction": "resume_phase2_drain",
-            "technicalScanId": scan_id,
-            "scanStatus": None,
-            "leaseActive": False,
-            "leaseExpiresAt": None,
-            "universeSize": None,
-            "processedCount": None,
-            "remainingCount": None,
-            "analyzedCount": None,
-            "insufficientHistoryCount": None,
-            "candidateSelection": (run.gates or {}).get("candidateSelection"),
-            "phase2Enabled": False,
-            "notes": [
-                "Phase-2 drain is paused. Resume via first-pass-drain enabled=true.",
-            ],
-        }
+    # Do not early-return on phase2Enabled=False: pausing future scheduling must
+    # not hide scan progress or claim an in-flight lease has stopped (#361/#362).
 
     drain_meta = {}
     if isinstance(run.dimensions, dict):
@@ -352,6 +329,8 @@ def classify_phase2_execution(
     processed = None
     analyzed = None
     insufficient = None
+    failed_count = None
+    pending_count = None
     has_technical_work = None
     if scan is not None:
         scan_status = str(scan.get("status") or "")
@@ -398,12 +377,20 @@ def classify_phase2_execution(
         records = getattr(scan_state, "records", {}) or {}
         analyzed = 0
         insufficient = 0
+        failed_count = 0
+        pending_count = 0
         for sid in stock_ids:
             rec = records.get(sid)
             if rec is None:
+                pending_count += 1
                 continue
-            if str(getattr(rec, "rejection_reason", "") or "") == HISTORY_BUDGET_EXHAUSTED_REASON:
+            reason = str(getattr(rec, "rejection_reason", "") or "")
+            readiness = str(getattr(rec, "readiness", "") or "")
+            # Mutually exclusive buckets — analyzed = evaluated indicators only.
+            if reason == HISTORY_BUDGET_EXHAUSTED_REASON or readiness == "source_incomplete":
                 insufficient += 1
+            elif readiness == "rejected" or reason:
+                failed_count += 1
             else:
                 analyzed += 1
         if not scan_status:
@@ -418,6 +405,10 @@ def classify_phase2_execution(
                 if coverage_meta.get("insufficientHistory") is not None
                 else None
             )
+            if coverage_meta.get("failed") is not None:
+                failed_count = int(coverage_meta.get("failed"))
+            if coverage_meta.get("pending") is not None:
+                pending_count = int(coverage_meta.get("pending"))
         except (TypeError, ValueError):
             pass
 
@@ -446,6 +437,11 @@ def classify_phase2_execution(
         state = "failed"
         blocker = "phase2_failed"
         next_action = "inspect_errors_or_retry"
+    elif complete:
+        # Authoritative completion wins over a stale budget lastOutcome (#361/#362).
+        state = "completed"
+        blocker = None
+        next_action = "review_evidence"
     elif last_outcome == "phase2_budget_cap_reached" or (
         scan_status == "budget_exhausted" and has_technical_work is not False
     ):
@@ -460,17 +456,15 @@ def classify_phase2_execution(
             if last_outcome == "phase2_budget_cap_reached"
             else "resume_budget_or_wait"
         )
-    elif complete:
-        state = "completed"
-        blocker = None
-        next_action = "review_evidence"
     elif last_outcome == "phase2_no_progress":
-        failed_count = 0
+        no_progress_failed = 0
         try:
-            failed_count = int((coverage_meta or {}).get("failed") or 0)
+            no_progress_failed = int((coverage_meta or {}).get("failed") or 0)
         except (TypeError, ValueError):
-            failed_count = 0
-        if failed_count > 0 and (remaining is None or remaining <= 0):
+            no_progress_failed = 0
+        if failed_count is not None:
+            no_progress_failed = max(no_progress_failed, int(failed_count))
+        if no_progress_failed > 0 and (remaining is None or remaining <= 0):
             state = "failed"
             blocker = "phase2_no_progress"
             next_action = "inspect_errors_or_retry"
@@ -514,6 +508,17 @@ def classify_phase2_execution(
         blocker = None
         next_action = "waiting_for_drain_tick"
 
+    # Scheduling pause is orthogonal to active processing / terminal outcomes.
+    if scan_id and not phase2_enabled:
+        if state == "actively_analyzing":
+            # Lease still held — pause only blocks future drain claims.
+            blocker = "phase2_scheduling_paused"
+            next_action = "poll_progress"
+        elif state not in {"completed", "failed", "waiting_for_budget_window"}:
+            state = "paused"
+            blocker = "phase2_paused"
+            next_action = "resume_phase2_drain"
+
     return {
         "state": state,
         "authorized": bool(approved and scan_id and available and phase2_enabled),
@@ -530,8 +535,11 @@ def classify_phase2_execution(
         "universeSize": universe_size,
         "processedCount": processed,
         "remainingCount": remaining,
+        # analyzedCount = evaluated indicator rows only (excludes failed/insufficient/pending).
         "analyzedCount": analyzed,
         "insufficientHistoryCount": insufficient,
+        "failedCount": failed_count,
+        "pendingCount": pending_count,
         "hasTechnicalWork": has_technical_work,
         "candidateSelection": (run.gates or {}).get("candidateSelection"),
         "phase2Enabled": phase2_enabled,
@@ -539,6 +547,7 @@ def classify_phase2_execution(
             "Attaching a technical scan is not proof that analysis is running.",
             "Phase-2 drain reuses the First-Pass drain CronJob token/owner/flag.",
             "Terminal scan status alone is not complete while history work remains.",
+            "phase2Enabled=false pauses future scheduling; an active lease may still finish.",
         ],
     }
 

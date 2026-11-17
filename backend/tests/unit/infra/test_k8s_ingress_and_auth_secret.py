@@ -241,6 +241,62 @@ def test_local_auth_file_cookie_follows_public_scheme(tmp_path) -> None:
     assert 'SESSION_SECRET: "aaaaaaaaaaaaaaaa"' in secret.read_text(encoding="utf-8")
 
 
+@pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
+def test_set_local_secret_key_is_structure_aware_and_non_leaking(tmp_path) -> None:
+    secret = tmp_path / "backend-auth-secret.yaml"
+    secret.write_text(
+        (
+            "apiVersion: v1\n"
+            "kind: Secret\n"
+            "metadata:\n"
+            "  name: stock-ticker-backend-auth\n"
+            "stringData:\n"
+            '  SESSION_SECRET: "aaaaaaaaaaaaaaaa"\n'
+            '  SESSION_COOKIE_SECURE: "true"\n'
+            "type: Opaque\n"
+        ),
+        encoding="utf-8",
+    )
+    funcs = _extract_deploy_funcs("_set_local_secret_key")
+    good = tmp_path / "good.sh"
+    good.write_text(
+        "set -euo pipefail\n"
+        + funcs
+        + '\n_set_local_secret_key "$1" SESSION_COOKIE_SECURE false\n',
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        ["bash", str(good), str(secret)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    text = secret.read_text(encoding="utf-8")
+    assert 'SESSION_COOKIE_SECURE: "false"' in text
+    assert 'SESSION_SECRET: "aaaaaaaaaaaaaaaa"' in text
+    assert "type: Opaque" in text
+    assert "aaaaaaaaaaaaaaaa" not in result.stdout
+    assert "aaaaaaaaaaaaaaaa" not in result.stderr
+
+    bad = tmp_path / "bad.sh"
+    bad.write_text(
+        "set -euo pipefail\n"
+        + funcs
+        + '\n_set_local_secret_key "$1" "bad-key!" nope\n',
+        encoding="utf-8",
+    )
+    rejected = subprocess.run(
+        ["bash", str(bad), str(secret)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert rejected.returncode != 0
+    assert "refusing invalid Secret key name" in rejected.stderr
+    assert "nope" not in rejected.stdout
+    assert "nope" not in rejected.stderr
+
+
 def test_backend_worker_deployment_is_wired() -> None:
     worker = (_K8S / "backend-worker.yaml").read_text(encoding="utf-8")
     assert "name: stock-ticker-backend-worker" in worker
