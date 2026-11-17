@@ -941,7 +941,25 @@ export function TwResearchPage({
     if (!jobs) return;
     setFirstPassJobs(jobs);
     setFirstPassJobsStale(false);
-    if (firstPassJobId || jobs.length === 0) return;
+    if (firstPassJobId) return;
+    // Prefer the authoritative run-owned Job even when it is not yet in the
+    // list (shows a loading option instead of silently picking an older Job).
+    const runJobId = researchRunQuery.data?.firstPassJobId;
+    if (typeof runJobId === "string" && runJobId.trim()) {
+      const match = jobs.find((job) => String(job.jobId ?? "") === runJobId);
+      setFirstPassJobId(runJobId);
+      if (match) {
+        setFirstPassProgressText(JSON.stringify(match, null, 2));
+        if (typeof match.activeSnapshotId === "string" && match.activeSnapshotId) {
+          setFirstPassSnapshotId(match.activeSnapshotId);
+        }
+      }
+      return;
+    }
+    // Wait for the current-run query before defaulting to the newest history
+    // row — otherwise a stale list entry can flash as the selected Job (#362 D2).
+    if (researchRunQuery.isLoading || researchRunQuery.isFetching) return;
+    if (jobs.length === 0) return;
     const latest = jobs[0];
     const jobId = String(latest.jobId ?? "");
     if (!jobId) return;
@@ -955,6 +973,9 @@ export function TwResearchPage({
     firstPassJobsQuery.isError,
     firstPassJobId,
     firstPassJobs.length,
+    researchRunQuery.data?.firstPassJobId,
+    researchRunQuery.isLoading,
+    researchRunQuery.isFetching,
   ]);
 
   useEffect(() => {
@@ -1474,8 +1495,11 @@ export function TwResearchPage({
       String(researchRunQuery.data?.phase ?? "") === "phase2_technical",
   );
 
+  const [startOutcomeMessage, setStartOutcomeMessage] = useState<string | null>(null);
+
   const applyManagedStartResult = (run: {
     firstPassJobId?: string | null;
+    startOutcome?: string | null;
     execution?: {
       state?: string;
       blocker?: string | null;
@@ -1488,6 +1512,16 @@ export function TwResearchPage({
       firstPassSelectionGenRef.current += 1;
       setFirstPassJobId(run.firstPassJobId);
       clearFirstPassEvidenceState();
+    }
+    const outcome = String(run.startOutcome ?? "");
+    if (outcome === "job_created") {
+      setStartOutcomeMessage(t("research.tw.execution.jobCreated"));
+    } else if (outcome === "drain_rearmed") {
+      setStartOutcomeMessage(t("research.tw.execution.drainRearmed"));
+    } else if (outcome === "job_resumed") {
+      setStartOutcomeMessage(t("research.tw.execution.jobResumed"));
+    } else {
+      setStartOutcomeMessage(null);
     }
     void queryClient.invalidateQueries({ queryKey: ["tw-research-run-current"] });
     void queryClient.invalidateQueries({ queryKey: ["tw-research-first-pass-jobs"] });
@@ -2257,14 +2291,17 @@ export function TwResearchPage({
     typeof selectedFirstPassJob?.createdAt === "string"
       ? selectedFirstPassJob.createdAt
       : null;
+  // Never invent a Job birth time from Research Run createdAt (#362 D2).
   const runOwnedJobCreatedAt = useMemo(() => {
     const fromList = firstPassJobs.find(
       (job) => String(job.jobId ?? "") === String(runOwnedFirstPassJobId ?? ""),
     )?.createdAt;
-    if (typeof fromList === "string") return fromList;
-    const fromRun = researchRunQuery.data?.createdAt;
-    return typeof fromRun === "string" ? fromRun : null;
-  }, [firstPassJobs, runOwnedFirstPassJobId, researchRunQuery.data?.createdAt]);
+    return typeof fromList === "string" ? fromList : null;
+  }, [firstPassJobs, runOwnedFirstPassJobId]);
+  const selectedJobMissingFromList = Boolean(
+    firstPassJobId &&
+      !firstPassJobs.some((job) => String(job.jobId ?? "") === String(firstPassJobId)),
+  );
 
   // "This batch" banner comes only from the latest batch mutation result.
   const batchMutationData = firstPassBatchMutation.data;
@@ -2457,6 +2494,15 @@ export function TwResearchPage({
                   data-testid="tw-research-start-retry-hint"
                 >
                   {startRetryHint}
+                </p>
+              ) : null}
+              {startOutcomeMessage ? (
+                <p
+                  className="cds--helper-text-01"
+                  data-testid="tw-research-start-outcome"
+                  role="status"
+                >
+                  {startOutcomeMessage}
                 </p>
               ) : null}
               {executionStatusMessage ? (
@@ -2857,7 +2903,7 @@ export function TwResearchPage({
                 />{" "}
                 {t("research.tw.showArchivedJobs")}
               </label>
-              {firstPassJobs.length > 0 ? (
+              {firstPassJobs.length > 0 || selectedJobMissingFromList ? (
                 <Select
                   id="tw-research-first-pass-job-history"
                   data-testid="tw-research-first-pass-job-history"
@@ -2899,6 +2945,15 @@ export function TwResearchPage({
                     }
                   }}
                 >
+                  {selectedJobMissingFromList && firstPassJobId ? (
+                    <SelectItem
+                      key={`pending-${firstPassJobId}`}
+                      value={firstPassJobId}
+                      text={t("research.tw.firstPassJobHistoryPendingOption", {
+                        jobId: firstPassJobId,
+                      })}
+                    />
+                  ) : null}
                   {firstPassJobs.map((job) => (
                     <SelectItem
                       key={String(job.jobId)}

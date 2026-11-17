@@ -84,13 +84,28 @@ const TW_RESEARCH_ROWS = [
   ["research.tw.startFirstPass", "Start first-round data collection", "開始第一輪資料收集"],
   [
     "research.tw.execution.executorUnavailable",
-    "Automatic collection is not available yet. Saved progress is kept. Press Start again after collection is enabled, or wait — do not expect new data until then.",
-    "自動收集尚未可用，已儲存的進度會保留。啟用後請再按「開始研究」，或稍候；在此之前不會有新資料。",
+    "Research has not started: the background processing service is not enabled yet. Saved progress is kept. Press Start again after it is enabled — do not expect new data until then.",
+    "研究尚未開始：背景處理服務尚未啟用。已儲存的進度會保留。啟用後請再按「開始研究」；在此之前不會有新資料。",
   ],
   [
     "research.tw.execution.jobCreated",
-    "Research is ready. Press Start again to begin automatic collection when it is available.",
-    "研究已就緒。自動收集可用時，請再按「開始研究」開始。",
+    "A new collection job was created. Automatic collection starts only after the background service is enabled.",
+    "已建立新的收集工作。背景服務啟用後才會開始自動收集。",
+  ],
+  [
+    "research.tw.execution.jobResumed",
+    "Resumed the existing collection job. Automatic collection continues only when the background service is enabled.",
+    "已接續現有的收集工作。背景服務啟用後才會繼續自動收集。",
+  ],
+  [
+    "research.tw.execution.drainRearmed",
+    "Collection was re-authorized for the existing job. Waiting for the next automatic run.",
+    "已為現有工作重新授權收集，正在等待下一次自動執行。",
+  ],
+  [
+    "research.tw.firstPassJobHistoryPendingOption",
+    "Selected job (details loading…) · {jobId}",
+    "已選工作（資料載入中…）· {jobId}",
   ],
   [
     "research.tw.execution.authorizedWaiting",

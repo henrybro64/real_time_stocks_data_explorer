@@ -331,6 +331,8 @@ class ResearchRunResponse(BaseModel):
     execution: dict[str, Any] | None = None
     # Phase-2 technical honesty: scan attach ≠ analysis running (#361).
     phase2Execution: dict[str, Any] | None = None
+    # Present on Start/Resume responses only (#362): new job vs existing job resumed.
+    startOutcome: str | None = None
 
 
 class TechnicalIndicatorSnapshot(BaseModel):

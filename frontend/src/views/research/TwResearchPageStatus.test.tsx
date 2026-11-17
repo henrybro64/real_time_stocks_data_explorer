@@ -132,10 +132,18 @@ function runRecord(overrides: Partial<TwResearchRun> = {}): TwResearchRun {
 
 function seed(options: {
   job?: Record<string, unknown>;
+  jobs?: Array<Record<string, unknown>>;
   progress?: Record<string, unknown>;
   run?: Partial<TwResearchRun> | null;
 }) {
-  vi.mocked(listTwResearchFirstPassJobs).mockResolvedValue([jobRecord(options.job)]);
+  const listed =
+    options.jobs ??
+    (options.job === undefined && options.jobs === undefined
+      ? [jobRecord()]
+      : options.job
+        ? [jobRecord(options.job)]
+        : []);
+  vi.mocked(listTwResearchFirstPassJobs).mockResolvedValue(listed);
   vi.mocked(fetchTwResearchFirstPassProgress).mockResolvedValue(
     progressRecord(options.progress),
   );
@@ -1244,6 +1252,80 @@ describe("TwResearchPage Start retry when queued without job (#365)", () => {
     ).toHaveTextContent(/no automatic run has started|尚未開始/i);
     expect(screen.getByTestId("tw-research-execution-status")).not.toHaveTextContent(
       /actively collecting|正在背景收集|正在進行資料收集/i,
+    );
+  });
+
+  it("shows executor-unavailable copy without inventing active collection (#362)", async () => {
+    seed({
+      run: {
+        status: "running",
+        phase: "phase1_first_pass",
+        firstPassJobId: JOB_ID,
+        scheduleEnabled: false,
+        createdAt: "2026-11-16T08:00:00Z",
+        execution: {
+          state: "executor_unavailable",
+          authorized: false,
+          drainAvailable: false,
+        },
+      },
+      jobs: [jobRecord({ jobId: JOB_ID, createdAt: "2026-11-17T03:17:00Z" })],
+    });
+    renderPage("zh-TW");
+    const status = await screen.findByTestId("tw-research-execution-status");
+    expect(status).toHaveTextContent(/研究尚未開始：背景處理服務尚未啟用/);
+    expect(status).not.toHaveTextContent(/正在背景收集|正在進行資料收集/);
+    const active = await screen.findByTestId("tw-research-active-job");
+    // Job label uses Job createdAt (Taipei), not the older Research Run birth time.
+    expect(active).toHaveTextContent(/2026\/11\/17/);
+    expect(active).not.toHaveTextContent(/2026\/11\/16/);
+  });
+
+  it("keeps selected job identity when it is missing from the history list (#362 D2)", async () => {
+    seed({
+      run: {
+        status: "running",
+        phase: "phase1_first_pass",
+        firstPassJobId: "fpj_selected_missing",
+        scheduleEnabled: false,
+        execution: {
+          state: "executor_unavailable",
+          authorized: false,
+          drainAvailable: false,
+        },
+      },
+      // Older historical jobs only — selected id is absent until refetch.
+      jobs: [jobRecord({ jobId: "fpj_older_history", createdAt: "2026-11-16T08:00:00Z" })],
+    });
+    renderPage("zh-TW");
+    const select = await screen.findByTestId("tw-research-first-pass-job-history");
+    expect(select).toHaveValue("fpj_selected_missing");
+    expect(select).toHaveTextContent(/已選工作（資料載入中/i);
+    expect(select).not.toHaveValue("fpj_older_history");
+  });
+
+  it("distinguishes new Job created from resumed Job on Start (#362)", async () => {
+    const user = userEvent.setup();
+    seed({
+      run: null,
+      jobs: [],
+    });
+    vi.mocked(startTwResearchRun).mockResolvedValue({
+      ...runRecord({
+        firstPassJobId: "fpj_brand_new",
+        execution: {
+          state: "executor_unavailable",
+          authorized: false,
+          drainAvailable: false,
+        },
+      }),
+      startOutcome: "job_created",
+    });
+    renderPage("zh-TW");
+    const start = await screen.findByTestId("tw-research-start-full-research");
+    await user.click(start);
+    expect(await screen.findByTestId("tw-research-start-outcome")).toHaveTextContent(
+      /已建立新的收集工作/,
     );
   });
 });

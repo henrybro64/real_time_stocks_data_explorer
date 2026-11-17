@@ -2080,44 +2080,52 @@ class TwResearchRepository(SessionBoundRepository):
                         raise ResearchRunConflict() from None
                     raise ResearchRunConflict() from None
             else:
+                next_run_id = str(payload["research_run_id"])
+                values: dict[str, Any] = {
+                    "research_run_id": next_run_id,
+                    "version": str(payload.get("version") or row.version),
+                    "phase": str(payload["phase"]),
+                    "status": str(payload["status"]),
+                    "trading_day": payload.get("trading_day"),
+                    "first_pass_job_id": payload.get("first_pass_job_id"),
+                    "first_pass_snapshot_id": payload.get("first_pass_snapshot_id"),
+                    "candidate_set_id": payload.get("candidate_set_id"),
+                    "candidate_set_version": payload.get("candidate_set_version"),
+                    "technical_scan_id": payload.get("technical_scan_id"),
+                    "gates_json": dict(payload.get("gates") or {}),
+                    "dimensions_json": dict(payload.get("dimensions") or {}),
+                    "notes_json": list(payload.get("notes") or [])[-50:],
+                    "schedule_enabled": bool(payload.get("schedule_enabled")),
+                    "revision": expected_revision + 1,
+                    "job_claim_token": payload.get("job_claim_token"),
+                    "job_claim_expires_at": _as_utc_iso(
+                        payload.get("job_claim_expires_at")
+                    ),
+                    "pending_first_pass_job_id": payload.get(
+                        "pending_first_pass_job_id"
+                    ),
+                    "phase2_claim_token": payload.get("phase2_claim_token"),
+                    "phase2_claim_expires_at": _as_utc_iso(
+                        payload.get("phase2_claim_expires_at")
+                    ),
+                    "pending_technical_scan_id": payload.get(
+                        "pending_technical_scan_id"
+                    ),
+                    "updated_at": now,
+                }
+                # User-keyed row: replacing a finished run with a new
+                # research_run_id must refresh created_at. Same-id updates keep
+                # the original birth timestamp.
+                if next_run_id != str(row.research_run_id):
+                    created = _as_utc_iso(payload.get("created_at")) or now
+                    values["created_at"] = created
                 updated = session.execute(
                     update(TwResearchResearchRun)
                     .where(
                         TwResearchResearchRun.user_id == user_id,
                         TwResearchResearchRun.revision == expected_revision,
                     )
-                    .values(
-                        research_run_id=str(payload["research_run_id"]),
-                        version=str(payload.get("version") or row.version),
-                        phase=str(payload["phase"]),
-                        status=str(payload["status"]),
-                        trading_day=payload.get("trading_day"),
-                        first_pass_job_id=payload.get("first_pass_job_id"),
-                        first_pass_snapshot_id=payload.get("first_pass_snapshot_id"),
-                        candidate_set_id=payload.get("candidate_set_id"),
-                        candidate_set_version=payload.get("candidate_set_version"),
-                        technical_scan_id=payload.get("technical_scan_id"),
-                        gates_json=dict(payload.get("gates") or {}),
-                        dimensions_json=dict(payload.get("dimensions") or {}),
-                        notes_json=list(payload.get("notes") or [])[-50:],
-                        schedule_enabled=bool(payload.get("schedule_enabled")),
-                        revision=expected_revision + 1,
-                        job_claim_token=payload.get("job_claim_token"),
-                        job_claim_expires_at=_as_utc_iso(
-                            payload.get("job_claim_expires_at")
-                        ),
-                        pending_first_pass_job_id=payload.get(
-                            "pending_first_pass_job_id"
-                        ),
-                        phase2_claim_token=payload.get("phase2_claim_token"),
-                        phase2_claim_expires_at=_as_utc_iso(
-                            payload.get("phase2_claim_expires_at")
-                        ),
-                        pending_technical_scan_id=payload.get(
-                            "pending_technical_scan_id"
-                        ),
-                        updated_at=now,
-                    )
+                    .values(**values)
                 )
                 if int(updated.rowcount or 0) != 1:
                     raise ResearchRunConflict()

@@ -1407,7 +1407,10 @@ def _research_run_unavailable(exc: ResearchRunStoreUnavailable) -> HTTPException
 
 def _maybe_rearm_first_pass_on_start(user_id: str) -> ResearchRunResponse:
     """Re-arm drain on Start; concurrent armed run returns 200 instead of 409."""
+    armed_before = False
     try:
+        before = research_run_store.get(user_id)
+        armed_before = bool(before.schedule_enabled) if before is not None else False
         run = research_run_store.maybe_rearm_first_pass_drain_on_start(user_id)
     except ResearchRunStoreUnavailable as exc:
         raise _research_run_unavailable(exc) from exc
@@ -1419,7 +1422,7 @@ def _maybe_rearm_first_pass_on_start(user_id: str) -> ResearchRunResponse:
         except ResearchRunStoreUnavailable:
             current = None
         if current is not None and bool(current.schedule_enabled):
-            return _research_run_response(current)
+            return _research_run_response(current, start_outcome="job_resumed")
         raise HTTPException(
             status_code=409,
             detail={
@@ -1427,7 +1430,12 @@ def _maybe_rearm_first_pass_on_start(user_id: str) -> ResearchRunResponse:
                 "reason": exc.reason,
             },
         ) from exc
-    return _research_run_response(run)
+    outcome = (
+        "drain_rearmed"
+        if (not armed_before and bool(run.schedule_enabled))
+        else "job_resumed"
+    )
+    return _research_run_response(run, start_outcome=outcome)
 
 
 def _create_first_pass_job_for_start(*, user_id: str, job_id: str) -> str:
@@ -1476,7 +1484,7 @@ def _attach_created_first_pass_job(
                 reason=str(attached.get("outcome")),
             )
     run = ResearchRun.from_persist_payload(attached["run"])
-    return _research_run_response(run)
+    return _research_run_response(run, start_outcome="job_created")
 
 
 def _resume_existing_phase1_run(*, user_id: str, run: ResearchRun) -> ResearchRunResponse | None:
@@ -1488,7 +1496,7 @@ def _resume_existing_phase1_run(*, user_id: str, run: ResearchRun) -> ResearchRu
         return None
     if run.first_pass_job_id and run.phase == "phase1_first_pass":
         return _maybe_rearm_first_pass_on_start(user_id)
-    return _research_run_response(run)
+    return _research_run_response(run, start_outcome="job_resumed")
 
 
 def _claim_and_create_phase1_job(*, user_id: str) -> ResearchRunResponse:
@@ -1509,7 +1517,7 @@ def _claim_and_create_phase1_job(*, user_id: str) -> ResearchRunResponse:
         return _maybe_rearm_first_pass_on_start(user_id)
     if outcome == "claim_held":
         held = ResearchRun.from_persist_payload(claim["run"])
-        return _research_run_response(held)
+        return _research_run_response(held, start_outcome="job_resumed")
 
     pending_job_id = claim.get("pending_first_pass_job_id")
     if not pending_job_id:
@@ -1555,7 +1563,11 @@ def _start_phase1_research_run(
     return _claim_and_create_phase1_job(user_id=user_id)
 
 
-def _research_run_response(run: ResearchRun) -> ResearchRunResponse:
+def _research_run_response(
+    run: ResearchRun,
+    *,
+    start_outcome: str | None = None,
+) -> ResearchRunResponse:
     """Attach honest execution readiness alongside the durable run (#359/#361)."""
     from app.services.tw_research.execution_status import (
         classify_first_pass_execution,
@@ -1603,6 +1615,7 @@ def _research_run_response(run: ResearchRun) -> ResearchRunResponse:
         phase2Execution=classify_phase2_execution(
             run, scan=scan_payload, scan_state=scan_state
         ),
+        startOutcome=start_outcome,
     )
 
 
@@ -2138,7 +2151,8 @@ def adopt_first_pass_job_into_research_run(
         if _is_pg_lock_contention(exc):
             raise _http_concurrent_update_retry(exc) from exc
         raise
-    return _research_run_response(run)
+    # Existing job attached under a new Research Run identity.
+    return _research_run_response(run, start_outcome="job_resumed")
 
 
 @router.post("/research-runs/gate", response_model=ResearchRunResponse)

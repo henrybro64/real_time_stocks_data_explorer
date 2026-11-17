@@ -830,6 +830,8 @@ export async function fetchTwResearchRunCurrent() {
 export type TwResearchRunStartResult = TwResearchRun & {
   execution?: TwResearchExecutionStatus | null;
   phase2Execution?: TwResearchPhase2ExecutionStatus | null;
+  /** Present on Start/Resume: new job vs existing job (#362). */
+  startOutcome?: "job_created" | "job_resumed" | "drain_rearmed" | string | null;
 };
 
 export async function startTwResearchRun(body?: {
@@ -841,11 +843,13 @@ export async function startTwResearchRun(body?: {
     researchRun: TwResearchRun;
     execution?: TwResearchExecutionStatus | null;
     phase2Execution?: TwResearchPhase2ExecutionStatus | null;
+    startOutcome?: string | null;
   }>("/tw-research/research-runs/start", "POST", body ?? { phase: "phase1_first_pass" });
   return {
     ...response.researchRun,
     execution: response.execution ?? null,
     phase2Execution: response.phase2Execution ?? null,
+    startOutcome: response.startOutcome ?? null,
   };
 }
 
@@ -857,11 +861,13 @@ export async function adoptTwResearchFirstPassJob(body: {
     researchRun: TwResearchRun;
     execution?: TwResearchExecutionStatus | null;
     phase2Execution?: TwResearchPhase2ExecutionStatus | null;
+    startOutcome?: string | null;
   }>("/tw-research/research-runs/adopt-first-pass-job", "POST", body);
   return {
     ...response.researchRun,
     execution: response.execution ?? null,
     phase2Execution: response.phase2Execution ?? null,
+    startOutcome: response.startOutcome ?? null,
   };
 }
 
