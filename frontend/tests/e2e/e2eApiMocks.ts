@@ -1396,7 +1396,20 @@ export async function installE2eApiMocks(page: Page): Promise<void> {
         await fulfillJson(route, { detail: "first_pass_progress_not_found" }, 404);
         return;
       }
-      await route.continue();
+      // Default mock job is fpj_e2e — never fall through to a live backend.
+      await fulfillJson(route, {
+        progress: {
+          jobId: "fpj_e2e",
+          status: "completed",
+          qualityStatus: "complete_attempted",
+          universeSize: 1,
+          cursor: 1,
+          processedCount: 1,
+          pendingCount: 0,
+          okCount: 1,
+          leaseActive: false,
+        },
+      });
       return;
     }
     if (

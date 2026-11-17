@@ -1,6 +1,7 @@
 import type { Page, Request } from "@playwright/test";
 
 import { E2E_TW_RESEARCH_HANDOFF, setE2eAuthenticatedUser, setE2eSignedOut } from "./e2eApiMocks";
+import { openTwResearchProgressDisclosure } from "./helpers";
 import { expect, test } from "./setup";
 
 /**
@@ -63,8 +64,8 @@ async function openResearchPage(page: Page) {
   setE2eAuthenticatedUser(page, { id: "handoff-user", username: "handoff-user" });
   await page.goto("/research/tw");
   await expect(page.locator("#main-content")).toBeVisible();
-  // Latest-verified lives under the Progress tab after the three-tab layout (#339).
-  await page.getByTestId("tw-research-tab-progress").click();
+  // Latest-verified lives under advanced Progress disclosure in single-flow (#361).
+  await openTwResearchProgressDisclosure(page);
   await expect(page.getByTestId("tw-research-latest-verified")).toBeVisible();
 }
 
@@ -106,12 +107,11 @@ test("authenticated browser reads the verified manifest and matching chunk", asy
 
   await page.getByTestId("tw-research-load-latest-manifest").click();
   const jsonArea = page.getByTestId("tw-research-latest-manifest-json");
-  // Manifest JSON lives under Advanced (collapsed by default for ordinary investors).
-  await page
-    .locator(
-      '[data-testid="tw-research-advanced-details"]:has([data-testid="tw-research-latest-manifest-json"]) summary',
-    )
-    .click();
+  // Manifest JSON lives under its own nested Advanced disclosure.
+  const manifestDetails = jsonArea.locator(
+    'xpath=ancestor::details[@data-testid="tw-research-advanced-details"][1]',
+  );
+  await manifestDetails.locator(":scope > summary").click();
   await expect(jsonArea).toBeVisible();
   await expect.poll(async () => jsonArea.inputValue()).toContain(E2E_TW_RESEARCH_HANDOFF.snapshotId);
   await expect.poll(async () => jsonArea.inputValue()).toContain("contentDigest");

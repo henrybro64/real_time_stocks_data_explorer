@@ -87,14 +87,16 @@ test("stock profile shows unavailable (stale) for stale mock", async ({ page }) 
   await expect(page.getByTestId("macd-kd-daily-unavailable")).toContainText(/unavailable \(stale\)|不可用（已過期/i);
 });
 
-test("research evidence tab shows 台積電 chip sections when snapshot is pinned", async ({
+test("research collect stage shows 台積電 chip sections when snapshot is pinned", async ({
   page,
 }) => {
   setE2eAuthenticatedUser(page, { id: "chip-user", username: "chip-user" });
   await page.goto("/research/tw");
   await expect(page.getByTestId("tw-research-tabs")).toBeVisible();
-  await page.getByTestId("tw-research-tab-evidence").click();
-  await expect(page.getByTestId("tw-research-chip-evidence")).toBeVisible();
+  // Chip evidence is inline in stage 2 (no evidence tab in single-flow #361).
+  await expect(page.getByTestId("tw-research-chip-evidence")).toBeVisible({
+    timeout: 15_000,
+  });
   await expect(page.getByTestId("tw-research-chip-row-TW:2330")).toBeVisible({
     timeout: 15_000,
   });
@@ -107,8 +109,9 @@ test("research chip browser works on mobile viewport 390×844", async ({ page })
   setE2eAuthenticatedUser(page, { id: "chip-mobile", username: "chip-mobile" });
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/research/tw");
-  await page.getByTestId("tw-research-tab-evidence").click();
-  await expect(page.getByTestId("tw-research-chip-evidence")).toBeVisible();
+  await expect(page.getByTestId("tw-research-chip-evidence")).toBeVisible({
+    timeout: 15_000,
+  });
   await expect(page.getByTestId("tw-research-chip-row-TW:2330")).toBeVisible({
     timeout: 15_000,
   });
