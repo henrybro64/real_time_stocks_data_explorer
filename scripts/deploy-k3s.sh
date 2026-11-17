@@ -625,9 +625,12 @@ for line in lines:
         out.append(line)
         continue
     if in_string_data:
+        # Blank / whitespace-only lines are not mapping boundaries (keepends
+        # leaves "\n" in stripped after lstrip of spaces/tabs).
+        content = stripped.strip()
         # Left the mapping when indentation returns to stringData level or less
         # on a non-empty, non-comment line.
-        if stripped and not stripped.startswith("#"):
+        if content and not content.startswith("#"):
             if len(indent) <= len(string_data_indent):
                 if not found:
                     out.append(f"{pending_insert_indent}{key}: {yaml_quote(value)}\n")
@@ -635,7 +638,7 @@ for line in lines:
                 in_string_data = False
                 out.append(line)
                 continue
-            m = re.match(r"^([A-Za-z0-9_]+)\s*:", stripped)
+            m = re.match(r"^([A-Za-z0-9_]+)\s*:", content)
             if m and m.group(1) == key:
                 out.append(f"{indent}{key}: {yaml_quote(value)}\n")
                 found = True

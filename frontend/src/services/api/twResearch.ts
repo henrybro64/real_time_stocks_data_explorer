@@ -830,12 +830,12 @@ export type TwResearchRun = {
   updatedAt?: string;
 };
 
-export async function fetchTwResearchRunCurrent() {
+export async function fetchTwResearchRunCurrent(init?: { signal?: AbortSignal }) {
   const response = await requestJson<{
     researchRun: TwResearchRun;
     execution?: TwResearchExecutionStatus | null;
     phase2Execution?: TwResearchPhase2ExecutionStatus | null;
-  }>("/tw-research/research-runs/current");
+  }>("/tw-research/research-runs/current", { signal: init?.signal });
   return {
     ...response.researchRun,
     execution: response.execution ?? response.researchRun.execution ?? null,

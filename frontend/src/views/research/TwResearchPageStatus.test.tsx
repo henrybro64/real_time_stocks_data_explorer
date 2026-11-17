@@ -2117,6 +2117,61 @@ describe("TwResearchPage Start retry when queued without job (#365)", () => {
     vi.useRealTimers();
   });
 
+  it("times out creation polling even when a GET is still in flight (#362)", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    seed({ run: null, jobs: [] });
+    const pendingRun = runRecord({
+      firstPassJobId: null,
+      pendingFirstPassJobId: "fpj_pending",
+      jobClaimActive: true,
+      jobClaimExpiresAt: new Date(Date.now() + 600_000).toISOString(),
+    });
+    let started = false;
+    vi.mocked(startTwResearchRun).mockImplementation(async () => {
+      started = true;
+      return { ...pendingRun, startOutcome: "creation_in_progress" };
+    });
+    vi.mocked(fetchTwResearchRunCurrent).mockImplementation(
+      (_init?: { signal?: AbortSignal }) =>
+        new Promise((resolve, reject) => {
+          if (!started) {
+            reject(
+              new ApiError("missing", { status: 404, detail: "x", kind: "not_found" }),
+            );
+            return;
+          }
+          const signal = _init?.signal;
+          if (!signal) return;
+          const onAbort = () => {
+            const err = new Error("aborted");
+            err.name = "AbortError";
+            reject(err);
+          };
+          if (signal.aborted) {
+            onAbort();
+            return;
+          }
+          signal.addEventListener("abort", onAbort, { once: true });
+        }),
+    );
+    renderPage("en");
+    await user.click(await screen.findByTestId("tw-research-start-full-research"));
+    expect(await screen.findByTestId("tw-research-start-outcome")).toHaveTextContent(
+      /already in progress/i,
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(50_000);
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId("tw-research-start-outcome")).toHaveTextContent(
+        /Still waiting for collection setup/i,
+      );
+    });
+    expect(startTwResearchRun).toHaveBeenCalledTimes(1);
+    vi.useRealTimers();
+  });
+
   it("cancels creation polling on unmount (#362)", async () => {
     const user = userEvent.setup();
     seed({ run: null, jobs: [] });

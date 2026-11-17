@@ -297,6 +297,43 @@ def test_set_local_secret_key_is_structure_aware_and_non_leaking(tmp_path) -> No
     assert "nope" not in rejected.stderr
 
 
+def test_set_local_secret_key_updates_across_blank_lines_in_string_data(tmp_path) -> None:
+    secret = tmp_path / "backend-auth-secret.yaml"
+    secret.write_text(
+        (
+            "apiVersion: v1\n"
+            "kind: Secret\n"
+            "metadata:\n"
+            "  name: stock-ticker-backend-auth\n"
+            "stringData:\n"
+            '  SESSION_SECRET: "aaaaaaaaaaaaaaaa"\n'
+            "\n"
+            '  SESSION_COOKIE_SECURE: "false"\n'
+            "type: Opaque\n"
+        ),
+        encoding="utf-8",
+    )
+    funcs = _extract_deploy_funcs("_set_local_secret_key")
+    script = tmp_path / "blank.sh"
+    script.write_text(
+        "set -euo pipefail\n"
+        + funcs
+        + '\n_set_local_secret_key "$1" SESSION_COOKIE_SECURE true\n',
+        encoding="utf-8",
+    )
+    subprocess.run(
+        ["bash", str(script), str(secret)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    text = secret.read_text(encoding="utf-8")
+    assert text.count("SESSION_COOKIE_SECURE:") == 1
+    assert 'SESSION_COOKIE_SECURE: "true"' in text
+    assert 'SESSION_COOKIE_SECURE: "false"' not in text
+    assert 'SESSION_SECRET: "aaaaaaaaaaaaaaaa"' in text
+
+
 def test_backend_worker_deployment_is_wired() -> None:
     worker = (_K8S / "backend-worker.yaml").read_text(encoding="utf-8")
     assert "name: stock-ticker-backend-worker" in worker

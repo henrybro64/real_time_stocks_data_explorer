@@ -1795,7 +1795,8 @@ export function TwResearchPage({
     const pollGen = creationPollGenRef.current;
     let cancelled = false;
     let timer: number | null = null;
-    const startedAt = Date.now();
+    let deadlineTimer: number | null = null;
+    const abortController = new AbortController();
 
     const finish = (phase: CreationPollPhase, messageKey: TranslationKey) => {
       if (cancelled || creationPollGenRef.current !== pollGen) return;
@@ -1803,16 +1804,34 @@ export function TwResearchPage({
       setStartOutcomeMessage(t(messageKey));
     };
 
+    const stopPolling = () => {
+      cancelled = true;
+      if (timer != null) {
+        window.clearTimeout(timer);
+        timer = null;
+      }
+      if (deadlineTimer != null) {
+        window.clearTimeout(deadlineTimer);
+        deadlineTimer = null;
+      }
+      abortController.abort();
+    };
+
+    // Independent of in-flight GETs so a stalled request cannot pin Start disabled.
+    deadlineTimer = window.setTimeout(() => {
+      finish("timeout", "research.tw.startOutcome.creationTimedOut");
+      stopPolling();
+    }, CREATION_POLL_MAX_MS);
+
     const tick = async () => {
       if (cancelled || creationPollGenRef.current !== pollGen) return;
-      if (Date.now() - startedAt >= CREATION_POLL_MAX_MS) {
-        finish("timeout", "research.tw.startOutcome.creationTimedOut");
-        return;
-      }
       try {
-        const run = await fetchTwResearchRunCurrent();
+        const run = await fetchTwResearchRunCurrent({
+          signal: abortController.signal,
+        });
         if (cancelled || creationPollGenRef.current !== pollGen) return;
         if (run?.firstPassJobId) {
+          stopPolling();
           applyManagedStartResult({
             ...run,
             startOutcome: "creation_attached",
@@ -1824,21 +1843,25 @@ export function TwResearchPage({
           const expiresMs = Date.parse(expiresRaw);
           if (Number.isFinite(expiresMs) && expiresMs <= Date.now()) {
             finish("expired", "research.tw.startOutcome.creationClaimExpired");
+            stopPolling();
             return;
           }
         }
         if (!run?.pendingFirstPassJobId && run?.jobClaimActive !== true) {
           finish("failed", "research.tw.startOutcome.creationFailed");
+          stopPolling();
           return;
         }
       } catch (error) {
         if (cancelled || creationPollGenRef.current !== pollGen) return;
+        if (error instanceof Error && error.name === "AbortError") return;
         const status = toApiError(error).status;
         if (status === 404) {
           finish("failed", "research.tw.startOutcome.creationFailed");
+          stopPolling();
           return;
         }
-        // Transient network/5xx — keep polling until timeout.
+        // Transient network/5xx — keep polling until the independent deadline.
       }
       if (cancelled || creationPollGenRef.current !== pollGen) return;
       timer = window.setTimeout(() => {
@@ -1848,8 +1871,7 @@ export function TwResearchPage({
 
     void tick();
     return () => {
-      cancelled = true;
-      if (timer != null) window.clearTimeout(timer);
+      stopPolling();
     };
     // intentionally omit applyManagedStartResult — stable enough via pollGen cancel
     // eslint-disable-next-line react-hooks/exhaustive-deps
