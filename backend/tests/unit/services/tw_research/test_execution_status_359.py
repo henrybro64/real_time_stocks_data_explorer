@@ -82,6 +82,151 @@ def test_executor_not_ticking_when_last_tick_stale(monkeypatch) -> None:
     assert result["nextAction"] == "wait_or_contact_operator"
 
 
+def test_stalled_when_mid_progress_and_tick_stale(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.services.tw_research.execution_status.first_pass_drain_availability",
+        lambda user_id: (True, None),
+    )
+    result = classify_first_pass_execution(
+        _run(
+            schedule_enabled=True,
+            dimensions={"firstPassDrain": {"lastTickAt": "2020-01-01T00:00:00+00:00"}},
+        ),
+        job={
+            "status": "running",
+            "universe_size": 73,
+            "ok_count": 10,
+            "partial_count": 0,
+            "failed_count": 0,
+            "updated_at": "2026-11-17T02:00:00+00:00",
+        },
+    )
+    assert result["state"] == "stalled"
+    assert result["jobUpdatedAt"] == "2026-11-17T02:00:00+00:00"
+    assert result["processedCount"] == 10
+    assert result["pendingCount"] == 63
+    assert result["authorized"] is True
+
+
+def test_last_data_progress_at_is_distinct_from_job_updated_at(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.services.tw_research.execution_status.first_pass_drain_availability",
+        lambda user_id: (False, "first_pass_drain_globally_disabled"),
+    )
+    result = classify_first_pass_execution(
+        _run(),
+        job={
+            "status": "pending",
+            "universe_size": 73,
+            "ok_count": 0,
+            "updated_at": "2026-11-17T04:00:00+00:00",
+        },
+        last_data_progress_at="2026-11-17T03:00:00+00:00",
+    )
+    assert result["jobUpdatedAt"] == "2026-11-17T04:00:00+00:00"
+    assert result["lastDataProgressAt"] == "2026-11-17T03:00:00+00:00"
+    assert result["lastDataProgressAt"] != result["jobUpdatedAt"]
+
+
+def test_drain_noop_tick_true_for_idle_deferred_and_skipped(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.services.tw_research.execution_status.first_pass_drain_availability",
+        lambda user_id: (True, None),
+    )
+    for outcome in (
+        "idle_no_work",
+        "deferred",
+        "skipped_not_authorized",
+        "skipped_no_job",
+    ):
+        result = classify_first_pass_execution(
+            _run(
+                schedule_enabled=True,
+                dimensions={"firstPassDrain": {"lastOutcome": outcome}},
+            ),
+            job={"status": "pending", "universe_size": 10, "ok_count": 0},
+        )
+        assert result["drainNoopTick"] is True, outcome
+        assert result["drainLastOutcome"] == outcome
+
+
+def test_drain_noop_tick_false_for_batch_progress_outcomes(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.services.tw_research.execution_status.first_pass_drain_availability",
+        lambda user_id: (True, None),
+    )
+    for outcome in (
+        "max_batches_reached",
+        "job_completed",
+        "job_partial",
+        "failed_batch",
+    ):
+        result = classify_first_pass_execution(
+            _run(
+                schedule_enabled=True,
+                dimensions={"firstPassDrain": {"lastOutcome": outcome}},
+            ),
+            job={"status": "running", "universe_size": 10, "ok_count": 2},
+        )
+        assert result["drainNoopTick"] is False, outcome
+
+
+def test_missing_last_data_progress_at_stays_null(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.services.tw_research.execution_status.first_pass_drain_availability",
+        lambda user_id: (False, "first_pass_drain_globally_disabled"),
+    )
+    result = classify_first_pass_execution(
+        _run(),
+        job={"status": "pending", "universe_size": 73, "ok_count": 0},
+        last_data_progress_at=None,
+    )
+    assert result["lastDataProgressAt"] is None
+
+
+def test_symbol_counts_unavailable_does_not_fabricate_processed(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.services.tw_research.execution_status.first_pass_drain_availability",
+        lambda user_id: (False, "first_pass_drain_globally_disabled"),
+    )
+    result = classify_first_pass_execution(
+        _run(),
+        job={
+            "status": "pending",
+            "universe_size": 73,
+            "ok_count": 10,
+            "partial_count": 0,
+            "failed_count": 0,
+        },
+        symbol_counts=None,
+        symbol_counts_available=False,
+    )
+    assert result["universeSize"] == 73
+    assert result["processedCount"] is None
+    assert result["pendingCount"] is None
+
+
+def test_running_status_without_lease_is_not_actively_collecting(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.services.tw_research.execution_status.first_pass_drain_availability",
+        lambda user_id: (False, "first_pass_drain_globally_disabled"),
+    )
+    result = classify_first_pass_execution(
+        _run(status="running", schedule_enabled=False),
+        job={
+            "status": "pending",
+            "universe_size": 73,
+            "ok_count": 0,
+            "partial_count": 0,
+            "failed_count": 0,
+        },
+    )
+    assert result["state"] == "executor_unavailable"
+    assert result["state"] != "actively_collecting"
+    assert result["processedCount"] == 0
+    assert result["pendingCount"] == 73
+
+
 def test_awaiting_analyst_after_gate(monkeypatch) -> None:
     monkeypatch.setattr(
         "app.services.tw_research.execution_status.first_pass_drain_availability",

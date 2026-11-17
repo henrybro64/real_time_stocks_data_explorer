@@ -173,6 +173,33 @@ describe("TwResearchJobManage", () => {
     expect(screen.queryByTestId("tw-research-first-pass-job-history")).not.toBeInTheDocument();
   });
 
+  it("200 delete does not resurrect a stale run-owned job id into history", async () => {
+    const user = userEvent.setup();
+    let deleted = false;
+    vi.mocked(fetchTwResearchRunCurrent).mockImplementation(async () => ({
+      researchRunId: "rr_manage",
+      userId: "u1",
+      phase: "phase1_first_pass",
+      status: "running",
+      firstPassJobId: deleted ? null : JOB_ID,
+      scheduleEnabled: false,
+    }));
+    vi.mocked(deleteTwResearchFirstPassJob).mockImplementation(async () => {
+      deleted = true;
+      return { deleted: true };
+    });
+    vi.mocked(listTwResearchFirstPassJobs).mockImplementation(async () =>
+      deleted ? [] : [jobRecord({ status: "pending" })],
+    );
+    renderPage("en");
+    await user.click(await screen.findByTestId("tw-research-job-delete"));
+    await user.click(await screen.findByTestId("tw-research-delete-modal-confirm"));
+    await waitFor(() => {
+      expect(screen.getByTestId("tw-research-first-pass-jobs-empty")).toBeInTheDocument();
+    });
+    expect(screen.queryByTestId("tw-research-first-pass-job-history")).not.toBeInTheDocument();
+  });
+
   it("202 then 410 gone shows permanent delete copy and clears selection", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTimeAsync });

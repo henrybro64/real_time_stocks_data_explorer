@@ -576,28 +576,101 @@ EOF
 }
 
 _set_local_secret_key() {
+  # Structure-aware stringData edit only. Never prints the value. Validates key
+  # name, requires a Secret document with stringData, and writes atomically (#362).
   SECRET_EDIT_PATH="$1" SECRET_EDIT_KEY="$2" SECRET_EDIT_VALUE="$3" python3 - <<'PY'
 import os
+import re
+import tempfile
 from pathlib import Path
 
 path = Path(os.environ["SECRET_EDIT_PATH"])
 key = os.environ["SECRET_EDIT_KEY"]
 value = os.environ["SECRET_EDIT_VALUE"]
-prefix = f"  {key}:"
-lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+
+if not re.fullmatch(r"[A-Z][A-Z0-9_]*", key or ""):
+    raise SystemExit("refusing invalid Secret key name")
+if not path.is_file():
+    raise SystemExit(f"secret file missing: {path}")
+
+text = path.read_text(encoding="utf-8")
+if "kind: Secret" not in text and "kind:\"Secret\"" not in text:
+    # Accept plain stringData-only fixtures used by unit harnesses.
+    if "stringData:" not in text:
+        raise SystemExit("refusing edit: not a Secret YAML with stringData")
+
+def yaml_quote(raw: str) -> str:
+    escaped = (
+        raw.replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("\n", "\\n")
+        .replace("\r", "\\r")
+    )
+    return f'"{escaped}"'
+
+lines = text.splitlines(keepends=True)
+out: list[str] = []
+in_string_data = False
 found = False
-out = []
+string_data_indent = ""
+pending_insert_indent = "  "
+
 for line in lines:
-    if line.startswith(prefix):
-        out.append(f'{prefix} "{value}"\n')
-        found = True
-    else:
+    stripped = line.lstrip(" \t")
+    indent = line[: len(line) - len(stripped)]
+    if re.match(r"^stringData:\s*(#.*)?$", line.rstrip("\n\r")):
+        in_string_data = True
+        string_data_indent = indent
+        pending_insert_indent = indent + "  "
         out.append(line)
+        continue
+    if in_string_data:
+        # Blank / whitespace-only lines are not mapping boundaries (keepends
+        # leaves "\n" in stripped after lstrip of spaces/tabs).
+        content = stripped.strip()
+        # Left the mapping when indentation returns to stringData level or less
+        # on a non-empty, non-comment line.
+        if content and not content.startswith("#"):
+            if len(indent) <= len(string_data_indent):
+                if not found:
+                    out.append(f"{pending_insert_indent}{key}: {yaml_quote(value)}\n")
+                    found = True
+                in_string_data = False
+                out.append(line)
+                continue
+            m = re.match(r"^([A-Za-z0-9_]+)\s*:", content)
+            if m and m.group(1) == key:
+                out.append(f"{indent}{key}: {yaml_quote(value)}\n")
+                found = True
+                continue
+        out.append(line)
+        continue
+    out.append(line)
+
+if in_string_data and not found:
+    out.append(f"{pending_insert_indent}{key}: {yaml_quote(value)}\n")
+    found = True
 if not found:
-    if out and not out[-1].endswith("\n"):
-        out.append("\n")
-    out.append(f'{prefix} "{value}"\n')
-path.write_text("".join(out), encoding="utf-8")
+    raise SystemExit("refusing edit: stringData block not found")
+
+# Never print the secret value — only confirm the key name on stderr if needed.
+new_text = "".join(out)
+# Validate the written key appears under stringData without dumping values.
+joined = "".join(out)
+sd_idx = joined.find("stringData:")
+if sd_idx < 0 or f"{key}:" not in joined[sd_idx:]:
+    raise SystemExit("refusing edit: post-validate failed for stringData key")
+
+fd, tmp_name = tempfile.mkstemp(prefix=path.name + ".", dir=str(path.parent))
+os.close(fd)
+tmp_path = Path(tmp_name)
+try:
+    tmp_path.write_text(new_text, encoding="utf-8")
+    os.chmod(tmp_path, 0o600)
+    os.replace(tmp_path, path)
+finally:
+    if tmp_path.exists():
+        tmp_path.unlink(missing_ok=True)
 PY
   unset SECRET_EDIT_PATH SECRET_EDIT_KEY SECRET_EDIT_VALUE
 }

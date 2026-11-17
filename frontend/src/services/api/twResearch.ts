@@ -643,6 +643,13 @@ export type TwResearchExecutionStatus = {
   scheduleEnabled?: boolean;
   drainAvailable?: boolean;
   drainBlocker?: string | null;
+  drainLastTickAt?: string | null;
+  drainLastOutcome?: string | null;
+  drainNoopTick?: boolean | null;
+  drainFresh?: boolean | null;
+  jobUpdatedAt?: string | null;
+  /** MAX(symbol.updated_at) for ok/partial/failed — not job lease/admin updates. */
+  lastDataProgressAt?: string | null;
   blocker?: string | null;
   nextAction?: string | null;
   jobId?: string | null;
@@ -672,8 +679,11 @@ export type TwResearchPhase2ExecutionStatus = {
   universeSize?: number | null;
   processedCount?: number | null;
   remainingCount?: number | null;
+  /** Evaluated indicator rows only — excludes failed / insufficient / pending. */
   analyzedCount?: number | null;
   insufficientHistoryCount?: number | null;
+  failedCount?: number | null;
+  pendingCount?: number | null;
   hasTechnicalWork?: boolean | null;
   phase2Enabled?: boolean | null;
   candidateSelection?: string | null;
@@ -803,22 +813,29 @@ export type TwResearchRun = {
   /** Phase-2 technical honesty; fall back to `execution` only for phase1 messages. */
   phase2Execution?: TwResearchPhase2ExecutionStatus | null;
   notNotionPublisher?: boolean;
-  cronjobRemainsSuspended?: boolean;
+  /**
+   * CronJob suspend observation. Null/undefined = unknown (API does not probe
+   * Kubernetes on ordinary requests). Never treat as authoritative readiness.
+   */
+  cronjobRemainsSuspended?: boolean | null;
   durable?: boolean;
-  /** Creation claim for attaching a First-Pass Job (idempotent Start reclaim). */
-  jobClaimToken?: string | null;
+  /** Creation claim is live (token present server-side and not expired). */
+  jobClaimActive?: boolean | null;
   jobClaimExpiresAt?: string | null;
   pendingFirstPassJobId?: string | null;
+  phase2ClaimActive?: boolean | null;
+  phase2ClaimExpiresAt?: string | null;
+  pendingTechnicalScanId?: string | null;
   createdAt?: string;
   updatedAt?: string;
 };
 
-export async function fetchTwResearchRunCurrent() {
+export async function fetchTwResearchRunCurrent(init?: { signal?: AbortSignal }) {
   const response = await requestJson<{
     researchRun: TwResearchRun;
     execution?: TwResearchExecutionStatus | null;
     phase2Execution?: TwResearchPhase2ExecutionStatus | null;
-  }>("/tw-research/research-runs/current");
+  }>("/tw-research/research-runs/current", { signal: init?.signal });
   return {
     ...response.researchRun,
     execution: response.execution ?? response.researchRun.execution ?? null,
@@ -830,6 +847,14 @@ export async function fetchTwResearchRunCurrent() {
 export type TwResearchRunStartResult = TwResearchRun & {
   execution?: TwResearchExecutionStatus | null;
   phase2Execution?: TwResearchPhase2ExecutionStatus | null;
+  /** Present on Start/Resume: new job vs existing job (#362). */
+  startOutcome?:
+    | "job_created"
+    | "job_resumed"
+    | "drain_rearmed"
+    | "creation_in_progress"
+    | string
+    | null;
 };
 
 export async function startTwResearchRun(body?: {
@@ -841,11 +866,13 @@ export async function startTwResearchRun(body?: {
     researchRun: TwResearchRun;
     execution?: TwResearchExecutionStatus | null;
     phase2Execution?: TwResearchPhase2ExecutionStatus | null;
+    startOutcome?: string | null;
   }>("/tw-research/research-runs/start", "POST", body ?? { phase: "phase1_first_pass" });
   return {
     ...response.researchRun,
     execution: response.execution ?? null,
     phase2Execution: response.phase2Execution ?? null,
+    startOutcome: response.startOutcome ?? null,
   };
 }
 
@@ -857,11 +884,13 @@ export async function adoptTwResearchFirstPassJob(body: {
     researchRun: TwResearchRun;
     execution?: TwResearchExecutionStatus | null;
     phase2Execution?: TwResearchPhase2ExecutionStatus | null;
+    startOutcome?: string | null;
   }>("/tw-research/research-runs/adopt-first-pass-job", "POST", body);
   return {
     ...response.researchRun,
     execution: response.execution ?? null,
     phase2Execution: response.phase2Execution ?? null,
+    startOutcome: response.startOutcome ?? null,
   };
 }
 

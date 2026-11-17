@@ -1482,7 +1482,19 @@ export async function installE2eApiMocks(page: Page): Promise<void> {
       const result = state.twResearchFirstPass?.deleteJobResult ?? { deleted: true };
       const status = result.deletionState === "requested" ? 202 : 200;
       if (result.deleted && state.twResearchFirstPass) {
-        state.twResearchFirstPass.jobs = [];
+        const deletedJobId = path.split("/").pop() ?? "";
+        state.twResearchFirstPass.jobs = state.twResearchFirstPass.jobs.filter(
+          (job) => String(job.jobId ?? "") !== deletedJobId,
+        );
+        const run = state.twResearchFirstPass.researchRun;
+        if (
+          run &&
+          typeof run === "object" &&
+          String((run as { firstPassJobId?: unknown }).firstPassJobId ?? "") ===
+            deletedJobId
+        ) {
+          (run as { firstPassJobId?: string | null }).firstPassJobId = null;
+        }
       }
       await fulfillJson(route, result, status);
       return;

@@ -8,6 +8,7 @@ explicit budgets.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from datetime import datetime
 from typing import Any, TypeVar
@@ -18,6 +19,8 @@ from fastapi.responses import JSONResponse
 
 from app.api.deps import get_effective_user_id
 from app.core.config import settings
+
+logger = logging.getLogger(__name__)
 from app.schemas.tw_research import (
     CandidateSetResponse,
     CandidateSetSubmitRequest,
@@ -1407,7 +1410,10 @@ def _research_run_unavailable(exc: ResearchRunStoreUnavailable) -> HTTPException
 
 def _maybe_rearm_first_pass_on_start(user_id: str) -> ResearchRunResponse:
     """Re-arm drain on Start; concurrent armed run returns 200 instead of 409."""
+    armed_before = False
     try:
+        before = research_run_store.get(user_id)
+        armed_before = bool(before.schedule_enabled) if before is not None else False
         run = research_run_store.maybe_rearm_first_pass_drain_on_start(user_id)
     except ResearchRunStoreUnavailable as exc:
         raise _research_run_unavailable(exc) from exc
@@ -1419,7 +1425,7 @@ def _maybe_rearm_first_pass_on_start(user_id: str) -> ResearchRunResponse:
         except ResearchRunStoreUnavailable:
             current = None
         if current is not None and bool(current.schedule_enabled):
-            return _research_run_response(current)
+            return _research_run_response(current, start_outcome="job_resumed")
         raise HTTPException(
             status_code=409,
             detail={
@@ -1427,7 +1433,12 @@ def _maybe_rearm_first_pass_on_start(user_id: str) -> ResearchRunResponse:
                 "reason": exc.reason,
             },
         ) from exc
-    return _research_run_response(run)
+    outcome = (
+        "drain_rearmed"
+        if (not armed_before and bool(run.schedule_enabled))
+        else "job_resumed"
+    )
+    return _research_run_response(run, start_outcome=outcome)
 
 
 def _create_first_pass_job_for_start(*, user_id: str, job_id: str) -> str:
@@ -1450,6 +1461,30 @@ def _create_first_pass_job_for_start(*, user_id: str, job_id: str) -> str:
         ) from exc
 
 
+def _start_outcome_from_durable_run(
+    run: ResearchRun,
+    *,
+    created_job_id: str | None = None,
+    attach_outcome: str | None = None,
+) -> str:
+    """Map confirmed PostgreSQL/memory run state to Start outcome (#361/#362).
+
+    Never report ``job_created`` unless this request's job id is the durable
+    authoritative ``first_pass_job_id``. Claim races without an attached job are
+    ``creation_in_progress``, not resumed.
+    """
+    authoritative = str(run.first_pass_job_id or "") or None
+    if authoritative and created_job_id and authoritative == created_job_id:
+        if attach_outcome in {None, "attached"}:
+            return "job_created"
+        return "job_resumed"
+    if authoritative:
+        return "job_resumed"
+    if run.job_claim_token or run.pending_first_pass_job_id:
+        return "creation_in_progress"
+    return "creation_in_progress"
+
+
 def _attach_created_first_pass_job(
     *,
     user_id: str,
@@ -1465,7 +1500,8 @@ def _attach_created_first_pass_job(
         )
     except ResearchRunStoreUnavailable as exc:
         raise _research_run_unavailable(exc) from exc
-    if attached.get("outcome") in {"already_attached", "claim_lost"}:
+    attach_outcome = str(attached.get("outcome") or "")
+    if attach_outcome in {"already_attached", "claim_lost"}:
         orphan = attached.get("orphan_job_id")
         if orphan:
             research_run_store.mark_orphaned_first_pass_job(
@@ -1473,10 +1509,19 @@ def _attach_created_first_pass_job(
                 user_id=user_id,
                 authoritative_job_id=str(attached.get("first_pass_job_id") or "")
                 or None,
-                reason=str(attached.get("outcome")),
+                reason=attach_outcome,
             )
     run = ResearchRun.from_persist_payload(attached["run"])
-    return _research_run_response(run)
+    # Another concurrent Start may already own the authoritative job. Re-arm
+    # only when durable state already has a First-Pass Job.
+    if attach_outcome in {"already_attached", "claim_lost"} and run.first_pass_job_id:
+        return _maybe_rearm_first_pass_on_start(user_id)
+    start_outcome = _start_outcome_from_durable_run(
+        run,
+        created_job_id=job_id,
+        attach_outcome=attach_outcome,
+    )
+    return _research_run_response(run, start_outcome=start_outcome)
 
 
 def _resume_existing_phase1_run(*, user_id: str, run: ResearchRun) -> ResearchRunResponse | None:
@@ -1488,7 +1533,7 @@ def _resume_existing_phase1_run(*, user_id: str, run: ResearchRun) -> ResearchRu
         return None
     if run.first_pass_job_id and run.phase == "phase1_first_pass":
         return _maybe_rearm_first_pass_on_start(user_id)
-    return _research_run_response(run)
+    return _research_run_response(run, start_outcome="job_resumed")
 
 
 def _claim_and_create_phase1_job(*, user_id: str) -> ResearchRunResponse:
@@ -1509,7 +1554,11 @@ def _claim_and_create_phase1_job(*, user_id: str) -> ResearchRunResponse:
         return _maybe_rearm_first_pass_on_start(user_id)
     if outcome == "claim_held":
         held = ResearchRun.from_persist_payload(claim["run"])
-        return _research_run_response(held)
+        # Another request holds the create lease — do not claim job_resumed
+        # until first_pass_job_id is durable.
+        if held.first_pass_job_id:
+            return _maybe_rearm_first_pass_on_start(user_id)
+        return _research_run_response(held, start_outcome="creation_in_progress")
 
     pending_job_id = claim.get("pending_first_pass_job_id")
     if not pending_job_id:
@@ -1555,7 +1604,24 @@ def _start_phase1_research_run(
     return _claim_and_create_phase1_job(user_id=user_id)
 
 
-def _research_run_response(run: ResearchRun) -> ResearchRunResponse:
+def _log_research_run_read_failure(field: str, *, job_id: str | None, exc: Exception) -> None:
+    """Bounded, sanitized log for isolated First-Pass status reads (#361/#362)."""
+    safe_job = None
+    if isinstance(job_id, str) and job_id.strip():
+        safe_job = job_id.strip()[:64]
+    logger.warning(
+        "tw_research_run_response_read_failed field=%s job_id=%s err_type=%s",
+        field,
+        safe_job,
+        type(exc).__name__,
+    )
+
+
+def _research_run_response(
+    run: ResearchRun,
+    *,
+    start_outcome: str | None = None,
+) -> ResearchRunResponse:
     """Attach honest execution readiness alongside the durable run (#359/#361)."""
     from app.services.tw_research.execution_status import (
         classify_first_pass_execution,
@@ -1566,17 +1632,41 @@ def _research_run_response(run: ResearchRun) -> ResearchRunResponse:
 
     job = None
     counts = None
-    if run.first_pass_job_id and tw_research_repository.is_available():
+    last_data_progress_at = None
+    # True unless the authoritative count query raised; False must not invent 0/N.
+    symbol_counts_available = True
+    job_id = run.first_pass_job_id
+    if job_id and tw_research_repository.is_available():
         try:
             job = tw_research_repository.get_first_pass_job(
-                run.first_pass_job_id, user_id=run.user_id
+                job_id, user_id=run.user_id
             )
-            counts = tw_research_repository.count_first_pass_symbols(
-                run.first_pass_job_id
+        except Exception as exc:  # noqa: BLE001 — isolate; keep other reads
+            _log_research_run_read_failure(
+                "get_first_pass_job", job_id=job_id, exc=exc
             )
-        except Exception:  # noqa: BLE001 — response must still return the run
             job = None
+        try:
+            counts = tw_research_repository.count_first_pass_symbols(job_id)
+        except Exception as exc:  # noqa: BLE001 — isolate; keep job / progress
+            _log_research_run_read_failure(
+                "count_first_pass_symbols", job_id=job_id, exc=exc
+            )
             counts = None
+            symbol_counts_available = False
+        try:
+            last_data_progress_at = (
+                tw_research_repository.latest_first_pass_symbol_data_progress_at(
+                    job_id
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 — isolate; keep job / counts
+            _log_research_run_read_failure(
+                "latest_first_pass_symbol_data_progress_at",
+                job_id=job_id,
+                exc=exc,
+            )
+            last_data_progress_at = None
     scan_payload = None
     scan_state = None
     if run.technical_scan_id:
@@ -1598,11 +1688,16 @@ def _research_run_response(run: ResearchRun) -> ResearchRunResponse:
     return ResearchRunResponse(
         researchRun=run.as_dict(),
         execution=classify_first_pass_execution(
-            run, job=job, symbol_counts=counts
+            run,
+            job=job,
+            symbol_counts=counts,
+            symbol_counts_available=symbol_counts_available,
+            last_data_progress_at=last_data_progress_at,
         ),
         phase2Execution=classify_phase2_execution(
             run, scan=scan_payload, scan_state=scan_state
         ),
+        startOutcome=start_outcome,
     )
 
 
@@ -2138,7 +2233,8 @@ def adopt_first_pass_job_into_research_run(
         if _is_pg_lock_contention(exc):
             raise _http_concurrent_update_retry(exc) from exc
         raise
-    return _research_run_response(run)
+    # Existing job attached under a new Research Run identity.
+    return _research_run_response(run, start_outcome="job_resumed")
 
 
 @router.post("/research-runs/gate", response_model=ResearchRunResponse)

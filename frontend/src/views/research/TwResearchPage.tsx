@@ -46,6 +46,7 @@ import {
   researchErrorRawDetail,
 } from "./researchErrorCopy";
 import {
+  formatTaipeiDateTime,
   jobHistoryOptionLabel,
   normalizeFailureClass,
   technicalScanPlainStatusKey,
@@ -134,6 +135,29 @@ export function deriveResearchUiStage(
   const status = String(run.status ?? "");
   const approved = String(run.gates?.candidateSelection ?? "") === "approved";
   const phase2State = String(run.phase2Execution?.state ?? "");
+  const hasPersistedFirstPass = Boolean(
+    run.firstPassJobId || run.firstPassSnapshotId,
+  );
+  const failedOrCancelled =
+    ["failed", "cancelled"].includes(status) || phase2State === "failed";
+
+  // Failure/cancel must win over results — never present as a successful Stage-4 (#362).
+  if (failedOrCancelled) {
+    if (
+      phase === "phase2_technical" ||
+      phase2State === "failed" ||
+      (approved && run.technicalScanId)
+    ) {
+      return "technical_analysis";
+    }
+    if (phase === "phase1_first_pass") {
+      return hasPersistedFirstPass ? "collecting" : "select_scope";
+    }
+    if (hasPersistedFirstPass) {
+      return "collecting";
+    }
+    return "select_scope";
+  }
 
   if (
     phase === "awaiting_analyst_report_decision" ||
@@ -153,7 +177,6 @@ export function deriveResearchUiStage(
     return "awaiting_candidate_selection";
   }
   if (phase === "phase1_first_pass") {
-    if (["failed", "cancelled"].includes(status)) return "select_scope";
     return "collecting";
   }
   return "select_scope";
@@ -527,6 +550,8 @@ export function TwResearchPage({
   });
 
   const [reportEvidenceText, setReportEvidenceText] = useState("");
+  // Example-only panel — never overwrites live export or first-pass evidence (#361).
+  const [exampleEvidenceText, setExampleEvidenceText] = useState("");
   const [expandedLedgerIds, setExpandedLedgerIds] = useState<Record<string, boolean>>({});
 
   const [firstPassJobsStale, setFirstPassJobsStale] = useState(false);
@@ -723,13 +748,41 @@ export function TwResearchPage({
         }
       } else if (result.deleted) {
         const countsText = formatDeletionCounts(result.counts);
+        const deletedId =
+          deleteModalMode === "job" ? String(firstPassJobId ?? "") : "";
         setPendingDeletionJobId(null);
         setPendingFullRunDeletion(false);
         setFirstPassJobId(null);
         setFirstPassProgressText("");
         setFirstPassSnapshotId(null);
+        // Patch caches before invalidate so a stale jobs/run payload cannot
+        // re-select the deleted id and remount history (#370 CI).
         if (deleteModalMode === "full_run") {
+          setFirstPassJobs([]);
+          queryClient.setQueryData(
+            ["tw-research-first-pass-jobs", includeArchivedJobs],
+            [],
+          );
           clearCandidateLocalStateAfterDeletion();
+        } else if (deletedId) {
+          setFirstPassJobs((prev) =>
+            prev.filter((job) => String(job.jobId ?? "") !== deletedId),
+          );
+          queryClient.setQueryData(
+            ["tw-research-first-pass-jobs", includeArchivedJobs],
+            (prev: Array<Record<string, unknown>> | undefined) =>
+              Array.isArray(prev)
+                ? prev.filter((job) => String(job.jobId ?? "") !== deletedId)
+                : prev,
+          );
+          queryClient.setQueryData(
+            ["tw-research-run-current"],
+            (prev: Record<string, unknown> | undefined) => {
+              if (!prev || typeof prev !== "object") return prev;
+              if (String(prev.firstPassJobId ?? "") !== deletedId) return prev;
+              return { ...prev, firstPassJobId: null };
+            },
+          );
         }
         setJobManageMessage(
           countsText
@@ -941,7 +994,30 @@ export function TwResearchPage({
     if (!jobs) return;
     setFirstPassJobs(jobs);
     setFirstPassJobsStale(false);
-    if (firstPassJobId || jobs.length === 0) return;
+    if (firstPassJobId) return;
+    // Prefer the authoritative run-owned Job. When it is temporarily absent
+    // from a non-empty history list, keep it selected (loading option, #362 D2).
+    // When the list is settled empty, do not resurrect a deleted pointer —
+    // that remounts history via selectedJobMissingFromList (#370 CI).
+    const runJobId = researchRunQuery.data?.firstPassJobId;
+    if (typeof runJobId === "string" && runJobId.trim()) {
+      const match = jobs.find((job) => String(job.jobId ?? "") === runJobId);
+      if (match) {
+        setFirstPassJobId(runJobId);
+        setFirstPassProgressText(JSON.stringify(match, null, 2));
+        if (typeof match.activeSnapshotId === "string" && match.activeSnapshotId) {
+          setFirstPassSnapshotId(match.activeSnapshotId);
+        }
+        return;
+      }
+      if (jobs.length === 0) return;
+      setFirstPassJobId(runJobId);
+      return;
+    }
+    // Wait for the current-run query before defaulting to the newest history
+    // row — otherwise a stale list entry can flash as the selected Job (#362 D2).
+    if (researchRunQuery.isLoading || researchRunQuery.isFetching) return;
+    if (jobs.length === 0) return;
     const latest = jobs[0];
     const jobId = String(latest.jobId ?? "");
     if (!jobId) return;
@@ -955,6 +1031,9 @@ export function TwResearchPage({
     firstPassJobsQuery.isError,
     firstPassJobId,
     firstPassJobs.length,
+    researchRunQuery.data?.firstPassJobId,
+    researchRunQuery.isLoading,
+    researchRunQuery.isFetching,
   ]);
 
   useEffect(() => {
@@ -1409,32 +1488,162 @@ export function TwResearchPage({
     return t("research.tw.adoptConflictGeneric");
   };
 
-  const executionMessageFromState = (state: string): string | null => {
+  const executionProgressAppendix = (opts: {
+    processed?: number | null;
+    total?: number | null;
+    lastProgressAt?: string | null;
+  }): string => {
+    const locale = language === "en" ? "en-US" : "zh-TW";
+    const processed = Number(opts.processed ?? 0);
+    const total = Number(opts.total ?? 0);
+    const lastProgressAt =
+      formatTaipeiDateTime(opts.lastProgressAt, locale) || "—";
+    return t("research.tw.execution.progressAppendix", {
+      processed,
+      total,
+      lastProgressAt,
+    });
+  };
+
+  const executionMessageFromState = (
+    state: string,
+    progress?: {
+      processed?: number | null;
+      total?: number | null;
+      lastProgressAt?: string | null;
+      nextRetryAt?: string | null;
+    },
+  ): string | null => {
+    const withProgress = (base: string): string => {
+      if (
+        !progress ||
+        typeof progress.processed !== "number" ||
+        typeof progress.total !== "number"
+      ) {
+        return base;
+      }
+      return `${base} ${executionProgressAppendix(progress)}`;
+    };
     if (state === "executor_unavailable") {
-      return t("research.tw.execution.executorUnavailable");
+      return withProgress(t("research.tw.execution.executorUnavailable"));
     }
     if (state === "job_created") {
-      return t("research.tw.execution.jobCreated");
+      return withProgress(t("research.tw.execution.awaitingStartToArm"));
     }
     if (state === "executor_not_ticking") {
-      return t("research.tw.execution.executorNotTicking");
+      return withProgress(t("research.tw.execution.executorNotTicking"));
+    }
+    if (state === "stalled") {
+      return withProgress(t("research.tw.execution.stalled"));
     }
     if (state === "execution_authorized") {
+      // Waiting for the next authorized batch — distinct from retry / stall.
       return t("research.tw.execution.authorizedWaiting");
     }
     if (state === "actively_collecting") {
       return t("research.tw.execution.activelyCollecting");
     }
+    if (state === "waiting_for_retry") {
+      const retryLabel = formatTaipeiDateTime(
+        progress?.nextRetryAt,
+        language === "en" ? "en-US" : "zh-TW",
+      );
+      if (retryLabel) {
+        return withProgress(
+          t("research.tw.execution.waitingForRetry", { time: retryLabel }),
+        );
+      }
+      // Never invent a retry time when the server did not schedule one.
+      return withProgress(t("research.tw.execution.waitingForRetryNoTime"));
+    }
     return null;
   };
 
   // Derive execution honesty from the live research-run query (survives refresh).
+  // Never mix selected/historical Job progress into the active Run's status line.
   const executionStatusMessage = useMemo(() => {
-    const state = String(researchRunQuery.data?.execution?.state ?? "");
-    return executionMessageFromState(state);
-  }, [researchRunQuery.data?.execution?.state, language, t]);
+    const run = researchRunQuery.data;
+    const state = String(run?.execution?.state ?? "");
+    const nested = run?.firstPassProgress as FirstPassProgressLike | undefined;
+    const runOwnedJobId =
+      typeof run?.firstPassJobId === "string" ? run.firstPassJobId : null;
+    const selectedMatchesRunOwned = Boolean(
+      runOwnedJobId &&
+        firstPassJobId &&
+        String(runOwnedJobId) === String(firstPassJobId),
+    );
+    // Counts + last data progress: run execution / nested only (never selected Job).
+    const processedRaw =
+      run?.execution?.processedCount ?? nested?.processedCount ?? null;
+    const totalRaw = run?.execution?.universeSize ?? nested?.universeSize ?? null;
+    const processed =
+      typeof processedRaw === "number" && Number.isFinite(processedRaw)
+        ? processedRaw
+        : null;
+    const total =
+      typeof totalRaw === "number" && Number.isFinite(totalRaw) ? totalRaw : null;
+    // Prefer authoritative symbol-persist time; never invent from job.updated_at.
+    const lastProgressAt = run?.execution?.lastDataProgressAt ?? null;
+    // Retry schedule: Job progress query only when it is the run-owned Job.
+    const jobProgress = selectedMatchesRunOwned
+      ? (firstPassProgressQuery.data as FirstPassProgressLike | undefined)
+      : undefined;
+    const nextRetryAt =
+      (typeof jobProgress?.nextRetryAt === "string" ? jobProgress.nextRetryAt : null) ??
+      (typeof nested?.nextRetryAt === "string" ? nested.nextRetryAt : null) ??
+      null;
+    return executionMessageFromState(state, {
+      processed,
+      total,
+      lastProgressAt,
+      nextRetryAt,
+    });
+  }, [
+    researchRunQuery.data?.execution,
+    researchRunQuery.data?.firstPassProgress,
+    researchRunQuery.data?.firstPassJobId,
+    firstPassJobId,
+    firstPassProgressQuery.data,
+    language,
+    t,
+  ]);
 
-  const phase2MessageFromState = (state: string): string | null => {
+  const executionAdvancedTimestamps = useMemo(() => {
+    const run = researchRunQuery.data;
+    if (!run?.execution) return null;
+    const locale = language === "en" ? "en-US" : "zh-TW";
+    const nested = run.firstPassProgress as FirstPassProgressLike | undefined;
+    const lastTickAt =
+      formatTaipeiDateTime(
+        run.execution.drainLastTickAt ?? run.firstPassDrain?.lastTickAt,
+        locale,
+      ) || "—";
+    const jobUpdatedAt =
+      formatTaipeiDateTime(
+        run.execution.jobUpdatedAt ?? nested?.updatedAt,
+        locale,
+      ) || "—";
+    return t("research.tw.execution.advancedTimestamps", {
+      lastTickAt,
+      jobUpdatedAt,
+    });
+  }, [
+    researchRunQuery.data?.execution,
+    researchRunQuery.data?.firstPassProgress,
+    researchRunQuery.data?.firstPassDrain?.lastTickAt,
+    language,
+    t,
+  ]);
+
+  const phase2MessageFromState = (
+    state: string,
+    exec?: {
+      drainAvailable?: boolean | null;
+      phase2Enabled?: boolean | null;
+      leaseActive?: boolean | null;
+      blocker?: string | null;
+    } | null,
+  ): string | null => {
     switch (state) {
       case "technical_scan_created":
         return t("research.tw.phase2Execution.technicalScanCreated");
@@ -1444,8 +1653,18 @@ export function TwResearchPage({
         return t("research.tw.phase2Execution.executorUnavailable");
       case "executor_not_ticking":
         return t("research.tw.phase2Execution.executorNotTicking");
-      case "actively_analyzing":
+      case "actively_analyzing": {
+        // Lease may still finish; do not claim the batch stopped (#362).
+        if (exec?.phase2Enabled === false || exec?.blocker === "phase2_scheduling_paused") {
+          return t("research.tw.phase2Execution.activelyAnalyzingSchedulingPaused");
+        }
+        if (exec?.drainAvailable === false) {
+          return t(
+            "research.tw.phase2Execution.activelyAnalyzingSchedulingUnavailable",
+          );
+        }
         return t("research.tw.phase2Execution.activelyAnalyzing");
+      }
       case "between_batches":
         return t("research.tw.phase2Execution.betweenBatches");
       case "waiting_for_budget_window":
@@ -1464,9 +1683,10 @@ export function TwResearchPage({
   };
 
   const phase2ExecutionMessage = useMemo(() => {
-    const state = String(researchRunQuery.data?.phase2Execution?.state ?? "");
-    return phase2MessageFromState(state);
-  }, [researchRunQuery.data?.phase2Execution?.state, language, t]);
+    const exec = researchRunQuery.data?.phase2Execution;
+    const state = String(exec?.state ?? "");
+    return phase2MessageFromState(state, exec);
+  }, [researchRunQuery.data?.phase2Execution, language, t]);
 
   const showPhase2ExecutionMessage = Boolean(
     researchRunQuery.data?.phase2Execution ||
@@ -1474,24 +1694,265 @@ export function TwResearchPage({
       String(researchRunQuery.data?.phase ?? "") === "phase2_technical",
   );
 
+  const [startOutcomeMessage, setStartOutcomeMessage] = useState<string | null>(null);
+  const [firstPassJobDetailError, setFirstPassJobDetailError] = useState<string | null>(
+    null,
+  );
+  const [firstPassJobDetailRetryId, setFirstPassJobDetailRetryId] = useState<string | null>(
+    null,
+  );
+  /** Bounded GET-only recovery while a concurrent Start holds the create claim. */
+  type CreationPollPhase =
+    | "idle"
+    | "polling"
+    | "attached"
+    | "expired"
+    | "timeout"
+    | "failed";
+  const [creationPollPhase, setCreationPollPhase] = useState<CreationPollPhase>("idle");
+  const creationPollGenRef = useRef(0);
+  const CREATION_POLL_INTERVAL_MS = 1_500;
+  const CREATION_POLL_MAX_MS = 45_000;
+
   const applyManagedStartResult = (run: {
+    researchRunId?: string | null;
+    createdAt?: string | null;
     firstPassJobId?: string | null;
+    startOutcome?: string | null;
+    firstPassProgress?: {
+      processed?: number | null;
+      total?: number | null;
+      processedCount?: number | null;
+      universeSize?: number | null;
+    } | null;
     execution?: {
       state?: string;
       blocker?: string | null;
       nextAction?: string | null;
       authorized?: boolean;
       drainAvailable?: boolean;
+      processedCount?: number | null;
+      universeSize?: number | null;
     } | null;
   }) => {
     if (run.firstPassJobId) {
       firstPassSelectionGenRef.current += 1;
       setFirstPassJobId(run.firstPassJobId);
       clearFirstPassEvidenceState();
+      setFirstPassJobDetailError(null);
+      setFirstPassJobDetailRetryId(null);
+    }
+    const outcome = String(run.startOutcome ?? "");
+    const locale = language === "en" ? "en-US" : "zh-TW";
+    const createdAt =
+      formatTaipeiDateTime(run.createdAt, locale) || "—";
+    const nestedProgress = run.firstPassProgress;
+    const processed = Number(
+      run.execution?.processedCount ??
+        nestedProgress?.processedCount ??
+        nestedProgress?.processed ??
+        0,
+    );
+    const total = Number(
+      run.execution?.universeSize ??
+        nestedProgress?.universeSize ??
+        nestedProgress?.total ??
+        0,
+    );
+    if (outcome === "job_created") {
+      setCreationPollPhase("idle");
+      setStartOutcomeMessage(
+        t("research.tw.startOutcome.jobCreated", {
+          createdAt,
+        }),
+      );
+    } else if (outcome === "drain_rearmed") {
+      setCreationPollPhase("idle");
+      setStartOutcomeMessage(t("research.tw.startOutcome.drainRearmed"));
+    } else if (outcome === "job_resumed") {
+      setCreationPollPhase("idle");
+      setStartOutcomeMessage(
+        t("research.tw.startOutcome.jobResumed", {
+          createdAt,
+          processed,
+          total,
+        }),
+      );
+    } else if (outcome === "creation_in_progress") {
+      setStartOutcomeMessage(t("research.tw.startOutcome.creationInProgress"));
+      setCreationPollPhase("polling");
+    } else if (outcome === "creation_attached") {
+      setCreationPollPhase("attached");
+      setStartOutcomeMessage(
+        t("research.tw.startOutcome.creationAttached", { createdAt }),
+      );
+    } else {
+      setStartOutcomeMessage(null);
     }
     void queryClient.invalidateQueries({ queryKey: ["tw-research-run-current"] });
     void queryClient.invalidateQueries({ queryKey: ["tw-research-first-pass-jobs"] });
   };
+
+  // Resume creation polling after refresh when a live claim has no Job yet.
+  // Do not auto-restart after timeout/expired/failed — user must Start again.
+  useEffect(() => {
+    const run = researchRunQuery.data;
+    if (!run) return;
+    if (run.firstPassJobId) {
+      if (creationPollPhase === "polling") setCreationPollPhase("idle");
+      return;
+    }
+    if (creationPollPhase !== "idle") return;
+    const hasClaim =
+      Boolean(run.pendingFirstPassJobId) || run.jobClaimActive === true;
+    if (!hasClaim) return;
+    const expiresRaw = run.jobClaimExpiresAt;
+    if (typeof expiresRaw === "string" && expiresRaw.trim()) {
+      const expiresMs = Date.parse(expiresRaw);
+      if (Number.isFinite(expiresMs) && expiresMs <= Date.now()) return;
+    }
+    setStartOutcomeMessage(t("research.tw.startOutcome.creationInProgress"));
+    setCreationPollPhase("polling");
+  }, [
+    researchRunQuery.data?.firstPassJobId,
+    researchRunQuery.data?.pendingFirstPassJobId,
+    researchRunQuery.data?.jobClaimActive,
+    researchRunQuery.data?.jobClaimExpiresAt,
+    creationPollPhase,
+    t,
+  ]);
+
+  useEffect(() => {
+    if (creationPollPhase !== "polling") return;
+    creationPollGenRef.current += 1;
+    const pollGen = creationPollGenRef.current;
+    let cancelled = false;
+    let timer: number | null = null;
+    let deadlineTimer: number | null = null;
+    const abortController = new AbortController();
+
+    const finish = (phase: CreationPollPhase, messageKey: TranslationKey) => {
+      if (cancelled || creationPollGenRef.current !== pollGen) return;
+      setCreationPollPhase(phase);
+      setStartOutcomeMessage(t(messageKey));
+    };
+
+    const stopPolling = () => {
+      cancelled = true;
+      if (timer != null) {
+        window.clearTimeout(timer);
+        timer = null;
+      }
+      if (deadlineTimer != null) {
+        window.clearTimeout(deadlineTimer);
+        deadlineTimer = null;
+      }
+      abortController.abort();
+    };
+
+    // Independent of in-flight GETs so a stalled request cannot pin Start disabled.
+    deadlineTimer = window.setTimeout(() => {
+      finish("timeout", "research.tw.startOutcome.creationTimedOut");
+      stopPolling();
+    }, CREATION_POLL_MAX_MS);
+
+    const tick = async () => {
+      if (cancelled || creationPollGenRef.current !== pollGen) return;
+      try {
+        const run = await fetchTwResearchRunCurrent({
+          signal: abortController.signal,
+        });
+        if (cancelled || creationPollGenRef.current !== pollGen) return;
+        if (run?.firstPassJobId) {
+          stopPolling();
+          applyManagedStartResult({
+            ...run,
+            startOutcome: "creation_attached",
+          });
+          return;
+        }
+        const expiresRaw = run?.jobClaimExpiresAt;
+        if (typeof expiresRaw === "string" && expiresRaw.trim()) {
+          const expiresMs = Date.parse(expiresRaw);
+          if (Number.isFinite(expiresMs) && expiresMs <= Date.now()) {
+            finish("expired", "research.tw.startOutcome.creationClaimExpired");
+            stopPolling();
+            return;
+          }
+        }
+        if (!run?.pendingFirstPassJobId && run?.jobClaimActive !== true) {
+          finish("failed", "research.tw.startOutcome.creationFailed");
+          stopPolling();
+          return;
+        }
+      } catch (error) {
+        if (cancelled || creationPollGenRef.current !== pollGen) return;
+        if (error instanceof Error && error.name === "AbortError") return;
+        const status = toApiError(error).status;
+        if (status === 404) {
+          finish("failed", "research.tw.startOutcome.creationFailed");
+          stopPolling();
+          return;
+        }
+        // Transient network/5xx — keep polling until the independent deadline.
+      }
+      if (cancelled || creationPollGenRef.current !== pollGen) return;
+      timer = window.setTimeout(() => {
+        void tick();
+      }, CREATION_POLL_INTERVAL_MS);
+    };
+
+    void tick();
+    return () => {
+      stopPolling();
+    };
+    // intentionally omit applyManagedStartResult — stable enough via pollGen cancel
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [creationPollPhase, language, t]);
+
+  const loadFirstPassJobDetails = (jobId: string, selectionGen: number) => {
+    void fetchTwResearchFirstPassJob(jobId)
+      .then((job) => {
+        if (firstPassSelectionGenRef.current !== selectionGen) return;
+        setFirstPassJobDetailError(null);
+        setFirstPassJobDetailRetryId(null);
+        setFirstPassProgressText(JSON.stringify(job, null, 2));
+        if (typeof job.activeSnapshotId === "string" && job.activeSnapshotId) {
+          setFirstPassSnapshotId(job.activeSnapshotId);
+        }
+      })
+      .catch((error: unknown) => {
+        if (firstPassSelectionGenRef.current !== selectionGen) return;
+        const api = toApiError(error);
+        const status = api.status ?? "network";
+        setFirstPassJobDetailRetryId(jobId);
+        setFirstPassJobDetailError(
+          t("research.tw.firstPassJobDetailLoadFailed", {
+            status: String(status),
+          }),
+        );
+      });
+  };
+
+  const missingJobDetailFetchedRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!firstPassJobId) {
+      missingJobDetailFetchedRef.current = null;
+      return;
+    }
+    const inList = firstPassJobs.some(
+      (job) => String(job.jobId ?? "") === String(firstPassJobId),
+    );
+    if (inList) {
+      missingJobDetailFetchedRef.current = null;
+      return;
+    }
+    if (missingJobDetailFetchedRef.current === firstPassJobId) return;
+    missingJobDetailFetchedRef.current = firstPassJobId;
+    firstPassSelectionGenRef.current += 1;
+    loadFirstPassJobDetails(String(firstPassJobId), firstPassSelectionGenRef.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- one fetch per missing selection id
+  }, [firstPassJobId, firstPassJobs]);
 
   const runNeedsDrainRearm = useMemo(() => {
     const run = researchRunQuery.data;
@@ -1826,7 +2287,8 @@ export function TwResearchPage({
   const loadEvidenceExampleMutation = useMutation({
     mutationFn: async () => fetchTwResearchReportEvidenceExampleZhTw(),
     onSuccess: (example) => {
-      setReportEvidenceText(JSON.stringify(example, null, 2));
+      // Write only to the example panel — never clobber live research evidence.
+      setExampleEvidenceText(JSON.stringify(example, null, 2));
     },
   });
 
@@ -2257,14 +2719,17 @@ export function TwResearchPage({
     typeof selectedFirstPassJob?.createdAt === "string"
       ? selectedFirstPassJob.createdAt
       : null;
+  // Never invent a Job birth time from Research Run createdAt (#362 D2).
   const runOwnedJobCreatedAt = useMemo(() => {
     const fromList = firstPassJobs.find(
       (job) => String(job.jobId ?? "") === String(runOwnedFirstPassJobId ?? ""),
     )?.createdAt;
-    if (typeof fromList === "string") return fromList;
-    const fromRun = researchRunQuery.data?.createdAt;
-    return typeof fromRun === "string" ? fromRun : null;
-  }, [firstPassJobs, runOwnedFirstPassJobId, researchRunQuery.data?.createdAt]);
+    return typeof fromList === "string" ? fromList : null;
+  }, [firstPassJobs, runOwnedFirstPassJobId]);
+  const selectedJobMissingFromList = Boolean(
+    firstPassJobId &&
+      !firstPassJobs.some((job) => String(job.jobId ?? "") === String(firstPassJobId)),
+  );
 
   // "This batch" banner comes only from the latest batch mutation result.
   const batchMutationData = firstPassBatchMutation.data;
@@ -2419,7 +2884,10 @@ export function TwResearchPage({
                   kind={startResearchIsPrimary ? "primary" : "secondary"}
                   size="sm"
                   data-testid="tw-research-start-full-research"
-                  disabled={startFullResearchMutation.isPending}
+                  disabled={
+                    startFullResearchMutation.isPending ||
+                    creationPollPhase === "polling"
+                  }
                   onClick={() => {
                     if (runIsActiveNonTerminal) {
                       document
@@ -2442,14 +2910,6 @@ export function TwResearchPage({
                 >
                   {t("research.tw.exportReportEvidence")}
                 </Button>
-                <Button
-                  kind="ghost"
-                  size="sm"
-                  disabled={loadEvidenceExampleMutation.isPending}
-                  onClick={() => loadEvidenceExampleMutation.mutate()}
-                >
-                  {t("research.tw.loadEvidenceExample")}
-                </Button>
               </Stack>
               {startRetryHint ? (
                 <p
@@ -2457,6 +2917,15 @@ export function TwResearchPage({
                   data-testid="tw-research-start-retry-hint"
                 >
                   {startRetryHint}
+                </p>
+              ) : null}
+              {startOutcomeMessage ? (
+                <p
+                  className="cds--helper-text-01"
+                  data-testid="tw-research-start-outcome"
+                  role="status"
+                >
+                  {startOutcomeMessage}
                 </p>
               ) : null}
               {executionStatusMessage ? (
@@ -2483,6 +2952,14 @@ export function TwResearchPage({
                       })}
                     </p>
                   ) : null}
+                  {executionAdvancedTimestamps ? (
+                    <p
+                      className="cds--helper-text-01"
+                      data-testid="tw-research-execution-advanced-timestamps"
+                    >
+                      {executionAdvancedTimestamps}
+                    </p>
+                  ) : null}
                   {browsingHistoricalFirstPassJob ? (
                     <p
                       className="cds--helper-text-01"
@@ -2504,6 +2981,34 @@ export function TwResearchPage({
                   ) : null}
                 </AdvancedDetailsDisclosure>
               ) : null}
+              <AdvancedDetailsDisclosure
+                titleKey="research.tw.exampleHelpTitle"
+                hintKey="research.tw.exampleHelpHint"
+              >
+                <div data-testid="tw-research-example-help">
+                  <p className="cds--helper-text-01">
+                    {t("research.tw.loadEvidenceExampleNote")}
+                  </p>
+                  <Button
+                    kind="ghost"
+                    size="sm"
+                    data-testid="tw-research-load-evidence-example"
+                    disabled={loadEvidenceExampleMutation.isPending}
+                    onClick={() => loadEvidenceExampleMutation.mutate()}
+                  >
+                    {t("research.tw.loadEvidenceExample")}
+                  </Button>
+                  {exampleEvidenceText ? (
+                    <pre
+                      className="cds--body-compact-01"
+                      data-testid="tw-research-example-evidence"
+                      style={{ whiteSpace: "pre-wrap", maxHeight: 240, overflow: "auto" }}
+                    >
+                      {exampleEvidenceText}
+                    </pre>
+                  ) : null}
+                </div>
+              </AdvancedDetailsDisclosure>
             </Stack>
           </Tile>
 
@@ -2857,7 +3362,7 @@ export function TwResearchPage({
                 />{" "}
                 {t("research.tw.showArchivedJobs")}
               </label>
-              {firstPassJobs.length > 0 ? (
+              {firstPassJobs.length > 0 || selectedJobMissingFromList ? (
                 <Select
                   id="tw-research-first-pass-job-history"
                   data-testid="tw-research-first-pass-job-history"
@@ -2876,6 +3381,8 @@ export function TwResearchPage({
                     clearFirstPassEvidenceState();
                     setAdoptErrorMessage(null);
                     setAdoptConflictCode(null);
+                    setFirstPassJobDetailError(null);
+                    setFirstPassJobDetailRetryId(null);
                     const match = firstPassJobs.find((job) => String(job.jobId) === next);
                     if (match) {
                       setFirstPassProgressText(JSON.stringify(match, null, 2));
@@ -2886,19 +3393,18 @@ export function TwResearchPage({
                         setFirstPassSnapshotId(match.activeSnapshotId);
                       }
                     } else {
-                      void fetchTwResearchFirstPassJob(next).then((job) => {
-                        if (firstPassSelectionGenRef.current !== selectionGen) return;
-                        setFirstPassProgressText(JSON.stringify(job, null, 2));
-                        if (
-                          typeof job.activeSnapshotId === "string" &&
-                          job.activeSnapshotId
-                        ) {
-                          setFirstPassSnapshotId(job.activeSnapshotId);
-                        }
-                      });
+                      // Keep the selected id; do not fall back to an older listed job.
+                      loadFirstPassJobDetails(next, selectionGen);
                     }
                   }}
                 >
+                  {selectedJobMissingFromList && firstPassJobId ? (
+                    <SelectItem
+                      key={`pending-${firstPassJobId}`}
+                      value={firstPassJobId}
+                      text={t("research.tw.firstPassJobHistoryPendingOption")}
+                    />
+                  ) : null}
                   {firstPassJobs.map((job) => (
                     <SelectItem
                       key={String(job.jobId)}
@@ -2914,6 +3420,35 @@ export function TwResearchPage({
                     />
                   ))}
                 </Select>
+              ) : null}
+              {firstPassJobDetailError ? (
+                <Stack gap={2}>
+                  <p
+                    className="cds--helper-text-01"
+                    role="alert"
+                    data-testid="tw-research-first-pass-job-detail-error"
+                  >
+                    {firstPassJobDetailError}
+                  </p>
+                  {firstPassJobDetailRetryId ? (
+                    <Button
+                      kind="tertiary"
+                      size="sm"
+                      data-testid="tw-research-first-pass-job-detail-retry"
+                      onClick={() => {
+                        firstPassSelectionGenRef.current += 1;
+                        const selectionGen = firstPassSelectionGenRef.current;
+                        setFirstPassJobDetailError(null);
+                        loadFirstPassJobDetails(
+                          firstPassJobDetailRetryId,
+                          selectionGen,
+                        );
+                      }}
+                    >
+                      {t("research.tw.firstPassJobDetailRetry")}
+                    </Button>
+                  ) : null}
+                </Stack>
               ) : null}
               {selectedFirstPassJob &&
               !runOwnsSelectedFirstPassJob &&

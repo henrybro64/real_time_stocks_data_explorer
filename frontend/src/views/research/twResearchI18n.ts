@@ -84,13 +84,78 @@ const TW_RESEARCH_ROWS = [
   ["research.tw.startFirstPass", "Start first-round data collection", "開始第一輪資料收集"],
   [
     "research.tw.execution.executorUnavailable",
-    "Automatic collection is not available yet. Saved progress is kept. Press Start again after collection is enabled, or wait — do not expect new data until then.",
-    "自動收集尚未可用，已儲存的進度會保留。啟用後請再按「開始研究」，或稍候；在此之前不會有新資料。",
+    "Research has not started: the background processing service is not enabled yet. Saved progress is kept. Press Start again after it is enabled — do not expect new data until then.",
+    "研究尚未開始：背景處理服務尚未啟用。已儲存的進度會保留。啟用後請再按「開始研究」；在此之前不會有新資料。",
   ],
   [
-    "research.tw.execution.jobCreated",
-    "Research is ready. Press Start again to begin automatic collection when it is available.",
-    "研究已就緒。自動收集可用時，請再按「開始研究」開始。",
+    "research.tw.execution.awaitingStartToArm",
+    "Collection is ready. Press Start to authorize automatic collection.",
+    "收集工作已就緒，請按「開始研究」授權自動收集。",
+  ],
+  [
+    "research.tw.execution.progressAppendix",
+    "{processed}/{total}. Last data progress: {lastProgressAt}",
+    "{processed}/{total}。最後資料進度：{lastProgressAt}",
+  ],
+  [
+    "research.tw.execution.advancedTimestamps",
+    "Last executor tick: {lastTickAt}. Job updated: {jobUpdatedAt}.",
+    "最後執行器心跳：{lastTickAt}。工作狀態更新：{jobUpdatedAt}。",
+  ],
+  [
+    "research.tw.startOutcome.jobCreated",
+    "Created a new research and collection job (created {createdAt}).",
+    "已建立新的研究與收集工作（建立於 {createdAt}）。",
+  ],
+  [
+    "research.tw.startOutcome.jobResumed",
+    "Resumed existing research (created {createdAt}, processed {processed}/{total}).",
+    "已接續現有研究（建立於 {createdAt}，已處理 {processed}/{total}）。",
+  ],
+  [
+    "research.tw.startOutcome.drainRearmed",
+    "Re-authorized automatic collection for the existing research.",
+    "已重新授權現有研究的自動收集。",
+  ],
+  [
+    "research.tw.startOutcome.creationInProgress",
+    "Collection setup is already in progress. Waiting for it to finish — do not press Start again.",
+    "收集工作正在建立中，正在等待完成 — 請勿再次按下開始。",
+  ],
+  [
+    "research.tw.startOutcome.creationAttached",
+    "Collection job is ready (created {createdAt}).",
+    "收集工作已就緒（建立於 {createdAt}）。",
+  ],
+  [
+    "research.tw.startOutcome.creationTimedOut",
+    "Still waiting for collection setup. Press Start again only if the status stays incomplete.",
+    "仍在等待收集工作建立完成。若狀態持續未完成，再按一次「開始研究」。",
+  ],
+  [
+    "research.tw.startOutcome.creationClaimExpired",
+    "Collection setup timed out before a job was attached. You can safely press Start again.",
+    "收集工作在建立完成前逾時。可安全再次按下「開始研究」。",
+  ],
+  [
+    "research.tw.startOutcome.creationFailed",
+    "Could not confirm collection setup. Check your connection, then press Start again if needed.",
+    "無法確認收集工作是否建立完成。請檢查連線後，必要時再按「開始研究」。",
+  ],
+  [
+    "research.tw.firstPassJobHistoryPendingOption",
+    "Selected job (details loading…)",
+    "已選工作（資料載入中…）",
+  ],
+  [
+    "research.tw.firstPassJobDetailLoadFailed",
+    "Could not load that historical collection job ({status}). Your selection is unchanged; retry or pick another job.",
+    "無法載入該歷史收集工作（{status}）。目前選取不變；請重試或改選其他工作。",
+  ],
+  [
+    "research.tw.firstPassJobDetailRetry",
+    "Retry loading job details",
+    "重試載入工作詳情",
   ],
   [
     "research.tw.execution.authorizedWaiting",
@@ -104,8 +169,38 @@ const TW_RESEARCH_ROWS = [
   ],
   [
     "research.tw.execution.executorNotTicking",
-    "Collection is authorized, but no automatic run has started yet. Wait a few minutes, then refresh — this is not active collecting.",
-    "已授權收集，但自動執行尚未開始。請稍候數分鐘後重新整理（這不是正在收集）。",
+    "Collection is authorized, but no automatic run has started yet. Wait a few minutes, then refresh — this is not active collecting. If it stays unchanged, an operator must verify the background service.",
+    "已授權收集，但自動執行尚未開始。請稍候數分鐘後重新整理（這不是正在收集）。若持續不變，需由維運確認背景服務。",
+  ],
+  [
+    "research.tw.execution.waitingForRetry",
+    "Collection paused after a rate limit or temporary error. Scheduled retry: {time}. This is waiting to retry — not an executor failure.",
+    "因速率限制或暫時錯誤而暫停收集。已排定重試：{time}。這是等待重試，不是執行器故障。",
+  ],
+  [
+    "research.tw.execution.waitingForRetryNoTime",
+    "Collection paused after a rate limit or temporary error and is waiting to retry. Retry time appears when the server schedules one — this is not an executor failure.",
+    "因速率限制或暫時錯誤而暫停收集，正在等待重試。重試時間會在伺服器排定後顯示——這不是執行器故障。",
+  ],
+  [
+    "research.tw.execution.stalled",
+    "Collection paused mid-way: no recent automatic run and no active batch. Saved progress is kept. Refresh later, or ask an operator to verify the background service.",
+    "收集中途暫停：沒有近期自動執行，也沒有進行中的批次。已儲存的進度會保留。請稍後重新整理，或請維運確認背景服務。",
+  ],
+  [
+    "research.tw.exampleHelpTitle",
+    "Help / example only (not live research)",
+    "說明／範例專區（非即時研究）",
+  ],
+  [
+    "research.tw.exampleHelpHint",
+    "Example JSON is for format reference only. It never replaces PostgreSQL-backed research evidence or your current selection.",
+    "範例 JSON 僅供格式參考，不會覆寫 PostgreSQL 研究證據或目前選取狀態。",
+  ],
+  [
+    "research.tw.loadEvidenceExampleNote",
+    "Loads a Traditional Chinese sample into the example panel below. Live export and first-pass evidence stay unchanged.",
+    "將繁中範例載入下方範例面板。即時匯出與第一輪證據不會被更動。",
   ],
   [
     "research.tw.startResearchViewProgress",
@@ -301,8 +396,18 @@ const TW_RESEARCH_ROWS = [
   ],
   [
     "research.tw.phase2Execution.activelyAnalyzing",
-    "Analyzing… Technical analysis is running in the background. You can close this page; progress is saved.",
-    "分析中…技術分析正在背景執行。可關閉此頁，進度會自動儲存。",
+    "Analyzing… A technical batch lease is active. Refresh for progress — a lease is not proof the worker is healthy. You can close this page; progress is saved.",
+    "分析中…技術分析批次鎖定仍有效。請重新整理查看進度（鎖定不代表執行器完全健康）。可關閉此頁，進度會自動儲存。",
+  ],
+  [
+    "research.tw.phase2Execution.activelyAnalyzingSchedulingUnavailable",
+    "A technical batch lease is still active, so work may be finishing. New automatic batches cannot start until the executor is available again. Saved progress is kept — refresh to check.",
+    "技術分析批次鎖定仍有效，可能還在完成中。在執行器再次可用前，不會開始新的自動批次。已儲存的進度會保留；請重新整理查看。",
+  ],
+  [
+    "research.tw.phase2Execution.activelyAnalyzingSchedulingPaused",
+    "A technical batch lease is still active, so work may be finishing. Future automatic batches are paused until you resume. Saved progress is kept — refresh to check.",
+    "技術分析批次鎖定仍有效，可能還在完成中。未來的自動批次已暫停，需手動恢復後才會再開始。已儲存的進度會保留；請重新整理查看。",
   ],
   [
     "research.tw.phase2Execution.betweenBatches",

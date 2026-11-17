@@ -36,13 +36,35 @@ def _parse_iso(value: object) -> datetime | None:
         return None
 
 
+def _drain_outcome_is_noop(last_outcome: object) -> bool | None:
+    """True when the last drain stop did not advance symbol collection.
+
+    Matches First-Pass drain stop reasons: ``idle_no_work``, ``deferred``, and
+    any ``skipped_*`` preflight/skip outcome. Batch/progress stops
+    (``max_batches_reached``, ``job_completed``, ``failed_batch``, …) are False.
+    """
+    if not isinstance(last_outcome, str) or not last_outcome.strip():
+        return None
+    outcome = last_outcome.strip().lower()
+    if outcome in {"idle_no_work", "deferred"} or outcome.startswith("skipped_"):
+        return True
+    return False
+
+
 def classify_first_pass_execution(
     run: ResearchRun,
     *,
     job: dict[str, Any] | None = None,
     symbol_counts: dict[str, Any] | None = None,
+    symbol_counts_available: bool = True,
+    last_data_progress_at: str | None = None,
 ) -> dict[str, Any]:
-    """Return an additive execution block for Start / current-run responses."""
+    """Return an additive execution block for Start / current-run responses.
+
+    ``symbol_counts_available=False`` means the authoritative symbol-count read
+    failed: leave processed/pending null rather than inventing 0/N from missing
+    job aggregates.
+    """
     available, drain_reason = first_pass_drain_availability(run.user_id)
     job_status = ""
     lease_active = False
@@ -50,6 +72,7 @@ def classify_first_pass_execution(
     processed = None
     pending = None
     universe_size = None
+    job_updated_at = None
     if job is not None:
         job_status = str(job.get("status") or job.get("job_status") or "")
         lease_expires = job.get("reserve_expires_at") or job.get("reserveExpiresAt")
@@ -57,35 +80,48 @@ def classify_first_pass_execution(
         if parsed_lease is not None:
             lease_expires_at = parsed_lease.isoformat()
             lease_active = parsed_lease > datetime.now(UTC)
+        raw_job_updated = job.get("updated_at") or job.get("updatedAt")
+        if isinstance(raw_job_updated, str):
+            job_updated_at = raw_job_updated
+        elif raw_job_updated is not None:
+            parsed_updated = _parse_iso(raw_job_updated)
+            if parsed_updated is not None:
+                job_updated_at = parsed_updated.isoformat()
         universe_size = job.get("universe_size") or job.get("universeSize")
         if universe_size is None:
             stock_ids = job.get("stock_ids") or job.get("stockIds") or []
             if isinstance(stock_ids, list):
                 universe_size = len(stock_ids)
-        counts = symbol_counts
-        if counts is None:
-            # Prefer explicit aggregates over cursor (cursor is a watermark).
-            counts = {
-                "ok": job.get("okCount") or job.get("ok_count"),
-                "partial": job.get("partialCount") or job.get("partial_count"),
-                "failed": job.get("failedCount") or job.get("failed_count"),
-                "total": job.get("symbolTotal") or job.get("symbol_total"),
-            }
         try:
             universe_size_i = int(universe_size) if universe_size is not None else None
         except (TypeError, ValueError):
             universe_size_i = None
         universe_size = universe_size_i
-        if universe_size_i is not None:
-            try:
-                ok = int(counts.get("ok") or 0) if isinstance(counts, dict) else 0
-                partial = int(counts.get("partial") or 0) if isinstance(counts, dict) else 0
-                failed = int(counts.get("failed") or 0) if isinstance(counts, dict) else 0
-                processed = ok + partial + failed
-                pending = max(0, universe_size_i - processed)
-            except (TypeError, ValueError):
-                processed = None
-                pending = None
+        if symbol_counts_available:
+            counts = symbol_counts
+            if counts is None:
+                # Prefer explicit aggregates over cursor (cursor is a watermark).
+                counts = {
+                    "ok": job.get("okCount") or job.get("ok_count"),
+                    "partial": job.get("partialCount") or job.get("partial_count"),
+                    "failed": job.get("failedCount") or job.get("failed_count"),
+                    "total": job.get("symbolTotal") or job.get("symbol_total"),
+                }
+            if universe_size_i is not None:
+                try:
+                    ok = int(counts.get("ok") or 0) if isinstance(counts, dict) else 0
+                    partial = (
+                        int(counts.get("partial") or 0) if isinstance(counts, dict) else 0
+                    )
+                    failed = (
+                        int(counts.get("failed") or 0) if isinstance(counts, dict) else 0
+                    )
+                    processed = ok + partial + failed
+                    pending = max(0, universe_size_i - processed)
+                except (TypeError, ValueError):
+                    processed = None
+                    pending = None
+        # else: count read failed — keep processed/pending null (no fabricated 0/N).
 
     drain_meta = {}
     if isinstance(run.dimensions, dict):
@@ -98,6 +134,9 @@ def classify_first_pass_execution(
         last_tick is not None
         and datetime.now(UTC) - last_tick <= _DRAIN_STALE_AFTER
     )
+    last_outcome = drain_meta.get("lastOutcome")
+    # Real drain stop reasons: idle/deferred/skipped_* are not collection progress.
+    noop_tick = _drain_outcome_is_noop(last_outcome)
 
     run_status = str(run.status or "")
     phase = str(run.phase or "")
@@ -116,11 +155,25 @@ def classify_first_pass_execution(
     elif job_status in {"completed", "partial"}:
         state = "completed" if job_status == "completed" else "partially_complete"
     elif lease_active and job_status in {"running", "pending", "queued"}:
+        # Only a live batch lease proves active collection — not run.status=running.
         state = "actively_collecting"
     elif job_status == "deferred" or run_status == "waiting_for_next_window":
         state = "waiting_for_retry"
     elif run.first_pass_job_id and not available:
         state = "executor_unavailable"
+    elif (
+        run.first_pass_job_id
+        and schedule_enabled
+        and available
+        and not lease_active
+        and not drain_fresh
+        and isinstance(processed, int)
+        and processed > 0
+        and isinstance(pending, int)
+        and pending > 0
+    ):
+        # Mid-job, armed, but no recent tick and no lease — stalled pending operator check.
+        state = "stalled"
     elif (
         run.first_pass_job_id
         and schedule_enabled
@@ -140,6 +193,9 @@ def classify_first_pass_execution(
     if state == "executor_unavailable":
         blocker = drain_reason or "first_pass_drain_unavailable"
         next_action = "wait_for_executor_or_run_manual_batch"
+    elif state == "stalled":
+        blocker = "first_pass_drain_stalled"
+        next_action = "wait_or_contact_operator"
     elif state == "executor_not_ticking":
         blocker = "first_pass_drain_not_ticking"
         next_action = "wait_or_contact_operator"
@@ -169,6 +225,14 @@ def classify_first_pass_execution(
         "drainBlocker": drain_reason,
         "drainLastTickAt": last_tick_at if isinstance(last_tick_at, str) else None,
         "drainFresh": bool(drain_fresh) if schedule_enabled and available else None,
+        "drainLastOutcome": last_outcome if isinstance(last_outcome, str) else None,
+        "drainNoopTick": bool(noop_tick) if last_outcome is not None else None,
+        # jobUpdatedAt = any Job row mutation (lease renew, admin, status).
+        "jobUpdatedAt": job_updated_at,
+        # lastDataProgressAt = MAX(symbol.updated_at) for ok/partial/failed only.
+        "lastDataProgressAt": last_data_progress_at
+        if isinstance(last_data_progress_at, str) and last_data_progress_at.strip()
+        else None,
         "blocker": blocker,
         "nextAction": next_action,
         "jobId": run.first_pass_job_id,
@@ -182,6 +246,8 @@ def classify_first_pass_execution(
         "notes": [
             "HTTP 200 / job insert is not proof that collection is running.",
             "schedule_enabled alone is not proof an active worker holds a lease.",
+            "A fresh drain tick without a live lease is not active collecting.",
+            "Backend cannot observe CronJob suspend; verify operator preflight.",
         ],
     }
 
@@ -229,6 +295,8 @@ def classify_phase2_execution(
             "remainingCount": None,
             "analyzedCount": None,
             "insufficientHistoryCount": None,
+            "failedCount": None,
+            "pendingCount": None,
             "candidateSelection": (run.gates or {}).get("candidateSelection"),
             "phase2Enabled": phase2_enabled,
             "notes": [
@@ -237,33 +305,8 @@ def classify_phase2_execution(
             ],
         }
 
-    if scan_id and not phase2_enabled:
-        return {
-            "state": "paused",
-            "authorized": False,
-            "drainAvailable": available,
-            "drainBlocker": drain_reason,
-            "drainLastTickAt": phase2_meta.get("lastTickAt")
-            if isinstance(phase2_meta.get("lastTickAt"), str)
-            else None,
-            "drainFresh": None,
-            "blocker": "phase2_paused",
-            "nextAction": "resume_phase2_drain",
-            "technicalScanId": scan_id,
-            "scanStatus": None,
-            "leaseActive": False,
-            "leaseExpiresAt": None,
-            "universeSize": None,
-            "processedCount": None,
-            "remainingCount": None,
-            "analyzedCount": None,
-            "insufficientHistoryCount": None,
-            "candidateSelection": (run.gates or {}).get("candidateSelection"),
-            "phase2Enabled": False,
-            "notes": [
-                "Phase-2 drain is paused. Resume via first-pass-drain enabled=true.",
-            ],
-        }
+    # Do not early-return on phase2Enabled=False: pausing future scheduling must
+    # not hide scan progress or claim an in-flight lease has stopped (#361/#362).
 
     drain_meta = {}
     if isinstance(run.dimensions, dict):
@@ -286,6 +329,8 @@ def classify_phase2_execution(
     processed = None
     analyzed = None
     insufficient = None
+    failed_count = None
+    pending_count = None
     has_technical_work = None
     if scan is not None:
         scan_status = str(scan.get("status") or "")
@@ -332,12 +377,20 @@ def classify_phase2_execution(
         records = getattr(scan_state, "records", {}) or {}
         analyzed = 0
         insufficient = 0
+        failed_count = 0
+        pending_count = 0
         for sid in stock_ids:
             rec = records.get(sid)
             if rec is None:
+                pending_count += 1
                 continue
-            if str(getattr(rec, "rejection_reason", "") or "") == HISTORY_BUDGET_EXHAUSTED_REASON:
+            reason = str(getattr(rec, "rejection_reason", "") or "")
+            readiness = str(getattr(rec, "readiness", "") or "")
+            # Mutually exclusive buckets — analyzed = evaluated indicators only.
+            if reason == HISTORY_BUDGET_EXHAUSTED_REASON or readiness == "source_incomplete":
                 insufficient += 1
+            elif readiness == "rejected" or reason:
+                failed_count += 1
             else:
                 analyzed += 1
         if not scan_status:
@@ -352,6 +405,10 @@ def classify_phase2_execution(
                 if coverage_meta.get("insufficientHistory") is not None
                 else None
             )
+            if coverage_meta.get("failed") is not None:
+                failed_count = int(coverage_meta.get("failed"))
+            if coverage_meta.get("pending") is not None:
+                pending_count = int(coverage_meta.get("pending"))
         except (TypeError, ValueError):
             pass
 
@@ -380,6 +437,11 @@ def classify_phase2_execution(
         state = "failed"
         blocker = "phase2_failed"
         next_action = "inspect_errors_or_retry"
+    elif complete:
+        # Authoritative completion wins over a stale budget lastOutcome (#361/#362).
+        state = "completed"
+        blocker = None
+        next_action = "review_evidence"
     elif last_outcome == "phase2_budget_cap_reached" or (
         scan_status == "budget_exhausted" and has_technical_work is not False
     ):
@@ -394,17 +456,15 @@ def classify_phase2_execution(
             if last_outcome == "phase2_budget_cap_reached"
             else "resume_budget_or_wait"
         )
-    elif complete:
-        state = "completed"
-        blocker = None
-        next_action = "review_evidence"
     elif last_outcome == "phase2_no_progress":
-        failed_count = 0
+        no_progress_failed = 0
         try:
-            failed_count = int((coverage_meta or {}).get("failed") or 0)
+            no_progress_failed = int((coverage_meta or {}).get("failed") or 0)
         except (TypeError, ValueError):
-            failed_count = 0
-        if failed_count > 0 and (remaining is None or remaining <= 0):
+            no_progress_failed = 0
+        if failed_count is not None:
+            no_progress_failed = max(no_progress_failed, int(failed_count))
+        if no_progress_failed > 0 and (remaining is None or remaining <= 0):
             state = "failed"
             blocker = "phase2_no_progress"
             next_action = "inspect_errors_or_retry"
@@ -412,15 +472,20 @@ def classify_phase2_execution(
             state = "waiting_for_retry"
             blocker = "phase2_no_progress"
             next_action = "wait_for_retry_window"
+    elif lease_active and scan_status in _PHASE2_ACTIVE:
+        # Live lease = claimed batch may still be running. Scheduling availability
+        # is orthogonal — do not hide the lease behind executor_unavailable (#362).
+        # Lease is not absolute proof the worker is healthy; UI should poll progress.
+        state = "actively_analyzing"
+        next_action = "poll_progress"
+        if not available:
+            blocker = drain_reason or "first_pass_drain_unavailable"
+        else:
+            blocker = None
     elif not available:
         state = "executor_unavailable"
         blocker = drain_reason or "first_pass_drain_unavailable"
         next_action = "wait_for_executor"
-    elif lease_active and scan_status in _PHASE2_ACTIVE:
-        # Only a live worker lease proves analysis is currently executing.
-        state = "actively_analyzing"
-        blocker = None
-        next_action = "poll_progress"
     elif (
         available
         and drain_fresh
@@ -448,6 +513,19 @@ def classify_phase2_execution(
         blocker = None
         next_action = "waiting_for_drain_tick"
 
+    # Scheduling pause is orthogonal to active processing / terminal outcomes.
+    if scan_id and not phase2_enabled:
+        if state == "actively_analyzing":
+            # Lease still held — pause only blocks future drain claims.
+            # Prefer explicit pause blocker when executor is otherwise available.
+            if available or blocker is None:
+                blocker = "phase2_scheduling_paused"
+            next_action = "poll_progress"
+        elif state not in {"completed", "failed", "waiting_for_budget_window"}:
+            state = "paused"
+            blocker = "phase2_paused"
+            next_action = "resume_phase2_drain"
+
     return {
         "state": state,
         "authorized": bool(approved and scan_id and available and phase2_enabled),
@@ -464,8 +542,11 @@ def classify_phase2_execution(
         "universeSize": universe_size,
         "processedCount": processed,
         "remainingCount": remaining,
+        # analyzedCount = evaluated indicator rows only (excludes failed/insufficient/pending).
         "analyzedCount": analyzed,
         "insufficientHistoryCount": insufficient,
+        "failedCount": failed_count,
+        "pendingCount": pending_count,
         "hasTechnicalWork": has_technical_work,
         "candidateSelection": (run.gates or {}).get("candidateSelection"),
         "phase2Enabled": phase2_enabled,
@@ -473,6 +554,9 @@ def classify_phase2_execution(
             "Attaching a technical scan is not proof that analysis is running.",
             "Phase-2 drain reuses the First-Pass drain CronJob token/owner/flag.",
             "Terminal scan status alone is not complete while history work remains.",
+            "phase2Enabled=false pauses future scheduling; an active lease may still finish.",
+            "A live lease means a batch was claimed — not that the worker is healthy.",
+            "Executor unavailable blocks new claims; it does not erase an in-flight lease.",
         ],
     }
 

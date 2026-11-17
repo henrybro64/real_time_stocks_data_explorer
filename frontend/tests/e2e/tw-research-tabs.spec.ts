@@ -47,12 +47,13 @@ test("single-flow stages expose fundamentals, watchlist, and progress disclosure
 
 test("analyst evidence example loads as labeled fixture only", async ({ page }) => {
   await openResearchPage(page);
-  await page
-    .getByRole("button", { name: /Load Traditional Chinese example|載入繁中範例/ })
-    .click();
-  await page.getByTestId("tw-research-advanced-details").locator("summary").first().click();
-  await expect(page.getByTestId("tw-research-report-evidence")).toContainText("exampleOnly");
-  await expect(page.getByTestId("tw-research-report-evidence")).toContainText("不是即時投資建議");
+  const exampleHelp = page.getByTestId("tw-research-example-help");
+  await exampleHelp.locator("xpath=ancestor::details").locator("summary").click();
+  await exampleHelp.getByTestId("tw-research-load-evidence-example").click();
+  await expect(page.getByTestId("tw-research-example-evidence")).toContainText("exampleOnly");
+  await expect(page.getByTestId("tw-research-example-evidence")).toContainText(
+    "不是即時投資建議",
+  );
 });
 
 test("watchlist remains available after reload and does not invent trading picks", async ({

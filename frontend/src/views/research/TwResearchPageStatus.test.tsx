@@ -12,6 +12,7 @@ import { ApiError } from "../../services/api/client";
 import {
   advanceTwResearchRunGate,
   fetchThemeOptions,
+  fetchTwResearchFirstPassJob,
   fetchTwResearchFirstPassProgress,
   fetchTwResearchFirstPassSymbols,
   fetchTwResearchRunCurrent,
@@ -52,6 +53,9 @@ vi.mock("../../services/api/twResearch", async () => {
       throw new ApiError("missing", { status: 404, detail: "x", kind: "not_found" });
     }),
     listTwResearchFirstPassJobs: vi.fn(async () => []),
+    fetchTwResearchFirstPassJob: vi.fn(async () => {
+      throw new ApiError("missing", { status: 404, detail: "x", kind: "not_found" });
+    }),
     fetchTwResearchFirstPassProgress: vi.fn(),
     fetchTwResearchFirstPassSymbols: vi.fn(),
     runTwResearchFirstPassBatch: vi.fn(),
@@ -132,10 +136,18 @@ function runRecord(overrides: Partial<TwResearchRun> = {}): TwResearchRun {
 
 function seed(options: {
   job?: Record<string, unknown>;
+  jobs?: Array<Record<string, unknown>>;
   progress?: Record<string, unknown>;
   run?: Partial<TwResearchRun> | null;
 }) {
-  vi.mocked(listTwResearchFirstPassJobs).mockResolvedValue([jobRecord(options.job)]);
+  const listed =
+    options.jobs ??
+    (options.job === undefined && options.jobs === undefined
+      ? [jobRecord()]
+      : options.job
+        ? [jobRecord(options.job)]
+        : []);
+  vi.mocked(listTwResearchFirstPassJobs).mockResolvedValue(listed);
   vi.mocked(fetchTwResearchFirstPassProgress).mockResolvedValue(
     progressRecord(options.progress),
   );
@@ -1120,15 +1132,30 @@ describe("TwResearchPage Start retry when queued without job (#365)", () => {
         status: "queued",
         phase: "phase1_first_pass",
         firstPassJobId: null,
-        jobClaimToken: "tok",
+        pendingFirstPassJobId: "fpj_pending",
+        jobClaimActive: true,
         jobClaimExpiresAt: future,
       },
     });
-    renderPage("en");
-    expect(await screen.findByTestId("tw-research-start-retry-hint")).toHaveTextContent(
-      /still in progress|正在建立/i,
+    // Keep GET returning the live claim so auto-poll does not 404-fail.
+    vi.mocked(fetchTwResearchRunCurrent).mockResolvedValue(
+      runRecord({
+        status: "queued",
+        phase: "phase1_first_pass",
+        firstPassJobId: null,
+        pendingFirstPassJobId: "fpj_pending",
+        jobClaimActive: true,
+        jobClaimExpiresAt: future,
+      }),
     );
-    expect(await screen.findByTestId("tw-research-start-full-research")).toBeEnabled();
+    renderPage("en");
+    expect(await screen.findByTestId("tw-research-start-outcome")).toHaveTextContent(
+      /already in progress|正在建立/i,
+    );
+    // Avoid duplicate Start POSTs while the create claim is live.
+    await waitFor(() => {
+      expect(screen.getByTestId("tw-research-start-full-research")).toBeDisabled();
+    });
   });
 
   it("allows a second Start after incomplete first attempt", async () => {
@@ -1245,5 +1272,948 @@ describe("TwResearchPage Start retry when queued without job (#365)", () => {
     expect(screen.getByTestId("tw-research-execution-status")).not.toHaveTextContent(
       /actively collecting|正在背景收集|正在進行資料收集/i,
     );
+  });
+
+  it("shows executor-unavailable copy without inventing active collection (#362)", async () => {
+    seed({
+      run: {
+        status: "running",
+        phase: "phase1_first_pass",
+        firstPassJobId: JOB_ID,
+        scheduleEnabled: false,
+        createdAt: "2026-11-16T08:00:00Z",
+        execution: {
+          state: "executor_unavailable",
+          authorized: false,
+          drainAvailable: false,
+        },
+      },
+      jobs: [jobRecord({ jobId: JOB_ID, createdAt: "2026-11-17T03:17:00Z" })],
+    });
+    renderPage("zh-TW");
+    const status = await screen.findByTestId("tw-research-execution-status");
+    expect(status).toHaveTextContent(/研究尚未開始：背景處理服務尚未啟用/);
+    expect(status).not.toHaveTextContent(/正在背景收集|正在進行資料收集/);
+    const active = await screen.findByTestId("tw-research-active-job");
+    // Job label uses Job createdAt (Taipei), not the older Research Run birth time.
+    expect(active).toHaveTextContent(/2026\/11\/17/);
+    expect(active).not.toHaveTextContent(/2026\/11\/16/);
+  });
+
+  it("keeps selected job identity when it is missing from the history list (#362 D2)", async () => {
+    seed({
+      run: {
+        status: "running",
+        phase: "phase1_first_pass",
+        firstPassJobId: "fpj_selected_missing",
+        scheduleEnabled: false,
+        execution: {
+          state: "executor_unavailable",
+          authorized: false,
+          drainAvailable: false,
+        },
+      },
+      // Older historical jobs only — selected id is absent until refetch.
+      jobs: [jobRecord({ jobId: "fpj_older_history", createdAt: "2026-11-16T08:00:00Z" })],
+    });
+    renderPage("zh-TW");
+    const select = await screen.findByTestId("tw-research-first-pass-job-history");
+    expect(select).toHaveValue("fpj_selected_missing");
+    expect(select).toHaveTextContent(/已選工作（資料載入中/i);
+    expect(select).not.toHaveTextContent(/fpj_selected_missing/);
+    expect(select).not.toHaveValue("fpj_older_history");
+  });
+
+  it("shows investor startOutcome for job_created with Taipei time and no raw ids (#362)", async () => {
+    const user = userEvent.setup();
+    seed({
+      run: null,
+      jobs: [],
+    });
+    vi.mocked(startTwResearchRun).mockResolvedValue({
+      ...runRecord({
+        researchRunId: "rr_brand_new",
+        createdAt: "2026-11-13T02:00:00Z",
+        firstPassJobId: "fpj_brand_new",
+        execution: {
+          state: "job_created",
+          authorized: false,
+          drainAvailable: true,
+          processedCount: 0,
+          universeSize: 73,
+        },
+      }),
+      startOutcome: "job_created",
+    });
+    renderPage("zh-TW");
+    const start = await screen.findByTestId("tw-research-start-full-research");
+    await user.click(start);
+    const outcome = await screen.findByTestId("tw-research-start-outcome");
+    expect(outcome).toHaveTextContent(/已建立新的研究與收集工作（建立於 2026\/11\/13/);
+    expect(outcome).not.toHaveTextContent(/rr_brand_new|fpj_/);
+    expect(outcome).not.toHaveTextContent(/尚未啟用|背景處理服務/);
+  });
+
+  it("shows investor startOutcome for job_resumed with progress and no raw ids (#362)", async () => {
+    const user = userEvent.setup();
+    seed({
+      run: {
+        status: "running",
+        firstPassJobId: JOB_ID,
+        scheduleEnabled: false,
+        createdAt: "2026-11-10T04:00:00Z",
+        execution: {
+          state: "job_created",
+          authorized: false,
+          drainAvailable: true,
+          processedCount: 12,
+          universeSize: 73,
+        },
+      },
+    });
+    vi.mocked(startTwResearchRun).mockResolvedValue({
+      ...runRecord({
+        researchRunId: "rr_resumed",
+        createdAt: "2026-11-10T04:00:00Z",
+        firstPassJobId: JOB_ID,
+        scheduleEnabled: true,
+        execution: {
+          state: "executor_not_ticking",
+          authorized: true,
+          drainAvailable: true,
+          processedCount: 12,
+          universeSize: 73,
+        },
+      }),
+      startOutcome: "job_resumed",
+    });
+    renderPage("zh-TW");
+    await user.click(await screen.findByTestId("tw-research-start-full-research"));
+    const outcome = await screen.findByTestId("tw-research-start-outcome");
+    expect(outcome).toHaveTextContent(/已接續現有研究（建立於 2026\/11\/10/);
+    expect(outcome).toHaveTextContent(/已處理 12\/73/);
+    expect(outcome).not.toHaveTextContent(/rr_resumed|fpj_/);
+    expect(outcome).not.toHaveTextContent(/尚未啟用|背景處理服務/);
+  });
+
+  it("shows identity-only startOutcome for drain_rearmed (#362)", async () => {
+    const user = userEvent.setup();
+    seed({
+      run: {
+        status: "running",
+        firstPassJobId: JOB_ID,
+        scheduleEnabled: false,
+        execution: {
+          state: "executor_unavailable",
+          authorized: false,
+          drainAvailable: false,
+        },
+      },
+    });
+    vi.mocked(startTwResearchRun).mockResolvedValue({
+      ...runRecord({
+        firstPassJobId: JOB_ID,
+        scheduleEnabled: true,
+        execution: {
+          state: "executor_not_ticking",
+          authorized: true,
+          drainAvailable: true,
+        },
+      }),
+      startOutcome: "drain_rearmed",
+    });
+    renderPage("zh-TW");
+    await user.click(await screen.findByTestId("tw-research-start-full-research"));
+    expect(await screen.findByTestId("tw-research-start-outcome")).toHaveTextContent(
+      /已重新授權現有研究的自動收集/,
+    );
+  });
+
+  it("job_created execution with drain available uses awaitingStartToArm, not not-enabled (#362)", async () => {
+    seed({
+      run: {
+        status: "running",
+        phase: "phase1_first_pass",
+        firstPassJobId: JOB_ID,
+        scheduleEnabled: false,
+        execution: {
+          state: "job_created",
+          authorized: false,
+          drainAvailable: true,
+          processedCount: 0,
+          universeSize: 73,
+        },
+      },
+      progress: { processedCount: 0, universeSize: 73, pendingCount: 73 },
+    });
+    renderPage("en");
+    const status = await screen.findByTestId("tw-research-execution-status");
+    expect(status).toHaveTextContent(/Collection is ready\. Press Start to authorize/i);
+    expect(status).not.toHaveTextContent(/not enabled|background processing service is not enabled/i);
+    expect(status).toHaveTextContent(/0\/73/);
+    expect(status).toHaveTextContent(/Last data progress: —/);
+    expect(status).not.toHaveTextContent(/Last executor tick|Job updated/i);
+    expect(
+      await screen.findByTestId("tw-research-execution-advanced-timestamps"),
+    ).toHaveTextContent(/Last executor tick: —/);
+  });
+
+  it("appends 0/73 and empty tick/progress on executor_unavailable (#362)", async () => {
+    seed({
+      run: {
+        status: "running",
+        phase: "phase1_first_pass",
+        firstPassJobId: JOB_ID,
+        scheduleEnabled: false,
+        execution: {
+          state: "executor_unavailable",
+          authorized: false,
+          drainAvailable: false,
+          processedCount: 0,
+          universeSize: 73,
+          drainLastTickAt: null,
+          jobUpdatedAt: null,
+          lastDataProgressAt: null,
+        },
+        firstPassDrain: { armed: false, available: false, lastTickAt: null },
+      },
+      progress: {
+        processedCount: 0,
+        universeSize: 73,
+        pendingCount: 73,
+        cursor: 0,
+        updatedAt: null,
+      },
+    });
+    renderPage("zh-TW");
+    const status = await screen.findByTestId("tw-research-execution-status");
+    expect(status).toHaveTextContent(/研究尚未開始：背景處理服務尚未啟用/);
+    expect(status).toHaveTextContent(/0\/73/);
+    expect(status).toHaveTextContent(/最後資料進度：—/);
+    expect(status).not.toHaveTextContent(/最後執行器心跳|工作狀態更新/);
+    expect(status).not.toHaveTextContent(/正在背景收集|正在進行資料收集/);
+  });
+
+  it("does not treat jobUpdatedAt as data progress without lastDataProgressAt (#362)", async () => {
+    seed({
+      run: {
+        status: "running",
+        firstPassJobId: JOB_ID,
+        scheduleEnabled: false,
+        execution: {
+          state: "executor_unavailable",
+          authorized: false,
+          drainAvailable: false,
+          processedCount: 1,
+          universeSize: 73,
+          // Admin/lease bump only — must not become "last data progress".
+          jobUpdatedAt: "2026-11-17T04:00:00Z",
+          lastDataProgressAt: null,
+          drainLastTickAt: "2026-11-17T03:55:00Z",
+        },
+      },
+      progress: { processedCount: 1, universeSize: 73, pendingCount: 72 },
+    });
+    renderPage("en");
+    const status = await screen.findByTestId("tw-research-execution-status");
+    expect(status).toHaveTextContent(/Last data progress: —/);
+    expect(status).not.toHaveTextContent(/Job updated|Last executor tick/i);
+    const advanced = await screen.findByTestId(
+      "tw-research-execution-advanced-timestamps",
+    );
+    expect(advanced).toHaveTextContent(/Job updated:.*2026/);
+    expect(advanced).toHaveTextContent(/Last executor tick:.*2026/);
+  });
+
+  it("shows lastDataProgressAt when symbol evidence was persisted (#362)", async () => {
+    seed({
+      run: {
+        status: "running",
+        firstPassJobId: JOB_ID,
+        scheduleEnabled: false,
+        execution: {
+          state: "executor_unavailable",
+          authorized: false,
+          drainAvailable: false,
+          processedCount: 3,
+          universeSize: 73,
+          jobUpdatedAt: "2026-11-17T05:00:00Z",
+          lastDataProgressAt: "2026-11-17T03:10:00Z",
+          drainLastTickAt: null,
+        },
+      },
+      progress: { processedCount: 3, universeSize: 73 },
+    });
+    renderPage("en");
+    const status = await screen.findByTestId("tw-research-execution-status");
+    expect(status).toHaveTextContent(/Last data progress:.*2026/);
+    expect(status).toHaveTextContent(/3\/73/);
+  });
+
+  it("waiting_for_retry uses scheduled nextRetryAt and is not executor failure (#362)", async () => {
+    seed({
+      run: {
+        status: "waiting_for_next_window",
+        firstPassJobId: JOB_ID,
+        scheduleEnabled: true,
+        execution: {
+          state: "waiting_for_retry",
+          authorized: true,
+          drainAvailable: true,
+          processedCount: 12,
+          universeSize: 73,
+          lastDataProgressAt: "2026-11-17T03:10:00Z",
+        },
+        // Nested progress supplies authoritative retry time after refresh.
+        firstPassProgress: {
+          nextRetryAt: "2026-11-13T04:30:00Z",
+          processedCount: 12,
+          universeSize: 73,
+        },
+      },
+      progress: {
+        status: "deferred",
+        processedCount: 12,
+        universeSize: 73,
+        nextRetryAt: "2026-11-13T04:30:00Z",
+      },
+    });
+    renderPage("en");
+    const status = await screen.findByTestId("tw-research-execution-status");
+    await waitFor(() => {
+      expect(status).toHaveTextContent(/Scheduled retry:.*2026/);
+    });
+    expect(status).toHaveTextContent(/waiting to retry|rate limit|temporary error/i);
+    expect(status).not.toHaveTextContent(/no automatic run has started/i);
+    expect(status).not.toHaveTextContent(/background service/i);
+    expect(status).toHaveTextContent(/12\/73/);
+  });
+
+  it("waiting_for_retry without nextRetryAt does not invent a time (#362)", async () => {
+    seed({
+      run: {
+        status: "waiting_for_next_window",
+        firstPassJobId: JOB_ID,
+        scheduleEnabled: true,
+        execution: {
+          state: "waiting_for_retry",
+          authorized: true,
+          drainAvailable: true,
+          processedCount: 4,
+          universeSize: 73,
+        },
+        firstPassProgress: { nextRetryAt: null },
+      },
+      progress: {
+        status: "deferred",
+        processedCount: 4,
+        universeSize: 73,
+        nextRetryAt: null,
+      },
+    });
+    renderPage("zh-TW");
+    const status = await screen.findByTestId("tw-research-execution-status");
+    expect(status).toHaveTextContent(/等待重試/);
+    expect(status).toHaveTextContent(/不是執行器故障/);
+    expect(status).not.toHaveTextContent(/已排定重試：\d{4}/);
+    expect(status).not.toHaveTextContent(/自動執行尚未開始/);
+  });
+
+  it("execution_authorized stays distinct from waiting_for_retry (#362)", async () => {
+    seed({
+      run: {
+        status: "running",
+        firstPassJobId: JOB_ID,
+        scheduleEnabled: true,
+        execution: {
+          state: "execution_authorized",
+          authorized: true,
+          drainAvailable: true,
+          processedCount: 0,
+          universeSize: 73,
+        },
+      },
+      progress: { processedCount: 0, universeSize: 73, nextRetryAt: null },
+    });
+    renderPage("en");
+    const status = await screen.findByTestId("tw-research-execution-status");
+    expect(status).toHaveTextContent(/authorized and waiting for the next automatic run/i);
+    expect(status).not.toHaveTextContent(/rate limit|temporary error|Scheduled retry/i);
+    expect(status).not.toHaveTextContent(/no automatic run has started/i);
+  });
+
+  it("executor_not_ticking stays distinct from waiting_for_retry (#362)", async () => {
+    seed({
+      run: {
+        status: "running",
+        firstPassJobId: JOB_ID,
+        scheduleEnabled: true,
+        execution: {
+          state: "executor_not_ticking",
+          authorized: true,
+          drainAvailable: true,
+          processedCount: 0,
+          universeSize: 73,
+        },
+      },
+    });
+    renderPage("en");
+    const status = await screen.findByTestId("tw-research-execution-status");
+    expect(status).toHaveTextContent(/no automatic run has started/i);
+    expect(status).not.toHaveTextContent(/Scheduled retry|rate limit|temporary error/i);
+  });
+
+  it("stalled stays distinct from waiting_for_retry (#362)", async () => {
+    seed({
+      run: {
+        status: "running",
+        firstPassJobId: JOB_ID,
+        scheduleEnabled: true,
+        execution: {
+          state: "stalled",
+          authorized: true,
+          drainAvailable: true,
+          processedCount: 10,
+          universeSize: 73,
+          lastDataProgressAt: "2026-11-17T02:00:00Z",
+        },
+      },
+      progress: { processedCount: 10, universeSize: 73 },
+    });
+    renderPage("en");
+    const stalled = await screen.findByTestId("tw-research-execution-status");
+    expect(stalled).toHaveTextContent(/paused mid-way/i);
+    expect(stalled).not.toHaveTextContent(/Scheduled retry|rate limit/i);
+  });
+
+  it("executor_unavailable stays distinct from waiting_for_retry (#362)", async () => {
+    seed({
+      run: {
+        status: "running",
+        firstPassJobId: JOB_ID,
+        scheduleEnabled: false,
+        execution: {
+          state: "executor_unavailable",
+          authorized: false,
+          drainAvailable: false,
+          processedCount: 0,
+          universeSize: 73,
+        },
+      },
+    });
+    renderPage("zh-TW");
+    const status = await screen.findByTestId("tw-research-execution-status");
+    expect(status).toHaveTextContent(/背景處理服務尚未啟用/);
+    expect(status).not.toHaveTextContent(/等待重試|速率限制/);
+  });
+
+  it("historical Job progress cannot contaminate current-run execution status (#362)", async () => {
+    const user = userEvent.setup();
+    const CURRENT = "fpj_current_run";
+    const HISTORICAL = "fpj_historical_browse";
+    const currentRetry = "2026-11-13T04:30:00Z"; // 12:30 Taipei
+    const historicalRetry = "2026-11-14T08:00:00Z"; // 16:00 Taipei
+
+    vi.mocked(fetchTwResearchRunCurrent).mockResolvedValue(
+      runRecord({
+        status: "waiting_for_next_window",
+        firstPassJobId: CURRENT,
+        scheduleEnabled: true,
+        execution: {
+          state: "waiting_for_retry",
+          authorized: true,
+          drainAvailable: true,
+          processedCount: 12,
+          universeSize: 73,
+          lastDataProgressAt: "2026-11-17T03:10:00Z",
+        },
+        firstPassProgress: {
+          nextRetryAt: currentRetry,
+          processedCount: 12,
+          universeSize: 73,
+        },
+      }),
+    );
+    vi.mocked(listTwResearchFirstPassJobs).mockResolvedValue([
+      jobRecord({
+        jobId: CURRENT,
+        createdAt: "2026-11-17T02:00:00Z",
+        status: "deferred",
+      }),
+      jobRecord({
+        jobId: HISTORICAL,
+        createdAt: "2026-11-10T02:00:00Z",
+        status: "deferred",
+      }),
+    ]);
+    vi.mocked(fetchTwResearchFirstPassJob).mockImplementation(async (jobId: string) =>
+      jobRecord({
+        jobId,
+        status: "deferred",
+        createdAt:
+          jobId === CURRENT ? "2026-11-17T02:00:00Z" : "2026-11-10T02:00:00Z",
+      }),
+    );
+    vi.mocked(fetchTwResearchFirstPassProgress).mockImplementation(
+      async (jobId: string) => {
+        if (jobId === HISTORICAL) {
+          return progressRecord({
+            jobId: HISTORICAL,
+            status: "deferred",
+            processedCount: 50,
+            universeSize: 73,
+            pendingCount: 23,
+            nextRetryAt: historicalRetry,
+          });
+        }
+        return progressRecord({
+          jobId: CURRENT,
+          status: "deferred",
+          processedCount: 12,
+          universeSize: 73,
+          pendingCount: 61,
+          nextRetryAt: currentRetry,
+        });
+      },
+    );
+
+    renderPage("en");
+    const exec = await screen.findByTestId("tw-research-execution-status");
+    await waitFor(() => {
+      expect(exec).toHaveTextContent(/Scheduled retry:.*12:30/);
+    });
+    expect(exec).toHaveTextContent(/12\/73/);
+    expect(exec).not.toHaveTextContent(/16:00/);
+    expect(exec).not.toHaveTextContent(/50\/73/);
+
+    const select = await screen.findByTestId("tw-research-first-pass-job-history");
+    await user.selectOptions(select, HISTORICAL);
+    expect(select).toHaveValue(HISTORICAL);
+
+    // Investor summary may reflect the browsed historical Job…
+    await waitFor(() => {
+      expect(screen.getByTestId("tw-research-next-retry")).toHaveTextContent(
+        /2026\/11\/14.*16:00|11\/14\/2026.*16:00/,
+      );
+    });
+    // …but the active Run execution line must keep the run-owned retry/counts.
+    expect(exec).toHaveTextContent(/Scheduled retry:.*12:30/);
+    expect(exec).toHaveTextContent(/12\/73/);
+    expect(exec).not.toHaveTextContent(/16:00/);
+    expect(exec).not.toHaveTextContent(/50\/73/);
+
+    // Switch back to current Job — still the run-owned schedule.
+    await user.selectOptions(select, CURRENT);
+    expect(select).toHaveValue(CURRENT);
+    await waitFor(() => {
+      expect(screen.getByTestId("tw-research-next-retry")).toHaveTextContent(
+        /12:30/,
+      );
+    });
+    expect(exec).toHaveTextContent(/Scheduled retry:.*12:30/);
+    expect(exec).toHaveTextContent(/12\/73/);
+  });
+
+  it("ignores stale historical progress when switching back to current Job (#362)", async () => {
+    const user = userEvent.setup();
+    const CURRENT = "fpj_current_stale";
+    const HISTORICAL = "fpj_hist_stale";
+    let resolveHistorical: ((value: Record<string, unknown>) => void) | null = null;
+
+    vi.mocked(fetchTwResearchRunCurrent).mockResolvedValue(
+      runRecord({
+        status: "waiting_for_next_window",
+        firstPassJobId: CURRENT,
+        scheduleEnabled: true,
+        execution: {
+          state: "waiting_for_retry",
+          authorized: true,
+          drainAvailable: true,
+          processedCount: 8,
+          universeSize: 73,
+          lastDataProgressAt: null,
+        },
+        firstPassProgress: {
+          nextRetryAt: "2026-11-13T05:00:00Z",
+          processedCount: 8,
+          universeSize: 73,
+        },
+      }),
+    );
+    vi.mocked(listTwResearchFirstPassJobs).mockResolvedValue([
+      jobRecord({ jobId: CURRENT, status: "deferred" }),
+      jobRecord({ jobId: HISTORICAL, status: "deferred" }),
+    ]);
+    vi.mocked(fetchTwResearchFirstPassJob).mockImplementation(async (jobId: string) =>
+      jobRecord({ jobId, status: "deferred" }),
+    );
+    vi.mocked(fetchTwResearchFirstPassProgress).mockImplementation(
+      async (jobId: string) => {
+        if (jobId === HISTORICAL) {
+          return new Promise((resolve) => {
+            resolveHistorical = resolve;
+          });
+        }
+        return progressRecord({
+          jobId: CURRENT,
+          status: "deferred",
+          processedCount: 8,
+          universeSize: 73,
+          nextRetryAt: "2026-11-13T05:00:00Z",
+        });
+      },
+    );
+
+    renderPage("en");
+    const exec = await screen.findByTestId("tw-research-execution-status");
+    await waitFor(() => {
+      expect(exec).toHaveTextContent(/Scheduled retry:.*13:00/);
+    });
+
+    const select = await screen.findByTestId("tw-research-first-pass-job-history");
+    await user.selectOptions(select, HISTORICAL);
+    // Switch back before historical progress resolves (stale in-flight).
+    await user.selectOptions(select, CURRENT);
+    resolveHistorical?.(
+      progressRecord({
+        jobId: HISTORICAL,
+        status: "deferred",
+        processedCount: 99,
+        universeSize: 73,
+        nextRetryAt: "2026-11-20T10:00:00Z",
+      }),
+    );
+
+    await waitFor(() => {
+      expect(select).toHaveValue(CURRENT);
+    });
+    // Stale historical retry/counts must not appear on the Run execution line.
+    expect(exec).toHaveTextContent(/Scheduled retry:.*13:00/);
+    expect(exec).toHaveTextContent(/8\/73/);
+    expect(exec).not.toHaveTextContent(/99\/73/);
+    expect(exec).not.toHaveTextContent(/18:00|10:00/);
+  });
+
+  it("keeps selected historical job and shows retry on 404 detail load (#362 P2-A)", async () => {
+    seed({
+      run: {
+        status: "running",
+        phase: "phase1_first_pass",
+        firstPassJobId: "fpj_selected_missing",
+        scheduleEnabled: false,
+        execution: {
+          state: "executor_unavailable",
+          authorized: false,
+          drainAvailable: false,
+        },
+      },
+      jobs: [jobRecord({ jobId: "fpj_older_history", createdAt: "2026-11-16T08:00:00Z" })],
+    });
+    vi.mocked(fetchTwResearchFirstPassJob).mockRejectedValue(
+      new ApiError("missing", { status: 404, detail: "x", kind: "not_found" }),
+    );
+    renderPage("en");
+    const select = await screen.findByTestId("tw-research-first-pass-job-history");
+    expect(select).toHaveValue("fpj_selected_missing");
+    expect(
+      await screen.findByTestId("tw-research-first-pass-job-detail-error"),
+    ).toHaveTextContent(/Could not load that historical collection job \(404\)/i);
+    expect(select).toHaveValue("fpj_selected_missing");
+    expect(select).not.toHaveValue("fpj_older_history");
+    expect(
+      screen.getByTestId("tw-research-first-pass-job-detail-retry"),
+    ).toBeInTheDocument();
+  });
+
+  it("ignores stale historical job detail responses after another selection (#362 P2-A)", async () => {
+    const user = userEvent.setup();
+    let resolveMissing: ((job: Record<string, unknown>) => void) | null = null;
+    vi.mocked(fetchTwResearchRunCurrent).mockResolvedValue(
+      runRecord({
+        status: "gated",
+        phase: "awaiting_analyst_candidate_selection",
+        firstPassJobId: "fpj_missing_a",
+        scheduleEnabled: false,
+      }),
+    );
+    vi.mocked(listTwResearchFirstPassJobs).mockResolvedValue([
+      jobRecord({ jobId: "fpj_listed", createdAt: "2026-11-16T08:00:00Z" }),
+    ]);
+    vi.mocked(fetchTwResearchFirstPassProgress).mockResolvedValue(
+      progressRecord({ jobId: "fpj_listed" }),
+    );
+    vi.mocked(fetchTwResearchFirstPassJob).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveMissing = resolve;
+        }),
+    );
+    renderPage("en");
+    const select = await screen.findByTestId("tw-research-first-pass-job-history");
+    await waitFor(() => {
+      expect(select).toHaveValue("fpj_missing_a");
+    });
+    await user.selectOptions(select, "fpj_listed");
+    expect(select).toHaveValue("fpj_listed");
+    resolveMissing?.({
+      jobId: "fpj_missing_a",
+      activeSnapshotId: "snap_stale",
+      status: "completed",
+    });
+    await waitFor(() => {
+      expect(screen.queryByTestId("tw-research-first-pass-job-detail-error")).toBeNull();
+    });
+    expect(select).toHaveValue("fpj_listed");
+  });
+
+  it("shows creation_in_progress startOutcome without claiming resume (#362 P1-A)", async () => {
+    const user = userEvent.setup();
+    seed({ run: null, jobs: [] });
+    const pendingRun = runRecord({
+      firstPassJobId: null,
+      pendingFirstPassJobId: "fpj_pending",
+      jobClaimActive: true,
+      jobClaimExpiresAt: new Date(Date.now() + 120_000).toISOString(),
+      execution: { state: "queued" },
+    });
+    let started = false;
+    vi.mocked(startTwResearchRun).mockImplementation(async () => {
+      started = true;
+      return { ...pendingRun, startOutcome: "creation_in_progress" };
+    });
+    vi.mocked(fetchTwResearchRunCurrent).mockImplementation(async () => {
+      if (!started) {
+        throw new ApiError("missing", { status: 404, detail: "x", kind: "not_found" });
+      }
+      return pendingRun;
+    });
+    renderPage("zh-TW");
+    await user.click(await screen.findByTestId("tw-research-start-full-research"));
+    expect(await screen.findByTestId("tw-research-start-outcome")).toHaveTextContent(
+      /收集工作正在建立中/,
+    );
+    expect(startTwResearchRun).toHaveBeenCalledTimes(1);
+    await waitFor(() => {
+      expect(screen.getByTestId("tw-research-start-full-research")).toBeDisabled();
+    });
+  });
+
+  it("polls until First-Pass Job attaches after creation_in_progress (#362)", async () => {
+    const user = userEvent.setup();
+    seed({ run: null, jobs: [] });
+    const pendingRun = runRecord({
+      firstPassJobId: null,
+      pendingFirstPassJobId: "fpj_pending",
+      jobClaimActive: true,
+      jobClaimExpiresAt: new Date(Date.now() + 120_000).toISOString(),
+      createdAt: "2026-11-13T02:00:00Z",
+    });
+    const attachedRun = runRecord({
+      firstPassJobId: "fpj_pending",
+      pendingFirstPassJobId: null,
+      jobClaimActive: false,
+      createdAt: "2026-11-13T02:00:00Z",
+      execution: {
+        state: "job_created",
+        drainAvailable: true,
+        processedCount: 0,
+        universeSize: 73,
+      },
+    });
+    let started = false;
+    let polls = 0;
+    vi.mocked(startTwResearchRun).mockImplementation(async () => {
+      started = true;
+      return { ...pendingRun, startOutcome: "creation_in_progress" };
+    });
+    vi.mocked(fetchTwResearchRunCurrent).mockImplementation(async () => {
+      if (!started) {
+        throw new ApiError("missing", { status: 404, detail: "x", kind: "not_found" });
+      }
+      polls += 1;
+      return polls >= 2 ? attachedRun : pendingRun;
+    });
+    renderPage("zh-TW");
+    await user.click(await screen.findByTestId("tw-research-start-full-research"));
+    await waitFor(
+      () => {
+        expect(screen.getByTestId("tw-research-start-outcome")).toHaveTextContent(
+          /收集工作已就緒/,
+        );
+      },
+      { timeout: 5_000 },
+    );
+    expect(startTwResearchRun).toHaveBeenCalledTimes(1);
+    expect(polls).toBeGreaterThanOrEqual(2);
+  });
+
+  it("stops creation polling on 404 without posting Start again (#362)", async () => {
+    const user = userEvent.setup();
+    seed({ run: null, jobs: [] });
+    let started = false;
+    vi.mocked(startTwResearchRun).mockImplementation(async () => {
+      started = true;
+      return {
+        ...runRecord({
+          firstPassJobId: null,
+          pendingFirstPassJobId: "fpj_pending",
+          jobClaimActive: true,
+          jobClaimExpiresAt: new Date(Date.now() + 120_000).toISOString(),
+        }),
+        startOutcome: "creation_in_progress",
+      };
+    });
+    vi.mocked(fetchTwResearchRunCurrent).mockImplementation(async () => {
+      if (!started) {
+        throw new ApiError("missing", { status: 404, detail: "x", kind: "not_found" });
+      }
+      throw new ApiError("missing", { status: 404, detail: "x", kind: "not_found" });
+    });
+    renderPage("en");
+    await user.click(await screen.findByTestId("tw-research-start-full-research"));
+    await waitFor(() => {
+      expect(screen.getByTestId("tw-research-start-outcome")).toHaveTextContent(
+        /Could not confirm collection setup/i,
+      );
+    });
+    expect(startTwResearchRun).toHaveBeenCalledTimes(1);
+  });
+
+  it("times out creation polling with a retry hint (#362)", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    seed({ run: null, jobs: [] });
+    const pendingRun = runRecord({
+      firstPassJobId: null,
+      pendingFirstPassJobId: "fpj_pending",
+      jobClaimActive: true,
+      jobClaimExpiresAt: new Date(Date.now() + 600_000).toISOString(),
+    });
+    let started = false;
+    vi.mocked(startTwResearchRun).mockImplementation(async () => {
+      started = true;
+      return { ...pendingRun, startOutcome: "creation_in_progress" };
+    });
+    vi.mocked(fetchTwResearchRunCurrent).mockImplementation(async () => {
+      if (!started) {
+        throw new ApiError("missing", { status: 404, detail: "x", kind: "not_found" });
+      }
+      return pendingRun;
+    });
+    renderPage("en");
+    await user.click(await screen.findByTestId("tw-research-start-full-research"));
+    expect(await screen.findByTestId("tw-research-start-outcome")).toHaveTextContent(
+      /already in progress/i,
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(50_000);
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId("tw-research-start-outcome")).toHaveTextContent(
+        /Still waiting for collection setup/i,
+      );
+    });
+    expect(startTwResearchRun).toHaveBeenCalledTimes(1);
+    vi.useRealTimers();
+  });
+
+  it("times out creation polling even when a GET is still in flight (#362)", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    seed({ run: null, jobs: [] });
+    const pendingRun = runRecord({
+      firstPassJobId: null,
+      pendingFirstPassJobId: "fpj_pending",
+      jobClaimActive: true,
+      jobClaimExpiresAt: new Date(Date.now() + 600_000).toISOString(),
+    });
+    let started = false;
+    vi.mocked(startTwResearchRun).mockImplementation(async () => {
+      started = true;
+      return { ...pendingRun, startOutcome: "creation_in_progress" };
+    });
+    vi.mocked(fetchTwResearchRunCurrent).mockImplementation(
+      (_init?: { signal?: AbortSignal }) =>
+        new Promise((resolve, reject) => {
+          if (!started) {
+            reject(
+              new ApiError("missing", { status: 404, detail: "x", kind: "not_found" }),
+            );
+            return;
+          }
+          const signal = _init?.signal;
+          if (!signal) return;
+          const onAbort = () => {
+            const err = new Error("aborted");
+            err.name = "AbortError";
+            reject(err);
+          };
+          if (signal.aborted) {
+            onAbort();
+            return;
+          }
+          signal.addEventListener("abort", onAbort, { once: true });
+        }),
+    );
+    renderPage("en");
+    await user.click(await screen.findByTestId("tw-research-start-full-research"));
+    expect(await screen.findByTestId("tw-research-start-outcome")).toHaveTextContent(
+      /already in progress/i,
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(50_000);
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId("tw-research-start-outcome")).toHaveTextContent(
+        /Still waiting for collection setup/i,
+      );
+    });
+    expect(startTwResearchRun).toHaveBeenCalledTimes(1);
+    vi.useRealTimers();
+  });
+
+  it("cancels creation polling on unmount (#362)", async () => {
+    const user = userEvent.setup();
+    seed({ run: null, jobs: [] });
+    const pendingRun = runRecord({
+      firstPassJobId: null,
+      pendingFirstPassJobId: "fpj_pending",
+      jobClaimActive: true,
+      jobClaimExpiresAt: new Date(Date.now() + 120_000).toISOString(),
+    });
+    let started = false;
+    let resolvePoll: ((run: ReturnType<typeof runRecord>) => void) | null = null;
+    vi.mocked(startTwResearchRun).mockImplementation(async () => {
+      started = true;
+      return { ...pendingRun, startOutcome: "creation_in_progress" };
+    });
+    vi.mocked(fetchTwResearchRunCurrent).mockImplementation(
+      () =>
+        new Promise((resolve, reject) => {
+          if (!started) {
+            reject(
+              new ApiError("missing", { status: 404, detail: "x", kind: "not_found" }),
+            );
+            return;
+          }
+          resolvePoll = resolve;
+        }),
+    );
+    const view = renderPage("en");
+    await user.click(await screen.findByTestId("tw-research-start-full-research"));
+    expect(await screen.findByTestId("tw-research-start-outcome")).toHaveTextContent(
+      /already in progress/i,
+    );
+    view.unmount();
+    resolvePoll?.(
+      runRecord({
+        firstPassJobId: "fpj_pending",
+        createdAt: "2026-11-13T02:00:00Z",
+      }),
+    );
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(startTwResearchRun).toHaveBeenCalledTimes(1);
   });
 });

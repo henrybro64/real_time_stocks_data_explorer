@@ -44,6 +44,21 @@ def _parse_iso_utc(value: str) -> datetime:
     return datetime.fromisoformat(str(value).replace("Z", _ISO_Z_UTC_SUFFIX))
 
 
+def _claim_token_is_active(token: object, expires_at: object) -> bool:
+    """True when a claim token is present and its lease has not expired."""
+    if not isinstance(token, str) or not token.strip():
+        return False
+    if not isinstance(expires_at, str) or not expires_at.strip():
+        return True
+    try:
+        expires = _parse_iso_utc(expires_at)
+    except ValueError:
+        return True
+    if expires.tzinfo is None:
+        expires = expires.replace(tzinfo=UTC)
+    return expires > datetime.now(UTC)
+
+
 def _ineligible_rearm_job_status_reason(status: str) -> str | None:
     if status in _REARM_ELIGIBLE_JOB_STATUS:
         return None
@@ -203,12 +218,23 @@ class ResearchRun:
         payload["updatedAt"] = payload.pop("updated_at")
         # scheduleEnabled = first-pass-drain armed (not the #330 technical schedule).
         payload["scheduleEnabled"] = payload.pop("schedule_enabled")
-        payload["jobClaimToken"] = payload.pop("job_claim_token")
-        payload["jobClaimExpiresAt"] = payload.pop("job_claim_expires_at")
+        # Never send claim tokens to the browser — only active/expiry hints.
+        job_claim_token = payload.pop("job_claim_token", None)
+        phase2_claim_token = payload.pop("phase2_claim_token", None)
+        job_claim_expires_at = payload.pop("job_claim_expires_at", None)
+        phase2_claim_expires_at = payload.pop("phase2_claim_expires_at", None)
+        payload["jobClaimActive"] = _claim_token_is_active(
+            job_claim_token, job_claim_expires_at
+        )
+        payload["jobClaimExpiresAt"] = job_claim_expires_at
         payload["pendingFirstPassJobId"] = payload.pop("pending_first_pass_job_id")
-        payload["phase2ClaimToken"] = payload.pop("phase2_claim_token")
-        payload["phase2ClaimExpiresAt"] = payload.pop("phase2_claim_expires_at")
+        payload["phase2ClaimActive"] = _claim_token_is_active(
+            phase2_claim_token, phase2_claim_expires_at
+        )
+        payload["phase2ClaimExpiresAt"] = phase2_claim_expires_at
         payload["pendingTechnicalScanId"] = payload.pop("pending_technical_scan_id")
+        payload.pop("jobClaimToken", None)
+        payload.pop("phase2ClaimToken", None)
         available, reason = first_pass_drain_availability(self.user_id)
         drain_meta = dict(self.dimensions.get("firstPassDrain") or {})
         payload["firstPassDrain"] = {
@@ -222,7 +248,9 @@ class ResearchRun:
         if isinstance(progress, dict):
             payload["firstPassProgress"] = dict(progress)
         payload["notNotionPublisher"] = True
-        payload["cronjobRemainsSuspended"] = True
+        # Unknown without a live Kubernetes observation. Ordinary API handlers
+        # must not claim CronJob suspend/active state (#361/#362).
+        payload["cronjobRemainsSuspended"] = None
         payload["durable"] = True
         return payload
 

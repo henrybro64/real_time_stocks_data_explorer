@@ -2080,44 +2080,52 @@ class TwResearchRepository(SessionBoundRepository):
                         raise ResearchRunConflict() from None
                     raise ResearchRunConflict() from None
             else:
+                next_run_id = str(payload["research_run_id"])
+                values: dict[str, Any] = {
+                    "research_run_id": next_run_id,
+                    "version": str(payload.get("version") or row.version),
+                    "phase": str(payload["phase"]),
+                    "status": str(payload["status"]),
+                    "trading_day": payload.get("trading_day"),
+                    "first_pass_job_id": payload.get("first_pass_job_id"),
+                    "first_pass_snapshot_id": payload.get("first_pass_snapshot_id"),
+                    "candidate_set_id": payload.get("candidate_set_id"),
+                    "candidate_set_version": payload.get("candidate_set_version"),
+                    "technical_scan_id": payload.get("technical_scan_id"),
+                    "gates_json": dict(payload.get("gates") or {}),
+                    "dimensions_json": dict(payload.get("dimensions") or {}),
+                    "notes_json": list(payload.get("notes") or [])[-50:],
+                    "schedule_enabled": bool(payload.get("schedule_enabled")),
+                    "revision": expected_revision + 1,
+                    "job_claim_token": payload.get("job_claim_token"),
+                    "job_claim_expires_at": _as_utc_iso(
+                        payload.get("job_claim_expires_at")
+                    ),
+                    "pending_first_pass_job_id": payload.get(
+                        "pending_first_pass_job_id"
+                    ),
+                    "phase2_claim_token": payload.get("phase2_claim_token"),
+                    "phase2_claim_expires_at": _as_utc_iso(
+                        payload.get("phase2_claim_expires_at")
+                    ),
+                    "pending_technical_scan_id": payload.get(
+                        "pending_technical_scan_id"
+                    ),
+                    "updated_at": now,
+                }
+                # User-keyed row: replacing a finished run with a new
+                # research_run_id must refresh created_at. Same-id updates keep
+                # the original birth timestamp.
+                if next_run_id != str(row.research_run_id):
+                    created = _as_utc_iso(payload.get("created_at")) or now
+                    values["created_at"] = created
                 updated = session.execute(
                     update(TwResearchResearchRun)
                     .where(
                         TwResearchResearchRun.user_id == user_id,
                         TwResearchResearchRun.revision == expected_revision,
                     )
-                    .values(
-                        research_run_id=str(payload["research_run_id"]),
-                        version=str(payload.get("version") or row.version),
-                        phase=str(payload["phase"]),
-                        status=str(payload["status"]),
-                        trading_day=payload.get("trading_day"),
-                        first_pass_job_id=payload.get("first_pass_job_id"),
-                        first_pass_snapshot_id=payload.get("first_pass_snapshot_id"),
-                        candidate_set_id=payload.get("candidate_set_id"),
-                        candidate_set_version=payload.get("candidate_set_version"),
-                        technical_scan_id=payload.get("technical_scan_id"),
-                        gates_json=dict(payload.get("gates") or {}),
-                        dimensions_json=dict(payload.get("dimensions") or {}),
-                        notes_json=list(payload.get("notes") or [])[-50:],
-                        schedule_enabled=bool(payload.get("schedule_enabled")),
-                        revision=expected_revision + 1,
-                        job_claim_token=payload.get("job_claim_token"),
-                        job_claim_expires_at=_as_utc_iso(
-                            payload.get("job_claim_expires_at")
-                        ),
-                        pending_first_pass_job_id=payload.get(
-                            "pending_first_pass_job_id"
-                        ),
-                        phase2_claim_token=payload.get("phase2_claim_token"),
-                        phase2_claim_expires_at=_as_utc_iso(
-                            payload.get("phase2_claim_expires_at")
-                        ),
-                        pending_technical_scan_id=payload.get(
-                            "pending_technical_scan_id"
-                        ),
-                        updated_at=now,
-                    )
+                    .values(**values)
                 )
                 if int(updated.rowcount or 0) != 1:
                     raise ResearchRunConflict()
@@ -4941,6 +4949,31 @@ class TwResearchRepository(SessionBoundRepository):
                 "deferred": counts.get("deferred", 0),
                 "pending": counts.get("pending", 0),
             }
+
+    def latest_first_pass_symbol_data_progress_at(self, job_id: str) -> str | None:
+        """Authoritative last symbol evidence persist time for a First-Pass Job.
+
+        Uses ``MAX(updated_at)`` over rows whose status is a completed attempt
+        (``ok`` / ``partial`` / ``failed``). Lease renewals, job status edits,
+        and drain no-op ticks do not write these rows, so they must not advance
+        this timestamp. Returns ``None`` when no such rows exist — never invents
+        a fallback from ``job.updated_at``.
+        """
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            latest = session.execute(
+                select(func.max(TwResearchFirstPassSymbolResult.updated_at)).where(
+                    TwResearchFirstPassSymbolResult.job_id == job_id,
+                    TwResearchFirstPassSymbolResult.status.in_(
+                        ("ok", "partial", "failed")
+                    ),
+                )
+            ).scalar_one_or_none()
+        if latest is None:
+            return None
+        if hasattr(latest, "isoformat"):
+            return latest.isoformat()
+        return str(latest)
 
     def earliest_first_pass_next_retry_at(self, job_id: str) -> str | None:
         """Earliest durable ``nextRetryAt`` among retry-scheduled symbol rows.

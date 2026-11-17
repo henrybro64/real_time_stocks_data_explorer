@@ -23,6 +23,7 @@ import {
   fetchTwResearchLatestManifest,
   fetchTwResearchMembership,
   fetchTwResearchReportEvidenceExampleZhTw,
+  postTwResearchReportEvidence,
   fetchTwResearchRunCurrent,
   fetchTwResearchScan,
   fetchTwResearchScanProgress,
@@ -1306,10 +1307,10 @@ describe("TwResearchPage reliability UX (#335–#337)", () => {
     // Advanced standalone create is behind disclosure, not a second primary Start.
     expect(
       await screen.findByTestId("tw-research-execution-status"),
-    ).toHaveTextContent(/自動收集尚未可用|automatic collection is not available/i);
+    ).toHaveTextContent(/研究尚未開始：背景處理服務尚未啟用|background processing service is not enabled/i);
   });
 
-  it("shows phase banner and loads ZH-TW evidence example (#339/#340/#341)", async () => {
+  it("shows phase banner and keeps demo example out of the primary Start row (#339/#361)", async () => {
     const user = userEvent.setup();
     vi.mocked(fetchTwResearchRunCurrent).mockResolvedValue({
       researchRunId: "rr_test",
@@ -1320,6 +1321,11 @@ describe("TwResearchPage reliability UX (#335–#337)", () => {
       cronjobRemainsSuspended: true,
       notNotionPublisher: true,
     });
+    // Seed live export text so we can prove example load does not overwrite it.
+    vi.mocked(postTwResearchReportEvidence).mockResolvedValue({
+      liveExport: true,
+      snapshotId: "live-fp",
+    } as never);
     renderPage();
     expect(await screen.findByTestId("tw-research-phase-banner")).toBeInTheDocument();
     await waitFor(() => {
@@ -1329,15 +1335,32 @@ describe("TwResearchPage reliability UX (#335–#337)", () => {
     expect(screen.getByTestId("tw-research-phase-banner").textContent).not.toMatch(
       /Notion|CronJob|#\d{3}/,
     );
+    // Primary Start remains the dominant research action; demo is Help-only.
+    const start = screen.getByTestId("tw-research-start-full-research");
+    expect(start).toBeInTheDocument();
+    const help = await screen.findByTestId("tw-research-example-help");
+    const exampleBtn = screen.getByTestId("tw-research-load-evidence-example");
+    expect(help).toContainElement(exampleBtn);
+    expect(start.closest("[data-testid='tw-research-example-help']")).toBeNull();
+    expect(help.textContent).toMatch(/範例|example|Help/i);
+
     await user.click(
-      screen.getByRole("button", {
-        name: /載入繁中範例|Load Traditional Chinese example/i,
-      }),
+      screen.getByRole("button", { name: /匯出證據摘要|Export evidence summary/i }),
     );
+    expect(await screen.findByTestId("tw-research-report-evidence")).toHaveTextContent(
+      "liveExport",
+    );
+
+    await user.click(exampleBtn);
     await waitFor(() => {
       expect(fetchTwResearchReportEvidenceExampleZhTw).toHaveBeenCalled();
     });
-    expect(await screen.findByTestId("tw-research-report-evidence")).toHaveTextContent(
+    expect(await screen.findByTestId("tw-research-example-evidence")).toHaveTextContent(
+      "exampleOnly",
+    );
+    // Live export evidence must remain untouched.
+    expect(screen.getByTestId("tw-research-report-evidence")).toHaveTextContent("liveExport");
+    expect(screen.getByTestId("tw-research-report-evidence")).not.toHaveTextContent(
       "exampleOnly",
     );
   });
@@ -1927,6 +1950,76 @@ describe("TwResearchPage one primary CTA per stage (#361)", () => {
     expect(deriveResearchUiStage(fixtures[4]!.run)).toBe("results");
   });
 
+  it("keeps failed/cancelled First-Pass with persisted job on collecting (#362)", () => {
+    expect(
+      deriveResearchUiStage({
+        researchRunId: "rr_failed",
+        userId: "u1",
+        phase: "phase1_first_pass",
+        status: "failed",
+        firstPassJobId: "fpj_failed",
+      }),
+    ).toBe("collecting");
+    expect(
+      deriveResearchUiStage({
+        researchRunId: "rr_cancelled",
+        userId: "u1",
+        phase: "phase1_first_pass",
+        status: "cancelled",
+        firstPassSnapshotId: "fps_1",
+      }),
+    ).toBe("collecting");
+  });
+
+  it("maps failed First-Pass without persisted evidence to select_scope (#362)", () => {
+    expect(
+      deriveResearchUiStage({
+        researchRunId: "rr_empty_fail",
+        userId: "u1",
+        phase: "phase1_first_pass",
+        status: "failed",
+      }),
+    ).toBe("select_scope");
+  });
+
+  it("keeps failed Phase-2 on technical_analysis for persisted scan evidence (#362)", () => {
+    expect(
+      deriveResearchUiStage({
+        researchRunId: "rr_p2_fail",
+        userId: "u1",
+        phase: "phase2_technical",
+        status: "failed",
+        technicalScanId: SCAN_ID,
+        gates: { candidateSelection: "approved" },
+        phase2Execution: { state: "failed" },
+      }),
+    ).toBe("technical_analysis");
+  });
+
+  it("does not present failed/cancelled runs as successful results (#362)", () => {
+    expect(
+      deriveResearchUiStage({
+        researchRunId: "rr_false_results",
+        userId: "u1",
+        phase: "complete_evidence_ready",
+        status: "failed",
+        firstPassJobId: "fpj_1",
+        technicalScanId: SCAN_ID,
+        gates: { candidateSelection: "approved" },
+        phase2Execution: { state: "completed" },
+      }),
+    ).toBe("technical_analysis");
+    expect(
+      deriveResearchUiStage({
+        researchRunId: "rr_cancelled_results",
+        userId: "u1",
+        phase: "awaiting_analyst_report_decision",
+        status: "cancelled",
+        firstPassJobId: "fpj_1",
+      }),
+    ).toBe("collecting");
+  });
+
   it.each(fixtures)(
     "shows exactly one visible primary button for stage $name",
     async ({ run }) => {
@@ -2096,5 +2189,33 @@ describe("TwResearchPage stage-4 flow (#361)", () => {
     expect(screen.queryByTestId("tw-research-create")).not.toBeInTheDocument();
     expect(screen.queryByTestId("tw-research-batch")).not.toBeInTheDocument();
     expect(screen.queryByTestId("tw-research-history")).not.toBeInTheDocument();
+  });
+
+  it("does not claim Phase-2 stopped when lease is active but executor unavailable (#362)", async () => {
+    window.localStorage.setItem("stock-ticker-language", "en");
+    vi.mocked(fetchTwResearchRunCurrent).mockResolvedValue({
+      researchRunId: "rr_lease_unavail",
+      userId: "u1",
+      phase: "phase2_technical",
+      status: "running",
+      firstPassJobId: "fpj_1",
+      technicalScanId: SCAN_ID,
+      gates: { candidateSelection: "approved" },
+      phase2Execution: {
+        state: "actively_analyzing",
+        authorized: false,
+        drainAvailable: false,
+        leaseActive: true,
+        phase2Enabled: true,
+        processedCount: 2,
+        remainingCount: 3,
+        blocker: "first_pass_drain_globally_disabled",
+      },
+    } as never);
+    renderPage();
+    const status = await screen.findByTestId("tw-research-phase2-execution-status");
+    expect(status).toHaveTextContent(/lease is still active|may be finishing/i);
+    expect(status).not.toHaveTextContent(/not available yet/i);
+    expect(status).not.toHaveTextContent(/nothing is running/i);
   });
 });
