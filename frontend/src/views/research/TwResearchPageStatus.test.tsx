@@ -1707,6 +1707,193 @@ describe("TwResearchPage Start retry when queued without job (#365)", () => {
     expect(status).not.toHaveTextContent(/等待重試|速率限制/);
   });
 
+  it("historical Job progress cannot contaminate current-run execution status (#362)", async () => {
+    const user = userEvent.setup();
+    const CURRENT = "fpj_current_run";
+    const HISTORICAL = "fpj_historical_browse";
+    const currentRetry = "2026-11-13T04:30:00Z"; // 12:30 Taipei
+    const historicalRetry = "2026-11-14T08:00:00Z"; // 16:00 Taipei
+
+    vi.mocked(fetchTwResearchRunCurrent).mockResolvedValue(
+      runRecord({
+        status: "waiting_for_next_window",
+        firstPassJobId: CURRENT,
+        scheduleEnabled: true,
+        execution: {
+          state: "waiting_for_retry",
+          authorized: true,
+          drainAvailable: true,
+          processedCount: 12,
+          universeSize: 73,
+          lastDataProgressAt: "2026-11-17T03:10:00Z",
+        },
+        firstPassProgress: {
+          nextRetryAt: currentRetry,
+          processedCount: 12,
+          universeSize: 73,
+        },
+      }),
+    );
+    vi.mocked(listTwResearchFirstPassJobs).mockResolvedValue([
+      jobRecord({
+        jobId: CURRENT,
+        createdAt: "2026-11-17T02:00:00Z",
+        status: "deferred",
+      }),
+      jobRecord({
+        jobId: HISTORICAL,
+        createdAt: "2026-11-10T02:00:00Z",
+        status: "deferred",
+      }),
+    ]);
+    vi.mocked(fetchTwResearchFirstPassJob).mockImplementation(async (jobId: string) =>
+      jobRecord({
+        jobId,
+        status: "deferred",
+        createdAt:
+          jobId === CURRENT ? "2026-11-17T02:00:00Z" : "2026-11-10T02:00:00Z",
+      }),
+    );
+    vi.mocked(fetchTwResearchFirstPassProgress).mockImplementation(
+      async (jobId: string) => {
+        if (jobId === HISTORICAL) {
+          return progressRecord({
+            jobId: HISTORICAL,
+            status: "deferred",
+            processedCount: 50,
+            universeSize: 73,
+            pendingCount: 23,
+            nextRetryAt: historicalRetry,
+          });
+        }
+        return progressRecord({
+          jobId: CURRENT,
+          status: "deferred",
+          processedCount: 12,
+          universeSize: 73,
+          pendingCount: 61,
+          nextRetryAt: currentRetry,
+        });
+      },
+    );
+
+    renderPage("en");
+    const exec = await screen.findByTestId("tw-research-execution-status");
+    await waitFor(() => {
+      expect(exec).toHaveTextContent(/Scheduled retry:.*12:30/);
+    });
+    expect(exec).toHaveTextContent(/12\/73/);
+    expect(exec).not.toHaveTextContent(/16:00/);
+    expect(exec).not.toHaveTextContent(/50\/73/);
+
+    const select = await screen.findByTestId("tw-research-first-pass-job-history");
+    await user.selectOptions(select, HISTORICAL);
+    expect(select).toHaveValue(HISTORICAL);
+
+    // Investor summary may reflect the browsed historical Job…
+    await waitFor(() => {
+      expect(screen.getByTestId("tw-research-next-retry")).toHaveTextContent(
+        /2026\/11\/14.*16:00|11\/14\/2026.*16:00/,
+      );
+    });
+    // …but the active Run execution line must keep the run-owned retry/counts.
+    expect(exec).toHaveTextContent(/Scheduled retry:.*12:30/);
+    expect(exec).toHaveTextContent(/12\/73/);
+    expect(exec).not.toHaveTextContent(/16:00/);
+    expect(exec).not.toHaveTextContent(/50\/73/);
+
+    // Switch back to current Job — still the run-owned schedule.
+    await user.selectOptions(select, CURRENT);
+    expect(select).toHaveValue(CURRENT);
+    await waitFor(() => {
+      expect(screen.getByTestId("tw-research-next-retry")).toHaveTextContent(
+        /12:30/,
+      );
+    });
+    expect(exec).toHaveTextContent(/Scheduled retry:.*12:30/);
+    expect(exec).toHaveTextContent(/12\/73/);
+  });
+
+  it("ignores stale historical progress when switching back to current Job (#362)", async () => {
+    const user = userEvent.setup();
+    const CURRENT = "fpj_current_stale";
+    const HISTORICAL = "fpj_hist_stale";
+    let resolveHistorical: ((value: Record<string, unknown>) => void) | null = null;
+
+    vi.mocked(fetchTwResearchRunCurrent).mockResolvedValue(
+      runRecord({
+        status: "waiting_for_next_window",
+        firstPassJobId: CURRENT,
+        scheduleEnabled: true,
+        execution: {
+          state: "waiting_for_retry",
+          authorized: true,
+          drainAvailable: true,
+          processedCount: 8,
+          universeSize: 73,
+          lastDataProgressAt: null,
+        },
+        firstPassProgress: {
+          nextRetryAt: "2026-11-13T05:00:00Z",
+          processedCount: 8,
+          universeSize: 73,
+        },
+      }),
+    );
+    vi.mocked(listTwResearchFirstPassJobs).mockResolvedValue([
+      jobRecord({ jobId: CURRENT, status: "deferred" }),
+      jobRecord({ jobId: HISTORICAL, status: "deferred" }),
+    ]);
+    vi.mocked(fetchTwResearchFirstPassJob).mockImplementation(async (jobId: string) =>
+      jobRecord({ jobId, status: "deferred" }),
+    );
+    vi.mocked(fetchTwResearchFirstPassProgress).mockImplementation(
+      async (jobId: string) => {
+        if (jobId === HISTORICAL) {
+          return new Promise((resolve) => {
+            resolveHistorical = resolve;
+          });
+        }
+        return progressRecord({
+          jobId: CURRENT,
+          status: "deferred",
+          processedCount: 8,
+          universeSize: 73,
+          nextRetryAt: "2026-11-13T05:00:00Z",
+        });
+      },
+    );
+
+    renderPage("en");
+    const exec = await screen.findByTestId("tw-research-execution-status");
+    await waitFor(() => {
+      expect(exec).toHaveTextContent(/Scheduled retry:.*13:00/);
+    });
+
+    const select = await screen.findByTestId("tw-research-first-pass-job-history");
+    await user.selectOptions(select, HISTORICAL);
+    // Switch back before historical progress resolves (stale in-flight).
+    await user.selectOptions(select, CURRENT);
+    resolveHistorical?.(
+      progressRecord({
+        jobId: HISTORICAL,
+        status: "deferred",
+        processedCount: 99,
+        universeSize: 73,
+        nextRetryAt: "2026-11-20T10:00:00Z",
+      }),
+    );
+
+    await waitFor(() => {
+      expect(select).toHaveValue(CURRENT);
+    });
+    // Stale historical retry/counts must not appear on the Run execution line.
+    expect(exec).toHaveTextContent(/Scheduled retry:.*13:00/);
+    expect(exec).toHaveTextContent(/8\/73/);
+    expect(exec).not.toHaveTextContent(/99\/73/);
+    expect(exec).not.toHaveTextContent(/18:00|10:00/);
+  });
+
   it("keeps selected historical job and shows retry on 404 detail load (#362 P2-A)", async () => {
     seed({
       run: {

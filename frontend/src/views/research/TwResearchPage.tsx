@@ -1505,10 +1505,19 @@ export function TwResearchPage({
   };
 
   // Derive execution honesty from the live research-run query (survives refresh).
+  // Never mix selected/historical Job progress into the active Run's status line.
   const executionStatusMessage = useMemo(() => {
     const run = researchRunQuery.data;
     const state = String(run?.execution?.state ?? "");
     const nested = run?.firstPassProgress as FirstPassProgressLike | undefined;
+    const runOwnedJobId =
+      typeof run?.firstPassJobId === "string" ? run.firstPassJobId : null;
+    const selectedMatchesRunOwned = Boolean(
+      runOwnedJobId &&
+        firstPassJobId &&
+        String(runOwnedJobId) === String(firstPassJobId),
+    );
+    // Counts + last data progress: run execution / nested only (never selected Job).
     const processedRaw =
       run?.execution?.processedCount ?? nested?.processedCount ?? null;
     const totalRaw = run?.execution?.universeSize ?? nested?.universeSize ?? null;
@@ -1520,8 +1529,10 @@ export function TwResearchPage({
       typeof totalRaw === "number" && Number.isFinite(totalRaw) ? totalRaw : null;
     // Prefer authoritative symbol-persist time; never invent from job.updated_at.
     const lastProgressAt = run?.execution?.lastDataProgressAt ?? null;
-    // Authoritative retry schedule only — never invent from local clock.
-    const jobProgress = firstPassProgressQuery.data as FirstPassProgressLike | undefined;
+    // Retry schedule: Job progress query only when it is the run-owned Job.
+    const jobProgress = selectedMatchesRunOwned
+      ? (firstPassProgressQuery.data as FirstPassProgressLike | undefined)
+      : undefined;
     const nextRetryAt =
       (typeof jobProgress?.nextRetryAt === "string" ? jobProgress.nextRetryAt : null) ??
       (typeof nested?.nextRetryAt === "string" ? nested.nextRetryAt : null) ??
@@ -1535,6 +1546,8 @@ export function TwResearchPage({
   }, [
     researchRunQuery.data?.execution,
     researchRunQuery.data?.firstPassProgress,
+    researchRunQuery.data?.firstPassJobId,
+    firstPassJobId,
     firstPassProgressQuery.data,
     language,
     t,

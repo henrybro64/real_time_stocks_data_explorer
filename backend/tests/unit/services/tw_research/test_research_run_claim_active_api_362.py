@@ -42,3 +42,23 @@ def test_as_dict_claim_active_false_when_expired() -> None:
     payload = run.as_dict()
     assert payload["jobClaimActive"] is False
     assert "jobClaimToken" not in payload
+
+
+def test_as_dict_cronjob_remains_suspended_is_unknown_not_hardcoded_true() -> None:
+    """API must not claim CronJob suspend state without runtime evidence (#362)."""
+    run = ResearchRun(
+        research_run_id="rr_cron",
+        user_id="u1",
+        phase="phase1_first_pass",
+        status="running",
+        first_pass_job_id="fpj_1",
+        schedule_enabled=True,
+    )
+    payload = run.as_dict()
+    assert "cronjobRemainsSuspended" in payload
+    assert payload["cronjobRemainsSuspended"] is None
+    # Readiness still comes from drain availability / schedule — not this flag.
+    assert "firstPassDrain" in payload
+    assert isinstance(payload["firstPassDrain"], dict)
+    assert "available" in payload["firstPassDrain"]
+    assert "armed" in payload["firstPassDrain"]

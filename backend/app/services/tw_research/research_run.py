@@ -248,7 +248,9 @@ class ResearchRun:
         if isinstance(progress, dict):
             payload["firstPassProgress"] = dict(progress)
         payload["notNotionPublisher"] = True
-        payload["cronjobRemainsSuspended"] = True
+        # Unknown without a live Kubernetes observation. Ordinary API handlers
+        # must not claim CronJob suspend/active state (#361/#362).
+        payload["cronjobRemainsSuspended"] = None
         payload["durable"] = True
         return payload
 

@@ -810,7 +810,11 @@ export type TwResearchRun = {
   /** Phase-2 technical honesty; fall back to `execution` only for phase1 messages. */
   phase2Execution?: TwResearchPhase2ExecutionStatus | null;
   notNotionPublisher?: boolean;
-  cronjobRemainsSuspended?: boolean;
+  /**
+   * CronJob suspend observation. Null/undefined = unknown (API does not probe
+   * Kubernetes on ordinary requests). Never treat as authoritative readiness.
+   */
+  cronjobRemainsSuspended?: boolean | null;
   durable?: boolean;
   /** Creation claim is live (token present server-side and not expired). */
   jobClaimActive?: boolean | null;
