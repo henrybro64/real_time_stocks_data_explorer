@@ -1277,6 +1277,9 @@ def post_candidate_technical_scan(
             max_upstream_month_fetches=body.maxUpstreamMonthFetches,
             max_enrichments_per_run=body.maxEnrichmentsPerRun,
             daily_override_ids=body.dailyOverrideIds,
+            research_run_id=(
+                getattr(run_before, "research_run_id", None) if run_before is not None else None
+            ),
         )
         scan_state = result.get("scan")
         scan_id = getattr(scan_state, "scan_id", None) or (

@@ -22,6 +22,7 @@ import hashlib
 import logging
 import time
 from collections.abc import Callable
+from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime, time as dt_time, timezone
 from inspect import Parameter, signature
@@ -33,6 +34,7 @@ from zoneinfo import ZoneInfo
 from app.models.quote import CandleRecord
 from app.models.stock import StockRecord
 from app.services.daily_price_history_service import (
+    HistoryFetchStats,
     HistoryProvenance,
     daily_price_history_service,
 )
@@ -737,6 +739,34 @@ class TwResearchScanService:
 
         return load_scan_state(scan_id)
 
+    def stamp_research_run_lineage_if_absent(
+        self,
+        state: ScanState,
+        research_run_id: str | None,
+    ) -> bool:
+        """Persist Research Run ownership on the scan when not already recorded.
+
+        Never overwrites an existing ``researchRunId`` (historical lineage stays
+        stable). Returns True when a stamp was written.
+        """
+        run_id_text = str(research_run_id).strip() if research_run_id is not None else ""
+        if not run_id_text:
+            return False
+        provenance = dict(getattr(state, "candidate_provenance", None) or {})
+        existing = str(
+            provenance.get("researchRunId") or provenance.get("research_run_id") or ""
+        ).strip()
+        if existing:
+            return False
+        provenance["researchRunId"] = run_id_text
+        state.candidate_provenance = provenance
+        if self._persist:
+            self._persist_scan(state)
+        else:
+            with self._lock:
+                self._scans[state.scan_id] = state
+        return True
+
     def list_scans(self, user_id: str, *, limit: int = 20) -> list[dict[str, Any]]:
         """Recent scans for one user. Does not load symbol rows or upstream data."""
         bounded = max(1, min(int(limit), 50))
@@ -1371,10 +1401,18 @@ class TwResearchScanService:
         budget_blocked = (
             months_used == 0 and remaining_budget <= 0 and not candles
         ) or (not candles and remaining_after <= 0 and months_used == 0)
+        fetch_stats = _LAST_HISTORY_FETCH_STATS.get()
+        _LAST_HISTORY_FETCH_STATS.set(None)
+        first_bar = completed[0].time[:10] if completed else None
+        last_bar = completed[-1].time[:10] if completed else None
         history_provenance = daily_price_history_service.resolve_history_provenance(
             stock,
-            months_fetched=months_used,
+            fetch_stats=fetch_stats,
+            first_bar_as_of=first_bar,
+            last_bar_as_of=last_bar,
             limit=PREFERRED_DAILY_HISTORY_LIMIT,
+            # months_used is attempt budget only — not collection evidence.
+            months_fetched=0,
         )
 
         if is_monthly_first_calculation(state.calculation_version):
@@ -2579,6 +2617,12 @@ def _not_run_daily_payload(
     }
 
 
+_LAST_HISTORY_FETCH_STATS: ContextVar[HistoryFetchStats | None] = ContextVar(
+    "tw_research_last_history_fetch_stats",
+    default=None,
+)
+
+
 def _default_history_loader(
     stock: StockRecord,
     limit: int,
@@ -2588,13 +2632,18 @@ def _default_history_loader(
     from app.services.providers.tw_provider import TWProvider
 
     provider = quote_service.providers.get("TW") or TWProvider()
-    return daily_price_history_service.get_daily_history_within_budget(
-        stock,
-        "MAX",
-        limit=limit,
-        provider=provider,
-        max_month_fetches=max_month_fetches,
+    candles, months_attempted, stats = (
+        daily_price_history_service.get_daily_history_within_budget(
+            stock,
+            "MAX",
+            limit=limit,
+            provider=provider,
+            max_month_fetches=max_month_fetches,
+        )
     )
+    # Stash honest fetch stats for provenance (HistoryLoader stays 2-tuple).
+    _LAST_HISTORY_FETCH_STATS.set(stats)
+    return candles, months_attempted
 
 
 tw_research_scan_service = TwResearchScanService()

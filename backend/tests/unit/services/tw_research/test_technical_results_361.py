@@ -18,6 +18,7 @@ from app.services.tw_research.scan import SymbolScanRecord, TwResearchScanServic
 from app.services.tw_research.technical_results import (
     build_technical_results_payload,
     map_symbol_technical_result,
+    resolve_technical_results_research_run_id,
 )
 from app.services.tw_research.universe import UniverseSelector
 from tests.support import stock_record
@@ -975,3 +976,122 @@ def test_daily_not_run_excluded_from_calculated_and_verified() -> None:
     assert by_id["TW:2330"]["overallStageResult"] == "pass"
     assert by_id["TW:2454"]["overallStageResult"] == "fail"
     assert by_id["TW:2303"]["overallStageResult"] == "daily_not_run"
+
+
+def _empty_state(*, provenance: dict | None = None):
+    service = TwResearchScanService(
+        history_loader=lambda *_a, **_k: ([], 0),
+        stock_loader=lambda stock_id: stock_record(
+            stock_id,
+            market="TW",
+            symbol=stock_id.split(":", 1)[1],
+            name=stock_id,
+            exchange="TWSE",
+            currency="TWD",
+            timezone="Asia/Taipei",
+        ),
+        persist=False,
+    )
+    state = service.create_scan(
+        UniverseSelector(mode="stock_ids", stock_ids=("TW:2330",)),
+        trading_day="2024-06-28",
+        user_id="u_run_id",
+        candidate_provenance=provenance,
+    )
+    return state
+
+
+def test_current_run_scan_uses_active_research_run_id() -> None:
+    class _Run:
+        research_run_id = "rr_current"
+
+    state = _empty_state(provenance={"candidateSetId": "cs_1"})
+    assert (
+        resolve_technical_results_research_run_id(
+            run=_Run(), state=state, is_current_run_scan=True
+        )
+        == "rr_current"
+    )
+    payload = build_technical_results_payload(
+        run=_Run(),
+        state=state,
+        phase2_execution=None,
+        is_current_run_scan=True,
+        viewing_historical=False,
+    )
+    assert payload["researchRunId"] == "rr_current"
+    assert payload["technicalScanId"] == state.scan_id
+
+
+def test_historical_scan_uses_durable_lineage_not_active_run() -> None:
+    class _Run:
+        research_run_id = "rr_active_now"
+
+    state = _empty_state(
+        provenance={
+            "candidateSetId": "cs_hist",
+            "researchRunId": "rr_historical_owner",
+        }
+    )
+    assert (
+        resolve_technical_results_research_run_id(
+            run=_Run(), state=state, is_current_run_scan=False
+        )
+        == "rr_historical_owner"
+    )
+    payload = build_technical_results_payload(
+        run=_Run(),
+        state=state,
+        phase2_execution={"state": "actively_analyzing"},
+        is_current_run_scan=False,
+        viewing_historical=True,
+    )
+    assert payload["researchRunId"] == "rr_historical_owner"
+    assert payload["viewingHistorical"] is True
+    assert payload["isCurrentRunScan"] is False
+    assert payload["phase2Execution"] is None
+
+
+def test_historical_scan_without_lineage_returns_null_run_id() -> None:
+    class _Run:
+        research_run_id = "rr_active_now"
+
+    state = _empty_state(provenance={"candidateSetId": "cs_orphan"})
+    assert (
+        resolve_technical_results_research_run_id(
+            run=_Run(), state=state, is_current_run_scan=False
+        )
+        is None
+    )
+    payload = build_technical_results_payload(
+        run=_Run(),
+        state=state,
+        phase2_execution=None,
+        is_current_run_scan=False,
+        viewing_historical=True,
+    )
+    assert payload["researchRunId"] is None
+
+
+def test_historical_with_no_current_run_still_uses_lineage() -> None:
+    state = _empty_state(provenance={"researchRunId": "rr_only_lineage"})
+    payload = build_technical_results_payload(
+        run=None,
+        state=state,
+        phase2_execution=None,
+        is_current_run_scan=False,
+        viewing_historical=True,
+    )
+    assert payload["researchRunId"] == "rr_only_lineage"
+
+
+def test_no_current_run_and_no_lineage_is_null() -> None:
+    state = _empty_state()
+    payload = build_technical_results_payload(
+        run=None,
+        state=state,
+        phase2_execution=None,
+        is_current_run_scan=False,
+        viewing_historical=True,
+    )
+    assert payload["researchRunId"] is None

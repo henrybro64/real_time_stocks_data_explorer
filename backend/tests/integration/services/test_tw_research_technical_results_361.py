@@ -265,12 +265,21 @@ def test_historical_scan_results_do_not_leak_current_scan_values(
         trading_day="2024-06-28",
         user_id=user_id,
         now=datetime(2024, 6, 28, 16, 0, tzinfo=TZ),
+        candidate_provenance={"researchRunId": "rr_will_be_current"},
     )
-    historical = service.create_scan(
+    historical_linked = service.create_scan(
         UniverseSelector(mode="stock_ids", stock_ids=("TW:2454",)),
         trading_day="2024-06-20",
         user_id=user_id,
         now=datetime(2024, 6, 20, 16, 0, tzinfo=TZ),
+        candidate_provenance={"researchRunId": "rr_historical_other"},
+    )
+    historical_orphan = service.create_scan(
+        UniverseSelector(mode="stock_ids", stock_ids=("TW:2303",)),
+        trading_day="2024-06-10",
+        user_id=user_id,
+        now=datetime(2024, 6, 10, 16, 0, tzinfo=TZ),
+        candidate_provenance={"candidateSetId": "cs_no_run"},
     )
     persist_symbol(
         current,
@@ -294,7 +303,7 @@ def test_historical_scan_results_do_not_leak_current_scan_values(
         ),
     )
     persist_symbol(
-        historical,
+        historical_linked,
         SymbolScanRecord(
             stock_id="TW:2454",
             stage="B",
@@ -307,6 +316,27 @@ def test_historical_scan_results_do_not_leak_current_scan_values(
                 "osc": 6.77,
                 "k": 80.0,
                 "d": 70.0,
+                "barCount": 40,
+                "quality": "ok",
+                "passStatus": "pass",
+                "timeframe": "monthly",
+            },
+        ),
+    )
+    persist_symbol(
+        historical_orphan,
+        SymbolScanRecord(
+            stock_id="TW:2303",
+            stage="B",
+            readiness="technically_qualified",
+            technical_stage=TECHNICAL_STAGE_DAILY_PASS,
+            monthly={
+                "asOf": "2024-03-31",
+                "dif": 3.33,
+                "signal": 1.0,
+                "osc": 2.33,
+                "k": 55.0,
+                "d": 52.0,
                 "barCount": 40,
                 "quality": "ok",
                 "passStatus": "pass",
@@ -327,30 +357,104 @@ def test_historical_scan_results_do_not_leak_current_scan_values(
         locked.gates["candidateSelection"] = "approved"
         locked.technical_scan_id = current.scan_id
         store._persist_locked(locked)
+    active_run = store.get(user_id)
+    assert active_run is not None
+    active_run_id = active_run.research_run_id
 
     app.dependency_overrides[get_effective_user_id] = lambda: user_id
     try:
         client = TestClient(app)
         hist = client.get(
-            f"/api/tw-research/research-runs/technical-results?scanId={historical.scan_id}"
+            f"/api/tw-research/research-runs/technical-results?scanId={historical_linked.scan_id}"
         )
         assert hist.status_code == 200, hist.text
         hist_body = hist.json()
-        assert hist_body["technicalScanId"] == historical.scan_id
+        assert hist_body["technicalScanId"] == historical_linked.scan_id
         assert hist_body["viewingHistorical"] is True
         assert hist_body["candidates"][0]["monthly"]["dif"] == 7.77
         assert hist_body["phase2Execution"] is None
+        # Must not attach the active Research Run to a historical scan.
+        assert hist_body["researchRunId"] == "rr_historical_other"
+        assert hist_body["researchRunId"] != active_run_id
+
+        orphan = client.get(
+            f"/api/tw-research/research-runs/technical-results?scanId={historical_orphan.scan_id}"
+        )
+        assert orphan.status_code == 200, orphan.text
+        orphan_body = orphan.json()
+        assert orphan_body["technicalScanId"] == historical_orphan.scan_id
+        assert orphan_body["researchRunId"] is None
 
         cur = client.get("/api/tw-research/research-runs/technical-results")
         assert cur.status_code == 200, cur.text
         cur_body = cur.json()
         assert cur_body["technicalScanId"] == current.scan_id
         assert cur_body["candidates"][0]["monthly"]["dif"] == 1.11
+        assert cur_body["researchRunId"] == active_run_id
+
+        # Refresh / switch back to historical keeps identities stable.
+        hist2 = client.get(
+            f"/api/tw-research/research-runs/technical-results?scanId={historical_linked.scan_id}"
+        )
+        assert hist2.status_code == 200
+        assert hist2.json()["researchRunId"] == "rr_historical_other"
+        assert hist2.json()["technicalScanId"] == historical_linked.scan_id
 
         # Must not reattach historical scan onto the run.
         after = store.get(user_id)
         assert after is not None
         assert after.technical_scan_id == current.scan_id
+    finally:
+        app.dependency_overrides.pop(get_effective_user_id, None)
+
+
+def test_historical_technical_results_ownership_404(db_session, monkeypatch) -> None:
+    del db_session
+    if not tw_research_repository.is_available():
+        pytest.skip("tw_research durable store unavailable")
+
+    from app.api.deps import get_effective_user_id
+    from app.main import app
+    from fastapi.testclient import TestClient
+
+    owner = f"p2own-{uuid4().hex[:8]}"
+    other = f"p2oth-{uuid4().hex[:8]}"
+    _ensure_user(owner)
+    _ensure_user(other)
+
+    service = TwResearchScanService(
+        history_loader=lambda *_a, **_k: ([], 0),
+        stock_loader=lambda stock_id: _tw(stock_id),
+        persist=True,
+    )
+    owned = service.create_scan(
+        UniverseSelector(mode="stock_ids", stock_ids=("TW:2330",)),
+        trading_day="2024-06-28",
+        user_id=owner,
+        now=datetime(2024, 6, 28, 16, 0, tzinfo=TZ),
+    )
+    ownerless = service.create_scan(
+        UniverseSelector(mode="stock_ids", stock_ids=("TW:2454",)),
+        trading_day="2024-06-28",
+        user_id=None,
+        now=datetime(2024, 6, 28, 16, 0, tzinfo=TZ),
+    )
+    monkeypatch.setattr(
+        "app.services.tw_research.scan.tw_research_scan_service",
+        service,
+    )
+
+    app.dependency_overrides[get_effective_user_id] = lambda: other
+    try:
+        client = TestClient(app)
+        foreign = client.get(
+            f"/api/tw-research/research-runs/technical-results?scanId={owned.scan_id}"
+        )
+        assert foreign.status_code == 404
+        bare = client.get(
+            f"/api/tw-research/research-runs/technical-results?scanId={ownerless.scan_id}"
+        )
+        assert bare.status_code == 404
     finally:
         app.dependency_overrides.pop(get_effective_user_id, None)
 

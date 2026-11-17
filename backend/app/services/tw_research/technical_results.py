@@ -465,6 +465,35 @@ def map_symbol_technical_result(
     }
 
 
+def resolve_technical_results_research_run_id(
+    *,
+    run: Any | None,
+    state: ScanState,
+    is_current_run_scan: bool,
+) -> str | None:
+    """Bind a Research Run ID only when lineage is current or durably proven.
+
+    Current-run views may use the active Research Run. Historical views never
+    inherit that active ID — they use ``candidate_provenance.researchRunId``
+    when present, otherwise null (never invent a relationship).
+    """
+    if is_current_run_scan:
+        if run is None:
+            return None
+        rid = getattr(run, "research_run_id", None)
+        text = str(rid).strip() if rid is not None else ""
+        return text or None
+
+    provenance = getattr(state, "candidate_provenance", None) or {}
+    if not isinstance(provenance, dict):
+        return None
+    rid = provenance.get("researchRunId")
+    if rid is None:
+        rid = provenance.get("research_run_id")
+    text = str(rid).strip() if rid is not None else ""
+    return text or None
+
+
 def build_technical_results_payload(
     *,
     run: Any | None,
@@ -589,7 +618,11 @@ def build_technical_results_payload(
     pass_rule["historyRangePersisted"] = bool(any_range)
 
     return {
-        "researchRunId": getattr(run, "research_run_id", None) if run is not None else None,
+        "researchRunId": resolve_technical_results_research_run_id(
+            run=run,
+            state=state,
+            is_current_run_scan=is_current_run_scan,
+        ),
         "technicalScanId": state.scan_id,
         "scanStatus": str(snap.get("status") or state.status),
         "tradingDay": state.trading_day,
