@@ -748,13 +748,41 @@ export function TwResearchPage({
         }
       } else if (result.deleted) {
         const countsText = formatDeletionCounts(result.counts);
+        const deletedId =
+          deleteModalMode === "job" ? String(firstPassJobId ?? "") : "";
         setPendingDeletionJobId(null);
         setPendingFullRunDeletion(false);
         setFirstPassJobId(null);
         setFirstPassProgressText("");
         setFirstPassSnapshotId(null);
+        // Patch caches before invalidate so a stale jobs/run payload cannot
+        // re-select the deleted id and remount history (#370 CI).
         if (deleteModalMode === "full_run") {
+          setFirstPassJobs([]);
+          queryClient.setQueryData(
+            ["tw-research-first-pass-jobs", includeArchivedJobs],
+            [],
+          );
           clearCandidateLocalStateAfterDeletion();
+        } else if (deletedId) {
+          setFirstPassJobs((prev) =>
+            prev.filter((job) => String(job.jobId ?? "") !== deletedId),
+          );
+          queryClient.setQueryData(
+            ["tw-research-first-pass-jobs", includeArchivedJobs],
+            (prev: Array<Record<string, unknown>> | undefined) =>
+              Array.isArray(prev)
+                ? prev.filter((job) => String(job.jobId ?? "") !== deletedId)
+                : prev,
+          );
+          queryClient.setQueryData(
+            ["tw-research-run-current"],
+            (prev: Record<string, unknown> | undefined) => {
+              if (!prev || typeof prev !== "object") return prev;
+              if (String(prev.firstPassJobId ?? "") !== deletedId) return prev;
+              return { ...prev, firstPassJobId: null };
+            },
+          );
         }
         setJobManageMessage(
           countsText
@@ -967,18 +995,23 @@ export function TwResearchPage({
     setFirstPassJobs(jobs);
     setFirstPassJobsStale(false);
     if (firstPassJobId) return;
-    // Prefer the authoritative run-owned Job even when it is not yet in the
-    // list (shows a loading option instead of silently picking an older Job).
+    // Prefer the authoritative run-owned Job. When it is temporarily absent
+    // from a non-empty history list, keep it selected (loading option, #362 D2).
+    // When the list is settled empty, do not resurrect a deleted pointer —
+    // that remounts history via selectedJobMissingFromList (#370 CI).
     const runJobId = researchRunQuery.data?.firstPassJobId;
     if (typeof runJobId === "string" && runJobId.trim()) {
       const match = jobs.find((job) => String(job.jobId ?? "") === runJobId);
-      setFirstPassJobId(runJobId);
       if (match) {
+        setFirstPassJobId(runJobId);
         setFirstPassProgressText(JSON.stringify(match, null, 2));
         if (typeof match.activeSnapshotId === "string" && match.activeSnapshotId) {
           setFirstPassSnapshotId(match.activeSnapshotId);
         }
+        return;
       }
+      if (jobs.length === 0) return;
+      setFirstPassJobId(runJobId);
       return;
     }
     // Wait for the current-run query before defaulting to the newest history
