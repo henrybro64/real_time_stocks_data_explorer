@@ -70,8 +70,8 @@ without a separate operator authorization message.** Read-only preflight is allo
    `k8s/backend.yaml` (`containerPort: 8000`) and the CronJob URL
    `http://stock-ticker-backend:8000/api/tw-research/first-pass/drain`:
    ```bash
-   sudo k3s kubectl -n stock-ticker exec deploy/stock-ticker-backend -c backend -- python - <<'PY'
-   import json, os, urllib.request
+   sudo k3s kubectl -n stock-ticker exec -i deploy/stock-ticker-backend -c backend -- python - <<'PY'
+   import json, os, urllib.error, urllib.request
    req = urllib.request.Request(
        "http://127.0.0.1:8000/api/tw-research/first-pass/drain",
        data=json.dumps({"dryRun": True}).encode(),
@@ -83,7 +83,11 @@ without a separate operator authorization message.** Read-only preflight is allo
            ],
        },
    )
-   print(urllib.request.urlopen(req, timeout=150).read().decode())
+   try:
+       print(urllib.request.urlopen(req, timeout=150).read().decode())
+   except urllib.error.HTTPError as e:
+       print("HTTP", e.code, e.read().decode())
+       raise SystemExit(1)
    PY
    ```
 8. **One** authorized 3-stock smoke (still with CronJob **suspended** so there is
@@ -94,8 +98,8 @@ without a separate operator authorization message.** Read-only preflight is allo
    ```
    Then the same in-pod call with a live body (replace `<authoritative-fpj-id>`):
    ```bash
-   sudo k3s kubectl -n stock-ticker exec deploy/stock-ticker-backend -c backend -- python - <<'PY'
-   import json, os, urllib.request
+   sudo k3s kubectl -n stock-ticker exec -i deploy/stock-ticker-backend -c backend -- python - <<'PY'
+   import json, os, urllib.error, urllib.request
    body = {
        "dryRun": False,
        "maxBatches": 1,
@@ -114,7 +118,11 @@ without a separate operator authorization message.** Read-only preflight is allo
            ],
        },
    )
-   print(urllib.request.urlopen(req, timeout=150).read().decode())
+   try:
+       print(urllib.request.urlopen(req, timeout=150).read().decode())
+   except urllib.error.HTTPError as e:
+       print("HTTP", e.code, e.read().decode())
+       raise SystemExit(1)
    PY
    ```
    Verify with read-only SQL (≤3 new symbol rows, statuses, provenance, and run
@@ -145,7 +153,7 @@ Compare Research Run birth/update times with the attached First-Pass Job without
 printing full user ids (12-char sha256 prefix only):
 
 ```bash
-sudo k3s kubectl -n stock-ticker exec deploy/stock-ticker-postgres -c postgres -- \
+sudo k3s kubectl -n stock-ticker exec -i deploy/stock-ticker-postgres -c postgres -- \
   env PGOPTIONS='-c default_transaction_read_only=on' \
   psql -U postgres -d stocks -v ON_ERROR_STOP=1 <<'SQL'
 SELECT
@@ -170,10 +178,6 @@ ORDER BY r.updated_at DESC
 LIMIT 10;
 SQL
 ```
-
-(`sha256(bytea)` requires the `pgcrypto` extension already installed; do not
-`CREATE EXTENSION` in this read-only check. If unavailable, stop — do not print
-raw user ids.)
 
 ## Rollback
 
