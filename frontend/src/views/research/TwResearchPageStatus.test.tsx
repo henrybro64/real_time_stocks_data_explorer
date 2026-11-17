@@ -1133,7 +1133,7 @@ describe("TwResearchPage Start retry when queued without job (#365)", () => {
         phase: "phase1_first_pass",
         firstPassJobId: null,
         pendingFirstPassJobId: "fpj_pending",
-        jobClaimToken: "tok",
+        jobClaimActive: true,
         jobClaimExpiresAt: future,
       },
     });
@@ -1144,7 +1144,7 @@ describe("TwResearchPage Start retry when queued without job (#365)", () => {
         phase: "phase1_first_pass",
         firstPassJobId: null,
         pendingFirstPassJobId: "fpj_pending",
-        jobClaimToken: "tok",
+        jobClaimActive: true,
         jobClaimExpiresAt: future,
       }),
     );
@@ -1452,8 +1452,10 @@ describe("TwResearchPage Start retry when queued without job (#365)", () => {
     expect(status).not.toHaveTextContent(/not enabled|background processing service is not enabled/i);
     expect(status).toHaveTextContent(/0\/73/);
     expect(status).toHaveTextContent(/Last data progress: —/);
-    expect(status).toHaveTextContent(/Last executor tick: —/);
-    expect(status).toHaveTextContent(/Job updated: —/);
+    expect(status).not.toHaveTextContent(/Last executor tick|Job updated/i);
+    expect(
+      await screen.findByTestId("tw-research-execution-advanced-timestamps"),
+    ).toHaveTextContent(/Last executor tick: —/);
   });
 
   it("appends 0/73 and empty tick/progress on executor_unavailable (#362)", async () => {
@@ -1488,7 +1490,7 @@ describe("TwResearchPage Start retry when queued without job (#365)", () => {
     expect(status).toHaveTextContent(/研究尚未開始：背景處理服務尚未啟用/);
     expect(status).toHaveTextContent(/0\/73/);
     expect(status).toHaveTextContent(/最後資料進度：—/);
-    expect(status).toHaveTextContent(/最後執行器心跳：—/);
+    expect(status).not.toHaveTextContent(/最後執行器心跳|工作狀態更新/);
     expect(status).not.toHaveTextContent(/正在背景收集|正在進行資料收集/);
   });
 
@@ -1515,8 +1517,12 @@ describe("TwResearchPage Start retry when queued without job (#365)", () => {
     renderPage("en");
     const status = await screen.findByTestId("tw-research-execution-status");
     expect(status).toHaveTextContent(/Last data progress: —/);
-    expect(status).toHaveTextContent(/Job updated:.*2026/);
-    expect(status).toHaveTextContent(/Last executor tick:.*2026/);
+    expect(status).not.toHaveTextContent(/Job updated|Last executor tick/i);
+    const advanced = await screen.findByTestId(
+      "tw-research-execution-advanced-timestamps",
+    );
+    expect(advanced).toHaveTextContent(/Job updated:.*2026/);
+    expect(advanced).toHaveTextContent(/Last executor tick:.*2026/);
   });
 
   it("shows lastDataProgressAt when symbol evidence was persisted (#362)", async () => {
@@ -1622,7 +1628,7 @@ describe("TwResearchPage Start retry when queued without job (#365)", () => {
     const pendingRun = runRecord({
       firstPassJobId: null,
       pendingFirstPassJobId: "fpj_pending",
-      jobClaimToken: "claim_live",
+      jobClaimActive: true,
       jobClaimExpiresAt: new Date(Date.now() + 120_000).toISOString(),
       execution: { state: "queued" },
     });
@@ -1654,14 +1660,14 @@ describe("TwResearchPage Start retry when queued without job (#365)", () => {
     const pendingRun = runRecord({
       firstPassJobId: null,
       pendingFirstPassJobId: "fpj_pending",
-      jobClaimToken: "claim_live",
+      jobClaimActive: true,
       jobClaimExpiresAt: new Date(Date.now() + 120_000).toISOString(),
       createdAt: "2026-11-13T02:00:00Z",
     });
     const attachedRun = runRecord({
       firstPassJobId: "fpj_pending",
       pendingFirstPassJobId: null,
-      jobClaimToken: null,
+      jobClaimActive: false,
       createdAt: "2026-11-13T02:00:00Z",
       execution: {
         state: "job_created",
@@ -1707,7 +1713,7 @@ describe("TwResearchPage Start retry when queued without job (#365)", () => {
         ...runRecord({
           firstPassJobId: null,
           pendingFirstPassJobId: "fpj_pending",
-          jobClaimToken: "claim_live",
+          jobClaimActive: true,
           jobClaimExpiresAt: new Date(Date.now() + 120_000).toISOString(),
         }),
         startOutcome: "creation_in_progress",
@@ -1736,7 +1742,7 @@ describe("TwResearchPage Start retry when queued without job (#365)", () => {
     const pendingRun = runRecord({
       firstPassJobId: null,
       pendingFirstPassJobId: "fpj_pending",
-      jobClaimToken: "claim_live",
+      jobClaimActive: true,
       jobClaimExpiresAt: new Date(Date.now() + 600_000).toISOString(),
     });
     let started = false;
@@ -1773,7 +1779,7 @@ describe("TwResearchPage Start retry when queued without job (#365)", () => {
     const pendingRun = runRecord({
       firstPassJobId: null,
       pendingFirstPassJobId: "fpj_pending",
-      jobClaimToken: "claim_live",
+      jobClaimActive: true,
       jobClaimExpiresAt: new Date(Date.now() + 120_000).toISOString(),
     });
     let started = false;

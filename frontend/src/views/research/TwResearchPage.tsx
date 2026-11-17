@@ -1434,25 +1434,17 @@ export function TwResearchPage({
   const executionProgressAppendix = (opts: {
     processed?: number | null;
     total?: number | null;
-    lastTickAt?: string | null;
     lastProgressAt?: string | null;
-    jobUpdatedAt?: string | null;
   }): string => {
     const locale = language === "en" ? "en-US" : "zh-TW";
     const processed = Number(opts.processed ?? 0);
     const total = Number(opts.total ?? 0);
-    const lastTickAt =
-      formatTaipeiDateTime(opts.lastTickAt, locale) || "—";
     const lastProgressAt =
       formatTaipeiDateTime(opts.lastProgressAt, locale) || "—";
-    const jobUpdatedAt =
-      formatTaipeiDateTime(opts.jobUpdatedAt, locale) || "—";
     return t("research.tw.execution.progressAppendix", {
       processed,
       total,
-      lastTickAt,
       lastProgressAt,
-      jobUpdatedAt,
     });
   };
 
@@ -1461,9 +1453,7 @@ export function TwResearchPage({
     progress?: {
       processed?: number | null;
       total?: number | null;
-      lastTickAt?: string | null;
       lastProgressAt?: string | null;
-      jobUpdatedAt?: string | null;
     },
   ): string | null => {
     const withProgress = (base: string): string => {
@@ -1503,18 +1493,37 @@ export function TwResearchPage({
       run?.execution?.processedCount ?? nested?.processedCount ?? 0;
     const total =
       run?.execution?.universeSize ?? nested?.universeSize ?? 0;
-    const lastTickAt =
-      run?.execution?.drainLastTickAt ??
-      run?.firstPassDrain?.lastTickAt ??
-      null;
     // Prefer authoritative symbol-persist time; never invent from job.updated_at.
     const lastProgressAt = run?.execution?.lastDataProgressAt ?? null;
-    const jobUpdatedAt = run?.execution?.jobUpdatedAt ?? nested?.updatedAt ?? null;
     return executionMessageFromState(state, {
       processed,
       total,
-      lastTickAt,
       lastProgressAt,
+    });
+  }, [
+    researchRunQuery.data?.execution,
+    researchRunQuery.data?.firstPassProgress,
+    language,
+    t,
+  ]);
+
+  const executionAdvancedTimestamps = useMemo(() => {
+    const run = researchRunQuery.data;
+    if (!run?.execution) return null;
+    const locale = language === "en" ? "en-US" : "zh-TW";
+    const nested = run.firstPassProgress as FirstPassProgressLike | undefined;
+    const lastTickAt =
+      formatTaipeiDateTime(
+        run.execution.drainLastTickAt ?? run.firstPassDrain?.lastTickAt,
+        locale,
+      ) || "—";
+    const jobUpdatedAt =
+      formatTaipeiDateTime(
+        run.execution.jobUpdatedAt ?? nested?.updatedAt,
+        locale,
+      ) || "—";
+    return t("research.tw.execution.advancedTimestamps", {
+      lastTickAt,
       jobUpdatedAt,
     });
   }, [
@@ -1675,7 +1684,7 @@ export function TwResearchPage({
     }
     if (creationPollPhase !== "idle") return;
     const hasClaim =
-      Boolean(run.pendingFirstPassJobId) || Boolean(run.jobClaimToken);
+      Boolean(run.pendingFirstPassJobId) || run.jobClaimActive === true;
     if (!hasClaim) return;
     const expiresRaw = run.jobClaimExpiresAt;
     if (typeof expiresRaw === "string" && expiresRaw.trim()) {
@@ -1687,7 +1696,7 @@ export function TwResearchPage({
   }, [
     researchRunQuery.data?.firstPassJobId,
     researchRunQuery.data?.pendingFirstPassJobId,
-    researchRunQuery.data?.jobClaimToken,
+    researchRunQuery.data?.jobClaimActive,
     researchRunQuery.data?.jobClaimExpiresAt,
     creationPollPhase,
     t,
@@ -1731,7 +1740,7 @@ export function TwResearchPage({
             return;
           }
         }
-        if (!run?.pendingFirstPassJobId && !run?.jobClaimToken) {
+        if (!run?.pendingFirstPassJobId && run?.jobClaimActive !== true) {
           finish("failed", "research.tw.startOutcome.creationFailed");
           return;
         }
@@ -2806,6 +2815,14 @@ export function TwResearchPage({
                           runOwnedFirstPassJobId ?? firstPassJobId ?? "—",
                         ),
                       })}
+                    </p>
+                  ) : null}
+                  {executionAdvancedTimestamps ? (
+                    <p
+                      className="cds--helper-text-01"
+                      data-testid="tw-research-execution-advanced-timestamps"
+                    >
+                      {executionAdvancedTimestamps}
                     </p>
                   ) : null}
                   {browsingHistoricalFirstPassJob ? (

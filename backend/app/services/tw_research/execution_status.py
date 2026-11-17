@@ -36,6 +36,21 @@ def _parse_iso(value: object) -> datetime | None:
         return None
 
 
+def _drain_outcome_is_noop(last_outcome: object) -> bool | None:
+    """True when the last drain stop did not advance symbol collection.
+
+    Matches First-Pass drain stop reasons: ``idle_no_work``, ``deferred``, and
+    any ``skipped_*`` preflight/skip outcome. Batch/progress stops
+    (``max_batches_reached``, ``job_completed``, ``failed_batch``, …) are False.
+    """
+    if not isinstance(last_outcome, str) or not last_outcome.strip():
+        return None
+    outcome = last_outcome.strip().lower()
+    if outcome in {"idle_no_work", "deferred"} or outcome.startswith("skipped_"):
+        return True
+    return False
+
+
 def classify_first_pass_execution(
     run: ResearchRun,
     *,
@@ -108,13 +123,8 @@ def classify_first_pass_execution(
         and datetime.now(UTC) - last_tick <= _DRAIN_STALE_AFTER
     )
     last_outcome = drain_meta.get("lastOutcome")
-    # A fresh Cron tick that leased nothing is not proof of successful collection.
-    noop_tick = isinstance(last_outcome, str) and last_outcome.lower() in {
-        "noop",
-        "dry_run",
-        "no_work",
-        "nothing_to_do",
-    }
+    # Real drain stop reasons: idle/deferred/skipped_* are not collection progress.
+    noop_tick = _drain_outcome_is_noop(last_outcome)
 
     run_status = str(run.status or "")
     phase = str(run.phase or "")

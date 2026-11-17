@@ -812,10 +812,13 @@ export type TwResearchRun = {
   notNotionPublisher?: boolean;
   cronjobRemainsSuspended?: boolean;
   durable?: boolean;
-  /** Creation claim for attaching a First-Pass Job (idempotent Start reclaim). */
-  jobClaimToken?: string | null;
+  /** Creation claim is live (token present server-side and not expired). */
+  jobClaimActive?: boolean | null;
   jobClaimExpiresAt?: string | null;
   pendingFirstPassJobId?: string | null;
+  phase2ClaimActive?: boolean | null;
+  phase2ClaimExpiresAt?: string | null;
+  pendingTechnicalScanId?: string | null;
   createdAt?: string;
   updatedAt?: string;
 };

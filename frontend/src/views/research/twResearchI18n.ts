@@ -94,8 +94,13 @@ const TW_RESEARCH_ROWS = [
   ],
   [
     "research.tw.execution.progressAppendix",
-    "{processed}/{total}. Last data progress: {lastProgressAt}. Last executor tick: {lastTickAt}. Job updated: {jobUpdatedAt}",
-    "{processed}/{total}。最後資料進度：{lastProgressAt}。最後執行器心跳：{lastTickAt}。工作狀態更新：{jobUpdatedAt}",
+    "{processed}/{total}. Last data progress: {lastProgressAt}",
+    "{processed}/{total}。最後資料進度：{lastProgressAt}",
+  ],
+  [
+    "research.tw.execution.advancedTimestamps",
+    "Last executor tick: {lastTickAt}. Job updated: {jobUpdatedAt}.",
+    "最後執行器心跳：{lastTickAt}。工作狀態更新：{jobUpdatedAt}。",
   ],
   [
     "research.tw.startOutcome.jobCreated",

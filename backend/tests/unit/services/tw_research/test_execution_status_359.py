@@ -128,6 +128,49 @@ def test_last_data_progress_at_is_distinct_from_job_updated_at(monkeypatch) -> N
     assert result["lastDataProgressAt"] != result["jobUpdatedAt"]
 
 
+def test_drain_noop_tick_true_for_idle_deferred_and_skipped(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.services.tw_research.execution_status.first_pass_drain_availability",
+        lambda user_id: (True, None),
+    )
+    for outcome in (
+        "idle_no_work",
+        "deferred",
+        "skipped_not_authorized",
+        "skipped_no_job",
+    ):
+        result = classify_first_pass_execution(
+            _run(
+                schedule_enabled=True,
+                dimensions={"firstPassDrain": {"lastOutcome": outcome}},
+            ),
+            job={"status": "pending", "universe_size": 10, "ok_count": 0},
+        )
+        assert result["drainNoopTick"] is True, outcome
+        assert result["drainLastOutcome"] == outcome
+
+
+def test_drain_noop_tick_false_for_batch_progress_outcomes(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.services.tw_research.execution_status.first_pass_drain_availability",
+        lambda user_id: (True, None),
+    )
+    for outcome in (
+        "max_batches_reached",
+        "job_completed",
+        "job_partial",
+        "failed_batch",
+    ):
+        result = classify_first_pass_execution(
+            _run(
+                schedule_enabled=True,
+                dimensions={"firstPassDrain": {"lastOutcome": outcome}},
+            ),
+            job={"status": "running", "universe_size": 10, "ok_count": 2},
+        )
+        assert result["drainNoopTick"] is False, outcome
+
+
 def test_missing_last_data_progress_at_stays_null(monkeypatch) -> None:
     monkeypatch.setattr(
         "app.services.tw_research.execution_status.first_pass_drain_availability",
