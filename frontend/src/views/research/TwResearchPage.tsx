@@ -1436,6 +1436,7 @@ export function TwResearchPage({
     total?: number | null;
     lastTickAt?: string | null;
     lastProgressAt?: string | null;
+    jobUpdatedAt?: string | null;
   }): string => {
     const locale = language === "en" ? "en-US" : "zh-TW";
     const processed = Number(opts.processed ?? 0);
@@ -1444,11 +1445,14 @@ export function TwResearchPage({
       formatTaipeiDateTime(opts.lastTickAt, locale) || "—";
     const lastProgressAt =
       formatTaipeiDateTime(opts.lastProgressAt, locale) || "—";
+    const jobUpdatedAt =
+      formatTaipeiDateTime(opts.jobUpdatedAt, locale) || "—";
     return t("research.tw.execution.progressAppendix", {
       processed,
       total,
       lastTickAt,
       lastProgressAt,
+      jobUpdatedAt,
     });
   };
 
@@ -1459,6 +1463,7 @@ export function TwResearchPage({
       total?: number | null;
       lastTickAt?: string | null;
       lastProgressAt?: string | null;
+      jobUpdatedAt?: string | null;
     },
   ): string | null => {
     const withProgress = (base: string): string => {
@@ -1502,13 +1507,15 @@ export function TwResearchPage({
       run?.execution?.drainLastTickAt ??
       run?.firstPassDrain?.lastTickAt ??
       null;
-    const lastProgressAt =
-      run?.execution?.jobUpdatedAt ?? nested?.updatedAt ?? null;
+    // Prefer authoritative symbol-persist time; never invent from job.updated_at.
+    const lastProgressAt = run?.execution?.lastDataProgressAt ?? null;
+    const jobUpdatedAt = run?.execution?.jobUpdatedAt ?? nested?.updatedAt ?? null;
     return executionMessageFromState(state, {
       processed,
       total,
       lastTickAt,
       lastProgressAt,
+      jobUpdatedAt,
     });
   }, [
     researchRunQuery.data?.execution,
@@ -1565,6 +1572,18 @@ export function TwResearchPage({
   const [firstPassJobDetailRetryId, setFirstPassJobDetailRetryId] = useState<string | null>(
     null,
   );
+  /** Bounded GET-only recovery while a concurrent Start holds the create claim. */
+  type CreationPollPhase =
+    | "idle"
+    | "polling"
+    | "attached"
+    | "expired"
+    | "timeout"
+    | "failed";
+  const [creationPollPhase, setCreationPollPhase] = useState<CreationPollPhase>("idle");
+  const creationPollGenRef = useRef(0);
+  const CREATION_POLL_INTERVAL_MS = 1_500;
+  const CREATION_POLL_MAX_MS = 45_000;
 
   const applyManagedStartResult = (run: {
     researchRunId?: string | null;
@@ -1612,14 +1631,17 @@ export function TwResearchPage({
         0,
     );
     if (outcome === "job_created") {
+      setCreationPollPhase("idle");
       setStartOutcomeMessage(
         t("research.tw.startOutcome.jobCreated", {
           createdAt,
         }),
       );
     } else if (outcome === "drain_rearmed") {
+      setCreationPollPhase("idle");
       setStartOutcomeMessage(t("research.tw.startOutcome.drainRearmed"));
     } else if (outcome === "job_resumed") {
+      setCreationPollPhase("idle");
       setStartOutcomeMessage(
         t("research.tw.startOutcome.jobResumed", {
           createdAt,
@@ -1629,12 +1651,113 @@ export function TwResearchPage({
       );
     } else if (outcome === "creation_in_progress") {
       setStartOutcomeMessage(t("research.tw.startOutcome.creationInProgress"));
+      setCreationPollPhase("polling");
+    } else if (outcome === "creation_attached") {
+      setCreationPollPhase("attached");
+      setStartOutcomeMessage(
+        t("research.tw.startOutcome.creationAttached", { createdAt }),
+      );
     } else {
       setStartOutcomeMessage(null);
     }
     void queryClient.invalidateQueries({ queryKey: ["tw-research-run-current"] });
     void queryClient.invalidateQueries({ queryKey: ["tw-research-first-pass-jobs"] });
   };
+
+  // Resume creation polling after refresh when a live claim has no Job yet.
+  // Do not auto-restart after timeout/expired/failed — user must Start again.
+  useEffect(() => {
+    const run = researchRunQuery.data;
+    if (!run) return;
+    if (run.firstPassJobId) {
+      if (creationPollPhase === "polling") setCreationPollPhase("idle");
+      return;
+    }
+    if (creationPollPhase !== "idle") return;
+    const hasClaim =
+      Boolean(run.pendingFirstPassJobId) || Boolean(run.jobClaimToken);
+    if (!hasClaim) return;
+    const expiresRaw = run.jobClaimExpiresAt;
+    if (typeof expiresRaw === "string" && expiresRaw.trim()) {
+      const expiresMs = Date.parse(expiresRaw);
+      if (Number.isFinite(expiresMs) && expiresMs <= Date.now()) return;
+    }
+    setStartOutcomeMessage(t("research.tw.startOutcome.creationInProgress"));
+    setCreationPollPhase("polling");
+  }, [
+    researchRunQuery.data?.firstPassJobId,
+    researchRunQuery.data?.pendingFirstPassJobId,
+    researchRunQuery.data?.jobClaimToken,
+    researchRunQuery.data?.jobClaimExpiresAt,
+    creationPollPhase,
+    t,
+  ]);
+
+  useEffect(() => {
+    if (creationPollPhase !== "polling") return;
+    creationPollGenRef.current += 1;
+    const pollGen = creationPollGenRef.current;
+    let cancelled = false;
+    let timer: number | null = null;
+    const startedAt = Date.now();
+
+    const finish = (phase: CreationPollPhase, messageKey: TranslationKey) => {
+      if (cancelled || creationPollGenRef.current !== pollGen) return;
+      setCreationPollPhase(phase);
+      setStartOutcomeMessage(t(messageKey));
+    };
+
+    const tick = async () => {
+      if (cancelled || creationPollGenRef.current !== pollGen) return;
+      if (Date.now() - startedAt >= CREATION_POLL_MAX_MS) {
+        finish("timeout", "research.tw.startOutcome.creationTimedOut");
+        return;
+      }
+      try {
+        const run = await fetchTwResearchRunCurrent();
+        if (cancelled || creationPollGenRef.current !== pollGen) return;
+        if (run?.firstPassJobId) {
+          applyManagedStartResult({
+            ...run,
+            startOutcome: "creation_attached",
+          });
+          return;
+        }
+        const expiresRaw = run?.jobClaimExpiresAt;
+        if (typeof expiresRaw === "string" && expiresRaw.trim()) {
+          const expiresMs = Date.parse(expiresRaw);
+          if (Number.isFinite(expiresMs) && expiresMs <= Date.now()) {
+            finish("expired", "research.tw.startOutcome.creationClaimExpired");
+            return;
+          }
+        }
+        if (!run?.pendingFirstPassJobId && !run?.jobClaimToken) {
+          finish("failed", "research.tw.startOutcome.creationFailed");
+          return;
+        }
+      } catch (error) {
+        if (cancelled || creationPollGenRef.current !== pollGen) return;
+        const status = toApiError(error).status;
+        if (status === 404) {
+          finish("failed", "research.tw.startOutcome.creationFailed");
+          return;
+        }
+        // Transient network/5xx — keep polling until timeout.
+      }
+      if (cancelled || creationPollGenRef.current !== pollGen) return;
+      timer = window.setTimeout(() => {
+        void tick();
+      }, CREATION_POLL_INTERVAL_MS);
+    };
+
+    void tick();
+    return () => {
+      cancelled = true;
+      if (timer != null) window.clearTimeout(timer);
+    };
+    // intentionally omit applyManagedStartResult — stable enough via pollGen cancel
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [creationPollPhase, language, t]);
 
   const loadFirstPassJobDetails = (jobId: string, selectionGen: number) => {
     void fetchTwResearchFirstPassJob(jobId)
@@ -2609,7 +2732,10 @@ export function TwResearchPage({
                   kind={startResearchIsPrimary ? "primary" : "secondary"}
                   size="sm"
                   data-testid="tw-research-start-full-research"
-                  disabled={startFullResearchMutation.isPending}
+                  disabled={
+                    startFullResearchMutation.isPending ||
+                    creationPollPhase === "polling"
+                  }
                   onClick={() => {
                     if (runIsActiveNonTerminal) {
                       document

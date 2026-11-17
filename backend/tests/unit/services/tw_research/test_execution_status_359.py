@@ -108,6 +108,39 @@ def test_stalled_when_mid_progress_and_tick_stale(monkeypatch) -> None:
     assert result["authorized"] is True
 
 
+def test_last_data_progress_at_is_distinct_from_job_updated_at(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.services.tw_research.execution_status.first_pass_drain_availability",
+        lambda user_id: (False, "first_pass_drain_globally_disabled"),
+    )
+    result = classify_first_pass_execution(
+        _run(),
+        job={
+            "status": "pending",
+            "universe_size": 73,
+            "ok_count": 0,
+            "updated_at": "2026-11-17T04:00:00+00:00",
+        },
+        last_data_progress_at="2026-11-17T03:00:00+00:00",
+    )
+    assert result["jobUpdatedAt"] == "2026-11-17T04:00:00+00:00"
+    assert result["lastDataProgressAt"] == "2026-11-17T03:00:00+00:00"
+    assert result["lastDataProgressAt"] != result["jobUpdatedAt"]
+
+
+def test_missing_last_data_progress_at_stays_null(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.services.tw_research.execution_status.first_pass_drain_availability",
+        lambda user_id: (False, "first_pass_drain_globally_disabled"),
+    )
+    result = classify_first_pass_execution(
+        _run(),
+        job={"status": "pending", "universe_size": 73, "ok_count": 0},
+        last_data_progress_at=None,
+    )
+    assert result["lastDataProgressAt"] is None
+
+
 def test_running_status_without_lease_is_not_actively_collecting(monkeypatch) -> None:
     monkeypatch.setattr(
         "app.services.tw_research.execution_status.first_pass_drain_availability",

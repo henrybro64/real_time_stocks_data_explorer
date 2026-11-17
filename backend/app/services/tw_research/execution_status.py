@@ -41,6 +41,7 @@ def classify_first_pass_execution(
     *,
     job: dict[str, Any] | None = None,
     symbol_counts: dict[str, Any] | None = None,
+    last_data_progress_at: str | None = None,
 ) -> dict[str, Any]:
     """Return an additive execution block for Start / current-run responses."""
     available, drain_reason = first_pass_drain_availability(run.user_id)
@@ -204,7 +205,12 @@ def classify_first_pass_execution(
         "drainFresh": bool(drain_fresh) if schedule_enabled and available else None,
         "drainLastOutcome": last_outcome if isinstance(last_outcome, str) else None,
         "drainNoopTick": bool(noop_tick) if last_outcome is not None else None,
+        # jobUpdatedAt = any Job row mutation (lease renew, admin, status).
         "jobUpdatedAt": job_updated_at,
+        # lastDataProgressAt = MAX(symbol.updated_at) for ok/partial/failed only.
+        "lastDataProgressAt": last_data_progress_at
+        if isinstance(last_data_progress_at, str) and last_data_progress_at.strip()
+        else None,
         "blocker": blocker,
         "nextAction": next_action,
         "jobId": run.first_pass_job_id,

@@ -1616,6 +1616,7 @@ def _research_run_response(
 
     job = None
     counts = None
+    last_data_progress_at = None
     if run.first_pass_job_id and tw_research_repository.is_available():
         try:
             job = tw_research_repository.get_first_pass_job(
@@ -1624,9 +1625,15 @@ def _research_run_response(
             counts = tw_research_repository.count_first_pass_symbols(
                 run.first_pass_job_id
             )
+            last_data_progress_at = (
+                tw_research_repository.latest_first_pass_symbol_data_progress_at(
+                    run.first_pass_job_id
+                )
+            )
         except Exception:  # noqa: BLE001 — response must still return the run
             job = None
             counts = None
+            last_data_progress_at = None
     scan_payload = None
     scan_state = None
     if run.technical_scan_id:
@@ -1648,7 +1655,10 @@ def _research_run_response(
     return ResearchRunResponse(
         researchRun=run.as_dict(),
         execution=classify_first_pass_execution(
-            run, job=job, symbol_counts=counts
+            run,
+            job=job,
+            symbol_counts=counts,
+            last_data_progress_at=last_data_progress_at,
         ),
         phase2Execution=classify_phase2_execution(
             run, scan=scan_payload, scan_state=scan_state

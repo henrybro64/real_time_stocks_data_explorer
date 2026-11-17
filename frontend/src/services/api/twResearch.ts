@@ -648,6 +648,8 @@ export type TwResearchExecutionStatus = {
   drainNoopTick?: boolean | null;
   drainFresh?: boolean | null;
   jobUpdatedAt?: string | null;
+  /** MAX(symbol.updated_at) for ok/partial/failed — not job lease/admin updates. */
+  lastDataProgressAt?: string | null;
   blocker?: string | null;
   nextAction?: string | null;
   jobId?: string | null;

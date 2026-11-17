@@ -94,8 +94,8 @@ const TW_RESEARCH_ROWS = [
   ],
   [
     "research.tw.execution.progressAppendix",
-    "{processed}/{total}. Last data progress: {lastProgressAt}. Last executor tick: {lastTickAt}",
-    "{processed}/{total}。最後資料進度：{lastProgressAt}。最後執行器心跳：{lastTickAt}",
+    "{processed}/{total}. Last data progress: {lastProgressAt}. Last executor tick: {lastTickAt}. Job updated: {jobUpdatedAt}",
+    "{processed}/{total}。最後資料進度：{lastProgressAt}。最後執行器心跳：{lastTickAt}。工作狀態更新：{jobUpdatedAt}",
   ],
   [
     "research.tw.startOutcome.jobCreated",
@@ -114,8 +114,28 @@ const TW_RESEARCH_ROWS = [
   ],
   [
     "research.tw.startOutcome.creationInProgress",
-    "Collection setup is already in progress. Wait a moment, then refresh — do not start again yet.",
-    "收集工作正在建立中。請稍候再重新整理，暫時不要再次按下開始。",
+    "Collection setup is already in progress. Waiting for it to finish — do not press Start again.",
+    "收集工作正在建立中，正在等待完成 — 請勿再次按下開始。",
+  ],
+  [
+    "research.tw.startOutcome.creationAttached",
+    "Collection job is ready (created {createdAt}).",
+    "收集工作已就緒（建立於 {createdAt}）。",
+  ],
+  [
+    "research.tw.startOutcome.creationTimedOut",
+    "Still waiting for collection setup. Press Start again only if the status stays incomplete.",
+    "仍在等待收集工作建立完成。若狀態持續未完成，再按一次「開始研究」。",
+  ],
+  [
+    "research.tw.startOutcome.creationClaimExpired",
+    "Collection setup timed out before a job was attached. You can safely press Start again.",
+    "收集工作在建立完成前逾時。可安全再次按下「開始研究」。",
+  ],
+  [
+    "research.tw.startOutcome.creationFailed",
+    "Could not confirm collection setup. Check your connection, then press Start again if needed.",
+    "無法確認收集工作是否建立完成。請檢查連線後，必要時再按「開始研究」。",
   ],
   [
     "research.tw.firstPassJobHistoryPendingOption",

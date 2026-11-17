@@ -4950,6 +4950,31 @@ class TwResearchRepository(SessionBoundRepository):
                 "pending": counts.get("pending", 0),
             }
 
+    def latest_first_pass_symbol_data_progress_at(self, job_id: str) -> str | None:
+        """Authoritative last symbol evidence persist time for a First-Pass Job.
+
+        Uses ``MAX(updated_at)`` over rows whose status is a completed attempt
+        (``ok`` / ``partial`` / ``failed``). Lease renewals, job status edits,
+        and drain no-op ticks do not write these rows, so they must not advance
+        this timestamp. Returns ``None`` when no such rows exist — never invents
+        a fallback from ``job.updated_at``.
+        """
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            latest = session.execute(
+                select(func.max(TwResearchFirstPassSymbolResult.updated_at)).where(
+                    TwResearchFirstPassSymbolResult.job_id == job_id,
+                    TwResearchFirstPassSymbolResult.status.in_(
+                        ("ok", "partial", "failed")
+                    ),
+                )
+            ).scalar_one_or_none()
+        if latest is None:
+            return None
+        if hasattr(latest, "isoformat"):
+            return latest.isoformat()
+        return str(latest)
+
     def earliest_first_pass_next_retry_at(self, job_id: str) -> str | None:
         """Earliest durable ``nextRetryAt`` among retry-scheduled symbol rows.
 
