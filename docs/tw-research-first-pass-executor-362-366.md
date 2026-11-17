@@ -25,7 +25,14 @@
 
 `concurrencyPolicy: Forbid` → at most one drain Job; expected throughput ≤ batch size per 5-minute tick until measured otherwise.
 
-Until the first successful tick, UI execution state is `executor_not_ticking` (authorized but not collecting).
+Until the first successful tick, UI execution state is `executor_not_ticking`
+(authorized but not collecting). Research Run `status=running` alone is **not**
+active collecting — only a live batch lease is. A fresh drain tick without a
+lease is also not collecting (including no-op ticks).
+
+The Backend **cannot observe** CronJob `suspend` from inside the process. If
+executor env is unset, UI shows `executor_unavailable` and asks for operator
+verification (read-only preflight); do not invent Kubernetes status in the UI.
 
 ## Recommended Secret layout
 

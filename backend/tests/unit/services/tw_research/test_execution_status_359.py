@@ -82,6 +82,53 @@ def test_executor_not_ticking_when_last_tick_stale(monkeypatch) -> None:
     assert result["nextAction"] == "wait_or_contact_operator"
 
 
+def test_stalled_when_mid_progress_and_tick_stale(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.services.tw_research.execution_status.first_pass_drain_availability",
+        lambda user_id: (True, None),
+    )
+    result = classify_first_pass_execution(
+        _run(
+            schedule_enabled=True,
+            dimensions={"firstPassDrain": {"lastTickAt": "2020-01-01T00:00:00+00:00"}},
+        ),
+        job={
+            "status": "running",
+            "universe_size": 73,
+            "ok_count": 10,
+            "partial_count": 0,
+            "failed_count": 0,
+            "updated_at": "2026-11-17T02:00:00+00:00",
+        },
+    )
+    assert result["state"] == "stalled"
+    assert result["jobUpdatedAt"] == "2026-11-17T02:00:00+00:00"
+    assert result["processedCount"] == 10
+    assert result["pendingCount"] == 63
+    assert result["authorized"] is True
+
+
+def test_running_status_without_lease_is_not_actively_collecting(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.services.tw_research.execution_status.first_pass_drain_availability",
+        lambda user_id: (False, "first_pass_drain_globally_disabled"),
+    )
+    result = classify_first_pass_execution(
+        _run(status="running", schedule_enabled=False),
+        job={
+            "status": "pending",
+            "universe_size": 73,
+            "ok_count": 0,
+            "partial_count": 0,
+            "failed_count": 0,
+        },
+    )
+    assert result["state"] == "executor_unavailable"
+    assert result["state"] != "actively_collecting"
+    assert result["processedCount"] == 0
+    assert result["pendingCount"] == 73
+
+
 def test_awaiting_analyst_after_gate(monkeypatch) -> None:
     monkeypatch.setattr(
         "app.services.tw_research.execution_status.first_pass_drain_availability",

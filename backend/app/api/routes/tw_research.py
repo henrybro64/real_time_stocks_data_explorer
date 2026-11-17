@@ -1458,6 +1458,30 @@ def _create_first_pass_job_for_start(*, user_id: str, job_id: str) -> str:
         ) from exc
 
 
+def _start_outcome_from_durable_run(
+    run: ResearchRun,
+    *,
+    created_job_id: str | None = None,
+    attach_outcome: str | None = None,
+) -> str:
+    """Map confirmed PostgreSQL/memory run state to Start outcome (#361/#362).
+
+    Never report ``job_created`` unless this request's job id is the durable
+    authoritative ``first_pass_job_id``. Claim races without an attached job are
+    ``creation_in_progress``, not resumed.
+    """
+    authoritative = str(run.first_pass_job_id or "") or None
+    if authoritative and created_job_id and authoritative == created_job_id:
+        if attach_outcome in {None, "attached"}:
+            return "job_created"
+        return "job_resumed"
+    if authoritative:
+        return "job_resumed"
+    if run.job_claim_token or run.pending_first_pass_job_id:
+        return "creation_in_progress"
+    return "creation_in_progress"
+
+
 def _attach_created_first_pass_job(
     *,
     user_id: str,
@@ -1473,7 +1497,8 @@ def _attach_created_first_pass_job(
         )
     except ResearchRunStoreUnavailable as exc:
         raise _research_run_unavailable(exc) from exc
-    if attached.get("outcome") in {"already_attached", "claim_lost"}:
+    attach_outcome = str(attached.get("outcome") or "")
+    if attach_outcome in {"already_attached", "claim_lost"}:
         orphan = attached.get("orphan_job_id")
         if orphan:
             research_run_store.mark_orphaned_first_pass_job(
@@ -1481,10 +1506,19 @@ def _attach_created_first_pass_job(
                 user_id=user_id,
                 authoritative_job_id=str(attached.get("first_pass_job_id") or "")
                 or None,
-                reason=str(attached.get("outcome")),
+                reason=attach_outcome,
             )
     run = ResearchRun.from_persist_payload(attached["run"])
-    return _research_run_response(run, start_outcome="job_created")
+    # Another concurrent Start may already own the authoritative job. Re-arm
+    # only when durable state already has a First-Pass Job.
+    if attach_outcome in {"already_attached", "claim_lost"} and run.first_pass_job_id:
+        return _maybe_rearm_first_pass_on_start(user_id)
+    start_outcome = _start_outcome_from_durable_run(
+        run,
+        created_job_id=job_id,
+        attach_outcome=attach_outcome,
+    )
+    return _research_run_response(run, start_outcome=start_outcome)
 
 
 def _resume_existing_phase1_run(*, user_id: str, run: ResearchRun) -> ResearchRunResponse | None:
@@ -1517,7 +1551,11 @@ def _claim_and_create_phase1_job(*, user_id: str) -> ResearchRunResponse:
         return _maybe_rearm_first_pass_on_start(user_id)
     if outcome == "claim_held":
         held = ResearchRun.from_persist_payload(claim["run"])
-        return _research_run_response(held, start_outcome="job_resumed")
+        # Another request holds the create lease — do not claim job_resumed
+        # until first_pass_job_id is durable.
+        if held.first_pass_job_id:
+            return _maybe_rearm_first_pass_on_start(user_id)
+        return _research_run_response(held, start_outcome="creation_in_progress")
 
     pending_job_id = claim.get("pending_first_pass_job_id")
     if not pending_job_id:

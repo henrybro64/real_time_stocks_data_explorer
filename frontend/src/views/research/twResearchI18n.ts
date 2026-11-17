@@ -94,18 +94,18 @@ const TW_RESEARCH_ROWS = [
   ],
   [
     "research.tw.execution.progressAppendix",
-    "{processed}/{total}. Last progress: {lastTickAt}",
-    "{processed}/{total}。最後進度：{lastTickAt}",
+    "{processed}/{total}. Last data progress: {lastProgressAt}. Last executor tick: {lastTickAt}",
+    "{processed}/{total}。最後資料進度：{lastProgressAt}。最後執行器心跳：{lastTickAt}",
   ],
   [
     "research.tw.startOutcome.jobCreated",
-    "Created a new research and collection job ({researchRunId}, created {createdAt}).",
-    "已建立新的研究與收集工作（{researchRunId}，建立於 {createdAt}）。",
+    "Created a new research and collection job (created {createdAt}).",
+    "已建立新的研究與收集工作（建立於 {createdAt}）。",
   ],
   [
     "research.tw.startOutcome.jobResumed",
-    "Resumed existing research ({researchRunId}, created {createdAt}, processed {processed}/{total}).",
-    "已接續現有研究（{researchRunId}，建立於 {createdAt}，已處理 {processed}/{total}）。",
+    "Resumed existing research (created {createdAt}, processed {processed}/{total}).",
+    "已接續現有研究（建立於 {createdAt}，已處理 {processed}/{total}）。",
   ],
   [
     "research.tw.startOutcome.drainRearmed",
@@ -113,9 +113,24 @@ const TW_RESEARCH_ROWS = [
     "已重新授權現有研究的自動收集。",
   ],
   [
+    "research.tw.startOutcome.creationInProgress",
+    "Collection setup is already in progress. Wait a moment, then refresh — do not start again yet.",
+    "收集工作正在建立中。請稍候再重新整理，暫時不要再次按下開始。",
+  ],
+  [
     "research.tw.firstPassJobHistoryPendingOption",
-    "Selected job (details loading…) · {jobId}",
-    "已選工作（資料載入中…）· {jobId}",
+    "Selected job (details loading…)",
+    "已選工作（資料載入中…）",
+  ],
+  [
+    "research.tw.firstPassJobDetailLoadFailed",
+    "Could not load that historical collection job ({status}). Your selection is unchanged; retry or pick another job.",
+    "無法載入該歷史收集工作（{status}）。目前選取不變；請重試或改選其他工作。",
+  ],
+  [
+    "research.tw.firstPassJobDetailRetry",
+    "Retry loading job details",
+    "重試載入工作詳情",
   ],
   [
     "research.tw.execution.authorizedWaiting",
@@ -129,8 +144,13 @@ const TW_RESEARCH_ROWS = [
   ],
   [
     "research.tw.execution.executorNotTicking",
-    "Collection is authorized, but no automatic run has started yet. Wait a few minutes, then refresh — this is not active collecting.",
-    "已授權收集，但自動執行尚未開始。請稍候數分鐘後重新整理（這不是正在收集）。",
+    "Collection is authorized, but no automatic run has started yet. Wait a few minutes, then refresh — this is not active collecting. If it stays unchanged, an operator must verify the background service.",
+    "已授權收集，但自動執行尚未開始。請稍候數分鐘後重新整理（這不是正在收集）。若持續不變，需由維運確認背景服務。",
+  ],
+  [
+    "research.tw.execution.stalled",
+    "Collection paused mid-way: no recent automatic run and no active batch. Saved progress is kept. Refresh later, or ask an operator to verify the background service.",
+    "收集中途暫停：沒有近期自動執行，也沒有進行中的批次。已儲存的進度會保留。請稍後重新整理，或請維運確認背景服務。",
   ],
   [
     "research.tw.startResearchViewProgress",

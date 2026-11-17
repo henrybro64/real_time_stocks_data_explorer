@@ -12,6 +12,7 @@ import { ApiError } from "../../services/api/client";
 import {
   advanceTwResearchRunGate,
   fetchThemeOptions,
+  fetchTwResearchFirstPassJob,
   fetchTwResearchFirstPassProgress,
   fetchTwResearchFirstPassSymbols,
   fetchTwResearchRunCurrent,
@@ -52,6 +53,9 @@ vi.mock("../../services/api/twResearch", async () => {
       throw new ApiError("missing", { status: 404, detail: "x", kind: "not_found" });
     }),
     listTwResearchFirstPassJobs: vi.fn(async () => []),
+    fetchTwResearchFirstPassJob: vi.fn(async () => {
+      throw new ApiError("missing", { status: 404, detail: "x", kind: "not_found" });
+    }),
     fetchTwResearchFirstPassProgress: vi.fn(),
     fetchTwResearchFirstPassSymbols: vi.fn(),
     runTwResearchFirstPassBatch: vi.fn(),
@@ -1301,10 +1305,11 @@ describe("TwResearchPage Start retry when queued without job (#365)", () => {
     const select = await screen.findByTestId("tw-research-first-pass-job-history");
     expect(select).toHaveValue("fpj_selected_missing");
     expect(select).toHaveTextContent(/已選工作（資料載入中/i);
+    expect(select).not.toHaveTextContent(/fpj_selected_missing/);
     expect(select).not.toHaveValue("fpj_older_history");
   });
 
-  it("shows identity-only startOutcome for job_created with run id and Taipei time (#362)", async () => {
+  it("shows investor startOutcome for job_created with Taipei time and no raw ids (#362)", async () => {
     const user = userEvent.setup();
     seed({
       run: null,
@@ -1329,12 +1334,12 @@ describe("TwResearchPage Start retry when queued without job (#365)", () => {
     const start = await screen.findByTestId("tw-research-start-full-research");
     await user.click(start);
     const outcome = await screen.findByTestId("tw-research-start-outcome");
-    expect(outcome).toHaveTextContent(/已建立新的研究與收集工作（rr_brand_new/);
-    expect(outcome).toHaveTextContent(/建立於 2026\/11\/13/);
+    expect(outcome).toHaveTextContent(/已建立新的研究與收集工作（建立於 2026\/11\/13/);
+    expect(outcome).not.toHaveTextContent(/rr_brand_new|fpj_/);
     expect(outcome).not.toHaveTextContent(/尚未啟用|背景處理服務/);
   });
 
-  it("shows identity-only startOutcome for job_resumed with progress (#362)", async () => {
+  it("shows investor startOutcome for job_resumed with progress and no raw ids (#362)", async () => {
     const user = userEvent.setup();
     seed({
       run: {
@@ -1370,9 +1375,9 @@ describe("TwResearchPage Start retry when queued without job (#365)", () => {
     renderPage("zh-TW");
     await user.click(await screen.findByTestId("tw-research-start-full-research"));
     const outcome = await screen.findByTestId("tw-research-start-outcome");
-    expect(outcome).toHaveTextContent(/已接續現有研究（rr_resumed/);
-    expect(outcome).toHaveTextContent(/建立於 2026\/11\/10/);
+    expect(outcome).toHaveTextContent(/已接續現有研究（建立於 2026\/11\/10/);
     expect(outcome).toHaveTextContent(/已處理 12\/73/);
+    expect(outcome).not.toHaveTextContent(/rr_resumed|fpj_/);
     expect(outcome).not.toHaveTextContent(/尚未啟用|背景處理服務/);
   });
 
@@ -1431,10 +1436,11 @@ describe("TwResearchPage Start retry when queued without job (#365)", () => {
     expect(status).toHaveTextContent(/Collection is ready\. Press Start to authorize/i);
     expect(status).not.toHaveTextContent(/not enabled|background processing service is not enabled/i);
     expect(status).toHaveTextContent(/0\/73/);
-    expect(status).toHaveTextContent(/Last progress: —/);
+    expect(status).toHaveTextContent(/Last data progress: —/);
+    expect(status).toHaveTextContent(/Last executor tick: —/);
   });
 
-  it("appends 0/73 and empty lastTickAt on executor_unavailable (#362)", async () => {
+  it("appends 0/73 and empty tick/progress on executor_unavailable (#362)", async () => {
     seed({
       run: {
         status: "running",
@@ -1448,16 +1454,114 @@ describe("TwResearchPage Start retry when queued without job (#365)", () => {
           processedCount: 0,
           universeSize: 73,
           drainLastTickAt: null,
+          jobUpdatedAt: null,
         },
         firstPassDrain: { armed: false, available: false, lastTickAt: null },
       },
-      progress: { processedCount: 0, universeSize: 73, pendingCount: 73, cursor: 0 },
+      progress: {
+        processedCount: 0,
+        universeSize: 73,
+        pendingCount: 73,
+        cursor: 0,
+        updatedAt: null,
+      },
     });
     renderPage("zh-TW");
     const status = await screen.findByTestId("tw-research-execution-status");
     expect(status).toHaveTextContent(/研究尚未開始：背景處理服務尚未啟用/);
     expect(status).toHaveTextContent(/0\/73/);
-    expect(status).toHaveTextContent(/最後進度：—/);
+    expect(status).toHaveTextContent(/最後資料進度：—/);
+    expect(status).toHaveTextContent(/最後執行器心跳：—/);
     expect(status).not.toHaveTextContent(/正在背景收集|正在進行資料收集/);
+  });
+
+  it("keeps selected historical job and shows retry on 404 detail load (#362 P2-A)", async () => {
+    seed({
+      run: {
+        status: "running",
+        phase: "phase1_first_pass",
+        firstPassJobId: "fpj_selected_missing",
+        scheduleEnabled: false,
+        execution: {
+          state: "executor_unavailable",
+          authorized: false,
+          drainAvailable: false,
+        },
+      },
+      jobs: [jobRecord({ jobId: "fpj_older_history", createdAt: "2026-11-16T08:00:00Z" })],
+    });
+    vi.mocked(fetchTwResearchFirstPassJob).mockRejectedValue(
+      new ApiError("missing", { status: 404, detail: "x", kind: "not_found" }),
+    );
+    renderPage("en");
+    const select = await screen.findByTestId("tw-research-first-pass-job-history");
+    expect(select).toHaveValue("fpj_selected_missing");
+    expect(
+      await screen.findByTestId("tw-research-first-pass-job-detail-error"),
+    ).toHaveTextContent(/Could not load that historical collection job \(404\)/i);
+    expect(select).toHaveValue("fpj_selected_missing");
+    expect(select).not.toHaveValue("fpj_older_history");
+    expect(
+      screen.getByTestId("tw-research-first-pass-job-detail-retry"),
+    ).toBeInTheDocument();
+  });
+
+  it("ignores stale historical job detail responses after another selection (#362 P2-A)", async () => {
+    const user = userEvent.setup();
+    let resolveMissing: ((job: Record<string, unknown>) => void) | null = null;
+    vi.mocked(fetchTwResearchRunCurrent).mockResolvedValue(
+      runRecord({
+        status: "gated",
+        phase: "awaiting_analyst_candidate_selection",
+        firstPassJobId: "fpj_missing_a",
+        scheduleEnabled: false,
+      }),
+    );
+    vi.mocked(listTwResearchFirstPassJobs).mockResolvedValue([
+      jobRecord({ jobId: "fpj_listed", createdAt: "2026-11-16T08:00:00Z" }),
+    ]);
+    vi.mocked(fetchTwResearchFirstPassProgress).mockResolvedValue(
+      progressRecord({ jobId: "fpj_listed" }),
+    );
+    vi.mocked(fetchTwResearchFirstPassJob).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveMissing = resolve;
+        }),
+    );
+    renderPage("en");
+    const select = await screen.findByTestId("tw-research-first-pass-job-history");
+    await waitFor(() => {
+      expect(select).toHaveValue("fpj_missing_a");
+    });
+    await user.selectOptions(select, "fpj_listed");
+    expect(select).toHaveValue("fpj_listed");
+    resolveMissing?.({
+      jobId: "fpj_missing_a",
+      activeSnapshotId: "snap_stale",
+      status: "completed",
+    });
+    await waitFor(() => {
+      expect(screen.queryByTestId("tw-research-first-pass-job-detail-error")).toBeNull();
+    });
+    expect(select).toHaveValue("fpj_listed");
+  });
+
+  it("shows creation_in_progress startOutcome without claiming resume (#362 P1-A)", async () => {
+    const user = userEvent.setup();
+    seed({ run: null, jobs: [] });
+    vi.mocked(startTwResearchRun).mockResolvedValue({
+      ...runRecord({
+        firstPassJobId: null,
+        pendingFirstPassJobId: "fpj_pending",
+        execution: { state: "queued" },
+      }),
+      startOutcome: "creation_in_progress",
+    });
+    renderPage("zh-TW");
+    await user.click(await screen.findByTestId("tw-research-start-full-research"));
+    expect(await screen.findByTestId("tw-research-start-outcome")).toHaveTextContent(
+      /收集工作正在建立中/,
+    );
   });
 });

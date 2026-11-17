@@ -50,6 +50,7 @@ def classify_first_pass_execution(
     processed = None
     pending = None
     universe_size = None
+    job_updated_at = None
     if job is not None:
         job_status = str(job.get("status") or job.get("job_status") or "")
         lease_expires = job.get("reserve_expires_at") or job.get("reserveExpiresAt")
@@ -57,6 +58,13 @@ def classify_first_pass_execution(
         if parsed_lease is not None:
             lease_expires_at = parsed_lease.isoformat()
             lease_active = parsed_lease > datetime.now(UTC)
+        raw_job_updated = job.get("updated_at") or job.get("updatedAt")
+        if isinstance(raw_job_updated, str):
+            job_updated_at = raw_job_updated
+        elif raw_job_updated is not None:
+            parsed_updated = _parse_iso(raw_job_updated)
+            if parsed_updated is not None:
+                job_updated_at = parsed_updated.isoformat()
         universe_size = job.get("universe_size") or job.get("universeSize")
         if universe_size is None:
             stock_ids = job.get("stock_ids") or job.get("stockIds") or []
@@ -98,6 +106,14 @@ def classify_first_pass_execution(
         last_tick is not None
         and datetime.now(UTC) - last_tick <= _DRAIN_STALE_AFTER
     )
+    last_outcome = drain_meta.get("lastOutcome")
+    # A fresh Cron tick that leased nothing is not proof of successful collection.
+    noop_tick = isinstance(last_outcome, str) and last_outcome.lower() in {
+        "noop",
+        "dry_run",
+        "no_work",
+        "nothing_to_do",
+    }
 
     run_status = str(run.status or "")
     phase = str(run.phase or "")
@@ -116,11 +132,25 @@ def classify_first_pass_execution(
     elif job_status in {"completed", "partial"}:
         state = "completed" if job_status == "completed" else "partially_complete"
     elif lease_active and job_status in {"running", "pending", "queued"}:
+        # Only a live batch lease proves active collection — not run.status=running.
         state = "actively_collecting"
     elif job_status == "deferred" or run_status == "waiting_for_next_window":
         state = "waiting_for_retry"
     elif run.first_pass_job_id and not available:
         state = "executor_unavailable"
+    elif (
+        run.first_pass_job_id
+        and schedule_enabled
+        and available
+        and not lease_active
+        and not drain_fresh
+        and isinstance(processed, int)
+        and processed > 0
+        and isinstance(pending, int)
+        and pending > 0
+    ):
+        # Mid-job, armed, but no recent tick and no lease — stalled pending operator check.
+        state = "stalled"
     elif (
         run.first_pass_job_id
         and schedule_enabled
@@ -140,6 +170,9 @@ def classify_first_pass_execution(
     if state == "executor_unavailable":
         blocker = drain_reason or "first_pass_drain_unavailable"
         next_action = "wait_for_executor_or_run_manual_batch"
+    elif state == "stalled":
+        blocker = "first_pass_drain_stalled"
+        next_action = "wait_or_contact_operator"
     elif state == "executor_not_ticking":
         blocker = "first_pass_drain_not_ticking"
         next_action = "wait_or_contact_operator"
@@ -169,6 +202,9 @@ def classify_first_pass_execution(
         "drainBlocker": drain_reason,
         "drainLastTickAt": last_tick_at if isinstance(last_tick_at, str) else None,
         "drainFresh": bool(drain_fresh) if schedule_enabled and available else None,
+        "drainLastOutcome": last_outcome if isinstance(last_outcome, str) else None,
+        "drainNoopTick": bool(noop_tick) if last_outcome is not None else None,
+        "jobUpdatedAt": job_updated_at,
         "blocker": blocker,
         "nextAction": next_action,
         "jobId": run.first_pass_job_id,
@@ -182,6 +218,8 @@ def classify_first_pass_execution(
         "notes": [
             "HTTP 200 / job insert is not proof that collection is running.",
             "schedule_enabled alone is not proof an active worker holds a lease.",
+            "A fresh drain tick without a live lease is not active collecting.",
+            "Backend cannot observe CronJob suspend; verify operator preflight.",
         ],
     }
 

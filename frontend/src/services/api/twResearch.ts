@@ -644,6 +644,10 @@ export type TwResearchExecutionStatus = {
   drainAvailable?: boolean;
   drainBlocker?: string | null;
   drainLastTickAt?: string | null;
+  drainLastOutcome?: string | null;
+  drainNoopTick?: boolean | null;
+  drainFresh?: boolean | null;
+  jobUpdatedAt?: string | null;
   blocker?: string | null;
   nextAction?: string | null;
   jobId?: string | null;
@@ -832,7 +836,13 @@ export type TwResearchRunStartResult = TwResearchRun & {
   execution?: TwResearchExecutionStatus | null;
   phase2Execution?: TwResearchPhase2ExecutionStatus | null;
   /** Present on Start/Resume: new job vs existing job (#362). */
-  startOutcome?: "job_created" | "job_resumed" | "drain_rearmed" | string | null;
+  startOutcome?:
+    | "job_created"
+    | "job_resumed"
+    | "drain_rearmed"
+    | "creation_in_progress"
+    | string
+    | null;
 };
 
 export async function startTwResearchRun(body?: {
