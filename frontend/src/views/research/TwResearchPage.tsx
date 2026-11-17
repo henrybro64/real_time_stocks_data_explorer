@@ -13,11 +13,6 @@ import {
   Select,
   SelectItem,
   Stack,
-  Tab,
-  TabList,
-  TabPanel,
-  TabPanels,
-  Tabs,
   Table,
   TableBody,
   TableCell,
@@ -40,6 +35,7 @@ import {
   ChipEvidenceCard,
   type ChipEvidenceRow,
 } from "./ChipEvidenceCard";
+import { TechnicalResultsPanel } from "./TechnicalResultsPanel";
 import {
   AdvancedDetailsDisclosure,
   ResearchInvestorSummary,
@@ -60,11 +56,9 @@ import {
   advanceTwResearchRunGate,
   archiveTwResearchFirstPassJob,
   cancelTwResearchFirstPassJob,
-  createTwResearchScan,
   createTwResearchTechnicalScanFromCandidateSet,
   deleteTwResearchFirstPassJob,
   deleteTwResearchRunCurrent,
-  fetchThemeOptions,
   fetchTwResearchBrowserText,
   fetchTwResearchCandidateSet,
   fetchTwResearchExportChunk,
@@ -88,6 +82,7 @@ import {
   fetchTwResearchScan,
   fetchTwResearchScanProgress,
   fetchTwResearchScans,
+  fetchTwResearchTechnicalResults,
   fetchTwResearchSnapshotChunk,
   listTwResearchFirstPassJobs,
   unarchiveTwResearchFirstPassJob,
@@ -96,10 +91,6 @@ import {
   researchProgressRevision,
   researchScanListRefetchInterval,
   researchScanRefetchInterval,
-  resolveTwResearchUniverse,
-  resumeTwResearchBudgetWindow,
-  runTwResearchBatch,
-  runTwResearchEnrichmentBatch,
   runTwResearchFirstPassBatch,
   saveTwResearchMembership,
   adoptTwResearchFirstPassJob,
@@ -109,7 +100,6 @@ import {
   twResearchCsvUrl,
   type TwResearchRun,
   type TwResearchScanSnapshot,
-  type TwResearchUniverseMode,
 } from "../../services/api/twResearch";
 
 function researchPhaseLabelKey(phase: string | undefined | null): TranslationKey {
@@ -126,6 +116,47 @@ function researchPhaseLabelKey(phase: string | undefined | null): TranslationKey
     default:
       return "research.tw.phaseIdle";
   }
+}
+
+/** Persisted ordinary-page workflow stage for one-primary-CTA rules (#361). */
+export type TwResearchUiStage =
+  | "select_scope"
+  | "collecting"
+  | "awaiting_candidate_selection"
+  | "technical_analysis"
+  | "results";
+
+export function deriveResearchUiStage(
+  run: TwResearchRun | null | undefined,
+): TwResearchUiStage {
+  if (!run) return "select_scope";
+  const phase = String(run.phase ?? "");
+  const status = String(run.status ?? "");
+  const approved = String(run.gates?.candidateSelection ?? "") === "approved";
+  const phase2State = String(run.phase2Execution?.state ?? "");
+
+  if (
+    phase === "awaiting_analyst_report_decision" ||
+    phase === "complete_evidence_ready" ||
+    status === "evidence_ready" ||
+    phase2State === "completed"
+  ) {
+    return "results";
+  }
+  if (phase === "phase2_technical" || (approved && run.technicalScanId)) {
+    return "technical_analysis";
+  }
+  if (approved && phase === "awaiting_analyst_candidate_selection") {
+    return "technical_analysis";
+  }
+  if (phase === "awaiting_analyst_candidate_selection" || status === "gated") {
+    return "awaiting_candidate_selection";
+  }
+  if (phase === "phase1_first_pass") {
+    if (["failed", "cancelled"].includes(status)) return "select_scope";
+    return "collecting";
+  }
+  return "select_scope";
 }
 
 const PAGE_SIZE = 25;
@@ -152,20 +183,6 @@ function splitLines(text: string): string[] {
     .filter(Boolean);
 }
 
-function researchSelectionKey(input: {
-  mode: TwResearchUniverseMode;
-  targetCount: number;
-  stockIds: string[];
-  themeKeys: string[];
-}): string {
-  return JSON.stringify({
-    mode: input.mode,
-    targetCount: input.targetCount,
-    stockIds: input.mode === "stock_ids" ? input.stockIds : [],
-    themeKeys: input.mode === "theme_keys" ? input.themeKeys : [],
-  });
-}
-
 /** Calendar day the backend uses when create omits tradingDay (Asia/Taipei). */
 export function taipeiTradingDay(now = new Date()): string {
   return new Intl.DateTimeFormat("en-CA", {
@@ -174,30 +191,6 @@ export function taipeiTradingDay(now = new Date()): string {
     month: "2-digit",
     day: "2-digit",
   }).format(now);
-}
-
-function scanProgressKey(scan: TwResearchScanSnapshot | null): string {
-  if (!scan) return "";
-  return [
-    scan.status,
-    scan.processedCount,
-    scan.cursor,
-    scan.enrichCursor ?? 0,
-    scan.qualifiedCount ?? 0,
-  ].join(":");
-}
-
-/**
- * After a lost/proxy-failed mutation response, a GET may show that the server
- * finished the work. Keep that snapshot, but never treat a durable `failed`
- * status as recovery — that is the backend's explicit failure signal.
- */
-function recoveredAfterLostMutation(
-  beforeKey: string,
-  latest: TwResearchScanSnapshot | null,
-): boolean {
-  if (!latest || latest.status === "failed") return false;
-  return scanProgressKey(latest) !== beforeKey;
 }
 
 function describeResearchFailure(error: unknown): string {
@@ -377,10 +370,6 @@ export function TwResearchPage({
   const { t, language } = useLanguage();
   const router = useRouter();
   const queryClient = useQueryClient();
-  const [mode, setMode] = useState<TwResearchUniverseMode>("starter_preset");
-  const [stockIdsText, setStockIdsText] = useState("TW:2727\nTW:2618\nTW:2330");
-  const [themeKeysText, setThemeKeysText] = useState("tw-pcb\ntw-ccl");
-  const [targetCount, setTargetCount] = useState<10 | 20>(10);
   const [scanId, setScanId] = useState<string | null>(initialScanId);
   const [page, setPage] = useState(1);
   const [watchlistPage, setWatchlistPage] = useState(1);
@@ -389,9 +378,6 @@ export function TwResearchPage({
   const [agentTotalChunks, setAgentTotalChunks] = useState(0);
   const [latestManifestText, setLatestManifestText] = useState("");
   const [latestSnapshotId, setLatestSnapshotId] = useState<string | null>(null);
-  const [activeSelectionKey, setActiveSelectionKey] = useState<string | null>(null);
-  const [keptExistingScan, setKeptExistingScan] = useState(false);
-  const [recoveredOperations, setRecoveredOperations] = useState<Record<string, boolean>>({});
   const [membershipText, setMembershipText] = useState("");
   const [membershipVersion, setMembershipVersion] = useState(0);
   const [membershipThemeKeys, setMembershipThemeKeys] = useState<string[]>([]);
@@ -421,7 +407,6 @@ export function TwResearchPage({
   const [firstPassJobs, setFirstPassJobs] = useState<Record<string, unknown>[]>([]);
   const scanRef = useRef<TwResearchScanSnapshot | null>(null);
   const scanIdRef = useRef<string | null>(scanId);
-  const createGuard = useRef(false);
   /** Bumps on every First-Pass Job selection change to drop stale async responses. */
   const firstPassSelectionGenRef = useRef(0);
   const firstPassJobIdRef = useRef<string | null>(null);
@@ -499,44 +484,6 @@ export function TwResearchPage({
     });
     refreshManifest(next.scanId);
   };
-
-  const reloadDurableScan = async (): Promise<TwResearchScanSnapshot | null> => {
-    const id = scanRef.current?.scanId;
-    if (!id) return null;
-    try {
-      const latest = await fetchTwResearchScan(id);
-      applyScanSnapshot(latest);
-      return latest;
-    } catch {
-      return null;
-    }
-  };
-
-  const markRecovered = (operation: string, recovered: boolean) => {
-    setRecoveredOperations((current) => ({ ...current, [operation]: recovered }));
-  };
-
-  const explicitIds = useMemo(() => splitLines(stockIdsText), [stockIdsText]);
-  const themeKeys = useMemo(() => splitLines(themeKeysText), [themeKeysText]);
-  const selectionKey = useMemo(
-    () =>
-      researchSelectionKey({
-        mode,
-        targetCount,
-        stockIds: explicitIds,
-        themeKeys,
-      }),
-    [explicitIds, mode, targetCount, themeKeys],
-  );
-
-  useEffect(() => {
-    setKeptExistingScan(false);
-  }, [selectionKey]);
-
-  const themesQuery = useQuery({
-    queryKey: ["themes-for-tw-research"],
-    queryFn: fetchThemeOptions,
-  });
 
   const membershipQuery = useQuery({
     queryKey: ["tw-research-membership"],
@@ -1151,13 +1098,6 @@ export function TwResearchPage({
     }
   }, [firstPassProgressQuery.data]);
 
-  const twThemeHint = useMemo(() => {
-    const keys = (themesQuery.data ?? [])
-      .map((theme) => theme.key)
-      .filter((key) => key.startsWith("tw-"));
-    return keys.length ? keys.join(", ") : "tw-pcb, tw-ccl, …";
-  }, [themesQuery.data]);
-
   const listQuery = useQuery({
     queryKey: ["tw-research-scans"],
     queryFn: () => fetchTwResearchScans(),
@@ -1186,6 +1126,64 @@ export function TwResearchPage({
   });
 
   const scan = scanQuery.data?.scanId === scanId ? scanQuery.data : null;
+
+  // Results identity follows the selected scan (historical ?scan= or managed).
+  const technicalResultsScanId = useMemo(() => {
+    if (initialScanId && initialScanId !== researchRunQuery.data?.technicalScanId) {
+      return scanId ?? initialScanId;
+    }
+    return scanId ?? researchRunQuery.data?.technicalScanId ?? null;
+  }, [initialScanId, researchRunQuery.data?.technicalScanId, scanId]);
+
+  const viewingHistoricalTechnicalResults = Boolean(
+    technicalResultsScanId &&
+      researchRunQuery.data?.technicalScanId &&
+      technicalResultsScanId !== researchRunQuery.data.technicalScanId,
+  );
+
+  const technicalResultsQuery = useQuery({
+    queryKey: [
+      "tw-research-technical-results",
+      technicalResultsScanId,
+      viewingHistoricalTechnicalResults
+        ? "historical"
+        : progressQuery.data?.status,
+      viewingHistoricalTechnicalResults
+        ? null
+        : progressQuery.data?.processedCount,
+    ],
+    queryFn: ({ queryKey }) => {
+      const id = queryKey[1];
+      return fetchTwResearchTechnicalResults(
+        typeof id === "string" && id ? id : null,
+      );
+    },
+    enabled: Boolean(technicalResultsScanId),
+    staleTime: 5_000,
+    refetchInterval: (query) => {
+      if (viewingHistoricalTechnicalResults) return false;
+      const state = String(
+        query.state.data?.phase2Execution?.state ??
+          researchRunQuery.data?.phase2Execution?.state ??
+          "",
+      );
+      if (
+        state === "actively_analyzing" ||
+        state === "between_batches" ||
+        state === "waiting_for_budget_window"
+      ) {
+        return 8_000;
+      }
+      return false;
+    },
+    retry: false,
+  });
+
+  // Drop stale responses that no longer match the selected scan identity.
+  const technicalResults =
+    technicalResultsQuery.data?.technicalScanId === technicalResultsScanId
+      ? technicalResultsQuery.data
+      : undefined;
 
   const pinnedFirstPassSnapshotId = useMemo(() => {
     const fromScan = scan?.candidateProvenance?.firstPassSnapshotId;
@@ -1330,10 +1328,17 @@ export function TwResearchPage({
   }, [progress, queryClient, scan, scanId]);
 
   useEffect(() => {
-    // First visit only: pick the newest persisted scan. Never steal a deliberate selection.
-    if (scanId || !listQuery.data?.scans.length) return;
-    setScanId(listQuery.data.scans[0]?.scanId ?? null);
-  }, [listQuery.data, scanId]);
+    const techId = researchRunQuery.data?.technicalScanId;
+    if (typeof techId !== "string" || !techId || techId === scanId) {
+      return;
+    }
+    // Preserve an explicitly requested historical scan from ?scan= / initialScanId.
+    // Adopt the managed run-owned scan only when no scan was requested.
+    if (initialScanId && initialScanId !== techId) {
+      return;
+    }
+    setScanId(techId);
+  }, [researchRunQuery.data?.technicalScanId, scanId, initialScanId]);
 
   useEffect(() => {
     if (!scanId || typeof window === "undefined") return;
@@ -1346,33 +1351,6 @@ export function TwResearchPage({
     queryKey: ["tw-research-manifest", scanId],
     queryFn: () => fetchTwResearchExportManifest(scanId as string),
     enabled: Boolean(scanId),
-  });
-
-  const createMutation = useMutation({
-    mutationFn: async (key: string) => {
-      if (mode === "stock_ids") {
-        await resolveTwResearchUniverse({ mode, stockIds: explicitIds });
-      } else if (mode === "theme_keys") {
-        await resolveTwResearchUniverse({ mode, themeKeys });
-      }
-      const created = await createTwResearchScan({
-        mode,
-        stockIds: mode === "stock_ids" ? explicitIds : [],
-        themeKeys: mode === "theme_keys" ? themeKeys : [],
-        targetCount,
-      });
-      return { created, key };
-    },
-    onSuccess: ({ created, key }) => {
-      setScanId(created.scanId);
-      applyScanSnapshot(created);
-      setActiveSelectionKey(key);
-      setKeptExistingScan(false);
-      void queryClient.invalidateQueries({ queryKey: ["tw-research-scans"] });
-    },
-    onSettled: () => {
-      createGuard.current = false;
-    },
   });
 
   const previewMembershipMutation = useMutation({
@@ -1432,8 +1410,11 @@ export function TwResearchPage({
   };
 
   const executionMessageFromState = (state: string): string | null => {
-    if (state === "executor_unavailable" || state === "job_created") {
+    if (state === "executor_unavailable") {
       return t("research.tw.execution.executorUnavailable");
+    }
+    if (state === "job_created") {
+      return t("research.tw.execution.jobCreated");
     }
     if (state === "executor_not_ticking") {
       return t("research.tw.execution.executorNotTicking");
@@ -1452,6 +1433,46 @@ export function TwResearchPage({
     const state = String(researchRunQuery.data?.execution?.state ?? "");
     return executionMessageFromState(state);
   }, [researchRunQuery.data?.execution?.state, language, t]);
+
+  const phase2MessageFromState = (state: string): string | null => {
+    switch (state) {
+      case "technical_scan_created":
+        return t("research.tw.phase2Execution.technicalScanCreated");
+      case "awaiting_technical_start":
+        return t("research.tw.phase2Execution.awaitingTechnicalStart");
+      case "executor_unavailable":
+        return t("research.tw.phase2Execution.executorUnavailable");
+      case "executor_not_ticking":
+        return t("research.tw.phase2Execution.executorNotTicking");
+      case "actively_analyzing":
+        return t("research.tw.phase2Execution.activelyAnalyzing");
+      case "between_batches":
+        return t("research.tw.phase2Execution.betweenBatches");
+      case "waiting_for_budget_window":
+        return t("research.tw.phase2Execution.waitingForBudgetWindow");
+      case "paused":
+        return t("research.tw.phase2Execution.paused");
+      case "waiting_for_retry":
+        return t("research.tw.phase2Execution.waitingForRetry");
+      case "completed":
+        return t("research.tw.phase2Execution.completed");
+      case "failed":
+        return t("research.tw.phase2Execution.failed");
+      default:
+        return null;
+    }
+  };
+
+  const phase2ExecutionMessage = useMemo(() => {
+    const state = String(researchRunQuery.data?.phase2Execution?.state ?? "");
+    return phase2MessageFromState(state);
+  }, [researchRunQuery.data?.phase2Execution?.state, language, t]);
+
+  const showPhase2ExecutionMessage = Boolean(
+    researchRunQuery.data?.phase2Execution ||
+      researchRunQuery.data?.technicalScanId ||
+      String(researchRunQuery.data?.phase ?? "") === "phase2_technical",
+  );
 
   const applyManagedStartResult = (run: {
     firstPassJobId?: string | null;
@@ -1489,6 +1510,58 @@ export function TwResearchPage({
       run.scheduleEnabled == null
     );
   }, [researchRunQuery.data]);
+
+  const candidateSelectionApproved = useMemo(() => {
+    const gate = researchRunQuery.data?.gates?.candidateSelection;
+    return String(gate ?? "") === "approved";
+  }, [researchRunQuery.data?.gates?.candidateSelection]);
+
+  const researchUiStage = useMemo(
+    () => deriveResearchUiStage(researchRunQuery.data),
+    [researchRunQuery.data],
+  );
+
+  const membershipHasUnsavedChanges = useMemo(() => {
+    const data = membershipQuery.data;
+    if (!data) {
+      return (
+        Object.values(sectorAdditions).some((ids) => ids.length > 0) ||
+        Object.values(sectorRemovals).some((ids) => ids.length > 0)
+      );
+    }
+    const serverDisabled = (
+      Array.isArray(data.disabledThemeKeys) ? data.disabledThemeKeys.map(String) : []
+    ).slice().sort();
+    const localDisabled = disabledThemeKeys.slice().sort();
+    if (JSON.stringify(serverDisabled) !== JSON.stringify(localDisabled)) return true;
+    const serverExtra = (
+      Array.isArray(data.extraStockIds) ? data.extraStockIds.map(String) : []
+    ).slice().sort();
+    const localExtra = membershipExtraIds.slice().sort();
+    if (JSON.stringify(serverExtra) !== JSON.stringify(localExtra)) return true;
+    if (Object.values(sectorAdditions).some((ids) => ids.length > 0)) return true;
+    if (Object.values(sectorRemovals).some((ids) => ids.length > 0)) return true;
+    return false;
+  }, [
+    disabledThemeKeys,
+    membershipExtraIds,
+    membershipQuery.data,
+    sectorAdditions,
+    sectorRemovals,
+  ]);
+
+  const membershipSaveIsPrimary =
+    researchUiStage === "select_scope" &&
+    membershipHasUnsavedChanges &&
+    !researchRunQuery.data;
+
+  const startResearchIsPrimary =
+    (researchUiStage === "select_scope" && !membershipSaveIsPrimary) ||
+    researchUiStage === "collecting" ||
+    researchUiStage === "results";
+
+  const approveCandidatesIsPrimary = researchUiStage === "awaiting_candidate_selection";
+  const startTechnicalIsPrimary = researchUiStage === "technical_analysis";
 
   const runIsActiveNonTerminal = useMemo(() => {
     const run = researchRunQuery.data;
@@ -1875,6 +1948,7 @@ export function TwResearchPage({
       setCandidateConflictServerIds([]);
       setCandidateSetConflict(null);
       void queryClient.invalidateQueries({ queryKey: ["tw-research-candidate-set-latest"] });
+      void queryClient.invalidateQueries({ queryKey: ["tw-research-run-current"] });
     },
     onError: async (error) => {
       const apiError = toApiError(error);
@@ -1909,49 +1983,9 @@ export function TwResearchPage({
     onSuccess: (created) => {
       setScanId(created.scanId);
       applyScanSnapshot(created);
-      setMode("stock_ids");
-      if (Array.isArray(created.stockIds)) {
-        setStockIdsText(created.stockIds.map(String).join("\n"));
-      }
       void queryClient.invalidateQueries({ queryKey: ["tw-research-scans"] });
       void queryClient.invalidateQueries({ queryKey: ["tw-research-run-current"] });
     },
-  });
-
-  const batchMutation = useMutation({
-    mutationFn: async () => runTwResearchBatch(requireScanId(), 10),
-    onMutate: () => markRecovered("batch", false),
-    onSuccess: applyScanSnapshot,
-    onError: async () => {
-      const before = scanProgressKey(scanRef.current);
-      const latest = await reloadDurableScan();
-      markRecovered("batch", recoveredAfterLostMutation(before, latest));
-    },
-  });
-
-  const resumeMutation = useMutation({
-    mutationFn: async () => resumeTwResearchBudgetWindow(requireScanId()),
-    onSuccess: (next) => {
-      applyScanSnapshot(next);
-      void queryClient.invalidateQueries({ queryKey: ["tw-research-progress", next.scanId] });
-      void queryClient.invalidateQueries({ queryKey: ["tw-research-scans"] });
-    },
-  });
-
-  const enrichMutation = useMutation({
-    mutationFn: async () => runTwResearchEnrichmentBatch(requireScanId(), 10),
-    onMutate: () => markRecovered("enrich", false),
-    onSuccess: applyScanSnapshot,
-    onError: async () => {
-      const before = scanProgressKey(scanRef.current);
-      const latest = await reloadDurableScan();
-      markRecovered("enrich", recoveredAfterLostMutation(before, latest));
-    },
-  });
-
-  const refreshMutation = useMutation({
-    mutationFn: async () => fetchTwResearchScan(requireScanId()),
-    onSuccess: applyScanSnapshot,
   });
 
   const agentMutation = useMutation({
@@ -2094,45 +2128,14 @@ export function TwResearchPage({
     return map;
   }, [frozenWatchlistChipQuery.data]);
   const busy =
-    createMutation.isPending ||
-    batchMutation.isPending ||
-    resumeMutation.isPending ||
-    enrichMutation.isPending ||
-    refreshMutation.isPending ||
     agentMutation.isPending ||
     latestManifestMutation.isPending ||
     latestChunkMutation.isPending;
-  const requestedTradingDay = taipeiTradingDay();
   const operationErrors: Array<{ key: string; label: TranslationKey; error: unknown }> = [
     {
       key: "list",
       label: "research.tw.errorList",
       error: listQuery.isFetching ? null : listQuery.error,
-    },
-    {
-      key: "create",
-      label: "research.tw.errorCreate",
-      error: createMutation.isPending ? null : createMutation.error,
-    },
-    {
-      key: "batch",
-      label: "research.tw.errorBatch",
-      error: batchMutation.isPending || recoveredOperations.batch ? null : batchMutation.error,
-    },
-    {
-      key: "resume",
-      label: "research.tw.errorResume",
-      error: resumeMutation.isPending ? null : resumeMutation.error,
-    },
-    {
-      key: "enrich",
-      label: "research.tw.errorEnrich",
-      error: enrichMutation.isPending || recoveredOperations.enrich ? null : enrichMutation.error,
-    },
-    {
-      key: "refresh",
-      label: "research.tw.errorRefresh",
-      error: refreshMutation.isPending ? null : refreshMutation.error,
     },
     {
       key: "agent",
@@ -2338,7 +2341,7 @@ export function TwResearchPage({
         : null;
 
   return (
-    <Grid className="app-page-grid" fullWidth>
+    <Grid className="app-page-grid" fullWidth data-testid="tw-research-page">
       <Column lg={16} md={8} sm={4}>
         <Stack gap={6}>
           <div>
@@ -2413,14 +2416,17 @@ export function TwResearchPage({
               />
               <Stack gap={2} orientation="horizontal">
                 <Button
-                  kind="primary"
+                  kind={startResearchIsPrimary ? "primary" : "secondary"}
                   size="sm"
                   data-testid="tw-research-start-full-research"
-                  disabled={
-                    startFullResearchMutation.isPending || runIsActiveNonTerminal
-                  }
+                  disabled={startFullResearchMutation.isPending}
                   onClick={() => {
-                    if (runIsActiveNonTerminal) return;
+                    if (runIsActiveNonTerminal) {
+                      document
+                        .querySelector('[data-testid="tw-research-investor-summary"]')
+                        ?.scrollIntoView({ behavior: "smooth", block: "start" });
+                      return;
+                    }
                     startFullResearchMutation.mutate();
                   }}
                 >
@@ -2502,19 +2508,30 @@ export function TwResearchPage({
           </Tile>
 
           <div data-testid="tw-research-tabs">
-          <Tabs>
-            <TabList aria-label={t("research.tw.tabsAria")} contained>
-              <Tab data-testid="tw-research-tab-evidence">{t("research.tw.tabEvidence")}</Tab>
-              <Tab data-testid="tw-research-tab-watchlist">{t("research.tw.tabWatchlist")}</Tab>
-              <Tab data-testid="tw-research-tab-progress">{t("research.tw.tabProgress")}</Tab>
-            </TabList>
-            <TabPanels>
-              <TabPanel>
+          <div
+            data-testid="tw-research-single-flow"
+            aria-label={t("research.tw.flow.aria")}
+          >
+          <p className="cds--helper-text-01" data-testid="tw-research-flow-current">
+            {t("research.tw.flow.currentStage")}:{" "}
+            {researchUiStage === "select_scope"
+              ? t("research.tw.flow.stage1")
+              : researchUiStage === "collecting"
+                ? t("research.tw.flow.stage2")
+                : researchUiStage === "awaiting_candidate_selection"
+                  ? t("research.tw.flow.stage3")
+                  : t("research.tw.flow.stage4")}
+          </p>
                 <Stack gap={6}>
+          <section
+            data-testid="tw-research-flow-stage-1"
+            aria-current={researchUiStage === "select_scope" ? "step" : undefined}
+          >
+          <span data-testid="tw-research-tab-evidence" hidden />
           <Tile data-testid="tw-research-fundamentals">
             <Stack gap={4}>
               <div>
-                <h2 className="cds--productive-heading-03">{t("research.tw.fundamentalsTitle")}</h2>
+                <h2 className="cds--productive-heading-03">{t("research.tw.flow.stage1")}</h2>
                 <p className="cds--helper-text-01">{t("research.tw.fundamentalsNote")}</p>
                 <p className="cds--helper-text-01">{t("research.tw.stageHint")}</p>
               </div>
@@ -2529,38 +2546,51 @@ export function TwResearchPage({
               </p>
               <Stack gap={3} orientation="horizontal">
                 <Button
-                  kind="tertiary"
+                  kind={membershipSaveIsPrimary ? "primary" : "tertiary"}
                   size="sm"
-                  disabled={membershipQuery.isFetching}
-                  onClick={() => void membershipQuery.refetch()}
-                >
-                  {t("research.tw.loadMembership")}
-                </Button>
-                <Button
-                  kind="tertiary"
-                  size="sm"
-                  disabled={previewMembershipMutation.isPending}
-                  onClick={() => previewMembershipMutation.mutate()}
-                >
-                  {t("research.tw.previewMembership")}
-                </Button>
-                <Button
-                  kind="primary"
-                  size="sm"
-                  disabled={saveMembershipMutation.isPending}
+                  data-testid="tw-research-save-membership"
+                  disabled={saveMembershipMutation.isPending || !membershipHasUnsavedChanges}
                   onClick={() => saveMembershipMutation.mutate()}
+                  title={
+                    membershipHasUnsavedChanges
+                      ? t("research.tw.saveMembership")
+                      : t("research.tw.membershipNoChanges")
+                  }
                 >
                   {t("research.tw.saveMembership")}
                 </Button>
-                <Button
-                  kind="danger--tertiary"
-                  size="sm"
-                  disabled={resetMembershipMutation.isPending}
-                  onClick={() => resetMembershipMutation.mutate()}
-                >
-                  {t("research.tw.resetMembership")}
-                </Button>
               </Stack>
+              <AdvancedDetailsDisclosure
+                titleKey="research.tw.membershipAdvancedTitle"
+                hintKey="research.tw.membershipAdvancedHint"
+              >
+                <Stack gap={3} orientation="horizontal">
+                  <Button
+                    kind="ghost"
+                    size="sm"
+                    disabled={membershipQuery.isFetching}
+                    onClick={() => void membershipQuery.refetch()}
+                  >
+                    {t("research.tw.loadMembership")}
+                  </Button>
+                  <Button
+                    kind="ghost"
+                    size="sm"
+                    disabled={previewMembershipMutation.isPending}
+                    onClick={() => previewMembershipMutation.mutate()}
+                  >
+                    {t("research.tw.previewMembership")}
+                  </Button>
+                  <Button
+                    kind="danger--tertiary"
+                    size="sm"
+                    disabled={resetMembershipMutation.isPending}
+                    onClick={() => resetMembershipMutation.mutate()}
+                  >
+                    {t("research.tw.resetMembership")}
+                  </Button>
+                </Stack>
+              </AdvancedDetailsDisclosure>
               <div data-testid="tw-research-sector-editor">
                 <h3 className="cds--productive-heading-02">{t("research.tw.sectorEditor")}</h3>
                 <Stack gap={3}>
@@ -2696,6 +2726,20 @@ export function TwResearchPage({
                   />
                 </Stack>
               </div>
+            </Stack>
+          </Tile>
+          </section>
+
+          <section
+            data-testid="tw-research-flow-stage-2"
+            aria-current={researchUiStage === "collecting" ? "step" : undefined}
+          >
+          <Tile data-testid="tw-research-collect-check">
+            <Stack gap={4}>
+              <div>
+                <h2 className="cds--productive-heading-03">{t("research.tw.flow.stage2")}</h2>
+                <p className="cds--helper-text-01">{t("research.tw.startFirstPassHint")}</p>
+              </div>
               <Stack gap={3} orientation="horizontal">
                 <Button
                   kind="tertiary"
@@ -2706,7 +2750,6 @@ export function TwResearchPage({
                   {t("research.tw.loadFirstPassEvidence")}
                 </Button>
               </Stack>
-              <p className="cds--helper-text-01">{t("research.tw.startFirstPassHint")}</p>
               <AdvancedDetailsDisclosure>
                 <Stack gap={3} orientation="horizontal">
                   <Button
@@ -3358,6 +3401,21 @@ export function TwResearchPage({
                   })}
                 </Stack>
               </Tile>
+            </Stack>
+          </Tile>
+          </section>
+
+          <section
+            data-testid="tw-research-flow-stage-3"
+            aria-current={
+              researchUiStage === "awaiting_candidate_selection" ? "step" : undefined
+            }
+          >
+          <Tile data-testid="tw-research-pick-candidates">
+            <Stack gap={4}>
+              <div>
+                <h2 className="cds--productive-heading-03">{t("research.tw.flow.stage3")}</h2>
+              </div>
               <TextArea
                 id="tw-research-candidate-ids"
                 data-testid="tw-research-candidate-ids"
@@ -3418,7 +3476,7 @@ export function TwResearchPage({
                       {t("research.tw.candidateDiscard")}
                     </Button>
                     <Button
-                      kind="primary"
+                      kind="secondary"
                       size="sm"
                       data-testid="tw-research-candidate-resolve-save"
                       disabled={saveCandidateSetMutation.isPending}
@@ -3438,8 +3496,9 @@ export function TwResearchPage({
               ) : null}
               <Stack gap={3} orientation="horizontal">
                 <Button
-                  kind="primary"
+                  kind={approveCandidatesIsPrimary ? "primary" : "secondary"}
                   size="sm"
+                  data-testid="tw-research-approve-candidates"
                   disabled={
                     !firstPassSnapshotId ||
                     !firstPassDigest ||
@@ -3450,201 +3509,94 @@ export function TwResearchPage({
                   {t("research.tw.saveCandidateSet")}
                 </Button>
                 <Button
-                  kind="secondary"
+                  kind={startTechnicalIsPrimary ? "primary" : "secondary"}
                   size="sm"
                   data-testid="tw-research-start-technical-from-candidates"
                   disabled={
+                    !candidateSelectionApproved ||
                     candidateSetVersion <= 0 ||
                     startTechnicalFromCandidateMutation.isPending
+                  }
+                  title={
+                    candidateSelectionApproved
+                      ? t("research.tw.startTechnicalFromCandidates")
+                      : t("research.tw.technicalNeedsCandidateApproval")
                   }
                   onClick={() => startTechnicalFromCandidateMutation.mutate()}
                 >
                   {t("research.tw.startTechnicalFromCandidates")}
                 </Button>
               </Stack>
+              {!candidateSelectionApproved ? (
+                <p
+                  className="cds--helper-text-01"
+                  data-testid="tw-research-technical-gate-hint"
+                >
+                  {t("research.tw.technicalNeedsCandidateApproval")}
+                </p>
+              ) : null}
+              {showPhase2ExecutionMessage && phase2ExecutionMessage ? (
+                <p
+                  className="cds--helper-text-01"
+                  data-testid="tw-research-phase2-execution-status"
+                >
+                  {phase2ExecutionMessage}
+                </p>
+              ) : null}
               {candidateSetText ? (
-                <TextArea
-                  id="tw-research-candidate-set-json"
-                  labelText={t("research.tw.saveCandidateSet")}
-                  value={candidateSetText}
-                  readOnly
-                  rows={4}
-                />
-              ) : null}
-            </Stack>
-          </Tile>
-
-          <Tile>
-            <Stack gap={4}>
-              <Select
-                id="tw-research-mode"
-                labelText={t("research.tw.universeMode")}
-                value={mode}
-                onChange={(event) => setMode(event.target.value as TwResearchUniverseMode)}
-              >
-                <SelectItem value="starter_preset" text={t("research.tw.modePreset")} />
-                <SelectItem value="theme_keys" text={t("research.tw.modeThemes")} />
-                <SelectItem value="stock_ids" text={t("research.tw.modeIds")} />
-              </Select>
-              {mode === "stock_ids" ? (
-                <TextArea
-                  id="tw-research-stock-ids"
-                  labelText={t("research.tw.stockIds")}
-                  value={stockIdsText}
-                  onChange={(event) => setStockIdsText(event.target.value)}
-                  rows={4}
-                />
-              ) : null}
-              {mode === "theme_keys" ? (
-                <Stack gap={2}>
+                <AdvancedDetailsDisclosure>
                   <TextArea
-                    id="tw-research-theme-keys"
-                    labelText={t("research.tw.themeKeys")}
-                    value={themeKeysText}
-                    onChange={(event) => setThemeKeysText(event.target.value)}
+                    id="tw-research-candidate-set-json"
+                    labelText={t("research.tw.saveCandidateSet")}
+                    value={candidateSetText}
+                    readOnly
                     rows={4}
                   />
-                  <p className="cds--helper-text-01">
-                    {t("research.tw.themeKeysHint", { keys: twThemeHint })}
-                  </p>
-                </Stack>
+                </AdvancedDetailsDisclosure>
               ) : null}
-              {listQuery.data?.scans.length || scanId ? (
-                <Select
-                  id="tw-research-history"
-                  data-testid="tw-research-history"
-                  labelText={t("research.tw.historyLabel")}
-                  value={scanId ?? ""}
-                  onChange={(event) => {
-                    const next = event.target.value;
-                    if (next) setScanId(next);
-                  }}
-                >
-                  {(listQuery.data?.scans ?? []).map((item) => (
-                    <SelectItem
-                      key={item.scanId}
-                      value={item.scanId}
-                      text={`${item.tradingDay} · ${item.status} · ${item.cursor}/${item.universeSize}`}
-                    />
-                  ))}
-                  {scanId &&
-                  !(listQuery.data?.scans ?? []).some((item) => item.scanId === scanId) ? (
-                    <SelectItem value={scanId} text={scanId} />
-                  ) : null}
-                </Select>
-              ) : null}
-              <Select
-                id="tw-research-target"
-                labelText={t("research.tw.targetCount")}
-                value={String(targetCount)}
-                onChange={(event) => setTargetCount(Number(event.target.value) as 10 | 20)}
-              >
-                <SelectItem value="10" text="10" />
-                <SelectItem value="20" text="20" />
-              </Select>
-              <Stack gap={3} orientation="horizontal">
-                {(
-                  [
-                    {
-                      key: "create",
-                      kind: "primary" as const,
-                      label: "research.tw.createScan" as const,
-                      disabled: busy,
-                      onClick: () => {
-                        if (createGuard.current || createMutation.isPending) return;
-                        const persisted = (listQuery.data?.scans ?? []).find(
-                          (item) =>
-                            ACTIVE_SCAN_STATUSES.has(item.status) &&
-                            item.tradingDay === requestedTradingDay &&
-                            researchSelectionKey({
-                              mode: item.selectorMode,
-                              targetCount: item.targetCount,
-                              stockIds: item.stockIds,
-                              themeKeys: item.themeKeys,
-                            }) === selectionKey,
-                        );
-                        if (persisted) {
-                          setScanId(persisted.scanId);
-                          setActiveSelectionKey(selectionKey);
-                          setKeptExistingScan(true);
-                          return;
-                        }
-                        if (scanId && selectionKey === activeSelectionKey) {
-                          setKeptExistingScan(true);
-                          return;
-                        }
-                        createGuard.current = true;
-                        setKeptExistingScan(false);
-                        createMutation.mutate(selectionKey);
-                      },
-                    },
-                    {
-                      key: "batch",
-                      kind: "secondary" as const,
-                      label: "research.tw.runBatch" as const,
-                      disabled:
-                        busy ||
-                        !scanId ||
-                        (displayStatus !== "" && !ACTIVE_SCAN_STATUSES.has(displayStatus)),
-                      onClick: () => batchMutation.mutate(),
-                    },
-                    {
-                      key: "resume",
-                      kind: "tertiary" as const,
-                      label: "research.tw.resumeBudget" as const,
-                      disabled: busy || !scanId || displayStatus !== "budget_exhausted",
-                      onClick: () => resumeMutation.mutate(),
-                    },
-                    {
-                      key: "enrich",
-                      kind: "tertiary" as const,
-                      label: "research.tw.runEnrichment" as const,
-                      disabled: busy || !scanId,
-                      onClick: () => enrichMutation.mutate(),
-                    },
-                    {
-                      key: "refresh",
-                      kind: "ghost" as const,
-                      label: "research.tw.refresh" as const,
-                      disabled: busy || !scanId,
-                      onClick: () => refreshMutation.mutate(),
-                    },
-                  ]
-                ).map((action) => (
-                  <Button
-                    key={action.key}
-                    size="md"
-                    kind={action.kind}
-                    disabled={action.disabled}
-                    data-testid={`tw-research-${action.key}`}
-                    onClick={action.onClick}
-                  >
-                    {t(action.label)}
-                  </Button>
-                ))}
-              </Stack>
-              {keptExistingScan ? (
-                <p className="cds--helper-text-01" data-testid="tw-research-existing-scan">
-                  {t("research.tw.existingScanKept")}
-                </p>
-              ) : null}
-              {displayStatus === "budget_exhausted" ? (
-                <p className="cds--helper-text-01" data-testid="tw-research-budget-exhausted">
-                  {t("research.tw.budgetExhausted")}
-                </p>
-              ) : null}
-              {busy ? <InlineLoading description={t("research.tw.working")} /> : null}
             </Stack>
           </Tile>
+          </section>
 
-                </Stack>
-              </TabPanel>
-              <TabPanel>
+          <section
+            data-testid="tw-research-flow-stage-4"
+            aria-current={
+              researchUiStage === "technical_analysis" ||
+              researchUiStage === "results"
+                ? "step"
+                : undefined
+            }
+          >
+          <h2 className="cds--productive-heading-03">{t("research.tw.flow.stage4")}</h2>
+
+          {technicalResultsScanId ||
+          researchUiStage === "technical_analysis" ||
+          researchUiStage === "results" ? (
+            <TechnicalResultsPanel
+              results={technicalResults}
+              phase2Message={
+                viewingHistoricalTechnicalResults
+                  ? null
+                  : showPhase2ExecutionMessage
+                    ? phase2ExecutionMessage
+                    : null
+              }
+              error={technicalResultsQuery.error}
+              empty={
+                !technicalResultsQuery.isFetching && !technicalResults
+              }
+              viewingHistorical={viewingHistoricalTechnicalResults}
+            />
+          ) : null}
 
           <Tile data-testid="tw-research-watchlist">
             <Stack gap={3}>
               <div>
-                <h2 className="cds--productive-heading-03">{t("research.tw.tabWatchlist")}</h2>
+                <h2 className="cds--productive-heading-03">
+                  <span data-testid="tw-research-tab-watchlist">
+                    {t("research.tw.tabWatchlist")}
+                  </span>
+                </h2>
                 <p className="cds--helper-text-01">{t("research.tw.watchlistNote")}</p>
               </div>
               <p className="cds--body-compact-01" data-testid="tw-research-watchlist-counts">
@@ -3820,9 +3772,13 @@ export function TwResearchPage({
               />
             </Stack>
           </Tile>
-              </TabPanel>
-              <TabPanel>
-                <Stack gap={6}>
+
+          <AdvancedDetailsDisclosure>
+            <div data-testid="tw-research-tab-progress">
+              <h3 className="cds--productive-heading-02">
+                {t("research.tw.flow.secondaryProgress")}
+              </h3>
+            </div>
           {(scanQuery.isError || progressQuery.isError) && scan ? (
             <div data-testid="tw-research-stale">
               <RequestStateNotice
@@ -3871,6 +3827,14 @@ export function TwResearchPage({
                 <p className="cds--body-compact-01" data-testid="tw-research-worker">
                   {t(workerActivityLabelKey(displayWorker))}
                 </p>
+                {displayStatus === "budget_exhausted" ? (
+                  <p
+                    className="cds--helper-text-01"
+                    data-testid="tw-research-budget-exhausted"
+                  >
+                    {t("research.tw.budgetExhausted")}
+                  </p>
+                ) : null}
                 {scan.candidateProvenance?.candidateSetId ? (
                   <div data-testid="tw-research-candidate-provenance">
                     <p className="cds--helper-text-01">
@@ -4290,10 +4254,10 @@ export function TwResearchPage({
               </Stack>
             </Tile>
           ) : null}
+          </AdvancedDetailsDisclosure>
+          </section>
                 </Stack>
-              </TabPanel>
-            </TabPanels>
-          </Tabs>
+          </div>
           </div>
         </Stack>
       </Column>

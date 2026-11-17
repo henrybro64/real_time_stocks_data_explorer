@@ -84,23 +84,28 @@ const TW_RESEARCH_ROWS = [
   ["research.tw.startFirstPass", "Start first-round data collection", "開始第一輪資料收集"],
   [
     "research.tw.execution.executorUnavailable",
-    "Job ready, but automatic collection is not available yet. Progress will wait until the executor is enabled, or use the advanced manual batch as a fallback.",
-    "工作已建立，但自動收集尚未可用。啟用執行器前會暫停；必要時可使用進階手動批次作為備援。",
+    "Automatic collection is not available yet. Saved progress is kept. Press Start again after collection is enabled, or wait — do not expect new data until then.",
+    "自動收集尚未可用，已儲存的進度會保留。啟用後請再按「開始研究」，或稍候；在此之前不會有新資料。",
+  ],
+  [
+    "research.tw.execution.jobCreated",
+    "Research is ready. Press Start again to begin automatic collection when it is available.",
+    "研究已就緒。自動收集可用時，請再按「開始研究」開始。",
   ],
   [
     "research.tw.execution.authorizedWaiting",
-    "Collection authorized. Waiting for the next worker tick — this is not idle failure.",
-    "已授權收集，正在等待下一次工作排程（這不是失敗）。",
+    "Collection is authorized and waiting for the next automatic run. This is normal — not a failure.",
+    "已授權收集，正在等待下一次自動執行。這是正常狀態，不是失敗。",
   ],
   [
     "research.tw.execution.activelyCollecting",
-    "Collection is actively leased and running.",
-    "正在進行資料收集（已取得租約）。",
+    "Collection is running in the background. You can close this page; progress is saved.",
+    "正在背景收集資料。可關閉此頁，進度會自動儲存。",
   ],
   [
     "research.tw.execution.executorNotTicking",
-    "Collection is authorized, but the drain executor has not ticked recently. Wait or contact the operator — this is not active collecting.",
-    "已授權收集，但自動排程最近沒有執行。請稍候或聯絡管理員（這不是正在收集）。",
+    "Collection is authorized, but no automatic run has started yet. Wait a few minutes, then refresh — this is not active collecting.",
+    "已授權收集，但自動執行尚未開始。請稍候數分鐘後重新整理（這不是正在收集）。",
   ],
   [
     "research.tw.startResearchViewProgress",
@@ -238,7 +243,16 @@ const TW_RESEARCH_ROWS = [
     "Load research data summary (advanced)",
     "載入研究資料摘要（進階）",
   ],
-  ["research.tw.saveCandidateSet", "Save stocks for deeper analysis", "儲存要深入分析的股票"],
+  [
+    "research.tw.saveCandidateSet",
+    "Approve and save stocks for deeper analysis",
+    "核准並儲存要深入分析的股票",
+  ],
+  [
+    "research.tw.technicalNeedsCandidateApproval",
+    "Technical analysis stays locked until you approve and save a candidate selection above.",
+    "請先在上方核准並儲存候選股票，才能開始技術分析。",
+  ],
   ["research.tw.candidateIds", "Stock IDs for deeper analysis (one per line)", "深入分析股票代號（每行一個）"],
   [
     "research.tw.candidateVersion",
@@ -267,8 +281,265 @@ const TW_RESEARCH_ROWS = [
   ],
   [
     "research.tw.startTechnicalFromCandidates",
-    "Start technical scan from saved selection",
-    "從已儲存選取啟動技術掃描",
+    "Start technical analysis",
+    "開始技術分析",
+  ],
+  [
+    "research.tw.phase2Execution.technicalScanCreated",
+    "Technical analysis is queued and waiting for background execution. Creating the scan does not mean analysis has started.",
+    "技術分析已就緒，等待背景執行。建立掃描不代表已開始分析。",
+  ],
+  [
+    "research.tw.phase2Execution.executorUnavailable",
+    "Automatic technical analysis is not available yet. Saved progress is kept. Wait until the executor is enabled — do not assume analysis ran.",
+    "自動技術分析尚未可用，已儲存的進度會保留。請等到執行器啟用；在此之前請勿假設已分析。",
+  ],
+  [
+    "research.tw.phase2Execution.executorNotTicking",
+    "Technical analysis is authorized, but no automatic run has started yet. Wait a few minutes, then refresh — this is not active analyzing.",
+    "已授權技術分析，但自動執行尚未開始。請稍候數分鐘後重新整理（這不是正在分析）。",
+  ],
+  [
+    "research.tw.phase2Execution.activelyAnalyzing",
+    "Analyzing… Technical analysis is running in the background. You can close this page; progress is saved.",
+    "分析中…技術分析正在背景執行。可關閉此頁，進度會自動儲存。",
+  ],
+  [
+    "research.tw.phase2Execution.betweenBatches",
+    "Between batches… A recent worker tick finished; waiting for the next batch. This is not an active lease.",
+    "批次之間…最近一次背景執行已結束，等待下一批。這不是正在執行中的鎖定。",
+  ],
+  [
+    "research.tw.phase2Execution.waitingForBudgetWindow",
+    "Waiting for a historical-data budget window. If today's window cap was reached, technical analysis continues on the next trading day.",
+    "等待歷史資料預算視窗。若今日視窗已達上限，技術分析會在下一個交易日繼續。",
+  ],
+  [
+    "research.tw.flow.stage1",
+    "1. Choose research stocks",
+    "1. 選擇研究股票",
+  ],
+  [
+    "research.tw.flow.stage2",
+    "2. Collect and check market data",
+    "2. 收集與檢查市場資料",
+  ],
+  [
+    "research.tw.flow.stage3",
+    "3. Pick stocks for deeper analysis",
+    "3. 挑選深入分析股票",
+  ],
+  [
+    "research.tw.flow.stage4",
+    "4. Technical analysis and research results",
+    "4. 技術分析與研究結果",
+  ],
+  [
+    "research.tw.flow.currentStage",
+    "Current stage",
+    "目前階段",
+  ],
+  [
+    "research.tw.flow.aria",
+    "Research workflow stages",
+    "研究流程階段",
+  ],
+  [
+    "research.tw.flow.secondaryHistory",
+    "Past research records",
+    "過往研究紀錄",
+  ],
+  [
+    "research.tw.flow.secondaryProgress",
+    "Progress and data quality (details)",
+    "進度與資料品質（細節）",
+  ],
+  [
+    "research.tw.phase2Execution.completed",
+    "Technical analysis completed.",
+    "已完成",
+  ],
+  [
+    "research.tw.phase2Execution.failed",
+    "Technical analysis failed. Review progress details before retrying.",
+    "技術分析失敗。請先查看進度細節再重試。",
+  ],
+  [
+    "research.tw.phase2Execution.awaitingTechnicalStart",
+    "Candidates are approved. Press Start technical analysis when you are ready.",
+    "候選已核准。準備好後請按下「開始技術分析」。",
+  ],
+  [
+    "research.tw.phase2Execution.paused",
+    "Technical analysis is paused. Resume drain when you are ready — nothing is running in the background.",
+    "技術分析已暫停。準備好後請恢復背景執行；目前沒有在背景分析。",
+  ],
+  [
+    "research.tw.phase2Execution.waitingForRetry",
+    "Technical analysis made no progress on the last tick and is waiting to retry.",
+    "技術分析上一輪沒有進度，正在等待重試。",
+  ],
+  [
+    "research.tw.technicalResults.title",
+    "Technical results",
+    "技術分析結果",
+  ],
+  [
+    "research.tw.technicalResults.subtitle",
+    "Monthly and daily MACD/KD from the run-owned technical scan. Values are persisted; nothing is recomputed here.",
+    "來自本輪技術掃描的月線／日線 MACD/KD。數值為已儲存結果，此處不會重新計算。",
+  ],
+  [
+    "research.tw.technicalResults.empty",
+    "No technical results yet. Approve candidates and start technical analysis first.",
+    "尚無技術分析結果。請先核准候選並開始技術分析。",
+  ],
+  [
+    "research.tw.technicalResults.monthly",
+    "Monthly MACD / KD",
+    "月線 MACD / KD",
+  ],
+  [
+    "research.tw.technicalResults.daily",
+    "Daily MACD / KD",
+    "日線 MACD / KD",
+  ],
+  [
+    "research.tw.technicalResults.asOfMonth",
+    "As of month",
+    "截至月份",
+  ],
+  [
+    "research.tw.technicalResults.asOfDate",
+    "As of date",
+    "截至日期",
+  ],
+  [
+    "research.tw.technicalResults.result",
+    "Result",
+    "結果",
+  ],
+  [
+    "research.tw.technicalResults.bars",
+    "Bars used",
+    "使用根數",
+  ],
+  [
+    "research.tw.technicalResults.insufficientHistory",
+    "Insufficient history: need {required} bars, have {available}",
+    "歷史資料不足：需要 {required} 根，現有 {available} 根",
+  ],
+  [
+    "research.tw.technicalResults.insufficientHistoryUnknown",
+    "Insufficient history: need {required} bars, available unknown",
+    "歷史資料不足：需要 {required} 根，現有筆數未知",
+  ],
+  [
+    "research.tw.technicalResults.dailyNotRun",
+    "Not run: monthly did not pass",
+    "未執行：月線未通過",
+  ],
+  [
+    "research.tw.technicalResults.loadError",
+    "Unable to load technical results right now; will retry automatically.",
+    "暫時無法載入技術結果，稍後自動重試",
+  ],
+  [
+    "research.tw.technicalResults.scanIdentity",
+    "Scan {scanId} · research day {tradingDay}",
+    "掃描 {scanId} · 研究日 {tradingDay}",
+  ],
+  [
+    "research.tw.technicalResults.viewingHistorical",
+    "Viewing a historical scan (not the current managed run).",
+    "正在檢視歷史掃描（非目前管理中的研究流程）。",
+  ],
+  [
+    "research.tw.technicalResults.calcMeta",
+    "Calculation version {version} · price basis {priceBasis} · scan updated {updatedAt}",
+    "計算版本 {version} · 價格基準 {priceBasis} · 掃描更新 {updatedAt}",
+  ],
+  [
+    "research.tw.technicalResults.counts",
+    "Calculated {calculated} · verified {verified} · daily skipped {dailySkipped} · errors {errors} · deferred {deferred} · unknown {unknown} · waiting for budget {waiting} · insufficient history {insufficient} · pending {pending} · processed {processed}",
+    "已計算 {calculated} · 已驗證 {verified} · 日線略過 {dailySkipped} · 錯誤 {errors} · 延後 {deferred} · 未知 {unknown} · 等待預算 {waiting} · 歷史不足 {insufficient} · 待處理 {pending} · 已處理 {processed}",
+  ],
+  [
+    "research.tw.technicalResults.provenanceLimits",
+    "Upstream feed (twse/tpex/yahoo) is separate from PostgreSQL cache location. Values appear only when persisted; placeholders like tw_default and older rows show unavailable (never invented).",
+    "上游來源（twse/tpex/yahoo）與 PostgreSQL 快取位置分開顯示。僅在已儲存時出現；tw_default 等佔位與較舊紀錄會標示不可用（不會臆造）。",
+  ],
+  [
+    "research.tw.technicalResults.provenanceUnavailable",
+    "Unavailable on this saved snapshot",
+    "此已存快照不可用",
+  ],
+  [
+    "research.tw.membershipNoChanges",
+    "No unsaved membership changes",
+    "研究股票清單沒有未儲存變更",
+  ],
+  [
+    "research.tw.membershipAdvancedTitle",
+    "Membership tools",
+    "研究股票工具",
+  ],
+  [
+    "research.tw.membershipAdvancedHint",
+    "Reload, preview, or reset the stock selection. Everyday research only needs Save when you change the list.",
+    "可重新載入、預覽或重設研究股票清單。一般流程只要在變更後按「儲存」即可。",
+  ],
+  ["research.tw.technicalResults.result.pass", "Pass", "通過"],
+  ["research.tw.technicalResults.result.fail", "Fail", "未通過"],
+  [
+    "research.tw.technicalResults.result.error",
+    "Symbol error",
+    "標的錯誤",
+  ],
+  [
+    "research.tw.technicalResults.result.insufficient_history",
+    "Insufficient history",
+    "歷史不足",
+  ],
+  [
+    "research.tw.technicalResults.result.waiting_for_history",
+    "Waiting for history budget",
+    "等待歷史資料預算",
+  ],
+  [
+    "research.tw.technicalResults.result.daily_not_run",
+    "Daily not run",
+    "日線未執行",
+  ],
+  [
+    "research.tw.technicalResults.result.monthly_pass",
+    "Monthly pass",
+    "月線通過",
+  ],
+  [
+    "research.tw.technicalResults.result.monthly_fail",
+    "Monthly fail",
+    "月線未通過",
+  ],
+  [
+    "research.tw.technicalResults.result.pending",
+    "Pending",
+    "待分析",
+  ],
+  [
+    "research.tw.technicalResults.result.deferred",
+    "Deferred",
+    "延後",
+  ],
+  [
+    "research.tw.technicalResults.result.monthly_unknown",
+    "Monthly unknown",
+    "月線未知",
+  ],
+  [
+    "research.tw.technicalResults.result.daily_unknown",
+    "Daily unknown",
+    "日線未知",
   ],
   [
     "research.tw.candidateProvenanceLine",
@@ -907,13 +1178,13 @@ const TW_RESEARCH_ROWS = [
   ],
   [
     "research.tw.nextAction.not_started_auto",
-    "Next: wait for automatic collection. Use the advanced manual batch only as a fallback.",
-    "下一步：等待自動收集。進階手動批次僅作備援。",
+    "Next: wait for automatic collection. Reloading this page is safe.",
+    "下一步：等待自動收集。重新整理頁面不會中斷進度。",
   ],
   [
     "research.tw.nextAction.not_started_manual",
-    "Next: automatic collection is not active right now. Use the advanced manual batch as a fallback, or start research again after automatic collection is enabled.",
-    "下一步：目前沒有自動收集。請用進階手動批次作備援，或等自動收集啟用後再開始研究。",
+    "Next: automatic collection is not active. Press Start again after it is enabled, or wait.",
+    "下一步：目前沒有自動收集。啟用後請再按「開始研究」，或稍候。",
   ],
   [
     "research.tw.nextAction.collecting_now",
@@ -927,13 +1198,13 @@ const TW_RESEARCH_ROWS = [
   ],
   [
     "research.tw.nextAction.paused_auto_stale",
-    "Next: automatic collection may not be working. Use the advanced manual batch as a fallback, or check again later.",
-    "下一步：自動收集可能沒有運作。可使用進階手動批次作備援，或稍後再回來查看。",
+    "Next: automatic collection may not be working. Wait a few minutes and refresh, or press Start again.",
+    "下一步：自動收集可能沒有運作。請稍候數分鐘後重新整理，或再按「開始研究」。",
   ],
   [
     "research.tw.nextAction.paused_manual",
-    "Next: nothing is collecting right now. Use the advanced manual batch to continue, or start research again.",
-    "下一步：目前沒有任何收集在執行。請用進階手動批次繼續，或重新開始研究。",
+    "Next: nothing is collecting right now. Press Start again when automatic collection is available.",
+    "下一步：目前沒有任何收集在執行。自動收集可用時請再按「開始研究」。",
   ],
   [
     "research.tw.nextAction.waiting_retry",

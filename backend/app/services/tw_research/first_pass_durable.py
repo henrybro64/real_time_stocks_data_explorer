@@ -390,6 +390,7 @@ def create_technical_scan_from_candidate_set(
     max_upstream_month_fetches: int | None = None,
     max_enrichments_per_run: int | None = None,
     daily_override_ids: list[str] | None = None,
+    research_run_id: str | None = None,
     repository: Any | None = None,
     scan_service: Any | None = None,
 ) -> dict[str, Any]:
@@ -517,6 +518,10 @@ def create_technical_scan_from_candidate_set(
         "dailyOverrideIds": override_ids,
         "notNotionReportList": True,
     }
+    run_id_text = str(research_run_id).strip() if research_run_id is not None else ""
+    if run_id_text:
+        # Durable lineage for historical technical-results (never invent later).
+        provenance["researchRunId"] = run_id_text
     from zoneinfo import ZoneInfo
 
     effective_trading_day = trading_day or datetime.now(ZoneInfo("Asia/Taipei")).date().isoformat()
@@ -532,6 +537,8 @@ def create_technical_scan_from_candidate_set(
         daily_override_ids=override_ids,
     )
     if existing_state is not None:
+        # First durable link only — never rewrite an older researchRunId.
+        service.stamp_research_run_lineage_if_absent(existing_state, run_id_text or None)
         return {
             "scan": existing_state,
             "candidateSetId": saved["candidate_set_id"],

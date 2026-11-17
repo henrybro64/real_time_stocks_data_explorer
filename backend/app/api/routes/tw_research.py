@@ -49,6 +49,7 @@ from app.schemas.tw_research import (
     ResearchRunResponse,
     ResearchRunStartRequest,
     ResolvedUniverseResponse,
+    TechnicalResultsResponse,
     ResumeBudgetWindowRequest,
     RunBatchRequest,
     RunEnrichmentBatchRequest,
@@ -1276,6 +1277,9 @@ def post_candidate_technical_scan(
             max_upstream_month_fetches=body.maxUpstreamMonthFetches,
             max_enrichments_per_run=body.maxEnrichmentsPerRun,
             daily_override_ids=body.dailyOverrideIds,
+            research_run_id=(
+                getattr(run_before, "research_run_id", None) if run_before is not None else None
+            ),
         )
         scan_state = result.get("scan")
         scan_id = getattr(scan_state, "scan_id", None) or (
@@ -1552,9 +1556,13 @@ def _start_phase1_research_run(
 
 
 def _research_run_response(run: ResearchRun) -> ResearchRunResponse:
-    """Attach honest execution readiness alongside the durable run (#359)."""
-    from app.services.tw_research.execution_status import classify_first_pass_execution
+    """Attach honest execution readiness alongside the durable run (#359/#361)."""
+    from app.services.tw_research.execution_status import (
+        classify_first_pass_execution,
+        classify_phase2_execution,
+    )
     from app.repositories.tw_research_repository import tw_research_repository
+    from app.services.tw_research.scan import tw_research_scan_service
 
     job = None
     counts = None
@@ -1569,10 +1577,31 @@ def _research_run_response(run: ResearchRun) -> ResearchRunResponse:
         except Exception:  # noqa: BLE001 — response must still return the run
             job = None
             counts = None
+    scan_payload = None
+    scan_state = None
+    if run.technical_scan_id:
+        try:
+            state = tw_research_scan_service.get_scan(str(run.technical_scan_id))
+            if state is not None and getattr(state, "user_id", None) in {
+                None,
+                run.user_id,
+            }:
+                scan_state = state
+                scan_payload = state.snapshot()
+                scan_payload["reserve_expires_at"] = getattr(
+                    state, "reserve_expires_at", None
+                )
+                scan_payload["user_id"] = getattr(state, "user_id", None)
+        except Exception:  # noqa: BLE001 — response must still return the run
+            scan_payload = None
+            scan_state = None
     return ResearchRunResponse(
         researchRun=run.as_dict(),
         execution=classify_first_pass_execution(
             run, job=job, symbol_counts=counts
+        ),
+        phase2Execution=classify_phase2_execution(
+            run, scan=scan_payload, scan_state=scan_state
         ),
     )
 
@@ -1834,6 +1863,88 @@ def get_current_research_run(
     return _research_run_response(run)
 
 
+@router.get(
+    "/research-runs/technical-results",
+    response_model=TechnicalResultsResponse,
+)
+def get_technical_results(
+    scan_id: str | None = Query(
+        None,
+        alias="scanId",
+        description="Optional owned scan id for historical read-only results.",
+    ),
+    user_id: str = Depends(get_effective_user_id),
+) -> TechnicalResultsResponse:
+    """Stage-4 read model: persisted MACD/KD rows for an owned technical scan (#361).
+
+    Read-only: uses ``research_run_store.get`` (no reconcile persist / revision bump).
+    Never recomputes indicators or calls providers. Never attaches a historical
+    scan to the active research run.
+
+    - Without ``scanId``: current run's ``technical_scan_id``.
+    - With ``scanId``: that scan when owned by the caller (historical view).
+    """
+    from app.services.tw_research.execution_status import classify_phase2_execution
+    from app.services.tw_research.scan import tw_research_scan_service
+    from app.services.tw_research.technical_results import build_technical_results_payload
+
+    try:
+        run = research_run_store.get(user_id)
+    except ResearchRunStoreUnavailable as exc:
+        raise _research_run_unavailable(exc) from exc
+
+    requested = str(scan_id or "").strip() or None
+    current_scan_id = (
+        str(run.technical_scan_id or "").strip() if run is not None else ""
+    ) or None
+
+    if requested:
+        resolved_scan_id = requested
+    else:
+        if run is None:
+            raise HTTPException(status_code=404, detail="research_run_not_found")
+        if not current_scan_id:
+            raise HTTPException(status_code=404, detail="technical_scan_not_found")
+        resolved_scan_id = current_scan_id
+
+    try:
+        state = tw_research_scan_service.get_scan(resolved_scan_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="technical_scan_not_found") from exc
+    except Exception as exc:  # noqa: BLE001 — unexpected lookup failures stay 503
+        raise HTTPException(
+            status_code=503,
+            detail={"error": "technical_scan_lookup_failed", "reason": type(exc).__name__},
+        ) from exc
+    if state is None:
+        raise HTTPException(status_code=404, detail="technical_scan_not_found")
+    # Strict ownership: ownerless and foreign scans are not readable. Use the same
+    # 404 as missing so scan existence is not leaked across users.
+    owner = getattr(state, "user_id", None)
+    owner_text = str(owner).strip() if owner is not None else ""
+    if not owner_text or owner_text != str(user_id):
+        raise HTTPException(status_code=404, detail="technical_scan_not_found")
+
+    is_current = bool(current_scan_id) and resolved_scan_id == current_scan_id
+    viewing_historical = bool(requested) and not is_current
+
+    phase2 = None
+    if run is not None and is_current:
+        scan_payload = state.snapshot()
+        scan_payload["reserve_expires_at"] = getattr(state, "reserve_expires_at", None)
+        scan_payload["user_id"] = getattr(state, "user_id", None)
+        phase2 = classify_phase2_execution(run, scan=scan_payload, scan_state=state)
+
+    payload = build_technical_results_payload(
+        run=run,
+        state=state,
+        phase2_execution=phase2,
+        viewing_historical=viewing_historical,
+        is_current_run_scan=is_current,
+    )
+    return TechnicalResultsResponse.model_validate(payload)
+
+
 @router.get("/research-runs/current/deletion-preview")
 def research_run_deletion_preview(
     user_id: str = Depends(get_effective_user_id),
@@ -1948,7 +2059,7 @@ def set_research_run_first_pass_drain(
     body: ResearchRunDrainControlRequest,
     user_id: str = Depends(get_effective_user_id),
 ) -> ResearchRunResponse:
-    """Pause or resume durable first-pass drain for the active research run (#349)."""
+    """Pause or resume durable First-Pass / Phase-2 drain for the active run (#349/#361)."""
     try:
         run = research_run_store.set_first_pass_drain_enabled(
             user_id,
@@ -1964,7 +2075,7 @@ def set_research_run_first_pass_drain(
             status_code=409,
             detail={"error": "research_run_revision_conflict", "reason": exc.reason},
         ) from exc
-    return ResearchRunResponse(researchRun=run.as_dict())
+    return _research_run_response(run)
 
 
 @router.post("/research-runs/start", response_model=ResearchRunResponse)

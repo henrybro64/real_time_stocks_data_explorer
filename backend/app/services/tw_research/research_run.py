@@ -611,30 +611,57 @@ class ResearchRunStore:
         enabled: bool,
         notes: list[str] | None = None,
     ) -> ResearchRun:
-        """Pause/resume durable first-pass drain for the active research run (#349).
+        """Pause/resume durable First-Pass / Phase-2 drain for the active run (#349/#361).
 
+        ``enabled=false`` clears Phase-1 ``schedule_enabled`` and Phase-2
+        ``dimensions.phase2Drain.enabled``. ``enabled=true`` re-arms whichever
+        phase is current (fail-closed availability / attach checks as #366).
         Never enables the technical-scan CronJob or Notion publishing.
-        Resume requires Phase-1 with an attached authoritative job so historical
-        orphan job ids cannot be armed without Start Research attach.
         """
         with self._lock:
             run = self._require_locked(user_id)
-            if enabled:
+            if not enabled:
+                run.schedule_enabled = False
+                phase2 = dict(run.dimensions.get("phase2Drain") or {})
+                phase2["enabled"] = False
+                run.dimensions["phase2Drain"] = phase2
+                run.append_note(
+                    "First-pass and Phase-2 drain paused by operator."
+                )
+            else:
                 available, reason = first_pass_drain_availability(user_id)
                 if not available:
                     raise ResearchRunConflict(
                         str(reason),
                         reason=str(reason),
                     )
-                block = self._rearm_block_reason_locked(run)
-                if block is not None:
-                    raise ResearchRunConflict(block, reason=block)
-            run.schedule_enabled = bool(enabled)
-            run.append_note(
-                "First-pass drain enabled."
-                if enabled
-                else "First-pass drain paused by operator."
-            )
+                if run.phase == "phase1_first_pass":
+                    block = self._rearm_block_reason_locked(run)
+                    if block is not None:
+                        raise ResearchRunConflict(block, reason=block)
+                    run.schedule_enabled = True
+                    run.append_note("First-pass drain enabled.")
+                elif (
+                    run.phase == "phase2_technical"
+                    and run.technical_scan_id
+                    and str((run.gates or {}).get("candidateSelection") or "")
+                    == "approved"
+                    and str(run.status or "")
+                    not in {"failed", "budget_exhausted", "cancelled"}
+                ):
+                    phase2 = dict(run.dimensions.get("phase2Drain") or {})
+                    phase2["enabled"] = True
+                    run.dimensions["phase2Drain"] = phase2
+                    run.append_note("Phase-2 drain enabled.")
+                else:
+                    # Fail closed when neither Phase-1 nor Phase-2 can re-arm.
+                    block = self._rearm_block_reason_locked(run)
+                    raise ResearchRunConflict(
+                        block
+                        or "drain_resume_requires_active_phase1_or_phase2",
+                        reason=block
+                        or "drain_resume_requires_active_phase1_or_phase2",
+                    )
             for note in notes or []:
                 run.append_note(note)
             run.updated_at = datetime.now(UTC).isoformat()
@@ -764,6 +791,92 @@ class ResearchRunStore:
             meta["lastTickAt"] = last_tick_at
             meta["lastOutcome"] = last_outcome
             run.dimensions["firstPassDrain"] = meta
+            run.updated_at = datetime.now(UTC).isoformat()
+            return self._persist_locked(run)
+
+    @staticmethod
+    def _prune_phase2_day_map(by_day: dict[str, Any], *, keep: int = 7) -> dict[str, Any]:
+        """Keep the most recent ``keep`` ISO-date keys (lexicographic)."""
+        if len(by_day) <= keep:
+            return dict(by_day)
+        keys = sorted(str(k) for k in by_day.keys())
+        drop = set(keys[:-keep])
+        return {k: v for k, v in by_day.items() if str(k) not in drop}
+
+    def ensure_phase2_window_baseline(
+        self,
+        user_id: str,
+        *,
+        calendar_day: str,
+        budget_windows_opened: int,
+    ) -> ResearchRun | None:
+        """Record scan ``budget_windows_opened`` at first resume of an Asia/Taipei day.
+
+        Subsequent same-day resumes reuse the stored baseline so
+        ``windows_today = budget_windows_opened − baseline``.
+        """
+        day = str(calendar_day or "").strip() or "_unknown"
+        with self._lock:
+            run = self._load_locked(user_id)
+            if run is None:
+                return None
+            meta = dict(run.dimensions.get("phase2Drain") or {})
+            baselines = dict(meta.get("windowBaselineByDay") or {})
+            if day in baselines:
+                return run
+            try:
+                baselines[day] = int(budget_windows_opened)
+            except (TypeError, ValueError):
+                baselines[day] = 0
+            meta["windowBaselineByDay"] = self._prune_phase2_day_map(baselines)
+            run.dimensions["phase2Drain"] = meta
+            run.updated_at = datetime.now(UTC).isoformat()
+            return self._persist_locked(run)
+
+    def record_phase2_drain_tick(
+        self,
+        user_id: str,
+        *,
+        last_tick_at: str,
+        last_outcome: str,
+        calendar_day: str | None = None,
+        trading_day: str | None = None,
+        windows_opened_delta: int = 0,
+        coverage: dict[str, Any] | None = None,
+    ) -> ResearchRun | None:
+        """Best-effort Phase-2 drain telemetry (#361).
+
+        ``windowsByTradingDay`` is keyed by the CURRENT Asia/Taipei calendar day
+        (``calendar_day``), not the scan/run trading day. Pruned to the last 7
+        day keys on write.
+        """
+        with self._lock:
+            run = self._load_locked(user_id)
+            if run is None:
+                return None
+            meta = dict(run.dimensions.get("phase2Drain") or {})
+            meta["lastTickAt"] = last_tick_at
+            meta["lastOutcome"] = last_outcome
+            if windows_opened_delta:
+                day = (
+                    str(calendar_day or trading_day or "").strip()
+                    or "_unknown"
+                )
+                by_day = dict(meta.get("windowsByTradingDay") or {})
+                try:
+                    prior = int(by_day.get(day) or 0)
+                except (TypeError, ValueError):
+                    prior = 0
+                by_day[day] = prior + int(windows_opened_delta)
+                meta["windowsByTradingDay"] = self._prune_phase2_day_map(by_day)
+                try:
+                    total = int(meta.get("windowsOpened") or 0)
+                except (TypeError, ValueError):
+                    total = 0
+                meta["windowsOpened"] = total + int(windows_opened_delta)
+            if isinstance(coverage, dict):
+                meta["coverage"] = dict(coverage)
+            run.dimensions["phase2Drain"] = meta
             run.updated_at = datetime.now(UTC).isoformat()
             return self._persist_locked(run)
 
@@ -1129,9 +1242,13 @@ class ResearchRunStore:
                 run.status = "running"
                 run.dimensions["monthlyTechnical"] = "in_progress"
                 run.dimensions["dailyTechnical"] = "pending_monthly_gate"
+                phase2 = dict(run.dimensions.get("phase2Drain") or {})
+                phase2["enabled"] = True
+                run.dimensions["phase2Drain"] = phase2
                 for note in list(notes or []) + [
                     "Phase-2 monthly-first technical started from approved candidates only.",
                     "Stops for analyst report decision; no Notion write.",
+                    "Phase-2 drain armed for the First-Pass CronJob path.",
                 ]:
                     run.append_note(note)
                 run.updated_at = datetime.now(UTC).isoformat()

@@ -400,6 +400,14 @@ export type E2eTwResearchFirstPassFixture = {
   runDeletionPreview?: Record<string, unknown> | null;
   /** Optional DELETE research-runs/current response. */
   deleteRunResult?: Record<string, unknown> | null;
+  /** Optional Phase-2 honesty block returned with research-runs/current (#361). */
+  phase2Execution?: Record<string, unknown> | null;
+  /** Optional latest candidate set override (#361 Stage-4). */
+  candidateSet?: Record<string, unknown> | null;
+  /** Optional GET /research-runs/technical-results payload (#361). */
+  technicalResults?: Record<string, unknown> | null;
+  /** Optional GET /scans/{id} snapshot (#361). */
+  technicalScan?: Record<string, unknown> | null;
 };
 
 type E2eMockState = {
@@ -1129,7 +1137,12 @@ export async function installE2eApiMocks(page: Page): Promise<void> {
           await fulfillJson(route, { detail: "research_run_not_found" }, 404);
           return;
         }
-        await fulfillJson(route, { researchRun: state.twResearchFirstPass.researchRun });
+        await fulfillJson(route, {
+          researchRun: state.twResearchFirstPass.researchRun,
+          phase2Execution: state.twResearchFirstPass.phase2Execution ?? null,
+          execution: (state.twResearchFirstPass.researchRun as { execution?: unknown })
+            .execution ?? null,
+        });
         return;
       }
       await fulfillJson(route, {
@@ -1189,6 +1202,10 @@ export async function installE2eApiMocks(page: Page): Promise<void> {
       return;
     }
     if (path === "/api/tw-research/candidate-sets/latest" && request.method() === "GET") {
+      if (state.twResearchFirstPass?.candidateSet) {
+        await fulfillJson(route, { candidateSet: state.twResearchFirstPass.candidateSet });
+        return;
+      }
       await fulfillJson(route, {
         candidateSet: {
           candidateSetId: "cs_e2e",
@@ -1198,6 +1215,153 @@ export async function installE2eApiMocks(page: Page): Promise<void> {
           stockIds: ["TW:2330"],
           origin: "manual",
         },
+      });
+      return;
+    }
+    if (path === "/api/tw-research/candidate-sets" && request.method() === "POST") {
+      if (!state.authStatus.loggedIn) {
+        await fulfillJson(route, { detail: "Not authenticated" }, 401);
+        return;
+      }
+      const body = request.postDataJSON() as Record<string, unknown>;
+      const next = {
+        candidateSetId: "cs_e2e_approved",
+        version: Number(state.twResearchFirstPass?.candidateSet?.version ?? 1) + 1,
+        firstPassSnapshotId:
+          body.firstPassSnapshotId ??
+          state.twResearchFirstPass?.candidateSet?.firstPassSnapshotId ??
+          "e2e-fps",
+        firstPassDigest:
+          body.firstPassDigest ??
+          state.twResearchFirstPass?.candidateSet?.firstPassDigest ??
+          "e2e-digest",
+        stockIds: body.stockIds ?? ["TW:2330"],
+        origin: "manual",
+      };
+      if (state.twResearchFirstPass) {
+        state.twResearchFirstPass.candidateSet = next;
+        if (state.twResearchFirstPass.researchRun) {
+          state.twResearchFirstPass.researchRun = {
+            ...state.twResearchFirstPass.researchRun,
+            gates: {
+              ...((state.twResearchFirstPass.researchRun.gates as object) ?? {}),
+              candidateSelection: "approved",
+            },
+            candidateSetId: next.candidateSetId,
+            candidateSetVersion: next.version,
+          };
+          state.twResearchFirstPass.phase2Execution = {
+            state: "awaiting_technical_start",
+          };
+        }
+      }
+      await fulfillJson(route, { candidateSet: next });
+      return;
+    }
+    if (
+      path === "/api/tw-research/candidate-sets/technical-scan" &&
+      request.method() === "POST"
+    ) {
+      if (!state.authStatus.loggedIn) {
+        await fulfillJson(route, { detail: "Not authenticated" }, 401);
+        return;
+      }
+      const scan = state.twResearchFirstPass?.technicalScan ?? {
+        scanId: "scan_e2e_stage4",
+        tradingDay: "2024-06-28",
+        universeVersion: "explicit:1",
+        status: "queued",
+        cursor: 0,
+        universeSize: 1,
+        processedCount: 0,
+        remainingCount: 1,
+        targetCount: 10,
+        dayPassCount: 0,
+        notes: [],
+        ledger: [],
+        stockIds: ["TW:2330"],
+      };
+      if (state.twResearchFirstPass) {
+        state.twResearchFirstPass.technicalScan = scan;
+        if (state.twResearchFirstPass.researchRun) {
+          state.twResearchFirstPass.researchRun = {
+            ...state.twResearchFirstPass.researchRun,
+            phase: "phase2_technical",
+            status: "running",
+            technicalScanId: scan.scanId,
+          };
+        }
+        state.twResearchFirstPass.phase2Execution = {
+          state: "actively_analyzing",
+          technicalScanId: scan.scanId,
+        };
+        state.twResearchFirstPass.technicalResults = state.twResearchFirstPass
+          .technicalResults ?? {
+          technicalScanId: String(scan.scanId),
+          scanStatus: "running",
+          calculationVersion: "macd12-26-9_kd9-3-3_monthly_first_v1",
+          priceBasis: "unadjusted_close",
+          analyzedCount: 0,
+          insufficientHistoryCount: 0,
+          candidates: [
+            {
+              stockId: "TW:2330",
+              name: "台積電",
+              overallStageResult: "pending",
+              monthly: null,
+              daily: null,
+            },
+          ],
+          phase2Execution: { state: "actively_analyzing" },
+        };
+      }
+      await fulfillJson(route, { scan });
+      return;
+    }
+    if (
+      path === "/api/tw-research/research-runs/technical-results" &&
+      request.method() === "GET"
+    ) {
+      if (!state.authStatus.loggedIn) {
+        await fulfillJson(route, { detail: "Not authenticated" }, 401);
+        return;
+      }
+      if (state.twResearchFirstPass?.technicalResults) {
+        await fulfillJson(route, state.twResearchFirstPass.technicalResults);
+        return;
+      }
+      await fulfillJson(route, { detail: "technical_scan_not_found" }, 404);
+      return;
+    }
+    if (
+      path === "/api/tw-research/research-runs/start" &&
+      request.method() === "POST"
+    ) {
+      if (!state.authStatus.loggedIn) {
+        await fulfillJson(route, { detail: "Not authenticated" }, 401);
+        return;
+      }
+      const run = state.twResearchFirstPass?.researchRun ?? {
+        researchRunId: "rr_e2e_started",
+        userId: "e2e",
+        phase: "phase1_first_pass",
+        status: "running",
+        firstPassJobId: "fpj_e2e",
+        scheduleEnabled: true,
+        execution: { state: "actively_collecting" },
+      };
+      if (state.twResearchFirstPass) {
+        state.twResearchFirstPass.researchRun = {
+          ...run,
+          phase: "phase1_first_pass",
+          status: "running",
+          scheduleEnabled: true,
+        };
+      }
+      await fulfillJson(route, {
+        researchRun: state.twResearchFirstPass?.researchRun ?? run,
+        execution: { state: "actively_collecting" },
+        phase2Execution: null,
       });
       return;
     }
@@ -1232,7 +1396,20 @@ export async function installE2eApiMocks(page: Page): Promise<void> {
         await fulfillJson(route, { detail: "first_pass_progress_not_found" }, 404);
         return;
       }
-      await route.continue();
+      // Default mock job is fpj_e2e — never fall through to a live backend.
+      await fulfillJson(route, {
+        progress: {
+          jobId: "fpj_e2e",
+          status: "completed",
+          qualityStatus: "complete_attempted",
+          universeSize: 1,
+          cursor: 1,
+          processedCount: 1,
+          pendingCount: 0,
+          okCount: 1,
+          leaseActive: false,
+        },
+      });
       return;
     }
     if (
@@ -1424,8 +1601,73 @@ export async function installE2eApiMocks(page: Page): Promise<void> {
       });
       return;
     }
+    if (
+      path.match(/^\/api\/tw-research\/scans\/[^/]+\/export\/manifest$/) &&
+      request.method() === "GET"
+    ) {
+      await fulfillJson(route, {
+        manifest: {
+          scanId: state.twResearchFirstPass?.technicalScan?.scanId ?? "scan_e2e",
+          chunkCount: 0,
+          chunks: [],
+        },
+      });
+      return;
+    }
     if (path === "/api/tw-research/scans" && request.method() === "GET") {
-      await fulfillJson(route, { scans: [] });
+      const scan = state.twResearchFirstPass?.technicalScan;
+      await fulfillJson(route, {
+        scans: scan
+          ? [
+              {
+                scanId: scan.scanId,
+                tradingDay: scan.tradingDay ?? "2024-06-28",
+                universeVersion: scan.universeVersion ?? "explicit:1",
+                status: scan.status ?? "queued",
+                qualityStatus: "processed",
+                targetCount: scan.targetCount ?? 10,
+                universeSize: scan.universeSize ?? 1,
+                cursor: scan.cursor ?? 0,
+                remainingCount: scan.remainingCount ?? 1,
+                updatedAt: "2024-06-28T00:00:00+00:00",
+                workerActivity: "idle",
+                selectorMode: "stock_ids",
+              },
+            ]
+          : [],
+      });
+      return;
+    }
+    if (
+      path.match(/^\/api\/tw-research\/scans\/[^/]+$/) &&
+      request.method() === "GET"
+    ) {
+      if (state.twResearchFirstPass?.technicalScan) {
+        await fulfillJson(route, { scan: state.twResearchFirstPass.technicalScan });
+        return;
+      }
+      await fulfillJson(route, { detail: "scan_not_found" }, 404);
+      return;
+    }
+    if (
+      path.match(/^\/api\/tw-research\/scans\/[^/]+\/progress$/) &&
+      request.method() === "GET"
+    ) {
+      const scan = state.twResearchFirstPass?.technicalScan;
+      if (scan) {
+        await fulfillJson(route, {
+          progress: {
+            scanId: scan.scanId,
+            status: scan.status ?? "queued",
+            cursor: scan.cursor ?? 0,
+            universeSize: scan.universeSize ?? 1,
+            processedCount: scan.processedCount ?? 0,
+            remainingCount: scan.remainingCount ?? 1,
+          },
+        });
+        return;
+      }
+      await fulfillJson(route, { detail: "scan_not_found" }, 404);
       return;
     }
     if (

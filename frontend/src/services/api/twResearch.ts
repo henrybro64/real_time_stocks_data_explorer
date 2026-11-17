@@ -655,6 +655,133 @@ export type TwResearchExecutionStatus = {
   notes?: string[];
 };
 
+/** Honest Phase-2 technical execution block (#361). Prefer over implying analysis ran. */
+export type TwResearchPhase2ExecutionStatus = {
+  state?: string;
+  authorized?: boolean;
+  drainAvailable?: boolean;
+  drainBlocker?: string | null;
+  drainLastTickAt?: string | null;
+  drainFresh?: boolean | null;
+  blocker?: string | null;
+  nextAction?: string | null;
+  technicalScanId?: string | null;
+  scanStatus?: string | null;
+  leaseActive?: boolean;
+  leaseExpiresAt?: string | null;
+  universeSize?: number | null;
+  processedCount?: number | null;
+  remainingCount?: number | null;
+  analyzedCount?: number | null;
+  insufficientHistoryCount?: number | null;
+  hasTechnicalWork?: boolean | null;
+  phase2Enabled?: boolean | null;
+  candidateSelection?: string | null;
+  notes?: string[];
+};
+
+/** Persisted MACD/KD snapshot on a Stage-4 results row (#361). */
+export type TwResearchTechnicalIndicatorSnapshot = {
+  asOf?: string | null;
+  dif?: number | null;
+  signal?: number | null;
+  osc?: number | null;
+  k?: number | null;
+  d?: number | null;
+  barCount?: number | null;
+  quality?: string | null;
+  passStatus?: string | null;
+  executionStatus?: string | null;
+  priceBasis?: string | null;
+  calculationVersion?: string | null;
+  timeframe?: string | null;
+  reason?: string | null;
+  sourceProvider?: string | null;
+  historyCacheLocation?: string | null;
+  historyOrigin?: string | null;
+  firstBarAsOf?: string | null;
+  lastBarAsOf?: string | null;
+  calculatedAt?: string | null;
+  sourceProviderStatus?: string | null;
+  historyRangeStatus?: string | null;
+  historyCacheStatus?: string | null;
+};
+
+export type TwResearchTechnicalInsufficientHistory = {
+  reason: string;
+  requiredBars: number;
+  availableBars?: number | null;
+  timeframe: string;
+};
+
+export type TwResearchTechnicalPassComponent = {
+  component: string;
+  value?: number | null;
+  threshold: string;
+  passed?: boolean | null;
+  missing?: boolean;
+};
+
+export type TwResearchTechnicalPassEvaluation = {
+  passStatus?: string | null;
+  quality?: string | null;
+  components?: TwResearchTechnicalPassComponent[];
+};
+
+export type TwResearchTechnicalResultCandidate = {
+  stockId: string;
+  name?: string | null;
+  monthly?: TwResearchTechnicalIndicatorSnapshot | null;
+  daily?: TwResearchTechnicalIndicatorSnapshot | null;
+  overallStageResult: string;
+  technicalStage?: string | null;
+  insufficientHistory?: TwResearchTechnicalInsufficientHistory | null;
+  rejectionReason?: string | null;
+  dailyNotRunReason?: string | null;
+  monthlyPassEvaluation?: TwResearchTechnicalPassEvaluation | null;
+  dailyPassEvaluation?: TwResearchTechnicalPassEvaluation | null;
+};
+
+/** GET /research-runs/technical-results (#361). */
+export type TwResearchTechnicalResults = {
+  researchRunId?: string | null;
+  technicalScanId: string;
+  scanStatus: string;
+  tradingDay?: string | null;
+  calculationVersion?: string | null;
+  priceBasis?: string | null;
+  scanUpdatedAt?: string | null;
+  universeSize?: number;
+  processedCount?: number;
+  remainingCount?: number;
+  analyzedCount?: number;
+  calculatedCount?: number;
+  verifiedCount?: number;
+  dailySkippedCount?: number;
+  errorCount?: number;
+  pendingCount?: number;
+  deferredCount?: number;
+  unknownCount?: number;
+  insufficientHistoryCount?: number;
+  waitingForHistoryCount?: number;
+  viewingHistorical?: boolean;
+  isCurrentRunScan?: boolean;
+  phase2Execution?: TwResearchPhase2ExecutionStatus | null;
+  passRule?: Record<string, unknown> | null;
+  candidates: TwResearchTechnicalResultCandidate[];
+  requiredBars?: { monthly?: number; daily?: number };
+};
+
+export async function fetchTwResearchTechnicalResults(scanId?: string | null) {
+  const qs =
+    typeof scanId === "string" && scanId.trim()
+      ? `?scanId=${encodeURIComponent(scanId.trim())}`
+      : "";
+  return requestJson<TwResearchTechnicalResults>(
+    `/tw-research/research-runs/technical-results${qs}`,
+  );
+}
+
 export type TwResearchRun = {
   researchRunId: string;
   userId: string;
@@ -673,6 +800,8 @@ export type TwResearchRun = {
   firstPassProgress?: TwResearchFirstPassProgress | null;
   firstPassDrain?: TwResearchFirstPassDrain | null;
   execution?: TwResearchExecutionStatus | null;
+  /** Phase-2 technical honesty; fall back to `execution` only for phase1 messages. */
+  phase2Execution?: TwResearchPhase2ExecutionStatus | null;
   notNotionPublisher?: boolean;
   cronjobRemainsSuspended?: boolean;
   durable?: boolean;
@@ -688,15 +817,19 @@ export async function fetchTwResearchRunCurrent() {
   const response = await requestJson<{
     researchRun: TwResearchRun;
     execution?: TwResearchExecutionStatus | null;
+    phase2Execution?: TwResearchPhase2ExecutionStatus | null;
   }>("/tw-research/research-runs/current");
   return {
     ...response.researchRun,
     execution: response.execution ?? response.researchRun.execution ?? null,
+    phase2Execution:
+      response.phase2Execution ?? response.researchRun.phase2Execution ?? null,
   };
 }
 
 export type TwResearchRunStartResult = TwResearchRun & {
   execution?: TwResearchExecutionStatus | null;
+  phase2Execution?: TwResearchPhase2ExecutionStatus | null;
 };
 
 export async function startTwResearchRun(body?: {
@@ -707,10 +840,12 @@ export async function startTwResearchRun(body?: {
   const response = await requestJsonWithBody<{
     researchRun: TwResearchRun;
     execution?: TwResearchExecutionStatus | null;
+    phase2Execution?: TwResearchPhase2ExecutionStatus | null;
   }>("/tw-research/research-runs/start", "POST", body ?? { phase: "phase1_first_pass" });
   return {
     ...response.researchRun,
     execution: response.execution ?? null,
+    phase2Execution: response.phase2Execution ?? null,
   };
 }
 
@@ -721,10 +856,12 @@ export async function adoptTwResearchFirstPassJob(body: {
   const response = await requestJsonWithBody<{
     researchRun: TwResearchRun;
     execution?: TwResearchExecutionStatus | null;
+    phase2Execution?: TwResearchPhase2ExecutionStatus | null;
   }>("/tw-research/research-runs/adopt-first-pass-job", "POST", body);
   return {
     ...response.researchRun,
     execution: response.execution ?? null,
+    phase2Execution: response.phase2Execution ?? null,
   };
 }
 

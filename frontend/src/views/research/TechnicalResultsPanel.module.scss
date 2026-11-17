@@ -1,0 +1,62 @@
+.desktopTable {
+  display: block;
+}
+
+.mobileCards {
+  display: none;
+}
+
+.card {
+  border-top: 1px solid var(--cds-border-subtle-01, #e0e0e0);
+  padding: 0.75rem 0;
+}
+
+.cardHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.indicatorBlock {
+  margin-bottom: 0.5rem;
+}
+
+.indicatorLabel {
+  font-weight: 600;
+  margin-bottom: 0.125rem;
+}
+
+.asOf,
+.bars,
+.metrics {
+  font-size: 0.875rem;
+  line-height: 1.35;
+}
+
+.metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 0.75rem;
+}
+
+.nullValue {
+  font-size: 0.875rem;
+}
+
+.reason {
+  color: var(--cds-text-secondary, #525252);
+  font-size: 0.8125rem;
+  margin-top: 0.25rem;
+}
+
+@media (max-width: 672px) {
+  .desktopTable {
+    display: none;
+  }
+
+  .mobileCards {
+    display: block;
+  }
+}

@@ -329,6 +329,102 @@ class ResearchRunResponse(BaseModel):
     researchRun: dict[str, Any]
     # Additive honesty block: distinguishes job created vs execution authorized (#359).
     execution: dict[str, Any] | None = None
+    # Phase-2 technical honesty: scan attach ≠ analysis running (#361).
+    phase2Execution: dict[str, Any] | None = None
+
+
+class TechnicalIndicatorSnapshot(BaseModel):
+    """Persisted MACD/KD snapshot fields from a symbol record (#361)."""
+
+    asOf: str | None = None
+    dif: float | None = None
+    signal: float | None = None
+    osc: float | None = None
+    k: float | None = None
+    d: float | None = None
+    barCount: int | None = None
+    quality: str | None = None
+    passStatus: str | None = None
+    executionStatus: str | None = None
+    priceBasis: str | None = None
+    calculationVersion: str | None = None
+    timeframe: str | None = None
+    reason: str | None = None
+    sourceProvider: str | None = None
+    historyCacheLocation: str | None = None
+    historyOrigin: str | None = None
+    firstBarAsOf: str | None = None
+    lastBarAsOf: str | None = None
+    calculatedAt: str | None = None
+    sourceProviderStatus: str | None = None
+    historyRangeStatus: str | None = None
+    historyCacheStatus: str | None = None
+
+
+class TechnicalInsufficientHistory(BaseModel):
+    reason: str
+    requiredBars: int
+    availableBars: int | None = None
+    timeframe: str
+
+
+class TechnicalPassComponent(BaseModel):
+    component: str
+    value: float | None = None
+    threshold: str
+    passed: bool | None = None
+    missing: bool = False
+
+
+class TechnicalPassEvaluation(BaseModel):
+    passStatus: str | None = None
+    quality: str | None = None
+    components: list[TechnicalPassComponent] = Field(default_factory=list)
+
+
+class TechnicalResultCandidate(BaseModel):
+    stockId: str
+    name: str | None = None
+    monthly: TechnicalIndicatorSnapshot | None = None
+    daily: TechnicalIndicatorSnapshot | None = None
+    overallStageResult: str
+    technicalStage: str | None = None
+    insufficientHistory: TechnicalInsufficientHistory | None = None
+    rejectionReason: str | None = None
+    dailyNotRunReason: str | None = None
+    monthlyPassEvaluation: TechnicalPassEvaluation | None = None
+    dailyPassEvaluation: TechnicalPassEvaluation | None = None
+
+
+class TechnicalResultsResponse(BaseModel):
+    """Stage-4 read model for a user-owned technical scan (#361)."""
+
+    researchRunId: str | None = None
+    technicalScanId: str
+    scanStatus: str
+    tradingDay: str | None = None
+    calculationVersion: str | None = None
+    priceBasis: str | None = None
+    scanUpdatedAt: str | None = None
+    universeSize: int = 0
+    processedCount: int = 0
+    remainingCount: int = 0
+    analyzedCount: int = 0
+    calculatedCount: int = 0
+    verifiedCount: int = 0
+    dailySkippedCount: int = 0
+    errorCount: int = 0
+    pendingCount: int = 0
+    deferredCount: int = 0
+    unknownCount: int = 0
+    insufficientHistoryCount: int = 0
+    waitingForHistoryCount: int = 0
+    viewingHistorical: bool = False
+    isCurrentRunScan: bool = True
+    phase2Execution: dict[str, Any] | None = None
+    passRule: dict[str, Any] | None = None
+    candidates: list[TechnicalResultCandidate] = Field(default_factory=list)
+    requiredBars: dict[str, int] = Field(default_factory=dict)
 
 
 class ReportEvidenceRequest(BaseModel):

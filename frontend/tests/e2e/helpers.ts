@@ -128,3 +128,23 @@ export async function ensurePortfolioDoesNotContain(page: Page, stockId = TW_STO
   await row.getByTestId(`portfolio-remove-${stockId}`).click();
   await expect(row).toHaveCount(0);
 }
+
+/**
+ * Progress / latest-verified live under a closed advanced disclosure in the
+ * single-flow research layout (#361). Open it before asserting those nodes.
+ */
+export async function openTwResearchProgressDisclosure(page: Page) {
+  const progressDetails = page.locator(
+    '[data-testid="tw-research-advanced-details"]:has([data-testid="tw-research-tab-progress"])',
+  );
+  await expect(progressDetails).toHaveCount(1);
+  const summary = progressDetails.locator(":scope > summary");
+  await expect(summary).toHaveCount(1);
+  const isOpen = await progressDetails.evaluate(
+    (node) => (node as HTMLDetailsElement).open,
+  );
+  if (!isOpen) {
+    await summary.click();
+  }
+  await expect(progressDetails).toHaveAttribute("open", "");
+}

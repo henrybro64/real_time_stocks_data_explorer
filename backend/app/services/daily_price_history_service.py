@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from datetime import datetime as stdlib_datetime
 import logging
 import math
 import threading
 import time
+from typing import Literal
 from zoneinfo import ZoneInfo
 
 from app.models.quote import CandleRecord, QuoteRecord
@@ -20,6 +22,53 @@ from app.services.market_clock import is_market_open, is_trading_day, market_ses
 from app.services.quote_redis_cache import get_cached_quote
 
 logger = logging.getLogger(__name__)
+
+# Verified upstream labels written by ``_persist`` — never the flight-key family.
+_KNOWN_UPSTREAM_SOURCES = frozenset({"twse", "tpex", "yahoo"})
+_POSTGRES_CACHE_LOCATION = "postgresql_daily_price_bars"
+HistoryOrigin = Literal[
+    "postgresql_cache",
+    "upstream_fetch",
+    "mixed",
+    "unknown",
+]
+
+
+@dataclass(frozen=True)
+class HistoryProvenance:
+    """Honest attribution for OHLCV used by technical indicators (#361).
+
+    ``source_provider`` is the upstream feed when known (twse/tpex/yahoo).
+    ``history_cache_location`` is where bars were read from when known.
+    ``history_origin`` summarizes cache vs upstream without inventing a feed name.
+    """
+
+    source_provider: str | None
+    history_cache_location: str | None
+    history_origin: HistoryOrigin
+
+
+@dataclass(frozen=True)
+class HistoryFetchStats:
+    """Outcome of one history load — attempts vs usable upstream bars (#361).
+
+    ``months_attempted`` counts budget spend (including failed requests).
+    ``upstream_bars_obtained`` counts bars successfully returned this turn.
+    """
+
+    months_attempted: int = 0
+    upstream_bars_obtained: int = 0
+    had_readable_postgres: bool = False
+    persisted_upstream: bool = False
+
+
+def exchange_upstream_source(stock: StockRecord) -> str:
+    """Map exchange to the upstream label used when persisting bars."""
+    if stock.exchange == "TWSE":
+        return "twse"
+    if stock.exchange == "TPEx":
+        return "tpex"
+    return "yahoo"
 
 _DAILY_RANGES = frozenset({"1W", "1M", "3M", "6M", "1Y", "MAX"})
 _RANGE_LIMITS = {
@@ -59,7 +108,7 @@ class DailyPriceHistoryService:
         provider,
     ) -> list[CandleRecord]:
         """Return daily candles from Postgres, backfilling months never stored."""
-        candles, _months = self.get_daily_history_within_budget(
+        candles, _months, _stats = self.get_daily_history_within_budget(
             stock,
             range_name,
             limit=limit,
@@ -76,23 +125,37 @@ class DailyPriceHistoryService:
         limit: int | None = None,
         provider,
         max_month_fetches: int | None,
-    ) -> tuple[list[CandleRecord], int]:
+    ) -> tuple[list[CandleRecord], int, HistoryFetchStats]:
         """Like ``get_daily_history``, but caps upstream month fetches.
 
-        Returns ``(candles, months_fetched)``. When ``max_month_fetches`` is 0,
-        only stored bars are returned (no upstream calls). When ``None``,
-        behavior matches the uncapped backfill path.
+        Returns ``(candles, months_attempted, stats)``. ``months_attempted`` is
+        the budget counter (includes failed requests). Provenance must use
+        ``stats.upstream_bars_obtained``, not attempt count. When
+        ``max_month_fetches`` is 0, only stored bars are returned. When
+        ``None``, behavior matches the uncapped backfill path.
         """
         candle_limit = limit if limit is not None else _RANGE_LIMITS.get(range_name, 90)
         stored, readable = self._load_stored(stock, max(candle_limit + 5, 40))
-        months_fetched = 0
+        months_attempted = 0
+        upstream_bars_obtained = 0
+        persisted_upstream = False
+        had_readable_postgres = bool(readable)
 
         if not readable:
             if max_month_fetches is not None and max_month_fetches <= 0:
-                return [], 0
+                empty_stats = HistoryFetchStats(
+                    months_attempted=0,
+                    upstream_bars_obtained=0,
+                    had_readable_postgres=False,
+                    persisted_upstream=False,
+                )
+                return [], 0, empty_stats
             # Legacy full-range pull counts as one upstream attempt for budgeting.
+            # Persistence for this path is unchanged (in-memory only when store
+            # was unreadable); provenance still records obtained bars.
             stored = self._fetch_legacy(stock, range_name, candle_limit, provider)
-            months_fetched = 1
+            months_attempted = 1
+            upstream_bars_obtained = len(stored)
         else:
             missing = self._missing_months(stock, stored, candle_limit)
             if missing:
@@ -109,11 +172,13 @@ class DailyPriceHistoryService:
                         limit=candle_limit,
                         provider=provider,
                     )
-                    months_fetched = len(missing)
+                    months_attempted = len(missing)
+                    upstream_bars_obtained = len(fetched)
                     if failed and not stored and not fetched:
                         raise RuntimeError("Daily history temporarily unavailable")
                     if fetched:
                         if self._persist(stock, fetched):
+                            persisted_upstream = True
                             reloaded, still_readable = self._load_stored(
                                 stock, max(candle_limit + 5, 40)
                             )
@@ -125,10 +190,16 @@ class DailyPriceHistoryService:
                         else:
                             stored = _overlay(stored, fetched)
 
+        stats = HistoryFetchStats(
+            months_attempted=months_attempted,
+            upstream_bars_obtained=upstream_bars_obtained,
+            had_readable_postgres=had_readable_postgres,
+            persisted_upstream=persisted_upstream,
+        )
         merged = self._merge_forming_candle_from_cache(stock, stored)
         if candle_limit > 0 and len(merged) > candle_limit:
-            return merged[-candle_limit:], months_fetched
-        return merged, months_fetched
+            return merged[-candle_limit:], months_attempted, stats
+        return merged, months_attempted, stats
 
     def peek_daily_history(
         self,
@@ -147,6 +218,111 @@ class DailyPriceHistoryService:
         if candle_limit > 0 and len(merged) > candle_limit:
             merged = merged[-candle_limit:]
         return merged, bool(missing)
+
+    def resolve_history_provenance(
+        self,
+        stock: StockRecord,
+        *,
+        months_fetched: int = 0,
+        upstream_bars_obtained: int | None = None,
+        had_readable_postgres: bool | None = None,
+        first_bar_as_of: str | None = None,
+        last_bar_as_of: str | None = None,
+        limit: int = 800,
+        fetch_stats: HistoryFetchStats | None = None,
+    ) -> HistoryProvenance:
+        """Attribute OHLCV actually used for calculation (#361).
+
+        Failed upstream attempts do **not** count as ``upstream_fetch`` /
+        ``mixed``. Prefer ``DailyPriceBar.source`` values inside the candle
+        window when provided. When this turn obtained usable upstream bars and
+        the store has no known source in-range, use the exchange→feed mapping
+        ``_persist`` would write. Never invent a provider from attempt count
+        alone; never report the flight-key family ``tw_default``.
+
+        ``months_fetched`` is retained for call-site compatibility but is not
+        treated as evidence of successful collection.
+        """
+        del months_fetched  # attempt budget ≠ provenance evidence
+        if fetch_stats is not None:
+            obtained = int(fetch_stats.upstream_bars_obtained)
+            had_pg: bool | None = bool(fetch_stats.had_readable_postgres)
+        else:
+            obtained = (
+                int(upstream_bars_obtained)
+                if upstream_bars_obtained is not None
+                else 0
+            )
+            had_pg = had_readable_postgres
+
+        stored_sources: set[str] = set()
+        try:
+            if self._repo.is_available():
+                start = _parse_bar_date(first_bar_as_of)
+                end = _parse_bar_date(last_bar_as_of)
+                in_range = getattr(self._repo, "distinct_sources_in_range", None)
+                if start is not None and end is not None and callable(in_range):
+                    stored_sources = {
+                        source.lower()
+                        for source in in_range(
+                            market=stock.market,
+                            symbol=stock.symbol,
+                            start_date=start,
+                            end_date=end,
+                        )
+                    }
+                else:
+                    stored_sources = {
+                        source.lower()
+                        for source in self._repo.distinct_sources(
+                            market=stock.market,
+                            symbol=stock.symbol,
+                            limit=max(limit, 40),
+                        )
+                    }
+        except Exception as exc:  # noqa: BLE001 - provenance must not break scans
+            logger.debug(
+                "Daily price bar source read failed; provenance stays unknown",
+                extra={
+                    "event": "daily_price_history.provenance.read_failed",
+                    "stock_id": stock.id,
+                    "error_type": type(exc).__name__,
+                },
+            )
+            stored_sources = set()
+
+        known = {source for source in stored_sources if source in _KNOWN_UPSTREAM_SOURCES}
+
+        # Storage location is independent of upstream provider identity.
+        if had_pg is True or (had_pg is None and bool(stored_sources)):
+            cache_location: str | None = _POSTGRES_CACHE_LOCATION
+        else:
+            cache_location = None
+
+        source_provider: str | None
+        if len(known) == 1:
+            source_provider = next(iter(known))
+        elif len(known) > 1:
+            source_provider = None
+        elif obtained > 0:
+            source_provider = exchange_upstream_source(stock)
+        else:
+            source_provider = None
+
+        if obtained > 0 and cache_location:
+            origin: HistoryOrigin = "mixed"
+        elif obtained > 0:
+            origin = "upstream_fetch"
+        elif cache_location:
+            origin = "postgresql_cache"
+        else:
+            origin = "unknown"
+
+        return HistoryProvenance(
+            source_provider=source_provider,
+            history_cache_location=cache_location,
+            history_origin=origin,
+        )
 
     def refresh_closed_current_month(self, stock: StockRecord, provider) -> bool:
         """After the close, fill the last completed session's month for one symbol."""
@@ -562,6 +738,15 @@ def _upsert_by_date(
     if replace_existing or not found:
         result.append(session)
     return sorted(result, key=lambda item: item.time)
+
+
+def _parse_bar_date(raw: str | None) -> date | None:
+    if not raw:
+        return None
+    try:
+        return date.fromisoformat(str(raw).strip()[:10])
+    except ValueError:
+        return None
 
 
 def months_needed_for_limit(limit: int) -> int:

@@ -43,6 +43,55 @@ class DailyPriceBarRepository(SessionBoundRepository):
             ).scalars()
             return list(reversed(list(rows)))
 
+    def distinct_sources(
+        self,
+        *,
+        market: str,
+        symbol: str,
+        limit: int,
+    ) -> set[str]:
+        """Return distinct non-empty ``source`` values among the newest ``limit`` bars.
+
+        Read-only; never contacts upstream providers.
+        """
+        if limit <= 0:
+            return set()
+        rows = self.list_bars(market=market, symbol=symbol, limit=limit)
+        return {str(row.source).strip() for row in rows if str(row.source or "").strip()}
+
+    def distinct_sources_in_range(
+        self,
+        *,
+        market: str,
+        symbol: str,
+        start_date: date,
+        end_date: date,
+    ) -> set[str]:
+        """Distinct non-empty ``source`` values for bars inside ``[start_date, end_date]``.
+
+        Read-only; never contacts upstream. Bars outside the calculation window
+        are ignored so newer unrelated providers cannot re-attribute history.
+        """
+        if end_date < start_date:
+            return set()
+        session_factory = self._session_factory()
+        with session_factory() as session:
+            rows = session.execute(
+                select(DailyPriceBar.source)
+                .where(
+                    DailyPriceBar.market == market,
+                    DailyPriceBar.symbol == symbol,
+                    DailyPriceBar.date >= start_date,
+                    DailyPriceBar.date <= end_date,
+                )
+                .distinct()
+            ).scalars()
+            return {
+                str(source).strip()
+                for source in rows
+                if source is not None and str(source).strip()
+            }
+
     def latest_date(self, *, market: str, symbol: str) -> date | None:
         session_factory = self._session_factory()
         with session_factory() as session:
