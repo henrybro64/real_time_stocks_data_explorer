@@ -78,6 +78,20 @@ echo "=== First-Pass drain CronJob ==="
 run_kubectl -n "${NS}" get cronjob "${CRONJOB_NAME}" \
   -o custom-columns=NAME:.metadata.name,SUSPEND:.spec.suspend,SCHEDULE:.spec.schedule,LAST_SCHEDULE:.status.lastScheduleTime,LAST_SUCCESS:.status.lastSuccessfulTime 2>/dev/null \
   || echo "cronjob ${CRONJOB_NAME} not found"
+DESIRED_ANN="${FIRST_PASS_DRAIN_DESIRED_SUSPEND_ANNOTATION:-stock-ticker.ai/first-pass-drain-desired-suspend}"
+desired_raw="$(run_kubectl -n "${NS}" get cronjob "${CRONJOB_NAME}" \
+  -o "go-template={{index .metadata.annotations \"${DESIRED_ANN}\"}}" 2>/dev/null || true)"
+desired="${desired_raw}"
+if [[ -z "${desired}" || "${desired}" == "<no value>" ]]; then
+  desired=""
+fi
+echo "desired-suspend annotation: ${desired:-unset}"
+echo
+echo "=== Taiwan Research schedule CronJob (must stay suspended) ==="
+SCHEDULE_CRON="${TW_RESEARCH_SCHEDULE_CRONJOB_NAME:-stock-ticker-tw-research-schedule}"
+run_kubectl -n "${NS}" get cronjob "${SCHEDULE_CRON}" \
+  -o custom-columns=NAME:.metadata.name,SUSPEND:.spec.suspend,SCHEDULE:.spec.schedule 2>/dev/null \
+  || echo "cronjob ${SCHEDULE_CRON} not found"
 
 # Built-in sha256 (no extension / no writes). User ids as 12-char hex prefix only.
 readonly_sql="$(cat <<'SQL'
@@ -91,6 +105,35 @@ SELECT
   dimensions_json #>> '{firstPassDrain,lastTickAt}' AS last_tick_at
 FROM tw_research_research_runs
 ORDER BY updated_at DESC
+LIMIT 20;
+
+-- Authoritative Research Run ↔ attached First-Pass Job readiness (advisory).
+-- Operator must confirm the intended run is armed + eligible before Stage D enable.
+SELECT
+  left(encode(sha256(convert_to(r.user_id, 'UTF8')), 'hex'), 12) AS user_hash12,
+  r.research_run_id,
+  r.phase,
+  r.status AS run_status,
+  r.schedule_enabled,
+  r.first_pass_job_id,
+  j.status AS job_status,
+  j.deletion_state,
+  j.reserve_expires_at,
+  CASE
+    WHEN r.first_pass_job_id IS NULL THEN 'no_attached_job'
+    WHEN COALESCE(r.schedule_enabled, false) IS NOT TRUE THEN 'not_armed'
+    WHEN r.phase IS DISTINCT FROM 'phase1_first_pass' THEN 'wrong_phase'
+    WHEN r.status IN ('failed', 'budget_exhausted', 'cancelled') THEN 'run_blocked'
+    WHEN j.job_id IS NULL THEN 'job_missing'
+    WHEN j.deletion_state IS NOT NULL AND btrim(j.deletion_state) <> '' THEN 'job_deletion_state'
+    WHEN j.status IN ('failed', 'archived', 'orphaned', 'cancelled') THEN 'job_not_eligible'
+    ELSE 'review_as_eligible'
+  END AS readiness_hint
+FROM tw_research_research_runs r
+LEFT JOIN tw_research_first_pass_jobs j
+  ON j.job_id = r.first_pass_job_id
+WHERE r.first_pass_job_id IS NOT NULL
+ORDER BY r.updated_at DESC
 LIMIT 20;
 
 SELECT
@@ -122,6 +165,9 @@ SQL
 
 echo
 echo "=== Read-only PostgreSQL summary ==="
+echo "Confirm the intended authoritative Research Run shows readiness_hint=review_as_eligible"
+echo "(schedule_enabled=true, phase1_first_pass, attached job present and not failed/archived)."
+echo "Do not enable the First-Pass CronJob until that row is verified. Never print tokens/user ids."
 if [[ -n "${DATABASE_URL:-}" ]]; then
   if ! printf '%s\n' "${readonly_sql}" \
     | env PGOPTIONS='-c default_transaction_read_only=on' \
@@ -139,4 +185,4 @@ else
 fi
 
 echo
-echo "Done. No writes performed."
+echo "Done. No writes performed. No auth bypass. PostgreSQL stayed read-only."

@@ -4,6 +4,11 @@ metadata:
   name: stock-ticker-tw-research-first-pass-drain
 spec:
   # Suspended until Henry explicitly enables durable first-pass drain (#349/#362).
+  # Git default stays suspend:true (Stage D default-disabled). After operator
+  # enable, deploy-k3s.sh preserves live suspend=false unless
+  # FORCE_FIRST_PASS_DRAIN_CRON_SUSPEND=1. See
+  # docs/tw-research-first-pass-cronjob-stage-d-362.md and
+  # scripts/tw-first-pass-cronjob-stage-d.sh.
   # Prerequisites (all required for honest "executor available"):
   #   1) Secret stock-ticker-backend-auth key TW_RESEARCH_FIRST_PASS_DRAIN_TOKEN
   #   2) Backend env TW_RESEARCH_FIRST_PASS_DRAIN_ENABLED=true

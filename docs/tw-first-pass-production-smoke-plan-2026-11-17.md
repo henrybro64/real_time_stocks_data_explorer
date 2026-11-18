@@ -58,8 +58,13 @@ Do not continue until path + restore notes are written down for the operator.
    - ⚠️ Never use `scripts/k8s-redeploy.sh` — it deletes the namespace **and the PVC**.
    - ⚠️ Do not set `FORCE_AUTH_SECRET_APPLY=1` unless the local gitignored secret
      file already has the intended drain keys — it replaces the live Secret.
-   - ⚠️ Deploy re-applies the drain CronJob manifest (`suspend: true`). After any
-     later activation, a redeploy re-suspends until you re-patch or change git.
+   - ⚠️ Git still ships the drain CronJob as `suspend: true` (default-disabled).
+     After Stage D, `deploy-k3s.sh` **preserves** an operator-approved live
+     `suspend=false` across redeploy (annotation
+     `stock-ticker.ai/first-pass-drain-desired-suspend`). To force re-suspend on
+     deploy: `FORCE_FIRST_PASS_DRAIN_CRON_SUSPEND=1`. The unrelated schedule
+     CronJob stays suspended. See
+     `docs/tw-research-first-pass-cronjob-stage-d-362.md`.
 3. 👁 `./scripts/verify-k3s-post-deploy.sh` and `sudo k3s kubectl -n stock-ticker get pods -o wide`.
 4. 👁 Re-run §0 preflight.
 
@@ -217,18 +222,21 @@ Refresh UI: current vs historical Job isolation must hold.
 
 ### 8. Unattended activation 🔒 (separate approval — not part of initial smoke)
 
-Only after §6–§7 pass and explicit approval:
+Only after §6–§7 pass and explicit approval. Prefer the Stage D helper (sets
+desired-suspend annotation so redeploy preserves the state):
 
 ```bash
-sudo k3s kubectl -n stock-ticker patch cronjob stock-ticker-tw-research-first-pass-drain \
-  -p '{"spec":{"suspend":false}}'
+CONFIRM=YES ./scripts/tw-first-pass-cronjob-stage-d.sh enable k3s
+# equivalent patch still works, but annotation may be missing until next deploy restore
 ```
 
 Validate pace toward 73; stop on stall / programming_error / high fail rate → §9.
+Do **not** enable `stock-ticker-tw-research-schedule`.
 
 ### 9. Rollback 🔒
 
-1. Re-suspend the CronJob.
+1. `CONFIRM=YES ./scripts/tw-first-pass-cronjob-stage-d.sh rollback k3s`
+   (or re-suspend the CronJob + set desired-suspend=true).
 2. `POST .../first-pass-drain` with `enabled=false` (pauses Phase-1 and Phase-2 scheduling).
 3. Optional: set `TW_RESEARCH_FIRST_PASS_DRAIN_ENABLED=false` + restart.
 4. Keep run/job/symbol rows. Restore from `~/backups/*-pre-362.dump` **only**

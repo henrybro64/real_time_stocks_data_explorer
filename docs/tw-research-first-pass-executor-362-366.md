@@ -11,6 +11,10 @@
 - `dryRun=true` returns a read-only preflight (availability booleans, run/job ids,
   counts, lease flag, batch size, last tick). It does not lease or call providers.
 - k3s CronJob remains `suspend: true` in git; activation is operator-only.
+- Stage D: `docs/tw-research-first-pass-cronjob-stage-d-362.md` +
+  `scripts/tw-first-pass-cronjob-stage-d.sh` (enable/pause/resume/rollback/verify).
+  `deploy-k3s.sh` preserves an operator-approved First-Pass unsuspend across
+  redeploy; schedule CronJob stays suspended.
 - Helper: `scripts/tw-first-pass-preflight.sh` (read-only kubectl + optional read-only psql).
 
 ## Timing hierarchy (unchanged)
