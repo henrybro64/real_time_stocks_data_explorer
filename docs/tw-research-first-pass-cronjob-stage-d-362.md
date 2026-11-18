@@ -34,12 +34,14 @@ Ship a **default-disabled** First-Pass drain CronJob configuration where:
 
 | Object | Git default | Redeploy behavior |
 |--------|-------------|-------------------|
-| `stock-ticker-tw-research-first-pass-drain` | `suspend: true` | Preserve live `false` (or annotation `desired-suspend=false`) unless `FORCE_FIRST_PASS_DRAIN_CRON_SUSPEND=1` |
+| `stock-ticker-tw-research-first-pass-drain` | `suspend: true` | Un-suspend **only** when pre-apply **live** `suspend` was `false`. Annotation alone never re-enables. Stale `desired=false` with live `true` → warn, leave suspended, reconcile annotation to `true`. `FORCE_FIRST_PASS_DRAIN_CRON_SUSPEND=1` forces `suspend=true`. Failed `kubectl apply -k` still restores live `false` when captured. |
 | `stock-ticker-tw-research-schedule` | `suspend: true` | Always forced back to `true` if found enabled |
 
 Operator annotation (set by Stage D script / deploy restore):
 
 `stock-ticker.ai/first-pass-drain-desired-suspend=true|false`
+
+Empty / `<no value>` annotation reads are treated as unset.
 
 ## Procedures
 
@@ -51,27 +53,34 @@ Operator annotation (set by Stage D script / deploy restore):
 ```
 
 Expect: schedule CronJob `suspend=true`; First-Pass CronJob present; report
-whether First-Pass is suspended or operator-active.
+whether First-Pass is suspended or operator-active; list any active drain Jobs.
 
 ### Enable (separate approval) 🔒
 
-Prerequisites (all required for honest “executor available”):
+`enable` / `resume` refuse (exit 3) unless:
 
-1. Secret keys present (names only): `TW_RESEARCH_FIRST_PASS_DRAIN_TOKEN`,
-   `TW_RESEARCH_FIRST_PASS_DRAIN_USER_ID`, `TW_RESEARCH_FIRST_PASS_DRAIN_ENABLED=true`
-2. Backend process sees those env keys (`preflight` “set”)
-3. Managed Research Run has `schedule_enabled=true` for the owned First-Pass Job
-4. Then:
+1. Secret `stock-ticker-backend-auth` has keys (names only):  
+   `TW_RESEARCH_FIRST_PASS_DRAIN_TOKEN`, `TW_RESEARCH_FIRST_PASS_DRAIN_USER_ID`,
+   `TW_RESEARCH_FIRST_PASS_DRAIN_ENABLED`
+2. Backend process env: `ENABLED=true`, `USER_ID` set, `TOKEN` set (presence only)
+3. No active Job owned by the First-Pass drain CronJob
+4. Schedule CronJob suspended or absent
+5. `CONFIRM=YES`
 
 ```bash
 CONFIRM=YES ./scripts/tw-first-pass-cronjob-stage-d.sh enable k3s
 ```
+
+Managed Research Run still needs `schedule_enabled=true` for the owned Job.
 
 ### Pause future ticks (keep progress) 🔒
 
 ```bash
 CONFIRM=YES ./scripts/tw-first-pass-cronjob-stage-d.sh pause k3s
 ```
+
+If an in-flight drain Job remains, the script notes  
+`in-flight drain Job <name> still running (≤180s); wait, then re-run verify`.
 
 Also pause app scheduling when stopping claims:
 
@@ -105,13 +114,31 @@ FORCE_FIRST_PASS_DRAIN_CRON_SUSPEND=1 ./scripts/deploy-k3s.sh k3s
 
 ### Redeploy after activation
 
-Normal `./scripts/deploy-k3s.sh k3s` **preserves** an operator-approved First-Pass
-`suspend=false`. It does **not** enable the schedule CronJob.
+Normal `./scripts/deploy-k3s.sh k3s` **preserves** First-Pass `suspend=false`
+only when the **live** pre-apply suspend was `false` (plain `kubectl patch`
+enable without annotation still works). It does **not** enable the schedule
+CronJob.
+
+### Observe first unattended ticks 👁
+
+`lastSuccessfulTime` alone is **not** progress: token-unset skips and
+`idle_no_work` ticks exit 0 and still count as CronJob success.
+
+Confirm DB / UI progress advancing from the verified baseline (e.g. 3/73) using
+read-only SQL / preflight — cursor, `lastTickAt`, and `lastDataProgressAt` must
+move. Enabling may start a Job almost immediately (`startingDeadlineSeconds:
+300`). Pace is ≤5 symbols/tick ≈ 14 ticks for the remaining 70 under Forbid.
+
+**Stop → rollback** if: two ticks with no new symbol rows while pending>0;
+`programming_error`; failed >20%; lease or DB errors.
+
+**Done** when phase = `awaiting_analyst_candidate_selection`. Phase 2 must not
+run automatically.
 
 ## Current verified production baseline (operator notes)
 
 - Original Research Run and Job remain authoritative.
-- First-Pass collection progress persists in PostgreSQL / UI.
+- First-Pass collection progress persists in PostgreSQL / UI (3/73 verified).
 - Backend drain settings may already be configured.
 - Both Taiwan Research CronJobs remain suspended until Stage D enable is
   separately approved.
@@ -119,8 +146,9 @@ Normal `./scripts/deploy-k3s.sh k3s` **preserves** an operator-approved First-Pa
 ## Acceptance for this preparation PR
 
 - [x] Git First-Pass CronJob stays `suspend: true`
-- [x] deploy-k3s preserves operator-approved unsuspend; force flag re-disables
+- [x] deploy-k3s preserves live unsuspend only; force flag re-disables
 - [x] Schedule CronJob stays / is forced suspended
 - [x] Stage D script covers status/verify/enable/pause/resume/rollback with `CONFIRM=YES`
-- [x] Focused unit tests for initial / redeploy / enabled / disabled / rollback paths
+- [x] Focused unit tests for initial / redeploy / enabled / disabled / rollback /
+  annotation-stale / apply-fail / enable prechecks
 - [ ] Production enable remains a later, separate operator authorization

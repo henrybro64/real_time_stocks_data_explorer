@@ -1054,12 +1054,27 @@ read_cronjob_suspend() {
   echo "${value}"
 }
 
+normalize_desired_suspend_annotation() {
+  # go-template index on a missing key can print "<no value>"; treat as unset.
+  local raw="${1:-}"
+  raw="${raw//$'\r'/}"
+  if [[ -z "${raw}" || "${raw}" == "<no value>" ]]; then
+    echo ""
+    return 0
+  fi
+  echo "${raw}"
+}
+
 read_cronjob_desired_suspend_annotation() {
   # Prints annotation value or empty when absent/unreadable.
   local name="$1"
-  ${KUBECTL_CMD} -n "${NAMESPACE}" get cronjob "${name}" \
-    -o "go-template={{index .metadata.annotations \"${FIRST_PASS_DRAIN_DESIRED_SUSPEND_ANNOTATION}\"}}" \
-    2>/dev/null || true
+  local raw
+  raw="$(
+    ${KUBECTL_CMD} -n "${NAMESPACE}" get cronjob "${name}" \
+      -o "go-template={{index .metadata.annotations \"${FIRST_PASS_DRAIN_DESIRED_SUSPEND_ANNOTATION}\"}}" \
+      2>/dev/null || true
+  )"
+  normalize_desired_suspend_annotation "${raw}"
 }
 
 capture_first_pass_drain_cron_suspend() {
@@ -1084,10 +1099,12 @@ annotate_first_pass_drain_desired_suspend() {
 }
 
 restore_first_pass_drain_cron_suspend() {
-  # After apply: git defaults to suspend=true. Preserve operator-approved false
-  # unless FORCE_FIRST_PASS_DRAIN_CRON_SUSPEND=1 explicitly re-disables.
+  # After apply: git defaults to suspend=true. Un-suspend ONLY when the pre-apply
+  # LIVE suspend was false (operator had it running). Annotation alone must not
+  # re-enable a paused CronJob. FORCE_FIRST_PASS_DRAIN_CRON_SUSPEND=1 re-disables.
   local before="${FIRST_PASS_DRAIN_CRON_SUSPEND_BEFORE:-missing}"
-  local desired="${FIRST_PASS_DRAIN_CRON_DESIRED_BEFORE:-}"
+  local desired
+  desired="$(normalize_desired_suspend_annotation "${FIRST_PASS_DRAIN_CRON_DESIRED_BEFORE:-}")"
   local after
   after="$(read_cronjob_suspend "${FIRST_PASS_DRAIN_CRONJOB_NAME}")"
   if [[ "${after}" == "missing" ]]; then
@@ -1100,19 +1117,41 @@ restore_first_pass_drain_cron_suspend() {
     annotate_first_pass_drain_desired_suspend true
     return 0
   fi
-  local should_unsuspend=0
-  if [[ "${desired}" == "false" || "${before}" == "false" ]]; then
-    should_unsuspend=1
-  fi
-  if [[ "${should_unsuspend}" == "1" ]]; then
+  if [[ "${before}" == "false" ]]; then
     echo "Preserving operator-approved First-Pass drain CronJob suspend=false across redeploy (#362)"
     patch_cronjob_suspend "${FIRST_PASS_DRAIN_CRONJOB_NAME}" false
     annotate_first_pass_drain_desired_suspend false
-  else
-    # Leave git default (suspend=true). Record desired=true when CronJob exists.
-    annotate_first_pass_drain_desired_suspend true || true
-    echo "First-Pass drain CronJob remains suspended (git default / operator-disabled)"
+    return 0
   fi
+  if [[ "${before}" == "true" && "${desired}" == "false" ]]; then
+    echo "WARNING: First-Pass drain live suspend=true but desired=false — leaving suspended; run CONFIRM=YES scripts/tw-first-pass-cronjob-stage-d.sh enable k3s if intended" >&2
+    annotate_first_pass_drain_desired_suspend true || true
+    echo "First-Pass drain CronJob remains suspended (live suspend=true; annotation reconciled to true)"
+    return 0
+  fi
+  # Leave git default (suspend=true). Record desired=true when CronJob exists.
+  annotate_first_pass_drain_desired_suspend true || true
+  echo "First-Pass drain CronJob remains suspended (git default / operator-disabled)"
+}
+
+apply_kustomize_preserving_first_pass_suspend() {
+  # Run kubectl apply -k. On failure, still restore live suspend=false when
+  # captured before apply so a partial rewrite cannot leave an active CronJob
+  # stuck at git's suspend=true without an explicit restore.
+  local path="$1"
+  local apply_rc=0
+  # Use && so set -e does not abort before we capture the real apply status
+  # (a failed command in `if cmd; fi` leaves $?==0 after fi).
+  ${KUBECTL_CMD} apply -k "${path}" && return 0
+  apply_rc=$?
+  echo "kubectl apply -k failed (rc=${apply_rc})" >&2
+  if [[ "${FIRST_PASS_DRAIN_CRON_SUSPEND_BEFORE:-}" == "false" ]]; then
+    restore_first_pass_drain_cron_suspend || true
+    echo "First-Pass drain suspend state restored after failed apply" >&2
+  else
+    echo "First-Pass drain CronJob left suspended — re-run enable" >&2
+  fi
+  return "${apply_rc}"
 }
 
 ensure_tw_research_schedule_cronjob_suspended() {
@@ -1161,9 +1200,13 @@ deploy_manifests() {
       "${IMAGE_PULL_SECRET}" \
       "${rendered_k8s}"
     echo "Using image overlay: backend=${BACKEND_IMAGE} frontend=${FRONTEND_IMAGE}"
-    ${KUBECTL_CMD} apply -k "${overlay_dir}"
+    if ! apply_kustomize_preserving_first_pass_suspend "${overlay_dir}"; then
+      exit 1
+    fi
   else
-    ${KUBECTL_CMD} apply -k "${rendered_k8s}"
+    if ! apply_kustomize_preserving_first_pass_suspend "${rendered_k8s}"; then
+      exit 1
+    fi
   fi
   restore_first_pass_drain_cron_suspend
   ensure_tw_research_schedule_cronjob_suspended

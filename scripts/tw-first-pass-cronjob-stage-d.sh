@@ -23,6 +23,8 @@ NS="${NAMESPACE:-stock-ticker}"
 FIRST_PASS_CRON="${FIRST_PASS_DRAIN_CRONJOB_NAME:-stock-ticker-tw-research-first-pass-drain}"
 SCHEDULE_CRON="${TW_RESEARCH_SCHEDULE_CRONJOB_NAME:-stock-ticker-tw-research-schedule}"
 DESIRED_ANNOTATION="${FIRST_PASS_DRAIN_DESIRED_SUSPEND_ANNOTATION:-stock-ticker.ai/first-pass-drain-desired-suspend}"
+SECRET_NAME="${SECRET_NAME:-stock-ticker-backend-auth}"
+DEPLOY_NAME="${DEPLOY_NAME:-stock-ticker-backend}"
 KUBECTL_CMD="${KUBECTL_CMD:-}"
 
 if [[ -z "${KUBECTL_CMD}" ]]; then
@@ -48,6 +50,16 @@ require_confirm() {
   fi
 }
 
+normalize_desired_suspend_annotation() {
+  local raw="${1:-}"
+  raw="${raw//$'\r'/}"
+  if [[ -z "${raw}" || "${raw}" == "<no value>" ]]; then
+    echo ""
+    return 0
+  fi
+  echo "${raw}"
+}
+
 read_suspend() {
   local name="$1"
   local value
@@ -64,9 +76,71 @@ read_suspend() {
 
 read_desired() {
   local name="$1"
-  run_kubectl -n "${NS}" get cronjob "${name}" \
-    -o "go-template={{index .metadata.annotations \"${DESIRED_ANNOTATION}\"}}" \
-    2>/dev/null || true
+  local raw
+  raw="$(
+    run_kubectl -n "${NS}" get cronjob "${name}" \
+      -o "go-template={{index .metadata.annotations \"${DESIRED_ANNOTATION}\"}}" \
+      2>/dev/null || true
+  )"
+  normalize_desired_suspend_annotation "${raw}"
+}
+
+secret_key_present() {
+  # Presence only via .data index — never prints the value.
+  local key="$1"
+  local marker
+  marker="$(
+    run_kubectl -n "${NS}" get secret "${SECRET_NAME}" \
+      -o "go-template={{if index .data \"${key}\"}}present{{end}}" \
+      2>/dev/null || true
+  )"
+  [[ "${marker}" == "present" ]]
+}
+
+list_active_first_pass_drain_jobs() {
+  # Prints active Job names owned by the First-Pass drain CronJob (one per line).
+  local jobs_json
+  if ! jobs_json="$(run_kubectl -n "${NS}" get jobs -o json 2>/dev/null)"; then
+    return 0
+  fi
+  FIRST_PASS_CRON="${FIRST_PASS_CRON}" python3 -c '
+import json, os, sys
+cron = os.environ.get("FIRST_PASS_CRON", "")
+try:
+    payload = json.loads(sys.argv[1])
+except Exception:
+    sys.exit(0)
+for item in payload.get("items") or []:
+    meta = item.get("metadata") or {}
+    owners = meta.get("ownerReferences") or []
+    owned = any(
+        own.get("kind") == "CronJob" and str(own.get("name") or "") == cron
+        for own in owners
+    )
+    if not owned:
+        continue
+    status = item.get("status") or {}
+    try:
+        active_n = int(status.get("active") or 0)
+    except (TypeError, ValueError):
+        active_n = 0
+    if active_n > 0:
+        print(str(meta.get("name") or ""))
+' "${jobs_json}" 2>/dev/null || true
+}
+
+report_active_drain_jobs() {
+  local jobs
+  jobs="$(list_active_first_pass_drain_jobs | sed '/^$/d' || true)"
+  if [[ -z "${jobs}" ]]; then
+    echo "active_first_pass_drain_jobs: none"
+    return 0
+  fi
+  echo "active_first_pass_drain_jobs:"
+  while IFS= read -r job; do
+    [[ -n "${job}" ]] || continue
+    echo "  - ${job}"
+  done <<< "${jobs}"
 }
 
 print_status() {
@@ -80,12 +154,15 @@ print_status() {
   echo "schedule_cron=${SCHEDULE_CRON} suspend=${sched_suspend}"
   echo
   echo "Git manifests stay suspend:true (default-disabled)."
-  echo "deploy-k3s.sh preserves first-pass suspend=false across redeploy unless"
-  echo "FORCE_FIRST_PASS_DRAIN_CRON_SUSPEND=1. Schedule CronJob is never preserved enabled."
+  echo "deploy-k3s.sh preserves first-pass suspend=false across redeploy only when"
+  echo "pre-apply LIVE suspend was false (not annotation alone)."
+  echo "FORCE_FIRST_PASS_DRAIN_CRON_SUSPEND=1 forces re-suspend. Schedule CronJob stays suspended."
   echo
   run_kubectl -n "${NS}" get cronjob "${FIRST_PASS_CRON}" "${SCHEDULE_CRON}" \
     -o custom-columns=NAME:.metadata.name,SUSPEND:.spec.suspend,SCHEDULE:.spec.schedule,LAST_SCHEDULE:.status.lastScheduleTime,LAST_SUCCESS:.status.lastSuccessfulTime \
     2>/dev/null || true
+  echo
+  report_active_drain_jobs
 }
 
 verify_baseline() {
@@ -107,14 +184,82 @@ verify_baseline() {
   if [[ "${fp_suspend}" == "true" ]]; then
     echo "OK: First-Pass drain CronJob currently suspended (default-disabled / paused)"
   elif [[ "${fp_suspend}" == "false" ]]; then
-    echo "NOTE: First-Pass drain CronJob is ACTIVE (operator-enabled). Redeploy will preserve this."
+    echo "NOTE: First-Pass drain CronJob is ACTIVE (operator-enabled). Redeploy preserves LIVE suspend=false."
   fi
   return "${rc}"
+}
+
+refuse_enable_unless_ready() {
+  # Exit 3 with the failed check name. Never prints Secret/env values.
+  local failed=""
+
+  if ! secret_key_present "TW_RESEARCH_FIRST_PASS_DRAIN_TOKEN"; then
+    failed="secret missing key TW_RESEARCH_FIRST_PASS_DRAIN_TOKEN"
+  elif ! secret_key_present "TW_RESEARCH_FIRST_PASS_DRAIN_USER_ID"; then
+    failed="secret missing key TW_RESEARCH_FIRST_PASS_DRAIN_USER_ID"
+  elif ! secret_key_present "TW_RESEARCH_FIRST_PASS_DRAIN_ENABLED"; then
+    failed="secret missing key TW_RESEARCH_FIRST_PASS_DRAIN_ENABLED"
+  fi
+  if [[ -n "${failed}" ]]; then
+    echo "Refusing ${ACTION}: ${failed}" >&2
+    exit 3
+  fi
+
+  # Presence-only backend env (same spirit as tw-first-pass-preflight.sh).
+  local env_report
+  if ! env_report="$(
+    run_kubectl -n "${NS}" exec "deploy/${DEPLOY_NAME}" -c backend -- sh -c \
+      'echo "ENABLED=${TW_RESEARCH_FIRST_PASS_DRAIN_ENABLED:-unset}"; if [ -n "${TW_RESEARCH_FIRST_PASS_DRAIN_USER_ID:-}" ]; then echo USER_ID=set; else echo USER_ID=unset; fi; if [ -n "${TW_RESEARCH_FIRST_PASS_DRAIN_TOKEN:-}" ]; then echo TOKEN=set; else echo TOKEN=unset; fi'
+  )"; then
+    echo "Refusing ${ACTION}: backend effective env unavailable (exec failed)" >&2
+    exit 3
+  fi
+  if ! printf '%s\n' "${env_report}" | grep -q '^ENABLED=true$'; then
+    echo "Refusing ${ACTION}: backend TW_RESEARCH_FIRST_PASS_DRAIN_ENABLED is not true" >&2
+    exit 3
+  fi
+  if ! printf '%s\n' "${env_report}" | grep -q '^USER_ID=set$'; then
+    echo "Refusing ${ACTION}: backend TW_RESEARCH_FIRST_PASS_DRAIN_USER_ID unset" >&2
+    exit 3
+  fi
+  if ! printf '%s\n' "${env_report}" | grep -q '^TOKEN=set$'; then
+    echo "Refusing ${ACTION}: backend TW_RESEARCH_FIRST_PASS_DRAIN_TOKEN unset" >&2
+    exit 3
+  fi
+
+  local active_jobs
+  active_jobs="$(list_active_first_pass_drain_jobs | sed '/^$/d' || true)"
+  if [[ -n "${active_jobs}" ]]; then
+    echo "Refusing ${ACTION}: active Job owned by First-Pass CronJob still running:" >&2
+    printf '%s\n' "${active_jobs}" >&2
+    exit 3
+  fi
+
+  local sched_suspend
+  sched_suspend="$(read_suspend "${SCHEDULE_CRON}")"
+  if [[ "${sched_suspend}" != "true" && "${sched_suspend}" != "missing" ]]; then
+    echo "Refusing ${ACTION}: schedule CronJob must be suspended (got ${sched_suspend})" >&2
+    exit 3
+  fi
+}
+
+note_inflight_after_pause() {
+  local jobs
+  jobs="$(list_active_first_pass_drain_jobs | sed '/^$/d' || true)"
+  if [[ -z "${jobs}" ]]; then
+    return 0
+  fi
+  local first
+  first="$(printf '%s\n' "${jobs}" | head -n 1)"
+  echo "in-flight drain Job ${first} still running (≤180s); wait, then re-run verify"
 }
 
 set_first_pass_suspend() {
   local suspend_bool="$1"
   require_confirm
+  if [[ "${suspend_bool}" == "false" ]]; then
+    refuse_enable_unless_ready
+  fi
   echo "Patching ${FIRST_PASS_CRON} spec.suspend=${suspend_bool}"
   run_kubectl -n "${NS}" patch cronjob "${FIRST_PASS_CRON}" --type merge \
     -p "{\"spec\":{\"suspend\":${suspend_bool}}}"
@@ -161,20 +306,21 @@ case "${ACTION}" in
   enable|resume)
     set_first_pass_suspend false
     echo
-    echo "Enabled Cron ticks only. Ensure drain Secret ENABLED/USER_ID/TOKEN and"
-    echo "research_run.schedule_enabled before expecting unattended progress."
-    echo "Do not enable the schedule CronJob. Do not start Phase 2 automatically."
+    echo "Enabled Cron ticks only. research_run.schedule_enabled must already be armed"
+    echo "for unattended progress. Do not enable the schedule CronJob. Do not start Phase 2."
     ;;
   pause|suspend)
     set_first_pass_suspend true
     echo
     echo "Future First-Pass Cron ticks paused. Existing Job/lease/symbol rows kept."
+    note_inflight_after_pause
     print_rollback_app_steps
     ;;
   rollback)
     set_first_pass_suspend true
     echo
     echo "CronJob re-suspended. Complete app-level rollback separately:"
+    note_inflight_after_pause
     print_rollback_app_steps
     ;;
   *)

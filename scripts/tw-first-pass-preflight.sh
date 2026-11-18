@@ -79,8 +79,12 @@ run_kubectl -n "${NS}" get cronjob "${CRONJOB_NAME}" \
   -o custom-columns=NAME:.metadata.name,SUSPEND:.spec.suspend,SCHEDULE:.spec.schedule,LAST_SCHEDULE:.status.lastScheduleTime,LAST_SUCCESS:.status.lastSuccessfulTime 2>/dev/null \
   || echo "cronjob ${CRONJOB_NAME} not found"
 DESIRED_ANN="${FIRST_PASS_DRAIN_DESIRED_SUSPEND_ANNOTATION:-stock-ticker.ai/first-pass-drain-desired-suspend}"
-desired="$(run_kubectl -n "${NS}" get cronjob "${CRONJOB_NAME}" \
+desired_raw="$(run_kubectl -n "${NS}" get cronjob "${CRONJOB_NAME}" \
   -o "go-template={{index .metadata.annotations \"${DESIRED_ANN}\"}}" 2>/dev/null || true)"
+desired="${desired_raw}"
+if [[ -z "${desired}" || "${desired}" == "<no value>" ]]; then
+  desired=""
+fi
 echo "desired-suspend annotation: ${desired:-unset}"
 echo
 echo "=== Taiwan Research schedule CronJob (must stay suspended) ==="
