@@ -1186,9 +1186,20 @@ first_pass_drain_interrupt_restore() {
   echo "First-Pass drain restore attempted after interrupted deploy" >&2
 }
 
+first_pass_drain_on_signal() {
+  # Bash resumes after a returning INT/TERM trap; restore then exit so deploy stops.
+  local code="${1:-1}"
+  first_pass_drain_interrupt_restore
+  clear_first_pass_drain_interrupt_trap
+  exit "${code}"
+}
+
 install_first_pass_drain_interrupt_trap() {
   FIRST_PASS_DRAIN_RESTORE_ATTEMPTED=0
-  trap first_pass_drain_interrupt_restore INT TERM ERR
+  # INT/TERM must exit; ERR restores only (set -e exits the failing command path).
+  trap 'first_pass_drain_on_signal 130' INT
+  trap 'first_pass_drain_on_signal 143' TERM
+  trap first_pass_drain_interrupt_restore ERR
 }
 
 clear_first_pass_drain_interrupt_trap() {

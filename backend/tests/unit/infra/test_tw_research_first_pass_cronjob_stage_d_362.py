@@ -274,6 +274,7 @@ def _restore_funcs() -> str:
         "ensure_tw_research_schedule_cronjob_suspended",
         "apply_kustomize_preserving_first_pass_suspend",
         "first_pass_drain_interrupt_restore",
+        "first_pass_drain_on_signal",
         "install_first_pass_drain_interrupt_trap",
         "clear_first_pass_drain_interrupt_trap",
     )
@@ -827,9 +828,94 @@ def test_sigterm_after_apply_restores_live_false(tmp_path: Path) -> None:
         text=True,
         check=False,
     )
+    assert result.returncode == 143
+    assert "reached_end" not in result.stdout
     assert "First-Pass drain restore attempted after interrupted deploy" in result.stderr
     final = json.loads(state.read_text(encoding="utf-8"))
     assert final["cronjobs"][_FP]["suspend"] == "false"
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
+def test_sigint_after_apply_restores_live_false(tmp_path: Path) -> None:
+    fake = _write_fake_kubectl(
+        tmp_path,
+        _default_state(
+            cronjobs={
+                _FP: {"suspend": "false", "desired": "false"},
+                _SCHED: {"suspend": "true", "desired": ""},
+            }
+        ),
+    )
+    state = tmp_path / "cron_state.json"
+    harness = tmp_path / "harness.sh"
+    harness.write_text(
+        "set -euo pipefail\n"
+        + _restore_funcs()
+        + "\nFIRST_PASS_DRAIN_CRON_SUSPEND_BEFORE=false\n"
+        + "FIRST_PASS_DRAIN_CRON_DESIRED_BEFORE=false\n"
+        + "install_first_pass_drain_interrupt_trap\n"
+        + "python3 - <<'PY'\n"
+        + "import json\n"
+        + f"p={str(state)!r}\n"
+        + "d=json.load(open(p))\n"
+        + f"d['cronjobs'][{_FP!r}]['suspend']='true'\n"
+        + "json.dump(d, open(p,'w'), indent=2)\n"
+        + "PY\n"
+        + "( sleep 0.2; kill -INT $$ ) &\n"
+        + "sleep 2\n"
+        + "echo reached_end\n",
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        ["bash", str(harness)],
+        env=_base_env(fake),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 130
+    assert "reached_end" not in result.stdout
+    assert "First-Pass drain restore attempted after interrupted deploy" in result.stderr
+    final = json.loads(state.read_text(encoding="utf-8"))
+    assert final["cronjobs"][_FP]["suspend"] == "false"
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
+def test_sigterm_when_before_true_exits_without_restore(tmp_path: Path) -> None:
+    fake = _write_fake_kubectl(
+        tmp_path,
+        _default_state(
+            cronjobs={
+                _FP: {"suspend": "true", "desired": "true"},
+                _SCHED: {"suspend": "true", "desired": ""},
+            }
+        ),
+    )
+    state = tmp_path / "cron_state.json"
+    harness = tmp_path / "harness.sh"
+    harness.write_text(
+        "set -euo pipefail\n"
+        + _restore_funcs()
+        + "\nFIRST_PASS_DRAIN_CRON_SUSPEND_BEFORE=true\n"
+        + "FIRST_PASS_DRAIN_CRON_DESIRED_BEFORE=true\n"
+        + "install_first_pass_drain_interrupt_trap\n"
+        + "( sleep 0.2; kill -TERM $$ ) &\n"
+        + "sleep 2\n"
+        + "echo reached_end\n",
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        ["bash", str(harness)],
+        env=_base_env(fake),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 143
+    assert "reached_end" not in result.stdout
+    assert "First-Pass drain restore attempted after interrupted deploy" not in result.stderr
+    final = json.loads(state.read_text(encoding="utf-8"))
+    assert int(final.get("patch_calls") or 0) == 0
 
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
