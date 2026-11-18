@@ -127,13 +127,24 @@ CronJob.
 Confirm DB / UI progress advancing from the verified baseline (e.g. 3/73) using
 read-only SQL / preflight — cursor, `lastTickAt`, and `lastDataProgressAt` must
 move. Enabling may start a Job almost immediately (`startingDeadlineSeconds:
-300`). Pace is ≤5 symbols/tick ≈ 14 ticks for the remaining 70 under Forbid.
+300`).
+
+**Pace:** smoke measured ~16.7 s/symbol. The 60 s budget is checked **before**
+each symbol starts, so expect ~4 symbols per tick ≈ **18 ticks (~90 min)** for
+the remaining 70 under Forbid — more with retries / partials.
 
 **Stop → rollback** if: two ticks with no new symbol rows while pending>0;
 `programming_error`; failed >20%; lease or DB errors.
 
-**Done** when phase = `awaiting_analyst_candidate_selection`. Phase 2 must not
-run automatically.
+**Done** when phase = `awaiting_analyst_candidate_selection`. The First-Pass
+drain stops at that gate. Once `candidateSelection` is approved and a technical
+scan is attached, the **same** CronJob runs Phase-2 technical batches. Pause the
+CronJob at the gate (`pause` / `rollback`) if Phase-2 should not start
+unattended.
+
+**Rollback verification:** `verify` shows no active drain Job; lease released
+(`reserve_expires_at` null or past via read-only SQL); committed symbol row
+count unchanged vs the pre-rollback baseline.
 
 ## Current verified production baseline (operator notes)
 

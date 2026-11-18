@@ -1119,8 +1119,11 @@ restore_first_pass_drain_cron_suspend() {
   fi
   if [[ "${before}" == "false" ]]; then
     echo "Preserving operator-approved First-Pass drain CronJob suspend=false across redeploy (#362)"
-    patch_cronjob_suspend "${FIRST_PASS_DRAIN_CRONJOB_NAME}" false
-    annotate_first_pass_drain_desired_suspend false
+    if ! patch_cronjob_suspend "${FIRST_PASS_DRAIN_CRONJOB_NAME}" false; then
+      echo "ERROR: First-Pass drain left suspended (was active) — re-run CONFIRM=YES scripts/tw-first-pass-cronjob-stage-d.sh enable k3s" >&2
+      return 1
+    fi
+    annotate_first_pass_drain_desired_suspend false || true
     return 0
   fi
   if [[ "${before}" == "true" && "${desired}" == "false" ]]; then
@@ -1170,6 +1173,28 @@ ensure_tw_research_schedule_cronjob_suspended() {
   fi
 }
 
+first_pass_drain_interrupt_restore() {
+  # INT/TERM/ERR during deploy after capture: restore live unsuspend once.
+  if [[ "${FIRST_PASS_DRAIN_RESTORE_ATTEMPTED:-0}" == "1" ]]; then
+    return 0
+  fi
+  FIRST_PASS_DRAIN_RESTORE_ATTEMPTED=1
+  if [[ "${FIRST_PASS_DRAIN_CRON_SUSPEND_BEFORE:-}" != "false" ]]; then
+    return 0
+  fi
+  restore_first_pass_drain_cron_suspend || true
+  echo "First-Pass drain restore attempted after interrupted deploy" >&2
+}
+
+install_first_pass_drain_interrupt_trap() {
+  FIRST_PASS_DRAIN_RESTORE_ATTEMPTED=0
+  trap first_pass_drain_interrupt_restore INT TERM ERR
+}
+
+clear_first_pass_drain_interrupt_trap() {
+  trap - INT TERM ERR
+}
+
 deploy_manifests() {
   echo "Applying Kubernetes manifests"
   BACKEND_READY_BEFORE="$(${KUBECTL_CMD} -n "${NAMESPACE}" get deploy stock-ticker-backend -o jsonpath='{.status.readyReplicas}' 2>/dev/null || true)"
@@ -1187,10 +1212,12 @@ deploy_manifests() {
   render_public_origin_manifests "${rendered_k8s}"
   warn_if_entra_redirect_host_differs
   capture_first_pass_drain_cron_suspend
+  install_first_pass_drain_interrupt_trap
   if uses_custom_app_images "${BACKEND_IMAGE}" "${FRONTEND_IMAGE}" || [[ -n "${IMAGE_PULL_SECRET}" ]]; then
     local overlay_dir
     overlay_dir="$(mktemp -d)"
     # Expand the path now; RETURN must not read a function-local after it goes out of scope.
+    # Keep RETURN cleanup; INT/TERM/ERR remain the interrupt restore trap.
     # shellcheck disable=SC2064
     trap "rm -rf '${overlay_dir}' '${rendered_k8s}'" RETURN
     write_k8s_image_overlay \
@@ -1201,14 +1228,22 @@ deploy_manifests() {
       "${rendered_k8s}"
     echo "Using image overlay: backend=${BACKEND_IMAGE} frontend=${FRONTEND_IMAGE}"
     if ! apply_kustomize_preserving_first_pass_suspend "${overlay_dir}"; then
+      clear_first_pass_drain_interrupt_trap
       exit 1
     fi
   else
     if ! apply_kustomize_preserving_first_pass_suspend "${rendered_k8s}"; then
+      clear_first_pass_drain_interrupt_trap
       exit 1
     fi
   fi
-  restore_first_pass_drain_cron_suspend
+  # Mark attempted before normal restore so an ERR inside restore cannot recurse.
+  FIRST_PASS_DRAIN_RESTORE_ATTEMPTED=1
+  if ! restore_first_pass_drain_cron_suspend; then
+    clear_first_pass_drain_interrupt_trap
+    exit 1
+  fi
+  clear_first_pass_drain_interrupt_trap
   ensure_tw_research_schedule_cronjob_suspended
   apply_frontend_ingress_host
   restart_local_app_workloads_if_imported

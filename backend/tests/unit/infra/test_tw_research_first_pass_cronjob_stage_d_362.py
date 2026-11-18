@@ -58,7 +58,11 @@ def _default_state(**overrides) -> dict:
             "TOKEN": "set",
         },
         "jobs": [],
+        "jobs_fail": False,
+        "jobs_padding_bytes": 0,
         "apply_fail": False,
+        "patch_fail": False,
+        "patch_calls": 0,
     }
     state.update(overrides)
     return state
@@ -135,6 +139,9 @@ def _write_fake_kubectl(tmp_path: Path, initial: dict) -> Path:
                 sys.exit(0)
 
             if "get" in args and "jobs" in args:
+                if data.get("jobs_fail"):
+                    print("fake get jobs failed", file=sys.stderr)
+                    sys.exit(1)
                 items = []
                 for job in data.get("jobs") or []:
                     items.append(
@@ -151,7 +158,11 @@ def _write_fake_kubectl(tmp_path: Path, initial: dict) -> Path:
                             "status": {"active": job.get("active", 0)},
                         }
                     )
-                print(json.dumps({"items": items}))
+                payload = {"items": items}
+                pad = int(data.get("jobs_padding_bytes") or 0)
+                if pad > 0:
+                    payload["padding"] = "x" * pad
+                print(json.dumps(payload))
                 sys.exit(0)
 
             cmd = next((a for a in args if a in {"get", "patch", "annotate"}), None)
@@ -181,6 +192,11 @@ def _write_fake_kubectl(tmp_path: Path, initial: dict) -> Path:
                 sys.exit(0)
 
             if cmd == "patch":
+                data["patch_calls"] = int(data.get("patch_calls") or 0) + 1
+                if data.get("patch_fail"):
+                    save(data)
+                    print("fake patch failed", file=sys.stderr)
+                    sys.exit(1)
                 if name not in cronjobs:
                     sys.exit(1)
                 patch_raw = None
@@ -257,6 +273,9 @@ def _restore_funcs() -> str:
         "restore_first_pass_drain_cron_suspend",
         "ensure_tw_research_schedule_cronjob_suspended",
         "apply_kustomize_preserving_first_pass_suspend",
+        "first_pass_drain_interrupt_restore",
+        "install_first_pass_drain_interrupt_trap",
+        "clear_first_pass_drain_interrupt_trap",
     )
 
 
@@ -290,6 +309,9 @@ def test_stage_d_docs_cover_observe_and_live_only_preserve() -> None:
     assert "Observe first unattended ticks" in doc
     assert "lastSuccessfulTime" in doc
     assert "awaiting_analyst_candidate_selection" in doc
+    assert "~16.7 s/symbol" in doc or "16.7" in doc
+    assert "same" in doc and "Phase-2" in doc
+    assert "reserve_expires_at" in doc
     assert "Does not close Issue #362" in doc
 
 
@@ -700,3 +722,148 @@ def test_stage_d_status_reports_active_jobs(tmp_path: Path) -> None:
     )
     assert "active_first_pass_drain_jobs:" in result.stdout
     assert "fp-drain-active" in result.stdout
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
+def test_enable_refuses_when_jobs_list_fails_without_patch(tmp_path: Path) -> None:
+    """(a) get jobs exits 1 → enable exit 3, no patch call."""
+    fake = _write_fake_kubectl(tmp_path, _default_state(jobs_fail=True))
+    result = subprocess.run(
+        ["bash", str(_STAGE_D), "enable", "k3s"],
+        env={**_base_env(fake), "CONFIRM": "YES"},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 3
+    assert "cannot list Jobs to verify no active First-Pass drain Job" in result.stderr
+    final = json.loads((tmp_path / "cron_state.json").read_text(encoding="utf-8"))
+    assert int(final.get("patch_calls") or 0) == 0
+    assert final["cronjobs"][_FP]["suspend"] == "true"
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
+def test_enable_refuses_large_jobs_json_with_active_owned_job(tmp_path: Path) -> None:
+    """(b) >200 KB jobs JSON with one active owned Job → enable refuses and names it."""
+    fake = _write_fake_kubectl(
+        tmp_path,
+        _default_state(
+            jobs=[{"name": "fp-drain-huge", "owner": _FP, "active": 1}],
+            jobs_padding_bytes=220_000,
+        ),
+    )
+    result = subprocess.run(
+        ["bash", str(_STAGE_D), "enable", "k3s"],
+        env={**_base_env(fake), "CONFIRM": "YES"},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 3, result.stdout + result.stderr
+    assert "fp-drain-huge" in result.stderr
+    final = json.loads((tmp_path / "cron_state.json").read_text(encoding="utf-8"))
+    assert int(final.get("patch_calls") or 0) == 0
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
+def test_status_prints_unknown_when_jobs_list_fails(tmp_path: Path) -> None:
+    """(c) status prints unknown when Jobs cannot be listed."""
+    fake = _write_fake_kubectl(tmp_path, _default_state(jobs_fail=True))
+    result = subprocess.run(
+        ["bash", str(_STAGE_D), "status", "k3s"],
+        env=_base_env(fake),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert "active_first_pass_drain_jobs: unknown (could not list Jobs)" in result.stdout
+
+    verified = subprocess.run(
+        ["bash", str(_STAGE_D), "verify", "k3s"],
+        env=_base_env(fake),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert verified.returncode == 1
+    assert "could not list First-Pass drain Jobs" in verified.stderr
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
+def test_sigterm_after_apply_restores_live_false(tmp_path: Path) -> None:
+    fake = _write_fake_kubectl(
+        tmp_path,
+        _default_state(
+            cronjobs={
+                _FP: {"suspend": "false", "desired": "false"},
+                _SCHED: {"suspend": "true", "desired": ""},
+            }
+        ),
+    )
+    state = tmp_path / "cron_state.json"
+    harness = tmp_path / "harness.sh"
+    harness.write_text(
+        "set -euo pipefail\n"
+        + _restore_funcs()
+        + "\nFIRST_PASS_DRAIN_CRON_SUSPEND_BEFORE=false\n"
+        + "FIRST_PASS_DRAIN_CRON_DESIRED_BEFORE=false\n"
+        + "install_first_pass_drain_interrupt_trap\n"
+        + "python3 - <<'PY'\n"
+        + "import json\n"
+        + f"p={str(state)!r}\n"
+        + "d=json.load(open(p))\n"
+        + f"d['cronjobs'][{_FP!r}]['suspend']='true'\n"
+        + "json.dump(d, open(p,'w'), indent=2)\n"
+        + "PY\n"
+        + "( sleep 0.2; kill -TERM $$ ) &\n"
+        + "sleep 2\n"
+        + "echo reached_end\n",
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        ["bash", str(harness)],
+        env=_base_env(fake),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert "First-Pass drain restore attempted after interrupted deploy" in result.stderr
+    final = json.loads(state.read_text(encoding="utf-8"))
+    assert final["cronjobs"][_FP]["suspend"] == "false"
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
+def test_restore_patch_failure_prints_error(tmp_path: Path) -> None:
+    fake = _write_fake_kubectl(
+        tmp_path,
+        _default_state(
+            cronjobs={
+                _FP: {"suspend": "true", "desired": "false"},
+                _SCHED: {"suspend": "true", "desired": ""},
+            },
+            patch_fail=True,
+        ),
+    )
+    harness = tmp_path / "harness.sh"
+    harness.write_text(
+        "set -euo pipefail\n"
+        + _restore_funcs()
+        + "\nFIRST_PASS_DRAIN_CRON_SUSPEND_BEFORE=false\n"
+        + "FIRST_PASS_DRAIN_CRON_DESIRED_BEFORE=false\n"
+        + "set +e\n"
+        + "restore_first_pass_drain_cron_suspend\n"
+        + "rc=$?\n"
+        + "set -e\n"
+        + "echo RC=$rc\n",
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        ["bash", str(harness)],
+        env=_base_env(fake),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert result.stdout.strip().splitlines()[-1] == "RC=1"
+    assert "ERROR: First-Pass drain left suspended (was active)" in result.stderr
+    assert "tw-first-pass-cronjob-stage-d.sh enable" in result.stderr

@@ -99,17 +99,18 @@ secret_key_present() {
 
 list_active_first_pass_drain_jobs() {
   # Prints active Job names owned by the First-Pass drain CronJob (one per line).
-  local jobs_json
-  if ! jobs_json="$(run_kubectl -n "${NS}" get jobs -o json 2>/dev/null)"; then
-    return 0
-  fi
-  FIRST_PASS_CRON="${FIRST_PASS_CRON}" python3 -c '
+  # JSON is piped on stdin (never as argv — large cluster job lists exceed
+  # Linux MAX_ARG_STRLEN). rc!=0 means list/parse failure; empty + rc0 = none.
+  local list_rc=0
+  set +e
+  run_kubectl -n "${NS}" get jobs -o json 2>/dev/null \
+    | FIRST_PASS_CRON="${FIRST_PASS_CRON}" python3 -c '
 import json, os, sys
 cron = os.environ.get("FIRST_PASS_CRON", "")
 try:
-    payload = json.loads(sys.argv[1])
+    payload = json.load(sys.stdin)
 except Exception:
-    sys.exit(0)
+    sys.exit(2)
 for item in payload.get("items") or []:
     meta = item.get("metadata") or {}
     owners = meta.get("ownerReferences") or []
@@ -126,12 +127,25 @@ for item in payload.get("items") or []:
         active_n = 0
     if active_n > 0:
         print(str(meta.get("name") or ""))
-' "${jobs_json}" 2>/dev/null || true
+'
+  list_rc=$?
+  set -e
+  return "${list_rc}"
 }
 
 report_active_drain_jobs() {
-  local jobs
-  jobs="$(list_active_first_pass_drain_jobs | sed '/^$/d' || true)"
+  local jobs=""
+  local list_rc=0
+  set +e
+  jobs="$(list_active_first_pass_drain_jobs)"
+  list_rc=$?
+  set -e
+  ACTIVE_DRAIN_JOBS_LIST_RC="${list_rc}"
+  jobs="$(printf '%s\n' "${jobs}" | sed '/^$/d' || true)"
+  if [[ "${list_rc}" -ne 0 ]]; then
+    echo "active_first_pass_drain_jobs: unknown (could not list Jobs)"
+    return 1
+  fi
   if [[ -z "${jobs}" ]]; then
     echo "active_first_pass_drain_jobs: none"
     return 0
@@ -162,7 +176,8 @@ print_status() {
     -o custom-columns=NAME:.metadata.name,SUSPEND:.spec.suspend,SCHEDULE:.spec.schedule,LAST_SCHEDULE:.status.lastScheduleTime,LAST_SUCCESS:.status.lastSuccessfulTime \
     2>/dev/null || true
   echo
-  report_active_drain_jobs
+  # Do not abort status on list failure; verify inspects ACTIVE_DRAIN_JOBS_LIST_RC.
+  report_active_drain_jobs || true
 }
 
 verify_baseline() {
@@ -171,6 +186,11 @@ verify_baseline() {
   fp_suspend="$(read_suspend "${FIRST_PASS_CRON}")"
   sched_suspend="$(read_suspend "${SCHEDULE_CRON}")"
   local rc=0
+  # print_status already reported jobs; flag unknown as verify failure.
+  if [[ "${ACTIVE_DRAIN_JOBS_LIST_RC:-0}" -ne 0 ]]; then
+    echo "FAIL: could not list First-Pass drain Jobs" >&2
+    rc=1
+  fi
   if [[ "${fp_suspend}" == "missing" ]]; then
     echo "FAIL: First-Pass drain CronJob missing" >&2
     rc=1
@@ -227,8 +247,17 @@ refuse_enable_unless_ready() {
     exit 3
   fi
 
-  local active_jobs
-  active_jobs="$(list_active_first_pass_drain_jobs | sed '/^$/d' || true)"
+  local active_jobs=""
+  local list_rc=0
+  set +e
+  active_jobs="$(list_active_first_pass_drain_jobs)"
+  list_rc=$?
+  set -e
+  active_jobs="$(printf '%s\n' "${active_jobs}" | sed '/^$/d' || true)"
+  if [[ "${list_rc}" -ne 0 ]]; then
+    echo "Refusing ${ACTION}: cannot list Jobs to verify no active First-Pass drain Job" >&2
+    exit 3
+  fi
   if [[ -n "${active_jobs}" ]]; then
     echo "Refusing ${ACTION}: active Job owned by First-Pass CronJob still running:" >&2
     printf '%s\n' "${active_jobs}" >&2
@@ -244,8 +273,17 @@ refuse_enable_unless_ready() {
 }
 
 note_inflight_after_pause() {
-  local jobs
-  jobs="$(list_active_first_pass_drain_jobs | sed '/^$/d' || true)"
+  local jobs=""
+  local list_rc=0
+  set +e
+  jobs="$(list_active_first_pass_drain_jobs)"
+  list_rc=$?
+  set -e
+  jobs="$(printf '%s\n' "${jobs}" | sed '/^$/d' || true)"
+  if [[ "${list_rc}" -ne 0 ]]; then
+    echo "active_first_pass_drain_jobs: unknown (could not list Jobs)"
+    return 0
+  fi
   if [[ -z "${jobs}" ]]; then
     return 0
   fi
@@ -283,6 +321,13 @@ App-level pause (keeps CronJob state; stops claiming new drain work):
   body: {"enabled":false}
   → clears Phase-1 schedule_enabled and Phase-2 phase2Drain.enabled.
   Does not delete Research Run / First-Pass Job / symbol rows.
+
+Rollback verification (read-only):
+  1) ./scripts/tw-first-pass-cronjob-stage-d.sh verify k3s
+     — no active First-Pass drain Job (or "unknown" → fix listing before enable)
+  2) Confirm lease released: reserve_expires_at null or past (preflight SQL /
+     read-only psql on tw_research_first_pass_jobs for the owned job_id)
+  3) Confirm committed symbol row count unchanged vs pre-rollback baseline
 
 Optional Secret disarm (never print values):
   Set TW_RESEARCH_FIRST_PASS_DRAIN_ENABLED=false on stock-ticker-backend-auth
