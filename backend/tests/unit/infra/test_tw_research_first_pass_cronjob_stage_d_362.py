@@ -63,6 +63,7 @@ def _default_state(**overrides) -> dict:
         "apply_fail": False,
         "patch_fail": False,
         "patch_calls": 0,
+        "cron_get_errors": {},
     }
     state.update(overrides)
     return state
@@ -171,6 +172,10 @@ def _write_fake_kubectl(tmp_path: Path, initial: dict) -> Path:
             cronjobs = data.setdefault("cronjobs", {})
 
             if cmd == "get":
+                errors = data.get("cron_get_errors") or {}
+                if name in errors:
+                    print(str(errors[name]), file=sys.stderr)
+                    sys.exit(1)
                 if name not in cronjobs:
                     print(
                         f'Error from server (NotFound): cronjobs.batch "{name}" not found',
@@ -268,6 +273,8 @@ def _restore_funcs() -> str:
         "read_cronjob_suspend",
         "read_cronjob_desired_suspend_annotation",
         "capture_first_pass_drain_cron_suspend",
+        "rewrite_rendered_first_pass_drain_suspend",
+        "prepare_rendered_first_pass_drain_suspend",
         "patch_cronjob_suspend",
         "annotate_first_pass_drain_desired_suspend",
         "restore_first_pass_drain_cron_suspend",
@@ -295,18 +302,24 @@ def test_schedule_cronjob_remains_suspended() -> None:
 def test_deploy_script_wires_capture_restore_and_schedule_guard() -> None:
     script = _DEPLOY.read_text(encoding="utf-8")
     assert "capture_first_pass_drain_cron_suspend" in script
+    assert "prepare_rendered_first_pass_drain_suspend" in script
     assert "restore_first_pass_drain_cron_suspend" in script
     assert "apply_kustomize_preserving_first_pass_suspend" in script
     assert "normalize_desired_suspend_annotation" in script
     deploy = script.split("deploy_manifests() {", 1)[1].split("\nneeds_docker()", 1)[0]
     assert deploy.index("capture_first_pass_drain_cron_suspend") < deploy.index(
+        "prepare_rendered_first_pass_drain_suspend"
+    )
+    assert deploy.index("prepare_rendered_first_pass_drain_suspend") < deploy.index(
         "apply_kustomize_preserving_first_pass_suspend"
     )
 
 
 def test_stage_d_docs_cover_observe_and_live_only_preserve() -> None:
     doc = _STAGE_D_DOC.read_text(encoding="utf-8")
-    assert "Un-suspend **only** when pre-apply **live**" in doc
+    assert "pre-apply **live**" in doc or "pre-apply live" in doc.lower()
+    assert "renders" in doc.lower() or "rendered" in doc.lower()
+    assert "refuses deploy" in doc.lower() or "cannot be read" in doc.lower()
     assert "Observe first unattended ticks" in doc
     assert "lastSuccessfulTime" in doc
     assert "awaiting_analyst_candidate_selection" in doc
@@ -314,6 +327,7 @@ def test_stage_d_docs_cover_observe_and_live_only_preserve() -> None:
     assert "same" in doc and "Phase-2" in doc
     assert "reserve_expires_at" in doc
     assert "Does not close Issue #362" in doc
+    assert "review_as_eligible" in doc or "readiness_hint" in doc
 
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
@@ -615,6 +629,188 @@ def test_schedule_cron_is_forced_back_to_suspended(tmp_path: Path) -> None:
         check=True,
     )
     assert _bool_lines(result.stdout)[-1] == "true"
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
+def test_read_cronjob_suspend_notfound_is_missing(tmp_path: Path) -> None:
+    state_obj = _default_state()
+    del state_obj["cronjobs"][_FP]
+    fake = _write_fake_kubectl(tmp_path, state_obj)
+    harness = tmp_path / "harness.sh"
+    harness.write_text(
+        "set -euo pipefail\n"
+        + _restore_funcs()
+        + f"\nset +e\nout=\"$(read_cronjob_suspend {_FP})\"; rc=$?; set -e\n"
+        + 'printf "out=%s rc=%s\\n" "${out}" "${rc}"\n',
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        ["bash", str(harness)],
+        env=_base_env(fake),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert "out=missing rc=0" in result.stdout
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
+def test_read_cronjob_suspend_api_error_fails_closed(tmp_path: Path) -> None:
+    fake = _write_fake_kubectl(
+        tmp_path,
+        _default_state(
+            cron_get_errors={
+                _FP: 'Error from server (Forbidden): cronjobs.batch "x" is forbidden',
+            }
+        ),
+    )
+    harness = tmp_path / "harness.sh"
+    harness.write_text(
+        "set -euo pipefail\n"
+        + _restore_funcs()
+        + f"\nset +e\nout=\"$(read_cronjob_suspend {_FP})\"; rc=$?; set -e\n"
+        + 'printf "out=%s rc=%s\\n" "${out}" "${rc}"\n',
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        ["bash", str(harness)],
+        env=_base_env(fake),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert "rc=1" in result.stdout
+    assert "cannot determine CronJob" in result.stderr
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
+def test_capture_refuses_deploy_when_suspend_unreadable(tmp_path: Path) -> None:
+    fake = _write_fake_kubectl(
+        tmp_path,
+        _default_state(
+            cron_get_errors={
+                _FP: "Unable to connect to the server: dial tcp: i/o timeout",
+            }
+        ),
+    )
+    harness = tmp_path / "harness.sh"
+    harness.write_text(
+        "set -euo pipefail\n"
+        + _restore_funcs()
+        + "\ncapture_first_pass_drain_cron_suspend\n"
+        + "echo should_not_reach\n",
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        ["bash", str(harness)],
+        env=_base_env(fake),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert "refusing deploy — cannot determine First-Pass drain CronJob suspend state" in result.stderr
+    assert "should_not_reach" not in result.stdout
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
+def test_prepare_rendered_rewrites_suspend_false_when_live_false(tmp_path: Path) -> None:
+    rendered = tmp_path / "rendered_k8s"
+    rendered.mkdir()
+    cron_src = _CRON.read_text(encoding="utf-8")
+    assert "suspend: true" in cron_src
+    (rendered / "backend-tw-research-first-pass-drain-cronjob.yaml").write_text(
+        cron_src, encoding="utf-8"
+    )
+    fake = _write_fake_kubectl(tmp_path, _default_state())
+    harness = tmp_path / "harness.sh"
+    harness.write_text(
+        "set -euo pipefail\n"
+        + _restore_funcs()
+        + "\nFIRST_PASS_DRAIN_CRON_SUSPEND_BEFORE=false\n"
+        + f"prepare_rendered_first_pass_drain_suspend {rendered}\n",
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        ["bash", str(harness)],
+        env=_base_env(fake),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert "Rendering First-Pass drain CronJob suspend=false" in result.stdout
+    rewritten = (rendered / "backend-tw-research-first-pass-drain-cronjob.yaml").read_text(
+        encoding="utf-8"
+    )
+    assert re.search(r"(?m)^\s*suspend:\s*false\s*$", rewritten)
+    assert "suspend: true" not in rewritten.split("jobTemplate")[0]
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
+def test_prepare_rendered_keeps_true_when_force(tmp_path: Path) -> None:
+    rendered = tmp_path / "rendered_k8s"
+    rendered.mkdir()
+    (rendered / "backend-tw-research-first-pass-drain-cronjob.yaml").write_text(
+        _CRON.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    fake = _write_fake_kubectl(tmp_path, _default_state())
+    harness = tmp_path / "harness.sh"
+    harness.write_text(
+        "set -euo pipefail\n"
+        + _restore_funcs()
+        + "\nFIRST_PASS_DRAIN_CRON_SUSPEND_BEFORE=false\n"
+        + f"prepare_rendered_first_pass_drain_suspend {rendered}\n",
+        encoding="utf-8",
+    )
+    env = _base_env(fake)
+    env["FORCE_FIRST_PASS_DRAIN_CRON_SUSPEND"] = "1"
+    result = subprocess.run(
+        ["bash", str(harness)],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert "stays suspend=true" in result.stdout
+    text = (rendered / "backend-tw-research-first-pass-drain-cronjob.yaml").read_text(
+        encoding="utf-8"
+    )
+    assert re.search(r"(?m)^\s*suspend:\s*true\s*$", text)
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
+def test_enable_refuses_when_schedule_suspend_unreadable(tmp_path: Path) -> None:
+    fake = _write_fake_kubectl(
+        tmp_path,
+        _default_state(
+            cron_get_errors={
+                _SCHED: 'Error from server (Forbidden): User "x" cannot get resource',
+            }
+        ),
+    )
+    result = subprocess.run(
+        ["bash", str(_STAGE_D), "enable", "k3s"],
+        env={**_base_env(fake), "CONFIRM": "YES"},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 3, result.stdout + result.stderr
+    assert "cannot determine schedule CronJob suspend state" in result.stderr
+    final = json.loads((tmp_path / "cron_state.json").read_text(encoding="utf-8"))
+    assert int(final.get("patch_calls") or 0) == 0
+    assert final["cronjobs"][_FP]["suspend"] == "true"
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
+def test_stage_d_doc_mentions_rendered_preserve_and_readiness(tmp_path: Path) -> None:
+    del tmp_path  # unused; keep signature consistent with other harness tests
+    text = _STAGE_D_DOC.read_text(encoding="utf-8")
+    assert "renders" in text.lower() or "rendered" in text.lower()
+    assert "readiness_hint" in text or "review_as_eligible" in text
+    preflight = (_ROOT / "scripts" / "tw-first-pass-preflight.sh").read_text(encoding="utf-8")
+    assert "readiness_hint" in preflight
+    assert "review_as_eligible" in preflight
 
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")

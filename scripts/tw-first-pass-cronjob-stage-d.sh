@@ -61,17 +61,33 @@ normalize_desired_suspend_annotation() {
 }
 
 read_suspend() {
+  # Prints: true | false | missing (confirmed NotFound / empty).
+  # Returns 1 on API/network/RBAC or other non-NotFound kubectl failures.
   local name="$1"
-  local value
-  if ! value="$(run_kubectl -n "${NS}" get cronjob "${name}" -o jsonpath='{.spec.suspend}' 2>/dev/null)"; then
+  local err_file out rc=0 err=""
+  local restore_e=0
+  [[ $- == *e* ]] && restore_e=1
+  err_file="$(mktemp)"
+  set +e
+  out="$(run_kubectl -n "${NS}" get cronjob "${name}" -o jsonpath='{.spec.suspend}' 2>"${err_file}")"
+  rc=$?
+  if [[ "${restore_e}" -eq 1 ]]; then set -e; else set +e; fi
+  err="$(tr -d '\r' <"${err_file}" | tr '\n' ' ')"
+  rm -f "${err_file}"
+  if [[ "${rc}" -eq 0 ]]; then
+    if [[ -z "${out}" ]]; then
+      echo "missing"
+      return 0
+    fi
+    echo "${out}"
+    return 0
+  fi
+  if grep -qiE '(NotFound|not found)' <<<"${err}"; then
     echo "missing"
     return 0
   fi
-  if [[ -z "${value}" ]]; then
-    echo "missing"
-    return 0
-  fi
-  echo "${value}"
+  echo "ERROR: cannot determine CronJob ${name} suspend state${err:+ (${err})}" >&2
+  return 1
 }
 
 read_desired() {
@@ -102,6 +118,8 @@ list_active_first_pass_drain_jobs() {
   # JSON is piped on stdin (never as argv — large cluster job lists exceed
   # Linux MAX_ARG_STRLEN). rc!=0 means list/parse failure; empty + rc0 = none.
   local list_rc=0
+  local restore_e=0
+  [[ $- == *e* ]] && restore_e=1
   set +e
   run_kubectl -n "${NS}" get jobs -o json 2>/dev/null \
     | FIRST_PASS_CRON="${FIRST_PASS_CRON}" python3 -c '
@@ -129,17 +147,18 @@ for item in payload.get("items") or []:
         print(str(meta.get("name") or ""))
 '
   list_rc=$?
-  set -e
+  if [[ "${restore_e}" -eq 1 ]]; then set -e; else set +e; fi
   return "${list_rc}"
 }
 
 report_active_drain_jobs() {
   local jobs=""
   local list_rc=0
-  set +e
-  jobs="$(list_active_first_pass_drain_jobs)"
-  list_rc=$?
-  set -e
+  if jobs="$(list_active_first_pass_drain_jobs)"; then
+    list_rc=0
+  else
+    list_rc=$?
+  fi
   ACTIVE_DRAIN_JOBS_LIST_RC="${list_rc}"
   jobs="$(printf '%s\n' "${jobs}" | sed '/^$/d' || true)"
   if [[ "${list_rc}" -ne 0 ]]; then
@@ -158,9 +177,22 @@ report_active_drain_jobs() {
 }
 
 print_status() {
-  local fp_suspend sched_suspend desired
-  fp_suspend="$(read_suspend "${FIRST_PASS_CRON}")"
-  sched_suspend="$(read_suspend "${SCHEDULE_CRON}")"
+  local fp_suspend="unknown" sched_suspend="unknown" desired=""
+  local fp_rc=0 sched_rc=0
+  if fp_suspend="$(read_suspend "${FIRST_PASS_CRON}")"; then
+    fp_rc=0
+  else
+    fp_rc=$?
+    fp_suspend="unknown"
+  fi
+  if sched_suspend="$(read_suspend "${SCHEDULE_CRON}")"; then
+    sched_rc=0
+  else
+    sched_rc=$?
+    sched_suspend="unknown"
+  fi
+  FIRST_PASS_SUSPEND_RC="${fp_rc}"
+  SCHEDULE_SUSPEND_RC="${sched_rc}"
   desired="$(read_desired "${FIRST_PASS_CRON}")"
   echo "========== tw-first-pass-cronjob-stage-d (#362) =========="
   echo "namespace=${NS} mode=${MODE} action=${ACTION}"
@@ -169,8 +201,11 @@ print_status() {
   echo
   echo "Git manifests stay suspend:true (default-disabled)."
   echo "deploy-k3s.sh preserves first-pass suspend=false across redeploy only when"
-  echo "pre-apply LIVE suspend was false (not annotation alone)."
+  echo "pre-apply LIVE suspend was false (not annotation alone); preferred path"
+  echo "renders that suspend into manifests before apply."
   echo "FORCE_FIRST_PASS_DRAIN_CRON_SUSPEND=1 forces re-suspend. Schedule CronJob stays suspended."
+  echo "Before enable: confirm authoritative Research Run is armed (schedule_enabled=true)"
+  echo "and its First-Pass Job is eligible via read-only tw-first-pass-preflight.sh."
   echo
   run_kubectl -n "${NS}" get cronjob "${FIRST_PASS_CRON}" "${SCHEDULE_CRON}" \
     -o custom-columns=NAME:.metadata.name,SUSPEND:.spec.suspend,SCHEDULE:.spec.schedule,LAST_SCHEDULE:.status.lastScheduleTime,LAST_SUCCESS:.status.lastSuccessfulTime \
@@ -182,20 +217,39 @@ print_status() {
 
 verify_baseline() {
   print_status
-  local fp_suspend sched_suspend
-  fp_suspend="$(read_suspend "${FIRST_PASS_CRON}")"
-  sched_suspend="$(read_suspend "${SCHEDULE_CRON}")"
+  # Re-read with fail-closed handling for verify messaging.
+  local fp_rc=0 sched_rc=0
+  local fp_suspend="unknown"
+  local sched_suspend="unknown"
+  if fp_suspend="$(read_suspend "${FIRST_PASS_CRON}")"; then
+    fp_rc=0
+  else
+    fp_rc=$?
+    fp_suspend="unknown"
+  fi
+  if sched_suspend="$(read_suspend "${SCHEDULE_CRON}")"; then
+    sched_rc=0
+  else
+    sched_rc=$?
+    sched_suspend="unknown"
+  fi
   local rc=0
   # print_status already reported jobs; flag unknown as verify failure.
   if [[ "${ACTIVE_DRAIN_JOBS_LIST_RC:-0}" -ne 0 ]]; then
     echo "FAIL: could not list First-Pass drain Jobs" >&2
     rc=1
   fi
-  if [[ "${fp_suspend}" == "missing" ]]; then
+  if [[ "${fp_rc}" -ne 0 ]]; then
+    echo "FAIL: could not determine First-Pass drain CronJob suspend state" >&2
+    rc=1
+  elif [[ "${fp_suspend}" == "missing" ]]; then
     echo "FAIL: First-Pass drain CronJob missing" >&2
     rc=1
   fi
-  if [[ "${sched_suspend}" != "true" && "${sched_suspend}" != "missing" ]]; then
+  if [[ "${sched_rc}" -ne 0 ]]; then
+    echo "FAIL: could not determine schedule CronJob suspend state" >&2
+    rc=1
+  elif [[ "${sched_suspend}" != "true" && "${sched_suspend}" != "missing" ]]; then
     echo "FAIL: Taiwan Research schedule CronJob must remain suspended (got ${sched_suspend})" >&2
     rc=1
   else
@@ -249,10 +303,11 @@ refuse_enable_unless_ready() {
 
   local active_jobs=""
   local list_rc=0
-  set +e
-  active_jobs="$(list_active_first_pass_drain_jobs)"
-  list_rc=$?
-  set -e
+  if active_jobs="$(list_active_first_pass_drain_jobs)"; then
+    list_rc=0
+  else
+    list_rc=$?
+  fi
   active_jobs="$(printf '%s\n' "${active_jobs}" | sed '/^$/d' || true)"
   if [[ "${list_rc}" -ne 0 ]]; then
     echo "Refusing ${ACTION}: cannot list Jobs to verify no active First-Pass drain Job" >&2
@@ -264,8 +319,17 @@ refuse_enable_unless_ready() {
     exit 3
   fi
 
-  local sched_suspend
-  sched_suspend="$(read_suspend "${SCHEDULE_CRON}")"
+  local sched_suspend=""
+  local sched_rc=0
+  if sched_suspend="$(read_suspend "${SCHEDULE_CRON}")"; then
+    sched_rc=0
+  else
+    sched_rc=$?
+  fi
+  if [[ "${sched_rc}" -ne 0 ]]; then
+    echo "Refusing ${ACTION}: cannot determine schedule CronJob suspend state" >&2
+    exit 3
+  fi
   if [[ "${sched_suspend}" != "true" && "${sched_suspend}" != "missing" ]]; then
     echo "Refusing ${ACTION}: schedule CronJob must be suspended (got ${sched_suspend})" >&2
     exit 3
@@ -275,10 +339,11 @@ refuse_enable_unless_ready() {
 note_inflight_after_pause() {
   local jobs=""
   local list_rc=0
-  set +e
-  jobs="$(list_active_first_pass_drain_jobs)"
-  list_rc=$?
-  set -e
+  if jobs="$(list_active_first_pass_drain_jobs)"; then
+    list_rc=0
+  else
+    list_rc=$?
+  fi
   jobs="$(printf '%s\n' "${jobs}" | sed '/^$/d' || true)"
   if [[ "${list_rc}" -ne 0 ]]; then
     echo "active_first_pass_drain_jobs: unknown (could not list Jobs)"
@@ -304,9 +369,16 @@ set_first_pass_suspend() {
   run_kubectl -n "${NS}" annotate cronjob "${FIRST_PASS_CRON}" \
     "${DESIRED_ANNOTATION}=${suspend_bool}" --overwrite
   # Never touch schedule CronJob enablement here — only assert it stays suspended.
-  local sched_suspend
-  sched_suspend="$(read_suspend "${SCHEDULE_CRON}")"
-  if [[ "${sched_suspend}" != "true" && "${sched_suspend}" != "missing" ]]; then
+  local sched_suspend=""
+  local sched_rc=0
+  if sched_suspend="$(read_suspend "${SCHEDULE_CRON}")"; then
+    sched_rc=0
+  else
+    sched_rc=$?
+  fi
+  if [[ "${sched_rc}" -ne 0 ]]; then
+    echo "WARNING: cannot determine schedule CronJob suspend state after First-Pass patch" >&2
+  elif [[ "${sched_suspend}" != "true" && "${sched_suspend}" != "missing" ]]; then
     echo "WARNING: forcing schedule CronJob back to suspend=true" >&2
     run_kubectl -n "${NS}" patch cronjob "${SCHEDULE_CRON}" --type merge \
       -p '{"spec":{"suspend":true}}'
@@ -351,8 +423,12 @@ case "${ACTION}" in
   enable|resume)
     set_first_pass_suspend false
     echo
-    echo "Enabled Cron ticks only. research_run.schedule_enabled must already be armed"
-    echo "for unattended progress. Do not enable the schedule CronJob. Do not start Phase 2."
+    echo "Enabled Cron ticks only. Before expecting unattended progress, confirm via"
+    echo "read-only ./scripts/tw-first-pass-preflight.sh that the authoritative Research"
+    echo "Run is armed (schedule_enabled=true, phase1_first_pass) and its attached"
+    echo "First-Pass Job is eligible (present, not failed/archived/deletion_state)."
+    echo "Do not enable the schedule CronJob. Pause at awaiting_analyst_candidate_selection"
+    echo "if Phase-2 should not start unattended."
     ;;
   pause|suspend)
     set_first_pass_suspend true

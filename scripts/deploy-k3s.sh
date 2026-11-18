@@ -1040,18 +1040,34 @@ TW_RESEARCH_SCHEDULE_CRONJOB_NAME="${TW_RESEARCH_SCHEDULE_CRONJOB_NAME:-stock-ti
 FIRST_PASS_DRAIN_DESIRED_SUSPEND_ANNOTATION="${FIRST_PASS_DRAIN_DESIRED_SUSPEND_ANNOTATION:-stock-ticker.ai/first-pass-drain-desired-suspend}"
 
 read_cronjob_suspend() {
-  # Prints: true | false | missing
+  # Prints: true | false | missing (confirmed NotFound / empty suspend).
+  # Returns 1 on API/network/RBAC or other non-NotFound kubectl failures so
+  # callers can fail closed instead of treating errors as absence.
   local name="$1"
-  local value
-  if ! value="$(${KUBECTL_CMD} -n "${NAMESPACE}" get cronjob "${name}" -o jsonpath='{.spec.suspend}' 2>/dev/null)"; then
+  local err_file out rc=0 err=""
+  local restore_e=0
+  [[ $- == *e* ]] && restore_e=1
+  err_file="$(mktemp)"
+  set +e
+  out="$(${KUBECTL_CMD} -n "${NAMESPACE}" get cronjob "${name}" -o jsonpath='{.spec.suspend}' 2>"${err_file}")"
+  rc=$?
+  if [[ "${restore_e}" -eq 1 ]]; then set -e; else set +e; fi
+  err="$(tr -d '\r' <"${err_file}" | tr '\n' ' ')"
+  rm -f "${err_file}"
+  if [[ "${rc}" -eq 0 ]]; then
+    if [[ -z "${out}" ]]; then
+      echo "missing"
+      return 0
+    fi
+    echo "${out}"
+    return 0
+  fi
+  if grep -qiE '(NotFound|not found)' <<<"${err}"; then
     echo "missing"
     return 0
   fi
-  if [[ -z "${value}" ]]; then
-    echo "missing"
-    return 0
-  fi
-  echo "${value}"
+  echo "ERROR: cannot determine CronJob ${name} suspend state${err:+ (${err})}" >&2
+  return 1
 }
 
 normalize_desired_suspend_annotation() {
@@ -1079,10 +1095,70 @@ read_cronjob_desired_suspend_annotation() {
 
 capture_first_pass_drain_cron_suspend() {
   # Capture live suspend + optional operator annotation before kubectl apply -k
-  # rewrites the object from git (suspend: true).
-  FIRST_PASS_DRAIN_CRON_SUSPEND_BEFORE="$(read_cronjob_suspend "${FIRST_PASS_DRAIN_CRONJOB_NAME}")"
+  # rewrites the object from git (suspend: true). Fail closed if live state is
+  # unknowable (API/RBAC/network) — never treat that as "missing".
+  local suspend_rc=0
+  if FIRST_PASS_DRAIN_CRON_SUSPEND_BEFORE="$(read_cronjob_suspend "${FIRST_PASS_DRAIN_CRONJOB_NAME}")"; then
+    suspend_rc=0
+  else
+    suspend_rc=$?
+  fi
+  if [[ "${suspend_rc}" -ne 0 ]]; then
+    echo "ERROR: refusing deploy — cannot determine First-Pass drain CronJob suspend state before apply" >&2
+    exit 1
+  fi
   FIRST_PASS_DRAIN_CRON_DESIRED_BEFORE="$(read_cronjob_desired_suspend_annotation "${FIRST_PASS_DRAIN_CRONJOB_NAME}")"
   echo "First-Pass drain CronJob pre-apply suspend=${FIRST_PASS_DRAIN_CRON_SUSPEND_BEFORE} desired=${FIRST_PASS_DRAIN_CRON_DESIRED_BEFORE:-unset}"
+}
+
+rewrite_rendered_first_pass_drain_suspend() {
+  # Smallest reliable preserve: write approved suspend into rendered manifests
+  # before kubectl apply so apply itself does not flip live false → git true.
+  local root="$1"
+  local suspend_bool="$2"
+  local file="${root}/backend-tw-research-first-pass-drain-cronjob.yaml"
+  if [[ ! -f "${file}" ]]; then
+    echo "ERROR: missing rendered First-Pass CronJob manifest: ${file}" >&2
+    return 1
+  fi
+  FIRST_PASS_DRAIN_RENDER_FILE="${file}" FIRST_PASS_DRAIN_RENDER_SUSPEND="${suspend_bool}" python3 - <<'PY'
+import os
+import pathlib
+import re
+import sys
+
+path = pathlib.Path(os.environ["FIRST_PASS_DRAIN_RENDER_FILE"])
+want = os.environ["FIRST_PASS_DRAIN_RENDER_SUSPEND"]
+if want not in {"true", "false"}:
+    raise SystemExit(f"invalid suspend bool: {want!r}")
+text = path.read_text(encoding="utf-8")
+new, n = re.subn(
+    r"(?m)^(\s*suspend:\s*)(true|false)\s*$",
+    rf"\g<1>{want}",
+    text,
+    count=1,
+)
+if n != 1:
+    raise SystemExit(f"could not rewrite CronJob suspend in {path}")
+path.write_text(new, encoding="utf-8")
+print(f"rendered {path.name} spec.suspend={want}", file=sys.stderr)
+PY
+}
+
+prepare_rendered_first_pass_drain_suspend() {
+  # Git stays default-disabled. Only rewrite rendered YAML when live was false
+  # (operator-approved). FORCE keeps rendered suspend=true.
+  local root="$1"
+  if [[ "${FORCE_FIRST_PASS_DRAIN_CRON_SUSPEND:-}" == "1" ]]; then
+    echo "FORCE_FIRST_PASS_DRAIN_CRON_SUSPEND=1 — rendered First-Pass CronJob stays suspend=true"
+    return 0
+  fi
+  if [[ "${FIRST_PASS_DRAIN_CRON_SUSPEND_BEFORE:-}" == "false" ]]; then
+    echo "Rendering First-Pass drain CronJob suspend=false into apply manifests (live was unsuspended)"
+    rewrite_rendered_first_pass_drain_suspend "${root}" false
+    return $?
+  fi
+  return 0
 }
 
 patch_cronjob_suspend() {
@@ -1099,14 +1175,23 @@ annotate_first_pass_drain_desired_suspend() {
 }
 
 restore_first_pass_drain_cron_suspend() {
-  # After apply: git defaults to suspend=true. Un-suspend ONLY when the pre-apply
-  # LIVE suspend was false (operator had it running). Annotation alone must not
-  # re-enable a paused CronJob. FORCE_FIRST_PASS_DRAIN_CRON_SUSPEND=1 re-disables.
+  # After apply: preferred path already rendered live suspend=false into
+  # manifests. This still reconciles annotation / FORCE and patches if apply
+  # left the object suspended. Annotation alone must not re-enable a paused
+  # CronJob. FORCE_FIRST_PASS_DRAIN_CRON_SUSPEND=1 re-disables.
   local before="${FIRST_PASS_DRAIN_CRON_SUSPEND_BEFORE:-missing}"
   local desired
   desired="$(normalize_desired_suspend_annotation "${FIRST_PASS_DRAIN_CRON_DESIRED_BEFORE:-}")"
-  local after
-  after="$(read_cronjob_suspend "${FIRST_PASS_DRAIN_CRONJOB_NAME}")"
+  local after="" after_rc=0
+  if after="$(read_cronjob_suspend "${FIRST_PASS_DRAIN_CRONJOB_NAME}")"; then
+    after_rc=0
+  else
+    after_rc=$?
+  fi
+  if [[ "${after_rc}" -ne 0 ]]; then
+    echo "ERROR: cannot determine First-Pass drain CronJob suspend state after apply" >&2
+    return 1
+  fi
   if [[ "${after}" == "missing" ]]; then
     echo "First-Pass drain CronJob missing after apply — skip suspend restore" >&2
     return 0
@@ -1118,6 +1203,11 @@ restore_first_pass_drain_cron_suspend() {
     return 0
   fi
   if [[ "${before}" == "false" ]]; then
+    if [[ "${after}" == "false" ]]; then
+      echo "First-Pass drain CronJob already suspend=false after apply (rendered preserve)"
+      annotate_first_pass_drain_desired_suspend false || true
+      return 0
+    fi
     echo "Preserving operator-approved First-Pass drain CronJob suspend=false across redeploy (#362)"
     if ! patch_cronjob_suspend "${FIRST_PASS_DRAIN_CRONJOB_NAME}" false; then
       echo "ERROR: First-Pass drain left suspended (was active) — re-run CONFIRM=YES scripts/tw-first-pass-cronjob-stage-d.sh enable k3s" >&2
@@ -1159,8 +1249,16 @@ apply_kustomize_preserving_first_pass_suspend() {
 
 ensure_tw_research_schedule_cronjob_suspended() {
   # Unrelated Taiwan Research schedule CronJob must stay disabled (#330/#362).
-  local state
-  state="$(read_cronjob_suspend "${TW_RESEARCH_SCHEDULE_CRONJOB_NAME}")"
+  local state="" state_rc=0
+  if state="$(read_cronjob_suspend "${TW_RESEARCH_SCHEDULE_CRONJOB_NAME}")"; then
+    state_rc=0
+  else
+    state_rc=$?
+  fi
+  if [[ "${state_rc}" -ne 0 ]]; then
+    echo "ERROR: cannot determine Taiwan Research schedule CronJob suspend state" >&2
+    return 1
+  fi
   if [[ "${state}" == "missing" ]]; then
     echo "Taiwan Research schedule CronJob not present — ok"
     return 0
@@ -1175,10 +1273,14 @@ ensure_tw_research_schedule_cronjob_suspended() {
 
 first_pass_drain_interrupt_restore() {
   # INT/TERM/ERR during deploy after capture: restore live unsuspend once.
-  if [[ "${FIRST_PASS_DRAIN_RESTORE_ATTEMPTED:-0}" == "1" ]]; then
+  # ERR while an explicit restore is in progress must not recurse.
+  if [[ "${FIRST_PASS_DRAIN_IN_EXPLICIT_RESTORE:-0}" == "1" ]]; then
     return 0
   fi
-  FIRST_PASS_DRAIN_RESTORE_ATTEMPTED=1
+  if [[ "${FIRST_PASS_DRAIN_INTERRUPT_RESTORE_DONE:-0}" == "1" ]]; then
+    return 0
+  fi
+  FIRST_PASS_DRAIN_INTERRUPT_RESTORE_DONE=1
   if [[ "${FIRST_PASS_DRAIN_CRON_SUSPEND_BEFORE:-}" != "false" ]]; then
     return 0
   fi
@@ -1189,13 +1291,19 @@ first_pass_drain_interrupt_restore() {
 first_pass_drain_on_signal() {
   # Bash resumes after a returning INT/TERM trap; restore then exit so deploy stops.
   local code="${1:-1}"
+  # INT/TERM during explicit restore: allow interrupt restore to still patch.
+  if [[ "${FIRST_PASS_DRAIN_IN_EXPLICIT_RESTORE:-0}" == "1" ]]; then
+    FIRST_PASS_DRAIN_IN_EXPLICIT_RESTORE=0
+    FIRST_PASS_DRAIN_INTERRUPT_RESTORE_DONE=0
+  fi
   first_pass_drain_interrupt_restore
   clear_first_pass_drain_interrupt_trap
   exit "${code}"
 }
 
 install_first_pass_drain_interrupt_trap() {
-  FIRST_PASS_DRAIN_RESTORE_ATTEMPTED=0
+  FIRST_PASS_DRAIN_INTERRUPT_RESTORE_DONE=0
+  FIRST_PASS_DRAIN_IN_EXPLICIT_RESTORE=0
   # INT/TERM must exit; ERR restores only (set -e exits the failing command path).
   trap 'first_pass_drain_on_signal 130' INT
   trap 'first_pass_drain_on_signal 143' TERM
@@ -1223,6 +1331,10 @@ deploy_manifests() {
   render_public_origin_manifests "${rendered_k8s}"
   warn_if_entra_redirect_host_differs
   capture_first_pass_drain_cron_suspend
+  if ! prepare_rendered_first_pass_drain_suspend "${rendered_k8s}"; then
+    echo "ERROR: refusing deploy — could not render First-Pass drain suspend into manifests" >&2
+    exit 1
+  fi
   install_first_pass_drain_interrupt_trap
   if uses_custom_app_images "${BACKEND_IMAGE}" "${FRONTEND_IMAGE}" || [[ -n "${IMAGE_PULL_SECRET}" ]]; then
     local overlay_dir
@@ -1248,12 +1360,15 @@ deploy_manifests() {
       exit 1
     fi
   fi
-  # Mark attempted before normal restore so an ERR inside restore cannot recurse.
-  FIRST_PASS_DRAIN_RESTORE_ATTEMPTED=1
+  # Explicit restore reconciles annotation / FORCE; INT/TERM can still recover
+  # until this finishes (do not pre-mark interrupt-done).
+  FIRST_PASS_DRAIN_IN_EXPLICIT_RESTORE=1
   if ! restore_first_pass_drain_cron_suspend; then
+    FIRST_PASS_DRAIN_IN_EXPLICIT_RESTORE=0
     clear_first_pass_drain_interrupt_trap
     exit 1
   fi
+  FIRST_PASS_DRAIN_IN_EXPLICIT_RESTORE=0
   clear_first_pass_drain_interrupt_trap
   ensure_tw_research_schedule_cronjob_suspended
   apply_frontend_ingress_host

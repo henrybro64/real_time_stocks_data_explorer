@@ -34,8 +34,8 @@ Ship a **default-disabled** First-Pass drain CronJob configuration where:
 
 | Object | Git default | Redeploy behavior |
 |--------|-------------|-------------------|
-| `stock-ticker-tw-research-first-pass-drain` | `suspend: true` | Un-suspend **only** when pre-apply **live** `suspend` was `false`. Annotation alone never re-enables. Stale `desired=false` with live `true` → warn, leave suspended, reconcile annotation to `true`. `FORCE_FIRST_PASS_DRAIN_CRON_SUSPEND=1` forces `suspend=true`. Failed `kubectl apply -k` still restores live `false` when captured. |
-| `stock-ticker-tw-research-schedule` | `suspend: true` | Always forced back to `true` if found enabled |
+| `stock-ticker-tw-research-first-pass-drain` | `suspend: true` | When pre-apply **live** `suspend` was `false`, deploy **renders** `suspend: false` into apply manifests (preferred) and still reconciles annotation / safety patch afterward. Annotation alone never re-enables. Stale `desired=false` with live `true` → warn, leave suspended, reconcile annotation to `true`. `FORCE_FIRST_PASS_DRAIN_CRON_SUSPEND=1` forces `suspend=true`. Failed `kubectl apply -k` still restores live `false` when captured. Unreadable live suspend (API/RBAC/network) **refuses deploy** before apply. |
+| `stock-ticker-tw-research-schedule` | `suspend: true` | Always forced back to `true` if found enabled; unreadable schedule suspend fails the deploy |
 
 Operator annotation (set by Stage D script / deploy restore):
 
@@ -55,6 +55,13 @@ Empty / `<no value>` annotation reads are treated as unset.
 Expect: schedule CronJob `suspend=true`; First-Pass CronJob present; report
 whether First-Pass is suspended or operator-active; list any active drain Jobs.
 
+**Activation readiness (authoritative run):** preflight prints a read-only
+`readiness_hint` join of Research Run ↔ attached First-Pass Job. Before enable,
+confirm the **intended** run shows `review_as_eligible` (or equivalent):  
+`schedule_enabled=true`, `phase=phase1_first_pass`, attached `first_pass_job_id`
+present, job not `failed`/`archived`/`orphaned`, no `deletion_state`. Do not
+bypass app auth or write PostgreSQL for this check.
+
 ### Enable (separate approval) 🔒
 
 `enable` / `resume` refuse (exit 3) unless:
@@ -64,14 +71,16 @@ whether First-Pass is suspended or operator-active; list any active drain Jobs.
    `TW_RESEARCH_FIRST_PASS_DRAIN_ENABLED`
 2. Backend process env: `ENABLED=true`, `USER_ID` set, `TOKEN` set (presence only)
 3. No active Job owned by the First-Pass drain CronJob
-4. Schedule CronJob suspended or absent
+4. Schedule CronJob suspended or absent (unreadable schedule state refuses enable)
 5. `CONFIRM=YES`
 
 ```bash
 CONFIRM=YES ./scripts/tw-first-pass-cronjob-stage-d.sh enable k3s
 ```
 
-Managed Research Run still needs `schedule_enabled=true` for the owned Job.
+Cron ticks alone are not enough: the authoritative managed Research Run must
+already be armed (`schedule_enabled=true`) with an eligible attached First-Pass
+Job (verified via preflight).
 
 ### Pause future ticks (keep progress) 🔒
 
@@ -116,8 +125,10 @@ FORCE_FIRST_PASS_DRAIN_CRON_SUSPEND=1 ./scripts/deploy-k3s.sh k3s
 
 Normal `./scripts/deploy-k3s.sh k3s` **preserves** First-Pass `suspend=false`
 only when the **live** pre-apply suspend was `false` (plain `kubectl patch`
-enable without annotation still works). It does **not** enable the schedule
-CronJob.
+enable without annotation still works). Preferred path: rewrite the rendered
+CronJob manifest to `suspend: false` **before** `kubectl apply -k`, then
+reconcile annotation (safety patch if still suspended). It does **not** enable
+the schedule CronJob. If live suspend cannot be read, deploy aborts before apply.
 
 ### Observe first unattended ticks 👁
 
