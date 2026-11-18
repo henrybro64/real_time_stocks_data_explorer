@@ -78,6 +78,16 @@ echo "=== First-Pass drain CronJob ==="
 run_kubectl -n "${NS}" get cronjob "${CRONJOB_NAME}" \
   -o custom-columns=NAME:.metadata.name,SUSPEND:.spec.suspend,SCHEDULE:.spec.schedule,LAST_SCHEDULE:.status.lastScheduleTime,LAST_SUCCESS:.status.lastSuccessfulTime 2>/dev/null \
   || echo "cronjob ${CRONJOB_NAME} not found"
+DESIRED_ANN="${FIRST_PASS_DRAIN_DESIRED_SUSPEND_ANNOTATION:-stock-ticker.ai/first-pass-drain-desired-suspend}"
+desired="$(run_kubectl -n "${NS}" get cronjob "${CRONJOB_NAME}" \
+  -o "go-template={{index .metadata.annotations \"${DESIRED_ANN}\"}}" 2>/dev/null || true)"
+echo "desired-suspend annotation: ${desired:-unset}"
+echo
+echo "=== Taiwan Research schedule CronJob (must stay suspended) ==="
+SCHEDULE_CRON="${TW_RESEARCH_SCHEDULE_CRONJOB_NAME:-stock-ticker-tw-research-schedule}"
+run_kubectl -n "${NS}" get cronjob "${SCHEDULE_CRON}" \
+  -o custom-columns=NAME:.metadata.name,SUSPEND:.spec.suspend,SCHEDULE:.spec.schedule 2>/dev/null \
+  || echo "cronjob ${SCHEDULE_CRON} not found"
 
 # Built-in sha256 (no extension / no writes). User ids as 12-char hex prefix only.
 readonly_sql="$(cat <<'SQL'

@@ -58,6 +58,13 @@ Optional env:
                    The preflight then validates that local file, so a broken
                    live SESSION_SECRET can be repaired by a forced apply.
                    Never use this to rotate LOCAL_AUTH_PASSWORD casually (#286).
+  FORCE_FIRST_PASS_DRAIN_CRON_SUSPEND=1
+                   After apply, force First-Pass drain CronJob suspend=true even
+                   if the live cluster had suspend=false (#362 Stage D). Default
+                   is to preserve an operator-approved unsuspend across redeploy
+                   so git's default-disabled manifest does not silently disarm
+                   an already-activated First-Pass CronJob. Never enables the
+                   unrelated Taiwan Research schedule CronJob.
 
 k3d one-time setup (before first deploy):
   k3d cluster create stock-ticker -p "80:80@loadbalancer"
@@ -1026,6 +1033,104 @@ apply_frontend_ingress_host() {
   rm -f "${rendered}"
 }
 
+# First-Pass drain CronJob (#362 Stage D). Git stays default-disabled; redeploy
+# must not wipe an operator-approved unsuspend. Schedule CronJob is never preserved enabled.
+FIRST_PASS_DRAIN_CRONJOB_NAME="${FIRST_PASS_DRAIN_CRONJOB_NAME:-stock-ticker-tw-research-first-pass-drain}"
+TW_RESEARCH_SCHEDULE_CRONJOB_NAME="${TW_RESEARCH_SCHEDULE_CRONJOB_NAME:-stock-ticker-tw-research-schedule}"
+FIRST_PASS_DRAIN_DESIRED_SUSPEND_ANNOTATION="${FIRST_PASS_DRAIN_DESIRED_SUSPEND_ANNOTATION:-stock-ticker.ai/first-pass-drain-desired-suspend}"
+
+read_cronjob_suspend() {
+  # Prints: true | false | missing
+  local name="$1"
+  local value
+  if ! value="$(${KUBECTL_CMD} -n "${NAMESPACE}" get cronjob "${name}" -o jsonpath='{.spec.suspend}' 2>/dev/null)"; then
+    echo "missing"
+    return 0
+  fi
+  if [[ -z "${value}" ]]; then
+    echo "missing"
+    return 0
+  fi
+  echo "${value}"
+}
+
+read_cronjob_desired_suspend_annotation() {
+  # Prints annotation value or empty when absent/unreadable.
+  local name="$1"
+  ${KUBECTL_CMD} -n "${NAMESPACE}" get cronjob "${name}" \
+    -o "go-template={{index .metadata.annotations \"${FIRST_PASS_DRAIN_DESIRED_SUSPEND_ANNOTATION}\"}}" \
+    2>/dev/null || true
+}
+
+capture_first_pass_drain_cron_suspend() {
+  # Capture live suspend + optional operator annotation before kubectl apply -k
+  # rewrites the object from git (suspend: true).
+  FIRST_PASS_DRAIN_CRON_SUSPEND_BEFORE="$(read_cronjob_suspend "${FIRST_PASS_DRAIN_CRONJOB_NAME}")"
+  FIRST_PASS_DRAIN_CRON_DESIRED_BEFORE="$(read_cronjob_desired_suspend_annotation "${FIRST_PASS_DRAIN_CRONJOB_NAME}")"
+  echo "First-Pass drain CronJob pre-apply suspend=${FIRST_PASS_DRAIN_CRON_SUSPEND_BEFORE} desired=${FIRST_PASS_DRAIN_CRON_DESIRED_BEFORE:-unset}"
+}
+
+patch_cronjob_suspend() {
+  local name="$1"
+  local suspend_bool="$2"
+  ${KUBECTL_CMD} -n "${NAMESPACE}" patch cronjob "${name}" --type merge \
+    -p "{\"spec\":{\"suspend\":${suspend_bool}}}"
+}
+
+annotate_first_pass_drain_desired_suspend() {
+  local suspend_bool="$1"
+  ${KUBECTL_CMD} -n "${NAMESPACE}" annotate cronjob "${FIRST_PASS_DRAIN_CRONJOB_NAME}" \
+    "${FIRST_PASS_DRAIN_DESIRED_SUSPEND_ANNOTATION}=${suspend_bool}" --overwrite
+}
+
+restore_first_pass_drain_cron_suspend() {
+  # After apply: git defaults to suspend=true. Preserve operator-approved false
+  # unless FORCE_FIRST_PASS_DRAIN_CRON_SUSPEND=1 explicitly re-disables.
+  local before="${FIRST_PASS_DRAIN_CRON_SUSPEND_BEFORE:-missing}"
+  local desired="${FIRST_PASS_DRAIN_CRON_DESIRED_BEFORE:-}"
+  local after
+  after="$(read_cronjob_suspend "${FIRST_PASS_DRAIN_CRONJOB_NAME}")"
+  if [[ "${after}" == "missing" ]]; then
+    echo "First-Pass drain CronJob missing after apply — skip suspend restore" >&2
+    return 0
+  fi
+  if [[ "${FORCE_FIRST_PASS_DRAIN_CRON_SUSPEND:-}" == "1" ]]; then
+    echo "FORCE_FIRST_PASS_DRAIN_CRON_SUSPEND=1 — forcing First-Pass drain CronJob suspend=true"
+    patch_cronjob_suspend "${FIRST_PASS_DRAIN_CRONJOB_NAME}" true
+    annotate_first_pass_drain_desired_suspend true
+    return 0
+  fi
+  local should_unsuspend=0
+  if [[ "${desired}" == "false" || "${before}" == "false" ]]; then
+    should_unsuspend=1
+  fi
+  if [[ "${should_unsuspend}" == "1" ]]; then
+    echo "Preserving operator-approved First-Pass drain CronJob suspend=false across redeploy (#362)"
+    patch_cronjob_suspend "${FIRST_PASS_DRAIN_CRONJOB_NAME}" false
+    annotate_first_pass_drain_desired_suspend false
+  else
+    # Leave git default (suspend=true). Record desired=true when CronJob exists.
+    annotate_first_pass_drain_desired_suspend true || true
+    echo "First-Pass drain CronJob remains suspended (git default / operator-disabled)"
+  fi
+}
+
+ensure_tw_research_schedule_cronjob_suspended() {
+  # Unrelated Taiwan Research schedule CronJob must stay disabled (#330/#362).
+  local state
+  state="$(read_cronjob_suspend "${TW_RESEARCH_SCHEDULE_CRONJOB_NAME}")"
+  if [[ "${state}" == "missing" ]]; then
+    echo "Taiwan Research schedule CronJob not present — ok"
+    return 0
+  fi
+  if [[ "${state}" != "true" ]]; then
+    echo "WARNING: ${TW_RESEARCH_SCHEDULE_CRONJOB_NAME} suspend=${state}; forcing suspend=true (#362)" >&2
+    patch_cronjob_suspend "${TW_RESEARCH_SCHEDULE_CRONJOB_NAME}" true
+  else
+    echo "Taiwan Research schedule CronJob remains suspended"
+  fi
+}
+
 deploy_manifests() {
   echo "Applying Kubernetes manifests"
   BACKEND_READY_BEFORE="$(${KUBECTL_CMD} -n "${NAMESPACE}" get deploy stock-ticker-backend -o jsonpath='{.status.readyReplicas}' 2>/dev/null || true)"
@@ -1042,6 +1147,7 @@ deploy_manifests() {
   trap "rm -rf '${rendered_k8s}'" RETURN
   render_public_origin_manifests "${rendered_k8s}"
   warn_if_entra_redirect_host_differs
+  capture_first_pass_drain_cron_suspend
   if uses_custom_app_images "${BACKEND_IMAGE}" "${FRONTEND_IMAGE}" || [[ -n "${IMAGE_PULL_SECRET}" ]]; then
     local overlay_dir
     overlay_dir="$(mktemp -d)"
@@ -1059,6 +1165,8 @@ deploy_manifests() {
   else
     ${KUBECTL_CMD} apply -k "${rendered_k8s}"
   fi
+  restore_first_pass_drain_cron_suspend
+  ensure_tw_research_schedule_cronjob_suspended
   apply_frontend_ingress_host
   restart_local_app_workloads_if_imported
 
